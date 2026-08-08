@@ -83,6 +83,44 @@ it("maps current Codex model capability fields", () => {
   ]);
 });
 
+it("defaults GPT-5.6-Sol to max reasoning when supported", () => {
+  const capabilities = mapCodexModelCapabilities({
+    additionalSpeedTiers: [],
+    defaultReasoningEffort: "low",
+    defaultServiceTier: null,
+    description: "Frontier coding model",
+    displayName: "GPT-5.6-Sol",
+    hidden: false,
+    id: "gpt-5.6-sol",
+    isDefault: true,
+    model: "gpt-5.6-sol",
+    serviceTiers: [],
+    supportedReasoningEfforts: [
+      {
+        description: "Fast responses with lighter reasoning",
+        reasoningEffort: "low",
+      },
+      {
+        description: "Maximum reasoning",
+        reasoningEffort: "max",
+      },
+    ],
+  });
+
+  assert.deepStrictEqual(capabilities.optionDescriptors, [
+    {
+      id: "reasoningEffort",
+      label: "Reasoning",
+      type: "select",
+      options: [
+        { id: "low", label: "Low" },
+        { id: "max", label: "Max", isDefault: true },
+      ],
+      currentValue: "max",
+    },
+  ]);
+});
+
 it("uses standard routing when the catalog has no default service tier", () => {
   const capabilities = mapCodexModelCapabilities({
     additionalSpeedTiers: ["fast"],

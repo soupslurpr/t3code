@@ -22,7 +22,11 @@ import type {
   ServerProviderModel,
   ServerProviderSkill,
 } from "@t3tools/contracts";
-import { PREFERRED_DEFAULT_CODEX_MODELS, ServerSettingsError } from "@t3tools/contracts";
+import {
+  DEFAULT_MODEL,
+  PREFERRED_DEFAULT_CODEX_MODELS,
+  ServerSettingsError,
+} from "@t3tools/contracts";
 
 import { createModelCapabilities } from "@t3tools/shared/model";
 import { resolveSpawnCommand } from "@t3tools/shared/shell";
@@ -62,6 +66,7 @@ const REASONING_EFFORT_LABELS: Readonly<Record<string, string>> = {
 };
 
 const DEFAULT_SERVICE_TIER_ID = "default";
+const DEFAULT_CODEX_REASONING_EFFORT = "max";
 const CURRENT_CODEX_MODELS = new Set(["gpt-5.6-luna", "gpt-5.6-terra", "gpt-5.6-sol"]);
 
 export function isLegacyCodexModel(model: string): boolean {
@@ -115,8 +120,15 @@ function codexAccountEmail(account: CodexSchema.V2GetAccountResponse["account"])
 export function mapCodexModelCapabilities(
   model: CodexSchema.V2ModelListResponse__Model,
 ): ModelCapabilities {
+  const defaultReasoningEffort =
+    model.model === DEFAULT_MODEL &&
+    model.supportedReasoningEfforts.some(
+      ({ reasoningEffort }) => reasoningEffort === DEFAULT_CODEX_REASONING_EFFORT,
+    )
+      ? DEFAULT_CODEX_REASONING_EFFORT
+      : model.defaultReasoningEffort;
   const reasoningOptions = model.supportedReasoningEfforts.map(({ reasoningEffort }) =>
-    reasoningEffort === model.defaultReasoningEffort
+    reasoningEffort === defaultReasoningEffort
       ? {
           id: reasoningEffort,
           label: reasoningEffortLabel(reasoningEffort),
