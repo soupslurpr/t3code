@@ -186,6 +186,7 @@ it.effect("resolveAutoBootstrapWelcomeTargets returns existing project and threa
 it.effect("resolveAutoBootstrapWelcomeTargets creates a project and thread when missing", () =>
   Effect.gen(function* () {
     const dispatchCalls = yield* Ref.make<ReadonlyArray<string>>([]);
+    const createdThreadRuntimeMode = yield* Ref.make<string | undefined>(undefined);
     const targets = yield* ServerRuntimeStartup.resolveAutoBootstrapWelcomeTargets.pipe(
       Effect.provideService(ServerConfig.ServerConfig, {
         cwd: "/tmp/startup-project",
@@ -211,9 +212,13 @@ it.effect("resolveAutoBootstrapWelcomeTargets creates a project and thread when 
       Effect.provideService(OrchestrationEngine.OrchestrationEngineService, {
         readEvents: () => Stream.empty,
         dispatch: (command) =>
-          Ref.update(dispatchCalls, (calls) => [...calls, command.type]).pipe(
-            Effect.as({ sequence: 1 }),
-          ),
+          Effect.gen(function* () {
+            yield* Ref.update(dispatchCalls, (calls) => [...calls, command.type]);
+            if (command.type === "thread.create") {
+              yield* Ref.set(createdThreadRuntimeMode, command.runtimeMode);
+            }
+            return { sequence: 1 };
+          }),
         streamDomainEvents: Stream.empty,
         latestSequence: Effect.succeed(0),
       } satisfies OrchestrationEngine.OrchestrationEngineService["Service"]),
@@ -223,6 +228,7 @@ it.effect("resolveAutoBootstrapWelcomeTargets creates a project and thread when 
     assert.equal(typeof targets.bootstrapProjectId, "string");
     assert.equal(typeof targets.bootstrapThreadId, "string");
     assert.deepStrictEqual(yield* Ref.get(dispatchCalls), ["project.create", "thread.create"]);
+    assert.equal(yield* Ref.get(createdThreadRuntimeMode), "auto");
   }),
 );
 

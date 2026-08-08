@@ -9,7 +9,6 @@ import {
   type OrchestrationSession,
   ThreadId,
   type ProviderSession,
-  type RuntimeMode,
   type TurnId,
 } from "@t3tools/contracts";
 import { isTemporaryWorktreeBranch, WORKTREE_BRANCH_PREFIX } from "@t3tools/shared/git";
@@ -91,7 +90,6 @@ const turnStartKeyForEvent = (event: ProviderIntentEvent): string =>
 
 const HANDLED_TURN_START_KEY_MAX = 10_000;
 const HANDLED_TURN_START_KEY_TTL = Duration.minutes(30);
-const DEFAULT_RUNTIME_MODE: RuntimeMode = "full-access";
 const MAX_REGENERATION_ATTACHMENTS = 4;
 const MAX_THREAD_TITLE_CONTEXT_CHARS = 8_000;
 const MAX_FIRST_USER_TITLE_CONTEXT_CHARS = 2_000;
@@ -1306,7 +1304,7 @@ const make = Effect.gen(function* () {
         ...(thread.session?.providerInstanceId !== undefined
           ? { providerInstanceId: thread.session.providerInstanceId }
           : {}),
-        runtimeMode: thread.session?.runtimeMode ?? DEFAULT_RUNTIME_MODE,
+        runtimeMode: thread.session?.runtimeMode ?? thread.runtimeMode,
         activeTurnId: null,
         lastError: thread.session?.lastError ?? null,
         updatedAt: now,
