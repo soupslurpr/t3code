@@ -25,6 +25,9 @@ T3 Code can use your installed Codex and its existing login. Run `codex login`
 on the environment's machine to sign in. [Provider setup](./install.md#providers)
 covers installation and custom configuration.
 
+New threads default to GPT-6-Astra with Max reasoning when Astra is available. Explicit project,
+thread, or saved composer selections take precedence. Other models keep their provider defaults.
+
 ## Use multiple accounts
 
 Add another ChatGPT account in **Settings → Providers**, then select the account
