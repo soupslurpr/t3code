@@ -4,6 +4,9 @@ For one account, use the default Codex provider with your normal Codex login.
 [Provider setup](./install.md#providers) covers installation, Settings > Providers,
 and custom binaries or environment variables.
 
+New threads default to GPT-6-Astra with Max reasoning when Astra is available. Explicit project,
+thread, or saved composer selections take precedence. Other models keep their provider defaults.
+
 ## Use multiple accounts
 
 A shared Codex home with a shadow home lets work and personal accounts continue
