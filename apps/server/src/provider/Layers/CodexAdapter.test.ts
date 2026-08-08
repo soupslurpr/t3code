@@ -447,6 +447,42 @@ sessionErrorLayer("CodexAdapterLive session errors", (it) => {
     }),
   );
 
+  it.effect("sends Max for Astra by default and preserves an explicit effort", () =>
+    Effect.gen(function* () {
+      const adapter = yield* CodexAdapter;
+      const threadId = asThreadId("astra-default-effort");
+      yield* adapter.startSession({
+        provider: ProviderDriverKind.make("codex"),
+        threadId,
+        runtimeMode: "auto",
+      });
+      const runtime = sessionRuntimeFactory.lastRuntime;
+      NodeAssert.ok(runtime);
+      runtime.sendTurnImpl.mockClear();
+
+      for (const options of [undefined, [{ id: "reasoningEffort", value: "low" }]]) {
+        yield* adapter.sendTurn({
+          threadId,
+          input: "hello",
+          modelSelection: createModelSelection(
+            ProviderInstanceId.make("codex"),
+            "gpt-6-astra",
+            options,
+          ),
+          attachments: [],
+        });
+      }
+
+      NodeAssert.deepStrictEqual(
+        runtime.sendTurnImpl.mock.calls.map(([input]) => input),
+        [
+          { input: "hello", model: "gpt-6-astra", effort: "max" },
+          { input: "hello", model: "gpt-6-astra", effort: "low" },
+        ],
+      );
+    }),
+  );
+
   it.effect("passes configured launch args into the session runtime", () => {
     const runtimeFactory = makeRuntimeFactory();
     const layer = Layer.effect(

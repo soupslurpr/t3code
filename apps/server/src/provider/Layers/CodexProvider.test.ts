@@ -64,6 +64,44 @@ it("maps current Codex model capability fields", () => {
   ]);
 });
 
+it("defaults GPT-6-Astra to max reasoning when supported", () => {
+  const capabilities = mapCodexModelCapabilities({
+    additionalSpeedTiers: [],
+    defaultReasoningEffort: "low",
+    defaultServiceTier: null,
+    description: "Frontier coding model",
+    displayName: "GPT-6-Astra",
+    hidden: false,
+    id: "gpt-6-astra",
+    isDefault: true,
+    model: "gpt-6-astra",
+    serviceTiers: [],
+    supportedReasoningEfforts: [
+      {
+        description: "Fast responses with lighter reasoning",
+        reasoningEffort: "low",
+      },
+      {
+        description: "Maximum reasoning",
+        reasoningEffort: "max",
+      },
+    ],
+  });
+
+  assert.deepStrictEqual(capabilities.optionDescriptors, [
+    {
+      id: "reasoningEffort",
+      label: "Reasoning",
+      type: "select",
+      options: [
+        { id: "low", label: "Low" },
+        { id: "max", label: "Max", isDefault: true },
+      ],
+      currentValue: "max",
+    },
+  ]);
+});
+
 it("uses standard routing when the catalog has no default service tier", () => {
   const capabilities = mapCodexModelCapabilities({
     additionalSpeedTiers: ["fast"],
@@ -118,7 +156,17 @@ it("marks the most preferred available model as default", () => {
   );
 });
 
-it("prefers sol over terra when both are available", () => {
+it("prefers Astra over Sol and Terra when available", () => {
+  const models = applyPreferredCodexDefaultModel([
+    { slug: "gpt-5.6-terra", name: "GPT-5.6-Terra", isCustom: false, capabilities: null },
+    { slug: "gpt-5.6-sol", name: "GPT-5.6-Sol", isCustom: false, capabilities: null },
+    { slug: "gpt-6-astra", name: "GPT-6-Astra", isCustom: false, capabilities: null },
+  ]);
+
+  assert.deepStrictEqual(models.find((model) => model.isDefault)?.slug, "gpt-6-astra");
+});
+
+it("falls back to Sol before Terra when Astra is unavailable", () => {
   const models = applyPreferredCodexDefaultModel([
     { slug: "gpt-5.6-terra", name: "GPT-5.6-Terra", isCustom: false, capabilities: null },
     { slug: "gpt-5.6-sol", name: "GPT-5.6-Sol", isCustom: false, capabilities: null },
@@ -138,7 +186,7 @@ it("keeps Codex's own default when no preferred model is available", () => {
 
 it("ignores custom models that shadow a preferred slug", () => {
   const models = applyPreferredCodexDefaultModel([
-    { slug: "gpt-5.6-sol", name: "gpt-5.6-sol", isCustom: true, capabilities: null },
+    { slug: "gpt-6-astra", name: "gpt-6-astra", isCustom: true, capabilities: null },
     { slug: "gpt-5.4", name: "GPT-5.4", isCustom: false, isDefault: true, capabilities: null },
   ]);
 

@@ -45,8 +45,10 @@ import { ChildProcessSpawner } from "effect/unstable/process";
 import * as CodexErrors from "effect-codex-app-server/errors";
 import * as EffectCodexSchema from "effect-codex-app-server/schema";
 
-import { getModelSelectionStringOptionValue } from "@t3tools/shared/model";
-import { getCodexServiceTierOptionValue } from "../../codexModelOptions.ts";
+import {
+  getCodexReasoningEffortOptionValue,
+  getCodexServiceTierOptionValue,
+} from "../../codexModelOptions.ts";
 import * as McpProviderSession from "../../mcp/McpProviderSession.ts";
 
 import {
@@ -2459,7 +2461,7 @@ export const makeCodexAdapter = Effect.fn("makeCodexAdapter")(function* (
     const session = yield* requireSession(input.threadId);
     const reasoningEffort =
       input.modelSelection?.instanceId === boundInstanceId
-        ? getModelSelectionStringOptionValue(input.modelSelection, "reasoningEffort")
+        ? getCodexReasoningEffortOptionValue(input.modelSelection)
         : undefined;
     const serviceTier =
       input.modelSelection?.instanceId === boundInstanceId
