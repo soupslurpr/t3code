@@ -26,7 +26,7 @@ import type {
   ServerProviderModel,
   ServerProviderSkill,
 } from "@t3tools/contracts";
-import { PREFERRED_DEFAULT_CODEX_MODELS, ServerSettingsError } from "@t3tools/contracts";
+import { DEFAULT_MODEL, PREFERRED_DEFAULT_CODEX_MODELS, ServerSettingsError } from "@t3tools/contracts";
 
 import {
   codexModelFamily,
@@ -50,6 +50,7 @@ import {
   type CodexResetCreditsSummary,
 } from "./codexUsageLimits.ts";
 import * as HostProcess from "@t3tools/shared/HostProcess";
+import { DEFAULT_CODEX_REASONING_EFFORT } from "../codexModelOptions.ts";
 import packageJson from "../../package.json" with { type: "json" };
 const isCodexAppServerSpawnError = Schema.is(CodexErrors.CodexAppServerSpawnError);
 const RATE_LIMITS_PROBE_TIMEOUT_MS = 3_000;
@@ -163,16 +164,18 @@ function codexAccountEmail(account: CodexSchema.V2GetAccountResponse["account"])
   return account.email;
 }
 
-export function codexDefaultReasoningEffortOverride(model: string): "medium" | undefined {
-  return codexModelFamily(model) === "gpt-6-astra" ? "medium" : undefined;
-}
-
 export function mapCodexModelCapabilities(
   model: CodexSchema.V2ModelListResponse__Model,
 ): ModelCapabilities {
+  const defaultReasoningEffort =
+    codexModelFamily(model.model) === DEFAULT_MODEL &&
+    model.supportedReasoningEfforts.some(
+      ({ reasoningEffort }) => reasoningEffort === DEFAULT_CODEX_REASONING_EFFORT,
+    )
+      ? DEFAULT_CODEX_REASONING_EFFORT
+      : model.defaultReasoningEffort;
   const reasoningOptions = model.supportedReasoningEfforts.map(({ reasoningEffort }) =>
-    reasoningEffort ===
-    (codexDefaultReasoningEffortOverride(model.model) ?? model.defaultReasoningEffort)
+    reasoningEffort === defaultReasoningEffort
       ? {
           id: reasoningEffort,
           label: reasoningEffortLabel(reasoningEffort),

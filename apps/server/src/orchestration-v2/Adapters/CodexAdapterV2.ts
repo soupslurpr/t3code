@@ -17,7 +17,6 @@ import type { CodexEffectiveRuntime } from "../../provider/CodexManagedRuntime.t
 import {
   buildCodexInitializeParams,
   codexAppServerEnvironment,
-  codexDefaultReasoningEffortOverride,
 } from "../../provider/CodexProvider.ts";
 import {
   codexRateLimitsToUpdate,
@@ -94,7 +93,10 @@ import * as Stream from "effect/Stream";
 import { ChildProcess, ChildProcessSpawner } from "effect/process";
 
 import { resolveAttachmentPath, resolveAttachmentPathById } from "../../attachmentStore.ts";
-import { getCodexServiceTierOptionValue } from "../../codexModelOptions.ts";
+import {
+  getCodexReasoningEffortOptionValue,
+  getCodexServiceTierOptionValue,
+} from "../../codexModelOptions.ts";
 import { ServerConfig } from "../../config.ts";
 import { expandHomePath } from "@t3tools/provider-core/server/pathExpansion";
 import {
@@ -739,9 +741,7 @@ export const buildCodexTurnStartParams = Effect.fn("CodexAdapterV2.buildCodexTur
       input.runtimePolicy.sandboxPolicy === undefined
         ? runtimeModeDefaults.sandboxPolicy
         : yield* decodeTurnSandboxPolicy(input.runtimePolicy.sandboxPolicy);
-    const selectedEffort =
-      getModelSelectionStringOptionValue(input.modelSelection, "reasoningEffort") ??
-      codexDefaultReasoningEffortOverride(input.modelSelection.model);
+    const selectedEffort = getCodexReasoningEffortOptionValue(input.modelSelection);
     const effort =
       selectedEffort === undefined ? undefined : yield* decodeTurnReasoningEffort(selectedEffort);
     const serviceTier =
