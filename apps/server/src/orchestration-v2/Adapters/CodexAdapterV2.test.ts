@@ -400,6 +400,27 @@ describe("CodexAdapterV2 assistant message streaming", () => {
 });
 
 describe("CodexAdapterV2 runtime policy", () => {
+  it.effect("sends Max for Astra by default and preserves an explicit effort", () =>
+    Effect.gen(function* () {
+      for (const selectedEffort of [undefined, "low"]) {
+        const params = yield* CodexAdapterV2.buildCodexTurnStartParams({
+          nativeThreadId: "astra-default-effort",
+          codexInput: [{ type: "text", text: "hello" }],
+          runtimePolicy: { runtimeMode: "auto", interactionMode: "plan", cwd: null },
+          modelSelection: {
+            instanceId: ProviderInstanceId.make("codex"),
+            model: "gpt-6-astra",
+            ...(selectedEffort === undefined
+              ? {}
+              : { options: [{ id: "reasoningEffort", value: selectedEffort }] }),
+          },
+        });
+        assert.equal(params.effort, selectedEffort ?? "max");
+        assert.equal(params.collaborationMode?.settings.reasoning_effort, selectedEffort ?? "max");
+      }
+    }),
+  );
+
   it.effect("derives concrete Codex turn policies from every T3 runtime mode", () =>
     Effect.gen(function* () {
       const build = (
