@@ -76,6 +76,15 @@ import {
   PreviewAutomationTypeInput,
   PreviewAutomationWaitForInput,
 } from "./previewAutomation.ts";
+import {
+  ComputerAutomationAccessInput,
+  ComputerAutomationActInput,
+  ComputerAutomationFailure,
+  ComputerAutomationObservation,
+  ComputerAutomationSnapshot,
+  ComputerAutomationSnapshotInput,
+  ComputerAutomationStatus,
+} from "./computerAutomation.ts";
 import type {
   ClientOrchestrationCommand,
   OrchestrationGetFullThreadDiffInput,
@@ -584,6 +593,14 @@ export const DesktopServerExposureStateSchema = Schema.Struct({
   advertisedHost: Schema.NullOr(Schema.String),
   tailscaleServeEnabled: Schema.Boolean,
   tailscaleServePort: Schema.Number,
+});
+
+export interface DesktopPowerSettings {
+  keepAwakeWhileAgentsWork: boolean;
+}
+
+export const DesktopPowerSettingsSchema = Schema.Struct({
+  keepAwakeWhileAgentsWork: Schema.Boolean,
 });
 
 export interface PickFolderOptions {
@@ -1211,6 +1228,30 @@ export const DesktopPreviewAutomationWaitForInputSchema = Schema.Struct({
 export const SystemSettingsPaneSchema = Schema.Literals(["full-disk-access"]);
 export type SystemSettingsPane = typeof SystemSettingsPaneSchema.Type;
 
+export const DesktopComputerAutomationActInputSchema = ComputerAutomationActInput;
+
+const DesktopComputerAutomationFailureSchema = Schema.Struct({
+  ok: Schema.Literal(false),
+  error: ComputerAutomationFailure,
+});
+
+/** Creates the local IPC envelope for a fallible computer-use operation. */
+export const makeDesktopComputerAutomationResultSchema = <Value extends Schema.Top>(value: Value) =>
+  Schema.Union([
+    Schema.Struct({
+      ok: Schema.Literal(true),
+      value,
+    }),
+    DesktopComputerAutomationFailureSchema,
+  ]);
+
+export type DesktopComputerAutomationResult<Value> =
+  | { readonly ok: true; readonly value: Value }
+  | {
+      readonly ok: false;
+      readonly error: ComputerAutomationFailure;
+    };
+
 export interface DesktopBridge {
   getAppBranding: () => DesktopAppBranding | null;
   /** The desktop client's OS platform, read from Electron's preload process. */
@@ -1277,6 +1318,10 @@ export interface DesktopBridge {
     readonly port?: number;
   }) => Promise<DesktopServerExposureState>;
   getAdvertisedEndpoints: () => Promise<readonly AdvertisedEndpoint[]>;
+  /** Optional for compatibility with desktop builds predating agent wake locks. */
+  getPowerSettings?: () => Promise<DesktopPowerSettings>;
+  /** Optional for compatibility with desktop builds predating agent wake locks. */
+  setKeepAwakeWhileAgentsWork?: (enabled: boolean) => Promise<DesktopPowerSettings>;
   getWslState: () => Promise<DesktopWslState>;
   setWslBackendEnabled: (enabled: boolean) => Promise<DesktopWslState>;
   setWslDistro: (distro: string | null) => Promise<DesktopWslState>;
@@ -1336,6 +1381,26 @@ export interface DesktopBridge {
    * Electron desktop build; web builds have `preview === undefined`.
    */
   preview?: DesktopPreviewBridge;
+  /** Host-computer capture and input. Present only in desktop builds that expose it. */
+  computer?: DesktopComputerAutomationBridge;
+}
+
+export interface DesktopComputerAutomationBridge {
+  status: () => Promise<ComputerAutomationStatus>;
+  requestView: (
+    input: ComputerAutomationAccessInput,
+  ) => Promise<DesktopComputerAutomationResult<ComputerAutomationObservation>>;
+  requestControl: (
+    input: ComputerAutomationAccessInput,
+  ) => Promise<DesktopComputerAutomationResult<ComputerAutomationObservation>>;
+  snapshot: (
+    input: ComputerAutomationSnapshotInput,
+  ) => Promise<DesktopComputerAutomationResult<ComputerAutomationSnapshot>>;
+  act: (
+    input: ComputerAutomationActInput,
+  ) => Promise<DesktopComputerAutomationResult<ComputerAutomationObservation>>;
+  release: () => Promise<DesktopComputerAutomationResult<ComputerAutomationStatus>>;
+  forgetControl: () => Promise<DesktopComputerAutomationResult<void>>;
 }
 
 /** Renderer callback invoked by Electron with a fresh user gesture before display-media capture. */

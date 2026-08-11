@@ -226,4 +226,47 @@ describe("ThreadBackgroundLiveness", () => {
     a.clearThreadLiveness("t");
     expect(a.getThreadBackgroundLiveness("t")).toBeNull();
   });
+
+  it("notifies subscribers only when a thread's aggregate liveness changes", () => {
+    const liveness = ThreadBackgroundLiveness.make();
+    const changes: Array<ThreadBackgroundLiveness.ThreadBackgroundLivenessChange> = [];
+    const unsubscribe = liveness.subscribe((change) => changes.push(change));
+
+    liveness.recordTaskLiveness({
+      threadId: "t",
+      taskId: "m1",
+      taskType: "local_bash",
+      status: "running",
+      kind: "started",
+    });
+    liveness.recordTaskLiveness({
+      threadId: "t",
+      taskId: "m2",
+      taskType: "local_bash",
+      status: "running",
+      kind: "started",
+    });
+    liveness.recordTaskLiveness({
+      threadId: "t",
+      taskId: "a1",
+      taskType: "subagent",
+      status: "running",
+      kind: "started",
+    });
+    liveness.clearThreadLiveness("t");
+    unsubscribe();
+    liveness.recordTaskLiveness({
+      threadId: "t",
+      taskId: "a2",
+      taskType: "subagent",
+      status: "running",
+      kind: "started",
+    });
+
+    expect(changes).toEqual([
+      { threadId: "t", liveness: "monitoring" },
+      { threadId: "t", liveness: "working" },
+      { threadId: "t", liveness: null },
+    ]);
+  });
 });
