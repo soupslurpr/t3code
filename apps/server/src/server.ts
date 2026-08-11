@@ -24,6 +24,7 @@ import { FetchHttpClient, HttpRouter, HttpServer } from "effect/http";
 import * as HttpApiBuilder from "effect/http-api/HttpApiBuilder";
 
 import * as BackgroundPolicy from "./background/BackgroundPolicy.ts";
+import * as AgentPowerReporter from "./background/AgentPowerReporter.ts";
 import * as HostPowerMonitor from "./background/HostPowerMonitor.ts";
 import * as ServerConfig from "./config.ts";
 import { withUntracedRequests } from "./http.ts";
@@ -667,7 +668,12 @@ const layerRuntimeCoreDependencies = layerRuntimeCoreDependenciesBase.pipe(
   ),
 );
 
-const layerRuntimeDependencies = layerRuntimeCoreDependencies.pipe(
+const layerRuntimeCoreWithAgentPower = AgentPowerReporter.layer.pipe(
+  Layer.provideMerge(layerRuntimeCoreDependencies),
+  Layer.provideMerge(layerDesktopTelemetryReceiver),
+);
+
+const layerRuntimeDependencies = layerRuntimeCoreWithAgentPower.pipe(
   Layer.provideMerge(layerUsage),
   Layer.provideMerge(layerBackground),
   Layer.provideMerge(layerResourceDiagnostics),

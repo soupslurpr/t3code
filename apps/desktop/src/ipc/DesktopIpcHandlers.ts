@@ -77,6 +77,8 @@ import {
   completeLegacyLocalStorage,
   takeLegacyLocalStorage,
 } from "./methods/legacyLocalStorage.ts";
+import * as ComputerIpc from "./methods/computer.ts";
+import { getPowerSettings, setKeepAwakeWhileAgentsWork } from "./methods/power.ts";
 import { getWslState, setWslBackendEnabled, setWslDistro, setWslOnly } from "./methods/wsl.ts";
 import {
   getCliCommandState,
@@ -136,6 +138,8 @@ export const installDesktopIpcHandlers = Effect.fn("desktop.ipc.installHandlers"
   yield* ipc.handle(setServerExposureMode);
   yield* ipc.handle(setTailscaleServeEnabled);
   yield* ipc.handle(getAdvertisedEndpoints);
+  yield* ipc.handle(getPowerSettings);
+  yield* ipc.handle(setKeepAwakeWhileAgentsWork);
 
   yield* ipc.handle(getWslState);
   yield* ipc.handle(setWslBackendEnabled);
@@ -172,4 +176,7 @@ export const installDesktopIpcHandlers = Effect.fn("desktop.ipc.installHandlers"
   }
   yield* ipc.handle(PreviewIpc.listBrowserImportSources);
   yield* ipc.handle(PreviewIpc.importBrowserCookies);
+  for (const computerMethod of ComputerIpc.methods) {
+    yield* ipc.handle(computerMethod);
+  }
 });

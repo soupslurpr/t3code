@@ -173,6 +173,7 @@ import {
 import { searchableSetting } from "./settingsSearch";
 import { ProjectFavicon } from "../ProjectFavicon";
 import { PanelAnimationsPreview } from "./PanelAnimationsPreview";
+import { DesktopPowerSettingsRow } from "./DesktopPowerSettingsRow";
 
 const ENVIRONMENT_IDENTIFICATION_LABELS: Record<EnvironmentIdentificationMode, string> = {
   artwork: "Artwork",
@@ -2860,6 +2861,8 @@ export function GeneralSettingsPanel() {
             />
           }
         />
+
+        <DesktopPowerSettingsRow />
 
         <SettingsRow
           {...searchableSetting("continue-threads-after-server-update")}
