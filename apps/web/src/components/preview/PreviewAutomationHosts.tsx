@@ -4,7 +4,11 @@ import { RegistryContext, useAtomSet, useAtomValue } from "@effect/atom-react";
 import { squashAtomCommandFailure } from "@t3tools/client-runtime/state/runtime";
 import {
   FILL_PREVIEW_VIEWPORT,
+  COMPUTER_AUTOMATION_OPERATIONS,
   PREVIEW_AUTOMATION_OPERATIONS,
+  type ComputerAutomationAccessInput,
+  type ComputerAutomationActInput,
+  type ComputerAutomationSnapshotInput,
   type EnvironmentId,
   type PreviewAutomationNavigateInput,
   type PreviewAutomationOpenInput,
@@ -61,6 +65,7 @@ import {
   PreviewAutomationRecordingNotActiveError,
   PreviewAutomationTargetUnavailableError,
   PreviewAutomationViewportTimeoutError,
+  resolveDesktopComputerAutomation,
 } from "./previewAutomationErrors";
 import {
   explicitlySuppressesPreviewMiniPlayer,
@@ -292,7 +297,10 @@ function PreviewAutomationHost(props: { readonly environmentId: EnvironmentId })
     () => ({
       clientId: automationClientId,
       environmentId,
-      supportedOperations: [...PREVIEW_AUTOMATION_OPERATIONS],
+      supportedOperations: [
+        ...PREVIEW_AUTOMATION_OPERATIONS,
+        ...(window.desktopBridge?.computer ? COMPUTER_AUTOMATION_OPERATIONS : []),
+      ],
     }),
     [automationClientId, environmentId],
   );
@@ -325,6 +333,31 @@ function PreviewAutomationHost(props: { readonly environmentId: EnvironmentId })
     async (request: PreviewAutomationRequest): Promise<unknown> => {
       // Session sync and tab creation consume the same budget as overlay registration.
       const hostDeadlineMs = Date.now() + resolveHostWaitBudgetMs(request.timeoutMs);
+      const computer = window.desktopBridge?.computer;
+      switch (request.operation) {
+        case "computerStatus":
+          return await computer?.status();
+        case "computerRequestView":
+          return await resolveDesktopComputerAutomation(
+            computer?.requestView(request.input as ComputerAutomationAccessInput),
+          );
+        case "computerRequestControl":
+          return await resolveDesktopComputerAutomation(
+            computer?.requestControl(request.input as ComputerAutomationAccessInput),
+          );
+        case "computerSnapshot":
+          return await resolveDesktopComputerAutomation(
+            computer?.snapshot(request.input as ComputerAutomationSnapshotInput),
+          );
+        case "computerAct":
+          return await resolveDesktopComputerAutomation(
+            computer?.act(request.input as ComputerAutomationActInput),
+          );
+        case "computerRelease":
+          return await resolveDesktopComputerAutomation(computer?.release());
+        case "computerForgetControl":
+          return await resolveDesktopComputerAutomation(computer?.forgetControl());
+      }
       const threadRef: ScopedThreadRef = {
         environmentId,
         threadId: request.threadId,

@@ -12,6 +12,15 @@ For browser work, first call \`preview_status\`. If no automation-capable previe
 Do not switch to global browser skills, Chrome, Node REPL browser automation, standalone Playwright, or agent-browser merely because the preview is initially closed or a first call fails. Use an alternative browser system only when the T3 preview tools are absent, the user explicitly requests another browser, or \`preview_open\` returns an explicit unsupported/unavailable error. A failed T3 preview tool call should be inspected and retried with corrected arguments when the error is actionable.
 `;
 
+const T3_CODE_COMPUTER_TOOL_INSTRUCTIONS = `
+
+## T3 Code desktop computer use
+
+When \`computer_*\` tools are exposed and a task needs the host GUI, call \`computer_request_view\` or \`computer_request_control\` early. Access requests return an initial observation by default and accept an observation policy. \`computer_act\` executes ordered actions and returns one configurable fresh observation. Batch predictable steps; use one action when the next step depends on the resulting UI. Prefer reliable keyboard navigation for known commands. For example, starting a known app is usually one batch: press Meta, wait briefly, type its name with \`submit:true\`, then wait for it to open.
+
+Action forms are: \`click {frameId,x,y,button?,count?}\`; \`move {frameId,x,y,durationMs?,settleMs?}\`; \`activate {targetId}\`; \`drag {frameId,startX,startY,endX,endY,button?,durationMs?,steps?}\`; \`wheel {deltaX?,deltaY?,unit?,frameId?,x?,y?}\`; \`type {text,intervalMs?,submit?}\`; \`press {key,modifiers?}\`; \`hotkey {keys}\`; \`key_down {key}\`; \`key_up {key}\`; and \`wait {durationMs}\`. Include \`type\` on every action. Type preserves exact Unicode text, so do not replace punctuation or symbols with ASCII approximations. Pointer coordinates are image pixels in the referenced frame; its transform handles crop and resolution. A semantic activation must be first, and at most one can appear in a batch because observations invalidate earlier target ids. Use observation screenshot bounds or a frame-relative region to control image cost and focus; use observation false only when no visual result is needed.
+`;
+
 /**
  * The browser block is omitted entirely when the preview tools aren't attached.
  * Describing `preview_*` tools that aren't in the turn's tool list would be
@@ -152,7 +161,7 @@ Do not ask "should I proceed?" in the final output. The user can easily switch o
 Only produce at most one \`<proposed_plan>\` block per turn, and only when you are presenting a complete spec.
 
 If the user stays in Plan mode and asks for revisions after a prior \`<proposed_plan>\`, any new \`<proposed_plan>\` must be a complete replacement. If the user indicates that the prior plan is not acceptable but does not provide enough information to produce a complete replacement, address the concern and continue planning without producing a \`<proposed_plan>\` block. If the follow-up neither requires changes nor calls the plan into question (e.g. clarifying question), answer it before the block, then reproduce the prior \`<proposed_plan>\` unchanged.
-${browserToolInstructions(browserToolsAvailable)}
+${browserToolInstructions(browserToolsAvailable)}${T3_CODE_COMPUTER_TOOL_INSTRUCTIONS}
 </collaboration_mode>`;
 
 const codexDefaultModeDeveloperInstructions = (
@@ -168,7 +177,7 @@ Your active mode changes only when new developer instructions with a different \
 Use the \`request_user_input\` tool only when it is listed in the available tools for this turn.
 
 In Default mode, strongly prefer making reasonable assumptions and executing the user's request rather than stopping to ask questions. If you absolutely must ask a question because the answer cannot be discovered from local context and a reasonable assumption would be risky, ask the user directly with a concise plain-text question. Never write a multiple choice question as a textual assistant message.
-${browserToolInstructions(browserToolsAvailable)}
+${browserToolInstructions(browserToolsAvailable)}${T3_CODE_COMPUTER_TOOL_INSTRUCTIONS}
 </collaboration_mode>`;
 
 export interface CodexRuntimeInfo {

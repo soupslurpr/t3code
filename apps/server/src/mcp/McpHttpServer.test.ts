@@ -1,7 +1,13 @@
 import { expect, it } from "@effect/vitest";
 import { NodeHttpServer } from "@effect/platform-node";
 import * as NodeServices from "@effect/platform-node/NodeServices";
-import { EnvironmentId, PreviewTabId, ProviderInstanceId, ThreadId } from "@t3tools/contracts";
+import {
+  DESKTOP_AUTOMATION_OPERATIONS,
+  EnvironmentId,
+  PreviewTabId,
+  ProviderInstanceId,
+  ThreadId,
+} from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Stream from "effect/Stream";
@@ -34,10 +40,164 @@ const client = McpSchema.McpServerClient.of({
   },
   getClient: Effect.die("unused"),
 });
-const TestLayer = McpHttpServer.PreviewToolkitRegistrationLive.pipe(
+const TestLayer = McpHttpServer.ToolkitRegistrationLive.pipe(
   Layer.provideMerge(McpServer.McpServer.layer),
   Layer.provideMerge(PreviewAutomationBroker.layer.pipe(Layer.provide(NodeServices.layer))),
 );
+
+/** Returns a valid renderer response for each operation exercised by this suite. */
+function automationResult(operation: string, input?: unknown): unknown {
+  switch (operation) {
+    case "snapshot":
+      return {
+        url: "http://example.test/",
+        title: "Example",
+        loading: false,
+        visibleText: "Example",
+        interactiveElements: [],
+        accessibilityTree: {},
+        consoleEntries: [],
+        networkEntries: [],
+        actionTimeline: [],
+        screenshot: {
+          mimeType: "image/png",
+          data: Buffer.from("preview-png").toString("base64"),
+          width: 10,
+          height: 5,
+        },
+      };
+    case "computerSnapshot": {
+      const snapshot = {
+        display: {
+          id: "7",
+          label: "Main display",
+          primary: true,
+          bounds: { x: 0, y: 0, width: 800, height: 600 },
+          scaleFactor: 1.25,
+        },
+        cursor: null,
+        pointer: {
+          frameId: "frame-1",
+          position: { x: 100, y: 200 },
+          source: "last-commanded",
+        },
+        frame: {
+          id: "frame-1",
+          displayId: "7",
+          coordinateSpace: "image-pixels",
+          width: 800,
+          height: 600,
+          toDesktopLogical: { scaleX: 1, scaleY: 1, offsetX: 0, offsetY: 0 },
+        },
+        accessibility: {
+          available: true,
+          coordinateSpace: "focused-window",
+          window: {
+            application: "Calculator",
+            name: "Calculator",
+            size: { width: 400, height: 500 },
+          },
+          targets: [
+            {
+              id: "a11y-1-1",
+              application: "Calculator",
+              role: "push button",
+              name: "Equals",
+              bounds: { x: 80, y: 180, width: 60, height: 40 },
+              activation: "action",
+              enabled: true,
+              focused: false,
+              selected: false,
+              checked: false,
+              expanded: false,
+            },
+          ],
+          truncated: false,
+        },
+        captureSource: "remote-desktop-stream",
+        screenshot: {
+          mimeType: "image/png",
+          data: Buffer.from("computer-png").toString("base64"),
+          width: 800,
+          height: 600,
+        },
+      };
+      if (
+        typeof input === "object" &&
+        input !== null &&
+        "screenshot" in input &&
+        input.screenshot === false
+      ) {
+        const { frame: _, pointer: __, screenshot: ___, ...semanticSnapshot } = snapshot;
+        return semanticSnapshot;
+      }
+      return snapshot;
+    }
+    case "computerStatus":
+      return {
+        available: true,
+        backend: "gnome-wayland-portal",
+        permission: "granted",
+        rememberedAccess: ["control"],
+        displayState: "active",
+        keepAwake: true,
+        displays: [
+          {
+            id: "7",
+            label: "Main display",
+            primary: true,
+            bounds: { x: 0, y: 0, width: 800, height: 600 },
+            scaleFactor: 1.25,
+          },
+        ],
+        cursor: null,
+      };
+    case "computerRequestControl":
+      return {
+        status: {
+          available: true,
+          backend: "gnome-wayland-portal",
+          permission: "granted",
+          rememberedAccess: ["control"],
+          displayState: "active",
+          keepAwake: true,
+          displays: [],
+          cursor: null,
+        },
+        snapshot: automationResult("computerSnapshot"),
+      };
+    case "computerRequestView":
+      return {
+        status: {
+          available: true,
+          backend: "gnome-wayland-portal",
+          permission: "view-only",
+          rememberedAccess: ["view"],
+          displayState: "active",
+          keepAwake: true,
+          displays: [],
+          cursor: null,
+        },
+        snapshot: automationResult("computerSnapshot"),
+      };
+    case "computerAct":
+      return { snapshot: automationResult("computerSnapshot") };
+    case "press":
+    case "computerRelease":
+      return automationResult("computerStatus");
+    case "computerForgetControl":
+      return undefined;
+    default:
+      return {
+        available: true,
+        visible: true,
+        tabId,
+        url: "http://example.test/",
+        title: "Example",
+        loading: false,
+      };
+  }
+}
 
 it("normalizes empty successful notification responses to accepted", () => {
   const notificationResponse = McpHttpServer.normalizeMcpHttpResponse(
@@ -51,7 +211,7 @@ it("normalizes empty successful notification responses to accepted", () => {
   expect(resultResponse.status).toBe(200);
 });
 
-it.effect("returns bounded structural preview snapshot failures", () =>
+it.effect("returns bounded structural snapshot failures", () =>
   Effect.scoped(
     Effect.gen(function* () {
       const server = yield* McpServer.McpServer;
@@ -59,6 +219,7 @@ it.effect("returns bounded structural preview snapshot failures", () =>
       const events = yield* broker.connect({
         clientId: "mcp-failure-client",
         environmentId,
+        supportedOperations: [...DESKTOP_AUTOMATION_OPERATIONS],
       });
       yield* Stream.runForEach(events, (event) =>
         event.type === "connected"
@@ -77,22 +238,35 @@ it.effect("returns bounded structural preview snapshot failures", () =>
       ).pipe(Effect.forkScoped);
       yield* Effect.yieldNow;
 
-      const snapshot = yield* server
-        .callTool({ name: "preview_snapshot", arguments: {} })
-        .pipe(
-          Effect.provideService(McpInvocationContext.McpInvocationContext, invocation),
-          Effect.provideService(McpSchema.McpServerClient, client),
-        );
-
-      expect(snapshot.isError).toBe(true);
-      expect(snapshot.content).toEqual([{ type: "text", text: "Preview snapshot failed." }]);
-      expect(snapshot.structuredContent).toEqual({
-        error: {
-          _tag: "PreviewAutomationExecutionError",
+      for (const testCase of [
+        {
+          tool: "preview_snapshot",
+          message: "Preview snapshot failed.",
           operation: "snapshot",
-          failureCount: 1,
         },
-      });
+        {
+          tool: "computer_snapshot",
+          message: "Computer snapshot failed.",
+          operation: "computerSnapshot",
+        },
+      ] as const) {
+        const snapshot = yield* server
+          .callTool({ name: testCase.tool, arguments: {} })
+          .pipe(
+            Effect.provideService(McpInvocationContext.McpInvocationContext, invocation),
+            Effect.provideService(McpSchema.McpServerClient, client),
+          );
+
+        expect(snapshot.isError).toBe(true);
+        expect(snapshot.content).toEqual([{ type: "text", text: testCase.message }]);
+        expect(snapshot.structuredContent).toEqual({
+          error: {
+            _tag: "PreviewAutomationExecutionError",
+            operation: testCase.operation,
+            failureCount: 1,
+          },
+        });
+      }
     }),
   ).pipe(Effect.provide(TestLayer)),
 );
@@ -163,6 +337,7 @@ it.effect("registers annotated tools and preserves authenticated request context
       const events = yield* broker.connect({
         clientId: "mcp-test-client",
         environmentId,
+        supportedOperations: [...DESKTOP_AUTOMATION_OPERATIONS],
       });
       yield* Stream.runForEach(events, (event) => {
         if (event.type === "connected") return Effect.void;
@@ -172,35 +347,7 @@ it.effect("registers annotated tools and preserves authenticated request context
           connectionId: event.connectionId,
           requestId: event.request.requestId,
           ok: true,
-          result:
-            event.request.operation === "snapshot"
-              ? {
-                  url: "http://example.test/",
-                  title: "Example",
-                  loading: false,
-                  visibleText: "Example",
-                  interactiveElements: [],
-                  accessibilityTree: {},
-                  consoleEntries: [],
-                  networkEntries: [],
-                  actionTimeline: [],
-                  screenshot: {
-                    mimeType: "image/png",
-                    data: Buffer.from("png").toString("base64"),
-                    width: 10,
-                    height: 5,
-                  },
-                }
-              : event.request.operation === "press"
-                ? undefined
-                : {
-                    available: true,
-                    visible: true,
-                    tabId,
-                    url: "http://example.test/",
-                    title: "Example",
-                    loading: false,
-                  },
+          result: automationResult(event.request.operation, event.request.input),
         });
       }).pipe(Effect.forkScoped);
       yield* Effect.yieldNow;
@@ -228,6 +375,30 @@ it.effect("registers annotated tools and preserves authenticated request context
       const navigateTool = server.tools.find(({ tool }) => tool.name === "preview_navigate");
       expect(navigateTool?.tool.annotations?.destructiveHint).toBe(false);
       expect(navigateTool?.tool.annotations?.openWorldHint).toBe(true);
+
+      const computerStatusTool = server.tools.find(({ tool }) => tool.name === "computer_status");
+      expect(computerStatusTool?.tool.annotations?.readOnlyHint).toBe(true);
+      expect(computerStatusTool?.tool.annotations?.destructiveHint).toBe(false);
+
+      const computerRequestViewTool = server.tools.find(
+        ({ tool }) => tool.name === "computer_request_view",
+      );
+      expect(computerRequestViewTool?.tool.annotations?.readOnlyHint).toBe(false);
+      expect(computerRequestViewTool?.tool.annotations?.destructiveHint).toBe(false);
+      expect(computerRequestViewTool?.tool.annotations?.idempotentHint).toBe(true);
+
+      const computerRequestControlTool = server.tools.find(
+        ({ tool }) => tool.name === "computer_request_control",
+      );
+      expect(computerRequestControlTool?.tool.annotations?.readOnlyHint).toBe(false);
+      expect(computerRequestControlTool?.tool.annotations?.destructiveHint).toBe(false);
+      expect(computerRequestControlTool?.tool.annotations?.idempotentHint).toBe(true);
+
+      const computerActTool = server.tools.find(({ tool }) => tool.name === "computer_act");
+      expect(computerActTool?.tool.annotations?.readOnlyHint).toBe(false);
+      expect(computerActTool?.tool.annotations?.destructiveHint).toBe(true);
+      expect(computerActTool?.tool.annotations?.openWorldHint).toBe(true);
+      expect(computerActTool?.tool.description).toContain("Batch predictable actions");
 
       const status = yield* server
         .callTool({ name: "preview_status", arguments: {} })
@@ -283,6 +454,176 @@ it.effect("registers annotated tools and preserves authenticated request context
         expect(result.structuredContent).toEqual({});
         expect(result.content).toEqual([{ type: "text", text: "{}" }]);
       }
+
+      const computerStatus = yield* server
+        .callTool({ name: "computer_status", arguments: {} })
+        .pipe(
+          Effect.provideService(McpInvocationContext.McpInvocationContext, invocation),
+          Effect.provideService(McpSchema.McpServerClient, client),
+        );
+      expect(computerStatus.isError).toBe(false);
+      expect(computerStatus.structuredContent).toMatchObject({
+        available: true,
+        backend: "gnome-wayland-portal",
+        permission: "granted",
+        rememberedAccess: ["control"],
+        displayState: "active",
+        keepAwake: true,
+      });
+
+      const computerRequestView = yield* server
+        .callTool({ name: "computer_request_view", arguments: {} })
+        .pipe(
+          Effect.provideService(McpInvocationContext.McpInvocationContext, invocation),
+          Effect.provideService(McpSchema.McpServerClient, client),
+        );
+      expect(computerRequestView.isError).toBe(false);
+      expect(computerRequestView.structuredContent).toMatchObject({
+        status: { permission: "view-only" },
+        snapshot: { display: { id: "7" } },
+      });
+      expect(computerRequestView.content).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            type: "image",
+            _meta: { "codex/imageDetail": "original" },
+          }),
+        ]),
+      );
+      expect(routedRequests.some(({ operation }) => operation === "computerRequestView")).toBe(
+        true,
+      );
+
+      const computerRequestControl = yield* server
+        .callTool({ name: "computer_request_control", arguments: {} })
+        .pipe(
+          Effect.provideService(McpInvocationContext.McpInvocationContext, invocation),
+          Effect.provideService(McpSchema.McpServerClient, client),
+        );
+      expect(computerRequestControl.isError).toBe(false);
+      expect(computerRequestControl.structuredContent).toMatchObject({
+        status: { permission: "granted" },
+        snapshot: { display: { id: "7" } },
+      });
+      expect(routedRequests.some(({ operation }) => operation === "computerRequestControl")).toBe(
+        true,
+      );
+
+      const computerSnapshot = yield* server
+        .callTool({ name: "computer_snapshot", arguments: { displayId: "7" } })
+        .pipe(
+          Effect.provideService(McpInvocationContext.McpInvocationContext, invocation),
+          Effect.provideService(McpSchema.McpServerClient, client),
+        );
+      expect(computerSnapshot.isError).toBe(false);
+      expect(computerSnapshot.content.some((content) => content.type === "image")).toBe(true);
+      expect(computerSnapshot.structuredContent).toMatchObject({
+        display: { id: "7" },
+        captureSource: "remote-desktop-stream",
+        pointer: { position: { x: 100, y: 200 } },
+        accessibility: {
+          coordinateSpace: "focused-window",
+          targets: [{ name: "Equals" }],
+        },
+        screenshot: { mimeType: "image/png", width: 800, height: 600 },
+      });
+      expect(computerSnapshot.structuredContent).not.toHaveProperty("screenshot.data");
+
+      const semanticSnapshot = yield* server
+        .callTool({
+          name: "computer_snapshot",
+          arguments: { displayId: "7", screenshot: false },
+        })
+        .pipe(
+          Effect.provideService(McpInvocationContext.McpInvocationContext, invocation),
+          Effect.provideService(McpSchema.McpServerClient, client),
+        );
+      expect(semanticSnapshot.isError).toBe(false);
+      expect(semanticSnapshot.content.some((content) => content.type === "image")).toBe(false);
+      expect(semanticSnapshot.structuredContent).not.toHaveProperty("screenshot");
+
+      const computerAct = yield* server
+        .callTool({
+          name: "computer_act",
+          arguments: {
+            actions: [
+              { type: "activate", targetId: "a11y-1-1" },
+              { type: "move", frameId: "frame-1", x: 100, y: 200, settleMs: 0 },
+              { type: "click", frameId: "frame-1", x: 100, y: 200 },
+              { type: "wheel", deltaY: 3, unit: "ticks" },
+              { type: "hotkey", keys: ["Control", "Shift", "N"] },
+              { type: "key_down", key: "Alt" },
+              { type: "press", key: "Tab" },
+              { type: "key_up", key: "Alt" },
+            ],
+          },
+        })
+        .pipe(
+          Effect.provideService(McpInvocationContext.McpInvocationContext, invocation),
+          Effect.provideService(McpSchema.McpServerClient, client),
+        );
+      expect(computerAct.isError).toBe(false);
+      expect(computerAct.structuredContent).toMatchObject({
+        snapshot: { pointer: { frameId: "frame-1", position: { x: 100, y: 200 } } },
+      });
+      expect(computerAct.content).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            type: "image",
+            _meta: { "codex/imageDetail": "original" },
+          }),
+        ]),
+      );
+      expect(routedRequests.some(({ operation }) => operation === "computerAct")).toBe(true);
+
+      const invalidComputerAct = yield* server
+        .callTool({
+          name: "computer_act",
+          arguments: { actions: [{ type: "hotkey", keys: ["Control"] }] },
+        })
+        .pipe(
+          Effect.provideService(McpInvocationContext.McpInvocationContext, invocation),
+          Effect.provideService(McpSchema.McpServerClient, client),
+        );
+      expect(invalidComputerAct.isError).toBe(true);
+      expect(invalidComputerAct.structuredContent).toMatchObject({
+        error: {
+          _tag: "ComputerAutomationInvalidInputError",
+          code: "invalid-action",
+          category: "invalid-input",
+          completedActionCount: 0,
+          phase: "validation",
+          cleanup: { keys: "not-needed", buttons: "not-needed" },
+        },
+      });
+      expect(invalidComputerAct.content).toEqual([
+        { type: "text", text: "The computer-use request is invalid." },
+      ]);
+
+      const computerRelease = yield* server
+        .callTool({ name: "computer_release", arguments: {} })
+        .pipe(
+          Effect.provideService(McpInvocationContext.McpInvocationContext, invocation),
+          Effect.provideService(McpSchema.McpServerClient, client),
+        );
+      expect(computerRelease.isError).toBe(false);
+      expect(computerRelease.structuredContent).toMatchObject({
+        permission: "granted",
+        keepAwake: true,
+      });
+      expect(routedRequests.some(({ operation }) => operation === "computerRelease")).toBe(true);
+      expect(routedRequests.at(-1)?.operation).toBe("computerRelease");
+
+      const computerForgetControl = yield* server
+        .callTool({ name: "computer_forget_control", arguments: {} })
+        .pipe(
+          Effect.provideService(McpInvocationContext.McpInvocationContext, invocation),
+          Effect.provideService(McpSchema.McpServerClient, client),
+        );
+      expect(computerForgetControl.isError).toBe(false);
+      expect(routedRequests.some(({ operation }) => operation === "computerForgetControl")).toBe(
+        true,
+      );
     }),
   ).pipe(Effect.provide(TestLayer)),
 );

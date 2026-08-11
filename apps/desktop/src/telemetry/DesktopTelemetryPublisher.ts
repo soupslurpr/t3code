@@ -19,6 +19,7 @@ import * as PubSub from "effect/PubSub";
 import * as Queue from "effect/Queue";
 import * as Ref from "effect/Ref";
 import * as Schema from "effect/Schema";
+import type * as Scope from "effect/Scope";
 import * as Stream from "effect/Stream";
 
 import * as ElectronApp from "../electron/ElectronApp.ts";
@@ -63,6 +64,15 @@ export class DesktopTelemetryPublisher extends Context.Service<
     readonly latest: Effect.Effect<Option.Option<DesktopHostTelemetrySnapshot>>;
     readonly changes: Stream.Stream<DesktopHostTelemetrySnapshot>;
     readonly encoded: Stream.Stream<Uint8Array>;
+    readonly agentWorking: Effect.Effect<boolean>;
+    readonly subscribeAgentWorking: Effect.Effect<
+      {
+        readonly latest: boolean;
+        readonly changes: Stream.Stream<boolean>;
+      },
+      never,
+      Scope.Scope
+    >;
     readonly handleControl: (message: DesktopTelemetryControlMessage) => Effect.Effect<void>;
     readonly handleControlForSource: (
       sourceId: string,
@@ -169,6 +179,8 @@ export const make = Effect.fn("desktop.telemetryPublisher.make")(function* () {
   const powerEvents = yield* Queue.unbounded<PowerEvent>();
   const sampleTriggers = yield* Queue.sliding<void>(1);
   const diagnosticsDemandSources = yield* Ref.make<ReadonlySet<string>>(new Set());
+  const agentWorkingSources = yield* Ref.make<ReadonlySet<string>>(new Set());
+  const agentWorkingChanges = yield* PubSub.sliding<boolean>(4);
   const latest = yield* Ref.make(Option.none<DesktopHostTelemetrySnapshot>());
   const changes = yield* PubSub.sliding<DesktopHostTelemetrySnapshot>(8);
   const sequence = yield* Ref.make(0);
@@ -347,22 +359,56 @@ export const make = Effect.fn("desktop.telemetryPublisher.make")(function* () {
         return Queue.offer(updateCommitQueue, message).pipe(Effect.asVoid);
       case "cancelDesktopUpdate":
         return Queue.offer(updateCancellationQueue, message).pipe(Effect.asVoid);
+      case "setAgentWorking":
+        return Ref.modify(agentWorkingSources, (sources) => {
+          const previous = sources.size > 0;
+          const next = new Set(sources);
+          if (message.enabled) {
+            next.add(sourceId);
+          } else {
+            next.delete(sourceId);
+          }
+          return [[previous, next.size > 0] as const, next] as const;
+        }).pipe(
+          Effect.flatMap(([previous, enabled]) =>
+            previous === enabled
+              ? Effect.void
+              : PubSub.publish(agentWorkingChanges, enabled).pipe(Effect.asVoid),
+          ),
+        );
     }
   };
   const removeControlSource: DesktopTelemetryPublisher["Service"]["removeControlSource"] = (
     sourceId,
   ) =>
-    Ref.modify(diagnosticsDemandSources, (sources) => {
-      const previous = sources.size > 0;
-      const next = new Set(sources);
-      next.delete(sourceId);
-      return [[previous, next.size > 0] as const, next] as const;
-    }).pipe(
-      Effect.flatMap(([previous, enabled]) =>
-        previous === enabled
-          ? Effect.void
-          : Queue.offer(sampleTriggers, undefined).pipe(Effect.asVoid),
-      ),
+    Effect.all(
+      [
+        Ref.modify(diagnosticsDemandSources, (sources) => {
+          const previous = sources.size > 0;
+          const next = new Set(sources);
+          next.delete(sourceId);
+          return [[previous, next.size > 0] as const, next] as const;
+        }).pipe(
+          Effect.flatMap(([previous, enabled]) =>
+            previous === enabled
+              ? Effect.void
+              : Queue.offer(sampleTriggers, undefined).pipe(Effect.asVoid),
+          ),
+        ),
+        Ref.modify(agentWorkingSources, (sources) => {
+          const previous = sources.size > 0;
+          const next = new Set(sources);
+          next.delete(sourceId);
+          return [[previous, next.size > 0] as const, next] as const;
+        }).pipe(
+          Effect.flatMap(([previous, enabled]) =>
+            previous === enabled
+              ? Effect.void
+              : PubSub.publish(agentWorkingChanges, enabled).pipe(Effect.asVoid),
+          ),
+        ),
+      ],
+      { concurrency: "unbounded", discard: true },
     );
   const handleControl: DesktopTelemetryPublisher["Service"]["handleControl"] = (message) =>
     handleControlForSource("legacy", message);
@@ -414,6 +460,15 @@ export const make = Effect.fn("desktop.telemetryPublisher.make")(function* () {
     latest: Ref.get(latest),
     changes: Stream.fromPubSub(changes),
     encoded,
+    agentWorking: Ref.get(agentWorkingSources).pipe(Effect.map((sources) => sources.size > 0)),
+    subscribeAgentWorking: Effect.gen(function* () {
+      const subscription = yield* PubSub.subscribe(agentWorkingChanges);
+      const sources = yield* Ref.get(agentWorkingSources);
+      return {
+        latest: sources.size > 0,
+        changes: Stream.fromSubscription(subscription),
+      };
+    }),
     handleControl,
     handleControlForSource,
     removeControlSource,

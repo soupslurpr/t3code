@@ -43,6 +43,8 @@ export const GET_SERVER_EXPOSURE_STATE_CHANNEL = "desktop:get-server-exposure-st
 export const SET_SERVER_EXPOSURE_MODE_CHANNEL = "desktop:set-server-exposure-mode";
 export const SET_TAILSCALE_SERVE_ENABLED_CHANNEL = "desktop:set-tailscale-serve-enabled";
 export const GET_ADVERTISED_ENDPOINTS_CHANNEL = "desktop:get-advertised-endpoints";
+export const GET_POWER_SETTINGS_CHANNEL = "desktop:get-power-settings";
+export const SET_KEEP_AWAKE_WHILE_AGENTS_WORK_CHANNEL = "desktop:set-keep-awake-while-agents-work";
 export const GET_WSL_STATE_CHANNEL = "desktop:get-wsl-state";
 export const SET_WSL_BACKEND_ENABLED_CHANNEL = "desktop:set-wsl-backend-enabled";
 export const SET_WSL_DISTRO_CHANNEL = "desktop:set-wsl-distro";
@@ -90,3 +92,12 @@ export const PREVIEW_RECORDING_SAVE_CHANNEL = "desktop:preview-recording-save";
 export const PREVIEW_RECORDING_FRAME_CHANNEL = "desktop:preview-recording-frame";
 export const PREVIEW_STATE_CHANGE_CHANNEL = "desktop:preview-state-change";
 export const PREVIEW_POINTER_EVENT_CHANNEL = "desktop:preview-pointer-event";
+export const COMPUTER_AUTOMATION_STATUS_CHANNEL = "desktop:computer-automation-status";
+export const COMPUTER_AUTOMATION_REQUEST_VIEW_CHANNEL = "desktop:computer-automation-request-view";
+export const COMPUTER_AUTOMATION_REQUEST_CONTROL_CHANNEL =
+  "desktop:computer-automation-request-control";
+export const COMPUTER_AUTOMATION_SNAPSHOT_CHANNEL = "desktop:computer-automation-snapshot";
+export const COMPUTER_AUTOMATION_ACT_CHANNEL = "desktop:computer-automation-act";
+export const COMPUTER_AUTOMATION_RELEASE_CHANNEL = "desktop:computer-automation-release";
+export const COMPUTER_AUTOMATION_FORGET_CONTROL_CHANNEL =
+  "desktop:computer-automation-forget-control";

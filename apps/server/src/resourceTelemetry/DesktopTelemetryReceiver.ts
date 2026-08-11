@@ -195,6 +195,9 @@ export class DesktopTelemetryReceiver extends Context.Service<
       never,
       Scope.Scope
     >;
+    readonly setAgentWorking: (
+      enabled: boolean,
+    ) => Effect.Effect<void, DesktopTelemetryControlError>;
   }
 >()("t3/resourceTelemetry/DesktopTelemetryReceiver") {}
 
@@ -407,6 +410,12 @@ export const make = Effect.fn("resourceTelemetry.desktopTelemetryReceiver.make")
     sendControlMessage({
       version: 1,
       type: "setDiagnosticsDemand",
+      enabled,
+    });
+  const setAgentWorking: DesktopTelemetryReceiver["Service"]["setAgentWorking"] = (enabled) =>
+    sendControlMessage({
+      version: 1,
+      type: "setAgentWorking",
       enabled,
     });
 
@@ -645,6 +654,7 @@ export const make = Effect.fn("resourceTelemetry.desktopTelemetryReceiver.make")
     health: Ref.get(health),
     subscribeHealth: subscribeBeforeSnapshotWithoutMutex(healthChanges, Ref.get(health)),
     setDiagnosticsDemand,
+    setAgentWorking,
     requestDesktopUpdate: (requestId) =>
       sendControlMessage({
         version: 1,
@@ -703,6 +713,7 @@ export const layerTest = (
           })),
         ),
       setDiagnosticsDemand: () => Effect.void,
+      setAgentWorking: () => Effect.void,
       requestDesktopUpdate: () => Effect.void,
       commitDesktopUpdate: () => Effect.void,
       cancelDesktopUpdate: () => Effect.void,

@@ -545,6 +545,25 @@ describe("T3 browser developer instructions", () => {
   });
 });
 
+describe("T3 computer developer instructions", () => {
+  const runtime = { model: "gpt-5.3-codex", reasoningEffort: "high" };
+
+  it("documents the deferred desktop action schema in both collaboration modes", () => {
+    for (const mode of ["default", "plan"] as const) {
+      const instructions = buildCodexDeveloperInstructions(mode, runtime, true);
+      NodeAssert.match(instructions, /computer_request_control/);
+      NodeAssert.match(instructions, /computer_act/);
+      NodeAssert.match(instructions, /click \{frameId,x,y,button\?,count\?\}/);
+      NodeAssert.match(instructions, /type \{text,intervalMs\?,submit\?\}/);
+      NodeAssert.match(instructions, /hotkey \{keys\}/);
+      NodeAssert.match(instructions, /key_down \{key\}/);
+      NodeAssert.match(instructions, /frame-relative region/);
+      NodeAssert.match(instructions, /starting a known app is usually one batch/);
+      NodeAssert.match(instructions, /preserves exact Unicode text/);
+    }
+  });
+});
+
 describe("hasConfiguredMcpServer", () => {
   it("detects inline Codex MCP configuration arguments", () => {
     NodeAssert.equal(hasConfiguredMcpServer(undefined), false);

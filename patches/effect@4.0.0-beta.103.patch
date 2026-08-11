@@ -38,6 +38,42 @@ index 755e41c..dc431aa 100644
    return Layer.merge(layerWithProtocolState(options), routes).pipe(Layer.provide(layerMcpProtocolHttp(options)), Layer.provide(protocolState), Layer.provide(RpcSerialization.layerJsonRpc()));
  };
  const layerMcpProtocolHttp = options => Layer.effect(RpcServer.Protocol)(Effect.gen(function* () {
+diff --git a/dist/unstable/ai/McpSchema.d.ts b/dist/unstable/ai/McpSchema.d.ts
+--- a/dist/unstable/ai/McpSchema.d.ts
++++ b/dist/unstable/ai/McpSchema.d.ts
+@@ -1604,6 +1604,10 @@ declare const ImageContent_base: Schema.Opaque<ImageContent, Schema.Struct<{
+      * Optional annotations for the client.
+      */
+     readonly annotations: Schema.decodeTo<Schema.optional<typeof Annotations>, Schema.optionalKey<typeof Annotations>, never, never>;
++    /**
++     * Optional implementation metadata for image-aware clients.
++     */
++    readonly _meta: Schema.decodeTo<Schema.optional<Schema.Record<Schema.String, Schema.Json>>, Schema.optionalKey<Schema.Record<Schema.String, Schema.Json>>, never, never>;
+ }>, {}> & Omit<Schema.Struct<{
+     readonly type: Schema.tag<"image">;
+     /**
+@@ -1621,4 +1625,8 @@ declare const ImageContent_base: Schema.Opaque<ImageContent, Schema.Struct<{
+      * Optional annotations for the client.
+      */
+     readonly annotations: Schema.decodeTo<Schema.optional<typeof Annotations>, Schema.optionalKey<typeof Annotations>, never, never>;
++    /**
++     * Optional implementation metadata for image-aware clients.
++     */
++    readonly _meta: Schema.decodeTo<Schema.optional<Schema.Record<Schema.String, Schema.Json>>, Schema.optionalKey<Schema.Record<Schema.String, Schema.Json>>, never, never>;
+ }>, keyof Schema.Top>;
+diff --git a/dist/unstable/ai/McpSchema.js b/dist/unstable/ai/McpSchema.js
+--- a/dist/unstable/ai/McpSchema.js
++++ b/dist/unstable/ai/McpSchema.js
+@@ -1061,4 +1061,8 @@ export class ImageContent extends /*#__PURE__*/Schema.Opaque()(/*#__PURE__*/Schem
+    * Optional annotations for the client.
+    */
+-  annotations: /*#__PURE__*/optional(Annotations)
++  annotations: /*#__PURE__*/optional(Annotations),
++  /**
++   * Optional implementation metadata for image-aware clients.
++   */
++  _meta: /*#__PURE__*/optional(/*#__PURE__*/Schema.Record(Schema.String, Schema.Json))
+ })) {}
 diff --git a/dist/unstable/rpc/RpcClient.d.ts b/dist/unstable/rpc/RpcClient.d.ts
 index aba2779..581d267 100644
 --- a/dist/unstable/rpc/RpcClient.d.ts

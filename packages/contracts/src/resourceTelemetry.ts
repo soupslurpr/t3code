@@ -321,12 +321,20 @@ export const DesktopTelemetryCancelDesktopUpdate = Schema.Struct({
 });
 export type DesktopTelemetryCancelDesktopUpdate = typeof DesktopTelemetryCancelDesktopUpdate.Type;
 
+export const DesktopTelemetrySetAgentWorking = Schema.Struct({
+  version: Schema.Literal(1),
+  type: Schema.Literal("setAgentWorking"),
+  enabled: Schema.Boolean,
+});
+export type DesktopTelemetrySetAgentWorking = typeof DesktopTelemetrySetAgentWorking.Type;
+
 export const DesktopTelemetryControlMessage = Schema.Union([
   DesktopTelemetrySetDiagnosticsDemand,
   DesktopTelemetrySetHostPowerIntervals,
   DesktopTelemetryRequestDesktopUpdate,
   DesktopTelemetryCommitDesktopUpdate,
   DesktopTelemetryCancelDesktopUpdate,
+  DesktopTelemetrySetAgentWorking,
 ]);
 export type DesktopTelemetryControlMessage = typeof DesktopTelemetryControlMessage.Type;
 
