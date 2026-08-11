@@ -1,4 +1,6 @@
 import {
+  ComputerAutomationFailure,
+  isComputerAutomationFailureKind,
   PREVIEW_AUTOMATION_V1_OPERATIONS,
   PreviewAutomationClientDisconnectedError,
   PreviewAutomationControlInterruptedError,
@@ -33,6 +35,8 @@ import * as Stream from "effect/Stream";
 import * as SynchronizedRef from "effect/SynchronizedRef";
 
 import * as McpInvocationContext from "./McpInvocationContext.ts";
+
+const isComputerAutomationFailure = Schema.is(ComputerAutomationFailure);
 
 export interface PreviewAutomationInvokeInput {
   readonly scope: McpInvocationContext.McpInvocationScope;
@@ -277,11 +281,24 @@ const classifyResponseError = (
         ...context,
         ...remoteDiagnostics,
       });
-    default:
+    default: {
+      const detail =
+        typeof error.detail === "object" && error.detail !== null ? error.detail : undefined;
+      const remoteFailureKind =
+        detail && "failureKind" in detail && isComputerAutomationFailureKind(detail.failureKind)
+          ? detail.failureKind
+          : undefined;
+      const computerFailure =
+        detail && "computerFailure" in detail && isComputerAutomationFailure(detail.computerFailure)
+          ? detail.computerFailure
+          : undefined;
       return new PreviewAutomationExecutionError({
         ...context,
         ...remoteDiagnostics,
+        ...(remoteFailureKind === undefined ? {} : { remoteFailureKind }),
+        ...(computerFailure === undefined ? {} : { computerFailure }),
       });
+    }
   }
 };
 

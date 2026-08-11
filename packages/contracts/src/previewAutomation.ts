@@ -10,6 +10,11 @@ import {
   PreviewViewportSize,
 } from "./preview.ts";
 import { ProviderInstanceId } from "./providerInstance.ts";
+import {
+  COMPUTER_AUTOMATION_OPERATIONS,
+  ComputerAutomationFailure,
+  ComputerAutomationFailureKind,
+} from "./computerAutomation.ts";
 
 const BoundedUrl = Schema.String.check(Schema.isTrimmed())
   .check(Schema.isNonEmpty())
@@ -45,7 +50,13 @@ export const PREVIEW_AUTOMATION_OPERATIONS = [
   "setColorScheme",
 ] as const;
 
-export const PreviewAutomationOperation = Schema.Literals(PREVIEW_AUTOMATION_OPERATIONS);
+/** Operations routed through an attached desktop automation host. */
+export const DESKTOP_AUTOMATION_OPERATIONS = [
+  ...PREVIEW_AUTOMATION_OPERATIONS,
+  ...COMPUTER_AUTOMATION_OPERATIONS,
+] as const;
+
+export const PreviewAutomationOperation = Schema.Literals(DESKTOP_AUTOMATION_OPERATIONS);
 export type PreviewAutomationOperation = typeof PreviewAutomationOperation.Type;
 
 const PreviewAutomationTabTargetFields = {
@@ -756,9 +767,20 @@ export class PreviewAutomationExecutionError extends Schema.TaggedErrorClass<Pre
   {
     ...PreviewAutomationRequestErrorFields,
     ...PreviewAutomationRemoteDiagnosticFields,
+    remoteFailureKind: Schema.optional(ComputerAutomationFailureKind),
+    computerFailure: Schema.optional(ComputerAutomationFailure),
   },
 ) {
   override get message(): string {
+    if (this.remoteFailureKind === "display-inactive") {
+      return `Preview automation ${this.operation} could not wake the blank desktop display safely. Wake it, then try again.`;
+    }
+    if (this.remoteFailureKind === "display-locked") {
+      return `Preview automation ${this.operation} cannot start while the desktop is locked. The user must unlock it, then try again.`;
+    }
+    if (this.remoteFailureKind === "keep-awake-denied") {
+      return `Preview automation ${this.operation} did not start because the user declined the session keep-awake request.`;
+    }
     return `Preview automation ${this.operation} failed on client ${this.clientId}.`;
   }
 }

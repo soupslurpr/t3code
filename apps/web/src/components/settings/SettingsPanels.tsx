@@ -144,6 +144,7 @@ import {
 } from "./settingsLayout";
 import { searchableSetting } from "./settingsSearch";
 import { ProjectFavicon } from "../ProjectFavicon";
+import { DesktopPowerSettingsRow } from "./DesktopPowerSettingsRow";
 
 const ENVIRONMENT_IDENTIFICATION_LABELS: Record<EnvironmentIdentificationMode, string> = {
   artwork: "Artwork",
@@ -2040,6 +2041,8 @@ export function GeneralSettingsPanel() {
             />
           }
         />
+
+        <DesktopPowerSettingsRow />
 
         <SettingsRow
           title={

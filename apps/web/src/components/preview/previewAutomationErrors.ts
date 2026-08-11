@@ -1,5 +1,9 @@
 import {
+  ComputerAutomationFailure,
+  ComputerAutomationFailureKind,
+  type DesktopComputerAutomationResult,
   EnvironmentId,
+  findComputerAutomationFailureKind,
   type PreviewAutomationHost,
   PreviewAutomationOperation,
   type PreviewAutomationRequest,
@@ -9,6 +13,27 @@ import {
   TrimmedNonEmptyString,
 } from "@t3tools/contracts";
 import * as Schema from "effect/Schema";
+
+class DesktopComputerAutomationError extends Error {
+  readonly code: ComputerAutomationFailure["code"];
+  readonly failure: ComputerAutomationFailure;
+
+  constructor(failure: ComputerAutomationFailure) {
+    super(failure.message);
+    this.code = failure.code;
+    this.failure = failure;
+  }
+}
+
+/** Resolves and unwraps one optional desktop computer-use IPC operation. */
+export async function resolveDesktopComputerAutomation<Value>(
+  result: Promise<DesktopComputerAutomationResult<Value>> | undefined,
+): Promise<Value | undefined> {
+  if (result === undefined) return undefined;
+  const resolved = await result;
+  if (resolved.ok) return resolved.value;
+  throw new DesktopComputerAutomationError(resolved.error);
+}
 
 export interface PreviewAutomationOperationContext {
   readonly requestId: PreviewAutomationRequest["requestId"];
@@ -176,6 +201,8 @@ export class PreviewAutomationOperationError extends Schema.TaggedErrorClass<Pre
     environmentId: EnvironmentId,
     threadId: ThreadId,
     tabId: Schema.NullOr(PreviewTabId),
+    failureKind: Schema.optional(ComputerAutomationFailureKind),
+    computerFailure: Schema.optional(ComputerAutomationFailure),
     cause: Schema.Defect(),
   },
 ) {
@@ -184,16 +211,35 @@ export class PreviewAutomationOperationError extends Schema.TaggedErrorClass<Pre
   ): PreviewAutomationHostError {
     if (isPreviewAutomationHostError(input.cause)) return input.cause;
     const diagnostics = targetNotEditableDiagnostics(input.cause);
-    return diagnostics
-      ? new PreviewAutomationTargetNotEditableHostError({
-          requestId: input.requestId,
-          operation: input.operation,
-          environmentId: input.environmentId,
-          threadId: input.threadId,
-          tabId: input.tabId,
-          ...diagnostics,
-        })
-      : new PreviewAutomationOperationError(input);
+    if (diagnostics) {
+      return new PreviewAutomationTargetNotEditableHostError({
+        requestId: input.requestId,
+        operation: input.operation,
+        environmentId: input.environmentId,
+        threadId: input.threadId,
+        tabId: input.tabId,
+        ...diagnostics,
+      });
+    }
+    const computerFailure =
+      input.operation.startsWith("computer") &&
+      input.cause instanceof DesktopComputerAutomationError
+        ? input.cause.failure
+        : undefined;
+    const kind =
+      computerFailure !== undefined &&
+      (computerFailure.code === "display-inactive" ||
+        computerFailure.code === "display-locked" ||
+        computerFailure.code === "keep-awake-denied")
+        ? computerFailure.code
+        : input.operation.startsWith("computer")
+          ? findComputerAutomationFailureKind(input.cause)
+          : undefined;
+    return new PreviewAutomationOperationError({
+      ...input,
+      ...(kind === undefined ? {} : { failureKind: kind }),
+      ...(computerFailure === undefined ? {} : { computerFailure }),
+    });
   }
 
   get responseTag() {

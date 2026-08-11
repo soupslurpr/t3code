@@ -3,6 +3,7 @@ import { expect, it } from "@effect/vitest";
 import {
   EnvironmentId,
   PreviewAutomationClientDisconnectedError,
+  PreviewAutomationExecutionError,
   PreviewAutomationInvalidSelectorError,
   PreviewAutomationMalformedResponseError,
   PreviewAutomationNoAvailableHostError,
@@ -357,6 +358,49 @@ it.effect("preserves bounded request and remote selector diagnostics", () => {
       expect("selector" in error).toBe(false);
       expect("remoteMessage" in error).toBe(false);
       expect("remoteDetail" in error).toBe(false);
+    }),
+  );
+});
+
+it.effect("surfaces a safe diagnosis for a blank desktop display", () => {
+  const remoteError = {
+    _tag: "PreviewAutomationExecutionError",
+    message: "sanitized host failure",
+    detail: { failureKind: "display-inactive" },
+  } as const;
+
+  return Effect.scoped(
+    Effect.gen(function* () {
+      const broker = yield* makeBroker;
+      const requests = requestsFrom(
+        yield* broker.connect(makeHost({ supportedOperations: ["computerRequestControl"] })),
+      );
+      yield* Stream.runForEach(requests, (request) =>
+        broker.respond({
+          clientId: "client-1",
+          connectionId: request.connectionId,
+          requestId: request.requestId,
+          ok: false,
+          error: remoteError,
+        }),
+      ).pipe(Effect.forkScoped);
+      yield* Effect.yieldNow;
+
+      const error = yield* broker
+        .invoke<void>({
+          scope,
+          operation: "computerRequestControl",
+          input: {},
+          timeoutMs: 1_234,
+        })
+        .pipe(Effect.flip);
+
+      expect(error).toBeInstanceOf(PreviewAutomationExecutionError);
+      expect(error).toMatchObject({ remoteFailureKind: "display-inactive" });
+      expect(error.message).toBe(
+        "Preview automation computerRequestControl could not wake the blank desktop display safely. Wake it, then try again.",
+      );
+      expect(error.cause).toBe(remoteError);
     }),
   );
 });

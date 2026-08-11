@@ -335,6 +335,25 @@ describe("T3 browser developer instructions", () => {
   });
 });
 
+describe("T3 computer developer instructions", () => {
+  it("documents the deferred desktop action schema in both collaboration modes", () => {
+    for (const instructions of [
+      CODEX_DEFAULT_MODE_DEVELOPER_INSTRUCTIONS,
+      CODEX_PLAN_MODE_DEVELOPER_INSTRUCTIONS,
+    ]) {
+      NodeAssert.match(instructions, /computer_request_control/);
+      NodeAssert.match(instructions, /computer_act/);
+      NodeAssert.match(instructions, /click \{frameId,x,y,button\?,count\?\}/);
+      NodeAssert.match(instructions, /type \{text,intervalMs\?,submit\?\}/);
+      NodeAssert.match(instructions, /hotkey \{keys\}/);
+      NodeAssert.match(instructions, /key_down \{key\}/);
+      NodeAssert.match(instructions, /frame-relative region/);
+      NodeAssert.match(instructions, /starting a known app is usually one batch/);
+      NodeAssert.match(instructions, /preserves exact Unicode text/);
+    }
+  });
+});
+
 describe("hasConfiguredMcpServer", () => {
   it("detects inline Codex MCP configuration arguments", () => {
     NodeAssert.equal(hasConfiguredMcpServer(undefined), false);

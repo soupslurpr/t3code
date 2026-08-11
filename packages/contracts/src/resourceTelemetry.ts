@@ -266,9 +266,17 @@ export const DesktopTelemetrySetHostPowerIntervals = Schema.Struct({
 export type DesktopTelemetrySetHostPowerIntervals =
   typeof DesktopTelemetrySetHostPowerIntervals.Type;
 
+export const DesktopTelemetrySetAgentWorking = Schema.Struct({
+  version: Schema.Literal(1),
+  type: Schema.Literal("setAgentWorking"),
+  enabled: Schema.Boolean,
+});
+export type DesktopTelemetrySetAgentWorking = typeof DesktopTelemetrySetAgentWorking.Type;
+
 export const DesktopTelemetryControlMessage = Schema.Union([
   DesktopTelemetrySetDiagnosticsDemand,
   DesktopTelemetrySetHostPowerIntervals,
+  DesktopTelemetrySetAgentWorking,
 ]);
 export type DesktopTelemetryControlMessage = typeof DesktopTelemetryControlMessage.Type;
 

@@ -22,6 +22,12 @@ import * as Layer from "effect/Layer";
 
 export type ThreadBackgroundLiveness = "working" | "monitoring" | null;
 
+/** Describes one aggregate liveness transition for a thread. */
+export interface ThreadBackgroundLivenessChange {
+  readonly threadId: string;
+  readonly liveness: ThreadBackgroundLiveness;
+}
+
 interface ThreadLivenessState {
   readonly agents: Set<string>;
   readonly monitors: Set<string>;
@@ -69,11 +75,16 @@ export class ThreadBackgroundLivenessService extends Context.Service<
      * "monitoring" only when watch loops are the ONLY live work.
      */
     readonly getThreadBackgroundLiveness: (threadId: string) => ThreadBackgroundLiveness;
+
+    /** Subscribes to aggregate per-thread liveness transitions. */
+    readonly subscribe: (listener: (change: ThreadBackgroundLivenessChange) => void) => () => void;
   }
 >()("t3/orchestration/ThreadBackgroundLiveness/ThreadBackgroundLivenessService") {}
 
+/** Creates an isolated in-memory background-liveness registry. */
 export function make(): ThreadBackgroundLivenessService["Service"] {
   const stateByThreadId = new Map<string, ThreadLivenessState>();
+  const listeners = new Set<(change: ThreadBackgroundLivenessChange) => void>();
 
   const stateFor = (threadId: string): ThreadLivenessState => {
     const existing = stateByThreadId.get(threadId);
@@ -101,71 +112,100 @@ export function make(): ThreadBackgroundLivenessService["Service"] {
     }
   };
 
+  const getThreadBackgroundLiveness = (threadId: string): ThreadBackgroundLiveness => {
+    const state = stateByThreadId.get(threadId);
+    if (!state) {
+      return null;
+    }
+    if (state.agents.size > 0) {
+      return "working";
+    }
+    if (state.monitors.size > 0) {
+      return "monitoring";
+    }
+    return null;
+  };
+
+  const notifyAfter = (threadId: string, update: () => void) => {
+    const previous = getThreadBackgroundLiveness(threadId);
+    update();
+    const liveness = getThreadBackgroundLiveness(threadId);
+    if (liveness === previous) return;
+    for (const listener of listeners) {
+      try {
+        listener({ threadId, liveness });
+      } catch {
+        // A reporting observer must not break provider event ingestion.
+      }
+    }
+  };
+
   return {
     recordTaskLiveness: (input) => {
-      const taskType = input.taskType;
-      if (taskType !== undefined && INERT_TASK_TYPES.has(taskType)) {
-        drop(input.threadId, input.taskId);
-        return;
-      }
-      // A subagent's internal non-agent work (its own shells/monitors) is
-      // covered by the owning agent's liveness. Nested agents fall through:
-      // they can outlive their parent (review finding).
-      if (
-        input.agentId !== undefined &&
-        (taskType === undefined || MONITOR_TASK_TYPES.has(taskType))
-      ) {
-        drop(input.threadId, input.taskId);
-        return;
-      }
-
-      // Idle counts as not-live: a resting (resumable) Codex child isn't
-      // doing anything, and an all-idle fleet must not pin Working.
-      const terminal =
-        input.kind === "completed" ||
-        input.status === "idle" ||
-        (input.status !== undefined && TERMINAL_STATUSES.has(input.status));
-      if (terminal) {
-        drop(input.threadId, input.taskId);
-        return;
-      }
-
-      // Status-free progress is a description tick, not a restart. A delayed
-      // progress event after idle must not put the task back in the live set
-      // (#7128).
-      if (input.kind === "progress" && input.status === undefined) {
-        const existing = stateByThreadId.get(input.threadId);
-        const stillLive =
-          existing !== undefined &&
-          (existing.agents.has(input.taskId) || existing.monitors.has(input.taskId));
-        if (!stillLive) {
+      notifyAfter(input.threadId, () => {
+        const taskType = input.taskType;
+        if (taskType !== undefined && INERT_TASK_TYPES.has(taskType)) {
+          drop(input.threadId, input.taskId);
           return;
         }
-      }
+        // A subagent's internal non-agent work (its own shells/monitors) is
+        // covered by the owning agent's liveness. Nested agents fall through:
+        // they can outlive their parent (review finding).
+        if (
+          input.agentId !== undefined &&
+          (taskType === undefined || MONITOR_TASK_TYPES.has(taskType))
+        ) {
+          drop(input.threadId, input.taskId);
+          return;
+        }
 
-      drop(input.threadId, input.taskId);
-      const state = stateFor(input.threadId);
-      const bucket =
-        taskType !== undefined && MONITOR_TASK_TYPES.has(taskType) ? state.monitors : state.agents;
-      bucket.add(input.taskId);
+        // Idle counts as not-live: a resting (resumable) Codex child isn't
+        // doing anything, and an all-idle fleet must not pin Working.
+        const terminal =
+          input.kind === "completed" ||
+          input.status === "idle" ||
+          (input.status !== undefined && TERMINAL_STATUSES.has(input.status));
+        if (terminal) {
+          drop(input.threadId, input.taskId);
+          return;
+        }
+
+        // Status-free progress is a description tick, not a restart. A delayed
+        // progress event after idle must not put the task back in the live set
+        // (#7128).
+        if (input.kind === "progress" && input.status === undefined) {
+          const existing = stateByThreadId.get(input.threadId);
+          const stillLive =
+            existing !== undefined &&
+            (existing.agents.has(input.taskId) || existing.monitors.has(input.taskId));
+          if (!stillLive) {
+            return;
+          }
+        }
+
+        drop(input.threadId, input.taskId);
+        const state = stateFor(input.threadId);
+        const bucket =
+          taskType !== undefined && MONITOR_TASK_TYPES.has(taskType)
+            ? state.monitors
+            : state.agents;
+        bucket.add(input.taskId);
+      });
     },
 
     clearThreadLiveness: (threadId) => {
-      stateByThreadId.delete(threadId);
+      notifyAfter(threadId, () => {
+        stateByThreadId.delete(threadId);
+      });
     },
 
-    getThreadBackgroundLiveness: (threadId) => {
-      const state = stateByThreadId.get(threadId);
-      if (!state) {
-        return null;
-      }
-      if (state.agents.size > 0) {
-        return "working";
-      }
-      if (state.monitors.size > 0) {
-        return "monitoring";
-      }
-      return null;
+    getThreadBackgroundLiveness,
+
+    subscribe: (listener) => {
+      listeners.add(listener);
+      return () => {
+        listeners.delete(listener);
+      };
     },
   };
 }
