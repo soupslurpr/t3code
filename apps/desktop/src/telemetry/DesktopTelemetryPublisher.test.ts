@@ -190,6 +190,34 @@ describe("DesktopTelemetryPublisher", () => {
         assert.equal(metricsReadCount, 1);
         assert.deepEqual(recordedMetrics, [metrics]);
 
+        const agentWorkingSubscription = yield* publisher.subscribeAgentWorking;
+        assert.isFalse(agentWorkingSubscription.latest);
+        const agentWorkingChanges = yield* agentWorkingSubscription.changes.pipe(
+          Stream.take(2),
+          Stream.runCollect,
+          Effect.forkChild,
+        );
+        yield* Effect.yieldNow;
+        yield* publisher.handleControlForSource("primary-backend", {
+          version: 1,
+          type: "setAgentWorking",
+          enabled: true,
+        });
+        yield* publisher.handleControlForSource("secondary-backend", {
+          version: 1,
+          type: "setAgentWorking",
+          enabled: true,
+        });
+        yield* publisher.handleControlForSource("primary-backend", {
+          version: 1,
+          type: "setAgentWorking",
+          enabled: false,
+        });
+        assert.isTrue(yield* publisher.agentWorking);
+        yield* publisher.removeControlSource("secondary-backend");
+        assert.deepEqual(Array.from(yield* Fiber.join(agentWorkingChanges)), [true, false]);
+        assert.isFalse(yield* publisher.agentWorking);
+
         const nextSnapshotFiber = yield* Stream.runHead(publisher.changes).pipe(Effect.forkChild);
         yield* Effect.yieldNow;
         yield* publisher.handleControlForSource("primary-backend", {

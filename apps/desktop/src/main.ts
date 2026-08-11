@@ -72,6 +72,8 @@ import * as BrowserSession from "./preview/BrowserSession.ts";
 import * as DesktopBrowserHost from "./preview/DesktopBrowserHost.ts";
 import * as PreviewManager from "./preview/Manager.ts";
 import * as PreviewPasskeys from "./preview/Passkeys.ts";
+import * as ComputerUse from "./computer/ComputerUse.ts";
+import * as GnomeRemoteDesktop from "./computer/GnomeRemoteDesktop.ts";
 import * as DesktopWindow from "./window/DesktopWindow.ts";
 import * as DesktopWslBackend from "./wsl/DesktopWslBackend.ts";
 import * as DesktopWslEnvironment from "./wsl/DesktopWslEnvironment.ts";
@@ -174,9 +176,14 @@ const layerDesktopPreview = PreviewManager.layer.pipe(
   Layer.provideMerge(layerDesktopFoundation),
 );
 
+const layerDesktopComputerUse = ComputerUse.layer.pipe(
+  Layer.provideMerge(GnomeRemoteDesktop.layer.pipe(Layer.provideMerge(layerDesktopFoundation))),
+);
+
 const layerDesktopWindow = DesktopWindow.layer.pipe(
   Layer.provideMerge(layerDesktopServerExposure),
   Layer.provideMerge(layerDesktopPreview),
+  Layer.provideMerge(layerDesktopComputerUse),
 );
 
 const layerDesktopSnapShot = DesktopSnapShot.layer.pipe(

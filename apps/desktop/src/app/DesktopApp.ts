@@ -4,6 +4,7 @@ import * as Effect from "effect/Effect";
 import * as Option from "effect/Option";
 import * as Ref from "effect/Ref";
 import * as Schema from "effect/Schema";
+import * as Stream from "effect/Stream";
 
 import * as NetService from "@t3tools/shared/Net";
 import * as Crypto from "effect/Crypto";
@@ -36,6 +37,8 @@ import * as DesktopSnapShot from "../snapShot/DesktopSnapShot.ts";
 import * as DesktopWslBackend from "../wsl/DesktopWslBackend.ts";
 import * as DesktopRendererHistory from "../telemetry/DesktopRendererHistory.ts";
 import * as HostProcess from "@t3tools/shared/HostProcess";
+import * as GnomeRemoteDesktop from "../computer/GnomeRemoteDesktop.ts";
+import * as DesktopTelemetryPublisher from "../telemetry/DesktopTelemetryPublisher.ts";
 
 const DEFAULT_DESKTOP_BACKEND_PORT = 3773;
 const MAX_TCP_PORT = 65_535;
@@ -168,6 +171,8 @@ const bootstrap = Effect.gen(function* () {
   const desktopWindow = yield* DesktopWindow.DesktopWindow;
   const snapShot = yield* DesktopSnapShot.DesktopSnapShot;
   const appActivation = yield* DesktopAppActivation.DesktopAppActivation;
+  const desktopTelemetry = yield* DesktopTelemetryPublisher.DesktopTelemetryPublisher;
+  const gnomeRemoteDesktop = yield* GnomeRemoteDesktop.GnomeRemoteDesktop;
   yield* logBootstrapInfo("bootstrap start");
 
   const settings = yield* desktopSettings.get;
@@ -241,6 +246,21 @@ const bootstrap = Effect.gen(function* () {
       "bootstrap fell back to local-only because no advertised network host was available",
     );
   }
+
+  const agentWorkingSubscription = yield* desktopTelemetry.subscribeAgentWorking;
+  const applyAgentWorking = (working: boolean) =>
+    gnomeRemoteDesktop.setAgentWorking(working).pipe(
+      Effect.catch((error) =>
+        logBootstrapWarning("could not update the agent wake lock", {
+          detail: error.message,
+        }),
+      ),
+    );
+  yield* applyAgentWorking(agentWorkingSubscription.latest);
+  yield* agentWorkingSubscription.changes.pipe(
+    Stream.runForEach(applyAgentWorking),
+    Effect.forkScoped,
+  );
 
   if (!(yield* Ref.get(state.quitting))) {
     // The main window waits for the primary backend. In wsl-only mode that is
