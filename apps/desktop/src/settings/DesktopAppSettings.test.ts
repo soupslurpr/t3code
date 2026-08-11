@@ -11,6 +11,7 @@ import * as DesktopEnvironment from "../app/DesktopEnvironment.ts";
 import * as DesktopAppSettings from "./DesktopAppSettings.ts";
 
 const DesktopSettingsPatch = Schema.Struct({
+  keepAwakeWhileAgentsWork: Schema.optionalKey(Schema.Boolean),
   linuxPasswordStore: Schema.optionalKey(
     Schema.Literals(["auto", "gnome-libsecret", "kwallet", "kwallet5", "kwallet6"]),
   ),
@@ -123,6 +124,7 @@ describe("DesktopSettings", () => {
     assert.deepEqual(
       DesktopAppSettings.resolveDefaultDesktopSettings("0.0.17-nightly.20260415.1"),
       {
+        keepAwakeWhileAgentsWork: true,
         linuxPasswordStore: "auto",
         localEnvironmentEnabled: true,
         mainWindowBounds: null,
@@ -144,6 +146,7 @@ describe("DesktopSettings", () => {
       Effect.gen(function* () {
         const settings = yield* DesktopAppSettings.DesktopAppSettings;
         yield* writeSettingsPatch({
+          keepAwakeWhileAgentsWork: false,
           linuxPasswordStore: "gnome-libsecret",
           serverExposureMode: "network-accessible",
           tailscaleServeEnabled: true,
@@ -153,6 +156,7 @@ describe("DesktopSettings", () => {
         });
 
         assert.deepEqual(yield* settings.load, {
+          keepAwakeWhileAgentsWork: false,
           linuxPasswordStore: "gnome-libsecret",
           localEnvironmentEnabled: true,
           mainWindowBounds: null,
@@ -166,6 +170,10 @@ describe("DesktopSettings", () => {
           wslOnly: false,
           wslDistro: null,
         } satisfies DesktopAppSettings.DesktopSettings);
+
+        const power = yield* settings.setKeepAwakeWhileAgentsWork(true);
+        assert.isTrue(power.changed);
+        assert.equal(power.settings.keepAwakeWhileAgentsWork, true);
 
         const exposure = yield* settings.setServerExposureMode("local-only");
         assert.isTrue(exposure.changed);
@@ -261,6 +269,7 @@ describe("DesktopSettings", () => {
         );
 
         assert.deepEqual(yield* settings.load, {
+          keepAwakeWhileAgentsWork: true,
           linuxPasswordStore: "auto",
           localEnvironmentEnabled: true,
           mainWindowBounds: { x: 120, y: 80, width: 1280, height: 900 },
@@ -318,6 +327,7 @@ describe("DesktopSettings", () => {
           );
 
           assert.deepEqual(yield* settings.load, {
+            keepAwakeWhileAgentsWork: true,
             linuxPasswordStore: "auto",
             localEnvironmentEnabled: true,
             mainWindowBounds: null,
@@ -367,6 +377,7 @@ describe("DesktopSettings", () => {
         });
 
         assert.deepEqual(yield* settings.load, {
+          keepAwakeWhileAgentsWork: true,
           linuxPasswordStore: "auto",
           localEnvironmentEnabled: true,
           mainWindowBounds: null,
@@ -396,6 +407,7 @@ describe("DesktopSettings", () => {
         });
 
         assert.deepEqual(yield* settings.load, {
+          keepAwakeWhileAgentsWork: true,
           linuxPasswordStore: "auto",
           localEnvironmentEnabled: true,
           mainWindowBounds: null,
@@ -424,6 +436,7 @@ describe("DesktopSettings", () => {
         });
 
         assert.deepEqual(yield* settings.load, {
+          keepAwakeWhileAgentsWork: true,
           linuxPasswordStore: "auto",
           localEnvironmentEnabled: true,
           mainWindowBounds: null,
