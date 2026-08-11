@@ -70,6 +70,8 @@ function makePoolLayer(
           latest: Effect.succeedNone,
           changes: Stream.empty,
           encoded: Stream.empty,
+          agentWorking: Effect.succeed(false),
+          subscribeAgentWorking: Effect.succeed({ latest: false, changes: Stream.empty }),
           handleControlForSource: () => Effect.void,
           removeControlSource: () => Effect.void,
           publishUpdateReport: () => Effect.void,

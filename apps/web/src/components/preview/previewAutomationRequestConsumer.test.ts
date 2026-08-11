@@ -13,6 +13,7 @@ import {
   PreviewAutomationRecordingNotActiveError,
   PreviewAutomationTargetUnavailableError,
   PreviewAutomationViewportTimeoutError,
+  resolveDesktopComputerAutomation,
 } from "./previewAutomationErrors";
 import {
   createPreviewAutomationRequestConsumerAtom,
@@ -322,6 +323,64 @@ describe("previewAutomationRequestConsumer", () => {
         selectorLength: 6,
       },
     });
+  });
+
+  it("exposes the safe reason when GNOME inhibits a computer session", () => {
+    const response = serializePreviewAutomationError(
+      {
+        _tag: "GnomeRemoteDesktopCommandError",
+        code: "display-inactive",
+        cause: "private portal diagnostic",
+      },
+      {
+        requestId: "request-control",
+        operation: "computerRequestControl",
+        environmentId,
+        threadId,
+        tabId: null,
+      },
+    );
+
+    expect(response).toMatchObject({
+      _tag: "PreviewAutomationExecutionError",
+      detail: { failureKind: "display-inactive" },
+    });
+    expect(JSON.stringify(response)).not.toContain("private portal diagnostic");
+  });
+
+  it.each(["display-locked", "keep-awake-denied"] as const)(
+    "exposes the safe %s computer-session reason",
+    async (code) => {
+      const cause = await resolveDesktopComputerAutomation(
+        Promise.resolve({
+          ok: false,
+          error: {
+            code,
+            category: "authorization",
+            message: "Computer access failed.",
+          },
+        }),
+      ).catch((error: unknown) => error);
+      const response = serializePreviewAutomationError(cause, {
+        requestId: "request-control",
+        operation: "computerRequestControl",
+        environmentId,
+        threadId,
+        tabId: null,
+      });
+
+      expect(response).toMatchObject({
+        _tag: "PreviewAutomationExecutionError",
+        detail: { failureKind: code, computerFailure: { code } },
+      });
+    },
+  );
+
+  it("unwraps successful and unavailable desktop computer operations", async () => {
+    await expect(
+      resolveDesktopComputerAutomation(Promise.resolve({ ok: true, value: "captured" })),
+    ).resolves.toBe("captured");
+    await expect(resolveDesktopComputerAutomation(undefined)).resolves.toBeUndefined();
   });
 
   it("correlates unexpected failures without exposing cause details", () => {

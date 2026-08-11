@@ -21,6 +21,16 @@ const normalizeAvailability = (
 ): T3CodeToolAvailability =>
   typeof availability === "boolean" ? { browser: availability, device: false } : availability;
 
+
+const T3_CODE_COMPUTER_TOOL_INSTRUCTIONS = `
+
+## T3 Code desktop computer use
+
+When \`computer_*\` tools are exposed and a task needs the host GUI, call \`computer_request_view\` or \`computer_request_control\` early. Access requests return an initial observation by default and accept an observation policy. \`computer_act\` executes ordered actions and returns one configurable fresh observation. Batch predictable steps; use one action when the next step depends on the resulting UI. Prefer reliable keyboard navigation for known commands. For example, starting a known app is usually one batch: press Meta, wait briefly, type its name with \`submit:true\`, then wait for it to open.
+
+Action forms are: \`click {frameId,x,y,button?,count?}\`; \`move {frameId,x,y,durationMs?,settleMs?}\`; \`activate {targetId}\`; \`drag {frameId,startX,startY,endX,endY,button?,durationMs?,steps?}\`; \`wheel {deltaX?,deltaY?,unit?,frameId?,x?,y?}\`; \`type {text,intervalMs?,submit?}\`; \`press {key,modifiers?}\`; \`hotkey {keys}\`; \`key_down {key}\`; \`key_up {key}\`; and \`wait {durationMs}\`. Include \`type\` on every action. Type preserves exact Unicode text, so do not replace punctuation or symbols with ASCII approximations. Pointer coordinates are image pixels in the referenced frame; its transform handles crop and resolution. A semantic activation must be first, and at most one can appear in a batch because observations invalidate earlier target ids. Use observation screenshot bounds or a frame-relative region to control image cost and focus; use observation false only when no visual result is needed.
+`;
+
 /**
  * Each block is omitted entirely when its tools aren't attached. Describing
  * `preview_*` or `device_*` tools that aren't in the turn's tool list would be
@@ -32,6 +42,7 @@ const toolInstructions = (availability: boolean | T3CodeToolAvailability): strin
   const tools = normalizeAvailability(availability);
   return [
     tools.browser ? T3_CODE_BROWSER_TOOL_INSTRUCTIONS : "",
+    tools.browser ? T3_CODE_COMPUTER_TOOL_INSTRUCTIONS : "",
     tools.device ? T3_CODE_DEVICE_TOOL_INSTRUCTIONS : "",
   ]
     .filter(Boolean)
