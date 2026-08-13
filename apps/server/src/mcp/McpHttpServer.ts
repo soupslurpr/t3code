@@ -79,6 +79,8 @@ import {
   ComputerStandardToolkitHandlersLive,
 } from "./toolkits/computer/handlers.ts";
 import { ComputerImageToolkit, ComputerStandardToolkit } from "./toolkits/computer/tools.ts";
+import { AgentDesktopToolkitHandlersLive } from "./toolkits/agentDesktop/handlers.ts";
+import { AgentDesktopToolkit } from "./toolkits/agentDesktop/tools.ts";
 
 const mcpResourceMetadataUrl = (request: HttpServerRequest.HttpServerRequest) =>
   HttpServerRequest.toURL(request).pipe(
@@ -1313,6 +1315,9 @@ export const layerMcpTransport = McpServer.layerHttp({
   protocols: [McpProtocol.v2025_06_18],
   allowSessionTermination: true,
 }).pipe(Layer.provide(layerMcpAuthMiddleware));
+const AgentDesktopToolkitRegistrationLive = McpServer.toolkit(AgentDesktopToolkit).pipe(
+  Layer.provide(AgentDesktopToolkitHandlersLive),
+);
 
 export const layer = Layer.mergeAll(
   layerPreviewToolkit,
@@ -1327,4 +1332,5 @@ export const layer = Layer.mergeAll(
   layerDeviceToolkit,
   layerHtmlToolkit,
   ComputerToolkitRegistrationLive,
+  AgentDesktopToolkitRegistrationLive,
 ).pipe(Layer.provideMerge(layerMcpTransport));
