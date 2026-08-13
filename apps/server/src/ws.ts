@@ -1,4 +1,5 @@
 import { OrchestrationDispatchCommandError } from "@t3tools/contracts";
+import * as Clock from "effect/Clock";
 import * as Crypto from "effect/Crypto";
 import * as Orchestrator from "./orchestration-v2/Orchestrator.ts";
 import * as NodeCrypto from "node:crypto";
@@ -22,6 +23,7 @@ import { rpcInitialItems } from "./rpcInitialItems.ts";
 import { subscribeChatGptHandoff } from "./provider/CodexChatGptHandoff.ts";
 import { subscribeCodexAuthCallback } from "./provider/CodexAuthCallback.ts";
 import {
+  AGENT_DESKTOP_HUMAN_AUTOMATION_OPERATION,
   DEFAULT_AUTOMATIC_GIT_FETCH_INTERVAL,
   AcpRegistryOperationError,
   CommandId,
@@ -72,6 +74,7 @@ import {
   ProjectMutationError,
   ProviderUploadFeedbackError,
   ProviderSetupError,
+  ProviderInstanceId,
   RelayClientInstallFailedError,
   type RelayClientInstallProgressEvent,
   type ServerSelfUpdateError,
@@ -243,6 +246,7 @@ import * as UsageLimitSources from "./usage/UsageLimitSources.ts";
 
 const CONFIG_DISCOVERY_TIMEOUT = Duration.seconds(5);
 const isProviderUploadFeedbackError = Schema.is(ProviderUploadFeedbackError);
+const AGENT_DESKTOP_HUMAN_PROVIDER_INSTANCE_ID = ProviderInstanceId.make("agent-desktop-human");
 
 const resolveDiscoveryForConfig = <A, E, R>(
   discovery: Effect.Effect<A, E, R>,
@@ -3447,6 +3451,27 @@ const makeWsRpcLayer = (
             WS_METHODS.previewAutomationFocusHost,
             previewAutomationBroker.focusHost(input),
             { "rpc.aggregate": "preview-automation" },
+          ),
+        [WS_METHODS.agentDesktopHumanInvoke]: (input) =>
+          observeRpcEffect(
+            WS_METHODS.agentDesktopHumanInvoke,
+            Effect.gen(function* () {
+              const environmentId = yield* serverEnvironment.getEnvironmentId.pipe(Effect.orDie);
+              return yield* previewAutomationBroker.invoke({
+                scope: {
+                  environmentId,
+                  threadId: input.threadId,
+                  providerSessionId: `human:${currentSessionId}`,
+                  providerInstanceId: AGENT_DESKTOP_HUMAN_PROVIDER_INSTANCE_ID,
+                  capabilities: new Set(["preview"]),
+                  issuedAt: yield* Clock.currentTimeMillis,
+                },
+                operation: AGENT_DESKTOP_HUMAN_AUTOMATION_OPERATION,
+                input: input.request,
+                timeoutMs: input.timeoutMs ?? 30_000,
+              });
+            }),
+            { "rpc.aggregate": "agent-desktop" },
           ),
         [WS_METHODS.subscribePreviewEvents]: (_input) =>
           observeRpcStream(WS_METHODS.subscribePreviewEvents, previewManager.events, {

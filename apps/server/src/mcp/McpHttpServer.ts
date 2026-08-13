@@ -65,6 +65,8 @@ import {
   ComputerStandardToolkitHandlersLive,
 } from "./toolkits/computer/handlers.ts";
 import { ComputerImageToolkit, ComputerStandardToolkit } from "./toolkits/computer/tools.ts";
+import { AgentDesktopToolkitHandlersLive } from "./toolkits/agentDesktop/handlers.ts";
+import { AgentDesktopToolkit } from "./toolkits/agentDesktop/tools.ts";
 
 const unauthorized = HttpServerResponse.jsonUnsafe(
   {
@@ -957,12 +959,9 @@ export const ComputerToolkitRegistrationLive = Layer.mergeAll(
   ComputerImageRegistrationLive,
 );
 
-const McpTransportLive = McpServer.layerHttp({
-  name: "T3 Code",
-  version: packageJson.version,
-  path: "/mcp",
-  protocols: [McpProtocol.v2025_06_18],
-}).pipe(Layer.provide(McpAuthMiddlewareLive));
+const AgentDesktopToolkitRegistrationLive = McpServer.toolkit(AgentDesktopToolkit).pipe(
+  Layer.provide(AgentDesktopToolkitHandlersLive),
+);
 
 export const ToolkitRegistrationLive = Layer.mergeAll(
   PreviewToolkitRegistrationLive,
@@ -976,6 +975,14 @@ export const ToolkitRegistrationLive = Layer.mergeAll(
   PullRequestsToolkitRegistrationLive,
   DeviceToolkitRegistrationLive,
   ComputerToolkitRegistrationLive,
+  AgentDesktopToolkitRegistrationLive,
 );
+
+const McpTransportLive = McpServer.layerHttp({
+  name: "T3 Code",
+  version: packageJson.version,
+  path: "/mcp",
+  protocols: [McpProtocol.v2025_06_18],
+}).pipe(Layer.provide(McpAuthMiddlewareLive));
 
 export const layer = ToolkitRegistrationLive.pipe(Layer.provideMerge(McpTransportLive));

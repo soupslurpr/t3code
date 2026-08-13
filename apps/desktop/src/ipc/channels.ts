@@ -117,6 +117,9 @@ export const MAC_PERMISSION_HELPER_CHANNEL = "desktop:mac-permission-helper";
 
 export const CHECK_SYSTEM_PERMISSION_CHANNEL = "desktop:check-system-permission";
 
+export const RECEIVE_PROVIDER_AUTH_CALLBACK_CHANNEL = "desktop:receive-provider-auth-callback";
+export const CANCEL_PROVIDER_AUTH_CALLBACK_CHANNEL = "desktop:cancel-provider-auth-callback";
+
 export const PREVIEW_RECORDING_INPUT_CHANNEL = "desktop:preview-recording-input";
 export const COMPUTER_AUTOMATION_STATUS_CHANNEL = "desktop:computer-automation-status";
 export const COMPUTER_AUTOMATION_REQUEST_VIEW_CHANNEL = "desktop:computer-automation-request-view";
@@ -127,6 +130,15 @@ export const COMPUTER_AUTOMATION_ACT_CHANNEL = "desktop:computer-automation-act"
 export const COMPUTER_AUTOMATION_RELEASE_CHANNEL = "desktop:computer-automation-release";
 export const COMPUTER_AUTOMATION_FORGET_CONTROL_CHANNEL =
   "desktop:computer-automation-forget-control";
-
-export const RECEIVE_PROVIDER_AUTH_CALLBACK_CHANNEL = "desktop:receive-provider-auth-callback";
-export const CANCEL_PROVIDER_AUTH_CALLBACK_CHANNEL = "desktop:cancel-provider-auth-callback";
+export const AGENT_DESKTOP_LIST_CHANNEL = "desktop:agent-desktop-list";
+export const AGENT_DESKTOP_SETUP_CHANNEL = "desktop:agent-desktop-setup";
+export const AGENT_DESKTOP_ACQUIRE_CHANNEL = "desktop:agent-desktop-acquire";
+export const AGENT_DESKTOP_MANAGE_CHANNEL = "desktop:agent-desktop-manage";
+export const AGENT_DESKTOP_COMMAND_CHANNEL = "desktop:agent-desktop-command";
+export const AGENT_DESKTOP_READ_FILE_CHANNEL = "desktop:agent-desktop-read-file";
+export const AGENT_DESKTOP_WRITE_FILE_CHANNEL = "desktop:agent-desktop-write-file";
+export const AGENT_DESKTOP_INSPECT_CHANNEL = "desktop:agent-desktop-inspect";
+export const AGENT_DESKTOP_CREATE_PORT_ROUTE_CHANNEL = "desktop:agent-desktop-create-port-route";
+export const AGENT_DESKTOP_REMOVE_PORT_ROUTE_CHANNEL = "desktop:agent-desktop-remove-port-route";
+export const AGENT_DESKTOP_PACKET_CAPTURE_CHANNEL = "desktop:agent-desktop-packet-capture";
+export const AGENT_DESKTOP_HUMAN_CHANNEL = "desktop:agent-desktop-human";
