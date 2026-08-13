@@ -29,7 +29,8 @@ const invoke = Effect.fn("ComputerToolkit.invoke")(function* <A>(
 });
 
 const handlers = {
-  computer_status: () => invoke<ComputerAutomationStatus>("computerStatus", {}, STATUS_TIMEOUT_MS),
+  computer_status: (input) =>
+    invoke<ComputerAutomationStatus>("computerStatus", input, STATUS_TIMEOUT_MS),
   computer_request_view: (input) =>
     invoke<ComputerAutomationObservation>("computerRequestView", input, CONTROL_TIMEOUT_MS),
   computer_request_control: (input) =>
@@ -38,10 +39,10 @@ const handlers = {
     invoke<ComputerAutomationSnapshot>("computerSnapshot", input, SNAPSHOT_TIMEOUT_MS),
   computer_act: (input) =>
     invoke<ComputerAutomationObservation>("computerAct", input, CONTROL_TIMEOUT_MS),
-  computer_release: () =>
-    invoke<ComputerAutomationStatus>("computerRelease", {}, CONTROL_TIMEOUT_MS),
-  computer_forget_control: () =>
-    invoke<void>("computerForgetControl", {}, CONTROL_TIMEOUT_MS).pipe(Effect.as(null)),
+  computer_release: (input) =>
+    invoke<ComputerAutomationStatus>("computerRelease", input, CONTROL_TIMEOUT_MS),
+  computer_forget_control: (input) =>
+    invoke<void>("computerForgetControl", input, CONTROL_TIMEOUT_MS).pipe(Effect.as(null)),
 } satisfies Parameters<typeof ComputerToolkit.toLayer>[0];
 
 const {

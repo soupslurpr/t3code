@@ -87,6 +87,10 @@ const ACCESSIBILITY_STARTUP_TIMEOUT_MS = 1_000;
 const ACCESSIBILITY_FOCUS_RETURN_TIMEOUT_MS = 2_000;
 const ACCESSIBILITY_FOCUS_RETURN_INTERVAL_MS = 50;
 const ACCESSIBILITY_FOCUS_SETTLE_MS = 50;
+const ACCESSIBILITY_TEXT_SELECTION_SETTLE_MS = 25;
+const ACCESSIBILITY_TEXT_FOCUS_TIMEOUT_MS = 250;
+const ACCESSIBILITY_TEXT_FOCUS_INTERVAL_MS = 25;
+const MAX_SEMANTIC_TEXT_SEGMENTS = 32;
 const UNICODE_ENTRY_MODIFIER_SETTLE_MS = 30;
 const UNICODE_ENTRY_PREFIX_SETTLE_MS = 30;
 const UNICODE_ENTRY_DIGIT_SETTLE_MS = 10;
@@ -482,6 +486,107 @@ function selectFocusedAccessibilityRoots(roots) {
   return { roots: focused, truncated };
 }
 
+/** Finds the single editable control that currently owns keyboard focus. */
+function findFocusedAccessibilityTextTarget() {
+  let atspi;
+  try {
+    atspi = ensureAccessibility();
+  } catch {
+    return null;
+  }
+  const selection = selectFocusedAccessibilityRoots(listAccessibilityRoots(atspi));
+  if (selection.roots.length !== 1) return null;
+  const queue = [selection.roots[0].accessible];
+  const focusedTargets = [];
+  let queueIndex = 0;
+  let scanned = 0;
+  while (queueIndex < queue.length && scanned < MAX_ACCESSIBILITY_NODES) {
+    const accessible = queue[queueIndex];
+    queueIndex += 1;
+    scanned += 1;
+    try {
+      const states = accessible.get_state_set();
+      if (!hasAccessibilityState(states, Atspi.StateType.DEFUNCT)) {
+        const interfaces = new Set(accessible.get_interfaces() ?? []);
+        if (
+          interfaces.has("EditableText") &&
+          interfaces.has("Text") &&
+          hasAccessibilityState(states, Atspi.StateType.FOCUSED) &&
+          hasAccessibilityState(states, Atspi.StateType.EDITABLE) &&
+          hasAccessibilityState(states, Atspi.StateType.SHOWING) &&
+          hasAccessibilityState(states, Atspi.StateType.VISIBLE) &&
+          (hasAccessibilityState(states, Atspi.StateType.ENABLED) ||
+            hasAccessibilityState(states, Atspi.StateType.SENSITIVE))
+        ) {
+          focusedTargets.push(accessible);
+        }
+        const childCount = Math.min(
+          MAX_ACCESSIBILITY_CHILDREN,
+          Math.max(0, accessible.get_child_count()),
+        );
+        for (let childIndex = 0; childIndex < childCount; childIndex += 1) {
+          const child = accessible.get_child_at_index(childIndex);
+          if (child !== null) queue.push(child);
+        }
+      }
+    } catch {
+      // The focused accessibility tree can change while it is traversed.
+    }
+  }
+  return focusedTargets.length === 1 ? focusedTargets[0] : null;
+}
+
+/** Waits briefly for a newly focused editable control to reach AT-SPI. */
+async function waitForFocusedAccessibilityTextTarget() {
+  const attemptCount = Math.ceil(
+    ACCESSIBILITY_TEXT_FOCUS_TIMEOUT_MS / ACCESSIBILITY_TEXT_FOCUS_INTERVAL_MS,
+  );
+  for (let attempt = 0; attempt <= attemptCount; attempt += 1) {
+    const target = findFocusedAccessibilityTextTarget();
+    if (target !== null) return target;
+    if (attempt < attemptCount) await delay(ACCESSIBILITY_TEXT_FOCUS_INTERVAL_MS);
+  }
+  return null;
+}
+
+/** Inserts exact text directly only when mutation is known to be safe. */
+async function insertFocusedAccessibilityText(textValue, intervalMs) {
+  const accessible = await waitForFocusedAccessibilityTextTarget();
+  if (accessible === null) return "unavailable";
+  const states = accessible.get_state_set();
+  if (/\n/u.test(textValue) && !hasAccessibilityState(states, Atspi.StateType.MULTI_LINE)) {
+    return "unavailable";
+  }
+  const text = accessible.get_text_iface();
+  if (text.get_n_selections() > 0) return "replace-selection";
+  const editable = accessible.get_editable_text_iface();
+  let position = text.get_caret_offset();
+  const insert = (value) => {
+    if (!Number.isInteger(position) || position < 0) return false;
+    if (!editable.insert_text(position, value, new TextEncoder().encode(value).length))
+      return false;
+    position += Array.from(value).length;
+    return text.set_caret_offset(position);
+  };
+  const insertOrFail = (value) => {
+    if (insert(value)) return;
+    throw accessibilityError(
+      "accessibility-insertion-failed",
+      "the focused control rejected exact text insertion; some text may have been inserted",
+      { field: "text", expected: ["exact text accepted by the focused editable control"] },
+    );
+  };
+  if (intervalMs === 0) {
+    insertOrFail(textValue);
+    return "inserted";
+  }
+  for (const character of textValue) {
+    insertOrFail(character);
+    await delay(intervalMs);
+  }
+  return "inserted";
+}
+
 /** Chooses a user-equivalent activation path for one accessible control. */
 function readAccessibilityActivation(accessible, role, states, interfaces) {
   const component = interfaces.includes("Component") ? accessible.get_component_iface() : null;
@@ -582,7 +687,16 @@ function readAccessibilityTarget(accessible, root, windowBounds, id) {
       root: root.accessible,
       application: root.application,
       windowBounds,
-      actionIndex: activation.actionIndex,
+      role,
+      name: accessibilityText(accessible.get_name(), 512),
+      activation: activation.activation,
+      actionName:
+        activation.activation === "action"
+          ? accessibilityText(
+              accessible.get_action_iface().get_action_name(activation.actionIndex),
+              128,
+            ).toLowerCase()
+          : null,
     },
   };
 }
@@ -1833,6 +1947,23 @@ async function typeUnicodeCharacter(character) {
   }
 }
 
+/** Types text through real portal key events when semantic insertion is unavailable. */
+async function typeKeyboardText(text, intervalMs) {
+  for (const character of text) {
+    if (character === "\n") {
+      await runInputPhase("key-press", () => tapKeysym(NAMED_KEYSYMS.enter, { field: "text" }));
+    } else if (character === "\t") {
+      await runInputPhase("key-press", () => tapKeysym(NAMED_KEYSYMS.tab, { field: "text" }));
+    } else if (/^[\x20-\x7e]$/u.test(character)) {
+      const keysym = resolveKeysym(character, "text");
+      await runInputPhase("key-press", () => tapKeysym(keysym, { field: "text" }));
+    } else {
+      await runInputPhase("key-press", () => typeUnicodeCharacter(character));
+    }
+    await delay(intervalMs);
+  }
+}
+
 /** Best-effort releases every tracked keysym before the portal session closes. */
 async function releaseHeldKeysyms() {
   const keysyms = Array.from(heldKeysyms);
@@ -2216,10 +2347,40 @@ async function activateAccessibilityTarget(targetId) {
       staleTargetDetail,
     );
   }
+  if (
+    current.target.role !== stored.role ||
+    current.target.name !== stored.name ||
+    current.target.activation !== stored.activation ||
+    current.stored.actionName !== stored.actionName
+  ) {
+    throw accessibilityError(
+      "stale-accessibility-target",
+      "the semantic target changed since the observation",
+      staleTargetDetail,
+    );
+  }
   const activation = current.target.activation;
   const activated = await runInputPhase("execution", async () => {
-    if (activation === "action" && current.stored.actionIndex !== null) {
-      return current.stored.accessible.get_action_iface().do_action(current.stored.actionIndex);
+    if (activation === "action" && stored.actionName !== null) {
+      const action = current.stored.accessible.get_action_iface();
+      const matchingActionIndices = [];
+      const actionCount = Math.max(0, action.get_n_actions());
+      for (let actionIndex = 0; actionIndex < actionCount; actionIndex += 1) {
+        if (
+          accessibilityText(action.get_action_name(actionIndex), 128).toLowerCase() ===
+          stored.actionName
+        ) {
+          matchingActionIndices.push(actionIndex);
+        }
+      }
+      if (matchingActionIndices.length !== 1) {
+        throw accessibilityError(
+          "stale-accessibility-target",
+          "the semantic target action changed since the observation",
+          staleTargetDetail,
+        );
+      }
+      return action.do_action(matchingActionIndices[0]);
     }
     const focused = current.stored.accessible.get_component_iface().grab_focus();
     if (focused && activation === "keyboard") {
@@ -2347,18 +2508,35 @@ async function handleCommand(message) {
     case "type": {
       await runInputPhase("authorization", () => ensureSession("control"));
       const normalizedText = message.params.text.replace(/\r\n|\r/gu, "\n");
-      for (const character of normalizedText) {
-        if (character === "\n") {
-          await runInputPhase("key-press", () => tapKeysym(NAMED_KEYSYMS.enter, { field: "text" }));
-        } else if (character === "\t") {
-          await runInputPhase("key-press", () => tapKeysym(NAMED_KEYSYMS.tab, { field: "text" }));
-        } else if (/^[\x20-\x7e]$/u.test(character)) {
-          const keysym = resolveKeysym(character, "text");
-          await runInputPhase("key-press", () => tapKeysym(keysym, { field: "text" }));
-        } else {
-          await runInputPhase("key-press", () => typeUnicodeCharacter(character));
+      const segments = normalizedText.match(/[^\t]+|\t/gu) ?? [];
+      const useSemanticInsertion =
+        segments.filter((segment) => segment !== "\t").length <= MAX_SEMANTIC_TEXT_SEGMENTS;
+      for (const segment of segments) {
+        let insertion =
+          segment === "\t" || !useSemanticInsertion
+            ? "unavailable"
+            : await runInputPhase("execution", () =>
+                insertFocusedAccessibilityText(segment, message.params.intervalMs),
+              );
+        if (insertion === "replace-selection") {
+          await runInputPhase("key-press", () =>
+            tapKeysym(NAMED_KEYSYMS.backspace, { field: "text" }),
+          );
+          await delay(ACCESSIBILITY_TEXT_SELECTION_SETTLE_MS);
+          insertion = await runInputPhase("execution", () =>
+            insertFocusedAccessibilityText(segment, message.params.intervalMs),
+          );
         }
-        await delay(message.params.intervalMs);
+        if (insertion === "replace-selection") {
+          throw accessibilityError(
+            "accessibility-insertion-failed",
+            "the focused text selection could not be replaced",
+            { field: "text", phase: "execution" },
+          );
+        }
+        if (insertion === "unavailable") {
+          await typeKeyboardText(segment, message.params.intervalMs);
+        }
       }
       return null;
     }
@@ -2393,6 +2571,9 @@ async function handleCommand(message) {
       await runInputPhase("authorization", () => ensureSession("control"));
       await sendKeyChord(keysyms);
       return null;
+    }
+    case "releaseInputs": {
+      return await recoverHeldInputs();
     }
     case "stop": {
       await releaseAccess();
