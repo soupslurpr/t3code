@@ -91,5 +91,33 @@ export function createPreviewEnvironmentAtoms<R, E>(
           JSON.stringify([environmentId, input.threadId, input.tabId]),
       },
     }),
+    respondToAutomation: createEnvironmentRpcCommand(runtime, {
+      label: "environment-data:preview:automation-respond",
+      tag: WS_METHODS.previewAutomationRespond,
+      scheduler: automationScheduler,
+      concurrency: {
+        mode: "singleFlight",
+        key: ({ environmentId, input }) =>
+          JSON.stringify([environmentId, input.connectionId, input.requestId]),
+      },
+    }),
+    focusAutomationHost: createEnvironmentRpcCommand(runtime, {
+      label: "environment-data:preview:automation-focus-host",
+      tag: WS_METHODS.previewAutomationFocusHost,
+      scheduler: automationScheduler,
+      concurrency: {
+        mode: "latest",
+        key: previewAutomationHostFocusConcurrencyKey,
+      },
+    }),
+    invokeAgentDesktopHuman: createEnvironmentRpcCommand(runtime, {
+      label: "environment-data:agent-desktop:human-invoke",
+      tag: WS_METHODS.agentDesktopHumanInvoke,
+      scheduler: automationScheduler,
+      concurrency: {
+        mode: "serial",
+        key: ({ environmentId, input }) => JSON.stringify([environmentId, input.threadId]),
+      },
+    }),
   };
 }
