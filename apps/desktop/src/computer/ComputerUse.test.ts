@@ -85,6 +85,7 @@ function makeController(records: Array<InputRecord>, onStart: () => void = () =>
     hotkey: (input) => record("hotkey", input),
     keyDown: (input) => record("keyDown", input),
     keyUp: (input) => record("keyUp", input),
+    releaseInputs: record("releaseInputs"),
     stop: record("stop"),
     forget: record("forget"),
   });

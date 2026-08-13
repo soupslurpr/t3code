@@ -1,4 +1,5 @@
 import { OrchestrationDispatchCommandError } from "@t3tools/contracts";
+import * as Clock from "effect/Clock";
 import * as Crypto from "effect/Crypto";
 import * as Orchestrator from "./orchestration-v2/Orchestrator.ts";
 
@@ -21,6 +22,7 @@ import { rpcInitialItems } from "./rpcInitialItems.ts";
 import { subscribeChatGptHandoff } from "./provider/CodexChatGptHandoff.ts";
 import { subscribeCodexAuthCallback } from "./provider/CodexAuthCallback.ts";
 import {
+  AGENT_DESKTOP_HUMAN_AUTOMATION_OPERATION,
   DEFAULT_AUTOMATIC_GIT_FETCH_INTERVAL,
   AcpRegistryOperationError,
   CommandId,
@@ -75,6 +77,7 @@ import {
   ProjectMutationError,
   ProviderUploadFeedbackError,
   ProviderSetupError,
+  ProviderInstanceId,
   RelayClientInstallFailedError,
   type RelayClientInstallProgressEvent,
   type ServerSelfUpdateError,
@@ -249,6 +252,7 @@ import * as UsageLimitSources from "./usage/UsageLimitSources.ts";
 
 const CONFIG_DISCOVERY_TIMEOUT = Duration.seconds(5);
 const isProviderUploadFeedbackError = Schema.is(ProviderUploadFeedbackError);
+const AGENT_DESKTOP_HUMAN_PROVIDER_INSTANCE_ID = ProviderInstanceId.make("agent-desktop-human");
 
 const resolveDiscoveryForConfig = <A, E, R>(
   discovery: Effect.Effect<A, E, R>,
@@ -2904,6 +2908,30 @@ const layerWsRpc = (
         [WS_METHODS.subscribePreviewEvents]: (_input) => previewManager.events,
         [WS_METHODS.deviceConfigure]: (input) => deviceService.configure(input),
         [WS_METHODS.deviceTestHost]: (input) => deviceService.testHost(input),
+        [WS_METHODS.previewAutomationConnect]: (input) => previewAutomationBroker.connect(input),
+        [WS_METHODS.previewAutomationRespond]: (input) => previewAutomationBroker.respond(input),
+        [WS_METHODS.previewAutomationFocusHost]: (input) => previewAutomationBroker.focusHost(input),
+        [WS_METHODS.agentDesktopHumanInvoke]: (input) =>
+          Effect.gen(function* () {
+            const environmentId = yield* serverEnvironment.getEnvironmentId.pipe(Effect.orDie);
+            return yield* previewAutomationBroker.invoke({
+              scope: {
+                environmentId,
+                requestNamespace: `human:${currentSessionId}`,
+                client: undefined,
+                thread: {
+                  threadId: input.threadId,
+                  providerSessionId: `human:${currentSessionId}`,
+                  providerInstanceId: AGENT_DESKTOP_HUMAN_PROVIDER_INSTANCE_ID,
+                },
+                capabilities: new Set(["preview"]),
+                issuedAt: yield* Clock.currentTimeMillis,
+              },
+              operation: AGENT_DESKTOP_HUMAN_AUTOMATION_OPERATION,
+              input: input.request,
+              timeoutMs: input.timeoutMs ?? 30_000,
+            });
+          }),
         [WS_METHODS.deviceList]: (input) =>
           input.inspectOnly && !input.updateTool
             ? deviceService.inspect

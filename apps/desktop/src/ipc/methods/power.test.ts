@@ -28,6 +28,7 @@ function makeGnomeRemoteDesktop(configured: Array<boolean>) {
     hotkey: () => unexpected,
     keyDown: () => unexpected,
     keyUp: () => unexpected,
+    releaseInputs: unexpected,
     stop: unexpected,
     forget: unexpected,
   });
