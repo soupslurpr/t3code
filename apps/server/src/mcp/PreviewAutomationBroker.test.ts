@@ -1,6 +1,7 @@
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { expect, it } from "@effect/vitest";
 import {
+  AGENT_DESKTOP_HUMAN_AUTOMATION_OPERATION,
   EnvironmentId,
   PreviewAutomationClientDisconnectedError,
   PreviewAutomationExecutionError,
@@ -570,6 +571,175 @@ it.effect("routes requests for background threads through an environment-level h
 
       expect(result).toBe("background");
       expect(routedThreadId).toBe(backgroundThreadId);
+    }),
+  ),
+);
+
+it.effect("routes browser, user-desktop, and agent-desktop work independently", () =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      const broker = yield* makeBroker;
+      const userRequests: RoutedRequest[] = [];
+      const agentRequests: RoutedRequest[] = [];
+      const userStream = requestsFrom(
+        yield* broker.connect(
+          makeHost({
+            clientId: "client-user-desktop",
+            supportedOperations: ["status", "computerRequestControl", "computerAct"],
+            computerDesktopKinds: ["user"],
+          }),
+        ),
+      );
+      const agentStream = requestsFrom(
+        yield* broker.connect(
+          makeHost({
+            clientId: "client-agent-desktop",
+            supportedOperations: ["agentDesktopList", "computerRequestControl", "computerAct"],
+            computerDesktopKinds: ["agent"],
+          }),
+        ),
+      );
+      yield* Stream.runForEach(userStream, (request) => {
+        userRequests.push(request);
+        return broker.respond({
+          clientId: "client-user-desktop",
+          connectionId: request.connectionId,
+          requestId: request.requestId,
+          ok: true,
+          result: `user:${request.operation}`,
+        });
+      }).pipe(Effect.forkScoped);
+      yield* Stream.runForEach(agentStream, (request) => {
+        agentRequests.push(request);
+        return broker.respond({
+          clientId: "client-agent-desktop",
+          connectionId: request.connectionId,
+          requestId: request.requestId,
+          ok: true,
+          result: `agent:${request.operation}`,
+        });
+      }).pipe(Effect.forkScoped);
+      yield* Effect.yieldNow;
+
+      expect(yield* broker.invoke<string>({ scope, operation: "status", input: {} })).toBe(
+        "user:status",
+      );
+      expect(
+        yield* broker.invoke<string>({ scope, operation: "agentDesktopList", input: {} }),
+      ).toBe("agent:agentDesktopList");
+      expect(
+        yield* broker.invoke<string>({
+          scope,
+          operation: "computerRequestControl",
+          input: { desktop: { kind: "agent" } },
+        }),
+      ).toBe("agent:computerRequestControl");
+      expect(
+        yield* broker.invoke<string>({ scope, operation: "computerAct", input: { actions: [] } }),
+      ).toBe("agent:computerAct");
+
+      expect(userRequests).toHaveLength(1);
+      expect(agentRequests.map(({ controllerId }) => controllerId)).toEqual([
+        scope.providerSessionId,
+        scope.providerSessionId,
+        scope.providerSessionId,
+      ]);
+
+      expect(
+        yield* broker.invoke<string>({
+          scope,
+          operation: "computerRequestControl",
+          input: { desktop: { kind: "user" } },
+        }),
+      ).toBe("user:computerRequestControl");
+      expect(
+        yield* broker.invoke<string>({ scope, operation: "computerAct", input: { actions: [] } }),
+      ).toBe("user:computerAct");
+    }),
+  ),
+);
+
+it.effect("routes human supervision only to an Agent desktop host", () =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      const broker = yield* makeBroker;
+      const routedRequests: RoutedRequest[] = [];
+      const requests = requestsFrom(
+        yield* broker.connect(
+          makeHost({
+            supportedOperations: [AGENT_DESKTOP_HUMAN_AUTOMATION_OPERATION],
+            computerDesktopKinds: ["agent"],
+          }),
+        ),
+      );
+      yield* Stream.runForEach(requests, (request) => {
+        routedRequests.push(request);
+        return broker.respond({
+          clientId: "client-1",
+          connectionId: request.connectionId,
+          requestId: request.requestId,
+          ok: true,
+          result: "human",
+        });
+      }).pipe(Effect.forkScoped);
+      yield* Effect.yieldNow;
+
+      expect(
+        yield* broker.invoke<string>({
+          scope: { ...scope, providerSessionId: "human:session-1" },
+          operation: AGENT_DESKTOP_HUMAN_AUTOMATION_OPERATION,
+          input: { operation: "list" },
+        }),
+      ).toBe("human");
+      expect(routedRequests[0]?.controllerId).toBe("human:session-1");
+    }),
+  ),
+);
+
+it.effect("gives parallel provider sessions distinct computer controller identities", () =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      const broker = yield* makeBroker;
+      const routedRequests: RoutedRequest[] = [];
+      const requests = requestsFrom(
+        yield* broker.connect(
+          makeHost({
+            supportedOperations: ["computerRequestControl"],
+            computerDesktopKinds: ["agent"],
+          }),
+        ),
+      );
+      yield* Stream.runForEach(requests, (request) => {
+        routedRequests.push(request);
+        return broker.respond({
+          clientId: "client-1",
+          connectionId: request.connectionId,
+          requestId: request.requestId,
+          ok: true,
+          result: request.controllerId,
+        });
+      }).pipe(Effect.forkScoped);
+      yield* Effect.yieldNow;
+
+      const secondScope = { ...scope, providerSessionId: "provider-session-2" };
+      expect(
+        yield* broker.invoke<string>({
+          scope,
+          operation: "computerRequestControl",
+          input: { desktop: { kind: "agent" } },
+        }),
+      ).toBe(scope.providerSessionId);
+      expect(
+        yield* broker.invoke<string>({
+          scope: secondScope,
+          operation: "computerRequestControl",
+          input: { desktop: { kind: "agent" } },
+        }),
+      ).toBe(secondScope.providerSessionId);
+      expect(routedRequests.map(({ controllerId }) => controllerId)).toEqual([
+        scope.providerSessionId,
+        secondScope.providerSessionId,
+      ]);
     }),
   ),
 );

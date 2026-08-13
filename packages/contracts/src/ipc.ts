@@ -65,6 +65,7 @@ import type {
 import {
   PreviewAutomationClickInput,
   PreviewAutomationEvaluateInput,
+  AgentDesktopHumanRequest,
   PreviewAutomationHost,
   PreviewAutomationHostFocus,
   PreviewAutomationPressInput,
@@ -84,7 +85,27 @@ import {
   ComputerAutomationSnapshot,
   ComputerAutomationSnapshotInput,
   ComputerAutomationStatus,
+  ComputerAutomationTargetInput,
 } from "./computerAutomation.ts";
+import {
+  AgentDesktop,
+  AgentDesktopAcquireInput,
+  AgentDesktopCommandInput,
+  AgentDesktopCommandResult,
+  AgentDesktopCreatePortRouteInput,
+  AgentDesktopInspectInput,
+  AgentDesktopList,
+  AgentDesktopManageInput,
+  AgentDesktopPacketCapture,
+  AgentDesktopPacketCaptureInput,
+  AgentDesktopPortRoute,
+  AgentDesktopReadFileInput,
+  AgentDesktopReadFileResult,
+  AgentDesktopSetupResult,
+  AgentDesktopRemovePortRouteInput,
+  AgentDesktopWriteFileInput,
+  AgentDesktopWriteFileResult,
+} from "./agentDesktop.ts";
 import type {
   ClientOrchestrationCommand,
   OrchestrationGetFullThreadDiffInput,
@@ -96,7 +117,7 @@ import type {
   OrchestrationSubscribeThreadInput,
   OrchestrationThreadStreamItem,
 } from "./orchestration.ts";
-import { EnvironmentId } from "./baseSchemas.ts";
+import { EnvironmentId, ThreadId } from "./baseSchemas.ts";
 import { AuthAccessTokenResult, AuthSessionState, AuthWebSocketTicketResult } from "./auth.ts";
 import { AdvertisedEndpoint } from "./remoteAccess.ts";
 import { ExecutionEnvironmentDescriptor } from "./environment.ts";
@@ -1078,7 +1099,75 @@ export const DesktopPreviewAutomationWaitForInputSchema = Schema.Struct({
   input: PreviewAutomationWaitForInput,
 });
 
-export const DesktopComputerAutomationActInputSchema = ComputerAutomationActInput;
+export const DesktopComputerAutomationContextSchema = Schema.Struct({
+  controllerId: Schema.String.check(Schema.isTrimmed()).check(Schema.isNonEmpty()),
+  environmentId: Schema.optionalKey(EnvironmentId),
+  threadId: Schema.optionalKey(ThreadId),
+});
+
+export const DesktopComputerAutomationAccessRequestSchema = Schema.Struct({
+  input: ComputerAutomationAccessInput,
+  context: Schema.optional(DesktopComputerAutomationContextSchema),
+});
+
+export const DesktopComputerAutomationTargetRequestSchema = Schema.Struct({
+  input: ComputerAutomationTargetInput,
+  context: Schema.optional(DesktopComputerAutomationContextSchema),
+});
+
+export const DesktopComputerAutomationSnapshotRequestSchema = Schema.Struct({
+  input: ComputerAutomationSnapshotInput,
+  context: Schema.optional(DesktopComputerAutomationContextSchema),
+});
+
+export const DesktopComputerAutomationActRequestSchema = Schema.Struct({
+  input: ComputerAutomationActInput,
+  context: Schema.optional(DesktopComputerAutomationContextSchema),
+});
+
+export const DesktopAgentDesktopAcquireRequestSchema = Schema.Struct({
+  input: AgentDesktopAcquireInput,
+  context: DesktopComputerAutomationContextSchema,
+});
+export const DesktopAgentDesktopSetupRequestSchema = Schema.Struct({
+  context: DesktopComputerAutomationContextSchema,
+});
+export const DesktopAgentDesktopManageRequestSchema = Schema.Struct({
+  input: AgentDesktopManageInput,
+  context: DesktopComputerAutomationContextSchema,
+});
+export const DesktopAgentDesktopCommandRequestSchema = Schema.Struct({
+  input: AgentDesktopCommandInput,
+  context: DesktopComputerAutomationContextSchema,
+});
+export const DesktopAgentDesktopReadFileRequestSchema = Schema.Struct({
+  input: AgentDesktopReadFileInput,
+  context: DesktopComputerAutomationContextSchema,
+});
+export const DesktopAgentDesktopWriteFileRequestSchema = Schema.Struct({
+  input: AgentDesktopWriteFileInput,
+  context: DesktopComputerAutomationContextSchema,
+});
+export const DesktopAgentDesktopInspectRequestSchema = Schema.Struct({
+  input: AgentDesktopInspectInput,
+  context: DesktopComputerAutomationContextSchema,
+});
+export const DesktopAgentDesktopCreatePortRouteRequestSchema = Schema.Struct({
+  input: AgentDesktopCreatePortRouteInput,
+  context: DesktopComputerAutomationContextSchema,
+});
+export const DesktopAgentDesktopRemovePortRouteRequestSchema = Schema.Struct({
+  input: AgentDesktopRemovePortRouteInput,
+  context: DesktopComputerAutomationContextSchema,
+});
+export const DesktopAgentDesktopPacketCaptureRequestSchema = Schema.Struct({
+  input: AgentDesktopPacketCaptureInput,
+  context: DesktopComputerAutomationContextSchema,
+});
+export const DesktopAgentDesktopHumanRequestSchema = Schema.Struct({
+  input: AgentDesktopHumanRequest,
+  context: DesktopComputerAutomationContextSchema,
+});
 
 const DesktopComputerAutomationFailureSchema = Schema.Struct({
   ok: Schema.Literal(false),
@@ -1195,24 +1284,94 @@ export interface DesktopBridge {
   preview?: DesktopPreviewBridge;
   /** Host-computer capture and input. Present only in desktop builds that expose it. */
   computer?: DesktopComputerAutomationBridge;
+  /** Environment-local isolated Agent desktop management. */
+  agentDesktop?: DesktopAgentDesktopBridge;
+}
+
+export interface DesktopAgentDesktopBridge {
+  list: (
+    context?: DesktopComputerAutomationContext,
+  ) => Promise<DesktopComputerAutomationResult<AgentDesktopList>>;
+  setup: (
+    context: DesktopComputerAutomationContext,
+  ) => Promise<DesktopComputerAutomationResult<AgentDesktopSetupResult>>;
+  acquire: (
+    input: AgentDesktopAcquireInput,
+    context: DesktopComputerAutomationContext,
+  ) => Promise<DesktopComputerAutomationResult<AgentDesktop>>;
+  manage: (
+    input: AgentDesktopManageInput,
+    context: DesktopComputerAutomationContext,
+  ) => Promise<DesktopComputerAutomationResult<AgentDesktop>>;
+  command: (
+    input: AgentDesktopCommandInput,
+    context: DesktopComputerAutomationContext,
+  ) => Promise<DesktopComputerAutomationResult<AgentDesktopCommandResult>>;
+  readFile: (
+    input: AgentDesktopReadFileInput,
+    context: DesktopComputerAutomationContext,
+  ) => Promise<DesktopComputerAutomationResult<AgentDesktopReadFileResult>>;
+  writeFile: (
+    input: AgentDesktopWriteFileInput,
+    context: DesktopComputerAutomationContext,
+  ) => Promise<DesktopComputerAutomationResult<AgentDesktopWriteFileResult>>;
+  inspect: (
+    input: AgentDesktopInspectInput,
+    context: DesktopComputerAutomationContext,
+  ) => Promise<DesktopComputerAutomationResult<AgentDesktop>>;
+  createPortRoute: (
+    input: AgentDesktopCreatePortRouteInput,
+    context: DesktopComputerAutomationContext,
+  ) => Promise<DesktopComputerAutomationResult<AgentDesktopPortRoute>>;
+  removePortRoute: (
+    input: AgentDesktopRemovePortRouteInput,
+    context: DesktopComputerAutomationContext,
+  ) => Promise<DesktopComputerAutomationResult<void>>;
+  capturePackets: (
+    input: AgentDesktopPacketCaptureInput,
+    context: DesktopComputerAutomationContext,
+  ) => Promise<DesktopComputerAutomationResult<AgentDesktopPacketCapture>>;
+  humanInvoke: (
+    input: AgentDesktopHumanRequest,
+    context: DesktopComputerAutomationContext,
+  ) => Promise<DesktopComputerAutomationResult<unknown>>;
 }
 
 export interface DesktopComputerAutomationBridge {
-  status: () => Promise<ComputerAutomationStatus>;
+  status: (
+    input: ComputerAutomationTargetInput,
+    context?: DesktopComputerAutomationContext,
+  ) => Promise<DesktopComputerAutomationResult<ComputerAutomationStatus>>;
   requestView: (
     input: ComputerAutomationAccessInput,
+    context?: DesktopComputerAutomationContext,
   ) => Promise<DesktopComputerAutomationResult<ComputerAutomationObservation>>;
   requestControl: (
     input: ComputerAutomationAccessInput,
+    context?: DesktopComputerAutomationContext,
   ) => Promise<DesktopComputerAutomationResult<ComputerAutomationObservation>>;
   snapshot: (
     input: ComputerAutomationSnapshotInput,
+    context?: DesktopComputerAutomationContext,
   ) => Promise<DesktopComputerAutomationResult<ComputerAutomationSnapshot>>;
   act: (
     input: ComputerAutomationActInput,
+    context?: DesktopComputerAutomationContext,
   ) => Promise<DesktopComputerAutomationResult<ComputerAutomationObservation>>;
-  release: () => Promise<DesktopComputerAutomationResult<ComputerAutomationStatus>>;
-  forgetControl: () => Promise<DesktopComputerAutomationResult<void>>;
+  release: (
+    input: ComputerAutomationTargetInput,
+    context?: DesktopComputerAutomationContext,
+  ) => Promise<DesktopComputerAutomationResult<ComputerAutomationStatus>>;
+  forgetControl: (
+    input: ComputerAutomationTargetInput,
+    context?: DesktopComputerAutomationContext,
+  ) => Promise<DesktopComputerAutomationResult<void>>;
+}
+
+export interface DesktopComputerAutomationContext {
+  readonly controllerId: string;
+  readonly environmentId?: EnvironmentId;
+  readonly threadId?: ThreadId;
 }
 
 export interface DesktopPreviewBridge {

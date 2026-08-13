@@ -99,10 +99,18 @@ movement, and button-up events. After an input failure, T3 Code releases tracked
 closes the portal session as a final safety fallback.
 
 Text actions preserve exact Unicode, including smart punctuation, arrows, combining characters, and
-emoji. Printable ASCII continues through virtual key events. Non-ASCII code points use GNOME's
-layout-independent Unicode input method because GNOME can silently discard Unicode keysyms that the
-active keyboard layout cannot produce. This path does not read or change the clipboard. Newline and
-Tab remain real key events.
+emoji. The user desktop enters non-ASCII code points through GNOME's layout-independent Unicode
+input method because GNOME can silently discard Unicode keysyms that the active keyboard layout
+cannot produce. Agent desktops insert exact UTF-8 through the active editable accessibility target
+and use timed, self-releasing QEMU key chords when that interface is unavailable. Neither path reads
+or changes the clipboard. On either desktop, a focused multiline editable control accepts a whole
+text block directly; elsewhere Newline and Tab remain real key events. Exact insertion never replays
+text through the keyboard after an uncertain partial failure.
+
+Taking over an Agent desktop enters full screen and captures host-reserved shortcuts so keys such as
+Super reach only the guest. GNOME may show a first-use prompt to allow shortcut inhibition. Its
+emergency Super+Escape chord immediately restores host shortcuts, and leaving full screen releases
+the human control lease.
 
 ## Agent Tools
 
@@ -144,6 +152,60 @@ bounds are therefore relative to the focused window named in the result, not to 
 Agents use the target identifier for semantic activation and use screenshot coordinates for mouse
 interaction. Semantic targets are currently disabled on multi-display desktops to avoid associating
 them with the wrong captured display.
+
+## Agent Desktops
+
+An agent can use a separate Agent desktop when it should work without moving the pointer, changing
+focus, or opening windows on your desktop. Each Agent desktop is a complete GNOME machine with its
+own display, files, processes, and network connection. The same computer tools work against it, but
+the machine does not need the host-desktop sharing dialog because its display and emulated input
+devices exist specifically for agent work.
+
+An agent can ask for a clean desktop, reuse a suitable prior desktop, or select a known desktop
+explicitly. Access returns the concrete desktop identifier, and every later status, snapshot, action,
+release, or forget operation names that identifier. Omitting a target always means your desktop; it
+never means the most recently used Agent desktop. This stateless routing lets parallel agents in one
+thread hold independent desktops without silently redirecting or releasing each other's sessions.
+A human can temporarily view or take control of an Agent desktop; agent input is revoked during that
+takeover and can resume after the human lease ends.
+
+The host chooses CPU, memory, and virtual disk capacity from current pressure and the task's stated
+needs. Agents describe needs such as graphics, interactivity, temporary disk use, audio, or whether a
+desktop must stay running; they do not select arbitrary host resource values. Idle desktops normally
+park to disk after ten minutes, while active operations, viewers, controllers, and explicit
+prevent-parking requests keep them running. An agent can also stop, park, checkpoint, clone, reset,
+recover, hand off, or delete a desktop explicitly.
+
+New desktops use host GPU acceleration automatically when the complete QEMU, graphics-driver, and
+device-access path is available. An agent can prefer acceleration while accepting a software
+fallback, require it for a graphics-heavy task, or request software graphics. Desktop status reports
+the backend that was actually selected. Software desktops can preserve full running machine state
+when parked or checkpointed. Accelerated desktops cleanly shut down when parked and use
+disk-consistent checkpoints because their live GPU state cannot be serialized.
+
+Each desktop has an independent NAT connection and its own byte, packet, drop, rate, address, and
+bounded connection accounting. Outbound networking works by default. Inbound guest services stay
+private until an agent publishes an exact guest port as loopback-only, tailnet-visible, or
+network-visible. Packet contents are not retained during ordinary accounting; a bounded capture is
+created only when an agent explicitly requests one.
+
+Guest commands use an exact executable and argument vector over a private guest channel rather than
+an implicit shell. Bounded file reads and writes use that same channel. The default command user is
+root inside the guest, so isolation separates those privileges from the host rather than pretending
+the guest itself is unprivileged. Private QEMU control sockets and machine state are owner-only on the
+host.
+
+The current implementation targets x86-64 Arch Linux hosts with KVM, a systemd user manager, QEMU,
+UEFI firmware, and passt networking. `agent_desktop_list` reports every prerequisite separately.
+When an official Arch package can repair one, `agent_desktop_setup` offers to install only the exact
+reported package set through PolicyKit and then probes again. On first use, the same approved setup
+downloads a pinned official Arch cloud image, checks its exact size and SHA-256, provisions the
+private graphical guest, and atomically installs it. An interrupted download can resume, and a
+verified source image is cached for recovery. Allow up to 75 minutes, 8 GiB of temporary free space,
+and roughly 3 GiB of retained storage. Missing KVM access, firmware settings, GPU device access, or
+graphics drivers remain explicit manual remedies. A custom `T3CODE_AGENT_DESKTOP_IMAGE` path also
+remains caller-managed. Setup applies to the attached desktop host, which may be different from the
+machine running the provider CLI.
 
 ## Troubleshooting
 

@@ -1048,6 +1048,10 @@ it.layer(NodeServices.layer)("build-desktop-artifact", (it) => {
         from: "apps/desktop/resources/computer-use",
         to: "computer-use",
       },
+      {
+        from: "apps/desktop/resources/agent-desktop",
+        to: "agent-desktop",
+      },
     ]);
     assert.deepStrictEqual(resolveResourceMonitorRustTargets("mac", "universal"), [
       "aarch64-apple-darwin",
