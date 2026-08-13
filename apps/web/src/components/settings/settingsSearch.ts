@@ -22,6 +22,7 @@ export type SettingsPath =
   | "/settings/source-control"
   | "/settings/storage"
   | "/settings/connections"
+  | "/settings/agent-desktops"
   | "/settings/archived";
 
 /**
@@ -91,6 +92,7 @@ export const SETTINGS_SECTION_LABELS: Readonly<Record<SettingsPath, string>> = {
   "/settings/source-control": "Source Control",
   "/settings/storage": "Storage",
   "/settings/connections": "Connections",
+  "/settings/agent-desktops": "Agent desktops",
   "/settings/archived": "Archive",
 };
 
@@ -171,6 +173,11 @@ export const SETTINGS_SEARCH_ITEMS = [
     searchTerms: [
       "new thread default runtime mode supervised approvals auto accept edits full access",
     ],
+  },
+  {
+    id: "agent-desktops",
+    title: "Agent desktops",
+    to: "/settings/agent-desktops",
   },
   {
     id: "color-scheme",

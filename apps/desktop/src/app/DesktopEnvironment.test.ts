@@ -54,6 +54,8 @@ describe("DesktopEnvironment", () => {
           T3CODE_OTLP_EXPORT_INTERVAL_MS: "2500",
           T3CODE_OTLP_HEADERS: "authorization=Basic%20abc%3D%3D,x-tenant=t3",
           T3CODE_OTLP_PROTOCOL: "http/protobuf",
+          T3CODE_AGENT_DESKTOP_HOME: " /tmp/agent-desktops ",
+          T3CODE_AGENT_DESKTOP_IMAGE: " /images/agent-desktop.qcow2 ",
         },
       );
 
@@ -70,6 +72,11 @@ describe("DesktopEnvironment", () => {
       assert.equal(environment.serverSettingsPath, "/tmp/t3/userdata/settings.json");
       assert.equal(environment.logDir, "/tmp/t3/userdata/logs");
       assert.equal(environment.browserArtifactsDir, "/tmp/t3/userdata/browser-artifacts");
+      assert.equal(environment.agentDesktopsDir, "/tmp/agent-desktops");
+      assert.deepEqual(
+        environment.agentDesktopBaseImage,
+        Option.some("/images/agent-desktop.qcow2"),
+      );
       assert.equal(environment.rootDir, "/repo");
       assert.equal(environment.appRoot, "/repo");
       assert.equal(environment.serverRoot, "/repo");
@@ -111,6 +118,7 @@ describe("DesktopEnvironment", () => {
       assert.equal(environment.stateDir, "/tmp/t3/userdata");
       assert.equal(environment.logDir, "/tmp/t3/userdata/logs");
       assert.equal(environment.browserArtifactsDir, "/tmp/t3/userdata/browser-artifacts");
+      assert.equal(environment.agentDesktopsDir, "/tmp/t3/userdata/agent-desktops");
       assert.equal(environment.serverSettingsPath, "/tmp/t3/userdata/settings.json");
       assert.equal(environment.otlpProtocol, "http/json");
     }),
