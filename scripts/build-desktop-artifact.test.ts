@@ -627,20 +627,14 @@ it.layer(NodeServices.layer)("build-desktop-artifact", (it) => {
         { from: "apps/desktop/prod-resources/browser-secret", to: "browser-secret" },
       ]);
       assert.deepStrictEqual(win.extraResources, [
-        {
-          from: "apps/desktop/prod-resources/resource-monitor",
-          to: "resource-monitor",
-        },
+        ...DESKTOP_EXTRA_RESOURCES,
         ...WINDOWS_SERVER_EXTRA_RESOURCES,
         ...WSL_RUNTIME_EXTRA_RESOURCES,
       ]);
       // No Linux prebuild means the sidecar staging never writes the archive,
       // so listing it here would fail the build on a missing source file.
       assert.deepStrictEqual(winWithoutWslPrebuild.extraResources, [
-        {
-          from: "apps/desktop/prod-resources/resource-monitor",
-          to: "resource-monitor",
-        },
+        ...DESKTOP_EXTRA_RESOURCES,
         ...WINDOWS_SERVER_EXTRA_RESOURCES,
       ]);
       assert.deepStrictEqual(win.nsis, { differentialPackage: true });
@@ -1309,6 +1303,7 @@ it.layer(NodeServices.layer)("build-desktop-artifact", (it) => {
 
     return Effect.scoped(
       Effect.gen(function* () {
+        const path = yield* Path.Path;
         const fixture = yield* makeWindowsPayloadFixture({ copyUnpackedNatives: true });
         yield* validateWindowsPackagedPayload({
           stageDistDir: fixture.stageDistDir,
@@ -1317,7 +1312,11 @@ it.layer(NodeServices.layer)("build-desktop-artifact", (it) => {
         });
 
         assert.isFalse(
-          commands.some((command) => command.options.env?.ELECTRON_RUN_AS_NODE === "1"),
+          commands.some(
+            (command) =>
+              command.command === path.join(fixture.packagedAppDir, fixture.appExecutableName) &&
+              command.options.env?.ELECTRON_RUN_AS_NODE === "1",
+          ),
         );
         assert.isTrue(
           commands.some(
@@ -1759,6 +1758,10 @@ it.layer(NodeServices.layer)("build-desktop-artifact", (it) => {
       {
         from: "apps/desktop/resources/computer-use",
         to: "computer-use",
+      },
+      {
+        from: "apps/desktop/resources/agent-desktop",
+        to: "agent-desktop",
       },
     ]);
     assert.deepStrictEqual(resolveResourceMonitorRustTargets("mac", "universal"), [

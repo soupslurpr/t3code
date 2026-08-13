@@ -180,6 +180,7 @@ import {
   PreviewSessionSnapshot,
 } from "./preview.ts";
 import {
+  AgentDesktopHumanInvokeInput,
   PreviewAutomationError,
   PreviewAutomationHost,
   PreviewAutomationHostFocus,
@@ -307,6 +308,7 @@ export const WS_METHODS = {
   previewAutomationConnect: "previewAutomation.connect",
   previewAutomationRespond: "previewAutomation.respond",
   previewAutomationFocusHost: "previewAutomation.focusHost",
+  agentDesktopHumanInvoke: "agentDesktop.humanInvoke",
 
   // Server meta
   serverProbe: "server.probe",
@@ -1037,6 +1039,12 @@ const WsPreviewAutomationFocusHostRpc = Rpc.make(WS_METHODS.previewAutomationFoc
   error: EnvironmentAuthorizationError,
 });
 
+const WsAgentDesktopHumanInvokeRpc = Rpc.make(WS_METHODS.agentDesktopHumanInvoke, {
+  payload: AgentDesktopHumanInvokeInput,
+  success: Schema.Unknown,
+  error: Schema.Union([PreviewAutomationError, EnvironmentAuthorizationError]),
+});
+
 const WsSubscribePreviewEventsRpc = Rpc.make(WS_METHODS.subscribePreviewEvents, {
   payload: Schema.Struct({}),
   success: PreviewEvent,
@@ -1272,6 +1280,7 @@ export const WsRpcGroup = RpcGroup.make(
   WsPreviewAutomationConnectRpc,
   WsPreviewAutomationRespondRpc,
   WsPreviewAutomationFocusHostRpc,
+  WsAgentDesktopHumanInvokeRpc,
   WsSubscribePreviewEventsRpc,
   WsSubscribeDiscoveredLocalServersRpc,
   WsSubscribeServerConfigRpc,

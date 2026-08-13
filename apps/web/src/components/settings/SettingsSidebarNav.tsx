@@ -17,6 +17,7 @@ import {
   GitBranchIcon,
   KeyboardIcon,
   Link2Icon,
+  MonitorCogIcon,
   PaletteIcon,
   SearchIcon,
   Settings2Icon,
@@ -77,6 +78,7 @@ const SETTINGS_SECTION_ICONS: Readonly<
   "/settings/integrations": BlocksIcon,
   "/settings/source-control": GitBranchIcon,
   "/settings/connections": Link2Icon,
+  "/settings/agent-desktops": MonitorCogIcon,
   "/settings/archived": ArchiveIcon,
 };
 

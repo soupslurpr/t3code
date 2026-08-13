@@ -1,4 +1,5 @@
 import * as Cause from "effect/Cause";
+import * as Clock from "effect/Clock";
 import * as Crypto from "effect/Crypto";
 import * as DateTime from "effect/DateTime";
 import * as Duration from "effect/Duration";
@@ -10,6 +11,7 @@ import * as Ref from "effect/Ref";
 import * as Schema from "effect/Schema";
 import * as Stream from "effect/Stream";
 import {
+  AGENT_DESKTOP_HUMAN_AUTOMATION_OPERATION,
   DEFAULT_AUTOMATIC_GIT_FETCH_INTERVAL,
   AuthAccessStreamError,
   type AuthAccessStreamEvent,
@@ -49,6 +51,7 @@ import {
   ProjectWriteFileError,
   ProviderUploadFeedbackError,
   ProviderSetupError,
+  ProviderInstanceId,
   RelayClientInstallFailedError,
   type RelayClientInstallProgressEvent,
   ServerSelfUpdateError,
@@ -154,6 +157,7 @@ const isOrchestrationDispatchCommandError = Schema.is(OrchestrationDispatchComma
 
 const nowIso = Effect.map(DateTime.now, DateTime.formatIso);
 const CONFIG_DISCOVERY_TIMEOUT = Duration.seconds(5);
+const AGENT_DESKTOP_HUMAN_PROVIDER_INSTANCE_ID = ProviderInstanceId.make("agent-desktop-human");
 
 const resolveDiscoveryForConfig = <A, E, R>(
   discovery: Effect.Effect<A, E, R>,
@@ -2653,6 +2657,27 @@ const makeWsRpcLayer = (
             WS_METHODS.previewAutomationFocusHost,
             previewAutomationBroker.focusHost(input),
             { "rpc.aggregate": "preview-automation" },
+          ),
+        [WS_METHODS.agentDesktopHumanInvoke]: (input) =>
+          observeRpcEffect(
+            WS_METHODS.agentDesktopHumanInvoke,
+            Effect.gen(function* () {
+              const environmentId = yield* serverEnvironment.getEnvironmentId.pipe(Effect.orDie);
+              return yield* previewAutomationBroker.invoke({
+                scope: {
+                  environmentId,
+                  threadId: input.threadId,
+                  providerSessionId: `human:${currentSessionId}`,
+                  providerInstanceId: AGENT_DESKTOP_HUMAN_PROVIDER_INSTANCE_ID,
+                  capabilities: new Set(["preview"]),
+                  issuedAt: yield* Clock.currentTimeMillis,
+                },
+                operation: AGENT_DESKTOP_HUMAN_AUTOMATION_OPERATION,
+                input: input.request,
+                timeoutMs: input.timeoutMs ?? 30_000,
+              });
+            }),
+            { "rpc.aggregate": "agent-desktop" },
           ),
         [WS_METHODS.subscribePreviewEvents]: (_input) =>
           observeRpcStream(WS_METHODS.subscribePreviewEvents, previewManager.events, {

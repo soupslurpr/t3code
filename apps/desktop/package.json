@@ -9,7 +9,11 @@
     "start": "node scripts/start-electron.mjs",
     "typecheck": "tsgo --noEmit",
     "test": "vp test run --passWithNoTests",
-    "smoke-test": "node scripts/smoke-test.mjs"
+    "smoke-test": "node scripts/smoke-test.mjs",
+    "prepare:agent-desktop-image": "node scripts/agent-desktop-image.mjs",
+    "test:agent-desktop": "node scripts/agent-desktop-smoke.mjs",
+    "test:computer-use-vm": "node scripts/computer-use-vm-smoke.mjs",
+    "benchmark:computer-use-vm": "node scripts/computer-use-vm-benchmark.mjs"
   },
   "dependencies": {
     "@clerk/electron": "catalog:",

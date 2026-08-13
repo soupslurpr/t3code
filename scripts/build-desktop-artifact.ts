@@ -1095,6 +1095,10 @@ export const DESKTOP_EXTRA_RESOURCES = [
     from: "apps/desktop/resources/computer-use",
     to: "computer-use",
   },
+  {
+    from: "apps/desktop/resources/agent-desktop",
+    to: "agent-desktop",
+  },
 ] as const;
 export const LINUX_BROWSER_SECRET_EXTRA_RESOURCES = [
   { from: "apps/desktop/prod-resources/browser-secret", to: "browser-secret" },

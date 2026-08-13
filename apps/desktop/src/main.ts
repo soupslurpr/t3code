@@ -63,7 +63,11 @@ import * as LinuxBrowserSecret from "./preview/BrowserImport/LinuxBrowserSecret.
 import * as BrowserSession from "./preview/BrowserSession.ts";
 import * as PreviewManager from "./preview/Manager.ts";
 import * as ComputerUse from "./computer/ComputerUse.ts";
+import * as ComputerUseCoordinator from "./computer/ComputerUseCoordinator.ts";
+import * as ComputerUseRouter from "./computer/ComputerUseRouter.ts";
 import * as GnomeRemoteDesktop from "./computer/GnomeRemoteDesktop.ts";
+import * as AgentDesktopManager from "./agentDesktop/AgentDesktopManager.ts";
+import * as QemuAgentDesktop from "./agentDesktop/QemuAgentDesktop.ts";
 import * as DesktopWindow from "./window/DesktopWindow.ts";
 import * as DesktopWslBackend from "./wsl/DesktopWslBackend.ts";
 import * as DesktopWslEnvironment from "./wsl/DesktopWslEnvironment.ts";
@@ -164,10 +168,28 @@ const desktopComputerUseLayer = ComputerUse.layer.pipe(
   Layer.provideMerge(GnomeRemoteDesktop.layer.pipe(Layer.provideMerge(desktopFoundationLayer))),
 );
 
+const desktopComputerUseCoordinatorLayer = ComputerUseCoordinator.layer.pipe(
+  Layer.provideMerge(desktopComputerUseLayer),
+);
+
+const qemuAgentDesktopLayer = QemuAgentDesktop.layer.pipe(
+  Layer.provideMerge(desktopFoundationLayer),
+);
+
+const agentDesktopManagerLayer = AgentDesktopManager.layer.pipe(
+  Layer.provideMerge(qemuAgentDesktopLayer),
+  Layer.provideMerge(desktopFoundationLayer),
+);
+
+const desktopComputerUseRouterLayer = ComputerUseRouter.layer.pipe(
+  Layer.provideMerge(desktopComputerUseCoordinatorLayer),
+  Layer.provideMerge(agentDesktopManagerLayer),
+);
+
 const desktopWindowLayer = DesktopWindow.layer.pipe(
   Layer.provideMerge(desktopServerExposureLayer),
   Layer.provideMerge(desktopPreviewLayer),
-  Layer.provideMerge(desktopComputerUseLayer),
+  Layer.provideMerge(desktopComputerUseRouterLayer),
 );
 
 const desktopAppActivationLayer = DesktopAppActivation.layer.pipe(

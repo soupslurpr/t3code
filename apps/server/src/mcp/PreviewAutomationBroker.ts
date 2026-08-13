@@ -1,5 +1,8 @@
 import {
+  AGENT_DESKTOP_HUMAN_AUTOMATION_OPERATION,
+  AGENT_DESKTOP_AUTOMATION_OPERATIONS,
   ComputerAutomationFailure,
+  COMPUTER_AUTOMATION_OPERATIONS,
   isComputerAutomationFailureKind,
   PREVIEW_AUTOMATION_V1_OPERATIONS,
   PreviewAutomationClientDisconnectedError,
@@ -67,6 +70,7 @@ interface ClientConnection {
   readonly connectionId: string;
   readonly environmentId: PreviewAutomationHost["environmentId"];
   readonly supportedOperations: ReadonlySet<PreviewAutomationOperation>;
+  readonly computerDesktopKinds: ReadonlySet<"user" | "agent">;
   readonly focused: boolean;
   readonly focusOrder: number;
   readonly queue: Queue.Queue<PreviewAutomationStreamEvent>;
@@ -92,6 +96,7 @@ interface HostAssignment {
   readonly queue: ClientConnection["queue"];
   readonly tabId?: PreviewTabId;
   readonly tabSequence?: number;
+  readonly computerDesktopKind?: "user" | "agent";
 }
 
 interface PreviewAutomationRequestErrorContext {
@@ -154,8 +159,35 @@ const selectorDiagnosticsFromInput = (
   return {};
 };
 
-const hostAssignmentKey = (scope: McpInvocationContext.McpInvocationScope): string =>
-  `${scope.environmentId}\u0000${scope.providerSessionId}`;
+const computerOperations = new Set<string>(COMPUTER_AUTOMATION_OPERATIONS);
+const agentDesktopOperations = new Set<string>(AGENT_DESKTOP_AUTOMATION_OPERATIONS);
+
+const isComputerOperation = (operation: PreviewAutomationOperation): boolean =>
+  operation === AGENT_DESKTOP_HUMAN_AUTOMATION_OPERATION ||
+  computerOperations.has(operation) ||
+  agentDesktopOperations.has(operation);
+
+const hostAssignmentKey = (
+  scope: McpInvocationContext.McpInvocationScope,
+  operation: PreviewAutomationOperation,
+): string =>
+  `${scope.environmentId}\u0000${scope.providerSessionId}\u0000${isComputerOperation(operation) ? "computer" : "preview"}`;
+
+/** Reads an explicit computer target without trusting arbitrary tool input. */
+function requestedComputerDesktopKind(input: unknown): "user" | "agent" | undefined {
+  if (typeof input !== "object" || input === null || !("desktop" in input)) return undefined;
+  const desktop = input.desktop;
+  if (typeof desktop !== "object" || desktop === null || !("kind" in desktop)) return undefined;
+  return desktop.kind === "user" || desktop.kind === "agent" ? desktop.kind : undefined;
+}
+
+/** Treats capability-unaware desktop hosts as user-desktop-only. */
+function supportsComputerDesktopKind(
+  connection: ClientConnection,
+  kind: "user" | "agent",
+): boolean {
+  return connection.computerDesktopKinds.has(kind);
+}
 
 const isPreviewTabId = Schema.is(PreviewTabId);
 
@@ -348,6 +380,7 @@ export const make = Effect.gen(function* PreviewAutomationBrokerMake() {
       connectionId,
       environmentId: host.environmentId,
       supportedOperations: new Set(host.supportedOperations ?? PREVIEW_AUTOMATION_V1_OPERATIONS),
+      computerDesktopKinds: new Set(host.computerDesktopKinds ?? ["user"]),
       focused: false,
       focusOrder: 0,
       queue,
@@ -455,26 +488,48 @@ export const make = Effect.gen(function* PreviewAutomationBrokerMake() {
           );
         }),
       );
-      const assignmentKey = hostAssignmentKey(input.scope);
+      const assignmentKey = hostAssignmentKey(input.scope, input.operation);
       const assigned = assignments.get(assignmentKey);
       const assignedConnection = assigned ? current.clients.get(assigned.clientId) : undefined;
+      const computerOperation = isComputerOperation(input.operation);
+      const explicitDesktopKind =
+        input.operation === AGENT_DESKTOP_HUMAN_AUTOMATION_OPERATION ||
+        agentDesktopOperations.has(input.operation)
+          ? ("agent" as const)
+          : computerOperation
+            ? requestedComputerDesktopKind(input.input)
+            : undefined;
+      const computerDesktopKind = computerOperation
+        ? (explicitDesktopKind ?? assigned?.computerDesktopKind ?? "user")
+        : undefined;
       const hasLiveAssignment = assignedConnection?.environmentId === input.scope.environmentId;
-      // Keep one provider session on one physical desktop runtime so a
-      // multi-step browser interaction cannot jump between independent
-      // Electron cookie/DOM state. A live assignment that predates an
-      // operation is not silently moved to a newer client: the caller gets a
-      // capability failure and can deliberately start a fresh provider
-      // session. A dead lease is pruned above and may fail over.
+      const assignedTargetCompatible =
+        !computerOperation ||
+        (computerDesktopKind !== undefined &&
+          assignedConnection !== undefined &&
+          supportsComputerDesktopKind(assignedConnection, computerDesktopKind));
+      const explicitTargetSwitch =
+        computerOperation && explicitDesktopKind !== undefined && !assignedTargetCompatible;
+      // Browser and computer affinity are independent: opening a collaborative
+      // preview must not strand later native computer use on a browser-only
+      // host. Within each domain, retain physical-host affinity so stateful
+      // interactions cannot jump clients. An explicit computer target may
+      // deliberately move between user- and agent-capable hosts.
       const connection =
-        hasLiveAssignment && supportsOperation(assignedConnection, input.operation)
+        hasLiveAssignment &&
+        assignedTargetCompatible &&
+        supportsOperation(assignedConnection, input.operation)
           ? assignedConnection
-          : hasLiveAssignment
+          : hasLiveAssignment && !explicitTargetSwitch
             ? undefined
             : Array.from(current.clients.values())
                 .filter(
                   (host) =>
                     host.environmentId === input.scope.environmentId &&
-                    supportsOperation(host, input.operation),
+                    supportsOperation(host, input.operation) &&
+                    (!computerOperation ||
+                      (computerDesktopKind !== undefined &&
+                        supportsComputerDesktopKind(host, computerDesktopKind))),
                 )
                 .sort(
                   (left, right) =>
@@ -498,6 +553,7 @@ export const make = Effect.gen(function* PreviewAutomationBrokerMake() {
         ...(canReuseAssignedTab && assigned.tabSequence !== undefined
           ? { tabSequence: assigned.tabSequence }
           : {}),
+        ...(computerDesktopKind === undefined ? {} : { computerDesktopKind }),
       });
 
       const requestSequence = current.requestSequence;
@@ -547,6 +603,9 @@ export const make = Effect.gen(function* PreviewAutomationBrokerMake() {
         request: {
           requestId,
           threadId: input.scope.threadId,
+          ...(isComputerOperation(input.operation)
+            ? { controllerId: input.scope.providerSessionId }
+            : {}),
           tabId: requestContext.tabId,
           tabIdExplicit: input.tabId !== undefined,
           operation: input.operation,
@@ -571,7 +630,7 @@ export const make = Effect.gen(function* PreviewAutomationBrokerMake() {
     const responseTabId = readResultTabId(result);
     const resultTabId = responseTabId === undefined ? input.tabId : responseTabId;
     if (resultTabId === undefined) return result;
-    const assignmentKey = hostAssignmentKey(input.scope);
+    const assignmentKey = hostAssignmentKey(input.scope, input.operation);
     yield* SynchronizedRef.update(state, (current) => {
       const assignment = current.assignments.get(assignmentKey);
       if (

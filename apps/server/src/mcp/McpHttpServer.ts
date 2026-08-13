@@ -28,6 +28,8 @@ import {
   ComputerStandardToolkitHandlersLive,
 } from "./toolkits/computer/handlers.ts";
 import { ComputerImageToolkit, ComputerStandardToolkit } from "./toolkits/computer/tools.ts";
+import { AgentDesktopToolkitHandlersLive } from "./toolkits/agentDesktop/handlers.ts";
+import { AgentDesktopToolkit } from "./toolkits/agentDesktop/tools.ts";
 
 const unauthorized = HttpServerResponse.jsonUnsafe(
   {
@@ -463,9 +465,14 @@ export const ComputerToolkitRegistrationLive = Layer.mergeAll(
   ComputerImageRegistrationLive,
 );
 
+const AgentDesktopToolkitRegistrationLive = McpServer.toolkit(AgentDesktopToolkit).pipe(
+  Layer.provide(AgentDesktopToolkitHandlersLive),
+);
+
 export const ToolkitRegistrationLive = Layer.mergeAll(
   PreviewToolkitRegistrationLive,
   ComputerToolkitRegistrationLive,
+  AgentDesktopToolkitRegistrationLive,
 );
 
 const McpTransportLive = McpServer.layerHttp({

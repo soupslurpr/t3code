@@ -4,11 +4,24 @@ import { RegistryContext, useAtomSet, useAtomValue } from "@effect/atom-react";
 import { squashAtomCommandFailure } from "@t3tools/client-runtime/state/runtime";
 import {
   FILL_PREVIEW_VIEWPORT,
+  AGENT_DESKTOP_HUMAN_AUTOMATION_OPERATION,
+  AGENT_DESKTOP_AUTOMATION_OPERATIONS,
+  AgentDesktopHumanRequest,
   COMPUTER_AUTOMATION_OPERATIONS,
   PREVIEW_AUTOMATION_OPERATIONS,
   type ComputerAutomationAccessInput,
   type ComputerAutomationActInput,
   type ComputerAutomationSnapshotInput,
+  type ComputerAutomationTargetInput,
+  type AgentDesktopAcquireInput,
+  type AgentDesktopCommandInput,
+  type AgentDesktopCreatePortRouteInput,
+  type AgentDesktopInspectInput,
+  type AgentDesktopManageInput,
+  type AgentDesktopPacketCaptureInput,
+  type AgentDesktopReadFileInput,
+  type AgentDesktopRemovePortRouteInput,
+  type AgentDesktopWriteFileInput,
   type EnvironmentId,
   type PreviewAutomationNavigateInput,
   type PreviewAutomationOpenInput,
@@ -26,6 +39,7 @@ import {
 import { resolvePreviewViewport } from "@t3tools/shared/previewViewport";
 import { useCallback, useContext, useEffect, useMemo, useRef, useState } from "react";
 import { Atom } from "effect/unstable/reactivity";
+import * as Schema from "effect/Schema";
 
 import {
   applyPreviewServerSnapshot,
@@ -90,6 +104,7 @@ import { isPreviewViewportReady } from "./previewViewportReadiness";
 import { shouldRollbackPreviewViewport } from "./previewViewportRollback";
 
 const PREVIEW_PRESENTATION_SETTLE_TIMEOUT_MS = 500;
+const decodeAgentDesktopHumanRequest = Schema.decodeUnknownSync(AgentDesktopHumanRequest);
 
 const waitForPreviewPresentation = async (runtimeTabId: string): Promise<void> => {
   const deadline = Date.now() + PREVIEW_PRESENTATION_SETTLE_TIMEOUT_MS;
@@ -300,7 +315,12 @@ function PreviewAutomationHost(props: { readonly environmentId: EnvironmentId })
       supportedOperations: [
         ...PREVIEW_AUTOMATION_OPERATIONS,
         ...(window.desktopBridge?.computer ? COMPUTER_AUTOMATION_OPERATIONS : []),
+        ...(window.desktopBridge?.agentDesktop ? AGENT_DESKTOP_AUTOMATION_OPERATIONS : []),
+        ...(window.desktopBridge?.agentDesktop ? [AGENT_DESKTOP_HUMAN_AUTOMATION_OPERATION] : []),
       ],
+      ...(window.desktopBridge?.computer
+        ? { computerDesktopKinds: ["user", "agent"] as const }
+        : {}),
     }),
     [automationClientId, environmentId],
   );
@@ -334,29 +354,104 @@ function PreviewAutomationHost(props: { readonly environmentId: EnvironmentId })
       // Session sync and tab creation consume the same budget as overlay registration.
       const hostDeadlineMs = Date.now() + resolveHostWaitBudgetMs(request.timeoutMs);
       const computer = window.desktopBridge?.computer;
+      const agentDesktop = window.desktopBridge?.agentDesktop;
+      const controllerId = request.controllerId ?? `legacy:${request.threadId}`;
+      const computerContext = {
+        controllerId,
+        environmentId,
+        threadId: request.threadId,
+      };
       switch (request.operation) {
         case "computerStatus":
-          return await computer?.status();
+          return await resolveDesktopComputerAutomation(
+            computer?.status(request.input as ComputerAutomationTargetInput, computerContext),
+          );
         case "computerRequestView":
           return await resolveDesktopComputerAutomation(
-            computer?.requestView(request.input as ComputerAutomationAccessInput),
+            computer?.requestView(request.input as ComputerAutomationAccessInput, computerContext),
           );
         case "computerRequestControl":
           return await resolveDesktopComputerAutomation(
-            computer?.requestControl(request.input as ComputerAutomationAccessInput),
+            computer?.requestControl(
+              request.input as ComputerAutomationAccessInput,
+              computerContext,
+            ),
           );
         case "computerSnapshot":
           return await resolveDesktopComputerAutomation(
-            computer?.snapshot(request.input as ComputerAutomationSnapshotInput),
+            computer?.snapshot(request.input as ComputerAutomationSnapshotInput, computerContext),
           );
         case "computerAct":
           return await resolveDesktopComputerAutomation(
-            computer?.act(request.input as ComputerAutomationActInput),
+            computer?.act(request.input as ComputerAutomationActInput, computerContext),
           );
         case "computerRelease":
-          return await resolveDesktopComputerAutomation(computer?.release());
+          return await resolveDesktopComputerAutomation(
+            computer?.release(request.input as ComputerAutomationTargetInput, computerContext),
+          );
         case "computerForgetControl":
-          return await resolveDesktopComputerAutomation(computer?.forgetControl());
+          return await resolveDesktopComputerAutomation(
+            computer?.forgetControl(
+              request.input as ComputerAutomationTargetInput,
+              computerContext,
+            ),
+          );
+        case "agentDesktopList":
+          return await resolveDesktopComputerAutomation(agentDesktop?.list(computerContext));
+        case "agentDesktopSetup":
+          return await resolveDesktopComputerAutomation(agentDesktop?.setup(computerContext));
+        case "agentDesktopAcquire":
+          return await resolveDesktopComputerAutomation(
+            agentDesktop?.acquire(request.input as AgentDesktopAcquireInput, computerContext),
+          );
+        case "agentDesktopManage":
+          return await resolveDesktopComputerAutomation(
+            agentDesktop?.manage(request.input as AgentDesktopManageInput, computerContext),
+          );
+        case "agentDesktopCommand":
+          return await resolveDesktopComputerAutomation(
+            agentDesktop?.command(request.input as AgentDesktopCommandInput, computerContext),
+          );
+        case "agentDesktopReadFile":
+          return await resolveDesktopComputerAutomation(
+            agentDesktop?.readFile(request.input as AgentDesktopReadFileInput, computerContext),
+          );
+        case "agentDesktopWriteFile":
+          return await resolveDesktopComputerAutomation(
+            agentDesktop?.writeFile(request.input as AgentDesktopWriteFileInput, computerContext),
+          );
+        case "agentDesktopInspect":
+          return await resolveDesktopComputerAutomation(
+            agentDesktop?.inspect(request.input as AgentDesktopInspectInput, computerContext),
+          );
+        case "agentDesktopCreatePortRoute":
+          return await resolveDesktopComputerAutomation(
+            agentDesktop?.createPortRoute(
+              request.input as AgentDesktopCreatePortRouteInput,
+              computerContext,
+            ),
+          );
+        case "agentDesktopRemovePortRoute":
+          return await resolveDesktopComputerAutomation(
+            agentDesktop?.removePortRoute(
+              request.input as AgentDesktopRemovePortRouteInput,
+              computerContext,
+            ),
+          );
+        case "agentDesktopPacketCapture":
+          return await resolveDesktopComputerAutomation(
+            agentDesktop?.capturePackets(
+              request.input as AgentDesktopPacketCaptureInput,
+              computerContext,
+            ),
+          );
+        case "agentDesktopHumanInvoke":
+          return await resolveDesktopComputerAutomation(
+            agentDesktop?.humanInvoke(
+              decodeAgentDesktopHumanRequest(request.input),
+              computerContext,
+            ),
+          );
       }
       const threadRef: ScopedThreadRef = {
         environmentId,

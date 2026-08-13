@@ -12,9 +12,19 @@ import {
 import { ProviderInstanceId } from "./providerInstance.ts";
 import {
   COMPUTER_AUTOMATION_OPERATIONS,
+  ComputerAutomationActInput,
   ComputerAutomationFailure,
   ComputerAutomationFailureKind,
+  ComputerAutomationSnapshotInput,
 } from "./computerAutomation.ts";
+import {
+  AGENT_DESKTOP_AUTOMATION_OPERATIONS,
+  AgentDesktopControllerId,
+  AgentDesktopId,
+  AgentDesktopInspectInput,
+  AgentDesktopManageInput,
+  AgentDesktopOwner,
+} from "./agentDesktop.ts";
 
 const BoundedUrl = Schema.String.check(Schema.isTrimmed())
   .check(Schema.isNonEmpty())
@@ -50,14 +60,64 @@ export const PREVIEW_AUTOMATION_OPERATIONS = [
   "setColorScheme",
 ] as const;
 
+/** Routes authenticated human supervision through an attached desktop host. */
+export const AGENT_DESKTOP_HUMAN_AUTOMATION_OPERATION = "agentDesktopHumanInvoke" as const;
+
 /** Operations routed through an attached desktop automation host. */
 export const DESKTOP_AUTOMATION_OPERATIONS = [
   ...PREVIEW_AUTOMATION_OPERATIONS,
   ...COMPUTER_AUTOMATION_OPERATIONS,
+  ...AGENT_DESKTOP_AUTOMATION_OPERATIONS,
+  AGENT_DESKTOP_HUMAN_AUTOMATION_OPERATION,
 ] as const;
 
 export const PreviewAutomationOperation = Schema.Literals(DESKTOP_AUTOMATION_OPERATIONS);
 export type PreviewAutomationOperation = typeof PreviewAutomationOperation.Type;
+
+const AgentDesktopHumanTarget = {
+  owner: AgentDesktopOwner,
+  desktopId: AgentDesktopId,
+};
+
+/** Describes one authenticated human supervision request. */
+export const AgentDesktopHumanRequest = Schema.Union([
+  Schema.Struct({ operation: Schema.Literal("list") }),
+  Schema.Struct({ operation: Schema.Literal("setup") }),
+  Schema.Struct({
+    operation: Schema.Literal("manage"),
+    owner: AgentDesktopOwner,
+    input: AgentDesktopManageInput,
+  }),
+  Schema.Struct({
+    operation: Schema.Literal("inspect"),
+    owner: AgentDesktopOwner,
+    input: AgentDesktopInspectInput,
+  }),
+  Schema.Struct({ operation: Schema.Literal("request-view"), ...AgentDesktopHumanTarget }),
+  Schema.Struct({ operation: Schema.Literal("request-control"), ...AgentDesktopHumanTarget }),
+  Schema.Struct({
+    operation: Schema.Literal("snapshot"),
+    ...AgentDesktopHumanTarget,
+    input: ComputerAutomationSnapshotInput,
+  }),
+  Schema.Struct({
+    operation: Schema.Literal("act"),
+    ...AgentDesktopHumanTarget,
+    input: ComputerAutomationActInput,
+  }),
+  Schema.Struct({ operation: Schema.Literal("release"), ...AgentDesktopHumanTarget }),
+]);
+export type AgentDesktopHumanRequest = typeof AgentDesktopHumanRequest.Type;
+
+/** Carries one human supervision request through the environment server. */
+export const AgentDesktopHumanInvokeInput = Schema.Struct({
+  threadId: ThreadId,
+  request: AgentDesktopHumanRequest,
+  timeoutMs: Schema.optional(
+    Schema.Int.check(Schema.isBetween({ minimum: 1_000, maximum: 4_560_000 })),
+  ),
+});
+export type AgentDesktopHumanInvokeInput = typeof AgentDesktopHumanInvokeInput.Type;
 
 const PreviewAutomationTabTargetFields = {
   tabId: Schema.optional(
@@ -592,6 +652,10 @@ export const PreviewAutomationHost = Schema.Struct({
    * a newer server safely coexist with an older desktop during rollout.
    */
   supportedOperations: Schema.optional(Schema.Array(PreviewAutomationOperation)),
+  /** Missing means the host can automate only the user's current desktop. */
+  computerDesktopKinds: Schema.optional(
+    Schema.Array(Schema.Literals(["user", "agent"])).check(Schema.isMaxLength(2)),
+  ),
 });
 export type PreviewAutomationHost = typeof PreviewAutomationHost.Type;
 
@@ -605,6 +669,8 @@ export type PreviewAutomationHostFocus = typeof PreviewAutomationHostFocus.Type;
 export const PreviewAutomationRequest = Schema.Struct({
   requestId: TrimmedNonEmptyString,
   threadId: ThreadId,
+  /** Stable owner for exclusive computer-control and Agent desktop assignment. */
+  controllerId: Schema.optional(AgentDesktopControllerId),
   tabId: Schema.optional(PreviewTabId),
   tabIdExplicit: Schema.optional(Schema.Boolean),
   operation: PreviewAutomationOperation,
