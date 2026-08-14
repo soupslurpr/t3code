@@ -4,6 +4,7 @@ import {
   CommandId,
   DEFAULT_PROVIDER_INTERACTION_MODE,
   DEFAULT_RUNTIME_MODE,
+  MessageId,
   ProjectId,
   ProviderInstanceId,
   ThreadId,
@@ -122,8 +123,10 @@ testLayer("ThreadMonitor", (it) => {
       const detail = yield* snapshots.getThreadDetailById(threadId);
       assert.isTrue(Option.isSome(detail));
       if (Option.isNone(detail)) return;
+      const deliveryGroupId = status.monitors[0]?.deliveryGroupId;
+      assert.isNotNull(deliveryGroupId);
       const continuationMessages = detail.value.messages.filter(
-        (message) => message.id === `thread-monitor:${monitor.id}:continuation`,
+        (message) => message.id === `thread-monitor-group:${deliveryGroupId}:continuation`,
       );
       assert.lengthOf(continuationMessages, 1);
       assert.strictEqual(continuationMessages[0]?.role, "system");
@@ -284,16 +287,155 @@ testLayer("ThreadMonitor", (it) => {
         threadId,
         cancel: { monitorId: cancellable.id },
       });
-      assert.strictEqual(cancelled.status, "cancelled");
+      assert.strictEqual(cancelled.monitors[0]?.status, "cancelled");
       const cancelledAgain = yield* service.cancel({
         threadId,
         cancel: { monitorId: cancellable.id },
       });
-      assert.strictEqual(cancelledAgain.status, "cancelled");
+      assert.strictEqual(cancelledAgain.monitors[0]?.status, "cancelled");
     }),
   );
 
-  it.effect("retires every outstanding monitor when its thread is deleted", () =>
+  it.effect("coalesces simultaneous triggers into one continuation", () =>
+    Effect.gen(function* () {
+      yield* seedThread;
+      const service = yield* ThreadMonitorService;
+      const snapshots = yield* ProjectionSnapshotQuery;
+      const first = yield* service.create({
+        threadId,
+        monitor: { label: "First condition", schedule: { type: "signal" } },
+      });
+      const second = yield* service.create({
+        threadId,
+        monitor: { label: "Second condition", schedule: { type: "signal" } },
+      });
+
+      yield* service.signal({
+        threadId,
+        signal: { monitorId: first.id, summary: "First matched." },
+      });
+      yield* service.signal({
+        threadId,
+        signal: { monitorId: second.id, summary: "Second matched." },
+      });
+      yield* TestClock.adjust("1 second");
+      yield* service.checkNow({ threadId, check: {} });
+
+      const status = yield* service.status({
+        threadId,
+        query: { includeFinished: true },
+      });
+      const delivered = status.monitors.filter(
+        (monitor) => monitor.id === first.id || monitor.id === second.id,
+      );
+      assert.lengthOf(delivered, 2);
+      assert.isTrue(delivered.every((monitor) => monitor.status === "delivered"));
+      assert.strictEqual(delivered[0]?.deliveryGroupId, delivered[1]?.deliveryGroupId);
+
+      const detail = yield* snapshots.getThreadDetailById(threadId);
+      assert.isTrue(Option.isSome(detail));
+      if (Option.isNone(detail)) return;
+      const deliveryGroupId = delivered[0]?.deliveryGroupId;
+      assert.isNotNull(deliveryGroupId);
+      const continuations = detail.value.messages.filter(
+        (message) => message.id === `thread-monitor-group:${deliveryGroupId}:continuation`,
+      );
+      assert.lengthOf(continuations, 1);
+      assert.include(continuations[0]?.text ?? "", "First condition");
+      assert.include(continuations[0]?.text ?? "", "Second condition");
+    }),
+  );
+
+  it.effect("cancels every outstanding monitor on a thread interrupt", () =>
+    Effect.gen(function* () {
+      yield* seedThread;
+      const service = yield* ThreadMonitorService;
+      const engine = yield* OrchestrationEngineService;
+      const first = yield* service.create({
+        threadId,
+        monitor: { label: "First wait", schedule: { type: "signal" } },
+      });
+      const second = yield* service.create({
+        threadId,
+        monitor: { label: "Second wait", schedule: { type: "signal" } },
+      });
+
+      yield* engine.dispatch({
+        type: "thread.turn.interrupt",
+        commandId: CommandId.make("cancel-monitors-with-interrupt"),
+        threadId,
+        createdAt: DateTime.formatIso(yield* DateTime.now),
+      });
+      yield* TestClock.adjust("1 second");
+
+      const status = yield* service.status({
+        threadId,
+        query: { includeFinished: true },
+      });
+      const interrupted = status.monitors.filter(
+        (monitor) => monitor.id === first.id || monitor.id === second.id,
+      );
+      assert.lengthOf(interrupted, 2);
+      assert.deepStrictEqual(
+        interrupted.map((monitor) => monitor.status),
+        ["cancelled", "cancelled"],
+      );
+    }),
+  );
+
+  it.effect("persists exponential retry state after a rejected delivery", () =>
+    Effect.gen(function* () {
+      yield* seedThread;
+      const service = yield* ThreadMonitorService;
+      const engine = yield* OrchestrationEngineService;
+      const repository = yield* ThreadMonitorRepository;
+      const monitor = yield* service.create({
+        threadId,
+        monitor: { label: "Retry delivery", schedule: { type: "signal" } },
+      });
+      const triggered = yield* service.signal({
+        threadId,
+        signal: { monitorId: monitor.id },
+      });
+      const deliveryGroupId = "rejected-delivery-group";
+      yield* repository.upsert({
+        ...triggered,
+        deliveryGroupId,
+      });
+
+      const rejectedAt = DateTime.formatIso(yield* DateTime.now);
+      yield* engine
+        .dispatch({
+          type: "thread.turn.start",
+          commandId: CommandId.make(`thread-monitor-group:${deliveryGroupId}:resume:1`),
+          threadId: ThreadId.make("missing-monitor-thread"),
+          message: {
+            messageId: MessageId.make("rejected-monitor-delivery"),
+            role: "system",
+            text: "Reject this command before the monitor retries it.",
+            attachments: [],
+          },
+          runtimeMode: DEFAULT_RUNTIME_MODE,
+          interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
+          createdAt: rejectedAt,
+        })
+        .pipe(Effect.result);
+
+      yield* TestClock.adjust("1 second");
+      const status = yield* service.checkNow({
+        threadId,
+        check: { monitorId: monitor.id },
+      });
+      const retrying = status.monitors[0];
+      assert.strictEqual(retrying?.status, "triggered");
+      assert.strictEqual(retrying?.deliveryAttempts, 2);
+      assert.strictEqual(retrying?.deliveryFailureCount, 1);
+      assert.isNotNull(retrying?.deliveryRetryAt);
+      assert.include(retrying?.lastError ?? "", "Unable to request the continuation turn");
+    }),
+  );
+
+  it.effect("purges every monitor when its thread is deleted", () =>
     Effect.gen(function* () {
       yield* seedThread;
       const engine = yield* OrchestrationEngineService;
@@ -318,16 +460,15 @@ testLayer("ThreadMonitor", (it) => {
       });
       yield* TestClock.adjust("1 second");
 
-      const retired = yield* service.status({
-        threadId,
-        query: { monitorId: monitor.id, includeFinished: true },
-      });
-      assert.strictEqual(retired.monitors[0]?.status, "cancelled");
+      const retired = yield* service
+        .status({
+          threadId,
+          query: { monitorId: monitor.id, includeFinished: true },
+        })
+        .pipe(Effect.flip);
+      assert.strictEqual(retired.code, "MONITOR_NOT_FOUND");
       const lastOverflow = yield* repository.getById(ThreadMonitorId.make("overflow-monitor-99"));
-      assert.isTrue(Option.isSome(lastOverflow));
-      if (Option.isSome(lastOverflow)) {
-        assert.strictEqual(lastOverflow.value.status, "cancelled");
-      }
+      assert.isTrue(Option.isNone(lastOverflow));
       assert.strictEqual(liveness.getThreadBackgroundLiveness(threadId), null);
     }),
   );
