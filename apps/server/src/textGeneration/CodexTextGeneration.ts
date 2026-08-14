@@ -38,12 +38,19 @@ import { getModelSelectionStringOptionValue } from "@t3tools/shared/model";
 import { getCodexServiceTierOptionValue } from "../codexModelOptions.ts";
 
 const CODEX_TIMEOUT_MS = 180_000;
+const MAX_IMAGE_CONDITION_SUMMARY_LENGTH = 2_000;
+const MAX_IMAGE_CONDITION_EVIDENCE_LENGTH = 4_000;
 const encodeJsonString = Schema.encodeEffect(Schema.fromJsonString(Schema.Unknown));
 const ImageConditionOutput = Schema.Struct({
   verdict: Schema.Literals(["matched", "not-matched", "uncertain"]),
-  summary: Schema.String.check(Schema.isMaxLength(2_000)),
-  evidence: Schema.String.check(Schema.isMaxLength(4_000)),
+  summary: Schema.String,
+  evidence: Schema.String,
 });
+
+/** Bounds model-authored monitor text after decoding without constraining Codex's JSON Schema. */
+function boundedImageConditionText(value: string, maxLength: number): string {
+  return value.trim().slice(0, maxLength);
+}
 /**
  * Build a Codex text-generation closure bound to a specific `CodexSettings`
  * payload. See `makeCodexAdapter` for the overall per-instance rationale.
@@ -476,8 +483,11 @@ export const makeCodexTextGeneration = Effect.fn("makeCodexTextGeneration")(func
       });
       return {
         verdict: generated.verdict,
-        summary: generated.summary.trim(),
-        evidence: generated.evidence.trim(),
+        summary: boundedImageConditionText(generated.summary, MAX_IMAGE_CONDITION_SUMMARY_LENGTH),
+        evidence: boundedImageConditionText(
+          generated.evidence,
+          MAX_IMAGE_CONDITION_EVIDENCE_LENGTH,
+        ),
         usage: {
           inputTokens: null,
           cachedInputTokens: null,
