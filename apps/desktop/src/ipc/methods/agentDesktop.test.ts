@@ -23,6 +23,7 @@ const desktop: AgentDesktop = {
   label: "Agent desktop",
   owner,
   state: "ready",
+  automaticParking: true,
   capabilities: ["command"],
   graphics: {
     backend: "virtio-gpu-2d",
