@@ -12,6 +12,8 @@ it("exports bounded object schemas and provider-neutral lifecycle tools", () => 
     "monitor_signal",
     "monitor_cancel",
     "monitor_check_now",
+    "computer_watch_start",
+    "computer_watch_capabilities",
   ]);
 
   for (const tool of Object.values(MonitorToolkit.tools)) {
@@ -35,4 +37,7 @@ it("exports bounded object schemas and provider-neutral lifecycle tools", () => 
   const start = MonitorToolkit.tools.monitor_start;
   expect(Context.get(start.annotations, Tool.Destructive)).toBe(true);
   expect(Context.get(start.annotations, Tool.OpenWorld)).toBe(true);
+
+  const capabilities = MonitorToolkit.tools.computer_watch_capabilities;
+  expect(Context.get(capabilities.annotations, Tool.Readonly)).toBe(true);
 });

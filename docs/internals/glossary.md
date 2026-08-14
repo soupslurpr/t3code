@@ -44,10 +44,12 @@ A user-visible log item attached to a thread. In [the contracts][1], activities 
 
 #### Durable monitor
 
-A persisted timer or externally signalled condition owned by one thread. It
-lets a provider turn finish while T3 Code waits without spending model tokens,
-then records the result or requests a provider-neutral continuation. See
-[durable-monitors.md][25] and [the monitor contracts][26].
+A persisted timer, externally signalled condition, or screen-region condition
+owned by one thread. It lets a provider turn finish while T3 Code waits, then
+records the result or requests a provider-neutral continuation. A semantic
+screen condition can spend tokens on its bounded evaluator calls; the scheduler
+itself does not keep a model turn active. See [durable-monitors.md][25] and [the
+monitor contracts][26].
 
 ### Orchestration
 

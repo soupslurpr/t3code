@@ -136,6 +136,8 @@ The desktop host exposes tools for:
 - running bounded action batches that can move, click, drag, emit discrete wheel ticks, type, press
   hotkeys or hold keys, wait for a duration or a visual change, and activate a current semantic
   target or window
+- leaving a durable, view-only screen-region watch that checks for an exact image change or asks an
+  explicitly selected capable model whether a visible condition has been met
 - releasing the active session or forgetting remembered consent
 
 Full-display screenshots preserve aspect ratio and default to a maximum of 1600 by 900 pixels. An
@@ -186,6 +188,9 @@ never means the most recently used Agent desktop. This stateless routing lets pa
 thread hold independent desktops without silently redirecting or releasing each other's sessions.
 A human can temporarily view or take control of an Agent desktop; agent input is revoked during that
 takeover and can resume after the human lease ends.
+An agent can also attach a durable view-only watch to an explicitly named Agent desktop already owned
+by another controller in the same thread. The watcher can capture that desktop but cannot inject input,
+and releasing it does not release the owner's control lease.
 
 The host chooses CPU, memory, and virtual disk capacity from current pressure and the task's stated
 needs. Agents describe needs such as graphics, interactivity, temporary disk use, audio, or whether a

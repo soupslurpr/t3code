@@ -7,10 +7,12 @@ keeping a provider process or one timer fiber per monitor alive.
 
 ## State and ownership
 
-Migration 41 creates `thread_monitors`. Each row stores a normalized time or
-signal condition, continuation policy, trigger evidence, terminal timestamps,
-and delivery attempts. MCP invocation credentials determine the owning thread.
-A request scoped to another thread receives the same not-found result as a
+Migration 41 creates `thread_monitors`, migration 42 adds coalesced delivery and
+durable retry state, and migration 43 adds structured computer conditions and
+`thread_monitor_computer_evidence`. Each monitor row stores its normalized
+condition, continuation policy, trigger evidence, terminal timestamps, and
+delivery attempts. MCP invocation credentials determine the owning thread. A
+request scoped to another thread receives the same not-found result as a
 missing monitor.
 
 The public lifecycle is:
@@ -35,10 +37,49 @@ has a fallback deadline. The scheduler sleeps until the nearest deadline or an
 orchestration/monitor event wakes it. Triggered continuations retry while a
 thread is busy or an earlier delivery attempt failed.
 
+Computer conditions use the same scheduler. Their next sample and optional
+deadline compete for the row's next wake time. Capture or evaluator failures
+persist a bounded diagnostic, mark the view resource degraded, and use bounded
+exponential backoff. A later check reacquires view access through the shared
+computer broker, so restart recovery does not depend on an in-memory portal or
+QEMU session object.
+
 A watcher is ordinary provider work, not a special model type. It can be a
 native subagent, workflow, process integration, or later turn that shares the
 owning thread's MCP scope and calls `monitor_signal`. The durable state never
-names a provider or model.
+names a provider or model for timer and signal conditions. A computer condition
+names an evaluator only when semantic image evaluation requires one.
+
+## Computer conditions
+
+`computer_watch_start` acquires view-only access before persisting an active
+condition. A frame-relative crop is resolved once and stored as a display plus
+Electron desktop-logical bounds, so expired frame identifiers are never used by
+the scheduler. The user desktop coordinator already supports independent
+viewers. An explicitly named Agent desktop also permits view-only controllers
+from the same environment and thread while preserving exclusive input control
+for its owner.
+
+Each check captures only the stored region at the requested bounded resolution.
+The service hashes the PNG and discards the sample after the check. Exact
+`image-change` conditions compare that hash with the initial hash without a
+model. Model conditions route through the exact provider instance and model in
+the condition; capability discovery lists only instances whose adapter exposes
+image evaluation. The default change gate skips a model call when the sample is
+unchanged.
+
+The evaluator receives current pixels, an optional retained baseline, and an
+explicit reminder that image content is untrusted data. The current Codex
+adapter runs an ephemeral, read-only structured-output invocation. It reports
+token usage as unavailable because the CLI path does not expose reliable
+per-request usage. It also reports prompt-cache refresh as unsupported. The
+monitor system never approximates either capability with a synthetic thread
+turn, an empty message, or an implicit model substitution.
+
+Only optional baseline and terminal matching PNGs are retained. Ordinary
+samples are not written to SQLite. Evidence rows cascade with thread-monitor
+deletion. Terminal transitions and cancellation release the monitor-specific
+view lease; they do not disturb another controller's view or control lease.
 
 ## Continuation delivery
 
