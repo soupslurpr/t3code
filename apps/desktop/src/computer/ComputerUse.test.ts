@@ -80,9 +80,18 @@ function makeController(records: Array<InputRecord>, onStart: () => void = () =>
     move: (input) => record("move", input),
     click: (input) => record("click", input),
     activate: (input) => record("activate", input).pipe(Effect.as({ target: accessibleTarget })),
+    activateWindow: (input) => record("activateWindow", input),
     drag: (input) => record("drag", input),
     wheel: (input) => record("wheel", input),
-    type: (input) => record("type", input),
+    type: (input) =>
+      record("type", input).pipe(
+        Effect.as({
+          requestedCodePoints: Array.from(input.text).length,
+          injectedCodePoints: Array.from(input.text).length,
+          delivery: "key-events" as const,
+          focusedEditable: false,
+        }),
+      ),
     press: (input) => record("press", input),
     hotkey: (input) => record("hotkey", input),
     keyDown: (input) => record("keyDown", input),
@@ -492,8 +501,21 @@ describe("ComputerUse", () => {
           ],
         })
         .pipe(Effect.forkChild);
-      yield* TestClock.adjust("750 millis");
-      yield* Fiber.join(resultFiber);
+      yield* TestClock.adjust("1 second");
+      const results = yield* Fiber.join(resultFiber);
+
+      assert.deepEqual(results, [
+        { index: 0, type: "press" },
+        {
+          index: 1,
+          type: "type",
+          requestedCodePoints: 10,
+          injectedCodePoints: 10,
+          delivery: "key-events",
+          focusedEditable: false,
+        },
+        { index: 2, type: "wait" },
+      ]);
 
       assert.deepEqual(records, [
         { operation: "start" },
@@ -511,8 +533,17 @@ describe("ComputerUse", () => {
         makePlatform(),
         makeController(inputRecords),
       );
-      yield* computer.act({
-        actions: [{ type: "type", text: "That’s right →\nASCII -> done" }],
+      const resultsFiber = yield* computer
+        .act({ actions: [{ type: "type", text: "That’s right →\nASCII -> done" }] })
+        .pipe(Effect.forkChild);
+      yield* TestClock.adjust("250 millis");
+      const results = yield* Fiber.join(resultsFiber);
+
+      assert.deepInclude(results[0], {
+        index: 0,
+        type: "type",
+        requestedCodePoints: Array.from("That’s right →\nASCII -> done").length,
+        delivery: "key-events",
       });
 
       assert.deepEqual(inputRecords, [
@@ -525,11 +556,12 @@ describe("ComputerUse", () => {
     }),
   );
 
-  it.effect("reports a Unicode input-injection failure with cleanup", () =>
+  it.effect("reports a text input-injection failure with its field and cleanup", () =>
     Effect.gen(function* () {
       const helperError = new GnomeRemoteDesktop.GnomeRemoteDesktopCommandError({
         operation: "type",
         code: "portal-error",
+        field: "text",
         phase: "key-press",
         cleanup: { keys: "released", buttons: "not-needed" },
         cause: "private portal diagnostic",
@@ -548,6 +580,7 @@ describe("ComputerUse", () => {
         code: "input-injection-failed",
         actionIndex: 0,
         completedActionCount: 0,
+        field: "actions[0].text",
         phase: "key-press",
         cleanup: { keys: "released", buttons: "not-needed" },
       });
@@ -698,6 +731,7 @@ describe("ComputerUse", () => {
                 available: true,
                 coordinateSpace: "focused-window" as const,
                 window: null,
+                windows: [],
                 targets: [],
                 truncated: false,
               },
@@ -754,19 +788,50 @@ describe("ComputerUse", () => {
         bounds: { x: -900, y: 50, width: 800, height: 600 },
       } as unknown as Display;
       const records: Array<InputRecord> = [];
+      const controller = GnomeRemoteDesktop.GnomeRemoteDesktop.of({
+        ...makeController(records),
+        snapshot: (input) =>
+          Effect.sync(() => records.push({ operation: "snapshot", input })).pipe(
+            Effect.as({
+              data: new Uint8Array([137, 80, 78, 71]),
+              source: "remote-desktop-stream" as const,
+              accessibility: {
+                available: true,
+                coordinateSpace: "focused-window" as const,
+                window: null,
+                windows: [
+                  {
+                    id: "window-1-1",
+                    application: "Calculator",
+                    name: "Calculator",
+                    focused: true,
+                  },
+                ],
+                targets: [],
+                truncated: false,
+              },
+            }),
+          ),
+      });
       const computer = yield* ComputerUse.makeWithOptions(
         makePlatform({ displays: [leftDisplay, display], decode: () => sourceImage }),
-        makeController(records),
+        controller,
       );
 
       const snapshot = yield* computer.snapshot({ displayId: "7" });
 
       assert.isUndefined(cropInput);
-      assert.isFalse(snapshot.accessibility?.available ?? true);
+      assert.isTrue(snapshot.accessibility?.available);
+      assert.equal(snapshot.accessibility?.windows[0]?.id, "window-1-1");
+      assert.deepEqual(snapshot.accessibility?.targets, []);
       assert.deepEqual(records, [
         {
           operation: "snapshot",
-          input: { includeAccessibility: false, displayBounds: display.bounds },
+          input: {
+            includeAccessibility: true,
+            includeAccessibilityTargets: false,
+            displayBounds: display.bounds,
+          },
         },
       ]);
     }),
@@ -914,6 +979,14 @@ describe("ComputerUse", () => {
                   name: "Calculator",
                   size: { width: 400, height: 500 },
                 },
+                windows: [
+                  {
+                    id: "window-1-1",
+                    application: "Calculator",
+                    name: "Calculator",
+                    focused: true,
+                  },
+                ],
                 targets: [accessibleTarget],
                 truncated: false,
               },
@@ -974,6 +1047,75 @@ describe("ComputerUse", () => {
     }),
   );
 
+  it.effect("waits for a bounded image region to change", () =>
+    Effect.gen(function* () {
+      const records: Array<InputRecord> = [];
+      let decodeCount = 0;
+      const imageWithByte = (
+        width: number,
+        height: number,
+        byte: number,
+      ): ComputerUse.ComputerUseImage => ({
+        isEmpty: () => false,
+        crop: (rectangle) => imageWithByte(rectangle.width, rectangle.height, byte),
+        resize: (options) => imageWithByte(options.width, options.height, byte),
+        getSize: () => ({ width, height }),
+        toBitmap: () => new Uint8Array(width * height * 4).fill(byte),
+        toPNG: () => new Uint8Array([byte]),
+      });
+      const computer = yield* ComputerUse.makeWithOptions(
+        makePlatform({
+          decode: () => {
+            decodeCount += 1;
+            return imageWithByte(800, 600, decodeCount >= 3 ? 1 : 0);
+          },
+        }),
+        makeController(records),
+      );
+      const frame = yield* captureFrame(computer);
+      records.length = 0;
+
+      const resultFiber = yield* computer
+        .act({
+          actions: [
+            {
+              type: "wait_for_change",
+              frameId: frame.id,
+              x: 100,
+              y: 100,
+              width: 200,
+              height: 100,
+              timeoutMs: 1_000,
+              pollIntervalMs: 100,
+            },
+          ],
+        })
+        .pipe(Effect.forkChild);
+      yield* TestClock.adjust("100 millis");
+
+      assert.deepEqual(yield* Fiber.join(resultFiber), [
+        {
+          index: 0,
+          type: "wait_for_change",
+          changed: true,
+          elapsedMs: 100,
+          samples: 2,
+        },
+      ]);
+      assert.deepEqual(records, [
+        { operation: "start" },
+        {
+          operation: "snapshot",
+          input: { includeAccessibility: false, displayBounds: display.bounds },
+        },
+        {
+          operation: "snapshot",
+          input: { includeAccessibility: false, displayBounds: display.bounds },
+        },
+      ]);
+    }),
+  );
+
   it.effect("rechecks and activates a semantic target in a batch", () =>
     Effect.gen(function* () {
       const records: Array<InputRecord> = [];
@@ -985,6 +1127,22 @@ describe("ComputerUse", () => {
       assert.deepEqual(records, [
         { operation: "start" },
         { operation: "activate", input: { targetId: "a11y-1-1" } },
+      ]);
+    }),
+  );
+
+  it.effect("activates a top-level semantic window in a batch", () =>
+    Effect.gen(function* () {
+      const records: Array<InputRecord> = [];
+      const computer = yield* ComputerUse.makeWithOptions(makePlatform(), makeController(records));
+
+      const results = yield* computer.act({
+        actions: [{ type: "activate_window", windowId: "window-1-1" }],
+      });
+      assert.deepEqual(results, [{ index: 0, type: "activate_window" }]);
+      assert.deepEqual(records, [
+        { operation: "start" },
+        { operation: "activateWindow", input: { windowId: "window-1-1" } },
       ]);
     }),
   );

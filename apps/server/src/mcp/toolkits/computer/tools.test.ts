@@ -5,8 +5,14 @@ import { Tool } from "effect/unstable/ai";
 import { ComputerToolkit } from "./tools.ts";
 
 it("exports bounded object schemas and accurate safety annotations", () => {
-  for (const tool of Object.values(ComputerToolkit.tools)) {
-    const schema = Tool.getJsonSchema(tool) as {
+  const schemas = Object.fromEntries(
+    Object.entries(ComputerToolkit.tools).map(([name, tool]) => [
+      name,
+      structuredClone(Tool.getJsonSchema(tool)),
+    ]),
+  );
+  for (const [name, tool] of Object.entries(ComputerToolkit.tools)) {
+    const schema = schemas[name] as {
       readonly type?: unknown;
       readonly anyOf?: unknown;
       readonly oneOf?: unknown;
@@ -44,4 +50,13 @@ it("exports bounded object schemas and accurate safety annotations", () => {
 
   expect(Context.get(ComputerToolkit.tools.computer_act.annotations, Tool.Readonly)).toBe(false);
   expect(Context.get(ComputerToolkit.tools.computer_act.annotations, Tool.Destructive)).toBe(true);
+
+  const actSchema = schemas.computer_act as {
+    readonly properties?: object;
+  };
+  const serializedActSchema = JSON.stringify(actSchema);
+  expect(serializedActSchema).toContain("One through 32 ordered actions");
+  expect(serializedActSchema).toContain('"activate_window"');
+  expect(serializedActSchema).toContain('"wait_for_change"');
+  expect(serializedActSchema).toContain('"maximum":60000');
 });

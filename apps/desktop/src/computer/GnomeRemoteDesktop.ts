@@ -33,6 +33,8 @@ const HELPER_CONTROL_TIMEOUT = Duration.minutes(2);
 const MAX_SCREENSHOT_BYTES = 64 * 1_024 * 1_024;
 const MAX_SCREENSHOT_BASE64_LENGTH = Math.ceil(MAX_SCREENSHOT_BYTES / 3) * 4;
 const MAX_ACCESSIBILITY_TARGETS = 256;
+const MAX_ACCESSIBILITY_WINDOWS = 128;
+const MAX_TYPE_CODE_POINTS = 10_000;
 
 const HelperResponse = Schema.Union([
   Schema.Struct({
@@ -112,6 +114,13 @@ const HelperAccessibilityTarget = Schema.Struct({
   expanded: Schema.Boolean,
 });
 
+const HelperAccessibilityWindow = Schema.Struct({
+  id: Schema.String,
+  application: Schema.String,
+  name: Schema.String,
+  focused: Schema.Boolean,
+});
+
 const HelperAccessibilitySnapshot = Schema.Struct({
   available: Schema.Boolean,
   coordinateSpace: Schema.Literal("focused-window"),
@@ -124,6 +133,9 @@ const HelperAccessibilitySnapshot = Schema.Struct({
         height: Schema.Int.check(Schema.isGreaterThan(0)),
       }),
     }),
+  ),
+  windows: Schema.Array(HelperAccessibilityWindow).check(
+    Schema.isMaxLength(MAX_ACCESSIBILITY_WINDOWS),
   ),
   targets: Schema.Array(HelperAccessibilityTarget).check(
     Schema.isMaxLength(MAX_ACCESSIBILITY_TARGETS),
@@ -142,6 +154,20 @@ const HelperActivateResult = Schema.Struct({
   target: HelperAccessibilityTarget,
 });
 
+const HelperTypeResult = Schema.Struct({
+  requestedCodePoints: Schema.Int.check(
+    Schema.isBetween({ minimum: 0, maximum: MAX_TYPE_CODE_POINTS }),
+  ),
+  injectedCodePoints: Schema.Int.check(
+    Schema.isBetween({ minimum: 0, maximum: MAX_TYPE_CODE_POINTS }),
+  ),
+  confirmedCodePoints: Schema.optional(
+    Schema.Int.check(Schema.isBetween({ minimum: 0, maximum: MAX_TYPE_CODE_POINTS })),
+  ),
+  delivery: Schema.Literals(["none", "accessibility", "key-events", "mixed"]),
+  focusedEditable: Schema.Boolean,
+});
+
 const HelperMethod = Schema.Literals([
   "status",
   "snapshot",
@@ -154,6 +180,7 @@ const HelperMethod = Schema.Literals([
   "move",
   "click",
   "activate",
+  "activateWindow",
   "drag",
   "wheel",
   "type",
@@ -258,6 +285,7 @@ export interface GnomeRemoteDesktopStreamSize {
 
 export interface GnomeRemoteDesktopSnapshotInput {
   readonly includeAccessibility: boolean;
+  readonly includeAccessibilityTargets?: boolean | undefined;
   readonly displayBounds: GnomeRemoteDesktopDisplayBounds;
 }
 
@@ -292,6 +320,12 @@ export interface GnomeRemoteDesktopSnapshot {
       readonly name: string;
       readonly size: { readonly width: number; readonly height: number };
     } | null;
+    readonly windows: ReadonlyArray<{
+      readonly id: string;
+      readonly application: string;
+      readonly name: string;
+      readonly focused: boolean;
+    }>;
     readonly targets: ReadonlyArray<GnomeRemoteDesktopAccessibilityTarget>;
     readonly truncated: boolean;
     readonly detail?: string | undefined;
@@ -300,6 +334,14 @@ export interface GnomeRemoteDesktopSnapshot {
 
 export interface GnomeRemoteDesktopActivateResult {
   readonly target: GnomeRemoteDesktopAccessibilityTarget;
+}
+
+export interface GnomeRemoteDesktopTypeResult {
+  readonly requestedCodePoints: number;
+  readonly injectedCodePoints: number;
+  readonly confirmedCodePoints?: number | undefined;
+  readonly delivery: "none" | "accessibility" | "key-events" | "mixed";
+  readonly focusedEditable: boolean;
 }
 
 export interface GnomeRemoteDesktopShape {
@@ -329,6 +371,9 @@ export interface GnomeRemoteDesktopShape {
   readonly activate: (input: {
     readonly targetId: string;
   }) => Effect.Effect<GnomeRemoteDesktopActivateResult, GnomeRemoteDesktopError>;
+  readonly activateWindow: (input: {
+    readonly windowId: string;
+  }) => Effect.Effect<void, GnomeRemoteDesktopError>;
   readonly drag: (input: {
     readonly button: "left" | "right" | "middle";
     readonly x: number;
@@ -345,7 +390,7 @@ export interface GnomeRemoteDesktopShape {
   readonly type: (input: {
     readonly text: string;
     readonly intervalMs: number;
-  }) => Effect.Effect<void, GnomeRemoteDesktopError>;
+  }) => Effect.Effect<GnomeRemoteDesktopTypeResult, GnomeRemoteDesktopError>;
   readonly press: (input: {
     readonly key: string;
     readonly modifiers: ReadonlyArray<string>;
@@ -406,6 +451,7 @@ const unavailable = (reason: string): GnomeRemoteDesktopShape => {
     move: () => fail,
     click: () => fail,
     activate: () => fail,
+    activateWindow: () => fail,
     drag: () => fail,
     wheel: () => fail,
     type: () => fail,
@@ -441,6 +487,7 @@ const decodeHelperResponse = Schema.decodeUnknownEffect(HelperResponse);
 const decodeHelperStatus = Schema.decodeUnknownEffect(HelperStatus);
 const decodeHelperSnapshot = Schema.decodeUnknownEffect(HelperSnapshot);
 const decodeHelperActivateResult = Schema.decodeUnknownEffect(HelperActivateResult);
+const decodeHelperTypeResult = Schema.decodeUnknownEffect(HelperTypeResult);
 const encodeHelperCommand = Schema.encodeEffect(Schema.fromJsonString(HelperCommand));
 
 const sessionEnvironment = Config.all({
@@ -786,6 +833,17 @@ export const make = Effect.gen(function* () {
       ),
     );
 
+  const typeText: GnomeRemoteDesktopShape["type"] = (input) =>
+    request<unknown>("type", input, HELPER_CONTROL_TIMEOUT).pipe(
+      Effect.flatMap((response) =>
+        decodeHelperTypeResult(response).pipe(
+          Effect.mapError(
+            (cause) => new GnomeRemoteDesktopProtocolError({ operation: "type", cause }),
+          ),
+        ),
+      ),
+    );
+
   const revocationEvents = yield* Queue.sliding<void>(1);
   const revoke = () => Queue.offerUnsafe(revocationEvents, undefined);
   yield* Effect.all(
@@ -832,9 +890,10 @@ export const make = Effect.gen(function* () {
     move: (input) => control("move", input),
     click: (input) => control("click", input),
     activate,
+    activateWindow: (input) => control("activateWindow", input),
     drag: (input) => control("drag", input),
     wheel: (input) => control("wheel", input),
-    type: (input) => control("type", input),
+    type: typeText,
     press: (input) => control("press", input),
     hotkey: (input) => control("hotkey", input),
     keyDown: (input) => control("keyDown", input),
