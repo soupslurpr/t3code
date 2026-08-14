@@ -97,6 +97,14 @@ function automationResult(operation: string, input?: unknown): unknown {
             name: "Calculator",
             size: { width: 400, height: 500 },
           },
+          windows: [
+            {
+              id: "window-1-1",
+              application: "Calculator",
+              name: "Calculator",
+              focused: true,
+            },
+          ],
           targets: [
             {
               id: "a11y-1-1",
@@ -186,8 +194,25 @@ function automationResult(operation: string, input?: unknown): unknown {
         },
         snapshot: automationResult("computerSnapshot"),
       };
-    case "computerAct":
-      return { snapshot: automationResult("computerSnapshot") };
+    case "computerAct": {
+      const actions =
+        typeof input === "object" &&
+        input !== null &&
+        "actions" in input &&
+        Array.isArray(input.actions)
+          ? input.actions
+          : [];
+      return {
+        snapshot: automationResult("computerSnapshot"),
+        actionResults: actions.map((action, index) => ({
+          index,
+          type:
+            typeof action === "object" && action !== null && "type" in action
+              ? action.type
+              : "press",
+        })),
+      };
+    }
     case "press":
     case "computerRelease":
       return automationResult("computerStatus");
@@ -622,7 +647,38 @@ it.effect("registers annotated tools and preserves authenticated request context
         },
       });
       expect(invalidComputerAct.content).toEqual([
-        { type: "text", text: "The computer-use request is invalid." },
+        {
+          type: "text",
+          text: expect.stringContaining('"code":"invalid-action"'),
+        },
+      ]);
+
+      const invalidWait = yield* server
+        .callTool({
+          name: "computer_act",
+          arguments: { actions: [{ type: "wait", durationMs: 12_000 }] },
+        })
+        .pipe(
+          Effect.provideService(McpInvocationContext.McpInvocationContext, invocation),
+          Effect.provideService(McpSchema.McpServerClient, client),
+        );
+      expect(invalidWait.isError).toBe(true);
+      expect(invalidWait.structuredContent).toMatchObject({
+        error: {
+          code: "invalid-action",
+          actionIndex: 0,
+          completedActionCount: 0,
+          field: "actions[0].durationMs",
+          phase: "validation",
+        },
+      });
+      expect(invalidWait.content).toEqual([
+        {
+          type: "text",
+          text: expect.stringMatching(
+            /"field":"actions\[0\]\.durationMs".*"expected":\["Expected a value between 0 and 5000"\]/u,
+          ),
+        },
       ]);
 
       const computerRelease = yield* server

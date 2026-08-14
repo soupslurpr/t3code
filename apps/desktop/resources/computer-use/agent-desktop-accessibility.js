@@ -12,14 +12,21 @@ const GLib = imports.gi.GLib;
 
 const MAX_NODES = 4_000;
 const MAX_TARGETS = 256;
+const MAX_WINDOWS = 128;
 const MAX_CHILDREN = 500;
 const MAX_TEXT_LENGTH = 1_024;
+const MAX_OBJECT_PATH_LENGTH = 1_024;
 const MAX_TEXT_INSERTION_LENGTH = 10_000;
 const MAX_TEXT_INSERTION_INTERVAL_MS = 250;
 const CALL_TIMEOUT_MS = 250;
 const STARTUP_TIMEOUT_MS = 1_000;
 const TEXT_FOCUS_TIMEOUT_MS = 250;
 const TEXT_FOCUS_INTERVAL_MS = 25;
+const TEXT_VERIFY_SETTLE_MS = 50;
+const KEYBOARD_SELECTION_SETTLE_MS = 50;
+const WINDOW_FOCUS_SETTLE_MS = 50;
+const WINDOW_RESOLVE_TIMEOUT_MS = 500;
+const WINDOW_RESOLVE_INTERVAL_MS = 50;
 const EXCLUDED_APPLICATIONS = new Set([
   "gnome-shell",
   "xdg-desktop-portal-gnome",
@@ -44,10 +51,12 @@ const TARGET_ROLES = new Set([
   "slider",
   "spin button",
   "table cell",
+  "text",
   "toggle button",
   "tree item",
 ]);
 const PREFERRED_ACTIONS = ["click", "press", "activate", "open", "toggle", "select"];
+const PREFERRED_WINDOW_ACTIONS = ["activate", "raise", "present"];
 const FOCUS_ONLY_ROLES = new Set(["entry", "password text", "slider", "spin button"]);
 
 /** Converts one thrown value to a bounded error message. */
@@ -70,6 +79,11 @@ function hasState(states, state) {
   } catch {
     return false;
   }
+}
+
+/** Reads an AT-SPI text range without invoking Accessible.get_text in GJS. */
+function readTextRange(text, startPosition, endPosition) {
+  return Atspi.Text.prototype.get_text.call(text, startPosition, endPosition);
 }
 
 /** Returns the visible intersection of two same-space rectangles. */
@@ -108,9 +122,16 @@ function listRoots() {
         if (accessible === null) continue;
         const role = accessibilityText(accessible.get_role_name(), 128).toLowerCase();
         if (!ROOT_ROLES.has(role)) continue;
+        const processId = accessible.get_process_id();
+        const objectPath = accessibilityText(accessible.path, MAX_OBJECT_PATH_LENGTH);
+        if (!Number.isSafeInteger(processId) || processId <= 0 || !objectPath.startsWith("/")) {
+          continue;
+        }
         roots.push({
           accessible,
           application: applicationName,
+          processId,
+          objectPath,
           window: accessibilityText(accessible.get_name(), 512),
         });
       }
@@ -146,6 +167,49 @@ function rootContainsFocus(root, maxNodes) {
     }
   }
   return { focused: false, scanned, truncated: queueIndex < queue.length };
+}
+
+/** Tries to move keyboard focus without trusting a declared Component interface. */
+function tryAccessibilityFocus(accessible) {
+  try {
+    if (hasState(accessible.get_state_set(), Atspi.StateType.FOCUSED)) return true;
+    if (!Array.from(accessible.get_interfaces() ?? []).includes("Component")) return false;
+    return accessible.get_component_iface().grab_focus();
+  } catch {
+    return false;
+  }
+}
+
+/** Selects one keyboard target through its focused parent selection model. */
+function trySelectKeyboardTarget(accessible) {
+  try {
+    const parent = accessible.get_parent();
+    const childIndex = accessible.get_index_in_parent();
+    if (
+      parent === null ||
+      childIndex < 0 ||
+      !Array.from(parent.get_interfaces() ?? []).includes("Selection")
+    ) {
+      return false;
+    }
+    if (!rootContainsFocus(parent, MAX_NODES).focused && !tryAccessibilityFocus(parent)) {
+      return false;
+    }
+    const selection = parent.get_selection_iface();
+    const selected = selection.is_child_selected(childIndex);
+    const selectedCount = Math.max(0, selection.get_n_selected_children());
+    if (selected && selectedCount === 1) return true;
+    if (selectedCount > 0 && !selection.clear_selection()) return false;
+    if (!selection.select_child(childIndex)) return false;
+    GLib.usleep(KEYBOARD_SELECTION_SETTLE_MS * 1_000);
+    return (
+      (hasState(accessible.get_state_set(), Atspi.StateType.SELECTED) ||
+        selection.is_child_selected(childIndex)) &&
+      selection.get_n_selected_children() === 1
+    );
+  } catch {
+    return false;
+  }
 }
 
 /** Selects the single active or focused top-level accessibility window. */
@@ -223,6 +287,7 @@ function readTarget(accessible, root, windowBounds, path) {
   }
   const role = accessibilityText(accessible.get_role_name(), 128).toLowerCase();
   if (role.length === 0 || !TARGET_ROLES.has(role)) return null;
+  if (role === "text" && !hasState(states, Atspi.StateType.EDITABLE)) return null;
   const interfaces = Array.from(accessible.get_interfaces() ?? []);
   const activation = readActivation(accessible, role, states, interfaces);
   if (activation === null || !interfaces.includes("Component")) return null;
@@ -269,7 +334,8 @@ function readTarget(accessible, root, windowBounds, path) {
     },
     locator: {
       application: root.application,
-      window: root.window,
+      processId: root.processId,
+      objectPath: root.objectPath,
       path,
       role,
       name,
@@ -281,14 +347,29 @@ function readTarget(accessible, root, windowBounds, path) {
 
 /** Captures bounded targets from the focused accessible window. */
 function snapshot() {
-  const selection = selectFocusedRoot(listRoots());
+  const roots = listRoots();
+  const selection = selectFocusedRoot(roots);
+  const windows = roots.slice(0, MAX_WINDOWS).map((root) => ({
+    window: {
+      application: root.application,
+      name: root.window,
+      focused: selection.root?.accessible === root.accessible,
+    },
+    locator: {
+      application: root.application,
+      processId: root.processId,
+      objectPath: root.objectPath,
+    },
+  }));
+  const windowsTruncated = roots.length > MAX_WINDOWS;
   if (selection.root === null) {
     return {
       available: true,
       coordinateSpace: "focused-window",
       window: null,
+      windows,
       targets: [],
-      truncated: selection.truncated,
+      truncated: selection.truncated || windowsTruncated,
       detail: selection.ambiguous
         ? "the active accessible window is ambiguous"
         : "the focused application does not expose an AT-SPI window",
@@ -346,7 +427,10 @@ function snapshot() {
         second.target.bounds.width * second.target.bounds.height,
   );
   const truncated =
-    selection.truncated || queueIndex < queue.length || candidates.length > MAX_TARGETS;
+    selection.truncated ||
+    windowsTruncated ||
+    queueIndex < queue.length ||
+    candidates.length > MAX_TARGETS;
   const targets = candidates.slice(0, MAX_TARGETS);
   return {
     available: true,
@@ -356,6 +440,7 @@ function snapshot() {
       name: selection.root.window,
       size: { width: windowBounds.width, height: windowBounds.height },
     },
+    windows,
     targets,
     truncated,
     ...(targets.length === 0
@@ -378,7 +463,10 @@ function resolvePath(root, path) {
 /** Re-resolves and activates one semantic target locator. */
 function activate(locator) {
   const matchingRoots = listRoots().filter(
-    (root) => root.application === locator.application && root.window === locator.window,
+    (root) =>
+      root.application === locator.application &&
+      root.processId === locator.processId &&
+      root.objectPath === locator.objectPath,
   );
   if (matchingRoots.length !== 1) {
     throw Object.assign(new Error("the semantic target window is no longer unique"), {
@@ -448,9 +536,15 @@ function activate(locator) {
       });
     }
     activated = action.do_action(matchingActionIndices[0]);
+  } else if (locator.activation === "keyboard") {
+    const selectable = hasState(states, Atspi.StateType.SELECTABLE);
+    activated =
+      (selectable && trySelectKeyboardTarget(accessible)) ||
+      tryAccessibilityFocus(accessible) ||
+      (!selectable && trySelectKeyboardTarget(accessible));
+    keyboard = activated;
   } else {
-    activated = accessible.get_component_iface().grab_focus();
-    keyboard = activated && locator.activation === "keyboard";
+    activated = tryAccessibilityFocus(accessible);
   }
   if (!activated) {
     throw Object.assign(new Error("the application rejected semantic activation"), {
@@ -458,6 +552,66 @@ function activate(locator) {
     });
   }
   return { keyboard };
+}
+
+/** Re-resolves and focuses one top-level semantic window. */
+function activateWindow(locator) {
+  const attemptCount = Math.ceil(WINDOW_RESOLVE_TIMEOUT_MS / WINDOW_RESOLVE_INTERVAL_MS);
+  let matchingRoots = [];
+  for (let attempt = 0; attempt <= attemptCount; attempt += 1) {
+    matchingRoots = listRoots().filter(
+      (root) =>
+        root.application === locator.application &&
+        root.processId === locator.processId &&
+        root.objectPath === locator.objectPath,
+    );
+    if (matchingRoots.length > 0 || attempt === attemptCount) break;
+    GLib.usleep(WINDOW_RESOLVE_INTERVAL_MS * 1_000);
+  }
+  if (matchingRoots.length !== 1) {
+    throw Object.assign(new Error("the semantic window is no longer unique"), {
+      code: "stale-accessibility-target",
+    });
+  }
+  const root = matchingRoots[0].accessible;
+  const interfaces = new Set(root.get_interfaces() ?? []);
+  let activated =
+    hasState(root.get_state_set(), Atspi.StateType.ACTIVE) ||
+    rootContainsFocus(root, MAX_NODES).focused;
+  if (!activated && interfaces.has("Action")) {
+    try {
+      const action = root.get_action_iface();
+      const actionCount = Math.max(0, action.get_n_actions());
+      for (const preferredName of PREFERRED_WINDOW_ACTIONS) {
+        for (let actionIndex = 0; actionIndex < actionCount; actionIndex += 1) {
+          if (
+            accessibilityText(action.get_action_name(actionIndex), 128).toLowerCase() ===
+            preferredName
+          ) {
+            activated = action.do_action(actionIndex);
+            break;
+          }
+        }
+        if (activated) break;
+      }
+    } catch {
+      activated = false;
+    }
+  }
+  if (!activated && interfaces.has("Component")) {
+    try {
+      activated = root.get_component_iface().grab_focus();
+    } catch {
+      activated = false;
+    }
+  }
+  if (activated) {
+    GLib.usleep(WINDOW_FOCUS_SETTLE_MS * 1_000);
+    activated =
+      hasState(root.get_state_set(), Atspi.StateType.ACTIVE) ||
+      rootContainsFocus(root, MAX_NODES).focused;
+  }
+  return { activated };
 }
 
 /** Finds the single editable target that owns the current text focus. */
@@ -523,6 +677,7 @@ function insertText(input) {
   if (text.get_n_selections() > 0) return { status: "replace-selection" };
   const editable = accessible.get_editable_text_iface();
   let position = text.get_caret_offset();
+  const startPosition = position;
   const insert = (value) => {
     if (!Number.isInteger(position) || position < 0) return false;
     if (!editable.insert_text(position, value, new TextEncoder().encode(value).length))
@@ -531,20 +686,39 @@ function insertText(input) {
     return text.set_caret_offset(position);
   };
   if (input.intervalMs === 0) {
-    if (insert(input.text)) return { status: "inserted" };
-    throw Object.assign(new Error("the focused control rejected exact text insertion"), {
-      code: "accessibility-insertion-failed",
-    });
-  }
-  for (const character of input.text) {
-    if (!insert(character)) {
+    if (!insert(input.text)) {
       throw Object.assign(new Error("the focused control rejected exact text insertion"), {
         code: "accessibility-insertion-failed",
       });
     }
-    GLib.usleep(input.intervalMs * 1_000);
+  } else {
+    for (const character of input.text) {
+      if (!insert(character)) {
+        throw Object.assign(new Error("the focused control rejected exact text insertion"), {
+          code: "accessibility-insertion-failed",
+        });
+      }
+      GLib.usleep(input.intervalMs * 1_000);
+    }
   }
-  return { status: "inserted" };
+  GLib.usleep(TEXT_VERIFY_SETTLE_MS * 1_000);
+  let insertedText;
+  try {
+    insertedText = readTextRange(text, startPosition, position);
+  } catch {
+    insertedText = null;
+  }
+  if (insertedText !== input.text) {
+    throw Object.assign(new Error("the focused control did not confirm the exact inserted text"), {
+      code: "accessibility-insertion-failed",
+    });
+  }
+  const codePointCount = Array.from(input.text).length;
+  return {
+    status: "inserted",
+    injectedCodePoints: codePointCount,
+    confirmedCodePoints: codePointCount,
+  };
 }
 
 /** Decodes one host-provided base64 JSON locator. */
@@ -555,7 +729,12 @@ function decodeLocator(encoded) {
     typeof locator !== "object" ||
     locator === null ||
     typeof locator.application !== "string" ||
-    typeof locator.window !== "string" ||
+    locator.application.length > 256 ||
+    !Number.isSafeInteger(locator.processId) ||
+    locator.processId <= 0 ||
+    typeof locator.objectPath !== "string" ||
+    locator.objectPath.length > MAX_OBJECT_PATH_LENGTH ||
+    !locator.objectPath.startsWith("/") ||
     !Array.isArray(locator.path) ||
     locator.path.length > 128 ||
     typeof locator.role !== "string" ||
@@ -570,6 +749,26 @@ function decodeLocator(encoded) {
     (locator.activation === "action") !== (typeof locator.actionName === "string")
   ) {
     throw new Error("the semantic target locator is invalid");
+  }
+  return locator;
+}
+
+/** Decodes one host-provided base64 JSON window locator. */
+function decodeWindowLocator(encoded) {
+  const decoded = new TextDecoder().decode(GLib.base64_decode(encoded));
+  const locator = JSON.parse(decoded);
+  if (
+    typeof locator !== "object" ||
+    locator === null ||
+    typeof locator.application !== "string" ||
+    locator.application.length > 256 ||
+    !Number.isSafeInteger(locator.processId) ||
+    locator.processId <= 0 ||
+    typeof locator.objectPath !== "string" ||
+    locator.objectPath.length > MAX_OBJECT_PATH_LENGTH ||
+    !locator.objectPath.startsWith("/")
+  ) {
+    throw new Error("the semantic window locator is invalid");
   }
   return locator;
 }
@@ -600,6 +799,9 @@ function main() {
   if (operation === "probe") return { available: true };
   if (operation === "snapshot") return snapshot();
   if (operation === "activate") return activate(decodeLocator(ARGV[1] ?? ""));
+  if (operation === "activate-window") {
+    return activateWindow(decodeWindowLocator(ARGV[1] ?? ""));
+  }
   if (operation === "insert-text") return insertText(decodeTextInsertion(ARGV[1] ?? ""));
   throw new Error(`unsupported guest accessibility operation ${operation}`);
 }
