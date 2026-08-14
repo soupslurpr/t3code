@@ -7,14 +7,14 @@ const decodeJsonThreadTitle = Schema.decodeOption(
   Schema.fromJsonString(Schema.Struct({ title: Schema.String })),
 );
 
-export function toJsonSchemaObject(schema: Schema.Top): unknown {
+export function toJsonSchemaObject(schema: Schema.Top): Schema.Json {
   const document = Schema.toJsonSchemaDocument(Schema.toType(schema), {
     onExcessProperty: "error",
   });
   if (document.definitions && Object.keys(document.definitions).length > 0) {
-    return { ...document.schema, $defs: document.definitions };
+    return { ...document.schema, $defs: document.definitions } as Schema.Json;
   }
-  return document.schema;
+  return document.schema as Schema.Json;
 }
 
 export function limitSection(value: string, maxChars: number): string {
