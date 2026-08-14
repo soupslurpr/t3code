@@ -197,6 +197,7 @@ export const AgentDesktop = Schema.Struct({
   label: TrimmedNonEmptyString.check(Schema.isMaxLength(256)),
   owner: AgentDesktopOwner,
   state: AgentDesktopLifecycleState,
+  automaticParking: Schema.Boolean,
   capabilities: Schema.Array(AgentDesktopCapability).check(
     Schema.isMaxLength(MAX_AGENT_DESKTOP_CAPABILITIES),
   ),
@@ -205,6 +206,7 @@ export const AgentDesktop = Schema.Struct({
   createdAt: Schema.String,
   lastActiveAt: Schema.String,
   recoverableUntil: Schema.NullOr(Schema.String),
+  retention: Schema.optional(Schema.Literals(["automatic", "preserve"])),
   graphics: AgentDesktopGraphics,
   resources: Schema.optional(AgentDesktopResourceTelemetry),
   detail: Schema.optional(Schema.String.check(Schema.isMaxLength(512))),
@@ -290,7 +292,18 @@ export const AgentDesktopRequirements = Schema.Struct({
     }),
   ),
   latency: Schema.optional(Schema.Literals(["interactive", "background"])),
-  preventParking: Schema.optional(Schema.Boolean),
+  preventParking: Schema.optional(
+    Schema.Boolean.annotate({
+      description:
+        "Keep this desktop running without a lease. This persists until a later acquisition of the same desktop explicitly sets false.",
+    }),
+  ),
+  retention: Schema.optional(
+    Schema.Literals(["automatic", "preserve"]).annotate({
+      description:
+        "Retention policy. Automatic permits recoverable retirement after prolonged inactivity or under host storage pressure; preserve requires explicit deletion.",
+    }),
+  ),
   expectedTemporaryDiskBytes: Schema.optional(
     Schema.Number.check(Schema.isBetween({ minimum: 0, maximum: 1_099_511_627_776 })),
   ),
