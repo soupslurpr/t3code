@@ -12,17 +12,15 @@ const MAX_ACTION_BATCH_ACTIONS = 32;
 const MAX_ACTION_BATCH_DURATION_MS = 60_000;
 const MAX_ACTION_BATCH_TEXT_LENGTH = 10_000;
 const MAX_ACTION_WAIT_MS = 5_000;
+const MAX_CHANGE_WAIT_MS = 60_000;
+const MIN_CHANGE_POLL_INTERVAL_MS = 100;
+const MAX_CHANGE_POLL_INTERVAL_MS = 2_000;
 const SUBMIT_SETTLE_MS = 250;
-const UNICODE_ENTRY_SETTLE_MS = 150;
 const MAX_ACCESSIBILITY_TARGETS = 256;
+const MAX_ACCESSIBILITY_WINDOWS = 128;
 const MAX_FAILURE_CAUSE_DEPTH = 4;
 const MAX_OBSERVATION_DELAY_MS = 5_000;
 const MAX_SCREENSHOT_DIMENSION = 4_096;
-
-/** Counts code points that require a layout-independent exact-text path. */
-function unicodeEntryCount(text: string): number {
-  return Array.from(text).filter((character) => !/^[\t\n\r\x20-\x7e]$/u.test(character)).length;
-}
 
 /** Operations that target the host computer rather than a browser preview. */
 export const COMPUTER_AUTOMATION_OPERATIONS = [
@@ -117,6 +115,7 @@ export const ComputerAutomationFailureCode = Schema.Literals([
   "stale-frame",
   "stale-semantic-target",
   "semantic-activation-failed",
+  "exact-text-unavailable",
   "unsupported-operation",
   "permission-denied",
   "input-injection-failed",
@@ -235,6 +234,9 @@ export type ComputerAutomationStatus = typeof ComputerAutomationStatus.Type;
 export const ComputerAutomationTargetId = TrimmedNonEmptyString.check(Schema.isMaxLength(128));
 export type ComputerAutomationTargetId = typeof ComputerAutomationTargetId.Type;
 
+export const ComputerAutomationWindowId = TrimmedNonEmptyString.check(Schema.isMaxLength(128));
+export type ComputerAutomationWindowId = typeof ComputerAutomationWindowId.Type;
+
 export const ComputerAutomationAccessibilityActivation = Schema.Literals([
   "action",
   "keyboard",
@@ -273,6 +275,17 @@ export const ComputerAutomationAccessibilityWindow = Schema.Struct({
 export type ComputerAutomationAccessibilityWindow =
   typeof ComputerAutomationAccessibilityWindow.Type;
 
+export const ComputerAutomationAccessibilityWindowTarget = Schema.Struct({
+  id: ComputerAutomationWindowId,
+  application: Schema.String.check(Schema.isMaxLength(256)),
+  name: Schema.String.check(Schema.isMaxLength(512)),
+  focused: Schema.Boolean,
+}).annotate({
+  description: "An ephemeral top-level accessible window that can be focused with activate_window.",
+});
+export type ComputerAutomationAccessibilityWindowTarget =
+  typeof ComputerAutomationAccessibilityWindowTarget.Type;
+
 export const ComputerAutomationAccessibilitySnapshot = Schema.Struct({
   available: Schema.Boolean,
   coordinateSpace: Schema.Literal("focused-window").annotate({
@@ -281,6 +294,12 @@ export const ComputerAutomationAccessibilitySnapshot = Schema.Struct({
   window: Schema.NullOr(ComputerAutomationAccessibilityWindow).annotate({
     description: "Focused accessible window for the returned target bounds.",
   }),
+  windows: Schema.Array(ComputerAutomationAccessibilityWindowTarget)
+    .check(Schema.isMaxLength(MAX_ACCESSIBILITY_WINDOWS))
+    .annotate({
+      description:
+        "Top-level accessible windows available for semantic activation. Their ids expire with this observation.",
+    }),
   targets: Schema.Array(ComputerAutomationAccessibilityTarget).check(
     Schema.isMaxLength(MAX_ACCESSIBILITY_TARGETS),
   ),
@@ -490,13 +509,82 @@ export const ComputerAutomationSnapshot = Schema.Struct({
 });
 export type ComputerAutomationSnapshot = typeof ComputerAutomationSnapshot.Type;
 
+export const ComputerAutomationTypeActionResult = Schema.Struct({
+  index: Schema.Int.check(Schema.isBetween({ minimum: 0, maximum: MAX_ACTION_BATCH_ACTIONS - 1 })),
+  type: Schema.Literal("type"),
+  requestedCodePoints: Schema.Int.check(
+    Schema.isBetween({ minimum: 0, maximum: MAX_ACTION_BATCH_TEXT_LENGTH }),
+  ),
+  injectedCodePoints: Schema.Int.check(
+    Schema.isBetween({ minimum: 0, maximum: MAX_ACTION_BATCH_TEXT_LENGTH }),
+  ).annotate({
+    description:
+      "Code points accepted by the desktop injection API; this does not claim the application rendered them.",
+  }),
+  confirmedCodePoints: Schema.optional(
+    Schema.Int.check(
+      Schema.isBetween({ minimum: 0, maximum: MAX_ACTION_BATCH_TEXT_LENGTH }),
+    ).annotate({
+      description: "Code points read back exactly from a focused editable accessibility control.",
+    }),
+  ),
+  delivery: Schema.Literals(["none", "accessibility", "key-events", "mixed"]),
+  focusedEditable: Schema.Boolean.annotate({
+    description: "Whether exact text was delivered through a focused editable control.",
+  }),
+});
+export type ComputerAutomationTypeActionResult = typeof ComputerAutomationTypeActionResult.Type;
+
+export const ComputerAutomationWaitForChangeActionResult = Schema.Struct({
+  index: Schema.Int.check(Schema.isBetween({ minimum: 0, maximum: MAX_ACTION_BATCH_ACTIONS - 1 })),
+  type: Schema.Literal("wait_for_change"),
+  changed: Schema.Boolean,
+  elapsedMs: Schema.Int.check(Schema.isBetween({ minimum: 0, maximum: MAX_CHANGE_WAIT_MS })),
+  samples: Schema.Int.check(Schema.isGreaterThanOrEqualTo(1)),
+});
+export type ComputerAutomationWaitForChangeActionResult =
+  typeof ComputerAutomationWaitForChangeActionResult.Type;
+
+export const ComputerAutomationSimpleActionResult = Schema.Struct({
+  index: Schema.Int.check(Schema.isBetween({ minimum: 0, maximum: MAX_ACTION_BATCH_ACTIONS - 1 })),
+  type: Schema.Literals([
+    "click",
+    "move",
+    "activate",
+    "activate_window",
+    "drag",
+    "wheel",
+    "press",
+    "hotkey",
+    "key_down",
+    "key_up",
+    "wait",
+  ]),
+});
+export type ComputerAutomationSimpleActionResult = typeof ComputerAutomationSimpleActionResult.Type;
+
+export const ComputerAutomationActionResult = Schema.Union([
+  ComputerAutomationSimpleActionResult,
+  ComputerAutomationTypeActionResult,
+  ComputerAutomationWaitForChangeActionResult,
+]);
+export type ComputerAutomationActionResult = typeof ComputerAutomationActionResult.Type;
+
 export const ComputerAutomationObservation = Schema.Struct({
   status: Schema.optional(ComputerAutomationStatus),
   snapshot: Schema.optional(ComputerAutomationSnapshot),
+  actionResults: Schema.optional(
+    Schema.Array(ComputerAutomationActionResult).check(
+      Schema.isMaxLength(MAX_ACTION_BATCH_ACTIONS),
+    ),
+  ).annotate({
+    description:
+      "Ordered execution receipts. Text receipts distinguish backend injection from exact accessibility read-back.",
+  }),
   detail: Schema.optional(Schema.String.check(Schema.isMaxLength(512))),
 }).annotate({
   description:
-    "Reports requested access status and desktop observation data; intentionally empty when a post-action observation is disabled.",
+    "Reports access status, desktop observation data, and action receipts. Screenshot data is omitted when post-action observation is disabled.",
 });
 export type ComputerAutomationObservation = typeof ComputerAutomationObservation.Type;
 
@@ -566,6 +654,17 @@ export const ComputerAutomationActivateResult = Schema.Struct({
   target: ComputerAutomationAccessibilityTarget,
 });
 export type ComputerAutomationActivateResult = typeof ComputerAutomationActivateResult.Type;
+
+export const ComputerAutomationActivateWindowInput = Schema.Struct({
+  windowId: ComputerAutomationWindowId.annotate({
+    description: "Ephemeral window id from the most recent computer observation.",
+  }),
+}).annotate({
+  description:
+    "Re-resolves and focuses a top-level accessible window through the active desktop session.",
+});
+export type ComputerAutomationActivateWindowInput =
+  typeof ComputerAutomationActivateWindowInput.Type;
 
 export const ComputerAutomationDragInput = Schema.Struct({
   frameId: FramePointFields.frameId,
@@ -641,7 +740,7 @@ export type ComputerAutomationWheelInput = typeof ComputerAutomationWheelInput.T
 export const ComputerAutomationTypeInput = Schema.Struct({
   text: Schema.String.check(Schema.isMaxLength(10_000)).annotate({
     description:
-      "Exact text to enter into the focused native control. Newline is inserted directly when the focused editable control explicitly supports multiple lines and otherwise presses Enter; tab presses Tab. Non-ASCII code points use a layout-independent path without changing the clipboard.",
+      "Exact text to enter into the focused native control. Newline is inserted directly when the focused editable control explicitly supports multiple lines and otherwise presses Enter; tab presses Tab. Non-ASCII code points require a focused accessible editable control and otherwise fail explicitly without changing the clipboard.",
   }),
   intervalMs: Schema.optional(
     Schema.Int.check(Schema.isBetween({ minimum: 0, maximum: 250 })).annotate({
@@ -657,9 +756,8 @@ export const ComputerAutomationTypeInput = Schema.Struct({
   .check(
     Schema.makeFilter(
       (input) =>
-        Array.from(input.text).length * (input.intervalMs ?? 0) +
-          unicodeEntryCount(input.text) * UNICODE_ENTRY_SETTLE_MS <=
-          MAX_TYPE_DURATION_MS || `Typing delay must total at most ${MAX_TYPE_DURATION_MS}ms.`,
+        Array.from(input.text).length * (input.intervalMs ?? 0) <= MAX_TYPE_DURATION_MS ||
+        `Typing delay must total at most ${MAX_TYPE_DURATION_MS}ms.`,
     ),
   )
   .annotate({
@@ -701,30 +799,105 @@ export const ComputerAutomationHotkeyInput = Schema.Struct({
 });
 export type ComputerAutomationHotkeyInput = typeof ComputerAutomationHotkeyInput.Type;
 
+export const ComputerAutomationWaitForChangeInput = Schema.Struct({
+  ...ComputerAutomationImageRegion.fields,
+  timeoutMs: Schema.Int.check(
+    Schema.isBetween({ minimum: 1, maximum: MAX_CHANGE_WAIT_MS }),
+  ).annotate({
+    description: "Maximum time to wait in milliseconds; maximum 60000.",
+  }),
+  pollIntervalMs: Schema.optional(
+    Schema.Int.check(
+      Schema.isBetween({
+        minimum: MIN_CHANGE_POLL_INTERVAL_MS,
+        maximum: MAX_CHANGE_POLL_INTERVAL_MS,
+      }),
+    ).annotate({
+      description: "Capture interval in milliseconds. Defaults to 250; range 100 through 2000.",
+    }),
+  ),
+}).annotate({
+  description:
+    "Waits for a region to change from a fresh baseline captured when this action starts, without returning every sample. The referenced frame defines coordinates, not the baseline; changes before this wait starts are not detected.",
+});
+export type ComputerAutomationWaitForChangeInput = typeof ComputerAutomationWaitForChangeInput.Type;
+
 export const ComputerAutomationAction = Schema.Union([
-  Schema.Struct({ type: Schema.Literal("click"), ...ComputerAutomationClickInput.fields }),
-  Schema.Struct({ type: Schema.Literal("move"), ...ComputerAutomationMoveInput.fields }),
-  Schema.Struct({ type: Schema.Literal("activate"), ...ComputerAutomationActivateInput.fields }),
-  Schema.Struct({ type: Schema.Literal("drag"), ...ComputerAutomationDragInput.fields }),
-  Schema.Struct({ type: Schema.Literal("wheel"), ...ComputerAutomationWheelInput.fields }),
-  Schema.Struct({ type: Schema.Literal("type"), ...ComputerAutomationTypeInput.fields }),
-  Schema.Struct({ type: Schema.Literal("press"), ...ComputerAutomationPressInput.fields }),
-  Schema.Struct({ type: Schema.Literal("hotkey"), ...ComputerAutomationHotkeyInput.fields }),
-  Schema.Struct({ type: Schema.Literal("key_down"), ...ComputerAutomationKeyInput.fields }),
-  Schema.Struct({ type: Schema.Literal("key_up"), ...ComputerAutomationKeyInput.fields }),
+  Schema.Struct({ type: Schema.Literal("click"), ...ComputerAutomationClickInput.fields }).annotate(
+    {
+      description: "Click at frame-relative image coordinates.",
+    },
+  ),
+  Schema.Struct({ type: Schema.Literal("move"), ...ComputerAutomationMoveInput.fields }).annotate({
+    description: "Move the pointer without clicking.",
+  }),
+  Schema.Struct({
+    type: Schema.Literal("activate"),
+    ...ComputerAutomationActivateInput.fields,
+  }).annotate({
+    description: "Activate one semantic target; this must be the first action in the batch.",
+  }),
+  Schema.Struct({
+    type: Schema.Literal("activate_window"),
+    ...ComputerAutomationActivateWindowInput.fields,
+  }).annotate({
+    description: "Focus one semantic window; this must be the first action in the batch.",
+  }),
+  Schema.Struct({ type: Schema.Literal("drag"), ...ComputerAutomationDragInput.fields }).annotate({
+    description: "Move, hold a mouse button, drag through intermediate points, and release.",
+  }),
+  Schema.Struct({ type: Schema.Literal("wheel"), ...ComputerAutomationWheelInput.fields }).annotate(
+    {
+      description: "Emit discrete horizontal or vertical mouse-wheel ticks.",
+    },
+  ),
+  Schema.Struct({ type: Schema.Literal("type"), ...ComputerAutomationTypeInput.fields }).annotate({
+    description: "Inject exact text and optionally submit it.",
+  }),
+  Schema.Struct({ type: Schema.Literal("press"), ...ComputerAutomationPressInput.fields }).annotate(
+    {
+      description: "Press and release one key with optional compatibility modifiers.",
+    },
+  ),
+  Schema.Struct({
+    type: Schema.Literal("hotkey"),
+    ...ComputerAutomationHotkeyInput.fields,
+  }).annotate({
+    description: "Press a key chord atomically and release it in reverse order.",
+  }),
+  Schema.Struct({
+    type: Schema.Literal("key_down"),
+    ...ComputerAutomationKeyInput.fields,
+  }).annotate({
+    description: "Hold one key across later actions or calls.",
+  }),
+  Schema.Struct({ type: Schema.Literal("key_up"), ...ComputerAutomationKeyInput.fields }).annotate({
+    description: "Release one key previously held by key_down.",
+  }),
   Schema.Struct({
     type: Schema.Literal("wait"),
-    durationMs: Schema.Int.check(Schema.isBetween({ minimum: 0, maximum: MAX_ACTION_WAIT_MS })),
+    durationMs: Schema.Int.check(
+      Schema.isBetween({ minimum: 0, maximum: MAX_ACTION_WAIT_MS }),
+    ).annotate({ description: "Fixed delay in milliseconds; maximum 5000." }),
+  }).annotate({ description: "Wait for a fixed bounded duration." }),
+  Schema.Struct({
+    type: Schema.Literal("wait_for_change"),
+    ...ComputerAutomationWaitForChangeInput.fields,
+  }).annotate({
+    description:
+      "Wait until a region changes after this action starts or the timeout expires; frameId defines coordinates, not a past baseline.",
   }),
 ]);
 export type ComputerAutomationAction = typeof ComputerAutomationAction.Type;
 
 export const ComputerAutomationActInput = Schema.Struct({
   ...ComputerAutomationDesktopTargetField,
-  actions: Schema.Array(ComputerAutomationAction).check(
-    Schema.isMinLength(1),
-    Schema.isMaxLength(MAX_ACTION_BATCH_ACTIONS),
-  ),
+  actions: Schema.Array(ComputerAutomationAction)
+    .check(Schema.isMinLength(1), Schema.isMaxLength(MAX_ACTION_BATCH_ACTIONS))
+    .annotate({
+      description:
+        "One through 32 ordered actions. Each action is a discriminated object whose type selects its documented fields.",
+    }),
   observation: Schema.optional(
     Schema.Union([Schema.Literal(false), ComputerAutomationObservationOptions]).annotate({
       description:
@@ -740,8 +913,14 @@ export const ComputerAutomationActInput = Schema.Struct({
       for (const [index, action] of input.actions.entries()) {
         switch (action.type) {
           case "activate":
+          case "activate_window":
             activationCount += 1;
-            if (index !== 0) return "A semantic activation must be the first action in a batch.";
+            if (index !== 0) {
+              return {
+                path: ["actions", index, action.type === "activate" ? "targetId" : "windowId"],
+                issue: "A semantic activation must be the first action in a batch.",
+              };
+            }
             break;
           case "drag":
             durationMs += action.durationMs ?? 500;
@@ -755,10 +934,16 @@ export const ComputerAutomationActInput = Schema.Struct({
               Number(action.x !== undefined) +
               Number(action.y !== undefined);
             if (pointFieldCount !== 0 && pointFieldCount !== 3) {
-              return "Wheel targeting requires frameId, x, and y together.";
+              return {
+                path: ["actions", index],
+                issue: "Wheel targeting requires frameId, x, and y together.",
+              };
             }
             if (action.deltaX === undefined && action.deltaY === undefined) {
-              return "Provide deltaX or deltaY.";
+              return {
+                path: ["actions", index],
+                issue: "Provide deltaX or deltaY.",
+              };
             }
             break;
           }
@@ -768,22 +953,34 @@ export const ComputerAutomationActInput = Schema.Struct({
               textLength += actionTextLength;
               durationMs +=
                 actionTextLength * (action.intervalMs ?? 0) +
-                unicodeEntryCount(action.text) * UNICODE_ENTRY_SETTLE_MS +
                 (action.submit === true ? SUBMIT_SETTLE_MS : 0);
             }
             break;
           case "wait":
             durationMs += action.durationMs;
             break;
+          case "wait_for_change":
+            durationMs += action.timeoutMs;
+            break;
         }
       }
-      if (activationCount > 1) return "A batch may activate at most one semantic target.";
+      if (activationCount > 1) {
+        return {
+          path: ["actions"],
+          issue: "A batch may activate at most one semantic target or window.",
+        };
+      }
       if (textLength > MAX_ACTION_BATCH_TEXT_LENGTH) {
-        return `Action batch text must total at most ${MAX_ACTION_BATCH_TEXT_LENGTH} characters.`;
+        return {
+          path: ["actions"],
+          issue: `Action batch text must total at most ${MAX_ACTION_BATCH_TEXT_LENGTH} characters.`,
+        };
       }
       return (
-        durationMs <= MAX_ACTION_BATCH_DURATION_MS ||
-        `Action batch delay must total at most ${MAX_ACTION_BATCH_DURATION_MS}ms.`
+        durationMs <= MAX_ACTION_BATCH_DURATION_MS || {
+          path: ["actions"],
+          issue: `Action batch delay must total at most ${MAX_ACTION_BATCH_DURATION_MS}ms.`,
+        }
       );
     }),
   )

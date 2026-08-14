@@ -8,7 +8,7 @@ const MODIFIER_ORDER = ["ctrl", "shift", "alt", "meta_l"] as const;
 export class QemuInputValidationError extends Schema.TaggedErrorClass<QemuInputValidationError>()(
   "QemuInputValidationError",
   {
-    code: Schema.Literals(["unsupported-key", "duplicate-hotkey-key"]),
+    code: Schema.Literals(["unsupported-key", "unsupported-text", "duplicate-hotkey-key"]),
     field: Schema.String,
     received: Schema.String,
     expected: Schema.Array(Schema.String),
@@ -190,7 +190,7 @@ export function qemuPressQcodes(
   ]);
 }
 
-/** Builds physical key chords with a Linux Unicode fallback and no clipboard mutation. */
+/** Builds physical key chords only for text QEMU can inject exactly. */
 export function qemuTextChords(text: string): ReadonlyArray<ReadonlyArray<string>> {
   const chords: string[][] = [];
   for (const character of text) {
@@ -206,11 +206,13 @@ export function qemuTextChords(text: string): ReadonlyArray<ReadonlyArray<string
       chords.push([...qemuPressQcodes(character)]);
       continue;
     }
-    chords.push([...qemuHotkeyQcodes(["Control", "Shift", "U"])]);
-    for (const digit of character.codePointAt(0)!.toString(16)) {
-      chords.push([...qemuPressQcodes(digit)]);
-    }
-    chords.push([...qemuPressQcodes("Enter")]);
+    throw new QemuInputValidationError({
+      code: "unsupported-text",
+      field: "text",
+      received: "non-ASCII text",
+      expected: ["ASCII text or a focused accessible editable control"],
+      phase: "validation",
+    });
   }
   return chords;
 }
