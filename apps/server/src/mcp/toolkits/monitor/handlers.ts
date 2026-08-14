@@ -36,6 +36,17 @@ const handlers = {
       const service = yield* ThreadMonitorService;
       return yield* service.checkNow({ threadId: scope.threadId, check });
     }),
+  computer_watch_start: (monitor) =>
+    Effect.gen(function* () {
+      const scope = yield* McpInvocationContext.McpInvocationContext;
+      const service = yield* ThreadMonitorService;
+      return yield* service.createComputer({ threadId: scope.threadId, monitor });
+    }),
+  computer_watch_capabilities: () =>
+    Effect.gen(function* () {
+      const service = yield* ThreadMonitorService;
+      return yield* service.computerCapabilities;
+    }),
 } satisfies Parameters<typeof MonitorToolkit.toLayer>[0];
 
 /** Provides durable monitor handlers to the MCP toolkit. */
