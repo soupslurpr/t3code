@@ -139,7 +139,8 @@ const routerHarness = Effect.gen(function* () {
           captureSource: "virtual-display" as const,
         }),
       ),
-    act: (_controllerId, _input, selectedId) => record(`agent:act:${selectedId}`),
+    act: (_controllerId, _input, selectedId) =>
+      record(`agent:act:${selectedId}`).pipe(Effect.as([])),
     release: (_controllerId, selectedId) =>
       record(`agent:release:${selectedId}`).pipe(Effect.as(agentStatus)),
     forget: (_controllerId, selectedId) => record(`agent:forget:${selectedId}`),
