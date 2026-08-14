@@ -31,6 +31,9 @@ export interface ThreadMonitorRepositoryShape {
     ReadonlyArray<ThreadMonitor>,
     ProjectionRepositoryError
   >;
+
+  /** Deletes every monitor owned by a thread. */
+  readonly deleteByThread: (threadId: ThreadId) => Effect.Effect<void, ProjectionRepositoryError>;
 }
 
 /** Provides durable monitor persistence. */
