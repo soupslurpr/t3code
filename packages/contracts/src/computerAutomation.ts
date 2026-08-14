@@ -323,8 +323,29 @@ export const ComputerAutomationImageRegion = Schema.Struct({
 });
 export type ComputerAutomationImageRegion = typeof ComputerAutomationImageRegion.Type;
 
+export const ComputerAutomationDesktopRegion = Schema.Struct({
+  coordinateSpace: Schema.Literal("desktop-logical"),
+  displayId: ComputerAutomationDisplayId.annotate({
+    description: "Display whose durable desktop-logical coordinates define this region.",
+  }),
+  x: Schema.Int,
+  y: Schema.Int,
+  width: Schema.Int.check(Schema.isGreaterThan(0)),
+  height: Schema.Int.check(Schema.isGreaterThan(0)),
+}).annotate({
+  description:
+    "Durable display region in Electron desktop-logical coordinates. Unlike an image region, it remains valid after its source frame expires.",
+});
+export type ComputerAutomationDesktopRegion = typeof ComputerAutomationDesktopRegion.Type;
+
+export const ComputerAutomationScreenshotRegion = Schema.Union([
+  ComputerAutomationImageRegion,
+  ComputerAutomationDesktopRegion,
+]);
+export type ComputerAutomationScreenshotRegion = typeof ComputerAutomationScreenshotRegion.Type;
+
 export const ComputerAutomationScreenshotOptions = Schema.Struct({
-  region: Schema.optional(ComputerAutomationImageRegion),
+  region: Schema.optional(ComputerAutomationScreenshotRegion),
   maxWidth: Schema.optional(
     Schema.Int.check(Schema.isBetween({ minimum: 1, maximum: MAX_SCREENSHOT_DIMENSION })).annotate({
       description: "Maximum returned image width while preserving aspect ratio.",
@@ -337,7 +358,7 @@ export const ComputerAutomationScreenshotOptions = Schema.Struct({
   ),
 }).annotate({
   description:
-    "Returns a full-display image or a current region defined by a prior frame, bounded to the requested resolution without upscaling.",
+    "Returns a full-display image, a current frame-relative region, or a durable desktop-logical region, bounded to the requested resolution without upscaling.",
 });
 export type ComputerAutomationScreenshotOptions = typeof ComputerAutomationScreenshotOptions.Type;
 
@@ -356,7 +377,7 @@ export const ComputerAutomationObservationOptions = Schema.Struct({
   screenshot: Schema.optional(
     Schema.Union([Schema.Literal(false), ComputerAutomationScreenshotOptions]).annotate({
       description:
-        "Screenshot options. Defaults to a full-display image; false returns semantic targets only.",
+        "Screenshot options. Defaults to a full-display image; false returns semantic targets only. Frame-relative regions are convenient for immediate actions, while desktop-logical regions remain valid for durable monitoring.",
     }),
   ),
   delayMs: Schema.optional(
@@ -379,7 +400,7 @@ export const ComputerAutomationObservationOptions = Schema.Struct({
         screenshot === false ||
         screenshot.region === undefined ||
         input.displayId === undefined ||
-        "Omit displayId when screenshot.region selects a source frame."
+        "Omit displayId when screenshot.region selects its source display or frame."
       );
     }),
   )
@@ -432,7 +453,7 @@ export const ComputerAutomationSnapshotInput = Schema.Struct({
         screenshot === false ||
         screenshot.region === undefined ||
         input.displayId === undefined ||
-        "Omit displayId when screenshot.region selects a source frame."
+        "Omit displayId when screenshot.region selects its source display or frame."
       );
     }),
   )
