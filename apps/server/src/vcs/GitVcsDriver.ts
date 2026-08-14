@@ -704,6 +704,8 @@ export const makeVcsDriverShape = Effect.fn("makeGitVcsDriverShape")(function* (
       return path.isAbsolute(gitCommonDir) ? gitCommonDir : path.resolve(cwd, gitCommonDir);
     });
 
+  // TODO(upstream pingdotgg/t3code#3646): Drop this downstream preflight when
+  // upstream rejects oversized checkpoints before Git writes objects.
   const validateCheckpointUntrackedContent = Effect.fn(
     "GitVcsDriver.checkpoints.validateUntrackedContent",
   )(function* (cwd: string) {

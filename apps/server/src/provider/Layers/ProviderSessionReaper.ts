@@ -123,6 +123,8 @@ const makeProviderSessionReaper = (options?: ProviderSessionReaperLiveOptions) =
       }
     });
 
+    // TODO(upstream pingdotgg/t3code#4584): Drop this downstream reconciliation
+    // when upstream settles projected sessions whose providers died on restart.
     const reconcileOrphanedProjectedSessions = Effect.gen(function* () {
       const [shell, activeSessions] = yield* Effect.all([
         projectionSnapshotQuery.getShellSnapshot(),

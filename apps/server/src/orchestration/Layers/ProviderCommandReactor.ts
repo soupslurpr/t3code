@@ -439,6 +439,8 @@ const make = Effect.gen(function* () {
       .pipe(Effect.map(Option.getOrUndefined));
   });
 
+  // TODO(upstream pingdotgg/t3code#5351): Drop this downstream targeted query
+  // when provider commands no longer hydrate full thread detail upstream.
   const resolveTurnStartContext = Effect.fnUntraced(function* (
     threadId: ThreadId,
     messageId: MessageId,

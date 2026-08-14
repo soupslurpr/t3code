@@ -808,6 +808,8 @@ const make = Effect.gen(function* () {
   const orchestrationEngine = yield* OrchestrationEngineService;
   const projectionSnapshotQuery = yield* ProjectionSnapshotQuery;
   const providerService = yield* ProviderService;
+  // TODO(upstream pingdotgg/t3code#5351): Drop these downstream targeted reads
+  // when runtime ingestion no longer hydrates full thread detail upstream.
   const projectionThreadActivityRepository = yield* ProjectionThreadActivityRepository;
   const projectionThreadMessageRepository = yield* ProjectionThreadMessageRepository;
   const projectionThreadProposedPlanRepository = yield* ProjectionThreadProposedPlanRepository;
