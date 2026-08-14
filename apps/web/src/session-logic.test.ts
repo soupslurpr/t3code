@@ -1786,6 +1786,26 @@ describe("deriveWorkLogEntries", () => {
 });
 
 describe("deriveTimelineEntries", () => {
+  it("omits internal system messages from the visible timeline", () => {
+    const entries = deriveTimelineEntries(
+      [
+        {
+          id: MessageId.make("system-message"),
+          role: "system",
+          text: "Internal durable monitor continuation.",
+          createdAt: "2026-02-23T00:00:00.000Z",
+          turnId: null,
+          updatedAt: "2026-02-23T00:00:00.000Z",
+          streaming: false,
+        },
+      ],
+      [],
+      [],
+    );
+
+    expect(entries).toEqual([]);
+  });
+
   it("includes proposed plans alongside messages and work entries in chronological order", () => {
     const entries = deriveTimelineEntries(
       [

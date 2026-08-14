@@ -3,6 +3,7 @@ import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
 
 import {
+  ClientOrchestrationCommand,
   DEFAULT_PROVIDER_INTERACTION_MODE,
   DEFAULT_RUNTIME_MODE,
   ModelSelection,
@@ -34,6 +35,7 @@ const decodeProjectCreateCommand = Schema.decodeUnknownEffect(ProjectCreateComma
 const decodeProjectCreatedPayload = Schema.decodeUnknownEffect(ProjectCreatedPayload);
 const decodeProjectMetaUpdatedPayload = Schema.decodeUnknownEffect(ProjectMetaUpdatedPayload);
 const decodeThreadTurnStartCommand = Schema.decodeUnknownEffect(ThreadTurnStartCommand);
+const decodeClientOrchestrationCommand = Schema.decodeUnknownEffect(ClientOrchestrationCommand);
 const decodeThreadTurnStartRequestedPayload = Schema.decodeUnknownEffect(
   ThreadTurnStartRequestedPayload,
 );
@@ -228,6 +230,29 @@ it.effect("decodes thread.turn.start defaults for provider and runtime mode", ()
     assert.strictEqual(parsed.modelSelection, undefined);
     assert.strictEqual(parsed.runtimeMode, DEFAULT_RUNTIME_MODE);
     assert.strictEqual(parsed.interactionMode, DEFAULT_PROVIDER_INTERACTION_MODE);
+  }),
+);
+
+it.effect("reserves system turn messages for internal orchestration", () =>
+  Effect.gen(function* () {
+    const command = {
+      type: "thread.turn.start",
+      commandId: "cmd-system-turn",
+      threadId: "thread-1",
+      message: {
+        messageId: "msg-system-turn",
+        role: "system",
+        text: "Resume after the durable monitor triggered.",
+        attachments: [],
+      },
+      createdAt: "2026-01-01T00:00:00.000Z",
+    } as const;
+
+    const internal = yield* decodeThreadTurnStartCommand(command);
+    assert.strictEqual(internal.message.role, "system");
+
+    const client = yield* Effect.exit(decodeClientOrchestrationCommand(command));
+    assert.strictEqual(client._tag, "Failure");
   }),
 );
 

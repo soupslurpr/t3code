@@ -828,7 +828,9 @@ export const ThreadTurnStartCommand = Schema.Struct({
   threadId: ThreadId,
   message: Schema.Struct({
     messageId: MessageId,
-    role: Schema.Literal("user"),
+    // Clients remain user-only below. Internal schedulers may resume a thread
+    // with a system message without impersonating the user.
+    role: Schema.Literals(["user", "system"]),
     text: Schema.String,
     attachments: Schema.Array(ChatAttachment),
   }),

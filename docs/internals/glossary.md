@@ -42,6 +42,13 @@ A single user-to-assistant work cycle inside a thread. It starts with user input
 
 A user-visible log item attached to a thread. In [the contracts][1], activities cover important non-message events like approvals, tool actions, and failures. They are projected into thread state in [projector.ts][4].
 
+#### Durable monitor
+
+A persisted timer or externally signalled condition owned by one thread. It
+lets a provider turn finish while T3 Code waits without spending model tokens,
+then records the result or requests a provider-neutral continuation. See
+[durable-monitors.md][25] and [the monitor contracts][26].
+
 ### Orchestration
 
 Orchestration is the server-side domain layer that turns runtime activity into stable app state. The main entry point is [OrchestrationEngine.ts][7], with core logic in [decider.ts][8] and [projector.ts][4].
@@ -179,3 +186,5 @@ The file patch and changed-file summary for one turn. It is usually computed in 
 [22]: ../../apps/server/src/checkpointing/Utils.ts
 [23]: ../../apps/server/src/checkpointing/Diffs.ts
 [24]: ./overview.md
+[25]: ./durable-monitors.md
+[26]: ../../packages/contracts/src/threadMonitor.ts

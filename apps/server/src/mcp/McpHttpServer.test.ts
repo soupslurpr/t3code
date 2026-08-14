@@ -17,6 +17,7 @@ import { HttpBody, HttpClient, HttpRouter, HttpServerResponse } from "effect/uns
 import * as McpHttpServer from "./McpHttpServer.ts";
 import * as McpInvocationContext from "./McpInvocationContext.ts";
 import * as PreviewAutomationBroker from "./PreviewAutomationBroker.ts";
+import { ThreadMonitorService } from "../threadMonitor/ThreadMonitorService.ts";
 
 const environmentId = EnvironmentId.make("environment-mcp-test");
 const threadId = ThreadId.make("thread-mcp-test");
@@ -40,7 +41,18 @@ const client = McpSchema.McpServerClient.of({
   },
   getClient: Effect.die("unused"),
 });
+const MonitorTestLayer = Layer.succeed(
+  ThreadMonitorService,
+  ThreadMonitorService.of({
+    create: () => Effect.die("unused"),
+    status: () => Effect.die("unused"),
+    signal: () => Effect.die("unused"),
+    cancel: () => Effect.die("unused"),
+    checkNow: () => Effect.die("unused"),
+  }),
+);
 const TestLayer = McpHttpServer.ToolkitRegistrationLive.pipe(
+  Layer.provide(MonitorTestLayer),
   Layer.provideMerge(McpServer.McpServer.layer),
   Layer.provideMerge(PreviewAutomationBroker.layer.pipe(Layer.provide(NodeServices.layer))),
 );

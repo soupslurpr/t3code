@@ -1069,12 +1069,12 @@ const make = Effect.gen(function* () {
     }
 
     const message = thread.messages.find((entry) => entry.id === event.payload.messageId);
-    if (!message || message.role !== "user") {
+    if (!message || (message.role !== "user" && message.role !== "system")) {
       yield* appendProviderFailureActivity({
         threadId: event.payload.threadId,
         kind: "provider.turn.start.failed",
         summary: "Provider turn start failed",
-        detail: `User message '${event.payload.messageId}' was not found for turn start request.`,
+        detail: `Input message '${event.payload.messageId}' was not found for turn start request.`,
         turnId: null,
         createdAt: event.payload.createdAt,
       });
@@ -1082,6 +1082,7 @@ const make = Effect.gen(function* () {
     }
 
     const isFirstUserMessageTurn =
+      message.role === "user" &&
       thread.messages.filter((entry) => entry.role === "user").length === 1;
     if (isFirstUserMessageTurn) {
       const project = yield* resolveProject(thread.projectId);

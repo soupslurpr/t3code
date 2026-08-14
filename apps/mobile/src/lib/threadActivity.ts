@@ -1523,12 +1523,14 @@ export function buildThreadFeed(
   const workLogEntries = deriveWorkLogEntries(thread.activities);
   const entries = Arr.sortWith(
     [
-      ...loadedMessages.map<RawThreadFeedEntry>((message) => ({
-        type: "message",
-        id: message.id,
-        createdAt: message.createdAt,
-        message,
-      })),
+      ...loadedMessages
+        .filter((message) => message.role !== "system")
+        .map<RawThreadFeedEntry>((message) => ({
+          type: "message",
+          id: message.id,
+          createdAt: message.createdAt,
+          message,
+        })),
       ...workLogEntries
         .filter((entry) => {
           if (options?.loadedMessages === undefined) {
