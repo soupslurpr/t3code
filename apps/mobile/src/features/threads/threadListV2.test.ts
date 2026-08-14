@@ -204,6 +204,31 @@ describe("resolveThreadListV2Status", () => {
       "ready",
     );
   });
+
+  it("shows durable waits as monitoring without masking failures", () => {
+    const monitoring = makeThread({
+      id: ThreadId.make("monitoring"),
+      title: "monitoring",
+      backgroundLiveness: "monitoring",
+    });
+    expect(resolveThreadListV2Status(monitoring)).toBe("monitoring");
+
+    expect(
+      resolveThreadListV2Status({
+        ...monitoring,
+        session: {
+          threadId: monitoring.id,
+          status: "error",
+          providerName: "Codex",
+          providerInstanceId: ProviderInstanceId.make("codex"),
+          runtimeMode: "full-access",
+          activeTurnId: null,
+          lastError: "failed",
+          updatedAt: NOW,
+        },
+      }),
+    ).toBe("failed");
+  });
 });
 
 describe("queued messages keep a settled thread active", () => {
