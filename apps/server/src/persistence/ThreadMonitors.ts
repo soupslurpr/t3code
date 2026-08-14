@@ -1,0 +1,281 @@
+/** Implements durable monitor persistence with SQLite. */
+import {
+  IsoDateTime,
+  NonNegativeInt,
+  ThreadId,
+  ThreadMonitor,
+  ThreadMonitorId,
+  ThreadMonitorStatus,
+} from "@t3tools/contracts";
+import * as Effect from "effect/Effect";
+import * as Layer from "effect/Layer";
+import * as Option from "effect/Option";
+import * as Schema from "effect/Schema";
+import * as SqlClient from "effect/unstable/sql/SqlClient";
+import * as SqlSchema from "effect/unstable/sql/SqlSchema";
+
+import { toPersistenceSqlError } from "../Errors.ts";
+import {
+  ThreadMonitorRepository,
+  type ThreadMonitorRepositoryShape,
+} from "../Services/ThreadMonitors.ts";
+
+const ThreadMonitorRow = Schema.Struct({
+  monitorId: ThreadMonitorId,
+  threadId: ThreadId,
+  label: Schema.String,
+  conditionType: Schema.Literals(["time", "signal"]),
+  wakeAt: Schema.NullOr(IsoDateTime),
+  continuationMode: Schema.Literals(["resume-thread", "record-only"]),
+  resumePrompt: Schema.NullOr(Schema.String),
+  status: ThreadMonitorStatus,
+  triggerReason: Schema.NullOr(Schema.Literals(["signal", "deadline"])),
+  triggerSummary: Schema.NullOr(Schema.String),
+  triggerEvidence: Schema.NullOr(Schema.String),
+  createdAt: IsoDateTime,
+  updatedAt: IsoDateTime,
+  triggeredAt: Schema.NullOr(IsoDateTime),
+  deliveredAt: Schema.NullOr(IsoDateTime),
+  cancelledAt: Schema.NullOr(IsoDateTime),
+  lastError: Schema.NullOr(Schema.String),
+  deliveryAttempts: NonNegativeInt,
+});
+type ThreadMonitorRow = typeof ThreadMonitorRow.Type;
+
+const toRow = (monitor: ThreadMonitor): ThreadMonitorRow => ({
+  monitorId: monitor.id,
+  threadId: monitor.threadId,
+  label: monitor.label,
+  conditionType: monitor.condition.type,
+  wakeAt: monitor.condition.type === "time" ? monitor.condition.at : monitor.condition.deadlineAt,
+  continuationMode: monitor.continuation.mode,
+  resumePrompt: monitor.continuation.mode === "resume-thread" ? monitor.continuation.prompt : null,
+  status: monitor.status,
+  triggerReason: monitor.trigger?.reason ?? null,
+  triggerSummary: monitor.trigger?.summary ?? null,
+  triggerEvidence: monitor.trigger?.evidence ?? null,
+  createdAt: monitor.createdAt,
+  updatedAt: monitor.updatedAt,
+  triggeredAt: monitor.triggeredAt,
+  deliveredAt: monitor.deliveredAt,
+  cancelledAt: monitor.cancelledAt,
+  lastError: monitor.lastError,
+  deliveryAttempts: monitor.deliveryAttempts,
+});
+
+const fromRow = (row: ThreadMonitorRow): ThreadMonitor => ({
+  id: row.monitorId,
+  threadId: row.threadId,
+  label: row.label,
+  condition:
+    row.conditionType === "time"
+      ? { type: "time", at: row.wakeAt ?? row.createdAt }
+      : { type: "signal", deadlineAt: row.wakeAt },
+  continuation:
+    row.continuationMode === "resume-thread"
+      ? { mode: "resume-thread", prompt: row.resumePrompt ?? row.label }
+      : { mode: "record-only" },
+  status: row.status,
+  trigger:
+    row.triggerReason === null
+      ? null
+      : {
+          reason: row.triggerReason,
+          summary: row.triggerSummary,
+          evidence: row.triggerEvidence,
+        },
+  createdAt: row.createdAt,
+  updatedAt: row.updatedAt,
+  triggeredAt: row.triggeredAt,
+  deliveredAt: row.deliveredAt,
+  cancelledAt: row.cancelledAt,
+  lastError: row.lastError,
+  deliveryAttempts: row.deliveryAttempts,
+});
+
+const make = Effect.gen(function* () {
+  const sql = yield* SqlClient.SqlClient;
+
+  const upsertRow = SqlSchema.void({
+    Request: ThreadMonitorRow,
+    execute: (row) => sql`
+      INSERT INTO thread_monitors (
+        monitor_id,
+        thread_id,
+        label,
+        condition_type,
+        wake_at,
+        continuation_mode,
+        resume_prompt,
+        status,
+        trigger_reason,
+        trigger_summary,
+        trigger_evidence,
+        created_at,
+        updated_at,
+        triggered_at,
+        delivered_at,
+        cancelled_at,
+        last_error,
+        delivery_attempts
+      ) VALUES (
+        ${row.monitorId},
+        ${row.threadId},
+        ${row.label},
+        ${row.conditionType},
+        ${row.wakeAt},
+        ${row.continuationMode},
+        ${row.resumePrompt},
+        ${row.status},
+        ${row.triggerReason},
+        ${row.triggerSummary},
+        ${row.triggerEvidence},
+        ${row.createdAt},
+        ${row.updatedAt},
+        ${row.triggeredAt},
+        ${row.deliveredAt},
+        ${row.cancelledAt},
+        ${row.lastError},
+        ${row.deliveryAttempts}
+      )
+      ON CONFLICT (monitor_id) DO UPDATE SET
+        thread_id = excluded.thread_id,
+        label = excluded.label,
+        condition_type = excluded.condition_type,
+        wake_at = excluded.wake_at,
+        continuation_mode = excluded.continuation_mode,
+        resume_prompt = excluded.resume_prompt,
+        status = excluded.status,
+        trigger_reason = excluded.trigger_reason,
+        trigger_summary = excluded.trigger_summary,
+        trigger_evidence = excluded.trigger_evidence,
+        created_at = excluded.created_at,
+        updated_at = excluded.updated_at,
+        triggered_at = excluded.triggered_at,
+        delivered_at = excluded.delivered_at,
+        cancelled_at = excluded.cancelled_at,
+        last_error = excluded.last_error,
+        delivery_attempts = excluded.delivery_attempts
+    `,
+  });
+
+  const getRow = SqlSchema.findOneOption({
+    Request: Schema.Struct({ monitorId: ThreadMonitorId }),
+    Result: ThreadMonitorRow,
+    execute: ({ monitorId }) => sql`
+      SELECT
+        monitor_id AS "monitorId",
+        thread_id AS "threadId",
+        label,
+        condition_type AS "conditionType",
+        wake_at AS "wakeAt",
+        continuation_mode AS "continuationMode",
+        resume_prompt AS "resumePrompt",
+        status,
+        trigger_reason AS "triggerReason",
+        trigger_summary AS "triggerSummary",
+        trigger_evidence AS "triggerEvidence",
+        created_at AS "createdAt",
+        updated_at AS "updatedAt",
+        triggered_at AS "triggeredAt",
+        delivered_at AS "deliveredAt",
+        cancelled_at AS "cancelledAt",
+        last_error AS "lastError",
+        delivery_attempts AS "deliveryAttempts"
+      FROM thread_monitors
+      WHERE monitor_id = ${monitorId}
+      LIMIT 1
+    `,
+  });
+
+  const listThreadRows = SqlSchema.findAll({
+    Request: Schema.Struct({
+      threadId: ThreadId,
+      includeFinished: Schema.Boolean,
+    }),
+    Result: ThreadMonitorRow,
+    execute: ({ threadId, includeFinished }) => sql`
+      SELECT
+        monitor_id AS "monitorId",
+        thread_id AS "threadId",
+        label,
+        condition_type AS "conditionType",
+        wake_at AS "wakeAt",
+        continuation_mode AS "continuationMode",
+        resume_prompt AS "resumePrompt",
+        status,
+        trigger_reason AS "triggerReason",
+        trigger_summary AS "triggerSummary",
+        trigger_evidence AS "triggerEvidence",
+        created_at AS "createdAt",
+        updated_at AS "updatedAt",
+        triggered_at AS "triggeredAt",
+        delivered_at AS "deliveredAt",
+        cancelled_at AS "cancelledAt",
+        last_error AS "lastError",
+        delivery_attempts AS "deliveryAttempts"
+      FROM thread_monitors
+      WHERE thread_id = ${threadId}
+        AND (${includeFinished ? 1 : 0} = 1 OR status IN ('active', 'triggered'))
+      ORDER BY created_at DESC, monitor_id DESC
+      LIMIT 100
+    `,
+  });
+
+  const listOutstandingRows = SqlSchema.findAll({
+    Request: Schema.Void,
+    Result: ThreadMonitorRow,
+    execute: () => sql`
+      SELECT
+        monitor_id AS "monitorId",
+        thread_id AS "threadId",
+        label,
+        condition_type AS "conditionType",
+        wake_at AS "wakeAt",
+        continuation_mode AS "continuationMode",
+        resume_prompt AS "resumePrompt",
+        status,
+        trigger_reason AS "triggerReason",
+        trigger_summary AS "triggerSummary",
+        trigger_evidence AS "triggerEvidence",
+        created_at AS "createdAt",
+        updated_at AS "updatedAt",
+        triggered_at AS "triggeredAt",
+        delivered_at AS "deliveredAt",
+        cancelled_at AS "cancelledAt",
+        last_error AS "lastError",
+        delivery_attempts AS "deliveryAttempts"
+      FROM thread_monitors
+      WHERE status IN ('active', 'triggered')
+      ORDER BY COALESCE(wake_at, '9999-12-31T23:59:59.999Z') ASC, monitor_id ASC
+    `,
+  });
+
+  const upsert: ThreadMonitorRepositoryShape["upsert"] = (monitor) =>
+    upsertRow(toRow(monitor)).pipe(
+      Effect.mapError(toPersistenceSqlError("ThreadMonitorRepository.upsert:query")),
+    );
+
+  const getById: ThreadMonitorRepositoryShape["getById"] = (monitorId) =>
+    getRow({ monitorId }).pipe(
+      Effect.map(Option.map(fromRow)),
+      Effect.mapError(toPersistenceSqlError("ThreadMonitorRepository.getById:query")),
+    );
+
+  return {
+    upsert,
+    getById,
+    listByThread: (input) =>
+      listThreadRows(input).pipe(
+        Effect.map((rows) => rows.map(fromRow)),
+        Effect.mapError(toPersistenceSqlError("ThreadMonitorRepository.listByThread:query")),
+      ),
+    listOutstanding: () =>
+      listOutstandingRows(undefined).pipe(
+        Effect.map((rows) => rows.map(fromRow)),
+        Effect.mapError(toPersistenceSqlError("ThreadMonitorRepository.listOutstanding:query")),
+      ),
+  } satisfies ThreadMonitorRepositoryShape;
+});
+
+export const layer = Layer.effect(ThreadMonitorRepository, make);

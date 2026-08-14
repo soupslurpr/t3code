@@ -91,6 +91,12 @@ const STATUS_LABEL_BY_STATUS: Partial<Record<ThreadListV2Status, StatusLabel>> =
     className: "text-adaptive-sky-600-400",
     iconTintClassName: "accent-adaptive-sky-600-400",
   },
+  monitoring: {
+    label: "Monitoring",
+    icon: "eye",
+    className: "text-adaptive-sky-600-400",
+    iconTintClassName: "accent-adaptive-sky-600-400",
+  },
   waiting: {
     label: "Waiting",
     icon: "circle.dashed.inset.filled",
