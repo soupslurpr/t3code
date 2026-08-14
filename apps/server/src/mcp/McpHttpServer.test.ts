@@ -45,6 +45,11 @@ const MonitorTestLayer = Layer.succeed(
   ThreadMonitorService,
   ThreadMonitorService.of({
     create: () => Effect.die("unused"),
+    createComputer: () => Effect.die("unused"),
+    computerCapabilities: Effect.succeed({
+      evaluators: [],
+      deterministicMatches: ["image-change"],
+    }),
     status: () => Effect.die("unused"),
     signal: () => Effect.die("unused"),
     cancel: () => Effect.die("unused"),

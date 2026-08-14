@@ -3,18 +3,22 @@ import {
   ThreadMonitor,
   ThreadMonitorCancelInput,
   ThreadMonitorCheckInput,
+  ThreadMonitorComputerCapabilities,
+  ThreadMonitorComputerStartInput,
   ThreadMonitorError,
   ThreadMonitorList,
   ThreadMonitorSignalInput,
   ThreadMonitorStartInput,
   ThreadMonitorStatusInput,
 } from "@t3tools/contracts";
+import * as Schema from "effect/Schema";
 import { Tool, Toolkit } from "effect/unstable/ai";
 
 import * as McpInvocationContext from "../../McpInvocationContext.ts";
 import { ThreadMonitorService } from "../../../threadMonitor/ThreadMonitorService.ts";
 
 const dependencies = [McpInvocationContext.McpInvocationContext, ThreadMonitorService];
+const EmptyParameters = Schema.Record(Schema.String, Schema.Never);
 
 const mutatingMonitorTool = <T extends Tool.Any>(tool: T): T =>
   tool.annotate(Tool.OpenWorld, true).annotate(Tool.Destructive, true) as T;
@@ -82,6 +86,32 @@ export const MonitorCheckNowTool = mutatingMonitorTool(
   }).annotate(Tool.Title, "Check durable monitors now"),
 );
 
+/** Starts a durable screen-region condition owned by the current thread. */
+export const ComputerWatchStartTool = mutatingMonitorTool(
+  Tool.make("computer_watch_start", {
+    description:
+      "Create a durable screen-region watch, acquire view-only access immediately, and return without keeping this model turn asleep. Choose the user desktop or an explicit Agent desktop, the full display or a region from a current frame, sampling resolution and cadence, and either exact image-change detection or an exact configured evaluator model plus a semantic condition. Frame regions are converted once to durable desktop coordinates. T3 discards ordinary samples, optionally retains an initial baseline, stores the terminal matching image, survives restarts, retries degraded capture or evaluation with backoff, releases its view lease when terminal or cancelled, and resumes the thread only through the ordinary monitor continuation. After starting a resume-thread watch, finish the current turn rather than polling.",
+    parameters: ThreadMonitorComputerStartInput,
+    success: ThreadMonitor,
+    failure: ThreadMonitorError,
+    dependencies,
+  }).annotate(Tool.Title, "Start durable computer watch"),
+);
+
+/** Lists exact configured model routes that can evaluate watched screen images. */
+export const ComputerWatchCapabilitiesTool = Tool.make("computer_watch_capabilities", {
+  description:
+    "List configured provider instances and models that support read-only screen-condition evaluation, plus deterministic conditions that need no model. Select an exact returned instanceId and model; T3 does not silently substitute another evaluator. tokenUsage reports whether evaluation usage is measurable, and promptCacheRefresh reports whether an adapter can explicitly refresh a model cache without creating a thread message.",
+  parameters: EmptyParameters,
+  success: ThreadMonitorComputerCapabilities,
+  failure: ThreadMonitorError,
+  dependencies,
+})
+  .annotate(Tool.Title, "Get computer-watch capabilities")
+  .annotate(Tool.Readonly, true)
+  .annotate(Tool.Destructive, false)
+  .annotate(Tool.Idempotent, true);
+
 /** Groups every durable monitor MCP operation. */
 export const MonitorToolkit = Toolkit.make(
   MonitorStartTool,
@@ -89,4 +119,6 @@ export const MonitorToolkit = Toolkit.make(
   MonitorSignalTool,
   MonitorCancelTool,
   MonitorCheckNowTool,
+  ComputerWatchStartTool,
+  ComputerWatchCapabilitiesTool,
 );

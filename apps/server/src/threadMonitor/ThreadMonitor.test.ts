@@ -12,9 +12,11 @@ import {
   TurnId,
 } from "@t3tools/contracts";
 import * as DateTime from "effect/DateTime";
+import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
+import * as Ref from "effect/Ref";
 import * as TestClock from "effect/testing/TestClock";
 
 import { ServerConfig } from "../config.ts";
@@ -30,13 +32,122 @@ import * as ThreadMonitorRepositoryLayer from "../persistence/Layers/ThreadMonit
 import { ThreadMonitorRepository } from "../persistence/Services/ThreadMonitors.ts";
 import * as RepositoryIdentityResolver from "../project/RepositoryIdentityResolver.ts";
 import { layer as ThreadMonitorLayer } from "./ThreadMonitor.ts";
+import { ThreadMonitorComputerService } from "./ThreadMonitorComputerService.ts";
 import { ThreadMonitorService } from "./ThreadMonitorService.ts";
 
 const projectId = ProjectId.make("monitor-project");
 const threadId = ThreadId.make("monitor-thread");
 
+interface ComputerMonitorProbeShape {
+  readonly checks: Ref.Ref<number>;
+  readonly releases: Ref.Ref<number>;
+}
+
+/** Exposes durable computer lifecycle calls to focused monitor tests. */
+class ComputerMonitorProbe extends Context.Service<
+  ComputerMonitorProbe,
+  ComputerMonitorProbeShape
+>()("t3/threadMonitor/ThreadMonitor.test/ComputerMonitorProbe") {}
+
+const computerLayer = Layer.succeed(
+  ThreadMonitorComputerService,
+  ThreadMonitorComputerService.of({
+    prepare: () => Effect.die("computer monitoring is not used by this test layer"),
+    check: () => Effect.die("computer monitoring is not used by this test layer"),
+    release: () => Effect.void,
+    capabilities: Effect.succeed({ evaluators: [], deterministicMatches: ["image-change"] }),
+  }),
+);
+
+const computerProbeLayer = Layer.effect(
+  ComputerMonitorProbe,
+  Effect.gen(function* () {
+    return ComputerMonitorProbe.of({
+      checks: yield* Ref.make(0),
+      releases: yield* Ref.make(0),
+    });
+  }),
+);
+
+const workingComputerLayer = Layer.effect(
+  ThreadMonitorComputerService,
+  Effect.gen(function* () {
+    const probe = yield* ComputerMonitorProbe;
+    return ThreadMonitorComputerService.of({
+      prepare: (input) =>
+        Effect.succeed({
+          condition: {
+            type: "computer",
+            desktop: input.watch.desktop ?? { kind: "user" },
+            region: {
+              coordinateSpace: "desktop-logical",
+              displayId: "display-0",
+              x: 10,
+              y: 20,
+              width: 300,
+              height: 200,
+            },
+            match: { type: "image-change" },
+            sampling: {
+              intervalMs: 30_000,
+              maxWidth: 1_024,
+              maxHeight: 1_024,
+              evaluateOnlyAfterChange: true,
+            },
+            deadlineAt: null,
+            nextCheckAt: input.createdAt,
+            baselineHash: "baseline-hash",
+            lastSampleHash: "baseline-hash",
+            baselineStored: true,
+            lastCheckedAt: null,
+            lastEvaluatedAt: null,
+            lastVerdict: null,
+            lastSummary: null,
+            lastUsage: null,
+            sampleCount: 0,
+            evaluationCount: 0,
+            unchangedSampleCount: 0,
+            consecutiveFailures: 0,
+            observationError: null,
+            resourceState: "viewing",
+          },
+          baselinePngBase64: "YmFzZWxpbmU=",
+        }),
+      check: ({ monitor, checkedAt }) => {
+        if (monitor.condition.type !== "computer") return Effect.die("expected computer monitor");
+        return Ref.update(probe.checks, (count) => count + 1).pipe(
+          Effect.as({
+            condition: {
+              ...monitor.condition,
+              nextCheckAt: checkedAt,
+              lastSampleHash: "terminal-hash",
+              lastCheckedAt: checkedAt,
+              lastEvaluatedAt: checkedAt,
+              lastVerdict: "matched" as const,
+              lastSummary: "The watched region changed.",
+              sampleCount: monitor.condition.sampleCount + 1,
+              evaluationCount: monitor.condition.evaluationCount + 1,
+            },
+            match: {
+              summary: "The watched region changed.",
+              evidence: "A visible terminal state appeared.",
+              terminalPngBase64: "dGVybWluYWw=",
+            },
+          }),
+        );
+      },
+      release: () => Ref.update(probe.releases, (count) => count + 1),
+      capabilities: Effect.succeed({
+        evaluators: [],
+        deterministicMatches: ["image-change"],
+      }),
+    });
+  }),
+);
+
 const testLayer = it.layer(
   ThreadMonitorLayer.pipe(
+    Layer.provide(computerLayer),
     Layer.provideMerge(OrchestrationLayerLive),
     Layer.provideMerge(ThreadMonitorRepositoryLayer.layer),
     Layer.provide(RepositoryIdentityResolver.layer),
@@ -44,6 +155,20 @@ const testLayer = it.layer(
     Layer.provide(SqlitePersistenceMemory),
     Layer.provide(NodeServices.layer),
     Layer.provide(TestClock.layer()),
+  ),
+);
+
+const computerMonitorTestLayer = it.layer(
+  ThreadMonitorLayer.pipe(
+    Layer.provide(workingComputerLayer),
+    Layer.provideMerge(OrchestrationLayerLive),
+    Layer.provideMerge(ThreadMonitorRepositoryLayer.layer),
+    Layer.provide(RepositoryIdentityResolver.layer),
+    Layer.provide(ServerConfig.layerTest(process.cwd(), { prefix: "t3-computer-monitor-test-" })),
+    Layer.provide(SqlitePersistenceMemory),
+    Layer.provide(NodeServices.layer),
+    Layer.provide(TestClock.layer()),
+    Layer.provideMerge(computerProbeLayer),
   ),
 );
 
@@ -474,11 +599,79 @@ testLayer("ThreadMonitor", (it) => {
   );
 });
 
+computerMonitorTestLayer("ThreadMonitor computer conditions", (it) => {
+  it.effect("retains evidence and releases view leases at terminal states", () =>
+    Effect.gen(function* () {
+      yield* seedThread;
+      const service = yield* ThreadMonitorService;
+      const repository = yield* ThreadMonitorRepository;
+      const probe = yield* ComputerMonitorProbe;
+
+      const monitor = yield* service.createComputer({
+        threadId,
+        monitor: {
+          label: "Wait for the rendered result",
+          desktop: { kind: "agent", desktopId: "agent-desktop-1" },
+          match: { type: "image-change" },
+          continuation: "record-only",
+        },
+      });
+      assert.strictEqual(monitor.status, "active");
+      assert.strictEqual(monitor.condition.type, "computer");
+      if (monitor.condition.type !== "computer") return;
+      assert.strictEqual(monitor.condition.resourceState, "viewing");
+
+      const retained = yield* repository.getComputerEvidence(monitor.id);
+      assert.isTrue(Option.isSome(retained));
+      if (Option.isSome(retained)) {
+        assert.strictEqual(retained.value.baselinePngBase64, "YmFzZWxpbmU=");
+      }
+
+      const matched = yield* service.checkNow({
+        threadId,
+        check: { monitorId: monitor.id },
+      });
+      const terminal = matched.monitors[0];
+      assert.isDefined(terminal);
+      assert.strictEqual(terminal?.status, "delivered");
+      assert.strictEqual(terminal?.trigger?.reason, "condition");
+      assert.strictEqual(terminal?.condition.type, "computer");
+      if (terminal?.condition.type === "computer") {
+        assert.strictEqual(terminal.condition.resourceState, "released");
+      }
+      assert.strictEqual(yield* Ref.get(probe.checks), 1);
+      assert.strictEqual(yield* Ref.get(probe.releases), 1);
+
+      const evidence = yield* repository.getComputerEvidence(monitor.id);
+      assert.isTrue(Option.isSome(evidence));
+      if (Option.isSome(evidence)) {
+        assert.strictEqual(evidence.value.terminalPngBase64, "dGVybWluYWw=");
+      }
+
+      const cancellable = yield* service.createComputer({
+        threadId,
+        monitor: {
+          label: "Cancel the rendered result watch",
+          match: { type: "image-change" },
+          continuation: "record-only",
+        },
+      });
+      const cancelled = yield* service.cancel({
+        threadId,
+        cancel: { monitorId: cancellable.id },
+      });
+      assert.strictEqual(cancelled.monitors[0]?.status, "cancelled");
+      assert.strictEqual(yield* Ref.get(probe.releases), 2);
+    }),
+  );
+});
+
 it.effect("restores outstanding monitor state and liveness after a runtime restart", () =>
   Effect.gen(function* () {
     const config = yield* ServerConfig;
     const makePersistentLayer = () =>
       ThreadMonitorLayer.pipe(
+        Layer.provide(computerLayer),
         Layer.provideMerge(OrchestrationLayerLive),
         Layer.provide(RepositoryIdentityResolver.layer),
         Layer.provide(Layer.succeed(ServerConfig, config)),
