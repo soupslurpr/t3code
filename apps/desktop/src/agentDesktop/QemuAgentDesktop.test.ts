@@ -17,6 +17,7 @@ import {
   qemuKeyChordPhases,
   qemuKeyChordSequence,
   qemuSendKeyArguments,
+  parseAgentDesktopStorageCapacity,
   toQemuAbsoluteCoordinate,
   type QemuAgentDesktopPaths,
 } from "./QemuAgentDesktop.ts";
@@ -82,6 +83,15 @@ describe("QemuAgentDesktop", () => {
       "--output=json",
       "/machine/disk.qcow2",
     ]);
+  });
+
+  it("parses bounded Agent desktop filesystem capacity", () => {
+    assert.deepEqual(
+      parseAgentDesktopStorageCapacity("1B-blocks       Avail\n214748364800 107374182400\n"),
+      { totalBytes: 214_748_364_800, availableBytes: 107_374_182_400 },
+    );
+    assert.isUndefined(parseAgentDesktopStorageCapacity("1B-blocks Avail\ninvalid output\n"));
+    assert.isUndefined(parseAgentDesktopStorageCapacity("1B-blocks Avail\n100 101\n"));
   });
 
   it("bounds emulated input batches without losing event order", () => {

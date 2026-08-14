@@ -33,6 +33,7 @@ const PACMAN_EXECUTABLE = "/usr/bin/pacman";
 const PKEXEC_EXECUTABLE = "/usr/bin/pkexec";
 const MFORMAT_EXECUTABLE = "/usr/bin/mformat";
 const MCOPY_EXECUTABLE = "/usr/bin/mcopy";
+const DF_EXECUTABLE = "/usr/bin/df";
 const ARCH_RELEASE_PATH = "/etc/arch-release";
 const KVM_DEVICE = "/dev/kvm";
 const OVMF_CODE_PATH = "/usr/share/edk2/x64/OVMF_CODE.4m.fd";
@@ -189,6 +190,11 @@ export interface QemuAgentDesktopDiskUsage {
   readonly virtualBytes: number;
 }
 
+export interface QemuAgentDesktopStorageCapacity {
+  readonly totalBytes: number;
+  readonly availableBytes: number;
+}
+
 export interface QemuAgentDesktopResourceUsage {
   readonly cpuUsageNanoseconds: number;
   readonly memoryUsedBytes: number;
@@ -306,6 +312,7 @@ export interface QemuAgentDesktopShape {
   readonly diskUsage: (
     id: AgentDesktopId,
   ) => Effect.Effect<QemuAgentDesktopDiskUsage, QemuAgentDesktopError>;
+  readonly storageCapacity: Effect.Effect<QemuAgentDesktopStorageCapacity, QemuAgentDesktopError>;
   readonly resourceUsage: (
     id: AgentDesktopId,
   ) => Effect.Effect<QemuAgentDesktopResourceUsage, QemuAgentDesktopError>;
@@ -635,6 +642,26 @@ export function buildQemuCommand(input: {
 /** Builds the monitor command that flushes one clone source drive. */
 export function qemuCloneFlushCommand(driveId: string): string {
   return `qemu-io ${driveId} flush`;
+}
+
+/** Parses the byte capacity row emitted by GNU df. */
+export function parseAgentDesktopStorageCapacity(
+  output: string,
+): QemuAgentDesktopStorageCapacity | undefined {
+  const fields = output.trim().split("\n").at(-1)?.trim().split(/\s+/u);
+  if (fields?.length !== 2) return undefined;
+  const totalBytes = Number(fields[0]);
+  const availableBytes = Number(fields[1]);
+  if (
+    !Number.isSafeInteger(totalBytes) ||
+    totalBytes <= 0 ||
+    !Number.isSafeInteger(availableBytes) ||
+    availableBytes < 0 ||
+    availableBytes > totalBytes
+  ) {
+    return undefined;
+  }
+  return { totalBytes, availableBytes };
 }
 
 const mapFailure =
@@ -1962,6 +1989,24 @@ export const make = Effect.gen(function* () {
       };
     }).pipe(Effect.mapError(mapFailure("disk-usage")));
 
+  const storageCapacity: QemuAgentDesktopShape["storageCapacity"] = Effect.gen(function* () {
+    yield* fileSystem.makeDirectory(environment.agentDesktopsDir, { recursive: true });
+    const result = yield* runChecked("storage-capacity", DF_EXECUTABLE, [
+      "--output=size,avail",
+      "--block-size=1",
+      environment.agentDesktopsDir,
+    ]);
+    const capacity = parseAgentDesktopStorageCapacity(result.stdout);
+    if (capacity === undefined) {
+      return yield* new QemuAgentDesktopError({
+        code: "internal-error",
+        operation: "storage-capacity",
+        detail: "df returned an invalid Agent desktop storage capacity",
+      });
+    }
+    return capacity;
+  }).pipe(Effect.mapError(mapFailure("storage-capacity")));
+
   const resourceUsage: QemuAgentDesktopShape["resourceUsage"] = (id) =>
     Effect.gen(function* () {
       const result = yield* runChecked("resource-usage", SYSTEMCTL_EXECUTABLE, [
@@ -2057,6 +2102,7 @@ export const make = Effect.gen(function* () {
     addRoute,
     removeRoute,
     diskUsage,
+    storageCapacity,
     resourceUsage,
     capturePackets,
     qmp,
