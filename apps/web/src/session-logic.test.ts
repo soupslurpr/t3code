@@ -2366,6 +2366,59 @@ describe("deriveTimelineEntries", () => {
     ).toEqual(deriveTimelineEntries([corrected, appendedMessage], [plan], work));
   });
 
+  it("omits internal system messages from the visible timeline", () => {
+    const entries = deriveTimelineEntries(
+      [
+        {
+          id: MessageId.make("system-message"),
+          role: "system",
+          text: "Internal durable monitor continuation.",
+          createdAt: "2026-02-23T00:00:00.000Z",
+          turnId: null,
+          updatedAt: "2026-02-23T00:00:00.000Z",
+          streaming: false,
+        },
+      ],
+      [],
+      [],
+    );
+
+    expect(entries).toEqual([]);
+  });
+
+  it("keeps appended monitor messages hidden during streaming updates", () => {
+    const systemMessage = {
+      ...streamingMessage,
+      id: MessageId.make("monitor-continuation"),
+      role: "system" as const,
+      text: "Internal durable monitor continuation.",
+      streaming: false,
+    };
+    const first = deriveTimelineEntriesWithState([streamingMessage], [], []);
+    const appended = deriveTimelineEntriesWithState(
+      [streamingMessage, systemMessage],
+      [],
+      [],
+      first,
+    );
+    expect(appended.entries).toHaveLength(1);
+    expect(appended.entries[0]).toBe(first.entries[0]);
+
+    const streamed = deriveTimelineEntriesWithState(
+      [{ ...streamingMessage, text: "Continued work." }, systemMessage],
+      [],
+      [],
+      appended,
+    );
+    expect(streamed.entries).toEqual([
+      expect.objectContaining({
+        kind: "message",
+        message: expect.objectContaining({ role: "assistant", text: "Continued work." }),
+      }),
+    ]);
+    expect(first.entries[0]).toMatchObject({ message: { text: "" } });
+  });
+
   it("includes proposed plans alongside messages and work entries in chronological order", () => {
     const entries = deriveTimelineEntries(
       [

@@ -1974,7 +1974,10 @@ export function deriveTimelineEntriesWithState(
     hasExactArrayPrefix(previous.workEntries, workEntries);
 
   if (canAppend) {
-    const messageRows = messages.slice(previous.messages.length).map(timelineEntryFromMessage);
+    const messageRows = messages
+      .slice(previous.messages.length)
+      .filter((message) => message.role !== "system")
+      .map(timelineEntryFromMessage);
     const proposedPlanRows = proposedPlans
       .slice(previous.proposedPlans.length)
       .map(timelineEntryFromProposedPlan);
@@ -1990,7 +1993,9 @@ export function deriveTimelineEntriesWithState(
     };
   }
 
-  const messageRows = messages.map(timelineEntryFromMessage);
+  const messageRows = messages
+    .filter((message) => message.role !== "system")
+    .map(timelineEntryFromMessage);
   const proposedPlanRows = proposedPlans.map(timelineEntryFromProposedPlan);
   const workRows = workEntries.map(timelineEntryFromWork);
   return {

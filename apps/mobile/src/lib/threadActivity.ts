@@ -2269,14 +2269,16 @@ export function buildThreadFeed(
   const activityEntries = getThreadFeedActivityEntries(thread.activities);
   const entries = Arr.sortWith(
     [
-      ...messages.map((message) => {
-        let entry = messageEntriesCache.get(message);
-        if (!entry) {
-          entry = { type: "message", id: message.id, createdAt: message.createdAt, message };
-          messageEntriesCache.set(message, entry);
-        }
-        return entry;
-      }),
+      ...messages
+        .filter((message) => message.role !== "system")
+        .map((message) => {
+          let entry = messageEntriesCache.get(message);
+          if (!entry) {
+            entry = { type: "message", id: message.id, createdAt: message.createdAt, message };
+            messageEntriesCache.set(message, entry);
+          }
+          return entry;
+        }),
       ...activityEntries.filter(
         (entry) =>
           oldestLoadedMessageCreatedAt === null || entry.createdAt >= oldestLoadedMessageCreatedAt,

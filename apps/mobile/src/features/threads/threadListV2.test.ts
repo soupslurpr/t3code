@@ -23,6 +23,7 @@ import {
   resolveThreadListV2SwipeActions,
   sortThreadsForListV2,
 } from "./threadListV2";
+import { resolveThreadStatus } from "./threadPresentation";
 
 const environmentId = EnvironmentId.make("environment-1");
 
@@ -155,6 +156,36 @@ describe("resolveThreadListV2Status", () => {
     expect(resolveThreadListV2Status(makeThread({ id: ThreadId.make("t"), title: "t" }))).toBe(
       "ready",
     );
+  });
+
+  it("shows durable waits as monitoring without masking failures", () => {
+    const monitoring = makeThread({
+      id: ThreadId.make("monitoring"),
+      title: "monitoring",
+      backgroundLiveness: "monitoring",
+    });
+    expect(resolveThreadListV2Status(monitoring)).toBe("monitoring");
+    expect(resolveThreadStatus(monitoring)).toMatchObject({
+      kind: "monitoring",
+      label: "Monitoring",
+      pulse: false,
+    });
+
+    expect(
+      resolveThreadListV2Status({
+        ...monitoring,
+        session: {
+          threadId: monitoring.id,
+          status: "error",
+          providerName: "Codex",
+          providerInstanceId: ProviderInstanceId.make("codex"),
+          runtimeMode: "full-access",
+          activeTurnId: null,
+          lastError: "failed",
+          updatedAt: NOW,
+        },
+      }),
+    ).toBe("failed");
   });
 });
 

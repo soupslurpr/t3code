@@ -1193,12 +1193,12 @@ const make = Effect.gen(function* () {
       return;
     }
     const message = thread.messages.find((entry) => entry.id === event.payload.messageId);
-    if (!message || message.role !== "user") {
+    if (!message || (message.role !== "user" && message.role !== "system")) {
       yield* appendProviderFailureActivity({
         threadId: event.payload.threadId,
         kind: "provider.turn.start.failed",
         summary: "Provider turn start failed",
-        detail: `User message '${event.payload.messageId}' was not found for turn start request.`,
+        detail: `Input message '${event.payload.messageId}' was not found for turn start request.`,
         turnId: null,
         createdAt: event.payload.createdAt,
         requestId: event.payload.messageId,
@@ -1300,7 +1300,11 @@ const make = Effect.gen(function* () {
     const nonCompactUserMessageCount = thread.messages.filter(
       (entry) => entry.role === "user" && !isCompactCommandMessage(entry),
     ).length;
-    if (nonCompactUserMessageCount === 1 && !isCompactCommand) {
+    if (
+      message.role === "user" &&
+      nonCompactUserMessageCount === 1 &&
+      !isCompactCommand
+    ) {
       const project = yield* resolveProject(thread.projectId);
       const generationCwd =
         resolveThreadWorkspaceCwd({

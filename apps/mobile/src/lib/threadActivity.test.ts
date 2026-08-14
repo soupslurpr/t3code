@@ -1031,6 +1031,27 @@ describe("buildThreadFeed", () => {
     ]);
   });
 
+  it("omits internal system messages from the visible feed", () => {
+    const thread = makeThread({
+      id: ThreadId.make("thread-system-message"),
+      projectId: ProjectId.make("project-1"),
+      title: "System continuation",
+      messages: [
+        {
+          id: MessageId.make("system-message"),
+          role: "system",
+          text: "Internal durable monitor continuation.",
+          turnId: null,
+          streaming: false,
+          createdAt: "2026-04-01T00:00:01.000Z",
+          updatedAt: "2026-04-01T00:00:01.000Z",
+        },
+      ],
+    });
+
+    expect(buildThreadFeed(thread)).toEqual([]);
+  });
+
   it("keeps historic work entries attributed to their turns", () => {
     const thread = makeThread({
       id: ThreadId.make("thread-1"),

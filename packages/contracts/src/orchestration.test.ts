@@ -4,9 +4,9 @@ import * as Exit from "effect/Exit";
 import * as Schema from "effect/Schema";
 
 import {
+  ClientOrchestrationCommand,
   DEFAULT_PROVIDER_INTERACTION_MODE,
   DEFAULT_RUNTIME_MODE,
-  ClientOrchestrationCommand,
   ModelSelection,
   OrchestrationCommand,
   OrchestrationDispatchCommandError,
@@ -370,6 +370,29 @@ it.effect("rejects malformed known attachment types instead of tolerating them",
       decode({ ...base, type: "image", mimeType: "application/pdf", sizeBytes: 12 }),
     );
     assert.strictEqual(Exit.isFailure(badMimeImage), true);
+  }),
+);
+
+it.effect("reserves system turn messages for internal orchestration", () =>
+  Effect.gen(function* () {
+    const command = {
+      type: "thread.turn.start",
+      commandId: "cmd-system-turn",
+      threadId: "thread-1",
+      message: {
+        messageId: "msg-system-turn",
+        role: "system",
+        text: "Resume after the durable monitor triggered.",
+        attachments: [],
+      },
+      createdAt: "2026-01-01T00:00:00.000Z",
+    } as const;
+
+    const internal = yield* decodeThreadTurnStartCommand(command);
+    assert.strictEqual(internal.message.role, "system");
+
+    const client = yield* Effect.exit(decodeClientOrchestrationCommand(command));
+    assert.strictEqual(client._tag, "Failure");
   }),
 );
 
