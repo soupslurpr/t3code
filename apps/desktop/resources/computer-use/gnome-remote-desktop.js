@@ -181,7 +181,9 @@ let requestSequence = 0;
 let sessionHandle = null;
 let sessionAccess = null;
 let sessionClosedSubscription = 0;
-let desktopAccessInhibitHandle = null;
+let desktopAvailabilityInhibitHandle = null;
+let desktopAvailabilityRequested = false;
+let desktopAvailabilityGeneration = 0;
 let agentWorkInhibitHandle = null;
 let powerProtectionEnabled = true;
 let agentWorking = false;
@@ -1162,21 +1164,76 @@ async function releaseInhibitor(closingHandle) {
   if (closingHandle !== null) await closePortalRequest(closingHandle);
 }
 
-/** Acquires idle and suspend inhibition for active desktop access. */
-async function acquireDesktopAccessInhibitor() {
-  if (desktopAccessInhibitHandle !== null || !powerProtectionEnabled) return;
-  desktopAccessInhibitHandle = await acquireInhibitor(
-    "desktop_access_inhibit",
+/** Acquires idle and suspend inhibition for retained desktop availability. */
+async function acquireDesktopAvailabilityInhibitor() {
+  if (
+    desktopAvailabilityInhibitHandle !== null ||
+    !desktopAvailabilityRequested ||
+    !powerProtectionEnabled
+  )
+    return;
+  const generation = desktopAvailabilityGeneration;
+  const acquiredHandle = await acquireInhibitor(
+    "desktop_availability_inhibit",
     DESKTOP_ACCESS_INHIBIT_FLAGS,
-    "Agent desktop access is active.",
+    "The desktop is available for agent work.",
   );
+  if (
+    generation !== desktopAvailabilityGeneration ||
+    !desktopAvailabilityRequested ||
+    !powerProtectionEnabled ||
+    desktopAvailabilityInhibitHandle !== null
+  ) {
+    await releaseInhibitor(acquiredHandle);
+    return;
+  }
+  desktopAvailabilityInhibitHandle = acquiredHandle;
 }
 
-/** Releases idle and suspend inhibition for desktop access. */
-async function releaseDesktopAccessInhibitor() {
-  const closingHandle = desktopAccessInhibitHandle;
-  desktopAccessInhibitHandle = null;
+/** Updates availability intent and invalidates any in-flight acquisition. */
+function setDesktopAvailabilityRequested(requested) {
+  if (desktopAvailabilityRequested === requested) return;
+  desktopAvailabilityRequested = requested;
+  desktopAvailabilityGeneration += 1;
+}
+
+/** Releases idle and suspend inhibition for desktop availability. */
+async function releaseDesktopAvailabilityInhibitor() {
+  const closingHandle = desktopAvailabilityInhibitHandle;
+  desktopAvailabilityInhibitHandle = null;
   await releaseInhibitor(closingHandle);
+}
+
+/** Retains desktop availability when the persistent power policy allows it. */
+async function retainDesktopAvailability(enabled) {
+  await configurePowerProtection(enabled);
+  if (!enabled) return;
+  setDesktopAvailabilityRequested(true);
+  await acquireDesktopAvailabilityInhibitor();
+}
+
+/** Requests availability without opening a monitor or input session. */
+async function requestDesktopAvailability(enabled) {
+  if (!enabled) {
+    await configurePowerProtection(false);
+    const error = new Error("desktop availability is disabled in T3 Code settings");
+    error.code = "keep-awake-denied";
+    throw error;
+  }
+  await retainDesktopAvailability(true);
+  try {
+    await wakeDisplay();
+  } catch (error) {
+    setDesktopAvailabilityRequested(false);
+    await releaseDesktopAvailabilityInhibitor();
+    throw error;
+  }
+}
+
+/** Allows automatic locking again without changing the persistent policy. */
+async function releaseDesktopAvailability() {
+  setDesktopAvailabilityRequested(false);
+  await releaseDesktopAvailabilityInhibitor();
 }
 
 /** Reconciles suspend-only inhibition with current agent activity. */
@@ -1199,20 +1256,27 @@ async function syncAgentWorkInhibitor() {
 /** Applies the persistent power policy without ending desktop access. */
 async function configurePowerProtection(enabled) {
   powerProtectionEnabled = enabled;
-  if (enabled) {
-    if (sessionHandle !== null) await acquireDesktopAccessInhibitor();
-    await syncAgentWorkInhibitor();
-    return;
-  }
-  await Promise.all([releaseDesktopAccessInhibitor(), syncAgentWorkInhibitor()]);
+  if (!enabled) setDesktopAvailabilityRequested(false);
+  if (enabled && sessionHandle !== null) setDesktopAvailabilityRequested(true);
+  await Promise.all([
+    desktopAvailabilityRequested
+      ? acquireDesktopAvailabilityInhibitor()
+      : releaseDesktopAvailabilityInhibitor(),
+    syncAgentWorkInhibitor(),
+  ]);
 }
 
 /** Updates whether any attached T3 backend has active agent work. */
 async function setAgentWorking(active, enabled) {
   agentWorking = active;
   powerProtectionEnabled = enabled;
-  await syncAgentWorkInhibitor();
-  if (!enabled) await releaseDesktopAccessInhibitor();
+  if (!enabled) setDesktopAvailabilityRequested(false);
+  await Promise.all([
+    desktopAvailabilityRequested
+      ? acquireDesktopAvailabilityInhibitor()
+      : releaseDesktopAvailabilityInhibitor(),
+    syncAgentWorkInhibitor(),
+  ]);
 }
 
 /** Cancels portal interactions of one kind, or every kind when omitted. */
@@ -1410,9 +1474,13 @@ async function releaseAccess() {
   await Promise.all([
     cancelPendingPortalRequests("access"),
     closeSession(),
-    releaseDesktopAccessInhibitor(),
     accessibilityStatusLease.restore(),
   ]);
+}
+
+/** Revokes both native access and retained availability after a system override. */
+async function revokeSystemAccess() {
+  await Promise.all([releaseAccess(), releaseDesktopAvailability()]);
 }
 
 /** Rejects work invalidated by a concurrent release request. */
@@ -1632,7 +1700,7 @@ async function captureDesktop(displayBounds) {
       await wakeDisplay();
       return await capturePortalStream(displayBounds);
     } catch (error) {
-      if (error?.code === "display-locked") await releaseAccess();
+      if (error?.code === "display-locked") await revokeSystemAccess();
       throw error;
     }
   }
@@ -1648,13 +1716,13 @@ function accessStatus() {
     permission,
     rememberedAccess: rememberedAccess(),
     displayState: displayState(),
-    keepAwake: desktopAccessInhibitHandle !== null,
+    keepAwake: desktopAvailabilityInhibitHandle !== null,
   };
 }
 
 /** Creates and starts one user-authorized view or control session. */
 async function ensureSession(requestedAccess, preventSleep = powerProtectionEnabled) {
-  await configurePowerProtection(preventSleep);
+  await retainDesktopAvailability(preventSleep);
   if (
     sessionHandle !== null &&
     (sessionAccess === "control" || sessionAccess === requestedAccess)
@@ -1663,7 +1731,11 @@ async function ensureSession(requestedAccess, preventSleep = powerProtectionEnab
       await wakeDisplay();
       return accessStatus();
     } catch (error) {
-      await releaseAccess();
+      if (error?.code === "display-locked") {
+        await revokeSystemAccess();
+      } else {
+        await releaseAccess();
+      }
       throw error;
     }
   }
@@ -1674,10 +1746,6 @@ async function ensureSession(requestedAccess, preventSleep = powerProtectionEnab
   const sessionToken = nextToken("session");
   const expectedSessionHandle = `${PORTAL_OBJECT_PATH}/session/${senderToken}/${sessionToken}`;
   try {
-    if (desktopAccessInhibitHandle === null && powerProtectionEnabled) {
-      await acquireDesktopAccessInhibitor();
-      requireAccessGeneration(generation);
-    }
     await wakeDisplay();
     requireAccessGeneration(generation);
     if (sessionHandle !== null) await closeSession();
@@ -1722,7 +1790,6 @@ async function ensureSession(requestedAccess, preventSleep = powerProtectionEnab
         heldButtons.clear();
         permission = inactivePermission();
         invalidateAccessibilityTargets();
-        void releaseDesktopAccessInhibitor();
         void accessibilityStatusLease.restore();
         if (sessionClosedSubscription !== 0) {
           connection.signal_unsubscribe(sessionClosedSubscription);
@@ -1812,7 +1879,7 @@ async function ensureSession(requestedAccess, preventSleep = powerProtectionEnab
     }
     permission = error?.code === "permission-denied" ? "denied" : inactivePermission();
     await closeSession();
-    await releaseDesktopAccessInhibitor();
+    if (error?.code === "display-locked") await releaseDesktopAvailability();
     throw error;
   }
 }
@@ -2150,7 +2217,6 @@ async function recoverHeldInputs() {
   heldButtons.clear();
   invalidateAccessibilityTargets();
   permission = inactivePermission();
-  await releaseDesktopAccessInhibitor();
   return {
     keys: keysReleased
       ? hadKeys
@@ -2307,6 +2373,14 @@ async function handleCommand(message) {
       await setAgentWorking(message.params.active === true, message.params.enabled === true);
       return null;
     }
+    case "requestAvailability": {
+      await requestDesktopAvailability(message.params.enabled === true);
+      return null;
+    }
+    case "releaseAvailability": {
+      await releaseDesktopAvailability();
+      return null;
+    }
     case "start": {
       return await ensureSession("control", message.params.preventSleep === true);
     }
@@ -2431,6 +2505,7 @@ async function handleCommand(message) {
     }
     case "forget": {
       await releaseAccess();
+      await releaseDesktopAvailability();
       forgetRestoreTokens();
       permission = "prompt-required";
       return null;
@@ -2502,7 +2577,7 @@ function verifyPortalCapabilities() {
 /** Queues access revocation after a manual lock or forced suspend. */
 function queueSystemRevocation() {
   if (shuttingDown) return;
-  releaseQueue = releaseQueue.then(() => releaseAccess());
+  releaseQueue = releaseQueue.then(() => revokeSystemAccess());
   releaseBarrier = releaseQueue;
 }
 
@@ -2574,7 +2649,12 @@ function dispatchCommand(message) {
     void processCommand(message);
     return;
   }
-  if (message.method === "stop" || message.method === "forget") {
+  if (
+    message.method === "stop" ||
+    message.method === "forget" ||
+    message.method === "configurePower" ||
+    message.method === "releaseAvailability"
+  ) {
     releaseQueue = releaseQueue.then(() => processCommand(message));
     releaseBarrier = releaseQueue;
     return;
@@ -2592,7 +2672,7 @@ GLib.io_add_watch(
       if (!shuttingDown) {
         shuttingDown = true;
         const shutdown = Promise.all([
-          releaseAccess(),
+          revokeSystemAccess(),
           (async () => {
             agentWorking = false;
             await syncAgentWorkInhibitor();

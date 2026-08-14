@@ -342,6 +342,8 @@ describe("T3 computer developer instructions", () => {
       CODEX_PLAN_MODE_DEVELOPER_INSTRUCTIONS,
     ]) {
       NodeAssert.match(instructions, /computer_request_control/);
+      NodeAssert.match(instructions, /computer_request_availability/);
+      NodeAssert.match(instructions, /computer_release_availability/);
       NodeAssert.match(instructions, /computer_act/);
       NodeAssert.match(instructions, /click \{frameId,x,y,button\?,count\?\}/);
       NodeAssert.match(instructions, /type \{text,intervalMs\?,submit\?\}/);

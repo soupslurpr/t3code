@@ -17,11 +17,13 @@ a task, giving you a chance to answer GNOME's native consent dialog before leavi
 does not itself send input.
 
 By default, T3 Code keeps the computer available while agents work. Ordinary agent work prevents
-system suspend but still permits the display to blank and lock. An active view or control session also
-prevents automatic screen locking so the agent does not lose its portal stream. This behavior does not
-need a separate per-session confirmation. You can turn it off persistently with **Keep computer awake
-for agents** in General settings; T3 Code does not change the operating system's persistent power or
-lock settings.
+system suspend but still permits the display to blank and lock. When an agent may need the user
+desktop later, it can retain a desktop-availability lease without opening monitor sharing. Requesting
+view or control access retains the same lease automatically. It prevents automatic locking and suspend
+until explicitly released, even after the sharing session closes and across later tasks. This behavior
+does not need a separate per-session confirmation. You can turn it off persistently with **Keep
+computer awake for agents** in General settings; T3 Code does not change the operating system's
+persistent power or lock settings.
 
 If you share a monitor during a control request but leave **Allow Remote Interaction** disabled, T3
 Code keeps the resulting view-only session instead of immediately closing it. Snapshots continue to
@@ -34,22 +36,25 @@ without a routine dialog. GNOME remains in control: it can reject or invalidate 
 approval again, and shows its active sharing indicator whenever a session is connected. T3 Code does
 not receive or store your portal choices directly.
 
-The agent can call `computer_release` to cancel pending authorization or end the active session
-immediately. This also removes the desktop-access idle inhibitor. A suspend-only inhibitor remains
-only while an agent is still working. Release retains restore tokens and returns the final permission
-and inhibitor state. A later `computer_status` reports `remembered` while no session is active. Its
-`rememberedAccess` field identifies which access levels can be restored; `displayState` and
-`keepAwake` report the host display and desktop-access inhibitor state.
-`computer_forget_control` ends the session and deletes both tokens, so the next request requires fresh
-approval. Quitting the desktop app also ends the active session while retaining remembered consent.
+The agent can call `computer_release` to cancel pending authorization or end the active sharing
+session immediately. This removes capture and input access but retains both GNOME restore tokens and
+desktop availability, so a later task can reconnect before automatic locking makes the user desktop
+unavailable. A later `computer_status` reports `remembered` while no sharing session is active, and
+`keepAwake` remains true while availability is retained. The agent can call
+`computer_release_availability`, or you can select **Allow locking** in General settings, to remove
+only the availability lease without disabling the persistent policy. `computer_forget_control` ends
+the session, deletes both restore tokens, and releases availability, so the next request requires
+fresh approval and may require unlocking. Quitting the desktop app releases availability while
+retaining remembered consent.
 
 Agents treat desktop changes as temporary by default. When it is appropriate for the task, they
 close programs or windows opened only for the task and return focus to the application that was
 active beforehand. This is guidance rather than an enforced cleanup script: an agent can leave a
 useful result visible or preserve intentionally requested state when that better serves the task.
 
-Manual locking or suspending always takes priority and ends desktop access. Manual locking does not
-stop the underlying agent turn, so its suspend-only inhibitor can remain until that work finishes.
+Manual locking or suspending always takes priority and ends desktop access and retained availability.
+Manual locking does not stop the underlying agent turn, so its suspend-only inhibitor can remain
+until that work finishes.
 The power policy never authorizes T3 Code to bypass an existing lock screen. If the display is blank
 but logind confirms that the session is still unlocked, T3 Code may wake it to show GNOME's consent
 prompt or continue approved work. A locked session requires you to unlock it.
@@ -224,7 +229,8 @@ Semantic targets additionally require the system AT-SPI typelib, normally provid
 `at-spi2-core` package. If the focused application does not expose accessibility information,
 or if the typelib is missing, screenshots and coordinate controls continue to work.
 
-If you reject GNOME's native prompt, the attempted action fails without sending input and the
-desktop-access inhibitor is removed. During a control request, selecting a monitor without enabling
-remote interaction grants view-only access instead. Try the control request again when you are ready
-to approve keyboard and pointer access.
+If you reject GNOME's native prompt, the attempted action fails without sending input. Retained
+desktop availability remains independent of that sharing choice and can be released from General
+settings. During a control request, selecting a monitor without enabling remote interaction grants
+view-only access instead. Try the control request again when you are ready to approve keyboard and
+pointer access.

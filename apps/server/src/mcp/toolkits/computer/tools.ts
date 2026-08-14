@@ -1,6 +1,7 @@
 import {
   ComputerAutomationAccessInput,
   ComputerAutomationActInput,
+  ComputerAutomationAvailabilityInput,
   ComputerAutomationObservation,
   ComputerAutomationSnapshot,
   ComputerAutomationSnapshotInput,
@@ -39,10 +40,36 @@ export const ComputerStatusTool = readonlyComputerTool(
   }).annotate(Tool.Title, "Get computer-control status"),
 );
 
+export const ComputerRequestAvailabilityTool = safeComputerTool(
+  Tool.make("computer_request_availability", {
+    description:
+      "Keep the user's desktop available for possible later agent work without opening monitor sharing or requesting keyboard and pointer control. Call this early when a task may eventually need the host GUI, especially before the user leaves. The availability lease prevents automatic locking and suspend, remains after computer_release and across later tasks, and ends only through computer_release_availability, computer_forget_control, manual locking, disabling the power policy, or quitting T3 Code. View and control requests establish the same lease automatically. The returned status reports keepAwake true when it is active. This operation is unnecessary for Agent desktops because their guest idle locking and suspend are disabled.",
+    parameters: ComputerAutomationAvailabilityInput,
+    success: ComputerAutomationStatus,
+    failure: PreviewAutomationError,
+    dependencies,
+  })
+    .annotate(Tool.Title, "Keep user desktop available")
+    .annotate(Tool.Idempotent, true),
+);
+
+export const ComputerReleaseAvailabilityTool = safeComputerTool(
+  Tool.make("computer_release_availability", {
+    description:
+      "Allow the user's desktop to lock and suspend automatically again without changing the persistent power-policy setting. This does not itself close active monitor or input access; normally call computer_release first. Retain availability when the user is away or any later task may need the host GUI. Release it only when the user requests it, manually takes over, or no foreseeable unattended task needs the user desktop. Manual locking always remains available and overrides the lease.",
+    parameters: ComputerAutomationAvailabilityInput,
+    success: ComputerAutomationStatus,
+    failure: PreviewAutomationError,
+    dependencies,
+  })
+    .annotate(Tool.Title, "Allow user desktop locking")
+    .annotate(Tool.Idempotent, true),
+);
+
 export const ComputerRequestViewTool = safeComputerTool(
   Tool.make("computer_request_view", {
     description:
-      "Immediately request monitor-only access to a user or Agent desktop without requesting or sending keyboard or pointer input, then return a configurable initial observation. Omission targets the user's desktop. Agent access returns a concrete desktopId; retain it and pass it on every later computer operation. Use fresh true when parallel work needs an independent desktop. User-desktop access may require the user to approve GNOME monitor sharing; Agent-desktop access does not. Choose observation resolution, crop, semantics, and delay as needed; use observation false only when status is sufficient. When the user-desktop power policy is enabled, its session automatically prevents locking and suspend until released. User-desktop snapshots read the PipeWire stream without the separate Screenshot portal. Remembered user-desktop view access can restore GNOME sharing later.",
+      "Immediately request monitor-only access to a user or Agent desktop without requesting or sending keyboard or pointer input, then return a configurable initial observation. Omission targets the user's desktop. Agent access returns a concrete desktopId; retain it and pass it on every later computer operation. Use fresh true when parallel work needs an independent desktop. User-desktop access may require the user to approve GNOME monitor sharing; Agent-desktop access does not. Choose observation resolution, crop, semantics, and delay as needed; use observation false only when status is sufficient. When the user-desktop power policy is enabled, this also retains an availability lease that prevents locking and suspend after monitor access is later released. User-desktop snapshots read the PipeWire stream without the separate Screenshot portal. Remembered user-desktop view access can restore GNOME sharing later.",
     parameters: ComputerAutomationAccessInput,
     success: ComputerAutomationObservation,
     failure: PreviewAutomationError,
@@ -55,7 +82,7 @@ export const ComputerRequestViewTool = safeComputerTool(
 export const ComputerRequestControlTool = safeComputerTool(
   Tool.make("computer_request_control", {
     description:
-      "Immediately request combined viewing, keyboard, and pointer access to a user or Agent desktop without sending input, then return a configurable initial observation. Omission targets the user's desktop. Agent access returns a concrete desktopId; retain it and pass it on every later computer operation. Use fresh true when parallel work needs an independent desktop. User-desktop access may require the user to approve GNOME sharing and control; Agent-desktop access does not. Choose observation resolution, crop, semantics, and delay as needed; use observation false only when status is sufficient. When the user-desktop power policy is enabled, its session automatically prevents locking and suspend until released. If GNOME grants the monitor but not Allow Remote Interaction, the user desktop remains usable view-only. Remembered user-desktop control access can restore GNOME sharing later. Treat desktop changes as temporary by default: when practical, remember the starting focus, close programs or windows opened only for the task, and restore the prior focus before release. Use judgment when leaving the resulting UI open is useful or requested.",
+      "Immediately request combined viewing, keyboard, and pointer access to a user or Agent desktop without sending input, then return a configurable initial observation. Omission targets the user's desktop. Agent access returns a concrete desktopId; retain it and pass it on every later computer operation. Use fresh true when parallel work needs an independent desktop. User-desktop access may require the user to approve GNOME sharing and control; Agent-desktop access does not. Choose observation resolution, crop, semantics, and delay as needed; use observation false only when status is sufficient. When the user-desktop power policy is enabled, this also retains an availability lease that prevents locking and suspend after access is later released. If GNOME grants the monitor but not Allow Remote Interaction, the user desktop remains usable view-only. Remembered user-desktop control access can restore GNOME sharing later. Treat desktop changes as temporary by default: when practical, remember the starting focus, close programs or windows opened only for the task, and restore the prior focus before release. Use judgment when leaving the resulting UI open is useful or requested.",
     parameters: ComputerAutomationAccessInput,
     success: ComputerAutomationObservation,
     failure: PreviewAutomationError,
@@ -90,7 +117,7 @@ export const ComputerActTool = computerTool(
 export const ComputerReleaseTool = safeComputerTool(
   Tool.make("computer_release", {
     description:
-      "Cancel pending authorization or end one explicitly targeted native view/control session and its idle inhibitor immediately. Omission targets the user's desktop; pass the concrete Agent desktopId used by this agent so another parallel desktop is untouched. Any keys or mouse buttons held by computer_act are released first. Before releasing, use judgment to close temporary programs or windows and restore the prior focus unless leaving the result visible is useful or requested. The returned final status confirms cleanup, so do not call computer_status solely to verify release. Remembered GNOME access is retained, so a later request can usually reconnect without its routine sharing dialog. Suspend-only inhibition can remain while the agent turn is still working. Use computer_forget_control to require fresh GNOME approval too.",
+      "Cancel pending authorization or end one explicitly targeted native view/control session immediately. Omission targets the user's desktop; pass the concrete Agent desktopId used by this agent so another parallel desktop is untouched. Any keys or mouse buttons held by computer_act are released first. Before releasing, use judgment to close temporary programs or windows and restore the prior focus unless leaving the result visible is useful or requested. The returned final status confirms cleanup, so do not call computer_status solely to verify release. Remembered GNOME access is retained, and the user-desktop availability lease remains active so a later task can reconnect before automatic locking. Use computer_release_availability separately only when allowing the user desktop to lock is actually appropriate. Use computer_forget_control to discard remembered approval and availability together.",
     parameters: ComputerAutomationTargetInput,
     success: ComputerAutomationStatus,
     failure: PreviewAutomationError,
@@ -103,7 +130,7 @@ export const ComputerReleaseTool = safeComputerTool(
 export const ComputerForgetControlTool = safeComputerTool(
   Tool.make("computer_forget_control", {
     description:
-      "End active computer access for one explicit desktop target. For the user's desktop, also discard T3's remembered GNOME view and control restore tokens so future access requires fresh user approval. Omission targets the user's desktop; pass a concrete Agent desktopId to release only that Agent desktop. Use this when access should not persist.",
+      "End active computer access for one explicit desktop target. For the user's desktop, also discard T3's remembered GNOME view and control restore tokens and release retained desktop availability, so future access requires fresh user approval and may require unlocking. Omission targets the user's desktop; pass a concrete Agent desktopId to release only that Agent desktop. Use this when access should not persist.",
     parameters: ComputerAutomationTargetInput,
     success: Schema.Null,
     failure: PreviewAutomationError,
@@ -115,6 +142,8 @@ export const ComputerForgetControlTool = safeComputerTool(
 
 export const ComputerToolkit = Toolkit.make(
   ComputerStatusTool,
+  ComputerRequestAvailabilityTool,
+  ComputerReleaseAvailabilityTool,
   ComputerRequestViewTool,
   ComputerRequestControlTool,
   ComputerSnapshotTool,
@@ -125,6 +154,8 @@ export const ComputerToolkit = Toolkit.make(
 
 export const ComputerStandardToolkit = Toolkit.make(
   ComputerStatusTool,
+  ComputerRequestAvailabilityTool,
+  ComputerReleaseAvailabilityTool,
   ComputerReleaseTool,
   ComputerForgetControlTool,
 );

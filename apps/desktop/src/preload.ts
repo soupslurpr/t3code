@@ -98,6 +98,8 @@ contextBridge.exposeInMainWorld("desktopBridge", {
   getPowerSettings: () => ipcRenderer.invoke(IpcChannels.GET_POWER_SETTINGS_CHANNEL),
   setKeepAwakeWhileAgentsWork: (enabled) =>
     ipcRenderer.invoke(IpcChannels.SET_KEEP_AWAKE_WHILE_AGENTS_WORK_CHANNEL, enabled),
+  releaseDesktopAvailability: () =>
+    ipcRenderer.invoke(IpcChannels.RELEASE_DESKTOP_AVAILABILITY_CHANNEL),
   getWslState: () => ipcRenderer.invoke(IpcChannels.GET_WSL_STATE_CHANNEL),
   setWslBackendEnabled: (enabled) =>
     ipcRenderer.invoke(IpcChannels.SET_WSL_BACKEND_ENABLED_CHANNEL, enabled),
@@ -168,6 +170,16 @@ contextBridge.exposeInMainWorld("desktopBridge", {
   computer: {
     status: (input, context) =>
       ipcRenderer.invoke(IpcChannels.COMPUTER_AUTOMATION_STATUS_CHANNEL, { input, context }),
+    requestAvailability: (input, context) =>
+      ipcRenderer.invoke(IpcChannels.COMPUTER_AUTOMATION_REQUEST_AVAILABILITY_CHANNEL, {
+        input,
+        context,
+      }),
+    releaseAvailability: (input, context) =>
+      ipcRenderer.invoke(IpcChannels.COMPUTER_AUTOMATION_RELEASE_AVAILABILITY_CHANNEL, {
+        input,
+        context,
+      }),
     requestView: (input, context) =>
       ipcRenderer.invoke(IpcChannels.COMPUTER_AUTOMATION_REQUEST_VIEW_CHANNEL, {
         input,

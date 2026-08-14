@@ -73,6 +73,8 @@ function makeController(records: Array<InputRecord>, onStart: () => void = () =>
     }),
     configurePowerProtection: (enabled) => record("configurePowerProtection", enabled),
     setAgentWorking: (active) => record("setAgentWorking", active),
+    requestAvailability: record("requestAvailability"),
+    releaseAvailability: record("releaseAvailability"),
     move: (input) => record("move", input),
     click: (input) => record("click", input),
     activate: (input) => record("activate", input).pipe(Effect.as({ target: accessibleTarget })),
@@ -129,6 +131,22 @@ const captureFrame = (computer: ComputerUse.ComputerUseShape) =>
   );
 
 describe("ComputerUse", () => {
+  it.effect("controls desktop availability without opening access", () =>
+    Effect.gen(function* () {
+      const records: Array<InputRecord> = [];
+      const controller = makeController(records);
+      const computer = yield* ComputerUse.makeWithOptions(makePlatform(), controller);
+
+      yield* computer.requestAvailability;
+      yield* computer.releaseAvailability;
+
+      assert.deepEqual(records, [
+        { operation: "requestAvailability" },
+        { operation: "releaseAvailability" },
+      ]);
+    }),
+  );
+
   it.effect("reports logical displays and the controller permission state", () =>
     Effect.gen(function* () {
       const computer = yield* ComputerUse.makeWithOptions(makePlatform(), makeController([]));

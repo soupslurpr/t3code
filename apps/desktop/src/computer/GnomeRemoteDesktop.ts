@@ -147,6 +147,8 @@ const HelperMethod = Schema.Literals([
   "snapshot",
   "configurePower",
   "setAgentWorking",
+  "requestAvailability",
+  "releaseAvailability",
   "view",
   "start",
   "move",
@@ -304,6 +306,8 @@ export interface GnomeRemoteDesktopShape {
     enabled: boolean,
   ) => Effect.Effect<void, GnomeRemoteDesktopError>;
   readonly setAgentWorking: (active: boolean) => Effect.Effect<void, GnomeRemoteDesktopError>;
+  readonly requestAvailability: Effect.Effect<void, GnomeRemoteDesktopError>;
+  readonly releaseAvailability: Effect.Effect<void, GnomeRemoteDesktopError>;
   readonly move: (input: {
     readonly x: number;
     readonly y: number;
@@ -386,6 +390,8 @@ const unavailable = (reason: string): GnomeRemoteDesktopShape => {
     start: fail,
     configurePowerProtection: () => Effect.void,
     setAgentWorking: () => Effect.void,
+    requestAvailability: fail,
+    releaseAvailability: Effect.void,
     move: () => fail,
     click: () => fail,
     activate: () => fail,
@@ -727,6 +733,14 @@ export const make = Effect.gen(function* () {
       ),
     );
 
+  const requestAvailability = appSettings.get.pipe(
+    Effect.flatMap((settings) =>
+      control("requestAvailability", { enabled: settings.keepAwakeWhileAgentsWork }),
+    ),
+  );
+
+  const releaseAvailability = control("releaseAvailability", {});
+
   const snapshot: GnomeRemoteDesktopShape["snapshot"] = (input) =>
     request<unknown>("snapshot", input, HELPER_CONTROL_TIMEOUT).pipe(
       Effect.flatMap((response) =>
@@ -802,6 +816,8 @@ export const make = Effect.gen(function* () {
     start: requestAccess("control"),
     configurePowerProtection,
     setAgentWorking,
+    requestAvailability,
+    releaseAvailability,
     move: (input) => control("move", input),
     click: (input) => control("click", input),
     activate,

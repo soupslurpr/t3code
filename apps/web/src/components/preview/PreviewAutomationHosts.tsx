@@ -11,6 +11,7 @@ import {
   PREVIEW_AUTOMATION_OPERATIONS,
   type ComputerAutomationAccessInput,
   type ComputerAutomationActInput,
+  type ComputerAutomationAvailabilityInput,
   type ComputerAutomationSnapshotInput,
   type ComputerAutomationTargetInput,
   type AgentDesktopAcquireInput,
@@ -342,6 +343,20 @@ function PreviewAutomationHost(props: { readonly environmentId: EnvironmentId })
         case "computerStatus":
           return await resolveDesktopComputerAutomation(
             computer?.status(request.input as ComputerAutomationTargetInput, computerContext),
+          );
+        case "computerRequestAvailability":
+          return await resolveDesktopComputerAutomation(
+            computer?.requestAvailability(
+              request.input as ComputerAutomationAvailabilityInput,
+              computerContext,
+            ),
+          );
+        case "computerReleaseAvailability":
+          return await resolveDesktopComputerAutomation(
+            computer?.releaseAvailability(
+              request.input as ComputerAutomationAvailabilityInput,
+              computerContext,
+            ),
           );
         case "computerRequestView":
           return await resolveDesktopComputerAutomation(
