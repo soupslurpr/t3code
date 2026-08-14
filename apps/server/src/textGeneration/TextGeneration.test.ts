@@ -118,4 +118,66 @@ describe("makeTextGenerationFromRegistry", () => {
       }
     }),
   );
+
+  it.effect("routes image evaluation only through the selected capable instance", () =>
+    Effect.gen(function* () {
+      const selectedId = ProviderInstanceId.make("codex_vision");
+      const calls: string[] = [];
+      const selected = makeStubInstance(
+        selectedId,
+        makeStubTextGeneration({
+          evaluateImageCondition: (input) => {
+            calls.push(input.criterion);
+            return Effect.succeed({
+              verdict: "not-matched",
+              summary: "The condition is not visible.",
+              evidence: "No matching dialog is present.",
+              usage: { inputTokens: 10, cachedInputTokens: 8, outputTokens: 4 },
+            });
+          },
+        }),
+      );
+      const other = makeStubInstance(
+        ProviderInstanceId.make("codex_other"),
+        makeStubTextGeneration({
+          evaluateImageCondition: () => Effect.die("wrong evaluator selected"),
+        }),
+      );
+      const textGeneration = TextGeneration.makeTextGenerationFromRegistry(
+        makeStubRegistry([other, selected]),
+      );
+
+      const result = yield* textGeneration.evaluateImageCondition!({
+        cwd: process.cwd(),
+        criterion: "A completion dialog is visible.",
+        currentPngBase64: "aW1hZ2U=",
+        modelSelection: createModelSelection(selectedId, "gpt-5.4-mini"),
+      });
+
+      expect(result.verdict).toBe("not-matched");
+      expect(calls).toEqual(["A completion dialog is visible."]);
+    }),
+  );
+
+  it.effect("reports a selected instance without image evaluation as unsupported", () =>
+    Effect.gen(function* () {
+      const instanceId = ProviderInstanceId.make("text_only");
+      const textGeneration = TextGeneration.makeTextGenerationFromRegistry(
+        makeStubRegistry([makeStubInstance(instanceId, makeStubTextGeneration({}))]),
+      );
+
+      const result = yield* textGeneration.evaluateImageCondition!({
+        cwd: process.cwd(),
+        criterion: "A completion dialog is visible.",
+        currentPngBase64: "aW1hZ2U=",
+        modelSelection: createModelSelection(instanceId, "text-model"),
+      }).pipe(Effect.result);
+
+      expect(Result.isFailure(result)).toBe(true);
+      if (Result.isFailure(result)) {
+        expect(result.failure.operation).toBe("evaluateImageCondition");
+        expect(result.failure.detail).toContain("does not support image-condition evaluation");
+      }
+    }),
+  );
 });
