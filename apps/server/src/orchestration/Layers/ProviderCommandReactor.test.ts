@@ -150,6 +150,7 @@ describe("ProviderCommandReactor", () => {
     readonly requiresNewThreadForModelChange?: boolean;
     readonly titleRegenerationCompletionDispatchFailures?: number;
     readonly titleRegenerationBeforeStart?: "one" | "two";
+    readonly failOnFullThreadDetailQuery?: boolean;
     readonly startSessionEffect?: (
       session: ProviderSession,
     ) => Effect.Effect<ProviderSession, ProviderAdapterRequestError>;
@@ -361,6 +362,18 @@ describe("ProviderCommandReactor", () => {
       Layer.provide(RepositoryIdentityResolver.layer),
       Layer.provide(SqlitePersistenceMemory),
     );
+    const reactorProjectionSnapshotLayer = input?.failOnFullThreadDetailQuery
+      ? Layer.effect(
+          ProjectionSnapshotQuery,
+          Effect.map(ProjectionSnapshotQuery, (service) =>
+            ProjectionSnapshotQuery.of({
+              ...service,
+              getThreadDetailById: () =>
+                Effect.die(new Error("provider command reactor hydrated full thread detail")),
+            }),
+          ),
+        ).pipe(Layer.provide(projectionSnapshotLayer))
+      : projectionSnapshotLayer;
     let titleRegenerationCompletionDispatchAttempts = 0;
     const reactorOrchestrationLayer = Layer.effect(
       OrchestrationEngineService,
@@ -389,7 +402,7 @@ describe("ProviderCommandReactor", () => {
     ).pipe(Layer.provide(orchestrationLayer));
     const layer = ProviderCommandReactorLive.pipe(
       Layer.provideMerge(reactorOrchestrationLayer),
-      Layer.provideMerge(projectionSnapshotLayer),
+      Layer.provideMerge(reactorProjectionSnapshotLayer),
       Layer.provideMerge(Layer.succeed(ProviderService, service)),
       Layer.provideMerge(makeProviderRegistryLayer(providerSnapshots as never)),
       Layer.provideMerge(
@@ -513,10 +526,10 @@ describe("ProviderCommandReactor", () => {
   }
 
   it("reacts to thread.turn.start by ensuring session and sending provider turn", async () => {
-    const harness = await createHarness();
+    const harness = await createHarness({ failOnFullThreadDetailQuery: true });
     const now = "2026-01-01T00:00:00.000Z";
 
-    await Effect.runPromise(
+    await harness.runEffect(
       harness.engine.dispatch({
         type: "thread.turn.start",
         commandId: CommandId.make("cmd-turn-start-1"),

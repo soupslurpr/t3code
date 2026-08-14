@@ -8,7 +8,9 @@
  */
 import type {
   CheckpointRef,
+  MessageId,
   OrchestrationCheckpointSummary,
+  OrchestrationMessage,
   OrchestrationProject,
   OrchestrationProjectShell,
   OrchestrationReadModel,
@@ -43,6 +45,11 @@ export interface ProjectionThreadCheckpointContext {
   readonly workspaceRoot: string;
   readonly worktreePath: string | null;
   readonly checkpoints: ReadonlyArray<OrchestrationCheckpointSummary>;
+}
+
+export interface ProjectionThreadTurnStartContext {
+  readonly message: OrchestrationMessage;
+  readonly userMessageCount: number;
 }
 
 export interface ProjectionFullThreadDiffContext {
@@ -146,6 +153,15 @@ export interface ProjectionSnapshotQueryShape {
   readonly getThreadCheckpointContext: (
     threadId: ThreadId,
   ) => Effect.Effect<Option.Option<ProjectionThreadCheckpointContext>, ProjectionRepositoryError>;
+
+  /**
+   * Read one turn-start input message and the thread's user-message count
+   * without hydrating the rest of the thread timeline.
+   */
+  readonly getThreadTurnStartContext: (
+    threadId: ThreadId,
+    messageId: MessageId,
+  ) => Effect.Effect<Option.Option<ProjectionThreadTurnStartContext>, ProjectionRepositoryError>;
 
   /**
    * Read only the narrow context needed to compute a full-thread diff from

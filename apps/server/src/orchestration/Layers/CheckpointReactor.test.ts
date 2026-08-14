@@ -9,6 +9,7 @@ import {
   ProviderRuntimeEvent,
   ProviderSession,
   ProviderInstanceId,
+  VcsUnsupportedOperationError,
 } from "@t3tools/contracts";
 import {
   CommandId,
@@ -285,6 +286,8 @@ describe("CheckpointReactor", () => {
     readonly providerSessionCwd?: string;
     readonly providerName?: ProviderDriverKind;
     readonly gitStatusRefreshCalls?: Array<string>;
+    readonly failOnFullThreadDetailQuery?: boolean;
+    readonly failedCheckpointCaptureCounter?: { count: number };
   }) {
     const cwd = createGitRepository();
     tempDirs.push(cwd);
@@ -310,6 +313,44 @@ describe("CheckpointReactor", () => {
       Layer.provide(RepositoryIdentityResolver.layer),
       Layer.provide(SqlitePersistenceMemory),
     );
+    const reactorProjectionSnapshotLayer = options?.failOnFullThreadDetailQuery
+      ? Layer.effect(
+          ProjectionSnapshotQuery,
+          Effect.map(ProjectionSnapshotQuery, (service) =>
+            ProjectionSnapshotQuery.of({
+              ...service,
+              getThreadDetailById: () =>
+                Effect.die(new Error("checkpoint reactor hydrated full thread detail")),
+            }),
+          ),
+        ).pipe(Layer.provide(projectionSnapshotLayer))
+      : projectionSnapshotLayer;
+    const checkpointStoreLayer = CheckpointStore.layer.pipe(Layer.provide(VcsDriverRegistry.layer));
+    const failedCheckpointCaptureCounter = options?.failedCheckpointCaptureCounter;
+    const reactorCheckpointStoreLayer = failedCheckpointCaptureCounter
+      ? Layer.effect(
+          CheckpointStore.CheckpointStore,
+          Effect.map(CheckpointStore.CheckpointStore, (service) =>
+            CheckpointStore.CheckpointStore.of({
+              ...service,
+              captureCheckpoint: () =>
+                Effect.sync(() => {
+                  failedCheckpointCaptureCounter.count += 1;
+                }).pipe(
+                  Effect.andThen(
+                    Effect.fail(
+                      new VcsUnsupportedOperationError({
+                        operation: "CheckpointReactor.test.captureCheckpoint",
+                        kind: "git",
+                        detail: "injected checkpoint failure",
+                      }),
+                    ),
+                  ),
+                ),
+            }),
+          ),
+        ).pipe(Layer.provide(checkpointStoreLayer))
+      : checkpointStoreLayer;
 
     const ServerConfigLayer = ServerConfig.layerTest(process.cwd(), {
       prefix: "t3-checkpoint-reactor-test-",
@@ -336,11 +377,11 @@ describe("CheckpointReactor", () => {
 
     const layer = CheckpointReactorLive.pipe(
       Layer.provideMerge(orchestrationLayer),
-      Layer.provideMerge(projectionSnapshotLayer),
+      Layer.provideMerge(reactorProjectionSnapshotLayer),
       Layer.provideMerge(RuntimeReceiptBusLive),
       Layer.provideMerge(Layer.succeed(ProviderService, provider.service)),
       Layer.provideMerge(vcsStatusBroadcasterLayer),
-      Layer.provideMerge(CheckpointStore.layer.pipe(Layer.provide(VcsDriverRegistry.layer))),
+      Layer.provideMerge(reactorCheckpointStoreLayer),
       Layer.provideMerge(
         WorkspaceEntries.layer.pipe(
           Layer.provide(WorkspacePaths.layer),
@@ -454,7 +495,10 @@ describe("CheckpointReactor", () => {
   }
 
   it("captures pre-turn baseline on turn.started and post-turn checkpoint on turn.completed", async () => {
-    const harness = await createHarness({ seedFilesystemCheckpoints: false });
+    const harness = await createHarness({
+      seedFilesystemCheckpoints: false,
+      failOnFullThreadDetailQuery: true,
+    });
     const createdAt = "2026-01-01T00:00:00.000Z";
 
     await Effect.runPromise(
@@ -818,7 +862,7 @@ describe("CheckpointReactor", () => {
       threadWorktreePath: null,
     });
 
-    await Effect.runPromise(
+    await runtime!.runPromise(
       harness.engine.dispatch({
         type: "thread.turn.start",
         commandId: CommandId.make("cmd-turn-start-for-baseline"),
@@ -846,6 +890,34 @@ describe("CheckpointReactor", () => {
         "README.md",
       ),
     ).toBe("v1\n");
+  });
+
+  it("backs off duplicate baseline capture attempts after a failure", async () => {
+    const failedCheckpointCaptureCounter = { count: 0 };
+    const harness = await createHarness({
+      seedFilesystemCheckpoints: false,
+      failedCheckpointCaptureCounter,
+    });
+
+    await Effect.runPromise(
+      harness.engine.dispatch({
+        type: "thread.turn.start",
+        commandId: CommandId.make("cmd-turn-start-baseline-backoff"),
+        threadId: ThreadId.make("thread-1"),
+        message: {
+          messageId: MessageId.make("message-baseline-backoff"),
+          role: "user",
+          text: "start turn",
+          attachments: [],
+        },
+        interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
+        runtimeMode: "approval-required",
+        createdAt: "2026-01-01T00:00:00.000Z",
+      }),
+    );
+    await harness.drain();
+
+    expect(failedCheckpointCaptureCounter.count).toBe(1);
   });
 
   it("captures turn completion checkpoint from project workspace root when provider session cwd is unavailable", async () => {

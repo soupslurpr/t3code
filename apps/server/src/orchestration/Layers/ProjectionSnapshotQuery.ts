@@ -63,6 +63,7 @@ import {
   type ProjectionFullThreadDiffContext,
   type ProjectionSnapshotCounts,
   type ProjectionThreadCheckpointContext,
+  type ProjectionThreadTurnStartContext,
   type ProjectionSnapshotQueryShape,
 } from "../Services/ProjectionSnapshotQuery.ts";
 
@@ -139,6 +140,15 @@ const ProjectIdLookupInput = Schema.Struct({
 const ThreadIdLookupInput = Schema.Struct({
   threadId: ThreadId,
 });
+const ThreadMessageLookupInput = Schema.Struct({
+  threadId: ThreadId,
+  messageId: MessageId,
+});
+const ProjectionThreadTurnStartMessageRowSchema = ProjectionThreadMessageDbRowSchema.mapFields(
+  Struct.assign({
+    userMessageCount: NonNegativeInt,
+  }),
+);
 // Windowed reads order turns by the stable keyset (anchor, turn key), where
 // anchor is requested_at and turn key is
 // COALESCE(turn_id, ''). Both are event-derived, so cursors survive the
@@ -981,6 +991,34 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
         FROM projection_thread_messages
         WHERE thread_id = ${threadId}
         ORDER BY created_at ASC, message_id ASC
+      `,
+  });
+
+  const getThreadTurnStartMessageRow = SqlSchema.findOneOption({
+    Request: ThreadMessageLookupInput,
+    Result: ProjectionThreadTurnStartMessageRowSchema,
+    execute: ({ threadId, messageId }) =>
+      sql`
+        SELECT
+          messages.message_id AS "messageId",
+          messages.thread_id AS "threadId",
+          messages.turn_id AS "turnId",
+          messages.role,
+          messages.text,
+          messages.attachments_json AS "attachments",
+          messages.is_streaming AS "isStreaming",
+          messages.created_at AS "createdAt",
+          messages.updated_at AS "updatedAt",
+          (
+            SELECT COUNT(*)
+            FROM projection_thread_messages AS user_messages
+            WHERE user_messages.thread_id = ${threadId}
+              AND user_messages.role = 'user'
+          ) AS "userMessageCount"
+        FROM projection_thread_messages AS messages
+        WHERE messages.thread_id = ${threadId}
+          AND messages.message_id = ${messageId}
+        LIMIT 1
       `,
   });
 
@@ -2390,6 +2428,37 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
       });
     });
 
+  const getThreadTurnStartContext: ProjectionSnapshotQueryShape["getThreadTurnStartContext"] = (
+    threadId,
+    messageId,
+  ) =>
+    getThreadTurnStartMessageRow({ threadId, messageId }).pipe(
+      Effect.mapError(
+        toPersistenceSqlOrDecodeError(
+          "ProjectionSnapshotQuery.getThreadTurnStartContext:query",
+          "ProjectionSnapshotQuery.getThreadTurnStartContext:decodeRow",
+        ),
+      ),
+      Effect.map(
+        Option.map((row): ProjectionThreadTurnStartContext => {
+          const message: OrchestrationMessage = {
+            id: row.messageId,
+            role: row.role,
+            text: row.text,
+            turnId: row.turnId,
+            streaming: row.isStreaming === 1,
+            createdAt: row.createdAt,
+            updatedAt: row.updatedAt,
+            ...(row.attachments === null ? {} : { attachments: row.attachments }),
+          };
+          return {
+            message,
+            userMessageCount: row.userMessageCount,
+          };
+        }),
+      ),
+    );
+
   const getFullThreadDiffContext: NonNullable<
     ProjectionSnapshotQueryShape["getFullThreadDiffContext"]
   > = (threadId, toTurnCount) =>
@@ -2823,6 +2892,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
     getProjectShellById,
     getFirstActiveThreadIdByProjectId,
     getThreadCheckpointContext,
+    getThreadTurnStartContext,
     getFullThreadDiffContext,
     getThreadShellById,
     getThreadDetailById,
