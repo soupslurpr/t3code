@@ -1406,10 +1406,10 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
       const persistedUserMessage = targetThread.messages.find(
         (message) =>
           message.id === command.message.messageId &&
-          message.role === "user" &&
+          message.role === command.message.role &&
           message.turnId === null,
       );
-      const userMessageEvent: Omit<OrchestrationEvent, "sequence"> | null = persistedUserMessage
+      const inputMessageEvent: Omit<OrchestrationEvent, "sequence"> | null = persistedUserMessage
         ? null
         : {
             ...(yield* withEventBase({
@@ -1422,7 +1422,7 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
             payload: {
               threadId: command.threadId,
               messageId: command.message.messageId,
-              role: "user",
+              role: command.message.role,
               text: command.message.text,
               attachments: command.message.attachments,
               ...(command.message.context !== undefined
@@ -1441,7 +1441,7 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
           occurredAt: command.createdAt,
           commandId: command.commandId,
         })),
-        ...(userMessageEvent ? { causationEventId: userMessageEvent.eventId } : {}),
+        ...(inputMessageEvent ? { causationEventId: inputMessageEvent.eventId } : {}),
         type: "thread.turn-start-requested",
         payload: {
           threadId: command.threadId,
@@ -1496,7 +1496,7 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
       }
       return [
         ...lifecycleResetEvents,
-        ...(userMessageEvent ? [userMessageEvent] : []),
+        ...(inputMessageEvent ? [inputMessageEvent] : []),
         turnStartRequestedEvent,
       ];
     }

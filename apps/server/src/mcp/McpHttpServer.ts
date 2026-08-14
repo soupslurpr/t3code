@@ -49,6 +49,8 @@ import {
 import { ComputerImageToolkit, ComputerStandardToolkit } from "./toolkits/computer/tools.ts";
 import { AgentDesktopToolkitHandlersLive } from "./toolkits/agentDesktop/handlers.ts";
 import { AgentDesktopToolkit } from "./toolkits/agentDesktop/tools.ts";
+import { MonitorToolkitHandlersLive } from "./toolkits/monitor/handlers.ts";
+import { MonitorToolkit } from "./toolkits/monitor/tools.ts";
 
 const MAX_VALIDATION_EXPECTATION_LENGTH = 128;
 const MAX_VALIDATION_FIELD_LENGTH = 128;
@@ -931,12 +933,17 @@ const AgentDesktopToolkitRegistrationLive = McpServer.toolkit(AgentDesktopToolki
   Layer.provide(AgentDesktopToolkitHandlersLive),
 );
 
+const MonitorToolkitRegistrationLive = McpServer.toolkit(MonitorToolkit).pipe(
+  Layer.provide(MonitorToolkitHandlersLive),
+);
+
 export const ToolkitRegistrationLive = Layer.mergeAll(
   PreviewToolkitRegistrationLive,
   PullRequestsToolkitRegistrationLive,
   DeviceToolkitRegistrationLive,
   ComputerToolkitRegistrationLive,
   AgentDesktopToolkitRegistrationLive,
+  MonitorToolkitRegistrationLive,
 );
 
 const McpTransportLive = McpServer.layerHttp({

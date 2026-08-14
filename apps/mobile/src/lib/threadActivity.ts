@@ -2427,7 +2427,11 @@ export function buildThreadFeed(
   const entries = Arr.sortWith(
     [
       ...messages
-        .filter((message) => message.role !== "user" || !foldedAnswerMessageIds.has(message.id))
+        .filter(
+          (message) =>
+            message.role !== "system" &&
+            (message.role !== "user" || !foldedAnswerMessageIds.has(message.id)),
+        )
         .map((message) => {
           let entry = messageEntriesCache.get(message);
           if (!entry) {
