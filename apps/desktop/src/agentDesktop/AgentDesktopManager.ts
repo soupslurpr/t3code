@@ -72,6 +72,12 @@ const TRANSIENT_KEY_ID = "t3:transient-key-chord";
 const MAX_STORED_FRAMES = 32;
 const RECOVERY_RETENTION = Duration.days(7);
 const IDLE_PARK_AFTER = Duration.minutes(10);
+const AUTOMATIC_RECOVERY_AFTER = Duration.days(30);
+const STORAGE_PRESSURE_MIN_IDLE = Duration.days(1);
+const MIN_STORAGE_RESERVE_BYTES = 2 * GIB;
+const MAX_STORAGE_RESERVE_BYTES = 20 * GIB;
+const STORAGE_RESERVE_RATIO = 0.05;
+const STORAGE_CHECK_INTERVAL = Duration.minutes(5);
 const MAINTENANCE_INTERVAL = Duration.minutes(1);
 const HUMAN_LEASE_TTL = Duration.seconds(30);
 const STATE_FILE_NAME = "desktops.json";
@@ -141,6 +147,7 @@ const PersistedDesktop = Schema.Struct({
       graphics: Schema.optional(Schema.Literals(["none", "preferred", "required"])),
       latency: Schema.optional(Schema.Literals(["interactive", "background"])),
       preventParking: Schema.optional(Schema.Boolean),
+      retention: Schema.optional(Schema.Literals(["automatic", "preserve"])),
       expectedTemporaryDiskBytes: Schema.optional(Schema.Number),
       audio: Schema.optional(Schema.Boolean),
     }),
@@ -591,6 +598,87 @@ export function shouldAutomaticallyParkAgentDesktop(input: {
   );
 }
 
+/** Returns the free-space reserve maintained for the Agent desktop filesystem. */
+function agentDesktopStorageReserveBytes(totalBytes: number): number {
+  if (!Number.isFinite(totalBytes) || totalBytes <= 0) return 0;
+  return Math.min(
+    totalBytes,
+    Math.max(
+      MIN_STORAGE_RESERVE_BYTES,
+      Math.min(MAX_STORAGE_RESERVE_BYTES, totalBytes * STORAGE_RESERVE_RATIO),
+    ),
+  );
+}
+
+/** Selects inactive desktops that should enter the recoverable deletion window. */
+export function selectAutomaticRecoveryCandidates(input: {
+  readonly now: number;
+  readonly desktops: ReadonlyArray<{
+    readonly id: AgentDesktopId;
+    readonly state: AgentDesktopLifecycleState;
+    readonly lastActiveAt: string;
+    readonly retention: "automatic" | "preserve";
+    readonly allocatedBytes: number;
+  }>;
+  readonly storage?: {
+    readonly totalBytes: number;
+    readonly availableBytes: number;
+  };
+}): ReadonlyArray<{
+  readonly id: AgentDesktopId;
+  readonly reason: "inactive" | "storage-pressure";
+}> {
+  const parsedLastActiveAt = (desktop: (typeof input.desktops)[number]) =>
+    Date.parse(desktop.lastActiveAt);
+  const automaticCandidates = input.desktops
+    .filter(
+      (desktop) =>
+        (desktop.state === "parked" || desktop.state === "stopped") &&
+        desktop.retention === "automatic" &&
+        Number.isFinite(parsedLastActiveAt(desktop)),
+    )
+    .sort((left, right) => parsedLastActiveAt(left) - parsedLastActiveAt(right));
+  const selected: Array<{
+    readonly id: AgentDesktopId;
+    readonly reason: "inactive" | "storage-pressure";
+  }> = [];
+  const selectedIds = new Set<AgentDesktopId>();
+  const inactiveBefore = input.now - Duration.toMillis(AUTOMATIC_RECOVERY_AFTER);
+  for (const desktop of automaticCandidates) {
+    if (parsedLastActiveAt(desktop) > inactiveBefore) continue;
+    selected.push({ id: desktop.id, reason: "inactive" });
+    selectedIds.add(desktop.id);
+  }
+
+  const storage = input.storage;
+  if (storage === undefined) return selected;
+  const reserveBytes = agentDesktopStorageReserveBytes(storage.totalBytes);
+  if (reserveBytes === 0 || storage.availableBytes >= reserveBytes) return selected;
+  const allocatedBytes = (desktop: (typeof input.desktops)[number]) =>
+    Number.isFinite(desktop.allocatedBytes) ? Math.max(0, desktop.allocatedBytes) : 0;
+  let projectedAvailableBytes = Math.max(0, storage.availableBytes);
+  for (const desktop of input.desktops) {
+    if (desktop.state === "recoverable" || selectedIds.has(desktop.id)) {
+      projectedAvailableBytes += allocatedBytes(desktop);
+    }
+  }
+  if (projectedAvailableBytes >= reserveBytes) return selected;
+
+  const storagePressureIdleBefore = input.now - Duration.toMillis(STORAGE_PRESSURE_MIN_IDLE);
+  for (const desktop of automaticCandidates) {
+    if (selectedIds.has(desktop.id) || parsedLastActiveAt(desktop) > storagePressureIdleBefore) {
+      continue;
+    }
+    const reclaimableBytes = allocatedBytes(desktop);
+    if (reclaimableBytes === 0) continue;
+    selected.push({ id: desktop.id, reason: "storage-pressure" });
+    selectedIds.add(desktop.id);
+    projectedAvailableBytes += reclaimableBytes;
+    if (projectedAvailableBytes >= reserveBytes) break;
+  }
+  return selected;
+}
+
 /** Reserves one currently unused host port long enough to choose its number. */
 const findAvailablePort = (host: string) =>
   Effect.tryPromise({
@@ -629,6 +717,7 @@ export const make = Effect.gen(function* () {
   const stateSemaphore = yield* Semaphore.make(1);
   const lifecycleSemaphore = yield* Semaphore.make(1);
   const leaseSemaphore = yield* Semaphore.make(1);
+  const nextStorageCheckAt = yield* Ref.make(0);
   const guestAccessibilitySource = yield* Effect.gen(function* () {
     for (const candidate of environment.resolveResourcePathCandidates(
       GUEST_ACCESSIBILITY_RESOURCE,
@@ -842,6 +931,7 @@ export const make = Effect.gen(function* () {
       label: desktop.label,
       owner: desktop.owner,
       state: desktop.state,
+      automaticParking: desktop.requirements?.preventParking !== true,
       capabilities: [
         ...CAPABILITIES,
         ...(hardwareAccelerated ? (["graphics-acceleration"] as const) : []),
@@ -862,6 +952,7 @@ export const make = Effect.gen(function* () {
       createdAt: desktop.createdAt,
       lastActiveAt: desktop.lastActiveAt,
       recoverableUntil: desktop.recoverableUntil,
+      retention: desktop.requirements?.retention ?? "automatic",
       ...(desktop.detail === undefined ? {} : { detail: desktop.detail }),
     } satisfies AgentDesktop;
   });
@@ -1407,6 +1498,33 @@ export const make = Effect.gen(function* () {
         ),
       );
     return yield* setLifecycle(desktop.id, "parked", detail);
+  });
+
+  const retireDesktop = Effect.fn("AgentDesktopManager.retireDesktop")(function* (
+    desktop: PersistedDesktop,
+    detail?: string,
+  ) {
+    const runtime = (yield* Ref.get(state)).runtimes.get(desktop.id);
+    if (runtime !== undefined) yield* revokeDesktopLease(desktop, runtime, "ignore");
+    yield* qemu.stop(desktop.id);
+    const recoverableUntil = isoTime(
+      (yield* Clock.currentTimeMillis) + Duration.toMillis(RECOVERY_RETENTION),
+    );
+    const recoverable = (yield* updateDesktop(desktop.id, (current) => ({
+      ...current,
+      state: "recoverable",
+      recoverableUntil,
+      detail,
+    })))!;
+    yield* modifyState((current) => {
+      if (current.assignments.get(desktop.owner.controllerId) !== desktop.id) {
+        return [undefined, current] as const;
+      }
+      const assignments = new Map(current.assignments);
+      assignments.delete(desktop.owner.controllerId);
+      return [undefined, { ...current, assignments }] as const;
+    });
+    return recoverable;
   });
 
   const reclaimOneDesktop = Effect.fn("AgentDesktopManager.reclaimOneDesktop")(function* () {
@@ -2502,36 +2620,11 @@ export const make = Effect.gen(function* () {
               label: desktop.label,
               ...(desktop.requirements === undefined ? {} : { requirements: desktop.requirements }),
             });
-            const recoverableUntil = isoTime(
-              (yield* Clock.currentTimeMillis) + Duration.toMillis(RECOVERY_RETENTION),
-            );
-            yield* revokeDesktopLease(desktop, runtime, "ignore");
-            yield* qemu.stop(desktop.id);
-            yield* updateDesktop(desktop.id, (current) => ({
-              ...current,
-              state: "recoverable",
-              recoverableUntil,
-              detail: `reset replaced this desktop with ${replacement.id}`,
-            }));
+            yield* retireDesktop(desktop, `Reset replaced this desktop with ${replacement.id}.`);
             return yield* summary(replacement);
           }
           case "delete": {
-            yield* revokeDesktopLease(desktop, runtime, "ignore");
-            yield* qemu.stop(desktop.id);
-            const recoverableUntil = isoTime(
-              (yield* Clock.currentTimeMillis) + Duration.toMillis(RECOVERY_RETENTION),
-            );
-            const recoverable = (yield* updateDesktop(desktop.id, (current) => ({
-              ...current,
-              state: "recoverable",
-              recoverableUntil,
-            })))!;
-            yield* modifyState((current) => {
-              const assignments = new Map(current.assignments);
-              assignments.delete(owner.controllerId);
-              return [undefined, { ...current, assignments }] as const;
-            });
-            return yield* summary(recoverable);
+            return yield* summary(yield* retireDesktop(desktop));
           }
           case "restore": {
             if (desktop.state !== "recoverable") {
@@ -3029,6 +3122,65 @@ export const make = Effect.gen(function* () {
           ),
         );
         if (removed) yield* removeDesktopState(desktop.id);
+      }
+
+      const afterCleanup = yield* Ref.get(state);
+      const retirementPool = Array.from(afterCleanup.desktops.values()).filter(
+        (desktop) =>
+          desktop.state === "parked" ||
+          desktop.state === "stopped" ||
+          desktop.state === "recoverable",
+      );
+      const storageCheckAt = yield* Ref.get(nextStorageCheckAt);
+      const shouldCheckStorage = retirementPool.length > 0 && now >= storageCheckAt;
+      const storage = !shouldCheckStorage
+        ? undefined
+        : yield* qemu.storageCapacity.pipe(Effect.option, Effect.map(Option.getOrUndefined));
+      if (shouldCheckStorage) {
+        yield* Ref.set(nextStorageCheckAt, now + Duration.toMillis(STORAGE_CHECK_INTERVAL));
+      }
+      const underStoragePressure =
+        storage !== undefined &&
+        storage.availableBytes < agentDesktopStorageReserveBytes(storage.totalBytes);
+      const diskAllocations: ReadonlyMap<AgentDesktopId, number> = underStoragePressure
+        ? new Map(
+            yield* Effect.forEach(
+              retirementPool,
+              (desktop) =>
+                qemu.diskUsage(desktop.id).pipe(
+                  Effect.map((usage) => [desktop.id, usage.allocatedBytes] as const),
+                  Effect.orElseSucceed(() => [desktop.id, 0] as const),
+                ),
+              { concurrency: 4 },
+            ),
+          )
+        : new Map();
+      const automaticRecoveries = selectAutomaticRecoveryCandidates({
+        now,
+        desktops: Array.from(afterCleanup.desktops.values(), (desktop) => ({
+          id: desktop.id,
+          state: desktop.state,
+          lastActiveAt: desktop.lastActiveAt,
+          retention: desktop.requirements?.retention ?? "automatic",
+          allocatedBytes: diskAllocations.get(desktop.id) ?? 0,
+        })),
+        ...(storage === undefined ? {} : { storage }),
+      });
+      for (const selection of automaticRecoveries) {
+        const desktop = afterCleanup.desktops.get(selection.id);
+        if (desktop === undefined) continue;
+        const detail =
+          selection.reason === "inactive"
+            ? "Retired automatically after 30 days of inactivity."
+            : "Retired automatically because Agent desktop storage was low.";
+        yield* retireDesktop(desktop, detail).pipe(
+          Effect.catch((cause) =>
+            Effect.logWarning("agent desktop automatic retirement failed", {
+              desktopId: desktop.id,
+              detail: cause.message,
+            }),
+          ),
+        );
       }
 
       const current = yield* Ref.get(state);
