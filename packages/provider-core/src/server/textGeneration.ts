@@ -74,6 +74,26 @@ export interface ThreadTitleGenerationResult {
   needsRefinement?: boolean | undefined;
 }
 
+export interface ImageConditionEvaluationInput {
+  cwd: string;
+  criterion: string;
+  currentPngBase64: string;
+  baselinePngBase64?: string | undefined;
+  /** What model and provider instance to use for evaluation. */
+  modelSelection: ModelSelection;
+}
+
+export interface ImageConditionEvaluationResult {
+  verdict: "matched" | "not-matched" | "uncertain";
+  summary: string;
+  evidence: string;
+  usage: {
+    readonly inputTokens: number | null;
+    readonly cachedInputTokens: number | null;
+    readonly outputTokens: number | null;
+  };
+}
+
 /** Commit, change request, branch, and title generation backed by one provider instance. */
 export interface ProviderTextGeneration {
   /**
@@ -101,4 +121,9 @@ export interface ProviderTextGeneration {
   readonly generateThreadTitle: (
     input: ThreadTitleGenerationInput,
   ) => Effect.Effect<ThreadTitleGenerationResult, TextGenerationError>;
+
+  /** Evaluates a read-only screen condition when the provider supports images. */
+  readonly evaluateImageCondition?: (
+    input: ImageConditionEvaluationInput,
+  ) => Effect.Effect<ImageConditionEvaluationResult, TextGenerationError>;
 }

@@ -11,6 +11,8 @@ import * as SourceControlProviderRegistry from "../sourceControl/SourceControlPr
 import * as ThreadTitleLinks from "./ThreadTitleLinks.ts";
 
 export type {
+  ImageConditionEvaluationInput,
+  ImageConditionEvaluationResult,
   BranchNameGenerationInput,
   BranchNameGenerationResult,
   CommitMessageGenerationInput,
@@ -32,7 +34,8 @@ type TextGenerationOp =
   | "generateCommitMessage"
   | "generatePrContent"
   | "generateBranchName"
-  | "generateThreadTitle";
+  | "generateThreadTitle"
+  | "evaluateImageCondition";
 
 const resolveInstance = (
   registry: ProviderInstanceRegistry.ProviderInstanceRegistry["Service"],
@@ -83,6 +86,19 @@ export const make = Effect.gen(function* () {
               ));
             return yield* textGeneration.generateThreadTitle({ ...input, linkedContext });
           }),
+        ),
+      ),
+    evaluateImageCondition: (input) =>
+      resolveInstance(registry, "evaluateImageCondition", input.modelSelection.instanceId).pipe(
+        Effect.flatMap((textGeneration) =>
+          textGeneration.evaluateImageCondition === undefined
+            ? Effect.fail(
+                new TextGenerationError({
+                  operation: "evaluateImageCondition",
+                  detail: `Provider instance '${input.modelSelection.instanceId}' does not support image-condition evaluation.`,
+                }),
+              )
+            : textGeneration.evaluateImageCondition(input),
         ),
       ),
   });
