@@ -1,3 +1,4 @@
+/** Reaps idle provider sessions without interfering with startup recovery. */
 import * as Clock from "effect/Clock";
 import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
@@ -22,6 +23,7 @@ export interface ProviderSessionReaperLiveOptions {
   readonly sweepIntervalMs?: number;
 }
 
+/** Creates the periodic idle-session reaper. */
 const makeProviderSessionReaper = (options?: ProviderSessionReaperLiveOptions) =>
   Effect.gen(function* () {
     const providerService = yield* ProviderService;
@@ -146,6 +148,7 @@ const makeProviderSessionReaper = (options?: ProviderSessionReaperLiveOptions) =
     } satisfies ProviderSessionReaperShape;
   });
 
+/** Provides the reaper with configurable idle and sweep intervals. */
 export const makeProviderSessionReaperLive = (options?: ProviderSessionReaperLiveOptions) =>
   Layer.effect(ProviderSessionReaper, makeProviderSessionReaper(options));
 
