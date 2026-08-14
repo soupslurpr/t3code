@@ -35,6 +35,7 @@ function makeGnomeRemoteDesktop(
     move: () => unexpected,
     click: () => unexpected,
     activate: () => unexpected,
+    activateWindow: () => unexpected,
     drag: () => unexpected,
     wheel: () => unexpected,
     type: () => unexpected,
