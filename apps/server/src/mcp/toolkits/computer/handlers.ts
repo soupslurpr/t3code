@@ -31,6 +31,10 @@ const invoke = Effect.fn("ComputerToolkit.invoke")(function* <A>(
 const handlers = {
   computer_status: (input) =>
     invoke<ComputerAutomationStatus>("computerStatus", input, STATUS_TIMEOUT_MS),
+  computer_request_availability: (input) =>
+    invoke<ComputerAutomationStatus>("computerRequestAvailability", input, STATUS_TIMEOUT_MS),
+  computer_release_availability: (input) =>
+    invoke<ComputerAutomationStatus>("computerReleaseAvailability", input, STATUS_TIMEOUT_MS),
   computer_request_view: (input) =>
     invoke<ComputerAutomationObservation>("computerRequestView", input, CONTROL_TIMEOUT_MS),
   computer_request_control: (input) =>

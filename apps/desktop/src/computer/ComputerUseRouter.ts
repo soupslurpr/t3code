@@ -1,6 +1,7 @@
 import type {
   AgentDesktopOwner,
   ComputerAutomationAccessInput,
+  ComputerAutomationAvailabilityInput,
   ComputerAutomationActInput,
   ComputerAutomationSnapshot,
   ComputerAutomationSnapshotInput,
@@ -33,6 +34,14 @@ export interface ComputerUseRouterShape {
   readonly requestControl: (
     context: DesktopComputerAutomationContext,
     input: ComputerAutomationAccessInput,
+  ) => Effect.Effect<ComputerAutomationStatus, ComputerUseRouterError>;
+  readonly requestAvailability: (
+    context: DesktopComputerAutomationContext,
+    input: ComputerAutomationAvailabilityInput,
+  ) => Effect.Effect<ComputerAutomationStatus, ComputerUseRouterError>;
+  readonly releaseAvailability: (
+    context: DesktopComputerAutomationContext,
+    input: ComputerAutomationAvailabilityInput,
   ) => Effect.Effect<ComputerAutomationStatus, ComputerUseRouterError>;
   readonly snapshot: (
     context: DesktopComputerAutomationContext,
@@ -118,6 +127,12 @@ export const make = Effect.gen(function* () {
   const requestControl: ComputerUseRouterShape["requestControl"] = (context, input) =>
     requestAccess(context, input, "control");
 
+  const requestAvailability: ComputerUseRouterShape["requestAvailability"] = (context) =>
+    user.requestAvailability(context.controllerId);
+
+  const releaseAvailability: ComputerUseRouterShape["releaseAvailability"] = (context) =>
+    user.releaseAvailability(context.controllerId);
+
   const snapshot: ComputerUseRouterShape["snapshot"] = (context, input) => {
     const { desktop = { kind: "user" }, ...observation } = input;
     return desktop.kind === "user"
@@ -150,6 +165,8 @@ export const make = Effect.gen(function* () {
     status,
     requestView,
     requestControl,
+    requestAvailability,
+    releaseAvailability,
     snapshot,
     act,
     release,

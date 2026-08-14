@@ -41,6 +41,8 @@ function makeComputer(calls: string[]): ComputerUse.ComputerUseShape {
     status: Effect.succeed(nativeStatus),
     requestView: record("requestView").pipe(Effect.as(nativeStatus)),
     requestControl: record("requestControl").pipe(Effect.as(nativeStatus)),
+    requestAvailability: record("requestAvailability").pipe(Effect.as(nativeStatus)),
+    releaseAvailability: record("releaseAvailability").pipe(Effect.as(nativeStatus)),
     snapshot: () => record("snapshot").pipe(Effect.as(snapshot)),
     act: () => record("act"),
     releaseInputs: record("releaseInputs"),
@@ -63,6 +65,27 @@ const withCoordinator = <A, E, R>(
   );
 
 describe("ComputerUseCoordinator", () => {
+  it.effect("controls availability independently from native access leases", () => {
+    const calls: string[] = [];
+    return withCoordinator(
+      Effect.gen(function* () {
+        const coordinator = yield* ComputerUseCoordinator.ComputerUseCoordinator;
+        yield* coordinator.requestAvailability("controller");
+        yield* coordinator.releaseAvailability("controller");
+        yield* coordinator.requestView("controller");
+        yield* coordinator.release("controller");
+
+        assert.deepEqual(calls, [
+          "requestAvailability",
+          "releaseAvailability",
+          "requestView",
+          "release",
+        ]);
+      }),
+      makeComputer(calls),
+    );
+  });
+
   it.effect("restores control-only grants as logical view access", () => {
     const calls: string[] = [];
     let currentStatus: ComputerAutomationStatus = {
