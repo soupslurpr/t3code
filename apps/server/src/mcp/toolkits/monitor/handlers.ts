@@ -1,0 +1,42 @@
+/** Implements thread-scoped durable monitor MCP handlers. */
+import * as Effect from "effect/Effect";
+
+import { ThreadMonitorService } from "../../../threadMonitor/ThreadMonitorService.ts";
+import * as McpInvocationContext from "../../McpInvocationContext.ts";
+import { MonitorToolkit } from "./tools.ts";
+
+const handlers = {
+  monitor_start: (monitor) =>
+    Effect.gen(function* () {
+      const scope = yield* McpInvocationContext.McpInvocationContext;
+      const service = yield* ThreadMonitorService;
+      return yield* service.create({ threadId: scope.threadId, monitor });
+    }),
+  monitor_status: (query) =>
+    Effect.gen(function* () {
+      const scope = yield* McpInvocationContext.McpInvocationContext;
+      const service = yield* ThreadMonitorService;
+      return yield* service.status({ threadId: scope.threadId, query });
+    }),
+  monitor_signal: (signal) =>
+    Effect.gen(function* () {
+      const scope = yield* McpInvocationContext.McpInvocationContext;
+      const service = yield* ThreadMonitorService;
+      return yield* service.signal({ threadId: scope.threadId, signal });
+    }),
+  monitor_cancel: (cancel) =>
+    Effect.gen(function* () {
+      const scope = yield* McpInvocationContext.McpInvocationContext;
+      const service = yield* ThreadMonitorService;
+      return yield* service.cancel({ threadId: scope.threadId, cancel });
+    }),
+  monitor_check_now: (check) =>
+    Effect.gen(function* () {
+      const scope = yield* McpInvocationContext.McpInvocationContext;
+      const service = yield* ThreadMonitorService;
+      return yield* service.checkNow({ threadId: scope.threadId, check });
+    }),
+} satisfies Parameters<typeof MonitorToolkit.toLayer>[0];
+
+/** Provides durable monitor handlers to the MCP toolkit. */
+export const MonitorToolkitHandlersLive = MonitorToolkit.toLayer(handlers);

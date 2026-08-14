@@ -1665,7 +1665,8 @@ export function deriveTimelineEntriesWithState(
     ),
   );
   const showMessage = (message: ChatMessage) =>
-    message.role !== "user" || !foldedAnswerMessageIds.has(message.id);
+    message.role !== "system" &&
+    (message.role !== "user" || !foldedAnswerMessageIds.has(message.id));
   const canAppend =
     previous !== null &&
     !previous.entries.some((entry) => entry.kind === "message" && !showMessage(entry.message)) &&

@@ -5,6 +5,7 @@ import * as Schema from "effect/Schema";
 import { CommandId, ProjectId, ThreadId } from "./baseSchemas.ts";
 
 import {
+  ClientOrchestrationCommand,
   DEFAULT_PROVIDER_INTERACTION_MODE,
   DEFAULT_RUNTIME_MODE,
   type ChatImageAttachment,
@@ -484,6 +485,29 @@ it.effect("rejects accessibility trees above the serialized payload limit", () =
     );
 
     assert.strictEqual(Exit.isFailure(result), true);
+  }),
+);
+
+it.effect("reserves system turn messages for internal orchestration", () =>
+  Effect.gen(function* () {
+    const command = {
+      type: "thread.turn.start",
+      commandId: "cmd-system-turn",
+      threadId: "thread-1",
+      message: {
+        messageId: "msg-system-turn",
+        role: "system",
+        text: "Resume after the durable monitor triggered.",
+        attachments: [],
+      },
+      createdAt: "2026-01-01T00:00:00.000Z",
+    } as const;
+
+    const internal = yield* decodeThreadTurnStartCommand(command);
+    assert.strictEqual(internal.message.role, "system");
+
+    const client = yield* Effect.exit(decodeClientOrchestrationCommand(command));
+    assert.strictEqual(client._tag, "Failure");
   }),
 );
 
