@@ -39,6 +39,9 @@ const ThreadMonitorRow = Schema.Struct({
   cancelledAt: Schema.NullOr(IsoDateTime),
   lastError: Schema.NullOr(Schema.String),
   deliveryAttempts: NonNegativeInt,
+  deliveryGroupId: Schema.NullOr(Schema.String),
+  deliveryRetryAt: Schema.NullOr(IsoDateTime),
+  deliveryFailureCount: NonNegativeInt,
 });
 type ThreadMonitorRow = typeof ThreadMonitorRow.Type;
 
@@ -61,6 +64,9 @@ const toRow = (monitor: ThreadMonitor): ThreadMonitorRow => ({
   cancelledAt: monitor.cancelledAt,
   lastError: monitor.lastError,
   deliveryAttempts: monitor.deliveryAttempts,
+  deliveryGroupId: monitor.deliveryGroupId,
+  deliveryRetryAt: monitor.deliveryRetryAt,
+  deliveryFailureCount: monitor.deliveryFailureCount,
 });
 
 const fromRow = (row: ThreadMonitorRow): ThreadMonitor => ({
@@ -91,6 +97,9 @@ const fromRow = (row: ThreadMonitorRow): ThreadMonitor => ({
   cancelledAt: row.cancelledAt,
   lastError: row.lastError,
   deliveryAttempts: row.deliveryAttempts,
+  deliveryGroupId: row.deliveryGroupId,
+  deliveryRetryAt: row.deliveryRetryAt,
+  deliveryFailureCount: row.deliveryFailureCount,
 });
 
 const make = Effect.gen(function* () {
@@ -117,7 +126,10 @@ const make = Effect.gen(function* () {
         delivered_at,
         cancelled_at,
         last_error,
-        delivery_attempts
+        delivery_attempts,
+        delivery_group_id,
+        delivery_retry_at,
+        delivery_failure_count
       ) VALUES (
         ${row.monitorId},
         ${row.threadId},
@@ -136,7 +148,10 @@ const make = Effect.gen(function* () {
         ${row.deliveredAt},
         ${row.cancelledAt},
         ${row.lastError},
-        ${row.deliveryAttempts}
+        ${row.deliveryAttempts},
+        ${row.deliveryGroupId},
+        ${row.deliveryRetryAt},
+        ${row.deliveryFailureCount}
       )
       ON CONFLICT (monitor_id) DO UPDATE SET
         thread_id = excluded.thread_id,
@@ -155,7 +170,10 @@ const make = Effect.gen(function* () {
         delivered_at = excluded.delivered_at,
         cancelled_at = excluded.cancelled_at,
         last_error = excluded.last_error,
-        delivery_attempts = excluded.delivery_attempts
+        delivery_attempts = excluded.delivery_attempts,
+        delivery_group_id = excluded.delivery_group_id,
+        delivery_retry_at = excluded.delivery_retry_at,
+        delivery_failure_count = excluded.delivery_failure_count
     `,
   });
 
@@ -181,7 +199,10 @@ const make = Effect.gen(function* () {
         delivered_at AS "deliveredAt",
         cancelled_at AS "cancelledAt",
         last_error AS "lastError",
-        delivery_attempts AS "deliveryAttempts"
+        delivery_attempts AS "deliveryAttempts",
+        delivery_group_id AS "deliveryGroupId",
+        delivery_retry_at AS "deliveryRetryAt",
+        delivery_failure_count AS "deliveryFailureCount"
       FROM thread_monitors
       WHERE monitor_id = ${monitorId}
       LIMIT 1
@@ -213,7 +234,10 @@ const make = Effect.gen(function* () {
         delivered_at AS "deliveredAt",
         cancelled_at AS "cancelledAt",
         last_error AS "lastError",
-        delivery_attempts AS "deliveryAttempts"
+        delivery_attempts AS "deliveryAttempts",
+        delivery_group_id AS "deliveryGroupId",
+        delivery_retry_at AS "deliveryRetryAt",
+        delivery_failure_count AS "deliveryFailureCount"
       FROM thread_monitors
       WHERE thread_id = ${threadId}
         AND (${includeFinished ? 1 : 0} = 1 OR status IN ('active', 'triggered'))
@@ -244,10 +268,21 @@ const make = Effect.gen(function* () {
         delivered_at AS "deliveredAt",
         cancelled_at AS "cancelledAt",
         last_error AS "lastError",
-        delivery_attempts AS "deliveryAttempts"
+        delivery_attempts AS "deliveryAttempts",
+        delivery_group_id AS "deliveryGroupId",
+        delivery_retry_at AS "deliveryRetryAt",
+        delivery_failure_count AS "deliveryFailureCount"
       FROM thread_monitors
       WHERE status IN ('active', 'triggered')
       ORDER BY COALESCE(wake_at, '9999-12-31T23:59:59.999Z') ASC, monitor_id ASC
+    `,
+  });
+
+  const deleteThreadRows = SqlSchema.void({
+    Request: Schema.Struct({ threadId: ThreadId }),
+    execute: ({ threadId }) => sql`
+      DELETE FROM thread_monitors
+      WHERE thread_id = ${threadId}
     `,
   });
 
@@ -274,6 +309,10 @@ const make = Effect.gen(function* () {
       listOutstandingRows(undefined).pipe(
         Effect.map((rows) => rows.map(fromRow)),
         Effect.mapError(toPersistenceSqlError("ThreadMonitorRepository.listOutstanding:query")),
+      ),
+    deleteByThread: (threadId) =>
+      deleteThreadRows({ threadId }).pipe(
+        Effect.mapError(toPersistenceSqlError("ThreadMonitorRepository.deleteByThread:query")),
       ),
   } satisfies ThreadMonitorRepositoryShape;
 });
