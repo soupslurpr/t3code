@@ -73,6 +73,26 @@ export interface ThreadTitleGenerationResult {
   title: string;
 }
 
+export interface ImageConditionEvaluationInput {
+  cwd: string;
+  criterion: string;
+  currentPngBase64: string;
+  baselinePngBase64?: string | undefined;
+  /** What model and provider instance to use for evaluation. */
+  modelSelection: ModelSelection;
+}
+
+export interface ImageConditionEvaluationResult {
+  verdict: "matched" | "not-matched" | "uncertain";
+  summary: string;
+  evidence: string;
+  usage: {
+    readonly inputTokens: number | null;
+    readonly cachedInputTokens: number | null;
+    readonly outputTokens: number | null;
+  };
+}
+
 export interface TextGenerationService {
   generateCommitMessage(
     input: CommitMessageGenerationInput,
@@ -80,6 +100,9 @@ export interface TextGenerationService {
   generatePrContent(input: PrContentGenerationInput): Promise<PrContentGenerationResult>;
   generateBranchName(input: BranchNameGenerationInput): Promise<BranchNameGenerationResult>;
   generateThreadTitle(input: ThreadTitleGenerationInput): Promise<ThreadTitleGenerationResult>;
+  evaluateImageCondition?(
+    input: ImageConditionEvaluationInput,
+  ): Promise<ImageConditionEvaluationResult>;
 }
 
 /**
@@ -113,6 +136,11 @@ export class TextGeneration extends Context.Service<
     readonly generateThreadTitle: (
       input: ThreadTitleGenerationInput,
     ) => Effect.Effect<ThreadTitleGenerationResult, TextGenerationError>;
+
+    /** Evaluates a read-only screen condition when the provider supports images. */
+    readonly evaluateImageCondition?: (
+      input: ImageConditionEvaluationInput,
+    ) => Effect.Effect<ImageConditionEvaluationResult, TextGenerationError>;
   }
 >()("t3/textGeneration/TextGeneration") {}
 
@@ -123,7 +151,8 @@ type TextGenerationOp =
   | "generateCommitMessage"
   | "generatePrContent"
   | "generateBranchName"
-  | "generateThreadTitle";
+  | "generateThreadTitle"
+  | "evaluateImageCondition";
 
 const resolveInstance = (
   registry: ProviderInstanceRegistry.ProviderInstanceRegistry["Service"],
@@ -162,6 +191,19 @@ export const makeTextGenerationFromRegistry = (
     generateThreadTitle: (input) =>
       resolveInstance(registry, "generateThreadTitle", input.modelSelection.instanceId).pipe(
         Effect.flatMap((textGeneration) => textGeneration.generateThreadTitle(input)),
+      ),
+    evaluateImageCondition: (input) =>
+      resolveInstance(registry, "evaluateImageCondition", input.modelSelection.instanceId).pipe(
+        Effect.flatMap((textGeneration) =>
+          textGeneration.evaluateImageCondition === undefined
+            ? Effect.fail(
+                new TextGenerationError({
+                  operation: "evaluateImageCondition",
+                  detail: `Provider instance '${input.modelSelection.instanceId}' does not support image-condition evaluation.`,
+                }),
+              )
+            : textGeneration.evaluateImageCondition(input),
+        ),
       ),
   });
 
