@@ -72,14 +72,15 @@ the focused application exposes enough semantic information, the agent can omit 
 inspection. This keeps routine intermediate checks small while leaving full images available for
 visual decisions and confirmation.
 
-Access requests and `computer_act` return a fresh screen observation by default. The agent can choose
-the image resolution, crop a region from a prior frame, omit the image when semantic targets are
-sufficient, adjust the capture delay, or skip a predictable post-action observation entirely. One
-action call can group a bounded sequence of predictable pointer and keyboard actions, so the agent
-does not need a tool round trip or image between steps that require no visual decision. When the next
-step depends on the resulting UI, the agent uses a one-action batch and inspects its observation
-first. A standalone snapshot remains available for inspection without acting or recovery after a
-failed follow-up capture. Typing can pause briefly and submit with Enter in the same action.
+Access requests and `computer_act` return a fresh screen observation by default. Action calls also
+return one ordered execution receipt per completed action, even when the agent skips the image. The
+agent can choose the image resolution, crop a region from a prior frame, omit the image when semantic
+targets are sufficient, adjust the capture delay, or skip a predictable post-action observation
+entirely. One action call can group a bounded sequence of predictable pointer and keyboard actions,
+so the agent does not need a tool round trip or image between steps that require no visual decision.
+When the next step depends on the resulting UI, the agent uses a one-action batch and inspects its
+observation first. A standalone snapshot remains available for inspection without acting or recovery
+after a failed follow-up capture. Typing can pause briefly and submit with Enter in the same action.
 
 Desktop screenshots can contain information from any visible application. They become part of the
 agent's tool context, so close or hide sensitive windows before allowing computer use. This matters
@@ -87,17 +88,19 @@ especially when you control an agent remotely: approval grants control of the ma
 attached desktop client, not the phone or browser you are holding.
 
 When available, T3 Code also reads the focused application's AT-SPI accessibility tree to identify
-visible controls. It does not read text-control contents. Portal dialogs and GNOME Shell are
-excluded, and semantic activation still requires an approved desktop-control session. It uses the
-control's native accessibility action where available, or focuses it and sends an ordinary Enter key
-event. Target identifiers expire after activation, on the next snapshot, or when control is
-released.
+visible controls. It does not expose text-control contents; after direct text insertion, it compares
+only the inserted range with the requested text and returns counts rather than content. Portal
+dialogs and GNOME Shell are excluded, and semantic activation still requires an approved
+desktop-control session. It uses the control's native accessibility action where available, or
+focuses it and sends an ordinary Enter key event. Target and window identifiers expire after
+activation, on the next snapshot, or when control is released.
 
-The first semantic observation temporarily enables GNOME toolkit accessibility for the active view
-or control session. T3 Code restores the prior setting when access is released and does not disable
-it if a screen reader became active in the meantime. Chromium- and Electron-based applications only
-register with AT-SPI during startup, so an application that was already open may need to be restarted
-before it exposes semantic targets. Screenshots and coordinate controls remain available without a
+Starting a view or control session temporarily enables GNOME toolkit accessibility, even when the
+initial observation omits semantic data. This lets applications launched afterward register with
+AT-SPI before the agent needs their controls or windows. T3 Code restores the prior setting when
+access is released and does not disable it if a screen reader became active in the meantime.
+Chromium- and Electron-based applications that were already open may still need to be restarted
+before they expose semantic data. Screenshots and coordinate controls remain available without a
 restart.
 
 Atomic hotkey actions normalize common key aliases and release every key acquired by the chord in
@@ -109,14 +112,18 @@ and releases them before ending control. Mouse drags similarly use explicit butt
 movement, and button-up events. After an input failure, T3 Code releases tracked keys and buttons or
 closes the portal session as a final safety fallback.
 
-Text actions preserve exact Unicode, including smart punctuation, arrows, combining characters, and
-emoji. The user desktop enters non-ASCII code points through GNOME's layout-independent Unicode
-input method because GNOME can silently discard Unicode keysyms that the active keyboard layout
-cannot produce. Agent desktops insert exact UTF-8 through the active editable accessibility target
-and use timed, self-releasing QEMU key chords when that interface is unavailable. Neither path reads
-or changes the clipboard. On either desktop, a focused multiline editable control accepts a whole
-text block directly; elsewhere Newline and Tab remain real key events. Exact insertion never replays
-text through the keyboard after an uncertain partial failure.
+Text actions request exact Unicode, including smart punctuation, arrows, combining characters, and
+emoji. A focused editable accessibility control receives the text directly and confirms the exact
+inserted substring. The action receipt separates requested, injected, and confirmed code-point
+counts so successful injection is not confused with a stale rendering. When direct insertion is not
+available, both desktop kinds use keyboard events only for exact ASCII and report
+`exact-text-unavailable` for non-ASCII instead of claiming success after a compositor or application
+silently drops it, or replaying a Unicode input-method sequence that an application might
+misinterpret. Keyboard taps and pointer clicks use short human-equivalent transition timing to avoid
+dropped events or accidental repeats, and typing waits briefly for the application input queue before
+returning. Neither path reads or changes the clipboard. On either desktop, a focused multiline
+editable control accepts a whole text block directly; elsewhere Newline and Tab remain real key
+events. Exact insertion never replays text through the keyboard after an uncertain partial failure.
 
 Taking over an Agent desktop enters full screen and captures host-reserved shortcuts so keys such as
 Super reach only the guest. GNOME may show a first-use prompt to allow shortcut inhibition. Its
@@ -131,9 +138,10 @@ The desktop host exposes tools for:
 - requesting view-only access early without requesting input
 - requesting combined screen-and-input access early without sending input
 - capturing one display or a focused region with selectable image resolution and best-effort
-  semantic targets
+  semantic targets and top-level windows
 - running bounded action batches that can move, click, drag, emit discrete wheel ticks, type, press
-  hotkeys or hold keys, wait, and activate a current semantic target
+  hotkeys or hold keys, wait for a duration or a visual change, and activate a current semantic
+  target or window
 - releasing the active session or forgetting remembered consent
 
 Full-display screenshots preserve aspect ratio and default to a maximum of 1600 by 900 pixels. An
@@ -150,7 +158,10 @@ reading, because you may have moved the mouse yourself in the meantime.
 Agents can move without clicking and inspect the returned observation after hover UI settles before
 deciding what to do. Wheel actions use the portal's discrete mouse-wheel events rather than an
 accessibility or touchpad-scroll gesture; small tick increments with observations in between are the
-most predictable. Omit `displayId` from a standalone snapshot to capture the primary display.
+most predictable. A visual-change wait compares a bounded region from a current frame for up to one
+minute and returns its elapsed time and sample count without placing every intermediate image in the
+agent context. Selecting the smallest stable region avoids unrelated animation. Omit `displayId`
+from a standalone snapshot to capture the primary display.
 
 Execution errors distinguish invalid input, unsupported operations, stale frames or semantic
 targets, authorization failures, capture failures, and input-injection failures. A failed batch
@@ -160,9 +171,12 @@ expected-value metadata, but T3 Code does not echo typed text.
 
 Wayland applications do not expose their window's screen origin through AT-SPI. Semantic target
 bounds are therefore relative to the focused window named in the result, not to the screenshot.
-Agents use the target identifier for semantic activation and use screenshot coordinates for mouse
-interaction. Semantic targets are currently disabled on multi-display desktops to avoid associating
-them with the wrong captured display.
+Agents use target identifiers for control activation, window identifiers to focus exposed top-level
+windows, and screenshot coordinates for mouse interaction. All semantic identifiers expire with the
+next semantic observation or action batch. Screenshot-only Agent desktop viewers and monitors do not
+consume them. Semantic control targets are currently disabled on multi-display desktops to avoid
+associating them with the wrong captured display, while the coordinate-free top-level window list
+remains available.
 
 ## Agent Desktops
 
