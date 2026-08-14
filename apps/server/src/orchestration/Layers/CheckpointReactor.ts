@@ -220,6 +220,8 @@ const make = Effect.gen(function* () {
     return cwd;
   });
 
+  // TODO(upstream pingdotgg/t3code#3646): Drop this downstream retry guard when
+  // equivalent checkpoint failure backoff lands upstream.
   const ensurePreTurnBaseline = Effect.fn("ensurePreTurnBaseline")(function* (input: {
     readonly threadId: ThreadId;
     readonly createdAt: string;
