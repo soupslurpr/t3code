@@ -431,6 +431,56 @@ describe("ComputerUse", () => {
     }),
   );
 
+  it.effect("captures a durable desktop-logical region without a source frame", () =>
+    Effect.gen(function* () {
+      let cropInput: unknown;
+      const sourceImage: ComputerUse.ComputerUseImage = {
+        isEmpty: () => false,
+        crop: (input) => {
+          cropInput = input;
+          return makeImage(input.width, input.height);
+        },
+        resize: (input) => makeImage(input.width, input.height),
+        getSize: () => ({ width: 1_600, height: 1_200 }),
+        toBitmap: () => new Uint8Array(1_600 * 1_200 * 4),
+        toPNG: () => new Uint8Array([1]),
+      };
+      const computer = yield* ComputerUse.makeWithOptions(
+        makePlatform({ decode: () => sourceImage }),
+        makeController([]),
+      );
+
+      const snapshot = yield* computer.snapshot({
+        includeAccessibility: false,
+        screenshot: {
+          region: {
+            coordinateSpace: "desktop-logical",
+            displayId: "7",
+            x: 0,
+            y: 100,
+            width: 400,
+            height: 300,
+          },
+          maxWidth: 800,
+          maxHeight: 600,
+        },
+      });
+
+      assert.deepEqual(cropInput, { x: 200, y: 100, width: 800, height: 600 });
+      assert.deepInclude(snapshot.frame, {
+        displayId: "7",
+        width: 800,
+        height: 600,
+        toDesktopLogical: {
+          scaleX: 0.5,
+          scaleY: 0.5,
+          offsetX: 0,
+          offsetY: 100,
+        },
+      });
+    }),
+  );
+
   it.effect("reports the exact invalid crop field", () =>
     Effect.gen(function* () {
       const computer = yield* ComputerUse.makeWithOptions(makePlatform(), makeController([]));
