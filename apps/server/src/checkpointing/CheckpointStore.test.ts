@@ -1,4 +1,5 @@
 // @effect-diagnostics nodeBuiltinImport:off
+import * as NodeFS from "node:fs";
 import * as NodePath from "node:path";
 
 import * as NodeServices from "@effect/platform-node/NodeServices";
@@ -93,6 +94,8 @@ function buildLargeText(lineCount = 5_000): string {
     .join("\n")
     .concat("\n");
 }
+
+const OVERSIZED_UNTRACKED_FILE_BYTES = 2 * 1024 * 1024 * 1024 + 1;
 
 it.layer(TestLayer)("CheckpointStore.layer", (it) => {
   describe("isGitRepository", () => {
@@ -428,6 +431,41 @@ it.layer(TestLayer)("CheckpointStore.layer", (it) => {
         expect(parseTurnDiffFilesFromNumstat(numstat)).toEqual([
           { path: "README.md", additions: 1, deletions: 1 },
         ]);
+      }),
+    );
+  });
+
+  describe("captureCheckpoint", () => {
+    it.effect("rejects oversized untracked content before creating a temporary index", () =>
+      Effect.gen(function* () {
+        const tmp = yield* makeTmpDir();
+        yield* initRepoWithCommit(tmp);
+        const checkpointStore = yield* CheckpointStore.CheckpointStore;
+        const oversizedPath = NodePath.join(tmp, "generated-model.bin");
+        yield* Effect.sync(() => {
+          NodeFS.writeFileSync(oversizedPath, "");
+          NodeFS.truncateSync(oversizedPath, OVERSIZED_UNTRACKED_FILE_BYTES);
+        });
+
+        const error = yield* Effect.flip(
+          checkpointStore.captureCheckpoint({
+            cwd: tmp,
+            checkpointRef: checkpointRefForThreadTurn(
+              ThreadId.make("thread-oversized-checkpoint"),
+              0,
+            ),
+          }),
+        );
+
+        expect(error).toMatchObject({
+          _tag: "VcsCheckpointLimitError",
+          kind: "untracked-file-bytes",
+          limit: 2 * 1024 * 1024 * 1024,
+          observed: OVERSIZED_UNTRACKED_FILE_BYTES,
+        });
+        const fileSystem = yield* FileSystem.FileSystem;
+        const gitEntries = yield* fileSystem.readDirectory(NodePath.join(tmp, ".git"));
+        expect(gitEntries.some((entry) => entry.startsWith("t3-checkpoint-index-"))).toBe(false);
       }),
     );
   });
