@@ -269,6 +269,30 @@ export class VcsUnsupportedOperationError extends Schema.TaggedErrorClass<VcsUns
   }
 }
 
+export const VcsCheckpointLimitKind = Schema.Literals([
+  "untracked-file-count",
+  "untracked-file-bytes",
+  "untracked-path-output-bytes",
+]);
+export type VcsCheckpointLimitKind = typeof VcsCheckpointLimitKind.Type;
+
+/** Reports a worktree that is too large to checkpoint safely. */
+export class VcsCheckpointLimitError extends Schema.TaggedErrorClass<VcsCheckpointLimitError>()(
+  "VcsCheckpointLimitError",
+  {
+    operation: Schema.String,
+    cwd: Schema.String,
+    kind: VcsCheckpointLimitKind,
+    limit: NonNegativeInt,
+    observed: NonNegativeInt,
+  },
+) {
+  override get message(): string {
+    const unit = this.kind === "untracked-file-count" ? "files" : "bytes";
+    return `Checkpoint capture skipped in ${this.operation}: ${this.cwd} has ${this.observed} untracked ${unit}, exceeding the ${this.limit} ${unit} safety limit. Ignore generated artifacts before retrying.`;
+  }
+}
+
 export const VcsError = Schema.Union([
   VcsProcessSpawnError,
   VcsProcessExitError,
@@ -279,5 +303,6 @@ export const VcsError = Schema.Union([
   VcsProcessMissingExitCodeError,
   VcsRepositoryDetectionError,
   VcsUnsupportedOperationError,
+  VcsCheckpointLimitError,
 ]);
 export type VcsError = typeof VcsError.Type;

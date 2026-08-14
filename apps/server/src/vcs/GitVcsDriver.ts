@@ -11,6 +11,7 @@ import { ChildProcessSpawner } from "effect/unstable/process";
 
 import {
   GitCommandError,
+  VcsCheckpointLimitError,
   VcsProcessExitError,
   type VcsSwitchRefInput,
   type VcsSwitchRefResult,
@@ -323,6 +324,9 @@ export class GitVcsDriver extends Context.Service<
 const WORKSPACE_FILES_MAX_OUTPUT_BYTES = 16 * 1024 * 1024;
 const GIT_CHECK_IGNORE_MAX_STDIN_BYTES = 256 * 1024;
 const CHECKPOINT_DIFF_MAX_OUTPUT_BYTES = 10_000_000;
+const CHECKPOINT_MAX_UNTRACKED_FILES = 10_000;
+const CHECKPOINT_MAX_UNTRACKED_BYTES = 2 * 1024 * 1024 * 1024;
+const CHECKPOINT_UNTRACKED_PATH_MAX_OUTPUT_BYTES = 4 * 1024 * 1024;
 const WORKSPACE_GIT_HARDENED_CONFIG_ARGS = [
   "-c",
   "core.fsmonitor=false",
@@ -700,9 +704,74 @@ export const makeVcsDriverShape = Effect.fn("makeGitVcsDriverShape")(function* (
       return path.isAbsolute(gitCommonDir) ? gitCommonDir : path.resolve(cwd, gitCommonDir);
     });
 
+  const validateCheckpointUntrackedContent = Effect.fn(
+    "GitVcsDriver.checkpoints.validateUntrackedContent",
+  )(function* (cwd: string) {
+    const operation = "GitVcsDriver.checkpoints.captureCheckpoint";
+    const result = yield* execute({
+      operation,
+      cwd,
+      args: [
+        ...WORKSPACE_GIT_HARDENED_CONFIG_ARGS,
+        "ls-files",
+        "--others",
+        "--exclude-standard",
+        "-z",
+      ],
+      timeoutMs: 10_000,
+      maxOutputBytes: CHECKPOINT_UNTRACKED_PATH_MAX_OUTPUT_BYTES,
+    });
+    if (result.stdoutTruncated) {
+      return yield* new VcsCheckpointLimitError({
+        operation,
+        cwd,
+        kind: "untracked-path-output-bytes",
+        limit: CHECKPOINT_UNTRACKED_PATH_MAX_OUTPUT_BYTES,
+        observed: CHECKPOINT_UNTRACKED_PATH_MAX_OUTPUT_BYTES + 1,
+      });
+    }
+
+    const untrackedPaths = splitNullSeparatedPaths(result.stdout, false);
+    if (untrackedPaths.length > CHECKPOINT_MAX_UNTRACKED_FILES) {
+      return yield* new VcsCheckpointLimitError({
+        operation,
+        cwd,
+        kind: "untracked-file-count",
+        limit: CHECKPOINT_MAX_UNTRACKED_FILES,
+        observed: untrackedPaths.length,
+      });
+    }
+
+    const maxUntrackedBytes = BigInt(CHECKPOINT_MAX_UNTRACKED_BYTES);
+    let untrackedBytes = 0n;
+    for (const relativePath of untrackedPaths) {
+      const info = yield* fileSystem
+        .stat(path.resolve(cwd, relativePath))
+        .pipe(Effect.orElseSucceed(() => null));
+      if (info === null) {
+        continue;
+      }
+      untrackedBytes += info.size;
+      if (untrackedBytes > maxUntrackedBytes) {
+        return yield* new VcsCheckpointLimitError({
+          operation,
+          cwd,
+          kind: "untracked-file-bytes",
+          limit: CHECKPOINT_MAX_UNTRACKED_BYTES,
+          observed: Number(
+            untrackedBytes > BigInt(Number.MAX_SAFE_INTEGER)
+              ? BigInt(Number.MAX_SAFE_INTEGER)
+              : untrackedBytes,
+          ),
+        });
+      }
+    }
+  });
+
   const checkpoints: VcsDriver.VcsCheckpointOps = {
     captureCheckpoint: Effect.fn("GitVcsDriver.checkpoints.captureCheckpoint")(function* (input) {
       const operation = "GitVcsDriver.checkpoints.captureCheckpoint";
+      yield* validateCheckpointUntrackedContent(input.cwd);
       const gitCommonDir = yield* resolveGitCommonDir(input.cwd);
       const tempIndexPath = path.join(
         gitCommonDir,
