@@ -7,6 +7,7 @@ import {
   ThreadMonitorId,
   type ThreadId,
   type ThreadMonitor,
+  type ThreadMonitorComputerCondition,
   type ThreadMonitorCondition,
   type ThreadMonitorStartInput,
   type ThreadMonitorTrigger,
@@ -31,6 +32,7 @@ import * as ThreadMonitorRepositoryLayer from "../persistence/Layers/ThreadMonit
 import { ThreadMonitorRepository } from "../persistence/Services/ThreadMonitors.ts";
 import { forkParked } from "../serverActivation.ts";
 import { ThreadMonitorService, type ThreadMonitorServiceShape } from "./ThreadMonitorService.ts";
+import { ThreadMonitorComputerService } from "./ThreadMonitorComputerService.ts";
 
 const DELIVERY_SETTLE_MS = 750;
 const PENDING_TURN_GRACE_MS = 10_000;
@@ -41,7 +43,12 @@ const MONITOR_TASK_TYPE = "monitor_mcp";
 
 /** Returns the timestamp that can trigger a monitor without an external signal. */
 function monitorWakeAt(monitor: ThreadMonitor): string | null {
-  return monitor.condition.type === "time" ? monitor.condition.at : monitor.condition.deadlineAt;
+  if (monitor.condition.type === "time") return monitor.condition.at;
+  if (monitor.condition.type === "signal") return monitor.condition.deadlineAt;
+  if (monitor.condition.deadlineAt === null) return monitor.condition.nextCheckAt;
+  return Date.parse(monitor.condition.deadlineAt) < Date.parse(monitor.condition.nextCheckAt)
+    ? monitor.condition.deadlineAt
+    : monitor.condition.nextCheckAt;
 }
 
 /** Returns the earliest time a triggered continuation may be delivered. */
@@ -169,6 +176,7 @@ const make = Effect.gen(function* () {
   const snapshots = yield* ProjectionSnapshotQuery;
   const repository = yield* ThreadMonitorRepository;
   const liveness = yield* ThreadBackgroundLivenessService;
+  const computer = yield* ThreadMonitorComputerService;
   const mutex = yield* Semaphore.make(1);
   const wakeQueue = yield* Queue.sliding<void>(1);
 
@@ -202,6 +210,42 @@ const make = Effect.gen(function* () {
         Effect.mapError(mapPersistenceError("write", monitor.id)),
         Effect.andThen(setLiveness(monitor, isOutstanding(monitor))),
       );
+
+  const releaseComputer = Effect.fn("ThreadMonitor.releaseComputer")(function* (
+    monitor: ThreadMonitor,
+  ) {
+    if (monitor.condition.type !== "computer" || monitor.condition.resourceState === "released") {
+      return monitor;
+    }
+    yield* computer.release(monitor);
+    const released: ThreadMonitor = {
+      ...monitor,
+      condition: { ...monitor.condition, resourceState: "released" },
+    };
+    yield* writeMonitor(released);
+    return released;
+  });
+
+  const computerFailureCondition = (
+    condition: ThreadMonitorComputerCondition,
+    failedAt: string,
+    detail: string,
+  ): ThreadMonitorComputerCondition => {
+    const failureCount = condition.consecutiveFailures + 1;
+    const retryDelay = Math.min(
+      DELIVERY_RETRY_MAX_MS,
+      Math.max(condition.sampling.intervalMs, BLOCKED_DELIVERY_RETRY_MS) *
+        2 ** Math.min(8, condition.consecutiveFailures),
+    );
+    return {
+      ...condition,
+      nextCheckAt: DateTime.formatIso(DateTime.makeUnsafe(Date.parse(failedAt) + retryDelay)),
+      lastCheckedAt: failedAt,
+      consecutiveFailures: failureCount,
+      observationError: detail.slice(0, 2_000),
+      resourceState: "degraded",
+    };
+  };
 
   const appendActivity = (monitor: ThreadMonitor, phase: string, summary: string) => {
     const createdAt = monitor.updatedAt;
@@ -427,6 +471,60 @@ const make = Effect.gen(function* () {
     );
   });
 
+  const checkComputerMonitor = Effect.fn("ThreadMonitor.checkComputer")(function* (
+    monitor: ThreadMonitor,
+    checkedAt: string,
+  ) {
+    if (monitor.condition.type !== "computer" || monitor.status !== "active") return monitor;
+    const evidence = yield* repository
+      .getComputerEvidence(monitor.id)
+      .pipe(Effect.mapError(mapPersistenceError("computer-check", monitor.id)));
+    const checked = yield* computer
+      .check({
+        monitor,
+        ...(Option.isSome(evidence) && evidence.value.baselinePngBase64 !== null
+          ? { baselinePngBase64: evidence.value.baselinePngBase64 }
+          : {}),
+        checkedAt,
+      })
+      .pipe(Effect.result);
+    if (Result.isFailure(checked)) {
+      const failed: ThreadMonitor = {
+        ...monitor,
+        condition: computerFailureCondition(monitor.condition, checkedAt, checked.failure.detail),
+        updatedAt: checkedAt,
+      };
+      yield* writeMonitor(failed);
+      return failed;
+    }
+
+    if (checked.success.match !== null) {
+      yield* repository
+        .putComputerTerminal({
+          monitorId: monitor.id,
+          pngBase64: checked.success.match.terminalPngBase64,
+        })
+        .pipe(Effect.mapError(mapPersistenceError("computer-terminal", monitor.id)));
+    }
+    const observed: ThreadMonitor = {
+      ...monitor,
+      condition: checked.success.condition,
+      updatedAt: checkedAt,
+    };
+    yield* writeMonitor(observed);
+    if (checked.success.match === null) return observed;
+    const triggered = yield* triggerMonitor(
+      observed,
+      {
+        reason: "condition",
+        summary: checked.success.match.summary,
+        evidence: checked.success.match.evidence,
+      },
+      checkedAt,
+    );
+    return yield* releaseComputer(triggered);
+  });
+
   const reconcileUnlocked = Effect.fn("ThreadMonitor.reconcile")(function* (
     threadId?: ThreadId,
     monitorId?: ThreadMonitorId,
@@ -443,7 +541,25 @@ const make = Effect.gen(function* () {
 
       let monitor = current;
       const wakeAt = monitorWakeAt(monitor);
-      if (monitor.status === "active" && wakeAt !== null && Date.parse(wakeAt) <= nowMs) {
+      if (monitor.status === "active" && monitor.condition.type === "computer") {
+        if (
+          monitor.condition.deadlineAt !== null &&
+          Date.parse(monitor.condition.deadlineAt) <= nowMs
+        ) {
+          monitor = yield* triggerMonitor(
+            monitor,
+            {
+              reason: "deadline",
+              summary: "The monitor deadline was reached.",
+              evidence: null,
+            },
+            now,
+          );
+          monitor = yield* releaseComputer(monitor);
+        } else if (Date.parse(monitor.condition.nextCheckAt) <= nowMs) {
+          monitor = yield* checkComputerMonitor(monitor, now);
+        }
+      } else if (monitor.status === "active" && wakeAt !== null && Date.parse(wakeAt) <= nowMs) {
         monitor = yield* triggerMonitor(
           monitor,
           {
@@ -547,6 +663,80 @@ const make = Effect.gen(function* () {
       }),
     );
 
+  const createComputer: ThreadMonitorServiceShape["createComputer"] = ({
+    threadId,
+    monitor: input,
+  }) =>
+    mutex.withPermits(1)(
+      Effect.gen(function* () {
+        const thread = yield* snapshots
+          .getThreadShellById(threadId)
+          .pipe(Effect.mapError(mapPersistenceError("computer-start")));
+        if (Option.isNone(thread)) {
+          return yield* monitorError({
+            code: "THREAD_UNAVAILABLE",
+            operation: "computer-start",
+            detail: `Thread '${threadId}' is unavailable.`,
+          });
+        }
+
+        const createdAt = yield* nowIso;
+        const id = ThreadMonitorId.make(yield* crypto.randomUUIDv4.pipe(Effect.orDie));
+        const prepared = yield* computer.prepare({
+          monitorId: id,
+          threadId,
+          routingInstanceId: thread.value.modelSelection.instanceId,
+          watch: input,
+          createdAt,
+        });
+        const monitor: ThreadMonitor = {
+          id,
+          threadId,
+          label: input.label,
+          condition: prepared.condition,
+          continuation:
+            input.continuation === "record-only"
+              ? { mode: "record-only" }
+              : { mode: "resume-thread", prompt: input.resumePrompt ?? input.label },
+          status: "active",
+          trigger: null,
+          createdAt,
+          updatedAt: createdAt,
+          triggeredAt: null,
+          deliveredAt: null,
+          cancelledAt: null,
+          lastError: null,
+          deliveryAttempts: 0,
+          deliveryGroupId: null,
+          deliveryRetryAt: null,
+          deliveryFailureCount: 0,
+        };
+        yield* writeMonitor(monitor).pipe(Effect.tapError(() => computer.release(monitor)));
+        if (prepared.baselinePngBase64 !== undefined) {
+          const retained = yield* repository
+            .putComputerBaseline({
+              monitorId: monitor.id,
+              pngBase64: prepared.baselinePngBase64,
+            })
+            .pipe(
+              Effect.mapError(mapPersistenceError("computer-baseline", monitor.id)),
+              Effect.result,
+            );
+          if (Result.isFailure(retained)) {
+            yield* computer.release(monitor);
+            yield* setLiveness(monitor, false);
+            yield* repository.deleteById(monitor.id).pipe(Effect.ignore);
+            return yield* retained.failure;
+          }
+        }
+        yield* appendActivity(monitor, "started", `Monitoring screen: ${monitor.label}`);
+        yield* wake;
+        return monitor;
+      }),
+    );
+
+  const computerCapabilities = computer.capabilities;
+
   const status: ThreadMonitorServiceShape["status"] = ({ threadId, query }) =>
     mutex.withPermits(1)(
       Effect.gen(function* () {
@@ -602,23 +792,23 @@ const make = Effect.gen(function* () {
             : [yield* readOwnedMonitor(threadId, input.monitorId, "cancel")];
         if (monitors.length === 0) return { monitors: [] };
         const cancelledAt = yield* nowIso;
-        const cancelled = yield* Effect.forEach(monitors, (monitor) => {
-          if (!isOutstanding(monitor)) return Effect.succeed(monitor);
-          const result: ThreadMonitor = {
-            ...monitor,
-            status: "cancelled",
-            updatedAt: cancelledAt,
-            cancelledAt,
-            lastError: null,
-            deliveryRetryAt: null,
-          };
-          return writeMonitor(result).pipe(
-            Effect.andThen(
-              appendActivity(result, "cancelled", `Monitor cancelled: ${result.label}`),
-            ),
-            Effect.as(result),
-          );
-        });
+        const cancelled = yield* Effect.forEach(monitors, (monitor) =>
+          Effect.gen(function* () {
+            if (!isOutstanding(monitor)) return monitor;
+            const current = yield* releaseComputer(monitor);
+            const result: ThreadMonitor = {
+              ...current,
+              status: "cancelled",
+              updatedAt: cancelledAt,
+              cancelledAt,
+              lastError: null,
+              deliveryRetryAt: null,
+            };
+            yield* writeMonitor(result);
+            yield* appendActivity(result, "cancelled", `Monitor cancelled: ${result.label}`);
+            return result;
+          }),
+        );
         yield* wake;
         return { monitors: cancelled.slice(0, 100) };
       }),
@@ -646,9 +836,11 @@ const make = Effect.gen(function* () {
           .pipe(Effect.mapError(mapPersistenceError("delete-thread")))).filter(
           (monitor) => monitor.threadId === threadId,
         );
-        yield* Effect.forEach(monitors, (monitor) => setLiveness(monitor, false), {
-          discard: true,
-        });
+        yield* Effect.forEach(
+          monitors,
+          (monitor) => releaseComputer(monitor).pipe(Effect.andThen(setLiveness(monitor, false))),
+          { discard: true },
+        );
         yield* repository
           .deleteByThread(threadId)
           .pipe(Effect.mapError(mapPersistenceError("delete-thread")));
@@ -793,7 +985,15 @@ const make = Effect.gen(function* () {
   });
 
   yield* start();
-  return { create, status, signal, cancel, checkNow } satisfies ThreadMonitorServiceShape;
+  return {
+    create,
+    createComputer,
+    computerCapabilities,
+    status,
+    signal,
+    cancel,
+    checkNow,
+  } satisfies ThreadMonitorServiceShape;
 });
 
 /** Provides the durable monitor service. */
