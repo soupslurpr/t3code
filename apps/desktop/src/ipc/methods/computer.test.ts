@@ -250,6 +250,7 @@ describe("computer IPC methods", () => {
   it.effect("runs an action batch with the default observation delay", () =>
     Effect.gen(function* () {
       const actions = [{ type: "press" as const, key: "Meta" }];
+      const actionResults = [{ index: 0, type: "press" as const }];
       const desktop = {
         kind: "agent" as const,
         desktopId: AgentDesktopId.make("agent-desktop"),
@@ -262,6 +263,7 @@ describe("computer IPC methods", () => {
               act: (input) =>
                 Effect.sync(() => {
                   assert.deepEqual(input, { desktop, actions });
+                  return actionResults;
                 }),
               snapshot: (input) =>
                 Effect.sync(() => {
@@ -277,7 +279,7 @@ describe("computer IPC methods", () => {
 
       assert.deepEqual(yield* Fiber.join(resultFiber), {
         ok: true,
-        value: { snapshot },
+        value: { snapshot, actionResults },
       });
     }),
   );
@@ -286,7 +288,7 @@ describe("computer IPC methods", () => {
     Effect.gen(function* () {
       const computer = makeComputer({
         requestView: Effect.succeed(status),
-        act: () => Effect.void,
+        act: () => Effect.succeed([{ index: 0, type: "press" }]),
       });
 
       const accessResult = yield* requestView
@@ -299,7 +301,10 @@ describe("computer IPC methods", () => {
         .pipe(Effect.provide(computerRouterLayer(computer)));
 
       assert.deepEqual(accessResult, { ok: true, value: { status } });
-      assert.deepEqual(actResult, { ok: true, value: {} });
+      assert.deepEqual(actResult, {
+        ok: true,
+        value: { actionResults: [{ index: 0, type: "press" }] },
+      });
     }),
   );
 

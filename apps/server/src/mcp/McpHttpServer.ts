@@ -31,6 +31,9 @@ import { ComputerImageToolkit, ComputerStandardToolkit } from "./toolkits/comput
 import { AgentDesktopToolkitHandlersLive } from "./toolkits/agentDesktop/handlers.ts";
 import { AgentDesktopToolkit } from "./toolkits/agentDesktop/tools.ts";
 
+const MAX_VALIDATION_EXPECTATION_LENGTH = 128;
+const MAX_VALIDATION_FIELD_LENGTH = 128;
+
 const unauthorized = HttpServerResponse.jsonUnsafe(
   {
     error: "invalid_mcp_credential",
@@ -211,6 +214,54 @@ const registerPreviewSnapshot = Effect.fn("McpHttpServer.registerPreviewSnapshot
   });
 });
 
+/** Extracts a dotted field path from Effect's standard validation detail. */
+function validationFieldFromMessage(message: string): string | undefined {
+  const matches = Array.from(message.matchAll(/\bat ((?:\[(?:"(?:\\.|[^"])*"|\d+)\])+)/gu));
+  const encodedPath = matches.at(-1)?.[1];
+  if (encodedPath === undefined) return undefined;
+  const segments: Array<string | number> = [];
+  for (const match of encodedPath.matchAll(/\[(?:"((?:\\.|[^"])*)"|(\d+))\]/gu)) {
+    if (match[2] !== undefined) {
+      segments.push(Number(match[2]));
+      continue;
+    }
+    try {
+      segments.push(JSON.parse(`"${match[1] ?? ""}"`) as string);
+    } catch {
+      return undefined;
+    }
+  }
+  if (segments.length === 0) return undefined;
+  return segments
+    .map((segment, index) =>
+      typeof segment === "number" ? `[${segment}]` : `${index === 0 ? "" : "."}${segment}`,
+    )
+    .join("")
+    .slice(0, MAX_VALIDATION_FIELD_LENGTH);
+}
+
+/** Returns the first action index encoded in one public validation field. */
+function actionIndexFromField(field: string | undefined): number | undefined {
+  const match = /^actions\[(\d+)\]/u.exec(field ?? "");
+  if (match === null) return undefined;
+  const index = Number(match[1]);
+  return Number.isSafeInteger(index) ? index : undefined;
+}
+
+/** Returns a bounded first line suitable for a public validation response. */
+function validationExpectation(description: string): string {
+  const lineEnd = description.indexOf("\n");
+  return description
+    .slice(0, lineEnd < 0 ? description.length : lineEnd)
+    .slice(0, MAX_VALIDATION_EXPECTATION_LENGTH);
+}
+
+/** Renders one bounded computer failure visibly instead of hiding its details in metadata. */
+function computerFailureText(failure: unknown, fallback: string): string {
+  if (typeof failure !== "object" || failure === null) return fallback;
+  return JSON.stringify({ error: failure });
+}
+
 const computerImageFailure = <E>(toolName: string, cause: Cause.Cause<E>) => {
   if (Cause.hasInterrupts(cause) || cause.reasons.some(Cause.isDieReason)) {
     return Effect.failCause(cause).pipe(Effect.orDie);
@@ -262,11 +313,20 @@ const computerImageFailure = <E>(toolName: string, cause: Cause.Cause<E>) => {
       ? firstFailure.computerFailure
       : undefined;
   const firstSchemaIssue = schemaIssues?.[0];
-  const schemaField = firstSchemaIssue?.path
+  const formattedSchemaField = firstSchemaIssue?.path
     ?.map((segment, index) =>
       typeof segment === "number" ? `[${segment}]` : `${index === 0 ? "" : "."}${String(segment)}`,
     )
-    .join("");
+    .join("")
+    .slice(0, MAX_VALIDATION_FIELD_LENGTH);
+  const validationDescription = firstSchemaIssue?.message ?? toolParameterValidation;
+  const schemaField =
+    formattedSchemaField && formattedSchemaField.length > 0
+      ? formattedSchemaField
+      : validationDescription === undefined
+        ? undefined
+        : validationFieldFromMessage(validationDescription);
+  const actionIndex = actionIndexFromField(schemaField);
   const invalidInput = schemaIssues !== undefined || toolParameterValidation !== undefined;
   const computerFailure = !invalidInput
     ? remoteComputerFailure
@@ -274,18 +334,17 @@ const computerImageFailure = <E>(toolName: string, cause: Cause.Cause<E>) => {
         code: "invalid-action",
         category: "invalid-input",
         message: "The computer-use request is invalid.",
+        ...(actionIndex === undefined ? {} : { actionIndex }),
         completedActionCount: 0,
         cleanup: { keys: "not-needed", buttons: "not-needed" },
+        ...(schemaField === undefined || schemaField.length === 0 ? {} : { field: schemaField }),
         ...(firstSchemaIssue === undefined
           ? {}
           : {
-              ...(schemaField === undefined || schemaField.length === 0
-                ? {}
-                : { field: schemaField }),
-              expected: [firstSchemaIssue.message.slice(0, 128)],
+              expected: [validationExpectation(firstSchemaIssue.message)],
             }),
         ...(firstSchemaIssue === undefined && toolParameterValidation !== undefined
-          ? { expected: [toolParameterValidation.slice(0, 128)] }
+          ? { expected: [validationExpectation(toolParameterValidation)] }
           : {}),
         phase: "validation",
       };
@@ -302,14 +361,10 @@ const computerImageFailure = <E>(toolName: string, cause: Cause.Cause<E>) => {
     content: [
       {
         type: "text",
-        text:
-          computerFailure !== undefined &&
-          "message" in computerFailure &&
-          typeof computerFailure.message === "string"
-            ? computerFailure.message
-            : toolName === "computer_snapshot"
-              ? "Computer snapshot failed."
-              : "Computer use failed.",
+        text: computerFailureText(
+          computerFailure,
+          toolName === "computer_snapshot" ? "Computer snapshot failed." : "Computer use failed.",
+        ),
       },
     ],
   });

@@ -27,9 +27,11 @@ software-display frames through QMP, and injects input through QEMU's input even
 desktops render OpenGL with virgl through EGL headless. They expose a raw framebuffer over a
 private Unix-domain VNC socket so observation does not require a visible host window or another
 runtime dependency. QEMU events provide hardware-like pointer input and deliberate key holds. Timed
-QEMU key chords provide self-releasing presses, hotkeys, and fallback text. Exact text uses the guest
-AT-SPI editable-text interface when one active target can be identified, without reading or changing
-the clipboard.
+QEMU key chords provide self-releasing presses, hotkeys, and exact ASCII fallback text. Exact
+Unicode uses the guest AT-SPI editable-text interface when one active target can be identified and
+verifies the inserted substring without reading or changing the clipboard. If that interface is
+unavailable, non-ASCII input fails explicitly instead of risking an application-dependent Unicode
+entry sequence.
 
 The guest image boots directly into a dedicated GNOME user. It enables toolkit accessibility,
 disables guest idle locking and suspend, starts QEMU Guest Agent, and does not expose SSH. Packaged
@@ -41,9 +43,9 @@ build overlays are removed. Setup is serialized so concurrent agents cannot race
 The repository command can still consume a caller-supplied qcow2 image and requires a SHA-256 unless
 verification is explicitly skipped.
 
-Semantic observations run a bounded AT-SPI helper inside the guest. Target identifiers include an
-accessibility generation and expire under the same one-action rule as host semantic targets. This
-keeps stale target behavior identical across both desktop kinds.
+Semantic observations run a bounded AT-SPI helper inside the guest. Target and top-level window
+identifiers include an accessibility generation and expire under the same one-action rule as host
+semantic identifiers. This keeps stale target behavior identical across both desktop kinds.
 
 ## Resources And Lifecycle
 

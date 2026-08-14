@@ -1,5 +1,6 @@
 import type {
   ComputerAutomationActInput,
+  ComputerAutomationActionResult,
   ComputerAutomationSnapshot,
   ComputerAutomationSnapshotInput,
   ComputerAutomationStatus,
@@ -48,7 +49,7 @@ export interface ComputerUseCoordinatorShape {
   readonly act: (
     controllerId: string,
     input: ComputerAutomationActInput,
-  ) => Effect.Effect<void, ComputerUse.ComputerUseError>;
+  ) => Effect.Effect<ReadonlyArray<ComputerAutomationActionResult>, ComputerUse.ComputerUseError>;
   readonly release: (
     controllerId: string,
   ) => Effect.Effect<ComputerAutomationStatus, ComputerUse.ComputerUseError>;

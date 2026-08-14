@@ -11,6 +11,7 @@ import Gio from "gi://Gio";
 import GLib from "gi://GLib";
 
 import { AccessibilityStatusLease } from "./accessibility-status-lease.js";
+import { canTypeExactlyWithKeyboardEvents } from "./exact-keyboard-text.js";
 
 let Atspi = null;
 let accessibilityImportError = null;
@@ -61,27 +62,35 @@ const AGENT_WORK_INHIBIT_FLAGS = INHIBIT_SUSPEND;
 const REQUEST_TIMEOUT_MS = 120_000;
 const DISPLAY_WAKE_TIMEOUT_MS = 2_000;
 const DISPLAY_WAKE_POLL_MS = 50;
+const KEY_HOLD_TIME_MS = 10;
+const KEY_RELEASE_SETTLE_MS = 10;
+const KEY_MODIFIER_SETTLE_MS = 25;
+const POINTER_BUTTON_HOLD_TIME_MS = 10;
+const POINTER_BUTTON_RELEASE_SETTLE_MS = 10;
 const STREAM_CAPTURE_TIMEOUT_MS = 5_000;
 const STREAM_CAPTURE_POLL_MS = 10;
 const MAX_SCREENSHOT_BYTES = 64 * 1_024 * 1_024;
 const MAX_RESTORE_TOKEN_LENGTH = 4_096;
 const MAX_ACCESSIBILITY_NODES = 4_000;
 const MAX_ACCESSIBILITY_TARGETS = 256;
+const MAX_ACCESSIBILITY_WINDOWS = 128;
 const MAX_ACCESSIBILITY_CHILDREN = 500;
 const MAX_ACCESSIBILITY_TEXT_LENGTH = 1_024;
+const MAX_ACCESSIBILITY_OBJECT_PATH_LENGTH = 1_024;
 const ACCESSIBILITY_CALL_TIMEOUT_MS = 250;
 const ACCESSIBILITY_STARTUP_TIMEOUT_MS = 1_000;
 const ACCESSIBILITY_FOCUS_RETURN_TIMEOUT_MS = 2_000;
 const ACCESSIBILITY_FOCUS_RETURN_INTERVAL_MS = 50;
 const ACCESSIBILITY_FOCUS_SETTLE_MS = 50;
+const ACCESSIBILITY_WINDOW_SWITCH_SETTLE_MS = 100;
+const ACCESSIBILITY_WINDOW_RESOLVE_TIMEOUT_MS = 500;
+const ACCESSIBILITY_WINDOW_RESOLVE_INTERVAL_MS = 50;
+const ACCESSIBILITY_WINDOW_STABLE_SAMPLES = 2;
 const ACCESSIBILITY_TEXT_SELECTION_SETTLE_MS = 25;
 const ACCESSIBILITY_TEXT_FOCUS_TIMEOUT_MS = 250;
 const ACCESSIBILITY_TEXT_FOCUS_INTERVAL_MS = 25;
+const ACCESSIBILITY_TEXT_VERIFY_SETTLE_MS = 50;
 const MAX_SEMANTIC_TEXT_SEGMENTS = 32;
-const UNICODE_ENTRY_MODIFIER_SETTLE_MS = 30;
-const UNICODE_ENTRY_PREFIX_SETTLE_MS = 30;
-const UNICODE_ENTRY_DIGIT_SETTLE_MS = 10;
-const UNICODE_ENTRY_COMMIT_SETTLE_MS = 30;
 const EXCLUDED_ACCESSIBILITY_APPLICATIONS = new Set([
   "gnome-shell",
   "xdg-desktop-portal-gnome",
@@ -106,10 +115,12 @@ const ACCESSIBILITY_TARGET_ROLES = new Set([
   "slider",
   "spin button",
   "table cell",
+  "text",
   "toggle button",
   "tree item",
 ]);
 const PREFERRED_ACCESSIBILITY_ACTIONS = ["click", "press", "activate", "open", "toggle", "select"];
+const PREFERRED_WINDOW_ACTIONS = ["activate", "raise", "present"];
 const ACCESSIBILITY_FOCUS_ONLY_ROLES = new Set(["entry", "password text", "slider", "spin button"]);
 const BUTTON_CODES = {
   left: 0x110,
@@ -160,6 +171,7 @@ const INPUT_METHODS = new Set([
   "move",
   "click",
   "activate",
+  "activateWindow",
   "drag",
   "wheel",
   "type",
@@ -195,6 +207,7 @@ let accessGeneration = 0;
 let accessibilityInitialized = false;
 let accessibilityGeneration = 0;
 let accessibilityTargets = new Map();
+let accessibilityWindows = new Map();
 const heldKeysyms = new Set();
 const heldButtons = new Set();
 const pendingPortalRequests = new Map();
@@ -351,6 +364,11 @@ function hasAccessibilityState(states, state) {
   }
 }
 
+/** Reads an AT-SPI text range without invoking Accessible.get_text in GJS. */
+function readAccessibilityTextRange(text, startPosition, endPosition) {
+  return Atspi.Text.prototype.get_text.call(text, startPosition, endPosition);
+}
+
 /** Returns the intersection of two rectangles in one coordinate space. */
 function intersectAccessibilityBounds(first, second) {
   const left = Math.max(first.x, second.x);
@@ -383,7 +401,18 @@ function listAccessibilityRoots(atspi) {
         if (accessible === null) continue;
         const role = accessibilityText(accessible.get_role_name(), 128).toLowerCase();
         if (!ACCESSIBILITY_ROOT_ROLES.has(role)) continue;
-        roots.push({ accessible, application: applicationName });
+        const processId = accessible.get_process_id();
+        const objectPath = accessibilityText(accessible.path, MAX_ACCESSIBILITY_OBJECT_PATH_LENGTH);
+        if (!Number.isSafeInteger(processId) || processId <= 0 || !objectPath.startsWith("/")) {
+          continue;
+        }
+        roots.push({
+          accessible,
+          application: applicationName,
+          processId,
+          objectPath,
+          window: accessibilityText(accessible.get_name(), 512),
+        });
       }
     } catch {
       // Applications can disappear while the registry is being traversed.
@@ -531,15 +560,16 @@ async function waitForFocusedAccessibilityTextTarget() {
 /** Inserts exact text directly only when mutation is known to be safe. */
 async function insertFocusedAccessibilityText(textValue, intervalMs) {
   const accessible = await waitForFocusedAccessibilityTextTarget();
-  if (accessible === null) return "unavailable";
+  if (accessible === null) return { status: "unavailable" };
   const states = accessible.get_state_set();
   if (/\n/u.test(textValue) && !hasAccessibilityState(states, Atspi.StateType.MULTI_LINE)) {
-    return "unavailable";
+    return { status: "unavailable" };
   }
   const text = accessible.get_text_iface();
-  if (text.get_n_selections() > 0) return "replace-selection";
+  if (text.get_n_selections() > 0) return { status: "replace-selection" };
   const editable = accessible.get_editable_text_iface();
   let position = text.get_caret_offset();
+  const startPosition = position;
   const insert = (value) => {
     if (!Number.isInteger(position) || position < 0) return false;
     if (!editable.insert_text(position, value, new TextEncoder().encode(value).length))
@@ -557,13 +587,32 @@ async function insertFocusedAccessibilityText(textValue, intervalMs) {
   };
   if (intervalMs === 0) {
     insertOrFail(textValue);
-    return "inserted";
+  } else {
+    for (const character of textValue) {
+      insertOrFail(character);
+      await delay(intervalMs);
+    }
   }
-  for (const character of textValue) {
-    insertOrFail(character);
-    await delay(intervalMs);
+  await delay(ACCESSIBILITY_TEXT_VERIFY_SETTLE_MS);
+  let insertedText;
+  try {
+    insertedText = readAccessibilityTextRange(text, startPosition, position);
+  } catch {
+    insertedText = null;
   }
-  return "inserted";
+  if (insertedText !== textValue) {
+    throw accessibilityError(
+      "accessibility-insertion-failed",
+      "the focused control did not confirm the exact inserted text; some text may have been inserted",
+      { field: "text", expected: ["exact text readable from the focused editable control"] },
+    );
+  }
+  const codePointCount = Array.from(textValue).length;
+  return {
+    status: "inserted",
+    injectedCodePoints: codePointCount,
+    confirmedCodePoints: codePointCount,
+  };
 }
 
 /** Chooses a user-equivalent activation path for one accessible control. */
@@ -615,6 +664,7 @@ function readAccessibilityTarget(accessible, root, windowBounds, id) {
 
   const role = accessibilityText(accessible.get_role_name(), 128).toLowerCase();
   if (role.length === 0 || !ACCESSIBILITY_TARGET_ROLES.has(role)) return null;
+  if (role === "text" && !hasAccessibilityState(states, Atspi.StateType.EDITABLE)) return null;
   const interfaces = Array.from(accessible.get_interfaces() ?? []);
   const activation = readAccessibilityActivation(accessible, role, states, interfaces);
   if (activation === null) return null;
@@ -684,22 +734,63 @@ function readAccessibilityTarget(accessible, root, windowBounds, id) {
 function invalidateAccessibilityTargets() {
   accessibilityGeneration += 1;
   accessibilityTargets = new Map();
+  accessibilityWindows = new Map();
 }
 
-/** Captures bounded semantic targets from the focused accessible window. */
-function captureAccessibility() {
+/** Stores bounded top-level windows for later semantic activation. */
+function captureAccessibilityWindows(roots, focusedRoots) {
+  const focusedAccessibles = new Set(focusedRoots.map((root) => root.accessible));
+  return roots.slice(0, MAX_ACCESSIBILITY_WINDOWS).map((root, index) => {
+    const id = `window-${accessibilityGeneration}-${index + 1}`;
+    accessibilityWindows.set(id, {
+      application: root.application,
+      processId: root.processId,
+      objectPath: root.objectPath,
+    });
+    return {
+      id,
+      application: root.application,
+      name: root.window,
+      focused: focusedAccessibles.has(root.accessible),
+    };
+  });
+}
+
+/** Captures bounded semantic windows and optionally focused control targets. */
+function captureAccessibility(includeTargets = true) {
   invalidateAccessibilityTargets();
   try {
     const atspi = ensureAccessibility();
     const roots = listAccessibilityRoots(atspi);
+    if (!includeTargets) {
+      const activeRoots = roots.filter(({ accessible }) => {
+        try {
+          return hasAccessibilityState(accessible.get_state_set(), Atspi.StateType.ACTIVE);
+        } catch {
+          return false;
+        }
+      });
+      return {
+        available: true,
+        coordinateSpace: "focused-window",
+        window: null,
+        windows: captureAccessibilityWindows(roots, activeRoots),
+        targets: [],
+        truncated: roots.length > MAX_ACCESSIBILITY_WINDOWS,
+        detail: "semantic control targets were omitted for a multi-display desktop",
+      };
+    }
     const selection = selectFocusedAccessibilityRoots(roots);
+    const windows = captureAccessibilityWindows(roots, selection.roots);
+    const windowsTruncated = roots.length > MAX_ACCESSIBILITY_WINDOWS;
     if (selection.roots.length === 0) {
       return {
         available: true,
         coordinateSpace: "focused-window",
         window: null,
+        windows,
         targets: [],
-        truncated: selection.truncated,
+        truncated: selection.truncated || windowsTruncated,
         detail: accessibilityStatusLease.enabledByLease
           ? "the focused application does not expose an AT-SPI window; restart applications opened before semantic accessibility was enabled"
           : "the focused application does not expose an AT-SPI window",
@@ -711,8 +802,9 @@ function captureAccessibility() {
         available: true,
         coordinateSpace: "focused-window",
         window: null,
+        windows,
         targets: [],
-        truncated: selection.truncated,
+        truncated: selection.truncated || windowsTruncated,
         detail: "the active accessible window is ambiguous",
       };
     }
@@ -740,13 +832,13 @@ function captureAccessibility() {
     };
     const window = {
       application: selectedRoot.application,
-      name: accessibilityText(selectedRoot.accessible.get_name(), 512),
+      name: selectedRoot.window,
       size: { width: windowBounds.width, height: windowBounds.height },
     };
 
     const candidates = [];
     let scanned = 0;
-    let truncated = selection.truncated;
+    let truncated = selection.truncated || windowsTruncated;
     for (const root of selection.roots) {
       const queue = [root.accessible];
       let queueIndex = 0;
@@ -792,6 +884,7 @@ function captureAccessibility() {
       available: true,
       coordinateSpace: "focused-window",
       window,
+      windows,
       targets,
       truncated,
       ...(targets.length === 0
@@ -803,6 +896,7 @@ function captureAccessibility() {
       available: false,
       coordinateSpace: "focused-window",
       window: null,
+      windows: [],
       targets: [],
       truncated: false,
       detail: accessibilityText(
@@ -1884,6 +1978,18 @@ async function ensureSession(requestedAccess, preventSleep = powerProtectionEnab
   }
 }
 
+/** Starts access and enables semantics before subsequently launched applications. */
+async function startPreparedSession(requestedAccess, preventSleep) {
+  const status = await ensureSession(requestedAccess, preventSleep);
+  const generation = accessGeneration;
+  await accessibilityStatusLease.acquire();
+  if (generation !== accessGeneration || sessionHandle === null) {
+    await accessibilityStatusLease.restore();
+    throw portalCancellationError();
+  }
+  return status;
+}
+
 /** Requires one granted portal device before sending input. */
 function requireDevice(device, name) {
   if ((grantedDevices & device) !== 0) return;
@@ -1926,53 +2032,50 @@ async function tapKeysym(keysym, detail = {}) {
       detail,
     );
   }
-  await holdKeysym(keysym);
-  await releaseKeysym(keysym);
-}
-
-/** Enters one code point through GNOME's layout-independent Unicode input method. */
-async function typeUnicodeCharacter(character) {
-  const codePoint = character.codePointAt(0);
-  const hexadecimal = codePoint.toString(16);
-  const controlWasHeld = heldKeysyms.has(MODIFIER_KEYSYMS.Control);
-  const shiftWasHeld = heldKeysyms.has(MODIFIER_KEYSYMS.Shift);
   try {
-    await holdKeysym(MODIFIER_KEYSYMS.Control);
-    await holdKeysym(MODIFIER_KEYSYMS.Shift);
-    await delay(UNICODE_ENTRY_MODIFIER_SETTLE_MS);
-    await tapKeysym(resolveKeysym("u", "text"), { field: "text" });
-    await delay(UNICODE_ENTRY_PREFIX_SETTLE_MS);
-    await releaseKeysym(MODIFIER_KEYSYMS.Shift);
-    await releaseKeysym(MODIFIER_KEYSYMS.Control);
-    for (const digit of hexadecimal) {
-      await tapKeysym(resolveKeysym(digit, "text"), { field: "text" });
-      await delay(UNICODE_ENTRY_DIGIT_SETTLE_MS);
+    await holdKeysym(keysym);
+    await delay(KEY_HOLD_TIME_MS);
+    await releaseKeysym(keysym);
+    await delay(KEY_RELEASE_SETTLE_MS);
+  } catch (error) {
+    const failure = mutableError(error);
+    if (typeof failure.field !== "string" && typeof detail.field === "string") {
+      failure.field = detail.field;
     }
-    await tapKeysym(NAMED_KEYSYMS.enter, { field: "text" });
-    await delay(UNICODE_ENTRY_COMMIT_SETTLE_MS);
-  } finally {
-    if (!shiftWasHeld) await releaseKeysym(MODIFIER_KEYSYMS.Shift);
-    if (!controlWasHeld) await releaseKeysym(MODIFIER_KEYSYMS.Control);
-    if (controlWasHeld) await holdKeysym(MODIFIER_KEYSYMS.Control);
-    if (shiftWasHeld) await holdKeysym(MODIFIER_KEYSYMS.Shift);
+    if (typeof failure.received !== "string" && typeof detail.received === "string") {
+      failure.received = detail.received;
+    }
+    throw failure;
   }
 }
 
 /** Types text through real portal key events when semantic insertion is unavailable. */
 async function typeKeyboardText(text, intervalMs) {
+  if (!canTypeExactlyWithKeyboardEvents(text)) {
+    throw accessibilityError(
+      "exact-text-unavailable",
+      "exact non-ASCII text requires a focused accessible editable control",
+      {
+        field: "text",
+        expected: ["ASCII text or a focused accessible editable control"],
+        phase: "execution",
+      },
+    );
+  }
+  let injectedCodePoints = 0;
   for (const character of text) {
     if (character === "\n") {
       await runInputPhase("key-press", () => tapKeysym(NAMED_KEYSYMS.enter, { field: "text" }));
     } else if (character === "\t") {
       await runInputPhase("key-press", () => tapKeysym(NAMED_KEYSYMS.tab, { field: "text" }));
-    } else if (/^[\x20-\x7e]$/u.test(character)) {
+    } else {
       const keysym = resolveKeysym(character, "text");
       await runInputPhase("key-press", () => tapKeysym(keysym, { field: "text" }));
-    } else {
-      await runInputPhase("key-press", () => typeUnicodeCharacter(character));
     }
+    injectedCodePoints += 1;
     await delay(intervalMs);
   }
+  return injectedCodePoints;
 }
 
 /** Best-effort releases every tracked keysym before the portal session closes. */
@@ -2067,6 +2170,7 @@ async function sendKeyChord(resolvedKeys) {
     await runInputPhase("key-down", () => holdKeysym(resolved.keysym));
     pressedKeys.push(resolved.keysym);
   }
+  if (pressedKeys.length > 0) await delay(KEY_MODIFIER_SETTLE_MS);
   const finalKey = resolvedKeys[resolvedKeys.length - 1];
   await runInputPhase("key-press", () =>
     tapKeysym(finalKey.keysym, { field: finalKey.field, received: finalKey.key }),
@@ -2176,6 +2280,14 @@ async function releaseButton(button) {
   if (!heldButtons.has(button)) return;
   await sendButton(button, false);
   heldButtons.delete(button);
+}
+
+/** Presses and releases one mouse button with compositor-safe timing. */
+async function tapButton(button) {
+  await holdButton(button);
+  await delay(POINTER_BUTTON_HOLD_TIME_MS);
+  await releaseButton(button);
+  await delay(POINTER_BUTTON_RELEASE_SETTLE_MS);
 }
 
 /** Best-effort releases every tracked mouse button. */
@@ -2307,7 +2419,8 @@ async function activateAccessibilityTarget(targetId) {
       }
       return action.do_action(matchingActionIndices[0]);
     }
-    const focused = current.stored.accessible.get_component_iface().grab_focus();
+    const focused =
+      current.target.focused || current.stored.accessible.get_component_iface().grab_focus();
     if (focused && activation === "keyboard") {
       await delay(ACCESSIBILITY_FOCUS_SETTLE_MS);
       await runInputPhase("key-press", () => tapKeysym(NAMED_KEYSYMS.enter));
@@ -2323,6 +2436,192 @@ async function activateAccessibilityTarget(targetId) {
   }
   invalidateAccessibilityTargets();
   return { target: current.target };
+}
+
+/** Tests whether one accessibility root currently owns desktop focus. */
+function accessibilityWindowIsFocused(accessible) {
+  try {
+    return (
+      hasAccessibilityState(accessible.get_state_set(), Atspi.StateType.ACTIVE) ||
+      accessibilityRootContainsFocus(accessible, MAX_ACCESSIBILITY_NODES).focused
+    );
+  } catch {
+    return false;
+  }
+}
+
+/** Tests one stable top-level accessibility identity. */
+function accessibilityWindowMatches(root, identity) {
+  return (
+    root.application === identity.application &&
+    root.processId === identity.processId &&
+    root.objectPath === identity.objectPath
+  );
+}
+
+/** Tries application-advertised activation without trusting one broken interface. */
+async function tryAccessibilityWindowActivation(root) {
+  if (accessibilityWindowIsFocused(root)) return true;
+  let interfaces;
+  try {
+    interfaces = new Set(root.get_interfaces() ?? []);
+  } catch {
+    return false;
+  }
+  if (interfaces.has("Action")) {
+    try {
+      const action = root.get_action_iface();
+      const actionCount = Math.max(0, action.get_n_actions());
+      for (const preferredName of PREFERRED_WINDOW_ACTIONS) {
+        for (let actionIndex = 0; actionIndex < actionCount; actionIndex += 1) {
+          if (
+            accessibilityText(action.get_action_name(actionIndex), 128).toLowerCase() ===
+              preferredName &&
+            action.do_action(actionIndex)
+          ) {
+            await delay(ACCESSIBILITY_FOCUS_SETTLE_MS);
+            if (accessibilityWindowIsFocused(root)) return true;
+          }
+        }
+      }
+    } catch {
+      // Some applications advertise unusable top-level actions.
+    }
+  }
+  if (interfaces.has("Component")) {
+    try {
+      if (root.get_component_iface().grab_focus()) {
+        await delay(ACCESSIBILITY_FOCUS_SETTLE_MS);
+        if (accessibilityWindowIsFocused(root)) return true;
+      }
+    } catch {
+      // GNOME commonly rejects focus on an inactive top-level component.
+    }
+  }
+  return false;
+}
+
+/** Waits for one stable semantic window to settle after a GNOME focus transition. */
+async function waitForAccessibilityWindowFocus(identity) {
+  const attemptCount = Math.ceil(
+    ACCESSIBILITY_WINDOW_RESOLVE_TIMEOUT_MS / ACCESSIBILITY_WINDOW_RESOLVE_INTERVAL_MS,
+  );
+  let available = false;
+  let roots = [];
+  for (let attempt = 0; attempt <= attemptCount; attempt += 1) {
+    roots = listAccessibilityRoots(ensureAccessibility());
+    const matches = roots.filter((root) => accessibilityWindowMatches(root, identity));
+    if (matches.length > 1) {
+      throw accessibilityError(
+        "stale-accessibility-target",
+        "the semantic window became ambiguous while GNOME was switching windows",
+      );
+    }
+    if (matches.length === 1) {
+      available = true;
+      if (accessibilityWindowIsFocused(matches[0].accessible)) {
+        return { available, focused: true, roots };
+      }
+    }
+    if (attempt < attemptCount) await delay(ACCESSIBILITY_WINDOW_RESOLVE_INTERVAL_MS);
+  }
+  return { available, focused: false, roots };
+}
+
+/** Waits for the semantic window inventory to survive consecutive registry reads. */
+async function waitForAccessibilityWindowInventory(identities) {
+  const attemptCount = Math.ceil(
+    ACCESSIBILITY_WINDOW_RESOLVE_TIMEOUT_MS / ACCESSIBILITY_WINDOW_RESOLVE_INTERVAL_MS,
+  );
+  let stableSamples = 0;
+  for (let attempt = 0; attempt <= attemptCount; attempt += 1) {
+    const roots = listAccessibilityRoots(ensureAccessibility());
+    const complete = identities.every(
+      (identity) => roots.filter((root) => accessibilityWindowMatches(root, identity)).length === 1,
+    );
+    stableSamples = complete ? stableSamples + 1 : 0;
+    if (stableSamples >= ACCESSIBILITY_WINDOW_STABLE_SAMPLES) return;
+    if (attempt < attemptCount) await delay(ACCESSIBILITY_WINDOW_RESOLVE_INTERVAL_MS);
+  }
+}
+
+/** Cycles GNOME's direct-window switcher until one stable semantic window owns focus. */
+async function switchToAccessibilityWindow(identity, initialRoots) {
+  const initialFocused =
+    initialRoots.find((root) => accessibilityWindowIsFocused(root.accessible)) ?? null;
+  const switchChord = resolveKeyChord([
+    { key: "Alt", field: "windowId" },
+    { key: "Escape", field: "windowId" },
+  ]);
+  const maxSwitches = Math.min(MAX_ACCESSIBILITY_WINDOWS, initialRoots.length);
+  for (let switchIndex = 0; switchIndex < maxSwitches; switchIndex += 1) {
+    await sendKeyChord(switchChord);
+    await delay(ACCESSIBILITY_WINDOW_SWITCH_SETTLE_MS);
+    const settled = await waitForAccessibilityWindowFocus(identity);
+    if (!settled.available) {
+      throw accessibilityError(
+        "stale-accessibility-target",
+        "the semantic window changed while GNOME was switching windows",
+      );
+    }
+    if (settled.focused) return true;
+    if (
+      initialFocused !== null &&
+      settled.roots.some(
+        (root) =>
+          accessibilityWindowMatches(root, initialFocused) &&
+          accessibilityWindowIsFocused(root.accessible),
+      )
+    ) {
+      return false;
+    }
+  }
+  return false;
+}
+
+/** Focuses one current top-level accessibility window. */
+async function activateAccessibilityWindow(windowId) {
+  const detail = {
+    field: "windowId",
+    received: windowId,
+    phase: "validation",
+  };
+  const stored = accessibilityWindows.get(windowId);
+  if (stored === undefined) {
+    throw accessibilityError(
+      "stale-accessibility-target",
+      "the semantic window is stale; capture a new computer snapshot",
+      detail,
+    );
+  }
+  const expectedWindows = Array.from(accessibilityWindows.values());
+  await runInputPhase("authorization", () => ensureSession("control"));
+  const roots = listAccessibilityRoots(ensureAccessibility());
+  const matches = roots.filter((root) => accessibilityWindowMatches(root, stored));
+  if (matches.length !== 1) {
+    throw accessibilityError(
+      "stale-accessibility-target",
+      "the semantic window is no longer uniquely available",
+      detail,
+    );
+  }
+  const root = matches[0].accessible;
+  const activated = await runInputPhase(
+    "execution",
+    async () =>
+      (await tryAccessibilityWindowActivation(root)) ||
+      (await switchToAccessibilityWindow(stored, roots)),
+  );
+  if (!activated) {
+    throw accessibilityError(
+      "accessibility-activation-failed",
+      "the application rejected semantic window activation",
+      { field: "windowId", received: windowId, phase: "execution" },
+    );
+  }
+  await waitForAccessibilityWindowInventory(expectedWindows);
+  invalidateAccessibilityTargets();
+  return null;
 }
 
 /** Sends bounded wheel steps through the portal's discrete-axis method. */
@@ -2362,7 +2661,7 @@ async function handleCommand(message) {
       }
       return {
         ...screenshot,
-        accessibility: captureAccessibility(),
+        accessibility: captureAccessibility(message.params.includeAccessibilityTargets !== false),
       };
     }
     case "configurePower": {
@@ -2382,10 +2681,10 @@ async function handleCommand(message) {
       return null;
     }
     case "start": {
-      return await ensureSession("control", message.params.preventSleep === true);
+      return await startPreparedSession("control", message.params.preventSleep === true);
     }
     case "view": {
-      return await ensureSession("view", message.params.preventSleep === true);
+      return await startPreparedSession("view", message.params.preventSleep === true);
     }
     case "move": {
       await runInputPhase("authorization", () => ensureSession("control"));
@@ -2398,14 +2697,16 @@ async function handleCommand(message) {
       await runInputPhase("authorization", () => ensureSession("control"));
       const button = message.params.button;
       for (let count = 0; count < message.params.count; count += 1) {
-        await runInputPhase("button-down", () => holdButton(button));
-        await runInputPhase("button-up", () => releaseButton(button));
+        await runInputPhase("button-press", () => tapButton(button));
         if (count + 1 < message.params.count) await delay(80);
       }
       return null;
     }
     case "activate": {
       return await activateAccessibilityTarget(message.params.targetId);
+    }
+    case "activateWindow": {
+      return await activateAccessibilityWindow(message.params.windowId);
     }
     case "drag": {
       await runInputPhase("authorization", () => ensureSession("control"));
@@ -2435,14 +2736,18 @@ async function handleCommand(message) {
       const segments = normalizedText.match(/[^\t]+|\t/gu) ?? [];
       const useSemanticInsertion =
         segments.filter((segment) => segment !== "\t").length <= MAX_SEMANTIC_TEXT_SEGMENTS;
+      let injectedCodePoints = 0;
+      let confirmedCodePoints = 0;
+      let usedAccessibility = false;
+      let usedKeyEvents = false;
       for (const segment of segments) {
         let insertion =
           segment === "\t" || !useSemanticInsertion
-            ? "unavailable"
+            ? { status: "unavailable" }
             : await runInputPhase("execution", () =>
                 insertFocusedAccessibilityText(segment, message.params.intervalMs),
               );
-        if (insertion === "replace-selection") {
+        if (insertion.status === "replace-selection") {
           await runInputPhase("key-press", () =>
             tapKeysym(NAMED_KEYSYMS.backspace, { field: "text" }),
           );
@@ -2451,18 +2756,37 @@ async function handleCommand(message) {
             insertFocusedAccessibilityText(segment, message.params.intervalMs),
           );
         }
-        if (insertion === "replace-selection") {
+        if (insertion.status === "replace-selection") {
           throw accessibilityError(
             "accessibility-insertion-failed",
             "the focused text selection could not be replaced",
             { field: "text", phase: "execution" },
           );
         }
-        if (insertion === "unavailable") {
-          await typeKeyboardText(segment, message.params.intervalMs);
+        if (insertion.status === "unavailable") {
+          injectedCodePoints += await typeKeyboardText(segment, message.params.intervalMs);
+          usedKeyEvents ||= segment.length > 0;
+        } else {
+          injectedCodePoints += insertion.injectedCodePoints;
+          confirmedCodePoints += insertion.confirmedCodePoints;
+          usedAccessibility = true;
         }
       }
-      return null;
+      const delivery =
+        usedAccessibility && usedKeyEvents
+          ? "mixed"
+          : usedAccessibility
+            ? "accessibility"
+            : usedKeyEvents
+              ? "key-events"
+              : "none";
+      return {
+        requestedCodePoints: Array.from(message.params.text).length,
+        injectedCodePoints,
+        ...(usedAccessibility ? { confirmedCodePoints } : {}),
+        delivery,
+        focusedEditable: usedAccessibility,
+      };
     }
     case "keyDown": {
       const keysym = resolveKeysym(message.params.key, "key");

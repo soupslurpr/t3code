@@ -43,7 +43,7 @@ function makeComputer(calls: string[]): ComputerUse.ComputerUseShape {
     requestAvailability: record("requestAvailability").pipe(Effect.as(nativeStatus)),
     releaseAvailability: record("releaseAvailability").pipe(Effect.as(nativeStatus)),
     snapshot: () => record("snapshot").pipe(Effect.as(snapshot)),
-    act: () => record("act"),
+    act: () => record("act").pipe(Effect.as([])),
     releaseInputs: record("releaseInputs"),
     release: record("release"),
     forget: record("forget"),

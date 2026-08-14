@@ -1,4 +1,5 @@
 import {
+  type ComputerAutomationActionResult,
   ComputerAutomationObservation,
   type ComputerAutomationObservationOptions,
   ComputerAutomationSnapshot,
@@ -71,15 +72,22 @@ function observeComputer(
 }
 
 /** Performs one desktop action and returns its resulting screen observation. */
-function actAndObserve<Value>(
+function actAndObserve(
   computer: ComputerUseRouter.ComputerUseRouterShape,
-  action: Effect.Effect<Value, ComputerUseRouter.ComputerUseRouterError>,
+  action: Effect.Effect<
+    ReadonlyArray<ComputerAutomationActionResult>,
+    ComputerUseRouter.ComputerUseRouterError
+  >,
   options: ComputerAutomationObservationOptions | false,
   target: Parameters<ComputerUseRouter.ComputerUseRouterShape["status"]>[1],
   context: DesktopComputerAutomationContext = LOCAL_RENDERER_CONTEXT,
 ): Effect.Effect<ComputerAutomationObservation, ComputerUseRouter.ComputerUseRouterError> {
   return action.pipe(
-    Effect.andThen(observeComputer(computer, options, target, undefined, context)),
+    Effect.flatMap((actionResults) =>
+      observeComputer(computer, options, target, undefined, context).pipe(
+        Effect.map((observation) => ({ ...observation, actionResults })),
+      ),
+    ),
   );
 }
 
