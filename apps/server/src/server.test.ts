@@ -1008,6 +1008,7 @@ const buildAppUnderTest = (options?: {
           getFirstActiveThreadIdByProjectId: () => Effect.succeed(Option.none()),
           getImportedAgentSessionSources: () => Effect.succeed([]),
           getThreadCheckpointContext: () => Effect.succeed(Option.none()),
+
           ...options?.layers?.projectionSnapshotQuery,
         }),
       ),

@@ -248,6 +248,7 @@ describe("ProviderSessionReaper", () => {
           getFirstActiveThreadIdByProjectId: () => Effect.die("unused"),
           getImportedAgentSessionSources: () => Effect.die("unused"),
           getThreadCheckpointContext: () => Effect.die("unused"),
+          getThreadTurnStartContext: () => Effect.die("unused"),
           getFullThreadDiffContext: () => Effect.die("unused"),
           getThreadRuntimeContext: () => Effect.die("unused"),
           getTurnStartMessage: () => Effect.die("unused"),
