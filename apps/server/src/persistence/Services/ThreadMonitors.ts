@@ -34,6 +34,32 @@ export interface ThreadMonitorRepositoryShape {
 
   /** Deletes every monitor owned by a thread. */
   readonly deleteByThread: (threadId: ThreadId) => Effect.Effect<void, ProjectionRepositoryError>;
+
+  /** Deletes one monitor by id. */
+  readonly deleteById: (
+    monitorId: ThreadMonitorId,
+  ) => Effect.Effect<void, ProjectionRepositoryError>;
+
+  /** Reads retained computer-monitor baseline and terminal PNG data. */
+  readonly getComputerEvidence: (monitorId: ThreadMonitorId) => Effect.Effect<
+    Option.Option<{
+      readonly baselinePngBase64: string | null;
+      readonly terminalPngBase64: string | null;
+    }>,
+    ProjectionRepositoryError
+  >;
+
+  /** Retains the optional initial PNG used by a computer monitor. */
+  readonly putComputerBaseline: (input: {
+    readonly monitorId: ThreadMonitorId;
+    readonly pngBase64: string;
+  }) => Effect.Effect<void, ProjectionRepositoryError>;
+
+  /** Retains the terminal PNG that matched a computer monitor. */
+  readonly putComputerTerminal: (input: {
+    readonly monitorId: ThreadMonitorId;
+    readonly pngBase64: string;
+  }) => Effect.Effect<void, ProjectionRepositoryError>;
 }
 
 /** Provides durable monitor persistence. */

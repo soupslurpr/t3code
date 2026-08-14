@@ -28,7 +28,7 @@ Terms whose meaning matters across T3 Code. Architecture and lifecycle constrain
 | Command receipt         | A durable record of a command's result, used to make retries idempotent.                                  |
 | Outbox effect           | Side-effect intent committed with the events, such as starting a provider turn or capturing a checkpoint. |
 | Effect worker           | The worker that runs outbox effects after commit and feeds their results back as commands.                |
-| Durable monitor | A persisted timer or external condition owned by a thread that can record a result or request a continuation. See [durable monitors](./durable-monitors.md). |
+| Durable monitor | A persisted timer, external signal, or screen condition owned by a thread that can record a result or request a continuation. See [durable monitors](./durable-monitors.md). |
 
 ## Providers and checkpoints
 

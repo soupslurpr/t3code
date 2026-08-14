@@ -4,6 +4,7 @@ import {
   NonNegativeInt,
   ThreadId,
   ThreadMonitor,
+  ThreadMonitorComputerCondition,
   ThreadMonitorId,
   ThreadMonitorStatus,
 } from "@t3tools/contracts";
@@ -24,12 +25,13 @@ const ThreadMonitorRow = Schema.Struct({
   monitorId: ThreadMonitorId,
   threadId: ThreadId,
   label: Schema.String,
-  conditionType: Schema.Literals(["time", "signal"]),
+  conditionType: Schema.Literals(["time", "signal", "computer"]),
+  conditionJson: Schema.NullOr(Schema.String),
   wakeAt: Schema.NullOr(IsoDateTime),
   continuationMode: Schema.Literals(["resume-thread", "record-only"]),
   resumePrompt: Schema.NullOr(Schema.String),
   status: ThreadMonitorStatus,
-  triggerReason: Schema.NullOr(Schema.Literals(["signal", "deadline"])),
+  triggerReason: Schema.NullOr(Schema.Literals(["signal", "deadline", "condition"])),
   triggerSummary: Schema.NullOr(Schema.String),
   triggerEvidence: Schema.NullOr(Schema.String),
   createdAt: IsoDateTime,
@@ -45,12 +47,24 @@ const ThreadMonitorRow = Schema.Struct({
 });
 type ThreadMonitorRow = typeof ThreadMonitorRow.Type;
 
+const ComputerEvidenceRow = Schema.Struct({
+  baselinePngBase64: Schema.NullOr(Schema.String),
+  terminalPngBase64: Schema.NullOr(Schema.String),
+});
+const decodeComputerCondition = Schema.decodeUnknownSync(ThreadMonitorComputerCondition);
+
 const toRow = (monitor: ThreadMonitor): ThreadMonitorRow => ({
   monitorId: monitor.id,
   threadId: monitor.threadId,
   label: monitor.label,
   conditionType: monitor.condition.type,
-  wakeAt: monitor.condition.type === "time" ? monitor.condition.at : monitor.condition.deadlineAt,
+  conditionJson: monitor.condition.type === "computer" ? JSON.stringify(monitor.condition) : null,
+  wakeAt:
+    monitor.condition.type === "time"
+      ? monitor.condition.at
+      : monitor.condition.type === "signal"
+        ? monitor.condition.deadlineAt
+        : monitor.condition.nextCheckAt,
   continuationMode: monitor.continuation.mode,
   resumePrompt: monitor.continuation.mode === "resume-thread" ? monitor.continuation.prompt : null,
   status: monitor.status,
@@ -69,6 +83,14 @@ const toRow = (monitor: ThreadMonitor): ThreadMonitorRow => ({
   deliveryFailureCount: monitor.deliveryFailureCount,
 });
 
+/** Decodes the structured computer condition stored outside fixed scheduler columns. */
+function computerConditionFromRow(row: ThreadMonitorRow): ThreadMonitorComputerCondition {
+  if (row.conditionJson === null) {
+    throw new Error(`computer monitor '${row.monitorId}' has no condition payload`);
+  }
+  return decodeComputerCondition(JSON.parse(row.conditionJson));
+}
+
 const fromRow = (row: ThreadMonitorRow): ThreadMonitor => ({
   id: row.monitorId,
   threadId: row.threadId,
@@ -76,7 +98,9 @@ const fromRow = (row: ThreadMonitorRow): ThreadMonitor => ({
   condition:
     row.conditionType === "time"
       ? { type: "time", at: row.wakeAt ?? row.createdAt }
-      : { type: "signal", deadlineAt: row.wakeAt },
+      : row.conditionType === "signal"
+        ? { type: "signal", deadlineAt: row.wakeAt }
+        : computerConditionFromRow(row),
   continuation:
     row.continuationMode === "resume-thread"
       ? { mode: "resume-thread", prompt: row.resumePrompt ?? row.label }
@@ -113,6 +137,7 @@ const make = Effect.gen(function* () {
         thread_id,
         label,
         condition_type,
+        condition_json,
         wake_at,
         continuation_mode,
         resume_prompt,
@@ -135,6 +160,7 @@ const make = Effect.gen(function* () {
         ${row.threadId},
         ${row.label},
         ${row.conditionType},
+        ${row.conditionJson},
         ${row.wakeAt},
         ${row.continuationMode},
         ${row.resumePrompt},
@@ -157,6 +183,7 @@ const make = Effect.gen(function* () {
         thread_id = excluded.thread_id,
         label = excluded.label,
         condition_type = excluded.condition_type,
+        condition_json = excluded.condition_json,
         wake_at = excluded.wake_at,
         continuation_mode = excluded.continuation_mode,
         resume_prompt = excluded.resume_prompt,
@@ -186,6 +213,7 @@ const make = Effect.gen(function* () {
         thread_id AS "threadId",
         label,
         condition_type AS "conditionType",
+        condition_json AS "conditionJson",
         wake_at AS "wakeAt",
         continuation_mode AS "continuationMode",
         resume_prompt AS "resumePrompt",
@@ -221,6 +249,7 @@ const make = Effect.gen(function* () {
         thread_id AS "threadId",
         label,
         condition_type AS "conditionType",
+        condition_json AS "conditionJson",
         wake_at AS "wakeAt",
         continuation_mode AS "continuationMode",
         resume_prompt AS "resumePrompt",
@@ -255,6 +284,7 @@ const make = Effect.gen(function* () {
         thread_id AS "threadId",
         label,
         condition_type AS "conditionType",
+        condition_json AS "conditionJson",
         wake_at AS "wakeAt",
         continuation_mode AS "continuationMode",
         resume_prompt AS "resumePrompt",
@@ -286,6 +316,47 @@ const make = Effect.gen(function* () {
     `,
   });
 
+  const deleteMonitorRow = SqlSchema.void({
+    Request: Schema.Struct({ monitorId: ThreadMonitorId }),
+    execute: ({ monitorId }) => sql`
+      DELETE FROM thread_monitors
+      WHERE monitor_id = ${monitorId}
+    `,
+  });
+
+  const getComputerEvidenceRow = SqlSchema.findOneOption({
+    Request: Schema.Struct({ monitorId: ThreadMonitorId }),
+    Result: ComputerEvidenceRow,
+    execute: ({ monitorId }) => sql`
+      SELECT
+        baseline_png_base64 AS "baselinePngBase64",
+        terminal_png_base64 AS "terminalPngBase64"
+      FROM thread_monitor_computer_evidence
+      WHERE monitor_id = ${monitorId}
+      LIMIT 1
+    `,
+  });
+
+  const putComputerBaselineRow = SqlSchema.void({
+    Request: Schema.Struct({ monitorId: ThreadMonitorId, pngBase64: Schema.String }),
+    execute: ({ monitorId, pngBase64 }) => sql`
+      INSERT INTO thread_monitor_computer_evidence (monitor_id, baseline_png_base64)
+      VALUES (${monitorId}, ${pngBase64})
+      ON CONFLICT (monitor_id) DO UPDATE SET
+        baseline_png_base64 = excluded.baseline_png_base64
+    `,
+  });
+
+  const putComputerTerminalRow = SqlSchema.void({
+    Request: Schema.Struct({ monitorId: ThreadMonitorId, pngBase64: Schema.String }),
+    execute: ({ monitorId, pngBase64 }) => sql`
+      INSERT INTO thread_monitor_computer_evidence (monitor_id, terminal_png_base64)
+      VALUES (${monitorId}, ${pngBase64})
+      ON CONFLICT (monitor_id) DO UPDATE SET
+        terminal_png_base64 = excluded.terminal_png_base64
+    `,
+  });
+
   const upsert: ThreadMonitorRepositoryShape["upsert"] = (monitor) =>
     upsertRow(toRow(monitor)).pipe(
       Effect.mapError(toPersistenceSqlError("ThreadMonitorRepository.upsert:query")),
@@ -313,6 +384,22 @@ const make = Effect.gen(function* () {
     deleteByThread: (threadId) =>
       deleteThreadRows({ threadId }).pipe(
         Effect.mapError(toPersistenceSqlError("ThreadMonitorRepository.deleteByThread:query")),
+      ),
+    deleteById: (monitorId) =>
+      deleteMonitorRow({ monitorId }).pipe(
+        Effect.mapError(toPersistenceSqlError("ThreadMonitorRepository.deleteById:query")),
+      ),
+    getComputerEvidence: (monitorId) =>
+      getComputerEvidenceRow({ monitorId }).pipe(
+        Effect.mapError(toPersistenceSqlError("ThreadMonitorRepository.getComputerEvidence:query")),
+      ),
+    putComputerBaseline: (input) =>
+      putComputerBaselineRow(input).pipe(
+        Effect.mapError(toPersistenceSqlError("ThreadMonitorRepository.putComputerBaseline:query")),
+      ),
+    putComputerTerminal: (input) =>
+      putComputerTerminalRow(input).pipe(
+        Effect.mapError(toPersistenceSqlError("ThreadMonitorRepository.putComputerTerminal:query")),
       ),
   } satisfies ThreadMonitorRepositoryShape;
 });
