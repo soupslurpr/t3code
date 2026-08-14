@@ -7,6 +7,7 @@ import {
   ComputerAutomationClickInput,
   ComputerAutomationFailure,
   ComputerAutomationAccessInput,
+  ComputerAutomationAvailabilityInput,
   ComputerAutomationHotkeyInput,
   ComputerAutomationKeyInput,
   ComputerAutomationWheelInput,
@@ -20,6 +21,7 @@ import {
 
 const decodeClick = Schema.decodeUnknownSync(ComputerAutomationClickInput);
 const decodeAccess = Schema.decodeUnknownSync(ComputerAutomationAccessInput);
+const decodeAvailability = Schema.decodeUnknownSync(ComputerAutomationAvailabilityInput);
 const decodeKey = Schema.decodeUnknownSync(ComputerAutomationKeyInput);
 const decodeActivate = Schema.decodeUnknownSync(ComputerAutomationActivateInput);
 const decodeAct = Schema.decodeUnknownSync(ComputerAutomationActInput);
@@ -34,6 +36,11 @@ const decodeType = Schema.decodeUnknownSync(ComputerAutomationTypeInput);
 
 describe("computer automation contracts", () => {
   it("selects user or independently managed agent desktops", () => {
+    expect(decodeAvailability({})).toEqual({});
+    expect(decodeAvailability({ desktop: { kind: "user" } })).toEqual({
+      desktop: { kind: "user" },
+    });
+    expect(() => decodeAvailability({ desktop: { kind: "agent" } })).toThrow();
     expect(decodeAccess({ desktop: { kind: "user" }, observation: false })).toEqual({
       desktop: { kind: "user" },
       observation: false,
@@ -244,6 +251,21 @@ describe("computer automation contracts", () => {
         cursor: null,
       }),
     ).toMatchObject({ available: true, permission: "remembered" });
+  });
+
+  it("represents retained availability without claiming access is active", () => {
+    expect(
+      decodeStatus({
+        available: true,
+        backend: "gnome-wayland-portal",
+        permission: "remembered",
+        rememberedAccess: ["view", "control"],
+        displayState: "active",
+        keepAwake: true,
+        displays: [],
+        cursor: null,
+      }),
+    ).toMatchObject({ permission: "remembered", keepAwake: true });
   });
 
   it("represents an active view-only session", () => {
