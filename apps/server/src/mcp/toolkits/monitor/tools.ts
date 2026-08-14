@@ -57,12 +57,12 @@ export const MonitorSignalTool = mutatingMonitorTool(
   }).annotate(Tool.Title, "Signal durable monitor"),
 );
 
-/** Cancels one outstanding monitor. */
+/** Cancels one outstanding monitor or all outstanding monitors. */
 export const MonitorCancelTool = Tool.make("monitor_cancel", {
   description:
-    "Cancel one outstanding durable monitor owned by the current thread. Cancellation is idempotent for an already terminal monitor and prevents a continuation that has not yet been requested.",
+    "Cancel one outstanding durable monitor owned by the current thread, or omit monitorId to cancel every outstanding monitor in the thread. Cancellation is idempotent for an already terminal monitor and prevents a continuation that has not yet been requested.",
   parameters: ThreadMonitorCancelInput,
-  success: ThreadMonitor,
+  success: ThreadMonitorList,
   failure: ThreadMonitorError,
   dependencies,
 })

@@ -37,11 +37,11 @@ export interface ThreadMonitorServiceShape {
     readonly signal: ThreadMonitorSignalInput;
   }) => Effect.Effect<ThreadMonitor, ThreadMonitorError>;
 
-  /** Cancels one outstanding monitor. */
+  /** Cancels one outstanding monitor or every outstanding monitor in a thread. */
   readonly cancel: (input: {
     readonly threadId: ThreadId;
     readonly cancel: ThreadMonitorCancelInput;
-  }) => Effect.Effect<ThreadMonitor, ThreadMonitorError>;
+  }) => Effect.Effect<ThreadMonitorList, ThreadMonitorError>;
 
   /** Reconciles due triggers and pending deliveries immediately. */
   readonly checkNow: (input: {
