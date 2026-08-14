@@ -27,6 +27,8 @@ function unicodeEntryCount(text: string): number {
 /** Operations that target the host computer rather than a browser preview. */
 export const COMPUTER_AUTOMATION_OPERATIONS = [
   "computerStatus",
+  "computerRequestAvailability",
+  "computerReleaseAvailability",
   "computerRequestView",
   "computerRequestControl",
   "computerSnapshot",
@@ -222,7 +224,7 @@ export const ComputerAutomationStatus = Schema.Struct({
   }),
   keepAwake: Schema.Boolean.annotate({
     description:
-      "Whether the active computer-use session is preventing automatic locking and suspend.",
+      "Whether a user-desktop availability lease is preventing automatic locking and suspend. The lease can remain active without a view or control session.",
   }),
   displays: Schema.Array(ComputerAutomationDisplay),
   cursor: Schema.NullOr(ComputerAutomationPoint),
@@ -382,6 +384,16 @@ export const ComputerAutomationTargetInput = Schema.Struct(
     "Targets an existing user or Agent desktop without relying on shared implicit selection.",
 });
 export type ComputerAutomationTargetInput = typeof ComputerAutomationTargetInput.Type;
+
+export const ComputerAutomationAvailabilityInput = Schema.Struct({
+  desktop: Schema.optional(Schema.Struct({ kind: Schema.Literal("user") })).annotate({
+    description: "User desktop to keep available. Omission also targets the user's desktop.",
+  }),
+}).annotate({
+  description:
+    "Targets the user's desktop availability lease without opening a view or control session.",
+});
+export type ComputerAutomationAvailabilityInput = typeof ComputerAutomationAvailabilityInput.Type;
 
 export const ComputerAutomationSnapshotInput = Schema.Struct({
   ...ComputerAutomationDesktopTargetField,

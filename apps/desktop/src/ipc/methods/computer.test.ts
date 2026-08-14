@@ -10,7 +10,7 @@ import * as TestClock from "effect/testing/TestClock";
 import * as ComputerUse from "../../computer/ComputerUse.ts";
 import * as ComputerUseRouter from "../../computer/ComputerUseRouter.ts";
 import * as GnomeRemoteDesktop from "../../computer/GnomeRemoteDesktop.ts";
-import { act, requestView } from "./computer.ts";
+import { act, releaseAvailability, requestAvailability, requestView } from "./computer.ts";
 
 const status = {
   available: true,
@@ -45,6 +45,8 @@ function makeComputer(options: {
     status: Effect.succeed(status),
     requestView: options.requestView,
     requestControl: unexpected,
+    requestAvailability: unexpected,
+    releaseAvailability: unexpected,
     snapshot: options.snapshot ?? (() => unexpected),
     act: options.act ?? (() => unexpected),
     releaseInputs: unexpected,
@@ -61,6 +63,8 @@ const computerRouterLayer = (computer: ComputerUse.ComputerUseShape) =>
       status: () => computer.status,
       requestView: () => computer.requestView,
       requestControl: () => computer.requestControl,
+      requestAvailability: () => computer.requestAvailability,
+      releaseAvailability: () => computer.releaseAvailability,
       snapshot: (_context, input) => computer.snapshot(input),
       act: (_context, input) => computer.act(input),
       release: () => computer.release.pipe(Effect.andThen(computer.status)),
@@ -69,6 +73,47 @@ const computerRouterLayer = (computer: ComputerUse.ComputerUseShape) =>
   );
 
 describe("computer IPC methods", () => {
+  it.effect("controls retained desktop availability across IPC", () =>
+    Effect.gen(function* () {
+      const calls: string[] = [];
+      const computer = ComputerUseRouter.ComputerUseRouter.of({
+        status: () => Effect.die("unexpected status"),
+        requestAvailability: (context, input) =>
+          Effect.sync(() => {
+            assert.strictEqual(context.controllerId, "local-renderer");
+            assert.deepEqual(input, {});
+            calls.push("request");
+            return { ...status, keepAwake: true };
+          }),
+        releaseAvailability: (context, input) =>
+          Effect.sync(() => {
+            assert.strictEqual(context.controllerId, "local-renderer");
+            assert.deepEqual(input, {});
+            calls.push("release");
+            return status;
+          }),
+        requestView: () => Effect.die("unexpected request view"),
+        requestControl: () => Effect.die("unexpected request control"),
+        snapshot: () => Effect.die("unexpected snapshot"),
+        act: () => Effect.die("unexpected act"),
+        release: () => Effect.die("unexpected access release"),
+        forget: () => Effect.die("unexpected forget"),
+      });
+      const layer = Layer.succeed(ComputerUseRouter.ComputerUseRouter, computer);
+
+      const requested = yield* requestAvailability
+        .handler({ input: {} })
+        .pipe(Effect.provide(layer));
+      const released = yield* releaseAvailability
+        .handler({ input: {} })
+        .pipe(Effect.provide(layer));
+
+      assert.deepEqual(requested, { ok: true, value: { ...status, keepAwake: true } });
+      assert.deepEqual(released, { ok: true, value: status });
+      assert.deepEqual(calls, ["request", "release"]);
+    }),
+  );
+
   it.effect("returns access status and its initial observation in one IPC envelope", () =>
     Effect.gen(function* () {
       const resultFiber = yield* requestView.handler({ input: {} }).pipe(
@@ -111,6 +156,8 @@ describe("computer IPC methods", () => {
             return status;
           }),
         requestControl: () => Effect.die("unexpected request control"),
+        requestAvailability: () => Effect.die("unexpected request availability"),
+        releaseAvailability: () => Effect.die("unexpected release availability"),
         snapshot: () => Effect.die("unexpected snapshot"),
         act: () => Effect.die("unexpected act"),
         release: () => Effect.die("unexpected release"),

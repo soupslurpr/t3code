@@ -42,6 +42,12 @@ export interface ComputerUseCoordinatorShape {
   readonly requestControl: (
     controllerId: string,
   ) => Effect.Effect<ComputerAutomationStatus, ComputerUse.ComputerUseError>;
+  readonly requestAvailability: (
+    controllerId: string,
+  ) => Effect.Effect<ComputerAutomationStatus, ComputerUse.ComputerUseError>;
+  readonly releaseAvailability: (
+    controllerId: string,
+  ) => Effect.Effect<ComputerAutomationStatus, ComputerUse.ComputerUseError>;
   readonly snapshot: (
     controllerId: string,
     input: ComputerAutomationSnapshotInput,
@@ -217,6 +223,12 @@ export const make = Effect.gen(function* () {
   const requestControl: ComputerUseCoordinatorShape["requestControl"] = (controllerId) =>
     acquire(controllerId, "control");
 
+  const requestAvailability: ComputerUseCoordinatorShape["requestAvailability"] = (controllerId) =>
+    computer.requestAvailability.pipe(Effect.andThen(presentStatus(controllerId)));
+
+  const releaseAvailability: ComputerUseCoordinatorShape["releaseAvailability"] = (controllerId) =>
+    computer.releaseAvailability.pipe(Effect.andThen(presentStatus(controllerId)));
+
   const snapshot: ComputerUseCoordinatorShape["snapshot"] = (controllerId, input) =>
     requireView(controllerId).pipe(Effect.andThen(computer.snapshot(input)));
 
@@ -285,6 +297,8 @@ export const make = Effect.gen(function* () {
     status: presentStatus,
     requestView,
     requestControl,
+    requestAvailability,
+    releaseAvailability,
     snapshot,
     act,
     release,

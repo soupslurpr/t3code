@@ -208,6 +208,7 @@ function automationResult(operation: string, input?: unknown): unknown {
       return snapshot;
     }
     case "computerStatus":
+    case "computerRequestAvailability":
       return {
         available: true,
         backend: "gnome-wayland-portal",
@@ -225,6 +226,11 @@ function automationResult(operation: string, input?: unknown): unknown {
           },
         ],
         cursor: null,
+      };
+    case "computerReleaseAvailability":
+      return {
+        ...(automationResult("computerStatus") as Record<string, unknown>),
+        keepAwake: false,
       };
     case "computerRequestControl":
       return {
@@ -943,6 +949,13 @@ it.effect("registers annotated tools and preserves authenticated request context
       expect(computerStatusTool?.tool.annotations?.readOnlyHint).toBe(true);
       expect(computerStatusTool?.tool.annotations?.destructiveHint).toBe(false);
 
+      const computerRequestAvailabilityTool = server.tools.find(
+        ({ tool }) => tool.name === "computer_request_availability",
+      );
+      expect(computerRequestAvailabilityTool?.tool.annotations?.readOnlyHint).toBe(false);
+      expect(computerRequestAvailabilityTool?.tool.annotations?.destructiveHint).toBe(false);
+      expect(computerRequestAvailabilityTool?.tool.annotations?.idempotentHint).toBe(true);
+
       const computerRequestViewTool = server.tools.find(
         ({ tool }) => tool.name === "computer_request_view",
       );
@@ -1053,6 +1066,18 @@ it.effect("registers annotated tools and preserves authenticated request context
         displayState: "active",
         keepAwake: true,
       });
+
+      const computerAvailability = yield* server
+        .callTool({ name: "computer_request_availability", arguments: {} })
+        .pipe(
+          Effect.provideService(McpInvocationContext.McpInvocationContext, invocation),
+          Effect.provideService(McpSchema.McpServerClient, client),
+        );
+      expect(computerAvailability.isError).toBe(false);
+      expect(computerAvailability.structuredContent).toMatchObject({ keepAwake: true });
+      expect(
+        routedRequests.some(({ operation }) => operation === "computerRequestAvailability"),
+      ).toBe(true);
 
       const computerRequestView = yield* server
         .callTool({ name: "computer_request_view", arguments: {} })
@@ -1196,6 +1221,16 @@ it.effect("registers annotated tools and preserves authenticated request context
       });
       expect(routedRequests.some(({ operation }) => operation === "computerRelease")).toBe(true);
       expect(routedRequests.at(-1)?.operation).toBe("computerRelease");
+
+      const computerReleaseAvailability = yield* server
+        .callTool({ name: "computer_release_availability", arguments: {} })
+        .pipe(
+          Effect.provideService(McpInvocationContext.McpInvocationContext, invocation),
+          Effect.provideService(McpSchema.McpServerClient, client),
+        );
+      expect(computerReleaseAvailability.isError).toBe(false);
+      expect(computerReleaseAvailability.structuredContent).toMatchObject({ keepAwake: false });
+      expect(routedRequests.at(-1)?.operation).toBe("computerReleaseAvailability");
 
       const computerForgetControl = yield* server
         .callTool({ name: "computer_forget_control", arguments: {} })
