@@ -4,8 +4,7 @@ import {
   CommandId,
   MessageId,
   type OrchestrationEvent,
-  type OrchestrationMessage,
-  type OrchestrationProposedPlanId,
+  OrchestrationProposedPlanId,
   CheckpointRef,
   classifyTaskAgentKind,
   EventId,
@@ -14,8 +13,6 @@ import {
   type ThreadTokenUsageSnapshot,
   TurnId,
   type OrchestrationCheckpointSummary,
-  type OrchestrationProposedPlan,
-  type OrchestrationThread,
   type OrchestrationThreadActivity,
   type ProviderRuntimeEvent,
   RuntimeRequestId,
@@ -36,8 +33,18 @@ import { formatTokens } from "@t3tools/shared/usageFormat";
 import { ProviderService } from "../../provider/Services/ProviderService.ts";
 import { ProjectionTurnRepository } from "../../persistence/Services/ProjectionTurns.ts";
 import { ProjectionTurnRepositoryLive } from "../../persistence/Layers/ProjectionTurns.ts";
-import { ProjectionThreadActivityRepository } from "../../persistence/Services/ProjectionThreadActivities.ts";
+import {
+  ProjectionThreadActivityRepository,
+  type ProjectionThreadActivity,
+} from "../../persistence/Services/ProjectionThreadActivities.ts";
 import { ProjectionThreadActivityRepositoryLive } from "../../persistence/Layers/ProjectionThreadActivities.ts";
+import { ProjectionThreadMessageRepository } from "../../persistence/Services/ProjectionThreadMessages.ts";
+import { ProjectionThreadMessageRepositoryLive } from "../../persistence/Layers/ProjectionThreadMessages.ts";
+import {
+  ProjectionThreadProposedPlanRepository,
+  type ProjectionThreadProposedPlan,
+} from "../../persistence/Services/ProjectionThreadProposedPlans.ts";
+import { ProjectionThreadProposedPlanRepositoryLive } from "../../persistence/Layers/ProjectionThreadProposedPlans.ts";
 import * as CheckpointStore from "../../checkpointing/CheckpointStore.ts";
 import { OrchestrationEngineService } from "../Services/OrchestrationEngine.ts";
 import { ThreadBackgroundLivenessService } from "../ThreadBackgroundLiveness.ts";
@@ -54,42 +61,6 @@ import { canReplaceThreadTitle } from "../threadTitles.ts";
 
 const providerTurnKey = (threadId: ThreadId, turnId: TurnId) => `${threadId}:${turnId}`;
 const providerTaskKey = (threadId: ThreadId, taskId: string) => `${threadId}:${taskId}`;
-const TASK_TITLE_ACTIVITY_KINDS = ["task.started", "task.progress"] as const;
-
-// Fallback when the in-memory description cache no longer has the task name
-// (server restart, session-exit sweep, TTL/capacity eviction): earlier
-// task.started/task.progress activities for the task are persisted with it.
-function findTaskTitleInActivities(
-  activities: ReadonlyArray<OrchestrationThreadActivity> | undefined,
-  taskId: string,
-): string | undefined {
-  if (!activities) {
-    return undefined;
-  }
-  for (let index = activities.length - 1; index >= 0; index -= 1) {
-    const activity = activities[index];
-    if (!activity || (activity.kind !== "task.started" && activity.kind !== "task.progress")) {
-      continue;
-    }
-    const payload =
-      activity.payload && typeof activity.payload === "object"
-        ? (activity.payload as { taskId?: unknown; title?: unknown; detail?: unknown })
-        : undefined;
-    if (payload?.taskId !== taskId) {
-      continue;
-    }
-    const title =
-      typeof payload.title === "string"
-        ? payload.title
-        : activity.kind === "task.started" && typeof payload.detail === "string"
-          ? payload.detail
-          : undefined;
-    if (title && title.trim().length > 0) {
-      return title;
-    }
-  }
-  return undefined;
-}
 
 interface AssistantSegmentState {
   baseKey: string;
@@ -136,57 +107,6 @@ function sameId(left: string | null | undefined, right: string | null | undefine
     return false;
   }
   return left === right;
-}
-
-function hasAssistantMessageForTurn(
-  messages: ReadonlyArray<OrchestrationMessage>,
-  turnId: TurnId,
-  options?: { readonly streamingOnly?: boolean },
-): boolean {
-  for (let index = 0; index < messages.length; index += 1) {
-    const message = messages[index];
-    if (!message) {
-      continue;
-    }
-    if (message.role !== "assistant" || message.turnId !== turnId) {
-      continue;
-    }
-    if (options?.streamingOnly === true && !message.streaming) {
-      continue;
-    }
-    return true;
-  }
-  return false;
-}
-
-function findMessageById(
-  messages: ReadonlyArray<OrchestrationMessage>,
-  messageId: MessageId,
-): OrchestrationMessage | undefined {
-  for (let index = 0; index < messages.length; index += 1) {
-    const message = messages[index];
-    if (message?.id === messageId) {
-      return message;
-    }
-  }
-  return undefined;
-}
-
-function findProposedPlanById(
-  proposedPlans: ReadonlyArray<
-    Pick<OrchestrationProposedPlan, "id" | "createdAt" | "implementedAt" | "implementationThreadId">
-  >,
-  planId: string,
-):
-  | Pick<OrchestrationProposedPlan, "id" | "createdAt" | "implementedAt" | "implementationThreadId">
-  | undefined {
-  for (let index = 0; index < proposedPlans.length; index += 1) {
-    const proposedPlan = proposedPlans[index];
-    if (proposedPlan?.id === planId) {
-      return proposedPlan;
-    }
-  }
-  return undefined;
 }
 
 function hasCheckpointForTurn(
@@ -264,7 +184,9 @@ function buildContextWindowActivityPayload(
 }
 
 function compactedTokenCountsFromActivities(
-  activities: ReadonlyArray<OrchestrationThreadActivity> | undefined,
+  activities:
+    | ReadonlyArray<Pick<ProjectionThreadActivity, "kind" | "payload" | "sequence" | "createdAt">>
+    | undefined,
 ): { readonly beforeTokens: number; readonly afterTokens: number } | undefined {
   const lastCompactionIndex = activities?.findLastIndex(
     (activity) => activity.kind === "context-compaction",
@@ -956,8 +878,12 @@ const make = Effect.gen(function* () {
   const orchestrationEngine = yield* OrchestrationEngineService;
   const projectionSnapshotQuery = yield* ProjectionSnapshotQuery;
   const providerService = yield* ProviderService;
-  const projectionTurnRepository = yield* ProjectionTurnRepository;
+  // TODO(upstream pingdotgg/t3code#5351): Drop these downstream targeted reads
+  // when runtime ingestion no longer hydrates full thread detail upstream.
   const projectionThreadActivityRepository = yield* ProjectionThreadActivityRepository;
+  const projectionThreadMessageRepository = yield* ProjectionThreadMessageRepository;
+  const projectionThreadProposedPlanRepository = yield* ProjectionThreadProposedPlanRepository;
+  const projectionTurnRepository = yield* ProjectionTurnRepository;
   const serverSettingsService = yield* ServerSettingsService;
   const checkpointStore = yield* CheckpointStore.CheckpointStore;
   const providerCommandId = (event: ProviderRuntimeEvent, tag: string) =>
@@ -1012,15 +938,6 @@ const make = Effect.gen(function* () {
         Option.filter(description, (value) => value.length > 0).pipe(Option.getOrUndefined),
       ),
     );
-
-  const resolveThreadDetail = Effect.fn("resolveThreadDetail")(function* (
-    threadId: ThreadId,
-    activityKinds: ReadonlyArray<string> = [],
-  ) {
-    return yield* projectionSnapshotQuery
-      .getThreadDetailById(threadId, { activityKinds })
-      .pipe(Effect.map(Option.getOrUndefined));
-  });
 
   const resolveThreadRuntimeContext = Effect.fn("resolveThreadRuntimeContext")(function* (
     threadId: ThreadId,
@@ -1360,12 +1277,10 @@ const make = Effect.gen(function* () {
   const upsertProposedPlan = (input: {
     event: ProviderRuntimeEvent;
     threadId: ThreadId;
-    threadProposedPlans: ReadonlyArray<{
-      id: string;
-      createdAt: string;
-      implementedAt: string | null;
-      implementationThreadId: ThreadId | null;
-    }>;
+    existingPlan?: Pick<
+      ProjectionThreadProposedPlan,
+      "createdAt" | "implementedAt" | "implementationThreadId"
+    >;
     planId: string;
     turnId?: TurnId;
     planMarkdown: string | undefined;
@@ -1378,7 +1293,6 @@ const make = Effect.gen(function* () {
         return;
       }
 
-      const existingPlan = findProposedPlanById(input.threadProposedPlans, input.planId);
       yield* orchestrationEngine.dispatch({
         type: "thread.proposed-plan.upsert",
         commandId: yield* providerCommandId(input.event, "proposed-plan-upsert"),
@@ -1387,9 +1301,9 @@ const make = Effect.gen(function* () {
           id: input.planId,
           turnId: input.turnId ?? null,
           planMarkdown,
-          implementedAt: existingPlan?.implementedAt ?? null,
-          implementationThreadId: existingPlan?.implementationThreadId ?? null,
-          createdAt: existingPlan?.createdAt ?? input.createdAt,
+          implementedAt: input.existingPlan?.implementedAt ?? null,
+          implementationThreadId: input.existingPlan?.implementationThreadId ?? null,
+          createdAt: input.existingPlan?.createdAt ?? input.createdAt,
           updatedAt: input.updatedAt,
         },
         createdAt: input.updatedAt,
@@ -1399,12 +1313,10 @@ const make = Effect.gen(function* () {
   const finalizeBufferedProposedPlan = (input: {
     event: ProviderRuntimeEvent;
     threadId: ThreadId;
-    threadProposedPlans: ReadonlyArray<{
-      id: string;
-      createdAt: string;
-      implementedAt: string | null;
-      implementationThreadId: ThreadId | null;
-    }>;
+    existingPlan?: Pick<
+      ProjectionThreadProposedPlan,
+      "createdAt" | "implementedAt" | "implementationThreadId"
+    >;
     planId: string;
     turnId?: TurnId;
     fallbackMarkdown?: string;
@@ -1422,7 +1334,7 @@ const make = Effect.gen(function* () {
       yield* upsertProposedPlan({
         event: input.event,
         threadId: input.threadId,
-        threadProposedPlans: input.threadProposedPlans,
+        ...(input.existingPlan ? { existingPlan: input.existingPlan } : {}),
         planId: input.planId,
         ...(input.turnId ? { turnId: input.turnId } : {}),
         planMarkdown,
@@ -1538,9 +1450,10 @@ const make = Effect.gen(function* () {
       implementationThreadId: ThreadId,
       implementedAt: string,
     ) {
-      const sourceThread = yield* resolveThreadDetail(sourceThreadId);
-      const sourcePlan = sourceThread?.proposedPlans.find((entry) => entry.id === sourcePlanId);
-      if (!sourceThread || !sourcePlan || sourcePlan.implementedAt !== null) {
+      const sourcePlan = yield* projectionThreadProposedPlanRepository
+        .getByPlanId({ threadId: sourceThreadId, planId: sourcePlanId })
+        .pipe(Effect.map(Option.getOrUndefined));
+      if (!sourcePlan || sourcePlan.implementedAt !== null) {
         return;
       }
 
@@ -1550,11 +1463,14 @@ const make = Effect.gen(function* () {
         commandId: CommandId.make(
           `provider:source-proposed-plan-implemented:${implementationThreadId}:${commandUuid}`,
         ),
-        threadId: sourceThread.id,
+        threadId: sourceThreadId,
         proposedPlan: {
-          ...sourcePlan,
+          id: sourcePlan.planId,
+          turnId: sourcePlan.turnId,
+          planMarkdown: sourcePlan.planMarkdown,
           implementedAt,
           implementationThreadId,
+          createdAt: sourcePlan.createdAt,
           updatedAt: implementedAt,
         },
         createdAt: implementedAt,
@@ -1570,16 +1486,6 @@ const make = Effect.gen(function* () {
 
       const thread = yield* resolveThreadRuntimeContext(event.threadId);
       if (!thread) return;
-
-      let loadedThreadDetail: OrchestrationThread | null | undefined;
-      const getLoadedThreadDetail = () =>
-        Effect.gen(function* () {
-          if (loadedThreadDetail !== undefined) {
-            return loadedThreadDetail;
-          }
-          loadedThreadDetail = (yield* resolveThreadDetail(thread.id)) ?? null;
-          return loadedThreadDetail;
-        });
 
       const now = event.createdAt;
       const eventTurnId = toTurnId(event.turnId);
@@ -1800,7 +1706,12 @@ const make = Effect.gen(function* () {
           ? toTurnId(event.turnId)
           : undefined;
       if (pauseForUserTurnId) {
-        const detailedThread = yield* getLoadedThreadDetail();
+        const hasProjectedStreamingAssistantMessage =
+          yield* projectionThreadMessageRepository.hasAssistantMessageForTurn({
+            threadId: thread.id,
+            turnId: pauseForUserTurnId,
+            streamingOnly: true,
+          });
         const assistantDeliveryMode: AssistantDeliveryMode = yield* Effect.map(
           serverSettingsService.getSettings,
           (settings) => (settings.enableLegacyTokenStreaming ? "streaming" : "buffered"),
@@ -1831,11 +1742,7 @@ const make = Effect.gen(function* () {
             event.type === "request.opened"
               ? "assistant-delta-finalize-on-request-opened"
               : "assistant-delta-finalize-on-user-input-requested",
-          hasProjectedMessage:
-            detailedThread !== null &&
-            hasAssistantMessageForTurn(detailedThread.messages, pauseForUserTurnId, {
-              streamingOnly: true,
-            }),
+          hasProjectedMessage: hasProjectedStreamingAssistantMessage,
           flushedMessageIds,
         });
       }
@@ -1864,19 +1771,28 @@ const make = Effect.gen(function* () {
           : undefined;
 
       if (assistantCompletion) {
-        const detailedThread = yield* getLoadedThreadDetail();
-        const messages = detailedThread?.messages ?? [];
         const turnId = toTurnId(event.turnId);
         const activeAssistantMessageId = turnId
           ? yield* getActiveAssistantMessageIdForTurn(thread.id, turnId)
           : Option.none<MessageId>();
         const hasAssistantMessagesForTurn =
-          turnId !== undefined ? hasAssistantMessageForTurn(messages, turnId) : false;
+          turnId !== undefined
+            ? yield* projectionThreadMessageRepository.hasAssistantMessageForTurn({
+                threadId: thread.id,
+                turnId,
+                streamingOnly: false,
+              })
+            : false;
         const assistantMessageId = Option.getOrElse(
           activeAssistantMessageId,
           () => assistantCompletion.messageId,
         );
-        const existingAssistantMessage = findMessageById(messages, assistantMessageId);
+        const existingAssistantMessage = yield* projectionThreadMessageRepository
+          .getByMessageId({ messageId: assistantMessageId })
+          .pipe(
+            Effect.map(Option.filter((message) => message.threadId === thread.id)),
+            Effect.map(Option.getOrUndefined),
+          );
         const shouldApplyFallbackCompletionText =
           !existingAssistantMessage || existingAssistantMessage.text.length === 0;
 
@@ -1916,11 +1832,16 @@ const make = Effect.gen(function* () {
       }
 
       if (proposedPlanCompletion) {
-        const detailedThread = yield* getLoadedThreadDetail();
+        const existingPlan = yield* projectionThreadProposedPlanRepository
+          .getByPlanId({
+            threadId: thread.id,
+            planId: OrchestrationProposedPlanId.make(proposedPlanCompletion.planId),
+          })
+          .pipe(Effect.map(Option.getOrUndefined));
         yield* finalizeBufferedProposedPlan({
           event,
           threadId: thread.id,
-          threadProposedPlans: detailedThread?.proposedPlans ?? [],
+          ...(existingPlan ? { existingPlan } : {}),
           planId: proposedPlanCompletion.planId,
           ...(proposedPlanCompletion.turnId ? { turnId: proposedPlanCompletion.turnId } : {}),
           fallbackMarkdown: proposedPlanCompletion.planMarkdown,
@@ -1929,9 +1850,6 @@ const make = Effect.gen(function* () {
       }
 
       if (isTerminalTurn) {
-        const detailedThread = yield* getLoadedThreadDetail();
-        const messages = detailedThread?.messages ?? [];
-        const proposedPlans = detailedThread?.proposedPlans ?? [];
         const turnId = toTurnId(event.turnId);
         if (turnId) {
           const userInputActivities =
@@ -1979,26 +1897,40 @@ const make = Effect.gen(function* () {
           yield* Effect.forEach(
             assistantMessageIds,
             (assistantMessageId) =>
-              finalizeAssistantMessage({
-                event,
-                threadId: thread.id,
-                messageId: assistantMessageId,
-                turnId,
-                createdAt: now,
-                commandTag: "assistant-complete-finalize",
-                finalDeltaCommandTag: "assistant-delta-finalize-fallback",
-                hasProjectedMessage: findMessageById(messages, assistantMessageId) !== undefined,
-              }),
+              projectionThreadMessageRepository
+                .getByMessageId({ messageId: assistantMessageId })
+                .pipe(
+                  Effect.map(Option.exists((message) => message.threadId === thread.id)),
+                  Effect.flatMap((hasProjectedMessage) =>
+                    finalizeAssistantMessage({
+                      event,
+                      threadId: thread.id,
+                      messageId: assistantMessageId,
+                      turnId,
+                      createdAt: now,
+                      commandTag: "assistant-complete-finalize",
+                      finalDeltaCommandTag: "assistant-delta-finalize-fallback",
+                      hasProjectedMessage,
+                    }),
+                  ),
+                ),
             { concurrency: 1 },
           ).pipe(Effect.asVoid);
           yield* clearAssistantMessageIdsForTurn(thread.id, turnId);
           yield* clearAssistantSegmentStateForTurn(thread.id, turnId);
 
+          const planId = proposedPlanIdForTurn(thread.id, turnId);
+          const existingPlan = yield* projectionThreadProposedPlanRepository
+            .getByPlanId({
+              threadId: thread.id,
+              planId: OrchestrationProposedPlanId.make(planId),
+            })
+            .pipe(Effect.map(Option.getOrUndefined));
           yield* finalizeBufferedProposedPlan({
             event,
             threadId: thread.id,
-            threadProposedPlans: proposedPlans,
-            planId: proposedPlanIdForTurn(thread.id, turnId),
+            ...(existingPlan ? { existingPlan } : {}),
+            planId,
             turnId,
             updatedAt: now,
           });
@@ -2153,8 +2085,9 @@ const make = Effect.gen(function* () {
       if (event.type === "task.completed") {
         taskTitle = yield* lookupTaskDescription(thread.id, event.payload.taskId);
         if (!taskTitle) {
-          const threadDetail = yield* resolveThreadDetail(thread.id, TASK_TITLE_ACTIVITY_KINDS);
-          taskTitle = findTaskTitleInActivities(threadDetail?.activities, event.payload.taskId);
+          taskTitle = yield* projectionThreadActivityRepository
+            .findTaskTitle({ threadId: thread.id, taskId: event.payload.taskId })
+            .pipe(Effect.map(Option.getOrUndefined));
         }
       }
 
@@ -2172,9 +2105,12 @@ const make = Effect.gen(function* () {
           DateTime.makeUnsafe(pendingTurnStart.value.requestedAt),
         )
       ) {
-        const pendingMessage = (yield* getLoadedThreadDetail())?.messages.find(
-          (message) => message.id === pendingTurnStart.value.messageId,
-        );
+        const pendingMessage = yield* projectionThreadMessageRepository
+          .getByMessageId({ messageId: pendingTurnStart.value.messageId })
+          .pipe(
+            Effect.map(Option.filter((message) => message.threadId === thread.id)),
+            Effect.map(Option.getOrUndefined),
+          );
         if (
           pendingMessage?.role === "user" &&
           (pendingMessage.attachments?.length ?? 0) === 0 &&
@@ -2192,11 +2128,11 @@ const make = Effect.gen(function* () {
         (activityEvent.payload.beforeTokens === undefined ||
           activityEvent.payload.afterTokens === undefined)
       ) {
-        const threadDetail = yield* resolveThreadDetail(thread.id, [
-          "context-window.updated",
-          "context-compaction",
-        ]);
-        const tokenCounts = compactedTokenCountsFromActivities(threadDetail?.activities);
+        const compactionContext =
+          yield* projectionThreadActivityRepository.listCompactionContextByThreadId({
+            threadId: thread.id,
+          });
+        const tokenCounts = compactedTokenCountsFromActivities(compactionContext);
         if (tokenCounts) {
           activityEvent = {
             ...activityEvent,
@@ -2270,10 +2206,14 @@ const make = Effect.gen(function* () {
   } satisfies ProviderRuntimeIngestionShape;
 });
 
+const ProviderRuntimeProjectionRepositoriesLive = Layer.mergeAll(
+  ProjectionTurnRepositoryLive,
+  ProjectionThreadActivityRepositoryLive,
+  ProjectionThreadMessageRepositoryLive,
+  ProjectionThreadProposedPlanRepositoryLive,
+);
+
 export const ProviderRuntimeIngestionLive = Layer.effect(
   ProviderRuntimeIngestionService,
   make,
-).pipe(
-  Layer.provide(ProjectionTurnRepositoryLive),
-  Layer.provide(ProjectionThreadActivityRepositoryLive),
-);
+).pipe(Layer.provide(ProviderRuntimeProjectionRepositoriesLive));

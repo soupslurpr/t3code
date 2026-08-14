@@ -17,6 +17,7 @@ import {
 import * as Schema from "effect/Schema";
 import * as Context from "effect/Context";
 import type * as Effect from "effect/Effect";
+import type * as Option from "effect/Option";
 
 import type { ProjectionRepositoryError } from "../Errors.ts";
 
@@ -37,6 +38,12 @@ export const ListProjectionThreadActivitiesInput = Schema.Struct({
   threadId: ThreadId,
 });
 export type ListProjectionThreadActivitiesInput = typeof ListProjectionThreadActivitiesInput.Type;
+
+export const FindProjectionThreadTaskTitleInput = Schema.Struct({
+  threadId: ThreadId,
+  taskId: Schema.String,
+});
+export type FindProjectionThreadTaskTitleInput = typeof FindProjectionThreadTaskTitleInput.Type;
 
 export const DeleteProjectionThreadActivitiesInput = Schema.Struct({
   threadId: ThreadId,
@@ -75,6 +82,22 @@ export interface ProjectionThreadActivityRepositoryShape {
   readonly listUserInputLifecycleByThreadId: (
     input: ListProjectionThreadActivitiesInput,
   ) => Effect.Effect<ReadonlyArray<ProjectionThreadActivity>, ProjectionRepositoryError>;
+
+  /**
+   * List activity rows used to derive context compaction token counts.
+   *
+   * Filters in SQLite so unrelated payloads do not enter server memory.
+   */
+  readonly listCompactionContextByThreadId: (
+    input: ListProjectionThreadActivitiesInput,
+  ) => Effect.Effect<ReadonlyArray<ProjectionThreadActivity>, ProjectionRepositoryError>;
+
+  /**
+   * Find the latest persisted title for a provider task.
+   */
+  readonly findTaskTitle: (
+    input: FindProjectionThreadTaskTitleInput,
+  ) => Effect.Effect<Option.Option<string>, ProjectionRepositoryError>;
 
   /**
    * Delete projected thread activity rows by thread.

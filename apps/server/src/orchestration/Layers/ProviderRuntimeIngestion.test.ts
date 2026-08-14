@@ -286,9 +286,19 @@ describe("ProviderRuntimeIngestion", () => {
       Layer.provide(RepositoryIdentityResolver.layer),
       Layer.provide(SqlitePersistenceMemory),
     );
+    const ingestionProjectionSnapshotLayer = Layer.effect(
+      ProjectionSnapshotQuery,
+      Effect.map(ProjectionSnapshotQuery, (service) =>
+        ProjectionSnapshotQuery.of({
+          ...service,
+          getThreadDetailById: () =>
+            Effect.die(new Error("provider runtime ingestion hydrated full thread detail")),
+        }),
+      ),
+    ).pipe(Layer.provide(projectionSnapshotLayer));
     const layer = ProviderRuntimeIngestionLive.pipe(
       Layer.provideMerge(orchestrationLayer),
-      Layer.provideMerge(projectionSnapshotLayer),
+      Layer.provideMerge(ingestionProjectionSnapshotLayer),
       // Single shared liveness instance across ingestion (writer), the
       // engine, and the snapshot query (reader).
       Layer.provideMerge(ThreadBackgroundLiveness.layer),

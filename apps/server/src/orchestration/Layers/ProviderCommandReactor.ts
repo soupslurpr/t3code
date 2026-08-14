@@ -2,6 +2,7 @@ import {
   type ChatAttachment,
   CommandId,
   EventId,
+  type MessageId,
   type ModelSelection,
   type OrchestrationEvent,
   ProviderDriverKind,
@@ -539,6 +540,17 @@ const make = Effect.gen(function* () {
   const resolveThreadDetail = Effect.fnUntraced(function* (threadId: ThreadId) {
     return yield* projectionSnapshotQuery
       .getThreadDetailById(threadId, { activityKinds: [] })
+      .pipe(Effect.map(Option.getOrUndefined));
+  });
+
+  // TODO(upstream pingdotgg/t3code#5351): Drop this downstream targeted query
+  // when provider commands no longer hydrate full thread detail upstream.
+  const resolveTurnStartContext = Effect.fnUntraced(function* (
+    threadId: ThreadId,
+    messageId: MessageId,
+  ) {
+    return yield* projectionSnapshotQuery
+      .getThreadTurnStartContext(threadId, messageId)
       .pipe(Effect.map(Option.getOrUndefined));
   });
 
@@ -1188,11 +1200,14 @@ const make = Effect.gen(function* () {
       return;
     }
 
-    const thread = yield* resolveThreadDetail(event.payload.threadId);
+    const [thread, turnStartContext] = yield* Effect.all([
+      resolveThreadShell(event.payload.threadId),
+      resolveTurnStartContext(event.payload.threadId, event.payload.messageId),
+    ]);
     if (!thread) {
       return;
     }
-    const message = thread.messages.find((entry) => entry.id === event.payload.messageId);
+    const message = turnStartContext?.message;
     if (!message || (message.role !== "user" && message.role !== "system")) {
       yield* appendProviderFailureActivity({
         threadId: event.payload.threadId,
@@ -1297,14 +1312,10 @@ const make = Effect.gen(function* () {
     yield* ensureThreadWorktree(thread);
 
     const isCompactCommand = isCompactCommandMessage(message);
-    const nonCompactUserMessageCount = thread.messages.filter(
-      (entry) => entry.role === "user" && !isCompactCommandMessage(entry),
-    ).length;
-    if (
-      message.role === "user" &&
-      nonCompactUserMessageCount === 1 &&
-      !isCompactCommand
-    ) {
+    const nonCompactUserMessageCount = turnStartContext?.nonCompactUserMessageCount ?? 0;
+    const isFirstNonCompactUserMessageTurn =
+      message.role === "user" && !isCompactCommand && nonCompactUserMessageCount === 1;
+    if (isFirstNonCompactUserMessageTurn) {
       const project = yield* resolveProject(thread.projectId);
       const generationCwd =
         resolveThreadWorkspaceCwd({

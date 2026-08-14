@@ -3,6 +3,7 @@ import * as SqlSchema from "effect/unstable/sql/SqlSchema";
 import { NonNegativeInt } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
+import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 import * as Struct from "effect/Struct";
 
@@ -10,11 +11,16 @@ import { toPersistenceDecodeError, toPersistenceSqlError } from "../Errors.ts";
 
 import {
   DeleteProjectionThreadActivitiesInput,
+  FindProjectionThreadTaskTitleInput,
   ListProjectionThreadActivitiesInput,
   ProjectionThreadActivity,
   ProjectionThreadActivityRepository,
   type ProjectionThreadActivityRepositoryShape,
 } from "../Services/ProjectionThreadActivities.ts";
+
+const ProjectionThreadTaskTitleRowSchema = Schema.Struct({
+  title: Schema.String,
+});
 
 const ProjectionThreadActivityDbRowSchema = ProjectionThreadActivity.mapFields(
   Struct.assign({
@@ -142,6 +148,63 @@ const makeProjectionThreadActivityRepository = Effect.gen(function* () {
       `,
   });
 
+  const listCompactionContextActivityRows = SqlSchema.findAll({
+    Request: ListProjectionThreadActivitiesInput,
+    Result: ProjectionThreadActivityDbRowSchema,
+    execute: ({ threadId }) =>
+      sql`
+        SELECT
+          activity_id AS "activityId",
+          thread_id AS "threadId",
+          turn_id AS "turnId",
+          tone,
+          kind,
+          summary,
+          payload_json AS "payload",
+          sequence,
+          created_at AS "createdAt"
+        FROM projection_thread_activities
+        WHERE thread_id = ${threadId}
+          AND kind IN ('context-window.updated', 'context-compaction')
+        ORDER BY
+          CASE WHEN sequence IS NULL THEN 0 ELSE 1 END ASC,
+          sequence ASC,
+          created_at ASC,
+          activity_id ASC
+      `,
+  });
+
+  const findProjectionThreadTaskTitleRow = SqlSchema.findOneOption({
+    Request: FindProjectionThreadTaskTitleInput,
+    Result: ProjectionThreadTaskTitleRowSchema,
+    execute: ({ threadId, taskId }) =>
+      sql`
+        SELECT
+          CASE
+            WHEN NULLIF(json_extract(payload_json, '$.title'), '') IS NOT NULL
+              THEN json_extract(payload_json, '$.title')
+            ELSE json_extract(payload_json, '$.detail')
+          END AS "title"
+        FROM projection_thread_activities
+        WHERE thread_id = ${threadId}
+          AND kind IN ('task.started', 'task.progress')
+          AND json_extract(payload_json, '$.taskId') = ${taskId}
+          AND (
+            NULLIF(json_extract(payload_json, '$.title'), '') IS NOT NULL
+            OR (
+              kind = 'task.started'
+              AND NULLIF(json_extract(payload_json, '$.detail'), '') IS NOT NULL
+            )
+          )
+        ORDER BY
+          CASE WHEN sequence IS NULL THEN 0 ELSE 1 END DESC,
+          sequence DESC,
+          created_at DESC,
+          activity_id DESC
+        LIMIT 1
+      `,
+  });
+
   const deleteProjectionThreadActivityRows = SqlSchema.void({
     Request: DeleteProjectionThreadActivitiesInput,
     execute: ({ threadId }) =>
@@ -184,6 +247,29 @@ const makeProjectionThreadActivityRepository = Effect.gen(function* () {
         Effect.map(mapActivityRows),
       );
 
+  const listCompactionContextByThreadId: ProjectionThreadActivityRepositoryShape["listCompactionContextByThreadId"] =
+    (input) =>
+      listCompactionContextActivityRows(input).pipe(
+        Effect.mapError(
+          toPersistenceSqlOrDecodeError(
+            "ProjectionThreadActivityRepository.listCompactionContextByThreadId:query",
+            "ProjectionThreadActivityRepository.listCompactionContextByThreadId:decodeRows",
+          ),
+        ),
+        Effect.map(mapActivityRows),
+      );
+
+  const findTaskTitle: ProjectionThreadActivityRepositoryShape["findTaskTitle"] = (input) =>
+    findProjectionThreadTaskTitleRow(input).pipe(
+      Effect.mapError(
+        toPersistenceSqlOrDecodeError(
+          "ProjectionThreadActivityRepository.findTaskTitle:query",
+          "ProjectionThreadActivityRepository.findTaskTitle:decodeRow",
+        ),
+      ),
+      Effect.map(Option.map((row) => row.title)),
+    );
+
   const deleteByThreadId: ProjectionThreadActivityRepositoryShape["deleteByThreadId"] = (input) =>
     deleteProjectionThreadActivityRows(input).pipe(
       Effect.mapError(
@@ -195,6 +281,8 @@ const makeProjectionThreadActivityRepository = Effect.gen(function* () {
     upsert,
     listByThreadId,
     listUserInputLifecycleByThreadId,
+    listCompactionContextByThreadId,
+    findTaskTitle,
     deleteByThreadId,
   } satisfies ProjectionThreadActivityRepositoryShape;
 });
