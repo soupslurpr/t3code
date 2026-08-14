@@ -81,6 +81,8 @@ import {
 import { ComputerImageToolkit, ComputerStandardToolkit } from "./toolkits/computer/tools.ts";
 import { AgentDesktopToolkitHandlersLive } from "./toolkits/agentDesktop/handlers.ts";
 import { AgentDesktopToolkit } from "./toolkits/agentDesktop/tools.ts";
+import { MonitorToolkitHandlersLive } from "./toolkits/monitor/handlers.ts";
+import { MonitorToolkit } from "./toolkits/monitor/tools.ts";
 
 const MAX_VALIDATION_EXPECTATION_LENGTH = 128;
 const MAX_VALIDATION_FIELD_LENGTH = 128;
@@ -1363,6 +1365,10 @@ export const ComputerToolkitRegistrationLive = Layer.mergeAll(
   ComputerImageRegistrationLive,
 );
 
+const MonitorToolkitRegistrationLive = McpServer.toolkit(MonitorToolkit).pipe(
+  Layer.provide(MonitorToolkitHandlersLive),
+);
+
 export const layerMcpTransport = McpServer.layerHttp({
   name: "T3 Code",
   version: packageJson.version,
@@ -1374,7 +1380,7 @@ const AgentDesktopToolkitRegistrationLive = McpServer.toolkit(AgentDesktopToolki
   Layer.provide(AgentDesktopToolkitHandlersLive),
 );
 
-export const layer = Layer.mergeAll(
+export const ToolkitRegistrationLive = Layer.mergeAll(
   layerPreviewToolkit,
   layerOrchestratorToolkit,
   layerThreadToolkit,
@@ -1386,6 +1392,9 @@ export const layer = Layer.mergeAll(
   layerPullRequestsToolkit,
   layerDeviceToolkit,
   layerHtmlToolkit,
+  MonitorToolkitRegistrationLive,
   ComputerToolkitRegistrationLive,
   AgentDesktopToolkitRegistrationLive,
-).pipe(Layer.provideMerge(layerMcpTransport));
+);
+
+export const layer = ToolkitRegistrationLive.pipe(Layer.provideMerge(layerMcpTransport));

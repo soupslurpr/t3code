@@ -39,6 +39,7 @@ import * as OrchestratorMcpService from "./OrchestratorMcpService.ts";
 import * as PreviewAutomationBroker from "./PreviewAutomationBroker.ts";
 import { OrchestratorToolkit } from "./toolkits/orchestrator/tools.ts";
 import { ProjectToolkit } from "./toolkits/project/tools.ts";
+import { ThreadMonitorService } from "../threadMonitor/ThreadMonitorService.ts";
 
 const environmentId = EnvironmentId.make("environment-mcp-test");
 const threadId = ThreadId.make("thread-mcp-test");
@@ -69,7 +70,18 @@ const client = McpSchema.McpServerClient.of({
   },
   getClient: Effect.die("unused"),
 });
-const layerTest = McpHttpServer.layerPreviewToolkit.pipe(
+const MonitorTestLayer = Layer.succeed(
+  ThreadMonitorService,
+  ThreadMonitorService.of({
+    create: () => Effect.die("unused"),
+    status: () => Effect.die("unused"),
+    signal: () => Effect.die("unused"),
+    cancel: () => Effect.die("unused"),
+    checkNow: () => Effect.die("unused"),
+  }),
+);
+const layerTest = McpHttpServer.ToolkitRegistrationLive.pipe(
+  Layer.provide(MonitorTestLayer),
   Layer.provideMerge(McpServer.McpServer.layer),
   Layer.provideMerge(McpToolAccessTestkit.liveThreadsLayer),
   Layer.provideMerge(PreviewAutomationBroker.layer),

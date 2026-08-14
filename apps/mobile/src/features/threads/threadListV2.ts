@@ -61,6 +61,7 @@ export type ThreadListV2Status =
   | "approval"
   | "input"
   | "working"
+  | "monitoring"
   | "waiting"
   | "failed"
   | "limited"
@@ -159,6 +160,7 @@ export function resolveThreadListV2Status(
     | "pendingSubagentRequest"
     | "runtime"
     | "blockedOnThreadWait"
+    | "backgroundLiveness"
   >,
 ): ThreadListV2Status {
   if (thread.hasPendingApprovals || thread.pendingSubagentRequest === "approval") {
@@ -181,6 +183,12 @@ export function resolveThreadListV2Status(
   }
   if (thread.runtime?.status === "failed") {
     return thread.runtime.lastErrorClass === "usage_limit" ? "limited" : "failed";
+  }
+  if (thread.backgroundLiveness === "working") {
+    return "working";
+  }
+  if (thread.backgroundLiveness === "monitoring") {
+    return "monitoring";
   }
   return "ready";
 }

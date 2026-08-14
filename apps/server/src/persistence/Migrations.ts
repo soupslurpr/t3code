@@ -58,6 +58,7 @@ import Migration0052 from "./Migrations/052_ProjectionThreadTitleState.ts";
 import Migration0053 from "./Migrations/053_PullRequestFilesViewed.ts";
 import Migration0054 from "./Migrations/054_ProjectionThreadsAutoSettleDisabledAt.ts";
 import Migration0055 from "./Migrations/055_OrchestrationV2.ts";
+import ThreadMonitorsMigration from "./Migrations/048_ThreadMonitors.ts";
 import Migration0056 from "./Migrations/056_RemoveRedundantProjectionIndexes.ts";
 import Migration0057 from "./Migrations/057_ScheduledTaskWebhooks.ts";
 import Migration0058 from "./Migrations/058_WebhookRelayDeliveries.ts";
@@ -138,6 +139,7 @@ export const migrationEntries = [
   [64, "CanonicalizeThreadPullRequestLinks", Migration0064],
   [65, "CodexUsageNativeTurnIndex", Migration0065],
   [66, "RepairClientSettlementTimestamps", Migration0066],
+  [67, "ThreadMonitors", ThreadMonitorsMigration],
 ] as const;
 
 export const migrationManifest = migrationEntries.map(([id, name]) => [id, name] as const);
