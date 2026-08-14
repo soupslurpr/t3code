@@ -10,11 +10,11 @@ input-driver package and reports computer use as unavailable on other systems.
 
 ## Permission And Safety
 
-Desktop access has two levels. A view-only session shares the selected monitors and permits snapshots
-without requesting keyboard or pointer access. A control session combines those monitor streams with
-keyboard and pointer access. The agent requests the least access it expects to need near the start of
-a task, giving you a chance to answer GNOME's native consent dialog before leaving. Requesting access
-does not itself send input.
+Desktop access has two agent-facing levels. A fresh view-only approval asks GNOME only for the
+selected monitors and permits snapshots without exposing keyboard or pointer access. A control
+session combines those monitor streams with keyboard and pointer access. The agent requests the least
+access it expects to need near the start of a task, giving you a chance to answer GNOME's native
+consent dialog before leaving. Requesting access does not itself send input.
 
 By default, T3 Code keeps the computer available while agents work. Ordinary agent work prevents
 system suspend but still permits the display to blank and lock. When an agent may need the user
@@ -35,6 +35,12 @@ stores them in its local state directory with owner-only file permissions and us
 without a routine dialog. GNOME remains in control: it can reject or invalidate a token, require
 approval again, and shows its active sharing indicator whenever a session is connected. T3 Code does
 not receive or store your portal choices directly.
+
+A remembered control grant necessarily includes its monitor stream, so status reports it as both
+view and control access. When that combined token is the only reusable grant, T3 Code can restore its
+native Remote Desktop session for a view-only request while giving the requesting agent or screen
+watch only a shared view lease. Input remains unavailable to that caller. This avoids another routine
+monitor prompt without broadening what the agent requested or what you previously approved.
 
 The agent can call `computer_release` to cancel pending authorization or end the active sharing
 session immediately. This removes capture and input access but retains both GNOME restore tokens and

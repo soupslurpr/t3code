@@ -28,6 +28,13 @@ interface LeaseState {
   } | null;
 }
 
+/** Expands a remembered control grant to the view capability it necessarily includes. */
+function effectiveRememberedAccess(
+  access: ComputerAutomationStatus["rememberedAccess"],
+): ComputerAutomationStatus["rememberedAccess"] {
+  return access.includes("control") ? ["view", "control"] : access;
+}
+
 export interface ComputerUseCoordinatorShape {
   readonly status: (controllerId: string) => Effect.Effect<ComputerAutomationStatus>;
   readonly requestView: (
@@ -78,6 +85,7 @@ export const make = Effect.gen(function* () {
     controllerId: string,
   ) {
     const [status, leases] = yield* Effect.all([computer.status, Ref.get(state)]);
+    const rememberedAccess = effectiveRememberedAccess(status.rememberedAccess);
     const hasView = leases.viewers.has(controllerId) || leases.controllerId === controllerId;
     const permission =
       leases.controllerId === controllerId
@@ -85,11 +93,11 @@ export const make = Effect.gen(function* () {
         : hasView && (status.permission === "granted" || status.permission === "view-only")
           ? ("view-only" as const)
           : status.permission === "granted" || status.permission === "view-only"
-            ? status.rememberedAccess.length > 0
+            ? rememberedAccess.length > 0
               ? ("remembered" as const)
               : ("prompt-required" as const)
             : status.permission;
-    return { ...status, desktop: USER_DESKTOP, permission };
+    return { ...status, desktop: USER_DESKTOP, permission, rememberedAccess };
   });
 
   const requireView = Effect.fn("ComputerUseCoordinator.requireView")(function* (
@@ -191,13 +199,23 @@ export const make = Effect.gen(function* () {
   ) {
     const shouldAcquire = yield* beginAcquisition(controllerId, access);
     if (!shouldAcquire) return yield* presentStatus(controllerId);
-    const status = yield* (
-      access === "control" ? computer.requestControl : computer.requestView
-    ).pipe(
+    const nativeAccess =
+      access === "control"
+        ? computer.requestControl
+        : computer.status.pipe(
+            Effect.flatMap((status) =>
+              status.permission === "remembered" &&
+              status.rememberedAccess.includes("control") &&
+              !status.rememberedAccess.includes("view")
+                ? computer.requestControl
+                : computer.requestView,
+            ),
+          );
+    yield* nativeAccess.pipe(
       Effect.tap(() => finishAcquisition(controllerId, access)),
       Effect.ensuring(removePendingAcquisition(controllerId, access)),
     );
-    return { ...status, desktop: USER_DESKTOP };
+    return yield* presentStatus(controllerId);
   });
 
   const requestView: ComputerUseCoordinatorShape["requestView"] = (controllerId) =>

@@ -56,7 +56,9 @@ names an evaluator only when semantic image evaluation requires one.
 condition. A frame-relative crop is resolved once and stored as a display plus
 Electron desktop-logical bounds, so expired frame identifiers are never used by
 the scheduler. The user desktop coordinator already supports independent
-viewers. An explicitly named Agent desktop also permits view-only controllers
+viewers. If GNOME has only a remembered combined-control token, the coordinator
+may restore that native session while assigning the monitor controller only a
+view lease. An explicitly named Agent desktop also permits view-only controllers
 from the same environment and thread while preserving exclusive input control
 for its owner.
 

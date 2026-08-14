@@ -1,4 +1,5 @@
 import { assert, describe, it } from "@effect/vitest";
+import type { ComputerAutomationStatus } from "@t3tools/contracts";
 import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
 import * as Fiber from "effect/Fiber";
@@ -82,6 +83,38 @@ describe("ComputerUseCoordinator", () => {
         ]);
       }),
       makeComputer(calls),
+    );
+  });
+
+  it.effect("restores control-only grants as logical view access", () => {
+    const calls: string[] = [];
+    let currentStatus: ComputerAutomationStatus = {
+      ...nativeStatus,
+      permission: "remembered" as const,
+      rememberedAccess: ["control" as const],
+    };
+    const computer: ComputerUse.ComputerUseShape = {
+      ...makeComputer(calls),
+      status: Effect.sync(() => currentStatus),
+      requestControl: Effect.sync(() => {
+        calls.push("requestControl");
+        currentStatus = nativeStatus;
+        return nativeStatus;
+      }),
+    };
+
+    return withCoordinator(
+      Effect.gen(function* () {
+        const coordinator = yield* ComputerUseCoordinator.ComputerUseCoordinator;
+        const remembered = yield* coordinator.status("viewer");
+        assert.deepEqual(remembered.rememberedAccess, ["view", "control"]);
+
+        const viewed = yield* coordinator.requestView("viewer");
+        assert.strictEqual(viewed.permission, "view-only");
+        assert.deepEqual(viewed.rememberedAccess, ["view", "control"]);
+        assert.deepEqual(calls, ["requestControl"]);
+      }),
+      computer,
     );
   });
 
