@@ -540,6 +540,10 @@ const ownersMatch = (left: AgentDesktopOwner, right: AgentDesktopOwner): boolean
   left.threadId === right.threadId &&
   left.controllerId === right.controllerId;
 
+/** Returns whether two controllers belong to the same thread boundary. */
+const ownersShareThread = (left: AgentDesktopOwner, right: AgentDesktopOwner): boolean =>
+  left.environmentId === right.environmentId && left.threadId === right.threadId;
+
 const isRunningState = (state: PersistedDesktop["state"]): boolean =>
   state === "starting" || state === "ready" || state === "active";
 
@@ -1793,9 +1797,34 @@ export const make = Effect.gen(function* () {
     return yield* requireDesktop(owner.controllerId, acquired.id);
   });
 
+  const acquireForView = Effect.fn("AgentDesktopManager.acquireForView")(function* (
+    owner: AgentDesktopOwner,
+    selector: Extract<ComputerDesktopSelector, { readonly kind: "agent" }>,
+  ) {
+    if (selector.desktopId === undefined) return yield* acquireForAccess(owner, selector);
+    return yield* lifecycleSemaphore.withPermits(1)(
+      Effect.gen(function* () {
+        const selected = yield* requireDesktopById(selector.desktopId!);
+        if (!ownersShareThread(selected.owner, owner)) {
+          return yield* new AgentDesktopManagerError({
+            code: "desktop-target-mismatch",
+            operation: "requestView",
+            detail: "the requested Agent desktop belongs to a different thread",
+          });
+        }
+        const desktop = yield* ensureStarted(selected);
+        yield* modifyState((current) => {
+          const assignments = new Map(current.assignments).set(owner.controllerId, desktop.id);
+          return [undefined, { ...current, assignments }] as const;
+        });
+        return desktop;
+      }),
+    );
+  });
+
   const requestView: AgentDesktopManagerShape["requestView"] = (owner, selector) =>
     Effect.gen(function* () {
-      const desktop = yield* acquireForAccess(owner, selector);
+      const desktop = yield* acquireForView(owner, selector);
       yield* modifyState((current) => {
         const lease = current.leases.get(desktop.id) ?? emptyLeaseState();
         const leases = new Map(current.leases).set(desktop.id, {
@@ -2262,7 +2291,7 @@ export const make = Effect.gen(function* () {
       yield* Ref.set(runtime.displaySize, sourceSize);
       let region = { x: 0, y: 0, width: sourceSize.width, height: sourceSize.height };
       const requestedRegion = screenshotOptions.region;
-      if (requestedRegion !== undefined) {
+      if (requestedRegion !== undefined && "frameId" in requestedRegion) {
         const stored = (yield* Ref.get(runtime.frames)).frames.get(requestedRegion.frameId);
         if (
           stored === undefined ||
@@ -2303,6 +2332,39 @@ export const make = Effect.gen(function* () {
             1,
             Math.round(requestedRegion.height * stored.frame.toDesktopLogical.scaleY),
           ),
+        };
+      } else if (requestedRegion !== undefined) {
+        if (requestedRegion.displayId !== "display-0") {
+          return yield* new ComputerUse.ComputerUseDisplayNotFoundError({
+            displayId: requestedRegion.displayId,
+          });
+        }
+        const right = requestedRegion.x + requestedRegion.width;
+        const bottom = requestedRegion.y + requestedRegion.height;
+        if (
+          requestedRegion.x < 0 ||
+          requestedRegion.y < 0 ||
+          right > sourceSize.width ||
+          bottom > sourceSize.height
+        ) {
+          return yield* new ComputerUse.ComputerUseRegionOutOfBoundsError({
+            frameId: `display:${requestedRegion.displayId}`,
+            x: requestedRegion.x,
+            y: requestedRegion.y,
+            width: requestedRegion.width,
+            height: requestedRegion.height,
+            frameWidth: sourceSize.width,
+            frameHeight: sourceSize.height,
+            field: "screenshot.region",
+            received: `${requestedRegion.x},${requestedRegion.y},${requestedRegion.width},${requestedRegion.height}`,
+            expected: ["region contained by its source display"],
+          });
+        }
+        region = {
+          x: requestedRegion.x,
+          y: requestedRegion.y,
+          width: requestedRegion.width,
+          height: requestedRegion.height,
         };
       }
       const cropped = sourceImage.crop(region);

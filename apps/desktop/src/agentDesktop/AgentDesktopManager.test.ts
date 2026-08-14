@@ -532,6 +532,84 @@ describe("AgentDesktopManager", () => {
     }),
   );
 
+  it.effect("captures a durable Agent desktop region without a source frame", () =>
+    Effect.gen(function* () {
+      const harness = yield* managerHarness("durable-region", { captureAvailable: true });
+      yield* Effect.gen(function* () {
+        const manager = yield* AgentDesktopManager.AgentDesktopManager;
+        const desktop = yield* manager.acquire(owner, { label: "Durable crop" });
+        yield* manager.requestView(owner, { kind: "agent", desktopId: desktop.id });
+
+        const snapshot = yield* manager.snapshot(
+          owner.controllerId,
+          {
+            includeAccessibility: false,
+            screenshot: {
+              region: {
+                coordinateSpace: "desktop-logical",
+                displayId: "display-0",
+                x: 10,
+                y: 20,
+                width: 30,
+                height: 40,
+              },
+              maxWidth: 100,
+              maxHeight: 100,
+            },
+          },
+          desktop.id,
+        );
+
+        assert.deepInclude(snapshot.frame, {
+          displayId: "display-0",
+          toDesktopLogical: {
+            scaleX: 0.3,
+            scaleY: 0.4,
+            offsetX: 10,
+            offsetY: 20,
+          },
+        });
+      }).pipe(Effect.provide(harness.layer));
+    }),
+  );
+
+  it.effect("shares view-only access with another controller in the same thread", () =>
+    Effect.gen(function* () {
+      const harness = yield* managerHarness("shared-thread-view");
+      yield* Effect.gen(function* () {
+        const manager = yield* AgentDesktopManager.AgentDesktopManager;
+        const desktop = yield* manager.acquire(owner, { label: "Shared view" });
+        yield* manager.requestControl(owner, { kind: "agent", desktopId: desktop.id });
+        const viewer = yield* Schema.decodeUnknownEffect(AgentDesktopOwner)({
+          ...owner,
+          controllerId: "monitor-controller",
+        });
+
+        const viewed = yield* manager.requestView(viewer, {
+          kind: "agent",
+          desktopId: desktop.id,
+        });
+        assert.strictEqual(viewed.permission, "view-only");
+        assert.strictEqual(
+          (yield* manager.status(owner.controllerId, desktop.id)).permission,
+          "granted",
+        );
+
+        const foreignThread = yield* Schema.decodeUnknownEffect(AgentDesktopOwner)({
+          ...viewer,
+          threadId: "another-thread",
+        });
+        const error = yield* manager
+          .requestView(foreignThread, { kind: "agent", desktopId: desktop.id })
+          .pipe(Effect.flip);
+        assert.strictEqual(
+          ComputerUse.toComputerAutomationFailure(error).code,
+          "desktop-target-mismatch",
+        );
+      }).pipe(Effect.provide(harness.layer));
+    }),
+  );
+
   it.effect("restores recoverable desktops and permanently removes them on request", () =>
     Effect.gen(function* () {
       const harness = yield* managerHarness("deletion-lifecycle");
