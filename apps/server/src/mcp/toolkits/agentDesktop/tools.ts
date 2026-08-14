@@ -64,7 +64,7 @@ export const AgentDesktopSetupTool = agentDesktopTool(
 export const AgentDesktopAcquireTool = safeAgentDesktopTool(
   Tool.make("agent_desktop_acquire", {
     description:
-      "Acquire this agent session's suitable prior Agent desktop or create and boot a clean one. Omit all fields for automatic reuse. Set fresh=true for a separate clean desktop, especially for parallel work, or desktopId to resume a known owned desktop. Describe task needs, not CPU or RAM sizes; the host manages resources automatically. Retain the returned desktopId and pass it to every later Agent desktop and computer tool so parallel agents remain isolated.",
+      "Acquire this agent session's suitable prior Agent desktop or create and boot a clean one. Omit all fields for automatic reuse. Set fresh=true for a separate clean desktop, especially for parallel work, or desktopId to resume a known owned desktop. Describe task needs, not CPU or RAM sizes; the host manages resources automatically. Retention defaults to automatic; request preserve when desktop state must remain until explicitly deleted. Retain the returned desktopId and pass it to every later Agent desktop and computer tool so parallel agents remain isolated.",
     parameters: AgentDesktopAcquireInput,
     success: AgentDesktop,
     failure: PreviewAutomationError,
@@ -75,7 +75,7 @@ export const AgentDesktopAcquireTool = safeAgentDesktopTool(
 export const AgentDesktopManageTool = agentDesktopTool(
   Tool.make("agent_desktop_manage", {
     description:
-      "Manage one owned Agent desktop. Resume, park to disk, stop, checkpoint, clone, reset, delete recoverably, restore, hand off to another known agent owner, or delete permanently. Reset and delete preserve recovery for seven days; delete-permanently does not. Prefer park when future reuse is likely.",
+      "Manage one owned Agent desktop. Resume, park to disk, stop, checkpoint, clone, reset, delete recoverably, restore, hand off to another known agent owner, or delete permanently. Reset, explicit delete, and automatic retirement preserve recovery for seven days; delete-permanently does not. Automatic retention retires desktops after 30 inactive days or under host storage pressure. A preserve retention request exempts a desktop from automatic retirement. Prefer park when future reuse is likely.",
     parameters: AgentDesktopManageInput,
     success: AgentDesktop,
     failure: PreviewAutomationError,

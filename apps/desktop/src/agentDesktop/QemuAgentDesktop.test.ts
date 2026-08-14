@@ -12,6 +12,7 @@ import {
   qemuInputEventBatches,
   qemuAgentDesktopUnitName,
   qemuDisplayDeviceDetail,
+  parseAgentDesktopStorageCapacity,
   qemuSendKeyArguments,
   toQemuAbsoluteCoordinate,
   type QemuAgentDesktopPaths,
@@ -69,6 +70,15 @@ describe("QemuAgentDesktop", () => {
     ]);
     assert.equal(qemuCloneFlushCommand("t3-system-disk"), "qemu-io t3-system-disk flush");
     assert.equal(qemuCloneFlushCommand("t3-nvram"), "qemu-io t3-nvram flush");
+  });
+
+  it("parses bounded Agent desktop filesystem capacity", () => {
+    assert.deepEqual(
+      parseAgentDesktopStorageCapacity("1B-blocks       Avail\n214748364800 107374182400\n"),
+      { totalBytes: 214_748_364_800, availableBytes: 107_374_182_400 },
+    );
+    assert.isUndefined(parseAgentDesktopStorageCapacity("1B-blocks Avail\ninvalid output\n"));
+    assert.isUndefined(parseAgentDesktopStorageCapacity("1B-blocks Avail\n100 101\n"));
   });
 
   it("bounds emulated input batches without losing event order", () => {

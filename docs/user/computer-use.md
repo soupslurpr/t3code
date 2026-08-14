@@ -181,6 +181,16 @@ park to disk after ten minutes, while active operations, viewers, controllers, a
 prevent-parking requests keep them running. An agent can also stop, park, checkpoint, clone, reset,
 recover, hand off, or delete a desktop explicitly.
 
+Stopped or parked desktops using automatic retention enter a seven-day recovery window after 30
+days without activity. The host also maintains a free-space reserve of five percent of the Agent
+desktop filesystem, bounded between 2 GiB and 20 GiB. When storage falls below that reserve,
+desktops idle for at least one day can enter the same recovery window, oldest first and only until
+enough pending space has been identified. This never skips recovery: disk space is reclaimed when
+the window expires, or when a user explicitly confirms permanent deletion in Settings. Agents can
+mark state that must be kept with the preserve retention policy, which exempts it from automatic
+retirement. Settings shows the recovery deadline and provides both Restore and confirmed Delete
+permanently actions.
+
 New desktops use host GPU acceleration automatically when the complete QEMU, graphics-driver, and
 device-access path is available. An agent can prefer acceleration while accepting a software
 fallback, require it for a graphics-heavy task, or request software graphics. Desktop status reports

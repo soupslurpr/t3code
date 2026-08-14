@@ -1,9 +1,4 @@
-import {
-  AgentDesktopOwner,
-  EnvironmentId,
-  ThreadId,
-  type AgentDesktopId,
-} from "@t3tools/contracts";
+import { AgentDesktopId, AgentDesktopOwner, EnvironmentId, ThreadId } from "@t3tools/contracts";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { assert, describe, it } from "@effect/vitest";
 import * as Deferred from "effect/Deferred";
@@ -27,6 +22,7 @@ const owner = Schema.decodeUnknownSync(AgentDesktopOwner)({
   threadId: Schema.decodeUnknownSync(ThreadId)("thread-1"),
   controllerId: "controller-1",
 });
+const decodeAgentDesktopId = Schema.decodeUnknownSync(AgentDesktopId);
 
 /** Creates a deterministic in-memory hypervisor and its recorded calls. */
 const makeQemu = (
@@ -182,6 +178,10 @@ const makeQemu = (
       addRoute: () => Effect.die("route is not expected"),
       removeRoute: () => Effect.die("route is not expected"),
       diskUsage: () => Effect.succeed({ allocatedBytes: 1, virtualBytes: 2 }),
+      storageCapacity: Effect.succeed({
+        totalBytes: 200 * 1024 ** 3,
+        availableBytes: 100 * 1024 ** 3,
+      }),
       resourceUsage: () => Effect.succeed({ cpuUsageNanoseconds: 1, memoryUsedBytes: 1 }),
       capturePackets: () =>
         Effect.succeed({ path: "/captures/network.pcap", sizeBytes: 64, truncated: false }),
@@ -307,6 +307,107 @@ describe("AgentDesktopManager", () => {
     );
   });
 
+  it("selects only safe automatic recovery candidates", () => {
+    const now = Date.parse("2026-08-13T12:00:00.000Z");
+    const stale = decodeAgentDesktopId("desktop-stale");
+    const preserved = decodeAgentDesktopId("desktop-preserved");
+    const running = decodeAgentDesktopId("desktop-running");
+    const recent = decodeAgentDesktopId("desktop-recent");
+    assert.deepEqual(
+      AgentDesktopManager.selectAutomaticRecoveryCandidates({
+        now,
+        desktops: [
+          {
+            id: stale,
+            state: "stopped",
+            lastActiveAt: "2026-07-01T12:00:00.000Z",
+            retention: "automatic",
+            allocatedBytes: 1,
+          },
+          {
+            id: preserved,
+            state: "parked",
+            lastActiveAt: "2026-06-01T12:00:00.000Z",
+            retention: "preserve",
+            allocatedBytes: 1,
+          },
+          {
+            id: running,
+            state: "ready",
+            lastActiveAt: "2026-06-01T12:00:00.000Z",
+            retention: "automatic",
+            allocatedBytes: 1,
+          },
+          {
+            id: recent,
+            state: "stopped",
+            lastActiveAt: "2026-08-01T12:00:00.000Z",
+            retention: "automatic",
+            allocatedBytes: 1,
+          },
+        ],
+      }),
+      [{ id: stale, reason: "inactive" }],
+    );
+  });
+
+  it("schedules only sufficiently idle storage needed for the reserve", () => {
+    const gib = 1024 ** 3;
+    const now = Date.parse("2026-08-13T12:00:00.000Z");
+    const pending = decodeAgentDesktopId("desktop-pending");
+    const unknown = decodeAgentDesktopId("desktop-unknown");
+    const oldest = decodeAgentDesktopId("desktop-oldest");
+    const older = decodeAgentDesktopId("desktop-older");
+    const recent = decodeAgentDesktopId("desktop-recent");
+    assert.deepEqual(
+      AgentDesktopManager.selectAutomaticRecoveryCandidates({
+        now,
+        storage: { totalBytes: 200 * gib, availableBytes: 3 * gib },
+        desktops: [
+          {
+            id: pending,
+            state: "recoverable",
+            lastActiveAt: "2026-08-01T12:00:00.000Z",
+            retention: "automatic",
+            allocatedBytes: 1 * gib,
+          },
+          {
+            id: unknown,
+            state: "stopped",
+            lastActiveAt: "2026-08-02T12:00:00.000Z",
+            retention: "automatic",
+            allocatedBytes: 0,
+          },
+          {
+            id: oldest,
+            state: "stopped",
+            lastActiveAt: "2026-08-03T12:00:00.000Z",
+            retention: "automatic",
+            allocatedBytes: 0.5 * gib,
+          },
+          {
+            id: older,
+            state: "parked",
+            lastActiveAt: "2026-08-11T12:00:00.000Z",
+            retention: "automatic",
+            allocatedBytes: 1 * gib,
+          },
+          {
+            id: recent,
+            state: "stopped",
+            lastActiveAt: "2026-08-13T00:30:00.000Z",
+            retention: "automatic",
+            allocatedBytes: 20 * gib,
+          },
+        ],
+      }),
+      [
+        { id: oldest, reason: "storage-pressure" },
+        { id: older, reason: "storage-pressure" },
+      ],
+    );
+  });
+
   it.effect("returns setup results with the manager's current desktops", () =>
     Effect.gen(function* () {
       const harness = yield* managerHarness("setup");
@@ -363,6 +464,41 @@ describe("AgentDesktopManager", () => {
         assert.equal(calls.filter((call) => call.startsWith("create:")).length, 1);
         assert.equal(calls.filter((call) => call.startsWith("start:")).length, 1);
         assert(calls.some((call) => call.endsWith(":ctrl+l") && call.startsWith("key:")));
+      }).pipe(Effect.provide(harness.layer));
+    }),
+  );
+
+  it.effect("restores recoverable desktops and permanently removes them on request", () =>
+    Effect.gen(function* () {
+      const harness = yield* managerHarness("deletion-lifecycle");
+      yield* Effect.gen(function* () {
+        const manager = yield* AgentDesktopManager.AgentDesktopManager;
+        const desktop = yield* manager.acquire(owner, { label: "Disposable" });
+        const deleted = yield* manager.manage(owner, {
+          desktopId: desktop.id,
+          operation: "delete",
+        });
+        assert.equal(deleted.state, "recoverable");
+        assert.isNotNull(deleted.recoverableUntil);
+
+        const restored = yield* manager.manage(owner, {
+          desktopId: desktop.id,
+          operation: "restore",
+        });
+        assert.equal(restored.state, "stopped");
+        assert.isNull(restored.recoverableUntil);
+
+        yield* manager.manage(owner, { desktopId: desktop.id, operation: "delete" });
+        yield* manager.manage(owner, {
+          desktopId: desktop.id,
+          operation: "delete-permanently",
+        });
+        assert.isFalse(
+          (yield* manager.list).desktops.some((candidate) => candidate.id === desktop.id),
+        );
+        assert.isTrue(
+          (yield* Ref.get(harness.calls)).some((call) => call === `remove:${desktop.id}`),
+        );
       }).pipe(Effect.provide(harness.layer));
     }),
   );

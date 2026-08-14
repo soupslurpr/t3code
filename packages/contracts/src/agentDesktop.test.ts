@@ -26,9 +26,14 @@ const decodeRemedy = Schema.decodeUnknownSync(AgentDesktopRequirementRemedy);
 describe("agent desktop contracts", () => {
   it("accepts automatic, fresh, and explicit acquisition", () => {
     expect(decodeAcquire({})).toEqual({});
-    expect(decodeAcquire({ fresh: true, requirements: { graphics: "preferred" } })).toEqual({
+    expect(
+      decodeAcquire({
+        fresh: true,
+        requirements: { graphics: "preferred", retention: "preserve" },
+      }),
+    ).toEqual({
       fresh: true,
-      requirements: { graphics: "preferred" },
+      requirements: { graphics: "preferred", retention: "preserve" },
     });
     expect(decodeAcquire({ desktopId: "desktop-1" })).toEqual({ desktopId: "desktop-1" });
     expect(() => decodeAcquire({ desktopId: "desktop-1", fresh: true })).toThrow();
@@ -133,6 +138,7 @@ describe("agent desktop contracts", () => {
         createdAt: "2026-08-12T19:00:00.000Z",
         lastActiveAt: "2026-08-12T20:00:00.000Z",
         recoverableUntil: null,
+        retention: "preserve",
         resources: {
           cpuUsagePercent: 12.5,
           memoryUsedBytes: 1_000,
