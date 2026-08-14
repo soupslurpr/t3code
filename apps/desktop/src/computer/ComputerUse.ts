@@ -25,6 +25,8 @@ const ComputerUseOperation = Schema.Literals([
   "status",
   "requestView",
   "requestControl",
+  "requestAvailability",
+  "releaseAvailability",
   "snapshot",
   "act",
   "release",
@@ -525,6 +527,8 @@ export interface ComputerUseShape {
   readonly status: Effect.Effect<ComputerAutomationStatus>;
   readonly requestView: Effect.Effect<ComputerAutomationStatus, ComputerUseError>;
   readonly requestControl: Effect.Effect<ComputerAutomationStatus, ComputerUseError>;
+  readonly requestAvailability: Effect.Effect<ComputerAutomationStatus, ComputerUseError>;
+  readonly releaseAvailability: Effect.Effect<ComputerAutomationStatus, ComputerUseError>;
   readonly snapshot: (
     input: ComputerAutomationSnapshotInput,
   ) => Effect.Effect<ComputerAutomationSnapshot, ComputerUseError>;
@@ -1364,6 +1368,16 @@ export const makeWithOptions = Effect.fn("ComputerUse.makeWithOptions")(function
     controller.view.pipe(Effect.andThen(status), Effect.mapError(mapOperationError("requestView"))),
   );
 
+  const requestAvailability = controller.requestAvailability.pipe(
+    Effect.andThen(status),
+    Effect.mapError(mapOperationError("requestAvailability")),
+  );
+
+  const releaseAvailability = controller.releaseAvailability.pipe(
+    Effect.andThen(status),
+    Effect.mapError(mapOperationError("releaseAvailability")),
+  );
+
   const forget = controller.forget.pipe(
     Effect.mapError(mapOperationError("forget")),
     Effect.ensuring(clearTransientState),
@@ -1373,6 +1387,8 @@ export const makeWithOptions = Effect.fn("ComputerUse.makeWithOptions")(function
     status,
     requestView,
     requestControl,
+    requestAvailability,
+    releaseAvailability,
     snapshot,
     act,
     releaseInputs,

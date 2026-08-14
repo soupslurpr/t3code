@@ -11,11 +11,15 @@ import * as DesktopIpc from "../DesktopIpc.ts";
 export const readPowerSettings: Effect.Effect<
   DesktopPowerSettings,
   never,
-  DesktopAppSettings.DesktopAppSettings
+  DesktopAppSettings.DesktopAppSettings | GnomeRemoteDesktop.GnomeRemoteDesktop
 > = Effect.gen(function* () {
   const appSettings = yield* DesktopAppSettings.DesktopAppSettings;
-  const settings = yield* appSettings.get;
-  return { keepAwakeWhileAgentsWork: settings.keepAwakeWhileAgentsWork };
+  const gnomeRemoteDesktop = yield* GnomeRemoteDesktop.GnomeRemoteDesktop;
+  const [settings, status] = yield* Effect.all([appSettings.get, gnomeRemoteDesktop.status]);
+  return {
+    keepAwakeWhileAgentsWork: settings.keepAwakeWhileAgentsWork,
+    desktopAvailabilityActive: status.keepAwake,
+  };
 });
 
 export const getPowerSettings = DesktopIpc.makeIpcMethod({
@@ -36,6 +40,17 @@ export const setKeepAwakeWhileAgentsWork = DesktopIpc.makeIpcMethod({
     const gnomeRemoteDesktop = yield* GnomeRemoteDesktop.GnomeRemoteDesktop;
     yield* appSettings.setKeepAwakeWhileAgentsWork(enabled);
     yield* gnomeRemoteDesktop.configurePowerProtection(enabled);
+    return yield* readPowerSettings;
+  }),
+});
+
+export const releaseDesktopAvailability = DesktopIpc.makeIpcMethod({
+  channel: IpcChannels.RELEASE_DESKTOP_AVAILABILITY_CHANNEL,
+  payload: Schema.Void,
+  result: DesktopPowerSettingsSchema,
+  handler: Effect.fn("desktop.ipc.power.releaseDesktopAvailability")(function* () {
+    const gnomeRemoteDesktop = yield* GnomeRemoteDesktop.GnomeRemoteDesktop;
+    yield* gnomeRemoteDesktop.releaseAvailability;
     return yield* readPowerSettings;
   }),
 });
