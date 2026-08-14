@@ -5,6 +5,8 @@ import {
   TurnId,
   ProviderDriverKind,
   ProviderInstanceId,
+  type OrchestrationCommand,
+  type ProviderSession,
 } from "@t3tools/contracts";
 import * as Clock from "effect/Clock";
 import * as DateTime from "effect/DateTime";
@@ -18,6 +20,10 @@ import * as Stream from "effect/Stream";
 import { afterEach, describe, expect, it, vi } from "vite-plus/test";
 
 import { ProjectionSnapshotQuery } from "../../orchestration/Services/ProjectionSnapshotQuery.ts";
+import {
+  OrchestrationEngineService,
+  type OrchestrationEngineShape,
+} from "../../orchestration/Services/OrchestrationEngine.ts";
 import { SqlitePersistenceMemory } from "../../persistence/Layers/Sqlite.ts";
 import * as ProviderSessionRuntime from "../../persistence/ProviderSessionRuntime.ts";
 import { ProviderValidationError } from "../Errors.ts";
@@ -150,8 +156,10 @@ describe("ProviderSessionReaper", () => {
     readonly stopSessionImplementation?: (input: {
       readonly threadId: ThreadId;
     }) => ReturnType<ProviderServiceShape["stopSession"]>;
+    readonly activeSessionThreadIds?: ReadonlyArray<ThreadId>;
   }) {
     const stoppedThreadIds = new Set<ThreadId>();
+    const dispatchedCommands: OrchestrationCommand[] = [];
     const stopSession = vi.fn<ProviderServiceShape["stopSession"]>(
       (request) =>
         (input.stopSessionImplementation
@@ -168,7 +176,25 @@ describe("ProviderSessionReaper", () => {
       respondToRequest: () => unsupported(),
       respondToUserInput: () => unsupported(),
       stopSession,
-      listSessions: () => Effect.succeed([]),
+      listSessions: () =>
+        Effect.succeed(
+          (
+            input.activeSessionThreadIds ??
+            input.readModel.threads.flatMap((thread) =>
+              thread.session !== null && thread.session.status !== "stopped" ? [thread.id] : [],
+            )
+          ).map(
+            (threadId): ProviderSession => ({
+              provider: ProviderDriverKind.make("codex"),
+              providerInstanceId: ProviderInstanceId.make("codex"),
+              status: "ready",
+              runtimeMode: "full-access",
+              threadId,
+              createdAt: "2026-01-01T00:00:00.000Z",
+              updatedAt: "2026-01-01T00:00:00.000Z",
+            }),
+          ),
+        ),
       getCapabilities: () => Effect.succeed({ sessionModelSwitch: "in-session" }),
       getInstanceInfo: (instanceId) => {
         const driverKind = ProviderDriverKind.make(String(instanceId));
@@ -193,6 +219,16 @@ describe("ProviderSessionReaper", () => {
     const providerSessionDirectoryLayer = ProviderSessionDirectoryLive.pipe(
       Layer.provide(runtimeRepositoryLayer),
     );
+    const orchestrationEngine: OrchestrationEngineShape = {
+      readEvents: () => Stream.empty,
+      dispatch: (command) =>
+        Effect.sync(() => {
+          dispatchedCommands.push(command);
+          return { sequence: dispatchedCommands.length };
+        }),
+      streamDomainEvents: Stream.empty,
+      latestSequence: Effect.succeed(0),
+    };
     const layer = makeProviderSessionReaperLive({
       inactivityThresholdMs: 1_000,
       sweepIntervalMs: 60_000,
@@ -204,7 +240,7 @@ describe("ProviderSessionReaper", () => {
         Layer.succeed(ProjectionSnapshotQuery, {
           getCommandReadModel: () => Effect.die("unused"),
           getSnapshot: () => Effect.die("unused"),
-          getShellSnapshot: () => Effect.die("unused"),
+          getShellSnapshot: () => Effect.succeed(input.readModel),
           getArchivedShellSnapshot: () => Effect.die("unused"),
           getSnapshotSequence: () =>
             Effect.succeed({ snapshotSequence: input.readModel.snapshotSequence }),
@@ -226,11 +262,12 @@ describe("ProviderSessionReaper", () => {
           searchThreads: () => Effect.succeed({ matches: [] }),
         }),
       ),
+      Layer.provideMerge(Layer.succeed(OrchestrationEngineService, orchestrationEngine)),
       Layer.provideMerge(NodeServices.layer),
     );
 
     runtime = ManagedRuntime.make(layer);
-    return { stopSession, stoppedThreadIds };
+    return { stopSession, stoppedThreadIds, dispatchedCommands };
   }
 
   it("reaps stale persisted sessions without active turns", async () => {
@@ -326,6 +363,61 @@ describe("ProviderSessionReaper", () => {
     expect(harness.stopSession).not.toHaveBeenCalled();
     const remaining = await runtime!.runPromise(repository.getByThreadId({ threadId }));
     expect(Option.isSome(remaining)).toBe(true);
+  });
+
+  it("stops an orphaned projected active turn during startup reconciliation", async () => {
+    const threadId = ThreadId.make("thread-reaper-orphaned-turn");
+    const turnId = TurnId.make("turn-reaper-orphaned");
+    const now = "2026-01-01T00:00:00.000Z";
+    const harness = await createHarness({
+      readModel: makeReadModel([
+        {
+          id: threadId,
+          session: {
+            threadId,
+            status: "running",
+            providerName: "codex",
+            runtimeMode: "full-access",
+            activeTurnId: turnId,
+            lastError: null,
+            updatedAt: now,
+          },
+        },
+      ]),
+      activeSessionThreadIds: [],
+    });
+    const repository = await runtime!.runPromise(
+      Effect.service(ProviderSessionRuntime.ProviderSessionRuntimeRepository),
+    );
+    await runtime!.runPromise(
+      repository.upsert({
+        threadId,
+        providerName: "codex",
+        providerInstanceId: ProviderInstanceId.make("codex"),
+        adapterKey: "codex",
+        runtimeMode: "full-access",
+        status: "stopped",
+        lastSeenAt: now,
+        resumeCursor: { opaque: "resume-orphaned" },
+        runtimePayload: { activeTurnId: null },
+      }),
+    );
+
+    await startReaper();
+    await waitFor(() =>
+      harness.dispatchedCommands.some((command) => command.type === "thread.session.set"),
+    );
+
+    expect(harness.stopSession).toHaveBeenCalledWith({ threadId });
+    const command = harness.dispatchedCommands.find((entry) => entry.type === "thread.session.set");
+    expect(command).toMatchObject({
+      type: "thread.session.set",
+      threadId,
+      session: {
+        status: "stopped",
+        activeTurnId: null,
+      },
+    });
   });
 
   it("skips stale sessions while background work is still live", async () => {

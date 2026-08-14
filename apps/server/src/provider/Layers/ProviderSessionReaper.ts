@@ -1,4 +1,7 @@
+import { CommandId } from "@t3tools/contracts";
 import * as Clock from "effect/Clock";
+import * as Crypto from "effect/Crypto";
+import * as DateTime from "effect/DateTime";
 import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
@@ -6,6 +9,7 @@ import * as Option from "effect/Option";
 import * as Schedule from "effect/Schedule";
 
 import { ProjectionSnapshotQuery } from "../../orchestration/Services/ProjectionSnapshotQuery.ts";
+import { OrchestrationEngineService } from "../../orchestration/Services/OrchestrationEngine.ts";
 import { ProviderSessionDirectory } from "../Services/ProviderSessionDirectory.ts";
 import {
   ProviderSessionReaper,
@@ -27,6 +31,8 @@ const makeProviderSessionReaper = (options?: ProviderSessionReaperLiveOptions) =
     const providerService = yield* ProviderService;
     const directory = yield* ProviderSessionDirectory;
     const projectionSnapshotQuery = yield* ProjectionSnapshotQuery;
+    const orchestrationEngine = yield* OrchestrationEngineService;
+    const crypto = yield* Crypto.Crypto;
 
     const inactivityThresholdMs = Math.max(
       1,
@@ -117,21 +123,91 @@ const makeProviderSessionReaper = (options?: ProviderSessionReaperLiveOptions) =
       }
     });
 
+    const reconcileOrphanedProjectedSessions = Effect.gen(function* () {
+      const [shell, activeSessions] = yield* Effect.all([
+        projectionSnapshotQuery.getShellSnapshot(),
+        providerService.listSessions(),
+      ]);
+      const activeThreadIds = new Set(activeSessions.map((session) => session.threadId));
+      let reconciledCount = 0;
+
+      for (const thread of shell.threads) {
+        const session = thread.session;
+        if (session === null || session.status === "stopped" || activeThreadIds.has(thread.id)) {
+          continue;
+        }
+
+        yield* providerService.stopSession({ threadId: thread.id }).pipe(
+          Effect.catchCause((cause) =>
+            Effect.logWarning("provider.session.reconcile-stop-failed", {
+              threadId: thread.id,
+              cause,
+            }),
+          ),
+        );
+        const createdAt = DateTime.formatIso(yield* DateTime.now);
+        const reconciled = yield* orchestrationEngine
+          .dispatch({
+            type: "thread.session.set",
+            commandId: CommandId.make(
+              `server:provider-session-reconcile:${yield* crypto.randomUUIDv4}`,
+            ),
+            threadId: thread.id,
+            session: {
+              threadId: thread.id,
+              status: "stopped",
+              providerName: session.providerName,
+              ...(session.providerInstanceId !== undefined
+                ? { providerInstanceId: session.providerInstanceId }
+                : {}),
+              runtimeMode: session.runtimeMode,
+              activeTurnId: null,
+              lastError: session.lastError,
+              updatedAt: createdAt,
+            },
+            createdAt,
+          })
+          .pipe(
+            Effect.as(true),
+            Effect.catchCause((cause) =>
+              Effect.logWarning("provider.session.reconcile-projection-failed", {
+                threadId: thread.id,
+                cause,
+              }).pipe(Effect.as(false)),
+            ),
+          );
+        if (reconciled) {
+          reconciledCount += 1;
+        }
+      }
+
+      if (reconciledCount > 0) {
+        yield* Effect.logInfo("provider.session.reconcile-complete", { reconciledCount });
+      }
+    });
+
     const start: ProviderSessionReaperShape["start"] = () =>
       Effect.gen(function* () {
         yield* forkParked(
-          sweep.pipe(
-            Effect.catch((error: unknown) =>
-              Effect.logWarning("provider.session.reaper.sweep-failed", {
-                error,
-              }),
+          reconcileOrphanedProjectedSessions.pipe(
+            Effect.catchCause((cause) =>
+              Effect.logWarning("provider.session.reconcile-failed", { cause }),
             ),
-            Effect.catchDefect((defect: unknown) =>
-              Effect.logWarning("provider.session.reaper.sweep-defect", {
-                defect,
-              }),
+            Effect.andThen(
+              sweep.pipe(
+                Effect.catch((error: unknown) =>
+                  Effect.logWarning("provider.session.reaper.sweep-failed", {
+                    error,
+                  }),
+                ),
+                Effect.catchDefect((defect: unknown) =>
+                  Effect.logWarning("provider.session.reaper.sweep-defect", {
+                    defect,
+                  }),
+                ),
+                Effect.repeat(Schedule.spaced(Duration.millis(sweepIntervalMs))),
+              ),
             ),
-            Effect.repeat(Schedule.spaced(Duration.millis(sweepIntervalMs))),
           ),
         );
 
