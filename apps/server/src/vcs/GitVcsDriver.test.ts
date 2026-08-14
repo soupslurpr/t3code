@@ -336,7 +336,9 @@ it.effect("checkpoint capture refuses a truncated nested repository listing", ()
             .run(input)
             .pipe(
               Effect.map((result) =>
-                input.args.includes("--others") ? { ...result, stdoutTruncated: true } : result,
+                input.args.includes("--") && input.args.includes("--others")
+                  ? { ...result, stdoutTruncated: true }
+                  : result,
               ),
             ),
       }),
@@ -514,7 +516,7 @@ it.effect.each([
       const captureProcess = yield* VcsProcess.make.pipe(
         Effect.provideService(ProcessRunner.ProcessRunner, {
           run: (input) => {
-            if (input.args.includes("--others")) discoveries += 1;
+            if (input.args.includes("--") && input.args.includes("--others")) discoveries += 1;
             if (input.env?.GIT_INDEX_FILE) privateIndexes.add(input.env.GIT_INDEX_FILE);
             const initialStage =
               phase === "add" &&
@@ -617,7 +619,9 @@ it.effect.each(["discovery", "probe", "retry"] as const)(
               stagingAttempts += 1;
             }
             const block =
-              (blockedPhase === "discovery" && input.args.includes("--others")) ||
+              (blockedPhase === "discovery" &&
+                input.args.includes("--") &&
+                input.args.includes("--others")) ||
               (blockedPhase === "probe" && input.cwd !== cwd && input.args.includes("rev-parse")) ||
               (blockedPhase === "retry" &&
                 staging &&
@@ -643,7 +647,9 @@ it.effect.each(["discovery", "probe", "retry"] as const)(
               );
             return liveProcess.run(input).pipe(
               Effect.tap(() =>
-                blockedPhase === "probe" && input.args.includes("--others")
+                blockedPhase === "probe" &&
+                input.args.includes("--") &&
+                input.args.includes("--others")
                   ? Deferred.succeed(discovered, undefined).pipe(
                       Effect.andThen(Effect.sleep("3 seconds")),
                     )
@@ -694,7 +700,7 @@ it.effect("checkpoint recovery preserves interruption and removes the private in
         run: (input) => {
           if (input.args.includes("add") && input.args.includes("-A"))
             privateIndex = input.env?.GIT_INDEX_FILE;
-          return input.args.includes("--others")
+          return input.args.includes("--") && input.args.includes("--others")
             ? Deferred.succeed(entered, undefined).pipe(Effect.andThen(Effect.never))
             : liveProcess.run(input);
         },
