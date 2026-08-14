@@ -548,10 +548,35 @@ describe("T3 browser developer instructions", () => {
 describe("T3 computer developer instructions", () => {
   const runtime = { model: "gpt-5.3-codex", reasoningEffort: "high" };
 
+  it("prioritizes desktop availability while leaving access timing to the agent", () => {
+    for (const mode of ["default", "plan"] as const) {
+      const instructions = buildCodexDeveloperInstructions(mode, runtime, true);
+      NodeAssert.match(
+        instructions,
+        /When an authorized user desktop may be needed, promptly call `computer_request_availability`/,
+      );
+      NodeAssert.match(
+        instructions,
+        /Call `computer_request_view` or `computer_request_control` when useful/,
+      );
+      NodeAssert.match(
+        instructions,
+        /User-desktop view and control requests establish availability automatically, and `computer_release` retains it/,
+      );
+      NodeAssert.match(
+        instructions,
+        /Retain availability while foreseeable work may need that desktop, and call `computer_release_availability` only when allowing automatic locking is appropriate/,
+      );
+      NodeAssert.doesNotMatch(instructions, /a task needs a GUI|might be needed only later/);
+    }
+  });
+
   it("documents the deferred desktop action schema in both collaboration modes", () => {
     for (const mode of ["default", "plan"] as const) {
       const instructions = buildCodexDeveloperInstructions(mode, runtime, true);
       NodeAssert.match(instructions, /computer_request_control/);
+      NodeAssert.match(instructions, /computer_request_availability/);
+      NodeAssert.match(instructions, /computer_release_availability/);
       NodeAssert.match(instructions, /computer_act/);
       NodeAssert.match(instructions, /click \{frameId,x,y,button\?,count\?\}/);
       NodeAssert.match(instructions, /type \{text,intervalMs\?,submit\?\}/);

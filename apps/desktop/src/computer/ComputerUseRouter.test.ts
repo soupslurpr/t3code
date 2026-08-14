@@ -64,6 +64,8 @@ const routerHarness = Effect.gen(function* () {
     status: () => record("user:status").pipe(Effect.as(userStatus)),
     requestView: () => record("user:view").pipe(Effect.as(userStatus)),
     requestControl: () => record("user:control").pipe(Effect.as(userStatus)),
+    requestAvailability: () => record("user:requestAvailability").pipe(Effect.as(userStatus)),
+    releaseAvailability: () => record("user:releaseAvailability").pipe(Effect.as(userStatus)),
     snapshot: () => unexpected,
     act: () => unexpected,
     release: () => record("user:release").pipe(Effect.as(userStatus)),
@@ -153,6 +155,21 @@ const routerHarness = Effect.gen(function* () {
 });
 
 describe("ComputerUseRouter", () => {
+  it.effect("routes availability independently to the user desktop", () =>
+    Effect.gen(function* () {
+      const harness = yield* routerHarness;
+      yield* Effect.gen(function* () {
+        const router = yield* ComputerUseRouter.ComputerUseRouter;
+        yield* router.requestAvailability(context, {});
+        yield* router.releaseAvailability(context, {});
+        assert.deepEqual(yield* Ref.get(harness.calls), [
+          "user:requestAvailability",
+          "user:releaseAvailability",
+        ]);
+      }).pipe(Effect.provide(harness.layer));
+    }),
+  );
+
   it.effect("defaults to Your desktop", () =>
     Effect.gen(function* () {
       const harness = yield* routerHarness;

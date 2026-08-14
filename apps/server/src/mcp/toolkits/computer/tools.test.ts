@@ -29,6 +29,8 @@ it("exports bounded object schemas and accurate safety annotations", () => {
   }
 
   for (const name of [
+    "computer_request_availability",
+    "computer_release_availability",
     "computer_request_view",
     "computer_request_control",
     "computer_release",

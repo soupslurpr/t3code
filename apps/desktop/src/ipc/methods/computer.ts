@@ -5,6 +5,7 @@ import {
   ComputerAutomationStatus,
   DesktopComputerAutomationAccessRequestSchema,
   DesktopComputerAutomationActRequestSchema,
+  DesktopComputerAutomationAvailabilityRequestSchema,
   type DesktopComputerAutomationContext,
   DesktopComputerAutomationSnapshotRequestSchema,
   DesktopComputerAutomationTargetRequestSchema,
@@ -108,6 +109,30 @@ export const status = DesktopIpc.makeIpcMethod({
   handler: Effect.fn("desktop.ipc.computer.status")(function* (request) {
     const computer = yield* ComputerUseRouter.ComputerUseRouter;
     return yield* computerResult(computer.status(requestContext(request.context), request.input));
+  }),
+});
+
+export const requestAvailability = DesktopIpc.makeIpcMethod({
+  channel: IpcChannels.COMPUTER_AUTOMATION_REQUEST_AVAILABILITY_CHANNEL,
+  payload: DesktopComputerAutomationAvailabilityRequestSchema,
+  result: makeDesktopComputerAutomationResultSchema(ComputerAutomationStatus),
+  handler: Effect.fn("desktop.ipc.computer.requestAvailability")(function* (request) {
+    const computer = yield* ComputerUseRouter.ComputerUseRouter;
+    return yield* computerResult(
+      computer.requestAvailability(requestContext(request.context), request.input),
+    );
+  }),
+});
+
+export const releaseAvailability = DesktopIpc.makeIpcMethod({
+  channel: IpcChannels.COMPUTER_AUTOMATION_RELEASE_AVAILABILITY_CHANNEL,
+  payload: DesktopComputerAutomationAvailabilityRequestSchema,
+  result: makeDesktopComputerAutomationResultSchema(ComputerAutomationStatus),
+  handler: Effect.fn("desktop.ipc.computer.releaseAvailability")(function* (request) {
+    const computer = yield* ComputerUseRouter.ComputerUseRouter;
+    return yield* computerResult(
+      computer.releaseAvailability(requestContext(request.context), request.input),
+    );
   }),
 });
 
@@ -219,6 +244,8 @@ export const forgetControl = DesktopIpc.makeIpcMethod({
 
 export const methods = [
   status,
+  requestAvailability,
+  releaseAvailability,
   requestView,
   requestControl,
   snapshot,

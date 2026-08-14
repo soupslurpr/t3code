@@ -50,7 +50,11 @@ import * as PreviewIpc from "./methods/preview.ts";
 import * as AppActivationIpc from "./methods/appActivation.ts";
 import * as ComputerIpc from "./methods/computer.ts";
 import * as AgentDesktopIpc from "./methods/agentDesktop.ts";
-import { getPowerSettings, setKeepAwakeWhileAgentsWork } from "./methods/power.ts";
+import {
+  getPowerSettings,
+  releaseDesktopAvailability,
+  setKeepAwakeWhileAgentsWork,
+} from "./methods/power.ts";
 import { getWslState, setWslBackendEnabled, setWslDistro, setWslOnly } from "./methods/wsl.ts";
 
 export const installDesktopIpcHandlers = Effect.fn("desktop.ipc.installHandlers")(function* () {
@@ -88,6 +92,7 @@ export const installDesktopIpcHandlers = Effect.fn("desktop.ipc.installHandlers"
   yield* ipc.handle(getAdvertisedEndpoints);
   yield* ipc.handle(getPowerSettings);
   yield* ipc.handle(setKeepAwakeWhileAgentsWork);
+  yield* ipc.handle(releaseDesktopAvailability);
 
   yield* ipc.handle(getWslState);
   yield* ipc.handle(setWslBackendEnabled);

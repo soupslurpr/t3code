@@ -79,6 +79,7 @@ import {
 } from "./previewAutomation.ts";
 import {
   ComputerAutomationAccessInput,
+  ComputerAutomationAvailabilityInput,
   ComputerAutomationActInput,
   ComputerAutomationFailure,
   ComputerAutomationObservation,
@@ -466,10 +467,12 @@ export const DesktopServerExposureStateSchema = Schema.Struct({
 
 export interface DesktopPowerSettings {
   keepAwakeWhileAgentsWork: boolean;
+  desktopAvailabilityActive: boolean;
 }
 
 export const DesktopPowerSettingsSchema = Schema.Struct({
   keepAwakeWhileAgentsWork: Schema.Boolean,
+  desktopAvailabilityActive: Schema.Boolean,
 });
 
 export interface PickFolderOptions {
@@ -1108,6 +1111,11 @@ export const DesktopComputerAutomationAccessRequestSchema = Schema.Struct({
   context: Schema.optional(DesktopComputerAutomationContextSchema),
 });
 
+export const DesktopComputerAutomationAvailabilityRequestSchema = Schema.Struct({
+  input: ComputerAutomationAvailabilityInput,
+  context: Schema.optional(DesktopComputerAutomationContextSchema),
+});
+
 export const DesktopComputerAutomationTargetRequestSchema = Schema.Struct({
   input: ComputerAutomationTargetInput,
   context: Schema.optional(DesktopComputerAutomationContextSchema),
@@ -1241,6 +1249,7 @@ export interface DesktopBridge {
   getPowerSettings?: () => Promise<DesktopPowerSettings>;
   /** Optional for compatibility with desktop builds predating agent wake locks. */
   setKeepAwakeWhileAgentsWork?: (enabled: boolean) => Promise<DesktopPowerSettings>;
+  releaseDesktopAvailability?: () => Promise<DesktopPowerSettings>;
   getWslState: () => Promise<DesktopWslState>;
   setWslBackendEnabled: (enabled: boolean) => Promise<DesktopWslState>;
   setWslDistro: (distro: string | null) => Promise<DesktopWslState>;
@@ -1354,6 +1363,14 @@ export interface DesktopAgentDesktopBridge {
 export interface DesktopComputerAutomationBridge {
   status: (
     input: ComputerAutomationTargetInput,
+    context?: DesktopComputerAutomationContext,
+  ) => Promise<DesktopComputerAutomationResult<ComputerAutomationStatus>>;
+  requestAvailability: (
+    input: ComputerAutomationAvailabilityInput,
+    context?: DesktopComputerAutomationContext,
+  ) => Promise<DesktopComputerAutomationResult<ComputerAutomationStatus>>;
+  releaseAvailability: (
+    input: ComputerAutomationAvailabilityInput,
     context?: DesktopComputerAutomationContext,
   ) => Promise<DesktopComputerAutomationResult<ComputerAutomationStatus>>;
   requestView: (

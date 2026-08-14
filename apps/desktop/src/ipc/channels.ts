@@ -45,6 +45,7 @@ export const SET_TAILSCALE_SERVE_ENABLED_CHANNEL = "desktop:set-tailscale-serve-
 export const GET_ADVERTISED_ENDPOINTS_CHANNEL = "desktop:get-advertised-endpoints";
 export const GET_POWER_SETTINGS_CHANNEL = "desktop:get-power-settings";
 export const SET_KEEP_AWAKE_WHILE_AGENTS_WORK_CHANNEL = "desktop:set-keep-awake-while-agents-work";
+export const RELEASE_DESKTOP_AVAILABILITY_CHANNEL = "desktop:release-desktop-availability";
 export const GET_WSL_STATE_CHANNEL = "desktop:get-wsl-state";
 export const SET_WSL_BACKEND_ENABLED_CHANNEL = "desktop:set-wsl-backend-enabled";
 export const SET_WSL_DISTRO_CHANNEL = "desktop:set-wsl-distro";
@@ -93,6 +94,10 @@ export const PREVIEW_RECORDING_FRAME_CHANNEL = "desktop:preview-recording-frame"
 export const PREVIEW_STATE_CHANGE_CHANNEL = "desktop:preview-state-change";
 export const PREVIEW_POINTER_EVENT_CHANNEL = "desktop:preview-pointer-event";
 export const COMPUTER_AUTOMATION_STATUS_CHANNEL = "desktop:computer-automation-status";
+export const COMPUTER_AUTOMATION_REQUEST_AVAILABILITY_CHANNEL =
+  "desktop:computer-automation-request-availability";
+export const COMPUTER_AUTOMATION_RELEASE_AVAILABILITY_CHANNEL =
+  "desktop:computer-automation-release-availability";
 export const COMPUTER_AUTOMATION_REQUEST_VIEW_CHANNEL = "desktop:computer-automation-request-view";
 export const COMPUTER_AUTOMATION_REQUEST_CONTROL_CHANNEL =
   "desktop:computer-automation-request-control";
