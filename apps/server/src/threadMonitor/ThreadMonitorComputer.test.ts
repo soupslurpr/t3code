@@ -12,6 +12,7 @@ import {
   type OrchestrationThreadShell,
 } from "@t3tools/contracts";
 import { createModelSelection } from "@t3tools/shared/model";
+import * as NodeCrypto from "node:crypto";
 import * as Effect from "effect/Effect";
 import * as Fiber from "effect/Fiber";
 import * as Layer from "effect/Layer";
@@ -40,12 +41,19 @@ function imageData(contents: string): string {
   return Buffer.from(contents).toString("base64");
 }
 
+/** Creates one valid deterministic content fingerprint for fake pixels. */
+function contentHash(contents: string): `sha256-bgra8-v1:${string}` {
+  return `sha256-bgra8-v1:${NodeCrypto.createHash("sha256").update(contents).digest("base64url")}`;
+}
+
 /** Builds one screenshot whose image coordinates map directly to the requested desktop region. */
 function snapshot(
   contents: string,
   x: number,
   encoding: ComputerAutomationScreenshotEncoding = { format: "webp", mode: "lossless" },
+  unchangedIfContentHash?: string,
 ): ComputerAutomationSnapshot {
+  const hash = contentHash(contents);
   return {
     display: {
       id: "display-1",
@@ -64,14 +72,19 @@ function snapshot(
       toDesktopLogical: { scaleX: 1, scaleY: 1, offsetX: x, offsetY: 0 },
     },
     captureSource: "virtual-display",
-    screenshot: {
-      mimeType: "image/webp",
-      data: imageData(contents),
-      width: 200,
-      height: 100,
-      sizeBytes: Buffer.byteLength(contents),
-      encoding,
-    },
+    screenshot:
+      unchangedIfContentHash === hash
+        ? { state: "unchanged", contentHash: hash, width: 200, height: 100 }
+        : {
+            state: "image",
+            contentHash: hash,
+            mimeType: "image/webp",
+            data: imageData(contents),
+            width: 200,
+            height: 100,
+            sizeBytes: Buffer.byteLength(contents),
+            encoding,
+          },
   };
 }
 
@@ -112,6 +125,7 @@ describe("ThreadMonitorComputer", () => {
   it.effect("captures context only when a trigger schedules exact model evaluation", () =>
     Effect.gen(function* () {
       const captures: number[] = [];
+      const comparisons: Array<string | undefined> = [];
       const evaluations: Array<TextGeneration.ImageConditionEvaluationInput> = [];
       let triggerCapture = 0;
       let captureFailure = false;
@@ -149,10 +163,12 @@ describe("ThreadMonitorComputer", () => {
             readonly screenshot: {
               readonly region?: { readonly x: number } | undefined;
               readonly encoding?: ComputerAutomationScreenshotEncoding | undefined;
+              readonly unchangedIfContentHash?: string | undefined;
             };
           };
           const x = input.screenshot.region?.x ?? 0;
           captures.push(x);
+          comparisons.push(input.screenshot.unchangedIfContentHash);
           const contents =
             x === 400
               ? captures.length <= 2
@@ -160,7 +176,14 @@ describe("ThreadMonitorComputer", () => {
                 : "context-current"
               : (["status-initial", "status-initial", "status-changed"][triggerCapture++] ??
                 "status-changed");
-          return Effect.succeed(snapshot(contents, x, input.screenshot.encoding) as Result);
+          return Effect.succeed(
+            snapshot(
+              contents,
+              x,
+              input.screenshot.encoding,
+              input.screenshot.unchangedIfContentHash,
+            ) as Result,
+          );
         },
       });
       const registry = ProviderInstanceRegistry.ProviderInstanceRegistry.of({
@@ -254,6 +277,7 @@ describe("ThreadMonitorComputer", () => {
         },
       });
       expect(captures).toEqual([0, 400]);
+      expect(comparisons).toEqual([undefined, undefined]);
       expect(prepared.baselineImages.map(({ regionId }) => regionId)).toEqual([
         "status",
         "details",
@@ -295,6 +319,7 @@ describe("ThreadMonitorComputer", () => {
         checkedAt: "2026-08-14T00:00:01.000Z",
       });
       expect(captures).toEqual([0, 400, 0]);
+      expect(comparisons.at(-1)).toBe(contentHash("status-initial"));
       expect(evaluations).toHaveLength(0);
       expect(unchanged.observedImages).toEqual([]);
 
@@ -304,6 +329,10 @@ describe("ThreadMonitorComputer", () => {
         checkedAt: "2026-08-14T00:00:02.000Z",
       });
       expect(captures).toEqual([0, 400, 0, 0, 400]);
+      expect(comparisons.slice(-2)).toEqual([
+        contentHash("status-initial"),
+        contentHash("context-initial"),
+      ]);
       expect(evaluations).toHaveLength(1);
       expect(evaluations[0]?.images).toEqual([
         {
@@ -356,6 +385,26 @@ describe("ThreadMonitorComputer", () => {
         { id: "fresh:0:details", regionId: "details", frameIndex: 0 },
         { id: "fresh:1:details", regionId: "details", frameIndex: 1 },
       ]);
+
+      const unsupported = yield* service
+        .check({
+          monitor: {
+            ...monitor,
+            condition: {
+              ...changed.condition,
+              observation: {
+                regions: changed.condition.observation.regions.map((region, index) =>
+                  index === 0 ? { ...region, lastSampleHash: "legacy-compressed-hash" } : region,
+                ),
+              },
+            },
+          },
+          evidence,
+          checkedAt: "2026-08-14T00:00:03.000Z",
+        })
+        .pipe(Effect.flip);
+      expect(unsupported.code).toBe("COMPUTER_FINGERPRINT_UNSUPPORTED");
+      expect(unsupported.detail).toContain("Restart this monitor");
 
       captureFailure = true;
       const failure = yield* service
