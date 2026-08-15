@@ -31,6 +31,7 @@ import {
   createStagePatchedDependencies,
   readWorkspaceConfig,
   createBuildConfig,
+  DESKTOP_ASAR_UNPACK_GLOBS,
   DESKTOP_ELECTRON_LANGUAGES,
   DESKTOP_FILE_EXCLUSIONS,
   DESKTOP_EXTRA_RESOURCES,
@@ -692,6 +693,7 @@ it.layer(NodeServices.layer)("build-desktop-artifact", (it) => {
           "electron-updater": "^6.6.2",
           "ffi-rs": "1.3.2",
           "playwright-core": "1.60.0",
+          sharp: "0.34.5",
         },
         {
           "@clerk/electron": "0.0.37",
@@ -706,6 +708,7 @@ it.layer(NodeServices.layer)("build-desktop-artifact", (it) => {
         "@napi-rs/keyring": "^1.3.0",
         "ffi-rs": "1.3.2",
         "playwright-core": "1.60.0",
+        sharp: "0.34.5",
       },
     );
   });
@@ -943,8 +946,8 @@ it.layer(NodeServices.layer)("build-desktop-artifact", (it) => {
 
       assert.notProperty(mac, "asar");
       assert.notProperty(linux, "asar");
-      assert.notProperty(mac, "asarUnpack");
-      assert.notProperty(linux, "asarUnpack");
+      assert.deepStrictEqual(mac.asarUnpack, DESKTOP_ASAR_UNPACK_GLOBS);
+      assert.deepStrictEqual(linux.asarUnpack, DESKTOP_ASAR_UNPACK_GLOBS);
       assert.deepStrictEqual(win.asar, { smartUnpack: false });
       assert.deepStrictEqual(win.asarUnpack, [WINDOWS_NATIVE_ASAR_UNPACK_GLOB]);
       assert.deepStrictEqual(winWithoutWslRuntime.asar, win.asar);

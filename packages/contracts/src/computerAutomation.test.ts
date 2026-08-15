@@ -181,10 +181,12 @@ describe("computer automation contracts", () => {
         },
         captureSource: "remote-desktop-stream",
         screenshot: {
-          mimeType: "image/png",
-          data: "iVBORw0KGgo=",
+          mimeType: "image/webp",
+          data: "UklGRg==",
           width: 800,
           height: 600,
+          sizeBytes: 4,
+          encoding: { format: "webp", mode: "lossless" },
         },
       }).pointer,
     ).toMatchObject({ source: "last-commanded" });
@@ -228,11 +230,31 @@ describe("computer automation contracts", () => {
           region: { frameId: "frame-1", x: 10, y: 20, width: 100, height: 80 },
           maxWidth: 1_200,
           maxHeight: 900,
+          encoding: { format: "webp", mode: "near-lossless", quality: 92 },
         },
         includeAccessibility: false,
         delayMs: 50,
       }),
-    ).toMatchObject({ screenshot: { maxWidth: 1_200 }, delayMs: 50 });
+    ).toMatchObject({
+      screenshot: {
+        maxWidth: 1_200,
+        encoding: { format: "webp", mode: "near-lossless", quality: 92 },
+      },
+      delayMs: 50,
+    });
+    expect(decodeSnapshotInput({ screenshot: { encoding: { format: "png" } } })).toMatchObject({
+      screenshot: { encoding: { format: "png" } },
+    });
+    expect(() =>
+      decodeSnapshotInput({
+        screenshot: { encoding: { format: "webp", mode: "lossy", quality: 0 } },
+      }),
+    ).toThrow();
+    expect(() =>
+      decodeSnapshotInput({
+        screenshot: { encoding: { format: "webp", mode: "lossless", quality: 90 } },
+      }),
+    ).toThrow();
     expect(() =>
       decodeSnapshotInput({
         displayId: "42",

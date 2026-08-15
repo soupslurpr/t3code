@@ -11,7 +11,8 @@ Migration 41 creates `thread_monitors`, migration 42 adds coalesced delivery and
 durable retry state, migration 43 adds structured computer conditions and
 `thread_monitor_computer_evidence`, and migration 44 adds model-evaluation
 throttling. Migration 45 replaces the single-region computer condition with a
-revisioned, multi-region condition and bounded evidence generations. Each
+revisioned, multi-region condition and bounded evidence generations. Migration
+46 makes retained images format-aware and migrates existing PNG evidence. Each
 monitor row stores its normalized condition, continuation policy, trigger
 evidence, terminal timestamps, and delivery attempts. MCP invocation
 credentials determine the owning thread. A request scoped to another thread
@@ -66,18 +67,18 @@ view lease. An explicitly named Agent desktop also permits view-only controllers
 from the same environment and thread while preserving exclusive input control
 for its owner.
 
-Each check captures trigger regions at their configured resolutions. Context
-regions are captured only when a model evaluation is due, so a large context
-view does not consume capture or image-token cost at every sampling interval.
-Exact `image-change` conditions compare trigger hashes with the revision
-baselines without a model. Model conditions route through the exact provider
-instance and model in the condition; capability discovery lists only instances
-whose adapter exposes image evaluation. The default change gate skips a model
-call when every trigger is unchanged. An optional minimum evaluation interval
-rate-limits model calls without slowing capture. A change observed during the
-rate-limit window sets a durable pending flag. At the first eligible sample, the
-evaluator receives the latest named trigger and context images even if the
-triggers are unchanged from the immediately preceding sample. Successful
+Each check captures trigger regions at their configured resolutions and image
+encodings. Context regions are captured only when a model evaluation is due, so
+a large context view does not consume capture or image-token cost at every
+sampling interval. Exact `image-change` conditions compare trigger hashes with
+the revision baselines without a model. Model conditions route through the exact
+provider instance and model in the condition; capability discovery lists only
+instances whose adapter exposes image evaluation. The default change gate skips
+a model call when every trigger is unchanged. An optional minimum evaluation
+interval rate-limits model calls without slowing capture. A change observed
+during the rate-limit window sets a durable pending flag. At the first eligible
+sample, the evaluator receives the latest named trigger and context images even
+if the triggers are unchanged from the immediately preceding sample. Successful
 evaluation clears the flag; restarts preserve it.
 
 The evaluator is a narrow, stateless predicate checker. It receives named

@@ -74,20 +74,36 @@ describe("thread monitor contracts", () => {
     ).toThrow();
   });
 
-  it("accepts named trigger and context regions with independent resolutions", () => {
+  it("accepts named regions with independent resolutions and encodings", () => {
     const decoded = decodeComputerWatch({
       label: "Wait for a result",
       match: modelMatch,
       observation: {
         regions: [
-          { id: "result", role: "trigger", maxWidth: 800, maxHeight: 450 },
-          { id: "status", role: "context", maxWidth: 320, maxHeight: 180 },
+          {
+            id: "result",
+            role: "trigger",
+            maxWidth: 800,
+            maxHeight: 450,
+            encoding: { format: "webp", mode: "near-lossless", quality: 90 },
+          },
+          {
+            id: "status",
+            role: "context",
+            maxWidth: 320,
+            maxHeight: 180,
+            encoding: { format: "png" },
+          },
         ],
       },
     });
     expect(decoded.observation?.regions.map(({ id, role }) => ({ id, role }))).toEqual([
       { id: "result", role: "trigger" },
       { id: "status", role: "context" },
+    ]);
+    expect(decoded.observation?.regions.map(({ encoding }) => encoding)).toEqual([
+      { format: "webp", mode: "near-lossless", quality: 90 },
+      { format: "png" },
     ]);
   });
 

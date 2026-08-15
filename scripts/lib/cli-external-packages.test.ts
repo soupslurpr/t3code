@@ -51,6 +51,8 @@ describe("shouldBundleCliDependency", () => {
       "@napi-rs/keyring",
       "@clerk/electron-passkeys",
       "node-addon-api",
+      "sharp",
+      "@img/sharp-linux-x64",
     ]) {
       assert.strictEqual(shouldBundleCliDependency(id), false, id);
     }
@@ -85,6 +87,7 @@ describe("selectCliRuntimeExternalDependencies", () => {
         "@napi-rs/keyring",
         "node-pty",
         "playwright-core",
+        "sharp",
         "undici",
       ],
     );
