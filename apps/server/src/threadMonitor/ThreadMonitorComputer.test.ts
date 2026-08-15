@@ -107,6 +107,7 @@ describe("ThreadMonitorComputer", () => {
       const captures: number[] = [];
       const evaluations: Array<TextGeneration.ImageConditionEvaluationInput> = [];
       let triggerCapture = 0;
+      let captureFailure = false;
       const instance = evaluatorInstance((input) => {
         evaluations.push(input);
         return Effect.succeed({
@@ -126,6 +127,17 @@ describe("ThreadMonitorComputer", () => {
             return Effect.succeed({} as Result);
           }
           if (request.operation !== "computerSnapshot") return Effect.die("unexpected operation");
+          if (captureFailure) {
+            return Effect.fail({
+              computerFailure: {
+                code: "capture-failed",
+                category: "capture",
+                message: "The desktop observation could not be captured.",
+                backendCode: "stream-capture-failed",
+                detail: "PipeWire could not duplicate a file descriptor (EMFILE)",
+              },
+            } as never);
+          }
           const input = request.input as {
             readonly screenshot: {
               readonly region?: { readonly x: number } | undefined;
@@ -236,6 +248,7 @@ describe("ThreadMonitorComputer", () => {
         "status",
         "details",
       ]);
+      expect(prepared.condition.review.policy?.consecutiveFailures).toBe(3);
 
       const monitor = {
         id: ThreadMonitorId.make("computer-watch-test"),
@@ -317,6 +330,17 @@ describe("ThreadMonitorComputer", () => {
         { id: "fresh:0:details", regionId: "details", frameIndex: 0 },
         { id: "fresh:1:details", regionId: "details", frameIndex: 1 },
       ]);
+
+      captureFailure = true;
+      const failure = yield* service
+        .check({
+          monitor: { ...monitor, condition: changed.condition },
+          evidence,
+          checkedAt: "2026-08-14T00:00:03.000Z",
+        })
+        .pipe(Effect.flip);
+      expect(failure.detail).toContain("capture-failed (stream-capture-failed)");
+      expect(failure.detail).toContain("PipeWire");
     }),
   );
 });
