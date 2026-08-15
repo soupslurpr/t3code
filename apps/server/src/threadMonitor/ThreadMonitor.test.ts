@@ -981,6 +981,70 @@ computerMonitorTestLayer("ThreadMonitor computer conditions", (it) => {
     }),
   );
 
+  it.effect("advances the controller review attempt after a command id conflict", () =>
+    Effect.gen(function* () {
+      yield* seedThread;
+      const service = yield* ThreadMonitorService;
+      const engine = yield* OrchestrationEngineService;
+
+      const monitor = yield* service.createComputer({
+        threadId,
+        monitor: {
+          label: "Retry a conflicting controller review",
+          match: {
+            type: "model",
+            criterion: "The result is visibly complete.",
+            modelSelection: {
+              instanceId: ProviderInstanceId.make("test-provider"),
+              model: "test-model",
+            },
+          },
+          sampling: { intervalMs: 1_000 },
+          review: { consecutiveUncertain: 1 },
+          continuation: "record-only",
+        },
+      });
+
+      yield* TestClock.adjust("1 second");
+      yield* service.checkNow({ threadId, check: { monitorId: monitor.id } });
+
+      const conflictingAt = DateTime.formatIso(yield* DateTime.now);
+      yield* engine
+        .dispatch({
+          type: "thread.turn.start",
+          commandId: CommandId.make(`thread-monitor:${monitor.id}:review:1:1:1`),
+          threadId: ThreadId.make("missing-review-thread"),
+          message: {
+            messageId: MessageId.make("conflicting-monitor-review"),
+            role: "system",
+            text: "Reject this command before the monitor retries it.",
+            attachments: [],
+          },
+          runtimeMode: DEFAULT_RUNTIME_MODE,
+          interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
+          createdAt: conflictingAt,
+        })
+        .pipe(Effect.result);
+
+      yield* TestClock.adjust("1 second");
+      const reviewed = yield* service.checkNow({
+        threadId,
+        check: { monitorId: monitor.id },
+      });
+      const current = reviewed.monitors[0];
+      assert.strictEqual(current?.status, "active");
+      assert.strictEqual(current?.condition.type, "computer");
+      if (current?.condition.type !== "computer") return;
+      assert.strictEqual(current.condition.review.state, "pending");
+      assert.strictEqual(current.condition.review.deliveryAttempts, 2);
+      assert.strictEqual(current.condition.review.deliveryFailureCount, 1);
+      assert.isNotNull(current.condition.review.deliveryRetryAt);
+      assert.include(current.lastError ?? "", "Unable to request the controller review turn");
+
+      yield* service.cancel({ threadId, cancel: { monitorId: monitor.id } });
+    }),
+  );
+
   it.effect("fails and releases watches with obsolete fingerprints", () =>
     Effect.gen(function* () {
       yield* seedThread;

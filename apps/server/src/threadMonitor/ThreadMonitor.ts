@@ -684,7 +684,8 @@ const make = Effect.gen(function* () {
           review: {
             ...attempting.condition.review,
             deliveryAttempts:
-              dispatched.failure._tag === "OrchestrationCommandPreviouslyRejectedError"
+              dispatched.failure._tag === "OrchestrationCommandPreviouslyRejectedError" ||
+              dispatched.failure._tag === "OrchestrationCommandIdConflictError"
                 ? attempt + 1
                 : attempt,
             deliveryRetryAt: retryAt,
