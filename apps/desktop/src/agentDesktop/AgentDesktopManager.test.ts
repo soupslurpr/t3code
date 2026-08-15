@@ -664,6 +664,49 @@ describe("AgentDesktopManager", () => {
     }),
   );
 
+  it.effect("injects discrete wheel ticks through QEMU", () =>
+    Effect.gen(function* () {
+      const harness = yield* managerHarness("wheel-ticks", { captureAvailable: true });
+      yield* Effect.gen(function* () {
+        const manager = yield* AgentDesktopManager.AgentDesktopManager;
+        const desktop = yield* manager.acquire(owner, { label: "Wheel input" });
+        yield* manager.requestControl(owner, { kind: "agent", desktopId: desktop.id });
+        const snapshot = yield* manager.snapshot(
+          owner.controllerId,
+          { includeAccessibility: false },
+          desktop.id,
+        );
+        if (snapshot.frame === undefined) throw new Error("snapshot did not return a frame");
+        const result = yield* manager.act(
+          owner.controllerId,
+          {
+            actions: [
+              {
+                type: "wheel",
+                frameId: snapshot.frame.id,
+                x: 50,
+                y: 50,
+                verticalTicks: -7,
+              },
+            ],
+          },
+          desktop.id,
+        );
+
+        assert.deepEqual(result, [
+          { index: 0, type: "wheel", horizontalTicks: 0, verticalTicks: -7 },
+        ]);
+        const injected = (yield* Ref.get(harness.inputEvents)).flat();
+        assert.equal(
+          injected.filter(
+            (event) => event.type === "btn" && event.data.button === "wheel-up" && event.data.down,
+          ).length,
+          7,
+        );
+      }).pipe(Effect.provide(harness.layer));
+    }),
+  );
+
   it.effect("reports and recovers Agent desktop capture health", () =>
     Effect.gen(function* () {
       const harness = yield* managerHarness("capture-health", { captureAvailable: true });

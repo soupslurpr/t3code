@@ -372,13 +372,29 @@ function automationResult(operation: string, input?: unknown): unknown {
         input.observation === false
           ? {}
           : { snapshot: automationResult("computerSnapshot") }),
-        actionResults: actions.map((action, index) => ({
-          index,
-          type:
-            typeof action === "object" && action !== null && "type" in action
-              ? action.type
-              : "press",
-        })),
+        actionResults: actions.map((action, index) => {
+          if (typeof action === "object" && action !== null && action.type === "wheel") {
+            return {
+              index,
+              type: "wheel",
+              horizontalTicks:
+                "horizontalTicks" in action && typeof action.horizontalTicks === "number"
+                  ? action.horizontalTicks
+                  : 0,
+              verticalTicks:
+                "verticalTicks" in action && typeof action.verticalTicks === "number"
+                  ? action.verticalTicks
+                  : 0,
+            };
+          }
+          return {
+            index,
+            type:
+              typeof action === "object" && action !== null && "type" in action
+                ? action.type
+                : "press",
+          };
+        }),
       };
     }
     case "press":
@@ -830,7 +846,7 @@ it.effect("registers annotated tools and preserves authenticated request context
               { type: "activate", targetId: "a11y-1-1" },
               { type: "move", frameId: "frame-1", x: 100, y: 200, settleMs: 0 },
               { type: "click", frameId: "frame-1", x: 100, y: 200 },
-              { type: "wheel", deltaY: 3, unit: "ticks" },
+              { type: "wheel", verticalTicks: 3 },
               { type: "hotkey", keys: ["Control", "Shift", "N"] },
               { type: "key_down", key: "Alt" },
               { type: "press", key: "Tab" },

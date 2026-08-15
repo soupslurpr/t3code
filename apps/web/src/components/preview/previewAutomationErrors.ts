@@ -222,17 +222,14 @@ export class PreviewAutomationOperationError extends Schema.TaggedErrorClass<Pre
       });
     }
     const computerFailure =
-      input.operation.startsWith("computer") &&
-      input.cause instanceof DesktopComputerAutomationError
-        ? input.cause.failure
-        : undefined;
+      input.cause instanceof DesktopComputerAutomationError ? input.cause.failure : undefined;
     const kind =
       computerFailure !== undefined &&
       (computerFailure.code === "display-inactive" ||
         computerFailure.code === "display-locked" ||
         computerFailure.code === "keep-awake-denied")
         ? computerFailure.code
-        : input.operation.startsWith("computer")
+        : input.operation.startsWith("computer") || input.operation.startsWith("agentDesktop")
           ? findComputerAutomationFailureKind(input.cause)
           : undefined;
     return new PreviewAutomationOperationError({

@@ -2958,10 +2958,12 @@ export const make = Effect.gen(function* () {
             events.push(buttonEvent(button, true), buttonEvent(button, false));
           }
         };
-        addTicks(action.deltaY ?? 0, "wheel-up", "wheel-down");
-        addTicks(action.deltaX ?? 0, "wheel-left", "wheel-right");
+        const horizontalTicks = action.horizontalTicks ?? 0;
+        const verticalTicks = action.verticalTicks ?? 0;
+        addTicks(verticalTicks, "wheel-up", "wheel-down");
+        addTicks(horizontalTicks, "wheel-left", "wheel-right");
         yield* qemu.sendInput(desktop.id, events);
-        return { index: actionIndex, type: action.type };
+        return { index: actionIndex, type: action.type, horizontalTicks, verticalTicks };
       }
       case "type": {
         const intervalMs = action.intervalMs ?? 0;
@@ -3397,13 +3399,19 @@ export const make = Effect.gen(function* () {
             ? innerArguments
             : ["-u", input.user, "--", innerExecutable, ...innerArguments];
         const startedAtMilliseconds = yield* Clock.currentTimeMillis;
+        const environmentEntries =
+          input.environment === undefined
+            ? undefined
+            : Array.isArray(input.environment)
+              ? input.environment
+              : Object.entries(input.environment).map(([name, value]) => ({ name, value }));
         const result = yield* qemu.executeGuestProcess(desktop.id, {
           executable,
           ...(argumentsValue.length === 0 ? {} : { arguments: argumentsValue }),
-          ...(input.environment === undefined
+          ...(environmentEntries === undefined
             ? {}
             : {
-                environment: input.environment.map((entry) => `${entry.name}=${entry.value}`),
+                environment: environmentEntries.map((entry) => `${entry.name}=${entry.value}`),
               }),
           ...(input.stdin === undefined ? {} : { stdin: new TextEncoder().encode(input.stdin) }),
           timeoutMs: input.timeoutMs ?? DEFAULT_COMMAND_TIMEOUT_MS,
