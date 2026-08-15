@@ -29,6 +29,7 @@ const MAX_TEMPORAL_SEQUENCE_FRAMES = 24;
 const MIN_TEMPORAL_SEQUENCE_INTERVAL_MS = 100;
 const MAX_TEMPORAL_SEQUENCE_INTERVAL_MS = 5_000;
 const MAX_TEMPORAL_SEQUENCE_DURATION_MS = 30_000;
+const COMPUTER_AUTOMATION_CONTENT_HASH_PATTERN = /^sha256-bgra8-v1:[A-Za-z0-9_-]{43}$/;
 
 /** Operations that target the host computer rather than a browser preview. */
 export const COMPUTER_AUTOMATION_OPERATIONS = [
@@ -48,6 +49,14 @@ export type ComputerAutomationDisplayId = typeof ComputerAutomationDisplayId.Typ
 
 export const ComputerAutomationFrameId = TrimmedNonEmptyString.check(Schema.isMaxLength(128));
 export type ComputerAutomationFrameId = typeof ComputerAutomationFrameId.Type;
+
+export const ComputerAutomationContentHash = TrimmedNonEmptyString.check(
+  Schema.isPattern(COMPUTER_AUTOMATION_CONTENT_HASH_PATTERN),
+).annotate({
+  description:
+    "Versioned SHA-256 fingerprint of the exact bounded BGRA8 pixels represented by a computer screenshot.",
+});
+export type ComputerAutomationContentHash = typeof ComputerAutomationContentHash.Type;
 
 export const ComputerAutomationPoint = Schema.Struct({
   x: Schema.Finite,
@@ -440,6 +449,10 @@ export const ComputerAutomationScreenshotOptions = Schema.Struct({
   encoding: Schema.optional(ComputerAutomationScreenshotEncoding).annotate({
     description: "Defaults to lossless WebP.",
   }),
+  unchangedIfContentHash: Schema.optional(ComputerAutomationContentHash).annotate({
+    description:
+      "Omit compressed image bytes when the newly captured pixels exactly match this content hash. A fresh frame and observation metadata are still returned.",
+  }),
 }).annotate({
   description:
     "Returns a full-display image, a current frame-relative region, or a durable desktop-logical region, bounded to the requested resolution without upscaling and encoded as lossless WebP by default.",
@@ -676,14 +689,24 @@ export const ComputerAutomationSnapshot = Schema.Struct({
     description: "Desktop display source used for the captured frame.",
   }),
   screenshot: Schema.optional(
-    Schema.Struct({
-      mimeType: ComputerAutomationScreenshotMimeType,
-      data: Schema.String.annotate({ description: "Base64-encoded compressed image bytes." }),
-      width: Schema.Int.check(Schema.isGreaterThan(0)),
-      height: Schema.Int.check(Schema.isGreaterThan(0)),
-      sizeBytes: Schema.Int.check(Schema.isGreaterThan(0)),
-      encoding: ComputerAutomationScreenshotEncoding,
-    }),
+    Schema.Union([
+      Schema.Struct({
+        state: Schema.Literal("image"),
+        contentHash: ComputerAutomationContentHash,
+        mimeType: ComputerAutomationScreenshotMimeType,
+        data: Schema.String.annotate({ description: "Base64-encoded compressed image bytes." }),
+        width: Schema.Int.check(Schema.isGreaterThan(0)),
+        height: Schema.Int.check(Schema.isGreaterThan(0)),
+        sizeBytes: Schema.Int.check(Schema.isGreaterThan(0)),
+        encoding: ComputerAutomationScreenshotEncoding,
+      }),
+      Schema.Struct({
+        state: Schema.Literal("unchanged"),
+        contentHash: ComputerAutomationContentHash,
+        width: Schema.Int.check(Schema.isGreaterThan(0)),
+        height: Schema.Int.check(Schema.isGreaterThan(0)),
+      }),
+    ]),
   ),
 });
 export type ComputerAutomationSnapshot = typeof ComputerAutomationSnapshot.Type;

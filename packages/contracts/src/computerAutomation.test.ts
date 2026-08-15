@@ -37,6 +37,7 @@ const decodeSnapshotInput = Schema.decodeUnknownSync(ComputerAutomationSnapshotI
 const decodeStatus = Schema.decodeUnknownSync(ComputerAutomationStatus);
 const decodeTarget = Schema.decodeUnknownSync(ComputerAutomationTargetInput);
 const decodeType = Schema.decodeUnknownSync(ComputerAutomationTypeInput);
+const contentHash = "sha256-bgra8-v1:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA";
 
 describe("computer automation contracts", () => {
   it("selects user or independently managed agent desktops", () => {
@@ -181,6 +182,8 @@ describe("computer automation contracts", () => {
         },
         captureSource: "remote-desktop-stream",
         screenshot: {
+          state: "image",
+          contentHash,
           mimeType: "image/webp",
           data: "UklGRg==",
           width: 800,
@@ -245,6 +248,31 @@ describe("computer automation contracts", () => {
     expect(decodeSnapshotInput({ screenshot: { encoding: { format: "png" } } })).toMatchObject({
       screenshot: { encoding: { format: "png" } },
     });
+    expect(
+      decodeSnapshotInput({ screenshot: { unchangedIfContentHash: contentHash } }),
+    ).toMatchObject({ screenshot: { unchangedIfContentHash: contentHash } });
+    expect(() =>
+      decodeSnapshotInput({ screenshot: { unchangedIfContentHash: "sha256:invalid" } }),
+    ).toThrow();
+    expect(
+      decodeSnapshot({
+        display: {
+          id: "42",
+          label: "Main display",
+          primary: true,
+          bounds: { x: 0, y: 0, width: 800, height: 600 },
+          scaleFactor: 1,
+        },
+        cursor: null,
+        captureSource: "remote-desktop-stream",
+        screenshot: {
+          state: "unchanged",
+          contentHash,
+          width: 800,
+          height: 600,
+        },
+      }).screenshot,
+    ).toEqual({ state: "unchanged", contentHash, width: 800, height: 600 });
     expect(() =>
       decodeSnapshotInput({
         screenshot: { encoding: { format: "webp", mode: "lossy", quality: 0 } },
