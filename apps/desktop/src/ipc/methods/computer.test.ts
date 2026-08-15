@@ -177,6 +177,12 @@ describe("computer IPC methods", () => {
       const agentStatus = {
         ...status,
         desktop: { id: agentDesktopId, kind: "agent" as const, label: "Agent desktop" },
+        displays: [
+          {
+            ...snapshot.display,
+            bounds: { ...snapshot.display.bounds, width: 1600, height: 900 },
+          },
+        ],
       };
       const computer = makeComputer({
         requestView: Effect.succeed(agentStatus),
@@ -195,7 +201,10 @@ describe("computer IPC methods", () => {
         })
         .pipe(Effect.provide(computerRouterLayer(computer)));
 
-      assert.deepEqual(result, { ok: true, value: { status: agentStatus, snapshot } });
+      assert.deepEqual(result, {
+        ok: true,
+        value: { status: { ...agentStatus, displays: [snapshot.display] }, snapshot },
+      });
     }),
   );
 

@@ -46,6 +46,20 @@ function computerResult<Value, Error, Requirements>(
   );
 }
 
+/** Reconciles status metadata with a display measured by the same observation. */
+function statusWithObservedDisplay(
+  status: ComputerAutomationStatus,
+  snapshot: ComputerAutomationSnapshot,
+): ComputerAutomationStatus {
+  if (!status.displays.some((display) => display.id === snapshot.display.id)) return status;
+  return {
+    ...status,
+    displays: status.displays.map((display) =>
+      display.id === snapshot.display.id ? snapshot.display : display,
+    ),
+  };
+}
+
 /** Captures a best-effort observation after the desktop has settled. */
 function observeComputer(
   computer: ComputerUseRouter.ComputerUseRouterShape,
@@ -59,7 +73,7 @@ function observeComputer(
   }
   return computer.snapshot(context, { ...target, ...options }).pipe(
     Effect.map((snapshot) => ({
-      ...(status === undefined ? {} : { status }),
+      ...(status === undefined ? {} : { status: statusWithObservedDisplay(status, snapshot) }),
       snapshot,
     })),
     Effect.orElseSucceed(
