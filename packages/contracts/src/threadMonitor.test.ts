@@ -30,6 +30,33 @@ describe("thread monitor contracts", () => {
     ).toEqual({ intervalMs: 1_000, minEvaluationIntervalMs: 30_000 });
   });
 
+  it("allows controller health reviews to be disabled explicitly", () => {
+    expect(
+      decodeComputerWatch({
+        label: "Watch silently",
+        match: { type: "image-change" },
+        review: null,
+      }).review,
+    ).toBeNull();
+    expect(
+      decodeComputerWatch({
+        label: "Review by time only",
+        match: { type: "image-change" },
+        review: {
+          consecutiveFailures: null,
+          at: "2026-08-15T12:00:00.000Z",
+        },
+      }).review,
+    ).toEqual({ consecutiveFailures: null, at: "2026-08-15T12:00:00.000Z" });
+    expect(
+      decodeComputerWatchUpdate({
+        monitorId: "monitor-1",
+        expectedRevision: 1,
+        review: { consecutiveFailures: null },
+      }).review,
+    ).toEqual({ consecutiveFailures: null });
+  });
+
   it("bounds the minimum model evaluation interval", () => {
     expect(() =>
       decodeComputerWatch({

@@ -56,6 +56,10 @@ Those images live in the environment's local T3 data until the owning thread is
 deleted. Cancelling, matching, reaching a deadline, or deleting the thread
 releases the watch's view lease. A temporary capture or evaluator failure is
 recorded and retried with bounded exponential backoff.
+After three consecutive failures, a screen watch normally resumes its controller once with the
+current diagnostic so the agent can inspect or revise an ineffective watch. The watch keeps retrying
+and does not repeat the warning within the same revision. An agent can disable this safeguard while
+retaining other review checkpoints, or disable reviews entirely when silence is intentional.
 
 Ask the agent to list or cancel its waits at any time. Signal-based monitoring
 usually combines a durable wait with background work that reports when its
