@@ -34,7 +34,7 @@ const readonlyComputerTool = <T extends Tool.Any>(tool: T): T =>
 export const ComputerStatusTool = readonlyComputerTool(
   Tool.make("computer_status", {
     description:
-      "Report whether the attached T3 environment can view and control one user or Agent desktop, including displays, display state, the active keep-awake lease, portal state, and remembered view/control access. Omission targets the user's desktop. An Agent desktop must be named by its desktopId so parallel agents cannot redirect each other. View-only means snapshots work but input does not. GNOME Wayland does not expose the live pointer position, so cursor is null there. Request the needed access immediately when a task may require desktop interaction.",
+      "Report whether the attached T3 environment can view and control one user or Agent desktop, including displays, per-display capture health, the latest bounded capture failure, display state, the active keep-awake lease, portal state, and remembered view/control access. Capture health reflects actual frame reads and is independent of permission, so granted access can still be degraded. Omission targets the user's desktop. An Agent desktop must be named by its desktopId so parallel agents cannot redirect each other. View-only means snapshots work but input does not. GNOME Wayland does not expose the live pointer position, so cursor is null there. Request the needed access immediately when a task may require desktop interaction.",
     parameters: ComputerAutomationTargetInput,
     success: ComputerAutomationStatus,
     failure: PreviewAutomationError,

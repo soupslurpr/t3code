@@ -72,6 +72,11 @@ the focused application exposes enough semantic information, the agent can omit 
 inspection. This keeps routine intermediate checks small while leaving full images available for
 visual decisions and confirmation.
 
+Computer status reports frame-capture health separately for each display. It includes the latest
+successful and failed frame times, consecutive failure count, and a bounded backend diagnostic.
+This distinguishes working permission from a working stream: a session can remain approved while
+PipeWire, the virtual display, or another capture component is degraded.
+
 Access requests and `computer_act` return a fresh screen observation by default. Action calls also
 return one ordered execution receipt per completed action, even when the agent skips the image. The
 agent can choose the image resolution, crop a region from a prior frame, omit the image when semantic
