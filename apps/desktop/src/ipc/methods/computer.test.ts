@@ -1,9 +1,17 @@
 import { assert, describe, it } from "@effect/vitest";
-import { AgentDesktopId, EnvironmentId, ThreadId } from "@t3tools/contracts";
+import {
+  AgentDesktopId,
+  ComputerAutomationObservation,
+  type ComputerAutomationCaptureHealth,
+  EnvironmentId,
+  makeDesktopComputerAutomationResultSchema,
+  ThreadId,
+} from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
 import * as Fiber from "effect/Fiber";
 import * as Layer from "effect/Layer";
+import * as Schema from "effect/Schema";
 import * as TestClock from "effect/testing/TestClock";
 
 import * as ComputerUse from "../../computer/ComputerUse.ts";
@@ -32,6 +40,9 @@ const snapshot = {
   cursor: null,
   captureSource: "remote-desktop-stream" as const,
 };
+const decodeRequestViewResult = Schema.decodeUnknownSync(
+  makeDesktopComputerAutomationResultSchema(ComputerAutomationObservation),
+);
 
 /** Creates the narrow fake computer service needed by the IPC tests. */
 function makeComputer(options: {
@@ -138,45 +149,46 @@ describe("computer IPC methods", () => {
 
   it.effect("refreshes capture health after an initial access observation", () =>
     Effect.gen(function* () {
+      const untestedHealth = {
+        displayId: "7",
+        state: "untested",
+        lastSuccessfulFrameAt: null,
+        lastFailedFrameAt: null,
+        consecutiveFailures: 0,
+        lastFailure: null,
+      } satisfies ComputerAutomationCaptureHealth;
       const untested = {
         ...status,
-        captureHealth: [
-          {
-            displayId: "7",
-            state: "untested" as const,
-            lastSuccessfulFrameAt: null,
-            lastFailedFrameAt: null,
-            consecutiveFailures: 0,
-            lastFailure: null,
-          },
-        ],
+        captureHealth: [untestedHealth],
       };
       let captured = false;
-      const result = yield* requestView.handler({ input: {} }).pipe(
-        Effect.provide(
-          computerRouterLayer(
-            makeComputer({
-              status: Effect.sync(() =>
-                captured
-                  ? {
-                      ...untested,
-                      captureHealth: [
-                        {
-                          ...untested.captureHealth[0],
-                          state: "healthy" as const,
-                          lastSuccessfulFrameAt: "2026-08-14T12:00:00.000Z",
-                        },
-                      ],
-                    }
-                  : untested,
-              ),
-              requestView: Effect.succeed(untested),
-              snapshot: () =>
-                Effect.sync(() => {
-                  captured = true;
-                  return snapshot;
-                }),
-            }),
+      const result = decodeRequestViewResult(
+        yield* requestView.handler({ input: {} }).pipe(
+          Effect.provide(
+            computerRouterLayer(
+              makeComputer({
+                status: Effect.sync(() =>
+                  captured
+                    ? {
+                        ...untested,
+                        captureHealth: [
+                          {
+                            ...untestedHealth,
+                            state: "healthy",
+                            lastSuccessfulFrameAt: "2026-08-14T12:00:00.000Z",
+                          },
+                        ],
+                      }
+                    : untested,
+                ),
+                requestView: Effect.succeed(untested),
+                snapshot: () =>
+                  Effect.sync(() => {
+                    captured = true;
+                    return snapshot;
+                  }),
+              }),
+            ),
           ),
         ),
       );
