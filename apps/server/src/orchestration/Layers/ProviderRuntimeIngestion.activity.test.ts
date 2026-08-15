@@ -122,7 +122,7 @@ describe("runtimeEventToActivities tool streaming persistence", () => {
     expect(JSON.stringify(data).length).toBeLessThan(1_000);
   });
 
-  it("persists the full terminal payload on tool.completed", () => {
+  it("persists tool.completed with the wire projection of terminal data", () => {
     const event = {
       ...base,
       type: "item.completed",
@@ -139,6 +139,58 @@ describe("runtimeEventToActivities tool streaming persistence", () => {
 
     expect(activities).toHaveLength(1);
     const payload = activities[0]?.payload as Record<string, unknown>;
-    expect(payload.data).toEqual(streamingData);
+    const data = payload.data as Record<string, unknown>;
+    expect(data.toolCallId).toBe("tool-call-1");
+    expect(data.command).toBe("blender --render");
+    expect(data.rawOutput).toEqual({ content: "first line of output" });
+    expect(data.content).toBeUndefined();
+    expect(JSON.stringify(data).length).toBeLessThan(1_000);
+  });
+
+  it("drops completed MCP image and structured-result bulk from persistence", () => {
+    const event = {
+      ...base,
+      type: "item.completed",
+      eventId: EventId.make("evt-computer-completed"),
+      payload: {
+        itemType: "mcp_tool_call",
+        status: "completed",
+        title: "t3-code · computer_act",
+        data: {
+          item: {
+            type: "mcpToolCall",
+            id: "computer-call-1",
+            server: "t3-code",
+            tool: "computer_act",
+            status: "completed",
+            arguments: { actions: [{ type: "press", key: "Enter" }] },
+            result: {
+              content: [
+                { type: "text", text: "Desktop action completed." },
+                { type: "image", data: "a".repeat(400_000), mimeType: "image/webp" },
+              ],
+              structuredContent: { screenshot: "b".repeat(400_000) },
+            },
+          },
+        },
+      },
+    } satisfies ProviderRuntimeEvent;
+
+    const activities = runtimeEventToActivities(event);
+
+    expect(activities).toHaveLength(1);
+    const payload = activities[0]?.payload as Record<string, unknown>;
+    expect(payload.data).toEqual({
+      item: {
+        type: "mcpToolCall",
+        id: "computer-call-1",
+        server: "t3-code",
+        tool: "computer_act",
+        status: "completed",
+        arguments: { actions: [{ type: "press", key: "Enter" }] },
+        result: { content: "Desktop action completed." },
+      },
+    });
+    expect(JSON.stringify(payload).length).toBeLessThan(1_000);
   });
 });
