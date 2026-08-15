@@ -1,9 +1,18 @@
 import type {
+  ComputerAutomationActInput,
+  ComputerAutomationObserveSequenceInput,
   ComputerAutomationObservation,
   ComputerAutomationSnapshot,
+  ComputerAutomationSnapshotInput,
   ComputerAutomationStatus,
+  ComputerAutomationTemporalCaptureOptions,
   PreviewAutomationOperation,
 } from "@t3tools/contracts";
+import {
+  captureComputerTemporalFrame,
+  captureComputerTemporalSequence,
+} from "@t3tools/shared/computerTemporalCapture";
+import * as Clock from "effect/Clock";
 import * as Effect from "effect/Effect";
 
 import * as McpInvocationContext from "../../McpInvocationContext.ts";
@@ -28,6 +37,72 @@ const invoke = Effect.fn("ComputerToolkit.invoke")(function* <A>(
   return yield* broker.invoke<A>({ scope, operation, input, timeoutMs });
 });
 
+/** Builds the screenshot-only request shared by temporal observations. */
+function temporalSnapshotInput(
+  input: ComputerAutomationTemporalCaptureOptions &
+    Pick<ComputerAutomationObserveSequenceInput, "desktop">,
+): ComputerAutomationSnapshotInput {
+  return {
+    ...(input.desktop === undefined ? {} : { desktop: input.desktop }),
+    ...(input.displayId === undefined ? {} : { displayId: input.displayId }),
+    includeAccessibility: false,
+    screenshot: input.screenshot ?? {},
+  };
+}
+
+/** Executes an action batch while capturing an optional temporal observation. */
+const actWithTemporalObservation = Effect.fn("ComputerToolkit.actWithTemporalObservation")(
+  function* (input: ComputerAutomationActInput) {
+    const { temporalObservation, ...actionInput } = input;
+    if (temporalObservation === undefined) {
+      return yield* invoke<ComputerAutomationObservation>(
+        "computerAct",
+        actionInput,
+        CONTROL_TIMEOUT_MS,
+      );
+    }
+    if (input.desktop?.kind !== "agent") {
+      return yield* invoke<ComputerAutomationObservation>("computerAct", input, CONTROL_TIMEOUT_MS);
+    }
+    const capture = {
+      ...(input.desktop === undefined ? {} : { desktop: input.desktop }),
+      ...temporalObservation,
+    };
+    const captureInput = {
+      capture: temporalObservation,
+      snapshot: invoke<ComputerAutomationSnapshot>(
+        "computerSnapshot",
+        temporalSnapshotInput(capture),
+        SNAPSHOT_TIMEOUT_MS,
+      ),
+    };
+    if ((temporalObservation.start ?? "before-actions") === "after-actions") {
+      const observation = yield* invoke<ComputerAutomationObservation>(
+        "computerAct",
+        actionInput,
+        CONTROL_TIMEOUT_MS,
+      );
+      const temporalSequence = yield* captureComputerTemporalSequence(captureInput);
+      return { ...observation, temporalSequence };
+    }
+
+    const startedAtMs = yield* Clock.currentTimeMillis;
+    const firstFrame = yield* captureComputerTemporalFrame({
+      ...captureInput,
+      index: 0,
+      startedAtMs,
+    });
+    const [observation, temporalSequence] = yield* Effect.all(
+      [
+        invoke<ComputerAutomationObservation>("computerAct", actionInput, CONTROL_TIMEOUT_MS),
+        captureComputerTemporalSequence({ ...captureInput, startedAtMs, firstFrame }),
+      ],
+      { concurrency: "unbounded" },
+    );
+    return { ...observation, temporalSequence };
+  },
+);
+
 const handlers = {
   computer_status: (input) =>
     invoke<ComputerAutomationStatus>("computerStatus", input, STATUS_TIMEOUT_MS),
@@ -41,8 +116,16 @@ const handlers = {
     invoke<ComputerAutomationObservation>("computerRequestControl", input, CONTROL_TIMEOUT_MS),
   computer_snapshot: (input) =>
     invoke<ComputerAutomationSnapshot>("computerSnapshot", input, SNAPSHOT_TIMEOUT_MS),
-  computer_act: (input) =>
-    invoke<ComputerAutomationObservation>("computerAct", input, CONTROL_TIMEOUT_MS),
+  computer_observe_sequence: (input) =>
+    captureComputerTemporalSequence({
+      capture: input,
+      snapshot: invoke<ComputerAutomationSnapshot>(
+        "computerSnapshot",
+        temporalSnapshotInput(input),
+        SNAPSHOT_TIMEOUT_MS,
+      ),
+    }),
+  computer_act: (input) => actWithTemporalObservation(input),
   computer_release: (input) =>
     invoke<ComputerAutomationStatus>("computerRelease", input, CONTROL_TIMEOUT_MS),
   computer_forget_control: (input) =>
@@ -53,12 +136,14 @@ const {
   computer_request_view,
   computer_request_control,
   computer_snapshot,
+  computer_observe_sequence,
   computer_act,
   ...standardHandlers
 } = handlers;
 
 const imageHandlers = {
   computer_snapshot,
+  computer_observe_sequence,
   computer_request_view,
   computer_request_control,
   computer_act,

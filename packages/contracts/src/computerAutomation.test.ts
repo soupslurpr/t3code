@@ -11,6 +11,7 @@ import {
   ComputerAutomationHotkeyInput,
   ComputerAutomationKeyInput,
   ComputerAutomationObservation,
+  ComputerAutomationObserveSequenceInput,
   ComputerAutomationWheelInput,
   ComputerAutomationSnapshot,
   ComputerAutomationSnapshotInput,
@@ -30,6 +31,7 @@ const decodeWheel = Schema.decodeUnknownSync(ComputerAutomationWheelInput);
 const decodeHotkey = Schema.decodeUnknownSync(ComputerAutomationHotkeyInput);
 const decodeFailure = Schema.decodeUnknownSync(ComputerAutomationFailure);
 const decodeObservation = Schema.decodeUnknownSync(ComputerAutomationObservation);
+const decodeObserveSequence = Schema.decodeUnknownSync(ComputerAutomationObserveSequenceInput);
 const decodeSnapshot = Schema.decodeUnknownSync(ComputerAutomationSnapshot);
 const decodeSnapshotInput = Schema.decodeUnknownSync(ComputerAutomationSnapshotInput);
 const decodeStatus = Schema.decodeUnknownSync(ComputerAutomationStatus);
@@ -78,6 +80,27 @@ describe("computer automation contracts", () => {
 
     expect(() => decodeClick({ frameId: "frame-1", x: -1, y: 80 })).toThrow();
     expect(() => decodeClick({ frameId: "frame-1", x: 120, y: 80, count: 4 })).toThrow();
+  });
+
+  it("bounds ephemeral temporal observations", () => {
+    expect(
+      decodeObserveSequence({
+        desktop: { kind: "agent", desktopId: "desktop-1" },
+        frameCount: 6,
+        intervalMs: 250,
+        screenshot: { maxWidth: 640, maxHeight: 360 },
+      }),
+    ).toMatchObject({ frameCount: 6, intervalMs: 250 });
+    expect(() => decodeObserveSequence({ frameCount: 1, intervalMs: 250 })).toThrow();
+    expect(() => decodeObserveSequence({ frameCount: 24, intervalMs: 5_000 })).toThrow();
+    expect(() =>
+      decodeObserveSequence({
+        displayId: "display-0",
+        frameCount: 2,
+        intervalMs: 100,
+        screenshot: { region: { frameId: "frame-1", x: 0, y: 0, width: 100, height: 100 } },
+      }),
+    ).toThrow();
   });
 
   it("requires a complete optional wheel target and at least one tick delta", () => {
@@ -424,6 +447,17 @@ describe("computer automation contracts", () => {
     expect(() =>
       decodeAct({ actions: [{ type: "type", text: "x".repeat(1_000), intervalMs: 100 }] }),
     ).toThrow();
+    expect(
+      decodeAct({
+        actions: [{ type: "press", key: "Space" }],
+        temporalObservation: {
+          frameCount: 4,
+          intervalMs: 200,
+          start: "before-actions",
+          screenshot: { maxWidth: 800, maxHeight: 450 },
+        },
+      }),
+    ).toMatchObject({ temporalObservation: { frameCount: 4, start: "before-actions" } });
   });
 
   it("accepts named modifiers for held-key transitions", () => {
