@@ -101,6 +101,7 @@ const workingComputerLayer = Layer.effect(
                   },
                   maxWidth: 1_024,
                   maxHeight: 1_024,
+                  encoding: { format: "webp", mode: "lossless" },
                   baselineHash: "baseline-hash",
                   lastSampleHash: "baseline-hash",
                   baselineStored: true,
@@ -177,7 +178,10 @@ const workingComputerLayer = Layer.effect(
               height: 200,
               frameIndex: null,
               elapsedMs: null,
-              pngBase64: "YmFzZWxpbmU=",
+              mimeType: "image/webp",
+              dataBase64: "YmFzZWxpbmU=",
+              sizeBytes: 8,
+              encoding: { format: "webp", mode: "lossless" },
             },
           ],
         }),
@@ -196,7 +200,10 @@ const workingComputerLayer = Layer.effect(
           height: 200,
           frameIndex: null,
           elapsedMs: null,
-          pngBase64: "dGVybWluYWw=",
+          mimeType: "image/webp" as const,
+          dataBase64: "dGVybWluYWw=",
+          sizeBytes: 8,
+          encoding: { format: "webp" as const, mode: "lossless" as const },
         };
         return Effect.gen(function* () {
           yield* Ref.update(probe.checks, (count) => count + 1);
@@ -271,6 +278,7 @@ const workingComputerLayer = Layer.effect(
                 },
           maxWidth: region.maxWidth ?? 1_024,
           maxHeight: region.maxHeight ?? 1_024,
+          encoding: region.encoding ?? { format: "webp", mode: "lossless" },
           baselineHash: `baseline-${region.id}`,
           lastSampleHash: `baseline-${region.id}`,
           baselineStored: true,
@@ -348,7 +356,10 @@ const workingComputerLayer = Layer.effect(
             height: region.region.height,
             frameIndex: null,
             elapsedMs: null,
-            pngBase64: "YmFzZWxpbmU=",
+            mimeType: "image/webp" as const,
+            dataBase64: "YmFzZWxpbmU=",
+            sizeBytes: 8,
+            encoding: { format: "webp" as const, mode: "lossless" as const },
           })),
         });
       },
@@ -370,7 +381,10 @@ const workingComputerLayer = Layer.effect(
               height: region.region.height,
               frameIndex: 0,
               elapsedMs: 0,
-              pngBase64: "ZnJlc2g=",
+              mimeType: "image/webp" as const,
+              dataBase64: "ZnJlc2g=",
+              sizeBytes: 5,
+              encoding: { format: "webp" as const, mode: "lossless" as const },
             })),
         );
       },
@@ -862,7 +876,8 @@ computerMonitorTestLayer("ThreadMonitor computer conditions", (it) => {
       const retained = yield* repository.getComputerEvidence(monitor.id);
       assert.isTrue(Option.isSome(retained));
       if (Option.isSome(retained)) {
-        assert.strictEqual(retained.value.baselineImages[0]?.pngBase64, "YmFzZWxpbmU=");
+        assert.strictEqual(retained.value.baselineImages[0]?.dataBase64, "YmFzZWxpbmU=");
+        assert.strictEqual(retained.value.baselineImages[0]?.mimeType, "image/webp");
       }
 
       yield* TestClock.adjust("30 seconds");
@@ -884,7 +899,7 @@ computerMonitorTestLayer("ThreadMonitor computer conditions", (it) => {
       const evidence = yield* repository.getComputerEvidence(monitor.id);
       assert.isTrue(Option.isSome(evidence));
       if (Option.isSome(evidence)) {
-        assert.strictEqual(evidence.value.terminalImages[0]?.pngBase64, "dGVybWluYWw=");
+        assert.strictEqual(evidence.value.terminalImages[0]?.dataBase64, "dGVybWluYWw=");
       }
 
       const cancellable = yield* service.createComputer({
@@ -1054,7 +1069,13 @@ computerMonitorTestLayer("ThreadMonitor computer conditions", (it) => {
           expectedRevision: 1,
           observation: {
             regions: [
-              { id: "result", role: "trigger", maxWidth: 640, maxHeight: 360 },
+              {
+                id: "result",
+                role: "trigger",
+                maxWidth: 640,
+                maxHeight: 360,
+                encoding: { format: "webp", mode: "lossy", quality: 75 },
+              },
               { id: "status", role: "context", maxWidth: 320, maxHeight: 180 },
             ],
           },
@@ -1073,6 +1094,11 @@ computerMonitorTestLayer("ThreadMonitor computer conditions", (it) => {
           { id: "status", role: "context" },
         ],
       );
+      assert.deepStrictEqual(revised.condition.observation.regions[0]?.encoding, {
+        format: "webp",
+        mode: "lossy",
+        quality: 75,
+      });
 
       const evidence = yield* repository.getComputerEvidence(monitor.id);
       assert.isTrue(Option.isSome(evidence));

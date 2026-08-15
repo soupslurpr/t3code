@@ -8,6 +8,7 @@ import type {
   ComputerAutomationFailure,
   ComputerAutomationFrame,
   ComputerAutomationPointer,
+  ComputerAutomationScreenshotEncoding,
   ComputerAutomationSnapshot,
   ComputerAutomationSnapshotInput,
   ComputerAutomationStatus,
@@ -23,6 +24,10 @@ import * as Schema from "effect/Schema";
 import * as Semaphore from "effect/Semaphore";
 import { nativeImage, screen, type Display } from "electron";
 
+import {
+  encodeComputerScreenshot,
+  type EncodedComputerScreenshot,
+} from "./ComputerScreenshotEncoding.ts";
 import * as GnomeRemoteDesktop from "./GnomeRemoteDesktop.ts";
 
 const ComputerUseOperation = Schema.Literals([
@@ -606,23 +611,19 @@ export interface ComputerUseImage {
   }) => ComputerUseImage;
   readonly getSize: () => { readonly width: number; readonly height: number };
   readonly toBitmap: () => Uint8Array;
-  readonly toPNG: () => Uint8Array;
 }
 
 export interface ComputerUsePlatform {
   readonly getDisplays: () => ReadonlyArray<Display>;
   readonly getPrimaryDisplay: () => Display;
   readonly decodePng: (data: Uint8Array) => ComputerUseImage;
-  readonly encodePng: (
+  readonly encodeScreenshot: (
     image: ComputerUseImage,
     pointer: { readonly x: number; readonly y: number } | null,
-  ) => Uint8Array;
+    encoding: ComputerAutomationScreenshotEncoding | undefined,
+  ) => Promise<EncodedComputerScreenshot>;
 }
 
-const POINTER_MARKER_RADIUS = 10;
-const POINTER_MARKER_INNER_RADIUS = 7;
-const POINTER_MARKER_CENTER_RADIUS = 2;
-const POINTER_MARKER_PIXEL_SIZE = 4;
 const DEFAULT_HOVER_SETTLE_MS = 250;
 const DEFAULT_TYPE_SETTLE_MS = 250;
 const DEFAULT_SUBMIT_SETTLE_MS = 250;
@@ -651,54 +652,12 @@ function fittedImageSize(
   };
 }
 
-/** Draws a high-contrast synthetic marker into one Electron BGRA bitmap. */
-function drawPointerMarker(
-  bitmap: Uint8Array,
-  width: number,
-  height: number,
-  point: { readonly x: number; readonly y: number },
-): void {
-  if (bitmap.length < width * height * POINTER_MARKER_PIXEL_SIZE) {
-    throw new Error("the desktop screenshot bitmap is smaller than its dimensions");
-  }
-  const centerX = Math.round(point.x);
-  const centerY = Math.round(point.y);
-  for (let offsetY = -POINTER_MARKER_RADIUS; offsetY <= POINTER_MARKER_RADIUS; offsetY += 1) {
-    const pixelY = centerY + offsetY;
-    if (pixelY < 0 || pixelY >= height) continue;
-    for (let offsetX = -POINTER_MARKER_RADIUS; offsetX <= POINTER_MARKER_RADIUS; offsetX += 1) {
-      const pixelX = centerX + offsetX;
-      if (pixelX < 0 || pixelX >= width) continue;
-      const distanceSquared = offsetX * offsetX + offsetY * offsetY;
-      const onOuterRing =
-        distanceSquared <= POINTER_MARKER_RADIUS * POINTER_MARKER_RADIUS &&
-        distanceSquared >= POINTER_MARKER_INNER_RADIUS * POINTER_MARKER_INNER_RADIUS;
-      const onCenter =
-        distanceSquared <= POINTER_MARKER_CENTER_RADIUS * POINTER_MARKER_CENTER_RADIUS;
-      if (!onOuterRing && !onCenter) continue;
-      const pixelOffset = (pixelY * width + pixelX) * POINTER_MARKER_PIXEL_SIZE;
-      bitmap[pixelOffset] = onCenter ? 48 : 0;
-      bitmap[pixelOffset + 1] = onCenter ? 48 : 230;
-      bitmap[pixelOffset + 2] = onCenter ? 255 : 255;
-      bitmap[pixelOffset + 3] = 255;
-    }
-  }
-}
-
 const livePlatform: ComputerUsePlatform = {
   getDisplays: () => screen.getAllDisplays(),
   getPrimaryDisplay: () => screen.getPrimaryDisplay(),
   decodePng: (data) =>
     nativeImage.createFromBuffer(Buffer.from(data.buffer, data.byteOffset, data.byteLength)),
-  encodePng: (image, pointer) => {
-    if (pointer === null) return image.toPNG();
-    const size = image.getSize();
-    const bitmap = Buffer.from(image.toBitmap());
-    drawPointerMarker(bitmap, size.width, size.height, pointer);
-    return nativeImage
-      .createFromBitmap(bitmap, { width: size.width, height: size.height, scaleFactor: 1 })
-      .toPNG();
-  },
+  encodeScreenshot: encodeComputerScreenshot,
 };
 
 /** Returns Electron's stable string representation for one display id. */
@@ -1265,7 +1224,7 @@ export const makeWithOptions = Effect.fn("ComputerUse.makeWithOptions")(function
               }
             : capture.accessibility;
       const commandedPointer = yield* Ref.get(lastPointer);
-      const rendered =
+      const prepared =
         screenshotOptions === null
           ? undefined
           : yield* Effect.try({
@@ -1363,20 +1322,43 @@ export const makeWithOptions = Effect.fn("ComputerUse.makeWithOptions")(function
                   commandedPointer === null
                     ? null
                     : pointerPositionInFrame(frame, commandedPointer);
-                const data = platform.encodePng(image, pointerPosition);
                 return {
                   frame,
                   pointerPosition,
-                  screenshot: {
-                    mimeType: "image/png" as const,
-                    data: Buffer.from(data).toString("base64"),
-                    width: size.width,
-                    height: size.height,
-                  },
+                  image,
+                  size,
+                  encoding: screenshotOptions.encoding,
                 };
               },
               catch: (cause) => new ComputerUseOperationError({ operation: "snapshot", cause }),
             });
+      const encoded =
+        prepared === undefined
+          ? undefined
+          : yield* Effect.tryPromise({
+              try: () =>
+                platform.encodeScreenshot(
+                  prepared.image,
+                  prepared.pointerPosition,
+                  prepared.encoding,
+                ),
+              catch: (cause) => new ComputerUseOperationError({ operation: "snapshot", cause }),
+            });
+      const rendered =
+        prepared === undefined || encoded === undefined
+          ? undefined
+          : {
+              frame: prepared.frame,
+              pointerPosition: prepared.pointerPosition,
+              screenshot: {
+                mimeType: encoded.mimeType,
+                data: encoded.data.toString("base64"),
+                width: prepared.size.width,
+                height: prepared.size.height,
+                sizeBytes: encoded.data.byteLength,
+                encoding: encoded.encoding,
+              },
+            };
       const frame =
         rendered === undefined
           ? undefined

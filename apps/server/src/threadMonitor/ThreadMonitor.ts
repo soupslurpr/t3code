@@ -1123,6 +1123,7 @@ const make = Effect.gen(function* () {
             region: region.region,
             maxWidth: region.maxWidth,
             maxHeight: region.maxHeight,
+            encoding: region.encoding,
           })),
         };
         const deadlineAt = update.deadlineAt !== undefined ? update.deadlineAt : current.deadlineAt;

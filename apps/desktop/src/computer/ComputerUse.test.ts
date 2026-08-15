@@ -104,7 +104,7 @@ function makeController(records: Array<InputRecord>, onStart: () => void = () =>
 function makePlatform(
   options: {
     readonly decode?: ComputerUse.ComputerUsePlatform["decodePng"];
-    readonly encode?: ComputerUse.ComputerUsePlatform["encodePng"];
+    readonly encode?: ComputerUse.ComputerUsePlatform["encodeScreenshot"];
     readonly displays?: ReadonlyArray<Display>;
   } = {},
 ): ComputerUse.ComputerUsePlatform {
@@ -113,7 +113,13 @@ function makePlatform(
     getDisplays: () => displays,
     getPrimaryDisplay: () => display,
     decodePng: options.decode ?? (() => makeImage(800, 600)),
-    encodePng: options.encode ?? ((image) => image.toPNG()),
+    encodeScreenshot:
+      options.encode ??
+      (async () => ({
+        data: Buffer.from([1, 2, 3]),
+        mimeType: "image/webp",
+        encoding: { format: "webp", mode: "lossless" },
+      })),
   };
 }
 
@@ -125,7 +131,6 @@ function makeImage(width: number, height: number): ComputerUse.ComputerUseImage 
     resize: (options) => makeImage(options.width, options.height),
     getSize: () => ({ width, height }),
     toBitmap: () => new Uint8Array(width * height * 4),
-    toPNG: () => new Uint8Array([1, 2, 3]),
   };
   return image;
 }
@@ -273,7 +278,6 @@ describe("ComputerUse", () => {
         resize: () => resizedImage,
         getSize: () => ({ width: 800, height: 600 }),
         toBitmap: () => new Uint8Array(800 * 600 * 4),
-        toPNG: () => new Uint8Array([1, 2, 3]),
       };
       const sourceImage: ComputerUse.ComputerUseImage = {
         isEmpty: () => false,
@@ -286,7 +290,6 @@ describe("ComputerUse", () => {
         },
         getSize: () => ({ width: 1_000, height: 750 }),
         toBitmap: () => new Uint8Array(1_000 * 750 * 4),
-        toPNG: () => new Uint8Array(),
       };
       const controller = GnomeRemoteDesktop.GnomeRemoteDesktop.of({
         ...makeController(records),
@@ -318,6 +321,9 @@ describe("ComputerUse", () => {
       assert.equal(screenshot.width, 800);
       assert.equal(screenshot.height, 600);
       assert.equal(screenshot.data, Buffer.from([1, 2, 3]).toString("base64"));
+      assert.equal(screenshot.sizeBytes, 3);
+      assert.equal(screenshot.mimeType, "image/webp");
+      assert.deepEqual(screenshot.encoding, { format: "webp", mode: "lossless" });
       assert.deepEqual(records, [
         {
           operation: "snapshot",
@@ -339,6 +345,7 @@ describe("ComputerUse", () => {
       const records: Array<InputRecord> = [];
       let resizeInput: unknown;
       let encodedPointer: { readonly x: number; readonly y: number } | null = null;
+      let encodedEncoding: unknown;
       const image: ComputerUse.ComputerUseImage = {
         isEmpty: () => false,
         crop: () => image,
@@ -348,7 +355,6 @@ describe("ComputerUse", () => {
         },
         getSize: () => ({ width: 1600, height: 900 }),
         toBitmap: () => new Uint8Array(1600 * 900 * 4),
-        toPNG: () => new Uint8Array([1]),
       };
       const controller = GnomeRemoteDesktop.GnomeRemoteDesktop.of({
         ...makeController(records),
@@ -364,9 +370,14 @@ describe("ComputerUse", () => {
         makePlatform({
           displays: [largeDisplay],
           decode: () => image,
-          encode: (_image, pointer) => {
+          encode: async (_image, pointer, encoding) => {
             encodedPointer = pointer;
-            return new Uint8Array([2]);
+            encodedEncoding = encoding;
+            return {
+              data: Buffer.from([2]),
+              mimeType: "image/webp",
+              encoding: { format: "webp", mode: "lossy", quality: 70 },
+            };
           },
         }),
         controller,
@@ -377,7 +388,10 @@ describe("ComputerUse", () => {
       yield* computer.act({
         actions: [{ type: "move", frameId: sourceFrame.id, x: 800, y: 450, settleMs: 0 }],
       });
-      const snapshot = yield* computer.snapshot({ displayId: "7" });
+      const snapshot = yield* computer.snapshot({
+        displayId: "7",
+        screenshot: { encoding: { format: "webp", mode: "lossy", quality: 70 } },
+      });
 
       assert.isUndefined(resizeInput);
       assert.deepEqual(records.slice(0, 2), [
@@ -386,8 +400,14 @@ describe("ComputerUse", () => {
       ]);
       assert.deepEqual(snapshot.pointer?.position, { x: 800, y: 450 });
       assert.deepEqual(encodedPointer, { x: 800, y: 450 });
+      assert.deepEqual(encodedEncoding, { format: "webp", mode: "lossy", quality: 70 });
       assert.equal(snapshot.screenshot?.width, 1600);
       assert.equal(snapshot.screenshot?.height, 900);
+      assert.deepEqual(snapshot.screenshot?.encoding, {
+        format: "webp",
+        mode: "lossy",
+        quality: 70,
+      });
     }),
   );
 
@@ -405,7 +425,6 @@ describe("ComputerUse", () => {
         },
         getSize: () => ({ width: 800, height: 600 }),
         toBitmap: () => new Uint8Array(800 * 600 * 4),
-        toPNG: () => new Uint8Array([1]),
       };
       const sourceImage: ComputerUse.ComputerUseImage = {
         isEmpty: () => false,
@@ -416,7 +435,6 @@ describe("ComputerUse", () => {
         resize: (input) => makeImage(input.width, input.height),
         getSize: () => ({ width: 1_600, height: 1_200 }),
         toBitmap: () => new Uint8Array(1_600 * 1_200 * 4),
-        toPNG: () => new Uint8Array([1]),
       };
       const computer = yield* ComputerUse.makeWithOptions(
         makePlatform({ decode: () => sourceImage }),
@@ -480,7 +498,6 @@ describe("ComputerUse", () => {
         resize: (input) => makeImage(input.width, input.height),
         getSize: () => ({ width: 1_600, height: 1_200 }),
         toBitmap: () => new Uint8Array(1_600 * 1_200 * 4),
-        toPNG: () => new Uint8Array([1]),
       };
       const computer = yield* ComputerUse.makeWithOptions(
         makePlatform({ decode: () => sourceImage }),
@@ -846,7 +863,6 @@ describe("ComputerUse", () => {
         resize: () => resizedImage,
         getSize: () => ({ width: 800, height: 600 }),
         toBitmap: () => new Uint8Array(800 * 600 * 4),
-        toPNG: () => new Uint8Array([1]),
       };
       const sourceImage: ComputerUse.ComputerUseImage = {
         isEmpty: () => false,
@@ -857,7 +873,6 @@ describe("ComputerUse", () => {
         resize: () => sourceImage,
         getSize: () => ({ width: 800, height: 600 }),
         toBitmap: () => new Uint8Array(800 * 600 * 4),
-        toPNG: () => new Uint8Array(),
       };
       const leftDisplay = {
         ...display,
@@ -1007,7 +1022,6 @@ describe("ComputerUse", () => {
         resize: () => image,
         getSize: () => ({ width: 800, height: 600 }),
         toBitmap: () => new Uint8Array(800 * 600 * 4),
-        toPNG: () => new Uint8Array([1]),
       };
       const controller = GnomeRemoteDesktop.GnomeRemoteDesktop.of({
         ...makeController(records),
@@ -1048,9 +1062,13 @@ describe("ComputerUse", () => {
       const computer = yield* ComputerUse.makeWithOptions(
         makePlatform({
           decode: () => image,
-          encode: (_image, pointer) => {
+          encode: async (_image, pointer) => {
             encodedPointer = pointer;
-            return new Uint8Array([2]);
+            return {
+              data: Buffer.from([2]),
+              mimeType: "image/webp",
+              encoding: { format: "webp", mode: "lossless" },
+            };
           },
         }),
         controller,
@@ -1104,7 +1122,6 @@ describe("ComputerUse", () => {
         resize: (options) => imageWithByte(options.width, options.height, byte),
         getSize: () => ({ width, height }),
         toBitmap: () => new Uint8Array(width * height * 4).fill(byte),
-        toPNG: () => new Uint8Array([byte]),
       });
       const computer = yield* ComputerUse.makeWithOptions(
         makePlatform({

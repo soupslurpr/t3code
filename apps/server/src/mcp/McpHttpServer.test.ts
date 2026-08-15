@@ -89,6 +89,7 @@ const MonitorTestLayer = Layer.succeed(
                   },
                   maxWidth: 800,
                   maxHeight: 600,
+                  encoding: { format: "webp", mode: "lossless" },
                   baselineHash: "hash",
                   lastSampleHash: "hash",
                   baselineStored: true,
@@ -162,7 +163,10 @@ const MonitorTestLayer = Layer.succeed(
             height: 600,
             frameIndex: null,
             elapsedMs: null,
-            pngBase64: Buffer.from("watch-image").toString("base64"),
+            mimeType: "image/webp",
+            dataBase64: Buffer.from("watch-image").toString("base64"),
+            sizeBytes: Buffer.byteLength("watch-image"),
+            encoding: { format: "webp", mode: "lossless" },
           },
         ],
       });
@@ -259,10 +263,12 @@ function automationResult(operation: string, input?: unknown): unknown {
         },
         captureSource: "remote-desktop-stream",
         screenshot: {
-          mimeType: "image/png",
-          data: Buffer.from("computer-png").toString("base64"),
+          mimeType: "image/webp",
+          data: Buffer.from("computer-webp").toString("base64"),
           width: 800,
           height: 600,
+          sizeBytes: Buffer.byteLength("computer-webp"),
+          encoding: { format: "webp", mode: "lossless" },
         },
       };
       if (
@@ -715,7 +721,13 @@ it.effect("registers annotated tools and preserves authenticated request context
           coordinateSpace: "focused-window",
           targets: [{ name: "Equals" }],
         },
-        screenshot: { mimeType: "image/png", width: 800, height: 600 },
+        screenshot: {
+          mimeType: "image/webp",
+          width: 800,
+          height: 600,
+          sizeBytes: Buffer.byteLength("computer-webp"),
+          encoding: { format: "webp", mode: "lossless" },
+        },
       });
       expect(computerSnapshot.structuredContent).not.toHaveProperty("screenshot.data");
 
@@ -832,13 +844,23 @@ it.effect("registers annotated tools and preserves authenticated request context
       expect(computerWatchInspection.isError).toBe(false);
       expect(computerWatchInspection.structuredContent).toMatchObject({
         revision: 1,
-        images: [{ id: "baseline:screen", kind: "baseline", regionId: "screen" }],
+        images: [
+          {
+            id: "baseline:screen",
+            kind: "baseline",
+            regionId: "screen",
+            mimeType: "image/webp",
+            sizeBytes: Buffer.byteLength("watch-image"),
+            encoding: { format: "webp", mode: "lossless" },
+          },
+        ],
       });
-      expect(computerWatchInspection.structuredContent).not.toHaveProperty("images[0].pngBase64");
+      expect(computerWatchInspection.structuredContent).not.toHaveProperty("images[0].dataBase64");
       expect(computerWatchInspection.content.filter((content) => content.type === "image")).toEqual(
         [
           expect.objectContaining({
             type: "image",
+            mimeType: "image/webp",
             _meta: expect.objectContaining({
               "t3/computerWatchImageId": "baseline:screen",
               "t3/computerWatchRegionId": "screen",

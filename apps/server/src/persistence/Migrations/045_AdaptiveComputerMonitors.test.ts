@@ -1,8 +1,4 @@
 import { assert, it } from "@effect/vitest";
-import {
-  ThreadMonitorComputerCondition,
-  ThreadMonitorComputerEvidenceImage,
-} from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Schema from "effect/Schema";
@@ -14,10 +10,31 @@ import * as NodeSqliteClient from "../NodeSqliteClient.ts";
 const layer = it.layer(Layer.mergeAll(NodeSqliteClient.layerMemory()));
 const encodeJson = Schema.encodeSync(Schema.fromJsonString(Schema.Unknown));
 const decodeCondition = Schema.decodeUnknownSync(
-  Schema.fromJsonString(ThreadMonitorComputerCondition),
+  Schema.fromJsonString(
+    Schema.Struct({
+      revision: Schema.Literal(1),
+      observation: Schema.Struct({
+        regions: Schema.Array(
+          Schema.Struct({
+            id: Schema.String,
+            role: Schema.String,
+            changedSampleCount: Schema.Int,
+          }),
+        ),
+      }),
+      review: Schema.Struct({ policy: Schema.Unknown }),
+    }),
+  ),
 );
 const decodeImages = Schema.decodeUnknownSync(
-  Schema.fromJsonString(Schema.Array(ThreadMonitorComputerEvidenceImage)),
+  Schema.fromJsonString(
+    Schema.Array(
+      Schema.Struct({
+        kind: Schema.String,
+        pngBase64: Schema.String,
+      }),
+    ),
+  ),
 );
 
 layer("045_AdaptiveComputerMonitors", (it) => {

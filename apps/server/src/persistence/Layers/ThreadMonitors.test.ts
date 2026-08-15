@@ -44,6 +44,7 @@ function monitor(revision: number): ThreadMonitor {
             },
             maxWidth: 800,
             maxHeight: 600,
+            encoding: { format: "webp", mode: "lossless" },
             baselineHash: `baseline-${revision}`,
             lastSampleHash: `baseline-${revision}`,
             baselineStored: true,
@@ -119,7 +120,10 @@ function baseline(revision: number): ThreadMonitorComputerEvidenceImage {
     height: 600,
     frameIndex: null,
     elapsedMs: null,
-    pngBase64: Buffer.from(`baseline-${revision}`).toString("base64"),
+    mimeType: "image/webp",
+    dataBase64: Buffer.from(`baseline-${revision}`).toString("base64"),
+    sizeBytes: Buffer.byteLength(`baseline-${revision}`),
+    encoding: { format: "webp", mode: "lossless" },
   };
 }
 

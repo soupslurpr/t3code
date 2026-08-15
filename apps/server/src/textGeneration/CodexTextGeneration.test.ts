@@ -578,8 +578,14 @@ it.layer(CodexTextGenerationTestLayer)("CodexTextGeneration", (it) => {
               {
                 id: "dialog",
                 purpose: "Completion state",
-                currentPngBase64: Buffer.from("current-image").toString("base64"),
-                baselinePngBase64: Buffer.from("baseline-image").toString("base64"),
+                current: {
+                  mimeType: "image/webp",
+                  dataBase64: Buffer.from("current-image").toString("base64"),
+                },
+                baseline: {
+                  mimeType: "image/webp",
+                  dataBase64: Buffer.from("baseline-image").toString("base64"),
+                },
               },
             ],
             modelSelection: DEFAULT_TEST_MODEL_SELECTION,

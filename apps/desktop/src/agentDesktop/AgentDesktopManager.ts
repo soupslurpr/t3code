@@ -56,6 +56,7 @@ import * as NodeNet from "node:net";
 import { nativeImage } from "electron";
 
 import * as DesktopEnvironment from "../app/DesktopEnvironment.ts";
+import { encodeComputerScreenshot } from "../computer/ComputerScreenshotEncoding.ts";
 import * as ComputerUse from "../computer/ComputerUse.ts";
 import * as QemuAgentDesktop from "./QemuAgentDesktop.ts";
 import * as QemuInput from "./QemuInput.ts";
@@ -2577,6 +2578,24 @@ export const make = Effect.gen(function* () {
         pointerPosition.y >= 0 &&
         pointerPosition.x < size.width &&
         pointerPosition.y < size.height;
+      const encoded = yield* Effect.tryPromise({
+        try: () =>
+          encodeComputerScreenshot(
+            image,
+            pointerVisible ? pointerPosition : null,
+            screenshotOptions.encoding,
+          ),
+        catch: (cause) =>
+          new AgentDesktopManagerError({
+            code: "internal-error",
+            operation: "snapshot",
+            detail:
+              `desktop screenshot encoding failed: ${cause instanceof Error ? cause.message : String(cause)}`.slice(
+                0,
+                2_000,
+              ),
+          }),
+      });
       return {
         display: {
           id: "display-0",
@@ -2593,10 +2612,12 @@ export const make = Effect.gen(function* () {
         ...(accessibility === undefined ? {} : { accessibility }),
         captureSource: "virtual-display",
         screenshot: {
-          mimeType: "image/png",
-          data: image.toPNG().toString("base64"),
+          mimeType: encoded.mimeType,
+          data: encoded.data.toString("base64"),
           width: size.width,
           height: size.height,
+          sizeBytes: encoded.data.byteLength,
+          encoding: encoded.encoding,
         },
       };
     });
