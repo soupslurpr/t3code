@@ -866,6 +866,7 @@ export class PreviewAutomationExecutionError extends Schema.TaggedError<PreviewA
     if (this.remoteFailureKind === "keep-awake-denied") {
       return `Preview automation ${this.operation} did not start because the user declined the session keep-awake request.`;
     }
+    if (this.computerFailure !== undefined) return this.computerFailure.message;
     return `Preview automation ${this.operation} failed on client ${this.clientId}.`;
   }
 }
