@@ -33,6 +33,9 @@ const decodeConsumeRateLimitResetCreditParams = Schema.decodeUnknownEffect(
 const decodeConsumeRateLimitResetCreditResponse = Schema.decodeUnknownEffect(
   CodexRpc.CLIENT_REQUEST_RESPONSES["account/rateLimitResetCredit/consume"],
 );
+const encodeThreadResumeParams = Schema.encodeUnknownEffect(
+  CodexRpc.CLIENT_REQUEST_PARAMS["thread/resume"],
+);
 
 it.layer(NodeServices.layer)("effect-codex-app-server protocol", (it) => {
   it.effect("maps account usage responses to the upstream token usage schema", () =>
@@ -126,6 +129,21 @@ it.layer(NodeServices.layer)("effect-codex-app-server protocol", (it) => {
       assert.deepEqual(yield* decodeConsumeRateLimitResetCreditResponse({ outcome: "reset" }), {
         outcome: "reset",
       });
+    }),
+  );
+
+  it.effect("preserves metadata-only thread resume requests", () =>
+    Effect.gen(function* () {
+      assert.deepEqual(
+        yield* encodeThreadResumeParams({
+          threadId: "thread-1",
+          excludeTurns: true,
+        }),
+        {
+          threadId: "thread-1",
+          excludeTurns: true,
+        },
+      );
     }),
   );
 
