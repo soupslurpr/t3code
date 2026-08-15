@@ -1,5 +1,4 @@
 import { assert, it } from "@effect/vitest";
-import { ThreadMonitorComputerCondition } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Schema from "effect/Schema";
@@ -11,7 +10,12 @@ import * as NodeSqliteClient from "@t3tools/shared/nodeSqliteClient";
 const layer = it.layer(Layer.mergeAll(NodeSqliteClient.layerMemory()));
 const encodeLegacyCondition = Schema.encodeUnknownSync(Schema.fromJsonString(Schema.Unknown));
 const decodeMigratedCondition = Schema.decodeUnknownSync(
-  Schema.fromJsonString(ThreadMonitorComputerCondition),
+  Schema.fromJsonString(
+    Schema.Struct({
+      sampling: Schema.Struct({ minEvaluationIntervalMs: Schema.NullOr(Schema.Number) }),
+      evaluationPending: Schema.Boolean,
+    }),
+  ),
 );
 
 layer("051_ComputerMonitorEvaluationThrottle", (it) => {
