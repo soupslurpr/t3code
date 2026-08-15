@@ -121,12 +121,13 @@ export const makeCodexTextGeneration = Effect.fn("makeCodexTextGeneration")(func
   const writeTempBytes = (
     operation: "evaluateImageCondition",
     prefix: string,
+    mimeType: "image/png" | "image/webp",
     content: Uint8Array,
   ): Effect.Effect<string, TextGenerationError, Scope.Scope> =>
     fileSystem
       .makeTempFileScoped({
         prefix: `t3code-${prefix}-${process.pid}-`,
-        suffix: ".png",
+        suffix: mimeType === "image/webp" ? ".webp" : ".png",
       })
       .pipe(
         Effect.tap((filePath) => fileSystem.writeFile(filePath, content)),
@@ -462,11 +463,12 @@ export const makeCodexTextGeneration = Effect.fn("makeCodexTextGeneration")(func
       const imagePaths: string[] = [];
       const imageDescriptions: string[] = [];
       for (const [imageIndex, image] of input.images.entries()) {
-        if (image.baselinePngBase64 !== undefined) {
+        if (image.baseline !== undefined) {
           const baselinePath = yield* writeTempBytes(
             "evaluateImageCondition",
             `computer-watch-${imageIndex}-baseline`,
-            Buffer.from(image.baselinePngBase64, "base64"),
+            image.baseline.mimeType,
+            Buffer.from(image.baseline.dataBase64, "base64"),
           );
           imagePaths.push(baselinePath);
           imageDescriptions.push(
@@ -476,7 +478,8 @@ export const makeCodexTextGeneration = Effect.fn("makeCodexTextGeneration")(func
         const currentPath = yield* writeTempBytes(
           "evaluateImageCondition",
           `computer-watch-${imageIndex}-current`,
-          Buffer.from(image.currentPngBase64, "base64"),
+          image.current.mimeType,
+          Buffer.from(image.current.dataBase64, "base64"),
         );
         imagePaths.push(currentPath);
         imageDescriptions.push(

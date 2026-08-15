@@ -79,26 +79,28 @@ PipeWire, the virtual display, or another capture component is degraded.
 
 Access requests and `computer_act` return a fresh screen observation by default. Action calls also
 return one ordered execution receipt per completed action, even when the agent skips the image. The
-agent can choose the image resolution, crop a region from a prior frame, omit the image when semantic
-targets are sufficient, adjust the capture delay, or skip a predictable post-action observation
-entirely. One action call can group a bounded sequence of predictable pointer and keyboard actions,
-so the agent does not need a tool round trip or image between steps that require no visual decision.
-When the next step depends on the resulting UI, the agent uses a one-action batch and inspects its
-observation first. A standalone snapshot remains available for inspection without acting or recovery
-after a failed follow-up capture. Typing can pause briefly and submit with Enter in the same action.
+agent can choose the image resolution and encoding, crop a region from a prior frame, omit the image
+when semantic targets are sufficient, adjust the capture delay, or skip a predictable post-action
+observation entirely. One action call can group a bounded sequence of predictable pointer and
+keyboard actions, so the agent does not need a tool round trip or image between steps that require no
+visual decision. When the next step depends on the resulting UI, the agent uses a one-action batch and
+inspects its observation first. A standalone snapshot remains available for inspection without acting
+or recovery after a failed follow-up capture. Typing can pause briefly and submit with Enter in the
+same action.
 
 For motion and transient UI, an agent can request a bounded sequence of timestamped screenshots with
-its own crop, resolution, frame count, and interval. It can also capture the sequence before, during,
-or after an action batch so the starting state and resulting transition remain visible. These frames
-are returned only to that tool call under the existing view permission and are not saved as a video.
-A separately retained recording remains a distinct, intentional operation.
+its own crop, resolution, encoding, frame count, and interval. It can also capture the sequence before,
+during, or after an action batch so the starting state and resulting transition remain visible. These
+frames are returned only to that tool call under the existing view permission and are not saved as a
+video. A separately retained recording remains a distinct, intentional operation.
 
-For a longer visual wait, an agent can create a durable watch with several independently cropped and
-sized regions. Trigger regions are sampled on the chosen cadence; context regions are captured only
-when an evaluator or controller needs them. The agent that owns the task chooses the exact condition,
-sampling policy, deadline, model, and optional review checkpoints. A selected evaluator receives
-named current images and optional revision baselines and returns only a verdict, visible facts, and
-image-linked evidence. It cannot act on the desktop or rewrite the monitoring strategy.
+For a longer visual wait, an agent can create a durable watch with several independently cropped,
+sized, and encoded regions. Trigger regions are sampled on the chosen cadence; context regions are
+captured only when an evaluator or controller needs them. The agent that owns the task chooses the
+exact condition, sampling policy, deadline, model, and optional review checkpoints. A selected
+evaluator receives named current images and optional revision baselines and returns only a verdict,
+visible facts, and image-linked evidence. It cannot act on the desktop or rewrite the monitoring
+strategy.
 
 Each watch has a revision. At a review checkpoint, the owning agent can inspect bounded baseline,
 previous, current, terminal, or freshly captured frames, then atomically update the regions or policy
@@ -175,10 +177,13 @@ The desktop host exposes tools for:
 - releasing the active session or forgetting remembered consent
 
 Full-display screenshots preserve aspect ratio and default to a maximum of 1600 by 900 pixels. An
-agent can request other bounded dimensions or return a sharper crop of a prior frame. Each image has
-a frame identifier and an explicit transform from its image pixels to Electron desktop-logical
-coordinates. Pointer actions reference that frame, preventing a crop or resolution change from
-silently moving a click. Display bounds continue to report logical desktop dimensions.
+agent can request other bounded dimensions or return a sharper crop of a prior frame. Images use
+lossless 8-bit WebP by default. An agent can instead choose near-lossless or lossy WebP when smaller
+transfers are worth reduced fidelity, or PNG when a downstream consumer requires it. Every result
+reports its actual encoding and compressed byte size. Each image also has a frame identifier and an
+explicit transform from its image pixels to Electron desktop-logical coordinates. Pointer actions
+reference that frame, preventing a crop or resolution change from silently moving a click. Display
+bounds continue to report logical desktop dimensions.
 
 GNOME Wayland does not expose the current pointer position to ordinary applications. Status and
 snapshot results therefore report `cursor: null`. After a pointer operation, snapshots draw a

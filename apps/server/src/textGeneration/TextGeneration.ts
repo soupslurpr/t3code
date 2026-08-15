@@ -1,7 +1,12 @@
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
-import type { ChatAttachment, ModelSelection, ProviderInstanceId } from "@t3tools/contracts";
+import type {
+  ChatAttachment,
+  ComputerAutomationScreenshotMimeType,
+  ModelSelection,
+  ProviderInstanceId,
+} from "@t3tools/contracts";
 import { TextGenerationError } from "@t3tools/contracts";
 
 import * as ProviderInstanceRegistry from "../provider/Services/ProviderInstanceRegistry.ts";
@@ -79,8 +84,16 @@ export interface ImageConditionEvaluationInput {
   images: ReadonlyArray<{
     id: string;
     purpose?: string | undefined;
-    currentPngBase64: string;
-    baselinePngBase64?: string | undefined;
+    current: {
+      mimeType: ComputerAutomationScreenshotMimeType;
+      dataBase64: string;
+    };
+    baseline?:
+      | {
+          mimeType: ComputerAutomationScreenshotMimeType;
+          dataBase64: string;
+        }
+      | undefined;
   }>;
   /** What model and provider instance to use for evaluation. */
   modelSelection: ModelSelection;

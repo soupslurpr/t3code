@@ -19,7 +19,7 @@ const { nativeImage } = vi.hoisted(() => {
     getSize: () => ({ width: 100, height: 100 }),
     crop: () => image,
     resize: () => image,
-    toPNG: () => Buffer.from([1]),
+    toBitmap: () => Buffer.alloc(100 * 100 * 4),
   };
   return { nativeImage: { createFromBitmap: vi.fn(() => image) } };
 });
@@ -629,6 +629,28 @@ describe("AgentDesktopManager", () => {
             offsetY: 20,
           },
         });
+        assert.equal(snapshot.screenshot?.mimeType, "image/webp");
+        assert.deepEqual(snapshot.screenshot?.encoding, {
+          format: "webp",
+          mode: "lossless",
+        });
+        assert.equal(
+          Buffer.from(snapshot.screenshot?.data ?? "", "base64")
+            .subarray(0, 4)
+            .toString("ascii"),
+          "RIFF",
+        );
+
+        const pngSnapshot = yield* manager.snapshot(
+          owner.controllerId,
+          {
+            includeAccessibility: false,
+            screenshot: { encoding: { format: "png" } },
+          },
+          desktop.id,
+        );
+        assert.equal(pngSnapshot.screenshot?.mimeType, "image/png");
+        assert.deepEqual(pngSnapshot.screenshot?.encoding, { format: "png" });
       }).pipe(Effect.provide(harness.layer));
     }),
   );

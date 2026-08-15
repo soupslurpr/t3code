@@ -21,6 +21,7 @@ import {
   createStageWorkspaceConfig,
   createStagePatchedDependencies,
   createBuildConfig,
+  DESKTOP_ASAR_UNPACK_GLOBS,
   DESKTOP_ELECTRON_LANGUAGES,
   DESKTOP_FILE_EXCLUSIONS,
   DESKTOP_EXTRA_RESOURCES,
@@ -374,6 +375,7 @@ it.layer(NodeServices.layer)("build-desktop-artifact", (it) => {
           "@t3tools/tailscale": "workspace:*",
           effect: "catalog:",
           electron: "41.5.0",
+          sharp: "0.34.5",
         },
         {
           "@effect/platform-node": "4.0.0-beta.59",
@@ -383,6 +385,7 @@ it.layer(NodeServices.layer)("build-desktop-artifact", (it) => {
       {
         "@effect/platform-node": "4.0.0-beta.59",
         effect: "4.0.0-beta.59",
+        sharp: "0.34.5",
       },
     );
   });
@@ -615,12 +618,15 @@ it.layer(NodeServices.layer)("build-desktop-artifact", (it) => {
         false,
       );
 
-      // All platforms keep app.asar fully packed; Windows ships the server
-      // tree as the hand-packed server.asar sidecar in extraResources instead
-      // of unpacking thousands of loose files at install time.
-      assert.notProperty(mac, "asarUnpack");
-      assert.notProperty(linux, "asarUnpack");
-      assert.notProperty(win, "asarUnpack");
+      // Sharp's platform addon and companion libvips package both need real
+      // paths for dlopen. Everything else in the primary app stays packed.
+      assert.deepStrictEqual(DESKTOP_ASAR_UNPACK_GLOBS, [
+        "**/node_modules/sharp/**/*",
+        "**/node_modules/@img/**/*",
+      ]);
+      for (const config of [mac, linux, win]) {
+        assert.deepStrictEqual(config.asarUnpack, DESKTOP_ASAR_UNPACK_GLOBS);
+      }
       assert.deepStrictEqual(mac.extraResources, DESKTOP_EXTRA_RESOURCES);
       assert.deepStrictEqual(linux.extraResources, [
         ...DESKTOP_EXTRA_RESOURCES,
