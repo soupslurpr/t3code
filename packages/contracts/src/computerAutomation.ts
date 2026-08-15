@@ -12,6 +12,7 @@ const MAX_ACTION_BATCH_ACTIONS = 32;
 const MAX_ACTION_BATCH_DURATION_MS = 60_000;
 const MAX_ACTION_BATCH_TEXT_LENGTH = 10_000;
 const MAX_ACTION_WAIT_MS = 5_000;
+const MAX_WHEEL_TICKS = 100;
 const MAX_CHANGE_WAIT_MS = 60_000;
 const MIN_CHANGE_POLL_INTERVAL_MS = 100;
 const MAX_CHANGE_POLL_INTERVAL_MS = 2_000;
@@ -786,7 +787,6 @@ export const ComputerAutomationSimpleActionResult = Schema.Struct({
     "activate",
     "activate_window",
     "drag",
-    "wheel",
     "press",
     "hotkey",
     "key_down",
@@ -796,8 +796,23 @@ export const ComputerAutomationSimpleActionResult = Schema.Struct({
 });
 export type ComputerAutomationSimpleActionResult = typeof ComputerAutomationSimpleActionResult.Type;
 
+export const ComputerAutomationWheelActionResult = Schema.Struct({
+  index: Schema.Int.check(Schema.isBetween({ minimum: 0, maximum: MAX_ACTION_BATCH_ACTIONS - 1 })),
+  type: Schema.Literal("wheel"),
+  horizontalTicks: Schema.Int.check(
+    Schema.isBetween({ minimum: -MAX_WHEEL_TICKS, maximum: MAX_WHEEL_TICKS }),
+  ),
+  verticalTicks: Schema.Int.check(
+    Schema.isBetween({ minimum: -MAX_WHEEL_TICKS, maximum: MAX_WHEEL_TICKS }),
+  ),
+}).annotate({
+  description: "Reports the discrete wheel ticks injected by the desktop backend.",
+});
+export type ComputerAutomationWheelActionResult = typeof ComputerAutomationWheelActionResult.Type;
+
 export const ComputerAutomationActionResult = Schema.Union([
   ComputerAutomationSimpleActionResult,
+  ComputerAutomationWheelActionResult,
   ComputerAutomationTypeActionResult,
   ComputerAutomationWaitForChangeActionResult,
 ]);
@@ -940,19 +955,21 @@ export const ComputerAutomationWheelInput = Schema.Struct({
   frameId: Schema.optional(FramePointFields.frameId),
   x: Schema.optional(FramePointFields.x),
   y: Schema.optional(FramePointFields.y),
-  deltaX: Schema.optional(
-    Schema.Int.check(Schema.isBetween({ minimum: -100, maximum: 100 })).annotate({
-      description: "Horizontal wheel steps. Positive scrolls right. Defaults to 0.",
+  horizontalTicks: Schema.optional(
+    Schema.Int.check(
+      Schema.isBetween({ minimum: -MAX_WHEEL_TICKS, maximum: MAX_WHEEL_TICKS }),
+    ).annotate({
+      description:
+        "Discrete horizontal wheel ticks. Positive scrolls right. Maximum magnitude 100.",
     }),
   ),
-  deltaY: Schema.optional(
-    Schema.Int.check(Schema.isBetween({ minimum: -100, maximum: 100 })).annotate({
-      description: "Vertical wheel steps. Positive scrolls down. Defaults to 0.",
+  verticalTicks: Schema.optional(
+    Schema.Int.check(
+      Schema.isBetween({ minimum: -MAX_WHEEL_TICKS, maximum: MAX_WHEEL_TICKS }),
+    ).annotate({
+      description: "Discrete vertical wheel ticks. Positive scrolls down. Maximum magnitude 100.",
     }),
   ),
-  unit: Schema.optional(Schema.Literal("ticks")).annotate({
-    description: "Discrete wheel unit. Defaults to ticks; no gesture-scroll unit is implied.",
-  }),
 })
   .check(
     Schema.makeFilter((input) => {
@@ -964,13 +981,15 @@ export const ComputerAutomationWheelInput = Schema.Struct({
         return "Wheel targeting requires frameId, x, and y together.";
       }
       return (
-        input.deltaX !== undefined || input.deltaY !== undefined || "Provide deltaX or deltaY."
+        input.horizontalTicks !== undefined ||
+        input.verticalTicks !== undefined ||
+        "Provide horizontalTicks or verticalTicks."
       );
     }),
   )
   .annotate({
     description:
-      "Emits real discrete mouse-wheel ticks at the current pointer, or first moves to a frame point.",
+      "Emits real discrete mouse-wheel ticks at the current pointer, or first moves to a frame point. This is not pixel-precise or line-based scrolling.",
   });
 export type ComputerAutomationWheelInput = typeof ComputerAutomationWheelInput.Type;
 
@@ -1204,10 +1223,10 @@ export const ComputerAutomationActInput = Schema.Struct({
                 issue: "Wheel targeting requires frameId, x, and y together.",
               };
             }
-            if (action.deltaX === undefined && action.deltaY === undefined) {
+            if (action.horizontalTicks === undefined && action.verticalTicks === undefined) {
               return {
                 path: ["actions", index],
-                issue: "Provide deltaX or deltaY.",
+                issue: "Provide horizontalTicks or verticalTicks.",
               };
             }
             break;

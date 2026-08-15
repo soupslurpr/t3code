@@ -685,6 +685,49 @@ describe("AgentDesktopManager", () => {
     }),
   );
 
+  it.effect("injects discrete wheel ticks through QEMU", () =>
+    Effect.gen(function* () {
+      const harness = yield* managerHarness("wheel-ticks", { captureAvailable: true });
+      yield* Effect.gen(function* () {
+        const manager = yield* AgentDesktopManager.AgentDesktopManager;
+        const desktop = yield* manager.acquire(owner, { label: "Wheel input" });
+        yield* manager.requestControl(owner, { kind: "agent", desktopId: desktop.id });
+        const snapshot = yield* manager.snapshot(
+          owner.controllerId,
+          { includeAccessibility: false },
+          desktop.id,
+        );
+        if (snapshot.frame === undefined) throw new Error("snapshot did not return a frame");
+        const result = yield* manager.act(
+          owner.controllerId,
+          {
+            actions: [
+              {
+                type: "wheel",
+                frameId: snapshot.frame.id,
+                x: 50,
+                y: 50,
+                verticalTicks: -7,
+              },
+            ],
+          },
+          desktop.id,
+        );
+
+        assert.deepEqual(result, [
+          { index: 0, type: "wheel", horizontalTicks: 0, verticalTicks: -7 },
+        ]);
+        const injected = (yield* Ref.get(harness.inputEvents)).flat();
+        assert.equal(
+          injected.filter(
+            (event) => event.type === "btn" && event.data.button === "wheel-up" && event.data.down,
+          ).length,
+          7,
+        );
+      }).pipe(Effect.provide(harness.layer));
+    }),
+  );
+
   it.effect("reports and recovers Agent desktop capture health", () =>
     Effect.gen(function* () {
       const harness = yield* managerHarness("capture-health", { captureAvailable: true });
@@ -1112,6 +1155,35 @@ describe("AgentDesktopManager", () => {
     }),
   );
 
+  it.effect("releases a transient chord when keyboard typing fails", () =>
+    Effect.gen(function* () {
+      const harness = yield* managerHarness("failed-key-chord", { failSendKeyOnce: true });
+      yield* Effect.gen(function* () {
+        const manager = yield* AgentDesktopManager.AgentDesktopManager;
+        const desktop = yield* manager.acquire(owner, { label: "Failed key chord" });
+        yield* manager.requestControl(owner, { kind: "agent", desktopId: desktop.id });
+
+        const error = yield* manager
+          .act(owner.controllerId, { actions: [{ type: "type", text: "a" }] }, desktop.id)
+          .pipe(Effect.flip);
+
+        assert.deepInclude(ComputerUse.toComputerAutomationFailure(error), {
+          code: "input-injection-failed",
+          category: "input-injection",
+          actionIndex: 0,
+          completedActionCount: 0,
+          cleanup: { keys: "released", buttons: "not-needed" },
+        });
+        const releasedKeys = (yield* Ref.get(harness.inputEvents))
+          .flat()
+          .flatMap((event) =>
+            event.type === "key" && !event.data.down ? [event.data.key.data] : [],
+          );
+        assert.deepEqual(releasedKeys, ["a"]);
+      }).pipe(Effect.provide(harness.layer));
+    }),
+  );
+
   it.effect("dwells between Agent desktop pointer button transitions", () =>
     Effect.gen(function* () {
       const harness = yield* managerHarness("pointer-dwell", { captureAvailable: true });
@@ -1156,35 +1228,6 @@ describe("AgentDesktopManager", () => {
           buttonEvents.map((event) => event.data.down),
           [true, false, true, false],
         );
-      }).pipe(Effect.provide(harness.layer));
-    }),
-  );
-
-  it.effect("releases a transient chord when keyboard typing fails", () =>
-    Effect.gen(function* () {
-      const harness = yield* managerHarness("failed-key-chord", { failSendKeyOnce: true });
-      yield* Effect.gen(function* () {
-        const manager = yield* AgentDesktopManager.AgentDesktopManager;
-        const desktop = yield* manager.acquire(owner, { label: "Failed key chord" });
-        yield* manager.requestControl(owner, { kind: "agent", desktopId: desktop.id });
-
-        const error = yield* manager
-          .act(owner.controllerId, { actions: [{ type: "type", text: "a" }] }, desktop.id)
-          .pipe(Effect.flip);
-
-        assert.deepInclude(ComputerUse.toComputerAutomationFailure(error), {
-          code: "input-injection-failed",
-          category: "input-injection",
-          actionIndex: 0,
-          completedActionCount: 0,
-          cleanup: { keys: "released", buttons: "not-needed" },
-        });
-        const releasedKeys = (yield* Ref.get(harness.inputEvents))
-          .flat()
-          .flatMap((event) =>
-            event.type === "key" && !event.data.down ? [event.data.key.data] : [],
-          );
-        assert.deepEqual(releasedKeys, ["a"]);
       }).pipe(Effect.provide(harness.layer));
     }),
   );
