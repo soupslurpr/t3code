@@ -72,6 +72,13 @@ the focused application exposes enough semantic information, the agent can omit 
 inspection. This keeps routine intermediate checks small while leaving full images available for
 visual decisions and confirmation.
 
+Every complete screenshot includes an exact, versioned fingerprint of its bounded pixels. An agent
+can return that fingerprint with a later capture when it only needs a new image if the pixels
+changed. A matching capture still returns fresh semantic data, coordinate transforms, and a valid
+frame identifier, but skips image encoding and transfer. The comparison token belongs to the caller
+rather than hidden desktop state, so reconnecting clients and parallel agents cannot overwrite one
+another's reference frame.
+
 Computer status reports frame-capture health separately for each display. It includes the latest
 successful and failed frame times, consecutive failure count, and a bounded backend diagnostic.
 This distinguishes working permission from a working stream: a session can remain approved while
@@ -100,7 +107,9 @@ captured only when an evaluator or controller needs them. The agent that owns th
 exact condition, sampling policy, deadline, model, and optional review checkpoints. A selected
 evaluator receives named current images and optional revision baselines and returns only a verdict,
 visible facts, and image-linked evidence. It cannot act on the desktop or rewrite the monitoring
-strategy.
+strategy. Watches use exact fingerprints automatically, so a matching sample skips compression and
+image transfer as well as model evaluation. Changed samples remain complete standalone images rather
+than depending on a chain of image deltas.
 
 Each watch has a revision. At a review checkpoint, the owning agent can inspect bounded baseline,
 previous, current, terminal, or freshly captured frames, then atomically update the regions or policy
@@ -180,10 +189,10 @@ Full-display screenshots preserve aspect ratio and default to a maximum of 1600 
 agent can request other bounded dimensions or return a sharper crop of a prior frame. Images use
 lossless 8-bit WebP by default. An agent can instead choose near-lossless or lossy WebP when smaller
 transfers are worth reduced fidelity, or PNG when a downstream consumer requires it. Every result
-reports its actual encoding and compressed byte size. Each image also has a frame identifier and an
-explicit transform from its image pixels to Electron desktop-logical coordinates. Pointer actions
-reference that frame, preventing a crop or resolution change from silently moving a click. Display
-bounds continue to report logical desktop dimensions.
+reports its exact content hash, actual encoding, and compressed byte size. Each observation also has
+a frame identifier and an explicit transform from its image pixels to Electron desktop-logical
+coordinates. Pointer actions reference that frame, preventing a crop or resolution change from
+silently moving a click. Display bounds continue to report logical desktop dimensions.
 
 GNOME Wayland does not expose the current pointer position to ordinary applications. Status and
 snapshot results therefore report `cursor: null`. After a pointer operation, snapshots draw a
