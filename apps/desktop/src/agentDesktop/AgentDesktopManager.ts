@@ -101,6 +101,27 @@ const GUEST_INTEGRATION_TIMEOUT_MS = 10_000;
 const GUEST_ACCESSIBILITY_OUTPUT_BYTES = 2 * 1024 * 1024;
 const MAX_SEMANTIC_TEXT_SEGMENTS = 32;
 
+/** Validates padded RFC 4648 base64 without using the JavaScript regex stack. */
+function isCanonicalBase64(value: string): boolean {
+  if (value.length % 4 !== 0) return false;
+  const paddingLength = value.endsWith("==") ? 2 : value.endsWith("=") ? 1 : 0;
+  const payloadLength = value.length - paddingLength;
+  for (let index = 0; index < payloadLength; index += 1) {
+    const code = value.charCodeAt(index);
+    const valid =
+      (code >= 0x41 && code <= 0x5a) ||
+      (code >= 0x61 && code <= 0x7a) ||
+      (code >= 0x30 && code <= 0x39) ||
+      code === 0x2b ||
+      code === 0x2f;
+    if (!valid) return false;
+  }
+  for (let index = payloadLength; index < value.length; index += 1) {
+    if (value.charCodeAt(index) !== 0x3d) return false;
+  }
+  return true;
+}
+
 const CAPABILITIES = [
   "computer",
   "video",
@@ -3283,9 +3304,7 @@ export const make = Effect.gen(function* () {
         const data = yield* Effect.try({
           try: () => {
             if (encoding === "utf8") return new TextEncoder().encode(input.data);
-            if (
-              !/^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/u.test(input.data)
-            ) {
+            if (!isCanonicalBase64(input.data)) {
               throw new Error("data is not canonical base64");
             }
             return Buffer.from(input.data, "base64");

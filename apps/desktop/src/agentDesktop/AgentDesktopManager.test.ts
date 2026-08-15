@@ -1432,6 +1432,29 @@ describe("AgentDesktopManager", () => {
     }),
   );
 
+  it.effect("writes multi-megabyte base64 without overflowing the regex stack", () =>
+    Effect.gen(function* () {
+      const harness = yield* managerHarness("large-base64");
+      yield* Effect.gen(function* () {
+        const manager = yield* AgentDesktopManager.AgentDesktopManager;
+        const desktop = yield* manager.acquire(owner, { label: "Large base64" });
+        const bytes = 4_609_024;
+        const result = yield* manager.writeFile(owner, {
+          desktopId: desktop.id,
+          path: "/tmp/archive.tar",
+          data: Buffer.alloc(bytes, 0xa5).toString("base64"),
+          encoding: "base64",
+        });
+
+        assert.equal(result.bytesWritten, bytes);
+        assert.include(
+          yield* Ref.get(harness.calls),
+          `write:${desktop.id}:/tmp/archive.tar:${bytes}`,
+        );
+      }).pipe(Effect.provide(harness.layer));
+    }),
+  );
+
   it.effect("does not park a desktop while a guest operation is active", () =>
     Effect.gen(function* () {
       const harness = yield* managerHarness("active-operation");
