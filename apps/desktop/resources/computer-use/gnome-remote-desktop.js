@@ -9,9 +9,14 @@
 
 import Gio from "gi://Gio";
 import GLib from "gi://GLib";
+import System from "system";
 
 import { AccessibilityStatusLease } from "./accessibility-status-lease.js";
 import { canTypeExactlyWithKeyboardEvents } from "./exact-keyboard-text.js";
+import {
+  createBatchedIdleCollector,
+  createStreamCaptureCompletion,
+} from "./stream-capture-completion.js";
 
 let Atspi = null;
 let accessibilityImportError = null;
@@ -69,6 +74,7 @@ const POINTER_BUTTON_HOLD_TIME_MS = 10;
 const POINTER_BUTTON_RELEASE_SETTLE_MS = 10;
 const STREAM_CAPTURE_TIMEOUT_MS = 5_000;
 const STREAM_CAPTURE_POLL_MS = 10;
+const STREAM_CAPTURE_GC_INTERVAL = 32;
 const MAX_SCREENSHOT_BYTES = 64 * 1_024 * 1_024;
 const MAX_RESTORE_TOKEN_LENGTH = 4_096;
 const MAX_ACCESSIBILITY_NODES = 4_000;
@@ -212,6 +218,16 @@ const heldKeysyms = new Set();
 const heldButtons = new Set();
 const pendingPortalRequests = new Map();
 const activeStreamCaptures = new Set();
+const noteCompletedStreamCapture = createBatchedIdleCollector({
+  interval: STREAM_CAPTURE_GC_INTERVAL,
+  schedule: (collect) => {
+    GLib.idle_add(GLib.PRIORITY_DEFAULT, () => {
+      collect();
+      return GLib.SOURCE_REMOVE;
+    });
+  },
+  collect: () => System.gc(),
+});
 let restoreTokens = { view: null, control: null };
 let shuttingDown = false;
 
@@ -1696,94 +1712,113 @@ function capturePortalStream(displayBounds) {
     sessionAccess === "control" ? "remote-desktop-stream" : "screen-cast-stream";
   const stream = resolveSnapshotStream(displayBounds);
   const fileDescriptor = openPipeWireRemote();
-  let pipeline;
-  try {
-    pipeline = gstreamer.parse_launch(
-      "pipewiresrc name=source do-timestamp=true num-buffers=1 " +
-        "! videoconvert ! video/x-raw,format=RGBA " +
-        "! pngenc snapshot=true compression-level=3 " +
-        "! appsink name=sink sync=false max-buffers=1",
-    );
-    const source = pipeline.get_by_name("source");
-    source.set_property("fd", fileDescriptor);
-    if (stream.pipewireSerial !== null && source.find_property("target-object") !== null) {
-      source.set_property("target-object", stream.pipewireSerial);
-    } else {
-      source.set_property("path", String(stream.nodeId));
-    }
-  } catch (error) {
-    GLib.close(fileDescriptor);
-    throw error;
-  }
 
   return new Promise((resolve, reject) => {
-    const sink = pipeline.get_by_name("sink");
-    const bus = pipeline.get_bus();
-    const deadline = GLib.get_monotonic_time() + STREAM_CAPTURE_TIMEOUT_MS * 1_000;
+    let pipeline = null;
+    let source = null;
+    let sink = null;
+    let bus = null;
     let pollSource = 0;
-    let settled = false;
-
-    const finish = (error, data = null) => {
-      if (settled) return;
-      settled = true;
-      if (pollSource !== 0) {
+    let cancel = null;
+    const finish = createStreamCaptureCompletion({
+      clearPoll: () => {
+        if (pollSource === 0) return;
         GLib.source_remove(pollSource);
         pollSource = 0;
-      }
-      activeStreamCaptures.delete(cancel);
-      pipeline.set_state(gstreamer.State.NULL);
-      if (error === null) {
-        resolve({ data: GLib.base64_encode(data), source: captureSource });
-      } else {
+      },
+      unregister: () => {
+        if (cancel === null) return;
+        activeStreamCaptures.delete(cancel);
+        cancel = null;
+      },
+      stopPipeline: () => {
+        const completedPipeline = pipeline;
+        pipeline = null;
+        source = null;
+        sink = null;
+        bus = null;
+        if (completedPipeline !== null) completedPipeline.set_state(gstreamer.State.NULL);
+      },
+      closeRemote: () => GLib.close(fileDescriptor),
+      resolve: (data) => {
+        noteCompletedStreamCapture();
+        resolve(data);
+      },
+      reject: (error) => {
+        noteCompletedStreamCapture();
         reject(error);
-      }
-    };
-    const cancel = () => finish(streamCaptureCancellationError());
-    activeStreamCaptures.add(cancel);
-
-    const stateChange = pipeline.set_state(gstreamer.State.PLAYING);
-    if (stateChange === gstreamer.StateChangeReturn.FAILURE) {
-      const error = new Error("GStreamer rejected the desktop stream capture pipeline");
-      error.code = "stream-capture-failed";
-      finish(error);
-      return;
-    }
-
-    pollSource = GLib.timeout_add(GLib.PRIORITY_DEFAULT, STREAM_CAPTURE_POLL_MS, () => {
-      try {
-        const sample = sink.emit("try-pull-sample", 0);
-        if (sample !== null) {
-          const buffer = sample.get_buffer();
-          const size = buffer?.get_size() ?? 0;
-          if (size <= 0 || size > MAX_SCREENSHOT_BYTES) {
-            const error = new Error("the desktop stream returned an invalid PNG frame size");
-            error.code = size > MAX_SCREENSHOT_BYTES ? "capture-too-large" : "capture-failed";
-            finish(error);
-          } else {
-            finish(null, buffer.extract_dup(0, size));
-          }
-          return GLib.SOURCE_REMOVE;
-        }
-        const message = bus.pop_filtered(gstreamer.MessageType.ERROR);
-        if (message !== null) {
-          const [failure] = message.parse_error();
-          const error = new Error(`desktop stream capture failed: ${failure.message}`);
-          error.code = "stream-capture-failed";
-          finish(error);
-          return GLib.SOURCE_REMOVE;
-        }
-        if (GLib.get_monotonic_time() >= deadline) {
-          const error = new Error("the desktop stream did not produce a frame in time");
-          error.code = "stream-capture-timeout";
-          finish(error);
-          return GLib.SOURCE_REMOVE;
-        }
-        return GLib.SOURCE_CONTINUE;
-      } catch (error) {
-        finish(error);
-        return GLib.SOURCE_REMOVE;
-      }
+      },
     });
+    cancel = () => finish(streamCaptureCancellationError());
+    try {
+      pipeline = gstreamer.parse_launch(
+        "pipewiresrc name=source do-timestamp=true num-buffers=1 " +
+          "! videoconvert ! video/x-raw,format=RGBA " +
+          "! pngenc snapshot=true compression-level=3 " +
+          "! appsink name=sink sync=false max-buffers=1",
+      );
+      source = pipeline.get_by_name("source");
+      source.set_property("fd", fileDescriptor);
+      if (stream.pipewireSerial !== null && source.find_property("target-object") !== null) {
+        source.set_property("target-object", stream.pipewireSerial);
+      } else {
+        source.set_property("path", String(stream.nodeId));
+      }
+
+      sink = pipeline.get_by_name("sink");
+      bus = pipeline.get_bus();
+      const deadline = GLib.get_monotonic_time() + STREAM_CAPTURE_TIMEOUT_MS * 1_000;
+      activeStreamCaptures.add(cancel);
+
+      const stateChange = pipeline.set_state(gstreamer.State.PLAYING);
+      if (stateChange === gstreamer.StateChangeReturn.FAILURE) {
+        const error = new Error("GStreamer rejected the desktop stream capture pipeline");
+        error.code = "stream-capture-failed";
+        finish(error);
+        return;
+      }
+
+      pollSource = GLib.timeout_add(GLib.PRIORITY_DEFAULT, STREAM_CAPTURE_POLL_MS, () => {
+        try {
+          const sample = sink.emit("try-pull-sample", 0);
+          if (sample !== null) {
+            const buffer = sample.get_buffer();
+            const size = buffer?.get_size() ?? 0;
+            if (size <= 0 || size > MAX_SCREENSHOT_BYTES) {
+              const error = new Error("the desktop stream returned an invalid PNG frame size");
+              error.code = size > MAX_SCREENSHOT_BYTES ? "capture-too-large" : "capture-failed";
+              finish(error);
+            } else {
+              finish(null, {
+                data: GLib.base64_encode(buffer.extract_dup(0, size)),
+                source: captureSource,
+              });
+            }
+            return GLib.SOURCE_REMOVE;
+          }
+          const message = bus.pop_filtered(gstreamer.MessageType.ERROR);
+          if (message !== null) {
+            const [failure] = message.parse_error();
+            const error = new Error(`desktop stream capture failed: ${failure.message}`);
+            error.code = "stream-capture-failed";
+            finish(error);
+            return GLib.SOURCE_REMOVE;
+          }
+          if (GLib.get_monotonic_time() >= deadline) {
+            const error = new Error("the desktop stream did not produce a frame in time");
+            error.code = "stream-capture-timeout";
+            finish(error);
+            return GLib.SOURCE_REMOVE;
+          }
+          return GLib.SOURCE_CONTINUE;
+        } catch (error) {
+          finish(error);
+          return GLib.SOURCE_REMOVE;
+        }
+      });
+    } catch (error) {
+      finish(error);
+    }
   });
 }
 
