@@ -1,8 +1,10 @@
 import {
+  type ComputerAutomationActInput,
   type ComputerAutomationActionResult,
   ComputerAutomationObservation,
   type ComputerAutomationObservationOptions,
   ComputerAutomationSnapshot,
+  type ComputerAutomationSnapshotInput,
   ComputerAutomationStatus,
   DesktopComputerAutomationAccessRequestSchema,
   DesktopComputerAutomationActRequestSchema,
@@ -13,6 +15,11 @@ import {
   type DesktopComputerAutomationResult,
   makeDesktopComputerAutomationResultSchema,
 } from "@t3tools/contracts";
+import {
+  captureComputerTemporalFrame,
+  captureComputerTemporalSequence,
+} from "@t3tools/shared/computerTemporalCapture";
+import * as Clock from "effect/Clock";
 import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
 
@@ -25,6 +32,8 @@ const DEFAULT_ACTION_OBSERVATION_DELAY_MS = 250;
 const OBSERVATION_FAILURE_DETAIL = "desktop action completed, but its follow-up observation failed";
 const LOCAL_RENDERER_CONTROLLER_ID = "local-renderer";
 const LOCAL_RENDERER_CONTEXT = { controllerId: LOCAL_RENDERER_CONTROLLER_ID } as const;
+
+type TemporalObservation = NonNullable<ComputerAutomationActInput["temporalObservation"]>;
 
 /** Resolves the logical controller used for one context-free local IPC call. */
 const requestContext = (
@@ -102,6 +111,63 @@ function actAndObserve(
     ),
   );
 }
+
+/** Builds the screenshot-only request used for one local temporal frame. */
+function temporalSnapshotInput(
+  desktop: ComputerAutomationActInput["desktop"],
+  capture: TemporalObservation,
+): ComputerAutomationSnapshotInput {
+  return {
+    desktop,
+    ...(capture.displayId === undefined ? {} : { displayId: capture.displayId }),
+    includeAccessibility: false,
+    screenshot: capture.screenshot ?? {},
+  };
+}
+
+/** Executes one action and temporal capture inside a single desktop IPC request. */
+const actWithTemporalObservation = Effect.fn("desktop.ipc.computer.actWithTemporalObservation")(
+  function* (input: {
+    readonly computer: ComputerUseRouter.ComputerUseRouterShape;
+    readonly context: DesktopComputerAutomationContext;
+    readonly request: ComputerAutomationActInput;
+    readonly observation: ComputerAutomationObservationOptions | false;
+  }) {
+    const { temporalObservation, ...actionInput } = input.request;
+    const action = actAndObserve(
+      input.computer,
+      input.computer.act(input.context, actionInput),
+      input.observation,
+      { desktop: input.request.desktop },
+      input.context,
+    );
+    if (temporalObservation === undefined) return yield* action;
+    const captureInput = {
+      capture: temporalObservation,
+      snapshot: input.computer.snapshot(
+        input.context,
+        temporalSnapshotInput(input.request.desktop, temporalObservation),
+      ),
+    };
+    if ((temporalObservation.start ?? "before-actions") === "after-actions") {
+      const observation = yield* action;
+      const temporalSequence = yield* captureComputerTemporalSequence(captureInput);
+      return { ...observation, temporalSequence };
+    }
+
+    const startedAtMs = yield* Clock.currentTimeMillis;
+    const firstFrame = yield* captureComputerTemporalFrame({
+      ...captureInput,
+      index: 0,
+      startedAtMs,
+    });
+    const [observation, temporalSequence] = yield* Effect.all(
+      [action, captureComputerTemporalSequence({ ...captureInput, startedAtMs, firstFrame })],
+      { concurrency: "unbounded" },
+    );
+    return { ...observation, temporalSequence };
+  },
+);
 
 /** Resolves the concrete desktop returned by an access request. */
 function targetFromStatus(status: ComputerAutomationStatus) {
@@ -219,13 +285,12 @@ export const act = DesktopIpc.makeIpcMethod({
             delayMs: request.input.observation?.delayMs ?? DEFAULT_ACTION_OBSERVATION_DELAY_MS,
           };
     return yield* computerResult(
-      actAndObserve(
-        computer,
-        computer.act(context, request.input),
+      actWithTemporalObservation({
         observation,
-        request.input.desktop === undefined ? {} : { desktop: request.input.desktop },
         context,
-      ),
+        computer,
+        request: request.input,
+      }),
     );
   }),
 });
