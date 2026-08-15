@@ -27,7 +27,11 @@ it("exports bounded object schemas and accurate safety annotations", () => {
     expect(Context.get(tool.annotations, Tool.OpenWorld)).toBe(true);
   }
 
-  for (const name of ["computer_status", "computer_snapshot"] as const) {
+  for (const name of [
+    "computer_status",
+    "computer_snapshot",
+    "computer_observe_sequence",
+  ] as const) {
     const tool = ComputerToolkit.tools[name];
     expect(Context.get(tool.annotations, Tool.Readonly)).toBe(true);
     expect(Context.get(tool.annotations, Tool.Idempotent)).toBe(true);
@@ -58,5 +62,6 @@ it("exports bounded object schemas and accurate safety annotations", () => {
   expect(serializedActSchema).toContain("One through 32 ordered actions");
   expect(serializedActSchema).toContain('"activate_window"');
   expect(serializedActSchema).toContain('"wait_for_change"');
+  expect(serializedActSchema).toContain('"temporalObservation"');
   expect(serializedActSchema).toContain('"maximum":60000');
 });

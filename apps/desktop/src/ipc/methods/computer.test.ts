@@ -12,6 +12,8 @@ import * as ComputerUseRouter from "../../computer/ComputerUseRouter.ts";
 import * as GnomeRemoteDesktop from "../../computer/GnomeRemoteDesktop.ts";
 import { act, releaseAvailability, requestAvailability, requestView } from "./computer.ts";
 
+const userDesktop = { kind: "user" as const };
+
 const status = {
   available: true,
   backend: "gnome-wayland-portal" as const,
@@ -336,6 +338,78 @@ describe("computer IPC methods", () => {
         ok: true,
         value: { actionResults: [{ index: 0, type: "press" }] },
       });
+    }),
+  );
+
+  it.effect("captures temporal action frames inside one IPC request", () =>
+    Effect.gen(function* () {
+      const events: string[] = [];
+      const actionStarted = yield* Deferred.make<void>();
+      const finishAction = yield* Deferred.make<void>();
+      const actions = [{ type: "press" as const, key: "Space" }];
+      const computer = makeComputer({
+        requestView: Effect.die("unexpected request view"),
+        act: (input) =>
+          Effect.gen(function* () {
+            assert.deepEqual(input, { desktop: userDesktop, actions, observation: false });
+            events.push("action-started");
+            yield* Deferred.succeed(actionStarted, undefined);
+            yield* Deferred.await(finishAction);
+            events.push("action-finished");
+            return [{ index: 0, type: "press" as const }];
+          }),
+        snapshot: (input) =>
+          Effect.sync(() => {
+            assert.deepEqual(input, {
+              desktop: userDesktop,
+              includeAccessibility: false,
+              screenshot: {},
+            });
+            events.push("snapshot");
+            return snapshot;
+          }),
+      });
+      const resultFiber = yield* act
+        .handler({
+          input: {
+            desktop: userDesktop,
+            actions,
+            observation: false,
+            temporalObservation: { frameCount: 5, intervalMs: 100 },
+          },
+        })
+        .pipe(Effect.provide(computerRouterLayer(computer)), Effect.forkChild);
+
+      yield* Deferred.await(actionStarted);
+      assert.deepEqual(events, ["snapshot", "action-started"]);
+      yield* Deferred.succeed(finishAction, undefined);
+      yield* TestClock.adjust("400 millis");
+
+      const result = yield* Fiber.join(resultFiber);
+      assert.isTrue(result.ok);
+      if (!result.ok) return;
+      assert.deepEqual(result.value.actionResults, [{ index: 0, type: "press" }]);
+      assert.equal(result.value.temporalSequence?.requestedFrameCount, 5);
+      assert.equal(result.value.temporalSequence?.capturedFrameCount, 5);
+      assert.deepEqual(
+        result.value.temporalSequence?.frames.map(({ index, elapsedMs }) => ({ index, elapsedMs })),
+        [
+          { index: 0, elapsedMs: 0 },
+          { index: 1, elapsedMs: 100 },
+          { index: 2, elapsedMs: 200 },
+          { index: 3, elapsedMs: 300 },
+          { index: 4, elapsedMs: 400 },
+        ],
+      );
+      assert.deepEqual(events, [
+        "snapshot",
+        "action-started",
+        "action-finished",
+        "snapshot",
+        "snapshot",
+        "snapshot",
+        "snapshot",
+      ]);
     }),
   );
 
