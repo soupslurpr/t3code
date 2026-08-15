@@ -9,7 +9,10 @@ import type {
   ThreadMonitorCancelInput,
   ThreadMonitorCheckInput,
   ThreadMonitorComputerCapabilities,
+  ThreadMonitorComputerInspectInput,
+  ThreadMonitorComputerInspection,
   ThreadMonitorComputerStartInput,
+  ThreadMonitorComputerUpdateInput,
   ThreadMonitorError,
   ThreadMonitorList,
   ThreadMonitorSignalInput,
@@ -27,7 +30,7 @@ export interface ThreadMonitorServiceShape {
     readonly monitor: ThreadMonitorStartInput;
   }) => Effect.Effect<ThreadMonitor, ThreadMonitorError>;
 
-  /** Creates one durable screen-region monitor owned by a thread. */
+  /** Creates one durable multi-region screen monitor owned by a thread. */
   readonly createComputer: (input: {
     readonly threadId: ThreadId;
     readonly monitor: ThreadMonitorComputerStartInput;
@@ -35,6 +38,18 @@ export interface ThreadMonitorServiceShape {
 
   /** Lists configured evaluator routes and deterministic computer conditions. */
   readonly computerCapabilities: Effect.Effect<ThreadMonitorComputerCapabilities>;
+
+  /** Reads retained and optional fresh images for one active computer watch. */
+  readonly inspectComputer: (input: {
+    readonly threadId: ThreadId;
+    readonly inspect: ThreadMonitorComputerInspectInput;
+  }) => Effect.Effect<ThreadMonitorComputerInspection, ThreadMonitorError>;
+
+  /** Atomically revises one active computer watch. */
+  readonly updateComputer: (input: {
+    readonly threadId: ThreadId;
+    readonly update: ThreadMonitorComputerUpdateInput;
+  }) => Effect.Effect<ThreadMonitor, ThreadMonitorError>;
 
   /** Lists monitors owned by a thread. */
   readonly status: (input: {

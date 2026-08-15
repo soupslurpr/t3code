@@ -88,6 +88,21 @@ or after an action batch so the starting state and resulting transition remain v
 are returned only to that tool call under the existing view permission and are not saved as a video.
 A separately retained recording remains a distinct, intentional operation.
 
+For a longer visual wait, an agent can create a durable watch with several independently cropped and
+sized regions. Trigger regions are sampled on the chosen cadence; context regions are captured only
+when an evaluator or controller needs them. The agent that owns the task chooses the exact condition,
+sampling policy, deadline, model, and optional review checkpoints. A selected evaluator receives
+named current images and optional revision baselines and returns only a verdict, visible facts, and
+image-linked evidence. It cannot act on the desktop or rewrite the monitoring strategy.
+
+Each watch has a revision. At a review checkpoint, the owning agent can inspect bounded baseline,
+previous, current, terminal, or freshly captured frames, then atomically update the regions or policy
+against the revision it inspected. A stale update is rejected instead of overwriting a newer one.
+Reviews leave the watch active, and each successful update begins a fresh revision with new baselines
+and metrics. An agent may time a review before its provider's prompt cache expires when another turn
+is expected to cost less than rebuilding that context; it can instead let the cache expire for a long
+or low-value wait. These retained frames are bounded monitoring evidence, not a continuous recording.
+
 Desktop screenshots can contain information from any visible application. They become part of the
 agent's tool context, so close or hide sensitive windows before allowing computer use. This matters
 especially when you control an agent remotely: approval grants control of the machine running the
@@ -149,8 +164,9 @@ The desktop host exposes tools for:
 - running bounded action batches that can move, click, drag, emit discrete wheel ticks, type, press
   hotkeys or hold keys, wait for a duration or a visual change, and activate a current semantic
   target or window
-- leaving a durable, view-only screen-region watch that checks for an exact image change or asks an
-  explicitly selected capable model whether a visible condition has been met
+- leaving a revisioned, view-only multi-region watch that checks for an exact image change or asks an
+  explicitly selected evaluator whether a visible condition has been met, with tools to inspect and
+  adapt it at review checkpoints
 - releasing the active session or forgetting remembered consent
 
 Full-display screenshots preserve aspect ratio and default to a maximum of 1600 by 900 pixels. An

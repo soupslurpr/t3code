@@ -8,12 +8,14 @@ keeping a provider process or one timer fiber per monitor alive.
 ## State and ownership
 
 Migration 41 creates `thread_monitors`, migration 42 adds coalesced delivery and
-durable retry state, and migration 43 adds structured computer conditions and
-`thread_monitor_computer_evidence`. Each monitor row stores its normalized
-condition, continuation policy, trigger evidence, terminal timestamps, and
-delivery attempts. MCP invocation credentials determine the owning thread. A
-request scoped to another thread receives the same not-found result as a
-missing monitor.
+durable retry state, migration 43 adds structured computer conditions and
+`thread_monitor_computer_evidence`, and migration 44 adds model-evaluation
+throttling. Migration 45 replaces the single-region computer condition with a
+revisioned, multi-region condition and bounded evidence generations. Each
+monitor row stores its normalized condition, continuation policy, trigger
+evidence, terminal timestamps, and delivery attempts. MCP invocation
+credentials determine the owning thread. A request scoped to another thread
+receives the same not-found result as a missing monitor.
 
 The public lifecycle is:
 
@@ -53,39 +55,67 @@ names an evaluator only when semantic image evaluation requires one.
 ## Computer conditions
 
 `computer_watch_start` acquires view-only access before persisting an active
-condition. A frame-relative crop is resolved once and stored as a display plus
-Electron desktop-logical bounds, so expired frame identifiers are never used by
-the scheduler. The user desktop coordinator already supports independent
+condition. A watch has one through eight named regions, with at least one
+`trigger` region and any number of `context` regions. Every region has its own
+crop, purpose, and bounded resolution. Frame-relative crops are resolved once
+and stored as Electron desktop-logical bounds, so expired frame identifiers are
+never used by the scheduler. The user desktop coordinator supports independent
 viewers. If GNOME has only a remembered combined-control token, the coordinator
 may restore that native session while assigning the monitor controller only a
 view lease. An explicitly named Agent desktop also permits view-only controllers
 from the same environment and thread while preserving exclusive input control
 for its owner.
 
-Each check captures only the stored region at the requested bounded resolution.
-The service hashes the PNG and discards the sample after the check. Exact
-`image-change` conditions compare that hash with the initial hash without a
-model. Model conditions route through the exact provider instance and model in
-the condition; capability discovery lists only instances whose adapter exposes
-image evaluation. The default change gate skips a model call when the sample is
-unchanged. An optional minimum evaluation interval rate-limits model calls
-without slowing capture. A change observed during the rate-limit window sets a
-durable pending flag. At the first eligible sample, the evaluator receives the
-latest image even if that image is unchanged from the immediately preceding
-sample. Successful evaluation clears the flag; restarts preserve it.
+Each check captures trigger regions at their configured resolutions. Context
+regions are captured only when a model evaluation is due, so a large context
+view does not consume capture or image-token cost at every sampling interval.
+Exact `image-change` conditions compare trigger hashes with the revision
+baselines without a model. Model conditions route through the exact provider
+instance and model in the condition; capability discovery lists only instances
+whose adapter exposes image evaluation. The default change gate skips a model
+call when every trigger is unchanged. An optional minimum evaluation interval
+rate-limits model calls without slowing capture. A change observed during the
+rate-limit window sets a durable pending flag. At the first eligible sample, the
+evaluator receives the latest named trigger and context images even if the
+triggers are unchanged from the immediately preceding sample. Successful
+evaluation clears the flag; restarts preserve it.
 
-The evaluator receives current pixels, an optional retained baseline, and an
-explicit reminder that image content is untrusted data. The current Codex
-adapter runs an ephemeral, read-only structured-output invocation. It reports
-token usage as unavailable because the CLI path does not expose reliable
-per-request usage. It also reports prompt-cache refresh as unsupported. The
-monitor system never approximates either capability with a synthetic thread
-turn, an empty message, or an implicit model substitution.
+The evaluator is a narrow, stateless predicate checker. It receives named
+current pixels, optional revision baselines, region purposes, and an explicit
+reminder that image content is untrusted data. It returns only a verdict,
+visible facts, and image-specific evidence; it receives no tools and cannot
+revise the watch. The current Codex adapter runs an ephemeral, read-only
+structured-output invocation. It reports token usage as unavailable because the
+CLI path does not expose reliable per-request usage, and reports prompt-cache
+refresh as unsupported. The monitor records exact token fields when an adapter
+can provide them, plus per-evaluation and aggregate duration. It never
+approximates unavailable usage or cache behavior with a synthetic thread turn,
+empty message, or implicit model substitution.
 
-Only optional baseline and terminal matching PNGs are retained. Ordinary
-samples are not written to SQLite. Evidence rows cascade with thread-monitor
-deletion. Terminal transitions and cancellation release the monitor-specific
-view lease; they do not disturb another controller's view or control lease.
+SQLite retains bounded baseline, previous-evaluation, current-evaluation, and
+terminal image generations. `computer_watch_inspect` can return those images as
+MCP image blocks or capture a bounded fresh burst for selected regions. Fresh
+bursts are inspection evidence only and do not mutate sampling state. Condition
+and evidence changes are committed atomically, evidence rows cascade with
+thread-monitor deletion, and terminal transitions or cancellation release only
+the monitor-specific view lease.
+
+Each watch has an optimistic revision. `computer_watch_update` requires the
+expected revision and atomically replaces any combination of observation plan,
+match, cadence, review policy, deadline, or continuation. A successful update
+captures fresh baselines, resets counters and evidence generations, and begins
+the next revision. A stale update returns `REVISION_CONFLICT` without changing
+state.
+
+Optional deterministic review checkpoints can fire after a configured number
+of evaluations, consecutive uncertain verdicts, consecutive failures, or at a
+wall-clock time. A review starts a normal system-role continuation for the
+capable thread controller, which may inspect evidence and revise the strategy.
+The evaluator never receives this responsibility. A delivered review leaves the
+watch active and does not repeat within that revision; acknowledging it through
+an update begins a fresh revision. Controllers can place reviews before an
+expected provider prompt-cache expiry when the saved context cost justifies a
+check-in, but the server does not invent model-specific cache policy.
 
 ## Continuation delivery
 
