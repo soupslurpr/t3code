@@ -90,6 +90,7 @@ const workingComputerLayer = Layer.effect(
             match: { type: "image-change" },
             sampling: {
               intervalMs: 30_000,
+              minEvaluationIntervalMs: null,
               maxWidth: 1_024,
               maxHeight: 1_024,
               evaluateOnlyAfterChange: true,
@@ -101,6 +102,7 @@ const workingComputerLayer = Layer.effect(
             baselineStored: true,
             lastCheckedAt: null,
             lastEvaluatedAt: null,
+            evaluationPending: false,
             lastVerdict: null,
             lastSummary: null,
             lastUsage: null,
