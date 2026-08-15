@@ -734,6 +734,10 @@ const make = Effect.gen(function* () {
       })
       .pipe(Effect.result);
     if (Result.isFailure(checked)) {
+      if (checked.failure.code === "COMPUTER_FINGERPRINT_UNSUPPORTED") {
+        const failed = yield* failMonitor(monitor, checked.failure.detail, checkedAt);
+        return yield* releaseComputer(failed);
+      }
       const failed: ThreadMonitor = {
         ...monitor,
         condition: computerFailureCondition(
