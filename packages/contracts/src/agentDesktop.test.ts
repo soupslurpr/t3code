@@ -5,6 +5,8 @@ import {
   AgentDesktop,
   AgentDesktopAcquireInput,
   AgentDesktopCommandInput,
+  AgentDesktopCopyInput,
+  AgentDesktopHostTransferInput,
   AgentDesktopManageInput,
   AgentDesktopNetworkTelemetry,
   AgentDesktopReadFileInput,
@@ -18,6 +20,8 @@ const decodeDesktop = Schema.decodeUnknownSync(AgentDesktop);
 const decodeManage = Schema.decodeUnknownSync(AgentDesktopManageInput);
 const decodeNetwork = Schema.decodeUnknownSync(AgentDesktopNetworkTelemetry);
 const decodeCommand = Schema.decodeUnknownSync(AgentDesktopCommandInput);
+const decodeCopy = Schema.decodeUnknownSync(AgentDesktopCopyInput);
+const decodeHostTransfer = Schema.decodeUnknownSync(AgentDesktopHostTransferInput);
 const decodeReadFile = Schema.decodeUnknownSync(AgentDesktopReadFileInput);
 const decodeWriteFile = Schema.decodeUnknownSync(AgentDesktopWriteFileInput);
 const decodeList = Schema.decodeUnknownSync(AgentDesktopList);
@@ -82,6 +86,43 @@ describe("agent desktop contracts", () => {
     expect(decodeWriteFile({ path: "/tmp/result", data: "hello", mode: "overwrite" }).mode).toBe(
       "overwrite",
     );
+  });
+
+  it("requires copies to cross the workspace boundary", () => {
+    expect(
+      decodeCopy({
+        source: { kind: "workspace", path: "artifacts/report" },
+        destination: { kind: "agent", desktopId: "desktop-1", path: "/tmp/report" },
+        collision: "replace",
+        compression: "auto",
+      }),
+    ).toEqual({
+      source: { kind: "workspace", path: "artifacts/report" },
+      destination: { kind: "agent", desktopId: "desktop-1", path: "/tmp/report" },
+      collision: "replace",
+      compression: "auto",
+    });
+    expect(() =>
+      decodeCopy({
+        source: { kind: "workspace", path: "first" },
+        destination: { kind: "workspace", path: "second" },
+      }),
+    ).toThrow();
+  });
+
+  it("keeps transfer capability URLs inside host-only inputs", () => {
+    expect(
+      decodeHostTransfer({
+        operation: "import",
+        transferId: "transfer-1",
+        url: "http://127.0.0.1:3773/api/agent-desktop-transfers/private",
+        guestPath: "/tmp/report",
+        collision: "create",
+        compression: "gzip",
+        sizeBytes: 42,
+        sha256: "a".repeat(64),
+      }).operation,
+    ).toBe("import");
   });
 
   it("bounds resource and network telemetry", () => {

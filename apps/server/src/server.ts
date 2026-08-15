@@ -22,7 +22,10 @@ import * as BackgroundPolicy from "./background/BackgroundPolicy.ts";
 import * as AgentPowerReporter from "./background/AgentPowerReporter.ts";
 import * as HostPowerMonitor from "./background/HostPowerMonitor.ts";
 import * as ServerConfig from "./config.ts";
+import * as AgentDesktopTransfer from "./agentDesktop/AgentDesktopTransferService.ts";
 import {
+  agentDesktopTransferDownloadRouteLayer,
+  agentDesktopTransferUploadRouteLayer,
   otlpTracesProxyRouteLayer,
   assetRouteLayer,
   attachmentUploadRouteLayer,
@@ -564,6 +567,7 @@ const RuntimeCoreWithAgentPowerLive = AgentPowerReporter.layer.pipe(
 
 const RuntimeDependenciesLive = RuntimeCoreWithAgentPowerLive.pipe(
   // Misc.
+  Layer.provideMerge(AgentDesktopTransfer.layer),
   Layer.provideMerge(BackgroundLayerLive),
   Layer.provideMerge(ResourceDiagnosticsLayerLive),
   Layer.provideMerge(UsageLayerLive),
@@ -597,6 +601,8 @@ export const makeRoutesLayer = Layer.mergeAll(
     assetRouteLayer,
     attachmentUploadRouteLayer,
     deviceHubProxyRouteLayer,
+    agentDesktopTransferDownloadRouteLayer,
+    agentDesktopTransferUploadRouteLayer,
     staticAndDevRouteLayer,
     websocketRpcRouteLayer,
   ),
