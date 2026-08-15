@@ -1783,6 +1783,13 @@ export const make = Effect.gen(function* () {
       }),
     );
 
+  const terminateGuestProcess = (id: AgentDesktopId, processId: number) =>
+    guestCommand(id, "guest-exec", {
+      path: "/usr/bin/kill",
+      arg: ["-TERM", String(processId)],
+      "capture-output": false,
+    }).pipe(Effect.ignore);
+
   const executeGuestProcess: QemuAgentDesktopShape["executeGuestProcess"] = (id, input) =>
     Effect.gen(function* () {
       const started = asRecord(
@@ -1799,53 +1806,51 @@ export const make = Effect.gen(function* () {
       const processId = yield* parseGuestResponse("guest-exec", () =>
         requiredInteger(started?.pid, "pid"),
       );
-      const deadline =
-        (yield* Clock.currentTimeMillis) +
-        (input.timeoutMs ?? Duration.toMillis(DEFAULT_GUEST_COMMAND_TIMEOUT));
-      while (true) {
-        const status = asRecord(yield* guestCommand(id, "guest-exec-status", { pid: processId }));
-        if (status?.exited === true) {
-          const [stdoutBytes, stderrBytes] = yield* parseGuestResponse(
-            "guest-exec-status",
-            () =>
-              [
-                decodeBase64(status["out-data"], "out-data"),
-                decodeBase64(status["err-data"], "err-data"),
-              ] as const,
-          );
-          const boundedStdout = stdoutBytes.subarray(0, input.maxOutputBytes);
-          const boundedStderr = stderrBytes.subarray(0, input.maxOutputBytes);
-          const signal =
-            typeof status.signal === "number" && Number.isInteger(status.signal)
-              ? status.signal
-              : 0;
-          return {
-            exitCode:
-              typeof status.exitcode === "number" && Number.isInteger(status.exitcode)
-                ? status.exitcode
-                : 128 + signal,
-            stdout: decodeUtf8(boundedStdout),
-            stderr: decodeUtf8(boundedStderr),
-            stdoutTruncated:
-              status["out-truncated"] === true || stdoutBytes.byteLength > input.maxOutputBytes,
-            stderrTruncated:
-              status["err-truncated"] === true || stderrBytes.byteLength > input.maxOutputBytes,
-          };
+      return yield* Effect.gen(function* () {
+        const deadline =
+          (yield* Clock.currentTimeMillis) +
+          (input.timeoutMs ?? Duration.toMillis(DEFAULT_GUEST_COMMAND_TIMEOUT));
+        while (true) {
+          const status = asRecord(yield* guestCommand(id, "guest-exec-status", { pid: processId }));
+          if (status?.exited === true) {
+            const [stdoutBytes, stderrBytes] = yield* parseGuestResponse(
+              "guest-exec-status",
+              () =>
+                [
+                  decodeBase64(status["out-data"], "out-data"),
+                  decodeBase64(status["err-data"], "err-data"),
+                ] as const,
+            );
+            const boundedStdout = stdoutBytes.subarray(0, input.maxOutputBytes);
+            const boundedStderr = stderrBytes.subarray(0, input.maxOutputBytes);
+            const signal =
+              typeof status.signal === "number" && Number.isInteger(status.signal)
+                ? status.signal
+                : 0;
+            return {
+              exitCode:
+                typeof status.exitcode === "number" && Number.isInteger(status.exitcode)
+                  ? status.exitcode
+                  : 128 + signal,
+              stdout: decodeUtf8(boundedStdout),
+              stderr: decodeUtf8(boundedStderr),
+              stdoutTruncated:
+                status["out-truncated"] === true || stdoutBytes.byteLength > input.maxOutputBytes,
+              stderrTruncated:
+                status["err-truncated"] === true || stderrBytes.byteLength > input.maxOutputBytes,
+            };
+          }
+          if ((yield* Clock.currentTimeMillis) >= deadline) {
+            yield* terminateGuestProcess(id, processId);
+            return yield* new QemuAgentDesktopError({
+              code: "timed-out",
+              operation: "guest-exec",
+              detail: `guest process ${processId} exceeded its timeout`,
+            });
+          }
+          yield* Effect.sleep(GUEST_EXEC_POLL_INTERVAL);
         }
-        if ((yield* Clock.currentTimeMillis) >= deadline) {
-          yield* guestCommand(id, "guest-exec", {
-            path: "/usr/bin/kill",
-            arg: ["-TERM", String(processId)],
-            "capture-output": false,
-          }).pipe(Effect.ignore);
-          return yield* new QemuAgentDesktopError({
-            code: "timed-out",
-            operation: "guest-exec",
-            detail: `guest process ${processId} exceeded its timeout`,
-          });
-        }
-        yield* Effect.sleep(GUEST_EXEC_POLL_INTERVAL);
-      }
+      }).pipe(Effect.onInterrupt(() => terminateGuestProcess(id, processId)));
     }).pipe(Effect.mapError(mapFailure("guest-exec", "guest-disconnected")));
 
   const closeGuestFile = (id: AgentDesktopId, handle: number) =>
