@@ -52,6 +52,8 @@ describe("shouldBundleCliDependency", () => {
       "@napi-rs/keyring",
       "@clerk/electron-passkeys",
       "node-addon-api",
+      "sharp",
+      "@img/sharp-linux-x64",
     ]) {
       assert.strictEqual(shouldBundleCliDependency(id), false, id);
     }
@@ -83,7 +85,7 @@ describe("selectCliRuntimeExternalDependencies", () => {
   it("selects every external root declared by the server", () => {
     assert.deepStrictEqual(
       Object.keys(selectCliRuntimeExternalDependencies(serverPackageJson.dependencies)).sort(),
-      ["@cursor/sdk", "@ff-labs/fff-node", "@napi-rs/keyring", "node-pty"],
+      ["@cursor/sdk", "@ff-labs/fff-node", "@napi-rs/keyring", "node-pty", "sharp"],
     );
   });
 });

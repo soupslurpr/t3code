@@ -12,6 +12,8 @@ import { ComputerDesktopTarget } from "./agentDesktop.ts";
 import {
   ComputerAutomationDesktopRegion,
   ComputerAutomationDisplayId,
+  ComputerAutomationScreenshotEncoding,
+  ComputerAutomationScreenshotMimeType,
   ComputerAutomationScreenshotRegion,
 } from "./computerAutomation.ts";
 import { ModelSelection } from "./orchestration.ts";
@@ -67,6 +69,9 @@ export const ThreadMonitorComputerObservationRegionInput = Schema.Struct({
   maxHeight: Schema.optional(ComputerWatchImageDimension).annotate({
     description:
       "Maximum returned image height from 1 through 4096 pixels. Defaults to 1024, preserves aspect ratio, and never upscales.",
+  }),
+  encoding: Schema.optional(ComputerAutomationScreenshotEncoding).annotate({
+    description: "Image encoding for this region. Defaults to lossless WebP.",
   }),
 }).check(
   Schema.makeFilter(
@@ -125,6 +130,7 @@ export const ThreadMonitorComputerRegionState = Schema.Struct({
   region: ComputerAutomationDesktopRegion,
   maxWidth: ComputerWatchImageDimension,
   maxHeight: ComputerWatchImageDimension,
+  encoding: ComputerAutomationScreenshotEncoding,
   baselineHash: ComputerWatchHash,
   lastSampleHash: ComputerWatchHash,
   baselineStored: Schema.Boolean,
@@ -515,7 +521,10 @@ export const ThreadMonitorComputerEvidenceImage = Schema.Struct({
   height: PositiveInt,
   frameIndex: Schema.NullOr(NonNegativeInt),
   elapsedMs: Schema.NullOr(NonNegativeInt),
-  pngBase64: Schema.String,
+  mimeType: ComputerAutomationScreenshotMimeType,
+  dataBase64: Schema.String,
+  sizeBytes: PositiveInt,
+  encoding: ComputerAutomationScreenshotEncoding,
 });
 export type ThreadMonitorComputerEvidenceImage = typeof ThreadMonitorComputerEvidenceImage.Type;
 

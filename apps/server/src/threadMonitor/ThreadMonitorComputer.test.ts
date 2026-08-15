@@ -6,6 +6,7 @@ import {
   ProviderInstanceId,
   ThreadId,
   ThreadMonitorId,
+  type ComputerAutomationScreenshotEncoding,
   type ComputerAutomationSnapshot,
   type OrchestrationProjectShell,
   type OrchestrationThreadShell,
@@ -35,12 +36,16 @@ const modelSelection = createModelSelection(instanceId, "small-vision-model");
 const initialAt = "2026-08-14T00:00:00.000Z";
 
 /** Encodes deterministic fake screenshot contents. */
-function png(contents: string): string {
+function imageData(contents: string): string {
   return Buffer.from(contents).toString("base64");
 }
 
 /** Builds one screenshot whose image coordinates map directly to the requested desktop region. */
-function snapshot(contents: string, x: number): ComputerAutomationSnapshot {
+function snapshot(
+  contents: string,
+  x: number,
+  encoding: ComputerAutomationScreenshotEncoding = { format: "webp", mode: "lossless" },
+): ComputerAutomationSnapshot {
   return {
     display: {
       id: "display-1",
@@ -60,10 +65,12 @@ function snapshot(contents: string, x: number): ComputerAutomationSnapshot {
     },
     captureSource: "virtual-display",
     screenshot: {
-      mimeType: "image/png",
-      data: png(contents),
+      mimeType: "image/webp",
+      data: imageData(contents),
       width: 200,
       height: 100,
+      sizeBytes: Buffer.byteLength(contents),
+      encoding,
     },
   };
 }
@@ -141,6 +148,7 @@ describe("ThreadMonitorComputer", () => {
           const input = request.input as {
             readonly screenshot: {
               readonly region?: { readonly x: number } | undefined;
+              readonly encoding?: ComputerAutomationScreenshotEncoding | undefined;
             };
           };
           const x = input.screenshot.region?.x ?? 0;
@@ -152,7 +160,7 @@ describe("ThreadMonitorComputer", () => {
                 : "context-current"
               : (["status-initial", "status-initial", "status-changed"][triggerCapture++] ??
                 "status-changed");
-          return Effect.succeed(snapshot(contents, x) as Result);
+          return Effect.succeed(snapshot(contents, x, input.screenshot.encoding) as Result);
         },
       });
       const registry = ProviderInstanceRegistry.ProviderInstanceRegistry.of({
@@ -211,6 +219,7 @@ describe("ThreadMonitorComputer", () => {
                 },
                 maxWidth: 200,
                 maxHeight: 100,
+                encoding: { format: "webp", mode: "near-lossless", quality: 88 },
               },
               {
                 id: "details",
@@ -226,6 +235,7 @@ describe("ThreadMonitorComputer", () => {
                 },
                 maxWidth: 200,
                 maxHeight: 100,
+                encoding: { format: "webp", mode: "lossy", quality: 72 },
               },
             ],
           },
@@ -247,6 +257,10 @@ describe("ThreadMonitorComputer", () => {
       expect(prepared.baselineImages.map(({ regionId }) => regionId)).toEqual([
         "status",
         "details",
+      ]);
+      expect(prepared.condition.observation.regions.map(({ encoding }) => encoding)).toEqual([
+        { format: "webp", mode: "near-lossless", quality: 88 },
+        { format: "webp", mode: "lossy", quality: 72 },
       ]);
       expect(prepared.condition.review.policy?.consecutiveFailures).toBe(3);
 
@@ -295,14 +309,26 @@ describe("ThreadMonitorComputer", () => {
         {
           id: "status",
           purpose: "Shows whether the task is complete.",
-          currentPngBase64: png("status-changed"),
-          baselinePngBase64: png("status-initial"),
+          current: {
+            mimeType: "image/webp",
+            dataBase64: imageData("status-changed"),
+          },
+          baseline: {
+            mimeType: "image/webp",
+            dataBase64: imageData("status-initial"),
+          },
         },
         {
           id: "details",
           purpose: "Explains the current task state.",
-          currentPngBase64: png("context-current"),
-          baselinePngBase64: png("context-initial"),
+          current: {
+            mimeType: "image/webp",
+            dataBase64: imageData("context-current"),
+          },
+          baseline: {
+            mimeType: "image/webp",
+            dataBase64: imageData("context-initial"),
+          },
         },
       ]);
       expect(changed.condition.observation.regions).toMatchObject([

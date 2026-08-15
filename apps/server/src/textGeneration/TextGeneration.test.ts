@@ -209,7 +209,12 @@ describe("TextGeneration.make", () => {
       const result = yield* textGeneration.evaluateImageCondition!({
         cwd: process.cwd(),
         criterion: "A completion dialog is visible.",
-        images: [{ id: "main", currentPngBase64: "aW1hZ2U=" }],
+        images: [
+          {
+            id: "main",
+            current: { mimeType: "image/webp", dataBase64: "aW1hZ2U=" },
+          },
+        ],
         modelSelection: createModelSelection(selectedId, "gpt-5.4-mini"),
       });
 
@@ -228,7 +233,12 @@ describe("TextGeneration.make", () => {
       const result = yield* textGeneration.evaluateImageCondition!({
         cwd: process.cwd(),
         criterion: "A completion dialog is visible.",
-        images: [{ id: "main", currentPngBase64: "aW1hZ2U=" }],
+        images: [
+          {
+            id: "main",
+            current: { mimeType: "image/webp", dataBase64: "aW1hZ2U=" },
+          },
+        ],
         modelSelection: createModelSelection(instanceId, "text-model"),
       }).pipe(Effect.result);
 
