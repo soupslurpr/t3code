@@ -1,5 +1,6 @@
 import * as Cause from "effect/Cause";
 import * as Context from "effect/Context";
+import * as Deferred from "effect/Deferred";
 import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
@@ -137,6 +138,11 @@ interface ActiveRemotePoller {
   readonly demandCwds: Ref.Ref<ReadonlyMap<string, number>>;
 }
 
+type PendingVcsStatusRefresh = Deferred.Deferred<VcsStatusResult, GitManagerServiceError>;
+type PendingVcsStatusRefreshLease =
+  | { readonly pending: PendingVcsStatusRefresh; readonly owner: true }
+  | { readonly pending: PendingVcsStatusRefresh; readonly owner: false };
+
 interface StreamStatusOptions {
   readonly automaticRemoteRefreshInterval?: Effect.Effect<Duration.Duration, never>;
 }
@@ -236,6 +242,9 @@ export const make = Effect.gen(function* () {
     return lock.withPermits(1)(effect);
   };
   const pollersRef = yield* SynchronizedRef.make(new Map<string, ActiveRemotePoller>());
+  const pendingRefreshesRef = yield* SynchronizedRef.make(
+    new Map<string, PendingVcsStatusRefresh>(),
+  );
 
   const getCachedStatus = Effect.fn("VcsStatusBroadcaster.getCachedStatus")(function* (
     cwd: string,
@@ -462,10 +471,10 @@ export const make = Effect.gen(function* () {
     );
   });
 
-  const refreshStatus: VcsStatusBroadcaster["Service"]["refreshStatus"] = Effect.fn(
-    "VcsStatusBroadcaster.refreshStatus",
-  )(function* (rawCwd) {
-    const cwd = yield* withFileSystem(normalizeCwd(rawCwd));
+  const refreshStatusCore = Effect.fn("VcsStatusBroadcaster.refreshStatusCore")(function* (
+    cwd: string,
+    policyCwds: ReadonlyArray<string>,
+  ) {
     // invalidateStatus (not the two partial invalidations) so an explicit
     // refresh also bypasses GitManager's slow PR-lookup cache.
     return yield* withRemoteWriteLock(
@@ -476,7 +485,7 @@ export const make = Effect.gen(function* () {
           [workflow.localStatus({ cwd }), workflow.remoteStatus({ cwd })],
           { concurrency: "unbounded" },
         );
-        const pulled = yield* maybeAutoPull(cwd, remote, [rawCwd]);
+        const pulled = yield* maybeAutoPull(cwd, remote, policyCwds);
         if (pulled !== null) return mergeGitStatusParts(pulled.local, pulled.remote);
         return yield* updateCachedStatus(cwd, local, remote, { publish: true });
       }),
@@ -510,6 +519,65 @@ export const make = Effect.gen(function* () {
         }),
       );
     });
+
+  const clearPendingRefresh = (cwd: string, pending: PendingVcsStatusRefresh) =>
+    SynchronizedRef.update(pendingRefreshesRef, (current) => {
+      if (current.get(cwd) !== pending) {
+        return current;
+      }
+      const next = new Map(current);
+      next.delete(cwd);
+      return next;
+    });
+
+  const acquirePendingRefresh = Effect.fn("VcsStatusBroadcaster.acquirePendingRefresh")(function* (
+    cwd: string,
+  ) {
+    return yield* SynchronizedRef.modifyEffect(
+      pendingRefreshesRef,
+      (
+        current,
+      ): Effect.Effect<
+        readonly [PendingVcsStatusRefreshLease, Map<string, PendingVcsStatusRefresh>]
+      > => {
+        const existing = current.get(cwd);
+        if (existing) {
+          return Effect.succeed([{ pending: existing, owner: false }, current]);
+        }
+
+        return Deferred.make<VcsStatusResult, GitManagerServiceError>().pipe(
+          Effect.map((pending) => {
+            const next = new Map(current);
+            next.set(cwd, pending);
+            return [{ pending, owner: true }, next] as const;
+          }),
+        );
+      },
+    );
+  });
+
+  const refreshStatus: VcsStatusBroadcaster["Service"]["refreshStatus"] = Effect.fn(
+    "VcsStatusBroadcaster.refreshStatus",
+  )(function* (rawCwd) {
+    return yield* Effect.uninterruptibleMask((restore) =>
+      Effect.gen(function* () {
+        const acquired = yield* acquirePendingRefresh(rawCwd);
+        if (acquired.owner) {
+          yield* withFileSystem(normalizeCwd(rawCwd)).pipe(
+            Effect.flatMap((cwd) => refreshStatusCore(cwd, [rawCwd])),
+            Effect.onExit((exit) =>
+              clearPendingRefresh(rawCwd, acquired.pending).pipe(
+                Effect.andThen(Deferred.done(acquired.pending, exit)),
+              ),
+            ),
+            Effect.exit,
+            Effect.forkIn(broadcasterScope),
+          );
+        }
+        return yield* restore(Deferred.await(acquired.pending));
+      }),
+    );
+  });
 
   const makeRemoteRefreshLoop = (
     cwd: string,
