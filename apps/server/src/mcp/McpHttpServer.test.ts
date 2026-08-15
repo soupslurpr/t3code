@@ -45,6 +45,7 @@ const threadId = ThreadId.make("thread-mcp-test");
 const tabId = PreviewTabId.make("tab-mcp-test");
 const alternateTabId = PreviewTabId.make("tab-mcp-alternate");
 const decodeJsonText = Schema.decodeUnknownSync(Schema.fromJsonString(Schema.Unknown));
+const computerContentHash = "sha256-bgra8-v1:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA";
 const invocation = {
   environmentId,
   requestNamespace: "provider-session-mcp-test",
@@ -353,6 +354,8 @@ function automationResult(operation: string, input?: unknown): unknown {
         },
         captureSource: "remote-desktop-stream",
         screenshot: {
+          state: "image",
+          contentHash: computerContentHash,
           mimeType: "image/webp",
           data: Buffer.from("computer-webp").toString("base64"),
           width: 800,
@@ -369,6 +372,25 @@ function automationResult(operation: string, input?: unknown): unknown {
       ) {
         const { frame: _, pointer: __, screenshot: ___, ...semanticSnapshot } = snapshot;
         return semanticSnapshot;
+      }
+      if (
+        typeof input === "object" &&
+        input !== null &&
+        "screenshot" in input &&
+        typeof input.screenshot === "object" &&
+        input.screenshot !== null &&
+        "unchangedIfContentHash" in input.screenshot &&
+        input.screenshot.unchangedIfContentHash === computerContentHash
+      ) {
+        return {
+          ...snapshot,
+          screenshot: {
+            state: "unchanged",
+            contentHash: computerContentHash,
+            width: 800,
+            height: 600,
+          },
+        };
       }
       return snapshot;
     }
@@ -1434,6 +1456,8 @@ it.effect("registers annotated tools and preserves authenticated request context
           targets: [{ name: "Equals" }],
         },
         screenshot: {
+          state: "image",
+          contentHash: computerContentHash,
           mimeType: "image/webp",
           width: 800,
           height: 600,
@@ -1442,6 +1466,30 @@ it.effect("registers annotated tools and preserves authenticated request context
         },
       });
       expect(computerSnapshot.structuredContent).not.toHaveProperty("screenshot.data");
+
+      const unchangedSnapshot = yield* server
+        .callTool({
+          name: "computer_snapshot",
+          arguments: {
+            displayId: "7",
+            screenshot: { unchangedIfContentHash: computerContentHash },
+          },
+        })
+        .pipe(
+          Effect.provideService(McpInvocationContext.McpInvocationContext, invocation),
+          Effect.provideService(McpSchema.McpServerClient, client),
+        );
+      expect(unchangedSnapshot.isError).toBe(false);
+      expect(unchangedSnapshot.content.some((content) => content.type === "image")).toBe(false);
+      expect(unchangedSnapshot.structuredContent).toMatchObject({
+        frame: { id: "frame-1" },
+        screenshot: {
+          state: "unchanged",
+          contentHash: computerContentHash,
+          width: 800,
+          height: 600,
+        },
+      });
 
       const computerSequenceFiber = yield* server
         .callTool({

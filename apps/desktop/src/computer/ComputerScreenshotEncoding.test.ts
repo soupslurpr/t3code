@@ -2,7 +2,7 @@ import sharp from "sharp";
 import { describe, expect, it } from "vite-plus/test";
 
 import {
-  encodeComputerScreenshot,
+  renderComputerScreenshot,
   resolveComputerScreenshotEncoding,
   type ComputerScreenshotImage,
 } from "./ComputerScreenshotEncoding.ts";
@@ -26,7 +26,9 @@ describe("ComputerScreenshotEncoding", () => {
       30, 20, 10, 255, 60, 50, 40, 255, 90, 80, 70, 255, 120, 110, 100, 255,
     ]);
 
-    const encoded = await encodeComputerScreenshot(image(2, 2, bitmap), null, undefined);
+    const encoded = await renderComputerScreenshot(image(2, 2, bitmap), null, undefined);
+    expect(encoded.state).toBe("image");
+    if (encoded.state !== "image") throw new Error("expected encoded screenshot bytes");
     const decoded = await decodeRgba(encoded.data);
 
     expect(encoded.mimeType).toBe("image/webp");
@@ -42,9 +44,11 @@ describe("ComputerScreenshotEncoding", () => {
   it("supports an explicit PNG compatibility encoding", async () => {
     const bitmap = Buffer.from([30, 20, 10, 255]);
 
-    const encoded = await encodeComputerScreenshot(image(1, 1, bitmap), null, {
+    const encoded = await renderComputerScreenshot(image(1, 1, bitmap), null, {
       format: "png",
     });
+    expect(encoded.state).toBe("image");
+    if (encoded.state !== "image") throw new Error("expected encoded screenshot bytes");
     const decoded = await decodeRgba(encoded.data);
 
     expect(encoded.mimeType).toBe("image/png");
@@ -76,7 +80,7 @@ describe("ComputerScreenshotEncoding", () => {
     const bitmap = Buffer.alloc(dimension * dimension * 4, 0);
     for (let offset = 3; offset < bitmap.length; offset += 4) bitmap[offset] = 255;
 
-    const encoded = await encodeComputerScreenshot(
+    const encoded = await renderComputerScreenshot(
       image(dimension, dimension, bitmap),
       {
         x: 12,
@@ -84,6 +88,8 @@ describe("ComputerScreenshotEncoding", () => {
       },
       undefined,
     );
+    expect(encoded.state).toBe("image");
+    if (encoded.state !== "image") throw new Error("expected encoded screenshot bytes");
     const decoded = await decodeRgba(encoded.data);
     const centerOffset = (12 * dimension + 12) * 4;
     const ringOffset = (12 * dimension + 22) * 4;
@@ -94,7 +100,43 @@ describe("ComputerScreenshotEncoding", () => {
 
   it("rejects malformed native bitmaps before encoding", async () => {
     await expect(
-      encodeComputerScreenshot(image(2, 2, Buffer.alloc(4)), null, undefined),
+      renderComputerScreenshot(image(2, 2, Buffer.alloc(4)), null, undefined),
     ).rejects.toThrow("bitmap size does not match");
+  });
+
+  it("omits encoding only when the exact bounded pixels match", async () => {
+    const initialBitmap = Buffer.from([
+      30, 20, 10, 255, 60, 50, 40, 255, 90, 80, 70, 255, 120, 110, 100, 255,
+    ]);
+    const initial = await renderComputerScreenshot(image(2, 2, initialBitmap), null, undefined);
+    expect(initial.state).toBe("image");
+
+    const unchanged = await renderComputerScreenshot(
+      image(2, 2, initialBitmap),
+      null,
+      undefined,
+      initial.contentHash,
+    );
+    const changedBitmap = Buffer.from(initialBitmap);
+    changedBitmap[0] = 31;
+    const changed = await renderComputerScreenshot(
+      image(2, 2, changedBitmap),
+      null,
+      undefined,
+      initial.contentHash,
+    );
+    const resized = await renderComputerScreenshot(
+      image(1, 4, initialBitmap),
+      null,
+      undefined,
+      initial.contentHash,
+    );
+
+    expect(initial.contentHash).toMatch(/^sha256-bgra8-v1:[A-Za-z0-9_-]{43}$/);
+    expect(unchanged).toEqual({ state: "unchanged", contentHash: initial.contentHash });
+    expect(changed.state).toBe("image");
+    expect(changed.contentHash).not.toBe(initial.contentHash);
+    expect(resized.state).toBe("image");
+    expect(resized.contentHash).not.toBe(initial.contentHash);
   });
 });

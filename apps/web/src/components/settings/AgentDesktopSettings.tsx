@@ -496,7 +496,7 @@ function DesktopViewer({
           onPointerUp={handlePointerUp}
           onWheel={handleWheel}
         >
-          {observation?.screenshot ? (
+          {observation?.screenshot?.state === "image" ? (
             <img
               ref={imageRef}
               src={`data:${observation.screenshot.mimeType};base64,${observation.screenshot.data}`}
