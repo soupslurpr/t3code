@@ -19,6 +19,8 @@ const SUBMIT_SETTLE_MS = 250;
 const MAX_ACCESSIBILITY_TARGETS = 256;
 const MAX_ACCESSIBILITY_WINDOWS = 128;
 const MAX_FAILURE_CAUSE_DEPTH = 4;
+const MAX_FAILURE_BACKEND_CODE_LENGTH = 128;
+const MAX_FAILURE_DETAIL_LENGTH = 2_000;
 const MAX_OBSERVATION_DELAY_MS = 5_000;
 const MAX_SCREENSHOT_DIMENSION = 4_096;
 const MAX_TEMPORAL_SEQUENCE_FRAMES = 24;
@@ -166,6 +168,16 @@ export const ComputerAutomationFailure = Schema.Struct({
   code: ComputerAutomationFailureCode,
   category: ComputerAutomationFailureCategory,
   message: Schema.String.check(Schema.isMaxLength(512)),
+  backendCode: Schema.optional(
+    TrimmedNonEmptyString.check(Schema.isMaxLength(MAX_FAILURE_BACKEND_CODE_LENGTH)),
+  ).annotate({
+    description: "Bounded backend-specific error code when one was reported.",
+  }),
+  detail: Schema.optional(
+    Schema.String.check(Schema.isMaxLength(MAX_FAILURE_DETAIL_LENGTH)),
+  ).annotate({
+    description: "Bounded backend diagnostic suitable for agent-facing troubleshooting.",
+  }),
   actionIndex: Schema.optional(
     Schema.Int.check(Schema.isBetween({ minimum: 0, maximum: MAX_ACTION_BATCH_ACTIONS - 1 })),
   ),
@@ -195,6 +207,26 @@ export const ComputerAutomationFailure = Schema.Struct({
   cleanup: Schema.optional(ComputerAutomationInputCleanup),
 });
 export type ComputerAutomationFailure = typeof ComputerAutomationFailure.Type;
+
+export const ComputerAutomationCaptureHealthState = Schema.Literals([
+  "untested",
+  "healthy",
+  "degraded",
+]);
+export type ComputerAutomationCaptureHealthState = typeof ComputerAutomationCaptureHealthState.Type;
+
+export const ComputerAutomationCaptureHealth = Schema.Struct({
+  displayId: ComputerAutomationDisplayId,
+  state: ComputerAutomationCaptureHealthState,
+  lastSuccessfulFrameAt: Schema.NullOr(IsoDateTime),
+  lastFailedFrameAt: Schema.NullOr(IsoDateTime),
+  consecutiveFailures: NonNegativeInt,
+  lastFailure: Schema.NullOr(ComputerAutomationFailure),
+}).annotate({
+  description:
+    "Session-scoped health of actual frame capture for one display, independent of access permission.",
+});
+export type ComputerAutomationCaptureHealth = typeof ComputerAutomationCaptureHealth.Type;
 
 /** Finds a bounded, public computer-use failure in an internal error chain. */
 export function findComputerAutomationFailureKind(
@@ -230,6 +262,12 @@ export const ComputerAutomationStatus = Schema.Struct({
       "Whether a user-desktop availability lease is preventing automatic locking and suspend. The lease can remain active without a view or control session.",
   }),
   displays: Schema.Array(ComputerAutomationDisplay),
+  captureHealth: Schema.optional(
+    Schema.Array(ComputerAutomationCaptureHealth).check(Schema.isMaxLength(64)),
+  ).annotate({
+    description:
+      "Per-display capture health. Absence means the connected desktop host does not report it.",
+  }),
   cursor: Schema.NullOr(ComputerAutomationPoint),
   detail: Schema.optional(Schema.String),
 });

@@ -267,9 +267,29 @@ describe("computer automation contracts", () => {
         displayState: "active",
         keepAwake: false,
         displays: [],
+        captureHealth: [
+          {
+            displayId: "display-0",
+            state: "degraded",
+            lastSuccessfulFrameAt: "2026-08-14T12:00:00.000Z",
+            lastFailedFrameAt: "2026-08-14T12:01:00.000Z",
+            consecutiveFailures: 3,
+            lastFailure: {
+              code: "capture-failed",
+              category: "capture",
+              message: "The desktop observation could not be captured.",
+              backendCode: "stream-capture-failed",
+              detail: "PipeWire could not duplicate a file descriptor.",
+            },
+          },
+        ],
         cursor: null,
       }),
-    ).toMatchObject({ available: true, permission: "pending" });
+    ).toMatchObject({
+      available: true,
+      permission: "pending",
+      captureHealth: [{ state: "degraded", consecutiveFailures: 3 }],
+    });
   });
 
   it("represents remembered consent without claiming a session is active", () => {
@@ -476,6 +496,8 @@ describe("computer automation contracts", () => {
         code: "invalid-key-name",
         category: "invalid-input",
         message: "The key is unsupported.",
+        backendCode: "unsupported-key",
+        detail: "unsupported key name NOPE",
         actionIndex: 0,
         completedActionCount: 0,
         field: "actions[0].keys[0]",
@@ -484,7 +506,11 @@ describe("computer automation contracts", () => {
         phase: "validation",
         cleanup: { keys: "released", buttons: "not-needed" },
       }),
-    ).toMatchObject({ code: "invalid-key-name", actionIndex: 0 });
+    ).toMatchObject({
+      code: "invalid-key-name",
+      backendCode: "unsupported-key",
+      actionIndex: 0,
+    });
     expect(
       decodeFailure({
         code: "semantic-activation-failed",

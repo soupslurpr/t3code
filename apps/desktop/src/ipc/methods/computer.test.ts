@@ -1,10 +1,18 @@
 import { assert, describe, it } from "@effect/vitest";
-import { AgentDesktopId, EnvironmentId, ThreadId } from "@t3tools/contracts";
-import * as Deferred from "effect/Deferred";
+import {
+  AgentDesktopId,
+  ComputerAutomationObservation,
+  type ComputerAutomationCaptureHealth,
+  EnvironmentId,
+  makeDesktopComputerAutomationResultSchema,
+  ThreadId,
+} from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
+import * as Deferred from "effect/Deferred";
 import * as Exit from "effect/Exit";
 import * as Fiber from "effect/Fiber";
 import * as Layer from "effect/Layer";
+import * as Schema from "effect/Schema";
 import * as TestClock from "effect/testing/TestClock";
 
 import * as ComputerUse from "../../computer/ComputerUse.ts";
@@ -35,16 +43,20 @@ const snapshot = {
   cursor: null,
   captureSource: "remote-desktop-stream" as const,
 };
+const decodeRequestViewResult = Schema.decodeUnknownSync(
+  makeDesktopComputerAutomationResultSchema(ComputerAutomationObservation),
+);
 
 /** Creates the narrow fake computer service needed by the IPC tests. */
 function makeComputer(options: {
+  readonly status?: ComputerUse.ComputerUseShape["status"];
   readonly requestView: ComputerUse.ComputerUseShape["requestView"];
   readonly snapshot?: ComputerUse.ComputerUseShape["snapshot"];
   readonly act?: ComputerUse.ComputerUseShape["act"];
 }): ComputerUse.ComputerUseShape {
   const unexpected = Effect.die("unexpected computer operation");
   return {
-    status: Effect.succeed(status),
+    status: options.status ?? Effect.succeed(status),
     requestView: options.requestView,
     requestControl: unexpected,
     requestAvailability: unexpected,
@@ -135,6 +147,61 @@ describe("computer IPC methods", () => {
         ok: true,
         value: { status, snapshot },
       });
+    }),
+  );
+
+  it.effect("refreshes capture health after an initial access observation", () =>
+    Effect.gen(function* () {
+      const untestedHealth = {
+        displayId: "7",
+        state: "untested",
+        lastSuccessfulFrameAt: null,
+        lastFailedFrameAt: null,
+        consecutiveFailures: 0,
+        lastFailure: null,
+      } satisfies ComputerAutomationCaptureHealth;
+      const untested = {
+        ...status,
+        captureHealth: [untestedHealth],
+      };
+      let captured = false;
+      const result = decodeRequestViewResult(
+        yield* requestView.handler({ input: {} }).pipe(
+          Effect.provide(
+            computerRouterLayer(
+              makeComputer({
+                status: Effect.sync(() =>
+                  captured
+                    ? {
+                        ...untested,
+                        captureHealth: [
+                          {
+                            ...untestedHealth,
+                            state: "healthy",
+                            lastSuccessfulFrameAt: "2026-08-14T12:00:00.000Z",
+                          },
+                        ],
+                      }
+                    : untested,
+                ),
+                requestView: Effect.succeed(untested),
+                snapshot: () =>
+                  Effect.sync(() => {
+                    captured = true;
+                    return snapshot;
+                  }),
+              }),
+            ),
+          ),
+        ),
+      );
+
+      assert.isTrue(result.ok);
+      if (!result.ok) return;
+      assert.equal(result.value.status?.captureHealth?.[0]?.displayId, "7");
+      assert.equal(result.value.status?.captureHealth?.[0]?.state, "healthy");
+      assert.equal(result.value.status?.captureHealth?.[0]?.consecutiveFailures, 0);
+      assert.isDefined(result.value.snapshot);
     }),
   );
 
@@ -385,7 +452,7 @@ describe("computer IPC methods", () => {
       yield* Deferred.succeed(finishAction, undefined);
       yield* TestClock.adjust("400 millis");
 
-      const result = yield* Fiber.join(resultFiber);
+      const result = decodeRequestViewResult(yield* Fiber.join(resultFiber));
       assert.isTrue(result.ok);
       if (!result.ok) return;
       assert.deepEqual(result.value.actionResults, [{ index: 0, type: "press" }]);
