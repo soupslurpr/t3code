@@ -65,6 +65,7 @@ const INHIBIT_IDLE = 8;
 const DESKTOP_ACCESS_INHIBIT_FLAGS = INHIBIT_SUSPEND | INHIBIT_IDLE;
 const AGENT_WORK_INHIBIT_FLAGS = INHIBIT_SUSPEND;
 const REQUEST_TIMEOUT_MS = 120_000;
+const MAX_ERROR_MESSAGE_LENGTH = 2_000;
 const DISPLAY_WAKE_TIMEOUT_MS = 2_000;
 const DISPLAY_WAKE_POLL_MS = 50;
 const KEY_HOLD_TIME_MS = 10;
@@ -252,9 +253,10 @@ function respond(response) {
 
 /** Normalizes an exception into the bounded helper protocol error shape. */
 function normalizeError(error) {
+  const message = error instanceof Error ? error.message : String(error);
   return {
     code: typeof error?.code === "string" ? error.code : "portal-error",
-    message: error instanceof Error ? error.message : String(error),
+    message: message.slice(0, MAX_ERROR_MESSAGE_LENGTH),
     ...(typeof error?.field === "string" ? { field: error.field } : {}),
     ...(typeof error?.received === "string" ? { received: error.received.slice(0, 128) } : {}),
     ...(Array.isArray(error?.expected)
@@ -265,6 +267,28 @@ function normalizeError(error) {
       ? { cleanup: error.cleanup }
       : {}),
   };
+}
+
+/** Converts one GStreamer bus error into a bounded capture failure. */
+function streamCaptureError(message, fallback) {
+  if (message === null) {
+    const error = new Error(fallback);
+    error.code = "stream-capture-failed";
+    return error;
+  }
+  try {
+    const [failure, debug] = message.parse_error();
+    const debugDetail = typeof debug === "string" ? debug.trim() : "";
+    const detail =
+      debugDetail.length === 0 ? failure.message : `${failure.message} (${debugDetail})`;
+    const error = new Error(`desktop stream capture failed: ${detail}`);
+    error.code = "stream-capture-failed";
+    return error;
+  } catch {
+    const error = new Error(fallback);
+    error.code = "stream-capture-failed";
+    return error;
+  }
 }
 
 /** Returns one mutable error object for protocol annotations. */
@@ -1772,8 +1796,10 @@ function capturePortalStream(displayBounds) {
 
       const stateChange = pipeline.set_state(gstreamer.State.PLAYING);
       if (stateChange === gstreamer.StateChangeReturn.FAILURE) {
-        const error = new Error("GStreamer rejected the desktop stream capture pipeline");
-        error.code = "stream-capture-failed";
+        const error = streamCaptureError(
+          bus.pop_filtered(gstreamer.MessageType.ERROR),
+          "GStreamer rejected the desktop stream capture pipeline",
+        );
         finish(error);
         return;
       }
@@ -1798,10 +1824,7 @@ function capturePortalStream(displayBounds) {
           }
           const message = bus.pop_filtered(gstreamer.MessageType.ERROR);
           if (message !== null) {
-            const [failure] = message.parse_error();
-            const error = new Error(`desktop stream capture failed: ${failure.message}`);
-            error.code = "stream-capture-failed";
-            finish(error);
+            finish(streamCaptureError(message, "the desktop stream capture pipeline failed"));
             return GLib.SOURCE_REMOVE;
           }
           if (GLib.get_monotonic_time() >= deadline) {

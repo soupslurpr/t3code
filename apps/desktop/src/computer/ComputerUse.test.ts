@@ -169,6 +169,16 @@ describe("ComputerUse", () => {
       assert.equal(status.displayState, "active");
       assert.isFalse(status.keepAwake);
       assert.isNull(status.cursor);
+      assert.deepEqual(status.captureHealth, [
+        {
+          displayId: "7",
+          state: "untested",
+          lastSuccessfulFrameAt: null,
+          lastFailedFrameAt: null,
+          consecutiveFailures: 0,
+          lastFailure: null,
+        },
+      ]);
       assert.deepEqual(status.displays[0], {
         id: "7",
         label: "Main display",
@@ -176,6 +186,63 @@ describe("ComputerUse", () => {
         bounds: { x: -100, y: 50, width: 800, height: 600 },
         scaleFactor: 1.25,
       });
+    }),
+  );
+
+  it.effect("reports capture failures independently from permission", () =>
+    Effect.gen(function* () {
+      let shouldFail = true;
+      const controller = GnomeRemoteDesktop.GnomeRemoteDesktop.of({
+        ...makeController([]),
+        snapshot: () =>
+          shouldFail
+            ? Effect.fail(
+                new GnomeRemoteDesktop.GnomeRemoteDesktopCommandError({
+                  operation: "snapshot",
+                  code: "stream-capture-failed",
+                  cause: "can't DUP fd:1014 Too many open files",
+                }),
+              )
+            : Effect.succeed({
+                data: new Uint8Array([137, 80, 78, 71]),
+                source: "remote-desktop-stream" as const,
+              }),
+      });
+      const computer = yield* ComputerUse.makeWithOptions(makePlatform(), controller);
+
+      yield* computer.snapshot({ displayId: "7" }).pipe(Effect.flip);
+      const degraded = yield* computer.status;
+
+      assert.equal(degraded.permission, "prompt-required");
+      assert.deepInclude(degraded.captureHealth?.[0], {
+        displayId: "7",
+        state: "degraded",
+        consecutiveFailures: 1,
+        lastFailure: {
+          code: "capture-failed",
+          category: "capture",
+          message: "The desktop observation could not be captured.",
+          backendCode: "stream-capture-failed",
+          detail: "can't DUP fd:1014 Too many open files",
+        },
+      });
+      assert.isString(degraded.captureHealth?.[0]?.lastFailedFrameAt);
+
+      shouldFail = false;
+      yield* computer.snapshot({ displayId: "7" });
+      const recovered = yield* computer.status;
+
+      assert.deepInclude(recovered.captureHealth?.[0], {
+        displayId: "7",
+        state: "healthy",
+        consecutiveFailures: 0,
+      });
+      assert.isString(recovered.captureHealth?.[0]?.lastSuccessfulFrameAt);
+      assert.equal(recovered.captureHealth?.[0]?.lastFailure?.backendCode, "stream-capture-failed");
+
+      yield* computer.release;
+      const released = yield* computer.status;
+      assert.equal(released.captureHealth?.[0]?.state, "untested");
     }),
   );
 

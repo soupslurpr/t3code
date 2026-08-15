@@ -27,6 +27,7 @@ import {
   type ComputerAutomationAction,
   type ComputerAutomationActionResult,
   type ComputerAutomationAccessibilitySnapshot,
+  type ComputerAutomationCaptureHealth,
   type ComputerAutomationFrame,
   type ComputerAutomationSnapshot,
   type ComputerAutomationSnapshotInput,
@@ -366,6 +367,7 @@ interface RuntimeState {
   readonly heldButtons: Ref.Ref<ReadonlySet<string>>;
   readonly lastPointer: Ref.Ref<{ readonly x: number; readonly y: number } | null>;
   readonly displaySize: Ref.Ref<{ readonly width: number; readonly height: number }>;
+  readonly captureHealth: Ref.Ref<ComputerAutomationCaptureHealth>;
   readonly accountingSample: Ref.Ref<AccountingSample | null>;
   readonly activeOperationCount: Ref.Ref<number>;
   readonly accessibilitySemaphore: Semaphore.Semaphore;
@@ -534,6 +536,16 @@ export function chooseAgentDesktopResources(
 
 const isoTime = (milliseconds: number): string =>
   DateTime.formatIso(DateTime.makeUnsafe(milliseconds));
+
+/** Creates capture health for an Agent desktop that has not produced a frame. */
+const untestedCaptureHealth = (): ComputerAutomationCaptureHealth => ({
+  displayId: "display-0",
+  state: "untested",
+  lastSuccessfulFrameAt: null,
+  lastFailedFrameAt: null,
+  consecutiveFailures: 0,
+  lastFailure: null,
+});
 
 const ownersMatch = (left: AgentDesktopOwner, right: AgentDesktopOwner): boolean =>
   left.environmentId === right.environmentId &&
@@ -779,6 +791,7 @@ export const make = Effect.gen(function* () {
         width: DEFAULT_DISPLAY_WIDTH,
         height: DEFAULT_DISPLAY_HEIGHT,
       }),
+      captureHealth: yield* Ref.make(untestedCaptureHealth()),
       accountingSample: yield* Ref.make<AccountingSample | null>(null),
       activeOperationCount: yield* Ref.make(0),
       accessibilitySemaphore: yield* Semaphore.make(1),
@@ -832,6 +845,35 @@ export const make = Effect.gen(function* () {
     leases: new Map(),
     runtimes,
     ...(loaded.loadDetail === undefined ? {} : { loadDetail: loaded.loadDetail }),
+  });
+
+  const recordCaptureSuccess = Effect.fn("AgentDesktopManager.recordCaptureSuccess")(function* (
+    runtime: RuntimeState,
+  ) {
+    const capturedAt = isoTime(yield* Clock.currentTimeMillis);
+    yield* Ref.update(runtime.captureHealth, (previous) => ({
+      ...previous,
+      state: "healthy" as const,
+      lastSuccessfulFrameAt: capturedAt,
+      consecutiveFailures: 0,
+    }));
+  });
+
+  const recordCaptureFailure = Effect.fn("AgentDesktopManager.recordCaptureFailure")(function* (
+    runtime: RuntimeState,
+    cause: unknown,
+  ) {
+    const failedAt = isoTime(yield* Clock.currentTimeMillis);
+    const lastFailure = ComputerUse.toComputerAutomationFailure(
+      new ComputerUse.ComputerUseOperationError({ operation: "snapshot", cause }),
+    );
+    yield* Ref.update(runtime.captureHealth, (previous) => ({
+      ...previous,
+      state: "degraded" as const,
+      lastFailedFrameAt: failedAt,
+      consecutiveFailures: previous.consecutiveFailures + 1,
+      lastFailure,
+    }));
   });
 
   const persist = Effect.fn("AgentDesktopManager.persist")(function* (next: ManagerState) {
@@ -997,6 +1039,8 @@ export const make = Effect.gen(function* () {
       runtime === undefined
         ? { width: DEFAULT_DISPLAY_WIDTH, height: DEFAULT_DISPLAY_HEIGHT }
         : yield* Ref.get(runtime.displaySize);
+    const captureHealth =
+      runtime === undefined ? untestedCaptureHealth() : yield* Ref.get(runtime.captureHealth);
     const hasControl = lease?.controllerId === controllerId;
     const hasView = hasControl || lease?.viewers.has(controllerId) === true;
     const running = isRunningState(desktop.state);
@@ -1017,6 +1061,7 @@ export const make = Effect.gen(function* () {
           scaleFactor: 1,
         },
       ],
+      captureHealth: [captureHealth],
       cursor: null,
       ...(!running ? { detail: `Agent desktop is ${desktop.state}.` } : {}),
     } satisfies ComputerAutomationStatus;
@@ -1531,7 +1576,10 @@ export const make = Effect.gen(function* () {
         ),
       );
     const runtime = (yield* Ref.get(state)).runtimes.get(desktop.id);
-    if (runtime !== undefined) yield* Ref.set(runtime.guestIntegration, null);
+    if (runtime !== undefined) {
+      yield* Ref.set(runtime.guestIntegration, null);
+      yield* Ref.set(runtime.captureHealth, untestedCaptureHealth());
+    }
     return (yield* setLifecycle(desktop.id, "ready")) ?? desktop;
   });
 
@@ -2271,7 +2319,9 @@ export const make = Effect.gen(function* () {
           captureSource: "virtual-display",
         };
       }
-      const capture = yield* qemu.capture(desktop.id);
+      const capture = yield* qemu
+        .capture(desktop.id)
+        .pipe(Effect.tapError((cause) => recordCaptureFailure(runtime, cause)));
       const sourceImage =
         capture.kind === "bitmap"
           ? nativeImage.createFromBitmap(Buffer.from(capture.data), {
@@ -2281,12 +2331,15 @@ export const make = Effect.gen(function* () {
             })
           : nativeImage.createFromBuffer(Buffer.from(capture.data));
       if (sourceImage.isEmpty()) {
-        return yield* new AgentDesktopManagerError({
+        const cause = new AgentDesktopManagerError({
           code: "internal-error",
           operation: "snapshot",
           detail: "QEMU returned an empty display image",
         });
+        yield* recordCaptureFailure(runtime, cause);
+        return yield* cause;
       }
+      yield* recordCaptureSuccess(runtime);
       const sourceSize = sourceImage.getSize();
       yield* Ref.set(runtime.displaySize, sourceSize);
       let region = { x: 0, y: 0, width: sourceSize.width, height: sourceSize.height };
@@ -2525,9 +2578,12 @@ export const make = Effect.gen(function* () {
 
   const captureChangeBitmap = Effect.fn("AgentDesktopManager.captureChangeBitmap")(function* (
     desktop: PersistedDesktop,
+    runtime: RuntimeState,
     region: ResolvedChangeRegion,
   ) {
-    const capture = yield* qemu.capture(desktop.id);
+    const capture = yield* qemu
+      .capture(desktop.id)
+      .pipe(Effect.tapError((cause) => recordCaptureFailure(runtime, cause)));
     const sourceImage =
       capture.kind === "bitmap"
         ? nativeImage.createFromBitmap(Buffer.from(capture.data), {
@@ -2537,12 +2593,15 @@ export const make = Effect.gen(function* () {
           })
         : nativeImage.createFromBuffer(Buffer.from(capture.data));
     if (sourceImage.isEmpty()) {
-      return yield* new AgentDesktopManagerError({
+      const cause = new AgentDesktopManagerError({
         code: "internal-error",
         operation: "wait-for-change",
         detail: "QEMU returned an empty display image",
       });
+      yield* recordCaptureFailure(runtime, cause);
+      return yield* cause;
     }
+    yield* recordCaptureSuccess(runtime);
     const sourceSize = sourceImage.getSize();
     if (sourceSize.width !== region.displayWidth || sourceSize.height !== region.displayHeight) {
       return yield* new ComputerUse.ComputerUseFrameNotFoundError({ frameId: region.frameId });
@@ -2579,12 +2638,13 @@ export const make = Effect.gen(function* () {
 
   const waitForVisualChange = Effect.fn("AgentDesktopManager.waitForVisualChange")(function* (
     desktop: PersistedDesktop,
+    runtime: RuntimeState,
     region: ResolvedChangeRegion,
     timeoutMs: number,
     pollIntervalMs: number,
   ) {
     const startedAt = yield* Clock.currentTimeMillis;
-    const baseline = yield* captureChangeBitmap(desktop, region);
+    const baseline = yield* captureChangeBitmap(desktop, runtime, region);
     let samples = 1;
     while (true) {
       const beforeWait = yield* Clock.currentTimeMillis;
@@ -2593,7 +2653,7 @@ export const make = Effect.gen(function* () {
         return { changed: false, elapsedMs: timeoutMs, samples };
       }
       yield* Effect.sleep(Duration.millis(Math.min(pollIntervalMs, timeoutMs - elapsedBeforeWait)));
-      const current = yield* captureChangeBitmap(desktop, region);
+      const current = yield* captureChangeBitmap(desktop, runtime, region);
       samples += 1;
       const elapsedMs = Math.min(timeoutMs, (yield* Clock.currentTimeMillis) - startedAt);
       if (!equalBitmaps(baseline, current)) return { changed: true, elapsedMs, samples };
@@ -2858,6 +2918,7 @@ export const make = Effect.gen(function* () {
         const region = yield* resolveChangeRegion(runtime, action);
         const result = yield* waitForVisualChange(
           desktop,
+          runtime,
           region,
           action.timeoutMs,
           action.pollIntervalMs ?? DEFAULT_CHANGE_POLL_INTERVAL_MS,
