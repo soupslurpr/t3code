@@ -5,6 +5,7 @@ import type {
   ThreadMonitor,
   ThreadMonitorComputerCapabilities,
   ThreadMonitorComputerCondition,
+  ThreadMonitorComputerEvidenceImage,
   ThreadMonitorComputerStartInput,
   ThreadMonitorError,
   ThreadMonitorId,
@@ -14,15 +15,23 @@ import type * as Effect from "effect/Effect";
 
 export interface ThreadMonitorComputerPrepareResult {
   readonly condition: ThreadMonitorComputerCondition;
-  readonly baselinePngBase64?: string | undefined;
+  readonly baselineImages: ReadonlyArray<ThreadMonitorComputerEvidenceImage>;
+}
+
+export interface ThreadMonitorComputerEvidence {
+  readonly baselineImages: ReadonlyArray<ThreadMonitorComputerEvidenceImage>;
+  readonly previousImages: ReadonlyArray<ThreadMonitorComputerEvidenceImage>;
+  readonly currentImages: ReadonlyArray<ThreadMonitorComputerEvidenceImage>;
+  readonly terminalImages: ReadonlyArray<ThreadMonitorComputerEvidenceImage>;
 }
 
 export interface ThreadMonitorComputerCheckResult {
   readonly condition: ThreadMonitorComputerCondition;
+  readonly observedImages: ReadonlyArray<ThreadMonitorComputerEvidenceImage>;
   readonly match: {
     readonly summary: string;
     readonly evidence: string;
-    readonly terminalPngBase64: string;
+    readonly terminalImages: ReadonlyArray<ThreadMonitorComputerEvidenceImage>;
   } | null;
 }
 
@@ -40,9 +49,25 @@ export interface ThreadMonitorComputerServiceShape {
   /** Samples and evaluates one active computer condition. */
   readonly check: (input: {
     readonly monitor: ThreadMonitor;
-    readonly baselinePngBase64?: string | undefined;
+    readonly evidence: ThreadMonitorComputerEvidence;
     readonly checkedAt: string;
   }) => Effect.Effect<ThreadMonitorComputerCheckResult, ThreadMonitorError>;
+
+  /** Rebaselines and returns a replacement revision for an active watch. */
+  readonly revise: (input: {
+    readonly monitor: ThreadMonitor;
+    readonly routingInstanceId: ProviderInstanceId;
+    readonly watch: ThreadMonitorComputerStartInput;
+    readonly revisedAt: string;
+  }) => Effect.Effect<ThreadMonitorComputerPrepareResult, ThreadMonitorError>;
+
+  /** Captures bounded fresh evidence for controller inspection. */
+  readonly inspectFresh: (input: {
+    readonly monitor: ThreadMonitor;
+    readonly regionIds?: ReadonlyArray<string> | undefined;
+    readonly frameCount: number;
+    readonly intervalMs: number;
+  }) => Effect.Effect<ReadonlyArray<ThreadMonitorComputerEvidenceImage>, ThreadMonitorError>;
 
   /** Releases the monitor's view-only desktop lease. */
   readonly release: (monitor: ThreadMonitor) => Effect.Effect<void>;

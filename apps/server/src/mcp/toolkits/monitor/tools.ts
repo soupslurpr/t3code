@@ -4,7 +4,10 @@ import {
   ThreadMonitorCancelInput,
   ThreadMonitorCheckInput,
   ThreadMonitorComputerCapabilities,
+  ThreadMonitorComputerInspectInput,
+  ThreadMonitorComputerInspection,
   ThreadMonitorComputerStartInput,
+  ThreadMonitorComputerUpdateInput,
   ThreadMonitorError,
   ThreadMonitorList,
   ThreadMonitorSignalInput,
@@ -86,11 +89,11 @@ export const MonitorCheckNowTool = mutatingMonitorTool(
   }).annotate(Tool.Title, "Check durable monitors now"),
 );
 
-/** Starts a durable screen-region condition owned by the current thread. */
+/** Starts a durable multi-region screen condition owned by the current thread. */
 export const ComputerWatchStartTool = mutatingMonitorTool(
   Tool.make("computer_watch_start", {
     description:
-      "Create a durable screen-region watch, acquire view-only access immediately, and return without keeping this model turn asleep. Choose the user desktop or an explicit Agent desktop, the full display or a region from a current frame, sampling resolution and cadence, and either exact image-change detection or an exact configured evaluator model plus a semantic condition. Model watches can separately set a minimum evaluation interval; changes inside that window remain pending and coalesce into one evaluation of the latest sample. Frame regions are converted once to durable desktop coordinates. T3 discards ordinary samples, optionally retains an initial baseline, stores the terminal matching image, survives restarts, retries degraded capture or evaluation with backoff, releases its view lease when terminal or cancelled, and resumes the thread only through the ordinary monitor continuation. After starting a resume-thread watch, finish the current turn rather than polling.",
+      "Create a durable multi-region screen watch, acquire view-only access immediately, and return without keeping this model turn asleep. The controller may name up to eight independently cropped and sized trigger or context regions; trigger regions drive change detection, while context regions are captured only for evaluation or inspection. Choose either exact image-change detection or one exact configured evaluator model plus a factual visible condition. Model watches can separately set a minimum evaluation interval; changes inside that window remain pending and coalesce into one evaluation of the latest sample. Frame regions are converted once to durable desktop coordinates. T3 retains only bounded baseline, previous, current, and terminal evidence, survives restarts, retries degraded capture or evaluation with backoff, supports deterministic controller-review checkpoints, releases its view lease when terminal or cancelled, and resumes the thread only through the ordinary monitor continuation. After starting a resume-thread watch, finish the current turn rather than polling.",
     parameters: ThreadMonitorComputerStartInput,
     success: ThreadMonitor,
     failure: ThreadMonitorError,
@@ -112,6 +115,32 @@ export const ComputerWatchCapabilitiesTool = Tool.make("computer_watch_capabilit
   .annotate(Tool.Destructive, false)
   .annotate(Tool.Idempotent, true);
 
+/** Returns retained monitor evidence and an optional bounded fresh frame burst. */
+export const ComputerWatchInspectTool = Tool.make("computer_watch_inspect", {
+  description:
+    "Inspect one computer watch's current revision, region metrics, evaluation usage and timing, and selected retained image generations. Optionally request one fresh capture or a bounded timestamped burst from selected configured regions. Fresh frames use the watch's existing view lease and are returned only to this call. Use this when the capable controller needs direct evidence to decide whether its regions, cadence, evaluator, or condition remain efficient; the narrow evaluator cannot revise the watch.",
+  parameters: ThreadMonitorComputerInspectInput,
+  success: ThreadMonitorComputerInspection,
+  failure: ThreadMonitorError,
+  dependencies,
+})
+  .annotate(Tool.Title, "Inspect computer watch")
+  .annotate(Tool.Readonly, false)
+  .annotate(Tool.Destructive, false)
+  .annotate(Tool.Idempotent, false);
+
+/** Atomically replaces controller-owned parts of an active watch. */
+export const ComputerWatchUpdateTool = mutatingMonitorTool(
+  Tool.make("computer_watch_update", {
+    description:
+      "Atomically revise an active computer watch using its current expectedRevision. The capable controller may replace named trigger/context regions and their individual resolution, switch condition or exact evaluator model, adjust sampling and evaluation cadence, set or disable deterministic future review checkpoints, change the deadline or terminal continuation, or acknowledge a delivered review while retaining the strategy. Every successful update starts a new revision with fresh baselines and metrics. A stale expectedRevision fails without changing state, so inspect the latest revision before retrying. This operation is exclusively controller-owned; evaluator output is observational evidence, never an update instruction.",
+    parameters: ThreadMonitorComputerUpdateInput,
+    success: ThreadMonitor,
+    failure: ThreadMonitorError,
+    dependencies,
+  }).annotate(Tool.Title, "Update computer watch"),
+);
+
 /** Groups every durable monitor MCP operation. */
 export const MonitorToolkit = Toolkit.make(
   MonitorStartTool,
@@ -121,4 +150,21 @@ export const MonitorToolkit = Toolkit.make(
   MonitorCheckNowTool,
   ComputerWatchStartTool,
   ComputerWatchCapabilitiesTool,
+  ComputerWatchInspectTool,
+  ComputerWatchUpdateTool,
+);
+
+/** Groups monitor operations whose results contain image bytes. */
+export const MonitorImageToolkit = Toolkit.make(ComputerWatchInspectTool);
+
+/** Groups monitor operations handled by the standard structured registration. */
+export const MonitorStandardToolkit = Toolkit.make(
+  MonitorStartTool,
+  MonitorStatusTool,
+  MonitorSignalTool,
+  MonitorCancelTool,
+  MonitorCheckNowTool,
+  ComputerWatchStartTool,
+  ComputerWatchCapabilitiesTool,
+  ComputerWatchUpdateTool,
 );
