@@ -8,6 +8,7 @@ import {
   ProjectId,
   ProviderInstanceId,
   ThreadId,
+  ThreadMonitorError,
   ThreadMonitorId,
   TurnId,
 } from "@t3tools/contracts";
@@ -40,6 +41,7 @@ const threadId = ThreadId.make("monitor-thread");
 
 interface ComputerMonitorProbeShape {
   readonly checks: Ref.Ref<number>;
+  readonly failNextChecks: Ref.Ref<number>;
   readonly releases: Ref.Ref<number>;
 }
 
@@ -66,6 +68,7 @@ const computerProbeLayer = Layer.effect(
   Effect.gen(function* () {
     return ComputerMonitorProbe.of({
       checks: yield* Ref.make(0),
+      failNextChecks: yield* Ref.make(0),
       releases: yield* Ref.make(0),
     });
   }),
@@ -114,19 +117,22 @@ const workingComputerLayer = Layer.effect(
                 ? { ...input.watch.match, baseline: input.watch.match.baseline ?? "none" }
                 : input.watch.match,
             sampling: {
-              intervalMs: 30_000,
-              minEvaluationIntervalMs: null,
-              evaluateOnlyAfterChange: true,
+              intervalMs: input.watch.sampling?.intervalMs ?? 30_000,
+              minEvaluationIntervalMs: input.watch.sampling?.minEvaluationIntervalMs ?? null,
+              evaluateOnlyAfterChange: input.watch.sampling?.evaluateOnlyAfterChange ?? true,
             },
             review: {
               policy:
-                input.watch.review === undefined
+                input.watch.review === null
                   ? null
                   : {
-                      afterEvaluations: input.watch.review.afterEvaluations ?? null,
-                      consecutiveUncertain: input.watch.review.consecutiveUncertain ?? null,
-                      consecutiveFailures: input.watch.review.consecutiveFailures ?? null,
-                      at: input.watch.review.at ?? null,
+                      afterEvaluations: input.watch.review?.afterEvaluations ?? null,
+                      consecutiveUncertain: input.watch.review?.consecutiveUncertain ?? null,
+                      consecutiveFailures:
+                        input.watch.review?.consecutiveFailures === undefined
+                          ? 3
+                          : input.watch.review.consecutiveFailures,
+                      at: input.watch.review?.at ?? null,
                     },
               state: "idle",
               reason: null,
@@ -177,7 +183,8 @@ const workingComputerLayer = Layer.effect(
         }),
       check: ({ monitor, checkedAt }) => {
         if (monitor.condition.type !== "computer") return Effect.die("expected computer monitor");
-        const uncertain = monitor.condition.match.type === "model";
+        const condition = monitor.condition;
+        const uncertain = condition.match.type === "model";
         const currentHash = uncertain ? "model-hash" : "terminal-hash";
         const currentImage = {
           id: "current:screen",
@@ -191,13 +198,26 @@ const workingComputerLayer = Layer.effect(
           elapsedMs: null,
           pngBase64: "dGVybWluYWw=",
         };
-        return Ref.update(probe.checks, (count) => count + 1).pipe(
-          Effect.as({
+        return Effect.gen(function* () {
+          yield* Ref.update(probe.checks, (count) => count + 1);
+          const shouldFail = yield* Ref.modify(probe.failNextChecks, (remaining) => [
+            remaining > 0,
+            Math.max(0, remaining - 1),
+          ]);
+          if (shouldFail) {
+            return yield* new ThreadMonitorError({
+              code: "COMPUTER_WATCH_UNAVAILABLE",
+              operation: "computer-watch-check",
+              detail:
+                "capture-failed (stream-capture-failed): PipeWire could not duplicate a file descriptor (EMFILE)",
+            });
+          }
+          return {
             condition: {
-              ...monitor.condition,
+              ...condition,
               nextCheckAt: checkedAt,
               observation: {
-                regions: monitor.condition.observation.regions.map((region) => ({
+                regions: condition.observation.regions.map((region) => ({
                   ...region,
                   lastSampleHash: currentHash,
                   sampleCount: region.sampleCount + 1,
@@ -213,11 +233,10 @@ const workingComputerLayer = Layer.effect(
               lastSummary: uncertain
                 ? "The evaluator could not determine the state."
                 : "The watched region changed.",
-              sampleCount: monitor.condition.sampleCount + 1,
-              evaluationCount: monitor.condition.evaluationCount + 1,
-              uncertainEvaluationCount:
-                monitor.condition.uncertainEvaluationCount + (uncertain ? 1 : 0),
-              consecutiveUncertain: uncertain ? monitor.condition.consecutiveUncertain + 1 : 0,
+              sampleCount: condition.sampleCount + 1,
+              evaluationCount: condition.evaluationCount + 1,
+              uncertainEvaluationCount: condition.uncertainEvaluationCount + (uncertain ? 1 : 0),
+              consecutiveUncertain: uncertain ? condition.consecutiveUncertain + 1 : 0,
             },
             observedImages: [currentImage],
             match: uncertain
@@ -227,8 +246,8 @@ const workingComputerLayer = Layer.effect(
                   evidence: "A visible terminal state appeared.",
                   terminalImages: [currentImage],
                 },
-          }),
-        );
+          };
+        });
       },
       revise: ({ monitor, watch, revisedAt }) => {
         if (monitor.condition.type !== "computer") return Effect.die("expected computer monitor");
@@ -276,13 +295,16 @@ const workingComputerLayer = Layer.effect(
           },
           review: {
             policy:
-              watch.review === undefined
+              watch.review === null
                 ? null
                 : {
-                    afterEvaluations: watch.review.afterEvaluations ?? null,
-                    consecutiveUncertain: watch.review.consecutiveUncertain ?? null,
-                    consecutiveFailures: watch.review.consecutiveFailures ?? null,
-                    at: watch.review.at ?? null,
+                    afterEvaluations: watch.review?.afterEvaluations ?? null,
+                    consecutiveUncertain: watch.review?.consecutiveUncertain ?? null,
+                    consecutiveFailures:
+                      watch.review?.consecutiveFailures === undefined
+                        ? 3
+                        : watch.review.consecutiveFailures,
+                    at: watch.review?.at ?? null,
                   },
             state: "idle" as const,
             reason: null,
@@ -929,6 +951,71 @@ computerMonitorTestLayer("ThreadMonitor computer conditions", (it) => {
         assert.lengthOf(reviewMessages, 1);
         assert.include(reviewMessages[0]?.text ?? "", "controller review");
         assert.include(reviewMessages[0]?.text ?? "", "computer_watch_update");
+      }
+
+      yield* service.cancel({ threadId, cancel: { monitorId: monitor.id } });
+    }),
+  );
+
+  it.effect("warns the controller once when default capture health degrades", () =>
+    Effect.gen(function* () {
+      yield* seedThread;
+      const service = yield* ThreadMonitorService;
+      const snapshots = yield* ProjectionSnapshotQuery;
+      const probe = yield* ComputerMonitorProbe;
+      yield* Ref.set(probe.failNextChecks, 3);
+
+      const monitor = yield* service.createComputer({
+        threadId,
+        monitor: {
+          label: "Watch a temporarily unavailable display",
+          match: { type: "image-change" },
+          sampling: { intervalMs: 1_000 },
+          continuation: "record-only",
+        },
+      });
+      assert.strictEqual(monitor.condition.type, "computer");
+      if (monitor.condition.type !== "computer") return;
+      assert.strictEqual(monitor.condition.review.policy?.consecutiveFailures, 3);
+
+      for (const delay of ["1 second", "1 second", "2 seconds"] as const) {
+        yield* TestClock.adjust(delay);
+        yield* service.checkNow({ threadId, check: { monitorId: monitor.id } });
+      }
+      yield* TestClock.adjust("750 millis");
+      yield* service.checkNow({ threadId, check: { monitorId: monitor.id } });
+
+      const current = yield* service.status({ threadId, query: { monitorId: monitor.id } });
+      const degraded = current.monitors[0];
+      assert.strictEqual(degraded?.condition.type, "computer");
+      if (degraded?.condition.type !== "computer") return;
+      assert.strictEqual(degraded.condition.resourceState, "degraded");
+      assert.strictEqual(degraded.condition.consecutiveFailures, 3);
+      assert.strictEqual(degraded.condition.review.state, "delivered");
+      assert.include(degraded.condition.observationError ?? "", "PipeWire");
+
+      const detail = yield* snapshots.getThreadDetailById(threadId);
+      assert.isTrue(Option.isSome(detail));
+      if (Option.isSome(detail)) {
+        const reviewMessages = detail.value.messages.filter((message) =>
+          message.id.startsWith(`thread-monitor:${monitor.id}:review:`),
+        );
+        assert.lengthOf(reviewMessages, 1);
+        assert.include(reviewMessages[0]?.text ?? "", "Latest observation error");
+        assert.include(reviewMessages[0]?.text ?? "", "stream-capture-failed");
+      }
+
+      yield* TestClock.adjust("4 seconds");
+      yield* service.checkNow({ threadId, check: { monitorId: monitor.id } });
+      const afterRecovery = yield* snapshots.getThreadDetailById(threadId);
+      assert.isTrue(Option.isSome(afterRecovery));
+      if (Option.isSome(afterRecovery)) {
+        assert.lengthOf(
+          afterRecovery.value.messages.filter((message) =>
+            message.id.startsWith(`thread-monitor:${monitor.id}:review:`),
+          ),
+          1,
+        );
       }
 
       yield* service.cancel({ threadId, cancel: { monitorId: monitor.id } });

@@ -230,6 +230,9 @@ function reviewMessage(
     `Revision: ${condition.revision}`,
     `Reason: ${condition.review.reason ?? "Configured review checkpoint."}`,
     `Evaluations: ${condition.evaluationCount}; uncertain: ${condition.uncertainEvaluationCount}; consecutive failures: ${condition.consecutiveFailures}`,
+    ...(condition.observationError === null
+      ? []
+      : [`Latest observation error: ${condition.observationError}`]),
     `Regions:\n${regionMetrics}`,
     "Inspect retained or fresh evidence with computer_watch_inspect. Use computer_watch_update with acknowledgeReview=true to begin a fresh revision while retaining an efficient strategy, or atomically revise regions, cadence, condition, evaluator, deadline, continuation, or future review policy using the current revision. Leaving the delivered review unchanged keeps the watch active but does not schedule another review in this revision. This is an automated T3 continuation signal, not a new user message.",
   ].join("\n\n");
@@ -1096,7 +1099,7 @@ const make = Effect.gen(function* () {
         const currentReview = current.review.policy;
         const preservedReview =
           currentReview === null
-            ? undefined
+            ? null
             : {
                 ...(currentReview.afterEvaluations === null
                   ? {}
@@ -1104,27 +1107,13 @@ const make = Effect.gen(function* () {
                 ...(currentReview.consecutiveUncertain === null
                   ? {}
                   : { consecutiveUncertain: currentReview.consecutiveUncertain }),
-                ...(currentReview.consecutiveFailures === null
-                  ? {}
-                  : { consecutiveFailures: currentReview.consecutiveFailures }),
+                consecutiveFailures: currentReview.consecutiveFailures,
                 ...(currentReview.at === null ||
                 Date.parse(currentReview.at) <= Date.parse(revisedAt)
                   ? {}
                   : { at: currentReview.at }),
               };
-        const preservedReviewConfigured =
-          preservedReview?.afterEvaluations !== undefined ||
-          preservedReview?.consecutiveUncertain !== undefined ||
-          preservedReview?.consecutiveFailures !== undefined ||
-          preservedReview?.at !== undefined;
-        const review =
-          update.review === null
-            ? undefined
-            : update.review !== undefined
-              ? update.review
-              : preservedReviewConfigured
-                ? preservedReview
-                : undefined;
+        const review = update.review !== undefined ? update.review : preservedReview;
         const match = update.match ?? current.match;
         const observation = update.observation ?? {
           regions: current.observation.regions.map((region) => ({
@@ -1144,7 +1133,7 @@ const make = Effect.gen(function* () {
           observation,
           match,
           sampling: { intervalMs, minEvaluationIntervalMs, evaluateOnlyAfterChange },
-          ...(review === undefined ? {} : { review }),
+          review,
           ...(deadlineAt === null ? {} : { deadlineAt }),
           continuation: continuationMode,
           ...(continuationMode === "resume-thread"
