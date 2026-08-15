@@ -376,6 +376,39 @@ describe("previewAutomationRequestConsumer", () => {
     },
   );
 
+  it("preserves structured Agent desktop guest failures", async () => {
+    const cause = await resolveDesktopComputerAutomation(
+      Promise.resolve({
+        ok: false,
+        error: {
+          code: "timed-out" as const,
+          category: "timeout" as const,
+          message: "The Agent desktop command timed out.",
+          backendCode: "timed-out",
+          detail: "guest process 42 exceeded its timeout",
+        },
+      }),
+    ).catch((error: unknown) => error);
+    const response = serializePreviewAutomationError(cause, {
+      requestId: "request-command",
+      operation: "agentDesktopCommand",
+      environmentId,
+      threadId,
+      tabId: null,
+    });
+
+    expect(response).toMatchObject({
+      _tag: "PreviewAutomationExecutionError",
+      detail: {
+        computerFailure: {
+          code: "timed-out",
+          backendCode: "timed-out",
+          detail: "guest process 42 exceeded its timeout",
+        },
+      },
+    });
+  });
+
   it("unwraps successful and unavailable desktop computer operations", async () => {
     await expect(
       resolveDesktopComputerAutomation(Promise.resolve({ ok: true, value: "captured" })),

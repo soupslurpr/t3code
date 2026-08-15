@@ -227,8 +227,7 @@ const smokeExpression = String.raw`(async () => {
             frameId: frame.id,
             x: centerX,
             y: centerY,
-            deltaY: 3,
-            unit: "ticks",
+            verticalTicks: 3,
           },
           {
             type: "drag",

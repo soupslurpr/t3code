@@ -101,7 +101,7 @@ export const AgentDesktopManageTool = agentDesktopTool(
 export const AgentDesktopCommandTool = agentDesktopTool(
   Tool.make("agent_desktop_command", {
     description:
-      "Execute one exact process inside an Agent desktop through its private guest channel. This is argv-based and does not invoke a shell; run /bin/sh or /bin/bash explicitly when shell syntax is useful. Omit desktopId to use this session's current assignment. Root is the default inside the isolated guest; set user to run as another guest account. Output, runtime, timeout, and truncation are reported precisely.",
+      "Execute one exact process inside an Agent desktop through its private guest channel. This is argv-based and does not invoke a shell; run /bin/sh or /bin/bash explicitly when shell syntax is useful. Omit desktopId to use this session's current assignment. Root is the default inside the isolated guest; set user to run as another guest account. Environment accepts either a name/value object or {name, value} entries. stdin is literal text; use a shell redirect for a guest file. Output, runtime, timeout, truncation, and guest failures are reported precisely.",
     parameters: AgentDesktopCommandInput,
     success: AgentDesktopCommandResult,
     failure: PreviewAutomationError,

@@ -406,6 +406,59 @@ it.effect("surfaces a safe diagnosis for a blank desktop display", () => {
   );
 });
 
+it.effect("surfaces structured Agent desktop command failures", () => {
+  const remoteError = {
+    _tag: "PreviewAutomationExecutionError",
+    message: "sanitized host failure",
+    detail: {
+      computerFailure: {
+        code: "timed-out",
+        category: "timeout",
+        message: "The Agent desktop command timed out.",
+        backendCode: "timed-out",
+        detail: "guest process 42 exceeded its timeout",
+      },
+    },
+  } as const;
+
+  return Effect.scoped(
+    Effect.gen(function* () {
+      const broker = yield* makeBroker;
+      const requests = requestsFrom(
+        yield* broker.connect(
+          makeHost({
+            supportedOperations: ["agentDesktopCommand"],
+            computerDesktopKinds: ["agent"],
+          }),
+        ),
+      );
+      yield* Stream.runForEach(requests, (request) =>
+        broker.respond({
+          clientId: "client-1",
+          connectionId: request.connectionId,
+          requestId: request.requestId,
+          ok: false,
+          error: remoteError,
+        }),
+      ).pipe(Effect.forkScoped);
+      yield* Effect.yieldNow;
+
+      const error = yield* broker
+        .invoke<void>({
+          scope,
+          operation: "agentDesktopCommand",
+          input: {},
+          timeoutMs: 1_234,
+        })
+        .pipe(Effect.flip);
+
+      expect(error).toBeInstanceOf(PreviewAutomationExecutionError);
+      expect(error).toMatchObject({ computerFailure: remoteError.detail.computerFailure });
+      expect(error.message).toBe("The Agent desktop command timed out.");
+    }),
+  );
+});
+
 it.effect("classifies a remote non-editable target without collapsing it to execution", () => {
   const remoteError = {
     _tag: "PreviewAutomationTargetNotEditableError",

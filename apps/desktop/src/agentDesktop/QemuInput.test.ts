@@ -14,6 +14,7 @@ describe("QemuInput", () => {
   it("normalizes named keys and printable characters", () => {
     assert.deepEqual(resolveQemuKey("CTRL"), { qcode: "ctrl", implicitModifiers: [] });
     assert.deepEqual(resolveQemuKey("ArrowDown"), { qcode: "down", implicitModifiers: [] });
+    assert.deepEqual(resolveQemuKey("LEFT"), { qcode: "left", implicitModifiers: [] });
     assert.deepEqual(resolveQemuKey("A"), { qcode: "a", implicitModifiers: ["shift"] });
     assert.deepEqual(resolveQemuKey("?"), { qcode: "slash", implicitModifiers: ["shift"] });
     let error: unknown;

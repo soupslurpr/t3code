@@ -365,11 +365,25 @@ export const AgentDesktopTargetInput = Schema.Struct({
 export type AgentDesktopTargetInput = typeof AgentDesktopTargetInput.Type;
 
 /** Adds one environment variable to an exact guest process invocation. */
+const AgentDesktopEnvironmentName = TrimmedNonEmptyString.check(
+  Schema.isMaxLength(256),
+  Schema.isPattern(/^[A-Za-z_][A-Za-z0-9_]*$/),
+);
+
 export const AgentDesktopEnvironmentEntry = Schema.Struct({
-  name: TrimmedNonEmptyString.check(Schema.isMaxLength(256)),
+  name: AgentDesktopEnvironmentName,
   value: Schema.String.check(Schema.isMaxLength(32_768)),
 });
 export type AgentDesktopEnvironmentEntry = typeof AgentDesktopEnvironmentEntry.Type;
+
+const AgentDesktopEnvironment = Schema.Union([
+  Schema.Array(AgentDesktopEnvironmentEntry).check(
+    Schema.isMaxLength(MAX_AGENT_DESKTOP_ENVIRONMENT_ENTRIES),
+  ),
+  Schema.Record(AgentDesktopEnvironmentName, Schema.String.check(Schema.isMaxLength(32_768))).check(
+    Schema.isMaxProperties(MAX_AGENT_DESKTOP_ENVIRONMENT_ENTRIES),
+  ),
+]);
 
 /** Executes one exact process inside an Agent desktop over its private guest channel. */
 export const AgentDesktopCommandInput = Schema.Struct({
@@ -381,18 +395,16 @@ export const AgentDesktopCommandInput = Schema.Struct({
     ),
   ),
   workingDirectory: Schema.optional(TrimmedNonEmptyString.check(Schema.isMaxLength(4_096))),
-  environment: Schema.optional(
-    Schema.Array(AgentDesktopEnvironmentEntry).check(
-      Schema.isMaxLength(MAX_AGENT_DESKTOP_ENVIRONMENT_ENTRIES),
-    ),
-  ),
+  environment: Schema.optional(AgentDesktopEnvironment).annotate({
+    description: "Guest environment as a name/value object or an array of {name, value} entries.",
+  }),
   user: Schema.optional(TrimmedNonEmptyString.check(Schema.isMaxLength(256))),
   stdin: Schema.optional(Schema.String.check(Schema.isMaxLength(MAX_AGENT_DESKTOP_FILE_BYTES))),
   timeoutMs: Schema.optional(
     Schema.Int.check(Schema.isBetween({ minimum: 100, maximum: 3_600_000 })),
   ),
   maxOutputBytes: Schema.optional(
-    Schema.Int.check(Schema.isBetween({ minimum: 1_024, maximum: MAX_AGENT_DESKTOP_FILE_BYTES })),
+    Schema.Int.check(Schema.isBetween({ minimum: 1, maximum: MAX_AGENT_DESKTOP_FILE_BYTES })),
   ),
 });
 export type AgentDesktopCommandInput = typeof AgentDesktopCommandInput.Type;

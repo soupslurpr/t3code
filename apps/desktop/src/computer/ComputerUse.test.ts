@@ -194,6 +194,23 @@ describe("ComputerUse", () => {
     );
   });
 
+  it("preserves bounded timeout diagnostics", () => {
+    assert.deepEqual(
+      ComputerUse.toComputerAutomationFailure({
+        code: "timed-out",
+        operation: "guest-exec",
+        detail: "guest process 42 exceeded its timeout",
+      }),
+      {
+        code: "timed-out",
+        category: "timeout",
+        message: "The Agent desktop command timed out.",
+        backendCode: "timed-out",
+        detail: "guest process 42 exceeded its timeout",
+      },
+    );
+  });
+
   it.effect("controls desktop availability without opening access", () =>
     Effect.gen(function* () {
       const records: Array<InputRecord> = [];
@@ -784,11 +801,24 @@ describe("ComputerUse", () => {
       const frame = yield* captureFrame(computer);
       records.length = 0;
 
-      yield* computer.act({
+      const results = yield* computer.act({
         actions: [
           { type: "hotkey", keys: ["CTRL", "Shift", "N"] },
-          { type: "wheel", frameId: frame.id, x: 200, y: 100, deltaY: 3, unit: "ticks" },
+          {
+            type: "wheel",
+            frameId: frame.id,
+            x: 200,
+            y: 100,
+            verticalTicks: 6,
+          },
         ],
+      });
+
+      assert.deepEqual(results[1], {
+        index: 1,
+        type: "wheel",
+        horizontalTicks: 0,
+        verticalTicks: 6,
       });
 
       assert.deepEqual(records, [
@@ -804,7 +834,7 @@ describe("ComputerUse", () => {
             streamSize: defaultStreamSize,
           },
         },
-        { operation: "wheel", input: { deltaX: 0, deltaY: 3 } },
+        { operation: "wheel", input: { deltaX: 0, deltaY: 6 } },
       ]);
     }),
   );
