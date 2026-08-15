@@ -196,7 +196,6 @@ const AGENT_DESKTOP_TRANSFER_FAILURE_CODES = new Set([
 ]);
 const MAX_FAILURE_BACKEND_CODE_LENGTH = 128;
 const MAX_FAILURE_DETAIL_LENGTH = 2_000;
-
 /** Narrows an unknown value to an object record. */
 const asRecord = (value: unknown): Readonly<Record<string, unknown>> | undefined =>
   typeof value === "object" && value !== null
@@ -369,8 +368,12 @@ export function toComputerAutomationFailure(cause: unknown): ComputerAutomationF
     return {
       code: "timed-out",
       category: "timeout",
-      message: "The desktop operation timed out.",
+      message:
+        operation === "guest-exec"
+          ? "The Agent desktop command timed out."
+          : "The desktop operation timed out.",
       ...common,
+      ...diagnostics,
     };
   }
   if (internalCode === "display-inactive" || internalCode === "display-locked") {
@@ -575,6 +578,7 @@ export function toComputerAutomationFailure(cause: unknown): ComputerAutomationF
       category: "input-injection",
       message: "The desktop backend could not inject the requested input.",
       ...common,
+      ...diagnostics,
     };
   }
   return {
@@ -582,6 +586,7 @@ export function toComputerAutomationFailure(cause: unknown): ComputerAutomationF
     category: "internal",
     message: "The desktop computer-use operation failed.",
     ...common,
+    ...diagnostics,
   };
 }
 
@@ -1550,7 +1555,7 @@ export const makeWithOptions = Effect.fn("ComputerUse.makeWithOptions")(function
                 resolvedPoints.set(index, [start, end]);
                 break;
               }
-              case "wheel":
+              case "wheel": {
                 if (
                   action.frameId !== undefined &&
                   action.x !== undefined &&
@@ -1566,6 +1571,7 @@ export const makeWithOptions = Effect.fn("ComputerUse.makeWithOptions")(function
                   );
                 }
                 break;
+              }
               case "wait_for_change":
                 resolvedChangeRegions.set(
                   index,
@@ -1640,7 +1646,7 @@ export const makeWithOptions = Effect.fn("ComputerUse.makeWithOptions")(function
                 yield* Ref.set(lastPointer, end.global);
                 break;
               }
-              case "wheel":
+              case "wheel": {
                 if (
                   action.frameId !== undefined &&
                   action.x !== undefined &&
@@ -1649,11 +1655,14 @@ export const makeWithOptions = Effect.fn("ComputerUse.makeWithOptions")(function
                   const target = resolvedPoint(resolvedPoints, index);
                   yield* moveTo(target, 0);
                 }
+                const horizontalTicks = action.horizontalTicks ?? 0;
+                const verticalTicks = action.verticalTicks ?? 0;
                 yield* controller.wheel({
-                  deltaX: action.deltaX ?? 0,
-                  deltaY: action.deltaY ?? 0,
+                  deltaX: horizontalTicks,
+                  deltaY: verticalTicks,
                 });
-                break;
+                return { index, type: action.type, horizontalTicks, verticalTicks };
+              }
               case "type": {
                 const result = yield* controller.type({
                   text: action.text,
