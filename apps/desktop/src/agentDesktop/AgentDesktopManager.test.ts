@@ -329,6 +329,26 @@ const managerHarness = (
   }).pipe(Effect.provide(NodeServices.layer));
 
 describe("AgentDesktopManager", () => {
+  it("reconciles persisted lifecycle states with QEMU after restart", () => {
+    assert.equal(AgentDesktopManager.reconcileAgentDesktopLifecycleState("active", true), "ready");
+    assert.equal(
+      AgentDesktopManager.reconcileAgentDesktopLifecycleState("ready", false),
+      "stopped",
+    );
+    assert.equal(
+      AgentDesktopManager.reconcileAgentDesktopLifecycleState("parking", false),
+      "parked",
+    );
+    assert.equal(
+      AgentDesktopManager.reconcileAgentDesktopLifecycleState("creating", false),
+      "failed",
+    );
+    assert.equal(
+      AgentDesktopManager.reconcileAgentDesktopLifecycleState("recoverable", false),
+      "recoverable",
+    );
+  });
+
   it("chooses bounded resources automatically", () => {
     assert.deepEqual(
       AgentDesktopManager.chooseAgentDesktopResources(

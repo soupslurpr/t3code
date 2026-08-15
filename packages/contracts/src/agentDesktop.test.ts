@@ -167,6 +167,7 @@ describe("agent desktop contracts", () => {
           controllerId: "controller-1",
         },
         state: "active",
+        automaticParking: true,
         capabilities: ["computer", "network-telemetry"],
         graphics: {
           backend: "virgl",

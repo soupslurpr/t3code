@@ -79,7 +79,7 @@ export const AgentDesktopSetupTool = agentDesktopTool(
 export const AgentDesktopAcquireTool = safeAgentDesktopTool(
   Tool.make("agent_desktop_acquire", {
     description:
-      "Acquire this agent session's suitable prior Agent desktop or create and boot a clean one. Omit all fields for automatic reuse. Set fresh=true for a separate clean desktop, especially for parallel work, or desktopId to resume a known owned desktop. Describe task needs, not CPU or RAM sizes; the host manages resources automatically. Retention defaults to automatic; request preserve when desktop state must remain until explicitly deleted. Retain the returned desktopId and pass it to every later Agent desktop and computer tool so parallel agents remain isolated.",
+      "Acquire this agent session's suitable prior Agent desktop or create and boot a clean one. Omit all fields for automatic reuse. Set fresh=true for a separate clean desktop, especially for parallel work, or desktopId to resume a known owned desktop. Describe task needs, not CPU or RAM sizes; the host manages resources automatically. preventParking=true persists across releases and restarts until the same desktop is acquired with preventParking=false, so use it only for work that must remain live while idle and clear it afterward. Retention defaults to automatic; request preserve when desktop state must remain until explicitly deleted. Retain the returned desktopId and pass it to every later Agent desktop and computer tool so parallel agents remain isolated.",
     parameters: AgentDesktopAcquireInput,
     success: AgentDesktop,
     failure: PreviewAutomationError,

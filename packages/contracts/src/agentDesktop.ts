@@ -201,6 +201,7 @@ export const AgentDesktop = Schema.Struct({
   label: TrimmedNonEmptyString.check(Schema.isMaxLength(256)),
   owner: AgentDesktopOwner,
   state: AgentDesktopLifecycleState,
+  automaticParking: Schema.Boolean,
   capabilities: Schema.Array(AgentDesktopCapability).check(
     Schema.isMaxLength(MAX_AGENT_DESKTOP_CAPABILITIES),
   ),
@@ -295,7 +296,12 @@ export const AgentDesktopRequirements = Schema.Struct({
     }),
   ),
   latency: Schema.optional(Schema.Literals(["interactive", "background"])),
-  preventParking: Schema.optional(Schema.Boolean),
+  preventParking: Schema.optional(
+    Schema.Boolean.annotate({
+      description:
+        "Keep this desktop running without a lease. This persists until a later acquisition of the same desktop explicitly sets false.",
+    }),
+  ),
   retention: Schema.optional(
     Schema.Literals(["automatic", "preserve"]).annotate({
       description:

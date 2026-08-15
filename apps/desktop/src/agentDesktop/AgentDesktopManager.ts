@@ -661,6 +661,19 @@ const ownersShareThread = (left: AgentDesktopOwner, right: AgentDesktopOwner): b
 const isRunningState = (state: PersistedDesktop["state"]): boolean =>
   state === "starting" || state === "ready" || state === "active";
 
+/** Reconciles persisted lifecycle state with the actual QEMU process after restart. */
+export function reconcileAgentDesktopLifecycleState(
+  state: AgentDesktopLifecycleState,
+  running: boolean,
+): AgentDesktopLifecycleState {
+  if (running) {
+    return state === "recoverable" || state === "deleting" ? state : "ready";
+  }
+  if (state === "parking") return "parked";
+  if (state === "stopping" || isRunningState(state)) return "stopped";
+  return state === "creating" ? "failed" : state;
+}
+
 const graphicsBackend = (desktop: PersistedDesktop): QemuAgentDesktop.QemuGraphicsBackend =>
   desktop.graphicsBackend ?? "virtio-gpu-2d";
 
@@ -938,12 +951,23 @@ export const make = Effect.gen(function* () {
       }),
     ),
   );
+  let reconciledLifecycle = false;
+  const loadedDesktops = yield* Effect.forEach(loaded.desktops, (desktop) =>
+    qemu.isRunning(desktop.id).pipe(
+      Effect.map((running) => {
+        const lifecycleState = reconcileAgentDesktopLifecycleState(desktop.state, running);
+        if (lifecycleState === desktop.state) return desktop;
+        reconciledLifecycle = true;
+        return { ...desktop, state: lifecycleState };
+      }),
+    ),
+  );
   const runtimes = new Map<AgentDesktopId, RuntimeState>();
-  for (const desktop of loaded.desktops) {
+  for (const desktop of loadedDesktops) {
     runtimes.set(desktop.id, yield* makeRuntime());
   }
   const assignments = new Map<string, AgentDesktopId>();
-  for (const desktop of [...loaded.desktops].sort((left, right) =>
+  for (const desktop of [...loadedDesktops].sort((left, right) =>
     left.lastActiveAt.localeCompare(right.lastActiveAt),
   )) {
     if (desktop.state !== "recoverable" && desktop.state !== "deleting") {
@@ -951,7 +975,7 @@ export const make = Effect.gen(function* () {
     }
   }
   const state = yield* Ref.make<ManagerState>({
-    desktops: new Map(loaded.desktops.map((desktop) => [desktop.id, desktop])),
+    desktops: new Map(loadedDesktops.map((desktop) => [desktop.id, desktop])),
     assignments,
     leases: new Map(),
     runtimes,
@@ -997,6 +1021,8 @@ export const make = Effect.gen(function* () {
     yield* fileSystem.writeFileString(temporaryPath, `${encoded}\n`);
     yield* fileSystem.rename(temporaryPath, statePath);
   });
+
+  if (reconciledLifecycle) yield* persist(yield* Ref.get(state));
 
   const replaceState = (next: ManagerState) =>
     persist(next).pipe(
@@ -1114,6 +1140,7 @@ export const make = Effect.gen(function* () {
       label: desktop.label,
       owner: desktop.owner,
       state: desktop.state,
+      automaticParking: desktop.requirements?.preventParking !== true,
       capabilities: [
         ...CAPABILITIES,
         ...(hardwareAccelerated ? (["graphics-acceleration"] as const) : []),

@@ -113,6 +113,12 @@ function stateBadgeVariant(state: AgentDesktop["state"]) {
   return "secondary" as const;
 }
 
+function stateLabel(state: AgentDesktop["state"]): string {
+  if (state === "ready") return "Running";
+  if (state === "active") return "In use";
+  return `${state[0]!.toUpperCase()}${state.slice(1)}`;
+}
+
 function pointerButton(button: number): ViewerDragStart["button"] | null {
   if (button === 0) return "left";
   if (button === 1) return "middle";
@@ -546,6 +552,7 @@ export function AgentDesktopSettings() {
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
   const [busyDesktopId, setBusyDesktopId] = useState<AgentDesktopId | null>(null);
+  const [openingViewerId, setOpeningViewerId] = useState<AgentDesktopId | null>(null);
   const [busyEnvironmentId, setBusyEnvironmentId] = useState<EnvironmentId | null>(null);
   const [setupEnvironmentId, setSetupEnvironmentId] = useState<EnvironmentId | null>(null);
   const [permanentDeleteDesktop, setPermanentDeleteDesktop] = useState<AgentDesktop | null>(null);
@@ -677,6 +684,7 @@ export function AgentDesktopSettings() {
   const openViewer = useCallback(
     async (desktop: AgentDesktop) => {
       setBusyDesktopId(desktop.id);
+      setOpeningViewerId(desktop.id);
       setError(null);
       setViewerError(null);
       try {
@@ -700,6 +708,7 @@ export function AgentDesktopSettings() {
       } catch (cause) {
         setError(failureMessage(cause));
       } finally {
+        setOpeningViewerId(null);
         setBusyDesktopId(null);
       }
     },
@@ -941,6 +950,7 @@ export function AgentDesktopSettings() {
               const thread = threadById.get(desktop.owner.threadId);
               const environment = environmentById.get(desktop.owner.environmentId);
               const busy = busyDesktopId === desktop.id;
+              const openingViewer = openingViewerId === desktop.id;
               const resumable = desktop.state === "parked" || desktop.state === "stopped";
               const recoverable = desktop.state === "recoverable";
               return (
@@ -948,7 +958,12 @@ export function AgentDesktopSettings() {
                   <CardHeader>
                     <CardTitle className="flex flex-wrap items-center gap-2 text-base">
                       {desktop.label}
-                      <Badge variant={stateBadgeVariant(desktop.state)}>{desktop.state}</Badge>
+                      <Badge variant={stateBadgeVariant(desktop.state)}>
+                        {stateLabel(desktop.state)}
+                      </Badge>
+                      {!desktop.automaticParking ? (
+                        <Badge variant="secondary">Kept running</Badge>
+                      ) : null}
                       {desktop.retention === "preserve" ? (
                         <Badge variant="secondary">preserved</Badge>
                       ) : null}
@@ -965,7 +980,7 @@ export function AgentDesktopSettings() {
                           onClick={() => void openViewer(desktop)}
                         >
                           <EyeIcon />
-                          Watch
+                          {openingViewer ? (resumable ? "Resuming…" : "Opening…") : "Watch"}
                         </Button>
                       )}
                     </CardAction>
