@@ -37,6 +37,7 @@ const owner = Schema.decodeUnknownSync(AgentDesktopOwner)({
   controllerId: "controller-1",
 });
 const decodeAgentDesktopId = Schema.decodeUnknownSync(AgentDesktopId);
+const decodeAgentDesktopOwner = Schema.decodeUnknownEffect(AgentDesktopOwner);
 const decodeRecordedAccessibilityLocator = Schema.decodeUnknownSync(
   Schema.fromJsonString(
     Schema.Struct({
@@ -580,7 +581,7 @@ describe("AgentDesktopManager", () => {
         const manager = yield* AgentDesktopManager.AgentDesktopManager;
         const desktop = yield* manager.acquire(owner, { label: "Shared view" });
         yield* manager.requestControl(owner, { kind: "agent", desktopId: desktop.id });
-        const viewer = yield* Schema.decodeUnknownEffect(AgentDesktopOwner)({
+        const viewer = yield* decodeAgentDesktopOwner({
           ...owner,
           controllerId: "monitor-controller",
         });
@@ -595,7 +596,7 @@ describe("AgentDesktopManager", () => {
           "granted",
         );
 
-        const foreignThread = yield* Schema.decodeUnknownEffect(AgentDesktopOwner)({
+        const foreignThread = yield* decodeAgentDesktopOwner({
           ...viewer,
           threadId: "another-thread",
         });

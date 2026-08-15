@@ -51,6 +51,7 @@ const ComputerEvidenceRow = Schema.Struct({
   baselinePngBase64: Schema.NullOr(Schema.String),
   terminalPngBase64: Schema.NullOr(Schema.String),
 });
+const decodeComputerCondition = Schema.decodeUnknownSync(ThreadMonitorComputerCondition);
 
 const toRow = (monitor: ThreadMonitor): ThreadMonitorRow => ({
   monitorId: monitor.id,
@@ -87,7 +88,7 @@ function computerConditionFromRow(row: ThreadMonitorRow): ThreadMonitorComputerC
   if (row.conditionJson === null) {
     throw new Error(`computer monitor '${row.monitorId}' has no condition payload`);
   }
-  return Schema.decodeUnknownSync(ThreadMonitorComputerCondition)(JSON.parse(row.conditionJson));
+  return decodeComputerCondition(JSON.parse(row.conditionJson));
 }
 
 const fromRow = (row: ThreadMonitorRow): ThreadMonitor => ({
