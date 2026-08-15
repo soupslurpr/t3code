@@ -218,6 +218,10 @@ contextBridge.exposeInMainWorld("desktopBridge", {
       ipcRenderer.invoke(IpcChannels.AGENT_DESKTOP_READ_FILE_CHANNEL, { input, context }),
     writeFile: (input, context) =>
       ipcRenderer.invoke(IpcChannels.AGENT_DESKTOP_WRITE_FILE_CHANNEL, { input, context }),
+    transfer: (input, context) =>
+      ipcRenderer.invoke(IpcChannels.AGENT_DESKTOP_TRANSFER_CHANNEL, { input, context }),
+    cancelTransfer: (input, context) =>
+      ipcRenderer.invoke(IpcChannels.AGENT_DESKTOP_TRANSFER_CANCEL_CHANNEL, { input, context }),
     inspect: (input, context) =>
       ipcRenderer.invoke(IpcChannels.AGENT_DESKTOP_INSPECT_CHANNEL, { input, context }),
     createPortRoute: (input, context) =>

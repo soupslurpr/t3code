@@ -8,6 +8,8 @@ const MAX_AGENT_DESKTOP_CAPABILITIES = 32;
 const MAX_AGENT_DESKTOP_COMMAND_ARGUMENTS = 256;
 const MAX_AGENT_DESKTOP_ENVIRONMENT_ENTRIES = 256;
 const MAX_AGENT_DESKTOP_FILE_BYTES = 16 * 1024 * 1024;
+const MAX_AGENT_DESKTOP_PATH_BYTES = 4_096;
+const MAX_AGENT_DESKTOP_TRANSFER_DETAIL_BYTES = 1_024;
 
 /** Operations routed to the environment-local Agent desktop runtime. */
 export const AGENT_DESKTOP_AUTOMATION_OPERATIONS = [
@@ -22,6 +24,8 @@ export const AGENT_DESKTOP_AUTOMATION_OPERATIONS = [
   "agentDesktopCreatePortRoute",
   "agentDesktopRemovePortRoute",
   "agentDesktopPacketCapture",
+  "agentDesktopTransfer",
+  "agentDesktopTransferCancel",
 ] as const;
 
 /** Identifies one durable desktop owned by the local T3 desktop runtime. */
@@ -443,6 +447,180 @@ export const AgentDesktopWriteFileResult = Schema.Struct({
   bytesWritten: Schema.Int.check(Schema.isGreaterThanOrEqualTo(0)),
 });
 export type AgentDesktopWriteFileResult = typeof AgentDesktopWriteFileResult.Type;
+
+/** Identifies one resumable workspace-to-desktop transfer. */
+export const AgentDesktopTransferId = TrimmedNonEmptyString.check(
+  Schema.isMaxLength(128),
+  Schema.isPattern(/^[A-Za-z0-9_-]+$/),
+);
+export type AgentDesktopTransferId = typeof AgentDesktopTransferId.Type;
+
+/** Selects one thread-relative workspace path or one path in an Agent desktop. */
+export const AgentDesktopTransferEndpoint = Schema.Union([
+  Schema.Struct({
+    kind: Schema.Literal("workspace"),
+    path: TrimmedNonEmptyString.check(Schema.isMaxLength(MAX_AGENT_DESKTOP_PATH_BYTES)).annotate({
+      description: "Path relative to the current thread workspace.",
+    }),
+  }),
+  Schema.Struct({
+    kind: Schema.Literal("agent"),
+    desktopId: Schema.optional(AgentDesktopId),
+    path: TrimmedNonEmptyString.check(Schema.isMaxLength(MAX_AGENT_DESKTOP_PATH_BYTES)).annotate({
+      description: "Absolute or graphical-user-home-relative path inside the Agent desktop.",
+    }),
+  }),
+]);
+export type AgentDesktopTransferEndpoint = typeof AgentDesktopTransferEndpoint.Type;
+
+/** Starts one streamed copy between the current workspace and an Agent desktop. */
+export const AgentDesktopCopyInput = Schema.Struct({
+  source: AgentDesktopTransferEndpoint,
+  destination: AgentDesktopTransferEndpoint,
+  collision: Schema.optional(Schema.Literals(["create", "replace", "merge"])),
+  compression: Schema.optional(Schema.Literals(["auto", "none", "gzip"])),
+  waitMs: Schema.optional(
+    Schema.Int.check(Schema.isBetween({ minimum: 0, maximum: 60_000 })).annotate({
+      description:
+        "Wait this long for completion before returning active status. Defaults to 15000; maximum 60000.",
+    }),
+  ),
+  timeoutMs: Schema.optional(
+    Schema.Int.check(Schema.isBetween({ minimum: 1_000, maximum: 21_600_000 })).annotate({
+      description: "Overall transfer timeout. Defaults to one hour; maximum six hours.",
+    }),
+  ),
+}).check(
+  Schema.makeFilter(
+    (input) =>
+      input.source.kind !== input.destination.kind ||
+      "source and destination must be on opposite sides of the workspace/Agent desktop boundary.",
+  ),
+);
+export type AgentDesktopCopyInput = typeof AgentDesktopCopyInput.Type;
+
+/** Looks up or cancels one transfer owned by the current agent session. */
+export const AgentDesktopTransferTargetInput = Schema.Struct({
+  transferId: AgentDesktopTransferId,
+  waitMs: Schema.optional(
+    Schema.Int.check(Schema.isBetween({ minimum: 0, maximum: 60_000 })).annotate({
+      description: "Wait this long for a terminal result. Defaults to zero; maximum 60000.",
+    }),
+  ),
+});
+export type AgentDesktopTransferTargetInput = typeof AgentDesktopTransferTargetInput.Type;
+
+/** Reports one portable copied tree. */
+export const AgentDesktopTransferTree = Schema.Struct({
+  rootType: Schema.Literals(["file", "directory", "symlink"]),
+  fileCount: Schema.Int.check(Schema.isGreaterThanOrEqualTo(0)),
+  directoryCount: Schema.Int.check(Schema.isGreaterThanOrEqualTo(0)),
+  symlinkCount: Schema.Int.check(Schema.isGreaterThanOrEqualTo(0)),
+  logicalBytes: Schema.Number.check(Schema.isGreaterThanOrEqualTo(0)),
+});
+export type AgentDesktopTransferTree = typeof AgentDesktopTransferTree.Type;
+
+/** Describes a terminal transfer failure without hiding its actionable category. */
+export const AgentDesktopTransferFailure = Schema.Struct({
+  code: Schema.Literals([
+    "invalid-source",
+    "invalid-destination",
+    "source-unavailable",
+    "destination-exists",
+    "destination-type-mismatch",
+    "unsupported-entry",
+    "desktop-unavailable",
+    "transport-failed",
+    "integrity-failed",
+    "timed-out",
+    "cancelled",
+    "resource-exhausted",
+    "internal-error",
+  ]),
+  phase: Schema.Literals(["queued", "preparing", "transferring", "verifying", "installing"]),
+  detail: Schema.String.check(Schema.isMaxLength(MAX_AGENT_DESKTOP_TRANSFER_DETAIL_BYTES)),
+});
+export type AgentDesktopTransferFailure = typeof AgentDesktopTransferFailure.Type;
+
+/** Reports durable progress for one asynchronous Agent desktop transfer. */
+export const AgentDesktopTransfer = Schema.Struct({
+  id: AgentDesktopTransferId,
+  state: Schema.Literals([
+    "queued",
+    "preparing",
+    "transferring",
+    "verifying",
+    "installing",
+    "completed",
+    "failed",
+    "cancelled",
+  ]),
+  direction: Schema.Literals(["to-agent", "from-agent"]),
+  source: AgentDesktopTransferEndpoint,
+  destination: AgentDesktopTransferEndpoint,
+  collision: Schema.Literals(["create", "replace", "merge"]),
+  compression: Schema.NullOr(Schema.Literals(["none", "gzip"])),
+  transferredBytes: Schema.Number.check(Schema.isGreaterThanOrEqualTo(0)),
+  totalBytes: Schema.NullOr(Schema.Number.check(Schema.isGreaterThanOrEqualTo(0))),
+  tree: Schema.NullOr(AgentDesktopTransferTree),
+  sha256: Schema.NullOr(Schema.String.check(Schema.isPattern(/^[a-f0-9]{64}$/))),
+  startedAt: Schema.String,
+  updatedAt: Schema.String,
+  completedAt: Schema.NullOr(Schema.String),
+  error: Schema.NullOr(AgentDesktopTransferFailure),
+});
+export type AgentDesktopTransfer = typeof AgentDesktopTransfer.Type;
+
+/** Reports that a transfer id is absent or belongs to another controller. */
+export class AgentDesktopTransferLookupError extends Schema.TaggedErrorClass<AgentDesktopTransferLookupError>()(
+  "AgentDesktopTransferLookupError",
+  {
+    transferId: AgentDesktopTransferId,
+    detail: Schema.String.check(Schema.isMaxLength(256)),
+  },
+) {}
+
+/** Instructs the desktop host to import or export one private transfer bundle. */
+export const AgentDesktopHostTransferInput = Schema.Union([
+  Schema.Struct({
+    operation: Schema.Literal("import"),
+    transferId: AgentDesktopTransferId,
+    desktopId: Schema.optional(AgentDesktopId),
+    url: TrimmedNonEmptyString.check(Schema.isMaxLength(8_192)),
+    guestPath: TrimmedNonEmptyString.check(Schema.isMaxLength(MAX_AGENT_DESKTOP_PATH_BYTES)),
+    collision: Schema.Literals(["create", "replace", "merge"]),
+    compression: Schema.Literals(["none", "gzip"]),
+    sizeBytes: Schema.Number.check(Schema.isGreaterThanOrEqualTo(0)),
+    sha256: Schema.String.check(Schema.isPattern(/^[a-f0-9]{64}$/)),
+  }),
+  Schema.Struct({
+    operation: Schema.Literal("export"),
+    transferId: AgentDesktopTransferId,
+    desktopId: Schema.optional(AgentDesktopId),
+    url: TrimmedNonEmptyString.check(Schema.isMaxLength(8_192)),
+    guestPath: TrimmedNonEmptyString.check(Schema.isMaxLength(MAX_AGENT_DESKTOP_PATH_BYTES)),
+    compression: Schema.Literals(["auto", "none", "gzip"]),
+  }),
+]);
+export type AgentDesktopHostTransferInput = typeof AgentDesktopHostTransferInput.Type;
+
+/** Cancels a transfer currently running in the attached desktop host. */
+export const AgentDesktopHostTransferCancelInput = Schema.Struct({
+  transferId: AgentDesktopTransferId,
+  desktopId: Schema.optional(AgentDesktopId),
+});
+export type AgentDesktopHostTransferCancelInput = typeof AgentDesktopHostTransferCancelInput.Type;
+
+/** Returns the exact bundle the desktop host imported or exported. */
+export const AgentDesktopHostTransferResult = Schema.Struct({
+  desktopId: AgentDesktopId,
+  transferId: AgentDesktopTransferId,
+  compression: Schema.Literals(["none", "gzip"]),
+  wireBytes: Schema.Number.check(Schema.isGreaterThanOrEqualTo(0)),
+  sha256: Schema.String.check(Schema.isPattern(/^[a-f0-9]{64}$/)),
+  tree: AgentDesktopTransferTree,
+});
+export type AgentDesktopHostTransferResult = typeof AgentDesktopHostTransferResult.Type;
 
 /** Selects the accounting detail returned for one Agent desktop. */
 export const AgentDesktopInspectInput = Schema.Struct({

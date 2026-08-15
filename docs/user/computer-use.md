@@ -262,6 +262,19 @@ root inside the guest, so isolation separates those privileges from the host rat
 the guest itself is unprivileged. Private QEMU control sockets and machine state are owner-only on the
 host.
 
+Agents can also copy complete files or directory trees between the current thread workspace and an
+Agent desktop. Workspace paths stay inside that thread's project or worktree. Relative Agent desktop
+paths resolve below the graphical guest user's home; files installed there are owned by that user so
+GUI applications can edit them. Safe internal symlinks are preserved, while standalone or escaping
+symlinks are rejected. Create, replace, and directory-merge collision policies are explicit.
+
+Large copies do not pass file bytes through the model response, renderer IPC, or WebSocket JSON. T3
+Code samples content before deciding whether compression is worthwhile, moves bounded resumable
+chunks through a short-lived private capability, verifies SHA-256 and the copied-tree summary, and
+stages the complete destination before installing it. The initiating agent can wait briefly, inspect
+exact progress later, or cancel an active copy. Transfer status remains available for 24 hours while
+the server process remains running.
+
 The current implementation targets x86-64 Arch Linux hosts with KVM, a systemd user manager, QEMU,
 UEFI firmware, and passt networking. `agent_desktop_list` reports every prerequisite separately.
 When an official Arch package can repair one, `agent_desktop_setup` offers to install only the exact

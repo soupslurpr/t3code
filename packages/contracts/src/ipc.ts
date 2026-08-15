@@ -93,6 +93,9 @@ import {
   AgentDesktopAcquireInput,
   AgentDesktopCommandInput,
   AgentDesktopCommandResult,
+  AgentDesktopHostTransferCancelInput,
+  AgentDesktopHostTransferInput,
+  AgentDesktopHostTransferResult,
   AgentDesktopCreatePortRouteInput,
   AgentDesktopInspectInput,
   AgentDesktopList,
@@ -1156,6 +1159,14 @@ export const DesktopAgentDesktopWriteFileRequestSchema = Schema.Struct({
   input: AgentDesktopWriteFileInput,
   context: DesktopComputerAutomationContextSchema,
 });
+export const DesktopAgentDesktopTransferRequestSchema = Schema.Struct({
+  input: AgentDesktopHostTransferInput,
+  context: DesktopComputerAutomationContextSchema,
+});
+export const DesktopAgentDesktopTransferCancelRequestSchema = Schema.Struct({
+  input: AgentDesktopHostTransferCancelInput,
+  context: DesktopComputerAutomationContextSchema,
+});
 export const DesktopAgentDesktopInspectRequestSchema = Schema.Struct({
   input: AgentDesktopInspectInput,
   context: DesktopComputerAutomationContextSchema,
@@ -1324,6 +1335,14 @@ export interface DesktopAgentDesktopBridge {
     input: AgentDesktopWriteFileInput,
     context: DesktopComputerAutomationContext,
   ) => Promise<DesktopComputerAutomationResult<AgentDesktopWriteFileResult>>;
+  transfer: (
+    input: AgentDesktopHostTransferInput,
+    context: DesktopComputerAutomationContext,
+  ) => Promise<DesktopComputerAutomationResult<AgentDesktopHostTransferResult>>;
+  cancelTransfer: (
+    input: AgentDesktopHostTransferCancelInput,
+    context: DesktopComputerAutomationContext,
+  ) => Promise<DesktopComputerAutomationResult<void>>;
   inspect: (
     input: AgentDesktopInspectInput,
     context: DesktopComputerAutomationContext,

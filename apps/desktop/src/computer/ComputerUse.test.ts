@@ -140,6 +140,23 @@ const captureFrame = (computer: ComputerUse.ComputerUseShape) =>
   );
 
 describe("ComputerUse", () => {
+  it("preserves allowlisted Agent desktop transfer diagnostics", () => {
+    assert.deepEqual(
+      ComputerUse.toComputerAutomationFailure({
+        code: "destination-exists",
+        operation: "guest-transfer-helper",
+        detail: "destination already exists",
+      }),
+      {
+        code: "guest-operation-failed",
+        category: "conflict",
+        message: "The Agent desktop file transfer was rejected.",
+        backendCode: "destination-exists",
+        detail: "destination already exists",
+      },
+    );
+  });
+
   it.effect("controls desktop availability without opening access", () =>
     Effect.gen(function* () {
       const records: Array<InputRecord> = [];

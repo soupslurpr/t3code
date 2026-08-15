@@ -1,4 +1,5 @@
 import * as NodeFSP from "node:fs/promises";
+import * as NodeHttp from "node:http";
 
 const DEFAULT_CDP_ENDPOINT = "http://127.0.0.1:39223";
 const CDP_DISCOVERY_TIMEOUT_MS = 60_000;
@@ -7,10 +8,11 @@ const keepDesktopOnFailure = process.env.T3_AGENT_DESKTOP_SMOKE_KEEP_ON_FAILURE 
 const screenshotOutput = process.env.T3_AGENT_DESKTOP_SMOKE_SCREENSHOT;
 const requireImageProvisioning = process.env.T3_AGENT_DESKTOP_SMOKE_REQUIRE_PROVISION === "1";
 
-const smokeExpression = String.raw`(async () => {
+const makeSmokeExpression = (transferUrl) => String.raw`(async () => {
   const keepDesktopOnFailure = ${JSON.stringify(keepDesktopOnFailure)};
   const includeDiagnosticScreenshot = ${JSON.stringify(screenshotOutput !== undefined)};
   const requireImageProvisioning = ${JSON.stringify(requireImageProvisioning)};
+  const transferUrl = ${JSON.stringify(transferUrl)};
   const agentDesktop = window.desktopBridge?.agentDesktop;
   const computer = window.desktopBridge?.computer;
   if (agentDesktop === undefined || computer === undefined) {
@@ -34,6 +36,8 @@ const smokeExpression = String.raw`(async () => {
     accessDisplaySynchronized: false,
     command: false,
     files: false,
+    transfer: false,
+    transferCollision: false,
     network: false,
     screenshot: null,
     semanticWindow: null,
@@ -167,6 +171,167 @@ const smokeExpression = String.raw`(async () => {
     );
     result.files = file.data === exactFileText && file.eof;
     if (!result.files) throw new Error("guest file round trip was not exact");
+
+    const transferSource = "/home/t3agent/t3-transfer-source";
+    const transferDestination = "/home/t3agent/t3-transfer-copy";
+    const transferPayloadBytes = 9 * 1024 * 1024 + 19;
+    valueOf(
+      await agentDesktop.command(
+        {
+          desktopId: desktop.id,
+          executable: "/usr/bin/mkdir",
+          arguments: ["-p", transferSource + "/nested"],
+        },
+        context,
+      ),
+      "create transfer fixture",
+    );
+    valueOf(
+      await agentDesktop.writeFile(
+        {
+          desktopId: desktop.id,
+          path: transferSource + "/Unicode ’ →.txt",
+          data: "Dinner: crème brûlée 😀\n",
+        },
+        context,
+      ),
+      "write transfer Unicode fixture",
+    );
+    const payload = valueOf(
+      await agentDesktop.command(
+        {
+          desktopId: desktop.id,
+          executable: "/usr/bin/python",
+          arguments: [
+            "-c",
+            "import random,sys; open(sys.argv[1], 'wb').write(random.Random(0).randbytes(int(sys.argv[2])))",
+            transferSource + "/nested/payload.bin",
+            String(transferPayloadBytes),
+          ],
+          timeoutMs: 30000,
+        },
+        context,
+      ),
+      "write deterministic transfer payload",
+    );
+    if (payload.exitCode !== 0) throw new Error("transfer payload generation failed");
+    const link = valueOf(
+      await agentDesktop.command(
+        {
+          desktopId: desktop.id,
+          executable: "/usr/bin/ln",
+          arguments: ["-s", "../Unicode ’ →.txt", transferSource + "/nested/link"],
+        },
+        context,
+      ),
+      "create transfer symlink",
+    );
+    if (link.exitCode !== 0) throw new Error("transfer symlink creation failed");
+    const exported = valueOf(
+      await agentDesktop.transfer(
+        {
+          operation: "export",
+          transferId: "agent-desktop-smoke-export",
+          desktopId: desktop.id,
+          url: transferUrl,
+          guestPath: transferSource,
+          compression: "none",
+        },
+        context,
+      ),
+      "export transfer fixture",
+    );
+    if (exported.wireBytes <= 8 * 1024 * 1024 || exported.tree.fileCount !== 2) {
+      throw new Error("export did not exercise a multi-chunk directory transfer");
+    }
+    const imported = valueOf(
+      await agentDesktop.transfer(
+        {
+          operation: "import",
+          transferId: "agent-desktop-smoke-import",
+          desktopId: desktop.id,
+          url: transferUrl,
+          guestPath: transferDestination,
+          collision: "create",
+          compression: exported.compression,
+          sizeBytes: exported.wireBytes,
+          sha256: exported.sha256,
+        },
+        context,
+      ),
+      "import transfer fixture",
+    );
+    const comparison = valueOf(
+      await agentDesktop.command(
+        {
+          desktopId: desktop.id,
+          executable: "/usr/bin/cmp",
+          arguments: [
+            transferSource + "/nested/payload.bin",
+            transferDestination + "/nested/payload.bin",
+          ],
+          timeoutMs: 30000,
+        },
+        context,
+      ),
+      "compare transferred payload",
+    );
+    const transferredText = valueOf(
+      await agentDesktop.readFile(
+        { desktopId: desktop.id, path: transferDestination + "/Unicode ’ →.txt" },
+        context,
+      ),
+      "read transferred Unicode fixture",
+    );
+    const transferredLink = valueOf(
+      await agentDesktop.command(
+        {
+          desktopId: desktop.id,
+          executable: "/usr/bin/readlink",
+          arguments: [transferDestination + "/nested/link"],
+        },
+        context,
+      ),
+      "read transferred symlink",
+    );
+    const transferredOwner = valueOf(
+      await agentDesktop.command(
+        {
+          desktopId: desktop.id,
+          executable: "/usr/bin/stat",
+          arguments: ["-c", "%U:%G", transferDestination + "/nested/payload.bin"],
+        },
+        context,
+      ),
+      "read transferred ownership",
+    );
+    result.transfer =
+      imported.sha256 === exported.sha256 &&
+      imported.wireBytes === exported.wireBytes &&
+      comparison.exitCode === 0 &&
+      transferredText.data === "Dinner: crème brûlée 😀\n" &&
+      transferredLink.stdout.trim() === "../Unicode ’ →.txt" &&
+      transferredOwner.stdout.trim() === "t3agent:t3agent";
+    if (!result.transfer) throw new Error("Agent desktop directory transfer was not exact");
+    const collision = await agentDesktop.transfer(
+      {
+        operation: "import",
+        transferId: "agent-desktop-smoke-collision",
+        desktopId: desktop.id,
+        url: transferUrl,
+        guestPath: transferDestination,
+        collision: "create",
+        compression: exported.compression,
+        sizeBytes: exported.wireBytes,
+        sha256: exported.sha256,
+      },
+      context,
+    );
+    result.transferCollision =
+      collision?.ok === false && collision.error?.backendCode === "destination-exists";
+    if (!result.transferCollision) {
+      throw new Error("Agent desktop transfer collision was not categorized");
+    }
 
     const resolved = valueOf(
       await agentDesktop.command(
@@ -455,7 +620,10 @@ async function discoverRenderer(endpoint) {
       });
       if (response.ok) {
         const targets = await response.json();
-        const target = targets.find(({ type, url }) => type === "page" && url === "t3code://app/");
+        const target = targets.find(
+          ({ type, url }) =>
+            type === "page" && (url === "t3code://app/" || url === "t3code-dev://app/"),
+        );
         if (target !== undefined) return target;
       }
     } catch (error) {
@@ -467,7 +635,7 @@ async function discoverRenderer(endpoint) {
 }
 
 /** Evaluates the retained Agent desktop workflow in an isolated T3 Code renderer. */
-async function evaluateSmoke(endpoint) {
+async function evaluateSmoke(endpoint, expression) {
   const target = await discoverRenderer(endpoint);
   return await new Promise((resolve, reject) => {
     const socket = new WebSocket(target.webSocketDebuggerUrl);
@@ -486,7 +654,7 @@ async function evaluateSmoke(endpoint) {
           id: 1,
           method: "Runtime.evaluate",
           params: {
-            expression: smokeExpression,
+            expression,
             awaitPromise: true,
             returnByValue: true,
             userGesture: true,
@@ -518,10 +686,125 @@ async function evaluateSmoke(endpoint) {
   });
 }
 
+/** Starts the bounded loopback endpoint used to exercise native transfer streaming. */
+async function startTransferFixture() {
+  const capabilityPath = `/api/agent-desktop-transfers/${"A".repeat(43)}`;
+  let archive = Buffer.alloc(0);
+  let totalBytes = null;
+  const server = NodeHttp.createServer((request, response) => {
+    const fail = (status, detail) => {
+      response.writeHead(status, { "content-type": "text/plain" });
+      response.end(detail);
+    };
+    const requestUrl = new URL(request.url ?? "/", "http://127.0.0.1");
+    if (requestUrl.pathname !== capabilityPath || requestUrl.search.length > 0) {
+      fail(404, "not found");
+      return;
+    }
+    if (request.method === "GET") {
+      const match = /^bytes=(\d+)-(\d+)$/.exec(request.headers.range ?? "");
+      if (match === null) {
+        fail(416, "a byte range is required");
+        return;
+      }
+      const start = Number(match[1]);
+      const end = Number(match[2]);
+      if (start < 0 || end < start || end >= archive.byteLength) {
+        fail(416, "the byte range is unavailable");
+        return;
+      }
+      const body = archive.subarray(start, end + 1);
+      response.writeHead(206, {
+        "accept-ranges": "bytes",
+        "content-length": String(body.byteLength),
+        "content-range": `bytes ${start}-${end}/${archive.byteLength}`,
+        "content-type": "application/octet-stream",
+      });
+      response.end(body);
+      return;
+    }
+    if (request.method !== "PUT") {
+      fail(405, "method not allowed");
+      return;
+    }
+    const match = /^bytes (\d+)-(\d+)\/(\d+)$/.exec(request.headers["content-range"] ?? "");
+    if (match === null) {
+      fail(400, "Content-Range is required");
+      return;
+    }
+    const start = Number(match[1]);
+    const end = Number(match[2]);
+    const declaredTotal = Number(match[3]);
+    const contentLength = Number(request.headers["content-length"]);
+    const chunks = [];
+    let receivedBytes = 0;
+    request.on("data", (chunk) => {
+      chunks.push(chunk);
+      receivedBytes += chunk.byteLength;
+    });
+    request.on("end", () => {
+      const body = Buffer.concat(chunks, receivedBytes);
+      if (
+        contentLength !== body.byteLength ||
+        end - start + 1 !== body.byteLength ||
+        end >= declaredTotal ||
+        (totalBytes !== null && totalBytes !== declaredTotal)
+      ) {
+        fail(400, "the upload range is invalid");
+        return;
+      }
+      totalBytes = declaredTotal;
+      if (start < archive.byteLength) {
+        const replay = archive.subarray(start, end + 1);
+        if (replay.byteLength === body.byteLength && replay.equals(body)) {
+          response.writeHead(409, { "upload-offset": String(end + 1) });
+          response.end();
+          return;
+        }
+        fail(409, "the upload range conflicts with stored bytes");
+        return;
+      }
+      if (start !== archive.byteLength) {
+        fail(409, "the upload range is not sequential");
+        return;
+      }
+      archive = Buffer.concat([archive, body], archive.byteLength + body.byteLength);
+      response.writeHead(archive.byteLength === declaredTotal ? 201 : 204, {
+        "upload-offset": String(archive.byteLength),
+      });
+      response.end();
+    });
+  });
+  await new Promise((resolve, reject) => {
+    server.once("error", reject);
+    server.listen(0, "127.0.0.1", resolve);
+  });
+  const address = server.address();
+  if (address === null || typeof address === "string") {
+    throw new Error("transfer fixture did not bind a TCP port");
+  }
+  return {
+    url: `http://127.0.0.1:${address.port}${capabilityPath}`,
+    close: () =>
+      new Promise((resolve, reject) =>
+        server.close((error) => {
+          if (error === undefined) resolve();
+          else reject(error);
+        }),
+      ),
+  };
+}
+
 /** Runs and reports the isolated Agent desktop integration workflow. */
 async function main() {
   const endpoint = process.env.T3_AGENT_DESKTOP_CDP_URL ?? DEFAULT_CDP_ENDPOINT;
-  const result = await evaluateSmoke(endpoint);
+  const transferFixture = await startTransferFixture();
+  let result;
+  try {
+    result = await evaluateSmoke(endpoint, makeSmokeExpression(transferFixture.url));
+  } finally {
+    await transferFixture.close();
+  }
   const diagnosticScreenshot = result?.diagnosticScreenshot;
   if (typeof result === "object" && result !== null) delete result.diagnosticScreenshot;
   if (screenshotOutput !== undefined && typeof diagnosticScreenshot === "string") {
@@ -536,6 +819,8 @@ async function main() {
     "graphicsAcceleration",
     "command",
     "files",
+    "transfer",
+    "transferCollision",
     "network",
     "humanView",
     "humanControl",

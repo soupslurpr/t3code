@@ -21,6 +21,7 @@ it("exports object schemas and operation-accurate safety annotations", () => {
   for (const name of [
     "agent_desktop_list",
     "agent_desktop_read_file",
+    "agent_desktop_transfer_status",
     "agent_desktop_inspect",
   ] as const) {
     const tool = AgentDesktopToolkit.tools[name];
@@ -35,9 +36,15 @@ it("exports object schemas and operation-accurate safety annotations", () => {
 
   for (const name of [
     "agent_desktop_command",
+    "agent_desktop_copy",
     "agent_desktop_manage",
     "agent_desktop_write_file",
   ] as const) {
     expect(Context.get(AgentDesktopToolkit.tools[name].annotations, Tool.Destructive)).toBe(true);
   }
+
+  const cancel = AgentDesktopToolkit.tools.agent_desktop_transfer_cancel;
+  expect(Context.get(cancel.annotations, Tool.Readonly)).not.toBe(true);
+  expect(Context.get(cancel.annotations, Tool.Idempotent)).toBe(true);
+  expect(Context.get(cancel.annotations, Tool.Destructive)).toBe(false);
 });

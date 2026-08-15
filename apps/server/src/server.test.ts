@@ -100,6 +100,7 @@ const collectQueueUntil = Effect.fn("TransferBudget.collectQueueUntil")(function
 });
 
 import * as BackgroundPolicy from "./background/BackgroundPolicy.ts";
+import * as AgentDesktopTransfer from "./agentDesktop/AgentDesktopTransferService.ts";
 import * as ServerConfig from "./config.ts";
 import { makeRoutesLayer } from "./server.ts";
 import { isThreadDetailEvent, resolveAvailableEditorsForConfig } from "./ws.ts";
@@ -850,6 +851,7 @@ const buildAppUnderTest = (options?: {
     );
 
     const appLayer = servedRoutesLayer.pipe(
+      Layer.provide(AgentDesktopTransfer.layer),
       Layer.provide(resourceTelemetryLayer),
       Layer.provide(UsageService.layerTest),
       Layer.provide(

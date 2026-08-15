@@ -47,6 +47,32 @@ Semantic observations run a bounded AT-SPI helper inside the guest. Target and t
 identifiers include an accessibility generation and expire under the same one-action rule as host
 semantic identifiers. This keeps stale target behavior identical across both desktop kinds.
 
+## Workspace Transfer Boundary
+
+The Agent desktop toolkit copies files and directory trees only across a typed workspace/guest
+boundary. The server resolves the current thread's project or worktree from the projection, rejects
+absolute workspace paths, and checks canonical source and destination ancestors before touching
+disk. A standalone symlink and every link that lexically leaves the copied tree are rejected.
+
+Transfer metadata and control use MCP, the preview-automation broker, and typed Electron IPC. File
+bytes do not: the server creates a 256-bit, six-hour bearer capability for one exact upload or
+download, and the desktop main process streams bounded 8 MiB ranges directly against the
+environment HTTP endpoint. Capability paths are accepted only in their server-issued relative form,
+carry no query or redirect target, and are removed when the operation settles. Uploads are
+sequential and idempotent, so a lost response can retry an already stored range only when its bytes
+match. Each upload has its own semaphore, preserving parallel transfers across desktops.
+
+Both sides implement the same small versioned bundle format. The host codec streams Node files; a
+packaged dependency-free Python helper does the same inside the guest through QEMU Guest Agent.
+Directories are traversed in lexical order, portable modes and modification times are retained, and
+auto compression uses a bounded sample before choosing fast gzip. The receiver verifies SHA-256,
+entry paths, entry counts, file lengths, link targets, and the complete tree summary. Extraction
+occurs in a fresh sibling staging path before an atomic create or replacement, or a type-checked
+directory merge. Home-directory imports are assigned to the graphical guest user; explicit system
+paths retain root ownership. Active progress is kept in one server registry shared by MCP and the
+HTTP routes, terminal results remain queryable for 24 hours, cancellation interrupts both sides,
+and stale transport archives are pruned on startup.
+
 ## Resources And Lifecycle
 
 Admission keeps at least 2 GiB and 20 percent of host memory free. A guest receives 2–8 GiB of memory,
@@ -81,7 +107,9 @@ bounded operation that returns a private artifact only after an explicit request
 ## Verification
 
 Focused unit tests cover contracts, admission, routing, input conversion, private framebuffer
-decoding, prerequisite remedies, pinned download validation, and image generation. The retained
-AppImage smoke test can require fresh image provisioning and then exercises prerequisite reporting,
-guest commands, exact Unicode files, network access, screenshots, semantic targets, graphical input,
+decoding, prerequisite remedies, pinned download validation, image generation, host/guest bundle
+interoperability, ranged downloads, resumable uploads, integrity checks, and cancellation. The
+retained AppImage smoke test can require fresh image provisioning and then exercises prerequisite
+reporting, guest commands, a multi-chunk directory transfer with Unicode, binary data, symlinks,
+ownership and collision handling, network access, screenshots, semantic targets, graphical input,
 human takeover, checkpoint, live clone, park/resume, and cleanup against a real KVM guest.
