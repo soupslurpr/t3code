@@ -1,6 +1,7 @@
 import type {
   BranchNamingOptions,
   ChatAttachment,
+  ComputerAutomationScreenshotMimeType,
   ModelSelection,
   TextGenerationError,
 } from "@t3tools/contracts";
@@ -80,8 +81,16 @@ export interface ImageConditionEvaluationInput {
   images: ReadonlyArray<{
     id: string;
     purpose?: string | undefined;
-    currentPngBase64: string;
-    baselinePngBase64?: string | undefined;
+    current: {
+      mimeType: ComputerAutomationScreenshotMimeType;
+      dataBase64: string;
+    };
+    baseline?:
+      | {
+          mimeType: ComputerAutomationScreenshotMimeType;
+          dataBase64: string;
+        }
+      | undefined;
   }>;
   /** What model and provider instance to use for evaluation. */
   modelSelection: ModelSelection;

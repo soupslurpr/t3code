@@ -23,6 +23,8 @@ const MAX_FAILURE_BACKEND_CODE_LENGTH = 128;
 const MAX_FAILURE_DETAIL_LENGTH = 2_000;
 const MAX_OBSERVATION_DELAY_MS = 5_000;
 const MAX_SCREENSHOT_DIMENSION = 4_096;
+const MIN_WEBP_QUALITY = 1;
+const MAX_WEBP_QUALITY = 100;
 const MAX_TEMPORAL_SEQUENCE_FRAMES = 24;
 const MIN_TEMPORAL_SEQUENCE_INTERVAL_MS = 100;
 const MAX_TEMPORAL_SEQUENCE_INTERVAL_MS = 5_000;
@@ -380,6 +382,43 @@ export const ComputerAutomationDesktopRegion = Schema.Struct({
 });
 export type ComputerAutomationDesktopRegion = typeof ComputerAutomationDesktopRegion.Type;
 
+export const ComputerAutomationScreenshotMimeType = Schema.Literals(["image/png", "image/webp"]);
+export type ComputerAutomationScreenshotMimeType = typeof ComputerAutomationScreenshotMimeType.Type;
+
+const ComputerAutomationWebpQuality = Schema.Int.check(
+  Schema.isBetween({ minimum: MIN_WEBP_QUALITY, maximum: MAX_WEBP_QUALITY }),
+).annotate({
+  description:
+    "WebP quality from 1 through 100. Higher values retain more detail but usually increase the encoded size.",
+});
+
+export const ComputerAutomationScreenshotEncoding = Schema.Union([
+  Schema.Struct({
+    format: Schema.Literal("webp"),
+    mode: Schema.Literal("lossless"),
+    quality: Schema.optionalKey(Schema.Never),
+  }),
+  Schema.Struct({
+    format: Schema.Literal("webp"),
+    mode: Schema.Literal("near-lossless"),
+    quality: Schema.optional(ComputerAutomationWebpQuality),
+  }),
+  Schema.Struct({
+    format: Schema.Literal("webp"),
+    mode: Schema.Literal("lossy"),
+    quality: Schema.optional(ComputerAutomationWebpQuality),
+  }),
+  Schema.Struct({
+    format: Schema.Literal("png"),
+    mode: Schema.optionalKey(Schema.Never),
+    quality: Schema.optionalKey(Schema.Never),
+  }),
+]).annotate({
+  description:
+    "Image encoding. WebP lossless preserves the current 8-bit desktop pixels; near-lossless and lossy trade fidelity for smaller frames. PNG is retained for compatibility.",
+});
+export type ComputerAutomationScreenshotEncoding = typeof ComputerAutomationScreenshotEncoding.Type;
+
 export const ComputerAutomationScreenshotRegion = Schema.Union([
   ComputerAutomationImageRegion,
   ComputerAutomationDesktopRegion,
@@ -398,9 +437,12 @@ export const ComputerAutomationScreenshotOptions = Schema.Struct({
       description: "Maximum returned image height while preserving aspect ratio.",
     }),
   ),
+  encoding: Schema.optional(ComputerAutomationScreenshotEncoding).annotate({
+    description: "Defaults to lossless WebP.",
+  }),
 }).annotate({
   description:
-    "Returns a full-display image, a current frame-relative region, or a durable desktop-logical region, bounded to the requested resolution without upscaling.",
+    "Returns a full-display image, a current frame-relative region, or a durable desktop-logical region, bounded to the requested resolution without upscaling and encoded as lossless WebP by default.",
 });
 export type ComputerAutomationScreenshotOptions = typeof ComputerAutomationScreenshotOptions.Type;
 
@@ -448,7 +490,7 @@ export const ComputerAutomationObservationOptions = Schema.Struct({
   )
   .annotate({
     description:
-      "Configures one bounded desktop observation with semantic targets and, by default, a PNG image.",
+      "Configures one bounded desktop observation with semantic targets and, by default, a lossless WebP image.",
   });
 export type ComputerAutomationObservationOptions = typeof ComputerAutomationObservationOptions.Type;
 
@@ -534,7 +576,7 @@ export const ComputerAutomationObserveSequenceInput = Schema.Struct({
   )
   .annotate({
     description:
-      "Targets one desktop and captures a bounded sequence of timestamped PNG observations.",
+      "Targets one desktop and captures a bounded sequence of timestamped image observations.",
   });
 export type ComputerAutomationObserveSequenceInput =
   typeof ComputerAutomationObserveSequenceInput.Type;
@@ -573,7 +615,7 @@ export const ComputerAutomationSnapshotInput = Schema.Struct({
   )
   .annotate({
     description:
-      "Targets one desktop and configures a bounded observation with semantic targets and, by default, a PNG image.",
+      "Targets one desktop and configures a bounded observation with semantic targets and, by default, a lossless WebP image.",
   });
 export type ComputerAutomationSnapshotInput = typeof ComputerAutomationSnapshotInput.Type;
 
@@ -635,10 +677,12 @@ export const ComputerAutomationSnapshot = Schema.Struct({
   }),
   screenshot: Schema.optional(
     Schema.Struct({
-      mimeType: Schema.Literal("image/png"),
-      data: Schema.String,
+      mimeType: ComputerAutomationScreenshotMimeType,
+      data: Schema.String.annotate({ description: "Base64-encoded compressed image bytes." }),
       width: Schema.Int.check(Schema.isGreaterThan(0)),
       height: Schema.Int.check(Schema.isGreaterThan(0)),
+      sizeBytes: Schema.Int.check(Schema.isGreaterThan(0)),
+      encoding: ComputerAutomationScreenshotEncoding,
     }),
   ),
 });

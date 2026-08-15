@@ -18,6 +18,7 @@ export const DESKTOP_RUNTIME_EXTERNAL_PREFIXES = [
   "@clerk/electron-passkeys",
   "electron-webauthn",
   "ffi-rs",
+  "sharp",
   "@yuuang/",
   // Reads its own bundle from disk by resolving `playwright-core/package.json`
   // at runtime and ships the browser driver alongside; there is nothing to
