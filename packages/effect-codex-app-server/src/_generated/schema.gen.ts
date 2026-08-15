@@ -11323,6 +11323,7 @@ export type ClientRequest__ThreadResumeParams = {
   readonly config?: { readonly [x: string]: unknown } | null;
   readonly cwd?: string | null;
   readonly developerInstructions?: string | null;
+  readonly excludeTurns?: boolean;
   readonly model?: string | null;
   readonly modelProvider?: string | null;
   readonly personality?: ClientRequest__Personality | null;
@@ -11344,6 +11345,12 @@ export const ClientRequest__ThreadResumeParams = Schema.Struct({
   ),
   cwd: Schema.optionalKey(Schema.Union([Schema.String, Schema.Null])),
   developerInstructions: Schema.optionalKey(Schema.Union([Schema.String, Schema.Null])),
+  excludeTurns: Schema.optionalKey(
+    Schema.Boolean.annotate({
+      description:
+        "When true, return only thread metadata and live-resume state without populating thread.turns.",
+    }),
+  ),
   model: Schema.optionalKey(
     Schema.Union([
       Schema.String.annotate({
@@ -40462,6 +40469,7 @@ export type V2ThreadResumeParams = {
   readonly config?: { readonly [x: string]: unknown } | null;
   readonly cwd?: string | null;
   readonly developerInstructions?: string | null;
+  readonly excludeTurns?: boolean;
   readonly model?: string | null;
   readonly modelProvider?: string | null;
   readonly personality?: V2ThreadResumeParams__Personality | null;
@@ -40485,6 +40493,12 @@ export const V2ThreadResumeParams = Schema.Struct({
   ),
   cwd: Schema.optionalKey(Schema.Union([Schema.String, Schema.Null])),
   developerInstructions: Schema.optionalKey(Schema.Union([Schema.String, Schema.Null])),
+  excludeTurns: Schema.optionalKey(
+    Schema.Boolean.annotate({
+      description:
+        "When true, return only thread metadata and live-resume state without populating thread.turns.",
+    }),
+  ),
   model: Schema.optionalKey(
     Schema.Union([
       Schema.String.annotate({
