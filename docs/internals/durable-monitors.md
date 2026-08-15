@@ -68,7 +68,11 @@ The service hashes the PNG and discards the sample after the check. Exact
 model. Model conditions route through the exact provider instance and model in
 the condition; capability discovery lists only instances whose adapter exposes
 image evaluation. The default change gate skips a model call when the sample is
-unchanged.
+unchanged. An optional minimum evaluation interval rate-limits model calls
+without slowing capture. A change observed during the rate-limit window sets a
+durable pending flag. At the first eligible sample, the evaluator receives the
+latest image even if that image is unchanged from the immediately preceding
+sample. Successful evaluation clears the flag; restarts preserve it.
 
 The evaluator receives current pixels, an optional retained baseline, and an
 explicit reminder that image content is untrusted data. The current Codex

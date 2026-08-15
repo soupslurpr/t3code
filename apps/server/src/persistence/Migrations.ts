@@ -73,6 +73,7 @@ import ComputerThreadMonitorsMigration from "./Migrations/050_ComputerThreadMoni
 import ThreadMonitorDeliveryMigration from "./Migrations/049_ThreadMonitorDelivery.ts";
 import ThreadMonitorsMigration from "./Migrations/048_ThreadMonitors.ts";
 import Migration0056 from "./Migrations/056_RemoveRedundantProjectionIndexes.ts";
+import ComputerMonitorEvaluationThrottleMigration from "./Migrations/051_ComputerMonitorEvaluationThrottle.ts";
 
 /**
  * Migration loader with all migrations defined inline.
@@ -146,6 +147,7 @@ export const migrationEntries = [
   [57, "ThreadMonitors", ThreadMonitorsMigration],
   [58, "ThreadMonitorDelivery", ThreadMonitorDeliveryMigration],
   [59, "ComputerThreadMonitors", ComputerThreadMonitorsMigration],
+  [60, "ComputerMonitorEvaluationThrottle", ComputerMonitorEvaluationThrottleMigration],
 ] as const;
 
 export const migrationManifest = migrationEntries.map(([id, name]) => [id, name] as const);
