@@ -413,8 +413,13 @@ export const make = Effect.gen(function* () {
       const result = yield* evaluator({
         cwd: thread.cwd,
         criterion: condition.match.criterion,
-        currentPngBase64: screenshot.data,
-        ...(baselinePngBase64 === undefined ? {} : { baselinePngBase64 }),
+        images: [
+          {
+            id: "screen",
+            currentPngBase64: screenshot.data,
+            ...(baselinePngBase64 === undefined ? {} : { baselinePngBase64 }),
+          },
+        ],
         modelSelection: condition.match.modelSelection,
       }).pipe(
         Effect.mapError((cause) =>
@@ -424,7 +429,12 @@ export const make = Effect.gen(function* () {
         ),
       );
       const summary = result.summary.trim().slice(0, 2_000) || "The evaluator returned no summary.";
-      const evidence = result.evidence.trim().slice(0, 4_000);
+      const evidence = [
+        ...result.visibleFacts,
+        ...result.evidence.map((item) => `[${item.imageId}] ${item.description}`),
+      ]
+        .join("\n")
+        .slice(0, 4_000);
       const evaluated: ThreadMonitorComputerCondition = {
         ...scheduled,
         lastEvaluatedAt: checkedAt,

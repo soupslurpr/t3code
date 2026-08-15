@@ -131,7 +131,8 @@ describe("makeTextGenerationFromRegistry", () => {
             return Effect.succeed({
               verdict: "not-matched",
               summary: "The condition is not visible.",
-              evidence: "No matching dialog is present.",
+              visibleFacts: ["No matching dialog is present."],
+              evidence: [{ imageId: "main", description: "No matching dialog is present." }],
               usage: { inputTokens: 10, cachedInputTokens: 8, outputTokens: 4 },
             });
           },
@@ -150,7 +151,7 @@ describe("makeTextGenerationFromRegistry", () => {
       const result = yield* textGeneration.evaluateImageCondition!({
         cwd: process.cwd(),
         criterion: "A completion dialog is visible.",
-        currentPngBase64: "aW1hZ2U=",
+        images: [{ id: "main", currentPngBase64: "aW1hZ2U=" }],
         modelSelection: createModelSelection(selectedId, "gpt-5.4-mini"),
       });
 
@@ -169,7 +170,7 @@ describe("makeTextGenerationFromRegistry", () => {
       const result = yield* textGeneration.evaluateImageCondition!({
         cwd: process.cwd(),
         criterion: "A completion dialog is visible.",
-        currentPngBase64: "aW1hZ2U=",
+        images: [{ id: "main", currentPngBase64: "aW1hZ2U=" }],
         modelSelection: createModelSelection(instanceId, "text-model"),
       }).pipe(Effect.result);
 
