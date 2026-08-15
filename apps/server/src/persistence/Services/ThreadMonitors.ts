@@ -3,7 +3,12 @@
  *
  * @module ThreadMonitorRepository
  */
-import type { ThreadId, ThreadMonitor, ThreadMonitorId } from "@t3tools/contracts";
+import type {
+  ThreadId,
+  ThreadMonitor,
+  ThreadMonitorComputerEvidenceImage,
+  ThreadMonitorId,
+} from "@t3tools/contracts";
 import * as Context from "effect/Context";
 import type * as Effect from "effect/Effect";
 import type * as Option from "effect/Option";
@@ -40,25 +45,24 @@ export interface ThreadMonitorRepositoryShape {
     monitorId: ThreadMonitorId,
   ) => Effect.Effect<void, ProjectionRepositoryError>;
 
-  /** Reads retained computer-monitor baseline and terminal PNG data. */
+  /** Reads bounded retained image generations for a computer monitor. */
   readonly getComputerEvidence: (monitorId: ThreadMonitorId) => Effect.Effect<
     Option.Option<{
-      readonly baselinePngBase64: string | null;
-      readonly terminalPngBase64: string | null;
+      readonly baselineImages: ReadonlyArray<ThreadMonitorComputerEvidenceImage>;
+      readonly previousImages: ReadonlyArray<ThreadMonitorComputerEvidenceImage>;
+      readonly currentImages: ReadonlyArray<ThreadMonitorComputerEvidenceImage>;
+      readonly terminalImages: ReadonlyArray<ThreadMonitorComputerEvidenceImage>;
     }>,
     ProjectionRepositoryError
   >;
 
-  /** Retains the optional initial PNG used by a computer monitor. */
-  readonly putComputerBaseline: (input: {
-    readonly monitorId: ThreadMonitorId;
-    readonly pngBase64: string;
-  }) => Effect.Effect<void, ProjectionRepositoryError>;
-
-  /** Retains the terminal PNG that matched a computer monitor. */
-  readonly putComputerTerminal: (input: {
-    readonly monitorId: ThreadMonitorId;
-    readonly pngBase64: string;
+  /** Atomically writes one computer-monitor revision and all bounded evidence. */
+  readonly upsertComputerRevision: (input: {
+    readonly monitor: ThreadMonitor;
+    readonly baselineImages: ReadonlyArray<ThreadMonitorComputerEvidenceImage>;
+    readonly previousImages: ReadonlyArray<ThreadMonitorComputerEvidenceImage>;
+    readonly currentImages: ReadonlyArray<ThreadMonitorComputerEvidenceImage>;
+    readonly terminalImages: ReadonlyArray<ThreadMonitorComputerEvidenceImage>;
   }) => Effect.Effect<void, ProjectionRepositoryError>;
 }
 

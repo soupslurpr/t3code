@@ -5,6 +5,7 @@ import {
   ThreadId,
   ThreadMonitor,
   ThreadMonitorComputerCondition,
+  ThreadMonitorComputerEvidenceImage,
   ThreadMonitorId,
   ThreadMonitorStatus,
 } from "@t3tools/contracts";
@@ -48,10 +49,17 @@ const ThreadMonitorRow = Schema.Struct({
 type ThreadMonitorRow = typeof ThreadMonitorRow.Type;
 
 const ComputerEvidenceRow = Schema.Struct({
-  baselinePngBase64: Schema.NullOr(Schema.String),
-  terminalPngBase64: Schema.NullOr(Schema.String),
+  baselineImagesJson: Schema.String,
+  previousImagesJson: Schema.String,
+  currentImagesJson: Schema.String,
+  terminalImagesJson: Schema.String,
 });
 const decodeComputerCondition = Schema.decodeUnknownSync(ThreadMonitorComputerCondition);
+const ComputerEvidenceImagesJson = Schema.fromJsonString(
+  Schema.Array(ThreadMonitorComputerEvidenceImage),
+);
+const decodeComputerEvidenceImages = Schema.decodeUnknownSync(ComputerEvidenceImagesJson);
+const encodeComputerEvidenceImages = Schema.encodeSync(ComputerEvidenceImagesJson);
 
 const toRow = (monitor: ThreadMonitor): ThreadMonitorRow => ({
   monitorId: monitor.id,
@@ -329,31 +337,49 @@ const make = Effect.gen(function* () {
     Result: ComputerEvidenceRow,
     execute: ({ monitorId }) => sql`
       SELECT
-        baseline_png_base64 AS "baselinePngBase64",
-        terminal_png_base64 AS "terminalPngBase64"
+        baseline_images_json AS "baselineImagesJson",
+        previous_images_json AS "previousImagesJson",
+        current_images_json AS "currentImagesJson",
+        terminal_images_json AS "terminalImagesJson"
       FROM thread_monitor_computer_evidence
       WHERE monitor_id = ${monitorId}
       LIMIT 1
     `,
   });
 
-  const putComputerBaselineRow = SqlSchema.void({
-    Request: Schema.Struct({ monitorId: ThreadMonitorId, pngBase64: Schema.String }),
-    execute: ({ monitorId, pngBase64 }) => sql`
-      INSERT INTO thread_monitor_computer_evidence (monitor_id, baseline_png_base64)
-      VALUES (${monitorId}, ${pngBase64})
+  const putComputerEvidenceRow = SqlSchema.void({
+    Request: Schema.Struct({
+      monitorId: ThreadMonitorId,
+      baselineImagesJson: Schema.String,
+      previousImagesJson: Schema.String,
+      currentImagesJson: Schema.String,
+      terminalImagesJson: Schema.String,
+    }),
+    execute: ({
+      monitorId,
+      baselineImagesJson,
+      previousImagesJson,
+      currentImagesJson,
+      terminalImagesJson,
+    }) => sql`
+      INSERT INTO thread_monitor_computer_evidence (
+        monitor_id,
+        baseline_images_json,
+        previous_images_json,
+        current_images_json,
+        terminal_images_json
+      ) VALUES (
+        ${monitorId},
+        ${baselineImagesJson},
+        ${previousImagesJson},
+        ${currentImagesJson},
+        ${terminalImagesJson}
+      )
       ON CONFLICT (monitor_id) DO UPDATE SET
-        baseline_png_base64 = excluded.baseline_png_base64
-    `,
-  });
-
-  const putComputerTerminalRow = SqlSchema.void({
-    Request: Schema.Struct({ monitorId: ThreadMonitorId, pngBase64: Schema.String }),
-    execute: ({ monitorId, pngBase64 }) => sql`
-      INSERT INTO thread_monitor_computer_evidence (monitor_id, terminal_png_base64)
-      VALUES (${monitorId}, ${pngBase64})
-      ON CONFLICT (monitor_id) DO UPDATE SET
-        terminal_png_base64 = excluded.terminal_png_base64
+        baseline_images_json = excluded.baseline_images_json,
+        previous_images_json = excluded.previous_images_json,
+        current_images_json = excluded.current_images_json,
+        terminal_images_json = excluded.terminal_images_json
     `,
   });
 
@@ -391,16 +417,36 @@ const make = Effect.gen(function* () {
       ),
     getComputerEvidence: (monitorId) =>
       getComputerEvidenceRow({ monitorId }).pipe(
+        Effect.map(
+          Option.map((row) => ({
+            baselineImages: decodeComputerEvidenceImages(row.baselineImagesJson),
+            previousImages: decodeComputerEvidenceImages(row.previousImagesJson),
+            currentImages: decodeComputerEvidenceImages(row.currentImagesJson),
+            terminalImages: decodeComputerEvidenceImages(row.terminalImagesJson),
+          })),
+        ),
         Effect.mapError(toPersistenceSqlError("ThreadMonitorRepository.getComputerEvidence:query")),
       ),
-    putComputerBaseline: (input) =>
-      putComputerBaselineRow(input).pipe(
-        Effect.mapError(toPersistenceSqlError("ThreadMonitorRepository.putComputerBaseline:query")),
-      ),
-    putComputerTerminal: (input) =>
-      putComputerTerminalRow(input).pipe(
-        Effect.mapError(toPersistenceSqlError("ThreadMonitorRepository.putComputerTerminal:query")),
-      ),
+    upsertComputerRevision: (input) =>
+      sql
+        .withTransaction(
+          upsertRow(toRow(input.monitor)).pipe(
+            Effect.flatMap(() =>
+              putComputerEvidenceRow({
+                monitorId: input.monitor.id,
+                baselineImagesJson: encodeComputerEvidenceImages(input.baselineImages),
+                previousImagesJson: encodeComputerEvidenceImages(input.previousImages),
+                currentImagesJson: encodeComputerEvidenceImages(input.currentImages),
+                terminalImagesJson: encodeComputerEvidenceImages(input.terminalImages),
+              }),
+            ),
+          ),
+        )
+        .pipe(
+          Effect.mapError(
+            toPersistenceSqlError("ThreadMonitorRepository.upsertComputerRevision:query"),
+          ),
+        ),
   } satisfies ThreadMonitorRepositoryShape;
 });
 

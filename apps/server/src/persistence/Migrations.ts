@@ -78,6 +78,7 @@ import Migration0058 from "./Migrations/058_WebhookRelayDeliveries.ts";
 import Migration0059 from "./Migrations/059_McpAppModelContext.ts";
 import Migration0060 from "./Migrations/060_ThreadSnapshotWindowIndexes.ts";
 import ComputerMonitorEvaluationThrottleMigration from "./Migrations/051_ComputerMonitorEvaluationThrottle.ts";
+import AdaptiveComputerMonitorsMigration from "./Migrations/052_AdaptiveComputerMonitors.ts";
 
 /**
  * Migration loader with all migrations defined inline.
@@ -156,6 +157,7 @@ export const migrationEntries = [
   [62, "ThreadMonitorDelivery", ThreadMonitorDeliveryMigration],
   [63, "ComputerThreadMonitors", ComputerThreadMonitorsMigration],
   [64, "ComputerMonitorEvaluationThrottle", ComputerMonitorEvaluationThrottleMigration],
+  [65, "AdaptiveComputerMonitors", AdaptiveComputerMonitorsMigration],
 ] as const;
 
 export const migrationManifest = migrationEntries.map(([id, name]) => [id, name] as const);
