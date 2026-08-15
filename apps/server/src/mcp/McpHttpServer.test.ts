@@ -7,6 +7,7 @@ import {
   PreviewTabId,
   ProviderInstanceId,
   ThreadId,
+  ThreadMonitorError,
 } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
 import * as Fiber from "effect/Fiber";
@@ -52,6 +53,121 @@ const MonitorTestLayer = Layer.succeed(
       evaluators: [],
       deterministicMatches: ["image-change"],
     }),
+    inspectComputer: ({ threadId, inspect }) => {
+      if (inspect.monitorId === "missing-watch") {
+        return Effect.fail(
+          new ThreadMonitorError({
+            code: "MONITOR_NOT_FOUND",
+            operation: "computer-inspect",
+            detail: "The requested computer watch does not exist.",
+            monitorId: inspect.monitorId,
+          }),
+        );
+      }
+      return Effect.succeed({
+        monitor: {
+          id: inspect.monitorId,
+          threadId,
+          label: "Inspect screen",
+          condition: {
+            type: "computer",
+            revision: 1,
+            desktop: { kind: "user" },
+            observation: {
+              regions: [
+                {
+                  id: "screen",
+                  role: "trigger",
+                  purpose: null,
+                  region: {
+                    coordinateSpace: "desktop-logical",
+                    displayId: "7",
+                    x: 0,
+                    y: 0,
+                    width: 800,
+                    height: 600,
+                  },
+                  maxWidth: 800,
+                  maxHeight: 600,
+                  baselineHash: "hash",
+                  lastSampleHash: "hash",
+                  baselineStored: true,
+                  sampleCount: 0,
+                  changedSampleCount: 0,
+                  unchangedSampleCount: 0,
+                  lastCapturedAt: null,
+                  lastChangedAt: null,
+                },
+              ],
+            },
+            match: { type: "image-change" },
+            sampling: {
+              intervalMs: 30_000,
+              minEvaluationIntervalMs: null,
+              evaluateOnlyAfterChange: true,
+            },
+            review: {
+              policy: null,
+              state: "idle",
+              reason: null,
+              sequence: 0,
+              requestedAt: null,
+              deliveredAt: null,
+              deliveryAttempts: 0,
+              deliveryRetryAt: null,
+              deliveryFailureCount: 0,
+            },
+            deadlineAt: null,
+            nextCheckAt: "2026-08-14T00:01:00.000Z",
+            lastCheckedAt: null,
+            lastEvaluatedAt: null,
+            lastEvaluationDurationMs: null,
+            totalEvaluationDurationMs: 0,
+            evaluationPending: false,
+            lastVerdict: null,
+            lastSummary: null,
+            lastUsage: null,
+            totalUsage: { inputTokens: null, cachedInputTokens: null, outputTokens: null },
+            sampleCount: 0,
+            evaluationCount: 0,
+            uncertainEvaluationCount: 0,
+            consecutiveUncertain: 0,
+            consecutiveFailures: 0,
+            observationError: null,
+            resourceState: "viewing",
+          },
+          continuation: { mode: "record-only" },
+          status: "active",
+          trigger: null,
+          createdAt: "2026-08-14T00:00:00.000Z",
+          updatedAt: "2026-08-14T00:00:00.000Z",
+          triggeredAt: null,
+          deliveredAt: null,
+          cancelledAt: null,
+          lastError: null,
+          deliveryAttempts: 0,
+          deliveryGroupId: null,
+          deliveryRetryAt: null,
+          deliveryFailureCount: 0,
+        },
+        revision: 1,
+        images: [
+          {
+            id: "baseline:screen",
+            kind: "baseline",
+            regionId: "screen",
+            capturedAt: "2026-08-14T00:00:00.000Z",
+            hash: "hash",
+            width: 800,
+            height: 600,
+            frameIndex: null,
+            elapsedMs: null,
+            pngBase64: Buffer.from("watch-image").toString("base64"),
+          },
+        ],
+      });
+    },
+    updateComputer: () => Effect.die("unused"),
     status: () => Effect.die("unused"),
     signal: () => Effect.die("unused"),
     cancel: () => Effect.die("unused"),
@@ -739,6 +855,58 @@ it.effect("registers annotated tools and preserves authenticated request context
             temporalObservation: { frameCount: 2, intervalMs: 100 },
           }),
         }),
+      ]);
+
+      const computerWatchInspection = yield* server
+        .callTool({
+          name: "computer_watch_inspect",
+          arguments: { monitorId: "watch-1" },
+        })
+        .pipe(
+          Effect.provideService(McpInvocationContext.McpInvocationContext, invocation),
+          Effect.provideService(McpSchema.McpServerClient, client),
+        );
+      expect(computerWatchInspection.isError).toBe(false);
+      expect(computerWatchInspection.structuredContent).toMatchObject({
+        revision: 1,
+        images: [{ id: "baseline:screen", kind: "baseline", regionId: "screen" }],
+      });
+      expect(computerWatchInspection.structuredContent).not.toHaveProperty("images[0].pngBase64");
+      expect(computerWatchInspection.content.filter((content) => content.type === "image")).toEqual(
+        [
+          expect.objectContaining({
+            type: "image",
+            _meta: expect.objectContaining({
+              "t3/computerWatchImageId": "baseline:screen",
+              "t3/computerWatchRegionId": "screen",
+            }),
+          }),
+        ],
+      );
+
+      const missingComputerWatch = yield* server
+        .callTool({
+          name: "computer_watch_inspect",
+          arguments: { monitorId: "missing-watch" },
+        })
+        .pipe(
+          Effect.provideService(McpInvocationContext.McpInvocationContext, invocation),
+          Effect.provideService(McpSchema.McpServerClient, client),
+        );
+      expect(missingComputerWatch.isError).toBe(true);
+      expect(missingComputerWatch.structuredContent).toMatchObject({
+        error: {
+          _tag: "ThreadMonitorError",
+          code: "MONITOR_NOT_FOUND",
+          operation: "computer-inspect",
+          monitorId: "missing-watch",
+        },
+      });
+      expect(missingComputerWatch.content).toEqual([
+        {
+          type: "text",
+          text: '{"error":{"code":"MONITOR_NOT_FOUND","message":"The requested computer watch does not exist.","monitorId":"missing-watch"}}',
+        },
       ]);
 
       const invalidComputerAct = yield* server
