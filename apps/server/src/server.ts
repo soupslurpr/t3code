@@ -27,6 +27,7 @@ import * as BackgroundPolicy from "./background/BackgroundPolicy.ts";
 import * as AgentPowerReporter from "./background/AgentPowerReporter.ts";
 import * as HostPowerMonitor from "./background/HostPowerMonitor.ts";
 import * as ServerConfig from "./config.ts";
+import * as AgentDesktopTransfer from "./agentDesktop/AgentDesktopTransferService.ts";
 import { withUntracedRequests } from "./http.ts";
 import * as ServerHttp from "./http.ts";
 import { guardHttpResponseWriteErrors } from "./httpResponseErrorGuard.ts";
@@ -672,6 +673,7 @@ const layerRuntimeDependencies = layerRuntimeCoreWithAgentPower.pipe(
   // Usage reads provider history through the ProviderHost, which needs the
   // background policy below it.
   Layer.provideMerge(layerUsage),
+  Layer.provideMerge(AgentDesktopTransfer.layer),
   Layer.provideMerge(layerBackground),
   Layer.provideMerge(layerResourceDiagnostics),
   Layer.provideMerge(TraceDiagnostics.layer),
@@ -711,6 +713,8 @@ const layerMakeRoutes = Layer.mergeAll(
     ServerBrowserStream.routeLayer,
     ServerHttp.layerStaticAndDevRoute,
     Ws.layer,
+    ServerHttp.agentDesktopTransferDownloadRouteLayer,
+    ServerHttp.agentDesktopTransferUploadRouteLayer,
   ),
   // The MCP session registry is provided globally (shared with V2 provider
   // sessions) rather than inline here. The orchestrator toolkit resolves

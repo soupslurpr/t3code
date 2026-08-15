@@ -1,6 +1,7 @@
 import {
   AgentDesktop,
   AgentDesktopCommandResult,
+  AgentDesktopHostTransferResult,
   type AgentDesktopHumanRequest,
   AgentDesktopList,
   type AgentDesktopOwner,
@@ -20,6 +21,8 @@ import {
   DesktopAgentDesktopRemovePortRouteRequestSchema,
   DesktopAgentDesktopSetupRequestSchema,
   DesktopAgentDesktopWriteFileRequestSchema,
+  DesktopAgentDesktopTransferCancelRequestSchema,
+  DesktopAgentDesktopTransferRequestSchema,
   type DesktopComputerAutomationContext,
   DesktopComputerAutomationContextSchema,
   type DesktopComputerAutomationResult,
@@ -174,6 +177,30 @@ export const writeFile = DesktopIpc.makeIpcMethod({
   }),
 });
 
+export const transfer = DesktopIpc.makeIpcMethod({
+  channel: IpcChannels.AGENT_DESKTOP_TRANSFER_CHANNEL,
+  payload: DesktopAgentDesktopTransferRequestSchema,
+  result: makeDesktopComputerAutomationResultSchema(AgentDesktopHostTransferResult),
+  handler: Effect.fn("desktop.ipc.agentDesktop.transfer")(function* (request) {
+    const manager = yield* AgentDesktopManager.AgentDesktopManager;
+    return yield* agentDesktopResult(
+      withOwner(request.context, (owner) => manager.transfer(owner, request.input)),
+    );
+  }),
+});
+
+export const cancelTransfer = DesktopIpc.makeIpcMethod({
+  channel: IpcChannels.AGENT_DESKTOP_TRANSFER_CANCEL_CHANNEL,
+  payload: DesktopAgentDesktopTransferCancelRequestSchema,
+  result: makeDesktopComputerAutomationResultSchema(Schema.Void),
+  handler: Effect.fn("desktop.ipc.agentDesktop.cancelTransfer")(function* (request) {
+    const manager = yield* AgentDesktopManager.AgentDesktopManager;
+    return yield* agentDesktopResult(
+      withOwner(request.context, (owner) => manager.cancelTransfer(owner, request.input)),
+    );
+  }),
+});
+
 export const inspect = DesktopIpc.makeIpcMethod({
   channel: IpcChannels.AGENT_DESKTOP_INSPECT_CHANNEL,
   payload: DesktopAgentDesktopInspectRequestSchema,
@@ -298,6 +325,8 @@ export const methods = [
   command,
   readFile,
   writeFile,
+  transfer,
+  cancelTransfer,
   inspect,
   createPortRoute,
   removePortRoute,

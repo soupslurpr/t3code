@@ -3,10 +3,12 @@ import type {
   AgentDesktopCommandInput,
   AgentDesktopCommandResult,
   AgentDesktopList,
+  AgentDesktopCopyInput,
   AgentDesktopPacketCapture,
   AgentDesktopPortRoute,
   AgentDesktopReadFileResult,
   AgentDesktopSetupResult,
+  AgentDesktopTransferTargetInput,
   AgentDesktopWriteFileResult,
   PreviewAutomationOperation,
 } from "@t3tools/contracts";
@@ -14,6 +16,7 @@ import * as Effect from "effect/Effect";
 
 import * as McpInvocationContext from "../../McpInvocationContext.ts";
 import * as PreviewAutomationBroker from "../../PreviewAutomationBroker.ts";
+import * as AgentDesktopTransferService from "../../../agentDesktop/AgentDesktopTransferService.ts";
 import { AgentDesktopToolkit } from "./tools.ts";
 
 const DEFAULT_TIMEOUT_MS = 30_000;
@@ -52,6 +55,24 @@ const handlers = {
     invoke<AgentDesktopReadFileResult>("agentDesktopReadFile", input),
   agent_desktop_write_file: (input) =>
     invoke<AgentDesktopWriteFileResult>("agentDesktopWriteFile", input),
+  agent_desktop_copy: (input: AgentDesktopCopyInput) =>
+    Effect.gen(function* () {
+      const scope = yield* McpInvocationContext.requireMcpCapability("preview");
+      const transfers = yield* AgentDesktopTransferService.AgentDesktopTransferService;
+      return yield* transfers.start(scope, input);
+    }),
+  agent_desktop_transfer_status: (input: AgentDesktopTransferTargetInput) =>
+    Effect.gen(function* () {
+      const scope = yield* McpInvocationContext.requireMcpCapability("preview");
+      const transfers = yield* AgentDesktopTransferService.AgentDesktopTransferService;
+      return yield* transfers.status(scope, input);
+    }),
+  agent_desktop_transfer_cancel: (input: AgentDesktopTransferTargetInput) =>
+    Effect.gen(function* () {
+      const scope = yield* McpInvocationContext.requireMcpCapability("preview");
+      const transfers = yield* AgentDesktopTransferService.AgentDesktopTransferService;
+      return yield* transfers.cancel(scope, input);
+    }),
   agent_desktop_inspect: (input) =>
     invoke<AgentDesktop>("agentDesktopInspect", input, LIFECYCLE_TIMEOUT_MS),
   agent_desktop_create_port_route: (input) =>
