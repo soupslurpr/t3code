@@ -33,6 +33,7 @@ const ComputerWatchImageDimension = Schema.Int.check(
 
 export const ThreadMonitorComputerSampling = Schema.Struct({
   intervalMs: ComputerWatchIntervalMs,
+  minEvaluationIntervalMs: Schema.NullOr(ComputerWatchIntervalMs),
   maxWidth: ComputerWatchImageDimension,
   maxHeight: ComputerWatchImageDimension,
   evaluateOnlyAfterChange: Schema.Boolean,
@@ -65,6 +66,7 @@ export const ThreadMonitorComputerCondition = Schema.Struct({
   baselineStored: Schema.Boolean,
   lastCheckedAt: Schema.NullOr(IsoDateTime),
   lastEvaluatedAt: Schema.NullOr(IsoDateTime),
+  evaluationPending: Schema.Boolean,
   lastVerdict: Schema.NullOr(Schema.Literals(["matched", "not-matched", "uncertain"])),
   lastSummary: Schema.NullOr(MonitorResultSummary),
   lastUsage: Schema.NullOr(
@@ -236,6 +238,10 @@ export const ThreadMonitorComputerStartInput = Schema.Struct({
   sampling: Schema.optional(
     Schema.Struct({
       intervalMs: Schema.optional(ComputerWatchIntervalMs),
+      minEvaluationIntervalMs: Schema.optional(ComputerWatchIntervalMs).annotate({
+        description:
+          "Optional minimum time between model evaluations. Sampling continues at intervalMs while evaluation requests are coalesced.",
+      }),
       maxWidth: Schema.optional(ComputerWatchImageDimension),
       maxHeight: Schema.optional(ComputerWatchImageDimension),
       evaluateOnlyAfterChange: Schema.optional(Schema.Boolean),
