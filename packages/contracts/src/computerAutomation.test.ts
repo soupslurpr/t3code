@@ -104,19 +104,28 @@ describe("computer automation contracts", () => {
     ).toThrow();
   });
 
-  it("requires a complete optional wheel target and at least one tick delta", () => {
-    expect(decodeWheel({ deltaY: 3, unit: "ticks" })).toEqual({ deltaY: 3, unit: "ticks" });
-    expect(decodeWheel({ frameId: "frame-1", x: 100, y: 200, deltaX: -10, deltaY: 50 })).toEqual({
+  it("accepts bounded discrete wheel ticks with complete optional targets", () => {
+    expect(decodeWheel({ verticalTicks: 3 })).toEqual({ verticalTicks: 3 });
+    expect(
+      decodeWheel({
+        frameId: "frame-1",
+        x: 100,
+        y: 200,
+        horizontalTicks: -10,
+        verticalTicks: 50,
+      }),
+    ).toEqual({
       frameId: "frame-1",
       x: 100,
       y: 200,
-      deltaX: -10,
-      deltaY: 50,
+      horizontalTicks: -10,
+      verticalTicks: 50,
     });
 
-    expect(() => decodeWheel({ frameId: "frame-1", x: 100, deltaY: 50 })).toThrow();
-    expect(() => decodeWheel({ deltaY: 0.5 })).toThrow();
-    expect(() => decodeWheel({ deltaY: 101 })).toThrow();
+    expect(() => decodeWheel({ frameId: "frame-1", x: 100, verticalTicks: 50 })).toThrow();
+    expect(() => decodeWheel({ verticalTicks: 0.5 })).toThrow();
+    expect(() => decodeWheel({ verticalTicks: 101 })).toThrow();
+    expect(() => decodeWheel({ deltaY: 3, unit: "pixels" })).toThrow();
     expect(() => decodeWheel({})).toThrow();
   });
 
@@ -506,7 +515,9 @@ describe("computer automation contracts", () => {
     ).toThrow();
     expect(() => decodeAct({ actions: [{ type: "wait", durationMs: 5_001 }] })).toThrow();
     expect(() =>
-      decodeAct({ actions: [{ type: "wheel", frameId: "frame-1", x: 100, deltaY: 3 }] }),
+      decodeAct({
+        actions: [{ type: "wheel", frameId: "frame-1", x: 100, verticalTicks: 3 }],
+      }),
     ).toThrow();
     expect(() => decodeAct({ actions: [{ type: "wheel" }] })).toThrow();
     expect(() =>

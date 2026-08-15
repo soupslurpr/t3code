@@ -82,6 +82,13 @@ describe("agent desktop contracts", () => {
       arguments: ["true"],
       environment: [{ name: "LANG", value: "C.UTF-8" }],
     });
+    expect(
+      decodeCommand({
+        executable: "/usr/bin/env",
+        environment: { LANG: "C.UTF-8" },
+        maxOutputBytes: 1,
+      }).environment,
+    ).toEqual({ LANG: "C.UTF-8" });
     expect(decodeReadFile({ path: "/tmp/result", encoding: "base64" }).encoding).toBe("base64");
     expect(decodeWriteFile({ path: "/tmp/result", data: "hello", mode: "overwrite" }).mode).toBe(
       "overwrite",

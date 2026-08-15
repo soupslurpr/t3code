@@ -1098,7 +1098,16 @@ export class PreviewAutomationExecutionError extends Schema.TaggedError<PreviewA
 ) {
   override get message(): string {
     if (this.remoteFailureKind === "display-inactive") {
-      return this.reason === undefined
+      return `Preview automation ${this.operation} could not wake the blank desktop display safely. Wake it, then try again.`;
+    }
+    if (this.remoteFailureKind === "display-locked") {
+      return `Preview automation ${this.operation} cannot start while the desktop is locked. The user must unlock it, then try again.`;
+    }
+    if (this.remoteFailureKind === "keep-awake-denied") {
+      return `Preview automation ${this.operation} did not start because the user declined the session keep-awake request.`;
+    }
+    if (this.computerFailure !== undefined) return this.computerFailure.message;
+    return this.reason === undefined
       ? `Preview automation ${this.operation} failed on client ${this.clientId}.`
       : `Preview automation ${this.operation} failed: ${this.reason}`;
   }
