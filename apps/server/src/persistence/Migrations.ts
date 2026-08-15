@@ -72,6 +72,7 @@ import Migration0063 from "./Migrations/063_DropUnusedV1Projections.ts";
 import Migration0064 from "./Migrations/064_CanonicalizeThreadPullRequestLinks.ts";
 import Migration0065 from "./Migrations/065_CodexUsageNativeTurnIndex.ts";
 import Migration0066 from "./Migrations/066_RepairClientSettlementTimestamps.ts";
+import ComputerMonitorEvaluationThrottleMigration from "./Migrations/051_ComputerMonitorEvaluationThrottle.ts";
 
 export const migrationEntries = [
   [1, "OrchestrationEvents", Migration0001],
@@ -144,6 +145,7 @@ export const migrationEntries = [
   [67, "ThreadMonitors", ThreadMonitorsMigration],
   [68, "ThreadMonitorDelivery", ThreadMonitorDeliveryMigration],
   [69, "ComputerThreadMonitors", ComputerThreadMonitorsMigration],
+  [70, "ComputerMonitorEvaluationThrottle", ComputerMonitorEvaluationThrottleMigration],
 ] as const;
 
 export const migrationManifest = migrationEntries.map(([id, name]) => [id, name] as const);
