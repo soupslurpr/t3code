@@ -81,10 +81,27 @@ function observeComputer(
     return Effect.succeed(status === undefined ? {} : { status });
   }
   return computer.snapshot(context, { ...target, ...options }).pipe(
-    Effect.map((snapshot) => ({
-      ...(status === undefined ? {} : { status: statusWithObservedDisplay(status, snapshot) }),
-      snapshot,
-    })),
+    Effect.flatMap((snapshot) => {
+      if (status === undefined) return Effect.succeed({ snapshot });
+      return computer.status(context, target).pipe(
+        Effect.map((refreshed) => ({
+          status: statusWithObservedDisplay(
+            {
+              ...status,
+              ...(refreshed.captureHealth === undefined
+                ? {}
+                : { captureHealth: refreshed.captureHealth }),
+            },
+            snapshot,
+          ),
+          snapshot,
+        })),
+        Effect.orElseSucceed(() => ({
+          status: statusWithObservedDisplay(status, snapshot),
+          snapshot,
+        })),
+      );
+    }),
     Effect.orElseSucceed((): ComputerAutomationObservation => ({
       ...(status === undefined ? {} : { status }),
       detail: OBSERVATION_FAILURE_DETAIL,
