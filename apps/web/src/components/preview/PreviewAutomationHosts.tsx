@@ -18,6 +18,8 @@ import {
   type AgentDesktopAcquireInput,
   type AgentDesktopCommandInput,
   type AgentDesktopCreatePortRouteInput,
+  type AgentDesktopHostTransferCancelInput,
+  type AgentDesktopHostTransferInput,
   type AgentDesktopInspectInput,
   type AgentDesktopManageInput,
   type AgentDesktopPacketCaptureInput,
@@ -77,7 +79,7 @@ import {
 import { runBrowserViewportMutation } from "~/browser/browserViewportActions";
 import { previewRuntimeTabId } from "~/browser/previewRuntimeTabId";
 import { isElectron } from "~/env";
-import { useEnvironments } from "~/state/environments";
+import { useEnvironmentHttpBaseUrl, useEnvironments } from "~/state/environments";
 import { previewEnvironment } from "~/state/preview";
 import { useAtomQueryRunner } from "~/state/use-atom-query-runner";
 import { useAtomCommand } from "~/state/use-atom-command";
@@ -113,6 +115,7 @@ import { resolveHostWaitBudgetMs, waitForHostReadiness } from "./previewAutomati
 import { runPreviewClickKeepingHostFocus } from "./previewClickFocus";
 import { isPreviewViewportReady } from "./previewViewportReadiness";
 import { shouldRollbackPreviewViewport } from "./previewViewportRollback";
+import { resolveAgentDesktopTransferUrl } from "./agentDesktopTransferUrl";
 
 const PREVIEW_PRESENTATION_SETTLE_TIMEOUT_MS = 500;
 const decodeAgentDesktopHumanRequest = Schema.decodeUnknownSync(AgentDesktopHumanRequest);
@@ -341,6 +344,7 @@ function PreviewAutomationHost(props: { readonly environmentId: EnvironmentId })
     [environmentId, previewSessions, visibleRuntimeTabIds],
   );
   const lastFocusReportRef = useRef<string | null>(null);
+  const environmentHttpBaseUrl = useEnvironmentHttpBaseUrl(environmentId);
   const registry = useContext(RegistryContext);
   const [automationClientId] = useState(createPreviewAutomationClientId);
   const initialAutomationHost = useMemo<PreviewAutomationHostState>(
@@ -468,6 +472,28 @@ function PreviewAutomationHost(props: { readonly environmentId: EnvironmentId })
         case "agentDesktopWriteFile":
           return await resolveDesktopComputerAutomation(
             agentDesktop?.writeFile(request.input as AgentDesktopWriteFileInput, computerContext),
+          );
+        case "agentDesktopTransfer": {
+          const input = request.input as AgentDesktopHostTransferInput;
+          if (environmentHttpBaseUrl === null) {
+            throw new Error("the environment HTTP endpoint is unavailable for file transfer");
+          }
+          return await resolveDesktopComputerAutomation(
+            agentDesktop?.transfer(
+              {
+                ...input,
+                url: resolveAgentDesktopTransferUrl(input.url, environmentHttpBaseUrl),
+              },
+              computerContext,
+            ),
+          );
+        }
+        case "agentDesktopTransferCancel":
+          return await resolveDesktopComputerAutomation(
+            agentDesktop?.cancelTransfer(
+              request.input as AgentDesktopHostTransferCancelInput,
+              computerContext,
+            ),
           );
         case "agentDesktopInspect":
           return await resolveDesktopComputerAutomation(
@@ -940,7 +966,7 @@ function PreviewAutomationHost(props: { readonly environmentId: EnvironmentId })
         browserActivity.release?.();
       }
     },
-    [environmentId, listPreviews, open, registry, resize],
+    [environmentHttpBaseUrl, environmentId, listPreviews, open, registry, resize],
   );
   const [requestHandlerAtom] = useState(() => Atom.make({ handle: handleRequest }));
   const setRequestHandler = useAtomSet(requestHandlerAtom);

@@ -3,6 +3,7 @@ import {
   AgentDesktopAcquireInput,
   AgentDesktopCommandInput,
   AgentDesktopCommandResult,
+  AgentDesktopCopyInput,
   AgentDesktopCreatePortRouteInput,
   AgentDesktopInspectInput,
   AgentDesktopList,
@@ -13,6 +14,9 @@ import {
   AgentDesktopReadFileInput,
   AgentDesktopReadFileResult,
   AgentDesktopSetupResult,
+  AgentDesktopTransfer,
+  AgentDesktopTransferLookupError,
+  AgentDesktopTransferTargetInput,
   AgentDesktopRemovePortRouteInput,
   AgentDesktopWriteFileInput,
   AgentDesktopWriteFileResult,
@@ -23,11 +27,22 @@ import { Tool, Toolkit } from "effect/unstable/ai";
 
 import * as McpInvocationContext from "../../McpInvocationContext.ts";
 import * as PreviewAutomationBroker from "../../PreviewAutomationBroker.ts";
+import * as AgentDesktopTransferService from "../../../agentDesktop/AgentDesktopTransferService.ts";
+import { ProjectionSnapshotQuery } from "../../../orchestration/Services/ProjectionSnapshotQuery.ts";
 
 const dependencies = [
   McpInvocationContext.McpInvocationContext,
   PreviewAutomationBroker.PreviewAutomationBroker,
 ];
+const transferDependencies = [
+  ...dependencies,
+  AgentDesktopTransferService.AgentDesktopTransferService,
+  ProjectionSnapshotQuery,
+];
+const AgentDesktopTransferToolError = Schema.Union([
+  PreviewAutomationError,
+  AgentDesktopTransferLookupError,
+]);
 const EmptyParameters = Schema.Record(Schema.String, Schema.Never);
 
 const agentDesktopTool = <T extends Tool.Any>(tool: T): T =>
@@ -116,6 +131,41 @@ export const AgentDesktopWriteFileTool = agentDesktopTool(
   }).annotate(Tool.Title, "Write Agent desktop file"),
 );
 
+export const AgentDesktopCopyTool = agentDesktopTool(
+  Tool.make("agent_desktop_copy", {
+    description:
+      "Copy a file or directory tree between this thread's workspace and an Agent desktop. Safe internal symlinks in directory trees are preserved; a standalone symlink is rejected. Workspace paths are relative to the current worktree. Relative Agent desktop paths resolve from the graphical user's home, while absolute paths can target the isolated system. Omit desktopId to use this session's current assignment. Directories are archived automatically, bytes use a private resumable stream instead of the tool response, auto compression samples content before deciding, and installation is staged and SHA-256 verified. Collision defaults to create; merge is valid only for directories. The call waits up to 15 seconds by default, then returns an active transfer id that agent_desktop_transfer_status can follow.",
+    parameters: AgentDesktopCopyInput,
+    success: AgentDesktopTransfer,
+    failure: AgentDesktopTransferToolError,
+    dependencies: transferDependencies,
+  }).annotate(Tool.Title, "Copy Agent desktop files"),
+);
+
+export const AgentDesktopTransferStatusTool = readonlyAgentDesktopTool(
+  Tool.make("agent_desktop_transfer_status", {
+    description:
+      "Read one transfer owned by this agent session. Set waitMs to long-poll for a terminal result without repeatedly polling; progress, phase, exact byte counts, compression, SHA-256, copied-tree summary, and structured terminal failures are returned.",
+    parameters: AgentDesktopTransferTargetInput,
+    success: AgentDesktopTransfer,
+    failure: AgentDesktopTransferToolError,
+    dependencies: transferDependencies,
+  }).annotate(Tool.Title, "Check Agent desktop transfer"),
+);
+
+export const AgentDesktopTransferCancelTool = safeAgentDesktopTool(
+  Tool.make("agent_desktop_transfer_cancel", {
+    description:
+      "Cancel one active transfer owned by this agent session. Host and server work are interrupted, held transfer resources are released, and the terminal cancelled status is returned. Cancelling a completed transfer returns its existing result.",
+    parameters: AgentDesktopTransferTargetInput,
+    success: AgentDesktopTransfer,
+    failure: AgentDesktopTransferToolError,
+    dependencies: transferDependencies,
+  })
+    .annotate(Tool.Title, "Cancel Agent desktop transfer")
+    .annotate(Tool.Idempotent, true),
+);
+
 export const AgentDesktopInspectTool = readonlyAgentDesktopTool(
   Tool.make("agent_desktop_inspect", {
     description:
@@ -170,6 +220,9 @@ export const AgentDesktopToolkit = Toolkit.make(
   AgentDesktopCommandTool,
   AgentDesktopReadFileTool,
   AgentDesktopWriteFileTool,
+  AgentDesktopCopyTool,
+  AgentDesktopTransferStatusTool,
+  AgentDesktopTransferCancelTool,
   AgentDesktopInspectTool,
   AgentDesktopCreatePortRouteTool,
   AgentDesktopRemovePortRouteTool,

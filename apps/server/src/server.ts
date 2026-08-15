@@ -27,6 +27,7 @@ import * as BackgroundPolicy from "./background/BackgroundPolicy.ts";
 import * as AgentPowerReporter from "./background/AgentPowerReporter.ts";
 import * as HostPowerMonitor from "./background/HostPowerMonitor.ts";
 import * as ServerConfig from "./config.ts";
+import * as AgentDesktopTransfer from "./agentDesktop/AgentDesktopTransferService.ts";
 import { withUntracedRequests } from "./http.ts";
 import * as ServerHttp from "./http.ts";
 import {
@@ -676,6 +677,7 @@ const layerRuntimeCoreWithAgentPower = AgentPowerReporter.layer.pipe(
 
 const layerRuntimeDependencies = layerRuntimeCoreWithAgentPower.pipe(
   Layer.provideMerge(layerUsage),
+  Layer.provideMerge(AgentDesktopTransfer.layer),
   Layer.provideMerge(layerBackground),
   Layer.provideMerge(layerResourceDiagnostics),
   Layer.provideMerge(TraceDiagnostics.layer),
@@ -715,6 +717,8 @@ const layerMakeRoutes = Layer.mergeAll(
     ServerBrowserStream.routeLayer,
     ServerHttp.layerStaticAndDevRoute,
     Ws.layer,
+    ServerHttp.agentDesktopTransferDownloadRouteLayer,
+    ServerHttp.agentDesktopTransferUploadRouteLayer,
   ),
   McpHttpServer.layer.pipe(
     Layer.provide(ProviderAdapterRegistry.layerFromProviderInstanceRegistry),
