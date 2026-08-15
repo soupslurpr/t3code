@@ -66,6 +66,7 @@ import UpstreamMigration0051 from "./Migrations/051_ProjectionThreadMessageConte
 import Migration0048 from "./Migrations/048_ThreadMonitors.ts";
 import Migration0049 from "./Migrations/049_ThreadMonitorDelivery.ts";
 import Migration0050 from "./Migrations/050_ComputerThreadMonitors.ts";
+import Migration0051 from "./Migrations/051_ComputerMonitorEvaluationThrottle.ts";
 
 /**
  * Migration loader with all migrations defined inline.
@@ -132,6 +133,7 @@ const migrationEntries = [
   [50, "ThreadMonitors", Migration0048],
   [51, "ThreadMonitorDelivery", Migration0049],
   [52, "ComputerThreadMonitors", Migration0050],
+  [53, "ComputerMonitorEvaluationThrottle", Migration0051],
 ] as const;
 
 export const migrationManifest = migrationEntries.map(([id, name]) => [id, name] as const);
