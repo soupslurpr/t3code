@@ -9,8 +9,10 @@ import {
   ThreadId,
 } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
+import * as Fiber from "effect/Fiber";
 import * as Layer from "effect/Layer";
 import * as Stream from "effect/Stream";
+import * as TestClock from "effect/testing/TestClock";
 import { McpProtocol, McpSchema, McpServer } from "effect/unstable/ai";
 import { HttpBody, HttpClient, HttpRouter, HttpServerResponse } from "effect/unstable/http";
 
@@ -220,7 +222,12 @@ function automationResult(operation: string, input?: unknown): unknown {
           ? input.actions
           : [];
       return {
-        snapshot: automationResult("computerSnapshot"),
+        ...(typeof input === "object" &&
+        input !== null &&
+        "observation" in input &&
+        input.observation === false
+          ? {}
+          : { snapshot: automationResult("computerSnapshot") }),
         actionResults: actions.map((action, index) => ({
           index,
           type:
@@ -596,6 +603,36 @@ it.effect("registers annotated tools and preserves authenticated request context
       });
       expect(computerSnapshot.structuredContent).not.toHaveProperty("screenshot.data");
 
+      const computerSequenceFiber = yield* server
+        .callTool({
+          name: "computer_observe_sequence",
+          arguments: { displayId: "7", frameCount: 2, intervalMs: 100 },
+        })
+        .pipe(
+          Effect.provideService(McpInvocationContext.McpInvocationContext, invocation),
+          Effect.provideService(McpSchema.McpServerClient, client),
+          Effect.forkScoped,
+        );
+      yield* Effect.yieldNow;
+      yield* TestClock.adjust("100 millis");
+      const computerSequence = yield* Fiber.join(computerSequenceFiber);
+      expect(computerSequence.isError).toBe(false);
+      expect(computerSequence.structuredContent).toMatchObject({
+        requestedFrameCount: 2,
+        capturedFrameCount: 2,
+        intervalMs: 100,
+        frames: [
+          { index: 0, snapshot: { screenshot: { width: 800, height: 600 } } },
+          { index: 1, snapshot: { screenshot: { width: 800, height: 600 } } },
+        ],
+      });
+      expect(computerSequence.structuredContent).not.toHaveProperty(
+        "frames[0].snapshot.screenshot.data",
+      );
+      expect(computerSequence.content.filter((content) => content.type === "image")).toHaveLength(
+        2,
+      );
+
       const semanticSnapshot = yield* server
         .callTool({
           name: "computer_snapshot",
@@ -642,6 +679,30 @@ it.effect("registers annotated tools and preserves authenticated request context
         ]),
       );
       expect(routedRequests.some(({ operation }) => operation === "computerAct")).toBe(true);
+
+      const temporalActFiber = yield* server
+        .callTool({
+          name: "computer_act",
+          arguments: {
+            actions: [{ type: "press", key: "Space" }],
+            observation: false,
+            temporalObservation: { frameCount: 2, intervalMs: 100 },
+          },
+        })
+        .pipe(
+          Effect.provideService(McpInvocationContext.McpInvocationContext, invocation),
+          Effect.provideService(McpSchema.McpServerClient, client),
+          Effect.forkScoped,
+        );
+      yield* Effect.yieldNow;
+      yield* TestClock.adjust("100 millis");
+      const temporalAct = yield* Fiber.join(temporalActFiber);
+      expect(temporalAct.isError).toBe(false);
+      expect(temporalAct.structuredContent).toMatchObject({
+        actionResults: [{ index: 0, type: "press" }],
+        temporalSequence: { requestedFrameCount: 2, capturedFrameCount: 2 },
+      });
+      expect(temporalAct.content.filter((content) => content.type === "image")).toHaveLength(2);
 
       const invalidComputerAct = yield* server
         .callTool({
