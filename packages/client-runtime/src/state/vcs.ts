@@ -22,7 +22,11 @@ import { safeErrorLogAttributes } from "../errors/safeLog.ts";
 import { EnvironmentCacheStore } from "../platform/persistence.ts";
 import { request, subscribe, type EnvironmentRpcInput } from "../rpc/client.ts";
 import { followStreamInEnvironment } from "./runtime.ts";
-import { vcsCommandConcurrency, vcsCommandScheduler } from "./vcsCommandScheduler.ts";
+import {
+  vcsCommandConcurrency,
+  vcsCommandScheduler,
+  vcsRefreshCommandConcurrency,
+} from "./vcsCommandScheduler.ts";
 import {
   invalidateCachedVcsRefs,
   vcsRefsCacheStateAtom,
@@ -297,7 +301,7 @@ export function createVcsEnvironmentAtoms<R, E>(
       label: "environment-data:vcs:refresh-status",
       tag: WS_METHODS.vcsRefreshStatus,
       scheduler: vcsCommandScheduler,
-      concurrency: vcsCommandConcurrency,
+      concurrency: vcsRefreshCommandConcurrency,
       onSettled: invalidateRefs,
     }),
     createWorktree: createEnvironmentRpcCommand(runtime, {

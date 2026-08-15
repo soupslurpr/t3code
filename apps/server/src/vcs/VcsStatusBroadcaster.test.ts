@@ -7,6 +7,7 @@ import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
 import * as FileSystem from "effect/FileSystem";
+import * as Fiber from "effect/Fiber";
 import * as Layer from "effect/Layer";
 import * as Logger from "effect/Logger";
 import * as Option from "effect/Option";
@@ -207,6 +208,68 @@ describe("VcsStatusBroadcaster", () => {
       assert.equal(state.remoteInvalidationCalls, 1);
     }).pipe(Effect.provide(makeTestLayer(state)));
   });
+
+  it.effect("shares an in-flight refresh after the first caller disconnects", () =>
+    Effect.gen(function* () {
+      const remoteStarted = yield* Deferred.make<void>();
+      const releaseRemote = yield* Deferred.make<void>();
+      const state = {
+        localStatusCalls: 0,
+        remoteStatusCalls: 0,
+        invalidationCalls: 0,
+      };
+      const testLayer = VcsStatusBroadcaster.layer.pipe(
+        Layer.provideMerge(NodeServices.layer),
+        Layer.provide(makeBackgroundPolicyLayer(() => true)),
+        Layer.provide(
+          Layer.mock(GitWorkflowService.GitWorkflowService)({
+            localStatus: () =>
+              Effect.sync(() => {
+                state.localStatusCalls += 1;
+                return baseLocalStatus;
+              }),
+            remoteStatus: () =>
+              Effect.sync(() => {
+                state.remoteStatusCalls += 1;
+              }).pipe(
+                Effect.andThen(Deferred.succeed(remoteStarted, undefined)),
+                Effect.andThen(Deferred.await(releaseRemote)),
+                Effect.as(baseRemoteStatus),
+              ),
+            invalidateStatus: () =>
+              Effect.sync(() => {
+                state.invalidationCalls += 1;
+              }),
+          } satisfies Partial<GitWorkflowService.GitWorkflowService["Service"]>),
+        ),
+      );
+
+      return yield* Effect.gen(function* () {
+        const broadcaster = yield* VcsStatusBroadcaster.VcsStatusBroadcaster;
+        const first = yield* broadcaster.refreshStatus("/repo").pipe(Effect.forkScoped);
+        yield* Deferred.await(remoteStarted);
+        const second = yield* broadcaster.refreshStatus("/repo").pipe(Effect.forkScoped);
+        yield* Effect.yieldNow;
+
+        assert.deepStrictEqual(state, {
+          localStatusCalls: 1,
+          remoteStatusCalls: 1,
+          invalidationCalls: 1,
+        });
+
+        yield* Fiber.interrupt(first);
+        yield* Deferred.succeed(releaseRemote, undefined);
+        assert.deepStrictEqual(yield* Fiber.join(second), baseStatus);
+
+        assert.deepStrictEqual(yield* broadcaster.refreshStatus("/repo"), baseStatus);
+        assert.deepStrictEqual(state, {
+          localStatusCalls: 2,
+          remoteStatusCalls: 2,
+          invalidationCalls: 2,
+        });
+      }).pipe(Effect.provide(testLayer));
+    }),
+  );
 
   it.effect("keeps the cached snapshot unchanged when a refresh branch fails", () => {
     const state = {
