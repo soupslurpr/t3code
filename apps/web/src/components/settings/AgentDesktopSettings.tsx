@@ -333,17 +333,16 @@ function DesktopViewer({
       const frame = observation?.frame;
       if (point === null || frame === undefined) return;
       event.preventDefault();
-      const deltaX = wheelTicks(event.deltaX, event.deltaMode);
-      const deltaY = wheelTicks(event.deltaY, event.deltaMode);
-      if (deltaX === 0 && deltaY === 0) return;
+      const horizontalTicks = wheelTicks(event.deltaX, event.deltaMode);
+      const verticalTicks = wheelTicks(event.deltaY, event.deltaMode);
+      if (horizontalTicks === 0 && verticalTicks === 0) return;
       void onAction([
         {
           type: "wheel",
           frameId: frame.id,
           ...point,
-          deltaX,
-          deltaY,
-          unit: "ticks",
+          horizontalTicks,
+          verticalTicks,
         },
       ]);
     },

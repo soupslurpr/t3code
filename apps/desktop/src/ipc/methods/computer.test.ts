@@ -503,7 +503,7 @@ describe("computer IPC methods", () => {
     );
   });
 
-  it.effect("replaces private unrecognized failures across IPC", () => {
+  it.effect("returns bounded unrecognized backend diagnostics across IPC", () => {
     const error = new GnomeRemoteDesktop.GnomeRemoteDesktopCommandError({
       operation: "view",
       code: "private-portal-error",
@@ -519,6 +519,8 @@ describe("computer IPC methods", () => {
               code: "internal-error",
               category: "internal",
               message: "The desktop computer-use operation failed.",
+              backendCode: "private-portal-error",
+              detail: "private portal diagnostic",
             },
           });
         }),
