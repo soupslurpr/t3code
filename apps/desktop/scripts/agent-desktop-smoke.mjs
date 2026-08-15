@@ -31,6 +31,7 @@ const smokeExpression = String.raw`(async () => {
     graphics: null,
     graphicsAcceleration: false,
     desktopId: null,
+    accessDisplaySynchronized: false,
     command: false,
     files: false,
     network: false,
@@ -182,16 +183,33 @@ const smokeExpression = String.raw`(async () => {
     result.network = resolved.exitCode === 0 && resolved.stdout.trim().length > 0;
     if (!result.network) throw new Error("guest network resolution failed");
 
-    valueOf(
+    const access = valueOf(
       await computer.requestControl(
         {
           desktop: { kind: "agent", desktopId: desktop.id },
-          observation: { screenshot: false, includeAccessibility: true },
+          observation: {
+            screenshot: { maxWidth: 800, maxHeight: 450 },
+            includeAccessibility: true,
+          },
         },
         context,
       ),
       "request Agent desktop control",
     );
+    const observedDisplay = access.snapshot?.display;
+    const statusDisplay = access.status?.displays.find(
+      (display) => display.id === observedDisplay?.id,
+    );
+    result.accessDisplaySynchronized =
+      observedDisplay !== undefined &&
+      statusDisplay !== undefined &&
+      statusDisplay.bounds.x === observedDisplay.bounds.x &&
+      statusDisplay.bounds.y === observedDisplay.bounds.y &&
+      statusDisplay.bounds.width === observedDisplay.bounds.width &&
+      statusDisplay.bounds.height === observedDisplay.bounds.height;
+    if (!result.accessDisplaySynchronized) {
+      throw new Error("access status and initial snapshot display bounds diverged");
+    }
     valueOf(
       await computer.act(
         {
