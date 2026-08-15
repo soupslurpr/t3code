@@ -21,6 +21,7 @@ import {
   ThreadId,
   type ComputerAutomationScreenshotEncoding,
   type ComputerAutomationScreenshotMimeType,
+  type ComputerAutomationContentHash,
 } from "@t3tools/contracts";
 
 import packageJson from "../../package.json" with { type: "json" };
@@ -961,14 +962,23 @@ type ComputerSnapshotResult = {
   readonly [key: string]: unknown;
 };
 
-type ComputerScreenshotResult = {
-  readonly mimeType: ComputerAutomationScreenshotMimeType;
-  readonly data: string;
-  readonly width: number;
-  readonly height: number;
-  readonly sizeBytes: number;
-  readonly encoding: ComputerAutomationScreenshotEncoding;
-};
+type ComputerScreenshotResult =
+  | {
+      readonly state: "image";
+      readonly contentHash: ComputerAutomationContentHash;
+      readonly mimeType: ComputerAutomationScreenshotMimeType;
+      readonly data: string;
+      readonly width: number;
+      readonly height: number;
+      readonly sizeBytes: number;
+      readonly encoding: ComputerAutomationScreenshotEncoding;
+    }
+  | {
+      readonly state: "unchanged";
+      readonly contentHash: ComputerAutomationContentHash;
+      readonly width: number;
+      readonly height: number;
+    };
 
 type ComputerTemporalSequenceResult = {
   readonly requestedFrameCount: number;
@@ -986,20 +996,31 @@ type ComputerTemporalSequenceResult = {
 /** Separates one screenshot's image bytes from its structured metadata. */
 function computerSnapshotResult(snapshot: ComputerSnapshotResult) {
   const { screenshot, ...metadata } = snapshot;
+  const image = screenshot?.state === "image" ? screenshot : undefined;
   return {
-    screenshot,
+    screenshot: image,
     metadata: {
       ...metadata,
       ...(screenshot === undefined
         ? {}
         : {
-            screenshot: {
-              mimeType: screenshot.mimeType,
-              width: screenshot.width,
-              height: screenshot.height,
-              sizeBytes: screenshot.sizeBytes,
-              encoding: screenshot.encoding,
-            },
+            screenshot:
+              screenshot.state === "unchanged"
+                ? {
+                    state: screenshot.state,
+                    contentHash: screenshot.contentHash,
+                    width: screenshot.width,
+                    height: screenshot.height,
+                  }
+                : {
+                    state: screenshot.state,
+                    contentHash: screenshot.contentHash,
+                    mimeType: screenshot.mimeType,
+                    width: screenshot.width,
+                    height: screenshot.height,
+                    sizeBytes: screenshot.sizeBytes,
+                    encoding: screenshot.encoding,
+                  },
           }),
     },
   };
@@ -1008,7 +1029,7 @@ function computerSnapshotResult(snapshot: ComputerSnapshotResult) {
 /** Removes image bytes from a temporal sequence while retaining frame order and timing. */
 function computerTemporalSequenceResult(sequence: ComputerTemporalSequenceResult) {
   const screenshots: Array<{
-    readonly screenshot: ComputerScreenshotResult;
+    readonly screenshot: Extract<ComputerScreenshotResult, { readonly state: "image" }>;
     readonly index: number;
     readonly elapsedMs: number;
   }> = [];

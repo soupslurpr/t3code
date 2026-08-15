@@ -629,17 +629,45 @@ describe("AgentDesktopManager", () => {
             offsetY: 20,
           },
         });
-        assert.equal(snapshot.screenshot?.mimeType, "image/webp");
-        assert.deepEqual(snapshot.screenshot?.encoding, {
+        const screenshot = snapshot.screenshot;
+        assert.equal(screenshot?.state, "image");
+        if (screenshot?.state !== "image") return;
+        assert.equal(screenshot.mimeType, "image/webp");
+        assert.deepEqual(screenshot.encoding, {
           format: "webp",
           mode: "lossless",
         });
         assert.equal(
-          Buffer.from(snapshot.screenshot?.data ?? "", "base64")
-            .subarray(0, 4)
-            .toString("ascii"),
+          Buffer.from(screenshot.data, "base64").subarray(0, 4).toString("ascii"),
           "RIFF",
         );
+
+        const unchangedSnapshot = yield* manager.snapshot(
+          owner.controllerId,
+          {
+            includeAccessibility: false,
+            screenshot: {
+              region: {
+                coordinateSpace: "desktop-logical",
+                displayId: "display-0",
+                x: 10,
+                y: 20,
+                width: 30,
+                height: 40,
+              },
+              maxWidth: 100,
+              maxHeight: 100,
+              unchangedIfContentHash: screenshot.contentHash,
+            },
+          },
+          desktop.id,
+        );
+        assert.deepEqual(unchangedSnapshot.screenshot, {
+          state: "unchanged",
+          contentHash: screenshot.contentHash,
+          width: screenshot.width,
+          height: screenshot.height,
+        });
 
         const pngSnapshot = yield* manager.snapshot(
           owner.controllerId,
@@ -649,8 +677,10 @@ describe("AgentDesktopManager", () => {
           },
           desktop.id,
         );
-        assert.equal(pngSnapshot.screenshot?.mimeType, "image/png");
-        assert.deepEqual(pngSnapshot.screenshot?.encoding, { format: "png" });
+        assert.equal(pngSnapshot.screenshot?.state, "image");
+        if (pngSnapshot.screenshot?.state !== "image") return;
+        assert.equal(pngSnapshot.screenshot.mimeType, "image/png");
+        assert.deepEqual(pngSnapshot.screenshot.encoding, { format: "png" });
       }).pipe(Effect.provide(harness.layer));
     }),
   );
