@@ -123,6 +123,7 @@ import * as TerminalManager from "./terminal/Manager.ts";
 import * as PreviewManager from "./preview/Manager.ts";
 import * as PortScanner from "./preview/PortScanner.ts";
 import * as BrowserTraceCollector from "./observability/BrowserTraceCollector.ts";
+import { ThreadMonitorService } from "./threadMonitor/ThreadMonitorService.ts";
 import * as ProjectFaviconResolver from "./project/ProjectFaviconResolver.ts";
 import * as T3ProjectFileLoader from "./project/T3ProjectFileLoader.ts";
 import * as ProjectSetupScriptRunner from "./project/ProjectSetupScriptRunner.ts";
@@ -608,6 +609,20 @@ const buildAppUnderTest = (options?: {
     const serviceLauncherClientLayer = ServiceLauncherClient.layer.pipe(
       Layer.provide(Layer.succeed(HostProcessEnvironment, {})),
     );
+    const threadMonitorLayer = Layer.mock(ThreadMonitorService)({
+      create: () => Effect.die("unused"),
+      createComputer: () => Effect.die("unused"),
+      computerCapabilities: Effect.succeed({
+        evaluators: [],
+        deterministicMatches: ["image-change"],
+      }),
+      inspectComputer: () => Effect.die("unused"),
+      updateComputer: () => Effect.die("unused"),
+      status: () => Effect.die("unused"),
+      signal: () => Effect.die("unused"),
+      cancel: () => Effect.die("unused"),
+      checkNow: () => Effect.die("unused"),
+    });
 
     const servedRoutesLayer = HttpRouter.serve(
       makeRoutesLayer.pipe(Layer.provide(serviceLauncherClientLayer)),
@@ -617,14 +632,17 @@ const buildAppUnderTest = (options?: {
       },
     ).pipe(
       Layer.provide(
-        Layer.mock(Keybindings.Keybindings)({
-          loadConfigState: Effect.succeed({
-            keybindings: [],
-            issues: [],
+        Layer.mergeAll(
+          threadMonitorLayer,
+          Layer.mock(Keybindings.Keybindings)({
+            loadConfigState: Effect.succeed({
+              keybindings: [],
+              issues: [],
+            }),
+            streamChanges: Stream.empty,
+            ...options?.layers?.keybindings,
           }),
-          streamChanges: Stream.empty,
-          ...options?.layers?.keybindings,
-        }),
+        ),
       ),
       Layer.provide(
         Layer.mock(ProviderRegistry.ProviderRegistry)({

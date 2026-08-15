@@ -54,6 +54,8 @@ const computerLayer = Layer.succeed(
   ThreadMonitorComputerService.of({
     prepare: () => Effect.die("computer monitoring is not used by this test layer"),
     check: () => Effect.die("computer monitoring is not used by this test layer"),
+    revise: () => Effect.die("computer monitoring is not used by this test layer"),
+    inspectFresh: () => Effect.die("computer monitoring is not used by this test layer"),
     release: () => Effect.void,
     capabilities: Effect.succeed({ evaluators: [], deterministicMatches: ["image-change"] }),
   }),
@@ -78,64 +80,276 @@ const workingComputerLayer = Layer.effect(
         Effect.succeed({
           condition: {
             type: "computer",
+            revision: 1,
             desktop: input.watch.desktop ?? { kind: "user" },
-            region: {
-              coordinateSpace: "desktop-logical",
-              displayId: "display-0",
-              x: 10,
-              y: 20,
-              width: 300,
-              height: 200,
+            observation: {
+              regions: [
+                {
+                  id: "screen",
+                  role: "trigger",
+                  purpose: null,
+                  region: {
+                    coordinateSpace: "desktop-logical",
+                    displayId: "display-0",
+                    x: 10,
+                    y: 20,
+                    width: 300,
+                    height: 200,
+                  },
+                  maxWidth: 1_024,
+                  maxHeight: 1_024,
+                  baselineHash: "baseline-hash",
+                  lastSampleHash: "baseline-hash",
+                  baselineStored: true,
+                  sampleCount: 0,
+                  changedSampleCount: 0,
+                  unchangedSampleCount: 0,
+                  lastCapturedAt: null,
+                  lastChangedAt: null,
+                },
+              ],
             },
-            match: { type: "image-change" },
+            match:
+              input.watch.match.type === "model"
+                ? { ...input.watch.match, baseline: input.watch.match.baseline ?? "none" }
+                : input.watch.match,
             sampling: {
               intervalMs: 30_000,
               minEvaluationIntervalMs: null,
-              maxWidth: 1_024,
-              maxHeight: 1_024,
               evaluateOnlyAfterChange: true,
             },
+            review: {
+              policy:
+                input.watch.review === undefined
+                  ? null
+                  : {
+                      afterEvaluations: input.watch.review.afterEvaluations ?? null,
+                      consecutiveUncertain: input.watch.review.consecutiveUncertain ?? null,
+                      consecutiveFailures: input.watch.review.consecutiveFailures ?? null,
+                      at: input.watch.review.at ?? null,
+                    },
+              state: "idle",
+              reason: null,
+              sequence: 0,
+              requestedAt: null,
+              deliveredAt: null,
+              deliveryAttempts: 0,
+              deliveryRetryAt: null,
+              deliveryFailureCount: 0,
+            },
             deadlineAt: null,
-            nextCheckAt: input.createdAt,
-            baselineHash: "baseline-hash",
-            lastSampleHash: "baseline-hash",
-            baselineStored: true,
+            nextCheckAt: DateTime.formatIso(
+              DateTime.makeUnsafe(
+                Date.parse(input.createdAt) + (input.watch.sampling?.intervalMs ?? 30_000),
+              ),
+            ),
             lastCheckedAt: null,
             lastEvaluatedAt: null,
+            lastEvaluationDurationMs: null,
+            totalEvaluationDurationMs: 0,
             evaluationPending: false,
             lastVerdict: null,
             lastSummary: null,
             lastUsage: null,
+            totalUsage: { inputTokens: null, cachedInputTokens: null, outputTokens: null },
             sampleCount: 0,
             evaluationCount: 0,
-            unchangedSampleCount: 0,
+            uncertainEvaluationCount: 0,
+            consecutiveUncertain: 0,
             consecutiveFailures: 0,
             observationError: null,
             resourceState: "viewing",
           },
-          baselinePngBase64: "YmFzZWxpbmU=",
+          baselineImages: [
+            {
+              id: "baseline:screen",
+              kind: "baseline",
+              regionId: "screen",
+              capturedAt: input.createdAt,
+              hash: "baseline-hash",
+              width: 300,
+              height: 200,
+              frameIndex: null,
+              elapsedMs: null,
+              pngBase64: "YmFzZWxpbmU=",
+            },
+          ],
         }),
       check: ({ monitor, checkedAt }) => {
         if (monitor.condition.type !== "computer") return Effect.die("expected computer monitor");
+        const uncertain = monitor.condition.match.type === "model";
+        const currentHash = uncertain ? "model-hash" : "terminal-hash";
+        const currentImage = {
+          id: "current:screen",
+          kind: "current" as const,
+          regionId: "screen",
+          capturedAt: checkedAt,
+          hash: currentHash,
+          width: 300,
+          height: 200,
+          frameIndex: null,
+          elapsedMs: null,
+          pngBase64: "dGVybWluYWw=",
+        };
         return Ref.update(probe.checks, (count) => count + 1).pipe(
           Effect.as({
             condition: {
               ...monitor.condition,
               nextCheckAt: checkedAt,
-              lastSampleHash: "terminal-hash",
+              observation: {
+                regions: monitor.condition.observation.regions.map((region) => ({
+                  ...region,
+                  lastSampleHash: currentHash,
+                  sampleCount: region.sampleCount + 1,
+                  changedSampleCount: region.changedSampleCount + 1,
+                  lastCapturedAt: checkedAt,
+                  lastChangedAt: checkedAt,
+                })),
+              },
               lastCheckedAt: checkedAt,
               lastEvaluatedAt: checkedAt,
-              lastVerdict: "matched" as const,
-              lastSummary: "The watched region changed.",
+              lastEvaluationDurationMs: 0,
+              lastVerdict: uncertain ? ("uncertain" as const) : ("matched" as const),
+              lastSummary: uncertain
+                ? "The evaluator could not determine the state."
+                : "The watched region changed.",
               sampleCount: monitor.condition.sampleCount + 1,
               evaluationCount: monitor.condition.evaluationCount + 1,
+              uncertainEvaluationCount:
+                monitor.condition.uncertainEvaluationCount + (uncertain ? 1 : 0),
+              consecutiveUncertain: uncertain ? monitor.condition.consecutiveUncertain + 1 : 0,
             },
-            match: {
-              summary: "The watched region changed.",
-              evidence: "A visible terminal state appeared.",
-              terminalPngBase64: "dGVybWluYWw=",
-            },
+            observedImages: [currentImage],
+            match: uncertain
+              ? null
+              : {
+                  summary: "The watched region changed.",
+                  evidence: "A visible terminal state appeared.",
+                  terminalImages: [currentImage],
+                },
           }),
+        );
+      },
+      revise: ({ monitor, watch, revisedAt }) => {
+        if (monitor.condition.type !== "computer") return Effect.die("expected computer monitor");
+        const regionInputs = watch.observation?.regions ?? [
+          { id: "screen", role: "trigger" as const },
+        ];
+        const regions = regionInputs.map((region, regionIndex) => ({
+          id: region.id,
+          role: region.role,
+          purpose: region.purpose ?? null,
+          region:
+            region.region !== undefined && "coordinateSpace" in region.region
+              ? region.region
+              : {
+                  coordinateSpace: "desktop-logical" as const,
+                  displayId: "display-0",
+                  x: regionIndex * 100,
+                  y: regionIndex * 100,
+                  width: 300,
+                  height: 200,
+                },
+          maxWidth: region.maxWidth ?? 1_024,
+          maxHeight: region.maxHeight ?? 1_024,
+          baselineHash: `baseline-${region.id}`,
+          lastSampleHash: `baseline-${region.id}`,
+          baselineStored: true,
+          sampleCount: 0,
+          changedSampleCount: 0,
+          unchangedSampleCount: 0,
+          lastCapturedAt: null,
+          lastChangedAt: null,
+        }));
+        const condition = {
+          ...monitor.condition,
+          revision: monitor.condition.revision + 1,
+          observation: { regions },
+          match:
+            watch.match.type === "model"
+              ? { ...watch.match, baseline: watch.match.baseline ?? "none" }
+              : watch.match,
+          sampling: {
+            intervalMs: watch.sampling?.intervalMs ?? 30_000,
+            minEvaluationIntervalMs: watch.sampling?.minEvaluationIntervalMs ?? null,
+            evaluateOnlyAfterChange: watch.sampling?.evaluateOnlyAfterChange ?? true,
+          },
+          review: {
+            policy:
+              watch.review === undefined
+                ? null
+                : {
+                    afterEvaluations: watch.review.afterEvaluations ?? null,
+                    consecutiveUncertain: watch.review.consecutiveUncertain ?? null,
+                    consecutiveFailures: watch.review.consecutiveFailures ?? null,
+                    at: watch.review.at ?? null,
+                  },
+            state: "idle" as const,
+            reason: null,
+            sequence: 0,
+            requestedAt: null,
+            deliveredAt: null,
+            deliveryAttempts: 0,
+            deliveryRetryAt: null,
+            deliveryFailureCount: 0,
+          },
+          deadlineAt: watch.deadlineAt ?? null,
+          nextCheckAt: DateTime.formatIso(
+            DateTime.makeUnsafe(Date.parse(revisedAt) + (watch.sampling?.intervalMs ?? 30_000)),
+          ),
+          lastCheckedAt: null,
+          lastEvaluatedAt: null,
+          lastEvaluationDurationMs: null,
+          totalEvaluationDurationMs: 0,
+          evaluationPending: false,
+          lastVerdict: null,
+          lastSummary: null,
+          lastUsage: null,
+          totalUsage: { inputTokens: null, cachedInputTokens: null, outputTokens: null },
+          sampleCount: 0,
+          evaluationCount: 0,
+          uncertainEvaluationCount: 0,
+          consecutiveUncertain: 0,
+          consecutiveFailures: 0,
+          observationError: null,
+          resourceState: "viewing" as const,
+        };
+        return Effect.succeed({
+          condition,
+          baselineImages: regions.map((region) => ({
+            id: `baseline:${region.id}`,
+            kind: "baseline" as const,
+            regionId: region.id,
+            capturedAt: revisedAt,
+            hash: region.baselineHash,
+            width: region.region.width,
+            height: region.region.height,
+            frameIndex: null,
+            elapsedMs: null,
+            pngBase64: "YmFzZWxpbmU=",
+          })),
+        });
+      },
+      inspectFresh: ({ monitor, regionIds }) => {
+        if (monitor.condition.type !== "computer") return Effect.die("expected computer monitor");
+        const selected = new Set(
+          regionIds ?? monitor.condition.observation.regions.map(({ id }) => id),
+        );
+        return Effect.succeed(
+          monitor.condition.observation.regions
+            .filter((region) => selected.has(region.id))
+            .map((region) => ({
+              id: `fresh:0:${region.id}`,
+              kind: "fresh" as const,
+              regionId: region.id,
+              capturedAt: monitor.updatedAt,
+              hash: `fresh-${region.id}`,
+              width: region.region.width,
+              height: region.region.height,
+              frameIndex: 0,
+              elapsedMs: 0,
+              pngBase64: "ZnJlc2g=",
+            })),
         );
       },
       release: () => Ref.update(probe.releases, (count) => count + 1),
@@ -626,9 +840,10 @@ computerMonitorTestLayer("ThreadMonitor computer conditions", (it) => {
       const retained = yield* repository.getComputerEvidence(monitor.id);
       assert.isTrue(Option.isSome(retained));
       if (Option.isSome(retained)) {
-        assert.strictEqual(retained.value.baselinePngBase64, "YmFzZWxpbmU=");
+        assert.strictEqual(retained.value.baselineImages[0]?.pngBase64, "YmFzZWxpbmU=");
       }
 
+      yield* TestClock.adjust("30 seconds");
       const matched = yield* service.checkNow({
         threadId,
         check: { monitorId: monitor.id },
@@ -647,7 +862,7 @@ computerMonitorTestLayer("ThreadMonitor computer conditions", (it) => {
       const evidence = yield* repository.getComputerEvidence(monitor.id);
       assert.isTrue(Option.isSome(evidence));
       if (Option.isSome(evidence)) {
-        assert.strictEqual(evidence.value.terminalPngBase64, "dGVybWluYWw=");
+        assert.strictEqual(evidence.value.terminalImages[0]?.pngBase64, "dGVybWluYWw=");
       }
 
       const cancellable = yield* service.createComputer({
@@ -664,6 +879,133 @@ computerMonitorTestLayer("ThreadMonitor computer conditions", (it) => {
       });
       assert.strictEqual(cancelled.monitors[0]?.status, "cancelled");
       assert.strictEqual(yield* Ref.get(probe.releases), 2);
+    }),
+  );
+
+  it.effect("delivers one nonterminal controller review after uncertain evaluations", () =>
+    Effect.gen(function* () {
+      yield* seedThread;
+      const service = yield* ThreadMonitorService;
+      const snapshots = yield* ProjectionSnapshotQuery;
+
+      const monitor = yield* service.createComputer({
+        threadId,
+        monitor: {
+          label: "Review an uncertain visual condition",
+          match: {
+            type: "model",
+            criterion: "The result is visibly complete.",
+            modelSelection: {
+              instanceId: ProviderInstanceId.make("test-provider"),
+              model: "test-model",
+            },
+          },
+          sampling: { intervalMs: 1_000 },
+          review: { consecutiveUncertain: 1 },
+          continuation: "record-only",
+        },
+      });
+
+      yield* TestClock.adjust("1 second");
+      yield* service.checkNow({ threadId, check: { monitorId: monitor.id } });
+      yield* TestClock.adjust("1 second");
+      const reviewed = yield* service.checkNow({
+        threadId,
+        check: { monitorId: monitor.id },
+      });
+      const current = reviewed.monitors[0];
+      assert.strictEqual(current?.status, "active");
+      assert.strictEqual(current?.condition.type, "computer");
+      if (current?.condition.type !== "computer") return;
+      assert.strictEqual(current.condition.review.state, "delivered");
+      assert.strictEqual(current.condition.review.deliveryAttempts, 1);
+
+      const detail = yield* snapshots.getThreadDetailById(threadId);
+      assert.isTrue(Option.isSome(detail));
+      if (Option.isSome(detail)) {
+        const reviewMessages = detail.value.messages.filter((message) =>
+          message.id.startsWith(`thread-monitor:${monitor.id}:review:`),
+        );
+        assert.lengthOf(reviewMessages, 1);
+        assert.include(reviewMessages[0]?.text ?? "", "controller review");
+        assert.include(reviewMessages[0]?.text ?? "", "computer_watch_update");
+      }
+
+      yield* service.cancel({ threadId, cancel: { monitorId: monitor.id } });
+    }),
+  );
+
+  it.effect("inspects evidence and atomically revises a region plan", () =>
+    Effect.gen(function* () {
+      yield* seedThread;
+      const service = yield* ThreadMonitorService;
+      const repository = yield* ThreadMonitorRepository;
+      const monitor = yield* service.createComputer({
+        threadId,
+        monitor: {
+          label: "Adapt the watched regions",
+          match: { type: "image-change" },
+          sampling: { intervalMs: 60 * 60 * 1_000 },
+          continuation: "record-only",
+        },
+      });
+
+      const inspection = yield* service.inspectComputer({
+        threadId,
+        inspect: { monitorId: monitor.id, fresh: { frameCount: 1 } },
+      });
+      assert.strictEqual(inspection.revision, 1);
+      assert.deepStrictEqual(
+        inspection.images.map(({ kind }) => kind),
+        ["baseline", "fresh"],
+      );
+
+      const revised = yield* service.updateComputer({
+        threadId,
+        update: {
+          monitorId: monitor.id,
+          expectedRevision: 1,
+          observation: {
+            regions: [
+              { id: "result", role: "trigger", maxWidth: 640, maxHeight: 360 },
+              { id: "status", role: "context", maxWidth: 320, maxHeight: 180 },
+            ],
+          },
+          sampling: { intervalMs: 10_000, minEvaluationIntervalMs: null },
+          review: { afterEvaluations: 5 },
+          acknowledgeReview: true,
+        },
+      });
+      assert.strictEqual(revised.condition.type, "computer");
+      if (revised.condition.type !== "computer") return;
+      assert.strictEqual(revised.condition.revision, 2);
+      assert.deepStrictEqual(
+        revised.condition.observation.regions.map(({ id, role }) => ({ id, role })),
+        [
+          { id: "result", role: "trigger" },
+          { id: "status", role: "context" },
+        ],
+      );
+
+      const evidence = yield* repository.getComputerEvidence(monitor.id);
+      assert.isTrue(Option.isSome(evidence));
+      if (Option.isSome(evidence)) {
+        assert.deepStrictEqual(
+          evidence.value.baselineImages.map(({ regionId }) => regionId),
+          ["result", "status"],
+        );
+        assert.lengthOf(evidence.value.currentImages, 0);
+      }
+
+      const stale = yield* service
+        .updateComputer({
+          threadId,
+          update: { monitorId: monitor.id, expectedRevision: 1, label: "Stale update" },
+        })
+        .pipe(Effect.flip);
+      assert.strictEqual(stale.code, "REVISION_CONFLICT");
+
+      yield* service.cancel({ threadId, cancel: { monitorId: monitor.id } });
     }),
   );
 });

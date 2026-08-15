@@ -8,6 +8,7 @@ import {
   type ThreadId,
   type ThreadMonitor,
   type ThreadMonitorComputerCondition,
+  type ThreadMonitorComputerEvidenceImage,
   type ThreadMonitorCondition,
   type ThreadMonitorStartInput,
   type ThreadMonitorTrigger,
@@ -33,7 +34,10 @@ import { ThreadMonitorRepository } from "../persistence/Services/ThreadMonitors.
 import { forkParked } from "../serverActivation.ts";
 import { ThreadMonitorService, type ThreadMonitorServiceShape } from "./ThreadMonitorService.ts";
 import { ThreadMonitorComputerService } from "./ThreadMonitorComputerService.ts";
-import { resolveComputerMonitorRetryDelay } from "./ThreadMonitorComputerPolicy.ts";
+import {
+  resolveComputerMonitorRetryDelay,
+  resolveControllerReview,
+} from "./ThreadMonitorComputerPolicy.ts";
 
 const DELIVERY_SETTLE_MS = 750;
 const PENDING_TURN_GRACE_MS = 10_000;
@@ -42,20 +46,57 @@ const DELIVERY_RETRY_MAX_MS = 5 * 60 * 1_000;
 const MAX_SCHEDULER_SLEEP_MS = 60 * 60 * 1_000;
 const MONITOR_TASK_TYPE = "monitor_mcp";
 
+const emptyComputerEvidence = {
+  baselineImages: [],
+  previousImages: [],
+  currentImages: [],
+  terminalImages: [],
+} as const;
+
+/** Re-tags the latest evaluated images as the bounded previous generation. */
+function previousComputerImages(
+  images: ReadonlyArray<ThreadMonitorComputerEvidenceImage>,
+): ReadonlyArray<ThreadMonitorComputerEvidenceImage> {
+  return images.map((image) => ({
+    ...image,
+    id: `previous:${image.regionId}`,
+    kind: "previous" as const,
+    frameIndex: null,
+    elapsedMs: null,
+  }));
+}
+
 /** Returns the timestamp that can trigger a monitor without an external signal. */
 function monitorWakeAt(monitor: ThreadMonitor): string | null {
   if (monitor.condition.type === "time") return monitor.condition.at;
   if (monitor.condition.type === "signal") return monitor.condition.deadlineAt;
-  if (monitor.condition.deadlineAt === null) return monitor.condition.nextCheckAt;
-  return Date.parse(monitor.condition.deadlineAt) < Date.parse(monitor.condition.nextCheckAt)
-    ? monitor.condition.deadlineAt
-    : monitor.condition.nextCheckAt;
+  const wakeTimes = [monitor.condition.nextCheckAt];
+  if (monitor.condition.deadlineAt !== null) wakeTimes.push(monitor.condition.deadlineAt);
+  if (
+    monitor.condition.review.state === "idle" &&
+    monitor.condition.review.policy?.at !== null &&
+    monitor.condition.review.policy?.at !== undefined
+  ) {
+    wakeTimes.push(monitor.condition.review.policy.at);
+  }
+  return wakeTimes.reduce((earliest, candidate) =>
+    Date.parse(candidate) < Date.parse(earliest) ? candidate : earliest,
+  );
 }
 
 /** Returns the earliest time a triggered continuation may be delivered. */
 function monitorDeliveryReadyAt(monitor: ThreadMonitor): number {
   const settledAt = Date.parse(monitor.triggeredAt ?? monitor.updatedAt) + DELIVERY_SETTLE_MS;
   const retryAt = monitor.deliveryRetryAt === null ? 0 : Date.parse(monitor.deliveryRetryAt);
+  return Math.max(settledAt, retryAt);
+}
+
+/** Returns the earliest time a nonterminal controller review may be delivered. */
+function reviewDeliveryReadyAt(condition: ThreadMonitorComputerCondition): number {
+  const settledAt =
+    Date.parse(condition.review.requestedAt ?? condition.nextCheckAt) + DELIVERY_SETTLE_MS;
+  const retryAt =
+    condition.review.deliveryRetryAt === null ? 0 : Date.parse(condition.review.deliveryRetryAt);
   return Math.max(settledAt, retryAt);
 }
 
@@ -171,6 +212,59 @@ function resumeMessage(monitors: ReadonlyArray<ThreadMonitor>): string {
   return lines.join("\n\n");
 }
 
+/** Formats a controller-owned checkpoint without granting the evaluator planning authority. */
+function reviewMessage(
+  monitor: ThreadMonitor & { condition: ThreadMonitorComputerCondition },
+): string {
+  const condition = monitor.condition;
+  const regionMetrics = condition.observation.regions
+    .map(
+      (region) =>
+        `${region.id} (${region.role}): ${region.sampleCount} captures, ${region.changedSampleCount} changed, ${region.unchangedSampleCount} unchanged`,
+    )
+    .join("\n");
+  return [
+    "T3 Code computer-watch controller review.",
+    "This is a deterministic checkpoint for the capable controller model. The evaluator supplied observations only and did not choose this monitor strategy.",
+    `Monitor: ${monitor.label}`,
+    `Revision: ${condition.revision}`,
+    `Reason: ${condition.review.reason ?? "Configured review checkpoint."}`,
+    `Evaluations: ${condition.evaluationCount}; uncertain: ${condition.uncertainEvaluationCount}; consecutive failures: ${condition.consecutiveFailures}`,
+    `Regions:\n${regionMetrics}`,
+    "Inspect retained or fresh evidence with computer_watch_inspect. Use computer_watch_update with acknowledgeReview=true to begin a fresh revision while retaining an efficient strategy, or atomically revise regions, cadence, condition, evaluator, deadline, continuation, or future review policy using the current revision. Leaving the delivered review unchanged keeps the watch active but does not schedule another review in this revision. This is an automated T3 continuation signal, not a new user message.",
+  ].join("\n\n");
+}
+
+/** Marks one deterministic review checkpoint pending without changing watch strategy. */
+function requestControllerReview(
+  condition: ThreadMonitorComputerCondition,
+  requestedAt: string,
+): ThreadMonitorComputerCondition {
+  const reason = resolveControllerReview({
+    policy: condition.review.policy,
+    state: condition.review.state,
+    evaluationCount: condition.evaluationCount,
+    consecutiveUncertain: condition.consecutiveUncertain,
+    consecutiveFailures: condition.consecutiveFailures,
+    nowMs: Date.parse(requestedAt),
+  });
+  if (reason === null) return condition;
+  return {
+    ...condition,
+    review: {
+      ...condition.review,
+      state: "pending",
+      reason,
+      sequence: condition.review.sequence + 1,
+      requestedAt,
+      deliveredAt: null,
+      deliveryAttempts: 0,
+      deliveryRetryAt: null,
+      deliveryFailureCount: 0,
+    },
+  };
+}
+
 const make = Effect.gen(function* () {
   const crypto = yield* Crypto.Crypto;
   const engine = yield* OrchestrationEngineService;
@@ -212,6 +306,22 @@ const make = Effect.gen(function* () {
         Effect.andThen(setLiveness(monitor, isOutstanding(monitor))),
       );
 
+  const writeComputerRevision = (
+    monitor: ThreadMonitor,
+    evidence: {
+      readonly baselineImages: ReadonlyArray<ThreadMonitorComputerEvidenceImage>;
+      readonly previousImages: ReadonlyArray<ThreadMonitorComputerEvidenceImage>;
+      readonly currentImages: ReadonlyArray<ThreadMonitorComputerEvidenceImage>;
+      readonly terminalImages: ReadonlyArray<ThreadMonitorComputerEvidenceImage>;
+    },
+  ) =>
+    repository
+      .upsertComputerRevision({ monitor, ...evidence })
+      .pipe(
+        Effect.mapError(mapPersistenceError("computer-revision", monitor.id)),
+        Effect.andThen(setLiveness(monitor, isOutstanding(monitor))),
+      );
+
   const releaseComputer = Effect.fn("ThreadMonitor.releaseComputer")(function* (
     monitor: ThreadMonitor,
   ) {
@@ -242,14 +352,17 @@ const make = Effect.gen(function* () {
           : null,
       consecutiveFailures: condition.consecutiveFailures,
     });
-    return {
-      ...condition,
-      nextCheckAt: DateTime.formatIso(DateTime.makeUnsafe(Date.parse(failedAt) + retryDelay)),
-      lastCheckedAt: failedAt,
-      consecutiveFailures: failureCount,
-      observationError: detail.slice(0, 2_000),
-      resourceState: "degraded",
-    };
+    return requestControllerReview(
+      {
+        ...condition,
+        nextCheckAt: DateTime.formatIso(DateTime.makeUnsafe(Date.parse(failedAt) + retryDelay)),
+        lastCheckedAt: failedAt,
+        consecutiveFailures: failureCount,
+        observationError: detail.slice(0, 2_000),
+        resourceState: "degraded",
+      },
+      failedAt,
+    );
   };
 
   const appendActivity = (monitor: ThreadMonitor, phase: string, summary: string) => {
@@ -478,6 +591,130 @@ const make = Effect.gen(function* () {
     );
   });
 
+  const deliverControllerReview = Effect.fn("ThreadMonitor.deliverControllerReview")(function* (
+    monitor: ThreadMonitor,
+    now: string,
+  ) {
+    if (
+      monitor.status !== "active" ||
+      monitor.condition.type !== "computer" ||
+      monitor.condition.review.state !== "pending" ||
+      reviewDeliveryReadyAt(monitor.condition) > Date.parse(now)
+    ) {
+      return monitor;
+    }
+
+    const shell = yield* snapshots
+      .getThreadShellById(monitor.threadId)
+      .pipe(Effect.mapError(mapPersistenceError("computer-review", monitor.id)));
+    if (Option.isNone(shell)) {
+      return yield* failMonitor(monitor, "The owning thread is unavailable.", now);
+    }
+    const thread = shell.value;
+    const sessionBusy =
+      thread.session?.status === "starting" || thread.session?.status === "running";
+    const pendingTurnAgeMs =
+      thread.latestTurn?.state === "running"
+        ? Date.parse(now) - Date.parse(thread.latestTurn.requestedAt)
+        : Number.POSITIVE_INFINITY;
+    if (
+      sessionBusy ||
+      (thread.latestTurn?.state === "running" && pendingTurnAgeMs < PENDING_TURN_GRACE_MS) ||
+      thread.hasPendingApprovals ||
+      thread.hasPendingUserInput
+    ) {
+      return monitor;
+    }
+
+    const attempt = Math.max(1, monitor.condition.review.deliveryAttempts);
+    const attempting: ThreadMonitor = {
+      ...monitor,
+      updatedAt: now,
+      lastError: null,
+      condition: {
+        ...monitor.condition,
+        review: {
+          ...monitor.condition.review,
+          deliveryAttempts: attempt,
+          deliveryRetryAt: null,
+        },
+      },
+    };
+    yield* writeMonitor(attempting);
+    if (attempting.condition.type !== "computer") return attempting;
+
+    const commandId = CommandId.make(
+      `thread-monitor:${monitor.id}:review:${attempting.condition.revision}:${attempting.condition.review.sequence}:${attempt}`,
+    );
+    const messageId = MessageId.make(
+      `thread-monitor:${monitor.id}:review:${attempting.condition.revision}:${attempting.condition.review.sequence}`,
+    );
+    const dispatched = yield* engine
+      .dispatch({
+        type: "thread.turn.start",
+        commandId,
+        threadId: monitor.threadId,
+        message: {
+          messageId,
+          role: "system",
+          text: reviewMessage(
+            attempting as ThreadMonitor & { condition: ThreadMonitorComputerCondition },
+          ),
+          attachments: [],
+        },
+        runtimeMode: thread.runtimeMode,
+        interactionMode: thread.interactionMode,
+        createdAt: now,
+      })
+      .pipe(Effect.result);
+
+    if (Result.isFailure(dispatched)) {
+      const failureCount = attempting.condition.review.deliveryFailureCount;
+      const retryAt = DateTime.formatIso(
+        DateTime.makeUnsafe(Date.parse(now) + deliveryRetryDelay(failureCount)),
+      );
+      const retrying: ThreadMonitor = {
+        ...attempting,
+        lastError: `Unable to request the controller review turn: ${boundedDetail(dispatched.failure)}`,
+        condition: {
+          ...attempting.condition,
+          review: {
+            ...attempting.condition.review,
+            deliveryAttempts:
+              dispatched.failure._tag === "OrchestrationCommandPreviouslyRejectedError"
+                ? attempt + 1
+                : attempt,
+            deliveryRetryAt: retryAt,
+            deliveryFailureCount: failureCount + 1,
+          },
+        },
+      };
+      yield* writeMonitor(retrying);
+      return retrying;
+    }
+
+    const delivered: ThreadMonitor = {
+      ...attempting,
+      lastError: null,
+      condition: {
+        ...attempting.condition,
+        review: {
+          ...attempting.condition.review,
+          state: "delivered",
+          deliveredAt: now,
+          deliveryRetryAt: null,
+        },
+      },
+    };
+    yield* writeMonitor(delivered);
+    yield* appendActivity(
+      delivered,
+      "review",
+      `Computer watch review requested: ${delivered.label}`,
+    );
+    return delivered;
+  });
+
   const checkComputerMonitor = Effect.fn("ThreadMonitor.checkComputer")(function* (
     monitor: ThreadMonitor,
     checkedAt: string,
@@ -486,12 +723,11 @@ const make = Effect.gen(function* () {
     const evidence = yield* repository
       .getComputerEvidence(monitor.id)
       .pipe(Effect.mapError(mapPersistenceError("computer-check", monitor.id)));
+    const retainedEvidence = Option.getOrElse(evidence, () => emptyComputerEvidence);
     const checked = yield* computer
       .check({
         monitor,
-        ...(Option.isSome(evidence) && evidence.value.baselinePngBase64 !== null
-          ? { baselinePngBase64: evidence.value.baselinePngBase64 }
-          : {}),
+        evidence: retainedEvidence,
         checkedAt,
       })
       .pipe(Effect.result);
@@ -510,20 +746,26 @@ const make = Effect.gen(function* () {
       return failed;
     }
 
-    if (checked.success.match !== null) {
-      yield* repository
-        .putComputerTerminal({
-          monitorId: monitor.id,
-          pngBase64: checked.success.match.terminalPngBase64,
-        })
-        .pipe(Effect.mapError(mapPersistenceError("computer-terminal", monitor.id)));
-    }
     const observed: ThreadMonitor = {
       ...monitor,
-      condition: checked.success.condition,
+      condition: requestControllerReview(checked.success.condition, checkedAt),
       updatedAt: checkedAt,
     };
-    yield* writeMonitor(observed);
+    if (checked.success.observedImages.length > 0 || checked.success.match !== null) {
+      yield* writeComputerRevision(observed, {
+        baselineImages: retainedEvidence.baselineImages,
+        previousImages: previousComputerImages(retainedEvidence.currentImages),
+        currentImages: checked.success.observedImages,
+        terminalImages:
+          checked.success.match?.terminalImages.map((image) => ({
+            ...image,
+            id: `terminal:${image.regionId}`,
+            kind: "terminal" as const,
+          })) ?? retainedEvidence.terminalImages,
+      });
+    } else {
+      yield* writeMonitor(observed);
+    }
     if (checked.success.match === null) return observed;
     const triggered = yield* triggerMonitor(
       observed,
@@ -568,8 +810,21 @@ const make = Effect.gen(function* () {
             now,
           );
           monitor = yield* releaseComputer(monitor);
-        } else if (Date.parse(monitor.condition.nextCheckAt) <= nowMs) {
-          monitor = yield* checkComputerMonitor(monitor, now);
+        } else {
+          const reviewedCondition = requestControllerReview(monitor.condition, now);
+          if (reviewedCondition !== monitor.condition) {
+            monitor = { ...monitor, condition: reviewedCondition, updatedAt: now };
+            yield* writeMonitor(monitor);
+          }
+          if (
+            monitor.condition.type === "computer" &&
+            Date.parse(monitor.condition.nextCheckAt) <= nowMs
+          ) {
+            monitor = yield* checkComputerMonitor(monitor, now);
+          }
+          if (monitor.status === "active") {
+            monitor = yield* deliverControllerReview(monitor, now);
+          }
         }
       } else if (monitor.status === "active" && wakeAt !== null && Date.parse(wakeAt) <= nowMs) {
         monitor = yield* triggerMonitor(
@@ -725,24 +980,12 @@ const make = Effect.gen(function* () {
           deliveryRetryAt: null,
           deliveryFailureCount: 0,
         };
-        yield* writeMonitor(monitor).pipe(Effect.tapError(() => computer.release(monitor)));
-        if (prepared.baselinePngBase64 !== undefined) {
-          const retained = yield* repository
-            .putComputerBaseline({
-              monitorId: monitor.id,
-              pngBase64: prepared.baselinePngBase64,
-            })
-            .pipe(
-              Effect.mapError(mapPersistenceError("computer-baseline", monitor.id)),
-              Effect.result,
-            );
-          if (Result.isFailure(retained)) {
-            yield* computer.release(monitor);
-            yield* setLiveness(monitor, false);
-            yield* repository.deleteById(monitor.id).pipe(Effect.ignore);
-            return yield* retained.failure;
-          }
-        }
+        yield* writeComputerRevision(monitor, {
+          baselineImages: prepared.baselineImages,
+          previousImages: [],
+          currentImages: [],
+          terminalImages: [],
+        }).pipe(Effect.tapError(() => computer.release(monitor)));
         yield* appendActivity(monitor, "started", `Monitoring screen: ${monitor.label}`);
         yield* wake;
         return monitor;
@@ -750,6 +993,213 @@ const make = Effect.gen(function* () {
     );
 
   const computerCapabilities = computer.capabilities;
+
+  const inspectComputer: ThreadMonitorServiceShape["inspectComputer"] = ({ threadId, inspect }) =>
+    mutex.withPermits(1)(
+      Effect.gen(function* () {
+        const monitor = yield* readOwnedMonitor(threadId, inspect.monitorId, "computer-inspect");
+        if (monitor.condition.type !== "computer") {
+          return yield* monitorError({
+            code: "MONITOR_NOT_COMPUTER",
+            operation: "computer-inspect",
+            detail: `Monitor '${monitor.id}' is not a computer watch.`,
+            monitorId: monitor.id,
+          });
+        }
+        const retained = Option.getOrElse(
+          yield* repository
+            .getComputerEvidence(monitor.id)
+            .pipe(Effect.mapError(mapPersistenceError("computer-inspect", monitor.id))),
+          () => emptyComputerEvidence,
+        );
+        const include = new Set(
+          inspect.include ?? (["baseline", "previous", "current", "terminal"] as const),
+        );
+        const stored = [
+          ...(include.has("baseline") ? retained.baselineImages : []),
+          ...(include.has("previous") ? retained.previousImages : []),
+          ...(include.has("current") ? retained.currentImages : []),
+          ...(include.has("terminal") ? retained.terminalImages : []),
+        ];
+        if (inspect.fresh === undefined) {
+          return { monitor, revision: monitor.condition.revision, images: stored };
+        }
+        if (monitor.status !== "active") {
+          return yield* monitorError({
+            code: "MONITOR_NOT_ACTIVE",
+            operation: "computer-inspect",
+            detail: `Monitor '${monitor.id}' is terminal, so fresh capture is unavailable.`,
+            monitorId: monitor.id,
+          });
+        }
+        const fresh = yield* computer.inspectFresh({
+          monitor,
+          ...(inspect.fresh.regionIds === undefined ? {} : { regionIds: inspect.fresh.regionIds }),
+          frameCount: inspect.fresh.frameCount ?? 1,
+          intervalMs: inspect.fresh.intervalMs ?? 500,
+        });
+        return {
+          monitor,
+          revision: monitor.condition.revision,
+          images: [...stored, ...fresh],
+        };
+      }),
+    );
+
+  const updateComputer: ThreadMonitorServiceShape["updateComputer"] = ({ threadId, update }) =>
+    mutex.withPermits(1)(
+      Effect.gen(function* () {
+        const monitor = yield* readOwnedMonitor(threadId, update.monitorId, "computer-update");
+        if (monitor.condition.type !== "computer") {
+          return yield* monitorError({
+            code: "MONITOR_NOT_COMPUTER",
+            operation: "computer-update",
+            detail: `Monitor '${monitor.id}' is not a computer watch.`,
+            monitorId: monitor.id,
+          });
+        }
+        if (monitor.status !== "active") {
+          return yield* monitorError({
+            code: "MONITOR_NOT_ACTIVE",
+            operation: "computer-update",
+            detail: `Monitor '${monitor.id}' is not active.`,
+            monitorId: monitor.id,
+          });
+        }
+        if (monitor.condition.revision !== update.expectedRevision) {
+          return yield* monitorError({
+            code: "REVISION_CONFLICT",
+            operation: "computer-update",
+            detail: `Expected revision ${update.expectedRevision}, but monitor '${monitor.id}' is at revision ${monitor.condition.revision}. Inspect the latest state before retrying.`,
+            monitorId: monitor.id,
+          });
+        }
+
+        const continuationMode = update.continuation ?? monitor.continuation.mode;
+        if (continuationMode === "record-only" && update.resumePrompt !== undefined) {
+          return yield* monitorError({
+            code: "INVALID_SCHEDULE",
+            operation: "computer-update",
+            detail: "resumePrompt cannot be used while the effective continuation is record-only.",
+            monitorId: monitor.id,
+          });
+        }
+        const revisedAt = yield* nowIso;
+        const current = monitor.condition;
+        const intervalMs = update.sampling?.intervalMs ?? current.sampling.intervalMs;
+        const minEvaluationIntervalMs =
+          update.sampling?.minEvaluationIntervalMs !== undefined
+            ? update.sampling.minEvaluationIntervalMs
+            : current.sampling.minEvaluationIntervalMs;
+        const evaluateOnlyAfterChange =
+          update.sampling?.evaluateOnlyAfterChange ?? current.sampling.evaluateOnlyAfterChange;
+        const currentReview = current.review.policy;
+        const preservedReview =
+          currentReview === null
+            ? undefined
+            : {
+                ...(currentReview.afterEvaluations === null
+                  ? {}
+                  : { afterEvaluations: currentReview.afterEvaluations }),
+                ...(currentReview.consecutiveUncertain === null
+                  ? {}
+                  : { consecutiveUncertain: currentReview.consecutiveUncertain }),
+                ...(currentReview.consecutiveFailures === null
+                  ? {}
+                  : { consecutiveFailures: currentReview.consecutiveFailures }),
+                ...(currentReview.at === null ||
+                Date.parse(currentReview.at) <= Date.parse(revisedAt)
+                  ? {}
+                  : { at: currentReview.at }),
+              };
+        const preservedReviewConfigured =
+          preservedReview?.afterEvaluations !== undefined ||
+          preservedReview?.consecutiveUncertain !== undefined ||
+          preservedReview?.consecutiveFailures !== undefined ||
+          preservedReview?.at !== undefined;
+        const review =
+          update.review === null
+            ? undefined
+            : update.review !== undefined
+              ? update.review
+              : preservedReviewConfigured
+                ? preservedReview
+                : undefined;
+        const match = update.match ?? current.match;
+        const observation = update.observation ?? {
+          regions: current.observation.regions.map((region) => ({
+            id: region.id,
+            role: region.role,
+            ...(region.purpose === null ? {} : { purpose: region.purpose }),
+            region: region.region,
+            maxWidth: region.maxWidth,
+            maxHeight: region.maxHeight,
+          })),
+        };
+        const deadlineAt = update.deadlineAt !== undefined ? update.deadlineAt : current.deadlineAt;
+        const effectiveLabel = update.label ?? monitor.label;
+        const watch = {
+          label: effectiveLabel,
+          desktop: current.desktop,
+          observation,
+          match,
+          sampling: { intervalMs, minEvaluationIntervalMs, evaluateOnlyAfterChange },
+          ...(review === undefined ? {} : { review }),
+          ...(deadlineAt === null ? {} : { deadlineAt }),
+          continuation: continuationMode,
+          ...(continuationMode === "resume-thread"
+            ? {
+                resumePrompt:
+                  update.resumePrompt ??
+                  (monitor.continuation.mode === "resume-thread"
+                    ? monitor.continuation.prompt
+                    : effectiveLabel),
+              }
+            : {}),
+        } satisfies import("@t3tools/contracts").ThreadMonitorComputerStartInput;
+        const thread = yield* snapshots
+          .getThreadShellById(threadId)
+          .pipe(Effect.mapError(mapPersistenceError("computer-update", monitor.id)));
+        if (Option.isNone(thread)) {
+          return yield* monitorError({
+            code: "THREAD_UNAVAILABLE",
+            operation: "computer-update",
+            detail: `Thread '${threadId}' is unavailable.`,
+            monitorId: monitor.id,
+          });
+        }
+        const prepared = yield* computer.revise({
+          monitor,
+          routingInstanceId: thread.value.modelSelection.instanceId,
+          watch,
+          revisedAt,
+        });
+        const revised: ThreadMonitor = {
+          ...monitor,
+          label: effectiveLabel,
+          condition: prepared.condition,
+          continuation:
+            continuationMode === "record-only"
+              ? { mode: "record-only" }
+              : { mode: "resume-thread", prompt: watch.resumePrompt ?? effectiveLabel },
+          updatedAt: revisedAt,
+          lastError: null,
+        };
+        yield* writeComputerRevision(revised, {
+          baselineImages: prepared.baselineImages,
+          previousImages: [],
+          currentImages: [],
+          terminalImages: [],
+        });
+        yield* appendActivity(
+          revised,
+          "updated",
+          `Computer watch revised to revision ${prepared.condition.revision}: ${revised.label}`,
+        );
+        yield* wake;
+        return revised;
+      }),
+    );
 
   const status: ThreadMonitorServiceShape["status"] = ({ threadId, query }) =>
     mutex.withPermits(1)(
@@ -888,6 +1338,10 @@ const make = Effect.gen(function* () {
           waitMs = Math.min(waitMs, readyInMs <= 0 ? BLOCKED_DELIVERY_RETRY_MS : readyInMs);
           continue;
         }
+        if (monitor.condition.type === "computer" && monitor.condition.review.state === "pending") {
+          const readyInMs = reviewDeliveryReadyAt(monitor.condition) - currentTime;
+          waitMs = Math.min(waitMs, readyInMs <= 0 ? BLOCKED_DELIVERY_RETRY_MS : readyInMs);
+        }
         const wakeAt = monitorWakeAt(monitor);
         if (wakeAt !== null) {
           waitMs = Math.min(waitMs, Math.max(0, Date.parse(wakeAt) - currentTime));
@@ -1003,6 +1457,8 @@ const make = Effect.gen(function* () {
     create,
     createComputer,
     computerCapabilities,
+    inspectComputer,
+    updateComputer,
     status,
     signal,
     cancel,

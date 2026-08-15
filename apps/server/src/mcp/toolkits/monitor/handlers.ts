@@ -3,7 +3,7 @@ import * as Effect from "effect/Effect";
 
 import { ThreadMonitorService } from "../../../threadMonitor/ThreadMonitorService.ts";
 import * as McpInvocationContext from "../../McpInvocationContext.ts";
-import { MonitorToolkit } from "./tools.ts";
+import { MonitorImageToolkit, MonitorStandardToolkit, MonitorToolkit } from "./tools.ts";
 
 const handlers = {
   monitor_start: (monitor) =>
@@ -47,7 +47,27 @@ const handlers = {
       const service = yield* ThreadMonitorService;
       return yield* service.computerCapabilities;
     }),
+  computer_watch_inspect: (inspect) =>
+    Effect.gen(function* () {
+      const scope = yield* McpInvocationContext.McpInvocationContext;
+      const service = yield* ThreadMonitorService;
+      return yield* service.inspectComputer({ threadId: scope.threadId, inspect });
+    }),
+  computer_watch_update: (update) =>
+    Effect.gen(function* () {
+      const scope = yield* McpInvocationContext.McpInvocationContext;
+      const service = yield* ThreadMonitorService;
+      return yield* service.updateComputer({ threadId: scope.threadId, update });
+    }),
 } satisfies Parameters<typeof MonitorToolkit.toLayer>[0];
+
+const { computer_watch_inspect, ...standardHandlers } = handlers;
 
 /** Provides durable monitor handlers to the MCP toolkit. */
 export const MonitorToolkitHandlersLive = MonitorToolkit.toLayer(handlers);
+
+export const MonitorStandardToolkitHandlersLive = MonitorStandardToolkit.toLayer(standardHandlers);
+
+export const MonitorImageToolkitHandlersLive = MonitorImageToolkit.toLayer({
+  computer_watch_inspect,
+});
