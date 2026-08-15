@@ -50,6 +50,8 @@ describe("shouldBundleCliDependency", () => {
       "@ff-labs/fff-node",
       "@clerk/electron-passkeys",
       "node-addon-api",
+      "sharp",
+      "@img/sharp-linux-x64",
     ]) {
       assert.strictEqual(shouldBundleCliDependency(id), false, id);
     }
@@ -81,7 +83,7 @@ describe("selectCliRuntimeExternalDependencies", () => {
   it("selects every external root declared by the server", () => {
     assert.deepStrictEqual(
       Object.keys(selectCliRuntimeExternalDependencies(serverPackageJson.dependencies)).sort(),
-      ["@ff-labs/fff-node", "node-pty"],
+      ["@ff-labs/fff-node", "node-pty", "sharp"],
     );
   });
 });

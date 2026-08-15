@@ -987,6 +987,13 @@ export function resolveMacFileExclusions(arch?: typeof BuildArch.Type) {
   const unusedArch = arch === "arm64" ? "x64" : "arm64";
   return [...MAC_FILE_EXCLUSIONS, `!**/node_modules/node-pty/prebuilds/darwin-${unusedArch}/**/*`];
 }
+
+// Sharp requires its package and all platform packages to live beside
+// app.asar so its JavaScript and dlopen paths resolve to the same real tree.
+export const DESKTOP_ASAR_UNPACK_GLOBS = [
+  "**/node_modules/sharp/**/*",
+  "**/node_modules/@img/**/*",
+] as const;
 // Windows ships the server tree (bundle + node_modules) as a separate
 // resources/server.asar sidecar instead of loose files: the NSIS installer
 // then extracts a handful of large archives instead of thousands of small
@@ -2658,6 +2665,7 @@ export const createBuildConfig = Effect.fn("createBuildConfig")(function* (
           ? LINUX_FILE_EXCLUSIONS
           : []),
     ],
+    asarUnpack: [...DESKTOP_ASAR_UNPACK_GLOBS],
     directories: {
       buildResources: "apps/desktop/resources",
     },
