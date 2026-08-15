@@ -23,6 +23,7 @@ import {
   createStageWorkspaceConfig,
   createStagePatchedDependencies,
   createBuildConfig,
+  DESKTOP_ASAR_UNPACK_GLOBS,
   DESKTOP_ELECTRON_LANGUAGES,
   DESKTOP_FILE_EXCLUSIONS,
   DESKTOP_EXTRA_RESOURCES,
@@ -378,6 +379,7 @@ it.layer(NodeServices.layer)("build-desktop-artifact", (it) => {
           "@t3tools/tailscale": "workspace:*",
           effect: "catalog:",
           electron: "41.5.0",
+          sharp: "0.34.5",
         },
         {
           "@effect/platform-node": "4.0.0-beta.59",
@@ -387,6 +389,7 @@ it.layer(NodeServices.layer)("build-desktop-artifact", (it) => {
       {
         "@effect/platform-node": "4.0.0-beta.59",
         effect: "4.0.0-beta.59",
+        sharp: "0.34.5",
       },
     );
   });
@@ -622,11 +625,11 @@ it.layer(NodeServices.layer)("build-desktop-artifact", (it) => {
       );
 
       // Windows unpacks native files explicitly so their JavaScript and metadata
-      // stay archived. Other platforms retain electron-builder's defaults.
+      // stay archived. Other platforms unpack Sharp's native packages.
       assert.notProperty(mac, "asar");
       assert.notProperty(linux, "asar");
-      assert.notProperty(mac, "asarUnpack");
-      assert.notProperty(linux, "asarUnpack");
+      assert.deepStrictEqual(mac.asarUnpack, DESKTOP_ASAR_UNPACK_GLOBS);
+      assert.deepStrictEqual(linux.asarUnpack, DESKTOP_ASAR_UNPACK_GLOBS);
       assert.deepStrictEqual(win.asar, { smartUnpack: false });
       assert.deepStrictEqual(win.asarUnpack, [WINDOWS_NATIVE_ASAR_UNPACK_GLOB]);
       assert.deepStrictEqual(winWithoutWslPrebuild.asar, win.asar);
