@@ -31,7 +31,7 @@ const ComputerWatchIntervalMs = Schema.Int.check(
   Schema.isBetween({ minimum: 1_000, maximum: 24 * 60 * 60 * 1_000 }),
 );
 const ComputerWatchImageDimension = Schema.Int.check(
-  Schema.isBetween({ minimum: 64, maximum: 4_096 }),
+  Schema.isBetween({ minimum: 1, maximum: 4_096 }),
 );
 const ComputerWatchRegionCount = 8;
 const ComputerWatchInspectFrameCount = Schema.Int.check(
@@ -60,8 +60,14 @@ export const ThreadMonitorComputerObservationRegionInput = Schema.Struct({
     description:
       "Optional screen area. A frame-relative input is converted once into durable desktop coordinates.",
   }),
-  maxWidth: Schema.optional(ComputerWatchImageDimension),
-  maxHeight: Schema.optional(ComputerWatchImageDimension),
+  maxWidth: Schema.optional(ComputerWatchImageDimension).annotate({
+    description:
+      "Maximum returned image width from 1 through 4096 pixels. Defaults to 1024, preserves aspect ratio, and never upscales.",
+  }),
+  maxHeight: Schema.optional(ComputerWatchImageDimension).annotate({
+    description:
+      "Maximum returned image height from 1 through 4096 pixels. Defaults to 1024, preserves aspect ratio, and never upscales.",
+  }),
 }).check(
   Schema.makeFilter(
     (input) =>

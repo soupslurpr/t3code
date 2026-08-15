@@ -64,6 +64,27 @@ describe("thread monitor contracts", () => {
     ]);
   });
 
+  it("accepts exact small region resolutions", () => {
+    expect(
+      decodeComputerWatch({
+        label: "Watch a compact status line",
+        match: { type: "image-change" },
+        observation: {
+          regions: [{ id: "status", role: "trigger", maxWidth: 300, maxHeight: 42 }],
+        },
+      }).observation?.regions[0]?.maxHeight,
+    ).toBe(42);
+    expect(() =>
+      decodeComputerWatch({
+        label: "Reject an empty image",
+        match: { type: "image-change" },
+        observation: {
+          regions: [{ id: "status", role: "trigger", maxWidth: 300, maxHeight: 0 }],
+        },
+      }),
+    ).toThrow();
+  });
+
   it("rejects duplicate region ids and context-only plans", () => {
     expect(() =>
       decodeComputerWatch({
