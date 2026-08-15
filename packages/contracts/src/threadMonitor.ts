@@ -356,16 +356,17 @@ export const ThreadMonitorComputerMatchInput = Schema.Union([
 export type ThreadMonitorComputerMatchInput = typeof ThreadMonitorComputerMatchInput.Type;
 
 export const ThreadMonitorComputerReviewPolicyInput = Schema.Struct({
-  afterEvaluations: Schema.optional(PositiveInt).annotate({
+  afterEvaluations: Schema.optional(Schema.NullOr(PositiveInt)).annotate({
     description: "Ask the controller to review after this many evaluations in the revision.",
   }),
-  consecutiveUncertain: Schema.optional(PositiveInt).annotate({
+  consecutiveUncertain: Schema.optional(Schema.NullOr(PositiveInt)).annotate({
     description: "Ask for review after this many consecutive uncertain verdicts.",
   }),
-  consecutiveFailures: Schema.optional(PositiveInt).annotate({
-    description: "Ask for review after this many consecutive capture or evaluator failures.",
+  consecutiveFailures: Schema.optional(Schema.NullOr(PositiveInt)).annotate({
+    description:
+      "Ask for review after this many consecutive capture or evaluator failures. Defaults to 3; null disables the automatic health review.",
   }),
-  at: Schema.optional(IsoDateTime).annotate({
+  at: Schema.optional(Schema.NullOr(IsoDateTime)).annotate({
     description: "Optional wall-clock time for a controller review.",
   }),
 }).check(
@@ -404,9 +405,9 @@ export const ThreadMonitorComputerStartInput = Schema.Struct({
       evaluateOnlyAfterChange: Schema.optional(Schema.Boolean),
     }),
   ),
-  review: Schema.optional(ThreadMonitorComputerReviewPolicyInput).annotate({
+  review: Schema.optional(Schema.NullOr(ThreadMonitorComputerReviewPolicyInput)).annotate({
     description:
-      "Optional deterministic checkpoint that resumes the controller to inspect and revise an active watch without delegating strategy to the evaluator.",
+      "Deterministic controller-review policy. By default, three consecutive failures trigger one health review; null disables all reviews.",
   }),
   deadlineAt: Schema.optional(IsoDateTime),
   continuation: Schema.optional(Schema.Literals(["resume-thread", "record-only"])),
@@ -446,7 +447,8 @@ export const ThreadMonitorComputerUpdateInput = Schema.Struct({
     }),
   ),
   review: Schema.optional(Schema.NullOr(ThreadMonitorComputerReviewPolicyInput)).annotate({
-    description: "Replacement review checkpoint policy; null disables it.",
+    description:
+      "Replacement review policy. Null disables all reviews; consecutiveFailures:null disables only the automatic health review.",
   }),
   deadlineAt: Schema.optional(Schema.NullOr(IsoDateTime)),
   continuation: Schema.optional(Schema.Literals(["resume-thread", "record-only"])),
