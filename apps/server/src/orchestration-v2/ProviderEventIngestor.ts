@@ -1,3 +1,4 @@
+import { projectTurnItemForWire } from "./WireProjection.ts";
 import {
   NodeId,
   CommandId,
@@ -465,7 +466,13 @@ export const layer: Layer.Layer<
               yield* makeDomainEvent(input, {
                 type: "turn-item.updated",
                 threadId: input.event.turnItem.threadId,
-                payload: input.event.turnItem,
+                // Persist bounded tool summaries, including terminal updates.
+                // Raw frames and command output otherwise grow the event log on every update.
+                payload: ["command_execution", "dynamic_tool", "file_change"].includes(
+                  input.event.turnItem.type,
+                )
+                  ? projectTurnItemForWire(input.event.turnItem)
+                  : input.event.turnItem,
                 runId: input.event.turnItem.runId,
                 nodeId: input.event.turnItem.nodeId,
               }),

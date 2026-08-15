@@ -23,6 +23,7 @@ import * as DateTime from "effect/DateTime";
 import * as Deferred from "effect/Deferred";
 import * as Fiber from "effect/Fiber";
 import * as Effect from "effect/Effect";
+import * as Schema from "effect/Schema";
 import * as Layer from "effect/Layer";
 import * as Stream from "effect/Stream";
 import * as TestClock from "effect/testing/TestClock";
@@ -41,6 +42,8 @@ import {
   routeProviderEvent,
   selectInheritedBackgroundTurnItems,
 } from "./RunExecutionService.ts";
+
+const encodeJson = Schema.encodeSync(Schema.fromJsonString(Schema.Unknown));
 
 const TestDatabaseLayer = SqlitePersistenceMemory;
 const TestStoresLayer = Layer.merge(EventStore.layer, ProjectionStore.layer).pipe(
@@ -1339,3 +1342,79 @@ layer("ProviderEventIngestorV2", (it) => {
     }),
   );
 });
+
+it.effect.each(["running", "completed"] as const)(
+  "persists bounded tool activity while %s",
+  (status) =>
+    Effect.gen(function* () {
+      const now = yield* DateTime.now;
+      const eventSink = yield* EventSink.EventSinkV2;
+      const ingestor = yield* ProviderEventIngestor.ProviderEventIngestorV2;
+      const projections = yield* ProjectionStore.ProjectionStoreV2;
+      const ids = yield* IdAllocator.IdAllocatorV2;
+      const threadEvent = yield* threadCreatedEvent(now);
+      yield* eventSink.write({ events: [threadEvent] });
+      const providerSessionId = yield* ids.allocate.providerSession({
+        providerInstanceId: modelSelection.instanceId,
+        threadId: threadEvent.threadId,
+      });
+      const base = {
+        threadId: threadEvent.threadId,
+        runId: null,
+        nodeId: null,
+        providerThreadId: null,
+        providerTurnId: null,
+        nativeItemRef: null,
+        parentItemId: null,
+        ordinal: 1,
+        status,
+        title: null,
+        startedAt: now,
+        completedAt: status === "completed" ? now : null,
+        updatedAt: now,
+      };
+      const items: OrchestrationV2TurnItem[] = [
+        {
+          ...base,
+          id: TurnItemId.make("large-command"),
+          type: "command_execution",
+          input: "run command",
+          output: "file not found\n" + "x".repeat(100_000),
+          exitCode: 1,
+        },
+        {
+          ...base,
+          id: TurnItemId.make("large-tool"),
+          type: "dynamic_tool",
+          toolName: "computer_observe",
+          input: { desktop: "agent" },
+          output: { isError: true, content: [{ type: "image", data: "x".repeat(100_000) }] },
+        },
+        {
+          ...base,
+          id: TurnItemId.make("large-patch"),
+          type: "file_change",
+          fileName: "file.ts",
+          additions: 1,
+          deletions: 0,
+          diffStr: "x".repeat(100_000),
+        },
+      ];
+      for (const turnItem of items) {
+        const stored = yield* ingestor.ingestNormalized({
+          providerSessionId,
+          providerInstanceId: modelSelection.instanceId,
+          threadId: threadEvent.threadId,
+          event: { type: "turn_item.updated", driver: CODEX_DRIVER, turnItem },
+        });
+        assert.isBelow(encodeJson(stored).length, 4_000);
+      }
+      const projection = yield* projections.getThreadProjection(threadEvent.threadId);
+      assert.isBelow(encodeJson(projection.turnItems).length, 4_000);
+      assert.containSubset(projection.turnItems, [
+        { type: "command_execution", input: "run command", outputIndicatesFailure: true },
+        { type: "dynamic_tool", toolName: "computer_observe", output: { isError: true } },
+        { type: "file_change", fileName: "file.ts", additions: 1 },
+      ]);
+    }).pipe(Effect.provide(TestLayer)),
+);
