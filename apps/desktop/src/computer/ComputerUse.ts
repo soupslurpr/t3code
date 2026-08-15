@@ -180,6 +180,14 @@ const EXECUTION_PHASES = new Set([
   "execution",
   "observation",
 ]);
+const AGENT_DESKTOP_TRANSFER_FAILURE_CODES = new Set([
+  "source-unavailable",
+  "invalid-destination",
+  "destination-exists",
+  "destination-type-mismatch",
+  "unsupported-entry",
+  "integrity-failed",
+]);
 const MAX_FAILURE_BACKEND_CODE_LENGTH = 128;
 const MAX_FAILURE_DETAIL_LENGTH = 2_000;
 
@@ -434,6 +442,15 @@ export function toComputerAutomationFailure(cause: unknown): ComputerAutomationF
       code: "guest-operation-failed",
       category: "internal",
       message: "The Agent desktop guest rejected the requested operation.",
+      ...common,
+      ...diagnostics,
+    };
+  }
+  if (internalCode !== undefined && AGENT_DESKTOP_TRANSFER_FAILURE_CODES.has(internalCode)) {
+    return {
+      code: "guest-operation-failed",
+      category: internalCode === "destination-exists" ? "conflict" : "internal",
+      message: "The Agent desktop file transfer was rejected.",
       ...common,
       ...diagnostics,
     };
