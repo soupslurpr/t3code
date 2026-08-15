@@ -26,6 +26,8 @@ const display = {
   scaleFactor: 1.25,
 } as unknown as Display;
 
+const contentHash = "sha256-bgra8-v1:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA";
+
 interface InputRecord {
   readonly operation: string;
   readonly input?: unknown;
@@ -116,6 +118,8 @@ function makePlatform(
     encodeScreenshot:
       options.encode ??
       (async () => ({
+        state: "image" as const,
+        contentHash,
         data: Buffer.from([1, 2, 3]),
         mimeType: "image/webp",
         encoding: { format: "webp", mode: "lossless" },
@@ -318,6 +322,8 @@ describe("ComputerUse", () => {
       assert.equal(snapshot.captureSource, "remote-desktop-stream");
       assert.isNull(snapshot.cursor);
       assert.isDefined(screenshot);
+      assert.equal(screenshot.state, "image");
+      if (screenshot.state !== "image") return;
       assert.equal(screenshot.width, 800);
       assert.equal(screenshot.height, 600);
       assert.equal(screenshot.data, Buffer.from([1, 2, 3]).toString("base64"));
@@ -374,6 +380,8 @@ describe("ComputerUse", () => {
             encodedPointer = pointer;
             encodedEncoding = encoding;
             return {
+              state: "image" as const,
+              contentHash,
               data: Buffer.from([2]),
               mimeType: "image/webp",
               encoding: { format: "webp", mode: "lossy", quality: 70 },
@@ -403,10 +411,42 @@ describe("ComputerUse", () => {
       assert.deepEqual(encodedEncoding, { format: "webp", mode: "lossy", quality: 70 });
       assert.equal(snapshot.screenshot?.width, 1600);
       assert.equal(snapshot.screenshot?.height, 900);
-      assert.deepEqual(snapshot.screenshot?.encoding, {
+      assert.equal(snapshot.screenshot?.state, "image");
+      if (snapshot.screenshot?.state !== "image") return;
+      assert.deepEqual(snapshot.screenshot.encoding, {
         format: "webp",
         mode: "lossy",
         quality: 70,
+      });
+    }),
+  );
+
+  it.effect("returns a fresh frame without bytes for matching pixels", () =>
+    Effect.gen(function* () {
+      let comparedHash: string | undefined;
+      const computer = yield* ComputerUse.makeWithOptions(
+        makePlatform({
+          encode: async (_image, _pointer, _encoding, unchangedIfContentHash) => {
+            comparedHash = unchangedIfContentHash;
+            return { state: "unchanged", contentHash };
+          },
+        }),
+        makeController([]),
+      );
+
+      const snapshot = yield* computer.snapshot({
+        displayId: "7",
+        includeAccessibility: false,
+        screenshot: { unchangedIfContentHash: contentHash },
+      });
+
+      assert.equal(comparedHash, contentHash);
+      assert.isDefined(snapshot.frame);
+      assert.deepEqual(snapshot.screenshot, {
+        state: "unchanged",
+        contentHash,
+        width: 800,
+        height: 600,
       });
     }),
   );
@@ -1065,6 +1105,8 @@ describe("ComputerUse", () => {
           encode: async (_image, pointer) => {
             encodedPointer = pointer;
             return {
+              state: "image" as const,
+              contentHash,
               data: Buffer.from([2]),
               mimeType: "image/webp",
               encoding: { format: "webp", mode: "lossless" },

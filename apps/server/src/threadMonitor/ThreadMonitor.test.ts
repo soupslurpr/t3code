@@ -42,6 +42,7 @@ const threadId = ThreadId.make("monitor-thread");
 interface ComputerMonitorProbeShape {
   readonly checks: Ref.Ref<number>;
   readonly failNextChecks: Ref.Ref<number>;
+  readonly failFingerprint: Ref.Ref<boolean>;
   readonly releases: Ref.Ref<number>;
 }
 
@@ -69,6 +70,7 @@ const computerProbeLayer = Layer.effect(
     return ComputerMonitorProbe.of({
       checks: yield* Ref.make(0),
       failNextChecks: yield* Ref.make(0),
+      failFingerprint: yield* Ref.make(false),
       releases: yield* Ref.make(0),
     });
   }),
@@ -207,6 +209,13 @@ const workingComputerLayer = Layer.effect(
         };
         return Effect.gen(function* () {
           yield* Ref.update(probe.checks, (count) => count + 1);
+          if (yield* Ref.get(probe.failFingerprint)) {
+            return yield* new ThreadMonitorError({
+              code: "COMPUTER_FINGERPRINT_UNSUPPORTED",
+              operation: "computer-watch-check",
+              detail: "Restart this monitor after upgrading T3 Code.",
+            });
+          }
           const shouldFail = yield* Ref.modify(probe.failNextChecks, (remaining) => [
             remaining > 0,
             Math.max(0, remaining - 1),
@@ -969,6 +978,40 @@ computerMonitorTestLayer("ThreadMonitor computer conditions", (it) => {
       }
 
       yield* service.cancel({ threadId, cancel: { monitorId: monitor.id } });
+    }),
+  );
+
+  it.effect("fails and releases watches with obsolete fingerprints", () =>
+    Effect.gen(function* () {
+      yield* seedThread;
+      const service = yield* ThreadMonitorService;
+      const probe = yield* ComputerMonitorProbe;
+      const releasesBefore = yield* Ref.get(probe.releases);
+      const monitor = yield* service.createComputer({
+        threadId,
+        monitor: {
+          label: "Watch from an older build",
+          match: { type: "image-change" },
+          continuation: "record-only",
+        },
+      });
+      yield* Ref.set(probe.failFingerprint, true);
+      yield* TestClock.adjust("30 seconds");
+      yield* service.checkNow({ threadId, check: { monitorId: monitor.id } });
+
+      const status = yield* service.status({
+        threadId,
+        query: { monitorId: monitor.id, includeFinished: true },
+      });
+      const failed = status.monitors[0];
+      assert.strictEqual(failed?.status, "failed");
+      assert.include(failed?.lastError ?? "", "Restart this monitor");
+      assert.strictEqual(failed?.condition.type, "computer");
+      if (failed?.condition.type === "computer") {
+        assert.strictEqual(failed.condition.resourceState, "released");
+      }
+      assert.strictEqual(yield* Ref.get(probe.releases), releasesBefore + 1);
+      yield* Ref.set(probe.failFingerprint, false);
     }),
   );
 

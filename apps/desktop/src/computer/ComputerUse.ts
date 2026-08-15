@@ -4,6 +4,7 @@ import type {
   ComputerAutomationActionResult,
   ComputerAutomationActInput,
   ComputerAutomationCaptureHealth,
+  ComputerAutomationContentHash,
   ComputerAutomationDisplay,
   ComputerAutomationFailure,
   ComputerAutomationFrame,
@@ -25,8 +26,8 @@ import * as Semaphore from "effect/Semaphore";
 import { nativeImage, screen, type Display } from "electron";
 
 import {
-  encodeComputerScreenshot,
-  type EncodedComputerScreenshot,
+  renderComputerScreenshot,
+  type RenderedComputerScreenshot,
 } from "./ComputerScreenshotEncoding.ts";
 import * as GnomeRemoteDesktop from "./GnomeRemoteDesktop.ts";
 
@@ -621,7 +622,8 @@ export interface ComputerUsePlatform {
     image: ComputerUseImage,
     pointer: { readonly x: number; readonly y: number } | null,
     encoding: ComputerAutomationScreenshotEncoding | undefined,
-  ) => Promise<EncodedComputerScreenshot>;
+    unchangedIfContentHash?: ComputerAutomationContentHash,
+  ) => Promise<RenderedComputerScreenshot>;
 }
 
 const DEFAULT_HOVER_SETTLE_MS = 250;
@@ -657,7 +659,7 @@ const livePlatform: ComputerUsePlatform = {
   getPrimaryDisplay: () => screen.getPrimaryDisplay(),
   decodePng: (data) =>
     nativeImage.createFromBuffer(Buffer.from(data.buffer, data.byteOffset, data.byteLength)),
-  encodeScreenshot: encodeComputerScreenshot,
+  encodeScreenshot: renderComputerScreenshot,
 };
 
 /** Returns Electron's stable string representation for one display id. */
@@ -1328,6 +1330,7 @@ export const makeWithOptions = Effect.fn("ComputerUse.makeWithOptions")(function
                   image,
                   size,
                   encoding: screenshotOptions.encoding,
+                  unchangedIfContentHash: screenshotOptions.unchangedIfContentHash,
                 };
               },
               catch: (cause) => new ComputerUseOperationError({ operation: "snapshot", cause }),
@@ -1341,6 +1344,7 @@ export const makeWithOptions = Effect.fn("ComputerUse.makeWithOptions")(function
                   prepared.image,
                   prepared.pointerPosition,
                   prepared.encoding,
+                  prepared.unchangedIfContentHash,
                 ),
               catch: (cause) => new ComputerUseOperationError({ operation: "snapshot", cause }),
             });
@@ -1350,14 +1354,24 @@ export const makeWithOptions = Effect.fn("ComputerUse.makeWithOptions")(function
           : {
               frame: prepared.frame,
               pointerPosition: prepared.pointerPosition,
-              screenshot: {
-                mimeType: encoded.mimeType,
-                data: encoded.data.toString("base64"),
-                width: prepared.size.width,
-                height: prepared.size.height,
-                sizeBytes: encoded.data.byteLength,
-                encoding: encoded.encoding,
-              },
+              screenshot:
+                encoded.state === "unchanged"
+                  ? {
+                      state: encoded.state,
+                      contentHash: encoded.contentHash,
+                      width: prepared.size.width,
+                      height: prepared.size.height,
+                    }
+                  : {
+                      state: encoded.state,
+                      contentHash: encoded.contentHash,
+                      mimeType: encoded.mimeType,
+                      data: encoded.data.toString("base64"),
+                      width: prepared.size.width,
+                      height: prepared.size.height,
+                      sizeBytes: encoded.data.byteLength,
+                      encoding: encoded.encoding,
+                    },
             };
       const frame =
         rendered === undefined
