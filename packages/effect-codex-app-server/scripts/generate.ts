@@ -70,6 +70,11 @@ class GeneratorError extends Schema.TaggedErrorClass<GeneratorError>()("Generato
   }
 }
 
+/** Returns whether a JSON value is an object rather than an array or primitive. */
+function isJsonObject(value: Schema.Json): value is Schema.JsonObject {
+  return value !== null && typeof value === "object" && !Array.isArray(value);
+}
+
 const ManualSchemas: Record<string, Schema.Json> = {
   GetAuthStatusParams: {
     type: "object",
@@ -227,6 +232,24 @@ function applyCodex0151DefinitionCompatibility(
     ],
   };
 }
+
+// Carry small additive protocol fields between full upstream binding syncs.
+const SchemaPropertyPatches = {
+  ClientRequest__ThreadResumeParams: {
+    excludeTurns: {
+      type: "boolean",
+      description:
+        "When true, return only thread metadata and live-resume state without populating thread.turns.",
+    },
+  },
+  V2ThreadResumeParams: {
+    excludeTurns: {
+      type: "boolean",
+      description:
+        "When true, return only thread metadata and live-resume state without populating thread.turns.",
+    },
+  },
+} satisfies Record<string, Record<string, Schema.Json>>;
 
 const getGeneratedPaths = Effect.fn("getGeneratedPaths")(function* () {
   const path = yield* Path.Path;
@@ -731,6 +754,28 @@ const generateFiles = Effect.fn("generateFiles")(function* () {
     if (!(name in aggregateSchemas)) {
       aggregateSchemas[name] = stripNullDefaults(normalizeNullableTypes(schema));
     }
+  }
+
+  for (const [name, properties] of Object.entries(SchemaPropertyPatches)) {
+    const schema = aggregateSchemas[name];
+    if (schema === undefined || !isJsonObject(schema)) {
+      return yield* new GeneratorError({
+        detail: `Cannot patch missing or non-object schema '${name}'`,
+      });
+    }
+    const existingProperties = schema.properties;
+    if (existingProperties === undefined || !isJsonObject(existingProperties)) {
+      return yield* new GeneratorError({
+        detail: `Cannot patch schema '${name}' without object properties`,
+      });
+    }
+    aggregateSchemas[name] = {
+      ...schema,
+      properties: {
+        ...existingProperties,
+        ...properties,
+      },
+    };
   }
 
   const generator = makeJsonSchemaGenerator();

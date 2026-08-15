@@ -713,6 +713,7 @@ export const openCodexThread = (input: {
   return input.client
     .request("thread/resume", {
       threadId: resumeThreadId,
+      excludeTurns: true,
       ...startParams,
     })
     .pipe(

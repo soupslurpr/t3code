@@ -862,6 +862,15 @@ describe("openCodexThread", () => {
         calls.map((call) => call.method),
         ["thread/resume", "thread/start"],
       );
+      NodeAssert.deepStrictEqual(calls[0]?.payload, {
+        threadId: "stale-thread",
+        excludeTurns: true,
+        cwd: "/tmp/project",
+        approvalPolicy: "never",
+        sandbox: "danger-full-access",
+        approvalsReviewer: "user",
+        model: "gpt-5.3-codex",
+      });
     }),
   );
 
