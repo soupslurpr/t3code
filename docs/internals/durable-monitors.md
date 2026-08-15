@@ -111,6 +111,11 @@ Optional deterministic review checkpoints can fire after a configured number
 of evaluations, consecutive uncertain verdicts, consecutive failures, or at a
 wall-clock time. A review starts a normal system-role continuation for the
 capable thread controller, which may inspect evidence and revise the strategy.
+New watches default to one review after three consecutive failures, and include
+the latest bounded observation error in that continuation. An explicit null
+review disables all checkpoints; a null consecutive-failure threshold disables
+only the automatic health review. Existing persisted revisions retain their
+stored policy.
 The evaluator never receives this responsibility. A delivered review leaves the
 watch active and does not repeat within that revision; acknowledging it through
 an update begins a fresh revision. Controllers can place reviews before an
