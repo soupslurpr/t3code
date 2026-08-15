@@ -76,8 +76,12 @@ export interface ThreadTitleGenerationResult {
 export interface ImageConditionEvaluationInput {
   cwd: string;
   criterion: string;
-  currentPngBase64: string;
-  baselinePngBase64?: string | undefined;
+  images: ReadonlyArray<{
+    id: string;
+    purpose?: string | undefined;
+    currentPngBase64: string;
+    baselinePngBase64?: string | undefined;
+  }>;
   /** What model and provider instance to use for evaluation. */
   modelSelection: ModelSelection;
 }
@@ -85,7 +89,11 @@ export interface ImageConditionEvaluationInput {
 export interface ImageConditionEvaluationResult {
   verdict: "matched" | "not-matched" | "uncertain";
   summary: string;
-  evidence: string;
+  visibleFacts: ReadonlyArray<string>;
+  evidence: ReadonlyArray<{
+    readonly imageId: string;
+    readonly description: string;
+  }>;
   usage: {
     readonly inputTokens: number | null;
     readonly cachedInputTokens: number | null;
