@@ -388,6 +388,7 @@ const computerImageFailure = <E>(toolName: string, cause: Cause.Cause<E>) => {
 type ComputerImageResult = {
   readonly snapshot?: ComputerSnapshotResult;
   readonly screenshot?: ComputerScreenshotResult;
+  readonly temporalSequence?: ComputerTemporalSequenceResult;
   readonly [key: string]: unknown;
 };
 
@@ -403,49 +404,126 @@ type ComputerScreenshotResult = {
   readonly height: number;
 };
 
+type ComputerTemporalSequenceResult = {
+  readonly requestedFrameCount: number;
+  readonly capturedFrameCount: number;
+  readonly intervalMs: number;
+  readonly elapsedMs: number;
+  readonly frames: ReadonlyArray<{
+    readonly index: number;
+    readonly elapsedMs: number;
+    readonly capturedAt: string;
+    readonly snapshot: ComputerSnapshotResult;
+  }>;
+};
+
+/** Separates one screenshot's image bytes from its structured metadata. */
+function computerSnapshotResult(snapshot: ComputerSnapshotResult) {
+  const { screenshot, ...metadata } = snapshot;
+  return {
+    screenshot,
+    metadata: {
+      ...metadata,
+      ...(screenshot === undefined
+        ? {}
+        : {
+            screenshot: {
+              mimeType: screenshot.mimeType,
+              width: screenshot.width,
+              height: screenshot.height,
+            },
+          }),
+    },
+  };
+}
+
+/** Removes image bytes from a temporal sequence while retaining frame order and timing. */
+function computerTemporalSequenceResult(sequence: ComputerTemporalSequenceResult) {
+  const screenshots: Array<{
+    readonly screenshot: ComputerScreenshotResult;
+    readonly index: number;
+    readonly elapsedMs: number;
+  }> = [];
+  const frames = sequence.frames.map((frame) => {
+    const prepared = computerSnapshotResult(frame.snapshot);
+    if (prepared.screenshot !== undefined) {
+      screenshots.push({
+        screenshot: prepared.screenshot,
+        index: frame.index,
+        elapsedMs: frame.elapsedMs,
+      });
+    }
+    return { ...frame, snapshot: prepared.metadata };
+  });
+  return { metadata: { ...sequence, frames }, screenshots };
+}
+
+/** Detects the direct result returned by computer_observe_sequence. */
+function isComputerTemporalSequenceResult(value: unknown): value is ComputerTemporalSequenceResult {
+  return (
+    typeof value === "object" &&
+    value !== null &&
+    "frames" in value &&
+    Array.isArray(value.frames) &&
+    "requestedFrameCount" in value
+  );
+}
+
 const computerImageResult = (encodedResult: unknown) => {
-  const observation = encodedResult as ComputerImageResult;
+  const original = encodedResult as ComputerImageResult;
+  const directSequence = isComputerTemporalSequenceResult(encodedResult)
+    ? encodedResult
+    : undefined;
+  const nestedSequence = original.temporalSequence;
+  const temporal =
+    directSequence === undefined && nestedSequence === undefined
+      ? undefined
+      : computerTemporalSequenceResult(directSequence ?? nestedSequence!);
+  const observation = (directSequence === undefined
+    ? {
+        ...original,
+        ...(temporal === undefined ? {} : { temporalSequence: temporal.metadata }),
+      }
+    : temporal!.metadata) as unknown as ComputerImageResult;
   const nestedSnapshot = observation.snapshot;
   const snapshot = nestedSnapshot ?? observation;
-  const { screenshot, ...desktopSnapshot } = snapshot;
-  const screenshotMetadata =
-    screenshot === undefined
-      ? undefined
-      : {
-          mimeType: screenshot.mimeType,
-          width: screenshot.width,
-          height: screenshot.height,
-        };
+  const preparedSnapshot = computerSnapshotResult(snapshot);
+  const { screenshot } = preparedSnapshot;
+  const desktopSnapshot = preparedSnapshot.metadata;
   const desktop =
     nestedSnapshot === undefined
       ? desktopSnapshot
       : {
           ...observation,
-          snapshot: {
-            ...desktopSnapshot,
-            ...(screenshotMetadata === undefined ? {} : { screenshot: screenshotMetadata }),
-          },
+          snapshot: desktopSnapshot,
         };
-  const metadata =
-    nestedSnapshot !== undefined || screenshotMetadata === undefined
-      ? desktop
-      : { ...desktop, screenshot: screenshotMetadata };
+  const metadata = desktop;
+  const images = [
+    ...(temporal?.screenshots.map((frame) => ({
+      type: "image" as const,
+      data: new Uint8Array(Buffer.from(frame.screenshot.data, "base64")),
+      mimeType: frame.screenshot.mimeType,
+      _meta: {
+        "codex/imageDetail": "original",
+        "t3/temporalFrameIndex": frame.index,
+        "t3/temporalElapsedMs": frame.elapsedMs,
+      },
+    })) ?? []),
+    ...(screenshot === undefined
+      ? []
+      : [
+          {
+            type: "image" as const,
+            data: new Uint8Array(Buffer.from(screenshot.data, "base64")),
+            mimeType: screenshot.mimeType,
+            _meta: { "codex/imageDetail": "original" },
+          },
+        ]),
+  ];
   return new McpSchema.CallToolResult({
     isError: false,
     structuredContent: metadata,
-    content: [
-      { type: "text", text: JSON.stringify(metadata) },
-      ...(screenshot === undefined
-        ? []
-        : [
-            {
-              type: "image" as const,
-              data: new Uint8Array(Buffer.from(screenshot.data, "base64")),
-              mimeType: screenshot.mimeType,
-              _meta: { "codex/imageDetail": "original" },
-            },
-          ]),
-    ],
+    content: [{ type: "text", text: JSON.stringify(metadata) }, ...images],
   });
 };
 
