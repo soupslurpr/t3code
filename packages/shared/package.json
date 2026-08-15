@@ -27,6 +27,10 @@
       "types": "./src/agentAwareness.ts",
       "import": "./src/agentAwareness.ts"
     },
+    "./agentDesktopBundle": {
+      "types": "./src/agentDesktopBundle.ts",
+      "import": "./src/agentDesktopBundle.ts"
+    },
     "./git": {
       "types": "./src/git.ts",
       "import": "./src/git.ts"
