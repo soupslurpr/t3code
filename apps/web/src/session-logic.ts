@@ -1672,7 +1672,7 @@ export function deriveTimelineEntriesWithState(
     ),
   );
   const showMessage = (message: ChatMessage) =>
-    message.role !== "system" &&
+    (message.role !== "system" || message.systemEvent !== undefined) &&
     (message.role !== "user" || !foldedAnswerMessageIds.has(message.id));
   const canAppend =
     previous !== null &&

@@ -12,8 +12,9 @@ durable retry state, migration 43 adds structured computer conditions and
 `thread_monitor_computer_evidence`, and migration 44 adds model-evaluation
 throttling. Migration 45 replaces the single-region computer condition with a
 revisioned, multi-region condition and bounded evidence generations. Migration
-46 makes retained images format-aware and migrates existing PNG evidence. Each
-monitor row stores its normalized condition, continuation policy, trigger
+46 makes retained images format-aware and migrates existing PNG evidence, and
+migration 47 adds typed system-event metadata to projected thread messages.
+Each monitor row stores its normalized condition, continuation policy, trigger
 evidence, terminal timestamps, and delivery attempts. MCP invocation
 credentials determine the owning thread. A request scoped to another thread
 receives the same not-found result as a missing monitor.
@@ -126,11 +127,17 @@ check-in, but the server does not invent model-specific cache policy.
 ## Continuation delivery
 
 The default continuation dispatches an internal `thread.turn.start` with a
-system-role message. Client commands remain user-only, so automation cannot be
-mistaken for user speech. The delivery reads the thread's current provider
+typed `monitor.continuation` system event. Client commands remain user-only, so
+automation cannot be mistaken for user speech. The event mechanically separates
+trusted harness facts, untrusted trigger observations, the stored controller
+instruction, and the fact that it grants no new authorization. Computer-watch
+checkpoints use the related `monitor.review` event. The projected message stores
+the structured event once and only a compact fallback label as text; the
+provider reactor renders the full provider-neutral input at delivery time.
+
+Web and mobile clients show these messages as compact, collapsible event cards
+instead of user bubbles. The delivery reads the thread's current provider
 configuration instead of preserving the model that created the monitor.
-Trigger summaries and evidence are explicitly identified as untrusted data;
-only the stored continuation prompt is presented as an instruction.
 
 Delivery waits for running or starting sessions, pending approvals, pending
 user input, and newly queued turns to settle. Every retry uses the same logical

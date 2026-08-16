@@ -8,6 +8,7 @@ import {
   ProjectId,
   ProviderInstanceId,
   ThreadId,
+  ThreadMonitorId,
   TurnId,
   type OrchestrationThread,
   type OrchestrationThreadActivity,
@@ -1008,6 +1009,86 @@ describe("buildThreadFeed", () => {
     });
 
     expect(buildThreadFeed(thread)).toEqual([]);
+  });
+
+  it("keeps monitor events visible when question answers fold into the work log", () => {
+    const thread = makeThread({
+      id: ThreadId.make("thread-monitor-event"),
+      projectId: ProjectId.make("project-1"),
+      title: "Typed monitor event",
+      messages: [
+        {
+          id: MessageId.make("monitor-event-message"),
+          role: "system",
+          text: "Monitor triggered: Wait for the build",
+          systemEvent: {
+            type: "monitor.continuation",
+            deliveryGroupId: "delivery-group-1",
+            monitors: [
+              {
+                monitorId: ThreadMonitorId.make("monitor-1"),
+                triggeredAt: "2026-04-01T00:00:01.000Z",
+                triggerReason: "signal",
+                observation: {
+                  label: "Wait for the build",
+                  summary: "Build passed.",
+                  evidence: null,
+                },
+                continuation: { prompt: "Report the result." },
+              },
+            ],
+            observationTrust: "untrusted",
+            grantsAuthorization: false,
+          },
+          turnId: null,
+          streaming: false,
+          createdAt: "2026-04-01T00:00:01.000Z",
+          updatedAt: "2026-04-01T00:00:01.000Z",
+        },
+      ],
+    });
+
+    expect(buildThreadFeed(thread)).toMatchObject([
+      { type: "message", message: { systemEvent: { type: "monitor.continuation" } } },
+    ]);
+    const messages = [
+      ...thread.messages,
+      ...(["user", "system"] as const).map((role) => ({
+        id: MessageId.make(role === "user" ? "async-answer:question-request" : "internal-message"),
+        role,
+        text: role === "user" ? "Proceed" : "Internal continuation",
+        streaming: false,
+        turnId: null,
+        createdAt: "2026-04-01T00:00:02.000Z",
+        updatedAt: "2026-04-01T00:00:02.000Z",
+      })),
+    ];
+    expect(buildThreadFeed({ ...thread, messages }).map((entry) => entry.id)).toEqual([
+      "monitor-event-message",
+      "async-answer:question-request",
+    ]);
+    const folded = buildThreadFeed({
+      ...thread,
+      messages,
+      activities: [
+        makeActivity({
+          id: EventId.make("answer-submitted"),
+          createdAt: "2026-04-01T00:00:03.000Z",
+          kind: "user-input.answer-submitted",
+          summary: "Answered questions",
+          payload: {
+            requestId: "question-request",
+            answers: { q: "Proceed" },
+            attachmentsByQuestionId: {},
+          },
+        }),
+      ],
+    });
+    expect(folded.map((entry) => entry.id)).toEqual(["monitor-event-message", "answer-submitted"]);
+    expect(folded[0]).toMatchObject({
+      type: "message",
+      message: { systemEvent: { type: "monitor.continuation" } },
+    });
   });
 
   it("keeps historic work entries attributed to their turns", () => {

@@ -1428,6 +1428,9 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
               ...(command.message.context !== undefined
                 ? { context: command.message.context }
                 : {}),
+              ...(command.message.systemEvent === undefined
+                ? {}
+                : { systemEvent: command.message.systemEvent }),
               turnId: null,
               streaming: false,
               createdAt: command.createdAt,
