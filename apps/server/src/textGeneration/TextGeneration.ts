@@ -150,6 +150,8 @@ export class TextGeneration extends Context.Service<
     readonly evaluateImageCondition?: (
       input: ImageConditionEvaluationInput,
     ) => Effect.Effect<ImageConditionEvaluationResult, TextGenerationError>;
+    /** Declares whether image-condition evaluation reports exact token counts. */
+    readonly imageConditionTokenUsage?: "exact";
   }
 >()("t3/textGeneration/TextGeneration") {}
 
