@@ -517,11 +517,23 @@ testLayer("ThreadMonitor", (it) => {
       assert.lengthOf(continuationMessages, 1);
       assert.strictEqual(continuationMessages[0]?.role, "system");
       assert.notInclude(continuationMessages[0]?.text ?? "", "test-provider");
-      assert.include(
-        continuationMessages[0]?.text ?? "",
-        "Continue in this thread using its current provider and model configuration.",
-      );
-      assert.include(continuationMessages[0]?.text ?? "", "untrusted observational data");
+      assert.strictEqual(continuationMessages[0]?.text, "Monitor triggered: Wait for the build");
+      const systemEvent = continuationMessages[0]?.systemEvent;
+      assert.strictEqual(systemEvent?.type, "monitor.continuation");
+      if (systemEvent?.type === "monitor.continuation") {
+        assert.strictEqual(systemEvent.observationTrust, "untrusted");
+        assert.isFalse(systemEvent.grantsAuthorization);
+        assert.strictEqual(systemEvent.monitors[0]?.monitorId, monitor.id);
+        assert.strictEqual(systemEvent.monitors[0]?.triggerReason, "signal");
+        assert.deepEqual(systemEvent.monitors[0]?.observation, {
+          label: "Wait for the build",
+          summary: "The build completed.",
+          evidence: "exitCode=0",
+        });
+        assert.deepEqual(systemEvent.monitors[0]?.continuation, {
+          prompt: "Inspect the completed build and report the result.",
+        });
+      }
 
       const deliveredMonitor = status.monitors[0];
       assert.isDefined(deliveredMonitor);
@@ -727,8 +739,15 @@ testLayer("ThreadMonitor", (it) => {
         (message) => message.id === `thread-monitor-group:${deliveryGroupId}:continuation`,
       );
       assert.lengthOf(continuations, 1);
-      assert.include(continuations[0]?.text ?? "", "First condition");
-      assert.include(continuations[0]?.text ?? "", "Second condition");
+      assert.strictEqual(continuations[0]?.text, "2 monitors triggered");
+      assert.deepEqual(
+        continuations[0]?.systemEvent?.type === "monitor.continuation"
+          ? continuations[0].systemEvent.monitors
+              .map((monitor) => monitor.observation.label)
+              .toSorted()
+          : [],
+        ["First condition", "Second condition"],
+      );
     }),
   );
 
@@ -973,8 +992,19 @@ computerMonitorTestLayer("ThreadMonitor computer conditions", (it) => {
           message.id.startsWith(`thread-monitor:${monitor.id}:review:`),
         );
         assert.lengthOf(reviewMessages, 1);
-        assert.include(reviewMessages[0]?.text ?? "", "controller review");
-        assert.include(reviewMessages[0]?.text ?? "", "computer_watch_update");
+        assert.strictEqual(
+          reviewMessages[0]?.text,
+          "Monitor review: Review an uncertain visual condition",
+        );
+        const systemEvent = reviewMessages[0]?.systemEvent;
+        assert.strictEqual(systemEvent?.type, "monitor.review");
+        if (systemEvent?.type === "monitor.review") {
+          assert.strictEqual(systemEvent.monitorId, monitor.id);
+          assert.strictEqual(systemEvent.observationTrust, "untrusted");
+          assert.isFalse(systemEvent.grantsAuthorization);
+          assert.strictEqual(systemEvent.metrics.evaluationCount, 2);
+          assert.strictEqual(systemEvent.metrics.uncertainEvaluationCount, 2);
+        }
       }
 
       yield* service.cancel({ threadId, cancel: { monitorId: monitor.id } });
@@ -1123,8 +1153,13 @@ computerMonitorTestLayer("ThreadMonitor computer conditions", (it) => {
           message.id.startsWith(`thread-monitor:${monitor.id}:review:`),
         );
         assert.lengthOf(reviewMessages, 1);
-        assert.include(reviewMessages[0]?.text ?? "", "Latest observation error");
-        assert.include(reviewMessages[0]?.text ?? "", "stream-capture-failed");
+        assert.strictEqual(reviewMessages[0]?.systemEvent?.type, "monitor.review");
+        if (reviewMessages[0]?.systemEvent?.type === "monitor.review") {
+          assert.include(
+            reviewMessages[0].systemEvent.observation.error ?? "",
+            "stream-capture-failed",
+          );
+        }
       }
 
       yield* TestClock.adjust("4 seconds");

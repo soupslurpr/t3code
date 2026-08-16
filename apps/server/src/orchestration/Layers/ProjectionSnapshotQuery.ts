@@ -12,6 +12,7 @@ import {
   OrchestrationReadModel,
   OrchestrationThreadSearchSource,
   OrchestrationShellSnapshot,
+  OrchestrationSystemEvent,
   OrchestrationThread,
   OrchestrationThreadDetailSnapshot,
   ProjectScript,
@@ -113,6 +114,7 @@ const ProjectionThreadMessageDbRowSchema = ProjectionThreadMessage.mapFields(
     isStreaming: Schema.Number,
     attachments: Schema.NullOr(Schema.fromJsonString(Schema.Array(ChatAttachment))),
     context: Schema.NullOr(Schema.fromJsonString(OrchestrationMessageContext)),
+    systemEvent: Schema.NullOr(Schema.fromJsonString(OrchestrationSystemEvent)),
   }),
 );
 const ProjectionTurnStartMessageDbRowSchema = ProjectionThreadMessageDbRowSchema.mapFields(
@@ -687,6 +689,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
           text,
           attachments_json AS "attachments",
           context_json AS "context",
+          system_event_json AS "systemEvent",
           is_streaming AS "isStreaming",
           created_at AS "createdAt",
           updated_at AS "updatedAt"
@@ -1283,6 +1286,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
         text,
         attachments_json AS "attachments",
         context_json AS "context",
+        system_event_json AS "systemEvent",
         is_streaming AS "isStreaming",
         created_at AS "createdAt",
         updated_at AS "updatedAt",
@@ -1316,6 +1320,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
           text,
           attachments_json AS "attachments",
           context_json AS "context",
+          system_event_json AS "systemEvent",
           is_streaming AS "isStreaming",
           created_at AS "createdAt",
           updated_at AS "updatedAt"
@@ -1695,6 +1700,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
           text,
           attachments_json AS "attachments",
           context_json AS "context",
+          system_event_json AS "systemEvent",
           is_streaming AS "isStreaming",
           created_at AS "createdAt",
           updated_at AS "updatedAt"
@@ -2105,6 +2111,7 @@ pending_approval_requests AS (
                   text: row.text,
                   ...(row.attachments !== null ? { attachments: row.attachments } : {}),
                   ...(row.context !== null ? { context: row.context } : {}),
+                  ...(row.systemEvent !== null ? { systemEvent: row.systemEvent } : {}),
                   turnId: row.turnId,
                   streaming: row.isStreaming === 1,
                   createdAt: row.createdAt,
@@ -3228,6 +3235,7 @@ pending_approval_requests AS (
         updatedAt: row.updatedAt,
         ...(row.attachments !== null ? { attachments: row.attachments } : {}),
         ...(row.context !== null ? { context: row.context } : {}),
+        ...(row.systemEvent !== null ? { systemEvent: row.systemEvent } : {}),
       },
       hasOtherUserMessages: row.hasOtherUserMessages === 1,
     }));
@@ -3491,6 +3499,9 @@ pending_approval_requests AS (
           }
           if (row.context !== null) {
             Object.assign(message, { context: row.context });
+          }
+          if (row.systemEvent !== null) {
+            Object.assign(message, { systemEvent: row.systemEvent });
           }
           return message;
         }),

@@ -2210,7 +2210,7 @@ export function buildThreadFeed(
       ...messages
         .filter(
           (message) =>
-            message.role !== "system" &&
+            (message.role !== "system" || message.systemEvent !== undefined) &&
             (message.role !== "user" || !foldedAnswerMessageIds.has(message.id)),
         )
         .map((message) => {
