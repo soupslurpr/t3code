@@ -46,6 +46,7 @@ import {
 } from "../../types";
 import {
   type MessageId,
+  type OrchestrationSystemEvent,
   type WorktreeSetupSnapshot,
   type OrchestrationV2ProjectedTurnItem,
   type RunAttemptId,
@@ -349,6 +350,27 @@ export function resolveTimelineIsAtEnd(state: TimelineEndState | undefined): boo
   // the inset and is true anywhere in the bottom composer-height band, so it is
   // only a fallback here, never a short-circuit.
   return contentLength - scroll - scrollLength <= TIMELINE_FOLLOW_REARM_THRESHOLD_PX;
+}
+
+/** Returns the compact heading shown for one typed monitor system event. */
+export function resolveMonitorSystemEventPresentation(event: OrchestrationSystemEvent): {
+  readonly title: string;
+  readonly summary: string;
+} {
+  if (event.type === "monitor.review") {
+    return { title: "Monitor review", summary: event.reason };
+  }
+  if (event.monitors.length === 1) {
+    const monitor = event.monitors[0]!;
+    return {
+      title: "Monitor triggered",
+      summary: monitor.observation.summary ?? monitor.observation.label,
+    };
+  }
+  return {
+    title: `${event.monitors.length} monitors triggered`,
+    summary: event.monitors.map((monitor) => monitor.observation.label).join(" · "),
+  };
 }
 
 export function resolveTimelineMinimapHeightStyle(itemCount: number): string {
