@@ -38,6 +38,7 @@ const owner = Schema.decodeUnknownSync(AgentDesktopOwner)({
 });
 const decodeAgentDesktopId = Schema.decodeUnknownSync(AgentDesktopId);
 const decodeAgentDesktopOwner = Schema.decodeUnknownEffect(AgentDesktopOwner);
+const encodeUnknownJson = Schema.encodeSync(Schema.fromJsonString(Schema.Unknown));
 const decodeRecordedAccessibilityLocator = Schema.decodeUnknownSync(
   Schema.fromJsonString(
     Schema.Struct({
@@ -300,6 +301,7 @@ const managerHarness = (
     readonly activationResponse?: string;
     readonly captureAvailable?: boolean;
     readonly windowActivationRequiresSwitch?: boolean;
+    readonly initialDocument?: string;
   },
 ) =>
   Effect.gen(function* () {
@@ -318,6 +320,12 @@ const managerHarness = (
     const agentDesktopsDir = yield* fileSystem.makeTempDirectoryScoped({
       prefix: `t3-agent-manager-${name}-`,
     });
+    if (options?.initialDocument !== undefined) {
+      yield* fileSystem.writeFileString(
+        `${agentDesktopsDir}/desktops.json`,
+        options.initialDocument,
+      );
+    }
     const accessibilityResource = `${agentDesktopsDir}/agent-desktop-accessibility.js`;
     if (accessibility) yield* fileSystem.writeFileString(accessibilityResource, "test helper");
     const environmentLayer = Layer.effect(
@@ -589,6 +597,128 @@ describe("AgentDesktopManager", () => {
         assert.equal(calls.filter((call) => call.startsWith("create:")).length, 1);
         assert.equal(calls.filter((call) => call.startsWith("start:")).length, 1);
         assert(calls.some((call) => call.endsWith(":ctrl+l") && call.startsWith("key:")));
+      }).pipe(Effect.provide(harness.layer));
+    }),
+  );
+
+  it.effect("reclaims an idle desktop after its controller changes", () =>
+    Effect.gen(function* () {
+      const desktopId = decodeAgentDesktopId("agent-preserved-before-restart");
+      const harness = yield* managerHarness("controller-restart", {
+        initialDocument: encodeUnknownJson({
+          version: 1,
+          desktops: [
+            {
+              id: desktopId,
+              label: "Persistent workspace",
+              owner,
+              state: "parked",
+              resources: {
+                cpuCount: 4,
+                memoryBytes: 4 * 1024 ** 3,
+                diskVirtualBytes: 64 * 1024 ** 3,
+                audio: false,
+              },
+              graphicsBackend: "virtio-gpu-2d",
+              requirements: { retention: "automatic" },
+              routes: [],
+              createdAt: "2026-08-01T00:00:00.000Z",
+              lastActiveAt: "2026-08-01T01:00:00.000Z",
+              recoverableUntil: null,
+            },
+          ],
+        }),
+      });
+      yield* Effect.gen(function* () {
+        const manager = yield* AgentDesktopManager.AgentDesktopManager;
+        assert.deepEqual(
+          (yield* manager.list).desktops.map((desktop) => desktop.id),
+          [desktopId],
+        );
+        const replacementOwner = yield* decodeAgentDesktopOwner({
+          ...owner,
+          controllerId: "controller-after-restart",
+        });
+
+        const reclaimed = yield* manager.acquire(replacementOwner, {
+          desktopId,
+          label: "Recovered workspace",
+          requirements: { retention: "preserve" },
+        });
+
+        assert.equal(reclaimed.id, desktopId);
+        assert.equal(reclaimed.label, "Recovered workspace");
+        assert.equal(reclaimed.owner.controllerId, replacementOwner.controllerId);
+        assert.equal(reclaimed.retention, "preserve");
+        assert.lengthOf((yield* manager.list).desktops, 1);
+
+        const foreignOwner = yield* decodeAgentDesktopOwner({
+          ...replacementOwner,
+          threadId: "another-thread",
+        });
+        const error = yield* manager.acquire(foreignOwner, { desktopId }).pipe(Effect.flip);
+        assert.equal(
+          ComputerUse.toComputerAutomationFailure(error).code,
+          "desktop-target-mismatch",
+        );
+        assert.isFalse((yield* Ref.get(harness.calls)).some((call) => call.startsWith("create:")));
+      }).pipe(Effect.provide(harness.layer));
+    }),
+  );
+
+  it.effect("reuses same-thread desktops without stealing active control", () =>
+    Effect.gen(function* () {
+      const harness = yield* managerHarness("same-thread-reuse");
+      yield* Effect.gen(function* () {
+        const manager = yield* AgentDesktopManager.AgentDesktopManager;
+        const desktop = yield* manager.acquire(owner, { label: "Shared thread workspace" });
+        const secondOwner = yield* decodeAgentDesktopOwner({
+          ...owner,
+          controllerId: "controller-2",
+        });
+        const automaticallyReused = yield* manager.acquire(secondOwner, {});
+        assert.equal(automaticallyReused.id, desktop.id);
+
+        yield* manager.requestControl(secondOwner, {
+          kind: "agent",
+          desktopId: desktop.id,
+        });
+        const thirdOwner = yield* decodeAgentDesktopOwner({
+          ...owner,
+          controllerId: "controller-3",
+        });
+        const parallelDesktop = yield* manager.acquire(thirdOwner, {});
+        assert.notEqual(parallelDesktop.id, desktop.id);
+
+        const busyError = yield* manager
+          .acquire(thirdOwner, { desktopId: desktop.id })
+          .pipe(Effect.flip);
+        assert.equal(ComputerUse.toComputerAutomationFailure(busyError).code, "desktop-busy");
+
+        yield* manager.release(secondOwner.controllerId, desktop.id);
+        const operation = yield* manager
+          .command(secondOwner, {
+            desktopId: desktop.id,
+            executable: "/usr/bin/t3-block",
+          })
+          .pipe(Effect.forkChild);
+        yield* Deferred.await(harness.commandStarted);
+        const activeOperationError = yield* manager
+          .acquire(thirdOwner, { desktopId: desktop.id })
+          .pipe(Effect.flip);
+        assert.equal(
+          ComputerUse.toComputerAutomationFailure(activeOperationError).code,
+          "desktop-busy",
+        );
+        yield* Deferred.succeed(harness.releaseCommand, undefined);
+        yield* Fiber.join(operation);
+
+        const reclaimed = yield* manager.acquire(thirdOwner, { desktopId: desktop.id });
+        assert.equal(reclaimed.id, desktop.id);
+        assert.equal(reclaimed.owner.controllerId, thirdOwner.controllerId);
+
+        const calls = yield* Ref.get(harness.calls);
+        assert.equal(calls.filter((call) => call.startsWith("create:")).length, 2);
       }).pipe(Effect.provide(harness.layer));
     }),
   );
