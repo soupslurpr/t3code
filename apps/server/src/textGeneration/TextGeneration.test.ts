@@ -191,7 +191,12 @@ describe("TextGeneration.make", () => {
               summary: "The condition is not visible.",
               visibleFacts: ["No matching dialog is present."],
               evidence: [{ imageId: "main", description: "No matching dialog is present." }],
-              usage: { inputTokens: 10, cachedInputTokens: 8, outputTokens: 4 },
+              usage: {
+                inputTokens: 10,
+                cachedInputTokens: 8,
+                cacheWriteInputTokens: 2,
+                outputTokens: 4,
+              },
             });
           },
         }),
@@ -202,8 +207,16 @@ describe("TextGeneration.make", () => {
           evaluateImageCondition: () => Effect.die("wrong evaluator selected"),
         }),
       );
-      const textGeneration = TextGeneration.makeTextGenerationFromRegistry(
-        makeStubRegistry([other, selected]),
+      const textGeneration = yield* TextGeneration.make.pipe(
+        Effect.provideService(
+          ProviderInstanceRegistry.ProviderInstanceRegistry,
+          makeStubRegistry([other, selected]),
+        ),
+        Effect.provide(
+          Layer.mock(SourceControlProviderRegistry.SourceControlProviderRegistry)({
+            resolveLink: () => Effect.die("No link lookup expected"),
+          }),
+        ),
       );
 
       const result = yield* textGeneration.evaluateImageCondition!({
@@ -226,8 +239,16 @@ describe("TextGeneration.make", () => {
   it.effect("reports a selected instance without image evaluation as unsupported", () =>
     Effect.gen(function* () {
       const instanceId = ProviderInstanceId.make("text_only");
-      const textGeneration = TextGeneration.makeTextGenerationFromRegistry(
-        makeStubRegistry([makeStubInstance(instanceId, makeStubTextGeneration({}))]),
+      const textGeneration = yield* TextGeneration.make.pipe(
+        Effect.provideService(
+          ProviderInstanceRegistry.ProviderInstanceRegistry,
+          makeStubRegistry([makeStubInstance(instanceId, makeStubTextGeneration({}))]),
+        ),
+        Effect.provide(
+          Layer.mock(SourceControlProviderRegistry.SourceControlProviderRegistry)({
+            resolveLink: () => Effect.die("No link lookup expected"),
+          }),
+        ),
       );
 
       const result = yield* textGeneration.evaluateImageCondition!({

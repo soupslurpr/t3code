@@ -114,6 +114,7 @@ export interface ImageConditionEvaluationResult {
   usage: {
     readonly inputTokens: number | null;
     readonly cachedInputTokens: number | null;
+    readonly cacheWriteInputTokens: number | null;
     readonly outputTokens: number | null;
   };
 }
