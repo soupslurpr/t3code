@@ -1909,9 +1909,89 @@ export const make = Effect.gen(function* () {
     return (yield* setLifecycle(id, "ready"))!;
   });
 
+  const claimReusableDesktop = Effect.fn("AgentDesktopManager.claimReusableDesktop")(function* (
+    owner: AgentDesktopOwner,
+    input: AgentDesktopAcquireInput,
+    desktopId: AgentDesktopId,
+    busyBehavior: "fail" | "skip",
+  ) {
+    return yield* leaseSemaphore.withPermits(1)(
+      Effect.gen(function* () {
+        const current = yield* Ref.get(state);
+        const desktop = current.desktops.get(desktopId);
+        if (desktop === undefined) {
+          return yield* new AgentDesktopManagerError({
+            code: "desktop-target-mismatch",
+            operation: "acquire",
+            detail: "the requested Agent desktop does not exist",
+          });
+        }
+        if (!ownersShareThread(desktop.owner, owner)) {
+          return yield* new AgentDesktopManagerError({
+            code: "desktop-target-mismatch",
+            operation: "acquire",
+            detail: "the requested Agent desktop belongs to a different thread",
+          });
+        }
+        if (!ownersMatch(desktop.owner, owner)) {
+          const runtime = current.runtimes.get(desktop.id);
+          if (runtime === undefined) {
+            return yield* new AgentDesktopManagerError({
+              code: "internal-error",
+              operation: "acquire",
+              detail: "the Agent desktop has no runtime state",
+            });
+          }
+          const lease = current.leases.get(desktop.id);
+          const controlledByAnother =
+            lease?.controllerId !== null &&
+            lease?.controllerId !== undefined &&
+            lease.controllerId !== owner.controllerId;
+          const activeOperationCount = yield* Ref.get(runtime.activeOperationCount);
+          if (controlledByAnother || activeOperationCount > 0) {
+            if (busyBehavior === "skip") return undefined;
+            return yield* new AgentDesktopManagerError({
+              code: "desktop-busy",
+              operation: "acquire",
+              detail: "another controller is actively using the requested Agent desktop",
+            });
+          }
+        }
+        return yield* modifyState((latest) => {
+          const selected = latest.desktops.get(desktop.id);
+          if (selected === undefined) return [undefined, latest] as const;
+          const claimed = {
+            ...selected,
+            owner,
+            ...(input.label === undefined ? {} : { label: input.label }),
+            ...(input.requirements === undefined
+              ? {}
+              : {
+                  requirements: {
+                    ...selected.requirements,
+                    ...input.requirements,
+                  },
+                }),
+          };
+          const desktops = new Map(latest.desktops).set(desktop.id, claimed);
+          const assignments = new Map(latest.assignments);
+          if (
+            selected.owner.controllerId !== owner.controllerId &&
+            assignments.get(selected.owner.controllerId) === desktop.id
+          ) {
+            assignments.delete(selected.owner.controllerId);
+          }
+          assignments.set(owner.controllerId, desktop.id);
+          return [claimed, { ...latest, desktops, assignments }] as const;
+        });
+      }),
+    );
+  });
+
   const acquire: AgentDesktopManagerShape["acquire"] = (owner, input) =>
     lifecycleSemaphore.withPermits(1)(
       Effect.gen(function* () {
+        yield* leaseSemaphore.withPermits(1)(expireHumanLeases());
         const current = yield* Ref.get(state);
         const explicit =
           input.desktopId === undefined ? undefined : current.desktops.get(input.desktopId);
@@ -1922,11 +2002,11 @@ export const make = Effect.gen(function* () {
             detail: "the requested Agent desktop does not exist",
           });
         }
-        if (explicit !== undefined && !ownersMatch(explicit.owner, owner)) {
+        if (explicit !== undefined && !ownersShareThread(explicit.owner, owner)) {
           return yield* new AgentDesktopManagerError({
             code: "desktop-target-mismatch",
             operation: "acquire",
-            detail: "the requested Agent desktop belongs to a different controller",
+            detail: "the requested Agent desktop belongs to a different thread",
           });
         }
         if (explicit !== undefined && !satisfiesRequirements(explicit, input.requirements)) {
@@ -1936,35 +2016,38 @@ export const make = Effect.gen(function* () {
             detail: "the requested Agent desktop does not satisfy the task requirements",
           });
         }
-        const reusable =
+        const candidates =
           input.fresh === true
-            ? undefined
-            : (explicit ??
-              Array.from(current.desktops.values())
-                .filter(
-                  (desktop) =>
-                    ownersMatch(desktop.owner, owner) &&
-                    desktop.state !== "recoverable" &&
-                    desktop.state !== "deleting" &&
-                    desktop.state !== "failed" &&
-                    satisfiesRequirements(desktop, input.requirements),
-                )
-                .sort((left, right) => right.lastActiveAt.localeCompare(left.lastActiveAt))[0]);
-        const prepared =
-          reusable === undefined || (input.label === undefined && input.requirements === undefined)
-            ? reusable
-            : yield* updateDesktop(reusable.id, (desktop) => ({
-                ...desktop,
-                ...(input.label === undefined ? {} : { label: input.label }),
-                ...(input.requirements === undefined
-                  ? {}
-                  : {
-                      requirements: {
-                        ...desktop.requirements,
-                        ...input.requirements,
-                      },
-                    }),
-              }));
+            ? []
+            : explicit === undefined
+              ? Array.from(current.desktops.values())
+                  .filter(
+                    (desktop) =>
+                      ownersShareThread(desktop.owner, owner) &&
+                      desktop.state !== "recoverable" &&
+                      desktop.state !== "deleting" &&
+                      desktop.state !== "failed" &&
+                      satisfiesRequirements(desktop, input.requirements),
+                  )
+                  .sort((left, right) => {
+                    const ownershipOrder =
+                      Number(ownersMatch(right.owner, owner)) -
+                      Number(ownersMatch(left.owner, owner));
+                    return ownershipOrder !== 0
+                      ? ownershipOrder
+                      : right.lastActiveAt.localeCompare(left.lastActiveAt);
+                  })
+              : [explicit];
+        let prepared: PersistedDesktop | undefined;
+        for (const candidate of candidates) {
+          prepared = yield* claimReusableDesktop(
+            owner,
+            input,
+            candidate.id,
+            explicit === undefined ? "skip" : "fail",
+          );
+          if (prepared !== undefined) break;
+        }
         const desktop =
           prepared === undefined
             ? yield* createDesktop(owner, input)
@@ -1985,7 +2068,7 @@ export const make = Effect.gen(function* () {
       ...(selector.desktopId === undefined ? {} : { desktopId: selector.desktopId }),
       ...(selector.fresh === undefined ? {} : { fresh: selector.fresh }),
     });
-    return yield* requireDesktop(owner.controllerId, acquired.id);
+    return yield* requireDesktopById(acquired.id);
   });
 
   const acquireForView = Effect.fn("AgentDesktopManager.acquireForView")(function* (
@@ -2040,7 +2123,16 @@ export const make = Effect.gen(function* () {
       yield* leaseSemaphore.withPermits(1)(
         Effect.gen(function* () {
           yield* expireHumanLeases();
-          const existingLease = (yield* Ref.get(state)).leases.get(desktop.id);
+          const current = yield* Ref.get(state);
+          const selected = current.desktops.get(desktop.id);
+          if (selected === undefined || !ownersMatch(selected.owner, owner)) {
+            return yield* new AgentDesktopManagerError({
+              code: "desktop-busy",
+              operation: "requestControl",
+              detail: "another controller claimed the Agent desktop before control was acquired",
+            });
+          }
+          const existingLease = current.leases.get(desktop.id);
           if (
             existingLease?.controllerId !== null &&
             existingLease?.controllerId !== undefined &&

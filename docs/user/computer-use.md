@@ -241,6 +241,11 @@ explicitly. Access returns the concrete desktop identifier, and every later stat
 release, or forget operation names that identifier. Omitting a target always means your desktop; it
 never means the most recently used Agent desktop. This stateless routing lets parallel agents in one
 thread hold independent desktops without silently redirecting or releasing each other's sessions.
+A provider or harness restart does not strand prior desktops: they remain listed for the same thread,
+and acquiring one explicitly reclaims it when no other controller is actively using it. Automatic
+acquisition prefers the current controller's suitable desktop, then the most recent suitable idle
+desktop from the thread. It never steals an active control lease; agents use a fresh desktop for
+intentional parallel work.
 A human can temporarily view or take control of an Agent desktop; agent input is revoked during that
 takeover and can resume after the human lease ends.
 An agent can also attach a durable view-only watch to an explicitly named Agent desktop already owned
