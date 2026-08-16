@@ -176,7 +176,7 @@ export class AssetPreviewTypeValidationError extends Schema.TaggedErrorClass<Ass
   override get message(): string {
     return this.resource._tag === "media-file"
       ? "Only images, videos, HTML, and PDF files can be previewed."
-      : "Only browser documents and images can be previewed.";
+      : "Only browser documents, images, and audio files can be previewed.";
   }
 }
 

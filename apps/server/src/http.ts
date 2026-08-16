@@ -137,7 +137,7 @@ export function assetResponseHeaders(
   };
 }
 
-/** A single byte range for native video readers; unsupported range syntax uses the full file. */
+/** A single byte range for native media readers; unsupported range syntax uses the full file. */
 function assetByteRange(header: string, size: bigint) {
   const match = /^bytes=(\d*)-(\d*)$/i.exec(header.trim());
   if (!match || (!match[1] && !match[2])) return null;
@@ -175,7 +175,13 @@ export const assetFileResponse = Effect.fn("assetFileResponse")(function* (
   const headers = assetResponseHeaders(asset.path, asset);
   const mediaFile = asset.file;
   const mediaInfo = mediaFile ? yield* statMediaFile(asset.path, mediaFile) : undefined;
-  const isVideo = headers["Content-Type"]?.toLowerCase().startsWith("video/") === true;
+  const mediaMimeType = (
+    asset.mimeType?.split(";", 1)[0]?.trim() ??
+    headers["Content-Type"] ??
+    Mime.getType(asset.path)
+  )?.toLowerCase();
+  const isVideo = mediaMimeType?.startsWith("video/") === true;
+  const acceptsByteRanges = isVideo || mediaMimeType?.startsWith("audio/") === true;
   if (mediaFile && isVideo) {
     // Host videos can change in place. Do not invite conditional range requests
     // with validators that cannot establish byte-for-byte identity.
@@ -184,7 +190,7 @@ export const assetFileResponse = Effect.fn("assetFileResponse")(function* (
   let status = 200;
   let offset = 0n;
   let bytesToRead: bigint | undefined;
-  if (isVideo) {
+  if (acceptsByteRanges) {
     headers["Accept-Ranges"] = "bytes";
     // If-Range requires a matching validator. A full response is safe when we cannot validate it.
     if (method === "GET" && rangeHeader && ifRangeHeader === undefined) {

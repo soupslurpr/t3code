@@ -26,7 +26,7 @@ import {
 
 const fileResponseLayer = Layer.mergeAll(NodeHttpPlatform.layer, NodeServices.layer);
 
-describe("video asset byte ranges", () => {
+describe("media asset byte ranges", () => {
   it.effect("uses current descriptor metadata after an in-place truncate or extension", () =>
     Effect.gen(function* () {
       const fs = yield* FileSystem.FileSystem;
@@ -250,6 +250,32 @@ describe("video asset byte ranges", () => {
       expect(image.status).toBe(200);
       expect(image.headers.has("accept-ranges")).toBe(false);
       expect(yield* Effect.promise(() => image.text())).toBe("0123456789");
+    }).pipe(Effect.provide(fileResponseLayer)),
+  );
+
+  it.effect("streams workspace audio byte ranges", () =>
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      const path = yield* Path.Path;
+      const directory = yield* fs.makeTempDirectoryScoped({ prefix: "t3-audio-range-" });
+      const file = path.join(directory, "sample.wav");
+      yield* fs.writeFileString(file, "0123456789abcdef");
+
+      const partial = HttpServerResponse.toWeb(
+        yield* assetFileResponse({ path: file }, "bytes=2-5"),
+      );
+      expect(partial.status).toBe(206);
+      expect(partial.headers.get("accept-ranges")).toBe("bytes");
+      expect(partial.headers.get("content-range")).toBe("bytes 2-5/16");
+      expect(partial.headers.get("content-length")).toBe("4");
+      expect(partial.headers.get("content-type")).toBe("audio/wav");
+      expect(yield* Effect.promise(() => partial.text())).toBe("2345");
+
+      const unsatisfiable = HttpServerResponse.toWeb(
+        yield* assetFileResponse({ path: file }, "bytes=99-"),
+      );
+      expect(unsatisfiable.status).toBe(416);
+      expect(unsatisfiable.headers.get("content-range")).toBe("bytes */16");
     }).pipe(Effect.provide(fileResponseLayer)),
   );
 

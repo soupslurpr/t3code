@@ -573,6 +573,42 @@ describe("AssetAccess", () => {
     }).pipe(Effect.provide(testLayer)),
   );
 
+  it.effect("issues exact workspace URLs for audio previews", () =>
+    Effect.gen(function* () {
+      const fileSystem = yield* FileSystem.FileSystem;
+      const path = yield* Path.Path;
+      const root = yield* fileSystem.makeTempDirectoryScoped({
+        prefix: "t3-asset-audio-workspace-",
+      });
+      const assetsDirectory = path.join(root, "samples");
+      const audioPath = path.join(assetsDirectory, "recording.wav");
+      const siblingPath = path.join(assetsDirectory, "other.wav");
+      yield* fileSystem.makeDirectory(assetsDirectory, { recursive: true });
+      yield* fileSystem.writeFile(audioPath, new Uint8Array([82, 73, 70, 70]));
+      yield* fileSystem.writeFile(siblingPath, new Uint8Array([82, 73, 70, 70]));
+      const canonicalAudioPath = yield* fileSystem.realPath(audioPath);
+
+      const result = yield* issueAssetUrl({
+        resource: {
+          _tag: "workspace-file",
+          threadId: ThreadId.make("thread-1"),
+          path: audioPath,
+        },
+        workspaceRoot: root,
+      });
+      const suffix = result.relativeUrl.slice(`${ASSET_ROUTE_PREFIX}/`.length);
+      const separatorIndex = suffix.indexOf("/");
+      const token = suffix.slice(0, separatorIndex);
+
+      expect(yield* resolveAsset(token, "recording.wav")).toEqual({
+        kind: "file",
+        path: canonicalAudioPath,
+      });
+      expect(yield* resolveAsset(token, "other.wav")).toBeNull();
+      expect(yield* resolveAsset(token, "../recording.wav")).toBeNull();
+    }).pipe(Effect.provide(testLayer)),
+  );
+
   it.effect("issues exact attachment capabilities by attachment id", () =>
     Effect.gen(function* () {
       const config = yield* ServerConfig.ServerConfig;

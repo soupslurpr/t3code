@@ -6,6 +6,7 @@ import type {
   ScopedThreadRef,
 } from "@t3tools/contracts";
 import {
+  isWorkspaceAudioPreviewPath,
   isWorkspaceImagePreviewPath,
   isWorkspaceVideoPreviewPath,
 } from "@t3tools/shared/filePreview";
@@ -143,6 +144,47 @@ const FILE_LINK_REVEAL_UNSAFE_CSS = `
   }
 `;
 type FilePostRender = NonNullable<FileOptions<unknown>["onPostRender"]>;
+
+function WorkspaceAudioPreview(props: {
+  readonly environmentId: EnvironmentId;
+  readonly threadRef: ScopedThreadRef;
+  readonly absolutePath: string;
+  readonly label: string;
+}) {
+  const assetUrl = useAssetUrlState(props.environmentId, {
+    _tag: "workspace-file",
+    threadId: props.threadRef.threadId,
+    path: props.absolutePath,
+  });
+  const [failedUrl, setFailedUrl] = useState<string | null>(null);
+
+  if (assetUrl._tag === "Failure" || (assetUrl._tag === "Success" && failedUrl === assetUrl.url)) {
+    return (
+      <div className="flex min-h-0 flex-1 items-center justify-center px-6 text-center text-xs leading-relaxed text-destructive">
+        Unable to load workspace audio.
+      </div>
+    );
+  }
+
+  return assetUrl._tag === "Success" ? (
+    <div className="flex min-h-0 flex-1 items-center justify-center p-6">
+      <audio
+        className="w-full max-w-xl"
+        controls
+        preload="metadata"
+        src={assetUrl.url}
+        aria-label={`Audio preview for ${props.label}`}
+        onError={() => setFailedUrl(assetUrl.url)}
+      >
+        Your browser does not support audio playback.
+      </audio>
+    </div>
+  ) : (
+    <div className="flex min-h-0 flex-1 items-center justify-center text-muted-foreground">
+      <LoaderCircle className="size-5 animate-spin" />
+    </div>
+  );
+}
 
 function WorkspaceImagePreview(props: {
   readonly environmentId: EnvironmentId;
@@ -979,9 +1021,10 @@ export default function FilePreviewPanel({
   const openPreview = useAtomCommand(previewEnvironment.open, {
     reportFailure: false,
   });
+  const isAudio = relativePath !== null && isWorkspaceAudioPreviewPath(relativePath);
   const isVideo = relativePath !== null && isWorkspaceVideoPreviewPath(relativePath);
   const isImage = relativePath !== null && !isVideo && isWorkspaceImagePreviewPath(relativePath);
-  const isMedia = isImage || isVideo;
+  const isMedia = isAudio || isImage || isVideo;
   // PDFs have no text to show; HTML has, and can toggle between page and source.
   const isPdf = relativePath !== null && isPdfPreviewFile(relativePath);
   const isHtml = relativePath !== null && !isPdf && isBrowserPreviewFile(relativePath);
@@ -1226,6 +1269,14 @@ export default function FilePreviewPanel({
         >
           {relativePath && attachment ? (
             <AttachmentBrowserPreview environmentId={environmentId} attachment={attachment} />
+          ) : relativePath && isAudio && absolutePath ? (
+            <WorkspaceAudioPreview
+              key={absolutePath}
+              environmentId={environmentId}
+              threadRef={threadRef}
+              absolutePath={absolutePath}
+              label={relativePath}
+            />
           ) : relativePath && isVideo && absolutePath ? (
             <WorkspaceVideoPreview
               key={`${environmentId}:${threadRef.threadId}:${absolutePath}`}
