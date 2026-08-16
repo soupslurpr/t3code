@@ -1054,7 +1054,10 @@ export const make = Effect.gen(function* () {
             driver: instance.driverKind,
             displayName: instance.displayName ?? null,
             models: snapshot.models.map((model) => ({ model: model.slug, name: model.name })),
-            tokenUsage: "unavailable" as const,
+            tokenUsage:
+              instance.textGeneration.imageConditionTokenUsage === "exact"
+                ? ("exact" as const)
+                : ("unavailable" as const),
             promptCacheRefresh: "unsupported" as const,
           })),
         ),
