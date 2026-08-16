@@ -97,8 +97,7 @@ export const list = DesktopIpc.makeIpcMethod({
                 desktops: result.desktops.filter(
                   (desktop) =>
                     desktop.owner.environmentId === context.environmentId &&
-                    desktop.owner.threadId === context.threadId &&
-                    desktop.owner.controllerId === context.controllerId,
+                    desktop.owner.threadId === context.threadId,
                 ),
               },
         ),

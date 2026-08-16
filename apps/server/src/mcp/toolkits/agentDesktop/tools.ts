@@ -57,7 +57,7 @@ const readonlyAgentDesktopTool = <T extends Tool.Any>(tool: T): T =>
 export const AgentDesktopListTool = readonlyAgentDesktopTool(
   Tool.make("agent_desktop_list", {
     description:
-      "List this agent session's isolated Agent desktops and probe every host prerequisite. Each missing, unusable, or degraded requirement includes a bounded remedy. Call agent_desktop_setup when any automatic remedy is offered; it may install official host packages or provision the verified base image. Continue once the returned status is ready. States distinguish running, parked, stopped, recoverable, and failed desktops. Use agent_desktop_inspect only when live accounting is useful.",
+      "List this thread's isolated Agent desktops and probe every host prerequisite. Desktops remain discoverable after a provider or harness restart; acquire a prior controller's desktop before using owner-scoped lifecycle or guest operations. Each missing, unusable, or degraded requirement includes a bounded remedy. Call agent_desktop_setup when any automatic remedy is offered; it may install official host packages or provision the verified base image. Continue once the returned status is ready. States distinguish running, parked, stopped, recoverable, and failed desktops. Use agent_desktop_inspect only when live accounting is useful.",
     parameters: EmptyParameters,
     success: AgentDesktopList,
     failure: PreviewAutomationError,
@@ -79,7 +79,7 @@ export const AgentDesktopSetupTool = agentDesktopTool(
 export const AgentDesktopAcquireTool = safeAgentDesktopTool(
   Tool.make("agent_desktop_acquire", {
     description:
-      "Acquire this agent session's suitable prior Agent desktop or create and boot a clean one. Omit all fields for automatic reuse. Set fresh=true for a separate clean desktop, especially for parallel work, or desktopId to resume a known owned desktop. Describe task needs, not CPU or RAM sizes; the host manages resources automatically. preventParking=true persists across releases and restarts until the same desktop is acquired with preventParking=false, so use it only for work that must remain live while idle and clear it afterward. Retention defaults to automatic; request preserve when desktop state must remain until explicitly deleted. Retain the returned desktopId and pass it to every later Agent desktop and computer tool so parallel agents remain isolated.",
+      "Acquire this thread's suitable prior Agent desktop or create and boot a clean one. Omit all fields for automatic reuse. Set fresh=true for a separate clean desktop, especially for parallel work, or desktopId to reclaim a known same-thread desktop after a provider or harness restart. Reclaiming never steals a desktop with another controller's active work or control lease. Describe task needs, not CPU or RAM sizes; the host manages resources automatically. preventParking=true persists across releases and restarts until the same desktop is acquired with preventParking=false, so use it only for work that must remain live while idle and clear it afterward. Retention defaults to automatic; request preserve when desktop state must remain until explicitly deleted. Retain the returned desktopId and pass it to every later Agent desktop and computer tool so parallel agents remain isolated.",
     parameters: AgentDesktopAcquireInput,
     success: AgentDesktop,
     failure: PreviewAutomationError,

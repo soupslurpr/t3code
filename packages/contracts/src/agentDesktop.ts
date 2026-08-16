@@ -45,7 +45,7 @@ export const ComputerDesktopSelector = Schema.Union([
     fresh: Schema.optional(
       Schema.Boolean.annotate({
         description:
-          "Create a clean desktop instead of reusing this controller's suitable prior desktop.",
+          "Create a clean desktop instead of reusing a suitable prior desktop from this thread.",
       }),
     ),
   }).check(
@@ -58,7 +58,7 @@ export const ComputerDesktopSelector = Schema.Union([
   ),
 ]).annotate({
   description:
-    "Desktop to use. An agent target without desktopId is acquired automatically for this controller.",
+    "Desktop to use. An agent target without desktopId prefers this controller's assignment, then a suitable idle desktop from the same thread.",
 });
 export type ComputerDesktopSelector = typeof ComputerDesktopSelector.Type;
 
@@ -83,7 +83,7 @@ export const ComputerDesktopIdentity = Schema.Struct({
 });
 export type ComputerDesktopIdentity = typeof ComputerDesktopIdentity.Type;
 
-/** Records the durable owner used to group an agent desktop in the UI. */
+/** Records the durable thread boundary and the controller currently claiming a desktop. */
 export const AgentDesktopOwner = Schema.Struct({
   environmentId: EnvironmentId,
   threadId: ThreadId,
