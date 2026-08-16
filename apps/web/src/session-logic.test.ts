@@ -3,10 +3,11 @@ import {
   EventId,
   MessageId,
   ThreadId,
+  ThreadMonitorId,
   TurnId,
   type OrchestrationThreadActivity,
 } from "@t3tools/contracts";
-import { describe, expect, it } from "vite-plus/test";
+import { assert, describe, expect, it } from "vite-plus/test";
 import { resolveWorkEntryToolPresentation } from "@t3tools/client-runtime/work-log/presentation";
 
 import {
@@ -2417,6 +2418,73 @@ describe("deriveTimelineEntries", () => {
       }),
     ]);
     expect(first.entries[0]).toMatchObject({ message: { text: "" } });
+  });
+
+  it("includes typed monitor system events in the visible timeline", () => {
+    const entries = deriveTimelineEntries(
+      [
+        {
+          id: MessageId.make("monitor-event-message"),
+          role: "system",
+          text: "Monitor triggered: Wait for the build",
+          systemEvent: {
+            type: "monitor.continuation",
+            deliveryGroupId: "delivery-group-1",
+            monitors: [
+              {
+                monitorId: ThreadMonitorId.make("monitor-1"),
+                triggeredAt: "2026-02-23T00:00:00.000Z",
+                triggerReason: "signal",
+                observation: {
+                  label: "Wait for the build",
+                  summary: "Build passed.",
+                  evidence: null,
+                },
+                continuation: { prompt: "Report the result." },
+              },
+            ],
+            observationTrust: "untrusted",
+            grantsAuthorization: false,
+          },
+          createdAt: "2026-02-23T00:00:00.000Z",
+          turnId: null,
+          updatedAt: "2026-02-23T00:00:00.000Z",
+          streaming: false,
+        },
+      ],
+      [],
+      [],
+    );
+
+    expect(entries).toMatchObject([
+      { kind: "message", message: { systemEvent: { type: "monitor.continuation" } } },
+    ]);
+    const monitorEntry = entries[0];
+    assert(monitorEntry?.kind === "message");
+    const first = deriveTimelineEntriesWithState([streamingMessage], [], []);
+    const appended = deriveTimelineEntriesWithState(
+      [streamingMessage, monitorEntry.message],
+      [],
+      [],
+      first,
+    );
+    expect(appended.entries).toHaveLength(2);
+    expect(appended.entries).toContain(first.entries[0]);
+    expect(appended.entries).toContainEqual(monitorEntry);
+
+    const streamed = deriveTimelineEntriesWithState(
+      [{ ...streamingMessage, text: "Continued work." }, monitorEntry.message],
+      [],
+      [],
+      appended,
+    );
+    expect(streamed.entries).toHaveLength(2);
+    expect(streamed.entries).toContainEqual(monitorEntry);
+    expect(streamed.entries).toContainEqual(
+      expect.objectContaining({
+        message: expect.objectContaining({ role: "assistant", text: "Continued work." }),
+      }),
+    );
   });
 
   it("includes proposed plans alongside messages and work entries in chronological order", () => {

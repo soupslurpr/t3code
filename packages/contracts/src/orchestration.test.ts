@@ -382,17 +382,60 @@ it.effect("reserves system turn messages for internal orchestration", () =>
       message: {
         messageId: "msg-system-turn",
         role: "system",
-        text: "Resume after the durable monitor triggered.",
+        text: "Monitor triggered: Wait for the build",
         attachments: [],
+        systemEvent: {
+          type: "monitor.continuation",
+          deliveryGroupId: "delivery-group-1",
+          monitors: [
+            {
+              monitorId: "monitor-1",
+              triggeredAt: "2026-01-01T00:00:00.000Z",
+              triggerReason: "signal",
+              observation: {
+                label: "Wait for the build",
+                summary: "The build completed.",
+                evidence: "exitCode=0",
+              },
+              continuation: { prompt: "Verify the artifact." },
+            },
+          ],
+          observationTrust: "untrusted",
+          grantsAuthorization: false,
+        },
       },
       createdAt: "2026-01-01T00:00:00.000Z",
     } as const;
 
     const internal = yield* decodeThreadTurnStartCommand(command);
     assert.strictEqual(internal.message.role, "system");
+    assert.strictEqual(internal.message.systemEvent?.type, "monitor.continuation");
 
     const client = yield* Effect.exit(decodeClientOrchestrationCommand(command));
     assert.strictEqual(client._tag, "Failure");
+
+    const invalidUserEvent = yield* Effect.exit(
+      decodeThreadTurnStartCommand({
+        ...command,
+        message: { ...command.message, role: "user" },
+      }),
+    );
+    assert.strictEqual(invalidUserEvent._tag, "Failure");
+
+    const invalidProjectedEvent = yield* Effect.exit(
+      decodeThreadMessageSentPayload({
+        threadId: command.threadId,
+        messageId: command.message.messageId,
+        role: "assistant",
+        text: command.message.text,
+        systemEvent: command.message.systemEvent,
+        turnId: null,
+        streaming: false,
+        createdAt: command.createdAt,
+        updatedAt: command.createdAt,
+      }),
+    );
+    assert.strictEqual(invalidProjectedEvent._tag, "Failure");
   }),
 );
 

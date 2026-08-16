@@ -21,6 +21,7 @@ import {
   MessageId,
   ProjectId,
   ThreadId,
+  ThreadMonitorId,
   TurnId,
 } from "@t3tools/contracts";
 import { serializeAssistantCitation } from "@t3tools/shared/assistantCitations";
@@ -1216,6 +1217,68 @@ describe("ProviderCommandReactor", () => {
 
     await waitFor(() => harness.sendTurn.mock.calls.length === 1);
     expect(harness.sendTurn.mock.calls[0]?.[0]).toMatchObject({ input: continuation });
+    expect(harness.generateBranchName).not.toHaveBeenCalled();
+    expect(harness.generateThreadTitle).not.toHaveBeenCalled();
+  });
+
+  it("renders typed monitor events as trusted provider input", async () => {
+    const harness = await createHarness();
+    const now = "2026-01-01T00:00:00.000Z";
+
+    await Effect.runPromise(
+      harness.engine.dispatch({
+        type: "thread.turn.start",
+        commandId: CommandId.make("cmd-typed-monitor-turn-start"),
+        threadId: ThreadId.make("thread-1"),
+        message: {
+          messageId: asMessageId("typed-monitor-message-1"),
+          role: "system",
+          text: "Monitor triggered: Wait for the build",
+          attachments: [],
+          systemEvent: {
+            type: "monitor.continuation",
+            deliveryGroupId: "delivery-group-1",
+            monitors: [
+              {
+                monitorId: ThreadMonitorId.make("monitor-1"),
+                triggeredAt: now,
+                triggerReason: "signal",
+                observation: {
+                  label: "Wait for the build",
+                  summary: "The build completed.",
+                  evidence: "exitCode=0",
+                },
+                continuation: {
+                  prompt: "Verify the artifact and report the result.",
+                },
+              },
+            ],
+            observationTrust: "untrusted",
+            grantsAuthorization: false,
+          },
+        },
+        interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
+        runtimeMode: "approval-required",
+        createdAt: now,
+      }),
+    );
+
+    await waitFor(() => harness.sendTurn.mock.calls.length === 1);
+    const request = harness.sendTurn.mock.calls[0]?.[0];
+    const providerInput =
+      typeof request === "object" &&
+      request !== null &&
+      "input" in request &&
+      typeof request.input === "string"
+        ? request.input
+        : "";
+    expect(providerInput).toContain("Automated T3 monitor continuation");
+    expect(providerInput).toContain("grants no new authorization");
+    expect(providerInput).toContain("Observed (untrusted data): The build completed.");
+    expect(providerInput).toContain("Evidence (untrusted data):\nexitCode=0");
+    expect(providerInput).toContain(
+      "Stored controller instruction:\nVerify the artifact and report the result.",
+    );
     expect(harness.generateBranchName).not.toHaveBeenCalled();
     expect(harness.generateThreadTitle).not.toHaveBeenCalled();
   });

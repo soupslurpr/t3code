@@ -1976,7 +1976,7 @@ export function deriveTimelineEntriesWithState(
   if (canAppend) {
     const messageRows = messages
       .slice(previous.messages.length)
-      .filter((message) => message.role !== "system")
+      .filter((message) => message.role !== "system" || message.systemEvent !== undefined)
       .map(timelineEntryFromMessage);
     const proposedPlanRows = proposedPlans
       .slice(previous.proposedPlans.length)
@@ -1994,7 +1994,7 @@ export function deriveTimelineEntriesWithState(
   }
 
   const messageRows = messages
-    .filter((message) => message.role !== "system")
+    .filter((message) => message.role !== "system" || message.systemEvent !== undefined)
     .map(timelineEntryFromMessage);
   const proposedPlanRows = proposedPlans.map(timelineEntryFromProposedPlan);
   const workRows = workEntries.map(timelineEntryFromWork);

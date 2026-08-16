@@ -8,6 +8,7 @@ import {
   ProjectId,
   ProviderInstanceId,
   ThreadId,
+  ThreadMonitorId,
   TurnId,
 } from "@t3tools/contracts";
 import type { OrchestrationThread } from "@t3tools/contracts";
@@ -453,6 +454,53 @@ describe("applyThreadDetailEvent", () => {
       if (result.kind === "updated") {
         expect(result.thread.messages).toHaveLength(1);
         expect(result.thread.messages[0]?.text).toBe("Hello, world!");
+      }
+    });
+
+    it("preserves typed system events received in real time", () => {
+      const systemEvent = {
+        type: "monitor.continuation" as const,
+        deliveryGroupId: "delivery-1",
+        monitors: [
+          {
+            monitorId: ThreadMonitorId.make("monitor-1"),
+            triggeredAt: "2026-04-01T06:00:00.000Z",
+            triggerReason: "deadline" as const,
+            observation: {
+              label: "Wait for the build",
+              summary: "The monitor deadline was reached.",
+              evidence: null,
+            },
+            continuation: { prompt: "Inspect the build result." },
+          },
+        ],
+        observationTrust: "untrusted" as const,
+        grantsAuthorization: false as const,
+      };
+      const result = applyThreadDetailEvent(baseThread, {
+        ...baseEventFields,
+        sequence: 7,
+        occurredAt: "2026-04-01T06:00:00.000Z",
+        aggregateKind: "thread",
+        aggregateId: ThreadId.make("thread-1"),
+        type: "thread.message-sent",
+        payload: {
+          threadId: ThreadId.make("thread-1"),
+          messageId: MessageId.make("msg-system-1"),
+          role: "system",
+          text: "Monitor triggered: Wait for the build",
+          systemEvent,
+          turnId: null,
+          streaming: false,
+          createdAt: "2026-04-01T06:00:00.000Z",
+          updatedAt: "2026-04-01T06:00:00.000Z",
+        },
+      });
+
+      expect(result.kind).toBe("updated");
+      if (result.kind === "updated") {
+        expect(result.thread.messages).toHaveLength(1);
+        expect(result.thread.messages[0]?.systemEvent).toEqual(systemEvent);
       }
     });
 

@@ -2270,7 +2270,7 @@ export function buildThreadFeed(
   const entries = Arr.sortWith(
     [
       ...messages
-        .filter((message) => message.role !== "system")
+        .filter((message) => message.role !== "system" || message.systemEvent !== undefined)
         .map((message) => {
           let entry = messageEntriesCache.get(message);
           if (!entry) {

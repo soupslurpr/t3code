@@ -18,6 +18,7 @@ import {
   ProjectId,
   ProviderItemId,
   ThreadId,
+  ThreadMonitorId,
   TrimmedNonEmptyString,
   TrimmedString,
   TurnId,
@@ -351,16 +352,89 @@ export type OrchestrationProject = typeof OrchestrationProject.Type;
 export const OrchestrationMessageRole = Schema.Literals(["user", "assistant", "system"]);
 export type OrchestrationMessageRole = typeof OrchestrationMessageRole.Type;
 
+const OrchestrationMonitorEventLabel = TrimmedNonEmptyString.check(Schema.isMaxLength(500));
+const OrchestrationMonitorEventSummary = TrimmedNonEmptyString.check(Schema.isMaxLength(2_000));
+const OrchestrationMonitorEventEvidence = Schema.String.check(Schema.isMaxLength(20_000));
+const OrchestrationMonitorEventPrompt = TrimmedNonEmptyString.check(Schema.isMaxLength(20_000));
+const OrchestrationMonitorEventGroupId = TrimmedNonEmptyString.check(Schema.isMaxLength(100));
+
+export const OrchestrationMonitorContinuationEvent = Schema.Struct({
+  type: Schema.Literal("monitor.continuation"),
+  deliveryGroupId: OrchestrationMonitorEventGroupId,
+  monitors: Schema.Array(
+    Schema.Struct({
+      monitorId: ThreadMonitorId,
+      triggeredAt: IsoDateTime,
+      triggerReason: Schema.Literals(["signal", "deadline", "condition"]),
+      observation: Schema.Struct({
+        label: OrchestrationMonitorEventLabel,
+        summary: Schema.NullOr(OrchestrationMonitorEventSummary),
+        evidence: Schema.NullOr(OrchestrationMonitorEventEvidence),
+      }),
+      continuation: Schema.Struct({
+        prompt: OrchestrationMonitorEventPrompt,
+      }),
+    }),
+  ).check(Schema.isMinLength(1), Schema.isMaxLength(100)),
+  observationTrust: Schema.Literal("untrusted"),
+  grantsAuthorization: Schema.Literal(false),
+});
+export type OrchestrationMonitorContinuationEvent =
+  typeof OrchestrationMonitorContinuationEvent.Type;
+
+export const OrchestrationMonitorReviewEvent = Schema.Struct({
+  type: Schema.Literal("monitor.review"),
+  monitorId: ThreadMonitorId,
+  revision: NonNegativeInt,
+  requestedAt: IsoDateTime,
+  reason: Schema.String.check(Schema.isMaxLength(1_000)),
+  metrics: Schema.Struct({
+    evaluationCount: NonNegativeInt,
+    uncertainEvaluationCount: NonNegativeInt,
+    consecutiveFailures: NonNegativeInt,
+    regions: Schema.Array(
+      Schema.Struct({
+        id: TrimmedNonEmptyString.check(Schema.isMaxLength(100)),
+        role: Schema.Literals(["trigger", "context"]),
+        sampleCount: NonNegativeInt,
+        changedSampleCount: NonNegativeInt,
+        unchangedSampleCount: NonNegativeInt,
+      }),
+    ).check(Schema.isMinLength(1), Schema.isMaxLength(8)),
+  }),
+  observation: Schema.Struct({
+    label: OrchestrationMonitorEventLabel,
+    error: Schema.NullOr(Schema.String.check(Schema.isMaxLength(2_000))),
+  }),
+  observationTrust: Schema.Literal("untrusted"),
+  grantsAuthorization: Schema.Literal(false),
+});
+export type OrchestrationMonitorReviewEvent = typeof OrchestrationMonitorReviewEvent.Type;
+
+export const OrchestrationSystemEvent = Schema.Union([
+  OrchestrationMonitorContinuationEvent,
+  OrchestrationMonitorReviewEvent,
+]);
+export type OrchestrationSystemEvent = typeof OrchestrationSystemEvent.Type;
+
 export const OrchestrationMessage = Schema.Struct({
   id: MessageId,
   role: OrchestrationMessageRole,
   text: Schema.String,
   attachments: Schema.optional(Schema.Array(ChatAttachment)),
+  systemEvent: Schema.optional(OrchestrationSystemEvent),
   turnId: Schema.NullOr(TurnId),
   streaming: Schema.Boolean,
   createdAt: IsoDateTime,
   updatedAt: IsoDateTime,
-});
+}).check(
+  Schema.makeFilter(
+    (message) =>
+      message.systemEvent === undefined ||
+      message.role === "system" ||
+      "systemEvent is only valid on a system-role message.",
+  ),
+);
 export type OrchestrationMessage = typeof OrchestrationMessage.Type;
 
 export const OrchestrationProposedPlanId = TrimmedNonEmptyString;
@@ -965,6 +1039,7 @@ export const ThreadTurnStartCommand = Schema.Struct({
     role: Schema.Literals(["user", "system"]),
     text: Schema.String,
     attachments: Schema.Array(ChatAttachment),
+    systemEvent: Schema.optional(OrchestrationSystemEvent),
   }),
   modelSelection: Schema.optional(ModelSelection),
   titleSeed: Schema.optional(TrimmedNonEmptyString),
@@ -975,7 +1050,14 @@ export const ThreadTurnStartCommand = Schema.Struct({
   bootstrap: Schema.optional(ThreadTurnStartBootstrap),
   sourceProposedPlan: Schema.optional(SourceProposedPlanReference),
   createdAt: IsoDateTime,
-});
+}).check(
+  Schema.makeFilter(
+    (command) =>
+      command.message.systemEvent === undefined ||
+      command.message.role === "system" ||
+      "message.systemEvent is only valid on a system-role message.",
+  ),
+);
 
 const ClientThreadTurnStartCommand = Schema.Struct({
   type: Schema.Literal("thread.turn.start"),
@@ -1392,11 +1474,19 @@ export const ThreadMessageSentPayload = Schema.Struct({
   role: OrchestrationMessageRole,
   text: Schema.String,
   attachments: Schema.optional(Schema.Array(ChatAttachment)),
+  systemEvent: Schema.optional(OrchestrationSystemEvent),
   turnId: Schema.NullOr(TurnId),
   streaming: Schema.Boolean,
   createdAt: IsoDateTime,
   updatedAt: IsoDateTime,
-});
+}).check(
+  Schema.makeFilter(
+    (payload) =>
+      payload.systemEvent === undefined ||
+      payload.role === "system" ||
+      "systemEvent is only valid on a system-role message.",
+  ),
+);
 
 export const ThreadTurnStartRequestedPayload = Schema.Struct({
   threadId: ThreadId,
