@@ -300,6 +300,89 @@ describe("computer automation contracts", () => {
     ).toThrow();
   });
 
+  it("accepts bounded same-capture detail screenshots", () => {
+    expect(
+      decodeSnapshotInput({
+        includeAccessibility: false,
+        screenshot: false,
+        detailScreenshots: [
+          {
+            id: "composer",
+            purpose: "Read the drafted message.",
+            region: {
+              coordinateSpace: "desktop-logical",
+              displayId: "42",
+              x: 100,
+              y: 200,
+              width: 400,
+              height: 120,
+            },
+            maxWidth: 800,
+            encoding: { format: "webp", mode: "lossless" },
+          },
+        ],
+      }),
+    ).toMatchObject({
+      screenshot: false,
+      detailScreenshots: [{ id: "composer", maxWidth: 800 }],
+    });
+    expect(() =>
+      decodeSnapshotInput({
+        detailScreenshots: [{ id: "duplicate" }, { id: "duplicate" }],
+      }),
+    ).toThrow();
+    expect(() =>
+      decodeSnapshotInput({
+        displayId: "42",
+        detailScreenshots: [
+          {
+            id: "detail",
+            region: { frameId: "frame-1", x: 0, y: 0, width: 10, height: 10 },
+          },
+        ],
+      }),
+    ).toThrow();
+
+    expect(
+      decodeSnapshot({
+        display: {
+          id: "42",
+          label: "Main display",
+          primary: true,
+          bounds: { x: 0, y: 0, width: 800, height: 600 },
+          scaleFactor: 1,
+        },
+        cursor: null,
+        captureSource: "remote-desktop-stream",
+        detailScreenshots: [
+          {
+            id: "composer",
+            purpose: "Read the drafted message.",
+            frame: {
+              id: "frame-2",
+              displayId: "42",
+              coordinateSpace: "image-pixels",
+              width: 400,
+              height: 120,
+              toDesktopLogical: { scaleX: 1, scaleY: 1, offsetX: 100, offsetY: 200 },
+            },
+            pointer: null,
+            screenshot: {
+              state: "image",
+              contentHash,
+              mimeType: "image/webp",
+              data: "UklGRg==",
+              width: 400,
+              height: 120,
+              sizeBytes: 4,
+              encoding: { format: "webp", mode: "lossless" },
+            },
+          },
+        ],
+      }).detailScreenshots,
+    ).toMatchObject([{ id: "composer", frame: { id: "frame-2" } }]);
+  });
+
   it("represents an unsupported host without inventing a backend", () => {
     expect(
       decodeStatus({
