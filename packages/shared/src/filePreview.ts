@@ -113,6 +113,8 @@ const AUDIO_MIME_TYPE_BY_EXTENSION = new Map([
   [".aiff", "audio/aiff"],
 ]);
 
+export const WORKSPACE_AUDIO_PREVIEW_EXTENSIONS = [...AUDIO_MIME_TYPE_BY_EXTENSION.keys()];
+
 /** Audio a player can request inline; the server serves these with byte ranges like video. */
 export function audioMimeTypeFromExtension(extension: string): string | null {
   if (!/^\.[a-z0-9]+$/i.test(extension)) return null;
@@ -179,6 +181,10 @@ export function isWorkspaceBrowserPreviewPath(path: string): boolean {
   return hasPreviewExtension(path, WORKSPACE_BROWSER_PREVIEW_EXTENSIONS);
 }
 
+export function isWorkspaceAudioPreviewPath(path: string): boolean {
+  return hasPreviewExtension(path, WORKSPACE_AUDIO_PREVIEW_EXTENSIONS);
+}
+
 export function isWorkspaceImagePreviewPath(path: string): boolean {
   return hasPreviewExtension(path, WORKSPACE_IMAGE_PREVIEW_EXTENSIONS);
 }
@@ -188,11 +194,10 @@ export function isWorkspaceVideoPreviewPath(path: string): boolean {
   return videoMimeType({ name: path, mimeType: "" }) !== null;
 }
 
-export function isWorkspaceAudioPreviewPath(path: string): boolean {
-  const extensionIndex = path.lastIndexOf(".");
-  return extensionIndex >= 0 && audioMimeTypeFromExtension(path.slice(extensionIndex)) !== null;
-}
-
 export function isWorkspacePreviewEntryPath(path: string): boolean {
-  return isWorkspaceBrowserPreviewPath(path) || isWorkspaceImagePreviewPath(path);
+  return (
+    isWorkspaceAudioPreviewPath(path) ||
+    isWorkspaceBrowserPreviewPath(path) ||
+    isWorkspaceImagePreviewPath(path)
+  );
 }

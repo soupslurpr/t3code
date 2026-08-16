@@ -37,7 +37,14 @@ interface MarkdownPreviewStyles {
   readonly nativeTextStyle: NativeMarkdownTextStyle;
 }
 
-function useMarkdownPreviewStyles(renderImage?: MarkdownImageRenderer): MarkdownPreviewStyles {
+function openMarkdownLink(href: string) {
+  void tryOpenExternalUrl(href, "markdown-link");
+}
+
+export function useMarkdownPreviewStyles(
+  renderImage?: MarkdownImageRenderer,
+  onLinkPress: (href: string) => void = openMarkdownLink,
+): MarkdownPreviewStyles {
   const { appearance } = useAppearancePreferences();
   const markdownFontSizes = useMemo(
     () => resolveMarkdownFontSizes(appearance.baseFontSize),
@@ -67,7 +74,7 @@ function useMarkdownPreviewStyles(renderImage?: MarkdownImageRenderer): Markdown
           className="font-t3-medium"
           onPress={() => {
             if (href) {
-              void tryOpenExternalUrl(href, "markdown-link");
+              onLinkPress(href);
             }
           }}
           style={{
@@ -182,6 +189,7 @@ function useMarkdownPreviewStyles(renderImage?: MarkdownImageRenderer): Markdown
     markdownFontSizes,
     mediumFontFamily,
     nativeMarkdownTypography,
+    onLinkPress,
     regularFontFamily,
     renderImage,
     strong,
