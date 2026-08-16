@@ -175,7 +175,11 @@ export const assetFileResponse = Effect.fn("assetFileResponse")(function* (
   const headers = assetResponseHeaders(asset.path, asset);
   const mediaFile = asset.file;
   const mediaInfo = mediaFile ? yield* statMediaFile(asset.path, mediaFile) : undefined;
-  const isMedia = /^(?:audio|video)\//i.test(headers["Content-Type"] ?? "");
+  const isMedia = /^(?:audio|video)\//i.test(
+    headers["Content-Type"] ??
+      asset.mimeType ??
+      Option.getOrElse(Mime.getType(asset.path), () => ""),
+  );
   if (isMedia) {
     // Host media can change in place. Do not invite conditional range requests
     // with validators that cannot establish byte-for-byte identity. Attachment media

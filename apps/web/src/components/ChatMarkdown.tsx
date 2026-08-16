@@ -2209,7 +2209,7 @@ const MarkdownFileLink = memo(function MarkdownFileLink({
       />
       <TooltipPopup
         side="top"
-        className="max-w-[min(40rem,calc(100vw-2rem))] font-mono text-[11px] leading-tight"
+        className="max-w-[min(40rem,calc(100vw-2rem))] select-text font-mono text-[11px] leading-tight"
       >
         {/* The full path: the chip already shows the shortened form, and a link
             to the workspace root collapses to a bare label that repeats it. */}
@@ -2576,6 +2576,7 @@ function useChatMarkdownState({
       copyMarkdown: string,
       className?: string,
       mediaSource?: string,
+      linkLabel?: string,
     ) => {
       const parentSuffix = fileLinkParentSuffixByPath.get(
         fileLinkMeta.filePath.replaceAll("\\", "/"),
@@ -2608,7 +2609,9 @@ function useChatMarkdownState({
           displayPath={fileLinkMeta.displayPath}
           panelPath={panelPath}
           line={fileLinkMeta.line}
-          label={labelParts.join(" · ")}
+          label={
+            linkLabel && linkLabel !== fileLinkMeta.basename ? linkLabel : labelParts.join(" · ")
+          }
           copyMarkdown={copyMarkdown}
           theme={resolvedTheme}
           threadRef={threadRef}
@@ -3087,11 +3090,14 @@ const CHAT_MARKDOWN_COMPONENTS = {
       );
     }
 
+    const label = nodeToPlainText(children).trim() || fileLinkMeta.basename;
+    const copyLabel = label.replace(/[\\`*_[\]<>]/g, "\\$&");
     return fileLinkChip(
       fileLinkMeta,
-      `[${fileLinkMeta.basename}](${normalizedHref})`,
+      `[${copyLabel}](${normalizedHref})`,
       props.className,
       normalizedHref,
+      label,
     );
   },
   code: function MarkdownCode({ node, children, className, ...props }) {

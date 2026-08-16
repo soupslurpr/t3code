@@ -475,6 +475,51 @@ describe("ChatMarkdown skill chips", () => {
 });
 
 describe("ChatMarkdown file option chips", () => {
+  it.each([true, false])(
+    "preserves descriptive file labels through rendering and updates with parseRawHtml=%s",
+    async (parseRawHtml) => {
+      vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
+      let renderer: ReactTestRenderer | undefined;
+      const render = (text: string) => (
+        <ChatMarkdown cwd="/tmp/project" text={text} parseRawHtml={parseRawHtml} />
+      );
+      const labels = () =>
+        renderer!.root
+          .findAllByType("span")
+          .flatMap((node) => node.children.filter((child) => typeof child === "string"));
+      try {
+        await act(async () => {
+          renderer = create(
+            render(
+              "Does this improve naturalness? [Own history](/tmp/project/seed-1-own-panel.wav) · " +
+                "[**Recording-derived** history](/tmp/project/seed-1-source-sampled-panel.wav) · " +
+                "[Reconstruction reference][reference].\n\n" +
+                "[reference]: /tmp/project/seed-1-source-assisted-panel.wav",
+            ),
+          );
+        });
+        expect(labels()).toEqual([
+          "Own history",
+          "Recording-derived history",
+          "Reconstruction reference",
+        ]);
+
+        await act(async () => {
+          renderer!.update(render("[Renamed sample](/tmp/project/seed-1-own-panel.wav)"));
+        });
+        expect(labels()).toEqual(["Renamed sample"]);
+
+        await act(async () => {
+          renderer!.update(render("[\\[Original\\] sample](/tmp/project/sample.wav)"));
+        });
+        expect(labels()).toEqual(["[Original] sample"]);
+      } finally {
+        await act(async () => renderer?.unmount());
+        vi.unstubAllGlobals();
+      }
+    },
+  );
+
   it("keeps the fallback button text selectable", () => {
     const html = renderToStaticMarkup(
       <ChatMarkdown cwd="/tmp/project" text="[Source](/tmp/project/src/main.ts)" />,
@@ -799,7 +844,7 @@ describe("ChatMarkdown Windows file links", () => {
         <ChatMarkdown
           cwd="C:/Users/shawn/project"
           environmentId={environmentId}
-          text={String.raw`[Source](C:\Users\shawn\project\src\index.ts) and [Test](C:\Users\shawn\project\test\index.ts)`}
+          text={String.raw`[index.ts](C:\Users\shawn\project\src\index.ts) and [index.ts](C:\Users\shawn\project\test\index.ts)`}
           lineBreaks={!parseRawHtml}
           parseRawHtml={parseRawHtml}
         />,

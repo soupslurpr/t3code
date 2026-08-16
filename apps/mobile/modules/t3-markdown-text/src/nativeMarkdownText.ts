@@ -121,6 +121,7 @@ export function nativeMarkdownContextCopyRanges(
     return source === null ? [] : [{ start, end: offset, text: source }];
   });
 }
+import { fileBasename } from "@t3tools/client-runtime/markdown-links";
 
 import type { SelectableMarkdownSkill } from "./SelectableMarkdownText.types";
 import {
@@ -480,11 +481,16 @@ function appendNode(
       }
       const presentation = resolveMarkdownLinkPresentation(node.href ?? "");
       if (presentation.kind === "file") {
-        return appendRun(runs, presentation.label, {
-          ...context,
-          href: presentation.href,
-          fileIcon: presentation.icon,
-        });
+        const label = textNodeContent(nodeTextContent(node)).trim();
+        return appendRun(
+          runs,
+          label && label !== fileBasename(presentation.path) ? label : presentation.label,
+          {
+            ...context,
+            href: presentation.href,
+            fileIcon: presentation.icon,
+          },
+        );
       }
       if (presentation.kind === "external") {
         return appendChildren(runs, node, {

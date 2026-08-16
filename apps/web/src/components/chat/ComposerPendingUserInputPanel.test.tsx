@@ -1,9 +1,13 @@
-import { ApprovalRequestId } from "@t3tools/contracts";
+import { ApprovalRequestId, EnvironmentId, ThreadId } from "@t3tools/contracts";
 import { renderToStaticMarkup } from "react-dom/server";
-import { describe, expect, it } from "vite-plus/test";
+import { describe, expect, it, vi } from "vite-plus/test";
 
 import { ComposerPendingUserInputPanel } from "./ComposerPendingUserInputPanel";
 import type { PendingUserInput } from "../../session-logic";
+
+vi.mock("../ChatMarkdown", () => ({
+  default: ({ text }: { text: string }) => <p>{text}</p>,
+}));
 
 const prompt: PendingUserInput = {
   requestId: ApprovalRequestId.make("request-1"),
@@ -26,6 +30,11 @@ const prompt: PendingUserInput = {
 function renderPanel(pendingUserInput: PendingUserInput = prompt) {
   return renderToStaticMarkup(
     <ComposerPendingUserInputPanel
+      threadRef={{
+        environmentId: EnvironmentId.make("environment-1"),
+        threadId: ThreadId.make("thread-1"),
+      }}
+      cwd="/tmp/project"
       pendingUserInputs={[pendingUserInput]}
       respondingRequestIds={[]}
       answers={{}}
