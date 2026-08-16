@@ -24,6 +24,7 @@ const MAX_FAILURE_BACKEND_CODE_LENGTH = 128;
 const MAX_FAILURE_DETAIL_LENGTH = 2_000;
 const MAX_OBSERVATION_DELAY_MS = 5_000;
 const MAX_SCREENSHOT_DIMENSION = 4_096;
+const MAX_DETAIL_SCREENSHOTS = 8;
 const MIN_WEBP_QUALITY = 1;
 const MAX_WEBP_QUALITY = 100;
 const MAX_TEMPORAL_SEQUENCE_FRAMES = 24;
@@ -460,6 +461,21 @@ export const ComputerAutomationScreenshotOptions = Schema.Struct({
 });
 export type ComputerAutomationScreenshotOptions = typeof ComputerAutomationScreenshotOptions.Type;
 
+export const ComputerAutomationDetailScreenshotOptions = Schema.Struct({
+  id: TrimmedNonEmptyString.check(Schema.isMaxLength(128)).annotate({
+    description: "Stable caller-chosen identifier for this detail within the observation.",
+  }),
+  purpose: Schema.optional(Schema.String.check(Schema.isMaxLength(512))).annotate({
+    description: "Concise reason this detail is useful to the observing agent.",
+  }),
+  ...ComputerAutomationScreenshotOptions.fields,
+}).annotate({
+  description:
+    "A named detail image derived from the same native display capture as the primary screenshot.",
+});
+export type ComputerAutomationDetailScreenshotOptions =
+  typeof ComputerAutomationDetailScreenshotOptions.Type;
+
 export const ComputerAutomationObservationOptions = Schema.Struct({
   displayId: Schema.optional(
     ComputerAutomationDisplayId.annotate({
@@ -478,6 +494,14 @@ export const ComputerAutomationObservationOptions = Schema.Struct({
         "Screenshot options. Defaults to a full-display image; false returns semantic targets only. Frame-relative regions are convenient for immediate actions, while desktop-logical regions remain valid for durable monitoring.",
     }),
   ),
+  detailScreenshots: Schema.optional(
+    Schema.Array(ComputerAutomationDetailScreenshotOptions)
+      .check(Schema.isMinLength(1), Schema.isMaxLength(MAX_DETAIL_SCREENSHOTS))
+      .annotate({
+        description:
+          "One through eight named detail images derived from the same native display capture. Each detail controls its own region, resolution, encoding, and unchanged-content comparison.",
+      }),
+  ),
   delayMs: Schema.optional(
     Schema.Int.check(Schema.isBetween({ minimum: 0, maximum: MAX_OBSERVATION_DELAY_MS })).annotate({
       description: "Delay before capture in milliseconds. Defaults to 250 after an action.",
@@ -489,22 +513,28 @@ export const ComputerAutomationObservationOptions = Schema.Struct({
       (input) =>
         input.includeAccessibility !== false ||
         input.screenshot !== false ||
-        "Include accessibility targets, a screenshot, or both.",
+        input.detailScreenshots !== undefined ||
+        "Include accessibility targets, a primary screenshot, detail screenshots, or a combination.",
     ),
     Schema.makeFilter((input) => {
-      const screenshot = input.screenshot;
+      const screenshots = [
+        ...(input.screenshot === undefined || input.screenshot === false ? [] : [input.screenshot]),
+        ...(input.detailScreenshots ?? []),
+      ];
       return (
-        screenshot === undefined ||
-        screenshot === false ||
-        screenshot.region === undefined ||
+        screenshots.every((screenshot) => screenshot.region === undefined) ||
         input.displayId === undefined ||
-        "Omit displayId when screenshot.region selects its source display or frame."
+        "Omit displayId when any screenshot region selects its source display or frame."
       );
+    }),
+    Schema.makeFilter((input) => {
+      const ids = input.detailScreenshots?.map((detail) => detail.id) ?? [];
+      return new Set(ids).size === ids.length || "Detail screenshot ids must be unique.";
     }),
   )
   .annotate({
     description:
-      "Configures one bounded desktop observation with semantic targets and, by default, a lossless WebP image.",
+      "Configures one bounded desktop observation with semantic targets and one or more images derived from a single native capture. The primary screenshot defaults to lossless WebP.",
   });
 export type ComputerAutomationObservationOptions = typeof ComputerAutomationObservationOptions.Type;
 
@@ -614,17 +644,23 @@ export const ComputerAutomationSnapshotInput = Schema.Struct({
       (input) =>
         input.includeAccessibility !== false ||
         input.screenshot !== false ||
-        "Include accessibility targets, a screenshot, or both.",
+        input.detailScreenshots !== undefined ||
+        "Include accessibility targets, a primary screenshot, detail screenshots, or a combination.",
     ),
     Schema.makeFilter((input) => {
-      const screenshot = input.screenshot;
+      const screenshots = [
+        ...(input.screenshot === undefined || input.screenshot === false ? [] : [input.screenshot]),
+        ...(input.detailScreenshots ?? []),
+      ];
       return (
-        screenshot === undefined ||
-        screenshot === false ||
-        screenshot.region === undefined ||
+        screenshots.every((screenshot) => screenshot.region === undefined) ||
         input.displayId === undefined ||
-        "Omit displayId when screenshot.region selects its source display or frame."
+        "Omit displayId when any screenshot region selects its source display or frame."
       );
+    }),
+    Schema.makeFilter((input) => {
+      const ids = input.detailScreenshots?.map((detail) => detail.id) ?? [];
+      return new Set(ids).size === ids.length || "Detail screenshot ids must be unique.";
     }),
   )
   .annotate({
@@ -676,6 +712,35 @@ export const ComputerAutomationPointer = Schema.Struct({
 });
 export type ComputerAutomationPointer = typeof ComputerAutomationPointer.Type;
 
+export const ComputerAutomationScreenshot = Schema.Union([
+  Schema.Struct({
+    state: Schema.Literal("image"),
+    contentHash: ComputerAutomationContentHash,
+    mimeType: ComputerAutomationScreenshotMimeType,
+    data: Schema.String.annotate({ description: "Base64-encoded compressed image bytes." }),
+    width: Schema.Int.check(Schema.isGreaterThan(0)),
+    height: Schema.Int.check(Schema.isGreaterThan(0)),
+    sizeBytes: Schema.Int.check(Schema.isGreaterThan(0)),
+    encoding: ComputerAutomationScreenshotEncoding,
+  }),
+  Schema.Struct({
+    state: Schema.Literal("unchanged"),
+    contentHash: ComputerAutomationContentHash,
+    width: Schema.Int.check(Schema.isGreaterThan(0)),
+    height: Schema.Int.check(Schema.isGreaterThan(0)),
+  }),
+]);
+export type ComputerAutomationScreenshot = typeof ComputerAutomationScreenshot.Type;
+
+export const ComputerAutomationDetailScreenshot = Schema.Struct({
+  id: TrimmedNonEmptyString.check(Schema.isMaxLength(128)),
+  purpose: Schema.optional(Schema.String.check(Schema.isMaxLength(512))),
+  frame: ComputerAutomationFrame,
+  pointer: Schema.NullOr(ComputerAutomationPointer),
+  screenshot: ComputerAutomationScreenshot,
+});
+export type ComputerAutomationDetailScreenshot = typeof ComputerAutomationDetailScreenshot.Type;
+
 export const ComputerAutomationSnapshot = Schema.Struct({
   display: ComputerAutomationDisplay,
   cursor: Schema.NullOr(ComputerAutomationPoint),
@@ -689,25 +754,11 @@ export const ComputerAutomationSnapshot = Schema.Struct({
   ]).annotate({
     description: "Desktop display source used for the captured frame.",
   }),
-  screenshot: Schema.optional(
-    Schema.Union([
-      Schema.Struct({
-        state: Schema.Literal("image"),
-        contentHash: ComputerAutomationContentHash,
-        mimeType: ComputerAutomationScreenshotMimeType,
-        data: Schema.String.annotate({ description: "Base64-encoded compressed image bytes." }),
-        width: Schema.Int.check(Schema.isGreaterThan(0)),
-        height: Schema.Int.check(Schema.isGreaterThan(0)),
-        sizeBytes: Schema.Int.check(Schema.isGreaterThan(0)),
-        encoding: ComputerAutomationScreenshotEncoding,
-      }),
-      Schema.Struct({
-        state: Schema.Literal("unchanged"),
-        contentHash: ComputerAutomationContentHash,
-        width: Schema.Int.check(Schema.isGreaterThan(0)),
-        height: Schema.Int.check(Schema.isGreaterThan(0)),
-      }),
-    ]),
+  screenshot: Schema.optional(ComputerAutomationScreenshot),
+  detailScreenshots: Schema.optional(
+    Schema.Array(ComputerAutomationDetailScreenshot).check(
+      Schema.isMaxLength(MAX_DETAIL_SCREENSHOTS),
+    ),
   ),
 });
 export type ComputerAutomationSnapshot = typeof ComputerAutomationSnapshot.Type;

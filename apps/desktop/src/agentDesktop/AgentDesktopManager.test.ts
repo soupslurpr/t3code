@@ -123,8 +123,9 @@ const makeQemu = (
       checkpoint: (id, saveMemoryState) =>
         record(`checkpoint:${id}:${saveMemoryState ? "memory" : "disk"}`),
       remove: (id) => record(`remove:${id}`),
-      capture: () =>
-        Ref.get(captureEnabled).pipe(
+      capture: (id) =>
+        record(`capture:${id}`).pipe(
+          Effect.andThen(Ref.get(captureEnabled)),
           Effect.flatMap((enabled) =>
             enabled
               ? Effect.succeed({
@@ -681,6 +682,87 @@ describe("AgentDesktopManager", () => {
         if (pngSnapshot.screenshot?.state !== "image") return;
         assert.equal(pngSnapshot.screenshot.mimeType, "image/png");
         assert.deepEqual(pngSnapshot.screenshot.encoding, { format: "png" });
+      }).pipe(Effect.provide(harness.layer));
+    }),
+  );
+
+  it.effect("derives Agent desktop detail frames from one virtual capture", () =>
+    Effect.gen(function* () {
+      const harness = yield* managerHarness("detail-capture", { captureAvailable: true });
+      yield* Effect.gen(function* () {
+        const manager = yield* AgentDesktopManager.AgentDesktopManager;
+        const desktop = yield* manager.acquire(owner, { label: "Detail capture" });
+        yield* manager.requestView(owner, { kind: "agent", desktopId: desktop.id });
+
+        const callsBefore = (yield* Ref.get(harness.calls)).length;
+        const snapshot = yield* manager.snapshot(
+          owner.controllerId,
+          {
+            includeAccessibility: false,
+            screenshot: false,
+            detailScreenshots: [
+              {
+                id: "upper-left",
+                region: {
+                  coordinateSpace: "desktop-logical",
+                  displayId: "display-0",
+                  x: 0,
+                  y: 0,
+                  width: 50,
+                  height: 50,
+                },
+              },
+              {
+                id: "lower-right",
+                purpose: "Inspect the changing value.",
+                region: {
+                  coordinateSpace: "desktop-logical",
+                  displayId: "display-0",
+                  x: 50,
+                  y: 50,
+                  width: 50,
+                  height: 50,
+                },
+              },
+            ],
+          },
+          desktop.id,
+        );
+
+        const snapshotCalls = (yield* Ref.get(harness.calls))
+          .slice(callsBefore)
+          .filter((call) => call.startsWith("capture:"));
+        assert.deepEqual(snapshotCalls, [`capture:${desktop.id}`]);
+        assert.isUndefined(snapshot.frame);
+        assert.deepEqual(
+          snapshot.detailScreenshots?.map(({ id, purpose, frame }) => ({ id, purpose, frame })),
+          [
+            {
+              id: "upper-left",
+              purpose: undefined,
+              frame: {
+                id: "agent-frame-1",
+                displayId: "display-0",
+                coordinateSpace: "image-pixels",
+                width: 100,
+                height: 100,
+                toDesktopLogical: { scaleX: 0.5, scaleY: 0.5, offsetX: 0, offsetY: 0 },
+              },
+            },
+            {
+              id: "lower-right",
+              purpose: "Inspect the changing value.",
+              frame: {
+                id: "agent-frame-2",
+                displayId: "display-0",
+                coordinateSpace: "image-pixels",
+                width: 100,
+                height: 100,
+                toDesktopLogical: { scaleX: 0.5, scaleY: 0.5, offsetX: 50, offsetY: 50 },
+              },
+            },
+          ],
+        );
       }).pipe(Effect.provide(harness.layer));
     }),
   );

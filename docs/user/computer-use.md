@@ -95,6 +95,13 @@ inspects its observation first. A standalone snapshot remains available for insp
 or recovery after a failed follow-up capture. Typing can pause briefly and submit with Enter in the
 same action.
 
+One observation can return a primary overview plus up to eight named detail images. T3 Code reads the
+native display once, then derives every crop, resolution, encoding, fingerprint, and actionable frame
+from those exact pixels. The primary image can be omitted when only details are useful. This lets an
+agent inspect several related areas without paying for repeated native captures or risking that the
+screen changes between an overview and its details. All images in one observation select the same
+display.
+
 For motion and transient UI, an agent can request a bounded sequence of timestamped screenshots with
 its own crop, resolution, encoding, frame count, and interval. It can also capture the sequence before,
 during, or after an action batch so the starting state and resulting transition remain visible. These
@@ -174,8 +181,8 @@ The desktop host exposes tools for:
 - checking support, active permission, remembered access, and displays
 - requesting view-only access early without requesting input
 - requesting combined screen-and-input access early without sending input
-- capturing one display or a focused region with selectable image resolution and best-effort
-  semantic targets and top-level windows
+- capturing one display as an overview, named same-frame details, or a focused region with selectable
+  image resolution and best-effort semantic targets and top-level windows
 - capturing a bounded, ephemeral sequence of timestamped screen frames for motion or transient UI
 - running bounded action batches that can move, click, drag, emit discrete wheel ticks, type, press
   hotkeys or hold keys, wait for a duration or a visual change, and activate a current semantic
