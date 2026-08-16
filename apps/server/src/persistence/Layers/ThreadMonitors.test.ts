@@ -83,7 +83,12 @@ function monitor(revision: number): ThreadMonitor {
       lastVerdict: null,
       lastSummary: null,
       lastUsage: null,
-      totalUsage: { inputTokens: null, cachedInputTokens: null, outputTokens: null },
+      totalUsage: {
+        inputTokens: null,
+        cachedInputTokens: null,
+        cacheWriteInputTokens: null,
+        outputTokens: null,
+      },
       sampleCount: 0,
       evaluationCount: 0,
       uncertainEvaluationCount: 0,
