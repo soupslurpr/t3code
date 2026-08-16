@@ -116,6 +116,7 @@ function evaluatorInstance(
       generateBranchName: () => Effect.die("unused"),
       generateThreadTitle: () => Effect.die("unused"),
       evaluateImageCondition,
+      imageConditionTokenUsage: "exact",
     }),
   };
 }
@@ -217,6 +218,10 @@ describe("ThreadMonitorComputer", () => {
         ),
       );
       const service = yield* ThreadMonitorComputer.make.pipe(Effect.provide(dependencies));
+      const capabilities = yield* service.capabilities;
+      expect(capabilities.evaluators).toEqual([
+        expect.objectContaining({ instanceId, tokenUsage: "exact" }),
+      ]);
       const prepared = yield* service.prepare({
         monitorId: ThreadMonitorId.make("computer-watch-test"),
         threadId,
