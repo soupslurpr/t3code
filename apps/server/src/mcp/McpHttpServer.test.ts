@@ -140,7 +140,12 @@ const MonitorTestLayer = Layer.succeed(
             lastVerdict: null,
             lastSummary: null,
             lastUsage: null,
-            totalUsage: { inputTokens: null, cachedInputTokens: null, outputTokens: null },
+            totalUsage: {
+              inputTokens: null,
+              cachedInputTokens: null,
+              cacheWriteInputTokens: null,
+              outputTokens: null,
+            },
             sampleCount: 0,
             evaluationCount: 0,
             uncertainEvaluationCount: 0,
