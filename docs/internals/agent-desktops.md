@@ -8,12 +8,15 @@ observation and action contract; only desktop selection and lifecycle ownership 
 
 The MCP toolkit sends Agent desktop operations through the existing preview-automation broker to the
 desktop client attached to that environment. The desktop process owns the hypervisor and persists a
-versioned inventory below its Agent desktop state directory. A desktop owner is the tuple of
-environment, thread, and controller identifiers. Every lifecycle, guest, and computer-use request
-checks that tuple before acting.
+versioned inventory below its Agent desktop state directory. Environment and thread identifiers form
+the durable authorization boundary. The persisted owner also records the controller currently
+claiming each desktop. A replacement controller in the same thread can atomically reclaim an idle
+desktop after a provider or harness restart, while active operations and control leases prevent a
+takeover. Cross-thread access still requires an explicit handoff.
 
 Computer requests select either the user desktop or an Agent desktop. Omitting an Agent desktop id
-lets the manager reuse the controller's suitable assignment or acquire a new machine. The computer
+lets the manager prefer the controller's suitable assignment, reclaim the most recent suitable idle
+desktop from the same thread, or acquire a new machine. The computer
 router keeps the two backends behind one current request shape; there is no legacy host-only IPC
 request path.
 
