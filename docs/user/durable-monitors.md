@@ -21,6 +21,12 @@ thread at delivery time. If another turn, approval, or user-input request is
 active, the continuation waits until the thread is available. An agent can
 also record a result without starting another turn.
 
+An automated continuation appears as a compact **Monitor triggered** or
+**Monitor review** event rather than as a message from you. Expanding the event
+shows its trigger, observation, evidence, and stored continuation instruction.
+T3 Code marks observational content as untrusted and records that the event
+does not grant fresh authorization.
+
 Waits survive a T3 server restart. T3 Code does not run timers in a hosted
 service while the environment is offline; an overdue wait is reconciled the
 next time that server starts. Deleting a thread cancels its outstanding waits.
@@ -51,7 +57,7 @@ creating synthetic keepalive turns or hidden conversation messages.
 
 Ordinary screen samples are discarded after comparison. T3 Code stores hashes
 and bounded status details with the monitor, can optionally retain the initial
-PNG for visual comparison, and retains the terminal matching PNG for audit.
+image for visual comparison, and retains the terminal matching image for audit.
 Those images live in the environment's local T3 data until the owning thread is
 deleted. Cancelling, matching, reaching a deadline, or deleting the thread
 releases the watch's view lease. A temporary capture or evaluator failure is
