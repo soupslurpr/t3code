@@ -36,6 +36,7 @@ import {
 import { type ChatMessage, type ProposedPlan, type TurnDiffSummary } from "../../types";
 import {
   type MessageId,
+  type OrchestrationSystemEvent,
   type WorktreeSetupSnapshot,
   type OrchestrationV2ProjectedTurnItem,
   type RunAttemptId,
@@ -308,6 +309,27 @@ export function resolveTimelineIsAtEnd(state: TimelineEndState | undefined): boo
 
 export function shouldPreserveAssistantLineBreaks(text: string): boolean {
   return /^★ Insight(?:\s|─)/mu.test(text);
+}
+
+/** Returns the compact heading shown for one typed monitor system event. */
+export function resolveMonitorSystemEventPresentation(event: OrchestrationSystemEvent): {
+  readonly title: string;
+  readonly summary: string;
+} {
+  if (event.type === "monitor.review") {
+    return { title: "Monitor review", summary: event.reason };
+  }
+  if (event.monitors.length === 1) {
+    const monitor = event.monitors[0]!;
+    return {
+      title: "Monitor triggered",
+      summary: monitor.observation.summary ?? monitor.observation.label,
+    };
+  }
+  return {
+    title: `${event.monitors.length} monitors triggered`,
+    summary: event.monitors.map((monitor) => monitor.observation.label).join(" · "),
+  };
 }
 
 export function resolveTimelineMinimapHeightStyle(itemCount: number): string {
