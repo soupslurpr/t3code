@@ -4,7 +4,10 @@ import type {
   ResolvedKeybindingsConfig,
   ScopedThreadRef,
 } from "@t3tools/contracts";
-import { isWorkspaceImagePreviewPath } from "@t3tools/shared/filePreview";
+import {
+  isWorkspaceAudioPreviewPath,
+  isWorkspaceImagePreviewPath,
+} from "@t3tools/shared/filePreview";
 import { VirtualizedFile, type SelectedLineRange } from "@pierre/diffs";
 import { Editor } from "@pierre/diffs/editor";
 import { EditProvider, File, type FileOptions, Virtualizer } from "@pierre/diffs/react";
@@ -127,6 +130,47 @@ const FILE_LINK_REVEAL_UNSAFE_CSS = `
   }
 `;
 type FilePostRender = NonNullable<FileOptions<unknown>["onPostRender"]>;
+
+function WorkspaceAudioPreview(props: {
+  readonly environmentId: EnvironmentId;
+  readonly threadRef: ScopedThreadRef;
+  readonly absolutePath: string;
+  readonly label: string;
+}) {
+  const assetUrl = useAssetUrlState(props.environmentId, {
+    _tag: "workspace-file",
+    threadId: props.threadRef.threadId,
+    path: props.absolutePath,
+  });
+  const [failedUrl, setFailedUrl] = useState<string | null>(null);
+
+  if (assetUrl._tag === "Failure" || (assetUrl._tag === "Success" && failedUrl === assetUrl.url)) {
+    return (
+      <div className="flex min-h-0 flex-1 items-center justify-center px-6 text-center text-xs leading-relaxed text-destructive">
+        Unable to load workspace audio.
+      </div>
+    );
+  }
+
+  return assetUrl._tag === "Success" ? (
+    <div className="flex min-h-0 flex-1 items-center justify-center p-6">
+      <audio
+        className="w-full max-w-xl"
+        controls
+        preload="metadata"
+        src={assetUrl.url}
+        aria-label={`Audio preview for ${props.label}`}
+        onError={() => setFailedUrl(assetUrl.url)}
+      >
+        Your browser does not support audio playback.
+      </audio>
+    </div>
+  ) : (
+    <div className="flex min-h-0 flex-1 items-center justify-center text-muted-foreground">
+      <LoaderCircle className="size-5 animate-spin" />
+    </div>
+  );
+}
 
 function WorkspaceImagePreview(props: {
   readonly environmentId: EnvironmentId;
@@ -780,8 +824,9 @@ export default function FilePreviewPanel({
   const openPreview = useAtomCommand(previewEnvironment.open, {
     reportFailure: false,
   });
+  const isAudio = relativePath !== null && isWorkspaceAudioPreviewPath(relativePath);
   const isImage = relativePath !== null && isWorkspaceImagePreviewPath(relativePath);
-  const file = useProjectFileQuery(environmentId, cwd, relativePath, !isImage);
+  const file = useProjectFileQuery(environmentId, cwd, relativePath, !isAudio && !isImage);
   const [explorerOpen, setExplorerOpen] = useState(initialExplorerOpen);
   // Reading markdown rendered is a preference, not a property of one file. Keeping
   // it on the panel meant a thread switch dropped it and forced source back.
@@ -994,7 +1039,15 @@ export default function FilePreviewPanel({
             relativePath ? "flex" : "hidden",
           )}
         >
-          {relativePath && isImage && absolutePath ? (
+          {relativePath && isAudio && absolutePath ? (
+            <WorkspaceAudioPreview
+              key={absolutePath}
+              environmentId={environmentId}
+              threadRef={threadRef}
+              absolutePath={absolutePath}
+              label={relativePath}
+            />
+          ) : relativePath && isImage && absolutePath ? (
             <WorkspaceImagePreview
               key={absolutePath}
               environmentId={environmentId}
