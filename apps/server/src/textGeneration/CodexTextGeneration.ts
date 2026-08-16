@@ -64,6 +64,7 @@ const CodexExecUsageEventJson = Schema.fromJsonString(
     usage: Schema.Struct({
       input_tokens: Schema.Int.check(Schema.isGreaterThanOrEqualTo(0)),
       cached_input_tokens: Schema.Int.check(Schema.isGreaterThanOrEqualTo(0)),
+      cache_write_input_tokens: Schema.optional(Schema.Int.check(Schema.isGreaterThanOrEqualTo(0))),
       output_tokens: Schema.Int.check(Schema.isGreaterThanOrEqualTo(0)),
     }),
   }),
@@ -73,6 +74,7 @@ const decodeCodexExecUsageEvent = Schema.decodeUnknownOption(CodexExecUsageEvent
 interface CodexExecUsage {
   readonly inputTokens: number | null;
   readonly cachedInputTokens: number | null;
+  readonly cacheWriteInputTokens: number | null;
   readonly outputTokens: number | null;
 }
 
@@ -120,11 +122,17 @@ function codexExecUsage(stdout: string): CodexExecUsage {
       return {
         inputTokens: event.value.usage.input_tokens,
         cachedInputTokens: event.value.usage.cached_input_tokens,
+        cacheWriteInputTokens: event.value.usage.cache_write_input_tokens ?? null,
         outputTokens: event.value.usage.output_tokens,
       };
     }
   }
-  return { inputTokens: null, cachedInputTokens: null, outputTokens: null };
+  return {
+    inputTokens: null,
+    cachedInputTokens: null,
+    cacheWriteInputTokens: null,
+    outputTokens: null,
+  };
 }
 
 /** Bounds model-authored monitor text after decoding without constraining Codex's JSON Schema. */

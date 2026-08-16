@@ -133,7 +133,12 @@ describe("makeTextGenerationFromRegistry", () => {
               summary: "The condition is not visible.",
               visibleFacts: ["No matching dialog is present."],
               evidence: [{ imageId: "main", description: "No matching dialog is present." }],
-              usage: { inputTokens: 10, cachedInputTokens: 8, outputTokens: 4 },
+              usage: {
+                inputTokens: 10,
+                cachedInputTokens: 8,
+                cacheWriteInputTokens: 2,
+                outputTokens: 4,
+              },
             });
           },
         }),

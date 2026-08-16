@@ -175,6 +175,7 @@ export type ThreadMonitorComputerReview = typeof ThreadMonitorComputerReview.Typ
 export const ThreadMonitorComputerUsage = Schema.Struct({
   inputTokens: Schema.NullOr(NonNegativeInt),
   cachedInputTokens: Schema.NullOr(NonNegativeInt),
+  cacheWriteInputTokens: Schema.NullOr(NonNegativeInt),
   outputTokens: Schema.NullOr(NonNegativeInt),
 });
 export type ThreadMonitorComputerUsage = typeof ThreadMonitorComputerUsage.Type;

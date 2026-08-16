@@ -136,7 +136,12 @@ describe("ThreadMonitorComputer", () => {
           summary: "The completion state is not visible.",
           visibleFacts: ["The status remains active."],
           evidence: [{ imageId: "status", description: "The status region remains active." }],
-          usage: { inputTokens: 20, cachedInputTokens: 16, outputTokens: 5 },
+          usage: {
+            inputTokens: 20,
+            cachedInputTokens: 16,
+            cacheWriteInputTokens: 3,
+            outputTokens: 5,
+          },
         });
       });
       const broker = PreviewAutomationBroker.PreviewAutomationBroker.of({
@@ -371,6 +376,7 @@ describe("ThreadMonitorComputer", () => {
       expect(changed.condition.totalUsage).toEqual({
         inputTokens: 20,
         cachedInputTokens: 16,
+        cacheWriteInputTokens: 3,
         outputTokens: 5,
       });
 

@@ -625,7 +625,7 @@ it.layer(CodexTextGenerationTestLayer)("CodexTextGeneration", (it) => {
             usage: {
               input_tokens: 14_200,
               cached_input_tokens: 8_960,
-              cache_write_input_tokens: 0,
+              cache_write_input_tokens: 5_120,
               output_tokens: 37,
               reasoning_output_tokens: 12,
             },
@@ -686,6 +686,7 @@ it.layer(CodexTextGenerationTestLayer)("CodexTextGeneration", (it) => {
           expect(result.usage).toEqual({
             inputTokens: 14_200,
             cachedInputTokens: 8_960,
+            cacheWriteInputTokens: 5_120,
             outputTokens: 37,
           });
         });
