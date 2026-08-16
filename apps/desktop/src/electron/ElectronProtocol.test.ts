@@ -115,6 +115,10 @@ describe("ElectronProtocol", () => {
           );
           assert.include(
             response.headers.get("content-security-policy") ?? "",
+            "media-src 'self' t3code-dev: blob: data: http: https:",
+          );
+          assert.include(
+            response.headers.get("content-security-policy") ?? "",
             "font-src 'self' t3code-dev: data:",
           );
         }),
@@ -321,7 +325,14 @@ describe("ElectronProtocol", () => {
       "http:",
       "https:",
     ]);
-    assert.deepEqual(directives["media-src"], ["'self'", "t3code:", "blob:", "http:", "https:"]);
+    assert.deepEqual(directives["media-src"], [
+      "'self'",
+      "t3code:",
+      "blob:",
+      "data:",
+      "http:",
+      "https:",
+    ]);
     assert.deepEqual(directives["frame-src"], ["'self'", "blob:", "http:", "https:"]);
     assert.deepEqual(directives["font-src"], ["'self'", "t3code:", "data:"]);
   });
