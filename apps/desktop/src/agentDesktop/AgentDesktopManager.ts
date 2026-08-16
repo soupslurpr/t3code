@@ -2535,8 +2535,6 @@ export const make = Effect.gen(function* () {
         input.includeAccessibility === false
           ? undefined
           : yield* captureGuestAccessibility(desktop, runtime);
-      if (accessibility === undefined) yield* Ref.set(runtime.accessibilityTargets, new Map());
-      if (accessibility === undefined) yield* Ref.set(runtime.accessibilityWindows, new Map());
       const screenshotOptions = input.screenshot === false ? null : (input.screenshot ?? {});
       const detailScreenshotOptions = input.detailScreenshots ?? [];
       if (screenshotOptions === null && detailScreenshotOptions.length === 0) {

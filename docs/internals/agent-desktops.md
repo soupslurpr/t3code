@@ -47,8 +47,9 @@ The repository command can still consume a caller-supplied qcow2 image and requi
 verification is explicitly skipped.
 
 Semantic observations run a bounded AT-SPI helper inside the guest. Target and top-level window
-identifiers include an accessibility generation and expire under the same one-action rule as host
-semantic identifiers. This keeps stale target behavior identical across both desktop kinds.
+identifiers include an accessibility generation. A newer semantic observation or an action batch
+expires them, while screenshot-only human views and monitors leave the current semantic observation
+intact. This prevents background viewing from racing the controlling agent's next semantic action.
 
 ## Workspace Transfer Boundary
 

@@ -1149,6 +1149,45 @@ describe("AgentDesktopManager", () => {
     }),
   );
 
+  it.effect("preserves semantic targets across visual-only viewer snapshots", () =>
+    Effect.gen(function* () {
+      const harness = yield* managerHarness("accessibility-viewer", {
+        accessibility: true,
+        captureAvailable: true,
+      });
+      yield* Effect.gen(function* () {
+        const manager = yield* AgentDesktopManager.AgentDesktopManager;
+        const desktop = yield* manager.acquire(owner, { label: "Accessible viewer" });
+        yield* manager.requestControl(owner, { kind: "agent", desktopId: desktop.id });
+
+        const semanticSnapshot = yield* manager.snapshot(
+          owner.controllerId,
+          { screenshot: false },
+          desktop.id,
+        );
+        const targetId = semanticSnapshot.accessibility?.targets[0]?.id;
+        assert.isDefined(targetId);
+
+        const viewerControllerId = "human:viewer";
+        yield* manager.requestHumanView(owner, viewerControllerId, desktop.id);
+        yield* manager.snapshot(
+          viewerControllerId,
+          { includeAccessibility: false, screenshot: {} },
+          desktop.id,
+        );
+
+        assert.deepEqual(
+          yield* manager.act(
+            owner.controllerId,
+            { actions: [{ type: "activate", targetId }] },
+            desktop.id,
+          ),
+          [{ index: 0, type: "activate" }],
+        );
+      }).pipe(Effect.provide(harness.layer));
+    }),
+  );
+
   it.effect("switches to Agent desktop windows that reject top-level accessibility focus", () =>
     Effect.gen(function* () {
       const harness = yield* managerHarness("window-switch-fallback", {

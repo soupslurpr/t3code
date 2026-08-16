@@ -224,7 +224,8 @@ Wayland applications do not expose their window's screen origin through AT-SPI. 
 bounds are therefore relative to the focused window named in the result, not to the screenshot.
 Agents use target identifiers for control activation, window identifiers to focus exposed top-level
 windows, and screenshot coordinates for mouse interaction. All semantic identifiers expire with the
-observation. Semantic control targets are currently disabled on multi-display desktops to avoid
+next semantic observation or action batch. Screenshot-only Agent desktop viewers and monitors do not
+consume them. Semantic control targets are currently disabled on multi-display desktops to avoid
 associating them with the wrong captured display, while the coordinate-free top-level window list
 remains available.
 
