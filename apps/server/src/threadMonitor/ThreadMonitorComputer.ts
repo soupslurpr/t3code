@@ -172,6 +172,7 @@ function accumulateUsage(
   return {
     inputTokens: addUsage(total.inputTokens, next.inputTokens),
     cachedInputTokens: addUsage(total.cachedInputTokens, next.cachedInputTokens),
+    cacheWriteInputTokens: addUsage(total.cacheWriteInputTokens, next.cacheWriteInputTokens),
     outputTokens: addUsage(total.outputTokens, next.outputTokens),
   };
 }
@@ -582,7 +583,12 @@ export const make = Effect.gen(function* () {
         lastVerdict: null,
         lastSummary: null,
         lastUsage: null,
-        totalUsage: { inputTokens: null, cachedInputTokens: null, outputTokens: null },
+        totalUsage: {
+          inputTokens: null,
+          cachedInputTokens: null,
+          cacheWriteInputTokens: null,
+          outputTokens: null,
+        },
         sampleCount: 0,
         evaluationCount: 0,
         uncertainEvaluationCount: 0,
