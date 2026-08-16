@@ -199,7 +199,11 @@ export const assetFileResponse = Effect.fn("assetFileResponse")(function* (
   }
   const mediaFile = asset.file;
   const mediaInfo = mediaFile ? yield* statMediaFile(asset.path, mediaFile) : undefined;
-  const isMedia = /^(?:audio|video)\//i.test(headers["Content-Type"] ?? "");
+  const isMedia = /^(?:audio|video)\//i.test(
+    headers["Content-Type"] ??
+      asset.mimeType ??
+      Option.getOrElse(Mime.getType(asset.path), () => ""),
+  );
   if (isMedia) {
     // Do not invite conditional range requests with validators that cannot establish
     // byte-for-byte identity. Attachment media carries no `file`, and must not

@@ -1,6 +1,6 @@
 import { Button } from "../../components/ui/Button";
 import { QuestionAttachments } from "./QuestionAttachments";
-import type { RuntimeRequestId } from "@t3tools/contracts";
+import type { RuntimeRequestId, EnvironmentId, ThreadId } from "@t3tools/contracts";
 import type { ThreadUserInputQuestion } from "@t3tools/client-runtime/state/thread-requests";
 import { useCallback, useRef } from "react";
 import { Platform, Pressable, ScrollView, View, type LayoutChangeEvent } from "react-native";
@@ -16,14 +16,12 @@ import Animated, {
 } from "react-native-reanimated";
 
 import { USER_INPUT_TOGGLE_DURATION_MS } from "./pendingUserInputLayout";
+import { QuestionMarkdown } from "./QuestionMarkdown";
 
 import { SymbolView } from "../../components/ui/AppSymbol";
 import { AppText as Text } from "../../components/ui/AppText";
 import { ControlPill } from "../../components/ui/ControlPill";
 import { cn } from "../../lib/cn";
-import { SelectableMarkdownText } from "../../native/SelectableMarkdownText";
-import { useOpenPullRequest } from "../../native/useOpenPullRequest";
-import { useMarkdownPreviewStyles } from "../files/FileMarkdownPreview";
 import {
   isPendingUserInputOptionSelected,
   type PendingUserInput,
@@ -32,6 +30,9 @@ import {
 
 export interface PendingUserInputCardProps {
   readonly canOperateThread: boolean;
+  readonly environmentId: EnvironmentId;
+  readonly threadId: ThreadId;
+  readonly workspaceRoot: string | null;
   readonly pendingUserInput: PendingUserInput;
   readonly maxHeight: number;
   readonly collapsed: boolean;
@@ -65,18 +66,6 @@ export interface PendingUserInputCardProps {
 const EXPANDED_CARD_IS_OVERLAY = Platform.OS === "ios";
 
 const CARD_LAYOUT_TRANSITION = LinearTransition.duration(200);
-
-function QuestionText(props: { readonly markdown: string }) {
-  const styles = useMarkdownPreviewStyles();
-  const openLink = useOpenPullRequest();
-  return (
-    <SelectableMarkdownText
-      markdown={props.markdown}
-      textStyle={styles.nativeTextStyle}
-      onLinkPress={(href) => void openLink(href)}
-    />
-  );
-}
 
 export function PendingUserInputCard(props: PendingUserInputCardProps) {
   const questionCount = props.pendingUserInput.questions.length;
@@ -243,7 +232,12 @@ export function PendingUserInputCard(props: PendingUserInputCardProps) {
               <Text className="font-t3-bold text-xs uppercase tracking-[1px] text-foreground-muted">
                 {question.header}
               </Text>
-              <QuestionText markdown={question.question} />
+              <QuestionMarkdown
+                markdown={question.question}
+                environmentId={props.environmentId}
+                threadId={props.threadId}
+                workspaceRoot={props.workspaceRoot}
+              />
               <View className="gap-2">
                 {question.options.map((option) => {
                   const optionValue = option.value ?? option.label.trim();

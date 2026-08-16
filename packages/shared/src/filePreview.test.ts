@@ -14,6 +14,14 @@ import {
 } from "./filePreview.ts";
 
 describe("workspace file previews", () => {
+  it.each(["recording.wav", "voice.MP3", "clip?download=1.ogg", "sound#play.oga"])(
+    "recognizes audio preview path %s",
+    (path) => {
+      expect(isWorkspaceAudioPreviewPath(path)).toBe(true);
+      expect(isWorkspacePreviewEntryPath(path)).toBe(true);
+    },
+  );
+
   it.each(["report.html", "report.HTM", "document#draft.pdf", "reports?old/document.pdf"])(
     "recognizes browser preview path %s",
     (path) => {
@@ -40,12 +48,15 @@ describe("workspace file previews", () => {
     "README.md",
     "src/index.ts",
     "image.png.ts",
+    "audio.wav.ts",
     "png",
     "image.png#notes.txt",
     "image.svg?notes.txt",
     "document.pdf?download=1",
     "report.html#notes.txt",
     "image%2Epng",
+    "clip.ogg?download=1",
+    "sound.oga#play",
   ])("rejects non-preview path %s", (path) => {
     expect(isWorkspacePreviewEntryPath(path)).toBe(false);
   });

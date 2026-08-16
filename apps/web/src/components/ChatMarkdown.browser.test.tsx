@@ -1041,7 +1041,7 @@ describe("ChatMarkdown Windows file links", () => {
   it("distinguishes same-named backslash paths but not the same file twice", async () => {
     for (const parseRawHtml of [true, false]) {
       const distinct = await renderWindows(
-        String.raw`[Source](C:\Users\shawn\project\src\index.ts) and [Test](C:\Users\shawn\project\test\index.ts)`,
+        String.raw`[index.ts](C:\Users\shawn\project\src\index.ts) and [index.ts](C:\Users\shawn\project\test\index.ts)`,
         parseRawHtml,
       );
       expect(distinct.textContent).toContain("index.ts · project/src");
@@ -1481,4 +1481,34 @@ describe("ChatMarkdown math", () => {
       ),
     ).toEqual(["\\[\nx^2\n\\]\n\n"]);
   });
+});
+
+describe("ChatMarkdown descriptive file labels", () => {
+  it.each([true, false])(
+    "preserves descriptive labels through updates with parseRawHtml=%s",
+    async (parseRawHtml) => {
+      const message = (text: string) => (
+        <ChatMarkdown cwd="/tmp/project" text={text} parseRawHtml={parseRawHtml} />
+      );
+      const { container, rerender } = await render(
+        message(
+          "Does this improve naturalness? [Own history](/tmp/project/seed-1-own-panel.wav) · " +
+            "[**Recording-derived** history](/tmp/project/seed-1-source-sampled-panel.wav) · " +
+            "[Reconstruction reference][reference].\n\n" +
+            "[reference]: /tmp/project/seed-1-source-assisted-panel.wav",
+        ),
+      );
+      const labels = () =>
+        [...container.querySelectorAll(".chat-markdown-file-link")].map((chip) => chip.textContent);
+      expect(labels()).toEqual([
+        "Own history",
+        "Recording-derived history",
+        "Reconstruction reference",
+      ]);
+      await rerender(message("[Renamed sample](/tmp/project/seed-1-own-panel.wav)"));
+      expect(labels()).toEqual(["Renamed sample"]);
+      await rerender(message(String.raw`[\[Original\] sample](/tmp/project/sample.wav)`));
+      expect(labels()).toEqual(["[Original] sample"]);
+    },
+  );
 });

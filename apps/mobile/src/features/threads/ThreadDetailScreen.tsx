@@ -1335,6 +1335,9 @@ export const ThreadDetailScreen = function ThreadDetailScreen(props: ThreadDetai
                       ) : null}
                       {props.activePendingUserInput ? (
                         <PendingUserInputCard
+                          environmentId={props.environmentId}
+                          threadId={props.selectedThread.id}
+                          workspaceRoot={props.threadCwd ?? props.projectWorkspaceRoot}
                           canOperateThread={props.canOperateThread}
                           pendingUserInput={props.activePendingUserInput}
                           maxHeight={pendingUserInputMaxHeight}
