@@ -1,4 +1,4 @@
-import { type ApprovalRequestId } from "@t3tools/contracts";
+import { type ApprovalRequestId, type ScopedThreadRef } from "@t3tools/contracts";
 import { memo, useCallback, useEffect, useRef, useState } from "react";
 import { type PendingUserInput } from "../../session-logic";
 import {
@@ -9,8 +9,11 @@ import { CheckIcon } from "lucide-react";
 import { Collapsible, CollapsiblePanel, CollapsibleTrigger } from "../ui/collapsible";
 import { cn } from "~/lib/utils";
 import { ComposerBanner } from "./ComposerBanner";
+import ChatMarkdown from "../ChatMarkdown";
 
 interface PendingUserInputPanelProps {
+  threadRef: ScopedThreadRef;
+  cwd: string | undefined;
   pendingUserInputs: PendingUserInput[];
   respondingRequestIds: ApprovalRequestId[];
   answers: Record<string, PendingUserInputDraftAnswer>;
@@ -21,6 +24,8 @@ interface PendingUserInputPanelProps {
 }
 
 export const ComposerPendingUserInputPanel = memo(function ComposerPendingUserInputPanel({
+  threadRef,
+  cwd,
   pendingUserInputs,
   respondingRequestIds,
   answers,
@@ -37,6 +42,8 @@ export const ComposerPendingUserInputPanel = memo(function ComposerPendingUserIn
     <ComposerPendingUserInputCard
       key={activePrompt.requestId}
       prompt={activePrompt}
+      threadRef={threadRef}
+      cwd={cwd}
       isResponding={respondingRequestIds.includes(activePrompt.requestId)}
       answers={answers}
       questionIndex={questionIndex}
@@ -49,6 +56,8 @@ export const ComposerPendingUserInputPanel = memo(function ComposerPendingUserIn
 
 const ComposerPendingUserInputCard = memo(function ComposerPendingUserInputCard({
   prompt,
+  threadRef,
+  cwd,
   isResponding,
   answers,
   questionIndex,
@@ -57,6 +66,8 @@ const ComposerPendingUserInputCard = memo(function ComposerPendingUserInputCard(
   onDismiss,
 }: {
   prompt: PendingUserInput;
+  threadRef: ScopedThreadRef;
+  cwd: string | undefined;
   isResponding: boolean;
   answers: Record<string, PendingUserInputDraftAnswer>;
   questionIndex: number;
@@ -229,7 +240,12 @@ const ComposerPendingUserInputCard = memo(function ComposerPendingUserInputCard(
       </CollapsibleTrigger>
       <CollapsiblePanel>
         <ComposerBanner.Body className="pe-1 pb-1">
-          <p className="text-sm text-foreground/85">{activeQuestion.question}</p>
+          <ChatMarkdown
+            text={activeQuestion.question}
+            cwd={cwd}
+            threadRef={threadRef}
+            className="text-foreground/85"
+          />
           {activeQuestion.multiSelect ? (
             <p className="mt-1 text-secondary-label text-xs">Select one or more options.</p>
           ) : null}

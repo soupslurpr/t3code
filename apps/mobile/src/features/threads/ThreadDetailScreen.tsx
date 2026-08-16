@@ -993,6 +993,9 @@ export const ThreadDetailScreen = memo(function ThreadDetailScreen(props: Thread
                     ) : null}
                     {props.activePendingUserInput ? (
                       <PendingUserInputCard
+                        environmentId={props.environmentId}
+                        threadId={props.selectedThread.id}
+                        workspaceRoot={props.threadCwd ?? props.projectWorkspaceRoot}
                         pendingUserInput={props.activePendingUserInput}
                         maxHeight={pendingUserInputMaxHeight}
                         collapsed={userInputCollapsed}

@@ -68,6 +68,24 @@ describe("nativeMarkdownTextRuns", () => {
       { start: 9, end: 10, text: "![Screenshot](t3-context://v1/image/screenshot)" },
     ]);
   });
+  it("keeps the descriptions attached to each audio sample", () => {
+    const samples = [
+      ["Own history", "/tmp/seed-1-own-panel.wav"],
+      ["Recording-derived history", "/tmp/seed-1-source-sampled-panel.wav"],
+      ["Reconstruction reference", "/tmp/seed-1-source-assisted-panel.wav"],
+    ] as const;
+    expect(
+      nativeMarkdownTextRuns({
+        type: "paragraph",
+        children: samples.map(([label, href]) => ({
+          type: "link",
+          href,
+          children: [{ type: "bold", children: [{ type: "text", content: label }] }],
+        })),
+      }),
+    ).toEqual(samples.map(([text, href]) => ({ text, href, fileIcon: "default" })));
+  });
+
   it("links a path-shaped code span without changing the same path in prose", () => {
     expect(
       nativeMarkdownTextRuns({
@@ -81,6 +99,21 @@ describe("nativeMarkdownTextRuns", () => {
       { text: "/tmp/frame.png " },
       { text: "frame.png", href: "/tmp/frame.png", fileIcon: "image" },
     ]);
+  });
+
+  it.each(["README.md", ""])("keeps file locations for a filename or empty label: %s", (label) => {
+    expect(
+      nativeMarkdownTextRuns({
+        type: "paragraph",
+        children: [
+          {
+            type: "link",
+            href: "/repo/README.md#L12",
+            children: [{ type: "text", content: label }],
+          },
+        ],
+      }),
+    ).toEqual([{ text: "README.md:12", href: "/repo/README.md#L12", fileIcon: "markdown" }]);
   });
 
   it("preserves the destination of a link with a code-formatted label", () => {
@@ -137,7 +170,7 @@ describe("nativeMarkdownTextRuns", () => {
         {
           type: "link",
           href: "file:///repo/README.md#L12",
-          children: [{ type: "text", content: "ignored label" }],
+          children: [{ type: "text", content: "Project overview" }],
         },
       ],
     };
@@ -150,7 +183,7 @@ describe("nativeMarkdownTextRuns", () => {
       },
       { text: " " },
       {
-        text: "README.md:12",
+        text: "Project overview",
         href: "file:///repo/README.md#L12",
         fileIcon: "markdown",
       },

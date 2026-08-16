@@ -1075,17 +1075,19 @@ function useMarkdownStyles(
         const presentation = resolveMarkdownLinkPresentation(href);
         if (presentation.kind === "file") {
           return (
-            <NativeText
-              className="font-t3-bold"
-              onPress={() => onLinkPress(href)}
-              style={{ color: inlineTextColor }}
-            >
-              <Image
-                source={markdownFileIconSource(presentation.icon)}
-                style={markdownLinkStyles.inlineIcon}
-              />
-              {presentation.label}
-            </NativeText>
+            <MarkdownLinkLabelContext.Provider value>
+              <NativeText
+                className="font-t3-bold"
+                onPress={() => onLinkPress(href)}
+                style={{ color: inlineTextColor }}
+              >
+                <Image
+                  source={markdownFileIconSource(presentation.icon)}
+                  style={markdownLinkStyles.inlineIcon}
+                />
+                {children}
+              </NativeText>
+            </MarkdownLinkLabelContext.Provider>
           );
         }
         if (presentation.kind === "external") {
