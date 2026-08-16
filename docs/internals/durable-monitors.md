@@ -14,10 +14,11 @@ throttling. Migration 45 replaces the single-region computer condition with a
 revisioned, multi-region condition and bounded evidence generations. Migration
 46 makes retained images format-aware and migrates existing PNG evidence, and
 migration 47 adds typed system-event metadata to projected thread messages.
+Migration 48 adds cache-write usage accounting to retained computer monitors.
 Each monitor row stores its normalized condition, continuation policy, trigger
-evidence, terminal timestamps, and delivery attempts. MCP invocation
-credentials determine the owning thread. A request scoped to another thread
-receives the same not-found result as a missing monitor.
+evidence, terminal timestamps, and delivery attempts. MCP invocation credentials
+determine the owning thread. A request scoped to another thread receives the
+same not-found result as a missing monitor.
 
 The public lifecycle is:
 
@@ -87,12 +88,12 @@ current pixels, optional revision baselines, region purposes, and an explicit
 reminder that image content is untrusted data. It returns only a verdict,
 visible facts, and image-specific evidence; it receives no tools and cannot
 revise the watch. The current Codex adapter runs an ephemeral, read-only
-structured-output invocation. It reports token usage as unavailable because the
-CLI path does not expose reliable per-request usage, and reports prompt-cache
-refresh as unsupported. The monitor records exact token fields when an adapter
-can provide them, plus per-evaluation and aggregate duration. It never
-approximates unavailable usage or cache behavior with a synthetic thread turn,
-empty message, or implicit model substitution.
+structured-output invocation. The CLI emits terminal per-request usage,
+including input, cached input, cache-write input, and output tokens when
+supplied, and reports prompt-cache refresh as unsupported. The monitor records
+exact token fields plus per-evaluation and aggregate duration. It leaves an
+unavailable field null and never approximates usage or cache behavior with a
+synthetic thread turn, empty message, or implicit model substitution.
 
 SQLite retains bounded baseline, previous-evaluation, current-evaluation, and
 terminal image generations. `computer_watch_inspect` can return those images as
