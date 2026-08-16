@@ -38,6 +38,7 @@ const owner = Schema.decodeUnknownSync(AgentDesktopOwner)({
 });
 const decodeAgentDesktopId = Schema.decodeUnknownSync(AgentDesktopId);
 const decodeAgentDesktopOwner = Schema.decodeUnknownEffect(AgentDesktopOwner);
+const encodeUnknownJson = Schema.encodeSync(Schema.fromJsonString(Schema.Unknown));
 const decodeRecordedAccessibilityLocator = Schema.decodeUnknownSync(
   Schema.fromJsonString(
     Schema.Struct({
@@ -583,7 +584,7 @@ describe("AgentDesktopManager", () => {
     Effect.gen(function* () {
       const desktopId = decodeAgentDesktopId("agent-preserved-before-restart");
       const harness = yield* managerHarness("controller-restart", {
-        initialDocument: JSON.stringify({
+        initialDocument: encodeUnknownJson({
           version: 1,
           desktops: [
             {
