@@ -6,6 +6,7 @@ import {
   ProjectId,
   ProviderInstanceId,
   ThreadId,
+  ThreadMonitorId,
   TurnId,
   type OrchestrationThread,
   type OrchestrationThreadActivity,
@@ -170,6 +171,48 @@ describe("buildThreadFeed", () => {
     });
 
     expect(buildThreadFeed(thread)).toEqual([]);
+  });
+
+  it("includes typed monitor system events in the visible feed", () => {
+    const thread = makeThread({
+      id: ThreadId.make("thread-monitor-event"),
+      projectId: ProjectId.make("project-1"),
+      title: "Typed monitor event",
+      messages: [
+        {
+          id: MessageId.make("monitor-event-message"),
+          role: "system",
+          text: "Monitor triggered: Wait for the build",
+          systemEvent: {
+            type: "monitor.continuation",
+            deliveryGroupId: "delivery-group-1",
+            monitors: [
+              {
+                monitorId: ThreadMonitorId.make("monitor-1"),
+                triggeredAt: "2026-04-01T00:00:01.000Z",
+                triggerReason: "signal",
+                observation: {
+                  label: "Wait for the build",
+                  summary: "Build passed.",
+                  evidence: null,
+                },
+                continuation: { prompt: "Report the result." },
+              },
+            ],
+            observationTrust: "untrusted",
+            grantsAuthorization: false,
+          },
+          turnId: null,
+          streaming: false,
+          createdAt: "2026-04-01T00:00:01.000Z",
+          updatedAt: "2026-04-01T00:00:01.000Z",
+        },
+      ],
+    });
+
+    expect(buildThreadFeed(thread)).toMatchObject([
+      { type: "message", message: { systemEvent: { type: "monitor.continuation" } } },
+    ]);
   });
 
   it("keeps historic work entries attributed to their turns", () => {

@@ -1793,7 +1793,7 @@ export function deriveTimelineEntries(
   turnPlans: ReadonlyArray<TurnPlanEntry> = [],
 ): TimelineEntry[] {
   const messageRows: TimelineEntry[] = messages
-    .filter((message) => message.role !== "system")
+    .filter((message) => message.role !== "system" || message.systemEvent !== undefined)
     .map((message) => ({
       id: message.id,
       kind: "message",

@@ -14,8 +14,9 @@ const LATEST_PROMPT_HEADER = "Latest user request (answer this now):";
 const OMITTED_SUMMARY = (count: number) =>
   `[${count} earlier message(s) omitted to stay within input limits.]`;
 
-function messageRoleLabel(message: ChatMessage): "USER" | "ASSISTANT" {
-  return message.role === "assistant" ? "ASSISTANT" : "USER";
+function messageRoleLabel(message: ChatMessage): "USER" | "ASSISTANT" | "SYSTEM" {
+  if (message.role === "assistant") return "ASSISTANT";
+  return message.role === "system" ? "SYSTEM" : "USER";
 }
 
 function attachmentSummary(message: ChatMessage): string | null {
@@ -33,7 +34,10 @@ function attachmentSummary(message: ChatMessage): string | null {
 }
 
 function buildMessageBlock(message: ChatMessage): string {
-  const text = message.text;
+  const text =
+    message.systemEvent === undefined
+      ? message.text
+      : `${message.text}\nTyped system event: ${JSON.stringify(message.systemEvent)}`;
   const attachments = attachmentSummary(message);
 
   if (text && attachments) {

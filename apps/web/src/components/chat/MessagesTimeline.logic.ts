@@ -9,7 +9,12 @@ import {
   type WorkLogEntry,
 } from "../../session-logic";
 import { type ChatMessage, type ProposedPlan, type TurnDiffSummary } from "../../types";
-import { type MessageId, type OrchestrationLatestTurn, type TurnId } from "@t3tools/contracts";
+import {
+  type MessageId,
+  type OrchestrationLatestTurn,
+  type OrchestrationSystemEvent,
+  type TurnId,
+} from "@t3tools/contracts";
 
 export const MAX_VISIBLE_WORK_LOG_ENTRIES = 1;
 export const TIMELINE_MINIMAP_ITEM_SPACING = 8;
@@ -67,6 +72,27 @@ export function resolveTimelineIsAtEnd(
 
 export function shouldPreserveAssistantLineBreaks(text: string): boolean {
   return /^★ Insight(?:\s|─)/mu.test(text);
+}
+
+/** Returns the compact heading shown for one typed monitor system event. */
+export function resolveMonitorSystemEventPresentation(event: OrchestrationSystemEvent): {
+  readonly title: string;
+  readonly summary: string;
+} {
+  if (event.type === "monitor.review") {
+    return { title: "Monitor review", summary: event.reason };
+  }
+  if (event.monitors.length === 1) {
+    const monitor = event.monitors[0]!;
+    return {
+      title: "Monitor triggered",
+      summary: monitor.observation.summary ?? monitor.observation.label,
+    };
+  }
+  return {
+    title: `${event.monitors.length} monitors triggered`,
+    summary: event.monitors.map((monitor) => monitor.observation.label).join(" · "),
+  };
 }
 
 export function resolveTimelineMinimapHeightStyle(itemCount: number): string {

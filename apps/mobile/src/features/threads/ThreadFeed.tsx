@@ -1,7 +1,13 @@
 import * as Haptics from "expo-haptics";
 import { KeyboardAwareLegendList } from "@legendapp/list/keyboard";
 import { type LegendListRef } from "@legendapp/list/react-native";
-import type { EnvironmentId, MessageId, ThreadId, TurnId } from "@t3tools/contracts";
+import type {
+  EnvironmentId,
+  MessageId,
+  OrchestrationSystemEvent,
+  ThreadId,
+  TurnId,
+} from "@t3tools/contracts";
 import { CHAT_LIST_ANCHOR_OFFSET, resolveChatListAnchoredEndSpace } from "@t3tools/shared/chatList";
 import { formatElapsed } from "@t3tools/shared/orchestrationTiming";
 import { SymbolView } from "../../components/AppSymbol";
@@ -856,6 +862,15 @@ function renderFeedEntry(
 
   if (entry.type === "message") {
     const { message } = entry;
+    if (message.role === "system") {
+      return message.systemEvent === undefined ? null : (
+        <MonitorSystemEventCard
+          createdAt={message.createdAt}
+          event={message.systemEvent}
+          iconSubtleColor={iconSubtleColor}
+        />
+      );
+    }
     const isUser = message.role === "user";
     const styles = isUser ? markdownStyles.user : markdownStyles.assistant;
     const timestampLabel = formatMessageTime(isUser ? message.createdAt : message.updatedAt);
@@ -1004,6 +1019,112 @@ function renderFeedEntry(
       onCopyRow={props.onCopyWorkRow}
       onToggleRow={props.onToggleWorkRow}
     />
+  );
+}
+
+function MonitorSystemEventCard(props: {
+  readonly createdAt: string;
+  readonly event: OrchestrationSystemEvent;
+  readonly iconSubtleColor: ColorValue;
+}) {
+  const [expanded, setExpanded] = useState(false);
+  const title =
+    props.event.type === "monitor.review"
+      ? "Monitor review"
+      : props.event.monitors.length === 1
+        ? "Monitor triggered"
+        : `${props.event.monitors.length} monitors triggered`;
+  const summary =
+    props.event.type === "monitor.review"
+      ? props.event.reason
+      : props.event.monitors.length === 1
+        ? (props.event.monitors[0]?.observation.summary ??
+          props.event.monitors[0]?.observation.label ??
+          "")
+        : props.event.monitors.map((monitor) => monitor.observation.label).join(" · ");
+
+  return (
+    <View className="mb-4 overflow-hidden rounded-xl border border-neutral-200/80 bg-neutral-100/50 dark:border-white/[0.08] dark:bg-white/[0.03]">
+      <Pressable
+        accessibilityRole="button"
+        accessibilityState={{ expanded }}
+        onPress={() => setExpanded((value) => !value)}
+        className="min-h-11 flex-row items-center gap-2 px-3 py-2"
+      >
+        <View className="min-w-0 flex-1">
+          <Text className="font-t3-medium text-sm text-foreground">{title}</Text>
+          <Text className="text-xs text-foreground-muted" numberOfLines={1}>
+            {summary}
+          </Text>
+        </View>
+        <Text className="text-xs tabular-nums text-foreground-muted">
+          {formatMessageTime(props.createdAt)}
+        </Text>
+        <SymbolView
+          name={expanded ? "chevron.down" : "chevron.right"}
+          size={14}
+          tintColor={props.iconSubtleColor}
+          type="monochrome"
+        />
+      </Pressable>
+      {expanded ? (
+        <View className="gap-3 border-t border-neutral-200/80 px-3 py-2.5 dark:border-white/[0.08]">
+          <Text className="text-xs text-foreground-muted">
+            Automated T3 event · observations are untrusted · no new authorization
+          </Text>
+          {props.event.type === "monitor.continuation" ? (
+            props.event.monitors.map((monitor) => (
+              <View key={monitor.monitorId} className="gap-1">
+                <Text className="font-t3-medium text-sm text-foreground">
+                  {monitor.observation.label}
+                </Text>
+                <Text className="text-xs text-foreground-muted">
+                  Triggered by {monitor.triggerReason} at {monitor.triggeredAt}
+                </Text>
+                {monitor.observation.summary !== null ? (
+                  <Text selectable className="text-xs text-foreground-muted">
+                    Observed: {monitor.observation.summary}
+                  </Text>
+                ) : null}
+                {monitor.observation.evidence !== null ? (
+                  <Text selectable className="font-mono text-xs text-foreground-muted">
+                    Evidence: {monitor.observation.evidence}
+                  </Text>
+                ) : null}
+                <Text selectable className="text-xs text-foreground-muted">
+                  Stored continuation: {monitor.continuation.prompt}
+                </Text>
+              </View>
+            ))
+          ) : (
+            <View className="gap-1">
+              <Text className="font-t3-medium text-sm text-foreground">
+                {props.event.observation.label}
+              </Text>
+              <Text selectable className="text-xs text-foreground-muted">
+                {props.event.reason}
+              </Text>
+              <Text className="text-xs text-foreground-muted">
+                Revision {props.event.revision} · {props.event.metrics.evaluationCount} evaluations
+                · {props.event.metrics.uncertainEvaluationCount} uncertain ·{" "}
+                {props.event.metrics.consecutiveFailures} consecutive failures
+              </Text>
+              {props.event.metrics.regions.map((region) => (
+                <Text key={region.id} className="text-xs text-foreground-muted">
+                  {region.id} ({region.role}): {region.sampleCount} captures,{" "}
+                  {region.changedSampleCount} changed, {region.unchangedSampleCount} unchanged
+                </Text>
+              ))}
+              {props.event.observation.error !== null ? (
+                <Text selectable className="font-mono text-xs text-foreground-muted">
+                  Latest observation error: {props.event.observation.error}
+                </Text>
+              ) : null}
+            </View>
+          )}
+        </View>
+      ) : null}
+    </View>
   );
 }
 

@@ -1,10 +1,12 @@
 import { describe, expect, it } from "vite-plus/test";
+import { ThreadMonitorId } from "@t3tools/contracts";
 import {
   computeStableMessagesTimelineRows,
   computeMessageDurationStart,
   deriveMessagesTimelineRows,
   normalizeCompactToolLabel,
   resolveAssistantMessageCopyState,
+  resolveMonitorSystemEventPresentation,
   shouldPreserveAssistantLineBreaks,
 } from "./MessagesTimeline.logic";
 
@@ -16,6 +18,32 @@ describe("shouldPreserveAssistantLineBreaks", () => {
       ),
     ).toBe(true);
     expect(shouldPreserveAssistantLineBreaks("A normal\\nmarkdown paragraph")).toBe(false);
+  });
+});
+
+describe("resolveMonitorSystemEventPresentation", () => {
+  it("uses the observation summary without presenting the event as user speech", () => {
+    expect(
+      resolveMonitorSystemEventPresentation({
+        type: "monitor.continuation",
+        deliveryGroupId: "delivery-group-1",
+        monitors: [
+          {
+            monitorId: ThreadMonitorId.make("monitor-1"),
+            triggeredAt: "2026-01-01T00:00:00.000Z",
+            triggerReason: "signal",
+            observation: {
+              label: "Wait for the build",
+              summary: "Build passed.",
+              evidence: null,
+            },
+            continuation: { prompt: "Report the result." },
+          },
+        ],
+        observationTrust: "untrusted",
+        grantsAuthorization: false,
+      }),
+    ).toEqual({ title: "Monitor triggered", summary: "Build passed." });
   });
 });
 

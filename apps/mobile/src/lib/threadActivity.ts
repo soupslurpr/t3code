@@ -1524,7 +1524,7 @@ export function buildThreadFeed(
   const entries = Arr.sortWith(
     [
       ...loadedMessages
-        .filter((message) => message.role !== "system")
+        .filter((message) => message.role !== "system" || message.systemEvent !== undefined)
         .map<RawThreadFeedEntry>((message) => ({
           type: "message",
           id: message.id,
