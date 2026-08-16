@@ -426,6 +426,14 @@ type ComputerImageResult = {
 
 type ComputerSnapshotResult = {
   readonly screenshot?: ComputerScreenshotResult;
+  readonly detailScreenshots?: ReadonlyArray<ComputerDetailScreenshotResult>;
+  readonly [key: string]: unknown;
+};
+
+type ComputerDetailScreenshotResult = {
+  readonly id: string;
+  readonly purpose?: string;
+  readonly screenshot: ComputerScreenshotResult;
   readonly [key: string]: unknown;
 };
 
@@ -462,12 +470,43 @@ type ComputerTemporalSequenceResult = {
 
 /** Separates one screenshot's image bytes from its structured metadata. */
 function computerSnapshotResult(snapshot: ComputerSnapshotResult) {
-  const { screenshot, ...metadata } = snapshot;
+  const { screenshot, detailScreenshots, ...metadata } = snapshot;
   const image = screenshot?.state === "image" ? screenshot : undefined;
+  const detailImages: Array<{
+    readonly id: string;
+    readonly purpose?: string;
+    readonly screenshot: Extract<ComputerScreenshotResult, { readonly state: "image" }>;
+  }> = [];
+  const detailMetadata = detailScreenshots?.map(({ screenshot: detailScreenshot, ...detail }) => {
+    if (detailScreenshot.state === "image") {
+      detailImages.push({
+        id: detail.id,
+        ...(detail.purpose === undefined ? {} : { purpose: detail.purpose }),
+        screenshot: detailScreenshot,
+      });
+    }
+    return {
+      ...detail,
+      screenshot:
+        detailScreenshot.state === "unchanged"
+          ? detailScreenshot
+          : {
+              state: detailScreenshot.state,
+              contentHash: detailScreenshot.contentHash,
+              mimeType: detailScreenshot.mimeType,
+              width: detailScreenshot.width,
+              height: detailScreenshot.height,
+              sizeBytes: detailScreenshot.sizeBytes,
+              encoding: detailScreenshot.encoding,
+            },
+    };
+  });
   return {
     screenshot: image,
+    detailScreenshots: detailImages,
     metadata: {
       ...metadata,
+      ...(detailMetadata === undefined ? {} : { detailScreenshots: detailMetadata }),
       ...(screenshot === undefined
         ? {}
         : {
@@ -499,6 +538,8 @@ function computerTemporalSequenceResult(sequence: ComputerTemporalSequenceResult
     readonly screenshot: Extract<ComputerScreenshotResult, { readonly state: "image" }>;
     readonly index: number;
     readonly elapsedMs: number;
+    readonly detailId?: string;
+    readonly detailPurpose?: string;
   }> = [];
   const frames = sequence.frames.map((frame) => {
     const prepared = computerSnapshotResult(frame.snapshot);
@@ -507,6 +548,15 @@ function computerTemporalSequenceResult(sequence: ComputerTemporalSequenceResult
         screenshot: prepared.screenshot,
         index: frame.index,
         elapsedMs: frame.elapsedMs,
+      });
+    }
+    for (const detail of prepared.detailScreenshots) {
+      screenshots.push({
+        screenshot: detail.screenshot,
+        index: frame.index,
+        elapsedMs: frame.elapsedMs,
+        detailId: detail.id,
+        ...(detail.purpose === undefined ? {} : { detailPurpose: detail.purpose }),
       });
     }
     return { ...frame, snapshot: prepared.metadata };
@@ -544,7 +594,7 @@ const computerImageResult = (encodedResult: unknown) => {
   const nestedSnapshot = observation.snapshot;
   const snapshot = nestedSnapshot ?? observation;
   const preparedSnapshot = computerSnapshotResult(snapshot);
-  const { screenshot } = preparedSnapshot;
+  const { screenshot, detailScreenshots } = preparedSnapshot;
   const desktopSnapshot = preparedSnapshot.metadata;
   const desktop =
     nestedSnapshot === undefined
@@ -563,6 +613,15 @@ const computerImageResult = (encodedResult: unknown) => {
         "codex/imageDetail": "original",
         "t3/temporalFrameIndex": frame.index,
         "t3/temporalElapsedMs": frame.elapsedMs,
+        ...(frame.detailId === undefined
+          ? { "t3/computerImageRole": "overview" }
+          : {
+              "t3/computerImageRole": "detail",
+              "t3/computerDetailId": frame.detailId,
+              ...(frame.detailPurpose === undefined
+                ? {}
+                : { "t3/computerDetailPurpose": frame.detailPurpose }),
+            }),
       },
     })) ?? []),
     ...(screenshot === undefined
@@ -572,9 +631,23 @@ const computerImageResult = (encodedResult: unknown) => {
             type: "image" as const,
             data: new Uint8Array(Buffer.from(screenshot.data, "base64")),
             mimeType: screenshot.mimeType,
-            _meta: { "codex/imageDetail": "original" },
+            _meta: {
+              "codex/imageDetail": "original",
+              "t3/computerImageRole": "overview",
+            },
           },
         ]),
+    ...detailScreenshots.map((detail) => ({
+      type: "image" as const,
+      data: new Uint8Array(Buffer.from(detail.screenshot.data, "base64")),
+      mimeType: detail.screenshot.mimeType,
+      _meta: {
+        "codex/imageDetail": "original",
+        "t3/computerImageRole": "detail",
+        "t3/computerDetailId": detail.id,
+        ...(detail.purpose === undefined ? {} : { "t3/computerDetailPurpose": detail.purpose }),
+      },
+    })),
   ];
   return new McpSchema.CallToolResult({
     isError: false,

@@ -33,6 +33,7 @@ import {
   type ComputerAutomationAccessibilitySnapshot,
   type ComputerAutomationCaptureHealth,
   type ComputerAutomationFrame,
+  type ComputerAutomationScreenshotOptions,
   type ComputerAutomationSnapshot,
   type ComputerAutomationSnapshotInput,
   type ComputerAutomationStatus,
@@ -2445,7 +2446,8 @@ export const make = Effect.gen(function* () {
       if (accessibility === undefined) yield* Ref.set(runtime.accessibilityTargets, new Map());
       if (accessibility === undefined) yield* Ref.set(runtime.accessibilityWindows, new Map());
       const screenshotOptions = input.screenshot === false ? null : (input.screenshot ?? {});
-      if (screenshotOptions === null) {
+      const detailScreenshotOptions = input.detailScreenshots ?? [];
+      if (screenshotOptions === null && detailScreenshotOptions.length === 0) {
         const displaySize = yield* Ref.get(runtime.displaySize);
         return {
           display: {
@@ -2484,146 +2486,202 @@ export const make = Effect.gen(function* () {
       yield* recordCaptureSuccess(runtime);
       const sourceSize = sourceImage.getSize();
       yield* Ref.set(runtime.displaySize, sourceSize);
-      let region = { x: 0, y: 0, width: sourceSize.width, height: sourceSize.height };
-      const requestedRegion = screenshotOptions.region;
-      if (requestedRegion !== undefined && "frameId" in requestedRegion) {
-        const stored = (yield* Ref.get(runtime.frames)).frames.get(requestedRegion.frameId);
-        if (
-          stored === undefined ||
-          stored.displayWidth !== sourceSize.width ||
-          stored.displayHeight !== sourceSize.height
-        ) {
-          return yield* new ComputerUse.ComputerUseFrameNotFoundError({
-            frameId: requestedRegion.frameId,
-          });
-        }
-        if (
-          requestedRegion.x + requestedRegion.width > stored.frame.width ||
-          requestedRegion.y + requestedRegion.height > stored.frame.height
-        ) {
-          return yield* new ComputerUse.ComputerUseRegionOutOfBoundsError({
-            ...requestedRegion,
-            frameWidth: stored.frame.width,
-            frameHeight: stored.frame.height,
-            field: "screenshot.region",
-            received: `${requestedRegion.x},${requestedRegion.y},${requestedRegion.width},${requestedRegion.height}`,
-            expected: ["region contained by its source frame"],
-          });
-        }
-        region = {
-          x: Math.round(
-            stored.frame.toDesktopLogical.offsetX +
-              requestedRegion.x * stored.frame.toDesktopLogical.scaleX,
-          ),
-          y: Math.round(
-            stored.frame.toDesktopLogical.offsetY +
-              requestedRegion.y * stored.frame.toDesktopLogical.scaleY,
-          ),
-          width: Math.max(
-            1,
-            Math.round(requestedRegion.width * stored.frame.toDesktopLogical.scaleX),
-          ),
-          height: Math.max(
-            1,
-            Math.round(requestedRegion.height * stored.frame.toDesktopLogical.scaleY),
-          ),
-        };
-      } else if (requestedRegion !== undefined) {
-        if (requestedRegion.displayId !== "display-0") {
-          return yield* new ComputerUse.ComputerUseDisplayNotFoundError({
-            displayId: requestedRegion.displayId,
-          });
-        }
-        const right = requestedRegion.x + requestedRegion.width;
-        const bottom = requestedRegion.y + requestedRegion.height;
-        if (
-          requestedRegion.x < 0 ||
-          requestedRegion.y < 0 ||
-          right > sourceSize.width ||
-          bottom > sourceSize.height
-        ) {
-          return yield* new ComputerUse.ComputerUseRegionOutOfBoundsError({
-            frameId: `display:${requestedRegion.displayId}`,
+      const commandedPointer = yield* Ref.get(runtime.lastPointer);
+      const resolveScreenshotRegion = Effect.fn("AgentDesktopManager.resolveScreenshotRegion")(
+        function* (options: ComputerAutomationScreenshotOptions, fieldPrefix: string) {
+          const requestedRegion = options.region;
+          if (requestedRegion === undefined) {
+            return { x: 0, y: 0, width: sourceSize.width, height: sourceSize.height };
+          }
+          if ("frameId" in requestedRegion) {
+            const stored = (yield* Ref.get(runtime.frames)).frames.get(requestedRegion.frameId);
+            if (
+              stored === undefined ||
+              stored.displayWidth !== sourceSize.width ||
+              stored.displayHeight !== sourceSize.height
+            ) {
+              return yield* new ComputerUse.ComputerUseFrameNotFoundError({
+                frameId: requestedRegion.frameId,
+              });
+            }
+            if (
+              requestedRegion.x + requestedRegion.width > stored.frame.width ||
+              requestedRegion.y + requestedRegion.height > stored.frame.height
+            ) {
+              return yield* new ComputerUse.ComputerUseRegionOutOfBoundsError({
+                ...requestedRegion,
+                frameWidth: stored.frame.width,
+                frameHeight: stored.frame.height,
+                field: fieldPrefix,
+                received: `${requestedRegion.x},${requestedRegion.y},${requestedRegion.width},${requestedRegion.height}`,
+                expected: ["region contained by its source frame"],
+              });
+            }
+            return {
+              x: Math.round(
+                stored.frame.toDesktopLogical.offsetX +
+                  requestedRegion.x * stored.frame.toDesktopLogical.scaleX,
+              ),
+              y: Math.round(
+                stored.frame.toDesktopLogical.offsetY +
+                  requestedRegion.y * stored.frame.toDesktopLogical.scaleY,
+              ),
+              width: Math.max(
+                1,
+                Math.round(requestedRegion.width * stored.frame.toDesktopLogical.scaleX),
+              ),
+              height: Math.max(
+                1,
+                Math.round(requestedRegion.height * stored.frame.toDesktopLogical.scaleY),
+              ),
+            };
+          }
+          if (requestedRegion.displayId !== "display-0") {
+            return yield* new ComputerUse.ComputerUseDisplayNotFoundError({
+              displayId: requestedRegion.displayId,
+            });
+          }
+          const right = requestedRegion.x + requestedRegion.width;
+          const bottom = requestedRegion.y + requestedRegion.height;
+          if (
+            requestedRegion.x < 0 ||
+            requestedRegion.y < 0 ||
+            right > sourceSize.width ||
+            bottom > sourceSize.height
+          ) {
+            return yield* new ComputerUse.ComputerUseRegionOutOfBoundsError({
+              frameId: `display:${requestedRegion.displayId}`,
+              x: requestedRegion.x,
+              y: requestedRegion.y,
+              width: requestedRegion.width,
+              height: requestedRegion.height,
+              frameWidth: sourceSize.width,
+              frameHeight: sourceSize.height,
+              field: fieldPrefix,
+              received: `${requestedRegion.x},${requestedRegion.y},${requestedRegion.width},${requestedRegion.height}`,
+              expected: ["region contained by its source display"],
+            });
+          }
+          return {
             x: requestedRegion.x,
             y: requestedRegion.y,
             width: requestedRegion.width,
             height: requestedRegion.height,
-            frameWidth: sourceSize.width,
-            frameHeight: sourceSize.height,
-            field: "screenshot.region",
-            received: `${requestedRegion.x},${requestedRegion.y},${requestedRegion.width},${requestedRegion.height}`,
-            expected: ["region contained by its source display"],
-          });
-        }
-        region = {
-          x: requestedRegion.x,
-          y: requestedRegion.y,
-          width: requestedRegion.width,
-          height: requestedRegion.height,
-        };
-      }
-      const cropped = sourceImage.crop(region);
-      const targetSize = fittedImageSize(
-        region.width,
-        region.height,
-        screenshotOptions.maxWidth ?? DEFAULT_SCREENSHOT_WIDTH,
-        screenshotOptions.maxHeight ?? DEFAULT_SCREENSHOT_HEIGHT,
-      );
-      const image =
-        targetSize.width === region.width && targetSize.height === region.height
-          ? cropped
-          : cropped.resize({ ...targetSize, quality: "best" });
-      const size = image.getSize();
-      const frame = yield* storeFrame(
-        runtime,
-        {
-          displayId: "display-0",
-          coordinateSpace: "image-pixels",
-          width: size.width,
-          height: size.height,
-          toDesktopLogical: {
-            scaleX: region.width / size.width,
-            scaleY: region.height / size.height,
-            offsetX: region.x,
-            offsetY: region.y,
-          },
+          };
         },
-        sourceSize.width,
-        sourceSize.height,
       );
-      const commandedPointer = yield* Ref.get(runtime.lastPointer);
-      const pointerPosition =
-        commandedPointer === null
-          ? null
-          : {
-              x: (commandedPointer.x - region.x) / frame.toDesktopLogical.scaleX,
-              y: (commandedPointer.y - region.y) / frame.toDesktopLogical.scaleY,
-            };
-      const pointerVisible =
-        pointerPosition !== null &&
-        pointerPosition.x >= 0 &&
-        pointerPosition.y >= 0 &&
-        pointerPosition.x < size.width &&
-        pointerPosition.y < size.height;
-      const rendered = yield* Effect.tryPromise({
-        try: () =>
-          renderComputerScreenshot(
-            image,
-            pointerVisible ? pointerPosition : null,
-            screenshotOptions.encoding,
-            screenshotOptions.unchangedIfContentHash,
-          ),
-        catch: (cause) =>
-          new AgentDesktopManagerError({
-            code: "internal-error",
-            operation: "snapshot",
-            detail:
-              `desktop screenshot encoding failed: ${cause instanceof Error ? cause.message : String(cause)}`.slice(
-                0,
-                2_000,
-              ),
-          }),
+      const renderScreenshot = Effect.fn("AgentDesktopManager.renderScreenshot")(function* (
+        options: ComputerAutomationScreenshotOptions,
+        region: {
+          readonly x: number;
+          readonly y: number;
+          readonly width: number;
+          readonly height: number;
+        },
+      ) {
+        const cropped = sourceImage.crop(region);
+        const targetSize = fittedImageSize(
+          region.width,
+          region.height,
+          options.maxWidth ?? DEFAULT_SCREENSHOT_WIDTH,
+          options.maxHeight ?? DEFAULT_SCREENSHOT_HEIGHT,
+        );
+        const image =
+          targetSize.width === region.width && targetSize.height === region.height
+            ? cropped
+            : cropped.resize({ ...targetSize, quality: "best" });
+        const size = image.getSize();
+        const frame = yield* storeFrame(
+          runtime,
+          {
+            displayId: "display-0",
+            coordinateSpace: "image-pixels",
+            width: size.width,
+            height: size.height,
+            toDesktopLogical: {
+              scaleX: region.width / size.width,
+              scaleY: region.height / size.height,
+              offsetX: region.x,
+              offsetY: region.y,
+            },
+          },
+          sourceSize.width,
+          sourceSize.height,
+        );
+        const pointerPosition =
+          commandedPointer === null
+            ? null
+            : {
+                x: (commandedPointer.x - region.x) / frame.toDesktopLogical.scaleX,
+                y: (commandedPointer.y - region.y) / frame.toDesktopLogical.scaleY,
+              };
+        const pointerVisible =
+          pointerPosition !== null &&
+          pointerPosition.x >= 0 &&
+          pointerPosition.y >= 0 &&
+          pointerPosition.x < size.width &&
+          pointerPosition.y < size.height;
+        const rendered = yield* Effect.tryPromise({
+          try: () =>
+            renderComputerScreenshot(
+              image,
+              pointerVisible ? pointerPosition : null,
+              options.encoding,
+              options.unchangedIfContentHash,
+            ),
+          catch: (cause) =>
+            new AgentDesktopManagerError({
+              code: "internal-error",
+              operation: "snapshot",
+              detail:
+                `desktop screenshot encoding failed: ${cause instanceof Error ? cause.message : String(cause)}`.slice(
+                  0,
+                  2_000,
+                ),
+            }),
+        });
+        return {
+          frame,
+          pointer:
+            pointerVisible && pointerPosition !== null
+              ? { frameId: frame.id, position: pointerPosition, source: "last-commanded" as const }
+              : null,
+          screenshot:
+            rendered.state === "unchanged"
+              ? {
+                  state: rendered.state,
+                  contentHash: rendered.contentHash,
+                  width: size.width,
+                  height: size.height,
+                }
+              : {
+                  state: rendered.state,
+                  contentHash: rendered.contentHash,
+                  mimeType: rendered.mimeType,
+                  data: rendered.data.toString("base64"),
+                  width: size.width,
+                  height: size.height,
+                  sizeBytes: rendered.data.byteLength,
+                  encoding: rendered.encoding,
+                },
+        };
       });
+      const primary =
+        screenshotOptions === null
+          ? undefined
+          : yield* resolveScreenshotRegion(screenshotOptions, "screenshot.region").pipe(
+              Effect.flatMap((region) => renderScreenshot(screenshotOptions, region)),
+            );
+      const detailScreenshots = yield* Effect.forEach(detailScreenshotOptions, (detail, index) =>
+        resolveScreenshotRegion(detail, `detailScreenshots[${index}].region`).pipe(
+          Effect.flatMap((region) => renderScreenshot(detail, region)),
+          Effect.map((rendered) => ({
+            id: detail.id,
+            ...(detail.purpose === undefined ? {} : { purpose: detail.purpose }),
+            ...rendered,
+          })),
+        ),
+      );
       return {
         display: {
           id: "display-0",
@@ -2633,30 +2691,11 @@ export const make = Effect.gen(function* () {
           scaleFactor: 1,
         },
         cursor: null,
-        pointer: pointerVisible
-          ? { frameId: frame.id, position: pointerPosition!, source: "last-commanded" }
-          : null,
-        frame,
+        ...(primary === undefined ? {} : { pointer: primary.pointer, frame: primary.frame }),
         ...(accessibility === undefined ? {} : { accessibility }),
         captureSource: "virtual-display",
-        screenshot:
-          rendered.state === "unchanged"
-            ? {
-                state: rendered.state,
-                contentHash: rendered.contentHash,
-                width: size.width,
-                height: size.height,
-              }
-            : {
-                state: rendered.state,
-                contentHash: rendered.contentHash,
-                mimeType: rendered.mimeType,
-                data: rendered.data.toString("base64"),
-                width: size.width,
-                height: size.height,
-                sizeBytes: rendered.data.byteLength,
-                encoding: rendered.encoding,
-              },
+        ...(primary === undefined ? {} : { screenshot: primary.screenshot }),
+        ...(detailScreenshots.length === 0 ? {} : { detailScreenshots }),
       };
     });
 

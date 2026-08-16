@@ -543,6 +543,86 @@ describe("ComputerUse", () => {
     }),
   );
 
+  it.effect("derives overview and detail frames from one native capture", () =>
+    Effect.gen(function* () {
+      const records: Array<InputRecord> = [];
+      let decodeCount = 0;
+      let encodeCount = 0;
+      const sourceImage = makeImage(1_600, 1_200);
+      const computer = yield* ComputerUse.makeWithOptions(
+        makePlatform({
+          decode: () => {
+            decodeCount += 1;
+            return sourceImage;
+          },
+          encode: async () => {
+            encodeCount += 1;
+            return {
+              state: "image" as const,
+              contentHash,
+              data: Buffer.from([1, 2, 3]),
+              mimeType: "image/webp",
+              encoding: { format: "webp" as const, mode: "lossless" as const },
+            };
+          },
+        }),
+        makeController(records),
+      );
+
+      const snapshot = yield* computer.snapshot({
+        displayId: "7",
+        includeAccessibility: false,
+        screenshot: { maxWidth: 400, maxHeight: 300 },
+        detailScreenshots: [
+          {
+            id: "toolbar",
+            purpose: "Inspect toolbar controls.",
+            region: {
+              coordinateSpace: "desktop-logical",
+              displayId: "7",
+              x: 0,
+              y: 100,
+              width: 200,
+              height: 100,
+            },
+            maxWidth: 400,
+            maxHeight: 200,
+          },
+        ],
+      });
+
+      assert.equal(records.filter(({ operation }) => operation === "snapshot").length, 1);
+      assert.equal(decodeCount, 1);
+      assert.equal(encodeCount, 2);
+      assert.deepInclude(snapshot.frame, {
+        id: "frame-1",
+        width: 400,
+        height: 300,
+        toDesktopLogical: { scaleX: 2, scaleY: 2, offsetX: -100, offsetY: 50 },
+      });
+      assert.deepInclude(snapshot.detailScreenshots?.[0], {
+        id: "toolbar",
+        purpose: "Inspect toolbar controls.",
+      });
+      assert.deepInclude(snapshot.detailScreenshots?.[0]?.frame, {
+        id: "frame-2",
+        width: 400,
+        height: 200,
+        toDesktopLogical: { scaleX: 0.5, scaleY: 0.5, offsetX: 0, offsetY: 100 },
+      });
+
+      records.length = 0;
+      yield* computer.act({
+        actions: [{ type: "click", frameId: "frame-2", x: 200, y: 100 }],
+      });
+      assert.deepEqual(records, [
+        { operation: "start" },
+        { operation: "move", input: { x: 100, y: 150, durationMs: 0 } },
+        { operation: "click", input: { button: "left", count: 1 } },
+      ]);
+    }),
+  );
+
   it.effect("captures a durable desktop-logical region without a source frame", () =>
     Effect.gen(function* () {
       let cropInput: unknown;

@@ -277,6 +277,42 @@ function automationResult(operation: string, input?: unknown): unknown {
       if (
         typeof input === "object" &&
         input !== null &&
+        "detailScreenshots" in input &&
+        Array.isArray(input.detailScreenshots) &&
+        input.detailScreenshots.length > 0
+      ) {
+        return {
+          ...snapshot,
+          detailScreenshots: [
+            {
+              id: "composer",
+              purpose: "Read the drafted message.",
+              frame: {
+                id: "frame-2",
+                displayId: "7",
+                coordinateSpace: "image-pixels",
+                width: 400,
+                height: 120,
+                toDesktopLogical: { scaleX: 1, scaleY: 1, offsetX: 100, offsetY: 200 },
+              },
+              pointer: null,
+              screenshot: {
+                state: "image",
+                contentHash: computerContentHash,
+                mimeType: "image/webp",
+                data: Buffer.from("computer-detail-webp").toString("base64"),
+                width: 400,
+                height: 120,
+                sizeBytes: Buffer.byteLength("computer-detail-webp"),
+                encoding: { format: "webp", mode: "lossless" },
+              },
+            },
+          ],
+        };
+      }
+      if (
+        typeof input === "object" &&
+        input !== null &&
         "screenshot" in input &&
         input.screenshot === false
       ) {
@@ -720,7 +756,10 @@ it.effect("registers annotated tools and preserves authenticated request context
         expect.arrayContaining([
           expect.objectContaining({
             type: "image",
-            _meta: { "codex/imageDetail": "original" },
+            _meta: expect.objectContaining({
+              "codex/imageDetail": "original",
+              "t3/computerImageRole": "overview",
+            }),
           }),
         ]),
       );
@@ -770,6 +809,53 @@ it.effect("registers annotated tools and preserves authenticated request context
         },
       });
       expect(computerSnapshot.structuredContent).not.toHaveProperty("screenshot.data");
+
+      const detailedSnapshot = yield* server
+        .callTool({
+          name: "computer_snapshot",
+          arguments: {
+            displayId: "7",
+            detailScreenshots: [{ id: "composer", purpose: "Read the drafted message." }],
+          },
+        })
+        .pipe(
+          Effect.provideService(McpInvocationContext.McpInvocationContext, invocation),
+          Effect.provideService(McpSchema.McpServerClient, client),
+        );
+      expect(detailedSnapshot.isError).toBe(false);
+      expect(detailedSnapshot.content.filter((content) => content.type === "image")).toHaveLength(
+        2,
+      );
+      expect(detailedSnapshot.content).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            type: "image",
+            _meta: expect.objectContaining({
+              "t3/computerImageRole": "detail",
+              "t3/computerDetailId": "composer",
+              "t3/computerDetailPurpose": "Read the drafted message.",
+            }),
+          }),
+        ]),
+      );
+      expect(detailedSnapshot.structuredContent).toMatchObject({
+        detailScreenshots: [
+          {
+            id: "composer",
+            purpose: "Read the drafted message.",
+            frame: { id: "frame-2" },
+            screenshot: {
+              state: "image",
+              width: 400,
+              height: 120,
+              sizeBytes: Buffer.byteLength("computer-detail-webp"),
+            },
+          },
+        ],
+      });
+      expect(detailedSnapshot.structuredContent).not.toHaveProperty(
+        "detailScreenshots[0].screenshot.data",
+      );
 
       const unchangedSnapshot = yield* server
         .callTool({
@@ -866,7 +952,10 @@ it.effect("registers annotated tools and preserves authenticated request context
         expect.arrayContaining([
           expect.objectContaining({
             type: "image",
-            _meta: { "codex/imageDetail": "original" },
+            _meta: expect.objectContaining({
+              "codex/imageDetail": "original",
+              "t3/computerImageRole": "overview",
+            }),
           }),
         ]),
       );
