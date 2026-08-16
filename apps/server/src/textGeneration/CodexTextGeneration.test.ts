@@ -609,7 +609,7 @@ it.layer(CodexTextGenerationTestLayer)("CodexTextGeneration", (it) => {
     ),
   );
 
-  it.effect("evaluates screen conditions with exact model and untrusted-image guidance", () =>
+  it.effect("evaluates screen conditions with minimal context and untrusted-image guidance", () =>
     withFakeCodexEnv(
       {
         output: JSON.stringify({
@@ -644,6 +644,11 @@ it.layer(CodexTextGenerationTestLayer)("CodexTextGeneration", (it) => {
           "--json",
           "model_provider=custom",
           "project_doc_max_bytes=0",
+          "skills.include_instructions=false",
+          "include_permissions_instructions=false",
+          "include_environment_context=false",
+          "include_apps_instructions=false",
+          "include_collaboration_mode_instructions=false",
           "tools.view_image=false",
           "shell_tool",
           "multi_agent",
