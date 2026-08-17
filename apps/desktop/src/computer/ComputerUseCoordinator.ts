@@ -1,8 +1,8 @@
 import type {
-  ComputerAutomationActInput,
+  ComputerAutomationActionBatchInput,
   ComputerAutomationActionResult,
   ComputerAutomationSnapshot,
-  ComputerAutomationSnapshotInput,
+  ComputerAutomationObservationOptions,
   ComputerAutomationStatus,
 } from "@t3tools/contracts";
 import * as Context from "effect/Context";
@@ -51,11 +51,11 @@ export interface ComputerUseCoordinatorShape {
   ) => Effect.Effect<ComputerAutomationStatus, ComputerUse.ComputerUseError>;
   readonly snapshot: (
     controllerId: string,
-    input: ComputerAutomationSnapshotInput,
+    input: ComputerAutomationObservationOptions,
   ) => Effect.Effect<ComputerAutomationSnapshot, ComputerUse.ComputerUseError>;
   readonly act: (
     controllerId: string,
-    input: ComputerAutomationActInput,
+    input: ComputerAutomationActionBatchInput,
   ) => Effect.Effect<ReadonlyArray<ComputerAutomationActionResult>, ComputerUse.ComputerUseError>;
   readonly release: (
     controllerId: string,

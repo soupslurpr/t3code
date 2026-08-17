@@ -38,14 +38,16 @@ const decodeStatus = Schema.decodeUnknownSync(ComputerAutomationStatus);
 const decodeTarget = Schema.decodeUnknownSync(ComputerAutomationTargetInput);
 const decodeType = Schema.decodeUnknownSync(ComputerAutomationTypeInput);
 const contentHash = "sha256-bgra8-v1:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA";
+const userDesktop = { desktop: { kind: "user" as const } };
 
 describe("computer automation contracts", () => {
   it("selects user or independently managed agent desktops", () => {
-    expect(decodeAvailability({})).toEqual({});
+    expect(() => decodeAvailability({})).toThrow();
     expect(decodeAvailability({ desktop: { kind: "user" } })).toEqual({
       desktop: { kind: "user" },
     });
     expect(() => decodeAvailability({ desktop: { kind: "agent" } })).toThrow();
+    expect(() => decodeAccess({})).toThrow();
     expect(decodeAccess({ desktop: { kind: "user" }, observation: false })).toEqual({
       desktop: { kind: "user" },
       observation: false,
@@ -66,6 +68,15 @@ describe("computer automation contracts", () => {
       desktop: { kind: "agent", desktopId: "desktop-1" },
     });
     expect(() => decodeTarget({ desktop: { kind: "agent" } })).toThrow();
+    expect(() => decodeTarget({})).toThrow();
+    expect(
+      decodeFailure({
+        code: "desktop-target-required",
+        category: "invalid-input",
+        message: "An explicit desktop target is required.",
+        field: "desktop",
+      }),
+    ).toMatchObject({ code: "desktop-target-required", field: "desktop" });
   });
 
   it("accepts display-relative coordinates and bounded click options", () => {
@@ -92,10 +103,15 @@ describe("computer automation contracts", () => {
         screenshot: { maxWidth: 640, maxHeight: 360 },
       }),
     ).toMatchObject({ frameCount: 6, intervalMs: 250 });
-    expect(() => decodeObserveSequence({ frameCount: 1, intervalMs: 250 })).toThrow();
-    expect(() => decodeObserveSequence({ frameCount: 24, intervalMs: 5_000 })).toThrow();
+    expect(() =>
+      decodeObserveSequence({ ...userDesktop, frameCount: 1, intervalMs: 250 }),
+    ).toThrow();
+    expect(() =>
+      decodeObserveSequence({ ...userDesktop, frameCount: 24, intervalMs: 5_000 }),
+    ).toThrow();
     expect(() =>
       decodeObserveSequence({
+        ...userDesktop,
         displayId: "display-0",
         frameCount: 2,
         intervalMs: 100,
@@ -226,7 +242,8 @@ describe("computer automation contracts", () => {
         captureSource: "remote-desktop-stream",
       }).screenshot,
     ).toBeUndefined();
-    expect(decodeSnapshotInput({ screenshot: false })).toEqual({
+    expect(decodeSnapshotInput({ ...userDesktop, screenshot: false })).toEqual({
+      ...userDesktop,
       screenshot: false,
     });
     expect(
@@ -235,9 +252,16 @@ describe("computer automation contracts", () => {
         screenshot: false,
       }),
     ).toEqual({ desktop: { kind: "agent", desktopId: "desktop-1" }, screenshot: false });
-    expect(() => decodeSnapshotInput({ includeAccessibility: false, screenshot: false })).toThrow();
+    expect(() =>
+      decodeSnapshotInput({
+        ...userDesktop,
+        includeAccessibility: false,
+        screenshot: false,
+      }),
+    ).toThrow();
     expect(
       decodeSnapshotInput({
+        ...userDesktop,
         screenshot: {
           region: { frameId: "frame-1", x: 10, y: 20, width: 100, height: 80 },
           maxWidth: 1_200,
@@ -254,14 +278,20 @@ describe("computer automation contracts", () => {
       },
       delayMs: 50,
     });
-    expect(decodeSnapshotInput({ screenshot: { encoding: { format: "png" } } })).toMatchObject({
-      screenshot: { encoding: { format: "png" } },
-    });
     expect(
-      decodeSnapshotInput({ screenshot: { unchangedIfContentHash: contentHash } }),
+      decodeSnapshotInput({ ...userDesktop, screenshot: { encoding: { format: "png" } } }),
+    ).toMatchObject({ screenshot: { encoding: { format: "png" } } });
+    expect(
+      decodeSnapshotInput({
+        ...userDesktop,
+        screenshot: { unchangedIfContentHash: contentHash },
+      }),
     ).toMatchObject({ screenshot: { unchangedIfContentHash: contentHash } });
     expect(() =>
-      decodeSnapshotInput({ screenshot: { unchangedIfContentHash: "sha256:invalid" } }),
+      decodeSnapshotInput({
+        ...userDesktop,
+        screenshot: { unchangedIfContentHash: "sha256:invalid" },
+      }),
     ).toThrow();
     expect(
       decodeSnapshot({
@@ -284,16 +314,19 @@ describe("computer automation contracts", () => {
     ).toEqual({ state: "unchanged", contentHash, width: 800, height: 600 });
     expect(() =>
       decodeSnapshotInput({
+        ...userDesktop,
         screenshot: { encoding: { format: "webp", mode: "lossy", quality: 0 } },
       }),
     ).toThrow();
     expect(() =>
       decodeSnapshotInput({
+        ...userDesktop,
         screenshot: { encoding: { format: "webp", mode: "lossless", quality: 90 } },
       }),
     ).toThrow();
     expect(() =>
       decodeSnapshotInput({
+        ...userDesktop,
         displayId: "42",
         screenshot: { region: { frameId: "frame-1", x: 0, y: 0, width: 10, height: 10 } },
       }),
@@ -303,6 +336,7 @@ describe("computer automation contracts", () => {
   it("accepts bounded same-capture detail screenshots", () => {
     expect(
       decodeSnapshotInput({
+        ...userDesktop,
         includeAccessibility: false,
         screenshot: false,
         detailScreenshots: [
@@ -328,11 +362,13 @@ describe("computer automation contracts", () => {
     });
     expect(() =>
       decodeSnapshotInput({
+        ...userDesktop,
         detailScreenshots: [{ id: "duplicate" }, { id: "duplicate" }],
       }),
     ).toThrow();
     expect(() =>
       decodeSnapshotInput({
+        ...userDesktop,
         displayId: "42",
         detailScreenshots: [
           {
@@ -539,9 +575,10 @@ describe("computer automation contracts", () => {
         { type: "wait", durationMs: 500 },
       ],
     });
-    expect(() => decodeAct({ actions: [] })).toThrow();
+    expect(() => decodeAct({ ...userDesktop, actions: [] })).toThrow();
     expect(() =>
       decodeAct({
+        ...userDesktop,
         actions: [
           { type: "press", key: "Tab" },
           { type: "activate", targetId: "a11y-1-1" },
@@ -550,6 +587,7 @@ describe("computer automation contracts", () => {
     ).toThrow();
     expect(
       decodeAct({
+        ...userDesktop,
         actions: [
           { type: "activate_window", windowId: "window-1-2" },
           {
@@ -567,6 +605,7 @@ describe("computer automation contracts", () => {
     ).toMatchObject({ actions: [{ type: "activate_window" }, { type: "wait_for_change" }] });
     expect(() =>
       decodeAct({
+        ...userDesktop,
         actions: [
           { type: "press", key: "Tab" },
           { type: "activate_window", windowId: "window-1-2" },
@@ -575,6 +614,7 @@ describe("computer automation contracts", () => {
     ).toThrow();
     expect(() =>
       decodeAct({
+        ...userDesktop,
         actions: [
           {
             type: "wait_for_change",
@@ -590,29 +630,38 @@ describe("computer automation contracts", () => {
     ).toThrow();
     expect(() =>
       decodeAct({
+        ...userDesktop,
         actions: [
           { type: "activate", targetId: "a11y-1-1" },
           { type: "activate", targetId: "a11y-1-2" },
         ],
       }),
     ).toThrow();
-    expect(() => decodeAct({ actions: [{ type: "wait", durationMs: 5_001 }] })).toThrow();
+    expect(() =>
+      decodeAct({ ...userDesktop, actions: [{ type: "wait", durationMs: 5_001 }] }),
+    ).toThrow();
     expect(() =>
       decodeAct({
+        ...userDesktop,
         actions: [{ type: "wheel", frameId: "frame-1", x: 100, verticalTicks: 3 }],
       }),
     ).toThrow();
-    expect(() => decodeAct({ actions: [{ type: "wheel" }] })).toThrow();
+    expect(() => decodeAct({ ...userDesktop, actions: [{ type: "wheel" }] })).toThrow();
     expect(() =>
       decodeAct({
+        ...userDesktop,
         actions: Array.from({ length: 33 }, () => ({ type: "press" as const, key: "Tab" })),
       }),
     ).toThrow();
     expect(() =>
-      decodeAct({ actions: [{ type: "type", text: "x".repeat(1_000), intervalMs: 100 }] }),
+      decodeAct({
+        ...userDesktop,
+        actions: [{ type: "type", text: "x".repeat(1_000), intervalMs: 100 }],
+      }),
     ).toThrow();
     expect(
       decodeAct({
+        ...userDesktop,
         actions: [{ type: "press", key: "Space" }],
         temporalObservation: {
           frameCount: 4,

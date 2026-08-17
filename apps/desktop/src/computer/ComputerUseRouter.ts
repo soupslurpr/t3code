@@ -91,7 +91,7 @@ export const make = Effect.gen(function* () {
   const agent = yield* AgentDesktopManager.AgentDesktopManager;
 
   const targetFromInput = (input: ComputerAutomationTargetInput): ComputerDesktopTarget =>
-    input.desktop ?? { kind: "user" };
+    input.desktop;
 
   const requestAccess = Effect.fn("ComputerUseRouter.requestAccess")(function* (
     context: DesktopComputerAutomationContext,
@@ -99,7 +99,7 @@ export const make = Effect.gen(function* () {
     access: "view" | "control",
   ) {
     const requested = input.desktop;
-    if (requested === undefined || requested.kind === "user") {
+    if (requested.kind === "user") {
       return yield* access === "control"
         ? user.requestControl(context.controllerId)
         : user.requestView(context.controllerId);
@@ -135,14 +135,14 @@ export const make = Effect.gen(function* () {
     user.releaseAvailability(context.controllerId);
 
   const snapshot: ComputerUseRouterShape["snapshot"] = (context, input) => {
-    const { desktop = { kind: "user" }, ...observation } = input;
+    const { desktop, ...observation } = input;
     return desktop.kind === "user"
       ? user.snapshot(context.controllerId, observation)
       : agent.snapshot(context.controllerId, observation, desktop.desktopId);
   };
 
   const act: ComputerUseRouterShape["act"] = (context, input) => {
-    const { desktop = { kind: "user" }, ...actions } = input;
+    const { desktop, ...actions } = input;
     return desktop.kind === "user"
       ? user.act(context.controllerId, actions)
       : agent.act(context.controllerId, actions, desktop.desktopId);
