@@ -294,6 +294,7 @@ describe("ThreadMonitorComputer", () => {
         "status",
         "details",
       ]);
+      expect(prepared.capturedBaselineImages).toEqual(prepared.baselineImages);
       expect(prepared.condition.observation.regions.map(({ encoding }) => encoding)).toEqual([
         { format: "webp", mode: "near-lossless", quality: 88 },
         { format: "webp", mode: "lossy", quality: 72 },
@@ -397,6 +398,39 @@ describe("ThreadMonitorComputer", () => {
       expect(fresh.map(({ id, regionId, frameIndex }) => ({ id, regionId, frameIndex }))).toEqual([
         { id: "fresh:0:details", regionId: "details", frameIndex: 0 },
         { id: "fresh:1:details", regionId: "details", frameIndex: 1 },
+      ]);
+
+      const unretainedBaseline = yield* service.revise({
+        monitor: { ...monitor, condition: changed.condition },
+        routingInstanceId: instanceId,
+        revisedAt: "2026-08-14T00:00:02.500Z",
+        watch: {
+          label: monitor.label,
+          desktop: monitor.condition.desktop,
+          observation: {
+            regions: prepared.condition.observation.regions.map((region) => ({
+              id: region.id,
+              role: region.role,
+              ...(region.purpose === null ? {} : { purpose: region.purpose }),
+              region: region.region,
+              maxWidth: region.maxWidth,
+              maxHeight: region.maxHeight,
+              encoding: region.encoding,
+            })),
+          },
+          match: {
+            type: "model",
+            criterion: "The task is visibly complete.",
+            modelSelection,
+            baseline: "none",
+          },
+          continuation: "record-only",
+        },
+      });
+      expect(unretainedBaseline.baselineImages).toEqual([]);
+      expect(unretainedBaseline.capturedBaselineImages.map(({ regionId }) => regionId)).toEqual([
+        "status",
+        "details",
       ]);
 
       const unsupported = yield* service
