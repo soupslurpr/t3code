@@ -559,7 +559,7 @@ function AgentBrowserAccessSetting() {
     <SettingsRow
       serverScoped
       {...searchableSetting("agent-browser-access")}
-      description="Allow agents to use the preview browser. Off hides browser tools from agents, not you."
+      description="Allow agents to use the preview browser. Off hides browser access from agents, but leaves other T3 tools and your browser panel available."
       status={
         settings.enableAgentBrowserAccess
           ? undefined

@@ -2669,7 +2669,7 @@ const makeWsRpcLayer = (
                   threadId: input.threadId,
                   providerSessionId: `human:${currentSessionId}`,
                   providerInstanceId: AGENT_DESKTOP_HUMAN_PROVIDER_INSTANCE_ID,
-                  capabilities: new Set(["preview"]),
+                  capabilities: new Set(["computer"]),
                   issuedAt: yield* Clock.currentTimeMillis,
                 },
                 operation: AGENT_DESKTOP_HUMAN_AUTOMATION_OPERATION,

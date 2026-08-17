@@ -32,7 +32,7 @@ const scope = {
   threadId: ThreadId.make("thread-1"),
   providerSessionId: "provider-session-1",
   providerInstanceId: ProviderInstanceId.make("codex"),
-  capabilities: new Set(["preview"] as const),
+  capabilities: new Set(["preview", "computer"] as const),
   issuedAt: 1,
 };
 
