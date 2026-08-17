@@ -15,6 +15,7 @@ import type * as Effect from "effect/Effect";
 
 export interface ThreadMonitorComputerPrepareResult {
   readonly condition: ThreadMonitorComputerCondition;
+  readonly capturedBaselineImages: ReadonlyArray<ThreadMonitorComputerEvidenceImage>;
   readonly baselineImages: ReadonlyArray<ThreadMonitorComputerEvidenceImage>;
 }
 
