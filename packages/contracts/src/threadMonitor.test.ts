@@ -15,11 +15,19 @@ const modelMatch = {
   criterion: "A result is visible",
   modelSelection: { instanceId: "provider", model: "image-evaluator" },
 };
+const userDesktop = { desktop: { kind: "user" as const } };
 
 describe("thread monitor contracts", () => {
+  it("requires an explicit watched desktop", () => {
+    expect(() =>
+      decodeComputerWatch({ label: "Wait for a result", match: { type: "image-change" } }),
+    ).toThrow();
+  });
+
   it("accepts independent capture and model evaluation intervals", () => {
     expect(
       decodeComputerWatch({
+        ...userDesktop,
         label: "Wait for a result",
         match: modelMatch,
         sampling: {
@@ -33,6 +41,7 @@ describe("thread monitor contracts", () => {
   it("allows controller health reviews to be disabled explicitly", () => {
     expect(
       decodeComputerWatch({
+        ...userDesktop,
         label: "Watch silently",
         match: { type: "image-change" },
         review: null,
@@ -40,6 +49,7 @@ describe("thread monitor contracts", () => {
     ).toBeNull();
     expect(
       decodeComputerWatch({
+        ...userDesktop,
         label: "Review by time only",
         match: { type: "image-change" },
         review: {
@@ -60,6 +70,7 @@ describe("thread monitor contracts", () => {
   it("bounds the minimum model evaluation interval", () => {
     expect(() =>
       decodeComputerWatch({
+        ...userDesktop,
         label: "Wait for a result",
         match: modelMatch,
         sampling: { minEvaluationIntervalMs: 999 },
@@ -67,6 +78,7 @@ describe("thread monitor contracts", () => {
     ).toThrow();
     expect(() =>
       decodeComputerWatch({
+        ...userDesktop,
         label: "Wait for a result",
         match: modelMatch,
         sampling: { minEvaluationIntervalMs: 24 * 60 * 60 * 1_000 + 1 },
@@ -76,6 +88,7 @@ describe("thread monitor contracts", () => {
 
   it("accepts named regions with independent resolutions and encodings", () => {
     const decoded = decodeComputerWatch({
+      ...userDesktop,
       label: "Wait for a result",
       match: modelMatch,
       observation: {
@@ -110,6 +123,7 @@ describe("thread monitor contracts", () => {
   it("accepts exact small region resolutions", () => {
     expect(
       decodeComputerWatch({
+        ...userDesktop,
         label: "Watch a compact status line",
         match: { type: "image-change" },
         observation: {
@@ -119,6 +133,7 @@ describe("thread monitor contracts", () => {
     ).toBe(42);
     expect(() =>
       decodeComputerWatch({
+        ...userDesktop,
         label: "Reject an empty image",
         match: { type: "image-change" },
         observation: {
@@ -131,6 +146,7 @@ describe("thread monitor contracts", () => {
   it("rejects duplicate region ids and context-only plans", () => {
     expect(() =>
       decodeComputerWatch({
+        ...userDesktop,
         label: "Duplicate regions",
         match: modelMatch,
         observation: {
@@ -143,6 +159,7 @@ describe("thread monitor contracts", () => {
     ).toThrow(/unique/u);
     expect(() =>
       decodeComputerWatch({
+        ...userDesktop,
         label: "No trigger",
         match: modelMatch,
         observation: { regions: [{ id: "screen", role: "context" }] },

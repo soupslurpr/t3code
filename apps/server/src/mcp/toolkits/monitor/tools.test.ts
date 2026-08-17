@@ -43,6 +43,11 @@ it("exports bounded object schemas and provider-neutral lifecycle tools", () => 
   const capabilities = MonitorToolkit.tools.computer_watch_capabilities;
   expect(Context.get(capabilities.annotations, Tool.Readonly)).toBe(true);
 
+  const watchStartSchema = Tool.getJsonSchema(MonitorToolkit.tools.computer_watch_start) as {
+    readonly required?: ReadonlyArray<string>;
+  };
+  expect(watchStartSchema.required).toContain("desktop");
+
   const inspect = MonitorToolkit.tools.computer_watch_inspect;
   expect(Context.get(inspect.annotations, Tool.Readonly)).toBe(false);
   expect(Context.get(inspect.annotations, Tool.Idempotent)).toBe(false);

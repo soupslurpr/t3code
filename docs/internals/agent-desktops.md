@@ -24,7 +24,8 @@ lets the manager prefer the controller's suitable assignment, reclaim the most r
 desktop from the same thread, or acquire a new machine. The computer
 router keeps the two backends behind one current request shape; there is no legacy host-only IPC
 request path. The preview broker retains separate physical-host affinity for user and Agent desktops.
-An omitted computer target always means the user desktop and never inherits a prior Agent target.
+Every computer operation names the user desktop or a concrete Agent desktop explicitly; no target is
+inherited or inferred.
 
 ## Machine Boundary
 
