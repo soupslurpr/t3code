@@ -158,14 +158,17 @@ closes the portal session as a final safety fallback.
 
 Text actions request exact Unicode, including smart punctuation, arrows, combining characters, and
 emoji. A focused editable accessibility control receives the text directly and confirms the exact
-inserted substring. The action receipt separates requested, injected, and confirmed code-point
-counts so successful injection is not confused with a stale rendering. When direct insertion is not
-available, both desktop kinds use keyboard events only for exact ASCII and report
+inserted substring. The action receipt separates requested, backend-accepted, and
+application-confirmed code-point counts and labels verification as exact, partial, or unavailable.
+Backend acceptance alone never claims that an application consumed or rendered key events. When
+direct insertion is not available, both desktop kinds use keyboard events only for exact ASCII and report
 `exact-text-unavailable` for non-ASCII instead of claiming success after a compositor or application
 silently drops it, or replaying a Unicode input-method sequence that an application might
-misinterpret. Keyboard taps and pointer clicks use short human-equivalent transition timing to avoid
-dropped events or accidental repeats, and typing waits briefly for the application input queue before
-returning. Neither path reads or changes the clipboard. On either desktop, a focused multiline
+misinterpret. Agent desktop key chords use explicit key-down, hold, reverse key-up, and settle
+phases instead of QEMU's asynchronous timed-key shortcut. Keyboard taps and pointer clicks use
+short human-equivalent transition timing to avoid dropped events or accidental repeats, and typing
+waits briefly for the application input queue before returning. Neither path reads or changes the
+clipboard. On either desktop, a focused multiline
 editable control accepts a whole text block directly; elsewhere Newline and Tab remain real key
 events. Exact insertion never replays text through the keyboard after an uncertain partial failure.
 

@@ -3115,7 +3115,7 @@ export const make = Effect.gen(function* () {
             }
             return Array.from(text).length;
           });
-        let injectedCodePoints = 0;
+        let acceptedCodePoints = 0;
         let confirmedCodePoints = 0;
         let usedAccessibility = false;
         let usedKeyEvents = false;
@@ -3135,15 +3135,15 @@ export const make = Effect.gen(function* () {
                 detail: "guest accessibility omitted exact text confirmation",
               });
             }
-            injectedCodePoints += insertion.injectedCodePoints;
+            acceptedCodePoints += insertion.injectedCodePoints;
             confirmedCodePoints += insertion.confirmedCodePoints;
             usedAccessibility = true;
           } else {
-            injectedCodePoints += yield* sendQemuText(segment);
+            acceptedCodePoints += yield* sendQemuText(segment);
             usedKeyEvents ||= segment.length > 0;
           }
         }
-        if (injectedCodePoints > 0) {
+        if (acceptedCodePoints > 0) {
           yield* Effect.sleep(Duration.millis(DEFAULT_TYPE_SETTLE_MS));
         }
         if (action.submit === true) {
@@ -3158,12 +3158,19 @@ export const make = Effect.gen(function* () {
               : usedKeyEvents
                 ? "key-events"
                 : "none";
+        const verification =
+          delivery === "accessibility" || delivery === "none"
+            ? "exact"
+            : delivery === "mixed"
+              ? "partial"
+              : "unavailable";
         return {
           index: actionIndex,
           type: action.type,
-          requestedCodePoints: Array.from(action.text).length,
-          injectedCodePoints,
-          ...(usedAccessibility ? { confirmedCodePoints } : {}),
+          requestedCodePoints: Array.from(normalizedText).length,
+          acceptedCodePoints,
+          confirmedCodePoints,
+          verification,
           delivery,
           focusedEditable: usedAccessibility,
         };
