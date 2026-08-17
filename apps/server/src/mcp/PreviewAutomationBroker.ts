@@ -104,7 +104,6 @@ interface HostAssignment {
   readonly queue: ClientConnection["queue"];
   readonly tabId?: PreviewTabId;
   readonly tabSequence?: number;
-  readonly computerDesktopKind?: "user" | "agent";
 }
 
 interface PreviewAutomationRequestErrorContext {
@@ -178,8 +177,9 @@ const isComputerOperation = (operation: PreviewAutomationOperation): boolean =>
 const hostAssignmentKey = (
   scope: McpInvocationContext.McpInvocationScope,
   operation: PreviewAutomationOperation,
+  computerDesktopKind?: "user" | "agent",
 ): string =>
-  `${scope.environmentId}\u0000${scope.providerSessionId}\u0000${isComputerOperation(operation) ? "computer" : "preview"}`;
+  `${scope.environmentId}\u0000${scope.providerSessionId}\u0000${isComputerOperation(operation) ? `computer:${computerDesktopKind ?? "user"}` : "preview"}`;
 
 /** Reads an explicit computer target without trusting arbitrary tool input. */
 function requestedComputerDesktopKind(input: unknown): "user" | "agent" | undefined {
@@ -516,9 +516,6 @@ export const make = Effect.gen(function* PreviewAutomationBrokerMake() {
           );
         }),
       );
-      const assignmentKey = hostAssignmentKey(input.scope, input.operation);
-      const assigned = assignments.get(assignmentKey);
-      const assignedConnection = assigned ? current.clients.get(assigned.clientId) : undefined;
       const computerOperation = isComputerOperation(input.operation);
       const explicitDesktopKind =
         input.operation === AGENT_DESKTOP_HUMAN_AUTOMATION_OPERATION ||
@@ -527,28 +524,28 @@ export const make = Effect.gen(function* PreviewAutomationBrokerMake() {
           : computerOperation
             ? requestedComputerDesktopKind(input.input)
             : undefined;
-      const computerDesktopKind = computerOperation
-        ? (explicitDesktopKind ?? assigned?.computerDesktopKind ?? "user")
-        : undefined;
+      const computerDesktopKind = computerOperation ? (explicitDesktopKind ?? "user") : undefined;
+      const assignmentKey = hostAssignmentKey(input.scope, input.operation, computerDesktopKind);
+      const assigned = assignments.get(assignmentKey);
+      const assignedConnection = assigned ? current.clients.get(assigned.clientId) : undefined;
       const hasLiveAssignment = assignedConnection?.environmentId === input.scope.environmentId;
       const assignedTargetCompatible =
         !computerOperation ||
         (computerDesktopKind !== undefined &&
           assignedConnection !== undefined &&
           supportsComputerDesktopKind(assignedConnection, computerDesktopKind));
-      const explicitTargetSwitch =
-        computerOperation && explicitDesktopKind !== undefined && !assignedTargetCompatible;
       // Browser and computer affinity are independent: opening a collaborative
-      // preview must not strand later native computer use on a browser-only
-      // host. Within each domain, retain physical-host affinity so stateful
-      // interactions cannot jump clients. An explicit computer target may
-      // deliberately move between user- and agent-capable hosts.
+      // preview must not strand later native computer use on a browser-only host.
+      // User- and Agent-desktop affinity are independent as well, so supervising
+      // a remote Agent desktop does not redirect the user's current desktop.
+      // Within each domain, retain physical-host affinity so stateful interactions
+      // cannot jump clients.
       const connection =
         hasLiveAssignment &&
         assignedTargetCompatible &&
         supportsOperation(assignedConnection, input.operation)
           ? assignedConnection
-          : hasLiveAssignment && !explicitTargetSwitch
+          : hasLiveAssignment
             ? undefined
             : Array.from(current.clients.values())
                 .filter(
@@ -561,9 +558,9 @@ export const make = Effect.gen(function* PreviewAutomationBrokerMake() {
                 )
                 .sort(
                   (left, right) =>
-                    right.supportedOperations.size - left.supportedOperations.size ||
                     Number(right.focused) - Number(left.focused) ||
-                    right.focusOrder - left.focusOrder,
+                    right.focusOrder - left.focusOrder ||
+                    right.supportedOperations.size - left.supportedOperations.size,
                 )[0];
       if (!connection) {
         if (!hasLiveAssignment) assignments.delete(assignmentKey);
@@ -581,7 +578,6 @@ export const make = Effect.gen(function* PreviewAutomationBrokerMake() {
         ...(canReuseAssignedTab && assigned.tabSequence !== undefined
           ? { tabSequence: assigned.tabSequence }
           : {}),
-        ...(computerDesktopKind === undefined ? {} : { computerDesktopKind }),
       });
 
       const requestSequence = current.requestSequence;
@@ -604,7 +600,7 @@ export const make = Effect.gen(function* PreviewAutomationBrokerMake() {
       const pending = new Map(current.pending);
       pending.set(requestId, { queue: connection.queue, deferred, context });
       return [
-        { connection, requestId, requestContext: context, requestSequence },
+        { assignmentKey, connection, requestId, requestContext: context, requestSequence },
         { ...current, assignments, pending, requestSequence: current.requestSequence + 1 },
       ] as const;
     });
@@ -617,7 +613,7 @@ export const make = Effect.gen(function* PreviewAutomationBrokerMake() {
         providerInstanceId: input.scope.providerInstanceId,
       });
     }
-    const { connection, requestId, requestContext, requestSequence } = route;
+    const { assignmentKey, connection, requestId, requestContext, requestSequence } = route;
     input.onTargetTab?.(requestContext.tabId);
     const removePending = SynchronizedRef.update(state, (next) => {
       if (!next.pending.has(requestId)) return next;
@@ -666,7 +662,6 @@ export const make = Effect.gen(function* PreviewAutomationBrokerMake() {
     const responseTabId = readResultTabId(result);
     const resultTabId = responseTabId === undefined ? input.tabId : responseTabId;
     if (resultTabId === undefined) return result;
-    const assignmentKey = hostAssignmentKey(input.scope, input.operation);
     yield* SynchronizedRef.update(state, (current) => {
       const assignment = current.assignments.get(assignmentKey);
       if (
