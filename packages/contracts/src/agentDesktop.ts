@@ -70,8 +70,7 @@ export const ComputerDesktopTarget = Schema.Union([
     desktopId: AgentDesktopId,
   }),
 ]).annotate({
-  description:
-    "Existing desktop to use. Omit the target to use the user's desktop; Agent desktops require their returned desktopId.",
+  description: "Existing desktop to use. Agent desktops require their returned desktopId.",
 });
 export type ComputerDesktopTarget = typeof ComputerDesktopTarget.Type;
 

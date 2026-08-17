@@ -2,7 +2,7 @@ import type {
   ComputerAutomationAccessibilitySnapshot,
   ComputerAutomationAction,
   ComputerAutomationActionResult,
-  ComputerAutomationActInput,
+  ComputerAutomationActionBatchInput,
   ComputerAutomationCaptureHealth,
   ComputerAutomationContentHash,
   ComputerAutomationDisplay,
@@ -12,7 +12,7 @@ import type {
   ComputerAutomationScreenshotOptions,
   ComputerAutomationScreenshotEncoding,
   ComputerAutomationSnapshot,
-  ComputerAutomationSnapshotInput,
+  ComputerAutomationObservationOptions,
   ComputerAutomationStatus,
 } from "@t3tools/contracts";
 import * as Clock from "effect/Clock";
@@ -623,10 +623,10 @@ export interface ComputerUseShape {
   readonly requestAvailability: Effect.Effect<ComputerAutomationStatus, ComputerUseError>;
   readonly releaseAvailability: Effect.Effect<ComputerAutomationStatus, ComputerUseError>;
   readonly snapshot: (
-    input: ComputerAutomationSnapshotInput,
+    input: ComputerAutomationObservationOptions,
   ) => Effect.Effect<ComputerAutomationSnapshot, ComputerUseError>;
   readonly act: (
-    input: ComputerAutomationActInput,
+    input: ComputerAutomationActionBatchInput,
   ) => Effect.Effect<ReadonlyArray<ComputerAutomationActionResult>, ComputerUseError>;
   readonly releaseInputs: Effect.Effect<void, ComputerUseError>;
   readonly release: Effect.Effect<void, ComputerUseError>;
