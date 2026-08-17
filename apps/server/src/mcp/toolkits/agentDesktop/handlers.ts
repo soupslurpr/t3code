@@ -32,7 +32,7 @@ const invoke = Effect.fn("AgentDesktopToolkit.invoke")(function* <A>(
   import("@t3tools/contracts").PreviewAutomationError,
   McpInvocationContext.McpInvocationContext | PreviewAutomationBroker.PreviewAutomationBroker
 > {
-  const scope = yield* McpInvocationContext.requireMcpCapability("preview");
+  const scope = yield* McpInvocationContext.requireMcpCapability("computer");
   const broker = yield* PreviewAutomationBroker.PreviewAutomationBroker;
   return yield* broker.invoke<A>({ scope, operation, input, timeoutMs });
 });
@@ -57,19 +57,19 @@ const handlers = {
     invoke<AgentDesktopWriteFileResult>("agentDesktopWriteFile", input),
   agent_desktop_copy: (input: AgentDesktopCopyInput) =>
     Effect.gen(function* () {
-      const scope = yield* McpInvocationContext.requireMcpCapability("preview");
+      const scope = yield* McpInvocationContext.requireMcpCapability("computer");
       const transfers = yield* AgentDesktopTransferService.AgentDesktopTransferService;
       return yield* transfers.start(scope, input);
     }),
   agent_desktop_transfer_status: (input: AgentDesktopTransferTargetInput) =>
     Effect.gen(function* () {
-      const scope = yield* McpInvocationContext.requireMcpCapability("preview");
+      const scope = yield* McpInvocationContext.requireMcpCapability("computer");
       const transfers = yield* AgentDesktopTransferService.AgentDesktopTransferService;
       return yield* transfers.status(scope, input);
     }),
   agent_desktop_transfer_cancel: (input: AgentDesktopTransferTargetInput) =>
     Effect.gen(function* () {
-      const scope = yield* McpInvocationContext.requireMcpCapability("preview");
+      const scope = yield* McpInvocationContext.requireMcpCapability("computer");
       const transfers = yield* AgentDesktopTransferService.AgentDesktopTransferService;
       return yield* transfers.cancel(scope, input);
     }),
