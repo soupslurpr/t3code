@@ -164,8 +164,8 @@ describe("ComputerUseRouter", () => {
       const harness = yield* routerHarness;
       yield* Effect.gen(function* () {
         const router = yield* ComputerUseRouter.ComputerUseRouter;
-        yield* router.requestAvailability(context, {});
-        yield* router.releaseAvailability(context, {});
+        yield* router.requestAvailability(context, { desktop: { kind: "user" } });
+        yield* router.releaseAvailability(context, { desktop: { kind: "user" } });
         assert.deepEqual(yield* Ref.get(harness.calls), [
           "user:requestAvailability",
           "user:releaseAvailability",
@@ -174,12 +174,15 @@ describe("ComputerUseRouter", () => {
     }),
   );
 
-  it.effect("defaults to Your desktop", () =>
+  it.effect("routes an explicit user desktop target", () =>
     Effect.gen(function* () {
       const harness = yield* routerHarness;
       yield* Effect.gen(function* () {
         const router = yield* ComputerUseRouter.ComputerUseRouter;
-        assert.equal((yield* router.status(context, {})).desktop?.kind, "user");
+        assert.equal(
+          (yield* router.status(context, { desktop: { kind: "user" } })).desktop?.kind,
+          "user",
+        );
         assert.deepEqual(yield* Ref.get(harness.calls), ["user:status"]);
       }).pipe(Effect.provide(harness.layer));
     }),

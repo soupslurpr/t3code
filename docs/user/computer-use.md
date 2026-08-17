@@ -242,9 +242,10 @@ for agent work.
 
 An agent can ask for a clean desktop, reuse a suitable prior desktop, or select a known desktop
 explicitly. Access returns the concrete desktop identifier, and every later status, snapshot, action,
-release, or forget operation names that identifier. Omitting a target always means your desktop; it
-never means the most recently used Agent desktop. This stateless routing lets parallel agents in one
-thread hold independent desktops without silently redirecting or releasing each other's sessions.
+release, or forget operation names that identifier. Every computer operation explicitly names either
+your desktop or a concrete Agent desktop; a missing target is rejected rather than inferred. This
+stateless routing lets parallel agents in one thread hold independent desktops without silently
+redirecting or releasing each other's sessions.
 A provider or harness restart does not strand prior desktops: they remain listed for the same thread,
 and acquiring one explicitly reclaims it when no other controller is actively using it. Automatic
 acquisition prefers the current controller's suitable desktop, then the most recent suitable idle

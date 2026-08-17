@@ -520,7 +520,7 @@ export const make = Effect.gen(function* () {
     }
     yield* validateEvaluator(input.watch.match);
 
-    const desktop = input.watch.desktop ?? ({ kind: "user" } as const);
+    const desktop = input.watch.desktop;
     const scope = yield* monitorScope({
       monitorId: input.monitorId,
       threadId: input.threadId,
