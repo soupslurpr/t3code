@@ -322,6 +322,7 @@ describe("T3 browser developer instructions", () => {
       // The rest of the collaboration mode is untouched.
       NodeAssert.match(instructions, /<collaboration_mode>/);
       NodeAssert.match(instructions, /<\/collaboration_mode>/);
+      NodeAssert.match(instructions, /computer_request_control/);
     }
   });
 
@@ -332,14 +333,18 @@ describe("T3 browser developer instructions", () => {
       buildCodexDeveloperInstructions("default", runtime, false),
       /preview_open/,
     );
+    NodeAssert.match(
+      buildCodexDeveloperInstructions("default", runtime, false),
+      /computer_request_control/,
+    );
   });
 });
 
 describe("T3 computer developer instructions", () => {
   it("documents the deferred desktop action schema in both collaboration modes", () => {
     for (const instructions of [
-      CODEX_DEFAULT_MODE_DEVELOPER_INSTRUCTIONS,
-      CODEX_PLAN_MODE_DEVELOPER_INSTRUCTIONS,
+      codexDefaultModeDeveloperInstructions(true, true),
+      codexPlanModeDeveloperInstructions(true, true),
     ]) {
       NodeAssert.match(instructions, /computer_request_control/);
       NodeAssert.match(instructions, /computer_request_availability/);
@@ -352,6 +357,16 @@ describe("T3 computer developer instructions", () => {
       NodeAssert.match(instructions, /frame-relative region/);
       NodeAssert.match(instructions, /starting a known app is usually one batch/);
       NodeAssert.match(instructions, /preserves exact Unicode text/);
+    }
+  });
+
+  it("omits computer guidance when the T3 MCP server is not attached", () => {
+    for (const instructions of [
+      codexDefaultModeDeveloperInstructions(false, false),
+      codexPlanModeDeveloperInstructions(false, false),
+    ]) {
+      NodeAssert.doesNotMatch(instructions, /computer_request_control/);
+      NodeAssert.doesNotMatch(instructions, /T3 Code desktop computer use/);
     }
   });
 });

@@ -362,7 +362,7 @@ function AgentBrowserAccessSetting() {
   return (
     <SettingsRow
       {...searchableSetting("agent-browser-access")}
-      description="Let agents open and drive the preview browser. When off, the browser tools and the instructions describing them are withheld from agent sessions. Your own browser panel is unaffected."
+      description="Let agents open and drive the preview browser. When off, browser access and its instructions are withheld while other T3 tools remain available. Your own browser panel is unaffected."
       status={
         settings.enableAgentBrowserAccess
           ? undefined
