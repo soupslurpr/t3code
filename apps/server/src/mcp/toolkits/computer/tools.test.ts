@@ -16,6 +16,7 @@ it("exports bounded object schemas and accurate safety annotations", () => {
       readonly type?: unknown;
       readonly anyOf?: unknown;
       readonly oneOf?: unknown;
+      readonly required?: ReadonlyArray<string>;
     };
     expect(
       tool.description?.length ?? 0,
@@ -24,6 +25,7 @@ it("exports bounded object schemas and accurate safety annotations", () => {
     expect(schema.type, `${tool.name} must export a top-level object schema`).toBe("object");
     expect(schema.anyOf, `${tool.name} must not export a root anyOf`).toBeUndefined();
     expect(schema.oneOf, `${tool.name} must not export a root oneOf`).toBeUndefined();
+    expect(schema.required, `${tool.name} must require an explicit desktop`).toContain("desktop");
     expect(Context.get(tool.annotations, Tool.OpenWorld)).toBe(true);
   }
 

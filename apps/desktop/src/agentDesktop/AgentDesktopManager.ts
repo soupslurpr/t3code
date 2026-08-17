@@ -27,7 +27,7 @@ import {
   type AgentDesktopSetupResult,
   type AgentDesktopWriteFileInput,
   type AgentDesktopWriteFileResult,
-  type ComputerAutomationActInput,
+  type ComputerAutomationActionBatchInput,
   type ComputerAutomationAction,
   type ComputerAutomationActionResult,
   type ComputerAutomationAccessibilitySnapshot,
@@ -35,7 +35,7 @@ import {
   type ComputerAutomationFrame,
   type ComputerAutomationScreenshotOptions,
   type ComputerAutomationSnapshot,
-  type ComputerAutomationSnapshotInput,
+  type ComputerAutomationObservationOptions,
   type ComputerAutomationStatus,
   type ComputerDesktopSelector,
 } from "@t3tools/contracts";
@@ -581,12 +581,12 @@ export interface AgentDesktopManagerShape {
   ) => Effect.Effect<ComputerAutomationStatus, AgentDesktopManagerOperationError>;
   readonly snapshot: (
     controllerId: string,
-    input: ComputerAutomationSnapshotInput,
+    input: ComputerAutomationObservationOptions,
     desktopId?: AgentDesktopId,
   ) => Effect.Effect<ComputerAutomationSnapshot, AgentDesktopManagerOperationError>;
   readonly act: (
     controllerId: string,
-    input: ComputerAutomationActInput,
+    input: ComputerAutomationActionBatchInput,
     desktopId?: AgentDesktopId,
   ) => Effect.Effect<
     ReadonlyArray<ComputerAutomationActionResult>,
