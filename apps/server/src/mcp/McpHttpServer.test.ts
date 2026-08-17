@@ -55,7 +55,7 @@ const invocation = {
     providerInstanceId: ProviderInstanceId.make("codex"),
   },
   client: undefined,
-  capabilities: new Set(["preview"] as const),
+  capabilities: new Set(["preview", "computer"] as const),
   issuedAt: 1,
 };
 const client = McpSchema.McpServerClient.of({
@@ -1188,6 +1188,32 @@ it.effect("sheds log entries before locators when every list is full", () =>
       expect(noticeText).not.toMatch(/\d+ of \d+ interactiveElements/);
     }),
   ).pipe(Effect.provide(layerTest)),
+);
+
+it.effect("denies preview access without removing computer tools", () =>
+  Effect.gen(function* () {
+    const server = yield* McpServer.McpServer;
+    const computerOnlyInvocation = {
+      ...invocation,
+      capabilities: new Set(["computer"] as const),
+    };
+    const callTool = (request: Parameters<typeof server.callTool>[0]) =>
+      server
+        .callTool(request)
+        .pipe(
+          Effect.provideService(McpInvocationContext.McpInvocationContext, computerOnlyInvocation),
+          Effect.provideService(McpSchema.McpServerClient, client),
+        );
+
+    const preview = yield* callTool({ name: "preview_status", arguments: {} });
+    const computer = yield* callTool({ name: "computer_watch_capabilities", arguments: {} });
+
+    expect(preview.isError).toBe(true);
+    expect(preview.content).toEqual([
+      { type: "text", text: "MCP credential does not grant the preview capability." },
+    ]);
+    expect(computer.isError).toBe(false);
+  }).pipe(Effect.provide(TestLayer)),
 );
 
 it.effect("terminates HTTP MCP sessions with DELETE", () =>

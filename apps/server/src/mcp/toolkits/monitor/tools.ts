@@ -13,6 +13,7 @@ import {
   ThreadMonitorSignalInput,
   ThreadMonitorStartInput,
   ThreadMonitorStatusInput,
+  PreviewAutomationUnavailableError,
 } from "@t3tools/contracts";
 import * as Schema from "effect/Schema";
 import { Tool, Toolkit } from "effect/unstable/ai";
@@ -22,6 +23,7 @@ import { ThreadMonitorService } from "../../../threadMonitor/ThreadMonitorServic
 
 const dependencies = [McpInvocationContext.McpInvocationContext, ThreadMonitorService];
 const EmptyParameters = Schema.Record(Schema.String, Schema.Never);
+const ComputerWatchError = Schema.Union([ThreadMonitorError, PreviewAutomationUnavailableError]);
 
 const mutatingMonitorTool = <T extends Tool.Any>(tool: T): T =>
   tool.annotate(Tool.OpenWorld, true).annotate(Tool.Destructive, true) as T;
@@ -96,7 +98,7 @@ export const ComputerWatchStartTool = mutatingMonitorTool(
       "Create a durable multi-region screen watch for one explicitly named user or Agent desktop, acquire view-only access immediately, and return without keeping this model turn asleep. The controller may name up to eight independently cropped, sized, and encoded trigger or context regions; trigger regions drive change detection, while context regions are captured only for evaluation or inspection. Region images default to lossless WebP. Choose either exact image-change detection or one exact configured evaluator model plus a factual visible condition. Model watches can separately set a minimum evaluation interval; changes inside that window remain pending and coalesce into one evaluation of the latest sample. Frame regions are converted once to durable desktop coordinates. T3 retains only bounded baseline, previous, current, and terminal evidence, survives restarts, retries degraded capture or evaluation with backoff, and requests one controller health review after three consecutive failures by default. Set review:null to disable all reviews or review.consecutiveFailures:null to disable only that health safeguard. A watch releases its view lease when terminal or cancelled and resumes the thread only through the ordinary monitor continuation. After starting a resume-thread watch, finish the current turn rather than polling.",
     parameters: ThreadMonitorComputerStartInput,
     success: ThreadMonitor,
-    failure: ThreadMonitorError,
+    failure: ComputerWatchError,
     dependencies,
   }).annotate(Tool.Title, "Start durable computer watch"),
 );
@@ -107,7 +109,7 @@ export const ComputerWatchCapabilitiesTool = Tool.make("computer_watch_capabilit
     "List configured provider instances and models that support read-only screen-condition evaluation, plus deterministic conditions that need no model. Select an exact returned instanceId and model; T3 does not silently substitute another evaluator. tokenUsage reports whether evaluation usage is measurable, and promptCacheRefresh reports whether an adapter can explicitly refresh a model cache without creating a thread message.",
   parameters: EmptyParameters,
   success: ThreadMonitorComputerCapabilities,
-  failure: ThreadMonitorError,
+  failure: ComputerWatchError,
   dependencies,
 })
   .annotate(Tool.Title, "Get computer-watch capabilities")
@@ -121,7 +123,7 @@ export const ComputerWatchInspectTool = Tool.make("computer_watch_inspect", {
     "Inspect one computer watch's current revision, region metrics, evaluation usage and timing, and selected retained image generations. Optionally request one fresh capture or a bounded timestamped burst from selected configured regions. Fresh frames use the watch's existing view lease and are returned only to this call. Use this when the capable controller needs direct evidence to decide whether its regions, cadence, evaluator, or condition remain efficient; the narrow evaluator cannot revise the watch.",
   parameters: ThreadMonitorComputerInspectInput,
   success: ThreadMonitorComputerInspection,
-  failure: ThreadMonitorError,
+  failure: ComputerWatchError,
   dependencies,
 })
   .annotate(Tool.Title, "Inspect computer watch")
@@ -136,7 +138,7 @@ export const ComputerWatchUpdateTool = mutatingMonitorTool(
       "Atomically revise an active computer watch using its current expectedRevision. The capable controller may replace named trigger/context regions and their individual resolution or encoding, switch condition or exact evaluator model, adjust sampling and evaluation cadence, set or disable deterministic future review checkpoints, change the deadline or terminal continuation, or acknowledge a delivered review while retaining the strategy. Set review:null to disable all reviews or review.consecutiveFailures:null to disable only automatic degradation review. Every successful update starts a new revision with fresh baselines and metrics. A stale expectedRevision fails without changing state, so inspect the latest revision before retrying. This operation is exclusively controller-owned; evaluator output is observational evidence, never an update instruction.",
     parameters: ThreadMonitorComputerUpdateInput,
     success: ThreadMonitor,
-    failure: ThreadMonitorError,
+    failure: ComputerWatchError,
     dependencies,
   }).annotate(Tool.Title, "Update computer watch"),
 );

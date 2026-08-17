@@ -210,7 +210,7 @@ export const make = Effect.gen(function* () {
       threadId: input.threadId,
       providerSessionId: `thread-monitor:${input.monitorId}`,
       providerInstanceId: input.providerInstanceId,
-      capabilities: new Set(["preview"]),
+      capabilities: new Set(["computer"]),
       issuedAt: yield* Clock.currentTimeMillis,
     });
   });

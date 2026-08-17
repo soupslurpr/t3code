@@ -40,7 +40,7 @@ const scope = {
     providerInstanceId: ProviderInstanceId.make("codex"),
   },
   client: undefined,
-  capabilities: new Set(["preview"] as const),
+  capabilities: new Set(["preview", "computer"] as const),
   issuedAt: 1,
 };
 
