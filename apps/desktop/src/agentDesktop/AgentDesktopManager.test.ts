@@ -297,6 +297,7 @@ const managerHarness = (
     readonly acceleratedGraphics?: boolean;
     readonly failInputReleaseOnce?: boolean;
     readonly failSendKeyOnce?: boolean;
+    readonly inputHelper?: boolean;
     readonly textInsertionResponse?: string;
     readonly activationResponse?: string;
     readonly captureAvailable?: boolean;
@@ -328,6 +329,10 @@ const managerHarness = (
     }
     const accessibilityResource = `${agentDesktopsDir}/agent-desktop-accessibility.js`;
     if (accessibility) yield* fileSystem.writeFileString(accessibilityResource, "test helper");
+    const inputHelperResource = `${agentDesktopsDir}/input-helper.py`;
+    if (options?.inputHelper === true) {
+      yield* fileSystem.writeFileString(inputHelperResource, "test input helper");
+    }
     const environmentLayer = Layer.effect(
       DesktopEnvironment.DesktopEnvironment,
       Effect.gen(function* () {
@@ -338,7 +343,12 @@ const managerHarness = (
           processArch: "x64",
           agentDesktopsDir,
           agentDesktopBaseImage: { _tag: "None" },
-          resolveResourcePathCandidates: () => (accessibility ? [accessibilityResource] : []),
+          resolveResourcePathCandidates: (resource: string) =>
+            resource === "computer-use/agent-desktop-accessibility.js" && accessibility
+              ? [accessibilityResource]
+              : resource === "agent-desktop/input-helper.py" && options?.inputHelper === true
+                ? [inputHelperResource]
+                : [],
         } as unknown as DesktopEnvironment.DesktopEnvironment["Service"]);
       }),
     ).pipe(Layer.provide(NodeServices.layer));
@@ -935,6 +945,58 @@ describe("AgentDesktopManager", () => {
             (event) => event.type === "btn" && event.data.button === "wheel-up" && event.data.down,
           ).length,
           7,
+        );
+      }).pipe(Effect.provide(harness.layer));
+    }),
+  );
+
+  it.effect("injects horizontal wheel ticks through the guest input bridge", () =>
+    Effect.gen(function* () {
+      const harness = yield* managerHarness("horizontal-wheel", {
+        captureAvailable: true,
+        inputHelper: true,
+      });
+      yield* Effect.gen(function* () {
+        const manager = yield* AgentDesktopManager.AgentDesktopManager;
+        const desktop = yield* manager.acquire(owner, { label: "Horizontal wheel input" });
+        yield* manager.requestControl(owner, { kind: "agent", desktopId: desktop.id });
+        const snapshot = yield* manager.snapshot(
+          owner.controllerId,
+          { includeAccessibility: false },
+          desktop.id,
+        );
+        if (snapshot.frame === undefined) throw new Error("snapshot did not return a frame");
+        const result = yield* manager.act(
+          owner.controllerId,
+          {
+            actions: [
+              {
+                type: "wheel",
+                frameId: snapshot.frame.id,
+                x: 50,
+                y: 50,
+                horizontalTicks: 4,
+                verticalTicks: -2,
+              },
+            ],
+          },
+          desktop.id,
+        );
+
+        assert.deepEqual(result, [
+          { index: 0, type: "wheel", horizontalTicks: 4, verticalTicks: -2 },
+        ]);
+        const injected = (yield* Ref.get(harness.inputEvents)).flat();
+        assert.isFalse(
+          injected.some(
+            (event) =>
+              event.type === "btn" &&
+              (event.data.button === "wheel-left" || event.data.button === "wheel-right"),
+          ),
+        );
+        assert.include(
+          yield* Ref.get(harness.calls),
+          `exec:${desktop.id}:/usr/bin/python:/run/t3-agent-input/input-helper.py wheel 4 -2`,
         );
       }).pipe(Effect.provide(harness.layer));
     }),
