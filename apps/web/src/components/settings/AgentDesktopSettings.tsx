@@ -587,7 +587,10 @@ function DesktopViewer({
         };
 
   return (
-    <DialogPopup className="w-[min(96vw,1100px)] max-w-none" bottomStickOnMobile={false}>
+    <DialogPopup
+      className="row-start-1 row-end-4 w-[min(96vw,1100px)] max-w-none self-start"
+      bottomStickOnMobile={false}
+    >
       <DialogHeader>
         <DialogTitle>{desktop.label}</DialogTitle>
         <DialogDescription>
