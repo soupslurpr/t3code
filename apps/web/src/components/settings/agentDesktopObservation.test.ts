@@ -9,6 +9,7 @@ import { describe, expect, it } from "vite-plus/test";
 import {
   agentDesktopObservationLayout,
   agentDesktopObservationViews,
+  agentDesktopPixelScrollPosition,
 } from "./agentDesktopObservation";
 
 const liveFrame: ComputerAutomationFrame = {
@@ -65,6 +66,54 @@ function observation(images: ReadonlyArray<ComputerObservationImage>): ComputerO
 }
 
 describe("Agent desktop observation lens", () => {
+  it("keeps pixel-view wheel movement in its nested scroller", () => {
+    expect(
+      agentDesktopPixelScrollPosition({
+        scrollLeft: 100,
+        scrollTop: 200,
+        scrollWidth: 1_600,
+        scrollHeight: 900,
+        clientWidth: 800,
+        clientHeight: 400,
+        deltaX: 0,
+        deltaY: 3,
+        deltaMode: 1,
+        shiftKey: false,
+      }),
+    ).toEqual({ left: 100, top: 248, consumed: true });
+    expect(
+      agentDesktopPixelScrollPosition({
+        scrollLeft: 100,
+        scrollTop: 500,
+        scrollWidth: 1_600,
+        scrollHeight: 900,
+        clientWidth: 800,
+        clientHeight: 400,
+        deltaX: 0,
+        deltaY: 1,
+        deltaMode: 2,
+        shiftKey: false,
+      }),
+    ).toEqual({ left: 100, top: 500, consumed: false });
+  });
+
+  it("supports shifted vertical wheel movement across pixel views", () => {
+    expect(
+      agentDesktopPixelScrollPosition({
+        scrollLeft: 100,
+        scrollTop: 200,
+        scrollWidth: 1_600,
+        scrollHeight: 900,
+        clientWidth: 800,
+        clientHeight: 400,
+        deltaX: 0,
+        deltaY: -2,
+        deltaMode: 1,
+        shiftKey: true,
+      }),
+    ).toEqual({ left: 68, top: 200, consumed: true });
+  });
+
   it("projects image and durable regions into the live frame", () => {
     expect(agentDesktopObservationLayout(observedImage("frame"), liveFrame)).toEqual({
       leftPercent: 20,

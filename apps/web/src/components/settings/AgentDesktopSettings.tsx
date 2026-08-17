@@ -72,6 +72,7 @@ import {
 import {
   agentDesktopObservationLayout,
   agentDesktopObservationViews,
+  agentDesktopPixelScrollPosition,
 } from "./agentDesktopObservation";
 
 const VIEWER_REFRESH_INTERVAL_MS = 750;
@@ -459,6 +460,27 @@ function DesktopViewer({
     [controlling, framePoint, observation?.frame, onAction],
   );
 
+  const handlePixelWheel = useCallback((event: ReactWheelEvent<HTMLDivElement>) => {
+    const scroller = event.currentTarget;
+    const next = agentDesktopPixelScrollPosition({
+      scrollLeft: scroller.scrollLeft,
+      scrollTop: scroller.scrollTop,
+      scrollWidth: scroller.scrollWidth,
+      scrollHeight: scroller.scrollHeight,
+      clientWidth: scroller.clientWidth,
+      clientHeight: scroller.clientHeight,
+      deltaX: event.deltaX,
+      deltaY: event.deltaY,
+      deltaMode: event.deltaMode,
+      shiftKey: event.shiftKey,
+    });
+    if (!next.consumed) return;
+    event.preventDefault();
+    event.stopPropagation();
+    scroller.scrollLeft = next.left;
+    scroller.scrollTop = next.top;
+  }, []);
+
   const handleKeyDown = useCallback(
     (event: ReactKeyboardEvent<HTMLDivElement>) => {
       if (!controlling) return;
@@ -725,7 +747,10 @@ function DesktopViewer({
               </div>
             ) : null}
             {inspectPixels ? (
-              <div className="mt-2 flex max-h-[40vh] gap-3 overflow-auto rounded-md bg-black p-2">
+              <div
+                className="mt-2 flex max-h-[40vh] gap-3 overflow-auto overscroll-contain rounded-md bg-black p-2"
+                onWheelCapture={handlePixelWheel}
+              >
                 {selectedImages.flatMap((image) =>
                   image.screenshot.state === "image"
                     ? [

@@ -18,12 +18,50 @@ export interface AgentDesktopObservationView {
   readonly images: ReadonlyArray<ComputerObservationImage>;
 }
 
+export interface AgentDesktopPixelScrollPosition {
+  readonly left: number;
+  readonly top: number;
+  readonly consumed: boolean;
+}
+
 interface DesktopRegion {
   readonly displayId: string;
   readonly x: number;
   readonly y: number;
   readonly width: number;
   readonly height: number;
+}
+
+/** Resolves one nested pixel-view wheel event without handing it to the dialog scroller. */
+export function agentDesktopPixelScrollPosition(input: {
+  readonly scrollLeft: number;
+  readonly scrollTop: number;
+  readonly scrollWidth: number;
+  readonly scrollHeight: number;
+  readonly clientWidth: number;
+  readonly clientHeight: number;
+  readonly deltaX: number;
+  readonly deltaY: number;
+  readonly deltaMode: number;
+  readonly shiftKey: boolean;
+}): AgentDesktopPixelScrollPosition {
+  const unit = input.deltaMode === 1 ? 16 : input.deltaMode === 2 ? input.clientHeight : 1;
+  const shiftsVerticalWheel = input.shiftKey && input.deltaX === 0;
+  const deltaX = (shiftsVerticalWheel ? input.deltaY : input.deltaX) * unit;
+  const deltaY = (shiftsVerticalWheel ? 0 : input.deltaY) * unit;
+  const left = Math.max(
+    0,
+    Math.min(input.scrollWidth - input.clientWidth, input.scrollLeft + deltaX),
+  );
+  const top = Math.max(
+    0,
+    Math.min(input.scrollHeight - input.clientHeight, input.scrollTop + deltaY),
+  );
+  return {
+    left,
+    top,
+    consumed: left !== input.scrollLeft || top !== input.scrollTop,
+  };
 }
 
 /** Resolves one observed image to durable desktop-logical coordinates. */
