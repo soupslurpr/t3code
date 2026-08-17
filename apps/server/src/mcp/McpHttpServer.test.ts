@@ -1154,6 +1154,38 @@ it.effect("registers annotated tools and preserves authenticated request context
       expect(computerActTool?.tool.annotations?.openWorldHint).toBe(true);
       expect(computerActTool?.tool.description).toContain("Batch predictable actions");
 
+      const routedBeforeMissingTargets = routedRequests.length;
+      for (const request of [
+        { name: "computer_status", arguments: {} },
+        { name: "computer_act", arguments: { actions: [{ type: "press", key: "Tab" }] } },
+      ]) {
+        const missingTarget = yield* server
+          .callTool(request)
+          .pipe(
+            Effect.provideService(McpInvocationContext.McpInvocationContext, invocation),
+            Effect.provideService(McpSchema.McpServerClient, client),
+          );
+        expect(missingTarget.isError).toBe(true);
+        expect(missingTarget.structuredContent).toMatchObject({
+          error: {
+            _tag: "ComputerAutomationInvalidInputError",
+            code: "desktop-target-required",
+            category: "invalid-input",
+            message: "An explicit desktop target is required.",
+            field: "desktop",
+            received: "missing",
+            phase: "validation",
+          },
+        });
+        expect(missingTarget.content).toEqual([
+          {
+            type: "text",
+            text: expect.stringContaining('"code":"desktop-target-required"'),
+          },
+        ]);
+      }
+      expect(routedRequests).toHaveLength(routedBeforeMissingTargets);
+
       const status = yield* server
         .callTool({ name: "preview_status", arguments: {} })
         .pipe(
@@ -1230,7 +1262,7 @@ it.effect("registers annotated tools and preserves authenticated request context
       }
 
       const computerStatus = yield* server
-        .callTool({ name: "computer_status", arguments: {} })
+        .callTool({ name: "computer_status", arguments: { desktop: { kind: "user" } } })
         .pipe(
           Effect.provideService(McpInvocationContext.McpInvocationContext, invocation),
           Effect.provideService(McpSchema.McpServerClient, client),
@@ -1246,7 +1278,10 @@ it.effect("registers annotated tools and preserves authenticated request context
       });
 
       const computerAvailability = yield* server
-        .callTool({ name: "computer_request_availability", arguments: {} })
+        .callTool({
+          name: "computer_request_availability",
+          arguments: { desktop: { kind: "user" } },
+        })
         .pipe(
           Effect.provideService(McpInvocationContext.McpInvocationContext, invocation),
           Effect.provideService(McpSchema.McpServerClient, client),
@@ -1258,7 +1293,10 @@ it.effect("registers annotated tools and preserves authenticated request context
       ).toBe(true);
 
       const computerRequestView = yield* server
-        .callTool({ name: "computer_request_view", arguments: {} })
+        .callTool({
+          name: "computer_request_view",
+          arguments: { desktop: { kind: "user" } },
+        })
         .pipe(
           Effect.provideService(McpInvocationContext.McpInvocationContext, invocation),
           Effect.provideService(McpSchema.McpServerClient, client),
@@ -1284,7 +1322,10 @@ it.effect("registers annotated tools and preserves authenticated request context
       );
 
       const computerRequestControl = yield* server
-        .callTool({ name: "computer_request_control", arguments: {} })
+        .callTool({
+          name: "computer_request_control",
+          arguments: { desktop: { kind: "user" } },
+        })
         .pipe(
           Effect.provideService(McpInvocationContext.McpInvocationContext, invocation),
           Effect.provideService(McpSchema.McpServerClient, client),
@@ -1299,7 +1340,10 @@ it.effect("registers annotated tools and preserves authenticated request context
       );
 
       const computerSnapshot = yield* server
-        .callTool({ name: "computer_snapshot", arguments: { displayId: "7" } })
+        .callTool({
+          name: "computer_snapshot",
+          arguments: { desktop: { kind: "user" }, displayId: "7" },
+        })
         .pipe(
           Effect.provideService(McpInvocationContext.McpInvocationContext, invocation),
           Effect.provideService(McpSchema.McpServerClient, client),
@@ -1330,6 +1374,7 @@ it.effect("registers annotated tools and preserves authenticated request context
         .callTool({
           name: "computer_snapshot",
           arguments: {
+            desktop: { kind: "user" },
             displayId: "7",
             detailScreenshots: [{ id: "composer", purpose: "Read the drafted message." }],
           },
@@ -1377,6 +1422,7 @@ it.effect("registers annotated tools and preserves authenticated request context
         .callTool({
           name: "computer_snapshot",
           arguments: {
+            desktop: { kind: "user" },
             displayId: "7",
             screenshot: { unchangedIfContentHash: computerContentHash },
           },
@@ -1400,7 +1446,12 @@ it.effect("registers annotated tools and preserves authenticated request context
       const computerSequenceFiber = yield* server
         .callTool({
           name: "computer_observe_sequence",
-          arguments: { displayId: "7", frameCount: 2, intervalMs: 100 },
+          arguments: {
+            desktop: { kind: "user" },
+            displayId: "7",
+            frameCount: 2,
+            intervalMs: 100,
+          },
         })
         .pipe(
           Effect.provideService(McpInvocationContext.McpInvocationContext, invocation),
@@ -1430,7 +1481,7 @@ it.effect("registers annotated tools and preserves authenticated request context
       const semanticSnapshot = yield* server
         .callTool({
           name: "computer_snapshot",
-          arguments: { displayId: "7", screenshot: false },
+          arguments: { desktop: { kind: "user" }, displayId: "7", screenshot: false },
         })
         .pipe(
           Effect.provideService(McpInvocationContext.McpInvocationContext, invocation),
@@ -1444,6 +1495,7 @@ it.effect("registers annotated tools and preserves authenticated request context
         .callTool({
           name: "computer_act",
           arguments: {
+            desktop: { kind: "user" },
             actions: [
               { type: "activate", targetId: "a11y-1-1" },
               { type: "move", frameId: "frame-1", x: 100, y: 200, settleMs: 0 },
@@ -1482,6 +1534,7 @@ it.effect("registers annotated tools and preserves authenticated request context
         .callTool({
           name: "computer_act",
           arguments: {
+            desktop: { kind: "user" },
             actions: [{ type: "press", key: "Space" }],
             observation: false,
             temporalObservation: { frameCount: 2, intervalMs: 100 },
@@ -1571,7 +1624,10 @@ it.effect("registers annotated tools and preserves authenticated request context
       const invalidComputerAct = yield* server
         .callTool({
           name: "computer_act",
-          arguments: { actions: [{ type: "hotkey", keys: ["Control"] }] },
+          arguments: {
+            desktop: { kind: "user" },
+            actions: [{ type: "hotkey", keys: ["Control"] }],
+          },
         })
         .pipe(
           Effect.provideService(McpInvocationContext.McpInvocationContext, invocation),
@@ -1598,7 +1654,10 @@ it.effect("registers annotated tools and preserves authenticated request context
       const invalidWait = yield* server
         .callTool({
           name: "computer_act",
-          arguments: { actions: [{ type: "wait", durationMs: 12_000 }] },
+          arguments: {
+            desktop: { kind: "user" },
+            actions: [{ type: "wait", durationMs: 12_000 }],
+          },
         })
         .pipe(
           Effect.provideService(McpInvocationContext.McpInvocationContext, invocation),
@@ -1624,7 +1683,7 @@ it.effect("registers annotated tools and preserves authenticated request context
       ]);
 
       const computerRelease = yield* server
-        .callTool({ name: "computer_release", arguments: {} })
+        .callTool({ name: "computer_release", arguments: { desktop: { kind: "user" } } })
         .pipe(
           Effect.provideService(McpInvocationContext.McpInvocationContext, invocation),
           Effect.provideService(McpSchema.McpServerClient, client),
@@ -1638,7 +1697,10 @@ it.effect("registers annotated tools and preserves authenticated request context
       expect(routedRequests.at(-1)?.operation).toBe("computerRelease");
 
       const computerReleaseAvailability = yield* server
-        .callTool({ name: "computer_release_availability", arguments: {} })
+        .callTool({
+          name: "computer_release_availability",
+          arguments: { desktop: { kind: "user" } },
+        })
         .pipe(
           Effect.provideService(McpInvocationContext.McpInvocationContext, invocation),
           Effect.provideService(McpSchema.McpServerClient, client),
@@ -1648,7 +1710,10 @@ it.effect("registers annotated tools and preserves authenticated request context
       expect(routedRequests.at(-1)?.operation).toBe("computerReleaseAvailability");
 
       const computerForgetControl = yield* server
-        .callTool({ name: "computer_forget_control", arguments: {} })
+        .callTool({
+          name: "computer_forget_control",
+          arguments: { desktop: { kind: "user" } },
+        })
         .pipe(
           Effect.provideService(McpInvocationContext.McpInvocationContext, invocation),
           Effect.provideService(McpSchema.McpServerClient, client),
@@ -1696,7 +1761,7 @@ it.effect("returns bounded structural computer snapshot failures", () =>
         },
       ] as const) {
         const snapshot = yield* server
-          .callTool({ name: testCase.tool, arguments: {} })
+          .callTool({ name: testCase.tool, arguments: { desktop: { kind: "user" } } })
           .pipe(
             Effect.provideService(McpInvocationContext.McpInvocationContext, invocation),
             Effect.provideService(McpSchema.McpServerClient, client),

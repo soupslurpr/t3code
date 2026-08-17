@@ -12,10 +12,10 @@ import {
 import { ProviderInstanceId } from "./providerInstance.ts";
 import {
   COMPUTER_AUTOMATION_OPERATIONS,
-  ComputerAutomationActInput,
+  ComputerAutomationActionBatchInput,
   ComputerAutomationFailure,
   ComputerAutomationFailureKind,
-  ComputerAutomationSnapshotInput,
+  ComputerAutomationObservationOptions,
 } from "./computerAutomation.ts";
 import {
   AGENT_DESKTOP_AUTOMATION_OPERATIONS,
@@ -98,12 +98,12 @@ export const AgentDesktopHumanRequest = Schema.Union([
   Schema.Struct({
     operation: Schema.Literal("snapshot"),
     ...AgentDesktopHumanTarget,
-    input: ComputerAutomationSnapshotInput,
+    input: ComputerAutomationObservationOptions,
   }),
   Schema.Struct({
     operation: Schema.Literal("act"),
     ...AgentDesktopHumanTarget,
-    input: ComputerAutomationActInput,
+    input: ComputerAutomationActionBatchInput,
   }),
   Schema.Struct({ operation: Schema.Literal("release"), ...AgentDesktopHumanTarget }),
 ]);
@@ -795,6 +795,18 @@ export class PreviewAutomationNoAvailableHostError extends Schema.TaggedError<Pr
   }
 }
 
+export class PreviewAutomationDesktopTargetRequiredError extends Schema.TaggedError<PreviewAutomationDesktopTargetRequiredError>()(
+  "PreviewAutomationDesktopTargetRequiredError",
+  {
+    ...PreviewAutomationScopeErrorFields,
+    computerFailure: ComputerAutomationFailure,
+  },
+) {
+  override get message(): string {
+    return this.computerFailure.message;
+  }
+}
+
 export class PreviewAutomationUnsupportedClientError extends Schema.TaggedError<PreviewAutomationUnsupportedClientError>()(
   "PreviewAutomationUnsupportedClientError",
   {
@@ -1010,6 +1022,7 @@ export const PreviewAutomationError = Schema.Union([
   PreviewAutomationRecordingDeadlineExpiredError,
   PreviewAutomationUnavailableError,
   PreviewAutomationNoAvailableHostError,
+  PreviewAutomationDesktopTargetRequiredError,
   PreviewAutomationUnsupportedClientError,
   PreviewAutomationTabNotFoundError,
   PreviewAutomationTimeoutError,
