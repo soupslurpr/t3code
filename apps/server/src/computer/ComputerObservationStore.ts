@@ -13,6 +13,7 @@ import {
   type ThreadId,
   type ThreadMonitorComputerEvidenceImage,
   type ThreadMonitorComputerInspection,
+  type ThreadMonitorComputerRevisionResult,
   type ThreadMonitorComputerRegionState,
 } from "@t3tools/contracts";
 import * as Clock from "effect/Clock";
@@ -67,6 +68,12 @@ export interface ComputerObservationStoreShape {
     readonly label: string;
     readonly modelSelection: ModelSelection;
     readonly images: ReadonlyArray<ComputerWatchEvaluationImage>;
+  }) => Effect.Effect<void>;
+  readonly publishWatchRevision: (input: {
+    readonly environmentId: EnvironmentId;
+    readonly threadId: ThreadId;
+    readonly instanceId: ProviderInstanceId;
+    readonly result: ThreadMonitorComputerRevisionResult;
   }) => Effect.Effect<void>;
   readonly publishWatchInspection: (input: {
     readonly environmentId: EnvironmentId;
@@ -275,6 +282,69 @@ export const make = Effect.gen(function* () {
       ]),
     });
 
+  const publishWatchRevision: ComputerObservationStoreShape["publishWatchRevision"] = (input) => {
+    const condition = input.result.monitor.condition;
+    if (
+      condition.type !== "computer" ||
+      condition.desktop.kind !== "agent" ||
+      input.result.baselineObservation === null
+    ) {
+      return Effect.void;
+    }
+    const regions = new Map(condition.observation.regions.map((region) => [region.id, region]));
+    const images = input.result.baselineObservation.images.flatMap((image) => {
+      const region = regions.get(image.regionId);
+      if (region === undefined) return [];
+      if (image.state === "unchanged") {
+        return [
+          {
+            id: image.id,
+            role: "watch-region" as const,
+            ...(region.purpose === null ? {} : { purpose: region.purpose }),
+            generation: "baseline" as const,
+            capturedAt: image.capturedAt,
+            region: region.region,
+            screenshot: {
+              state: "unchanged" as const,
+              contentHash: ComputerAutomationContentHash.make(image.contentHash),
+              width: image.width,
+              height: image.height,
+            },
+          },
+        ];
+      }
+      return [
+        watchImage(
+          {
+            id: image.id,
+            kind: "baseline",
+            regionId: image.regionId,
+            capturedAt: image.capturedAt,
+            hash: image.contentHash,
+            width: image.width,
+            height: image.height,
+            frameIndex: null,
+            elapsedMs: null,
+            mimeType: image.mimeType,
+            dataBase64: image.dataBase64,
+            sizeBytes: image.sizeBytes,
+            encoding: image.encoding,
+          },
+          region,
+        ),
+      ];
+    });
+    return publish({
+      environmentId: input.environmentId,
+      desktopId: condition.desktop.desktopId,
+      threadId: input.threadId,
+      source: "watch-baseline",
+      recipient: { kind: "controller", instanceId: input.instanceId },
+      label: input.result.monitor.label,
+      images,
+    });
+  };
+
   const publishWatchInspection: ComputerObservationStoreShape["publishWatchInspection"] = (
     input,
   ) => {
@@ -318,6 +388,7 @@ export const make = Effect.gen(function* () {
 
   return ComputerObservationStore.of({
     publishController,
+    publishWatchRevision,
     publishWatchEvaluation,
     publishWatchInspection,
     read,

@@ -81,8 +81,25 @@ const workingComputerLayer = Layer.effect(
   Effect.gen(function* () {
     const probe = yield* ComputerMonitorProbe;
     return ThreadMonitorComputerService.of({
-      prepare: (input) =>
-        Effect.succeed({
+      prepare: (input) => {
+        const baselineImages = [
+          {
+            id: "baseline:screen",
+            kind: "baseline" as const,
+            regionId: "screen",
+            capturedAt: input.createdAt,
+            hash: "baseline-hash",
+            width: 300,
+            height: 200,
+            frameIndex: null,
+            elapsedMs: null,
+            mimeType: "image/webp" as const,
+            dataBase64: "YmFzZWxpbmU=",
+            sizeBytes: 8,
+            encoding: { format: "webp" as const, mode: "lossless" as const },
+          },
+        ];
+        return Effect.succeed({
           condition: {
             type: "computer",
             revision: 1,
@@ -174,24 +191,10 @@ const workingComputerLayer = Layer.effect(
             observationError: null,
             resourceState: "viewing",
           },
-          baselineImages: [
-            {
-              id: "baseline:screen",
-              kind: "baseline",
-              regionId: "screen",
-              capturedAt: input.createdAt,
-              hash: "baseline-hash",
-              width: 300,
-              height: 200,
-              frameIndex: null,
-              elapsedMs: null,
-              mimeType: "image/webp",
-              dataBase64: "YmFzZWxpbmU=",
-              sizeBytes: 8,
-              encoding: { format: "webp", mode: "lossless" },
-            },
-          ],
-        }),
+          capturedBaselineImages: baselineImages,
+          baselineImages,
+        });
+      },
       check: ({ monitor, checkedAt }) => {
         if (monitor.condition.type !== "computer") return Effect.die("expected computer monitor");
         const condition = monitor.condition;
@@ -363,23 +366,25 @@ const workingComputerLayer = Layer.effect(
           observationError: null,
           resourceState: "viewing" as const,
         };
+        const baselineImages = regions.map((region) => ({
+          id: `baseline:${region.id}`,
+          kind: "baseline" as const,
+          regionId: region.id,
+          capturedAt: revisedAt,
+          hash: region.baselineHash,
+          width: region.region.width,
+          height: region.region.height,
+          frameIndex: null,
+          elapsedMs: null,
+          mimeType: "image/webp" as const,
+          dataBase64: "YmFzZWxpbmU=",
+          sizeBytes: 8,
+          encoding: { format: "webp" as const, mode: "lossless" as const },
+        }));
         return Effect.succeed({
           condition,
-          baselineImages: regions.map((region) => ({
-            id: `baseline:${region.id}`,
-            kind: "baseline" as const,
-            regionId: region.id,
-            capturedAt: revisedAt,
-            hash: region.baselineHash,
-            width: region.region.width,
-            height: region.region.height,
-            frameIndex: null,
-            elapsedMs: null,
-            mimeType: "image/webp" as const,
-            dataBase64: "YmFzZWxpbmU=",
-            sizeBytes: 8,
-            encoding: { format: "webp" as const, mode: "lossless" as const },
-          })),
+          capturedBaselineImages: baselineImages,
+          baselineImages,
         });
       },
       inspectFresh: ({ monitor, regionIds }) => {
@@ -897,7 +902,7 @@ computerMonitorTestLayer("ThreadMonitor computer conditions", (it) => {
       const repository = yield* ThreadMonitorRepository;
       const probe = yield* ComputerMonitorProbe;
 
-      const monitor = yield* service.createComputer({
+      const created = yield* service.createComputer({
         threadId,
         monitor: {
           label: "Wait for the rendered result",
@@ -906,6 +911,14 @@ computerMonitorTestLayer("ThreadMonitor computer conditions", (it) => {
           continuation: "record-only",
         },
       });
+      const monitor = created.monitor;
+      assert.strictEqual(created.revision, 1);
+      assert.strictEqual(created.baselineObservation?.images[0]?.state, "image");
+      const initialImage = created.baselineObservation?.images[0];
+      if (initialImage?.state === "image") {
+        assert.strictEqual(initialImage.dataBase64, "YmFzZWxpbmU=");
+        assert.strictEqual(initialImage.contentHash, "baseline-hash");
+      }
       assert.strictEqual(monitor.status, "active");
       assert.strictEqual(monitor.condition.type, "computer");
       if (monitor.condition.type !== "computer") return;
@@ -940,15 +953,18 @@ computerMonitorTestLayer("ThreadMonitor computer conditions", (it) => {
         assert.strictEqual(evidence.value.terminalImages[0]?.dataBase64, "dGVybWluYWw=");
       }
 
-      const cancellable = yield* service.createComputer({
+      const cancellableResult = yield* service.createComputer({
         threadId,
         monitor: {
           label: "Cancel the rendered result watch",
           desktop: { kind: "user" },
+          baselineObservation: false,
           match: { type: "image-change" },
           continuation: "record-only",
         },
       });
+      const cancellable = cancellableResult.monitor;
+      assert.isNull(cancellableResult.baselineObservation);
       const cancelled = yield* service.cancel({
         threadId,
         cancel: { monitorId: cancellable.id },
@@ -964,7 +980,7 @@ computerMonitorTestLayer("ThreadMonitor computer conditions", (it) => {
       const service = yield* ThreadMonitorService;
       const snapshots = yield* ProjectionSnapshotQuery;
 
-      const monitor = yield* service.createComputer({
+      const { monitor } = yield* service.createComputer({
         threadId,
         monitor: {
           label: "Review an uncertain visual condition",
@@ -1029,7 +1045,7 @@ computerMonitorTestLayer("ThreadMonitor computer conditions", (it) => {
       const service = yield* ThreadMonitorService;
       const engine = yield* OrchestrationEngineService;
 
-      const monitor = yield* service.createComputer({
+      const { monitor } = yield* service.createComputer({
         threadId,
         monitor: {
           label: "Retry a conflicting controller review",
@@ -1094,7 +1110,7 @@ computerMonitorTestLayer("ThreadMonitor computer conditions", (it) => {
       const service = yield* ThreadMonitorService;
       const probe = yield* ComputerMonitorProbe;
       const releasesBefore = yield* Ref.get(probe.releases);
-      const monitor = yield* service.createComputer({
+      const { monitor } = yield* service.createComputer({
         threadId,
         monitor: {
           label: "Watch from an older build",
@@ -1131,7 +1147,7 @@ computerMonitorTestLayer("ThreadMonitor computer conditions", (it) => {
       const probe = yield* ComputerMonitorProbe;
       yield* Ref.set(probe.failNextChecks, 3);
 
-      const monitor = yield* service.createComputer({
+      const { monitor } = yield* service.createComputer({
         threadId,
         monitor: {
           label: "Watch a temporarily unavailable display",
@@ -1199,7 +1215,7 @@ computerMonitorTestLayer("ThreadMonitor computer conditions", (it) => {
       yield* seedThread;
       const service = yield* ThreadMonitorService;
       const repository = yield* ThreadMonitorRepository;
-      const monitor = yield* service.createComputer({
+      const { monitor } = yield* service.createComputer({
         threadId,
         monitor: {
           label: "Adapt the watched regions",
@@ -1220,11 +1236,14 @@ computerMonitorTestLayer("ThreadMonitor computer conditions", (it) => {
         ["baseline", "fresh"],
       );
 
-      const revised = yield* service.updateComputer({
+      const revisedResult = yield* service.updateComputer({
         threadId,
         update: {
           monitorId: monitor.id,
           expectedRevision: 1,
+          baselineObservation: {
+            unchangedIfContentHashes: [{ regionId: "result", contentHash: "baseline-result" }],
+          },
           observation: {
             regions: [
               {
@@ -1242,6 +1261,17 @@ computerMonitorTestLayer("ThreadMonitor computer conditions", (it) => {
           acknowledgeReview: true,
         },
       });
+      const revised = revisedResult.monitor;
+      assert.deepStrictEqual(
+        revisedResult.baselineObservation?.images.map(({ regionId, state }) => ({
+          regionId,
+          state,
+        })),
+        [
+          { regionId: "result", state: "unchanged" },
+          { regionId: "status", state: "image" },
+        ],
+      );
       assert.strictEqual(revised.condition.type, "computer");
       if (revised.condition.type !== "computer") return;
       assert.strictEqual(revised.condition.revision, 2);
