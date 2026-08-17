@@ -4,11 +4,7 @@ import { RegistryContext, useAtomSet, useAtomValue } from "@effect/atom-react";
 import { squashAtomCommandFailure } from "@t3tools/client-runtime/state/runtime";
 import {
   FILL_PREVIEW_VIEWPORT,
-  AGENT_DESKTOP_HUMAN_AUTOMATION_OPERATION,
-  AGENT_DESKTOP_AUTOMATION_OPERATIONS,
   AgentDesktopHumanRequest,
-  COMPUTER_AUTOMATION_OPERATIONS,
-  PREVIEW_AUTOMATION_OPERATIONS,
   type ComputerAutomationAccessInput,
   type ComputerAutomationActInput,
   type ComputerAutomationAvailabilityInput,
@@ -63,7 +59,11 @@ import { browserDefaultOpenViewport, resolveBrowserDefaults } from "~/browser/br
 import { runBrowserViewportMutation } from "~/browser/browserViewportActions";
 import { previewRuntimeTabId } from "~/browser/previewRuntimeTabId";
 import { isElectron } from "~/env";
-import { useEnvironmentHttpBaseUrl, useEnvironments } from "~/state/environments";
+import {
+  useEnvironmentHttpBaseUrl,
+  useEnvironments,
+  usePrimaryEnvironmentId,
+} from "~/state/environments";
 import { previewEnvironment } from "~/state/preview";
 import { useAtomQueryRunner } from "~/state/use-atom-query-runner";
 import { useAtomCommand } from "~/state/use-atom-command";
@@ -88,6 +88,7 @@ import {
 } from "./previewNavigationReadiness";
 import { createPreviewAutomationRequestConsumerAtom } from "./previewAutomationRequestConsumer";
 import { createPreviewAutomationClientId } from "./previewAutomationClientId";
+import { previewAutomationHostCapabilities } from "./previewAutomationHostCapabilities";
 import {
   needsPreviewAutomationSessionSync,
   resolvePreviewAutomationOpenTab,
@@ -270,6 +271,7 @@ const raisePreviewAutomationHostError = (
 
 export function PreviewAutomationHosts() {
   const { environments } = useEnvironments();
+  const primaryEnvironmentId = usePrimaryEnvironmentId();
   if (!isElectron || !previewBridge?.automation) return null;
   return (
     <>
@@ -277,19 +279,25 @@ export function PreviewAutomationHosts() {
        * Host lifetime follows the desktop runtime's environment connections,
        * not the routed thread. This keeps background threads automatable and
        * lets the subscription runtime own reconnects for every saved target.
+       * Only the primary environment may use this machine's Agent desktops;
+       * remote environments retain their own physical host and inventory.
        */}
       {environments.map((environment) => (
         <PreviewAutomationHost
           key={environment.environmentId}
           environmentId={environment.environmentId}
+          primaryEnvironment={environment.environmentId === primaryEnvironmentId}
         />
       ))}
     </>
   );
 }
 
-function PreviewAutomationHost(props: { readonly environmentId: EnvironmentId }) {
-  const { environmentId } = props;
+function PreviewAutomationHost(props: {
+  readonly environmentId: EnvironmentId;
+  readonly primaryEnvironment: boolean;
+}) {
+  const { environmentId, primaryEnvironment } = props;
   const environmentHttpBaseUrl = useEnvironmentHttpBaseUrl(environmentId);
   const registry = useContext(RegistryContext);
   const [automationClientId] = useState(createPreviewAutomationClientId);
@@ -297,17 +305,13 @@ function PreviewAutomationHost(props: { readonly environmentId: EnvironmentId })
     () => ({
       clientId: automationClientId,
       environmentId,
-      supportedOperations: [
-        ...PREVIEW_AUTOMATION_OPERATIONS,
-        ...(window.desktopBridge?.computer ? COMPUTER_AUTOMATION_OPERATIONS : []),
-        ...(window.desktopBridge?.agentDesktop ? AGENT_DESKTOP_AUTOMATION_OPERATIONS : []),
-        ...(window.desktopBridge?.agentDesktop ? [AGENT_DESKTOP_HUMAN_AUTOMATION_OPERATION] : []),
-      ],
-      ...(window.desktopBridge?.computer
-        ? { computerDesktopKinds: ["user", "agent"] as const }
-        : {}),
+      ...previewAutomationHostCapabilities({
+        computerAvailable: window.desktopBridge?.computer !== undefined,
+        agentDesktopAvailable: window.desktopBridge?.agentDesktop !== undefined,
+        primaryEnvironment,
+      }),
     }),
-    [automationClientId, environmentId],
+    [automationClientId, environmentId, primaryEnvironment],
   );
   const automationRequestsAtom = previewEnvironment.automationRequests({
     environmentId,
