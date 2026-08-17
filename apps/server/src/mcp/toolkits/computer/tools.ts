@@ -16,10 +16,12 @@ import { Tool, Toolkit } from "effect/unstable/ai";
 
 import * as McpInvocationContext from "../../McpInvocationContext.ts";
 import * as PreviewAutomationBroker from "../../PreviewAutomationBroker.ts";
+import * as ComputerObservationStore from "../../../computer/ComputerObservationStore.ts";
 
 const dependencies = [
   McpInvocationContext.McpInvocationContext,
   PreviewAutomationBroker.PreviewAutomationBroker,
+  ComputerObservationStore.ComputerObservationStore,
 ];
 
 const computerTool = <T extends Tool.Any>(tool: T): T =>
