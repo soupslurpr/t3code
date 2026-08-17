@@ -362,6 +362,38 @@ export const ThreadMonitorComputerMatchInput = Schema.Union([
 ]);
 export type ThreadMonitorComputerMatchInput = typeof ThreadMonitorComputerMatchInput.Type;
 
+export const ThreadMonitorComputerBaselineObservationInput = Schema.Union([
+  Schema.Literal(false),
+  Schema.Struct({
+    unchangedIfContentHashes: Schema.optional(
+      Schema.Array(
+        Schema.Struct({
+          regionId: ComputerWatchRegionId,
+          contentHash: ComputerWatchHash,
+        }),
+      )
+        .check(Schema.isMinLength(1), Schema.isMaxLength(ComputerWatchRegionCount))
+        .annotate({
+          description:
+            "Known baseline hashes by region. Matching freshly captured images return metadata without duplicate image bytes.",
+        }),
+    ),
+  }).check(
+    Schema.makeFilter(
+      (input) =>
+        input.unchangedIfContentHashes === undefined ||
+        new Set(input.unchangedIfContentHashes.map(({ regionId }) => regionId)).size ===
+          input.unchangedIfContentHashes.length ||
+        "Known baseline region ids must be unique.",
+    ),
+  ),
+]).annotate({
+  description:
+    "Controls the atomic baseline observation returned to the controller. Defaults to full baseline images; false omits the response images without changing watch capture or retention.",
+});
+export type ThreadMonitorComputerBaselineObservationInput =
+  typeof ThreadMonitorComputerBaselineObservationInput.Type;
+
 export const ThreadMonitorComputerReviewPolicyInput = Schema.Struct({
   afterEvaluations: Schema.optional(Schema.NullOr(PositiveInt)).annotate({
     description: "Ask the controller to review after this many evaluations in the revision.",
@@ -400,6 +432,7 @@ export const ThreadMonitorComputerStartInput = Schema.Struct({
     description:
       "Named trigger and context regions. Defaults to one full-primary-display trigger region named screen.",
   }),
+  baselineObservation: Schema.optional(ThreadMonitorComputerBaselineObservationInput),
   match: ThreadMonitorComputerMatchInput,
   sampling: Schema.optional(
     Schema.Struct({
@@ -442,6 +475,10 @@ export const ThreadMonitorComputerUpdateInput = Schema.Struct({
   observation: Schema.optional(ThreadMonitorComputerObservationInput).annotate({
     description: "Replacement region plan. Replacing it captures fresh baselines.",
   }),
+  baselineObservation: Schema.optional(ThreadMonitorComputerBaselineObservationInput).annotate({
+    description:
+      "Controls the fresh baseline returned for this revision. Supplying this field alone explicitly rebaselines the unchanged watch strategy.",
+  }),
   match: Schema.optional(ThreadMonitorComputerMatchInput).annotate({
     description: "Replacement deterministic or exact model condition.",
   }),
@@ -468,6 +505,7 @@ export const ThreadMonitorComputerUpdateInput = Schema.Struct({
       (input) =>
         input.label !== undefined ||
         input.observation !== undefined ||
+        input.baselineObservation !== undefined ||
         input.match !== undefined ||
         input.sampling !== undefined ||
         input.review !== undefined ||
@@ -527,6 +565,59 @@ export const ThreadMonitorComputerEvidenceImage = Schema.Struct({
   encoding: ComputerAutomationScreenshotEncoding,
 });
 export type ThreadMonitorComputerEvidenceImage = typeof ThreadMonitorComputerEvidenceImage.Type;
+
+const ThreadMonitorComputerBaselineObservationImageMetadata = Schema.Struct({
+  id: TrimmedNonEmptyString.check(Schema.isMaxLength(200)),
+  regionId: ComputerWatchRegionId,
+  capturedAt: IsoDateTime,
+  contentHash: ComputerWatchHash,
+  width: PositiveInt,
+  height: PositiveInt,
+});
+
+export const ThreadMonitorComputerBaselineObservationImage = Schema.Union([
+  Schema.Struct({
+    state: Schema.Literal("image"),
+    ...ThreadMonitorComputerBaselineObservationImageMetadata.fields,
+    mimeType: ComputerAutomationScreenshotMimeType,
+    dataBase64: Schema.String,
+    sizeBytes: PositiveInt,
+    encoding: ComputerAutomationScreenshotEncoding,
+  }),
+  Schema.Struct({
+    state: Schema.Literal("unchanged"),
+    ...ThreadMonitorComputerBaselineObservationImageMetadata.fields,
+  }),
+]);
+export type ThreadMonitorComputerBaselineObservationImage =
+  typeof ThreadMonitorComputerBaselineObservationImage.Type;
+
+export const ThreadMonitorComputerRevisionResult = Schema.Struct({
+  monitor: ThreadMonitor,
+  revision: PositiveInt,
+  baselineObservation: Schema.NullOr(
+    Schema.Struct({
+      images: Schema.Array(ThreadMonitorComputerBaselineObservationImage).check(
+        Schema.isMinLength(1),
+        Schema.isMaxLength(ComputerWatchRegionCount),
+      ),
+    }).check(
+      Schema.makeFilter(
+        (input) =>
+          new Set(input.images.map(({ regionId }) => regionId)).size === input.images.length ||
+          "Baseline observation region ids must be unique.",
+      ),
+    ),
+  ),
+}).check(
+  Schema.makeFilter(
+    (input) =>
+      (input.monitor.condition.type === "computer" &&
+        input.monitor.condition.revision === input.revision) ||
+      "The returned revision must identify the computer monitor revision.",
+  ),
+);
+export type ThreadMonitorComputerRevisionResult = typeof ThreadMonitorComputerRevisionResult.Type;
 
 export const ThreadMonitorComputerInspectInput = Schema.Struct({
   monitorId: ThreadMonitorId,
