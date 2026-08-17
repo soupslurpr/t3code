@@ -102,9 +102,13 @@ const DEFAULT_COMMAND_OUTPUT_BYTES = 1024 * 1024;
 const DEFAULT_FILE_READ_BYTES = 1024 * 1024;
 const MAX_NETWORK_CONNECTIONS = 256;
 const GUEST_ACCESSIBILITY_RESOURCE = "computer-use/agent-desktop-accessibility.js";
+const GUEST_INPUT_RESOURCE = "agent-desktop/input-helper.py";
 const GUEST_TRANSFER_RESOURCE = "agent-desktop/transfer-helper.py";
 const GUEST_ACCESSIBILITY_DIRECTORY = "/run/t3-agent-desktop";
 const GUEST_ACCESSIBILITY_PATH = `${GUEST_ACCESSIBILITY_DIRECTORY}/accessibility.js`;
+const GUEST_INPUT_DIRECTORY = "/run/t3-agent-input";
+const GUEST_INPUT_PATH = `${GUEST_INPUT_DIRECTORY}/input-helper.py`;
+const GUEST_INPUT_SERVICE_PATH = "/run/systemd/system/t3-agent-input.service";
 const GUEST_DESKTOP_USER_PATH = "/etc/t3-agent-desktop-user";
 const GUEST_INTEGRATION_TIMEOUT_MS = 10_000;
 const GUEST_ACCESSIBILITY_OUTPUT_BYTES = 2 * 1024 * 1024;
@@ -115,6 +119,15 @@ const GUEST_TRANSFER_TIMEOUT_MS = 6 * 60 * 60 * 1_000;
 const GUEST_TRANSFER_OUTPUT_BYTES = 64 * 1024;
 const GUEST_TRANSFER_FETCH_ATTEMPTS = 3;
 const MAX_SEMANTIC_TEXT_SEGMENTS = 32;
+const GUEST_INPUT_SERVICE = `[Unit]
+Description=T3 Agent desktop input bridge
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/python ${GUEST_INPUT_PATH} serve
+Restart=on-failure
+RestartSec=100ms
+`;
 
 /** Formats a short causal chain for private transport diagnostics. */
 function transferCauseDetail(cause: unknown): string {
@@ -464,6 +477,7 @@ interface RuntimeState {
   readonly accessibilityTargets: Ref.Ref<ReadonlyMap<string, GuestAccessibilityLocator>>;
   readonly accessibilityWindows: Ref.Ref<ReadonlyMap<string, GuestAccessibilityWindowLocator>>;
   readonly guestIntegration: Ref.Ref<GuestDesktopIdentity | null>;
+  readonly guestInputPrepared: Ref.Ref<boolean>;
 }
 
 interface GuestDesktopIdentity {
@@ -897,6 +911,13 @@ export const make = Effect.gen(function* () {
     }
     return null;
   });
+  const guestInputSource = yield* Effect.gen(function* () {
+    for (const candidate of environment.resolveResourcePathCandidates(GUEST_INPUT_RESOURCE)) {
+      const source = yield* fileSystem.readFileString(candidate).pipe(Effect.option);
+      if (Option.isSome(source)) return source.value;
+    }
+    return null;
+  });
   const guestTransferSource = yield* Effect.gen(function* () {
     for (const candidate of environment.resolveResourcePathCandidates(GUEST_TRANSFER_RESOURCE)) {
       const source = yield* fileSystem.readFileString(candidate).pipe(Effect.option);
@@ -929,6 +950,7 @@ export const make = Effect.gen(function* () {
         new Map(),
       ),
       guestIntegration: yield* Ref.make<GuestDesktopIdentity | null>(null),
+      guestInputPrepared: yield* Ref.make(false),
     } satisfies RuntimeState;
   });
 
@@ -1442,6 +1464,88 @@ export const make = Effect.gen(function* () {
               `guest process exited with status ${result.exitCode}`,
           }),
         );
+
+  const runGuestInputProcess = (
+    desktop: PersistedDesktop,
+    executable: string,
+    argumentsValue: ReadonlyArray<string>,
+  ) =>
+    qemu
+      .executeGuestProcess(desktop.id, {
+        executable,
+        arguments: argumentsValue,
+        timeoutMs: GUEST_INTEGRATION_TIMEOUT_MS,
+        maxOutputBytes: 4_096,
+      })
+      .pipe(Effect.flatMap((result) => requireGuestProcessSuccess("guest-input", result)));
+
+  const prepareGuestInput = Effect.fn("AgentDesktopManager.prepareGuestInput")(function* (
+    desktop: PersistedDesktop,
+    runtime: RuntimeState,
+  ) {
+    if (yield* Ref.get(runtime.guestInputPrepared)) return;
+    if (guestInputSource === null) {
+      return yield* new AgentDesktopManagerError({
+        code: "unsupported-operation",
+        operation: "guest-input-install",
+        detail: "the bundled Agent desktop input helper is missing",
+      });
+    }
+    yield* runGuestInputProcess(desktop, "/usr/bin/install", [
+      "-d",
+      "-m",
+      "0700",
+      GUEST_INPUT_DIRECTORY,
+    ]);
+    yield* qemu.writeGuestFile(
+      desktop.id,
+      GUEST_INPUT_PATH,
+      new TextEncoder().encode(guestInputSource),
+      "overwrite",
+    );
+    yield* qemu.writeGuestFile(
+      desktop.id,
+      GUEST_INPUT_SERVICE_PATH,
+      new TextEncoder().encode(GUEST_INPUT_SERVICE),
+      "overwrite",
+    );
+    yield* runGuestInputProcess(desktop, "/usr/bin/chmod", ["0700", GUEST_INPUT_PATH]);
+    yield* runGuestInputProcess(desktop, "/usr/bin/chmod", ["0644", GUEST_INPUT_SERVICE_PATH]);
+    yield* runGuestInputProcess(desktop, "/usr/bin/modprobe", ["uinput"]);
+    yield* runGuestInputProcess(desktop, "/usr/bin/systemctl", ["daemon-reload"]);
+    yield* runGuestInputProcess(desktop, "/usr/bin/systemctl", [
+      "restart",
+      "t3-agent-input.service",
+    ]);
+    yield* runGuestInputProcess(desktop, "/usr/bin/python", [GUEST_INPUT_PATH, "wheel", "0", "0"]);
+    yield* Ref.set(runtime.guestInputPrepared, true);
+  });
+
+  const sendGuestWheel = Effect.fn("AgentDesktopManager.sendGuestWheel")(function* (
+    desktop: PersistedDesktop,
+    runtime: RuntimeState,
+    horizontalTicks: number,
+    verticalTicks: number,
+  ) {
+    const wasPrepared = yield* Ref.get(runtime.guestInputPrepared);
+    const inject = () =>
+      runGuestInputProcess(desktop, "/usr/bin/python", [
+        GUEST_INPUT_PATH,
+        "wheel",
+        String(horizontalTicks),
+        String(verticalTicks),
+      ]).pipe(Effect.asVoid);
+    yield* prepareGuestInput(desktop, runtime);
+    if (!wasPrepared) return yield* inject();
+    return yield* inject().pipe(
+      Effect.catch(() =>
+        Ref.set(runtime.guestInputPrepared, false).pipe(
+          Effect.andThen(prepareGuestInput(desktop, runtime)),
+          Effect.andThen(inject()),
+        ),
+      ),
+    );
+  });
 
   const runGuestSessionProcess = (
     desktop: PersistedDesktop,
@@ -3095,9 +3199,12 @@ export const make = Effect.gen(function* () {
         };
         const horizontalTicks = action.horizontalTicks ?? 0;
         const verticalTicks = action.verticalTicks ?? 0;
-        addTicks(verticalTicks, "wheel-up", "wheel-down");
-        addTicks(horizontalTicks, "wheel-left", "wheel-right");
-        yield* qemu.sendInput(desktop.id, events);
+        if (horizontalTicks === 0) {
+          addTicks(verticalTicks, "wheel-up", "wheel-down");
+          yield* qemu.sendInput(desktop.id, events);
+        } else {
+          yield* sendGuestWheel(desktop, runtime, horizontalTicks, verticalTicks);
+        }
         return { index: actionIndex, type: action.type, horizontalTicks, verticalTicks };
       }
       case "type": {
