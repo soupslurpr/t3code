@@ -7,6 +7,9 @@ import type {
   AgentDesktopSetupResult,
   ComputerAutomationAction,
   ComputerAutomationSnapshot,
+  ComputerObservation,
+  ComputerObservationImage,
+  ComputerObservationUpdate,
   EnvironmentId,
 } from "@t3tools/contracts";
 import { ThreadId } from "@t3tools/contracts";
@@ -14,6 +17,7 @@ import {
   CircleStopIcon,
   EyeIcon,
   HandIcon,
+  ImagesIcon,
   MonitorIcon,
   PauseIcon,
   PlayIcon,
@@ -52,12 +56,23 @@ import {
 import { Badge } from "../ui/badge";
 import { Button } from "../ui/button";
 import { Card, CardAction, CardDescription, CardHeader, CardPanel, CardTitle } from "../ui/card";
-import { Dialog, DialogDescription, DialogHeader, DialogPopup, DialogTitle } from "../ui/dialog";
+import {
+  Dialog,
+  DialogDescription,
+  DialogHeader,
+  DialogPanel,
+  DialogPopup,
+  DialogTitle,
+} from "../ui/dialog";
 import { SettingsPageContainer, SettingsSection } from "./settingsLayout";
 import {
   acquireAgentDesktopKeyboardCapture,
   type AgentDesktopKeyboardCapture,
 } from "./agentDesktopKeyboardCapture";
+import {
+  agentDesktopObservationLayout,
+  agentDesktopObservationViews,
+} from "./agentDesktopObservation";
 
 const VIEWER_REFRESH_INTERVAL_MS = 750;
 const VIEWER_HOVER_DELAY_MS = 100;
@@ -181,9 +196,81 @@ function wheelTicks(delta: number, deltaMode: number): number {
   return Math.max(-100, Math.min(100, rounded === 0 ? Math.sign(delta) : rounded));
 }
 
+/** Formats one exact image encoding for the Agent lens status. */
+function observationEncoding(image: ComputerObservationImage): string {
+  if (image.screenshot.state === "unchanged") return "unchanged";
+  const encoding = image.screenshot.encoding;
+  if (encoding.format === "png") return "PNG";
+  if (encoding.mode === "lossless") return "lossless WebP";
+  return `${encoding.mode} WebP${encoding.quality === undefined ? "" : ` q${encoding.quality}`}`;
+}
+
+/** Identifies the model-facing recipient without implying model attention. */
+function observationRecipient(observation: ComputerObservation): string {
+  const recipient = observation.recipient;
+  if (recipient.kind === "controller") return `Controller · ${recipient.instanceId}`;
+  return `Watch evaluator · ${recipient.modelSelection.model}`;
+}
+
+/** Formats the operation that produced a model-facing observation. */
+function observationSource(observation: ComputerObservation): string {
+  return observation.source.replaceAll("-", " ");
+}
+
+/** Overlays exact delivered pixels at their desktop-logical location. */
+function AgentObservationOverlay({
+  liveFrame,
+  images,
+}: {
+  liveFrame: NonNullable<ComputerAutomationSnapshot["frame"]>;
+  images: ReadonlyArray<ComputerObservationImage>;
+}) {
+  const positioned = images.flatMap((image) => {
+    const layout = agentDesktopObservationLayout(image, liveFrame);
+    return layout === null ? [] : [{ image, layout }];
+  });
+  return (
+    <div className="pointer-events-none absolute inset-0 overflow-hidden" aria-hidden="true">
+      <div className="absolute inset-0 bg-black/55" />
+      {positioned.map(({ image, layout }) => (
+        <div
+          key={image.id}
+          className="absolute overflow-hidden border-2 border-cyan-300 shadow-[0_0_0_1px_rgb(0_0_0/0.65)]"
+          style={{
+            left: `${layout.leftPercent}%`,
+            top: `${layout.topPercent}%`,
+            width: `${layout.widthPercent}%`,
+            height: `${layout.heightPercent}%`,
+          }}
+        >
+          {image.screenshot.state === "image" ? (
+            <img
+              src={`data:${image.screenshot.mimeType};base64,${image.screenshot.data}`}
+              alt=""
+              draggable={false}
+              className="size-full object-fill"
+            />
+          ) : (
+            <div className="size-full bg-cyan-950/30" />
+          )}
+          <span className="absolute left-1 top-1 max-w-[calc(100%-0.5rem)] truncate rounded bg-black/75 px-1.5 py-0.5 text-[10px] leading-none text-white">
+            {image.purpose ?? image.id}
+          </span>
+        </div>
+      ))}
+      {positioned.length === 0 ? (
+        <div className="absolute inset-0 flex items-center justify-center px-6 text-center text-sm text-white/75">
+          This observation contains no displayable image bytes for the current display.
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
 function DesktopViewer({
   desktop,
   observation,
+  agentObservation,
   controlling,
   busy,
   error,
@@ -193,6 +280,7 @@ function DesktopViewer({
 }: {
   desktop: AgentDesktop;
   observation: ComputerAutomationSnapshot | null;
+  agentObservation: ComputerObservation | null;
   controlling: boolean;
   busy: boolean;
   error: string | null;
@@ -210,6 +298,28 @@ function DesktopViewer({
   const mountedRef = useRef(true);
   const [captureBusy, setCaptureBusy] = useState(false);
   const [captureError, setCaptureError] = useState<string | null>(null);
+  const [viewMode, setViewMode] = useState<"live" | "lens">("live");
+  const [selectedObservationViewId, setSelectedObservationViewId] = useState<string | null>(null);
+  const [inspectPixels, setInspectPixels] = useState(false);
+  const [inspectSemantics, setInspectSemantics] = useState(false);
+  const observationViews = useMemo(
+    () => (agentObservation === null ? [] : agentDesktopObservationViews(agentObservation)),
+    [agentObservation],
+  );
+  const selectedObservationView =
+    observationViews.find((view) => view.id === selectedObservationViewId) ??
+    observationViews.at(-1) ??
+    null;
+
+  useEffect(() => {
+    setSelectedObservationViewId(observationViews.at(-1)?.id ?? null);
+    setInspectPixels(false);
+    setInspectSemantics(false);
+  }, [agentObservation?.id, observationViews]);
+
+  useEffect(() => {
+    if (agentObservation === null) setViewMode("live");
+  }, [agentObservation]);
 
   const framePoint = useCallback(
     (clientX: number, clientY: number): ViewerPoint | null => {
@@ -400,6 +510,7 @@ function DesktopViewer({
   const takeControl = useCallback(async () => {
     if (controlAttemptRef.current) return;
     controlAttemptRef.current = true;
+    setViewMode("live");
     setCaptureBusy(true);
     setCaptureError(null);
     try {
@@ -463,6 +574,18 @@ function DesktopViewer({
     };
   }, []);
 
+  const liveFrame = observation?.frame;
+  const lensActive = viewMode === "lens" && agentObservation !== null;
+  const selectedImages = selectedObservationView?.images ?? [];
+  const hasSelectedPixels = selectedImages.some((image) => image.screenshot.state === "image");
+  const liveSurfaceStyle =
+    liveFrame === undefined
+      ? undefined
+      : {
+          aspectRatio: `${liveFrame.width} / ${liveFrame.height}`,
+          width: `min(100%, ${liveFrame.width}px, calc(65vh * ${liveFrame.width / liveFrame.height}))`,
+        };
+
   return (
     <DialogPopup className="w-[min(96vw,1100px)] max-w-none" bottomStickOnMobile={false}>
       <DialogHeader>
@@ -473,7 +596,7 @@ function DesktopViewer({
           GNOME may ask once to inhibit shortcuts; Super+Escape always restores them.
         </DialogDescription>
       </DialogHeader>
-      <div className="px-6 pb-6">
+      <DialogPanel>
         <div
           ref={surfaceRef}
           className={cn(
@@ -495,20 +618,155 @@ function DesktopViewer({
           onPointerUp={handlePointerUp}
           onWheel={handleWheel}
         >
-          {observation?.screenshot?.state === "image" ? (
-            <img
-              ref={imageRef}
-              src={`data:${observation.screenshot.mimeType};base64,${observation.screenshot.data}`}
-              alt={`${desktop.label} screen`}
-              draggable={false}
-              className="mx-auto max-h-[65vh] w-auto max-w-full touch-none select-none object-contain"
-            />
+          {observation?.screenshot?.state === "image" && liveFrame !== undefined ? (
+            <div className="relative mx-auto" style={liveSurfaceStyle}>
+              <img
+                ref={imageRef}
+                src={`data:${observation.screenshot.mimeType};base64,${observation.screenshot.data}`}
+                alt={`${desktop.label} screen`}
+                draggable={false}
+                className="size-full touch-none select-none object-fill"
+              />
+              {lensActive && selectedObservationView !== null ? (
+                <AgentObservationOverlay liveFrame={liveFrame} images={selectedImages} />
+              ) : null}
+            </div>
           ) : (
             <div className="flex aspect-video items-center justify-center text-sm text-white/60">
               No screen frame is available.
             </div>
           )}
         </div>
+        <div className="mt-3 flex flex-wrap items-center justify-between gap-2">
+          <div className="flex rounded-lg border bg-muted/30 p-0.5" role="group" aria-label="View">
+            <Button
+              size="xs"
+              variant={viewMode === "live" ? "secondary" : "ghost"}
+              aria-pressed={viewMode === "live"}
+              onClick={() => setViewMode("live")}
+            >
+              Live
+            </Button>
+            <Button
+              size="xs"
+              variant={lensActive ? "secondary" : "ghost"}
+              aria-pressed={lensActive}
+              disabled={agentObservation === null}
+              onClick={() => setViewMode("lens")}
+            >
+              <ImagesIcon />
+              Agent lens
+            </Button>
+          </div>
+          {lensActive && agentObservation !== null ? (
+            <div className="text-right text-[11px] leading-tight text-muted-foreground">
+              <p>{observationRecipient(agentObservation)}</p>
+              <p>
+                {observationSource(agentObservation)} · Observed{" "}
+                {formatRelativeTimeLabel(agentObservation.observedAt)}
+              </p>
+            </div>
+          ) : null}
+        </div>
+        {lensActive && agentObservation !== null ? (
+          <div className="mt-2 rounded-lg border bg-muted/20 p-2.5">
+            <div className="flex flex-wrap items-center gap-1.5">
+              {observationViews.length > 1
+                ? observationViews.map((view) => (
+                    <Button
+                      key={view.id}
+                      size="xs"
+                      variant={selectedObservationView?.id === view.id ? "secondary" : "outline"}
+                      aria-pressed={selectedObservationView?.id === view.id}
+                      onClick={() => setSelectedObservationViewId(view.id)}
+                    >
+                      {view.label}
+                    </Button>
+                  ))
+                : null}
+              {hasSelectedPixels ? (
+                <Button
+                  size="xs"
+                  variant={inspectPixels ? "secondary" : "outline"}
+                  aria-pressed={inspectPixels}
+                  onClick={() => setInspectPixels((current) => !current)}
+                >
+                  1:1 pixels
+                </Button>
+              ) : null}
+              {agentObservation.accessibility !== undefined ? (
+                <Button
+                  size="xs"
+                  variant={inspectSemantics ? "secondary" : "outline"}
+                  aria-pressed={inspectSemantics}
+                  onClick={() => setInspectSemantics((current) => !current)}
+                >
+                  {agentObservation.accessibility.targets.length} semantic targets
+                </Button>
+              ) : null}
+            </div>
+            <p className="mt-2 text-[11px] text-muted-foreground">
+              {selectedImages.length === 0
+                ? "This delivery contained semantic data without image pixels."
+                : `${selectedImages.length} delivered image${selectedImages.length === 1 ? "" : "s"}`}
+              {agentObservation.label === undefined ? "" : ` · ${agentObservation.label}`}
+            </p>
+            {selectedImages.length > 0 ? (
+              <div className="mt-1 flex flex-wrap gap-x-3 gap-y-0.5 text-[10px] text-muted-foreground">
+                {selectedImages.map((image) => (
+                  <span key={image.id}>
+                    {image.purpose ?? image.role.replaceAll("-", " ")} · {image.screenshot.width}×
+                    {image.screenshot.height} · {observationEncoding(image)}
+                  </span>
+                ))}
+              </div>
+            ) : null}
+            {inspectPixels ? (
+              <div className="mt-2 flex max-h-[40vh] gap-3 overflow-auto rounded-md bg-black p-2">
+                {selectedImages.flatMap((image) =>
+                  image.screenshot.state === "image"
+                    ? [
+                        <figure key={image.id} className="shrink-0">
+                          <img
+                            src={`data:${image.screenshot.mimeType};base64,${image.screenshot.data}`}
+                            alt={image.purpose ?? image.id}
+                            draggable={false}
+                            width={image.screenshot.width}
+                            height={image.screenshot.height}
+                            className="max-w-none"
+                          />
+                          <figcaption className="mt-1 text-[10px] text-white/70">
+                            {image.purpose ?? image.id} · {image.screenshot.width}×
+                            {image.screenshot.height} · {observationEncoding(image)}
+                          </figcaption>
+                        </figure>,
+                      ]
+                    : [],
+                )}
+              </div>
+            ) : null}
+            {inspectSemantics && agentObservation.accessibility !== undefined ? (
+              <div className="mt-2 max-h-44 overflow-auto rounded-md border bg-background p-2 text-[11px]">
+                {agentObservation.accessibility.targets.length === 0 ? (
+                  <p className="text-muted-foreground">
+                    {agentObservation.accessibility.detail ?? "No semantic targets were exposed."}
+                  </p>
+                ) : (
+                  <ul className="space-y-1">
+                    {agentObservation.accessibility.targets.map((target) => (
+                      <li key={target.id}>
+                        <span className="font-medium">{target.name || target.role}</span>
+                        <span className="text-muted-foreground">
+                          {` · ${target.role} · ${target.activation}`}
+                        </span>
+                      </li>
+                    ))}
+                  </ul>
+                )}
+              </div>
+            ) : null}
+          </div>
+        ) : null}
         <div className="mt-3 min-h-5 text-xs text-muted-foreground">
           {error ??
             captureError ??
@@ -532,7 +790,7 @@ function DesktopViewer({
             </Button>
           )}
         </div>
-      </div>
+      </DialogPanel>
     </DialogPopup>
   );
 }
@@ -559,6 +817,7 @@ export function AgentDesktopSettings() {
   const [viewer, setViewer] = useState<{
     readonly desktop: AgentDesktop;
     readonly observation: ComputerAutomationSnapshot;
+    readonly agentObservation: ComputerObservation | null;
     readonly controlling: boolean;
   } | null>(null);
   const viewerRef = useRef(viewer);
@@ -703,7 +962,26 @@ export function AgentDesktopSettings() {
             },
           },
         });
-        setViewer({ desktop, observation, controlling: false });
+        let agentObservation: ComputerObservation | null = null;
+        try {
+          const update = await run<ComputerObservationUpdate>(desktop.owner.environmentId, {
+            threadId: desktop.owner.threadId,
+            request: {
+              operation: "observation",
+              owner: desktop.owner,
+              desktopId: desktop.id,
+            },
+          });
+          agentObservation = update.observation ?? null;
+        } catch (cause) {
+          setViewerError(`Agent lens unavailable: ${failureMessage(cause)}`);
+        }
+        setViewer({
+          desktop,
+          observation,
+          agentObservation,
+          controlling: false,
+        });
       } catch (cause) {
         setError(failureMessage(cause));
       } finally {
@@ -731,6 +1009,7 @@ export function AgentDesktopSettings() {
         return;
       }
       inFlight = true;
+      let failure: unknown = null;
       try {
         const observation = await run<ComputerAutomationSnapshot>(desktop.owner.environmentId, {
           threadId: desktop.owner.threadId,
@@ -748,13 +1027,37 @@ export function AgentDesktopSettings() {
         setViewer((current) =>
           current?.desktop.id === desktop.id ? { ...current, observation } : current,
         );
-        setViewerError(null);
       } catch (cause) {
-        if (!cancelled) setViewerError(failureMessage(cause));
-      } finally {
-        inFlight = false;
-        schedule();
+        failure = cause;
       }
+      try {
+        const currentObservation = viewerRef.current?.agentObservation;
+        const update = await run<ComputerObservationUpdate>(desktop.owner.environmentId, {
+          threadId: desktop.owner.threadId,
+          request: {
+            operation: "observation",
+            owner: desktop.owner,
+            desktopId: desktop.id,
+            ...(currentObservation === null || currentObservation === undefined
+              ? {}
+              : { afterId: currentObservation.id }),
+          },
+        });
+        if (!cancelled) {
+          setViewer((current) => {
+            if (current?.desktop.id !== desktop.id) return current;
+            if (update.latestId === null) return { ...current, agentObservation: null };
+            return update.observation === undefined
+              ? current
+              : { ...current, agentObservation: update.observation };
+          });
+        }
+      } catch (cause) {
+        failure ??= cause;
+      }
+      if (!cancelled) setViewerError(failure === null ? null : failureMessage(failure));
+      inFlight = false;
+      schedule();
     };
 
     schedule();
@@ -1076,6 +1379,7 @@ export function AgentDesktopSettings() {
           <DesktopViewer
             desktop={viewer.desktop}
             observation={viewer.observation}
+            agentObservation={viewer.agentObservation}
             controlling={viewer.controlling}
             busy={busyDesktopId === viewer.desktop.id}
             error={viewerError}

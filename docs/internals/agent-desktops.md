@@ -58,6 +58,22 @@ identifiers include an accessibility generation. A newer semantic observation or
 expires them, while screenshot-only human views and monitors leave the current semantic observation
 intact. This prevents background viewing from racing the controlling agent's next semantic action.
 
+## Human Observation Lens
+
+The environment server retains one short-lived latest model-facing observation per Agent desktop.
+Direct computer tools publish only after their final result is assembled, so temporal captures and
+overview-plus-detail payloads appear as one delivery. Durable monitors publish only when images are
+actually passed to their configured evaluator; fingerprint-only samples never enter the lens.
+Controller inspection of retained watch evidence is identified separately.
+
+The Agent desktop Watch dialog continues to poll an independent live frame. It requests the retained
+observation by id and receives image bytes only when that id changes. Frames retain their original
+encoding and image-to-desktop transform, allowing the client to place the exact submitted pixels over
+the live display without another capture or re-encode. The cache is memory-only, expires after thirty
+minutes, retains at most 32 desktops and 128 MiB of compressed images, and evicts least-recent entries
+under either bound. The newest observation is preserved even when a single valid tool result exceeds
+the aggregate image target.
+
 ## Workspace Transfer Boundary
 
 The Agent desktop toolkit copies files and directory trees only across a typed workspace/guest

@@ -22,6 +22,7 @@ import * as Stream from "effect/Stream";
 import * as TestClock from "effect/testing/TestClock";
 import { describe, expect } from "vite-plus/test";
 
+import * as ComputerObservationStore from "../computer/ComputerObservationStore.ts";
 import * as ServerEnvironment from "../environment/ServerEnvironment.ts";
 import * as PreviewAutomationBroker from "../mcp/PreviewAutomationBroker.ts";
 import { ProjectionSnapshotQuery } from "../orchestration/Services/ProjectionSnapshotQuery.ts";
@@ -211,6 +212,7 @@ describe("ThreadMonitorComputer", () => {
       } as unknown as ProjectionSnapshotQuery["Service"];
       const dependencies = Layer.mergeAll(
         NodeServices.layer,
+        ComputerObservationStore.layer,
         Layer.succeed(PreviewAutomationBroker.PreviewAutomationBroker, broker),
         Layer.succeed(ProviderInstanceRegistry.ProviderInstanceRegistry, registry),
         Layer.succeed(ProjectionSnapshotQuery, projections),
