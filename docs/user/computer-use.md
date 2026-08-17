@@ -234,8 +234,11 @@ remains available.
 An agent can use a separate Agent desktop when it should work without moving the pointer, changing
 focus, or opening windows on your desktop. Each Agent desktop is a complete GNOME machine with its
 own display, files, processes, and network connection. The same computer tools work against it, but
-the machine does not need the host-desktop sharing dialog because its display and emulated input
-devices exist specifically for agent work.
+the virtual machine remains on the device hosting its T3 environment. Other connected T3 clients can
+watch or control it remotely without installing QEMU or creating a second local inventory.
+The hosting T3 desktop app must remain connected for remote viewing and control. The machine does not
+need the host-desktop sharing dialog because its display and emulated input devices exist specifically
+for agent work.
 
 An agent can ask for a clean desktop, reuse a suitable prior desktop, or select a known desktop
 explicitly. Access returns the concrete desktop identifier, and every later status, snapshot, action,
