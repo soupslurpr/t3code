@@ -491,6 +491,52 @@ function accessibilityRootContainsFocus(root, maxNodes) {
   return { focused: false, scanned, truncated: queueIndex < queue.length };
 }
 
+/** Tries to move keyboard focus without trusting a declared Component interface. */
+function tryAccessibilityFocus(accessible) {
+  try {
+    if (hasAccessibilityState(accessible.get_state_set(), Atspi.StateType.FOCUSED)) return true;
+    if (!Array.from(accessible.get_interfaces() ?? []).includes("Component")) return false;
+    return accessible.get_component_iface().grab_focus();
+  } catch {
+    return false;
+  }
+}
+
+/** Selects one keyboard target through its focused parent selection model. */
+async function trySelectKeyboardAccessibilityTarget(accessible) {
+  try {
+    const parent = accessible.get_parent();
+    const childIndex = accessible.get_index_in_parent();
+    if (
+      parent === null ||
+      childIndex < 0 ||
+      !Array.from(parent.get_interfaces() ?? []).includes("Selection")
+    ) {
+      return false;
+    }
+    if (
+      !accessibilityRootContainsFocus(parent, MAX_ACCESSIBILITY_NODES).focused &&
+      !tryAccessibilityFocus(parent)
+    ) {
+      return false;
+    }
+    const selection = parent.get_selection_iface();
+    const selected = selection.is_child_selected(childIndex);
+    const selectedCount = Math.max(0, selection.get_n_selected_children());
+    if (selected && selectedCount === 1) return true;
+    if (selectedCount > 0 && !selection.clear_selection()) return false;
+    if (!selection.select_child(childIndex)) return false;
+    await delay(ACCESSIBILITY_FOCUS_SETTLE_MS);
+    return (
+      (hasAccessibilityState(accessible.get_state_set(), Atspi.StateType.SELECTED) ||
+        selection.is_child_selected(childIndex)) &&
+      selection.get_n_selected_children() === 1
+    );
+  } catch {
+    return false;
+  }
+}
+
 /** Waits for GNOME to return focus after closing its control-consent dialog. */
 async function waitForAccessibilityRootFocus(root) {
   const attemptCount = Math.ceil(
@@ -2477,8 +2523,19 @@ async function activateAccessibilityTarget(targetId) {
       }
       return action.do_action(matchingActionIndices[0]);
     }
+    const selectable = hasAccessibilityState(
+      current.stored.accessible.get_state_set(),
+      Atspi.StateType.SELECTABLE,
+    );
     const focused =
-      current.target.focused || current.stored.accessible.get_component_iface().grab_focus();
+      current.target.focused ||
+      (activation === "keyboard" &&
+        selectable &&
+        (await trySelectKeyboardAccessibilityTarget(current.stored.accessible))) ||
+      tryAccessibilityFocus(current.stored.accessible) ||
+      (activation === "keyboard" &&
+        !selectable &&
+        (await trySelectKeyboardAccessibilityTarget(current.stored.accessible)));
     if (focused && activation === "keyboard") {
       await delay(ACCESSIBILITY_FOCUS_SETTLE_MS);
       await runInputPhase("key-press", () => tapKeysym(NAMED_KEYSYMS.enter));

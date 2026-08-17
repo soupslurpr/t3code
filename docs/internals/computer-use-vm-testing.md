@@ -7,9 +7,9 @@ create, configure, or start a VM themselves.
 
 Run `vp run --filter @t3tools/desktop test:computer-use-vm` to exercise remembered control, scaled
 pointer input, real wheel ticks, exact Unicode typing without clipboard mutation, native editable and
-window semantic targets, early accessibility setup, semantic window activation, visual-change
-waiting, action receipts, cleanup, retained availability after access release, explicit availability
-release, and restoration of GNOME's accessibility setting. Run
+window semantic targets, keyboard selection targets, early accessibility setup, semantic window
+activation, visual-change waiting, action receipts, cleanup, retained availability after access
+release, explicit availability release, and restoration of GNOME's accessibility setting. Run
 `vp run --filter @t3tools/desktop benchmark:computer-use-vm` to compare semantics-only, overview,
 balanced, detailed, and focused-region observations. Both commands close temporary applications and
 release control before returning.

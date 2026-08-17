@@ -23,6 +23,7 @@ const STARTUP_TIMEOUT_MS = 1_000;
 const TEXT_FOCUS_TIMEOUT_MS = 250;
 const TEXT_FOCUS_INTERVAL_MS = 25;
 const TEXT_VERIFY_SETTLE_MS = 50;
+const KEYBOARD_SELECTION_SETTLE_MS = 50;
 const WINDOW_FOCUS_SETTLE_MS = 50;
 const WINDOW_RESOLVE_TIMEOUT_MS = 500;
 const WINDOW_RESOLVE_INTERVAL_MS = 50;
@@ -166,6 +167,49 @@ function rootContainsFocus(root, maxNodes) {
     }
   }
   return { focused: false, scanned, truncated: queueIndex < queue.length };
+}
+
+/** Tries to move keyboard focus without trusting a declared Component interface. */
+function tryAccessibilityFocus(accessible) {
+  try {
+    if (hasState(accessible.get_state_set(), Atspi.StateType.FOCUSED)) return true;
+    if (!Array.from(accessible.get_interfaces() ?? []).includes("Component")) return false;
+    return accessible.get_component_iface().grab_focus();
+  } catch {
+    return false;
+  }
+}
+
+/** Selects one keyboard target through its focused parent selection model. */
+function trySelectKeyboardTarget(accessible) {
+  try {
+    const parent = accessible.get_parent();
+    const childIndex = accessible.get_index_in_parent();
+    if (
+      parent === null ||
+      childIndex < 0 ||
+      !Array.from(parent.get_interfaces() ?? []).includes("Selection")
+    ) {
+      return false;
+    }
+    if (!rootContainsFocus(parent, MAX_NODES).focused && !tryAccessibilityFocus(parent)) {
+      return false;
+    }
+    const selection = parent.get_selection_iface();
+    const selected = selection.is_child_selected(childIndex);
+    const selectedCount = Math.max(0, selection.get_n_selected_children());
+    if (selected && selectedCount === 1) return true;
+    if (selectedCount > 0 && !selection.clear_selection()) return false;
+    if (!selection.select_child(childIndex)) return false;
+    GLib.usleep(KEYBOARD_SELECTION_SETTLE_MS * 1_000);
+    return (
+      (hasState(accessible.get_state_set(), Atspi.StateType.SELECTED) ||
+        selection.is_child_selected(childIndex)) &&
+      selection.get_n_selected_children() === 1
+    );
+  } catch {
+    return false;
+  }
 }
 
 /** Selects the single active or focused top-level accessibility window. */
@@ -492,10 +536,15 @@ function activate(locator) {
       });
     }
     activated = action.do_action(matchingActionIndices[0]);
-  } else {
+  } else if (locator.activation === "keyboard") {
+    const selectable = hasState(states, Atspi.StateType.SELECTABLE);
     activated =
-      hasState(states, Atspi.StateType.FOCUSED) || accessible.get_component_iface().grab_focus();
-    keyboard = activated && locator.activation === "keyboard";
+      (selectable && trySelectKeyboardTarget(accessible)) ||
+      tryAccessibilityFocus(accessible) ||
+      (!selectable && trySelectKeyboardTarget(accessible));
+    keyboard = activated;
+  } else {
+    activated = tryAccessibilityFocus(accessible);
   }
   if (!activated) {
     throw Object.assign(new Error("the application rejected semantic activation"), {

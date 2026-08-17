@@ -1078,7 +1078,10 @@ describe("AgentDesktopManager", () => {
 
   it.effect("captures and activates guest accessibility targets", () =>
     Effect.gen(function* () {
-      const harness = yield* managerHarness("accessibility", { accessibility: true });
+      const harness = yield* managerHarness("accessibility", {
+        accessibility: true,
+        activationResponse: '{"ok":true,"result":{"keyboard":true}}',
+      });
       yield* Effect.gen(function* () {
         const manager = yield* AgentDesktopManager.AgentDesktopManager;
         const desktop = yield* manager.acquire(owner, { label: "Accessible" });
@@ -1127,6 +1130,7 @@ describe("AgentDesktopManager", () => {
         assert.isTrue(
           calls.some((call) => call.includes("/usr/bin/gjs") && call.includes("activate")),
         );
+        assert.isTrue(calls.some((call) => call.startsWith("key:") && call.endsWith(":ret")));
         assert.isTrue(calls.some((call) => call.includes("activate-window")));
         const activationCall = calls.find((call) => call.includes(" activate "));
         const windowActivationCall = calls.find((call) => call.includes(" activate-window "));

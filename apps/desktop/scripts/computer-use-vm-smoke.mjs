@@ -11,6 +11,7 @@ const smokeExpression = String.raw`(async () => {
   const state = {
     textEditorTargets: 0,
     calculatorTargets: 0,
+    filesTargets: 0,
     clickCount: 0,
     wheelEvents: 0,
     rightDragPhases: [],
@@ -23,6 +24,7 @@ const smokeExpression = String.raw`(async () => {
     clipboardUnchanged: false,
     waitForChange: null,
     windowActivation: false,
+    keyboardSelectionActivation: false,
     invalidKeyFailure: null,
     staleTargetFailure: null,
     focusRestored: false,
@@ -39,8 +41,10 @@ const smokeExpression = String.raw`(async () => {
   const clipboardSentinel = "T3 computer-use VM smoke sentinel";
   const textEditorApplications = ["gnome-text-editor", "org.gnome.TextEditor", "Text Editor"];
   const calculatorApplications = ["gnome-calculator", "Calculator"];
+  const filesApplications = ["org.gnome.Nautilus", "nautilus", "Files"];
   let editorOpen = false;
   let calculatorOpen = false;
+  let filesOpen = false;
   let clipboardBefore = null;
   let changedWindowState = false;
 
@@ -515,6 +519,69 @@ const smokeExpression = String.raw`(async () => {
     );
     calculatorOpen = false;
 
+    valueOf(
+      await computer.act({
+        actions: [
+          { type: "hotkey", keys: ["Alt", "F2"] },
+          { type: "wait", durationMs: 1000 },
+          { type: "type", text: "nautilus --new-window", submit: true },
+        ],
+        observation: false,
+      }),
+      "launch Files",
+    );
+    filesOpen = true;
+    const filesSnapshot = await waitForApplication(
+      filesApplications,
+      20_000,
+      (accessibility) =>
+        accessibility?.targets.some(
+          (target) =>
+            target.role === "table cell" &&
+            target.activation === "keyboard" &&
+            target.name.toLowerCase().includes("downloads"),
+        ) === true,
+    );
+    const filesAccessibility = filesSnapshot.accessibility;
+    state.filesTargets = filesAccessibility?.targets.length ?? 0;
+    const downloadsTarget = filesAccessibility?.targets.find(
+      (target) =>
+        target.role === "table cell" &&
+        target.activation === "keyboard" &&
+        target.name.toLowerCase().includes("downloads"),
+    );
+    if (downloadsTarget === undefined) {
+      throw new Error("Files did not expose its Downloads keyboard target");
+    }
+    valueOf(
+      await computer.act({
+        actions: [{ type: "activate", targetId: downloadsTarget.id }],
+        observation: false,
+      }),
+      "activate Downloads keyboard target",
+    );
+    const downloadsSnapshot = await waitForApplication(
+      filesApplications,
+      10_000,
+      (accessibility) => accessibility?.window?.name.toLowerCase().includes("downloads") === true,
+    );
+    if (downloadsSnapshot.accessibility?.window?.name.toLowerCase().includes("downloads") !== true) {
+      throw new Error("the Downloads keyboard target did not open its folder");
+    }
+    state.keyboardSelectionActivation = true;
+    const filesCloseTarget = downloadsSnapshot.accessibility?.targets.find(
+      (target) => target.name === "Close" && target.enabled,
+    );
+    if (filesCloseTarget === undefined) throw new Error("Files did not expose semantic Close");
+    valueOf(
+      await computer.act({
+        actions: [{ type: "activate", targetId: filesCloseTarget.id }],
+        observation: false,
+      }),
+      "semantic Files close",
+    );
+    filesOpen = false;
+
     const finalWindowSnapshot = valueOf(
       await computer.snapshot({ screenshot: false, includeAccessibility: true }),
       "observe original window for focus restoration",
@@ -639,7 +706,38 @@ const smokeExpression = String.raw`(async () => {
         }
       } catch {}
     }
-    if (changedWindowState && !editorOpen && !calculatorOpen) {
+    if (filesOpen) {
+      try {
+        const cleanupSnapshot = valueOf(
+          await computer.snapshot({ screenshot: false, includeAccessibility: true }),
+          "observe Files during cleanup",
+        );
+        const filesWindow = cleanupSnapshot.accessibility?.windows.find((window) =>
+          filesApplications.includes(window.application),
+        );
+        if (filesWindow !== undefined) {
+          valueOf(
+            await computer.act({
+              actions: [{ type: "activate_window", windowId: filesWindow.id }],
+              observation: false,
+            }),
+            "activate Files during cleanup",
+          );
+          valueOf(
+            await computer.act({
+              actions: [
+                { type: "hotkey", keys: ["Alt", "F4"] },
+                { type: "wait", durationMs: 500 },
+              ],
+              observation: false,
+            }),
+            "close Files during cleanup",
+          );
+          filesOpen = false;
+        }
+      } catch {}
+    }
+    if (changedWindowState && !editorOpen && !calculatorOpen && !filesOpen) {
       try {
         await computer.act({
           actions: [{ type: "hotkey", keys: ["Meta", "ArrowDown"] }],
@@ -696,6 +794,7 @@ async function main() {
         accessibilityRestored: accessibilityAfter,
         textEditorTargets: result.textEditorTargets,
         calculatorTargets: result.calculatorTargets,
+        filesTargets: result.filesTargets,
         clickCount: result.clickCount,
         wheelEvents: result.wheelEvents,
         rightDragPhases: result.rightDragPhases,
@@ -708,6 +807,7 @@ async function main() {
         clipboardUnchanged: result.clipboardUnchanged,
         waitForChange: result.waitForChange,
         windowActivation: result.windowActivation,
+        keyboardSelectionActivation: result.keyboardSelectionActivation,
         invalidKeyFailure: result.invalidKeyFailure,
         staleTargetFailure: result.staleTargetFailure,
         focusRestored: result.focusRestored,
