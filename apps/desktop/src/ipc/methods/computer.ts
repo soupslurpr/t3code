@@ -239,7 +239,7 @@ export const act = DesktopIpc.makeIpcMethod({
         computer,
         computer.act(context, request.input),
         observation,
-        request.input.desktop === undefined ? {} : { desktop: request.input.desktop },
+        { desktop: request.input.desktop },
         context,
       ),
     );

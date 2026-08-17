@@ -121,6 +121,7 @@ export const isComputerAutomationFailureKind = Schema.is(ComputerAutomationFailu
 
 export const ComputerAutomationFailureCode = Schema.Literals([
   "invalid-action",
+  "desktop-target-required",
   "invalid-key-name",
   "invalid-coordinate",
   "display-not-found",
@@ -584,9 +585,9 @@ export type ComputerAutomationTemporalCaptureOptions =
   typeof ComputerAutomationTemporalCaptureOptions.Type;
 
 const ComputerAutomationDesktopTargetField = {
-  desktop: Schema.optional(ComputerDesktopTarget).annotate({
+  desktop: ComputerDesktopTarget.annotate({
     description:
-      "Existing desktop to use. Omission targets the user's desktop; pass the desktopId returned by Agent desktop access on every later operation.",
+      "Existing desktop to use. Pass kind user for the user's desktop or the desktopId returned by Agent desktop access.",
   }),
 };
 
@@ -626,8 +627,8 @@ export type ComputerAutomationObserveSequenceInput =
   typeof ComputerAutomationObserveSequenceInput.Type;
 
 export const ComputerAutomationAvailabilityInput = Schema.Struct({
-  desktop: Schema.optional(Schema.Struct({ kind: Schema.Literal("user") })).annotate({
-    description: "User desktop to keep available. Omission also targets the user's desktop.",
+  desktop: Schema.Struct({ kind: Schema.Literal("user") }).annotate({
+    description: "Explicit user desktop whose availability lease should change.",
   }),
 }).annotate({
   description:
@@ -670,9 +671,9 @@ export const ComputerAutomationSnapshotInput = Schema.Struct({
 export type ComputerAutomationSnapshotInput = typeof ComputerAutomationSnapshotInput.Type;
 
 export const ComputerAutomationAccessInput = Schema.Struct({
-  desktop: Schema.optional(ComputerDesktopSelector).annotate({
+  desktop: ComputerDesktopSelector.annotate({
     description:
-      "Desktop to use. Omission targets the user's desktop. Agent access returns a desktopId to pass on every later operation.",
+      "Desktop to use. Agent access returns a desktopId to pass on every later operation.",
   }),
   observation: Schema.optional(
     Schema.Union([Schema.Literal(false), ComputerAutomationObservationOptions]).annotate({
@@ -1196,8 +1197,7 @@ export const ComputerAutomationAction = Schema.Union([
 ]);
 export type ComputerAutomationAction = typeof ComputerAutomationAction.Type;
 
-export const ComputerAutomationActInput = Schema.Struct({
-  ...ComputerAutomationDesktopTargetField,
+const ComputerAutomationActionBatchFields = {
   actions: Schema.Array(ComputerAutomationAction)
     .check(Schema.isMinLength(1), Schema.isMaxLength(MAX_ACTION_BATCH_ACTIONS))
     .annotate({
@@ -1238,86 +1238,104 @@ export const ComputerAutomationActInput = Schema.Struct({
           "Optional bounded screen sequence captured around the action batch for temporal verification.",
       }),
   ),
+};
+
+/** Validates limits and semantic ordering shared by routed and backend action batches. */
+function validateComputerAutomationActionBatch(input: {
+  readonly actions: ReadonlyArray<ComputerAutomationAction>;
+}) {
+  let durationMs = 0;
+  let textLength = 0;
+  let activationCount = 0;
+  for (const [index, action] of input.actions.entries()) {
+    switch (action.type) {
+      case "activate":
+      case "activate_window":
+        activationCount += 1;
+        if (index !== 0) {
+          return {
+            path: ["actions", index, action.type === "activate" ? "targetId" : "windowId"],
+            issue: "A semantic activation must be the first action in a batch.",
+          };
+        }
+        break;
+      case "drag":
+        durationMs += action.durationMs ?? 500;
+        break;
+      case "move":
+        durationMs += (action.durationMs ?? 0) + (action.settleMs ?? 250);
+        break;
+      case "wheel": {
+        const pointFieldCount =
+          Number(action.frameId !== undefined) +
+          Number(action.x !== undefined) +
+          Number(action.y !== undefined);
+        if (pointFieldCount !== 0 && pointFieldCount !== 3) {
+          return {
+            path: ["actions", index],
+            issue: "Wheel targeting requires frameId, x, and y together.",
+          };
+        }
+        if (action.horizontalTicks === undefined && action.verticalTicks === undefined) {
+          return {
+            path: ["actions", index],
+            issue: "Provide horizontalTicks or verticalTicks.",
+          };
+        }
+        break;
+      }
+      case "type": {
+        const actionTextLength = Array.from(action.text).length;
+        textLength += actionTextLength;
+        durationMs +=
+          actionTextLength * (action.intervalMs ?? 0) +
+          (action.submit === true ? SUBMIT_SETTLE_MS : 0);
+        break;
+      }
+      case "wait":
+        durationMs += action.durationMs;
+        break;
+      case "wait_for_change":
+        durationMs += action.timeoutMs;
+        break;
+    }
+  }
+  if (activationCount > 1) {
+    return {
+      path: ["actions"],
+      issue: "A batch may activate at most one semantic target or window.",
+    };
+  }
+  if (textLength > MAX_ACTION_BATCH_TEXT_LENGTH) {
+    return {
+      path: ["actions"],
+      issue: `Action batch text must total at most ${MAX_ACTION_BATCH_TEXT_LENGTH} characters.`,
+    };
+  }
+  return (
+    durationMs <= MAX_ACTION_BATCH_DURATION_MS || {
+      path: ["actions"],
+      issue: `Action batch delay must total at most ${MAX_ACTION_BATCH_DURATION_MS}ms.`,
+    }
+  );
+}
+
+const ComputerAutomationActionBatchFilter = Schema.makeFilter(
+  validateComputerAutomationActionBatch,
+);
+
+export const ComputerAutomationActionBatchInput = Schema.Struct(ComputerAutomationActionBatchFields)
+  .check(ComputerAutomationActionBatchFilter)
+  .annotate({
+    description: "Runs bounded desktop actions after a router has selected their target.",
+  });
+export type ComputerAutomationActionBatchInput = typeof ComputerAutomationActionBatchInput.Type;
+
+export const ComputerAutomationActInput = Schema.Struct({
+  ...ComputerAutomationDesktopTargetField,
+  ...ComputerAutomationActionBatchFields,
 })
-  .check(
-    Schema.makeFilter((input) => {
-      let durationMs = 0;
-      let textLength = 0;
-      let activationCount = 0;
-      for (const [index, action] of input.actions.entries()) {
-        switch (action.type) {
-          case "activate":
-          case "activate_window":
-            activationCount += 1;
-            if (index !== 0) {
-              return {
-                path: ["actions", index, action.type === "activate" ? "targetId" : "windowId"],
-                issue: "A semantic activation must be the first action in a batch.",
-              };
-            }
-            break;
-          case "drag":
-            durationMs += action.durationMs ?? 500;
-            break;
-          case "move":
-            durationMs += (action.durationMs ?? 0) + (action.settleMs ?? 250);
-            break;
-          case "wheel": {
-            const pointFieldCount =
-              Number(action.frameId !== undefined) +
-              Number(action.x !== undefined) +
-              Number(action.y !== undefined);
-            if (pointFieldCount !== 0 && pointFieldCount !== 3) {
-              return {
-                path: ["actions", index],
-                issue: "Wheel targeting requires frameId, x, and y together.",
-              };
-            }
-            if (action.horizontalTicks === undefined && action.verticalTicks === undefined) {
-              return {
-                path: ["actions", index],
-                issue: "Provide horizontalTicks or verticalTicks.",
-              };
-            }
-            break;
-          }
-          case "type":
-            {
-              const actionTextLength = Array.from(action.text).length;
-              textLength += actionTextLength;
-              durationMs +=
-                actionTextLength * (action.intervalMs ?? 0) +
-                (action.submit === true ? SUBMIT_SETTLE_MS : 0);
-            }
-            break;
-          case "wait":
-            durationMs += action.durationMs;
-            break;
-          case "wait_for_change":
-            durationMs += action.timeoutMs;
-            break;
-        }
-      }
-      if (activationCount > 1) {
-        return {
-          path: ["actions"],
-          issue: "A batch may activate at most one semantic target or window.",
-        };
-      }
-      if (textLength > MAX_ACTION_BATCH_TEXT_LENGTH) {
-        return {
-          path: ["actions"],
-          issue: `Action batch text must total at most ${MAX_ACTION_BATCH_TEXT_LENGTH} characters.`,
-        };
-      }
-      return (
-        durationMs <= MAX_ACTION_BATCH_DURATION_MS || {
-          path: ["actions"],
-          issue: `Action batch delay must total at most ${MAX_ACTION_BATCH_DURATION_MS}ms.`,
-        }
-      );
-    }),
-  )
+  .check(ComputerAutomationActionBatchFilter)
   .annotate({
     description:
       "Runs bounded desktop actions in order, then captures one updated screen observation.",

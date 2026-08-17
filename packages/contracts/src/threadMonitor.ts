@@ -393,9 +393,8 @@ export const ThreadMonitorComputerStartInput = Schema.Struct({
   label: MonitorLabel.annotate({
     description: "Short description of the screen condition being watched.",
   }),
-  desktop: Schema.optional(ComputerDesktopTarget).annotate({
-    description:
-      "Desktop to observe. Omission targets the user's desktop; Agent desktops require their concrete desktopId.",
+  desktop: ComputerDesktopTarget.annotate({
+    description: "Desktop to observe. Agent desktops require their concrete desktopId.",
   }),
   observation: Schema.optional(ThreadMonitorComputerObservationInput).annotate({
     description:

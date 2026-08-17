@@ -43,7 +43,7 @@ function temporalSnapshotInput(
     Pick<ComputerAutomationObserveSequenceInput, "desktop">,
 ): ComputerAutomationSnapshotInput {
   return {
-    ...(input.desktop === undefined ? {} : { desktop: input.desktop }),
+    desktop: input.desktop,
     ...(input.displayId === undefined ? {} : { displayId: input.displayId }),
     includeAccessibility: false,
     screenshot: input.screenshot ?? {},
@@ -111,7 +111,7 @@ const actWithTemporalObservation = Effect.fn("ComputerToolkit.actWithTemporalObs
       );
     }
     const capture = {
-      ...(input.desktop === undefined ? {} : { desktop: input.desktop }),
+      desktop: input.desktop,
       ...temporalObservation,
     };
     if ((temporalObservation.start ?? "before-actions") === "after-actions") {

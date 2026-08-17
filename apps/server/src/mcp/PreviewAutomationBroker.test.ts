@@ -4,6 +4,7 @@ import {
   AGENT_DESKTOP_HUMAN_AUTOMATION_OPERATION,
   EnvironmentId,
   PreviewAutomationClientDisconnectedError,
+  PreviewAutomationDesktopTargetRequiredError,
   PreviewAutomationExecutionError,
   PreviewAutomationInvalidSelectorError,
   PreviewAutomationMalformedResponseError,
@@ -391,7 +392,7 @@ it.effect("surfaces a safe diagnosis for a blank desktop display", () => {
         .invoke<void>({
           scope,
           operation: "computerRequestControl",
-          input: {},
+          input: { desktop: { kind: "user" } },
           timeoutMs: 1_234,
         })
         .pipe(Effect.flip);
@@ -710,7 +711,11 @@ it.effect("routes browser, user-desktop, and agent-desktop work independently", 
         }),
       ).toBe("user:computerRequestControl");
       expect(
-        yield* broker.invoke<string>({ scope, operation: "computerAct", input: { actions: [] } }),
+        yield* broker.invoke<string>({
+          scope,
+          operation: "computerAct",
+          input: { desktop: { kind: "user" }, actions: [] },
+        }),
       ).toBe("user:computerAct");
     }),
   ),
@@ -785,13 +790,17 @@ it.effect("keeps focused user and primary Agent desktop hosts independent", () =
           input: { desktop: { kind: "agent", desktopId: "agent-1" }, actions: [] },
         }),
       ).toBe("agent:computerAct");
-      expect(
-        yield* broker.invoke<string>({
-          scope,
-          operation: "computerAct",
-          input: { actions: [] },
-        }),
-      ).toBe("user:computerAct");
+      const missingTarget = yield* broker
+        .invoke<string>({ scope, operation: "computerAct", input: { actions: [] } })
+        .pipe(Effect.flip);
+      expect(missingTarget).toBeInstanceOf(PreviewAutomationDesktopTargetRequiredError);
+      expect(missingTarget).toMatchObject({
+        computerFailure: {
+          code: "desktop-target-required",
+          field: "desktop",
+          received: "missing",
+        },
+      });
     }),
   ),
 );

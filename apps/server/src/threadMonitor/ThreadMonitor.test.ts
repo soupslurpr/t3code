@@ -86,7 +86,7 @@ const workingComputerLayer = Layer.effect(
           condition: {
             type: "computer",
             revision: 1,
-            desktop: input.watch.desktop ?? { kind: "user" },
+            desktop: input.watch.desktop,
             observation: {
               regions: [
                 {
@@ -944,6 +944,7 @@ computerMonitorTestLayer("ThreadMonitor computer conditions", (it) => {
         threadId,
         monitor: {
           label: "Cancel the rendered result watch",
+          desktop: { kind: "user" },
           match: { type: "image-change" },
           continuation: "record-only",
         },
@@ -967,6 +968,7 @@ computerMonitorTestLayer("ThreadMonitor computer conditions", (it) => {
         threadId,
         monitor: {
           label: "Review an uncertain visual condition",
+          desktop: { kind: "user" },
           match: {
             type: "model",
             criterion: "The result is visibly complete.",
@@ -1031,6 +1033,7 @@ computerMonitorTestLayer("ThreadMonitor computer conditions", (it) => {
         threadId,
         monitor: {
           label: "Retry a conflicting controller review",
+          desktop: { kind: "user" },
           match: {
             type: "model",
             criterion: "The result is visibly complete.",
@@ -1095,6 +1098,7 @@ computerMonitorTestLayer("ThreadMonitor computer conditions", (it) => {
         threadId,
         monitor: {
           label: "Watch from an older build",
+          desktop: { kind: "user" },
           match: { type: "image-change" },
           continuation: "record-only",
         },
@@ -1131,6 +1135,7 @@ computerMonitorTestLayer("ThreadMonitor computer conditions", (it) => {
         threadId,
         monitor: {
           label: "Watch a temporarily unavailable display",
+          desktop: { kind: "user" },
           match: { type: "image-change" },
           sampling: { intervalMs: 1_000 },
           continuation: "record-only",
@@ -1198,6 +1203,7 @@ computerMonitorTestLayer("ThreadMonitor computer conditions", (it) => {
         threadId,
         monitor: {
           label: "Adapt the watched regions",
+          desktop: { kind: "user" },
           match: { type: "image-change" },
           sampling: { intervalMs: 60 * 60 * 1_000 },
           continuation: "record-only",
