@@ -64,7 +64,7 @@ export interface McpSessionRegistryOptions {
  *
  * Liveness is refreshed both by MCP traffic and by `touch` on every provider
  * turn, so a session that is still doing work never expires no matter how long
- * it goes between browser tool calls. This window therefore only bounds
+ * it goes between MCP tool calls. This window therefore only bounds
  * credentials whose session died without a clean stop — the normal paths
  * (`stopSession`, `stopAll`) revoke eagerly and do not wait for it.
  *
