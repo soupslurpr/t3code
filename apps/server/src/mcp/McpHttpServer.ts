@@ -13,6 +13,7 @@ import type {
   ComputerAutomationContentHash,
   ComputerAutomationScreenshotEncoding,
   ComputerAutomationScreenshotMimeType,
+  ThreadMonitorComputerRevisionResult,
 } from "@t3tools/contracts";
 
 import packageJson from "../../package.json" with { type: "json" };
@@ -749,6 +750,56 @@ const computerWatchInspectionResult = (encodedResult: unknown) => {
   });
 };
 
+/** Converts an atomic watch baseline into metadata plus ordered MCP image content. */
+export const encodeComputerWatchRevisionResult = (encodedResult: unknown) => {
+  const result = encodedResult as ThreadMonitorComputerRevisionResult;
+  const baselineImages = result.baselineObservation?.images ?? [];
+  const images = baselineImages.flatMap((image) => (image.state === "image" ? [image] : []));
+  const metadata = {
+    ...result,
+    ...(result.baselineObservation === null
+      ? {}
+      : {
+          baselineObservation: {
+            images: baselineImages.map((image) =>
+              image.state === "unchanged"
+                ? image
+                : {
+                    state: image.state,
+                    id: image.id,
+                    regionId: image.regionId,
+                    capturedAt: image.capturedAt,
+                    contentHash: image.contentHash,
+                    width: image.width,
+                    height: image.height,
+                    mimeType: image.mimeType,
+                    sizeBytes: image.sizeBytes,
+                    encoding: image.encoding,
+                  },
+            ),
+          },
+        }),
+  };
+  return new McpSchema.CallToolResult({
+    isError: false,
+    structuredContent: metadata,
+    content: [
+      { type: "text", text: JSON.stringify(metadata) },
+      ...images.map((image) => ({
+        type: "image" as const,
+        data: new Uint8Array(Buffer.from(image.dataBase64, "base64")),
+        mimeType: image.mimeType,
+        _meta: {
+          "codex/imageDetail": "original",
+          "t3/computerWatchImageId": image.id,
+          "t3/computerWatchImageKind": "baseline",
+          "t3/computerWatchRegionId": image.regionId,
+        },
+      })),
+    ],
+  });
+};
+
 const registerComputerTools = Effect.fn("McpHttpServer.registerComputerTools")(function* () {
   const server = yield* McpServer.McpServer;
   const broker = yield* PreviewAutomationBroker.PreviewAutomationBroker;
@@ -838,7 +889,11 @@ const registerMonitorImageTools = Effect.fn("McpHttpServer.registerMonitorImageT
               Effect.matchCauseEffect({
                 onFailure: (cause) => computerToolFailure(tool.name, cause),
                 onSuccess: ({ encodedResult }) =>
-                  Effect.succeed(computerWatchInspectionResult(encodedResult)),
+                  Effect.succeed(
+                    tool.name === "computer_watch_inspect"
+                      ? computerWatchInspectionResult(encodedResult)
+                      : encodeComputerWatchRevisionResult(encodedResult),
+                  ),
               }),
             );
           }),

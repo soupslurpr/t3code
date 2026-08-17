@@ -5,6 +5,7 @@ import {
   ThreadId,
   type ComputerAutomationObservation,
   type ThreadMonitorComputerEvidenceImage,
+  type ThreadMonitorComputerRevisionResult,
   type ThreadMonitorComputerRegionState,
 } from "@t3tools/contracts";
 import { createModelSelection } from "@t3tools/shared/model";
@@ -181,6 +182,79 @@ describe("ComputerObservationStore", () => {
         "current",
       ]);
       expect(result.observation?.images[1]?.region).toMatchObject({ x: 100, width: 300 });
+    }),
+  );
+
+  it.effect("publishes the exact baseline returned to the controller", () =>
+    Effect.gen(function* () {
+      const store = yield* ComputerObservationStore.make;
+      const result = {
+        monitor: {
+          threadId,
+          label: "Wait for completion",
+          condition: {
+            type: "computer",
+            desktop: { kind: "agent", desktopId },
+            observation: { regions: [watchRegion()] },
+          },
+        },
+        revision: 1,
+        baselineObservation: {
+          images: [
+            {
+              state: "image",
+              id: "baseline:status",
+              regionId: "status",
+              capturedAt: "2026-08-17T10:00:00.000Z",
+              contentHash: hash,
+              width: 600,
+              height: 200,
+              mimeType: "image/webp",
+              dataBase64: "baseline-controller-image",
+              sizeBytes: 25,
+              encoding: { format: "webp", mode: "lossless" },
+            },
+          ],
+        },
+      } as unknown as ThreadMonitorComputerRevisionResult;
+      yield* store.publishWatchRevision({ environmentId, threadId, instanceId, result });
+
+      const observed = yield* store.read({ environmentId, threadId, desktopId });
+      expect(observed.observation?.source).toBe("watch-baseline");
+      expect(observed.observation?.recipient).toEqual({ kind: "controller", instanceId });
+      expect(observed.observation?.images[0]).toMatchObject({
+        generation: "baseline",
+        screenshot: { state: "image", data: "baseline-controller-image" },
+      });
+
+      yield* store.publishWatchRevision({
+        environmentId,
+        threadId,
+        instanceId,
+        result: {
+          ...result,
+          baselineObservation: {
+            images: [
+              {
+                state: "unchanged",
+                id: "baseline:status",
+                regionId: "status",
+                capturedAt: "2026-08-17T10:00:01.000Z",
+                contentHash: hash,
+                width: 600,
+                height: 200,
+              },
+            ],
+          },
+        },
+      });
+      const unchanged = yield* store.read({ environmentId, threadId, desktopId });
+      expect(unchanged.observation?.images[0]?.screenshot).toEqual({
+        state: "unchanged",
+        contentHash: hash,
+        width: 600,
+        height: 200,
+      });
     }),
   );
 

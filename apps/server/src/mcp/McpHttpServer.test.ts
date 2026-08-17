@@ -7,7 +7,9 @@ import {
   PreviewTabId,
   ProviderInstanceId,
   ThreadId,
+  type ThreadMonitor,
   ThreadMonitorError,
+  ThreadMonitorId,
 } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
 import * as Fiber from "effect/Fiber";
@@ -46,11 +48,128 @@ const client = McpSchema.McpServerClient.of({
   },
   getClient: Effect.die("unused"),
 });
+
+/** Creates one stable active computer-watch fixture. */
+function computerWatchMonitor(ownerThreadId: ThreadId, monitorId: ThreadMonitorId): ThreadMonitor {
+  return {
+    id: monitorId,
+    threadId: ownerThreadId,
+    label: "Inspect screen",
+    condition: {
+      type: "computer",
+      revision: 1,
+      desktop: { kind: "user" },
+      observation: {
+        regions: [
+          {
+            id: "screen",
+            role: "trigger",
+            purpose: null,
+            region: {
+              coordinateSpace: "desktop-logical",
+              displayId: "7",
+              x: 0,
+              y: 0,
+              width: 800,
+              height: 600,
+            },
+            maxWidth: 800,
+            maxHeight: 600,
+            encoding: { format: "webp", mode: "lossless" },
+            baselineHash: "hash",
+            lastSampleHash: "hash",
+            baselineStored: true,
+            sampleCount: 0,
+            changedSampleCount: 0,
+            unchangedSampleCount: 0,
+            lastCapturedAt: null,
+            lastChangedAt: null,
+          },
+        ],
+      },
+      match: { type: "image-change" },
+      sampling: {
+        intervalMs: 30_000,
+        minEvaluationIntervalMs: null,
+        evaluateOnlyAfterChange: true,
+      },
+      review: {
+        policy: null,
+        state: "idle",
+        reason: null,
+        sequence: 0,
+        requestedAt: null,
+        deliveredAt: null,
+        deliveryAttempts: 0,
+        deliveryRetryAt: null,
+        deliveryFailureCount: 0,
+      },
+      deadlineAt: null,
+      nextCheckAt: "2026-08-14T00:01:00.000Z",
+      lastCheckedAt: null,
+      lastEvaluatedAt: null,
+      lastEvaluationDurationMs: null,
+      totalEvaluationDurationMs: 0,
+      evaluationPending: false,
+      lastVerdict: null,
+      lastSummary: null,
+      lastUsage: null,
+      totalUsage: {
+        inputTokens: null,
+        cachedInputTokens: null,
+        cacheWriteInputTokens: null,
+        outputTokens: null,
+      },
+      sampleCount: 0,
+      evaluationCount: 0,
+      uncertainEvaluationCount: 0,
+      consecutiveUncertain: 0,
+      consecutiveFailures: 0,
+      observationError: null,
+      resourceState: "viewing",
+    },
+    continuation: { mode: "record-only" },
+    status: "active",
+    trigger: null,
+    createdAt: "2026-08-14T00:00:00.000Z",
+    updatedAt: "2026-08-14T00:00:00.000Z",
+    triggeredAt: null,
+    deliveredAt: null,
+    cancelledAt: null,
+    lastError: null,
+    deliveryAttempts: 0,
+    deliveryGroupId: null,
+    deliveryRetryAt: null,
+    deliveryFailureCount: 0,
+  };
+}
+
+const watchImage = {
+  id: "baseline:screen",
+  regionId: "screen",
+  capturedAt: "2026-08-14T00:00:00.000Z",
+  width: 800,
+  height: 600,
+  mimeType: "image/webp" as const,
+  dataBase64: Buffer.from("watch-image").toString("base64"),
+  sizeBytes: Buffer.byteLength("watch-image"),
+  encoding: { format: "webp" as const, mode: "lossless" as const },
+};
+
 const MonitorTestLayer = Layer.succeed(
   ThreadMonitorService,
   ThreadMonitorService.of({
     create: () => Effect.die("unused"),
-    createComputer: () => Effect.die("unused"),
+    createComputer: ({ threadId }) => {
+      const monitor = computerWatchMonitor(threadId, ThreadMonitorId.make("created-watch"));
+      return Effect.succeed({
+        monitor,
+        revision: 1,
+        baselineObservation: {
+          images: [{ state: "image", contentHash: "hash", ...watchImage }],
+        },
+      });
+    },
     computerCapabilities: Effect.succeed({
       evaluators: [],
       deterministicMatches: ["image-change"],
@@ -67,113 +186,15 @@ const MonitorTestLayer = Layer.succeed(
         );
       }
       return Effect.succeed({
-        monitor: {
-          id: inspect.monitorId,
-          threadId,
-          label: "Inspect screen",
-          condition: {
-            type: "computer",
-            revision: 1,
-            desktop: { kind: "user" },
-            observation: {
-              regions: [
-                {
-                  id: "screen",
-                  role: "trigger",
-                  purpose: null,
-                  region: {
-                    coordinateSpace: "desktop-logical",
-                    displayId: "7",
-                    x: 0,
-                    y: 0,
-                    width: 800,
-                    height: 600,
-                  },
-                  maxWidth: 800,
-                  maxHeight: 600,
-                  encoding: { format: "webp", mode: "lossless" },
-                  baselineHash: "hash",
-                  lastSampleHash: "hash",
-                  baselineStored: true,
-                  sampleCount: 0,
-                  changedSampleCount: 0,
-                  unchangedSampleCount: 0,
-                  lastCapturedAt: null,
-                  lastChangedAt: null,
-                },
-              ],
-            },
-            match: { type: "image-change" },
-            sampling: {
-              intervalMs: 30_000,
-              minEvaluationIntervalMs: null,
-              evaluateOnlyAfterChange: true,
-            },
-            review: {
-              policy: null,
-              state: "idle",
-              reason: null,
-              sequence: 0,
-              requestedAt: null,
-              deliveredAt: null,
-              deliveryAttempts: 0,
-              deliveryRetryAt: null,
-              deliveryFailureCount: 0,
-            },
-            deadlineAt: null,
-            nextCheckAt: "2026-08-14T00:01:00.000Z",
-            lastCheckedAt: null,
-            lastEvaluatedAt: null,
-            lastEvaluationDurationMs: null,
-            totalEvaluationDurationMs: 0,
-            evaluationPending: false,
-            lastVerdict: null,
-            lastSummary: null,
-            lastUsage: null,
-            totalUsage: {
-              inputTokens: null,
-              cachedInputTokens: null,
-              cacheWriteInputTokens: null,
-              outputTokens: null,
-            },
-            sampleCount: 0,
-            evaluationCount: 0,
-            uncertainEvaluationCount: 0,
-            consecutiveUncertain: 0,
-            consecutiveFailures: 0,
-            observationError: null,
-            resourceState: "viewing",
-          },
-          continuation: { mode: "record-only" },
-          status: "active",
-          trigger: null,
-          createdAt: "2026-08-14T00:00:00.000Z",
-          updatedAt: "2026-08-14T00:00:00.000Z",
-          triggeredAt: null,
-          deliveredAt: null,
-          cancelledAt: null,
-          lastError: null,
-          deliveryAttempts: 0,
-          deliveryGroupId: null,
-          deliveryRetryAt: null,
-          deliveryFailureCount: 0,
-        },
+        monitor: computerWatchMonitor(threadId, inspect.monitorId),
         revision: 1,
         images: [
           {
-            id: "baseline:screen",
             kind: "baseline",
-            regionId: "screen",
-            capturedAt: "2026-08-14T00:00:00.000Z",
             hash: "hash",
-            width: 800,
-            height: 600,
             frameIndex: null,
             elapsedMs: null,
-            mimeType: "image/webp",
-            dataBase64: Buffer.from("watch-image").toString("base64"),
-            sizeBytes: Buffer.byteLength("watch-image"),
-            encoding: { format: "webp", mode: "lossless" },
+            ...watchImage,
           },
         ],
       });
@@ -467,6 +488,65 @@ it("normalizes empty successful notification responses to accepted", () => {
     HttpServerResponse.jsonUnsafe({ jsonrpc: "2.0", id: 1, result: {} }),
   );
   expect(resultResponse.status).toBe(200);
+});
+
+it("separates atomic watch baseline bytes from structured metadata", () => {
+  const result = McpHttpServer.encodeComputerWatchRevisionResult({
+    monitor: { id: "watch-1" },
+    revision: 2,
+    baselineObservation: {
+      images: [
+        {
+          state: "unchanged",
+          id: "baseline:known",
+          regionId: "known",
+          capturedAt: "2026-08-17T12:00:00.000Z",
+          contentHash: computerContentHash,
+          width: 400,
+          height: 200,
+        },
+        {
+          state: "image",
+          id: "baseline:fresh",
+          regionId: "fresh",
+          capturedAt: "2026-08-17T12:00:00.000Z",
+          contentHash: "sha256-bgra8-v1:fresh",
+          width: 400,
+          height: 200,
+          mimeType: "image/webp",
+          dataBase64: Buffer.from("fresh-baseline").toString("base64"),
+          sizeBytes: Buffer.byteLength("fresh-baseline"),
+          encoding: { format: "webp", mode: "lossless" },
+        },
+      ],
+    },
+  });
+
+  expect(result.structuredContent).toMatchObject({
+    revision: 2,
+    baselineObservation: {
+      images: [
+        { state: "unchanged", regionId: "known", contentHash: computerContentHash },
+        {
+          state: "image",
+          regionId: "fresh",
+          mimeType: "image/webp",
+          sizeBytes: Buffer.byteLength("fresh-baseline"),
+        },
+      ],
+    },
+  });
+  expect(result.structuredContent).not.toHaveProperty("baselineObservation.images[1].dataBase64");
+  expect(result.content.filter((content) => content.type === "image")).toEqual([
+    expect.objectContaining({
+      type: "image",
+      mimeType: "image/webp",
+      _meta: expect.objectContaining({
+        "t3/computerWatchImageKind": "baseline",
+        "t3/computerWatchRegionId": "fresh",
+      }),
+    }),
+  ]);
 });
 
 it.effect("returns bounded structural snapshot failures", () =>
@@ -1104,6 +1184,48 @@ it.effect("registers annotated tools and preserves authenticated request context
         temporalSequence: { requestedFrameCount: 2, capturedFrameCount: 2 },
       });
       expect(temporalAct.content.filter((content) => content.type === "image")).toHaveLength(2);
+
+      const computerWatchStart = yield* server
+        .callTool({
+          name: "computer_watch_start",
+          arguments: {
+            label: "Watch the screen",
+            desktop: { kind: "user" },
+            match: { type: "image-change" },
+            continuation: "record-only",
+          },
+        })
+        .pipe(
+          Effect.provideService(McpInvocationContext.McpInvocationContext, invocation),
+          Effect.provideService(McpSchema.McpServerClient, client),
+        );
+      expect(computerWatchStart.isError).toBe(false);
+      expect(computerWatchStart.structuredContent).toMatchObject({
+        revision: 1,
+        baselineObservation: {
+          images: [
+            {
+              state: "image",
+              regionId: "screen",
+              contentHash: "hash",
+              mimeType: "image/webp",
+            },
+          ],
+        },
+      });
+      expect(computerWatchStart.structuredContent).not.toHaveProperty(
+        "baselineObservation.images[0].dataBase64",
+      );
+      expect(computerWatchStart.content.filter((content) => content.type === "image")).toEqual([
+        expect.objectContaining({
+          type: "image",
+          mimeType: "image/webp",
+          _meta: expect.objectContaining({
+            "t3/computerWatchImageKind": "baseline",
+            "t3/computerWatchRegionId": "screen",
+          }),
+        }),
+      ]);
 
       const computerWatchInspection = yield* server
         .callTool({
