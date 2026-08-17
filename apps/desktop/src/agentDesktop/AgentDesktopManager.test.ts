@@ -1303,6 +1303,7 @@ describe("AgentDesktopManager", () => {
         const results = yield* Fiber.join(resultsFiber);
         assert.deepInclude(results[0], {
           type: "type",
+          verification: "exact",
           delivery: "accessibility",
           focusedEditable: true,
         });
@@ -1335,7 +1336,17 @@ describe("AgentDesktopManager", () => {
           )
           .pipe(Effect.forkChild);
         yield* TestClock.adjust(Duration.millis(250));
-        yield* Fiber.join(typing);
+        const results = yield* Fiber.join(typing);
+
+        assert.deepInclude(results[0], {
+          type: "type",
+          requestedCodePoints: Array.from("ASCII fallback ->").length,
+          acceptedCodePoints: Array.from("ASCII fallback ->").length,
+          confirmedCodePoints: 0,
+          verification: "unavailable",
+          delivery: "key-events",
+          focusedEditable: false,
+        });
 
         const calls = yield* Ref.get(fallbackHarness.calls);
         assert.isTrue(calls.some((call) => call.startsWith("key:")));

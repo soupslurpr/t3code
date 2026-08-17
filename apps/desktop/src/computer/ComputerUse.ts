@@ -1704,7 +1704,23 @@ export const makeWithOptions = Effect.fn("ComputerUse.makeWithOptions")(function
                   yield* controller.press({ key: "Enter", modifiers: [] });
                   yield* Effect.sleep(Duration.millis(DEFAULT_SUBMIT_SETTLE_MS));
                 }
-                return { index, type: action.type, ...result };
+                const confirmedCodePoints = result.confirmedCodePoints ?? 0;
+                const verification: "exact" | "partial" | "unavailable" =
+                  result.delivery === "accessibility" || result.delivery === "none"
+                    ? "exact"
+                    : result.delivery === "mixed"
+                      ? "partial"
+                      : "unavailable";
+                return {
+                  index,
+                  type: action.type,
+                  requestedCodePoints: result.requestedCodePoints,
+                  acceptedCodePoints: result.injectedCodePoints,
+                  confirmedCodePoints,
+                  verification,
+                  delivery: result.delivery,
+                  focusedEditable: result.focusedEditable,
+                };
               }
               case "press":
                 yield* controller.press({ key: action.key, modifiers: action.modifiers ?? [] });
