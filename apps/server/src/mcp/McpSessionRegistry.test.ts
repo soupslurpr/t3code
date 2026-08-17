@@ -240,3 +240,20 @@ it.effect.each(["provider-session", "thread", "all"] as const)(
       expect(yield* registry.resolve(token)).toBeUndefined();
     }),
 );
+
+it.effect("issues a computer-only credential without browser access", () =>
+  Effect.gen(function* () {
+    const registry = yield* makeRegistry(() => 1_000);
+    const issued = yield* registry.issue({
+      threadId: ThreadId.make("thread-computer-only"),
+      providerInstanceId: ProviderInstanceId.make("codex"),
+      capabilities: new Set(["computer"]),
+    });
+    const token = issued.config.authorizationHeader.replace(/^Bearer\s+/, "");
+    const resolved = yield* registry.resolve(token);
+
+    expect(issued.config.capabilities).toBeDefined();
+    expect(issued.config.capabilities?.has("preview")).toBe(false);
+    expect(Array.from(resolved?.capabilities ?? []).sort()).toEqual(["computer", "orchestration", "pull-requests", "worktree"]);
+  }),
+);

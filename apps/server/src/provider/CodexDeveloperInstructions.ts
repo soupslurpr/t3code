@@ -44,11 +44,11 @@ Action forms are: \`click {frameId,x,y,button?,count?}\`; \`move {frameId,x,y,du
  * agent-browser, and raw simctl/adb, so leaving them in would talk it out of the only automation
  * it still has.
  */
-const toolInstructions = (availability: boolean | T3CodeToolAvailability): string => {
+const toolInstructions = (availability: boolean | T3CodeToolAvailability, computerToolsAvailable: boolean): string => {
   const tools = normalizeAvailability(availability);
   return [
     tools.browser ? T3_CODE_BROWSER_TOOL_INSTRUCTIONS : "",
-    tools.browser ? T3_CODE_COMPUTER_TOOL_INSTRUCTIONS : "",
+    computerToolsAvailable ? T3_CODE_COMPUTER_TOOL_INSTRUCTIONS : "",
     tools.device ? T3_CODE_DEVICE_TOOL_INSTRUCTIONS : "",
   ]
     .filter(Boolean)
@@ -218,8 +218,9 @@ export function buildCodexDeveloperInstructions(interactionMode: ProviderInterac
 export function buildCodexAdditionalContext(
   runtime: CodexRuntimeInfo,
   toolsAvailable: boolean | T3CodeToolAvailability = true,
+  computerToolsAvailable = true,
 ): Record<string, V2TurnStartParams__AdditionalContextEntry> {
-  const tools = toolInstructions(toolsAvailable);
+  const tools = toolInstructions(toolsAvailable, computerToolsAvailable);
   // Separate keys keep each value under Codex's per-entry cap. Codex emits
   // entries in key order, so the numbering preserves the authored order.
   return {

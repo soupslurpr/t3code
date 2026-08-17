@@ -38,24 +38,25 @@ const handlers = {
     }),
   computer_watch_start: (monitor) =>
     Effect.gen(function* () {
-      const scope = yield* McpInvocationContext.McpInvocationContext;
+      const scope = yield* McpInvocationContext.requireMcpCapability("computer");
       const service = yield* ThreadMonitorService;
       return yield* service.createComputer({ threadId: scope.threadId, monitor });
     }),
   computer_watch_capabilities: () =>
     Effect.gen(function* () {
+      yield* McpInvocationContext.requireMcpCapability("computer");
       const service = yield* ThreadMonitorService;
       return yield* service.computerCapabilities;
     }),
   computer_watch_inspect: (inspect) =>
     Effect.gen(function* () {
-      const scope = yield* McpInvocationContext.McpInvocationContext;
+      const scope = yield* McpInvocationContext.requireMcpCapability("computer");
       const service = yield* ThreadMonitorService;
       return yield* service.inspectComputer({ threadId: scope.threadId, inspect });
     }),
   computer_watch_update: (update) =>
     Effect.gen(function* () {
-      const scope = yield* McpInvocationContext.McpInvocationContext;
+      const scope = yield* McpInvocationContext.requireMcpCapability("computer");
       const service = yield* ThreadMonitorService;
       return yield* service.updateComputer({ threadId: scope.threadId, update });
     }),

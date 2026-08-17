@@ -96,3 +96,31 @@ it.effect("refuses thread-owned capabilities to a caller signed in from outside 
     expect(error.threadId).toBeUndefined();
   });
 });
+
+it.effect("accepts computer access without granting preview access", () => {
+  const invocation: McpInvocationContext.McpInvocationScope = {
+    environmentId: EnvironmentId.make("environment-1"),
+    requestNamespace: "provider-session-1",
+    client: undefined,
+    thread: {
+      threadId: ThreadId.make("thread-1"),
+      providerSessionId: "provider-session-1",
+      providerInstanceId: ProviderInstanceId.make("codex"),
+    },
+    capabilities: new Set(["computer"]),
+    issuedAt: 1,
+  };
+
+  return Effect.gen(function* () {
+    const computerScope = yield* McpInvocationContext.requireMcpCapability("computer").pipe(
+      Effect.provideService(McpInvocationContext.McpInvocationContext, invocation),
+    );
+    const previewError = yield* McpInvocationContext.requireMcpCapability("preview").pipe(
+      Effect.provideService(McpInvocationContext.McpInvocationContext, invocation),
+      Effect.flip,
+    );
+
+    expect(computerScope).toBe(invocation);
+    expect(previewError).toBeInstanceOf(PreviewAutomationUnavailableError);
+  });
+});
