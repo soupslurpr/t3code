@@ -253,6 +253,13 @@ desktop from the thread. It never steals an active control lease; agents use a f
 intentional parallel work.
 A human can temporarily view or take control of an Agent desktop; agent input is revoked during that
 takeover and can resume after the human lease ends.
+The Watch dialog also has an Agent lens mode. It overlays the exact latest image regions delivered
+to the controller or watch evaluator over the live desktop, identifies their recipient, resolution,
+encoding, and capture time, and can display the original pixels at 1:1. Temporal frames and retained
+watch generations remain selectable. The live desktop continues underneath, while the lens changes
+only when a model receives another observation; ordinary watch refreshes and unchanged monitor
+samples do not pretend that the model saw a frame. The lens reuses existing observation bytes,
+retains only bounded short-lived memory, and performs no additional capture or model call.
 An agent can also attach a durable view-only watch to an explicitly named Agent desktop already owned
 by another controller in the same thread. The watcher can capture that desktop but cannot inject input,
 and releasing it does not release the owner's control lease.
