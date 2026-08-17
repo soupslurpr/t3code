@@ -20,8 +20,13 @@ import { Tool, Toolkit } from "effect/unstable/ai";
 
 import * as McpInvocationContext from "../../McpInvocationContext.ts";
 import { ThreadMonitorService } from "../../../threadMonitor/ThreadMonitorService.ts";
+import * as ComputerObservationStore from "../../../computer/ComputerObservationStore.ts";
 
-const dependencies = [McpInvocationContext.McpInvocationContext, ThreadMonitorService];
+const dependencies = [
+  McpInvocationContext.McpInvocationContext,
+  ThreadMonitorService,
+  ComputerObservationStore.ComputerObservationStore,
+];
 const EmptyParameters = Schema.Record(Schema.String, Schema.Never);
 const ComputerWatchError = Schema.Union([ThreadMonitorError, PreviewAutomationUnavailableError]);
 

@@ -21,6 +21,7 @@ import * as McpHttpServer from "./McpHttpServer.ts";
 import * as McpInvocationContext from "./McpInvocationContext.ts";
 import * as PreviewAutomationBroker from "./PreviewAutomationBroker.ts";
 import { ThreadMonitorService } from "../threadMonitor/ThreadMonitorService.ts";
+import * as ComputerObservationStore from "../computer/ComputerObservationStore.ts";
 
 const environmentId = EnvironmentId.make("environment-mcp-test");
 const threadId = ThreadId.make("thread-mcp-test");
@@ -186,6 +187,7 @@ const MonitorTestLayer = Layer.succeed(
 );
 const TestLayer = McpHttpServer.ToolkitRegistrationLive.pipe(
   Layer.provide(MonitorTestLayer),
+  Layer.provideMerge(ComputerObservationStore.layer),
   Layer.provideMerge(McpServer.McpServer.layer),
   Layer.provideMerge(PreviewAutomationBroker.layer.pipe(Layer.provide(NodeServices.layer))),
 );
@@ -654,6 +656,7 @@ it.effect("registers annotated tools and preserves authenticated request context
         clientId: "mcp-test-client",
         environmentId,
         supportedOperations: [...DESKTOP_AUTOMATION_OPERATIONS],
+        computerDesktopKinds: ["user", "agent"],
       });
       yield* Stream.runForEach(events, (event) => {
         if (event.type === "connected") return Effect.void;
@@ -966,6 +969,37 @@ it.effect("registers annotated tools and preserves authenticated request context
       expect(detailedSnapshot.structuredContent).not.toHaveProperty(
         "detailScreenshots[0].screenshot.data",
       );
+
+      const agentDesktopId = "agent-mcp-observation-test";
+      const agentSnapshot = yield* server
+        .callTool({
+          name: "computer_snapshot",
+          arguments: { desktop: { kind: "agent", desktopId: agentDesktopId }, displayId: "7" },
+        })
+        .pipe(
+          Effect.provideService(McpInvocationContext.McpInvocationContext, invocation),
+          Effect.provideService(McpSchema.McpServerClient, client),
+        );
+      expect(agentSnapshot.isError).toBe(false);
+      const observationStore = yield* ComputerObservationStore.ComputerObservationStore;
+      const retainedObservation = yield* observationStore.read({
+        environmentId,
+        threadId,
+        desktopId: agentDesktopId,
+      });
+      expect(retainedObservation.observation).toMatchObject({
+        source: "snapshot",
+        recipient: { kind: "controller", instanceId: "codex" },
+        images: [
+          {
+            frame: { id: "frame-1" },
+            screenshot: {
+              state: "image",
+              data: Buffer.from("computer-webp").toString("base64"),
+            },
+          },
+        ],
+      });
 
       const unchangedSnapshot = yield* server
         .callTool({

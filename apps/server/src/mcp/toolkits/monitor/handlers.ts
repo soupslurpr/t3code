@@ -1,6 +1,7 @@
 /** Implements thread-scoped durable monitor MCP handlers. */
 import * as Effect from "effect/Effect";
 
+import * as ComputerObservationStore from "../../../computer/ComputerObservationStore.ts";
 import { ThreadMonitorService } from "../../../threadMonitor/ThreadMonitorService.ts";
 import * as McpInvocationContext from "../../McpInvocationContext.ts";
 import { MonitorImageToolkit, MonitorStandardToolkit, MonitorToolkit } from "./tools.ts";
@@ -52,7 +53,15 @@ const handlers = {
     Effect.gen(function* () {
       const scope = yield* McpInvocationContext.requireMcpCapability("computer");
       const service = yield* ThreadMonitorService;
-      return yield* service.inspectComputer({ threadId: scope.threadId, inspect });
+      const inspection = yield* service.inspectComputer({ threadId: scope.threadId, inspect });
+      const observations = yield* ComputerObservationStore.ComputerObservationStore;
+      yield* observations.publishWatchInspection({
+        environmentId: scope.environmentId,
+        threadId: scope.threadId,
+        instanceId: scope.providerInstanceId,
+        inspection,
+      });
+      return inspection;
     }),
   computer_watch_update: (update) =>
     Effect.gen(function* () {
