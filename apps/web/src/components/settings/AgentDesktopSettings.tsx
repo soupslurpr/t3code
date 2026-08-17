@@ -235,7 +235,7 @@ function AgentObservationOverlay({
       {positioned.map(({ image, layout }) => (
         <div
           key={image.id}
-          className="absolute overflow-hidden border-2 border-cyan-300 shadow-[0_0_0_1px_rgb(0_0_0/0.65)]"
+          className="absolute overflow-hidden shadow-[0_0_0_1px_rgb(0_0_0/0.65)] ring-2 ring-cyan-300 ring-inset"
           style={{
             left: `${layout.leftPercent}%`,
             top: `${layout.topPercent}%`,
