@@ -28,6 +28,7 @@ import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 
 import * as ServerEnvironment from "../environment/ServerEnvironment.ts";
+import * as ComputerObservationStore from "../computer/ComputerObservationStore.ts";
 import * as McpInvocationContext from "../mcp/McpInvocationContext.ts";
 import * as PreviewAutomationBroker from "../mcp/PreviewAutomationBroker.ts";
 import { ProjectionSnapshotQuery } from "../orchestration/Services/ProjectionSnapshotQuery.ts";
@@ -197,6 +198,7 @@ function imageWithKind(
 export const make = Effect.gen(function* () {
   const broker = yield* PreviewAutomationBroker.PreviewAutomationBroker;
   const environment = yield* ServerEnvironment.ServerEnvironment;
+  const observations = yield* ComputerObservationStore.ComputerObservationStore;
   const snapshots = yield* ProjectionSnapshotQuery;
   const registry = yield* ProviderInstanceRegistry.ProviderInstanceRegistry;
 
@@ -868,6 +870,23 @@ export const make = Effect.gen(function* () {
           "computer-watch-evaluate",
           "At least one retained region baseline is unavailable.",
         );
+      }
+      if (condition.desktop.kind === "agent") {
+        yield* observations.publishWatchEvaluation({
+          environmentId: scope.environmentId,
+          threadId: monitor.threadId,
+          desktopId: condition.desktop.desktopId,
+          monitorId: monitor.id,
+          label: monitor.label,
+          modelSelection: condition.match.modelSelection,
+          images: allCaptured.map(({ state, image }) => ({
+            state,
+            current: image,
+            ...(condition.match.type === "model" && condition.match.baseline === "initial"
+              ? { baseline: baselines.get(state.id)! }
+              : {}),
+          })),
+        });
       }
       const evaluationStartedAtMs = yield* Clock.currentTimeMillis;
       const result = yield* evaluator({

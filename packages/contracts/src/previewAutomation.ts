@@ -17,6 +17,7 @@ import {
   ComputerAutomationFailureKind,
   ComputerAutomationObservationOptions,
 } from "./computerAutomation.ts";
+import { ComputerObservationId } from "./computerObservation.ts";
 import {
   AGENT_DESKTOP_AUTOMATION_OPERATIONS,
   AgentDesktopControllerId,
@@ -106,6 +107,11 @@ export const AgentDesktopHumanRequest = Schema.Union([
     input: ComputerAutomationActionBatchInput,
   }),
   Schema.Struct({ operation: Schema.Literal("release"), ...AgentDesktopHumanTarget }),
+  Schema.Struct({
+    operation: Schema.Literal("observation"),
+    ...AgentDesktopHumanTarget,
+    afterId: Schema.optional(ComputerObservationId),
+  }),
 ]);
 export type AgentDesktopHumanRequest = typeof AgentDesktopHumanRequest.Type;
 
