@@ -182,4 +182,38 @@ describe("thread monitor contracts", () => {
       }),
     ).toThrow(/duration/u);
   });
+
+  it("accepts exact baseline response deduplication and explicit rebaselining", () => {
+    const baselineObservation = {
+      unchangedIfContentHashes: [{ regionId: "screen", contentHash: "sha256-bgra8-v1:known" }],
+    };
+    expect(
+      decodeComputerWatch({
+        ...userDesktop,
+        label: "Wait for a result",
+        match: { type: "image-change" },
+        baselineObservation,
+      }).baselineObservation,
+    ).toEqual(baselineObservation);
+    expect(
+      decodeComputerWatchUpdate({
+        monitorId: "monitor-1",
+        expectedRevision: 1,
+        baselineObservation: {},
+      }).baselineObservation,
+    ).toEqual({});
+    expect(() =>
+      decodeComputerWatch({
+        ...userDesktop,
+        label: "Reject duplicate known hashes",
+        match: { type: "image-change" },
+        baselineObservation: {
+          unchangedIfContentHashes: [
+            { regionId: "screen", contentHash: "first" },
+            { regionId: "screen", contentHash: "second" },
+          ],
+        },
+      }),
+    ).toThrow(/unique/u);
+  });
 });

@@ -62,6 +62,7 @@ export const ComputerObservation = Schema.Struct({
     "snapshot",
     "act",
     "sequence",
+    "watch-baseline",
     "watch-evaluation",
     "watch-inspection",
   ]),

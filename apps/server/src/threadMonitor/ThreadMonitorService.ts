@@ -11,6 +11,7 @@ import type {
   ThreadMonitorComputerCapabilities,
   ThreadMonitorComputerInspectInput,
   ThreadMonitorComputerInspection,
+  ThreadMonitorComputerRevisionResult,
   ThreadMonitorComputerStartInput,
   ThreadMonitorComputerUpdateInput,
   ThreadMonitorError,
@@ -34,7 +35,7 @@ export interface ThreadMonitorServiceShape {
   readonly createComputer: (input: {
     readonly threadId: ThreadId;
     readonly monitor: ThreadMonitorComputerStartInput;
-  }) => Effect.Effect<ThreadMonitor, ThreadMonitorError>;
+  }) => Effect.Effect<ThreadMonitorComputerRevisionResult, ThreadMonitorError>;
 
   /** Lists configured evaluator routes and deterministic computer conditions. */
   readonly computerCapabilities: Effect.Effect<ThreadMonitorComputerCapabilities>;
@@ -49,7 +50,7 @@ export interface ThreadMonitorServiceShape {
   readonly updateComputer: (input: {
     readonly threadId: ThreadId;
     readonly update: ThreadMonitorComputerUpdateInput;
-  }) => Effect.Effect<ThreadMonitor, ThreadMonitorError>;
+  }) => Effect.Effect<ThreadMonitorComputerRevisionResult, ThreadMonitorError>;
 
   /** Lists monitors owned by a thread. */
   readonly status: (input: {

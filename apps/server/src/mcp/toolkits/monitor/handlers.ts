@@ -41,7 +41,15 @@ const handlers = {
     Effect.gen(function* () {
       const scope = yield* McpInvocationContext.requireMcpCapability("computer");
       const service = yield* ThreadMonitorService;
-      return yield* service.createComputer({ threadId: scope.threadId, monitor });
+      const result = yield* service.createComputer({ threadId: scope.threadId, monitor });
+      const observations = yield* ComputerObservationStore.ComputerObservationStore;
+      yield* observations.publishWatchRevision({
+        environmentId: scope.environmentId,
+        threadId: scope.threadId,
+        instanceId: scope.providerInstanceId,
+        result,
+      });
+      return result;
     }),
   computer_watch_capabilities: () =>
     Effect.gen(function* () {
@@ -67,11 +75,20 @@ const handlers = {
     Effect.gen(function* () {
       const scope = yield* McpInvocationContext.requireMcpCapability("computer");
       const service = yield* ThreadMonitorService;
-      return yield* service.updateComputer({ threadId: scope.threadId, update });
+      const result = yield* service.updateComputer({ threadId: scope.threadId, update });
+      const observations = yield* ComputerObservationStore.ComputerObservationStore;
+      yield* observations.publishWatchRevision({
+        environmentId: scope.environmentId,
+        threadId: scope.threadId,
+        instanceId: scope.providerInstanceId,
+        result,
+      });
+      return result;
     }),
 } satisfies Parameters<typeof MonitorToolkit.toLayer>[0];
 
-const { computer_watch_inspect, ...standardHandlers } = handlers;
+const { computer_watch_start, computer_watch_inspect, computer_watch_update, ...standardHandlers } =
+  handlers;
 
 /** Provides durable monitor handlers to the MCP toolkit. */
 export const MonitorToolkitHandlersLive = MonitorToolkit.toLayer(handlers);
@@ -79,5 +96,7 @@ export const MonitorToolkitHandlersLive = MonitorToolkit.toLayer(handlers);
 export const MonitorStandardToolkitHandlersLive = MonitorStandardToolkit.toLayer(standardHandlers);
 
 export const MonitorImageToolkitHandlersLive = MonitorImageToolkit.toLayer({
+  computer_watch_start,
   computer_watch_inspect,
+  computer_watch_update,
 });

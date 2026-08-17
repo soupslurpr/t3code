@@ -118,6 +118,13 @@ strategy. Watches use exact fingerprints automatically, so a matching sample ski
 image transfer as well as model evaluation. Changed samples remain complete standalone images rather
 than depending on a chain of image deltas.
 
+Starting a watch returns the exact images T3 Code captured as that revision's baseline, rather than
+assuming an earlier screenshot is still current. The owning agent can therefore catch a transient,
+wrong window, or late UI change and immediately rebaseline before it leaves the task unattended.
+Updates return their new baselines in the same way. When the agent already holds an image with the
+same exact region fingerprint, it can request metadata-only confirmation instead of receiving the
+same bytes again; it can also omit baseline images when direct review is unnecessary.
+
 Each watch has a revision. At a review checkpoint, the owning agent can inspect bounded baseline,
 previous, current, terminal, or freshly captured frames, then atomically update the regions or policy
 against the revision it inspected. A stale update is rejected instead of overwriting a newer one.
