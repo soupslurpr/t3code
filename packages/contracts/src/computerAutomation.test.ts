@@ -724,8 +724,9 @@ describe("computer automation contracts", () => {
             index: 0,
             type: "type",
             requestedCodePoints: 18,
-            injectedCodePoints: 18,
+            acceptedCodePoints: 18,
             confirmedCodePoints: 18,
+            verification: "exact",
             delivery: "accessibility",
             focusedEditable: true,
           },
@@ -744,5 +745,21 @@ describe("computer automation contracts", () => {
         { type: "wait_for_change", changed: false },
       ],
     });
+    expect(() =>
+      decodeObservation({
+        actionResults: [
+          {
+            index: 0,
+            type: "type",
+            requestedCodePoints: 18,
+            acceptedCodePoints: 18,
+            confirmedCodePoints: 0,
+            verification: "exact",
+            delivery: "key-events",
+            focusedEditable: false,
+          },
+        ],
+      }),
+    ).toThrow(/verification must agree/u);
   });
 });
