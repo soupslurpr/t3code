@@ -12,8 +12,8 @@ import {
   qemuInputEventBatches,
   qemuAgentDesktopUnitName,
   qemuDisplayDeviceDetail,
+  qemuKeyChordPhases,
   parseAgentDesktopStorageCapacity,
-  qemuSendKeyArguments,
   toQemuAbsoluteCoordinate,
   type QemuAgentDesktopPaths,
 } from "./QemuAgentDesktop.ts";
@@ -122,14 +122,36 @@ describe("QemuAgentDesktop", () => {
     ]);
   });
 
-  it("builds self-releasing timed key chords", () => {
-    assert.deepEqual(qemuSendKeyArguments(["ctrl", "shift", "n"]), {
-      keys: [
-        { type: "qcode", data: "ctrl" },
-        { type: "qcode", data: "shift" },
-        { type: "qcode", data: "n" },
+  it("builds explicit ordered key chord transitions", () => {
+    assert.deepEqual(qemuKeyChordPhases(["ctrl", "shift", "n"]), {
+      press: [
+        {
+          type: "key",
+          data: { down: true, key: { type: "qcode", data: "ctrl" } },
+        },
+        {
+          type: "key",
+          data: { down: true, key: { type: "qcode", data: "shift" } },
+        },
+        {
+          type: "key",
+          data: { down: true, key: { type: "qcode", data: "n" } },
+        },
       ],
-      "hold-time": 10,
+      release: [
+        {
+          type: "key",
+          data: { down: false, key: { type: "qcode", data: "n" } },
+        },
+        {
+          type: "key",
+          data: { down: false, key: { type: "qcode", data: "shift" } },
+        },
+        {
+          type: "key",
+          data: { down: false, key: { type: "qcode", data: "ctrl" } },
+        },
+      ],
     });
   });
 

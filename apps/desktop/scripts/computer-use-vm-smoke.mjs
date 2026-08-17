@@ -279,7 +279,9 @@ const smokeExpression = String.raw`(async () => {
     if (
       state.asciiTypeResult?.type !== "type" ||
       state.asciiTypeResult.requestedCodePoints !== Array.from(asciiText).length ||
-      state.asciiTypeResult.injectedCodePoints !== Array.from(asciiText).length
+      state.asciiTypeResult.acceptedCodePoints !== Array.from(asciiText).length ||
+      state.asciiTypeResult.confirmedCodePoints !== 0 ||
+      state.asciiTypeResult.verification !== "unavailable"
     ) {
       throw new Error("ASCII typing did not return an accurate action receipt");
     }
@@ -362,8 +364,9 @@ const smokeExpression = String.raw`(async () => {
     state.unicodeExact =
       state.typeResult?.type === "type" &&
       state.typeResult.requestedCodePoints === exactCodePoints &&
-      state.typeResult.injectedCodePoints === exactCodePoints &&
+      state.typeResult.acceptedCodePoints === exactCodePoints &&
       state.typeResult.confirmedCodePoints === exactCodePoints &&
+      state.typeResult.verification === "exact" &&
       state.typeResult.delivery === "accessibility" &&
       state.typeResult.focusedEditable;
     state.postTypeCapture = typed.snapshot?.screenshot && {

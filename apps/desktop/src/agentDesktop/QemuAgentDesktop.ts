@@ -64,7 +64,7 @@ const DEFAULT_GUEST_COMMAND_TIMEOUT = Duration.minutes(5);
 const PACKET_CAPTURE_POLL_INTERVAL = Duration.millis(100);
 const MAX_INPUT_EVENTS_PER_BATCH = 2;
 const INPUT_BATCH_SETTLE_INTERVAL = Duration.millis(10);
-const KEY_HOLD_TIME_MS = 10;
+const KEY_HOLD_INTERVAL = Duration.millis(10);
 const KEY_RELEASE_SETTLE_INTERVAL = Duration.millis(10);
 const IMAGE_PROVISION_REQUIREMENT_IDS = new Set([
   "hypervisor",
@@ -479,13 +479,18 @@ export function qemuInputEventBatches(
   return batches;
 }
 
-/** Builds one timed QEMU key chord that releases itself after a bounded hold. */
-export function qemuSendKeyArguments(
-  qcodes: ReadonlyArray<string>,
-): Readonly<Record<string, unknown>> {
+/** Builds explicit press and reverse-release phases for one key chord. */
+export function qemuKeyChordPhases(qcodes: ReadonlyArray<string>): {
+  readonly press: ReadonlyArray<QemuInputEvent>;
+  readonly release: ReadonlyArray<QemuInputEvent>;
+} {
+  const event = (data: string, down: boolean): QemuInputEvent => ({
+    type: "key",
+    data: { down, key: { type: "qcode", data } },
+  });
   return {
-    keys: qcodes.map((data) => ({ type: "qcode", data })),
-    "hold-time": KEY_HOLD_TIME_MS,
+    press: qcodes.map((qcode) => event(qcode, true)),
+    release: qcodes.toReversed().map((qcode) => event(qcode, false)),
   };
 }
 
@@ -1693,10 +1698,17 @@ export const make = Effect.gen(function* () {
           }
         }).pipe(Effect.mapError(mapFailure("input", "guest-disconnected")));
 
-  const sendKey: QemuAgentDesktopShape["sendKey"] = (id, qcodes) =>
-    qmp(id, "send-key", qemuSendKeyArguments(qcodes)).pipe(
-      Effect.andThen(Effect.sleep(KEY_RELEASE_SETTLE_INTERVAL)),
+  const sendKey: QemuAgentDesktopShape["sendKey"] = (id, qcodes) => {
+    const phases = qemuKeyChordPhases(qcodes);
+    return Effect.uninterruptible(
+      Effect.gen(function* () {
+        yield* sendInput(id, phases.press);
+        yield* Effect.sleep(KEY_HOLD_INTERVAL);
+        yield* sendInput(id, phases.release);
+        yield* Effect.sleep(KEY_RELEASE_SETTLE_INTERVAL);
+      }),
     );
+  };
 
   const guestCommand: QemuAgentDesktopShape["guestCommand"] = (id, execute, argumentsValue) =>
     QemuProtocol.invokeQga(paths(id).qgaSocket, execute, argumentsValue).pipe(

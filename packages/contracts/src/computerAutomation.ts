@@ -800,25 +800,67 @@ export const ComputerAutomationTypeActionResult = Schema.Struct({
   type: Schema.Literal("type"),
   requestedCodePoints: Schema.Int.check(
     Schema.isBetween({ minimum: 0, maximum: MAX_ACTION_BATCH_TEXT_LENGTH }),
-  ),
-  injectedCodePoints: Schema.Int.check(
+  ).annotate({
+    description: "Requested code points after CR and CRLF line endings are normalized to newline.",
+  }),
+  acceptedCodePoints: Schema.Int.check(
     Schema.isBetween({ minimum: 0, maximum: MAX_ACTION_BATCH_TEXT_LENGTH }),
   ).annotate({
     description:
-      "Code points accepted by the desktop injection API; this does not claim the application rendered them.",
+      "Code points accepted by the desktop delivery backend; this does not claim the application consumed or rendered them.",
   }),
-  confirmedCodePoints: Schema.optional(
-    Schema.Int.check(
-      Schema.isBetween({ minimum: 0, maximum: MAX_ACTION_BATCH_TEXT_LENGTH }),
-    ).annotate({
-      description: "Code points read back exactly from a focused editable accessibility control.",
-    }),
-  ),
+  confirmedCodePoints: Schema.Int.check(
+    Schema.isBetween({ minimum: 0, maximum: MAX_ACTION_BATCH_TEXT_LENGTH }),
+  ).annotate({
+    description:
+      "Code points read back exactly from a focused editable accessibility control; zero when application readback was unavailable.",
+  }),
+  verification: Schema.Literals(["exact", "partial", "unavailable"]).annotate({
+    description:
+      "Whether every requested code point, only an accessibility-delivered subset, or none of the result was confirmed through application readback.",
+  }),
   delivery: Schema.Literals(["none", "accessibility", "key-events", "mixed"]),
   focusedEditable: Schema.Boolean.annotate({
-    description: "Whether exact text was delivered through a focused editable control.",
+    description:
+      "Whether at least part of the text was delivered through a focused editable control.",
   }),
-});
+}).check(
+  Schema.makeFilter(
+    (result) =>
+      result.acceptedCodePoints === result.requestedCodePoints ||
+      "A successful typing receipt must account for every requested code point.",
+  ),
+  Schema.makeFilter(
+    (result) =>
+      result.confirmedCodePoints <= result.acceptedCodePoints ||
+      "Confirmed code points cannot exceed accepted code points.",
+  ),
+  Schema.makeFilter((result) => {
+    const consistent =
+      result.verification === "exact"
+        ? result.confirmedCodePoints === result.requestedCodePoints
+        : result.verification === "partial"
+          ? result.confirmedCodePoints > 0 &&
+            result.confirmedCodePoints < result.requestedCodePoints
+          : result.confirmedCodePoints === 0 && result.requestedCodePoints > 0;
+    return consistent || "Typing verification must agree with its confirmed code-point count.";
+  }),
+  Schema.makeFilter((result) => {
+    const expectedVerification =
+      result.delivery === "accessibility" || result.delivery === "none"
+        ? "exact"
+        : result.delivery === "mixed"
+          ? "partial"
+          : "unavailable";
+    const expectedFocusedEditable =
+      result.delivery === "accessibility" || result.delivery === "mixed";
+    return (
+      (result.verification === expectedVerification &&
+        result.focusedEditable === expectedFocusedEditable) ||
+      "Typing delivery must agree with its verification and focused-editable state."
+    );
+  }),
+);
 export type ComputerAutomationTypeActionResult = typeof ComputerAutomationTypeActionResult.Type;
 
 export const ComputerAutomationWaitForChangeActionResult = Schema.Struct({
@@ -1052,7 +1094,8 @@ export const ComputerAutomationTypeInput = Schema.Struct({
   }),
   intervalMs: Schema.optional(
     Schema.Int.check(Schema.isBetween({ minimum: 0, maximum: 250 })).annotate({
-      description: "Pacing delay per text character in milliseconds. Defaults to 0; maximum 250.",
+      description:
+        "Additional pacing delay per text character in milliseconds. Defaults to 0; desktop backends still enforce safe key press and release ordering. Maximum 250.",
     }),
   ),
   submit: Schema.optional(

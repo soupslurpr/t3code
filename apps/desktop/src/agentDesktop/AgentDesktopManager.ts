@@ -84,6 +84,7 @@ const DEFAULT_CHANGE_POLL_INTERVAL_MS = 250;
 const CHANGE_DETECTION_MAX_WIDTH = 480;
 const CHANGE_DETECTION_MAX_HEIGHT = 270;
 const GUEST_TEXT_SELECTION_SETTLE_MS = 25;
+const TRANSIENT_KEY_ID = "t3:transient-key-chord";
 const MAX_STORED_FRAMES = 32;
 const RECOVERY_RETENTION = Duration.days(7);
 const IDLE_PARK_AFTER = Duration.minutes(10);
@@ -1264,7 +1265,16 @@ export const make = Effect.gen(function* () {
   ) {
     const heldQcodes = new Set(Array.from((yield* Ref.get(runtime.heldKeys)).values()).flat());
     const transientQcodes = qcodes.filter((qcode) => !heldQcodes.has(qcode));
-    if (transientQcodes.length > 0) yield* qemu.sendKey(desktop.id, transientQcodes);
+    if (transientQcodes.length === 0) return;
+    yield* Ref.update(runtime.heldKeys, (current) =>
+      new Map(current).set(TRANSIENT_KEY_ID, transientQcodes),
+    );
+    yield* qemu.sendKey(desktop.id, transientQcodes);
+    yield* Ref.update(runtime.heldKeys, (current) => {
+      const next = new Map(current);
+      next.delete(TRANSIENT_KEY_ID);
+      return next;
+    });
   });
 
   const revokeDesktopLease = Effect.fn("AgentDesktopManager.revokeDesktopLease")(function* (
@@ -3109,7 +3119,7 @@ export const make = Effect.gen(function* () {
             }
             return Array.from(text).length;
           });
-        let injectedCodePoints = 0;
+        let acceptedCodePoints = 0;
         let confirmedCodePoints = 0;
         let usedAccessibility = false;
         let usedKeyEvents = false;
@@ -3129,15 +3139,15 @@ export const make = Effect.gen(function* () {
                 detail: "guest accessibility omitted exact text confirmation",
               });
             }
-            injectedCodePoints += insertion.injectedCodePoints;
+            acceptedCodePoints += insertion.injectedCodePoints;
             confirmedCodePoints += insertion.confirmedCodePoints;
             usedAccessibility = true;
           } else {
-            injectedCodePoints += yield* sendQemuText(segment);
+            acceptedCodePoints += yield* sendQemuText(segment);
             usedKeyEvents ||= segment.length > 0;
           }
         }
-        if (injectedCodePoints > 0) {
+        if (acceptedCodePoints > 0) {
           yield* Effect.sleep(Duration.millis(DEFAULT_TYPE_SETTLE_MS));
         }
         if (action.submit === true) {
@@ -3152,12 +3162,19 @@ export const make = Effect.gen(function* () {
               : usedKeyEvents
                 ? "key-events"
                 : "none";
+        const verification =
+          delivery === "accessibility" || delivery === "none"
+            ? "exact"
+            : delivery === "mixed"
+              ? "partial"
+              : "unavailable";
         return {
           index: actionIndex,
           type: action.type,
-          requestedCodePoints: Array.from(action.text).length,
-          injectedCodePoints,
-          ...(usedAccessibility ? { confirmedCodePoints } : {}),
+          requestedCodePoints: Array.from(normalizedText).length,
+          acceptedCodePoints,
+          confirmedCodePoints,
+          verification,
           delivery,
           focusedEditable: usedAccessibility,
         };

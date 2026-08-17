@@ -55,6 +55,7 @@ const makeQemu = (
   accessibility: boolean,
   acceleratedGraphicsAvailable: boolean,
   failInputReleaseOnce: boolean,
+  failSendKeyOnce: boolean,
   textInsertionResponse: string,
   activationResponse: string,
   captureAvailable: boolean,
@@ -70,6 +71,7 @@ const makeQemu = (
     const releaseCommand = yield* Deferred.make<void>();
     const desktopParked = yield* Deferred.make<void>();
     const inputReleaseFailed = yield* Ref.make(false);
+    const sendKeyFailed = yield* Ref.make(false);
     const captureEnabled = yield* Ref.make(captureAvailable);
     let windowActivationAttemptCount = 0;
     const record = (call: string) => Ref.update(calls, (current) => [...current, call]);
@@ -160,7 +162,24 @@ const makeQemu = (
             });
           }
         }),
-      sendKey: (id, qcodes) => record(`key:${id}:${qcodes.join("+")}`),
+      sendKey: (id, qcodes) =>
+        record(`key:${id}:${qcodes.join("+")}`).pipe(
+          Effect.andThen(
+            failSendKeyOnce
+              ? Ref.getAndSet(sendKeyFailed, true).pipe(
+                  Effect.flatMap((failed) =>
+                    failed
+                      ? Effect.void
+                      : new QemuAgentDesktop.QemuAgentDesktopError({
+                          code: "internal-error",
+                          operation: "send-key",
+                          detail: "the test key chord failed",
+                        }),
+                  ),
+                )
+              : Effect.void,
+          ),
+        ),
       guestCommand: (_id, command) =>
         command === "guest-network-get-interfaces"
           ? Effect.succeed([
@@ -277,6 +296,7 @@ const managerHarness = (
     readonly accessibility?: boolean;
     readonly acceleratedGraphics?: boolean;
     readonly failInputReleaseOnce?: boolean;
+    readonly failSendKeyOnce?: boolean;
     readonly textInsertionResponse?: string;
     readonly activationResponse?: string;
     readonly captureAvailable?: boolean;
@@ -290,6 +310,7 @@ const managerHarness = (
       accessibility,
       options?.acceleratedGraphics === true,
       options?.failInputReleaseOnce === true,
+      options?.failSendKeyOnce === true,
       options?.textInsertionResponse ?? "",
       options?.activationResponse ?? '{"ok":true,"result":{"keyboard":false}}',
       options?.captureAvailable === true,
@@ -1282,6 +1303,7 @@ describe("AgentDesktopManager", () => {
         const results = yield* Fiber.join(resultsFiber);
         assert.deepInclude(results[0], {
           type: "type",
+          verification: "exact",
           delivery: "accessibility",
           focusedEditable: true,
         });
@@ -1314,7 +1336,17 @@ describe("AgentDesktopManager", () => {
           )
           .pipe(Effect.forkChild);
         yield* TestClock.adjust(Duration.millis(250));
-        yield* Fiber.join(typing);
+        const results = yield* Fiber.join(typing);
+
+        assert.deepInclude(results[0], {
+          type: "type",
+          requestedCodePoints: Array.from("ASCII fallback ->").length,
+          acceptedCodePoints: Array.from("ASCII fallback ->").length,
+          confirmedCodePoints: 0,
+          verification: "unavailable",
+          delivery: "key-events",
+          focusedEditable: false,
+        });
 
         const calls = yield* Ref.get(fallbackHarness.calls);
         assert.isTrue(calls.some((call) => call.startsWith("key:")));
@@ -1343,6 +1375,35 @@ describe("AgentDesktopManager", () => {
           (yield* Ref.get(unsafeFallbackHarness.calls)).some((call) => call.startsWith("key:")),
         );
       }).pipe(Effect.provide(unsafeFallbackHarness.layer));
+    }),
+  );
+
+  it.effect("releases a transient chord when keyboard typing fails", () =>
+    Effect.gen(function* () {
+      const harness = yield* managerHarness("failed-key-chord", { failSendKeyOnce: true });
+      yield* Effect.gen(function* () {
+        const manager = yield* AgentDesktopManager.AgentDesktopManager;
+        const desktop = yield* manager.acquire(owner, { label: "Failed key chord" });
+        yield* manager.requestControl(owner, { kind: "agent", desktopId: desktop.id });
+
+        const error = yield* manager
+          .act(owner.controllerId, { actions: [{ type: "type", text: "a" }] }, desktop.id)
+          .pipe(Effect.flip);
+
+        assert.deepInclude(ComputerUse.toComputerAutomationFailure(error), {
+          code: "input-injection-failed",
+          category: "input-injection",
+          actionIndex: 0,
+          completedActionCount: 0,
+          cleanup: { keys: "released", buttons: "not-needed" },
+        });
+        const releasedKeys = (yield* Ref.get(harness.inputEvents))
+          .flat()
+          .flatMap((event) =>
+            event.type === "key" && !event.data.down ? [event.data.key.data] : [],
+          );
+        assert.deepEqual(releasedKeys, ["a"]);
+      }).pipe(Effect.provide(harness.layer));
     }),
   );
 
