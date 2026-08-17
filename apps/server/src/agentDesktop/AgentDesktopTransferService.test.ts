@@ -40,7 +40,7 @@ const scope: McpInvocationContext.McpInvocationScope = {
   threadId,
   providerSessionId: "session-transfer-test",
   providerInstanceId,
-  capabilities: new Set(["preview"]),
+  capabilities: new Set(["computer"]),
   issuedAt: 0,
 };
 

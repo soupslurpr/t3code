@@ -10,6 +10,7 @@ import * as Effect from "effect/Effect";
 
 const ALL_MCP_CAPABILITIES = [
   "preview",
+  "computer",
   "orchestration",
   "worktree",
   "device",
@@ -32,7 +33,7 @@ export class McpInvocationContext extends Context.Service<
 >()("t3/mcp/McpInvocationContext") {}
 
 /** The error a missing capability surfaces as; preview keeps its own so the broker can route it. */
-export type McpCapabilityError<C extends McpCapability> = C extends "preview"
+export type McpCapabilityError<C extends McpCapability> = C extends "preview" | "computer"
   ? PreviewAutomationUnavailableError
   : McpCapabilityUnavailableError;
 
@@ -46,7 +47,7 @@ const missingCapability = (
     providerSessionId: invocation.providerSessionId,
     providerInstanceId: invocation.providerInstanceId,
   };
-  return capability === "preview"
+  return capability === "preview" || capability === "computer"
     ? new PreviewAutomationUnavailableError({ capability, ...fields })
     : new McpCapabilityUnavailableError({ capability, ...fields });
 };
