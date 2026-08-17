@@ -688,7 +688,11 @@ it.effect("routes browser, user-desktop, and agent-desktop work independently", 
         }),
       ).toBe("agent:computerRequestControl");
       expect(
-        yield* broker.invoke<string>({ scope, operation: "computerAct", input: { actions: [] } }),
+        yield* broker.invoke<string>({
+          scope,
+          operation: "computerAct",
+          input: { desktop: { kind: "agent", desktopId: "agent-1" }, actions: [] },
+        }),
       ).toBe("agent:computerAct");
 
       expect(userRequests).toHaveLength(1);
@@ -707,6 +711,86 @@ it.effect("routes browser, user-desktop, and agent-desktop work independently", 
       ).toBe("user:computerRequestControl");
       expect(
         yield* broker.invoke<string>({ scope, operation: "computerAct", input: { actions: [] } }),
+      ).toBe("user:computerAct");
+    }),
+  ),
+);
+
+it.effect("keeps focused user and primary Agent desktop hosts independent", () =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      const broker = yield* makeBroker;
+      let userConnectionId = "";
+      const userRequests = requestsFrom(
+        yield* broker.connect(
+          makeHost({
+            clientId: "client-focused-user",
+            supportedOperations: ["computerRequestControl", "computerAct"],
+            computerDesktopKinds: ["user"],
+          }),
+        ),
+        (connectionId) => {
+          userConnectionId = connectionId;
+        },
+      );
+      const agentRequests = requestsFrom(
+        yield* broker.connect(
+          makeHost({
+            clientId: "client-primary-agent",
+            supportedOperations: ["agentDesktopList", "computerRequestControl", "computerAct"],
+            computerDesktopKinds: ["user", "agent"],
+          }),
+        ),
+      );
+      yield* Stream.runForEach(userRequests, (request) =>
+        broker.respond({
+          clientId: "client-focused-user",
+          connectionId: request.connectionId,
+          requestId: request.requestId,
+          ok: true,
+          result: `user:${request.operation}`,
+        }),
+      ).pipe(Effect.forkScoped);
+      yield* Stream.runForEach(agentRequests, (request) =>
+        broker.respond({
+          clientId: "client-primary-agent",
+          connectionId: request.connectionId,
+          requestId: request.requestId,
+          ok: true,
+          result: `agent:${request.operation}`,
+        }),
+      ).pipe(Effect.forkScoped);
+      yield* Effect.yieldNow;
+      yield* broker.focusHost({
+        clientId: "client-focused-user",
+        environmentId: scope.environmentId,
+        connectionId: userConnectionId,
+        focused: true,
+      });
+
+      expect(
+        yield* broker.invoke<string>({
+          scope,
+          operation: "computerRequestControl",
+          input: { desktop: { kind: "user" } },
+        }),
+      ).toBe("user:computerRequestControl");
+      expect(
+        yield* broker.invoke<string>({ scope, operation: "agentDesktopList", input: {} }),
+      ).toBe("agent:agentDesktopList");
+      expect(
+        yield* broker.invoke<string>({
+          scope,
+          operation: "computerAct",
+          input: { desktop: { kind: "agent", desktopId: "agent-1" }, actions: [] },
+        }),
+      ).toBe("agent:computerAct");
+      expect(
+        yield* broker.invoke<string>({
+          scope,
+          operation: "computerAct",
+          input: { actions: [] },
+        }),
       ).toBe("user:computerAct");
     }),
   ),
