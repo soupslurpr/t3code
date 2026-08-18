@@ -97,7 +97,7 @@ const decodeTransferShellSnapshot = Schema.decodeUnknownEffect(
 const encodeTestJson = Schema.encodeUnknownSync(Schema.fromJsonString(Schema.Unknown));
 
 import * as BackgroundPolicy from "./background/BackgroundPolicy.ts";
-import * as AgentDesktopTransfer from "./agentDesktop/AgentDesktopTransferService.ts";
+import * as AgentDesktopManager from "./agentDesktop/AgentDesktopManager.ts";
 import * as ComputerObservationStore from "./computer/ComputerObservationStore.ts";
 import * as ServerConfig from "./config.ts";
 import * as DeviceService from "./device/DeviceService.ts";
@@ -1053,7 +1053,7 @@ const buildAppUnderTest = (options?: {
     );
 
     const appLayer = servedRoutesLayer.pipe(
-      Layer.provide(AgentDesktopTransfer.layer),
+      Layer.provide(Layer.mock(AgentDesktopManager.AgentDesktopManager)({})),
       Layer.provide(resourceTelemetryLayer),
       Layer.provide(UsageService.layerTest),
       Layer.provide(

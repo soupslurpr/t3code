@@ -1,12 +1,13 @@
-// @effect-diagnostics globalFetchInEffect:off - Electron main streams opaque transfer capabilities with native abort signals.
+// @effect-diagnostics nodeBuiltinImport:off - QEMU transfers require positioned Node file I/O.
+import * as NodeFSP from "node:fs/promises";
+import * as NodeNet from "node:net";
+import * as NodeOS from "node:os";
+
 import {
   AgentDesktop,
   type AgentDesktopAcquireInput,
   type AgentDesktopCommandInput,
   type AgentDesktopCommandResult,
-  type AgentDesktopHostTransferCancelInput,
-  type AgentDesktopHostTransferInput,
-  type AgentDesktopHostTransferResult,
   type AgentDesktopCreatePortRouteInput,
   type AgentDesktopId,
   type AgentDesktopInspectInput,
@@ -25,6 +26,7 @@ import {
   type AgentDesktopRequirements,
   type AgentDesktopResourceTelemetry,
   type AgentDesktopSetupResult,
+  type AgentDesktopTransfer,
   type AgentDesktopWriteFileInput,
   type AgentDesktopWriteFileResult,
   type ComputerAutomationActionBatchInput,
@@ -52,13 +54,11 @@ import * as Option from "effect/Option";
 import * as Ref from "effect/Ref";
 import * as Schema from "effect/Schema";
 import * as Semaphore from "effect/Semaphore";
-import * as NodeOS from "node:os";
-import * as NodeNet from "node:net";
-import { nativeImage } from "electron";
 
-import * as DesktopEnvironment from "../app/DesktopEnvironment.ts";
 import { renderComputerScreenshot } from "../computer/ComputerScreenshotEncoding.ts";
-import * as ComputerUse from "../computer/ComputerUse.ts";
+import * as ComputerUse from "../computer/ComputerAutomationFailure.ts";
+import * as AgentDesktopEnvironment from "./AgentDesktopEnvironment.ts";
+import { cropAgentDesktopImage, decodeAgentDesktopCapture } from "./AgentDesktopImage.ts";
 import * as QemuAgentDesktop from "./QemuAgentDesktop.ts";
 import * as QemuInput from "./QemuInput.ts";
 
@@ -101,7 +101,7 @@ const DEFAULT_COMMAND_TIMEOUT_MS = 5 * 60 * 1000;
 const DEFAULT_COMMAND_OUTPUT_BYTES = 1024 * 1024;
 const DEFAULT_FILE_READ_BYTES = 1024 * 1024;
 const MAX_NETWORK_CONNECTIONS = 256;
-const GUEST_ACCESSIBILITY_RESOURCE = "computer-use/agent-desktop-accessibility.js";
+const GUEST_ACCESSIBILITY_RESOURCE = "agent-desktop/accessibility.js";
 const GUEST_INPUT_RESOURCE = "agent-desktop/input-helper.py";
 const GUEST_TRANSFER_RESOURCE = "agent-desktop/transfer-helper.py";
 const GUEST_ACCESSIBILITY_DIRECTORY = "/run/t3-agent-desktop";
@@ -117,7 +117,6 @@ const GUEST_TRANSFER_HELPER_PATH = `${GUEST_ACCESSIBILITY_DIRECTORY}/transfer-he
 const GUEST_TRANSFER_CHUNK_BYTES = 8 * 1024 * 1024;
 const GUEST_TRANSFER_TIMEOUT_MS = 6 * 60 * 60 * 1_000;
 const GUEST_TRANSFER_OUTPUT_BYTES = 64 * 1024;
-const GUEST_TRANSFER_FETCH_ATTEMPTS = 3;
 const MAX_SEMANTIC_TEXT_SEGMENTS = 32;
 const GUEST_INPUT_SERVICE = `[Unit]
 Description=T3 Agent desktop input bridge
@@ -524,6 +523,44 @@ export interface HostResourceSnapshot {
   readonly runningDesktopCount: number;
 }
 
+interface AgentDesktopManagerTransferBase {
+  readonly transferId: AgentDesktopTransfer["id"];
+  readonly desktopId?: AgentDesktopId;
+  readonly archivePath: string;
+  readonly guestPath: string;
+  readonly onProgress?: (transferredBytes: number, totalBytes: number) => Effect.Effect<void>;
+}
+
+/** Describes one server-local transfer between a host archive and an Agent desktop. */
+export type AgentDesktopManagerTransferInput =
+  | (AgentDesktopManagerTransferBase & {
+      readonly operation: "import";
+      readonly collision: "create" | "replace" | "merge";
+      readonly compression: "none" | "gzip";
+      readonly sizeBytes: number;
+      readonly sha256: string;
+    })
+  | (AgentDesktopManagerTransferBase & {
+      readonly operation: "export";
+      readonly compression: "auto" | "none" | "gzip";
+    });
+
+/** Selects one active server-local transfer for cancellation. */
+export interface AgentDesktopManagerTransferCancelInput {
+  readonly transferId: AgentDesktopTransfer["id"];
+  readonly desktopId?: AgentDesktopId;
+}
+
+/** Reports the exact portable archive imported or exported by an Agent desktop. */
+export interface AgentDesktopManagerTransferResult {
+  readonly desktopId: AgentDesktopId;
+  readonly transferId: AgentDesktopTransfer["id"];
+  readonly compression: "none" | "gzip";
+  readonly wireBytes: number;
+  readonly sha256: string;
+  readonly tree: NonNullable<AgentDesktopTransfer["tree"]>;
+}
+
 export interface AgentDesktopManagerShape {
   readonly list: Effect.Effect<AgentDesktopList>;
   readonly setup: Effect.Effect<AgentDesktopSetupResult, AgentDesktopManagerOperationError>;
@@ -549,11 +586,11 @@ export interface AgentDesktopManagerShape {
   ) => Effect.Effect<AgentDesktopWriteFileResult, AgentDesktopManagerOperationError>;
   readonly transfer: (
     owner: AgentDesktopOwner,
-    input: AgentDesktopHostTransferInput,
-  ) => Effect.Effect<AgentDesktopHostTransferResult, AgentDesktopManagerOperationError>;
+    input: AgentDesktopManagerTransferInput,
+  ) => Effect.Effect<AgentDesktopManagerTransferResult, AgentDesktopManagerOperationError>;
   readonly cancelTransfer: (
     owner: AgentDesktopOwner,
-    input: AgentDesktopHostTransferCancelInput,
+    input: AgentDesktopManagerTransferCancelInput,
   ) => Effect.Effect<void, AgentDesktopManagerOperationError>;
   readonly inspect: (
     owner: AgentDesktopOwner,
@@ -619,7 +656,7 @@ export interface AgentDesktopManagerShape {
 export class AgentDesktopManager extends Context.Service<
   AgentDesktopManager,
   AgentDesktopManagerShape
->()("@t3tools/desktop/agentDesktop/AgentDesktopManager") {}
+>()("t3/agentDesktop/AgentDesktopManager") {}
 
 /** Chooses bounded resources from current host pressure and task requirements. */
 export function chooseAgentDesktopResources(
@@ -892,7 +929,7 @@ const findAvailablePort = (host: string) =>
 
 /** Creates the persistent Agent desktop policy and computer-use manager. */
 export const make = Effect.gen(function* () {
-  const environment = yield* DesktopEnvironment.DesktopEnvironment;
+  const environment = yield* AgentDesktopEnvironment.AgentDesktopEnvironment;
   const fileSystem = yield* FileSystem.FileSystem;
   const crypto = yield* Crypto.Crypto;
   const qemu = yield* QemuAgentDesktop.QemuAgentDesktop;
@@ -1931,7 +1968,7 @@ export const make = Effect.gen(function* () {
         operation: "acquire",
         detail:
           graphicsRequirement?.detail ??
-          "hardware graphics acceleration is not available on this desktop host",
+          "hardware graphics acceleration is not available on this environment host",
       });
     }
     const selectedGraphics: QemuAgentDesktop.QemuGraphicsBackend =
@@ -2635,6 +2672,25 @@ export const make = Effect.gen(function* () {
       ),
   );
 
+  const decodeCapture = Effect.fn("AgentDesktopManager.decodeCapture")(function* (
+    capture: QemuAgentDesktop.QemuAgentDesktopCapture,
+    operation: string,
+  ) {
+    return yield* Effect.tryPromise({
+      try: () => decodeAgentDesktopCapture(capture),
+      catch: (cause) =>
+        new AgentDesktopManagerError({
+          code: "internal-error",
+          operation,
+          detail:
+            `QEMU display decoding failed: ${cause instanceof Error ? cause.message : String(cause)}`.slice(
+              0,
+              2_000,
+            ),
+        }),
+    });
+  });
+
   const snapshot: AgentDesktopManagerShape["snapshot"] = (controllerId, input, desktopId) =>
     Effect.gen(function* () {
       const desktop = yield* requireAccessibleDesktop(controllerId, desktopId);
@@ -2666,23 +2722,9 @@ export const make = Effect.gen(function* () {
       const capture = yield* qemu
         .capture(desktop.id)
         .pipe(Effect.tapError((cause) => recordCaptureFailure(runtime, cause)));
-      const sourceImage =
-        capture.kind === "bitmap"
-          ? nativeImage.createFromBitmap(Buffer.from(capture.data), {
-              width: capture.width,
-              height: capture.height,
-              scaleFactor: 1,
-            })
-          : nativeImage.createFromBuffer(Buffer.from(capture.data));
-      if (sourceImage.isEmpty()) {
-        const cause = new AgentDesktopManagerError({
-          code: "internal-error",
-          operation: "snapshot",
-          detail: "QEMU returned an empty display image",
-        });
-        yield* recordCaptureFailure(runtime, cause);
-        return yield* cause;
-      }
+      const sourceImage = yield* decodeCapture(capture, "snapshot").pipe(
+        Effect.tapError((cause) => recordCaptureFailure(runtime, cause)),
+      );
       yield* recordCaptureSuccess(runtime);
       const sourceSize = sourceImage.getSize();
       yield* Ref.set(runtime.displaySize, sourceSize);
@@ -2779,17 +2821,25 @@ export const make = Effect.gen(function* () {
           readonly height: number;
         },
       ) {
-        const cropped = sourceImage.crop(region);
         const targetSize = fittedImageSize(
           region.width,
           region.height,
           options.maxWidth ?? DEFAULT_SCREENSHOT_WIDTH,
           options.maxHeight ?? DEFAULT_SCREENSHOT_HEIGHT,
         );
-        const image =
-          targetSize.width === region.width && targetSize.height === region.height
-            ? cropped
-            : cropped.resize({ ...targetSize, quality: "best" });
+        const image = yield* Effect.tryPromise({
+          try: () => cropAgentDesktopImage(sourceImage, region, targetSize),
+          catch: (cause) =>
+            new AgentDesktopManagerError({
+              code: "internal-error",
+              operation: "snapshot",
+              detail:
+                `desktop screenshot transform failed: ${cause instanceof Error ? cause.message : String(cause)}`.slice(
+                  0,
+                  2_000,
+                ),
+            }),
+        });
         const size = image.getSize();
         const frame = yield* storeFrame(
           runtime,
@@ -2996,23 +3046,9 @@ export const make = Effect.gen(function* () {
     const capture = yield* qemu
       .capture(desktop.id)
       .pipe(Effect.tapError((cause) => recordCaptureFailure(runtime, cause)));
-    const sourceImage =
-      capture.kind === "bitmap"
-        ? nativeImage.createFromBitmap(Buffer.from(capture.data), {
-            width: capture.width,
-            height: capture.height,
-            scaleFactor: 1,
-          })
-        : nativeImage.createFromBuffer(Buffer.from(capture.data));
-    if (sourceImage.isEmpty()) {
-      const cause = new AgentDesktopManagerError({
-        code: "internal-error",
-        operation: "wait-for-change",
-        detail: "QEMU returned an empty display image",
-      });
-      yield* recordCaptureFailure(runtime, cause);
-      return yield* cause;
-    }
+    const sourceImage = yield* decodeCapture(capture, "wait-for-change").pipe(
+      Effect.tapError((cause) => recordCaptureFailure(runtime, cause)),
+    );
     yield* recordCaptureSuccess(runtime);
     const sourceSize = sourceImage.getSize();
     if (sourceSize.width !== region.displayWidth || sourceSize.height !== region.displayHeight) {
@@ -3031,7 +3067,6 @@ export const make = Effect.gen(function* () {
         detail: "the visual change region resolved to an empty image",
       });
     }
-    const cropped = sourceImage.crop({ x: cropX, y: cropY, width, height });
     const scale = Math.max(
       1,
       width / CHANGE_DETECTION_MAX_WIDTH,
@@ -3041,10 +3076,19 @@ export const make = Effect.gen(function* () {
       width: Math.max(1, Math.round(width / scale)),
       height: Math.max(1, Math.round(height / scale)),
     };
-    const image =
-      fitted.width === width && fitted.height === height
-        ? cropped
-        : cropped.resize({ ...fitted, quality: "best" });
+    const image = yield* Effect.tryPromise({
+      try: () => cropAgentDesktopImage(sourceImage, { x: cropX, y: cropY, width, height }, fitted),
+      catch: (cause) =>
+        new AgentDesktopManagerError({
+          code: "internal-error",
+          operation: "wait-for-change",
+          detail:
+            `desktop change capture transform failed: ${cause instanceof Error ? cause.message : String(cause)}`.slice(
+              0,
+              2_000,
+            ),
+        }),
+    });
     return image.toBitmap();
   });
 
@@ -3736,30 +3780,6 @@ export const make = Effect.gen(function* () {
       }),
     );
 
-  const transferUrl = (value: string) =>
-    Effect.try({
-      try: () => {
-        const url = new URL(value);
-        if (
-          (url.protocol !== "http:" && url.protocol !== "https:") ||
-          url.username.length > 0 ||
-          url.password.length > 0 ||
-          url.hash.length > 0 ||
-          url.search.length > 0 ||
-          !/^\/api\/agent-desktop-transfers\/[A-Za-z0-9_-]{43}$/.test(url.pathname)
-        ) {
-          throw new Error("transfer URL is not a supported private HTTP capability");
-        }
-        return url.toString();
-      },
-      catch: (cause) =>
-        new AgentDesktopManagerError({
-          code: "invalid-action",
-          operation: "transfer-url",
-          detail: String(cause).slice(0, 256),
-        }),
-    });
-
   const guestTransferPath = (identity: GuestDesktopIdentity, value: string) => {
     if (value.includes("\0")) {
       return Effect.fail(
@@ -3882,100 +3902,58 @@ export const make = Effect.gen(function* () {
       })
       .pipe(Effect.ignore);
 
-  const downloadTransferChunk = Effect.fn("AgentDesktopManager.downloadTransferChunk")(
-    function* (input: {
-      readonly url: string;
-      readonly offset: number;
-      readonly end: number;
-      readonly totalBytes: number;
-    }) {
-      return yield* Effect.tryPromise({
-        try: async (signal) => {
-          const response = await fetch(input.url, {
-            method: "GET",
-            headers: { Range: `bytes=${input.offset}-${input.end}` },
-            cache: "no-store",
-            redirect: "error",
-            signal,
-          });
-          if (response.status !== 206) {
-            throw new Error(`transfer download returned HTTP ${response.status}`);
-          }
-          const contentRange = response.headers.get("content-range");
-          if (contentRange !== `bytes ${input.offset}-${input.end}/${input.totalBytes}`) {
-            throw new Error("transfer download returned an unexpected Content-Range");
-          }
-          const data = new Uint8Array(await response.arrayBuffer());
-          if (data.byteLength !== input.end - input.offset + 1) {
-            throw new Error("transfer download returned an incomplete range");
-          }
-          return data;
-        },
-        catch: (cause) =>
-          new AgentDesktopManagerError({
-            code: "internal-error",
-            operation: "transfer-download",
-            detail: transferCauseDetail(cause),
-          }),
-      }).pipe(Effect.retry({ times: GUEST_TRANSFER_FETCH_ATTEMPTS - 1 }));
-    },
-  );
+  const readHostTransferChunk = Effect.fn("AgentDesktopManager.readHostTransferChunk")(function* (
+    path: string,
+    offset: number,
+    length: number,
+  ) {
+    return yield* Effect.tryPromise({
+      try: async () => {
+        const handle = await NodeFSP.open(path, "r");
+        try {
+          const buffer = Buffer.allocUnsafe(length);
+          const { bytesRead } = await handle.read(buffer, 0, length, offset);
+          return new Uint8Array(buffer.buffer, buffer.byteOffset, bytesRead);
+        } finally {
+          await handle.close();
+        }
+      },
+      catch: (cause) =>
+        new AgentDesktopManagerError({
+          code: "internal-error",
+          operation: "transfer-host-read",
+          detail: transferCauseDetail(cause),
+        }),
+    });
+  });
 
-  const uploadTransferChunk = Effect.fn("AgentDesktopManager.uploadTransferChunk")(
-    function* (input: {
-      readonly url: string;
-      readonly offset: number;
-      readonly totalBytes: number;
-      readonly data: Uint8Array;
-    }) {
-      const end = input.offset + input.data.byteLength - 1;
-      const requestBody = new Uint8Array(input.data.byteLength);
-      requestBody.set(input.data);
-      return yield* Effect.tryPromise({
-        try: async (signal) => {
-          const response = await fetch(input.url, {
-            method: "PUT",
-            headers: {
-              "Content-Range": `bytes ${input.offset}-${end}/${input.totalBytes}`,
-              "Content-Type": "application/octet-stream",
-            },
-            body: requestBody.buffer,
-            cache: "no-store",
-            redirect: "error",
-            signal,
-          });
-          if (response.status === 507) {
-            throw new AgentDesktopManagerError({
-              code: "resource-exhausted",
-              operation: "transfer-upload",
-              detail: (await response.text()).slice(0, 512) || "the transfer host ran out of space",
-            });
-          }
-          const nextOffset = Number(response.headers.get("upload-offset"));
-          if (
-            (response.status !== 201 && response.status !== 204 && response.status !== 409) ||
-            !Number.isSafeInteger(nextOffset)
-          ) {
-            throw new Error(`transfer upload returned HTTP ${response.status}`);
-          }
-          if (nextOffset !== end + 1) {
-            throw new Error(
-              `transfer upload expected offset ${end + 1} but received ${nextOffset}`,
-            );
-          }
-          return nextOffset;
-        },
-        catch: (cause) =>
-          isAgentDesktopManagerError(cause)
-            ? cause
-            : new AgentDesktopManagerError({
-                code: "internal-error",
-                operation: "transfer-upload",
-                detail: transferCauseDetail(cause),
-              }),
-      }).pipe(Effect.retry({ times: GUEST_TRANSFER_FETCH_ATTEMPTS - 1 }));
-    },
-  );
+  const resetHostTransferArchive = (path: string) =>
+    Effect.tryPromise({
+      try: () => NodeFSP.writeFile(path, new Uint8Array(), { mode: 0o600 }),
+      catch: (cause) =>
+        new AgentDesktopManagerError({
+          code: "internal-error",
+          operation: "transfer-host-create",
+          detail: transferCauseDetail(cause),
+        }),
+    });
+
+  const appendHostTransferChunk = (path: string, data: Uint8Array) =>
+    Effect.tryPromise({
+      try: () => NodeFSP.appendFile(path, data),
+      catch: (cause) =>
+        new AgentDesktopManagerError({
+          code: "internal-error",
+          operation: "transfer-host-write",
+          detail: transferCauseDetail(cause),
+        }),
+    });
+
+  const reportTransferProgress = (
+    input: AgentDesktopManagerTransferInput,
+    transferredBytes: number,
+    totalBytes: number,
+  ) => input.onProgress?.(transferredBytes, totalBytes) ?? Effect.void;
 
   const transferTree = (result: typeof GuestTransferResult.Type) => ({
     rootType: result.rootType,
@@ -3988,9 +3966,8 @@ export const make = Effect.gen(function* () {
   const importTransfer = Effect.fn("AgentDesktopManager.importTransfer")(function* (
     desktop: PersistedDesktop,
     identity: GuestDesktopIdentity,
-    input: Extract<AgentDesktopHostTransferInput, { readonly operation: "import" }>,
+    input: Extract<AgentDesktopManagerTransferInput, { readonly operation: "import" }>,
   ) {
-    const url = yield* transferUrl(input.url);
     const destination = yield* guestTransferPath(identity, input.guestPath);
     const desktopUserOwnsDestination =
       destination === identity.homeDirectory ||
@@ -3999,13 +3976,15 @@ export const make = Effect.gen(function* () {
     yield* removeGuestTransferArchive(desktop, archivePath);
     let offset = 0;
     while (offset < input.sizeBytes) {
-      const end = Math.min(input.sizeBytes, offset + GUEST_TRANSFER_CHUNK_BYTES) - 1;
-      const data = yield* downloadTransferChunk({
-        url,
-        offset,
-        end,
-        totalBytes: input.sizeBytes,
-      });
+      const expectedBytes = Math.min(GUEST_TRANSFER_CHUNK_BYTES, input.sizeBytes - offset);
+      const data = yield* readHostTransferChunk(input.archivePath, offset, expectedBytes);
+      if (data.byteLength !== expectedBytes) {
+        return yield* new AgentDesktopManagerError({
+          code: "internal-error",
+          operation: "transfer-host-read",
+          detail: "the host transfer archive ended before its declared size",
+        });
+      }
       const bytesWritten = yield* qemu.writeGuestFile(
         desktop.id,
         archivePath,
@@ -4020,6 +3999,7 @@ export const make = Effect.gen(function* () {
         });
       }
       offset += bytesWritten;
+      yield* reportTransferProgress(input, offset, input.sizeBytes);
     }
     const result = yield* runGuestTransferHelper(desktop, [
       "extract",
@@ -4055,15 +4035,14 @@ export const make = Effect.gen(function* () {
       wireBytes: result.wireBytes,
       sha256: result.sha256,
       tree: transferTree(result),
-    } satisfies AgentDesktopHostTransferResult;
+    } satisfies AgentDesktopManagerTransferResult;
   });
 
   const exportTransfer = Effect.fn("AgentDesktopManager.exportTransfer")(function* (
     desktop: PersistedDesktop,
     identity: GuestDesktopIdentity,
-    input: Extract<AgentDesktopHostTransferInput, { readonly operation: "export" }>,
+    input: Extract<AgentDesktopManagerTransferInput, { readonly operation: "export" }>,
   ) {
-    const url = yield* transferUrl(input.url);
     const source = yield* guestTransferPath(identity, input.guestPath);
     const archivePath = `${GUEST_TRANSFER_DIRECTORY}/${input.transferId}.bundle`;
     yield* removeGuestTransferArchive(desktop, archivePath);
@@ -4076,6 +4055,7 @@ export const make = Effect.gen(function* () {
       "--compression",
       input.compression,
     ]);
+    yield* resetHostTransferArchive(input.archivePath);
     let offset = 0;
     while (offset < result.wireBytes) {
       const read = yield* qemu.readGuestFile(
@@ -4091,12 +4071,9 @@ export const make = Effect.gen(function* () {
           detail: "the guest transfer archive ended before its declared size",
         });
       }
-      offset = yield* uploadTransferChunk({
-        url,
-        offset,
-        totalBytes: result.wireBytes,
-        data: read.data,
-      });
+      yield* appendHostTransferChunk(input.archivePath, read.data);
+      offset += read.data.byteLength;
+      yield* reportTransferProgress(input, offset, result.wireBytes);
     }
     return {
       desktopId: desktop.id,
@@ -4105,7 +4082,7 @@ export const make = Effect.gen(function* () {
       wireBytes: result.wireBytes,
       sha256: result.sha256,
       tree: transferTree(result),
-    } satisfies AgentDesktopHostTransferResult;
+    } satisfies AgentDesktopManagerTransferResult;
   });
 
   const transfer: AgentDesktopManagerShape["transfer"] = (owner, input) =>
@@ -4127,7 +4104,7 @@ export const make = Effect.gen(function* () {
           return yield* new AgentDesktopManagerError({
             code: "desktop-busy",
             operation: "transfer",
-            detail: "the transfer id is already active in this desktop host",
+            detail: "the transfer id is already active in this environment runtime",
           });
         }
         const archivePath = `${GUEST_TRANSFER_DIRECTORY}/${input.transferId}.bundle`;

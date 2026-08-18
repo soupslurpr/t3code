@@ -10,7 +10,7 @@ const CAPABILITIES_ID = "t3-capabilities";
 type JsonRecord = Readonly<Record<string, unknown>>;
 
 /** Reports a bounded QEMU monitor or guest-agent transport failure. */
-export class QemuProtocolError extends Schema.TaggedErrorClass<QemuProtocolError>()(
+export class QemuProtocolError extends Schema.TaggedError<QemuProtocolError>()(
   "QemuProtocolError",
   {
     channel: Schema.Literals(["qmp", "qga"]),
