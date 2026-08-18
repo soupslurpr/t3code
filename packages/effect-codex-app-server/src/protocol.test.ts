@@ -24,6 +24,9 @@ const decodeJson = Schema.decodeEffect(Schema.fromJsonString(Schema.Unknown));
 const decodeAccountTokenUsageResponse = Schema.decodeUnknownEffect(
   CodexRpc.CLIENT_REQUEST_RESPONSES["account/usage/read"],
 );
+const encodeAccountTokenUsageParams = Schema.encodeUnknownEffect(
+  CodexRpc.CLIENT_REQUEST_PARAMS["account/usage/read"],
+);
 const decodeAccountRateLimitsResponse = Schema.decodeUnknownEffect(
   CodexRpc.CLIENT_REQUEST_RESPONSES["account/rateLimits/read"],
 );
@@ -36,6 +39,9 @@ const decodeConsumeRateLimitResetCreditResponse = Schema.decodeUnknownEffect(
 const encodeThreadResumeParams = Schema.encodeUnknownEffect(
   CodexRpc.CLIENT_REQUEST_PARAMS["thread/resume"],
 );
+const decodeErrorNotification = Schema.decodeUnknownEffect(
+  CodexRpc.SERVER_NOTIFICATION_PARAMS.error,
+);
 
 it.layer(NodeServices.layer)("effect-codex-app-server protocol", (it) => {
   it.effect("maps account usage responses to the upstream token usage schema", () =>
@@ -44,14 +50,66 @@ it.layer(NodeServices.layer)("effect-codex-app-server protocol", (it) => {
         CodexRpc.CLIENT_REQUEST_RESPONSES["account/usage/read"],
         CodexSchema.V2GetAccountTokenUsageResponse,
       );
-      const decoded = yield* decodeAccountTokenUsageResponse({
+      assert.deepEqual(yield* encodeAccountTokenUsageParams({ threadId: "thread-1" }), {
+        threadId: "thread-1",
+      });
+      const response = {
         dailyUsageBuckets: [{ startDate: "2026-06-10", tokens: 42 }],
         summary: { lifetimeTokens: 42 },
-      });
-      assert.deepEqual(decoded, {
-        dailyUsageBuckets: [{ startDate: "2026-06-10", tokens: 42 }],
-        summary: { lifetimeTokens: 42 },
-      });
+        threadUsage: {
+          estimatedUsageCreditsMicros: 12_345,
+          estimatedUsageUsdMicros: 678,
+          groups: [
+            {
+              cachedInputTokens: 4_000,
+              estimatedUsageCreditsMicros: 12_345,
+              inputTokens: 5_000,
+              model: "gpt-5.6-sol",
+              netNewInputTokens: 1_000,
+              outputTokens: 500,
+              reasoningEffort: "high",
+              speed: "standard",
+              totalTokens: 5_500,
+            },
+          ],
+          threadId: "thread-1",
+        },
+      } as const;
+      assert.deepEqual(yield* decodeAccountTokenUsageResponse(response), response);
+    }),
+  );
+
+  it.effect("maps paginated history and current policy failures", () =>
+    Effect.gen(function* () {
+      assert.equal(CodexRpc.CLIENT_REQUEST_METHODS["thread/revert"], "thread/revert");
+      assert.strictEqual(
+        CodexRpc.CLIENT_REQUEST_PARAMS["thread/revert"],
+        CodexSchema.V2ThreadRevertParams,
+      );
+      assert.strictEqual(
+        CodexRpc.CLIENT_REQUEST_RESPONSES["thread/revert"],
+        CodexSchema.V2ThreadRevertResponse,
+      );
+      assert.deepEqual(
+        yield* decodeErrorNotification({
+          error: {
+            codexErrorInfo: "misalignmentPolicyViolation",
+            message: "request blocked by policy",
+          },
+          threadId: "thread-1",
+          turnId: "turn-1",
+          willRetry: false,
+        }),
+        {
+          error: {
+            codexErrorInfo: "misalignmentPolicyViolation",
+            message: "request blocked by policy",
+          },
+          threadId: "thread-1",
+          turnId: "turn-1",
+          willRetry: false,
+        },
+      );
     }),
   );
 

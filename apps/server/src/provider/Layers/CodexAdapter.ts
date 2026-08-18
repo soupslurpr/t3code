@@ -164,8 +164,7 @@ type CodexLifecycleItem =
   | EffectCodexSchema.V2ItemCompletedNotification["item"];
 
 type CodexToolUserInputQuestion =
-  | EffectCodexSchema.ServerRequest__ToolRequestUserInputQuestion
-  | EffectCodexSchema.ToolRequestUserInputParams__ToolRequestUserInputQuestion;
+  EffectCodexSchema.ToolRequestUserInputParams__ToolRequestUserInputQuestion;
 
 const ApprovalDecisionPayload = Schema.Struct({
   decision: ProviderApprovalDecision,
@@ -804,7 +803,7 @@ const MAX_DESCRIBED_FILE_CHANGES = 20;
 // Without them the approval card has nothing to show but its own title — the
 // command-execution branch already falls back to the command for the same reason.
 function describeFileChanges(
-  fileChanges: EffectCodexSchema.ServerRequest__ApplyPatchApprovalParams["fileChanges"] | undefined,
+  fileChanges: EffectCodexSchema.ApplyPatchApprovalParams["fileChanges"] | undefined,
 ): string | undefined {
   if (fileChanges === undefined) return undefined;
   const entries = Object.entries(fileChanges).toSorted(([left], [right]) =>
@@ -1320,9 +1319,7 @@ function mapToRuntimeEvents(
 
   if (event.kind === "request") {
     if (event.method === "item/tool/requestUserInput") {
-      const payload =
-        readPayload(EffectCodexSchema.ServerRequest__ToolRequestUserInputParams, event.payload) ??
-        readPayload(EffectCodexSchema.ToolRequestUserInputParams, event.payload);
+      const payload = readPayload(EffectCodexSchema.ToolRequestUserInputParams, event.payload);
       const questions = payload ? toUserInputQuestions(payload.questions) : undefined;
       if (!questions) {
         return [];
@@ -1347,14 +1344,14 @@ function mapToRuntimeEvents(
       switch (event.method) {
         case "item/commandExecution/requestApproval": {
           const payload = readPayload(
-            EffectCodexSchema.ServerRequest__CommandExecutionRequestApprovalParams,
+            EffectCodexSchema.CommandExecutionRequestApprovalParams,
             event.payload,
           );
           return payload?.command ?? payload?.reason ?? undefined;
         }
         case "item/fileChange/requestApproval": {
           const payload = readPayload(
-            EffectCodexSchema.ServerRequest__FileChangeRequestApprovalParams,
+            EffectCodexSchema.FileChangeRequestApprovalParams,
             event.payload,
           );
           // These params carry no path of their own, only the root the agent
@@ -1364,10 +1361,7 @@ function mapToRuntimeEvents(
         case "mcpServer/elicitation/request":
           return elicitation?.message;
         case "applyPatchApproval": {
-          const payload = readPayload(
-            EffectCodexSchema.ServerRequest__ApplyPatchApprovalParams,
-            event.payload,
-          );
+          const payload = readPayload(EffectCodexSchema.ApplyPatchApprovalParams, event.payload);
           return (
             nonEmptyDetail(payload?.reason) ??
             describeFileChanges(payload?.fileChanges) ??
@@ -1375,17 +1369,11 @@ function mapToRuntimeEvents(
           );
         }
         case "execCommandApproval": {
-          const payload = readPayload(
-            EffectCodexSchema.ServerRequest__ExecCommandApprovalParams,
-            event.payload,
-          );
+          const payload = readPayload(EffectCodexSchema.ExecCommandApprovalParams, event.payload);
           return payload?.reason ?? payload?.command.join(" ");
         }
         case "item/tool/call": {
-          const payload = readPayload(
-            EffectCodexSchema.ServerRequest__DynamicToolCallParams,
-            event.payload,
-          );
+          const payload = readPayload(EffectCodexSchema.DynamicToolCallParams, event.payload);
           return payload?.tool ?? undefined;
         }
         default:
