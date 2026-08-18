@@ -802,10 +802,12 @@ export class PreviewAutomationNoAvailableHostError extends Schema.TaggedError<Pr
     requestId: Schema.optional(TrimmedNonEmptyString),
     tabId: Schema.optional(PreviewTabId),
     timeoutMs: Schema.optional(Schema.Int.check(Schema.isGreaterThan(0))),
+    computerFailure: Schema.optional(ComputerAutomationFailure),
     ...PreviewAutomationOptionalRemoteDiagnosticFields,
   },
 ) {
   override get message(): string {
+    if (this.computerFailure !== undefined) return this.computerFailure.message;
     return `No preview automation host is available for ${this.operation} in environment ${this.environmentId}. Preview tools run in a T3 Code desktop app that is open and connected to this environment; a headless server has no browser of its own. Do not retry. To check a page, use a headless browser from the shell, such as Playwright, or curl, or ask the user to open this thread in the T3 Code desktop app.`;
   }
 }
