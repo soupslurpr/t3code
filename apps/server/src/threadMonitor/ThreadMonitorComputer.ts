@@ -7,7 +7,6 @@ import {
   type ComputerAutomationScreenshotRegion,
   type ComputerAutomationSnapshot,
   type ComputerDesktopTarget,
-  type PreviewAutomationOperation,
   type ProviderInstanceId,
   type ThreadId,
   type ThreadMonitorComputerCondition,
@@ -29,8 +28,8 @@ import * as Schema from "effect/Schema";
 
 import * as ServerEnvironment from "../environment/ServerEnvironment.ts";
 import * as ComputerObservationStore from "../computer/ComputerObservationStore.ts";
+import * as ComputerAutomationRouter from "../computer/ComputerAutomationRouter.ts";
 import * as McpInvocationContext from "../mcp/McpInvocationContext.ts";
-import * as PreviewAutomationBroker from "../mcp/PreviewAutomationBroker.ts";
 import { ProjectionSnapshotQuery } from "../orchestration/Services/ProjectionSnapshotQuery.ts";
 import * as ProviderInstanceRegistry from "../provider/Services/ProviderInstanceRegistry.ts";
 import type { ProviderInstance } from "../provider/ProviderDriver.ts";
@@ -40,9 +39,6 @@ import {
 } from "./ThreadMonitorComputerService.ts";
 import { resolveModelEvaluation } from "./ThreadMonitorComputerPolicy.ts";
 
-const REQUEST_VIEW_TIMEOUT_MS = 120_000;
-const SNAPSHOT_TIMEOUT_MS = 30_000;
-const RELEASE_TIMEOUT_MS = 30_000;
 const DEFAULT_INTERVAL_MS = 30_000;
 const DEFAULT_MAX_IMAGE_DIMENSION = 1_024;
 const DEFAULT_FAILURE_REVIEW_THRESHOLD = 3;
@@ -203,7 +199,7 @@ function imageWithKind(
 
 /** Creates the live computer-monitor adapter. */
 export const make = Effect.gen(function* () {
-  const broker = yield* PreviewAutomationBroker.PreviewAutomationBroker;
+  const computer = yield* ComputerAutomationRouter.ComputerAutomationRouter;
   const environment = yield* ServerEnvironment.ServerEnvironment;
   const observations = yield* ComputerObservationStore.ComputerObservationStore;
   const snapshots = yield* ProjectionSnapshotQuery;
@@ -223,19 +219,6 @@ export const make = Effect.gen(function* () {
       issuedAt: yield* Clock.currentTimeMillis,
     });
   });
-
-  const invoke = <A>(input: {
-    readonly scope: McpInvocationContext.McpInvocationScope;
-    readonly operation: PreviewAutomationOperation;
-    readonly payload: unknown;
-    readonly timeoutMs: number;
-  }) =>
-    broker.invoke<A>({
-      scope: input.scope,
-      operation: input.operation,
-      input: input.payload,
-      timeoutMs: input.timeoutMs,
-    });
 
   const readThreadContext = Effect.fn("ThreadMonitorComputer.readThreadContext")(function* (
     threadId: ThreadId,
@@ -264,24 +247,19 @@ export const make = Effect.gen(function* () {
     readonly encoding?: ThreadMonitorComputerObservationRegionInput["encoding"];
     readonly unchangedIfContentHash?: ComputerAutomationContentHash;
   }) {
-    return yield* invoke<ComputerAutomationSnapshot>({
-      scope: input.scope,
-      operation: "computerSnapshot",
-      payload: {
-        desktop: input.desktop,
-        includeAccessibility: false,
-        ...(input.displayId === undefined ? {} : { displayId: input.displayId }),
-        screenshot: {
-          ...(input.region === undefined ? {} : { region: input.region }),
-          maxWidth: input.maxWidth,
-          maxHeight: input.maxHeight,
-          ...(input.encoding === undefined ? {} : { encoding: input.encoding }),
-          ...(input.unchangedIfContentHash === undefined
-            ? {}
-            : { unchangedIfContentHash: input.unchangedIfContentHash }),
-        },
+    return yield* computer.snapshot(input.scope, {
+      desktop: input.desktop,
+      includeAccessibility: false,
+      ...(input.displayId === undefined ? {} : { displayId: input.displayId }),
+      screenshot: {
+        ...(input.region === undefined ? {} : { region: input.region }),
+        maxWidth: input.maxWidth,
+        maxHeight: input.maxHeight,
+        ...(input.encoding === undefined ? {} : { encoding: input.encoding }),
+        ...(input.unchangedIfContentHash === undefined
+          ? {}
+          : { unchangedIfContentHash: input.unchangedIfContentHash }),
       },
-      timeoutMs: SNAPSHOT_TIMEOUT_MS,
     });
   });
 
@@ -538,12 +516,7 @@ export const make = Effect.gen(function* () {
           ? input.watch.match.modelSelection.instanceId
           : input.routingInstanceId,
     });
-    yield* invoke<ComputerAutomationObservation>({
-      scope,
-      operation: "computerRequestView",
-      payload: { desktop, observation: false },
-      timeoutMs: REQUEST_VIEW_TIMEOUT_MS,
-    });
+    yield* computer.requestView(scope, { desktop, observation: false });
     return yield* Effect.gen(function* () {
       const match = normalizeMatch(input.watch.match);
       const sampling = {
@@ -614,12 +587,7 @@ export const make = Effect.gen(function* () {
     }).pipe(
       Effect.tapError(() =>
         input.releaseOnFailure
-          ? invoke({
-              scope,
-              operation: "computerRelease",
-              payload: { desktop },
-              timeoutMs: RELEASE_TIMEOUT_MS,
-            }).pipe(Effect.ignore)
+          ? computer.release(scope, { desktop }).pipe(Effect.ignore)
           : Effect.void,
       ),
     );
@@ -701,12 +669,7 @@ export const make = Effect.gen(function* () {
         threadId: monitor.threadId,
         providerInstanceId,
       });
-      yield* invoke<ComputerAutomationObservation>({
-        scope,
-        operation: "computerRequestView",
-        payload: { desktop: condition.desktop, observation: false },
-        timeoutMs: REQUEST_VIEW_TIMEOUT_MS,
-      });
+      yield* computer.requestView(scope, { desktop: condition.desktop, observation: false });
 
       const triggerRegions = condition.observation.regions.filter(
         (region) => region.role === "trigger",
@@ -1000,12 +963,7 @@ export const make = Effect.gen(function* () {
         threadId: input.monitor.threadId,
         providerInstanceId,
       });
-      yield* invoke<ComputerAutomationObservation>({
-        scope,
-        operation: "computerRequestView",
-        payload: { desktop: condition.desktop, observation: false },
-        timeoutMs: REQUEST_VIEW_TIMEOUT_MS,
-      });
+      yield* computer.requestView(scope, { desktop: condition.desktop, observation: false });
       const requestedIds = input.regionIds === undefined ? null : new Set(input.regionIds);
       const regions = condition.observation.regions.filter(
         (region) => requestedIds === null || requestedIds.has(region.id),
@@ -1068,12 +1026,7 @@ export const make = Effect.gen(function* () {
         threadId: monitor.threadId,
         providerInstanceId: providerInstanceId ?? thread.shell.modelSelection.instanceId,
       });
-      yield* invoke({
-        scope,
-        operation: "computerRelease",
-        payload: { desktop: condition.desktop },
-        timeoutMs: RELEASE_TIMEOUT_MS,
-      });
+      yield* computer.release(scope, { desktop: condition.desktop });
     }).pipe(
       Effect.catch((cause) =>
         Effect.logWarning("failed to release durable computer monitor", {

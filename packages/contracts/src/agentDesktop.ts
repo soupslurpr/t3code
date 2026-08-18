@@ -12,7 +12,7 @@ const MAX_AGENT_DESKTOP_PATH_BYTES = 4_096;
 const MAX_AGENT_DESKTOP_TRANSFER_DETAIL_BYTES = 1_024;
 
 /** Operations routed to the environment-local Agent desktop runtime. */
-export const AGENT_DESKTOP_AUTOMATION_OPERATIONS = [
+export const AGENT_DESKTOP_OPERATIONS = [
   "agentDesktopList",
   "agentDesktopSetup",
   "agentDesktopAcquire",
@@ -24,11 +24,9 @@ export const AGENT_DESKTOP_AUTOMATION_OPERATIONS = [
   "agentDesktopCreatePortRoute",
   "agentDesktopRemovePortRoute",
   "agentDesktopPacketCapture",
-  "agentDesktopTransfer",
-  "agentDesktopTransferCancel",
 ] as const;
 
-/** Identifies one durable desktop owned by the local T3 desktop runtime. */
+/** Identifies one durable desktop owned by its T3 environment server. */
 export const AgentDesktopId = TrimmedNonEmptyString.check(Schema.isMaxLength(128));
 export type AgentDesktopId = typeof AgentDesktopId.Type;
 
@@ -216,7 +214,7 @@ export const AgentDesktop = Schema.Struct({
 });
 export type AgentDesktop = typeof AgentDesktop.Type;
 
-/** Identifies one independently testable Agent desktop host prerequisite. */
+/** Identifies one independently testable environment-host prerequisite. */
 export const AgentDesktopRequirementId = Schema.Literals([
   "probe",
   "platform",
@@ -596,48 +594,6 @@ export class AgentDesktopTransferLookupError extends Schema.TaggedErrorClass<Age
     detail: Schema.String.check(Schema.isMaxLength(256)),
   },
 ) {}
-
-/** Instructs the desktop host to import or export one private transfer bundle. */
-export const AgentDesktopHostTransferInput = Schema.Union([
-  Schema.Struct({
-    operation: Schema.Literal("import"),
-    transferId: AgentDesktopTransferId,
-    desktopId: Schema.optional(AgentDesktopId),
-    url: TrimmedNonEmptyString.check(Schema.isMaxLength(8_192)),
-    guestPath: TrimmedNonEmptyString.check(Schema.isMaxLength(MAX_AGENT_DESKTOP_PATH_BYTES)),
-    collision: Schema.Literals(["create", "replace", "merge"]),
-    compression: Schema.Literals(["none", "gzip"]),
-    sizeBytes: Schema.Number.check(Schema.isGreaterThanOrEqualTo(0)),
-    sha256: Schema.String.check(Schema.isPattern(/^[a-f0-9]{64}$/)),
-  }),
-  Schema.Struct({
-    operation: Schema.Literal("export"),
-    transferId: AgentDesktopTransferId,
-    desktopId: Schema.optional(AgentDesktopId),
-    url: TrimmedNonEmptyString.check(Schema.isMaxLength(8_192)),
-    guestPath: TrimmedNonEmptyString.check(Schema.isMaxLength(MAX_AGENT_DESKTOP_PATH_BYTES)),
-    compression: Schema.Literals(["auto", "none", "gzip"]),
-  }),
-]);
-export type AgentDesktopHostTransferInput = typeof AgentDesktopHostTransferInput.Type;
-
-/** Cancels a transfer currently running in the attached desktop host. */
-export const AgentDesktopHostTransferCancelInput = Schema.Struct({
-  transferId: AgentDesktopTransferId,
-  desktopId: Schema.optional(AgentDesktopId),
-});
-export type AgentDesktopHostTransferCancelInput = typeof AgentDesktopHostTransferCancelInput.Type;
-
-/** Returns the exact bundle the desktop host imported or exported. */
-export const AgentDesktopHostTransferResult = Schema.Struct({
-  desktopId: AgentDesktopId,
-  transferId: AgentDesktopTransferId,
-  compression: Schema.Literals(["none", "gzip"]),
-  wireBytes: Schema.Number.check(Schema.isGreaterThanOrEqualTo(0)),
-  sha256: Schema.String.check(Schema.isPattern(/^[a-f0-9]{64}$/)),
-  tree: AgentDesktopTransferTree,
-});
-export type AgentDesktopHostTransferResult = typeof AgentDesktopHostTransferResult.Type;
 
 /** Selects the accounting detail returned for one Agent desktop. */
 export const AgentDesktopInspectInput = Schema.Struct({

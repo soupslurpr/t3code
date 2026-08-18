@@ -28,6 +28,10 @@ import * as AgentPowerReporter from "./background/AgentPowerReporter.ts";
 import * as HostPowerMonitor from "./background/HostPowerMonitor.ts";
 import * as ServerConfig from "./config.ts";
 import * as AgentDesktopTransfer from "./agentDesktop/AgentDesktopTransferService.ts";
+import * as AgentDesktopEnvironment from "./agentDesktop/AgentDesktopEnvironment.ts";
+import * as AgentDesktopManager from "./agentDesktop/AgentDesktopManager.ts";
+import * as QemuAgentDesktop from "./agentDesktop/QemuAgentDesktop.ts";
+import * as ComputerAutomationRouter from "./computer/ComputerAutomationRouter.ts";
 import { withUntracedRequests } from "./http.ts";
 import * as ServerHttp from "./http.ts";
 import {
@@ -206,6 +210,26 @@ const HTTP_ROUTER_CONFIG = {
 const HTTP_PREEMPTIVE_SHUTDOWN_GRACE_MS = 0;
 const layerComputerObservationStore = ComputerObservationStore.layer;
 const layerPreviewAutomationBroker = PreviewAutomationBroker.layer;
+const layerAgentDesktopEnvironment = AgentDesktopEnvironment.layer;
+const layerQemuAgentDesktop = QemuAgentDesktop.layer.pipe(
+  Layer.provide(layerAgentDesktopEnvironment),
+);
+const layerAgentDesktopManager = AgentDesktopManager.layer.pipe(
+  Layer.provideMerge(layerQemuAgentDesktop),
+  Layer.provide(layerAgentDesktopEnvironment),
+);
+const layerComputerAutomationRouter = ComputerAutomationRouter.layer.pipe(
+  Layer.provideMerge(layerPreviewAutomationBroker),
+  Layer.provide(layerAgentDesktopManager),
+);
+const layerAgentDesktopTransfer = AgentDesktopTransfer.layer.pipe(
+  Layer.provide(layerAgentDesktopManager),
+);
+const layerAgentDesktopServices = Layer.mergeAll(
+  layerAgentDesktopManager,
+  layerComputerAutomationRouter,
+  layerAgentDesktopTransfer,
+);
 const layerResourceAttribution = ResourceAttribution.layer;
 const layerApplicationObservability = EventLoopMonitor.layer.pipe(
   Layer.provideMerge(Observability.layer),
@@ -612,6 +636,7 @@ const layerRuntimeCoreDependenciesBase = Layer.mergeAll(
   Layer.provideMerge(RuntimeLayer.layerEventInfrastructure),
   Layer.provideMerge(Layer.merge(ProjectStore.layer, ThreadSearch.layer)),
   Layer.provideMerge(Layer.mergeAll(layerComputerObservationStore, layerServerSettings)),
+  Layer.provideMerge(layerAgentDesktopServices),
   Layer.provideMerge(layerSourceControlProviderRegistry),
   Layer.provideMerge(layerGit),
   Layer.provideMerge(layerVcs),
@@ -630,7 +655,7 @@ const layerRuntimeCoreDependenciesBase = Layer.mergeAll(
   ),
 );
 
-const layerRuntimeCoreDependencies = layerRuntimeCoreDependenciesBase.pipe(
+const layerRuntimeCoreProviderDependencies = layerRuntimeCoreDependenciesBase.pipe(
   Layer.provideMerge(layerPtyAdapter),
   Layer.provideMerge(AcpRegistrySupport.layerFromHost.pipe(Layer.provide(ProviderHostLive.layer))),
   Layer.provideMerge(
@@ -642,6 +667,9 @@ const layerRuntimeCoreDependencies = layerRuntimeCoreDependenciesBase.pipe(
       McpProviderSessions.layer,
     ),
   ),
+);
+
+const layerRuntimeCoreDependencies = layerRuntimeCoreProviderDependencies.pipe(
   Layer.provideMerge(
     OpenCodeRuntime.layer.pipe(
       Layer.provide(
@@ -679,7 +707,6 @@ const layerRuntimeCoreWithAgentPower = AgentPowerReporter.layer.pipe(
 
 const layerRuntimeDependencies = layerRuntimeCoreWithAgentPower.pipe(
   Layer.provideMerge(layerUsage),
-  Layer.provideMerge(AgentDesktopTransfer.layer),
   Layer.provideMerge(layerBackground),
   Layer.provideMerge(layerResourceDiagnostics),
   Layer.provideMerge(TraceDiagnostics.layer),
@@ -719,8 +746,6 @@ const layerMakeRoutes = Layer.mergeAll(
     ServerBrowserStream.routeLayer,
     ServerHttp.layerStaticAndDevRoute,
     Ws.layer,
-    ServerHttp.agentDesktopTransferDownloadRouteLayer,
-    ServerHttp.agentDesktopTransferUploadRouteLayer,
   ),
   McpHttpServer.layer.pipe(
     Layer.provide(ProviderAdapterRegistry.layerFromProviderInstanceRegistry),
@@ -732,6 +757,7 @@ const layerMakeRoutes = Layer.mergeAll(
   ),
   // Both transports consume the same service instance, so caches single-flight across clients
   // and mutations observed on WebSocket invalidate patches subsequently read over HTTP.
+  Layer.provide(layerAgentDesktopServices),
   Layer.provide(layerPullRequestService),
   Layer.provide(ServerBrowser.layer.pipe(Layer.provide(DesktopBrowserChannel.layer))),
   Layer.provide(PreviewBrowser.layer),
