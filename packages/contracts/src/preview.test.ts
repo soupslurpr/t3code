@@ -175,10 +175,10 @@ describe("PreviewAutomationHost", () => {
 });
 
 describe("PreviewAutomationError", () => {
-  it("preserves a structured missing desktop-host failure", () => {
+  it("preserves a structured missing user-desktop host failure", () => {
     const error = decodeAutomationError({
       _tag: "PreviewAutomationNoAvailableHostError",
-      operation: "agentDesktopList",
+      operation: "computerStatus",
       environmentId: "environment-1",
       threadId: "thread-1",
       providerSessionId: "provider-session-1",
@@ -186,7 +186,7 @@ describe("PreviewAutomationError", () => {
       computerFailure: {
         code: "agent-desktop-unavailable",
         category: "resource",
-        message: "No Agent-desktop host is connected.",
+        message: "No user-desktop host is connected.",
         backendCode: "no-connected-automation-host",
       },
     });
@@ -194,7 +194,7 @@ describe("PreviewAutomationError", () => {
     expect(error._tag).toBe("PreviewAutomationNoAvailableHostError");
     if (error._tag === "PreviewAutomationNoAvailableHostError") {
       expect(error.computerFailure?.backendCode).toBe("no-connected-automation-host");
-      expect(error.message).toBe("No Agent-desktop host is connected.");
+      expect(error.message).toBe("No user-desktop host is connected.");
     }
   });
 

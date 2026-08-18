@@ -7,27 +7,14 @@ import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
 import * as Fiber from "effect/Fiber";
 import * as Layer from "effect/Layer";
+import * as Option from "effect/Option";
 import * as Path from "effect/Path";
 import * as Ref from "effect/Ref";
 import * as Schema from "effect/Schema";
 import * as TestClock from "effect/testing/TestClock";
-import { vi } from "vite-plus/test";
 
-const { nativeImage } = vi.hoisted(() => {
-  const image = {
-    isEmpty: () => false,
-    getSize: () => ({ width: 100, height: 100 }),
-    crop: () => image,
-    resize: () => image,
-    toBitmap: () => Buffer.alloc(100 * 100 * 4),
-  };
-  return { nativeImage: { createFromBitmap: vi.fn(() => image) } };
-});
-
-vi.mock("electron", () => ({ nativeImage }));
-
-import * as DesktopEnvironment from "../app/DesktopEnvironment.ts";
-import * as ComputerUse from "../computer/ComputerUse.ts";
+import * as ComputerUse from "../computer/ComputerAutomationFailure.ts";
+import * as AgentDesktopEnvironment from "./AgentDesktopEnvironment.ts";
 import * as AgentDesktopManager from "./AgentDesktopManager.ts";
 import * as QemuAgentDesktop from "./QemuAgentDesktop.ts";
 
@@ -334,22 +321,22 @@ const managerHarness = (
       yield* fileSystem.writeFileString(inputHelperResource, "test input helper");
     }
     const environmentLayer = Layer.effect(
-      DesktopEnvironment.DesktopEnvironment,
+      AgentDesktopEnvironment.AgentDesktopEnvironment,
       Effect.gen(function* () {
         const path = yield* Path.Path;
-        return DesktopEnvironment.DesktopEnvironment.of({
+        return AgentDesktopEnvironment.AgentDesktopEnvironment.of({
           path,
           platform: "linux",
           processArch: "x64",
           agentDesktopsDir,
-          agentDesktopBaseImage: { _tag: "None" },
+          agentDesktopBaseImage: Option.none(),
           resolveResourcePathCandidates: (resource: string) =>
-            resource === "computer-use/agent-desktop-accessibility.js" && accessibility
+            resource === "agent-desktop/accessibility.js" && accessibility
               ? [accessibilityResource]
               : resource === "agent-desktop/input-helper.py" && options?.inputHelper === true
                 ? [inputHelperResource]
                 : [],
-        } as unknown as DesktopEnvironment.DesktopEnvironment["Service"]);
+        });
       }),
     ).pipe(Layer.provide(NodeServices.layer));
     const dependencies = Layer.mergeAll(
@@ -764,8 +751,8 @@ describe("AgentDesktopManager", () => {
         assert.deepInclude(snapshot.frame, {
           displayId: "display-0",
           toDesktopLogical: {
-            scaleX: 0.3,
-            scaleY: 0.4,
+            scaleX: 1,
+            scaleY: 1,
             offsetX: 10,
             offsetY: 20,
           },
@@ -884,9 +871,9 @@ describe("AgentDesktopManager", () => {
                 id: "agent-frame-1",
                 displayId: "display-0",
                 coordinateSpace: "image-pixels",
-                width: 100,
-                height: 100,
-                toDesktopLogical: { scaleX: 0.5, scaleY: 0.5, offsetX: 0, offsetY: 0 },
+                width: 50,
+                height: 50,
+                toDesktopLogical: { scaleX: 1, scaleY: 1, offsetX: 0, offsetY: 0 },
               },
             },
             {
@@ -896,9 +883,9 @@ describe("AgentDesktopManager", () => {
                 id: "agent-frame-2",
                 displayId: "display-0",
                 coordinateSpace: "image-pixels",
-                width: 100,
-                height: 100,
-                toDesktopLogical: { scaleX: 0.5, scaleY: 0.5, offsetX: 50, offsetY: 50 },
+                width: 50,
+                height: 50,
+                toDesktopLogical: { scaleX: 1, scaleY: 1, offsetX: 50, offsetY: 50 },
               },
             },
           ],

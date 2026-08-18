@@ -76,8 +76,6 @@ import * as ComputerUse from "./computer/ComputerUse.ts";
 import * as ComputerUseCoordinator from "./computer/ComputerUseCoordinator.ts";
 import * as ComputerUseRouter from "./computer/ComputerUseRouter.ts";
 import * as GnomeRemoteDesktop from "./computer/GnomeRemoteDesktop.ts";
-import * as AgentDesktopManager from "./agentDesktop/AgentDesktopManager.ts";
-import * as QemuAgentDesktop from "./agentDesktop/QemuAgentDesktop.ts";
 import * as DesktopWindow from "./window/DesktopWindow.ts";
 import * as DesktopWslBackend from "./wsl/DesktopWslBackend.ts";
 import * as DesktopWslEnvironment from "./wsl/DesktopWslEnvironment.ts";
@@ -188,18 +186,8 @@ const layerDesktopComputerUseCoordinator = ComputerUseCoordinator.layer.pipe(
   Layer.provideMerge(layerDesktopComputerUse),
 );
 
-const layerQemuAgentDesktop = QemuAgentDesktop.layer.pipe(
-  Layer.provideMerge(layerDesktopFoundation),
-);
-
-const layerAgentDesktopManager = AgentDesktopManager.layer.pipe(
-  Layer.provideMerge(layerQemuAgentDesktop),
-  Layer.provideMerge(layerDesktopFoundation),
-);
-
 const layerDesktopComputerUseRouter = ComputerUseRouter.layer.pipe(
   Layer.provideMerge(layerDesktopComputerUseCoordinator),
-  Layer.provideMerge(layerAgentDesktopManager),
 );
 
 const layerDesktopWindow = DesktopWindow.layer.pipe(

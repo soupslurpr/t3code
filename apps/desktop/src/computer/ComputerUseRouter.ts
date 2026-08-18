@@ -1,5 +1,4 @@
 import type {
-  AgentDesktopOwner,
   ComputerAutomationAccessInput,
   ComputerAutomationAvailabilityInput,
   ComputerAutomationActInput,
@@ -15,13 +14,10 @@ import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 
-import * as AgentDesktopManager from "../agentDesktop/AgentDesktopManager.ts";
 import * as ComputerUse from "./ComputerUse.ts";
 import * as ComputerUseCoordinator from "./ComputerUseCoordinator.ts";
 
-export type ComputerUseRouterError =
-  | ComputerUse.ComputerUseError
-  | AgentDesktopManager.AgentDesktopManagerOperationError;
+export type ComputerUseRouterError = ComputerUse.ComputerUseError;
 
 export interface ComputerUseRouterShape {
   readonly status: (
@@ -66,29 +62,19 @@ export class ComputerUseRouter extends Context.Service<ComputerUseRouter, Comput
   "@t3tools/desktop/computer/ComputerUseRouter",
 ) {}
 
-/** Creates one owner only when a broker supplied its durable scope. */
-function ownerFromContext(
-  context: DesktopComputerAutomationContext,
-): Effect.Effect<AgentDesktopOwner, AgentDesktopManager.AgentDesktopManagerError> {
-  return context.environmentId !== undefined && context.threadId !== undefined
-    ? Effect.succeed({
-        environmentId: context.environmentId,
-        threadId: context.threadId,
-        controllerId: context.controllerId,
-      })
-    : Effect.fail(
-        new AgentDesktopManager.AgentDesktopManagerError({
-          code: "agent-desktop-unavailable",
-          operation: "resolve-owner",
-          detail: "Agent desktop access requires an environment and thread scope",
-        }),
-      );
+/** Rejects an Agent target at the interactive user-desktop boundary. */
+function agentDesktopMovedToServer(
+  operation: ComputerUse.ComputerUseOperationError["operation"],
+): ComputerUse.ComputerUseOperationError {
+  return new ComputerUse.ComputerUseOperationError({
+    operation,
+    cause: new Error("Agent desktops are owned by the environment server"),
+  });
 }
 
 /** Routes every computer operation to its requested desktop. */
 export const make = Effect.gen(function* () {
   const user = yield* ComputerUseCoordinator.ComputerUseCoordinator;
-  const agent = yield* AgentDesktopManager.AgentDesktopManager;
 
   const targetFromInput = (input: ComputerAutomationTargetInput): ComputerDesktopTarget =>
     input.desktop;
@@ -99,27 +85,21 @@ export const make = Effect.gen(function* () {
     access: "view" | "control",
   ) {
     const requested = input.desktop;
-    if (requested.kind === "user") {
-      return yield* access === "control"
-        ? user.requestControl(context.controllerId)
-        : user.requestView(context.controllerId);
+    if (requested.kind === "agent") {
+      return yield* agentDesktopMovedToServer(
+        access === "control" ? "requestControl" : "requestView",
+      );
     }
-    const owner = yield* ownerFromContext(context);
-    const selector = {
-      kind: "agent" as const,
-      ...(requested.desktopId === undefined ? {} : { desktopId: requested.desktopId }),
-      ...(requested.fresh === undefined ? {} : { fresh: requested.fresh }),
-    };
     return yield* access === "control"
-      ? agent.requestControl(owner, selector)
-      : agent.requestView(owner, selector);
+      ? user.requestControl(context.controllerId)
+      : user.requestView(context.controllerId);
   });
 
   const status: ComputerUseRouterShape["status"] = (context, input) => {
     const desktop = targetFromInput(input);
     return desktop.kind === "user"
       ? user.status(context.controllerId)
-      : agent.status(context.controllerId, desktop.desktopId);
+      : Effect.fail(agentDesktopMovedToServer("status"));
   };
 
   const requestView: ComputerUseRouterShape["requestView"] = (context, input) =>
@@ -138,28 +118,28 @@ export const make = Effect.gen(function* () {
     const { desktop, ...observation } = input;
     return desktop.kind === "user"
       ? user.snapshot(context.controllerId, observation)
-      : agent.snapshot(context.controllerId, observation, desktop.desktopId);
+      : Effect.fail(agentDesktopMovedToServer("snapshot"));
   };
 
   const act: ComputerUseRouterShape["act"] = (context, input) => {
     const { desktop, ...actions } = input;
     return desktop.kind === "user"
       ? user.act(context.controllerId, actions)
-      : agent.act(context.controllerId, actions, desktop.desktopId);
+      : Effect.fail(agentDesktopMovedToServer("act"));
   };
 
   const release: ComputerUseRouterShape["release"] = (context, input) => {
     const desktop = targetFromInput(input);
     return desktop.kind === "user"
       ? user.release(context.controllerId)
-      : agent.release(context.controllerId, desktop.desktopId);
+      : Effect.fail(agentDesktopMovedToServer("release"));
   };
 
   const forget: ComputerUseRouterShape["forget"] = (context, input) => {
     const desktop = targetFromInput(input);
     return desktop.kind === "user"
       ? user.forget(context.controllerId)
-      : agent.forget(context.controllerId, desktop.desktopId);
+      : Effect.fail(agentDesktopMovedToServer("forget"));
   };
 
   return ComputerUseRouter.of({

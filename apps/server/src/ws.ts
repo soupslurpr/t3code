@@ -22,7 +22,6 @@ import { rpcInitialItems } from "./rpcInitialItems.ts";
 import { subscribeChatGptHandoff } from "./provider/CodexChatGptHandoff.ts";
 import { subscribeCodexAuthCallback } from "./provider/CodexAuthCallback.ts";
 import {
-  AGENT_DESKTOP_HUMAN_AUTOMATION_OPERATION,
   DEFAULT_AUTOMATIC_GIT_FETCH_INTERVAL,
   AcpRegistryOperationError,
   CommandId,
@@ -187,6 +186,12 @@ import * as ServerBrowser from "./preview/ServerBrowser.ts";
 import * as DeviceService from "./device/DeviceService.ts";
 import { remoteSshDeviceHosts } from "./device/localSshDeviceHost.ts";
 import * as ComputerObservationStore from "./computer/ComputerObservationStore.ts";
+import * as AgentDesktopManager from "./agentDesktop/AgentDesktopManager.ts";
+import {
+  humanRequestOperation,
+  runAgentDesktopHumanRequest,
+} from "./agentDesktop/AgentDesktopHuman.ts";
+import { environmentDesktopFailure } from "./computer/ComputerAutomationRouter.ts";
 import * as PreviewManager from "./preview/Manager.ts";
 import { issueAssetUrl } from "./assets/AssetAccess.ts";
 import { attachmentRelativePath, createDeterministicAttachmentId } from "./attachmentStore.ts";
@@ -1291,6 +1296,7 @@ const layerWsRpc = (
       const workspaceFileSystem = yield* WorkspaceFileSystem.WorkspaceFileSystem;
       const serverEnvironment = yield* ServerEnvironment.ServerEnvironment;
       const computerObservations = yield* ComputerObservationStore.ComputerObservationStore;
+      const agentDesktopManager = yield* AgentDesktopManager.AgentDesktopManager;
       const backgroundPolicy = yield* BackgroundPolicy.BackgroundPolicy;
       const rpcClientIds = yield* Ref.make(new Set<RpcClientId>());
       yield* Effect.addFinalizer(() =>
@@ -2932,8 +2938,7 @@ const layerWsRpc = (
                     : { afterId: input.request.afterId }),
                 });
               }
-            return yield* previewAutomationBroker.invoke({
-              scope: {
+            const scope = {
                 environmentId,
                 requestNamespace: `human:${currentSessionId}`,
                 client: undefined,
@@ -2942,13 +2947,18 @@ const layerWsRpc = (
                   providerSessionId: `human:${currentSessionId}`,
                   providerInstanceId: AGENT_DESKTOP_HUMAN_PROVIDER_INSTANCE_ID,
                 },
-                capabilities: new Set(["computer"]),
+                capabilities: new Set(["computer" as const]),
                 issuedAt: yield* Clock.currentTimeMillis,
-              },
-              operation: AGENT_DESKTOP_HUMAN_AUTOMATION_OPERATION,
-              input: input.request,
-              timeoutMs: input.timeoutMs ?? 30_000,
-            });
+              };
+              return yield* runAgentDesktopHumanRequest(
+                agentDesktopManager,
+                scope,
+                input.request,
+              ).pipe(
+                Effect.mapError((cause) =>
+                  environmentDesktopFailure(scope, humanRequestOperation(input.request), cause),
+                ),
+              );
           }),
         [WS_METHODS.deviceList]: (input) =>
           input.inspectOnly && !input.updateTool

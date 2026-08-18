@@ -10,51 +10,64 @@ import type {
   AgentDesktopSetupResult,
   AgentDesktopTransferTargetInput,
   AgentDesktopWriteFileResult,
-  PreviewAutomationOperation,
+  EnvironmentDesktopAutomationError,
 } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
 
 import * as McpInvocationContext from "../../McpInvocationContext.ts";
-import * as PreviewAutomationBroker from "../../PreviewAutomationBroker.ts";
 import * as AgentDesktopTransferService from "../../../agentDesktop/AgentDesktopTransferService.ts";
+import * as AgentDesktopManager from "../../../agentDesktop/AgentDesktopManager.ts";
+import { environmentDesktopFailure } from "../../../computer/ComputerAutomationRouter.ts";
 import { AgentDesktopToolkit } from "./tools.ts";
 
-const DEFAULT_TIMEOUT_MS = 30_000;
-const LIFECYCLE_TIMEOUT_MS = 180_000;
-const HOST_SETUP_TIMEOUT_MS = 76 * 60 * 1_000;
-
 const invoke = Effect.fn("AgentDesktopToolkit.invoke")(function* <A>(
-  operation: PreviewAutomationOperation,
-  input: unknown,
-  timeoutMs = DEFAULT_TIMEOUT_MS,
-): Effect.fn.Return<
-  A,
-  import("@t3tools/contracts").PreviewAutomationError,
-  McpInvocationContext.McpInvocationContext | PreviewAutomationBroker.PreviewAutomationBroker
-> {
+  operation: EnvironmentDesktopAutomationError["operation"],
+  run: (
+    manager: AgentDesktopManager.AgentDesktopManagerShape,
+    owner: import("@t3tools/contracts").AgentDesktopOwner,
+  ) => Effect.Effect<A, AgentDesktopManager.AgentDesktopManagerOperationError>,
+) {
   const scope = yield* McpInvocationContext.requireMcpCapability("computer");
-  const broker = yield* PreviewAutomationBroker.PreviewAutomationBroker;
-  return yield* broker.invoke<A>({ scope, operation, input, timeoutMs });
+  const manager = yield* AgentDesktopManager.AgentDesktopManager;
+  return yield* run(manager, {
+    environmentId: scope.environmentId,
+    threadId: scope.threadId,
+    controllerId: scope.providerSessionId,
+  }).pipe(Effect.mapError((cause) => environmentDesktopFailure(scope, operation, cause)));
 });
 
 const handlers = {
-  agent_desktop_list: () => invoke<AgentDesktopList>("agentDesktopList", {}),
+  agent_desktop_list: () =>
+    invoke<AgentDesktopList>("agentDesktopList", (manager, owner) =>
+      manager.list.pipe(
+        Effect.map((result) => ({
+          ...result,
+          desktops: result.desktops.filter(
+            (desktop) =>
+              desktop.owner.environmentId === owner.environmentId &&
+              desktop.owner.threadId === owner.threadId,
+          ),
+        })),
+      ),
+    ),
   agent_desktop_setup: () =>
-    invoke<AgentDesktopSetupResult>("agentDesktopSetup", {}, HOST_SETUP_TIMEOUT_MS),
+    invoke<AgentDesktopSetupResult>("agentDesktopSetup", (manager) => manager.setup),
   agent_desktop_acquire: (input) =>
-    invoke<AgentDesktop>("agentDesktopAcquire", input, LIFECYCLE_TIMEOUT_MS),
+    invoke<AgentDesktop>("agentDesktopAcquire", (manager, owner) => manager.acquire(owner, input)),
   agent_desktop_manage: (input) =>
-    invoke<AgentDesktop>("agentDesktopManage", input, LIFECYCLE_TIMEOUT_MS),
+    invoke<AgentDesktop>("agentDesktopManage", (manager, owner) => manager.manage(owner, input)),
   agent_desktop_command: (input: AgentDesktopCommandInput) =>
-    invoke<AgentDesktopCommandResult>(
-      "agentDesktopCommand",
-      input,
-      Math.min(3_660_000, (input.timeoutMs ?? 300_000) + 60_000),
+    invoke<AgentDesktopCommandResult>("agentDesktopCommand", (manager, owner) =>
+      manager.command(owner, input),
     ),
   agent_desktop_read_file: (input) =>
-    invoke<AgentDesktopReadFileResult>("agentDesktopReadFile", input),
+    invoke<AgentDesktopReadFileResult>("agentDesktopReadFile", (manager, owner) =>
+      manager.readFile(owner, input),
+    ),
   agent_desktop_write_file: (input) =>
-    invoke<AgentDesktopWriteFileResult>("agentDesktopWriteFile", input),
+    invoke<AgentDesktopWriteFileResult>("agentDesktopWriteFile", (manager, owner) =>
+      manager.writeFile(owner, input),
+    ),
   agent_desktop_copy: (input: AgentDesktopCopyInput) =>
     Effect.gen(function* () {
       const scope = yield* McpInvocationContext.requireMcpCapability("computer");
@@ -74,16 +87,18 @@ const handlers = {
       return yield* transfers.cancel(scope, input);
     }),
   agent_desktop_inspect: (input) =>
-    invoke<AgentDesktop>("agentDesktopInspect", input, LIFECYCLE_TIMEOUT_MS),
+    invoke<AgentDesktop>("agentDesktopInspect", (manager, owner) => manager.inspect(owner, input)),
   agent_desktop_create_port_route: (input) =>
-    invoke<AgentDesktopPortRoute>("agentDesktopCreatePortRoute", input),
+    invoke<AgentDesktopPortRoute>("agentDesktopCreatePortRoute", (manager, owner) =>
+      manager.createPortRoute(owner, input),
+    ),
   agent_desktop_remove_port_route: (input) =>
-    invoke<void>("agentDesktopRemovePortRoute", input).pipe(Effect.as(null)),
+    invoke<void>("agentDesktopRemovePortRoute", (manager, owner) =>
+      manager.removePortRoute(owner, input),
+    ).pipe(Effect.as(null)),
   agent_desktop_packet_capture: (input) =>
-    invoke<AgentDesktopPacketCapture>(
-      "agentDesktopPacketCapture",
-      input,
-      input.durationMs + DEFAULT_TIMEOUT_MS,
+    invoke<AgentDesktopPacketCapture>("agentDesktopPacketCapture", (manager, owner) =>
+      manager.capturePackets(owner, input),
     ),
 } satisfies Parameters<typeof AgentDesktopToolkit.toLayer>[0];
 

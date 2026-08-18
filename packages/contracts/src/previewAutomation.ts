@@ -20,7 +20,7 @@ import {
 } from "./computerAutomation.ts";
 import { ComputerObservationId } from "./computerObservation.ts";
 import {
-  AGENT_DESKTOP_AUTOMATION_OPERATIONS,
+  AGENT_DESKTOP_OPERATIONS,
   AgentDesktopControllerId,
   AgentDesktopId,
   AgentDesktopInspectInput,
@@ -73,15 +73,10 @@ export const PREVIEW_AUTOMATION_SERVER_OPERATIONS = [
   "select",
   "drag",
 ] as const;
-/** Routes authenticated human supervision through an attached desktop host. */
-export const AGENT_DESKTOP_HUMAN_AUTOMATION_OPERATION = "agentDesktopHumanInvoke" as const;
-
 /** Operations routed through an attached desktop automation host. */
 export const DESKTOP_AUTOMATION_OPERATIONS = [
   ...PREVIEW_AUTOMATION_SERVER_OPERATIONS,
   ...COMPUTER_AUTOMATION_OPERATIONS,
-  ...AGENT_DESKTOP_AUTOMATION_OPERATIONS,
-  AGENT_DESKTOP_HUMAN_AUTOMATION_OPERATION,
 ] as const;
 
 export const PreviewAutomationOperation = Schema.Literals(DESKTOP_AUTOMATION_OPERATIONS);
@@ -856,10 +851,6 @@ export const PreviewAutomationHost = Schema.Struct({
    * a newer server safely coexist with an older desktop during rollout.
    */
   supportedOperations: Schema.optional(Schema.Array(PreviewAutomationOperation)),
-  /** Missing means the host can automate only the user's current desktop. */
-  computerDesktopKinds: Schema.optional(
-    Schema.Array(Schema.Literals(["user", "agent"])).check(Schema.isMaxLength(2)),
-  ),
 });
 export type PreviewAutomationHost = typeof PreviewAutomationHost.Type;
 
@@ -882,7 +873,7 @@ export type PreviewAutomationHostFocus = typeof PreviewAutomationHostFocus.Type;
 export const PreviewAutomationRequest = Schema.Struct({
   requestId: TrimmedNonEmptyString,
   threadId: ThreadId,
-  /** Stable owner for exclusive computer-control and Agent desktop assignment. */
+  /** Stable owner for exclusive computer-control leases. */
   controllerId: Schema.optional(AgentDesktopControllerId),
   tabId: Schema.optional(PreviewTabId),
   tabIdExplicit: Schema.optional(Schema.Boolean),
@@ -967,6 +958,27 @@ const PreviewAutomationScopeErrorFields = {
 
 /** The automation host id of an environment's own server browser. */
 export const SERVER_BROWSER_AUTOMATION_CLIENT_ID = "server-browser";
+const EnvironmentDesktopAutomationOperation = Schema.Literals([
+  ...COMPUTER_AUTOMATION_OPERATIONS,
+  ...AGENT_DESKTOP_OPERATIONS,
+]);
+
+/** Reports a server-owned desktop operation failure without inventing a remote host. */
+export class EnvironmentDesktopAutomationError extends Schema.TaggedErrorClass<EnvironmentDesktopAutomationError>()(
+  "EnvironmentDesktopAutomationError",
+  {
+    operation: EnvironmentDesktopAutomationOperation,
+    environmentId: EnvironmentId,
+    threadId: ThreadId,
+    providerSessionId: TrimmedNonEmptyString,
+    providerInstanceId: ProviderInstanceId,
+    computerFailure: ComputerAutomationFailure,
+  },
+) {
+  override get message(): string {
+    return this.computerFailure.message;
+  }
+}
 
 const PreviewAutomationRequestErrorFields = {
   ...PreviewAutomationScopeErrorFields,
@@ -1275,6 +1287,7 @@ export const PreviewAutomationError = Schema.Union([
   PreviewAutomationRecordingTooLargeError,
   PreviewAutomationRecordingDeadlineExpiredError,
   PreviewAutomationUnavailableError,
+  EnvironmentDesktopAutomationError,
   PreviewAutomationNoAvailableHostError,
   PreviewAutomationDesktopTargetRequiredError,
   PreviewAutomationUnsupportedClientError,

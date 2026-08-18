@@ -28,6 +28,10 @@ import * as AgentPowerReporter from "./background/AgentPowerReporter.ts";
 import * as HostPowerMonitor from "./background/HostPowerMonitor.ts";
 import * as ServerConfig from "./config.ts";
 import * as AgentDesktopTransfer from "./agentDesktop/AgentDesktopTransferService.ts";
+import * as AgentDesktopEnvironment from "./agentDesktop/AgentDesktopEnvironment.ts";
+import * as AgentDesktopManager from "./agentDesktop/AgentDesktopManager.ts";
+import * as QemuAgentDesktop from "./agentDesktop/QemuAgentDesktop.ts";
+import * as ComputerAutomationRouter from "./computer/ComputerAutomationRouter.ts";
 import { withUntracedRequests } from "./http.ts";
 import * as ServerHttp from "./http.ts";
 import { guardHttpResponseWriteErrors } from "./httpResponseErrorGuard.ts";
@@ -194,6 +198,26 @@ const HTTP_ROUTER_CONFIG = {
 const HTTP_PREEMPTIVE_SHUTDOWN_GRACE_MS = 0;
 const layerComputerObservationStore = ComputerObservationStore.layer;
 const layerPreviewAutomationBroker = PreviewAutomationBroker.layer;
+const layerAgentDesktopEnvironment = AgentDesktopEnvironment.layer;
+const layerQemuAgentDesktop = QemuAgentDesktop.layer.pipe(
+  Layer.provide(layerAgentDesktopEnvironment),
+);
+const layerAgentDesktopManager = AgentDesktopManager.layer.pipe(
+  Layer.provideMerge(layerQemuAgentDesktop),
+  Layer.provide(layerAgentDesktopEnvironment),
+);
+const layerComputerAutomationRouter = ComputerAutomationRouter.layer.pipe(
+  Layer.provideMerge(layerPreviewAutomationBroker),
+  Layer.provide(layerAgentDesktopManager),
+);
+const layerAgentDesktopTransfer = AgentDesktopTransfer.layer.pipe(
+  Layer.provide(layerAgentDesktopManager),
+);
+const layerAgentDesktopServices = Layer.mergeAll(
+  layerAgentDesktopManager,
+  layerComputerAutomationRouter,
+  layerAgentDesktopTransfer,
+);
 const layerResourceAttribution = ResourceAttribution.layer;
 const layerApplicationObservability = EventLoopMonitor.layer.pipe(
   Layer.provideMerge(Observability.layer),
@@ -585,6 +609,7 @@ const layerRuntimeCoreDependenciesBase = Layer.mergeAll(
   Layer.provideMerge(RuntimeLayer.layerEventInfrastructure),
   Layer.provideMerge(Layer.merge(ProjectStore.layer, ThreadSearch.layer)),
   Layer.provideMerge(Layer.mergeAll(layerComputerObservationStore, layerServerSettings)),
+  Layer.provideMerge(layerAgentDesktopServices),
   // The asset route uses the registry's GitHub credential for private PR media, which the
   // built-in drivers' layer provides alongside the registry.
   Layer.provideMerge(layerSourceControlProviderRegistry),
@@ -611,7 +636,7 @@ const layerRuntimeCoreDependenciesBase = Layer.mergeAll(
   ),
 );
 
-const layerRuntimeCoreDependencies = layerRuntimeCoreDependenciesBase.pipe(
+const layerRuntimeCoreProviderDependencies = layerRuntimeCoreDependenciesBase.pipe(
   Layer.provideMerge(layerPtyAdapter),
   // Search, prepare, status inspection, and turn launch share one registry
   // cache so every client and provider instance sees the same prepared agents.
@@ -630,6 +655,9 @@ const layerRuntimeCoreDependencies = layerRuntimeCoreDependenciesBase.pipe(
       McpProviderSessions.layer,
     ),
   ),
+);
+
+const layerRuntimeCoreDependencies = layerRuntimeCoreProviderDependencies.pipe(
   // `OpenCodeDriver.create()` yields `OpenCodeRuntime`; previously the old
   // `ProviderRegistry.layer` pulled `OpenCodeRuntimeLive` in for itself, but
   // the rewritten registry reads snapshots off the instance registry and
@@ -675,7 +703,6 @@ const layerRuntimeDependencies = layerRuntimeCoreWithAgentPower.pipe(
   // Usage reads provider history through the ProviderHost, which needs the
   // background policy below it.
   Layer.provideMerge(layerUsage),
-  Layer.provideMerge(AgentDesktopTransfer.layer),
   Layer.provideMerge(layerBackground),
   Layer.provideMerge(layerResourceDiagnostics),
   Layer.provideMerge(TraceDiagnostics.layer),
@@ -715,8 +742,6 @@ const layerMakeRoutes = Layer.mergeAll(
     ServerBrowserStream.routeLayer,
     ServerHttp.layerStaticAndDevRoute,
     Ws.layer,
-    ServerHttp.agentDesktopTransferDownloadRouteLayer,
-    ServerHttp.agentDesktopTransferUploadRouteLayer,
   ),
   // The MCP session registry is provided globally (shared with V2 provider
   // sessions) rather than inline here. The orchestrator toolkit resolves
@@ -730,6 +755,7 @@ const layerMakeRoutes = Layer.mergeAll(
 ).pipe(
   // Both transports consume the same service instance, so caches single-flight across clients
   // and mutations observed on WebSocket invalidate patches subsequently read over HTTP.
+  Layer.provide(layerAgentDesktopServices),
   Layer.provide(layerPullRequestService),
   // The stream route and the WebSocket RPCs share one browser.
   Layer.provide(ServerBrowser.layer.pipe(Layer.provide(DesktopBrowserChannel.layer))),
