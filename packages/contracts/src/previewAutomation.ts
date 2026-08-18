@@ -773,10 +773,12 @@ export class PreviewAutomationNoAvailableHostError extends Schema.TaggedErrorCla
     requestId: Schema.optional(TrimmedNonEmptyString),
     tabId: Schema.optional(PreviewTabId),
     timeoutMs: Schema.optional(Schema.Int.check(Schema.isGreaterThan(0))),
+    computerFailure: Schema.optional(ComputerAutomationFailure),
     ...PreviewAutomationOptionalRemoteDiagnosticFields,
   },
 ) {
   override get message(): string {
+    if (this.computerFailure !== undefined) return this.computerFailure.message;
     const summary = `No preview automation host is available for ${this.operation} in environment ${this.environmentId}.`;
     return summary;
   }

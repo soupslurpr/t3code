@@ -175,6 +175,29 @@ describe("PreviewAutomationHost", () => {
 });
 
 describe("PreviewAutomationError", () => {
+  it("preserves a structured missing desktop-host failure", () => {
+    const error = decodeAutomationError({
+      _tag: "PreviewAutomationNoAvailableHostError",
+      operation: "agentDesktopList",
+      environmentId: "environment-1",
+      threadId: "thread-1",
+      providerSessionId: "provider-session-1",
+      providerInstanceId: "codex",
+      computerFailure: {
+        code: "agent-desktop-unavailable",
+        category: "resource",
+        message: "No Agent-desktop host is connected.",
+        backendCode: "no-connected-automation-host",
+      },
+    });
+
+    expect(error._tag).toBe("PreviewAutomationNoAvailableHostError");
+    if (error._tag === "PreviewAutomationNoAvailableHostError") {
+      expect(error.computerFailure?.backendCode).toBe("no-connected-automation-host");
+      expect(error.message).toBe("No Agent-desktop host is connected.");
+    }
+  });
+
   it("preserves a typed non-editable target failure", () => {
     const error = decodeAutomationError({
       _tag: "PreviewAutomationTargetNotEditableError",
