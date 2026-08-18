@@ -19,7 +19,6 @@ import * as Schedule from "effect/Schedule";
 import * as Schema from "effect/Schema";
 import * as Stream from "effect/Stream";
 import {
-  AGENT_DESKTOP_HUMAN_AUTOMATION_OPERATION,
   DEFAULT_AUTOMATIC_GIT_FETCH_INTERVAL,
   AuthAccessStreamError,
   type AuthAccessStreamEvent,
@@ -127,6 +126,12 @@ import * as PreviewAutomationBroker from "./mcp/PreviewAutomationBroker.ts";
 import * as DeviceService from "./device/DeviceService.ts";
 import { remoteSshDeviceHosts } from "./device/localSshDeviceHost.ts";
 import * as ComputerObservationStore from "./computer/ComputerObservationStore.ts";
+import * as AgentDesktopManager from "./agentDesktop/AgentDesktopManager.ts";
+import {
+  humanRequestOperation,
+  runAgentDesktopHumanRequest,
+} from "./agentDesktop/AgentDesktopHuman.ts";
+import { environmentDesktopFailure } from "./computer/ComputerAutomationRouter.ts";
 import * as PreviewManager from "./preview/Manager.ts";
 import { issueAssetUrl } from "./assets/AssetAccess.ts";
 import { deletePendingAttachment, issueAttachmentUploadUrl } from "./assets/AttachmentUpload.ts";
@@ -630,6 +635,7 @@ const makeWsRpcLayer = (
       const agentSessionScanner = yield* AgentSessionScanner.AgentSessionScanner;
       const serverEnvironment = yield* ServerEnvironment.ServerEnvironment;
       const computerObservations = yield* ComputerObservationStore.ComputerObservationStore;
+      const agentDesktopManager = yield* AgentDesktopManager.AgentDesktopManager;
       const backgroundPolicy = yield* BackgroundPolicy.BackgroundPolicy;
       const rpcClientIds = yield* Ref.make(new Set<RpcClientId>());
       yield* Effect.addFinalizer(() =>
@@ -3460,19 +3466,23 @@ const makeWsRpcLayer = (
                     : { afterId: input.request.afterId }),
                 });
               }
-              return yield* previewAutomationBroker.invoke({
-                scope: {
-                  environmentId,
-                  threadId: input.threadId,
-                  providerSessionId: `human:${currentSessionId}`,
-                  providerInstanceId: AGENT_DESKTOP_HUMAN_PROVIDER_INSTANCE_ID,
-                  capabilities: new Set(["computer"]),
-                  issuedAt: yield* Clock.currentTimeMillis,
-                },
-                operation: AGENT_DESKTOP_HUMAN_AUTOMATION_OPERATION,
-                input: input.request,
-                timeoutMs: input.timeoutMs ?? 30_000,
-              });
+              const scope = {
+                environmentId,
+                threadId: input.threadId,
+                providerSessionId: `human:${currentSessionId}`,
+                providerInstanceId: AGENT_DESKTOP_HUMAN_PROVIDER_INSTANCE_ID,
+                capabilities: new Set(["computer" as const]),
+                issuedAt: yield* Clock.currentTimeMillis,
+              };
+              return yield* runAgentDesktopHumanRequest(
+                agentDesktopManager,
+                scope,
+                input.request,
+              ).pipe(
+                Effect.mapError((cause) =>
+                  environmentDesktopFailure(scope, humanRequestOperation(input.request), cause),
+                ),
+              );
             }),
             { "rpc.aggregate": "agent-desktop" },
           ),

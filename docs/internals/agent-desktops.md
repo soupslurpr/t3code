@@ -6,14 +6,12 @@ observation and action contract; only desktop selection and lifecycle ownership 
 
 ## Routing And Ownership
 
-The MCP toolkit sends Agent desktop operations through the existing preview-automation broker to the
-desktop client whose primary environment is that environment. A desktop client connected to another
-saved environment can supervise its Agent desktops remotely, but does not advertise its own local
-hypervisor or inventory there. This keeps the physical host stable when several desktop clients are
-connected to one environment.
+The environment server owns Agent desktop operations, the hypervisor, and the versioned inventory
+below its state directory. MCP calls and human supervision RPCs therefore reach the same machines
+from a local desktop app, a remote browser, or mobile. No connected client advertises a hypervisor,
+and disconnecting or replacing a client cannot strand the inventory.
 
-The hosting desktop process owns the hypervisor and persists a versioned inventory below its Agent
-desktop state directory. Environment and thread identifiers form the durable authorization boundary.
+Environment and thread identifiers form the durable authorization boundary.
 The persisted owner also records the controller currently claiming each desktop. A replacement
 controller in the same thread can atomically reclaim an idle desktop after a provider or harness
 restart, while active operations and control leases prevent a takeover. Cross-thread access still
@@ -22,10 +20,10 @@ requires an explicit handoff.
 Computer requests select either the user desktop or an Agent desktop. Omitting an Agent desktop id
 lets the manager prefer the controller's suitable assignment, reclaim the most recent suitable idle
 desktop from the same thread, or acquire a new machine. The computer
-router keeps the two backends behind one current request shape; there is no legacy host-only IPC
-request path. The preview broker retains separate physical-host affinity for user and Agent desktops.
-Every computer operation names the user desktop or a concrete Agent desktop explicitly; no target is
-inherited or inferred.
+router keeps the two backends behind one current request shape: user-desktop requests use the
+preview-automation broker, while Agent-desktop requests execute directly on the environment server.
+There is no Agent-desktop Electron IPC or automation-host routing path. Every computer operation
+names the user desktop or a concrete Agent desktop explicitly; no target is inherited or inferred.
 
 ## Machine Boundary
 
@@ -81,24 +79,21 @@ boundary. The server resolves the current thread's project or worktree from the 
 absolute workspace paths, and checks canonical source and destination ancestors before touching
 disk. A standalone symlink and every link that lexically leaves the copied tree are rejected.
 
-Transfer metadata and control use MCP, the preview-automation broker, and typed Electron IPC. File
-bytes do not: the server creates a 256-bit, six-hour bearer capability for one exact upload or
-download, and the desktop main process streams bounded 8 MiB ranges directly against the
-environment HTTP endpoint. Capability paths are accepted only in their server-issued relative form,
-carry no query or redirect target, and are removed when the operation settles. Uploads are
-sequential and idempotent, so a lost response can retry an already stored range only when its bytes
-match. Each upload has its own semaphore, preserving parallel transfers across desktops.
+Transfer metadata, control, and bytes remain inside the environment server. It streams bounded
+chunks between a private server archive and the guest channel without renderer IPC, WebSocket JSON,
+HTTP capability URLs, or model-visible payloads. Each transfer has independent state, preserving
+parallel transfers across desktops.
 
-Both sides implement the same small versioned bundle format. The host codec streams Node files; a
+Both sides implement the same small versioned bundle format. The server codec streams Node files; a
 packaged dependency-free Python helper does the same inside the guest through QEMU Guest Agent.
 Directories are traversed in lexical order, portable modes and modification times are retained, and
 auto compression uses a bounded sample before choosing fast gzip. The receiver verifies SHA-256,
 entry paths, entry counts, file lengths, link targets, and the complete tree summary. Extraction
 occurs in a fresh sibling staging path before an atomic create or replacement, or a type-checked
 directory merge. Home-directory imports are assigned to the graphical guest user; explicit system
-paths retain root ownership. Active progress is kept in one server registry shared by MCP and the
-HTTP routes, terminal results remain queryable for 24 hours, cancellation interrupts both sides,
-and stale transport archives are pruned on startup.
+paths retain root ownership. Active progress is kept in one server registry shared by the Agent
+desktop tools, terminal results remain queryable for 24 hours, cancellation interrupts both sides,
+and stale archives are pruned on startup.
 
 ## Resources And Lifecycle
 
@@ -137,9 +132,8 @@ bounded operation that returns a private artifact only after an explicit request
 ## Verification
 
 Focused unit tests cover contracts, admission, routing, input conversion, private framebuffer
-decoding, prerequisite remedies, pinned download validation, image generation, host/guest bundle
-interoperability, ranged downloads, resumable uploads, integrity checks, and cancellation. The
-retained AppImage smoke test can require fresh image provisioning and then exercises prerequisite
-reporting, guest commands, a multi-chunk directory transfer with Unicode, binary data, symlinks,
-ownership and collision handling, network access, screenshots, semantic targets, graphical input,
-human takeover, checkpoint, live clone, park/resume, and cleanup against a real KVM guest.
+decoding, prerequisite remedies, pinned download validation, image generation, server/guest bundle
+interoperability, direct streamed transfers, integrity checks, and cancellation. The server smoke
+harness starts an isolated environment-owned runtime without an Electron automation host, then
+exercises acquisition, guest commands, file transfer, screenshots, graphical input, release, and
+cleanup against a real KVM guest.
