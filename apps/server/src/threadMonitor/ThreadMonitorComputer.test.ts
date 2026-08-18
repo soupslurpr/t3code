@@ -300,6 +300,7 @@ describe("ThreadMonitorComputer", () => {
         { format: "webp", mode: "lossy", quality: 72 },
       ]);
       expect(prepared.condition.review.policy?.consecutiveFailures).toBe(3);
+      expect(prepared.condition.review.policy?.afterEvaluations).toBe(12);
 
       const monitor = {
         id: ThreadMonitorId.make("computer-watch-test"),
@@ -383,6 +384,36 @@ describe("ThreadMonitorComputer", () => {
         cacheWriteInputTokens: 3,
         outputTokens: 5,
       });
+
+      const capturesBeforePause = captures.length;
+      const paused = yield* service.check({
+        monitor: {
+          ...monitor,
+          condition: {
+            ...changed.condition,
+            observation: {
+              regions: changed.condition.observation.regions.map((region, regionIndex) =>
+                regionIndex === 0
+                  ? { ...region, lastSampleHash: contentHash("pre-review-state") }
+                  : region,
+              ),
+            },
+            review: {
+              ...changed.condition.review,
+              state: "pending",
+              reason: "The default evaluation checkpoint was reached.",
+              sequence: 1,
+              requestedAt: "2026-08-14T00:00:02.500Z",
+            },
+          },
+        },
+        evidence,
+        checkedAt: "2026-08-14T00:00:03.000Z",
+      });
+      expect(captures.slice(capturesBeforePause)).toEqual([0]);
+      expect(evaluations).toHaveLength(1);
+      expect(paused.observedImages).toEqual([]);
+      expect(paused.condition.evaluationPending).toBe(true);
 
       const freshFiber = yield* service
         .inspectFresh({
