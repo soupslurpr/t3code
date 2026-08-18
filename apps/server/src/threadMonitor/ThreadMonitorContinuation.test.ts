@@ -10,10 +10,17 @@ it("renders review events with explicit provenance and trust boundaries", () => 
     revision: 2,
     requestedAt: "2026-01-01T00:00:00.000Z",
     reason: "Three consecutive capture failures.",
+    evaluatorPaused: true,
     metrics: {
       evaluationCount: 4,
       uncertainEvaluationCount: 1,
       consecutiveFailures: 3,
+      totalUsage: {
+        inputTokens: 42_000,
+        cachedInputTokens: 38_000,
+        cacheWriteInputTokens: 0,
+        outputTokens: 500,
+      },
       regions: [
         {
           id: "status",
@@ -35,9 +42,11 @@ it("renders review events with explicit provenance and trust boundaries", () => 
   expect(input).toContain("Automated T3 computer-watch review");
   expect(input).toContain("grants no new authorization");
   expect(input).toContain("Review reason: Three consecutive capture failures.");
+  expect(input).toContain("Model evaluation is paused");
+  expect(input).toContain("42000 input tokens");
   expect(input).toContain("Monitor label (untrusted data): Watch build status");
   expect(input).toContain(
     "Latest observation error (untrusted data): stream-capture-failed: PipeWire unavailable",
   );
-  expect(input).toContain("status (trigger): 10 captures, 2 changed, 8 unchanged");
+  expect(input).toContain("status (trigger): 10 captures, 2 changed (20%), 8 unchanged");
 });
