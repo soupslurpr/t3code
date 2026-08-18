@@ -43,6 +43,7 @@ import {
 import {
   makeMonitorContinuationEvent,
   makeMonitorReviewEvent,
+  monitorReviewActivitySummary,
   monitorSystemEventSummary,
 } from "./ThreadMonitorContinuation.ts";
 
@@ -374,15 +375,20 @@ const make = Effect.gen(function* () {
     );
   };
 
-  const appendActivity = (monitor: ThreadMonitor, phase: string, summary: string) => {
+  const appendActivity = (
+    monitor: ThreadMonitor,
+    phase: string,
+    summary: string,
+    identity = phase,
+  ) => {
     const createdAt = monitor.updatedAt;
     return engine
       .dispatch({
         type: "thread.activity.append",
-        commandId: CommandId.make(`thread-monitor:${monitor.id}:activity:${phase}`),
+        commandId: CommandId.make(`thread-monitor:${monitor.id}:activity:${identity}`),
         threadId: monitor.threadId,
         activity: {
-          id: EventId.make(`thread-monitor:${monitor.id}:activity:${phase}`),
+          id: EventId.make(`thread-monitor:${monitor.id}:activity:${identity}`),
           tone: monitor.status === "failed" ? "error" : "info",
           kind: `thread-monitor.${phase}`,
           summary,
@@ -403,6 +409,21 @@ const make = Effect.gen(function* () {
           }),
         ),
       );
+  };
+
+  const appendReviewRequestedActivity = (monitor: ThreadMonitor) => {
+    if (monitor.condition.type !== "computer" || monitor.condition.review.state !== "pending") {
+      return Effect.void;
+    }
+    const event = makeMonitorReviewEvent(
+      monitor as ThreadMonitor & { readonly condition: ThreadMonitorComputerCondition },
+    );
+    return appendActivity(
+      monitor,
+      "review-paused",
+      monitorReviewActivitySummary(event),
+      `review-paused:${monitor.condition.revision}:${monitor.condition.review.sequence}`,
+    );
   };
 
   const readOwnedMonitor = Effect.fn("ThreadMonitor.readOwned")(function* (
@@ -761,12 +782,22 @@ const make = Effect.gen(function* () {
         updatedAt: checkedAt,
       };
       yield* writeMonitor(failed);
+      if (
+        monitor.condition.review.state === "idle" &&
+        failed.condition.type === "computer" &&
+        failed.condition.review.state === "pending"
+      ) {
+        yield* appendReviewRequestedActivity(failed);
+      }
       return failed;
     }
 
     const observed: ThreadMonitor = {
       ...monitor,
-      condition: requestControllerReview(checked.success.condition, checkedAt),
+      condition:
+        checked.success.match === null
+          ? requestControllerReview(checked.success.condition, checkedAt)
+          : checked.success.condition,
       updatedAt: checkedAt,
     };
     if (checked.success.observedImages.length > 0 || checked.success.match !== null) {
@@ -783,6 +814,13 @@ const make = Effect.gen(function* () {
       });
     } else {
       yield* writeMonitor(observed);
+    }
+    if (
+      monitor.condition.review.state === "idle" &&
+      observed.condition.type === "computer" &&
+      observed.condition.review.state === "pending"
+    ) {
+      yield* appendReviewRequestedActivity(observed);
     }
     if (checked.success.match === null) return observed;
     const triggered = yield* triggerMonitor(
@@ -831,8 +869,14 @@ const make = Effect.gen(function* () {
         } else {
           const reviewedCondition = requestControllerReview(monitor.condition, now);
           if (reviewedCondition !== monitor.condition) {
+            const reviewRequested =
+              monitor.condition.review.state === "idle" &&
+              reviewedCondition.review.state === "pending";
             monitor = { ...monitor, condition: reviewedCondition, updatedAt: now };
             yield* writeMonitor(monitor);
+            if (reviewRequested) {
+              yield* appendReviewRequestedActivity(monitor);
+            }
           }
           if (
             monitor.condition.type === "computer" &&
@@ -1120,12 +1164,8 @@ const make = Effect.gen(function* () {
           currentReview === null
             ? null
             : {
-                ...(currentReview.afterEvaluations === null
-                  ? {}
-                  : { afterEvaluations: currentReview.afterEvaluations }),
-                ...(currentReview.consecutiveUncertain === null
-                  ? {}
-                  : { consecutiveUncertain: currentReview.consecutiveUncertain }),
+                afterEvaluations: currentReview.afterEvaluations,
+                consecutiveUncertain: currentReview.consecutiveUncertain,
                 consecutiveFailures: currentReview.consecutiveFailures,
                 ...(currentReview.at === null ||
                 Date.parse(currentReview.at) <= Date.parse(revisedAt)

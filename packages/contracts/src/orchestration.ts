@@ -289,10 +289,19 @@ export const OrchestrationMonitorReviewEvent = Schema.Struct({
   revision: NonNegativeInt,
   requestedAt: IsoDateTime,
   reason: Schema.String.check(Schema.isMaxLength(1_000)),
+  evaluatorPaused: Schema.optional(Schema.Literal(true)),
   metrics: Schema.Struct({
     evaluationCount: NonNegativeInt,
     uncertainEvaluationCount: NonNegativeInt,
     consecutiveFailures: NonNegativeInt,
+    totalUsage: Schema.optional(
+      Schema.Struct({
+        inputTokens: Schema.NullOr(NonNegativeInt),
+        cachedInputTokens: Schema.NullOr(NonNegativeInt),
+        cacheWriteInputTokens: Schema.NullOr(NonNegativeInt),
+        outputTokens: Schema.NullOr(NonNegativeInt),
+      }),
+    ),
     regions: Schema.Array(
       Schema.Struct({
         id: TrimmedNonEmptyString.check(Schema.isMaxLength(100)),
