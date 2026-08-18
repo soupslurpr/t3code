@@ -9,8 +9,6 @@ import {
   ProjectId,
   ProviderInstanceId,
   ThreadId,
-  type AgentDesktopHostTransferInput,
-  type AgentDesktopHostTransferResult,
 } from "@t3tools/contracts";
 import {
   extractAgentDesktopBundle,
@@ -24,8 +22,8 @@ import * as Option from "effect/Option";
 
 import * as ServerConfig from "../config.ts";
 import * as McpInvocationContext from "../mcp/McpInvocationContext.ts";
-import * as PreviewAutomationBroker from "../mcp/PreviewAutomationBroker.ts";
 import { ProjectionSnapshotQuery } from "../orchestration/Services/ProjectionSnapshotQuery.ts";
+import * as AgentDesktopManager from "./AgentDesktopManager.ts";
 import * as AgentDesktopTransfer from "./AgentDesktopTransferService.ts";
 
 const environmentId = EnvironmentId.make("environment-transfer-test");
@@ -86,146 +84,50 @@ function projectionLayer(workspaceRoot: string) {
   });
 }
 
-/** Creates one broker service around an exact host-side transfer handler. */
-function brokerLayer(
+/** Creates one manager service around an exact server-local transfer handler. */
+function managerLayer(
   handleTransfer: (
-    input: AgentDesktopHostTransferInput,
-  ) => Effect.Effect<AgentDesktopHostTransferResult>,
+    input: AgentDesktopManager.AgentDesktopManagerTransferInput,
+  ) => Effect.Effect<
+    AgentDesktopManager.AgentDesktopManagerTransferResult,
+    AgentDesktopManager.AgentDesktopManagerOperationError
+  >,
 ) {
-  return Layer.succeed(
-    PreviewAutomationBroker.PreviewAutomationBroker,
-    PreviewAutomationBroker.PreviewAutomationBroker.of({
-      connect: () => Effect.die("unused"),
-      focusHost: () => Effect.die("unused"),
-      respond: () => Effect.die("unused"),
-      invoke: <Result>(request: PreviewAutomationBroker.PreviewAutomationInvokeInput) => {
-        if (request.operation === "agentDesktopTransfer") {
-          return handleTransfer(request.input as AgentDesktopHostTransferInput).pipe(
-            Effect.map((result) => result as Result),
-          );
-        }
-        if (request.operation === "agentDesktopTransferCancel") {
-          return Effect.succeed(undefined as Result);
-        }
-        return Effect.die(`unexpected operation ${request.operation}`);
-      },
-    }),
-  );
-}
-
-/** Creates a host that reports one categorized guest transfer rejection. */
-function rejectingBrokerLayer(backendCode: string, detail: string) {
-  return Layer.succeed(
-    PreviewAutomationBroker.PreviewAutomationBroker,
-    PreviewAutomationBroker.PreviewAutomationBroker.of({
-      connect: () => Effect.die("unused"),
-      focusHost: () => Effect.die("unused"),
-      respond: () => Effect.die("unused"),
-      invoke: () =>
-        Effect.fail({
-          computerFailure: {
-            code: "guest-operation-failed",
-            category: "conflict",
-            message: "The Agent desktop file transfer was rejected.",
-            backendCode,
-            detail,
-          },
-        } as never),
-    }),
-  );
-}
-
-/** Extracts a capability token from the service-owned relative route. */
-function transferToken(url: string): string {
-  const token = url.split("/").at(-1);
-  assert.isDefined(token);
-  return token;
-}
-
-/** Copies every bounded server range into one local archive. */
-function downloadArchive(
-  transfers: AgentDesktopTransfer.AgentDesktopTransferServiceShape,
-  token: string,
-  sizeBytes: number,
-  destination: string,
-): Effect.Effect<void> {
-  return Effect.acquireUseRelease(
-    Effect.promise(() => NodeFSP.open(destination, "wx")),
-    (destinationHandle) =>
-      Effect.gen(function* () {
-        let offset = 0;
-        while (offset < sizeBytes) {
-          const end = Math.min(sizeBytes - 1, offset + 16_383);
-          const result = yield* transfers.download(token, `bytes=${offset}-${end}`);
-          assert.equal(result.status, "ready");
-          if (result.status !== "ready") return yield* Effect.die("transfer range unavailable");
-          const data = yield* Effect.promise(async () => {
-            const sourceHandle = await NodeFSP.open(result.download.path, "r");
-            try {
-              const bytes = Buffer.alloc(result.download.bytesToRead);
-              const read = await sourceHandle.read(
-                bytes,
-                0,
-                bytes.byteLength,
-                result.download.offset,
-              );
-              assert.equal(read.bytesRead, bytes.byteLength);
-              return bytes;
-            } finally {
-              await sourceHandle.close();
-            }
-          });
-          yield* Effect.promise(() =>
-            destinationHandle.write(data, 0, data.byteLength, offset).then(() => undefined),
-          );
-          offset = end + 1;
-        }
-        yield* Effect.promise(() => destinationHandle.sync());
-      }),
-    (destinationHandle) => Effect.promise(() => destinationHandle.close()),
-  );
-}
-
-/** Uploads one archive through sequential, idempotent service chunks. */
-function uploadArchive(
-  transfers: AgentDesktopTransfer.AgentDesktopTransferServiceShape,
-  token: string,
-  source: string,
-): Effect.Effect<void> {
-  return Effect.gen(function* () {
-    const data = yield* Effect.promise(() => NodeFSP.readFile(source));
-    let offset = 0;
-    while (offset < data.byteLength) {
-      const end = Math.min(data.byteLength, offset + 16_384);
-      const chunk = data.subarray(offset, end);
-      const result = yield* transfers.upload(token, {
-        start: offset,
-        end: end - 1,
-        total: data.byteLength,
-        data: chunk,
-      });
-      assert.equal(result.status, "accepted");
-      if (result.status !== "accepted") return yield* Effect.die("transfer chunk was rejected");
-      assert.equal(result.nextOffset, end);
-      offset = end;
-    }
+  return Layer.mock(AgentDesktopManager.AgentDesktopManager)({
+    transfer: (_owner, input) => handleTransfer(input),
+    cancelTransfer: () => Effect.void,
   });
+}
+
+/** Creates a manager that reports one categorized guest transfer rejection. */
+function rejectingManagerLayer(code: "destination-exists", detail: string) {
+  return managerLayer(() =>
+    Effect.fail(
+      new AgentDesktopManager.AgentDesktopManagerError({
+        code,
+        operation: "guest-transfer-helper",
+        detail,
+      }),
+    ),
+  );
 }
 
 /** Provides a fresh service state directory for one scoped transfer test. */
 function withTransferService<A, E>(
   workspaceRoot: string,
+  manager: Layer.Layer<AgentDesktopManager.AgentDesktopManager>,
   effect: Effect.Effect<A, E, AgentDesktopTransfer.AgentDesktopTransferService>,
 ) {
   const layer = AgentDesktopTransfer.layer.pipe(
     Layer.provide(ServerConfig.layerTest(workspaceRoot, { prefix: "t3-agent-transfer-service-" })),
     Layer.provide(NodeServices.layer),
+    Layer.provide(manager),
   );
   return effect.pipe(Effect.provide(layer));
 }
 
 describe("AgentDesktopTransferService", () => {
-  it.effect("copies a directory from the workspace through ranged download", () =>
+  it.effect("copies a directory directly from the workspace", () =>
     Effect.scoped(
       Effect.gen(function* () {
         const fileSystem = yield* FileSystem.FileSystem;
@@ -233,7 +135,6 @@ describe("AgentDesktopTransferService", () => {
           prefix: "t3-agent-transfer-workspace-",
         });
         const source = NodePath.join(workspaceRoot, "source");
-        const guestArchive = NodePath.join(workspaceRoot, "guest.bundle");
         const guestDestination = NodePath.join(workspaceRoot, "guest-result");
         yield* Effect.promise(async () => {
           await NodeFSP.mkdir(source);
@@ -242,36 +143,31 @@ describe("AgentDesktopTransferService", () => {
 
         yield* withTransferService(
           workspaceRoot,
+          managerLayer((input) => {
+            assert.equal(input.operation, "import");
+            if (input.operation !== "import") return Effect.die("unexpected export");
+            return Effect.gen(function* () {
+              const tree = yield* Effect.promise(() =>
+                extractAgentDesktopBundle({
+                  archivePath: input.archivePath,
+                  destinationPath: guestDestination,
+                  compression: input.compression,
+                  collision: input.collision,
+                }),
+              );
+              yield* input.onProgress?.(input.sizeBytes, input.sizeBytes) ?? Effect.void;
+              return {
+                desktopId,
+                transferId: input.transferId,
+                compression: input.compression,
+                wireBytes: input.sizeBytes,
+                sha256: input.sha256,
+                tree,
+              };
+            });
+          }),
           Effect.gen(function* () {
             const transfers = yield* AgentDesktopTransfer.AgentDesktopTransferService;
-            const host = brokerLayer((input) => {
-              assert.equal(input.operation, "import");
-              if (input.operation !== "import") return Effect.die("unexpected export");
-              return Effect.gen(function* () {
-                yield* downloadArchive(
-                  transfers,
-                  transferToken(input.url),
-                  input.sizeBytes,
-                  guestArchive,
-                );
-                const tree = yield* Effect.promise(() =>
-                  extractAgentDesktopBundle({
-                    archivePath: guestArchive,
-                    destinationPath: guestDestination,
-                    compression: input.compression,
-                    collision: input.collision,
-                  }),
-                );
-                return {
-                  desktopId,
-                  transferId: input.transferId,
-                  compression: input.compression,
-                  wireBytes: input.sizeBytes,
-                  sha256: input.sha256,
-                  tree,
-                };
-              });
-            });
             const result = yield* transfers
               .start(scope, {
                 source: { kind: "workspace", path: "source" },
@@ -280,7 +176,7 @@ describe("AgentDesktopTransferService", () => {
                 compression: "gzip",
                 waitMs: 60_000,
               })
-              .pipe(Effect.provide(Layer.mergeAll(projectionLayer(workspaceRoot), host)));
+              .pipe(Effect.provide(projectionLayer(workspaceRoot)));
 
             assert.equal(result.state, "completed", result.error?.detail);
             assert.equal(result.transferredBytes, result.totalBytes);
@@ -303,7 +199,7 @@ describe("AgentDesktopTransferService", () => {
     ).pipe(Effect.provide(NodeServices.layer)),
   );
 
-  it.effect("copies a directory into the workspace through resumable upload", () =>
+  it.effect("copies a directory directly into the workspace", () =>
     Effect.scoped(
       Effect.gen(function* () {
         const fileSystem = yield* FileSystem.FileSystem;
@@ -329,37 +225,24 @@ describe("AgentDesktopTransferService", () => {
 
         yield* withTransferService(
           workspaceRoot,
+          managerLayer((input) => {
+            assert.equal(input.operation, "export");
+            if (input.operation !== "export") return Effect.die("unexpected import");
+            return Effect.gen(function* () {
+              yield* Effect.promise(() => NodeFSP.copyFile(guestArchive, input.archivePath));
+              yield* input.onProgress?.(packed.wireBytes, packed.wireBytes) ?? Effect.void;
+              return {
+                desktopId,
+                transferId: input.transferId,
+                compression: packed.compression,
+                wireBytes: packed.wireBytes,
+                sha256: packed.sha256,
+                tree: packed,
+              };
+            });
+          }),
           Effect.gen(function* () {
             const transfers = yield* AgentDesktopTransfer.AgentDesktopTransferService;
-            const host = brokerLayer((input) => {
-              assert.equal(input.operation, "export");
-              if (input.operation !== "export") return Effect.die("unexpected import");
-              return Effect.gen(function* () {
-                const token = transferToken(input.url);
-                yield* uploadArchive(transfers, token, guestArchive);
-                const data = yield* Effect.promise(() => NodeFSP.readFile(guestArchive));
-                const firstChunk = data.subarray(0, Math.min(16_384, data.byteLength));
-                const retried = yield* transfers.upload(token, {
-                  start: 0,
-                  end: firstChunk.byteLength - 1,
-                  total: data.byteLength,
-                  data: firstChunk,
-                });
-                assert.deepInclude(retried, {
-                  status: "accepted",
-                  nextOffset: data.byteLength,
-                  complete: true,
-                });
-                return {
-                  desktopId,
-                  transferId: input.transferId,
-                  compression: packed.compression,
-                  wireBytes: packed.wireBytes,
-                  sha256: packed.sha256,
-                  tree: packed,
-                };
-              });
-            });
             const result = yield* transfers
               .start(scope, {
                 source: { kind: "agent", desktopId, path: "~/result" },
@@ -368,7 +251,7 @@ describe("AgentDesktopTransferService", () => {
                 compression: "none",
                 waitMs: 60_000,
               })
-              .pipe(Effect.provide(Layer.mergeAll(projectionLayer(workspaceRoot), host)));
+              .pipe(Effect.provide(projectionLayer(workspaceRoot)));
 
             assert.equal(result.state, "completed", result.error?.detail);
             assert.equal(result.sha256, packed.sha256);
@@ -385,7 +268,7 @@ describe("AgentDesktopTransferService", () => {
     ).pipe(Effect.provide(NodeServices.layer)),
   );
 
-  it.effect("cancels an active host transfer and retains its terminal status", () =>
+  it.effect("cancels an active guest transfer and retains its terminal status", () =>
     Effect.scoped(
       Effect.gen(function* () {
         const fileSystem = yield* FileSystem.FileSystem;
@@ -396,20 +279,17 @@ describe("AgentDesktopTransferService", () => {
 
         yield* withTransferService(
           workspaceRoot,
+          managerLayer(() => Effect.never),
           Effect.gen(function* () {
             const transfers = yield* AgentDesktopTransfer.AgentDesktopTransferService;
-            const host = brokerLayer(() => Effect.never);
-            const dependencies = Layer.mergeAll(projectionLayer(workspaceRoot), host);
             const started = yield* transfers
               .start(scope, {
                 source: { kind: "workspace", path: "source.txt" },
                 destination: { kind: "agent", desktopId, path: "~/pending.txt" },
                 waitMs: 0,
               })
-              .pipe(Effect.provide(dependencies));
-            const cancelled = yield* transfers
-              .cancel(scope, { transferId: started.id })
-              .pipe(Effect.provide(dependencies));
+              .pipe(Effect.provide(projectionLayer(workspaceRoot)));
+            const cancelled = yield* transfers.cancel(scope, { transferId: started.id });
             const retained = yield* transfers.status(scope, { transferId: started.id });
 
             assert.equal(cancelled.state, "cancelled");
@@ -432,6 +312,7 @@ describe("AgentDesktopTransferService", () => {
 
         yield* withTransferService(
           workspaceRoot,
+          rejectingManagerLayer("destination-exists", "destination already exists"),
           Effect.gen(function* () {
             const transfers = yield* AgentDesktopTransfer.AgentDesktopTransferService;
             const result = yield* transfers
@@ -440,14 +321,7 @@ describe("AgentDesktopTransferService", () => {
                 destination: { kind: "agent", desktopId, path: "~/existing.txt" },
                 waitMs: 60_000,
               })
-              .pipe(
-                Effect.provide(
-                  Layer.mergeAll(
-                    projectionLayer(workspaceRoot),
-                    rejectingBrokerLayer("destination-exists", "destination already exists"),
-                  ),
-                ),
-              );
+              .pipe(Effect.provide(projectionLayer(workspaceRoot)));
 
             assert.equal(result.state, "failed");
             assert.deepEqual(result.error, {
@@ -472,12 +346,9 @@ describe("AgentDesktopTransferService", () => {
 
         yield* withTransferService(
           workspaceRoot,
+          managerLayer(() => Effect.never),
           Effect.gen(function* () {
             const transfers = yield* AgentDesktopTransfer.AgentDesktopTransferService;
-            const dependencies = Layer.mergeAll(
-              projectionLayer(workspaceRoot),
-              brokerLayer(() => Effect.never),
-            );
             const started = yield* Effect.all(
               Array.from({ length: 9 }, (_, index) =>
                 transfers
@@ -486,7 +357,7 @@ describe("AgentDesktopTransferService", () => {
                     destination: { kind: "agent", desktopId, path: `~/copy-${index}.txt` },
                     waitMs: 0,
                   })
-                  .pipe(Effect.provide(dependencies)),
+                  .pipe(Effect.provide(projectionLayer(workspaceRoot))),
               ),
               { concurrency: "unbounded" },
             );
@@ -498,11 +369,7 @@ describe("AgentDesktopTransferService", () => {
             yield* Effect.all(
               started
                 .filter((transfer) => transfer.state !== "failed")
-                .map((transfer) =>
-                  transfers
-                    .cancel(scope, { transferId: transfer.id })
-                    .pipe(Effect.provide(dependencies)),
-                ),
+                .map((transfer) => transfers.cancel(scope, { transferId: transfer.id })),
               { concurrency: "unbounded" },
             );
           }),

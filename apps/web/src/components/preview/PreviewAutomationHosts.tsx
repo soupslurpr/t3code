@@ -4,23 +4,11 @@ import { RegistryContext, useAtomSet, useAtomValue } from "@effect/atom-react";
 import { squashAtomCommandFailure } from "@t3tools/client-runtime/state/runtime";
 import {
   FILL_PREVIEW_VIEWPORT,
-  AgentDesktopHumanRequest,
   type ComputerAutomationAccessInput,
   type ComputerAutomationActInput,
   type ComputerAutomationAvailabilityInput,
   type ComputerAutomationSnapshotInput,
   type ComputerAutomationTargetInput,
-  type AgentDesktopAcquireInput,
-  type AgentDesktopCommandInput,
-  type AgentDesktopCreatePortRouteInput,
-  type AgentDesktopHostTransferCancelInput,
-  type AgentDesktopHostTransferInput,
-  type AgentDesktopInspectInput,
-  type AgentDesktopManageInput,
-  type AgentDesktopPacketCaptureInput,
-  type AgentDesktopReadFileInput,
-  type AgentDesktopRemovePortRouteInput,
-  type AgentDesktopWriteFileInput,
   type EnvironmentId,
   type PreviewAutomationNavigateInput,
   type PreviewAutomationOpenInput,
@@ -38,7 +26,6 @@ import {
 import { resolvePreviewViewport } from "@t3tools/shared/previewViewport";
 import { useCallback, useContext, useEffect, useMemo, useState } from "react";
 import { Atom } from "effect/unstable/reactivity";
-import * as Schema from "effect/Schema";
 
 import {
   applyPreviewServerSnapshot,
@@ -59,11 +46,7 @@ import { browserDefaultOpenViewport, resolveBrowserDefaults } from "~/browser/br
 import { runBrowserViewportMutation } from "~/browser/browserViewportActions";
 import { previewRuntimeTabId } from "~/browser/previewRuntimeTabId";
 import { isElectron } from "~/env";
-import {
-  useEnvironmentHttpBaseUrl,
-  useEnvironments,
-  usePrimaryEnvironmentId,
-} from "~/state/environments";
+import { useEnvironments } from "~/state/environments";
 import { previewEnvironment } from "~/state/preview";
 import { useAtomQueryRunner } from "~/state/use-atom-query-runner";
 import { useAtomCommand } from "~/state/use-atom-command";
@@ -96,10 +79,8 @@ import {
 } from "./previewAutomationTarget";
 import { isPreviewViewportReady } from "./previewViewportReadiness";
 import { shouldRollbackPreviewViewport } from "./previewViewportRollback";
-import { resolveAgentDesktopTransferUrl } from "./agentDesktopTransferUrl";
 
 const PREVIEW_PRESENTATION_SETTLE_TIMEOUT_MS = 500;
-const decodeAgentDesktopHumanRequest = Schema.decodeUnknownSync(AgentDesktopHumanRequest);
 
 const waitForPreviewPresentation = async (runtimeTabId: string): Promise<void> => {
   const deadline = Date.now() + PREVIEW_PRESENTATION_SETTLE_TIMEOUT_MS;
@@ -271,7 +252,6 @@ const raisePreviewAutomationHostError = (
 
 export function PreviewAutomationHosts() {
   const { environments } = useEnvironments();
-  const primaryEnvironmentId = usePrimaryEnvironmentId();
   if (!isElectron || !previewBridge?.automation) return null;
   return (
     <>
@@ -279,26 +259,19 @@ export function PreviewAutomationHosts() {
        * Host lifetime follows the desktop runtime's environment connections,
        * not the routed thread. This keeps background threads automatable and
        * lets the subscription runtime own reconnects for every saved target.
-       * Only the primary environment may use this machine's Agent desktops;
-       * remote environments retain their own physical host and inventory.
        */}
       {environments.map((environment) => (
         <PreviewAutomationHost
           key={environment.environmentId}
           environmentId={environment.environmentId}
-          primaryEnvironment={environment.environmentId === primaryEnvironmentId}
         />
       ))}
     </>
   );
 }
 
-function PreviewAutomationHost(props: {
-  readonly environmentId: EnvironmentId;
-  readonly primaryEnvironment: boolean;
-}) {
-  const { environmentId, primaryEnvironment } = props;
-  const environmentHttpBaseUrl = useEnvironmentHttpBaseUrl(environmentId);
+function PreviewAutomationHost(props: { readonly environmentId: EnvironmentId }) {
+  const { environmentId } = props;
   const registry = useContext(RegistryContext);
   const [automationClientId] = useState(createPreviewAutomationClientId);
   const initialAutomationHost = useMemo<PreviewAutomationHostState>(
@@ -307,11 +280,9 @@ function PreviewAutomationHost(props: {
       environmentId,
       ...previewAutomationHostCapabilities({
         computerAvailable: window.desktopBridge?.computer !== undefined,
-        agentDesktopAvailable: window.desktopBridge?.agentDesktop !== undefined,
-        primaryEnvironment,
       }),
     }),
-    [automationClientId, environmentId, primaryEnvironment],
+    [automationClientId, environmentId],
   );
   const automationRequestsAtom = previewEnvironment.automationRequests({
     environmentId,
@@ -340,7 +311,6 @@ function PreviewAutomationHost(props: {
   const handleRequest = useCallback(
     async (request: PreviewAutomationRequest): Promise<unknown> => {
       const computer = window.desktopBridge?.computer;
-      const agentDesktop = window.desktopBridge?.agentDesktop;
       const controllerId = request.controllerId ?? `legacy:${request.threadId}`;
       const computerContext = {
         controllerId,
@@ -393,84 +363,6 @@ function PreviewAutomationHost(props: {
           return await resolveDesktopComputerAutomation(
             computer?.forgetControl(
               request.input as ComputerAutomationTargetInput,
-              computerContext,
-            ),
-          );
-        case "agentDesktopList":
-          return await resolveDesktopComputerAutomation(agentDesktop?.list(computerContext));
-        case "agentDesktopSetup":
-          return await resolveDesktopComputerAutomation(agentDesktop?.setup(computerContext));
-        case "agentDesktopAcquire":
-          return await resolveDesktopComputerAutomation(
-            agentDesktop?.acquire(request.input as AgentDesktopAcquireInput, computerContext),
-          );
-        case "agentDesktopManage":
-          return await resolveDesktopComputerAutomation(
-            agentDesktop?.manage(request.input as AgentDesktopManageInput, computerContext),
-          );
-        case "agentDesktopCommand":
-          return await resolveDesktopComputerAutomation(
-            agentDesktop?.command(request.input as AgentDesktopCommandInput, computerContext),
-          );
-        case "agentDesktopReadFile":
-          return await resolveDesktopComputerAutomation(
-            agentDesktop?.readFile(request.input as AgentDesktopReadFileInput, computerContext),
-          );
-        case "agentDesktopWriteFile":
-          return await resolveDesktopComputerAutomation(
-            agentDesktop?.writeFile(request.input as AgentDesktopWriteFileInput, computerContext),
-          );
-        case "agentDesktopTransfer": {
-          const input = request.input as AgentDesktopHostTransferInput;
-          if (environmentHttpBaseUrl === null) {
-            throw new Error("the environment HTTP endpoint is unavailable for file transfer");
-          }
-          return await resolveDesktopComputerAutomation(
-            agentDesktop?.transfer(
-              {
-                ...input,
-                url: resolveAgentDesktopTransferUrl(input.url, environmentHttpBaseUrl),
-              },
-              computerContext,
-            ),
-          );
-        }
-        case "agentDesktopTransferCancel":
-          return await resolveDesktopComputerAutomation(
-            agentDesktop?.cancelTransfer(
-              request.input as AgentDesktopHostTransferCancelInput,
-              computerContext,
-            ),
-          );
-        case "agentDesktopInspect":
-          return await resolveDesktopComputerAutomation(
-            agentDesktop?.inspect(request.input as AgentDesktopInspectInput, computerContext),
-          );
-        case "agentDesktopCreatePortRoute":
-          return await resolveDesktopComputerAutomation(
-            agentDesktop?.createPortRoute(
-              request.input as AgentDesktopCreatePortRouteInput,
-              computerContext,
-            ),
-          );
-        case "agentDesktopRemovePortRoute":
-          return await resolveDesktopComputerAutomation(
-            agentDesktop?.removePortRoute(
-              request.input as AgentDesktopRemovePortRouteInput,
-              computerContext,
-            ),
-          );
-        case "agentDesktopPacketCapture":
-          return await resolveDesktopComputerAutomation(
-            agentDesktop?.capturePackets(
-              request.input as AgentDesktopPacketCaptureInput,
-              computerContext,
-            ),
-          );
-        case "agentDesktopHumanInvoke":
-          return await resolveDesktopComputerAutomation(
-            agentDesktop?.humanInvoke(
-              decodeAgentDesktopHumanRequest(request.input),
               computerContext,
             ),
           );
@@ -853,7 +745,7 @@ function PreviewAutomationHost(props: {
         });
       }
     },
-    [environmentHttpBaseUrl, environmentId, listPreviews, open, registry, resize],
+    [environmentId, listPreviews, open, registry, resize],
   );
   const [requestHandlerAtom] = useState(() => Atom.make({ handle: handleRequest }));
   const setRequestHandler = useAtomSet(requestHandlerAtom);

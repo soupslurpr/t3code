@@ -50,8 +50,6 @@ export class DesktopEnvironment extends Context.Service<
     readonly serverSettingsPath: string;
     readonly logDir: string;
     readonly browserArtifactsDir: string;
-    readonly agentDesktopsDir: string;
-    readonly agentDesktopBaseImage: Option.Option<string>;
     readonly rootDir: string;
     readonly appRoot: string;
     // Root of the tree containing apps/server/dist and node_modules for the
@@ -208,10 +206,6 @@ const make = Effect.fn("desktop.environment.make")(function* (
     serverSettingsPath: path.join(stateDir, "settings.json"),
     logDir: path.join(stateDir, "logs"),
     browserArtifactsDir: path.join(stateDir, "browser-artifacts"),
-    agentDesktopsDir: Option.getOrElse(config.agentDesktopHome, () =>
-      path.join(stateDir, "agent-desktops"),
-    ),
-    agentDesktopBaseImage: config.agentDesktopBaseImage,
     rootDir,
     appRoot,
     serverRoot,

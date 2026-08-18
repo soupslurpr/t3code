@@ -18,7 +18,7 @@ import * as Stream from "effect/Stream";
 import { ChildProcess, ChildProcessSpawner } from "effect/unstable/process";
 import * as NodeOS from "node:os";
 
-import * as DesktopEnvironment from "../app/DesktopEnvironment.ts";
+import * as AgentDesktopEnvironment from "./AgentDesktopEnvironment.ts";
 import * as QemuProtocol from "./QemuProtocol.ts";
 import * as QemuVnc from "./QemuVnc.ts";
 
@@ -316,7 +316,7 @@ export interface QemuAgentDesktopShape {
 }
 
 export class QemuAgentDesktop extends Context.Service<QemuAgentDesktop, QemuAgentDesktopShape>()(
-  "@t3tools/desktop/agentDesktop/QemuAgentDesktop",
+  "t3/agentDesktop/QemuAgentDesktop",
 ) {}
 
 interface ProcessResult {
@@ -627,7 +627,7 @@ const mapFailure =
 
 /** Creates the Linux QEMU/KVM implementation used by Agent desktop management. */
 export const make = Effect.gen(function* () {
-  const environment = yield* DesktopEnvironment.DesktopEnvironment;
+  const environment = yield* AgentDesktopEnvironment.AgentDesktopEnvironment;
   const fileSystem = yield* FileSystem.FileSystem;
   const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
   const nextCaptureId = yield* Ref.make(1);
@@ -758,7 +758,7 @@ export const make = Effect.gen(function* () {
             status: "unusable",
             required: true,
             detail,
-            remedy: manualRemedy("Use a Linux x86-64 desktop host."),
+            remedy: manualRemedy("Use a Linux x86-64 environment host."),
           },
         ],
         detail,
@@ -1223,7 +1223,7 @@ export const make = Effect.gen(function* () {
             required: true,
             detail: String(cause).slice(0, 512),
             remedy: manualRemedy(
-              "Inspect the desktop host logs and repair the prerequisite probe.",
+              "Inspect the environment server logs and repair the prerequisite probe.",
             ),
           },
         ],
@@ -1303,7 +1303,7 @@ export const make = Effect.gen(function* () {
           requirement.status !== "ready" && requirement.remedy?.kind === "install-packages",
       );
       if (pendingPackageRemedy) {
-        detail = "automatic package installation is unavailable on this desktop host";
+        detail = "automatic package installation is unavailable on this environment host";
       }
     }
     return {
@@ -1524,7 +1524,7 @@ export const make = Effect.gen(function* () {
         return yield* new QemuAgentDesktopError({
           code: "agent-desktop-unavailable",
           operation: "resolve-display",
-          detail: "hardware graphics acceleration is unavailable on this desktop host",
+          detail: "hardware graphics acceleration is unavailable on this environment host",
         });
       }
       if (graphicsBackend !== "virgl" && !softwareGraphicsAvailable) {

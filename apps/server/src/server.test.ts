@@ -100,7 +100,7 @@ const collectQueueUntil = Effect.fn("TransferBudget.collectQueueUntil")(function
 });
 
 import * as BackgroundPolicy from "./background/BackgroundPolicy.ts";
-import * as AgentDesktopTransfer from "./agentDesktop/AgentDesktopTransferService.ts";
+import * as AgentDesktopManager from "./agentDesktop/AgentDesktopManager.ts";
 import * as ComputerObservationStore from "./computer/ComputerObservationStore.ts";
 import * as ServerConfig from "./config.ts";
 import { makeRoutesLayer } from "./server.ts";
@@ -853,7 +853,7 @@ const buildAppUnderTest = (options?: {
     );
 
     const appLayer = servedRoutesLayer.pipe(
-      Layer.provide(AgentDesktopTransfer.layer),
+      Layer.provide(Layer.mock(AgentDesktopManager.AgentDesktopManager)({})),
       Layer.provide(resourceTelemetryLayer),
       Layer.provide(UsageService.layerTest),
       Layer.provide(

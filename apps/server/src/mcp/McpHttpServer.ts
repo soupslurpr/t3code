@@ -20,6 +20,7 @@ import packageJson from "../../package.json" with { type: "json" };
 import * as McpInvocationContext from "./McpInvocationContext.ts";
 import * as McpSessionRegistry from "./McpSessionRegistry.ts";
 import * as PreviewAutomationBroker from "./PreviewAutomationBroker.ts";
+import * as ComputerAutomationRouter from "../computer/ComputerAutomationRouter.ts";
 import * as ComputerObservationStore from "../computer/ComputerObservationStore.ts";
 import {
   PreviewSnapshotToolkitHandlersLive,
@@ -802,7 +803,7 @@ export const encodeComputerWatchRevisionResult = (encodedResult: unknown) => {
 
 const registerComputerTools = Effect.fn("McpHttpServer.registerComputerTools")(function* () {
   const server = yield* McpServer.McpServer;
-  const broker = yield* PreviewAutomationBroker.PreviewAutomationBroker;
+  const computer = yield* ComputerAutomationRouter.ComputerAutomationRouter;
   const observations = yield* ComputerObservationStore.ComputerObservationStore;
   const built = yield* ComputerToolkit;
   for (const tool of Object.values(built.tools)) {
@@ -833,7 +834,7 @@ const registerComputerTools = Effect.fn("McpHttpServer.registerComputerTools")(f
             Stream.unwrap,
             Stream.run(Sink.last()),
             Effect.flatMap(Effect.fromOption),
-            Effect.provideService(PreviewAutomationBroker.PreviewAutomationBroker, broker),
+            Effect.provideService(ComputerAutomationRouter.ComputerAutomationRouter, computer),
             Effect.provideService(ComputerObservationStore.ComputerObservationStore, observations),
             Effect.provideService(McpInvocationContext.McpInvocationContext, invocation),
             Effect.matchCauseEffect({

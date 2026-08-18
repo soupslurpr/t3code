@@ -45,7 +45,6 @@ import {
 } from "./methods/window.ts";
 import * as PreviewIpc from "./methods/preview.ts";
 import * as ComputerIpc from "./methods/computer.ts";
-import * as AgentDesktopIpc from "./methods/agentDesktop.ts";
 import {
   getPowerSettings,
   releaseDesktopAvailability,
@@ -107,8 +106,5 @@ export const installDesktopIpcHandlers = Effect.fn("desktop.ipc.installHandlers"
   }
   for (const computerMethod of ComputerIpc.methods) {
     yield* ipc.handle(computerMethod);
-  }
-  for (const agentDesktopMethod of AgentDesktopIpc.methods) {
-    yield* ipc.handle(agentDesktopMethod);
   }
 });

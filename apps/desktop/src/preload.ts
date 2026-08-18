@@ -205,34 +205,6 @@ contextBridge.exposeInMainWorld("desktopBridge", {
         context,
       }),
   },
-  agentDesktop: {
-    list: (context) => ipcRenderer.invoke(IpcChannels.AGENT_DESKTOP_LIST_CHANNEL, context),
-    setup: (context) => ipcRenderer.invoke(IpcChannels.AGENT_DESKTOP_SETUP_CHANNEL, { context }),
-    acquire: (input, context) =>
-      ipcRenderer.invoke(IpcChannels.AGENT_DESKTOP_ACQUIRE_CHANNEL, { input, context }),
-    manage: (input, context) =>
-      ipcRenderer.invoke(IpcChannels.AGENT_DESKTOP_MANAGE_CHANNEL, { input, context }),
-    command: (input, context) =>
-      ipcRenderer.invoke(IpcChannels.AGENT_DESKTOP_COMMAND_CHANNEL, { input, context }),
-    readFile: (input, context) =>
-      ipcRenderer.invoke(IpcChannels.AGENT_DESKTOP_READ_FILE_CHANNEL, { input, context }),
-    writeFile: (input, context) =>
-      ipcRenderer.invoke(IpcChannels.AGENT_DESKTOP_WRITE_FILE_CHANNEL, { input, context }),
-    transfer: (input, context) =>
-      ipcRenderer.invoke(IpcChannels.AGENT_DESKTOP_TRANSFER_CHANNEL, { input, context }),
-    cancelTransfer: (input, context) =>
-      ipcRenderer.invoke(IpcChannels.AGENT_DESKTOP_TRANSFER_CANCEL_CHANNEL, { input, context }),
-    inspect: (input, context) =>
-      ipcRenderer.invoke(IpcChannels.AGENT_DESKTOP_INSPECT_CHANNEL, { input, context }),
-    createPortRoute: (input, context) =>
-      ipcRenderer.invoke(IpcChannels.AGENT_DESKTOP_CREATE_PORT_ROUTE_CHANNEL, { input, context }),
-    removePortRoute: (input, context) =>
-      ipcRenderer.invoke(IpcChannels.AGENT_DESKTOP_REMOVE_PORT_ROUTE_CHANNEL, { input, context }),
-    capturePackets: (input, context) =>
-      ipcRenderer.invoke(IpcChannels.AGENT_DESKTOP_PACKET_CAPTURE_CHANNEL, { input, context }),
-    humanInvoke: (input, context) =>
-      ipcRenderer.invoke(IpcChannels.AGENT_DESKTOP_HUMAN_CHANNEL, { input, context }),
-  },
   preview: {
     createTab: (tabId, defaults) =>
       ipcRenderer.invoke(IpcChannels.PREVIEW_CREATE_TAB_CHANNEL, {

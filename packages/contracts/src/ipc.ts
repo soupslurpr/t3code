@@ -65,7 +65,6 @@ import type {
 import {
   PreviewAutomationClickInput,
   PreviewAutomationEvaluateInput,
-  AgentDesktopHumanRequest,
   PreviewAutomationHost,
   PreviewAutomationHostFocus,
   PreviewAutomationPressInput,
@@ -88,28 +87,6 @@ import {
   ComputerAutomationStatus,
   ComputerAutomationTargetInput,
 } from "./computerAutomation.ts";
-import {
-  AgentDesktop,
-  AgentDesktopAcquireInput,
-  AgentDesktopCommandInput,
-  AgentDesktopCommandResult,
-  AgentDesktopHostTransferCancelInput,
-  AgentDesktopHostTransferInput,
-  AgentDesktopHostTransferResult,
-  AgentDesktopCreatePortRouteInput,
-  AgentDesktopInspectInput,
-  AgentDesktopList,
-  AgentDesktopManageInput,
-  AgentDesktopPacketCapture,
-  AgentDesktopPacketCaptureInput,
-  AgentDesktopPortRoute,
-  AgentDesktopReadFileInput,
-  AgentDesktopReadFileResult,
-  AgentDesktopSetupResult,
-  AgentDesktopRemovePortRouteInput,
-  AgentDesktopWriteFileInput,
-  AgentDesktopWriteFileResult,
-} from "./agentDesktop.ts";
 import type {
   ClientOrchestrationCommand,
   OrchestrationGetFullThreadDiffInput,
@@ -1136,58 +1113,6 @@ export const DesktopComputerAutomationActRequestSchema = Schema.Struct({
   context: Schema.optional(DesktopComputerAutomationContextSchema),
 });
 
-export const DesktopAgentDesktopAcquireRequestSchema = Schema.Struct({
-  input: AgentDesktopAcquireInput,
-  context: DesktopComputerAutomationContextSchema,
-});
-export const DesktopAgentDesktopSetupRequestSchema = Schema.Struct({
-  context: DesktopComputerAutomationContextSchema,
-});
-export const DesktopAgentDesktopManageRequestSchema = Schema.Struct({
-  input: AgentDesktopManageInput,
-  context: DesktopComputerAutomationContextSchema,
-});
-export const DesktopAgentDesktopCommandRequestSchema = Schema.Struct({
-  input: AgentDesktopCommandInput,
-  context: DesktopComputerAutomationContextSchema,
-});
-export const DesktopAgentDesktopReadFileRequestSchema = Schema.Struct({
-  input: AgentDesktopReadFileInput,
-  context: DesktopComputerAutomationContextSchema,
-});
-export const DesktopAgentDesktopWriteFileRequestSchema = Schema.Struct({
-  input: AgentDesktopWriteFileInput,
-  context: DesktopComputerAutomationContextSchema,
-});
-export const DesktopAgentDesktopTransferRequestSchema = Schema.Struct({
-  input: AgentDesktopHostTransferInput,
-  context: DesktopComputerAutomationContextSchema,
-});
-export const DesktopAgentDesktopTransferCancelRequestSchema = Schema.Struct({
-  input: AgentDesktopHostTransferCancelInput,
-  context: DesktopComputerAutomationContextSchema,
-});
-export const DesktopAgentDesktopInspectRequestSchema = Schema.Struct({
-  input: AgentDesktopInspectInput,
-  context: DesktopComputerAutomationContextSchema,
-});
-export const DesktopAgentDesktopCreatePortRouteRequestSchema = Schema.Struct({
-  input: AgentDesktopCreatePortRouteInput,
-  context: DesktopComputerAutomationContextSchema,
-});
-export const DesktopAgentDesktopRemovePortRouteRequestSchema = Schema.Struct({
-  input: AgentDesktopRemovePortRouteInput,
-  context: DesktopComputerAutomationContextSchema,
-});
-export const DesktopAgentDesktopPacketCaptureRequestSchema = Schema.Struct({
-  input: AgentDesktopPacketCaptureInput,
-  context: DesktopComputerAutomationContextSchema,
-});
-export const DesktopAgentDesktopHumanRequestSchema = Schema.Struct({
-  input: AgentDesktopHumanRequest,
-  context: DesktopComputerAutomationContextSchema,
-});
-
 const DesktopComputerAutomationFailureSchema = Schema.Struct({
   ok: Schema.Literal(false),
   error: ComputerAutomationFailure,
@@ -1304,65 +1229,6 @@ export interface DesktopBridge {
   preview?: DesktopPreviewBridge;
   /** Host-computer capture and input. Present only in desktop builds that expose it. */
   computer?: DesktopComputerAutomationBridge;
-  /** Environment-local isolated Agent desktop management. */
-  agentDesktop?: DesktopAgentDesktopBridge;
-}
-
-export interface DesktopAgentDesktopBridge {
-  list: (
-    context?: DesktopComputerAutomationContext,
-  ) => Promise<DesktopComputerAutomationResult<AgentDesktopList>>;
-  setup: (
-    context: DesktopComputerAutomationContext,
-  ) => Promise<DesktopComputerAutomationResult<AgentDesktopSetupResult>>;
-  acquire: (
-    input: AgentDesktopAcquireInput,
-    context: DesktopComputerAutomationContext,
-  ) => Promise<DesktopComputerAutomationResult<AgentDesktop>>;
-  manage: (
-    input: AgentDesktopManageInput,
-    context: DesktopComputerAutomationContext,
-  ) => Promise<DesktopComputerAutomationResult<AgentDesktop>>;
-  command: (
-    input: AgentDesktopCommandInput,
-    context: DesktopComputerAutomationContext,
-  ) => Promise<DesktopComputerAutomationResult<AgentDesktopCommandResult>>;
-  readFile: (
-    input: AgentDesktopReadFileInput,
-    context: DesktopComputerAutomationContext,
-  ) => Promise<DesktopComputerAutomationResult<AgentDesktopReadFileResult>>;
-  writeFile: (
-    input: AgentDesktopWriteFileInput,
-    context: DesktopComputerAutomationContext,
-  ) => Promise<DesktopComputerAutomationResult<AgentDesktopWriteFileResult>>;
-  transfer: (
-    input: AgentDesktopHostTransferInput,
-    context: DesktopComputerAutomationContext,
-  ) => Promise<DesktopComputerAutomationResult<AgentDesktopHostTransferResult>>;
-  cancelTransfer: (
-    input: AgentDesktopHostTransferCancelInput,
-    context: DesktopComputerAutomationContext,
-  ) => Promise<DesktopComputerAutomationResult<void>>;
-  inspect: (
-    input: AgentDesktopInspectInput,
-    context: DesktopComputerAutomationContext,
-  ) => Promise<DesktopComputerAutomationResult<AgentDesktop>>;
-  createPortRoute: (
-    input: AgentDesktopCreatePortRouteInput,
-    context: DesktopComputerAutomationContext,
-  ) => Promise<DesktopComputerAutomationResult<AgentDesktopPortRoute>>;
-  removePortRoute: (
-    input: AgentDesktopRemovePortRouteInput,
-    context: DesktopComputerAutomationContext,
-  ) => Promise<DesktopComputerAutomationResult<void>>;
-  capturePackets: (
-    input: AgentDesktopPacketCaptureInput,
-    context: DesktopComputerAutomationContext,
-  ) => Promise<DesktopComputerAutomationResult<AgentDesktopPacketCapture>>;
-  humanInvoke: (
-    input: AgentDesktopHumanRequest,
-    context: DesktopComputerAutomationContext,
-  ) => Promise<DesktopComputerAutomationResult<unknown>>;
 }
 
 export interface DesktopComputerAutomationBridge {
