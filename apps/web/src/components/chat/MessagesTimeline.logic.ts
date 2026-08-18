@@ -179,7 +179,10 @@ export function resolveMonitorSystemEventPresentation(event: OrchestrationSystem
   readonly summary: string;
 } {
   if (event.type === "monitor.review") {
-    return { title: "Monitor review", summary: event.reason };
+    return {
+      title: event.evaluatorPaused === true ? "Monitor evaluator paused" : "Monitor review",
+      summary: event.reason,
+    };
   }
   if (event.monitors.length === 1) {
     const monitor = event.monitors[0]!;
