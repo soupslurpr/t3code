@@ -15,12 +15,12 @@ import * as Schema from "effect/Schema";
 import { Tool, Toolkit } from "effect/unstable/ai";
 
 import * as McpInvocationContext from "../../McpInvocationContext.ts";
-import * as PreviewAutomationBroker from "../../PreviewAutomationBroker.ts";
+import * as ComputerAutomationRouter from "../../../computer/ComputerAutomationRouter.ts";
 import * as ComputerObservationStore from "../../../computer/ComputerObservationStore.ts";
 
 const dependencies = [
   McpInvocationContext.McpInvocationContext,
-  PreviewAutomationBroker.PreviewAutomationBroker,
+  ComputerAutomationRouter.ComputerAutomationRouter,
   ComputerObservationStore.ComputerObservationStore,
 ];
 

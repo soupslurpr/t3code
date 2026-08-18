@@ -26,9 +26,11 @@ import * as AgentPowerReporter from "./background/AgentPowerReporter.ts";
 import * as HostPowerMonitor from "./background/HostPowerMonitor.ts";
 import * as ServerConfig from "./config.ts";
 import * as AgentDesktopTransfer from "./agentDesktop/AgentDesktopTransferService.ts";
+import * as AgentDesktopEnvironment from "./agentDesktop/AgentDesktopEnvironment.ts";
+import * as AgentDesktopManager from "./agentDesktop/AgentDesktopManager.ts";
+import * as QemuAgentDesktop from "./agentDesktop/QemuAgentDesktop.ts";
+import * as ComputerAutomationRouter from "./computer/ComputerAutomationRouter.ts";
 import {
-  agentDesktopTransferDownloadRouteLayer,
-  agentDesktopTransferUploadRouteLayer,
   otlpTracesProxyRouteLayer,
   assetRouteLayer,
   attachmentUploadRouteLayer,
@@ -193,6 +195,26 @@ const HTTP_ROUTER_CONFIG = {
 const HTTP_PREEMPTIVE_SHUTDOWN_GRACE_MS = 0;
 const PreviewAutomationBrokerLive = PreviewAutomationBroker.layer;
 const ComputerObservationStoreLive = ComputerObservationStore.layer;
+const AgentDesktopEnvironmentLive = AgentDesktopEnvironment.layer;
+const QemuAgentDesktopLive = QemuAgentDesktop.layer.pipe(
+  Layer.provide(AgentDesktopEnvironmentLive),
+);
+const AgentDesktopManagerLive = AgentDesktopManager.layer.pipe(
+  Layer.provideMerge(QemuAgentDesktopLive),
+  Layer.provide(AgentDesktopEnvironmentLive),
+);
+const ComputerAutomationRouterLive = ComputerAutomationRouter.layer.pipe(
+  Layer.provideMerge(PreviewAutomationBrokerLive),
+  Layer.provide(AgentDesktopManagerLive),
+);
+const AgentDesktopTransferLive = AgentDesktopTransfer.layer.pipe(
+  Layer.provide(AgentDesktopManagerLive),
+);
+const AgentDesktopServicesLive = Layer.mergeAll(
+  AgentDesktopManagerLive,
+  ComputerAutomationRouterLive,
+  AgentDesktopTransferLive,
+);
 const ResourceAttributionLayerLive = ResourceAttribution.layer;
 const ApplicationObservabilityLive = EventLoopMonitor.layer.pipe(
   Layer.provideMerge(ObservabilityLive),
@@ -550,6 +572,7 @@ const RuntimeCoreDependenciesBaseLive = Layer.mergeAll(
   Layer.provideMerge(OrchestrationEventInfrastructureLayerLive),
   Layer.provideMerge(Layer.merge(ProjectStore.layer, ThreadSearch.layer)),
   Layer.provideMerge(Layer.mergeAll(ComputerObservationStoreLive, ServerSettingsLayerLive)),
+  Layer.provideMerge(AgentDesktopServicesLive),
   // The asset route uses the registry's GitHub credential for private PR media.
   Layer.provideMerge(Layer.mergeAll(SourceControlProviderRegistryLayerLive, GitHubCli.layer)),
   Layer.provideMerge(GitLayerLive),
@@ -576,7 +599,7 @@ const RuntimeCoreDependenciesBaseLive = Layer.mergeAll(
   ),
 );
 
-const RuntimeCoreDependenciesLive = RuntimeCoreDependenciesBaseLive.pipe(
+const RuntimeCoreProviderDependenciesLive = RuntimeCoreDependenciesBaseLive.pipe(
   Layer.provideMerge(PtyAdapterLive),
   // Search, prepare, status inspection, and turn launch share one registry
   // cache so every client and provider instance sees the same prepared agents.
@@ -592,6 +615,9 @@ const RuntimeCoreDependenciesLive = RuntimeCoreDependenciesBaseLive.pipe(
   Layer.provideMerge(
     Layer.mergeAll(ProviderEventLoggers.layer, ModelManifest.layer, ResetCreditCoordinator.layer),
   ),
+);
+
+const RuntimeCoreDependenciesLive = RuntimeCoreProviderDependenciesLive.pipe(
   // `OpenCodeDriver.create()` yields `OpenCodeRuntime`; previously the old
   // `ProviderRegistryLive` pulled `OpenCodeRuntimeLive` in for itself, but
   // the rewritten registry reads snapshots off the instance registry and
@@ -625,7 +651,6 @@ const RuntimeCoreWithAgentPowerLive = AgentPowerReporter.layer.pipe(
 
 const RuntimeDependenciesLive = RuntimeCoreWithAgentPowerLive.pipe(
   // Misc.
-  Layer.provideMerge(AgentDesktopTransfer.layer),
   Layer.provideMerge(BackgroundLayerLive),
   Layer.provideMerge(ResourceDiagnosticsLayerLive),
   Layer.provideMerge(UsageLayerLive),
@@ -660,8 +685,6 @@ const makeRoutesLayer = Layer.mergeAll(
     assetRouteLayer,
     attachmentUploadRouteLayer,
     deviceHubProxyRouteLayer,
-    agentDesktopTransferDownloadRouteLayer,
-    agentDesktopTransferUploadRouteLayer,
     staticAndDevRouteLayer,
     websocketRpcRouteLayer,
   ),
@@ -679,6 +702,7 @@ const makeRoutesLayer = Layer.mergeAll(
   // Both transports consume the same service instance, so caches single-flight across clients
   // and mutations observed on WebSocket invalidate patches subsequently read over HTTP.
   Layer.provide(PullRequestServiceLive),
+  Layer.provide(AgentDesktopServicesLive),
   Layer.provide(PreviewAutomationBrokerLive),
   Layer.provide(ServerSelfUpdate.layer.pipe(Layer.provide(DesktopAppUpdateLayerLive))),
   Layer.provide(commandReadinessLayer),

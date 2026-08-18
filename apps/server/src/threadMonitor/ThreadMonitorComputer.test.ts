@@ -23,8 +23,8 @@ import * as TestClock from "effect/testing/TestClock";
 import { describe, expect } from "vite-plus/test";
 
 import * as ComputerObservationStore from "../computer/ComputerObservationStore.ts";
+import * as ComputerAutomationRouter from "../computer/ComputerAutomationRouter.ts";
 import * as ServerEnvironment from "../environment/ServerEnvironment.ts";
-import * as PreviewAutomationBroker from "../mcp/PreviewAutomationBroker.ts";
 import { ProjectionSnapshotQuery } from "../orchestration/Services/ProjectionSnapshotQuery.ts";
 import type { ProviderInstance } from "../provider/ProviderDriver.ts";
 import * as ProviderInstanceRegistry from "../provider/Services/ProviderInstanceRegistry.ts";
@@ -146,15 +146,10 @@ describe("ThreadMonitorComputer", () => {
           },
         });
       });
-      const broker = PreviewAutomationBroker.PreviewAutomationBroker.of({
-        connect: () => Effect.die("unused"),
-        focusHost: () => Effect.die("unused"),
-        respond: () => Effect.die("unused"),
-        invoke: <Result>(request: PreviewAutomationBroker.PreviewAutomationInvokeInput) => {
-          if (request.operation === "computerRequestView") {
-            return Effect.succeed({} as Result);
-          }
-          if (request.operation !== "computerSnapshot") return Effect.die("unexpected operation");
+      const computer = Layer.mock(ComputerAutomationRouter.ComputerAutomationRouter)({
+        requestView: () => Effect.succeed({} as never),
+        release: () => Effect.succeed({} as never),
+        snapshot: (_scope, input) => {
           if (captureFailure) {
             return Effect.fail({
               computerFailure: {
@@ -166,16 +161,10 @@ describe("ThreadMonitorComputer", () => {
               },
             } as never);
           }
-          const input = request.input as {
-            readonly screenshot: {
-              readonly region?: { readonly x: number } | undefined;
-              readonly encoding?: ComputerAutomationScreenshotEncoding | undefined;
-              readonly unchangedIfContentHash?: string | undefined;
-            };
-          };
-          const x = input.screenshot.region?.x ?? 0;
+          const screenshot = input.screenshot === false ? {} : (input.screenshot ?? {});
+          const x = screenshot.region?.x ?? 0;
           captures.push(x);
-          comparisons.push(input.screenshot.unchangedIfContentHash);
+          comparisons.push(screenshot.unchangedIfContentHash);
           const contents =
             x === 400
               ? captures.length <= 2
@@ -184,12 +173,7 @@ describe("ThreadMonitorComputer", () => {
               : (["status-initial", "status-initial", "status-changed"][triggerCapture++] ??
                 "status-changed");
           return Effect.succeed(
-            snapshot(
-              contents,
-              x,
-              input.screenshot.encoding,
-              input.screenshot.unchangedIfContentHash,
-            ) as Result,
+            snapshot(contents, x, screenshot.encoding, screenshot.unchangedIfContentHash),
           );
         },
       });
@@ -214,7 +198,7 @@ describe("ThreadMonitorComputer", () => {
       const dependencies = Layer.mergeAll(
         NodeServices.layer,
         ComputerObservationStore.layer,
-        Layer.succeed(PreviewAutomationBroker.PreviewAutomationBroker, broker),
+        computer,
         Layer.succeed(ProviderInstanceRegistry.ProviderInstanceRegistry, registry),
         Layer.succeed(ProjectionSnapshotQuery, projections),
         Layer.succeed(
