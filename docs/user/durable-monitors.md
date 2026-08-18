@@ -55,17 +55,25 @@ Evaluator availability, token reporting, and explicit prompt-cache refresh are
 adapter capabilities. T3 Code reports unsupported capabilities instead of
 creating synthetic keepalive turns or hidden conversation messages.
 
+A model-backed screen watch pauses evaluation after 12 evaluations by default and
+requests a controller review. Capture and hash comparison continue, but no more
+evaluator tokens are used until the controller inspects the watch and
+acknowledges, revises, or cancels it. The review reports evaluation counts,
+change rates, and available token usage. An agent can choose another evaluation
+checkpoint or explicitly disable it for a genuinely high-frequency condition.
+
 Ordinary screen samples are discarded after comparison. T3 Code stores hashes
 and bounded status details with the monitor, can optionally retain the initial
 image for visual comparison, and retains the terminal matching image for audit.
 Those images live in the environment's local T3 data until the owning thread is
 deleted. Cancelling, matching, reaching a deadline, or deleting the thread
 releases the watch's view lease. A temporary capture or evaluator failure is
-recorded and retried with bounded exponential backoff.
-After three consecutive failures, a screen watch normally resumes its controller once with the
-current diagnostic so the agent can inspect or revise an ineffective watch. The watch keeps retrying
-and does not repeat the warning within the same revision. An agent can disable this safeguard while
-retaining other review checkpoints, or disable reviews entirely when silence is intentional.
+recorded and retried with bounded exponential backoff. After three consecutive
+failures, a screen watch normally resumes its controller once with the current
+diagnostic so the agent can inspect or revise an ineffective watch. The watch
+keeps retrying and does not repeat the warning within the same revision. An
+agent can disable this safeguard while retaining other review checkpoints, or
+disable reviews entirely when silence is intentional.
 
 Ask the agent to list or cancel its waits at any time. Signal-based monitoring
 usually combines a durable wait with background work that reports when its

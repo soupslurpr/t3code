@@ -396,7 +396,8 @@ export type ThreadMonitorComputerBaselineObservationInput =
 
 export const ThreadMonitorComputerReviewPolicyInput = Schema.Struct({
   afterEvaluations: Schema.optional(Schema.NullOr(PositiveInt)).annotate({
-    description: "Ask the controller to review after this many evaluations in the revision.",
+    description:
+      "Ask the controller to review after this many evaluations in the revision. Model watches default to 12; null disables the evaluation checkpoint.",
   }),
   consecutiveUncertain: Schema.optional(Schema.NullOr(PositiveInt)).annotate({
     description: "Ask for review after this many consecutive uncertain verdicts.",
@@ -446,7 +447,7 @@ export const ThreadMonitorComputerStartInput = Schema.Struct({
   ),
   review: Schema.optional(Schema.NullOr(ThreadMonitorComputerReviewPolicyInput)).annotate({
     description:
-      "Deterministic controller-review policy. By default, three consecutive failures trigger one health review; null disables all reviews.",
+      "Deterministic controller-review policy. Model watches default to a review after 12 evaluations, and every watch defaults to a review after three consecutive failures. Null disables all reviews.",
   }),
   deadlineAt: Schema.optional(IsoDateTime),
   continuation: Schema.optional(Schema.Literals(["resume-thread", "record-only"])),
