@@ -28,6 +28,7 @@ import {
   renderCodexFileCitationsAsMarkdown,
   splitCodexArtifactTemplateMarkdown,
 } from "@t3tools/client-runtime/codex-markdown-directives";
+import { formatSubagentTokenCount } from "@t3tools/client-runtime/state/subagentRuntime";
 import { CHAT_LIST_ANCHOR_OFFSET, resolveChatListAnchoredEndSpace } from "@t3tools/shared/chatList";
 import { videoMimeType } from "@t3tools/shared/video";
 import { SymbolView, type AppSymbolName } from "../../components/AppSymbol";
@@ -1625,7 +1626,9 @@ function MonitorSystemEventCard(props: {
   const [expanded, setExpanded] = useState(false);
   const title =
     props.event.type === "monitor.review"
-      ? "Monitor review"
+      ? props.event.evaluatorPaused === true
+        ? "Monitor evaluator paused"
+        : "Monitor review"
       : props.event.monitors.length === 1
         ? "Monitor triggered"
         : `${props.event.monitors.length} monitors triggered`;
@@ -1699,15 +1702,42 @@ function MonitorSystemEventCard(props: {
               <Text selectable className="text-xs text-foreground-muted">
                 {props.event.reason}
               </Text>
+              {props.event.evaluatorPaused === true ? (
+                <Text className="font-t3-medium text-xs text-foreground-muted">
+                  Model evaluation is paused until the controller acknowledges this review.
+                </Text>
+              ) : null}
               <Text className="text-xs text-foreground-muted">
                 Revision {props.event.revision} · {props.event.metrics.evaluationCount} evaluations
                 · {props.event.metrics.uncertainEvaluationCount} uncertain ·{" "}
                 {props.event.metrics.consecutiveFailures} consecutive failures
               </Text>
+              {props.event.metrics.totalUsage !== undefined &&
+              (props.event.metrics.totalUsage.inputTokens !== null ||
+                props.event.metrics.totalUsage.outputTokens !== null) ? (
+                <Text className="text-xs tabular-nums text-foreground-muted">
+                  {props.event.metrics.totalUsage.inputTokens === null
+                    ? "Input usage unavailable"
+                    : `${formatSubagentTokenCount(props.event.metrics.totalUsage.inputTokens)} input tokens`}
+                  {props.event.metrics.totalUsage.cachedInputTokens === null
+                    ? ""
+                    : ` · ${formatSubagentTokenCount(props.event.metrics.totalUsage.cachedInputTokens)} cached`}
+                  {props.event.metrics.totalUsage.cacheWriteInputTokens === null
+                    ? ""
+                    : ` · ${formatSubagentTokenCount(props.event.metrics.totalUsage.cacheWriteInputTokens)} cache writes`}
+                  {props.event.metrics.totalUsage.outputTokens === null
+                    ? ""
+                    : ` · ${formatSubagentTokenCount(props.event.metrics.totalUsage.outputTokens)} output tokens`}
+                </Text>
+              ) : null}
               {props.event.metrics.regions.map((region) => (
                 <Text key={region.id} className="text-xs text-foreground-muted">
                   {region.id} ({region.role}): {region.sampleCount} captures,{" "}
-                  {region.changedSampleCount} changed, {region.unchangedSampleCount} unchanged
+                  {region.changedSampleCount} changed
+                  {region.sampleCount === 0
+                    ? ""
+                    : ` (${Math.round((region.changedSampleCount / region.sampleCount) * 100)}%)`}
+                  , {region.unchangedSampleCount} unchanged
                 </Text>
               ))}
               {props.event.observation.error !== null ? (

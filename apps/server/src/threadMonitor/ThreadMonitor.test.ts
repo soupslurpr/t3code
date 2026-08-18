@@ -146,7 +146,12 @@ const workingComputerLayer = Layer.effect(
                 input.watch.review === null
                   ? null
                   : {
-                      afterEvaluations: input.watch.review?.afterEvaluations ?? null,
+                      afterEvaluations:
+                        input.watch.review?.afterEvaluations === undefined
+                          ? input.watch.match.type === "model"
+                            ? 12
+                            : null
+                          : input.watch.review.afterEvaluations,
                       consecutiveUncertain: input.watch.review?.consecutiveUncertain ?? null,
                       consecutiveFailures:
                         input.watch.review?.consecutiveFailures === undefined
@@ -199,6 +204,7 @@ const workingComputerLayer = Layer.effect(
         if (monitor.condition.type !== "computer") return Effect.die("expected computer monitor");
         const condition = monitor.condition;
         const uncertain = condition.match.type === "model";
+        const evaluatorPaused = uncertain && condition.review.state !== "idle";
         const currentHash = uncertain ? "model-hash" : "terminal-hash";
         const currentImage = {
           id: "current:screen",
@@ -251,18 +257,49 @@ const workingComputerLayer = Layer.effect(
                 })),
               },
               lastCheckedAt: checkedAt,
-              lastEvaluatedAt: checkedAt,
-              lastEvaluationDurationMs: 0,
-              lastVerdict: uncertain ? ("uncertain" as const) : ("matched" as const),
-              lastSummary: uncertain
-                ? "The evaluator could not determine the state."
-                : "The watched region changed.",
+              lastEvaluatedAt: evaluatorPaused ? condition.lastEvaluatedAt : checkedAt,
+              lastEvaluationDurationMs: evaluatorPaused ? condition.lastEvaluationDurationMs : 0,
+              evaluationPending: evaluatorPaused,
+              lastVerdict: evaluatorPaused
+                ? condition.lastVerdict
+                : uncertain
+                  ? ("uncertain" as const)
+                  : ("matched" as const),
+              lastSummary: evaluatorPaused
+                ? condition.lastSummary
+                : uncertain
+                  ? "The evaluator could not determine the state."
+                  : "The watched region changed.",
+              lastUsage: evaluatorPaused
+                ? condition.lastUsage
+                : uncertain
+                  ? {
+                      inputTokens: 100,
+                      cachedInputTokens: 80,
+                      cacheWriteInputTokens: 0,
+                      outputTokens: 10,
+                    }
+                  : null,
+              totalUsage:
+                uncertain && !evaluatorPaused
+                  ? {
+                      inputTokens: (condition.totalUsage.inputTokens ?? 0) + 100,
+                      cachedInputTokens: (condition.totalUsage.cachedInputTokens ?? 0) + 80,
+                      cacheWriteInputTokens: condition.totalUsage.cacheWriteInputTokens ?? 0,
+                      outputTokens: (condition.totalUsage.outputTokens ?? 0) + 10,
+                    }
+                  : condition.totalUsage,
               sampleCount: condition.sampleCount + 1,
-              evaluationCount: condition.evaluationCount + 1,
-              uncertainEvaluationCount: condition.uncertainEvaluationCount + (uncertain ? 1 : 0),
-              consecutiveUncertain: uncertain ? condition.consecutiveUncertain + 1 : 0,
+              evaluationCount: condition.evaluationCount + (evaluatorPaused ? 0 : 1),
+              uncertainEvaluationCount:
+                condition.uncertainEvaluationCount + (uncertain && !evaluatorPaused ? 1 : 0),
+              consecutiveUncertain: evaluatorPaused
+                ? condition.consecutiveUncertain
+                : uncertain
+                  ? condition.consecutiveUncertain + 1
+                  : 0,
             },
-            observedImages: [currentImage],
+            observedImages: evaluatorPaused ? [] : [currentImage],
             match: uncertain
               ? null
               : {
@@ -323,7 +360,12 @@ const workingComputerLayer = Layer.effect(
               watch.review === null
                 ? null
                 : {
-                    afterEvaluations: watch.review?.afterEvaluations ?? null,
+                    afterEvaluations:
+                      watch.review?.afterEvaluations === undefined
+                        ? watch.match.type === "model"
+                          ? 12
+                          : null
+                        : watch.review.afterEvaluations,
                     consecutiveUncertain: watch.review?.consecutiveUncertain ?? null,
                     consecutiveFailures:
                       watch.review?.consecutiveFailures === undefined
@@ -974,7 +1016,7 @@ computerMonitorTestLayer("ThreadMonitor computer conditions", (it) => {
     }),
   );
 
-  it.effect("delivers one nonterminal controller review after uncertain evaluations", () =>
+  it.effect("pauses after the default model evaluation budget and delivers review", () =>
     Effect.gen(function* () {
       yield* seedThread;
       const service = yield* ThreadMonitorService;
@@ -994,14 +1036,15 @@ computerMonitorTestLayer("ThreadMonitor computer conditions", (it) => {
             },
           },
           sampling: { intervalMs: 1_000 },
-          review: { consecutiveUncertain: 1 },
           continuation: "record-only",
         },
       });
 
-      yield* TestClock.adjust("1 second");
-      yield* service.checkNow({ threadId, check: { monitorId: monitor.id } });
-      yield* TestClock.adjust("1 second");
+      for (let evaluation = 0; evaluation < 12; evaluation += 1) {
+        yield* TestClock.adjust("1 second");
+        yield* service.checkNow({ threadId, check: { monitorId: monitor.id } });
+      }
+      yield* TestClock.adjust("750 millis");
       const reviewed = yield* service.checkNow({
         threadId,
         check: { monitorId: monitor.id },
@@ -1022,18 +1065,55 @@ computerMonitorTestLayer("ThreadMonitor computer conditions", (it) => {
         assert.lengthOf(reviewMessages, 1);
         assert.strictEqual(
           reviewMessages[0]?.text,
-          "Monitor review: Review an uncertain visual condition",
+          "Monitor evaluator paused: Review an uncertain visual condition",
         );
         const systemEvent = reviewMessages[0]?.systemEvent;
         assert.strictEqual(systemEvent?.type, "monitor.review");
         if (systemEvent?.type === "monitor.review") {
           assert.strictEqual(systemEvent.monitorId, monitor.id);
+          assert.isTrue(systemEvent.evaluatorPaused);
           assert.strictEqual(systemEvent.observationTrust, "untrusted");
           assert.isFalse(systemEvent.grantsAuthorization);
-          assert.strictEqual(systemEvent.metrics.evaluationCount, 2);
-          assert.strictEqual(systemEvent.metrics.uncertainEvaluationCount, 2);
+          assert.strictEqual(systemEvent.metrics.evaluationCount, 12);
+          assert.strictEqual(systemEvent.metrics.uncertainEvaluationCount, 12);
+          assert.deepEqual(systemEvent.metrics.totalUsage, {
+            inputTokens: 1_200,
+            cachedInputTokens: 960,
+            cacheWriteInputTokens: 0,
+            outputTokens: 120,
+          });
         }
+        const reviewActivity = detail.value.activities.find(
+          (activity) => activity.kind === "thread-monitor.review-paused",
+        );
+        assert.include(reviewActivity?.summary ?? "", "evaluator paused");
+        assert.include(reviewActivity?.summary ?? "", "12 evaluations");
       }
+
+      const resumed = yield* service.updateComputer({
+        threadId,
+        update: {
+          monitorId: monitor.id,
+          expectedRevision: 1,
+          review: { afterEvaluations: null },
+          acknowledgeReview: true,
+        },
+      });
+      assert.strictEqual(resumed.monitor.condition.type, "computer");
+      if (resumed.monitor.condition.type !== "computer") return;
+      assert.isNull(resumed.monitor.condition.review.policy?.afterEvaluations);
+
+      const retained = yield* service.updateComputer({
+        threadId,
+        update: {
+          monitorId: monitor.id,
+          expectedRevision: 2,
+          label: "Review an uncertain visual condition later",
+        },
+      });
+      assert.strictEqual(retained.monitor.condition.type, "computer");
+      if (retained.monitor.condition.type !== "computer") return;
+      assert.isNull(retained.monitor.condition.review.policy?.afterEvaluations);
 
       yield* service.cancel({ threadId, cancel: { monitorId: monitor.id } });
     }),

@@ -1309,6 +1309,7 @@ function MonitorSystemEventTimelineRow({
   const presentation = resolveMonitorSystemEventPresentation(event);
   const Chevron = expanded ? ChevronDownIcon : ChevronRightIcon;
   const Icon = event.type === "monitor.review" ? CircleAlertIcon : EyeIcon;
+  const reviewUsage = event.type === "monitor.review" ? event.metrics.totalUsage : undefined;
 
   return (
     <section className="mx-1 overflow-hidden rounded-lg border border-border/70 bg-muted/20 text-xs">
@@ -1323,12 +1324,16 @@ function MonitorSystemEventTimelineRow({
           <span className="block font-medium text-foreground/85">{presentation.title}</span>
           <span className="block truncate text-muted-foreground/75">{presentation.summary}</span>
         </span>
-        <time
-          className="shrink-0 text-[11px] text-muted-foreground/55 tabular-nums"
-          title={formatChatTimestampTooltip(row.message.createdAt, ctx.timestampFormat)}
-        >
-          {formatDayAwareTimestamp(row.message.createdAt, ctx.timestampFormat)}
-        </time>
+        <Tooltip>
+          <TooltipTrigger
+            render={<time className="shrink-0 text-[11px] text-muted-foreground/55 tabular-nums" />}
+          >
+            {formatDayAwareTimestamp(row.message.createdAt, ctx.timestampFormat)}
+          </TooltipTrigger>
+          <TooltipPopup>
+            {formatChatTimestampTooltip(row.message.createdAt, ctx.timestampFormat)}
+          </TooltipPopup>
+        </Tooltip>
         <Chevron className="size-3.5 shrink-0 text-muted-foreground/65" />
       </button>
       {expanded ? (
@@ -1367,15 +1372,41 @@ function MonitorSystemEventTimelineRow({
             <div className="space-y-1.5">
               <p className="font-medium text-foreground/85">{event.observation.label}</p>
               <p>{event.reason}</p>
+              {event.evaluatorPaused === true ? (
+                <p className="font-medium text-foreground/70">
+                  Model evaluation is paused until the controller acknowledges this review.
+                </p>
+              ) : null}
               <p>
                 Revision {event.revision} · {event.metrics.evaluationCount} evaluations ·{" "}
                 {event.metrics.uncertainEvaluationCount} uncertain ·{" "}
                 {event.metrics.consecutiveFailures} consecutive failures
               </p>
+              {reviewUsage !== undefined &&
+              (reviewUsage.inputTokens !== null || reviewUsage.outputTokens !== null) ? (
+                <p className="tabular-nums">
+                  {reviewUsage.inputTokens === null
+                    ? "Input usage unavailable"
+                    : `${formatSubagentTokenCount(reviewUsage.inputTokens)} input tokens`}
+                  {reviewUsage.cachedInputTokens === null
+                    ? ""
+                    : ` · ${formatSubagentTokenCount(reviewUsage.cachedInputTokens)} cached`}
+                  {reviewUsage.cacheWriteInputTokens === null
+                    ? ""
+                    : ` · ${formatSubagentTokenCount(reviewUsage.cacheWriteInputTokens)} cache writes`}
+                  {reviewUsage.outputTokens === null
+                    ? ""
+                    : ` · ${formatSubagentTokenCount(reviewUsage.outputTokens)} output tokens`}
+                </p>
+              ) : null}
               {event.metrics.regions.map((region) => (
                 <p key={region.id}>
                   {region.id} ({region.role}): {region.sampleCount} captures,{" "}
-                  {region.changedSampleCount} changed, {region.unchangedSampleCount} unchanged
+                  {region.changedSampleCount} changed
+                  {region.sampleCount === 0
+                    ? ""
+                    : ` (${Math.round((region.changedSampleCount / region.sampleCount) * 100)}%)`}
+                  , {region.unchangedSampleCount} unchanged
                 </p>
               ))}
               {event.observation.error !== null ? (

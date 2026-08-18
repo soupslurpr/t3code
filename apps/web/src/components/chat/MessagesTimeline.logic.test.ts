@@ -623,6 +623,45 @@ describe("resolveMonitorSystemEventPresentation", () => {
       }),
     ).toEqual({ title: "Monitor triggered", summary: "Build passed." });
   });
+
+  it("makes a paused model evaluator explicit", () => {
+    expect(
+      resolveMonitorSystemEventPresentation({
+        type: "monitor.review",
+        monitorId: ThreadMonitorId.make("monitor-2"),
+        revision: 1,
+        requestedAt: "2026-01-01T00:00:00.000Z",
+        reason: "The watch completed 12 evaluations in this revision.",
+        evaluatorPaused: true,
+        metrics: {
+          evaluationCount: 12,
+          uncertainEvaluationCount: 0,
+          consecutiveFailures: 0,
+          totalUsage: {
+            inputTokens: 50_000,
+            cachedInputTokens: 45_000,
+            cacheWriteInputTokens: 0,
+            outputTokens: 500,
+          },
+          regions: [
+            {
+              id: "timeline",
+              role: "trigger",
+              sampleCount: 20,
+              changedSampleCount: 12,
+              unchangedSampleCount: 8,
+            },
+          ],
+        },
+        observation: { label: "Wait for a reply", error: null },
+        observationTrust: "untrusted",
+        grantsAuthorization: false,
+      }),
+    ).toEqual({
+      title: "Monitor evaluator paused",
+      summary: "The watch completed 12 evaluations in this revision.",
+    });
+  });
 });
 
 describe("computeMessageDurationStart", () => {
