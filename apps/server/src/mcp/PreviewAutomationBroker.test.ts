@@ -1,7 +1,6 @@
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { expect, it } from "@effect/vitest";
 import {
-  AGENT_DESKTOP_HUMAN_AUTOMATION_OPERATION,
   EnvironmentId,
   PreviewAutomationClientDisconnectedError,
   PreviewAutomationDesktopTargetRequiredError,
@@ -407,59 +406,6 @@ it.effect("surfaces a safe diagnosis for a blank desktop display", () => {
   );
 });
 
-it.effect("surfaces structured Agent desktop command failures", () => {
-  const remoteError = {
-    _tag: "PreviewAutomationExecutionError",
-    message: "sanitized host failure",
-    detail: {
-      computerFailure: {
-        code: "timed-out",
-        category: "timeout",
-        message: "The Agent desktop command timed out.",
-        backendCode: "timed-out",
-        detail: "guest process 42 exceeded its timeout",
-      },
-    },
-  } as const;
-
-  return Effect.scoped(
-    Effect.gen(function* () {
-      const broker = yield* makeBroker;
-      const requests = requestsFrom(
-        yield* broker.connect(
-          makeHost({
-            supportedOperations: ["agentDesktopCommand"],
-            computerDesktopKinds: ["agent"],
-          }),
-        ),
-      );
-      yield* Stream.runForEach(requests, (request) =>
-        broker.respond({
-          clientId: "client-1",
-          connectionId: request.connectionId,
-          requestId: request.requestId,
-          ok: false,
-          error: remoteError,
-        }),
-      ).pipe(Effect.forkScoped);
-      yield* Effect.yieldNow;
-
-      const error = yield* broker
-        .invoke<void>({
-          scope,
-          operation: "agentDesktopCommand",
-          input: {},
-          timeoutMs: 1_234,
-        })
-        .pipe(Effect.flip);
-
-      expect(error).toBeInstanceOf(PreviewAutomationExecutionError);
-      expect(error).toMatchObject({ computerFailure: remoteError.detail.computerFailure });
-      expect(error.message).toBe("The Agent desktop command timed out.");
-    }),
-  );
-});
-
 it.effect("classifies a remote non-editable target without collapsing it to execution", () => {
   const remoteError = {
     _tag: "PreviewAutomationTargetNotEditableError",
@@ -555,103 +501,28 @@ it.effect("rejects calls when no connected host exists", () =>
   }),
 );
 
-it.effect("reports when no environment Agent-desktop host is connected", () =>
+it.effect("rejects Agent desktops at the client automation boundary", () =>
   Effect.gen(function* () {
     const broker = yield* makeBroker;
     const error = yield* broker
-      .invoke<void>({ scope, operation: "agentDesktopList", input: {} })
+      .invoke<void>({
+        scope,
+        operation: "computerSnapshot",
+        input: { desktop: { kind: "agent", desktopId: "agent-server-owned" } },
+      })
       .pipe(Effect.flip);
 
-    expect(error).toBeInstanceOf(PreviewAutomationNoAvailableHostError);
+    expect(error).toBeInstanceOf(PreviewAutomationDesktopTargetRequiredError);
     expect(error).toMatchObject({
+      operation: "computerSnapshot",
       computerFailure: {
-        code: "agent-desktop-unavailable",
-        category: "resource",
-        backendCode: "no-connected-automation-host",
-        detail:
-          "Connected hosts: 0; hosts supporting agentDesktopList: 0; advertised desktop kinds: none.",
+        code: "desktop-target-required",
+        field: "desktop.kind",
+        received: "agent",
+        expected: ['{"kind":"user"}'],
       },
     });
-    expect(error.message).toContain("Agent desktops are owned by the environment");
   }),
-);
-
-it.effect("explains why a remote user-desktop host cannot provide Agent desktops", () =>
-  Effect.scoped(
-    Effect.gen(function* () {
-      const broker = yield* makeBroker;
-      const events = yield* broker.connect(
-        makeHost({
-          supportedOperations: ["computerRequestControl"],
-          computerDesktopKinds: ["user"],
-        }),
-      );
-      yield* Stream.runDrain(events).pipe(Effect.forkScoped);
-      yield* Effect.yieldNow;
-
-      const listError = yield* broker
-        .invoke<void>({ scope, operation: "agentDesktopList", input: {} })
-        .pipe(Effect.flip);
-      expect(listError).toBeInstanceOf(PreviewAutomationNoAvailableHostError);
-      expect(listError).toMatchObject({
-        computerFailure: {
-          code: "agent-desktop-unavailable",
-          category: "unsupported-operation",
-          backendCode: "environment-agent-desktop-host-required",
-          detail:
-            "Connected hosts: 1; hosts supporting agentDesktopList: 0; advertised desktop kinds: user.",
-        },
-      });
-      expect(listError.message).toContain(
-        "Agent desktops are hosted only by the environment's primary desktop app",
-      );
-
-      const controlError = yield* broker
-        .invoke<void>({
-          scope,
-          operation: "computerRequestControl",
-          input: { desktop: { kind: "agent" } },
-        })
-        .pipe(Effect.flip);
-      expect(controlError).toMatchObject({
-        computerFailure: {
-          backendCode: "environment-agent-desktop-host-required",
-          field: "desktop.kind",
-          received: "agent",
-          expected: ["user"],
-        },
-      });
-    }),
-  ),
-);
-
-it.effect("distinguishes an unsupported operation from a missing desktop kind", () =>
-  Effect.scoped(
-    Effect.gen(function* () {
-      const broker = yield* makeBroker;
-      const events = yield* broker.connect(
-        makeHost({
-          supportedOperations: ["computerRequestControl"],
-          computerDesktopKinds: ["agent"],
-        }),
-      );
-      yield* Stream.runDrain(events).pipe(Effect.forkScoped);
-      yield* Effect.yieldNow;
-
-      const error = yield* broker
-        .invoke<void>({ scope, operation: "agentDesktopList", input: {} })
-        .pipe(Effect.flip);
-      expect(error).toMatchObject({
-        computerFailure: {
-          code: "unsupported-operation",
-          backendCode: "automation-operation-unsupported",
-          field: "operation",
-          received: "agentDesktopList",
-        },
-      });
-      expect(error.message).toContain("do not support agentDesktopList");
-    }),
-  ),
 );
 
 it.effect("does not create host state from focus updates without a live stream", () =>
@@ -728,219 +599,6 @@ it.effect("routes requests for background threads through an environment-level h
   ),
 );
 
-it.effect("routes browser, user-desktop, and agent-desktop work independently", () =>
-  Effect.scoped(
-    Effect.gen(function* () {
-      const broker = yield* makeBroker;
-      const userRequests: RoutedRequest[] = [];
-      const agentRequests: RoutedRequest[] = [];
-      const userStream = requestsFrom(
-        yield* broker.connect(
-          makeHost({
-            clientId: "client-user-desktop",
-            supportedOperations: ["status", "computerRequestControl", "computerAct"],
-            computerDesktopKinds: ["user"],
-          }),
-        ),
-      );
-      const agentStream = requestsFrom(
-        yield* broker.connect(
-          makeHost({
-            clientId: "client-agent-desktop",
-            supportedOperations: ["agentDesktopList", "computerRequestControl", "computerAct"],
-            computerDesktopKinds: ["agent"],
-          }),
-        ),
-      );
-      yield* Stream.runForEach(userStream, (request) => {
-        userRequests.push(request);
-        return broker.respond({
-          clientId: "client-user-desktop",
-          connectionId: request.connectionId,
-          requestId: request.requestId,
-          ok: true,
-          result: `user:${request.operation}`,
-        });
-      }).pipe(Effect.forkScoped);
-      yield* Stream.runForEach(agentStream, (request) => {
-        agentRequests.push(request);
-        return broker.respond({
-          clientId: "client-agent-desktop",
-          connectionId: request.connectionId,
-          requestId: request.requestId,
-          ok: true,
-          result: `agent:${request.operation}`,
-        });
-      }).pipe(Effect.forkScoped);
-      yield* Effect.yieldNow;
-
-      expect(yield* broker.invoke<string>({ scope, operation: "status", input: {} })).toBe(
-        "user:status",
-      );
-      expect(
-        yield* broker.invoke<string>({ scope, operation: "agentDesktopList", input: {} }),
-      ).toBe("agent:agentDesktopList");
-      expect(
-        yield* broker.invoke<string>({
-          scope,
-          operation: "computerRequestControl",
-          input: { desktop: { kind: "agent" } },
-        }),
-      ).toBe("agent:computerRequestControl");
-      expect(
-        yield* broker.invoke<string>({
-          scope,
-          operation: "computerAct",
-          input: { desktop: { kind: "agent", desktopId: "agent-1" }, actions: [] },
-        }),
-      ).toBe("agent:computerAct");
-
-      expect(userRequests).toHaveLength(1);
-      expect(agentRequests.map(({ controllerId }) => controllerId)).toEqual([
-        scope.providerSessionId,
-        scope.providerSessionId,
-        scope.providerSessionId,
-      ]);
-
-      expect(
-        yield* broker.invoke<string>({
-          scope,
-          operation: "computerRequestControl",
-          input: { desktop: { kind: "user" } },
-        }),
-      ).toBe("user:computerRequestControl");
-      expect(
-        yield* broker.invoke<string>({
-          scope,
-          operation: "computerAct",
-          input: { desktop: { kind: "user" }, actions: [] },
-        }),
-      ).toBe("user:computerAct");
-    }),
-  ),
-);
-
-it.effect("keeps focused user and primary Agent desktop hosts independent", () =>
-  Effect.scoped(
-    Effect.gen(function* () {
-      const broker = yield* makeBroker;
-      let userConnectionId = "";
-      const userRequests = requestsFrom(
-        yield* broker.connect(
-          makeHost({
-            clientId: "client-focused-user",
-            supportedOperations: ["computerRequestControl", "computerAct"],
-            computerDesktopKinds: ["user"],
-          }),
-        ),
-        (connectionId) => {
-          userConnectionId = connectionId;
-        },
-      );
-      const agentRequests = requestsFrom(
-        yield* broker.connect(
-          makeHost({
-            clientId: "client-primary-agent",
-            supportedOperations: ["agentDesktopList", "computerRequestControl", "computerAct"],
-            computerDesktopKinds: ["user", "agent"],
-          }),
-        ),
-      );
-      yield* Stream.runForEach(userRequests, (request) =>
-        broker.respond({
-          clientId: "client-focused-user",
-          connectionId: request.connectionId,
-          requestId: request.requestId,
-          ok: true,
-          result: `user:${request.operation}`,
-        }),
-      ).pipe(Effect.forkScoped);
-      yield* Stream.runForEach(agentRequests, (request) =>
-        broker.respond({
-          clientId: "client-primary-agent",
-          connectionId: request.connectionId,
-          requestId: request.requestId,
-          ok: true,
-          result: `agent:${request.operation}`,
-        }),
-      ).pipe(Effect.forkScoped);
-      yield* Effect.yieldNow;
-      yield* broker.focusHost({
-        clientId: "client-focused-user",
-        environmentId: scope.environmentId,
-        connectionId: userConnectionId,
-        focused: true,
-      });
-
-      expect(
-        yield* broker.invoke<string>({
-          scope,
-          operation: "computerRequestControl",
-          input: { desktop: { kind: "user" } },
-        }),
-      ).toBe("user:computerRequestControl");
-      expect(
-        yield* broker.invoke<string>({ scope, operation: "agentDesktopList", input: {} }),
-      ).toBe("agent:agentDesktopList");
-      expect(
-        yield* broker.invoke<string>({
-          scope,
-          operation: "computerAct",
-          input: { desktop: { kind: "agent", desktopId: "agent-1" }, actions: [] },
-        }),
-      ).toBe("agent:computerAct");
-      const missingTarget = yield* broker
-        .invoke<string>({ scope, operation: "computerAct", input: { actions: [] } })
-        .pipe(Effect.flip);
-      expect(missingTarget).toBeInstanceOf(PreviewAutomationDesktopTargetRequiredError);
-      expect(missingTarget).toMatchObject({
-        computerFailure: {
-          code: "desktop-target-required",
-          field: "desktop",
-          received: "missing",
-        },
-      });
-    }),
-  ),
-);
-
-it.effect("routes human supervision only to an Agent desktop host", () =>
-  Effect.scoped(
-    Effect.gen(function* () {
-      const broker = yield* makeBroker;
-      const routedRequests: RoutedRequest[] = [];
-      const requests = requestsFrom(
-        yield* broker.connect(
-          makeHost({
-            supportedOperations: [AGENT_DESKTOP_HUMAN_AUTOMATION_OPERATION],
-            computerDesktopKinds: ["agent"],
-          }),
-        ),
-      );
-      yield* Stream.runForEach(requests, (request) => {
-        routedRequests.push(request);
-        return broker.respond({
-          clientId: "client-1",
-          connectionId: request.connectionId,
-          requestId: request.requestId,
-          ok: true,
-          result: "human",
-        });
-      }).pipe(Effect.forkScoped);
-      yield* Effect.yieldNow;
-
-      expect(
-        yield* broker.invoke<string>({
-          scope: { ...scope, providerSessionId: "human:session-1" },
-          operation: AGENT_DESKTOP_HUMAN_AUTOMATION_OPERATION,
-          input: { operation: "list" },
-        }),
-      ).toBe("human");
-      expect(routedRequests[0]?.controllerId).toBe("human:session-1");
-    }),
-  ),
-);
-
 it.effect("gives parallel provider sessions distinct computer controller identities", () =>
   Effect.scoped(
     Effect.gen(function* () {
@@ -950,7 +608,6 @@ it.effect("gives parallel provider sessions distinct computer controller identit
         yield* broker.connect(
           makeHost({
             supportedOperations: ["computerRequestControl"],
-            computerDesktopKinds: ["agent"],
           }),
         ),
       );
@@ -971,14 +628,14 @@ it.effect("gives parallel provider sessions distinct computer controller identit
         yield* broker.invoke<string>({
           scope,
           operation: "computerRequestControl",
-          input: { desktop: { kind: "agent" } },
+          input: { desktop: { kind: "user" } },
         }),
       ).toBe(scope.providerSessionId);
       expect(
         yield* broker.invoke<string>({
           scope: secondScope,
           operation: "computerRequestControl",
-          input: { desktop: { kind: "agent" } },
+          input: { desktop: { kind: "user" } },
         }),
       ).toBe(secondScope.providerSessionId);
       expect(routedRequests.map(({ controllerId }) => controllerId)).toEqual([

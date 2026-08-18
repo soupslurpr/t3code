@@ -1,6 +1,4 @@
 import {
-  AGENT_DESKTOP_HUMAN_AUTOMATION_OPERATION,
-  AGENT_DESKTOP_AUTOMATION_OPERATIONS,
   ComputerAutomationFailure,
   COMPUTER_AUTOMATION_OPERATIONS,
   isComputerAutomationFailureKind,
@@ -71,7 +69,6 @@ interface ClientConnection {
   readonly connectionId: string;
   readonly environmentId: PreviewAutomationHost["environmentId"];
   readonly supportedOperations: ReadonlySet<PreviewAutomationOperation>;
-  readonly computerDesktopKinds: ReadonlySet<"user" | "agent">;
   readonly focused: boolean;
   readonly focusOrder: number;
   readonly queue: Queue.Queue<PreviewAutomationStreamEvent>;
@@ -125,7 +122,6 @@ interface BrokerState {
 interface UnavailableHostDiagnostics {
   readonly connectedHostCount: number;
   readonly operationHostCount: number;
-  readonly availableDesktopKinds: ReadonlyArray<"user" | "agent">;
   readonly assignedHostIncompatible: boolean;
 }
 
@@ -181,26 +177,19 @@ const selectorDiagnosticsFromInput = (
 };
 
 const computerOperations = new Set<string>(COMPUTER_AUTOMATION_OPERATIONS);
-const agentDesktopOperations = new Set<string>(AGENT_DESKTOP_AUTOMATION_OPERATIONS);
 
 const isComputerOperation = (operation: PreviewAutomationOperation): boolean =>
-  operation === AGENT_DESKTOP_HUMAN_AUTOMATION_OPERATION ||
-  computerOperations.has(operation) ||
-  agentDesktopOperations.has(operation);
+  computerOperations.has(operation);
 
 /** Builds one provider-session affinity key without inferring a computer target. */
 function hostAssignmentKey(
   scope: McpInvocationContext.McpInvocationScope,
   operation: PreviewAutomationOperation,
-  computerDesktopKind?: "user" | "agent",
 ): string {
   if (!isComputerOperation(operation)) {
     return `${scope.environmentId}\u0000${scope.providerSessionId}\u0000preview`;
   }
-  if (computerDesktopKind === undefined) {
-    throw new Error("computer desktop kind is required for host affinity");
-  }
-  return `${scope.environmentId}\u0000${scope.providerSessionId}\u0000computer:${computerDesktopKind}`;
+  return `${scope.environmentId}\u0000${scope.providerSessionId}\u0000computer`;
 }
 
 /** Reads an explicit computer target without trusting arbitrary tool input. */
@@ -211,26 +200,7 @@ function requestedComputerDesktopKind(input: unknown): "user" | "agent" | undefi
   return desktop.kind === "user" || desktop.kind === "agent" ? desktop.kind : undefined;
 }
 
-/** Describes the explicit targets accepted by one computer operation. */
-function expectedComputerDesktopTargets(
-  operation: PreviewAutomationOperation,
-): ReadonlyArray<string> {
-  if (operation === "computerRequestAvailability" || operation === "computerReleaseAvailability") {
-    return ['{"kind":"user"}'];
-  }
-  if (operation === "computerRequestView" || operation === "computerRequestControl") {
-    return ['{"kind":"user"}', '{"kind":"agent"}', '{"kind":"agent","desktopId":"..."}'];
-  }
-  return ['{"kind":"user"}', '{"kind":"agent","desktopId":"..."}'];
-}
-
-/** Treats capability-unaware desktop hosts as user-desktop-only. */
-function supportsComputerDesktopKind(
-  connection: ClientConnection,
-  kind: "user" | "agent",
-): boolean {
-  return connection.computerDesktopKinds.has(kind);
-}
+const USER_DESKTOP_TARGETS = ['{"kind":"user"}'] as const;
 
 /** Describes connected host capabilities without exposing client identities. */
 function unavailableHostDiagnostics(
@@ -238,14 +208,10 @@ function unavailableHostDiagnostics(
   operation: PreviewAutomationOperation,
   assignedHostIncompatible: boolean,
 ): UnavailableHostDiagnostics {
-  const availableDesktopKinds = (["user", "agent"] as const).filter((kind) =>
-    connections.some((connection) => supportsComputerDesktopKind(connection, kind)),
-  );
   return {
     connectedHostCount: connections.length,
     operationHostCount: connections.filter((connection) => supportsOperation(connection, operation))
       .length,
-    availableDesktopKinds,
     assignedHostIncompatible,
   };
 }
@@ -254,25 +220,16 @@ function unavailableHostDiagnostics(
 function unavailableComputerHostFailure(input: {
   readonly operation: PreviewAutomationOperation;
   readonly environmentId: PreviewAutomationInvokeInput["scope"]["environmentId"];
-  readonly desktopKind: "user" | "agent";
   readonly diagnostics: UnavailableHostDiagnostics;
 }): ComputerAutomationFailure {
   const { diagnostics } = input;
-  const desktopLabel = input.desktopKind === "agent" ? "Agent desktop" : "user desktop";
-  const availableKinds =
-    diagnostics.availableDesktopKinds.length === 0
-      ? "none"
-      : diagnostics.availableDesktopKinds.join(", ");
-  const detail = `Connected hosts: ${diagnostics.connectedHostCount}; hosts supporting ${input.operation}: ${diagnostics.operationHostCount}; advertised desktop kinds: ${availableKinds}.`;
+  const detail = `Connected hosts: ${diagnostics.connectedHostCount}; hosts supporting ${input.operation}: ${diagnostics.operationHostCount}.`;
 
   if (diagnostics.connectedHostCount === 0) {
     return {
-      code: input.desktopKind === "agent" ? "agent-desktop-unavailable" : "unsupported-operation",
+      code: "unsupported-operation",
       category: "resource",
-      message:
-        input.desktopKind === "agent"
-          ? `No Agent-desktop host is connected for environment ${input.environmentId}. Agent desktops are owned by the environment and require its primary desktop app.`
-          : `No user-desktop automation host is connected for environment ${input.environmentId}.`,
+      message: `No user-desktop automation host is connected for environment ${input.environmentId}.`,
       backendCode: "no-connected-automation-host",
       detail,
       phase: "execution",
@@ -282,43 +239,13 @@ function unavailableComputerHostFailure(input: {
 
   if (diagnostics.assignedHostIncompatible) {
     return {
-      code: diagnostics.availableDesktopKinds.includes(input.desktopKind)
-        ? "unsupported-operation"
-        : input.desktopKind === "agent"
-          ? "agent-desktop-unavailable"
-          : "unsupported-operation",
+      code: "unsupported-operation",
       category: "unsupported-operation",
-      message: `The assigned ${desktopLabel} host does not support ${input.operation}. T3 retained host affinity instead of moving stateful work to another machine.`,
+      message: `The assigned user-desktop host does not support ${input.operation}. T3 retained host affinity instead of moving stateful work to another machine.`,
       backendCode: "assigned-automation-host-incompatible",
       detail,
       field: "operation",
       received: input.operation,
-      phase: "execution",
-      cleanup: { keys: "not-needed", buttons: "not-needed" },
-    };
-  }
-
-  if (!diagnostics.availableDesktopKinds.includes(input.desktopKind)) {
-    return {
-      code: input.desktopKind === "agent" ? "agent-desktop-unavailable" : "unsupported-operation",
-      category: "unsupported-operation",
-      message:
-        input.desktopKind === "agent"
-          ? `Connected automation hosts cannot provide Agent desktops for environment ${input.environmentId}. Agent desktops are hosted only by the environment's primary desktop app; target {"kind":"user"} only when the connected interactive desktop is the intended surface.`
-          : `Connected automation hosts cannot provide the requested user desktop for environment ${input.environmentId}.`,
-      backendCode:
-        input.desktopKind === "agent"
-          ? "environment-agent-desktop-host-required"
-          : "desktop-kind-unavailable",
-      detail,
-      ...(input.operation === AGENT_DESKTOP_HUMAN_AUTOMATION_OPERATION ||
-      agentDesktopOperations.has(input.operation)
-        ? {}
-        : {
-            field: "desktop.kind",
-            received: input.desktopKind,
-            expected: diagnostics.availableDesktopKinds,
-          }),
       phase: "execution",
       cleanup: { keys: "not-needed", buttons: "not-needed" },
     };
@@ -339,9 +266,9 @@ function unavailableComputerHostFailure(input: {
   }
 
   return {
-    code: input.desktopKind === "agent" ? "agent-desktop-unavailable" : "unsupported-operation",
+    code: "unsupported-operation",
     category: "unsupported-operation",
-    message: `No connected automation host supports ${input.operation} for the requested ${desktopLabel} in environment ${input.environmentId}.`,
+    message: `No connected automation host supports ${input.operation} for the requested user desktop in environment ${input.environmentId}.`,
     backendCode: "no-compatible-automation-host",
     detail,
     phase: "execution",
@@ -548,7 +475,6 @@ export const make = Effect.gen(function* PreviewAutomationBrokerMake() {
       connectionId,
       environmentId: host.environmentId,
       supportedOperations: new Set(host.supportedOperations ?? PREVIEW_AUTOMATION_V1_OPERATIONS),
-      computerDesktopKinds: new Set(host.computerDesktopKinds ?? ["user"]),
       focused: false,
       focusOrder: 0,
       queue,
@@ -646,14 +572,11 @@ export const make = Effect.gen(function* PreviewAutomationBrokerMake() {
   ): Effect.fn.Return<A, PreviewAutomationError> {
     const timeoutMs = input.timeoutMs ?? 15_000;
     const computerOperation = isComputerOperation(input.operation);
-    const explicitDesktopKind =
-      input.operation === AGENT_DESKTOP_HUMAN_AUTOMATION_OPERATION ||
-      agentDesktopOperations.has(input.operation)
-        ? ("agent" as const)
-        : computerOperation
-          ? requestedComputerDesktopKind(input.input)
-          : undefined;
-    if (computerOperation && explicitDesktopKind === undefined) {
+    const explicitDesktopKind = computerOperation
+      ? requestedComputerDesktopKind(input.input)
+      : undefined;
+    if (computerOperation && explicitDesktopKind !== "user") {
+      const missingDesktop = explicitDesktopKind === undefined;
       return yield* new PreviewAutomationDesktopTargetRequiredError({
         operation: input.operation,
         environmentId: input.scope.environmentId,
@@ -663,16 +586,17 @@ export const make = Effect.gen(function* PreviewAutomationBrokerMake() {
         computerFailure: {
           code: "desktop-target-required",
           category: "invalid-input",
-          message: "An explicit desktop target is required.",
-          field: "desktop",
-          received: "missing",
-          expected: expectedComputerDesktopTargets(input.operation),
+          message: missingDesktop
+            ? "An explicit desktop target is required."
+            : "The client automation broker accepts only the user desktop.",
+          field: missingDesktop ? "desktop" : "desktop.kind",
+          received: missingDesktop ? "missing" : explicitDesktopKind,
+          expected: USER_DESKTOP_TARGETS,
           phase: "validation",
           cleanup: { keys: "not-needed", buttons: "not-needed" },
         },
       });
     }
-    const computerDesktopKind = computerOperation ? explicitDesktopKind : undefined;
     const deferred = yield* Deferred.make<unknown, PreviewAutomationError>();
     const route = yield* SynchronizedRef.modify<BrokerState, HostRoute>(state, (current) => {
       const assignments = new Map(
@@ -684,39 +608,24 @@ export const make = Effect.gen(function* PreviewAutomationBrokerMake() {
           );
         }),
       );
-      const assignmentKey = hostAssignmentKey(input.scope, input.operation, computerDesktopKind);
+      const assignmentKey = hostAssignmentKey(input.scope, input.operation);
       const assigned = assignments.get(assignmentKey);
       const assignedConnection = assigned ? current.clients.get(assigned.clientId) : undefined;
       const hasLiveAssignment = assignedConnection?.environmentId === input.scope.environmentId;
-      const assignedTargetCompatible =
-        !computerOperation ||
-        (computerDesktopKind !== undefined &&
-          assignedConnection !== undefined &&
-          supportsComputerDesktopKind(assignedConnection, computerDesktopKind));
       // Browser and computer affinity are independent: opening a collaborative
       // preview must not strand later native computer use on a browser-only host.
-      // User- and Agent-desktop affinity are independent as well, so supervising
-      // a remote Agent desktop does not redirect the user's current desktop.
       // Within each domain, retain physical-host affinity so stateful interactions
       // cannot jump clients.
       const environmentConnections = Array.from(current.clients.values()).filter(
         (host) => host.environmentId === input.scope.environmentId,
       );
       const connection =
-        hasLiveAssignment &&
-        assignedTargetCompatible &&
-        supportsOperation(assignedConnection, input.operation)
+        hasLiveAssignment && supportsOperation(assignedConnection, input.operation)
           ? assignedConnection
           : hasLiveAssignment
             ? undefined
             : environmentConnections
-                .filter(
-                  (host) =>
-                    supportsOperation(host, input.operation) &&
-                    (!computerOperation ||
-                      (computerDesktopKind !== undefined &&
-                        supportsComputerDesktopKind(host, computerDesktopKind))),
-                )
+                .filter((host) => supportsOperation(host, input.operation))
                 .sort(
                   (left, right) =>
                     Number(right.focused) - Number(left.focused) ||
@@ -782,15 +691,13 @@ export const make = Effect.gen(function* PreviewAutomationBrokerMake() {
       ] as const;
     });
     if (route._tag === "unavailable") {
-      const computerFailure =
-        computerOperation && computerDesktopKind !== undefined
-          ? unavailableComputerHostFailure({
-              operation: input.operation,
-              environmentId: input.scope.environmentId,
-              desktopKind: computerDesktopKind,
-              diagnostics: route.diagnostics,
-            })
-          : undefined;
+      const computerFailure = computerOperation
+        ? unavailableComputerHostFailure({
+            operation: input.operation,
+            environmentId: input.scope.environmentId,
+            diagnostics: route.diagnostics,
+          })
+        : undefined;
       return yield* new PreviewAutomationNoAvailableHostError({
         operation: input.operation,
         environmentId: input.scope.environmentId,

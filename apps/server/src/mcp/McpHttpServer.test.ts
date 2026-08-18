@@ -10,6 +10,7 @@ import {
   type ThreadMonitor,
   ThreadMonitorError,
   ThreadMonitorId,
+  type ComputerAutomationSnapshot,
 } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
 import * as Fiber from "effect/Fiber";
@@ -24,6 +25,9 @@ import * as McpInvocationContext from "./McpInvocationContext.ts";
 import * as PreviewAutomationBroker from "./PreviewAutomationBroker.ts";
 import { ThreadMonitorService } from "../threadMonitor/ThreadMonitorService.ts";
 import * as ComputerObservationStore from "../computer/ComputerObservationStore.ts";
+import * as ComputerAutomationRouter from "../computer/ComputerAutomationRouter.ts";
+import * as AgentDesktopManager from "../agentDesktop/AgentDesktopManager.ts";
+import * as AgentDesktopTransfer from "../agentDesktop/AgentDesktopTransferService.ts";
 
 const environmentId = EnvironmentId.make("environment-mcp-test");
 const threadId = ThreadId.make("thread-mcp-test");
@@ -206,11 +210,28 @@ const MonitorTestLayer = Layer.succeed(
     checkNow: () => Effect.die("unused"),
   }),
 );
+const BrokerTestLayer = PreviewAutomationBroker.layer.pipe(Layer.provide(NodeServices.layer));
+const AgentDesktopManagerTestLayer = Layer.mock(AgentDesktopManager.AgentDesktopManager)({
+  list: Effect.succeed({ available: true, desktops: [], requirements: [] }),
+  snapshot: (_controllerId, _options, _desktopId) =>
+    Effect.succeed(automationResult("computerSnapshot") as ComputerAutomationSnapshot),
+});
+const ComputerAutomationRouterTestLayer = ComputerAutomationRouter.layer.pipe(
+  Layer.provide(BrokerTestLayer),
+  Layer.provide(AgentDesktopManagerTestLayer),
+);
+const AgentDesktopTransferTestLayer = Layer.mock(AgentDesktopTransfer.AgentDesktopTransferService)(
+  {},
+);
+
 const TestLayer = McpHttpServer.ToolkitRegistrationLive.pipe(
   Layer.provide(MonitorTestLayer),
+  Layer.provide(AgentDesktopTransferTestLayer),
+  Layer.provide(AgentDesktopManagerTestLayer),
+  Layer.provide(ComputerAutomationRouterTestLayer),
   Layer.provideMerge(ComputerObservationStore.layer),
   Layer.provideMerge(McpServer.McpServer.layer),
-  Layer.provideMerge(PreviewAutomationBroker.layer.pipe(Layer.provide(NodeServices.layer))),
+  Layer.provideMerge(BrokerTestLayer),
 );
 
 /** Returns a valid renderer response for each operation exercised by this suite. */
@@ -668,40 +689,6 @@ it.effect("denies preview access without removing computer tools", () =>
   }).pipe(Effect.provide(TestLayer)),
 );
 
-it.effect("surfaces missing environment Agent-desktop hosting through computer tools", () =>
-  Effect.gen(function* () {
-    const server = yield* McpServer.McpServer;
-    const result = yield* server
-      .callTool({
-        name: "computer_request_control",
-        arguments: { desktop: { kind: "agent" } },
-      })
-      .pipe(
-        Effect.provideService(McpInvocationContext.McpInvocationContext, invocation),
-        Effect.provideService(McpSchema.McpServerClient, client),
-      );
-
-    expect(result.isError).toBe(true);
-    expect(result.structuredContent).toMatchObject({
-      error: {
-        _tag: "PreviewAutomationNoAvailableHostError",
-        operation: "computerRequestControl",
-        code: "agent-desktop-unavailable",
-        category: "resource",
-        backendCode: "no-connected-automation-host",
-        detail:
-          "Connected hosts: 0; hosts supporting computerRequestControl: 0; advertised desktop kinds: none.",
-      },
-    });
-    expect(result.content).toEqual([
-      {
-        type: "text",
-        text: expect.stringContaining('"backendCode":"no-connected-automation-host"'),
-      },
-    ]);
-  }).pipe(Effect.provide(TestLayer)),
-);
-
 it.effect("terminates HTTP MCP sessions with DELETE", () =>
   Effect.scoped(
     Effect.gen(function* () {
@@ -770,7 +757,6 @@ it.effect("registers annotated tools and preserves authenticated request context
         clientId: "mcp-test-client",
         environmentId,
         supportedOperations: [...DESKTOP_AUTOMATION_OPERATIONS],
-        computerDesktopKinds: ["user", "agent"],
       });
       yield* Stream.runForEach(events, (event) => {
         if (event.type === "connected") return Effect.void;
@@ -1085,6 +1071,7 @@ it.effect("registers annotated tools and preserves authenticated request context
       );
 
       const agentDesktopId = "agent-mcp-observation-test";
+      const routedBeforeAgentSnapshot = routedRequests.length;
       const agentSnapshot = yield* server
         .callTool({
           name: "computer_snapshot",
@@ -1095,6 +1082,7 @@ it.effect("registers annotated tools and preserves authenticated request context
           Effect.provideService(McpSchema.McpServerClient, client),
         );
       expect(agentSnapshot.isError).toBe(false);
+      expect(routedRequests).toHaveLength(routedBeforeAgentSnapshot);
       const observationStore = yield* ComputerObservationStore.ComputerObservationStore;
       const retainedObservation = yield* observationStore.read({
         environmentId,
@@ -1114,6 +1102,21 @@ it.effect("registers annotated tools and preserves authenticated request context
           },
         ],
       });
+
+      const routedBeforeAgentList = routedRequests.length;
+      const agentDesktopList = yield* server
+        .callTool({ name: "agent_desktop_list", arguments: {} })
+        .pipe(
+          Effect.provideService(McpInvocationContext.McpInvocationContext, invocation),
+          Effect.provideService(McpSchema.McpServerClient, client),
+        );
+      expect(agentDesktopList.isError).toBe(false);
+      expect(agentDesktopList.structuredContent).toMatchObject({
+        available: true,
+        desktops: [],
+        requirements: [],
+      });
+      expect(routedRequests).toHaveLength(routedBeforeAgentList);
 
       const unchangedSnapshot = yield* server
         .callTool({

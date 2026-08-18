@@ -16,7 +16,9 @@
   "type": "module",
   "scripts": {
     "dev": "node --watch src/bin.ts",
-    "build:bundle": "vp pack && vp pack src/service-launcher.ts --out-dir dist --no-clean",
+    "build:bundle": "vp pack && vp pack src/service-launcher.ts --out-dir dist --no-clean && node scripts/copy-agent-desktop-resources.mjs",
+    "prepare:agent-desktop-image": "node scripts/agent-desktop-image.mjs",
+    "test:agent-desktop": "node scripts/agent-desktop-smoke.ts",
     "start": "node dist/bin.mjs",
     "typecheck": "tsgo --noEmit",
     "test": "vp test run"
@@ -31,6 +33,7 @@
     "effect": "catalog:",
     "msgpackr-extract": "3.0.4",
     "node-pty": "^1.1.0",
+    "sharp": "0.34.5",
     "yaml": "catalog:",
     "yauzl": "^3.4.0"
   },

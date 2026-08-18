@@ -29,11 +29,6 @@ import * as HttpApiBuilder from "effect/unstable/httpapi/HttpApiBuilder";
 import { OtlpTracer } from "effect/unstable/observability";
 
 import * as ServerConfig from "./config.ts";
-import {
-  AGENT_DESKTOP_TRANSFER_MAX_CHUNK_BYTES,
-  AGENT_DESKTOP_TRANSFER_ROUTE_PREFIX,
-  AgentDesktopTransferService,
-} from "./agentDesktop/AgentDesktopTransferService.ts";
 import { ASSET_ROUTE_PREFIX, resolveAsset } from "./assets/AssetAccess.ts";
 import { statMediaFile, streamMediaFile, type OpenMediaFile } from "./assets/MediaFile.ts";
 import {
@@ -447,123 +442,6 @@ export const attachmentUploadRouteLayer = HttpRouter.add(
       ? HttpServerResponse.empty({ status: 204 })
       : HttpServerResponse.text(stored.detail, { status: stored.status });
   }),
-);
-
-/** Extracts one opaque transfer capability without accepting nested paths. */
-function transferToken(request: HttpServerRequest.HttpServerRequest): string | null {
-  const url = HttpServerRequest.toURL(request);
-  if (Option.isNone(url)) return null;
-  if (url.value.search.length > 0) return null;
-  const prefix = `${AGENT_DESKTOP_TRANSFER_ROUTE_PREFIX}/`;
-  if (!url.value.pathname.startsWith(prefix)) return null;
-  const token = url.value.pathname.slice(prefix.length);
-  return /^[A-Za-z0-9_-]{43}$/.test(token) ? token : null;
-}
-
-/** Parses one exact upload Content-Range. */
-function parseTransferContentRange(
-  value: string | undefined,
-): { readonly start: number; readonly end: number; readonly total: number } | null {
-  const match = /^bytes (\d+)-(\d+)\/(\d+)$/.exec(value ?? "");
-  if (match === null) return null;
-  const start = Number(match[1]);
-  const end = Number(match[2]);
-  const total = Number(match[3]);
-  return Number.isSafeInteger(start) && Number.isSafeInteger(end) && Number.isSafeInteger(total)
-    ? { start, end, total }
-    : null;
-}
-
-/** Streams bounded ranged downloads through an opaque short-lived capability. */
-export const agentDesktopTransferDownloadRouteLayer = HttpRouter.add(
-  "GET",
-  `${AGENT_DESKTOP_TRANSFER_ROUTE_PREFIX}/*`,
-  Effect.gen(function* () {
-    const request = yield* HttpServerRequest.HttpServerRequest;
-    const token = transferToken(request);
-    if (token === null) return HttpServerResponse.text("Not Found", { status: 404 });
-    const transfers = yield* AgentDesktopTransferService;
-    const result = yield* transfers.download(token, request.headers.range);
-    if (result.status === "not-found") {
-      return HttpServerResponse.text("Not Found", { status: 404 });
-    }
-    if (result.status === "range-not-satisfiable") {
-      return HttpServerResponse.empty({
-        status: 416,
-        headers: { "Content-Range": `bytes */${result.totalBytes}` },
-      });
-    }
-    const end = result.download.offset + result.download.bytesToRead - 1;
-    return yield* HttpServerResponse.file(result.download.path, {
-      status: 206,
-      offset: result.download.offset,
-      bytesToRead: result.download.bytesToRead,
-      contentType: "application/octet-stream",
-      contentLength: result.download.bytesToRead,
-      headers: {
-        "Accept-Ranges": "bytes",
-        "Cache-Control": "no-store, no-transform",
-        "Content-Range": `bytes ${result.download.offset}-${end}/${result.download.totalBytes}`,
-        "X-Content-Type-Options": "nosniff",
-      },
-    }).pipe(
-      Effect.orElseSucceed(() => HttpServerResponse.text("Transfer unavailable", { status: 410 })),
-    );
-  }),
-);
-
-/** Accepts one sequential resumable upload chunk through an opaque capability. */
-export const agentDesktopTransferUploadRouteLayer = HttpRouter.add(
-  "PUT",
-  `${AGENT_DESKTOP_TRANSFER_ROUTE_PREFIX}/*`,
-  Effect.gen(function* () {
-    const request = yield* HttpServerRequest.HttpServerRequest;
-    const token = transferToken(request);
-    if (token === null) return HttpServerResponse.text("Not Found", { status: 404 });
-    const range = parseTransferContentRange(request.headers["content-range"]);
-    const contentLength = Number(request.headers["content-length"]);
-    if (
-      range === null ||
-      !Number.isSafeInteger(contentLength) ||
-      contentLength <= 0 ||
-      contentLength > AGENT_DESKTOP_TRANSFER_MAX_CHUNK_BYTES ||
-      range.end - range.start + 1 !== contentLength
-    ) {
-      return HttpServerResponse.text("Invalid transfer chunk", { status: 400 });
-    }
-    const data = new Uint8Array(yield* request.arrayBuffer);
-    if (data.byteLength !== contentLength) {
-      return HttpServerResponse.text("Incomplete transfer chunk", { status: 400 });
-    }
-    const transfers = yield* AgentDesktopTransferService;
-    const result = yield* transfers.upload(token, { ...range, data });
-    if (result.status === "not-found") {
-      return HttpServerResponse.text("Not Found", { status: 404 });
-    }
-    if (result.status === "invalid") {
-      return HttpServerResponse.text(result.detail, { status: 400 });
-    }
-    if (result.status === "offset-mismatch") {
-      return HttpServerResponse.empty({
-        status: 409,
-        headers: { "Upload-Offset": String(result.nextOffset) },
-      });
-    }
-    if (result.status === "failed") {
-      return HttpServerResponse.text(result.detail, {
-        status: result.code === "resource-exhausted" ? 507 : 500,
-      });
-    }
-    return HttpServerResponse.empty({
-      status: result.complete ? 201 : 204,
-      headers: {
-        "Cache-Control": "no-store",
-        "Upload-Offset": String(result.nextOffset),
-      },
-    });
-  }).pipe(
-    Effect.orElseSucceed(() => HttpServerResponse.text("Transfer upload failed", { status: 500 })),
-  ),
 );
 
 const decodeBuildManifest = Schema.decodeUnknownEffect(
