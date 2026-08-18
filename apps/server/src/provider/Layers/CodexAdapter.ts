@@ -129,8 +129,7 @@ type CodexLifecycleItem =
   | EffectCodexSchema.V2ItemCompletedNotification["item"];
 
 type CodexToolUserInputQuestion =
-  | EffectCodexSchema.ServerRequest__ToolRequestUserInputQuestion
-  | EffectCodexSchema.ToolRequestUserInputParams__ToolRequestUserInputQuestion;
+  EffectCodexSchema.ToolRequestUserInputParams__ToolRequestUserInputQuestion;
 
 const ApprovalDecisionPayload = Schema.Struct({
   decision: ProviderApprovalDecision,
@@ -785,9 +784,7 @@ function mapToRuntimeEvents(
 
   if (event.kind === "request") {
     if (event.method === "item/tool/requestUserInput") {
-      const payload =
-        readPayload(EffectCodexSchema.ServerRequest__ToolRequestUserInputParams, event.payload) ??
-        readPayload(EffectCodexSchema.ToolRequestUserInputParams, event.payload);
+      const payload = readPayload(EffectCodexSchema.ToolRequestUserInputParams, event.payload);
       const questions = payload ? toUserInputQuestions(payload.questions) : undefined;
       if (!questions) {
         return [];
@@ -807,37 +804,28 @@ function mapToRuntimeEvents(
       switch (event.method) {
         case "item/commandExecution/requestApproval": {
           const payload = readPayload(
-            EffectCodexSchema.ServerRequest__CommandExecutionRequestApprovalParams,
+            EffectCodexSchema.CommandExecutionRequestApprovalParams,
             event.payload,
           );
           return payload?.command ?? payload?.reason ?? undefined;
         }
         case "item/fileChange/requestApproval": {
           const payload = readPayload(
-            EffectCodexSchema.ServerRequest__FileChangeRequestApprovalParams,
+            EffectCodexSchema.FileChangeRequestApprovalParams,
             event.payload,
           );
           return payload?.reason ?? undefined;
         }
         case "applyPatchApproval": {
-          const payload = readPayload(
-            EffectCodexSchema.ServerRequest__ApplyPatchApprovalParams,
-            event.payload,
-          );
+          const payload = readPayload(EffectCodexSchema.ApplyPatchApprovalParams, event.payload);
           return payload?.reason ?? undefined;
         }
         case "execCommandApproval": {
-          const payload = readPayload(
-            EffectCodexSchema.ServerRequest__ExecCommandApprovalParams,
-            event.payload,
-          );
+          const payload = readPayload(EffectCodexSchema.ExecCommandApprovalParams, event.payload);
           return payload?.reason ?? payload?.command.join(" ");
         }
         case "item/tool/call": {
-          const payload = readPayload(
-            EffectCodexSchema.ServerRequest__DynamicToolCallParams,
-            event.payload,
-          );
+          const payload = readPayload(EffectCodexSchema.DynamicToolCallParams, event.payload);
           return payload?.tool ?? undefined;
         }
         default:

@@ -16,21 +16,17 @@ import {
   HttpClientResponse,
 } from "effect/unstable/http";
 import { ChildProcess, ChildProcessSpawner } from "effect/unstable/process";
+import { zstdDecompressSync } from "node:zlib";
 
-const UPSTREAM_REF = "678157acaa819d5510adfe359abb5d0392cfe461";
+const UPSTREAM_REF = "3ba0f711642a888aec92a611a3f3b2211157ff89";
 const USER_AGENT = "effect-codex-app-server-generator";
-const GITHUB_API_BASE =
-  "https://api.github.com/repos/openai/codex/contents/codex-rs/app-server-protocol";
+const PRECOMPUTED_EXPORTS_URL = `https://raw.githubusercontent.com/openai/codex/${UPSTREAM_REF}/codex-rs/app-server-protocol/schema/precomputed/app-server-exports-experimental.json.zst`;
 
-const GithubContentEntries = Schema.Array(
-  Schema.Struct({
-    name: Schema.String,
-    path: Schema.String,
-    download_url: Schema.NullOr(Schema.String),
-    type: Schema.String,
-  }),
-);
-type GithubContentEntry = (typeof GithubContentEntries.Type)[number];
+const PrecomputedExports = Schema.Struct({
+  typescript: Schema.Record(Schema.String, Schema.String),
+  json_schema: Schema.Record(Schema.String, Schema.String),
+  internal_json_schema: Schema.Record(Schema.String, Schema.String),
+});
 
 const JsonSchemaDocument = Schema.StructWithRest(
   Schema.Struct({
@@ -38,7 +34,7 @@ const JsonSchemaDocument = Schema.StructWithRest(
   }),
   [Schema.Record(Schema.String, Schema.Json)],
 );
-const decodeGithubContentEntries = Schema.decodeEffect(Schema.fromJsonString(GithubContentEntries));
+const decodePrecomputedExports = Schema.decodeEffect(Schema.fromJsonString(PrecomputedExports));
 const decodeJsonSchemaDocument = Schema.decodeEffect(Schema.fromJsonString(JsonSchemaDocument));
 
 interface GeneratedPaths {
@@ -51,13 +47,15 @@ interface GeneratedPaths {
 interface MethodEntry {
   readonly method: string;
   readonly paramsType?: string;
+  readonly paramsNullable?: boolean;
+  readonly paramsOptional?: boolean;
 }
 
 interface JsonSchemaFile {
   readonly namespace?: string;
   readonly exportName: string;
   readonly fileName: string;
-  readonly downloadUrl: string;
+  readonly contents: string;
   readonly qualifiedName: string;
 }
 
@@ -68,11 +66,6 @@ class GeneratorError extends Schema.TaggedErrorClass<GeneratorError>()("Generato
   override get message() {
     return this.detail;
   }
-}
-
-/** Returns whether a JSON value is an object rather than an array or primitive. */
-function isJsonObject(value: Schema.Json): value is Schema.JsonObject {
-  return value !== null && typeof value === "object" && !Array.isArray(value);
 }
 
 const ManualSchemas: Record<string, Schema.Json> = {
@@ -148,25 +141,31 @@ const ManualSchemas: Record<string, Schema.Json> = {
     },
     required: ["authMethod", "authToken", "requiresOpenaiAuth"],
   },
+  // Upstream exposes these only as definitions in the aggregate request schema.
+  V2GetAccountTokenUsageParams: {
+    type: "object",
+    title: "GetAccountTokenUsageParams",
+    properties: {
+      threadId: {
+        anyOf: [{ type: "string" }, { type: "null" }],
+      },
+    },
+  },
+  V2RemoteControlDisableParams: {
+    type: "object",
+    title: "RemoteControlDisableParams",
+    properties: {
+      ephemeral: { type: "boolean" },
+    },
+  },
+  V2RemoteControlEnableParams: {
+    type: "object",
+    title: "RemoteControlEnableParams",
+    properties: {
+      ephemeral: { type: "boolean" },
+    },
+  },
 };
-
-// Carry small additive protocol fields between full upstream binding syncs.
-const SchemaPropertyPatches = {
-  ClientRequest__ThreadResumeParams: {
-    excludeTurns: {
-      type: "boolean",
-      description:
-        "When true, return only thread metadata and live-resume state without populating thread.turns.",
-    },
-  },
-  V2ThreadResumeParams: {
-    excludeTurns: {
-      type: "boolean",
-      description:
-        "When true, return only thread metadata and live-resume state without populating thread.turns.",
-    },
-  },
-} satisfies Record<string, Record<string, Schema.Json>>;
 
 const getGeneratedPaths = Effect.fn("getGeneratedPaths")(function* () {
   const path = yield* Path.Path;
@@ -185,25 +184,46 @@ const ensureGeneratedDir = Effect.fn("ensureGeneratedDir")(function* () {
   yield* fs.makeDirectory(generatedDir, { recursive: true });
 });
 
-const fetchText = Effect.fn("fetchText")(function* (url: string) {
-  return yield* HttpClientRequest.get(url).pipe(
+/** Downloads and decodes Codex's versioned experimental protocol export. */
+const fetchPrecomputedExports = Effect.fn("fetchPrecomputedExports")(function* () {
+  const response = yield* HttpClientRequest.get(PRECOMPUTED_EXPORTS_URL).pipe(
     HttpClientRequest.setHeader("user-agent", USER_AGENT),
     HttpClient.execute,
     Effect.flatMap(HttpClientResponse.filterStatusOk),
-    Effect.flatMap((okResponse) => okResponse.text),
     Effect.mapError(
       (cause) =>
         new GeneratorError({
-          detail: `Failed to fetch ${url}`,
+          detail: `Failed to fetch ${PRECOMPUTED_EXPORTS_URL}`,
           cause,
         }),
     ),
   );
-});
-
-const fetchDirectoryEntries = Effect.fn("fetchDirectoryEntries")(function* (path: string) {
-  const raw = yield* fetchText(`${GITHUB_API_BASE}/${path}?ref=${UPSTREAM_REF}`);
-  return yield* decodeGithubContentEntries(raw);
+  const compressed = yield* response.arrayBuffer.pipe(
+    Effect.mapError(
+      (cause) =>
+        new GeneratorError({
+          detail: "Failed to read the precomputed Codex protocol export",
+          cause,
+        }),
+    ),
+  );
+  const json = yield* Effect.try({
+    try: () => new TextDecoder().decode(zstdDecompressSync(new Uint8Array(compressed))),
+    catch: (cause) =>
+      new GeneratorError({
+        detail: "Failed to decompress the precomputed Codex protocol export",
+        cause,
+      }),
+  });
+  return yield* decodePrecomputedExports(json).pipe(
+    Effect.mapError(
+      (cause) =>
+        new GeneratorError({
+          detail: "Failed to decode the precomputed Codex protocol export",
+          cause,
+        }),
+    ),
+  );
 });
 
 function collectSchemaEntries(
@@ -314,14 +334,27 @@ function toPascalCaseMethod(method: string) {
     .join("");
 }
 
+function parseMethodParams(expression: string, optional: boolean): Omit<MethodEntry, "method"> {
+  const members = expression.split("|").map((member) => member.trim());
+  const concreteMembers = members.filter((member) => member !== "null" && member !== "undefined");
+  if (concreteMembers.length > 1) {
+    throw new Error(`Unsupported request parameter union: ${expression}`);
+  }
+  return {
+    paramsType: concreteMembers[0] ?? "undefined",
+    ...(members.includes("null") ? { paramsNullable: true } : {}),
+    ...(optional || members.includes("undefined") ? { paramsOptional: true } : {}),
+  };
+}
+
 function parseRequestEntries(fileContents: string): ReadonlyArray<MethodEntry> {
-  const entryPattern = /\{\s*"method":\s*"([^"]+)",\s*id:\s*RequestId,\s*params:\s*([^,}]+)/g;
+  const entryPattern = /\{\s*"method":\s*"([^"]+)",\s*id:\s*RequestId,\s*params(\?)?:\s*([^,}]+)/g;
   const entries: Array<MethodEntry> = [];
   let match: RegExpExecArray | null;
   while ((match = entryPattern.exec(fileContents)) !== null) {
     entries.push({
       method: match[1]!,
-      paramsType: match[2]!.trim(),
+      ...parseMethodParams(match[3]!.trim(), match[2] === "?"),
     });
   }
   return entries;
@@ -424,16 +457,11 @@ function renderTypeInterface(
 function renderSchemaMap(
   constantName: string,
   entries: ReadonlyArray<MethodEntry>,
-  typeName: (entry: MethodEntry) => string,
+  schemaExpression: (entry: MethodEntry) => string,
 ) {
   return [
     `export const ${constantName} = {`,
-    ...entries.map((entry) => {
-      const schemaName = typeName(entry);
-      return `  ${JSON.stringify(entry.method)}: ${
-        schemaName === "undefined" ? "undefined" : `CodexSchema.${schemaName}`
-      },`;
-    }),
+    ...entries.map((entry) => `  ${JSON.stringify(entry.method)}: ${schemaExpression(entry)},`),
     "} as const;",
     "",
   ].join("\n");
@@ -441,6 +469,32 @@ function renderSchemaMap(
 
 function renderSchemaTypeReference(schemaName: string) {
   return schemaName === "undefined" ? "undefined" : `CodexSchema.${schemaName}`;
+}
+
+function renderMethodParamTypeReference(
+  entry: MethodEntry,
+  generatedSchemaNames: ReadonlySet<string>,
+) {
+  const schemaName = resolveSchemaTypeName(entry.paramsType ?? "undefined", generatedSchemaNames);
+  const members = [renderSchemaTypeReference(schemaName)];
+  if (entry.paramsNullable) members.push("null");
+  if (entry.paramsOptional) members.push("undefined");
+  return [...new Set(members)].join(" | ");
+}
+
+function renderMethodParamSchemaReference(
+  entry: MethodEntry,
+  generatedSchemaNames: ReadonlySet<string>,
+) {
+  const schemaName = resolveSchemaTypeName(entry.paramsType ?? "undefined", generatedSchemaNames);
+  if (schemaName === "undefined") return "undefined";
+  const members = [renderSchemaTypeReference(schemaName)];
+  if (entry.paramsNullable) members.push("Schema.Null");
+  if (entry.paramsOptional) members.push("Schema.Undefined");
+  const uniqueMembers = [...new Set(members)];
+  return uniqueMembers.length === 1
+    ? uniqueMembers[0]!
+    : `Schema.Union([${uniqueMembers.join(", ")}])`;
 }
 
 function exportNameForPath(filePath: string): string {
@@ -459,35 +513,50 @@ function exportNameForPath(filePath: string): string {
 }
 
 function buildJsonSchemaFiles(
-  entries: ReadonlyArray<GithubContentEntry>,
+  entries: Readonly<Record<string, string>>,
 ): ReadonlyArray<JsonSchemaFile> {
-  return entries
+  return Object.entries(entries)
     .filter(
-      (entry) =>
-        entry.type === "file" &&
-        entry.name.endsWith(".json") &&
-        entry.download_url !== null &&
-        !entry.name.startsWith("codex_app_server_protocol."),
+      ([fileName]) =>
+        fileName.endsWith(".json") &&
+        !fileName.startsWith("codex_app_server_protocol.") &&
+        ![
+          "ClientNotification.json",
+          "ClientRequest.json",
+          "ServerNotification.json",
+          "ServerRequest.json",
+        ].includes(fileName),
     )
-    .map((entry) => {
-      const relative = entry.path.replace(/^codex-rs\/app-server-protocol\/schema\/json\//, "");
+    .map(([relative, contents]) => {
       const parts = relative.split("/");
       if (parts.length > 1) {
         return {
           namespace: parts[0]!,
           exportName: exportNameForPath(relative),
-          fileName: entry.name,
-          downloadUrl: entry.download_url!,
+          fileName: parts.at(-1)!,
+          contents,
           qualifiedName: relative.replace(/\.json$/, ""),
         } satisfies JsonSchemaFile;
       }
       return {
         exportName: exportNameForPath(relative),
-        fileName: entry.name,
-        downloadUrl: entry.download_url!,
+        fileName: relative,
+        contents,
         qualifiedName: relative.replace(/\.json$/, ""),
       } satisfies JsonSchemaFile;
     });
+}
+
+/** Returns a required file from the precomputed export. */
+function requirePrecomputedFile(entries: Readonly<Record<string, string>>, fileName: string) {
+  const contents = entries[fileName];
+  return contents === undefined
+    ? Effect.fail(
+        new GeneratorError({
+          detail: `Missing ${fileName} in the precomputed Codex protocol export`,
+        }),
+      )
+    : Effect.succeed(contents);
 }
 
 function rewriteExternalRefs(
@@ -551,17 +620,10 @@ function rewriteExternalRefs(
 const generateFiles = Effect.fn("generateFiles")(function* () {
   yield* ensureGeneratedDir();
 
-  const [rootJsonEntries, v1JsonEntries, v2JsonEntries] = yield* Effect.all([
-    fetchDirectoryEntries("schema/json"),
-    fetchDirectoryEntries("schema/json/v1"),
-    fetchDirectoryEntries("schema/json/v2"),
-  ]);
-
-  const jsonSchemaFiles = [
-    ...buildJsonSchemaFiles(rootJsonEntries),
-    ...buildJsonSchemaFiles(v1JsonEntries),
-    ...buildJsonSchemaFiles(v2JsonEntries),
-  ].toSorted((left, right) => left.exportName.localeCompare(right.exportName));
+  const precomputedExports = yield* fetchPrecomputedExports();
+  const jsonSchemaFiles = buildJsonSchemaFiles(precomputedExports.json_schema).toSorted(
+    (left, right) => left.exportName.localeCompare(right.exportName),
+  );
 
   const exportNameByQualifiedName = new Map(
     jsonSchemaFiles.map((file) => [file.qualifiedName, file.exportName]),
@@ -569,8 +631,7 @@ const generateFiles = Effect.fn("generateFiles")(function* () {
   const aggregateSchemas: Record<string, Schema.Json> = {};
 
   for (const file of jsonSchemaFiles) {
-    const raw = yield* fetchText(file.downloadUrl);
-    const parsed = yield* decodeJsonSchemaDocument(raw);
+    const parsed = yield* decodeJsonSchemaDocument(file.contents);
     const localDefinitionNames = new Map(
       Object.keys(parsed.definitions ?? {}).map((definitionName) => [
         definitionName,
@@ -616,28 +677,6 @@ const generateFiles = Effect.fn("generateFiles")(function* () {
     }
   }
 
-  for (const [name, properties] of Object.entries(SchemaPropertyPatches)) {
-    const schema = aggregateSchemas[name];
-    if (schema === undefined || !isJsonObject(schema)) {
-      return yield* new GeneratorError({
-        detail: `Cannot patch missing or non-object schema '${name}'`,
-      });
-    }
-    const existingProperties = schema.properties;
-    if (existingProperties === undefined || !isJsonObject(existingProperties)) {
-      return yield* new GeneratorError({
-        detail: `Cannot patch schema '${name}' without object properties`,
-      });
-    }
-    aggregateSchemas[name] = {
-      ...schema,
-      properties: {
-        ...existingProperties,
-        ...properties,
-      },
-    };
-  }
-
   const generator = makeJsonSchemaGenerator();
   for (const [name, schema] of Object.entries(aggregateSchemas).toSorted(([left], [right]) =>
     left.localeCompare(right),
@@ -656,23 +695,23 @@ const generateFiles = Effect.fn("generateFiles")(function* () {
   }
 
   const generatedSchemaNames = new Set(generatedEntries.keys());
-  const clientRequestRaw = yield* fetchText(
-    `https://raw.githubusercontent.com/openai/codex/${UPSTREAM_REF}/codex-rs/app-server-protocol/schema/typescript/ClientRequest.ts`,
-  );
-  const clientNotificationRaw = yield* fetchText(
-    `https://raw.githubusercontent.com/openai/codex/${UPSTREAM_REF}/codex-rs/app-server-protocol/schema/typescript/ClientNotification.ts`,
-  );
-  const serverRequestRaw = yield* fetchText(
-    `https://raw.githubusercontent.com/openai/codex/${UPSTREAM_REF}/codex-rs/app-server-protocol/schema/typescript/ServerRequest.ts`,
-  );
-  const serverNotificationRaw = yield* fetchText(
-    `https://raw.githubusercontent.com/openai/codex/${UPSTREAM_REF}/codex-rs/app-server-protocol/schema/typescript/ServerNotification.ts`,
-  );
+  const protocolTypescript = yield* Effect.all({
+    clientRequest: requirePrecomputedFile(precomputedExports.typescript, "ClientRequest.ts"),
+    clientNotification: requirePrecomputedFile(
+      precomputedExports.typescript,
+      "ClientNotification.ts",
+    ),
+    serverRequest: requirePrecomputedFile(precomputedExports.typescript, "ServerRequest.ts"),
+    serverNotification: requirePrecomputedFile(
+      precomputedExports.typescript,
+      "ServerNotification.ts",
+    ),
+  });
 
-  const clientRequestEntries = parseRequestEntries(clientRequestRaw);
-  const clientNotificationEntries = parseNotificationEntries(clientNotificationRaw);
-  const serverRequestEntries = parseRequestEntries(serverRequestRaw);
-  const serverNotificationEntries = parseNotificationEntries(serverNotificationRaw);
+  const clientRequestEntries = parseRequestEntries(protocolTypescript.clientRequest);
+  const clientNotificationEntries = parseNotificationEntries(protocolTypescript.clientNotification);
+  const serverRequestEntries = parseRequestEntries(protocolTypescript.serverRequest);
+  const serverNotificationEntries = parseNotificationEntries(protocolTypescript.serverNotification);
 
   const prelude = [
     "// This file is generated by the effect-codex-app-server package. Do not edit manually.",
@@ -690,6 +729,7 @@ const generateFiles = Effect.fn("generateFiles")(function* () {
 
   const metaOutput = [
     ...prelude,
+    'import * as Schema from "effect/Schema";',
     'import * as CodexSchema from "./schema.gen.ts";',
     "",
     renderMethodConstants("CLIENT_REQUEST_METHODS", clientRequestEntries),
@@ -702,9 +742,7 @@ const generateFiles = Effect.fn("generateFiles")(function* () {
     "export type ServerNotificationMethod = keyof typeof SERVER_NOTIFICATION_METHODS;",
     "",
     renderTypeInterface("ClientRequestParamsByMethod", clientRequestEntries, (entry) =>
-      renderSchemaTypeReference(
-        resolveSchemaTypeName(entry.paramsType ?? "undefined", generatedSchemaNames),
-      ),
+      renderMethodParamTypeReference(entry, generatedSchemaNames),
     ),
     renderTypeInterface("ClientRequestResponsesByMethod", clientRequestEntries, (entry) =>
       renderSchemaTypeReference(
@@ -712,14 +750,10 @@ const generateFiles = Effect.fn("generateFiles")(function* () {
       ),
     ),
     renderTypeInterface("ClientNotificationParamsByMethod", clientNotificationEntries, (entry) =>
-      renderSchemaTypeReference(
-        resolveSchemaTypeName(entry.paramsType ?? "undefined", generatedSchemaNames),
-      ),
+      renderMethodParamTypeReference(entry, generatedSchemaNames),
     ),
     renderTypeInterface("ServerRequestParamsByMethod", serverRequestEntries, (entry) =>
-      renderSchemaTypeReference(
-        resolveSchemaTypeName(entry.paramsType ?? "undefined", generatedSchemaNames),
-      ),
+      renderMethodParamTypeReference(entry, generatedSchemaNames),
     ),
     renderTypeInterface("ServerRequestResponsesByMethod", serverRequestEntries, (entry) =>
       renderSchemaTypeReference(
@@ -727,27 +761,29 @@ const generateFiles = Effect.fn("generateFiles")(function* () {
       ),
     ),
     renderTypeInterface("ServerNotificationParamsByMethod", serverNotificationEntries, (entry) =>
-      renderSchemaTypeReference(
-        resolveSchemaTypeName(entry.paramsType ?? "undefined", generatedSchemaNames),
-      ),
+      renderMethodParamTypeReference(entry, generatedSchemaNames),
     ),
     renderSchemaMap("CLIENT_REQUEST_PARAMS", clientRequestEntries, (entry) =>
-      resolveSchemaTypeName(entry.paramsType ?? "undefined", generatedSchemaNames),
+      renderMethodParamSchemaReference(entry, generatedSchemaNames),
     ),
     renderSchemaMap("CLIENT_REQUEST_RESPONSES", clientRequestEntries, (entry) =>
-      resolveResponseTypeName(entry.method, entry.paramsType, generatedSchemaNames),
+      renderSchemaTypeReference(
+        resolveResponseTypeName(entry.method, entry.paramsType, generatedSchemaNames),
+      ),
     ),
     renderSchemaMap("CLIENT_NOTIFICATION_PARAMS", clientNotificationEntries, (entry) =>
-      resolveSchemaTypeName(entry.paramsType ?? "undefined", generatedSchemaNames),
+      renderMethodParamSchemaReference(entry, generatedSchemaNames),
     ),
     renderSchemaMap("SERVER_REQUEST_PARAMS", serverRequestEntries, (entry) =>
-      resolveSchemaTypeName(entry.paramsType ?? "undefined", generatedSchemaNames),
+      renderMethodParamSchemaReference(entry, generatedSchemaNames),
     ),
     renderSchemaMap("SERVER_REQUEST_RESPONSES", serverRequestEntries, (entry) =>
-      resolveResponseTypeName(entry.method, entry.paramsType, generatedSchemaNames),
+      renderSchemaTypeReference(
+        resolveResponseTypeName(entry.method, entry.paramsType, generatedSchemaNames),
+      ),
     ),
     renderSchemaMap("SERVER_NOTIFICATION_PARAMS", serverNotificationEntries, (entry) =>
-      resolveSchemaTypeName(entry.paramsType ?? "undefined", generatedSchemaNames),
+      renderMethodParamSchemaReference(entry, generatedSchemaNames),
     ),
   ].join("\n");
 
