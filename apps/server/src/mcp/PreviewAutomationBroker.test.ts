@@ -555,6 +555,105 @@ it.effect("rejects calls when no connected host exists", () =>
   }),
 );
 
+it.effect("reports when no environment Agent-desktop host is connected", () =>
+  Effect.gen(function* () {
+    const broker = yield* makeBroker;
+    const error = yield* broker
+      .invoke<void>({ scope, operation: "agentDesktopList", input: {} })
+      .pipe(Effect.flip);
+
+    expect(error).toBeInstanceOf(PreviewAutomationNoAvailableHostError);
+    expect(error).toMatchObject({
+      computerFailure: {
+        code: "agent-desktop-unavailable",
+        category: "resource",
+        backendCode: "no-connected-automation-host",
+        detail:
+          "Connected hosts: 0; hosts supporting agentDesktopList: 0; advertised desktop kinds: none.",
+      },
+    });
+    expect(error.message).toContain("Agent desktops are owned by the environment");
+  }),
+);
+
+it.effect("explains why a remote user-desktop host cannot provide Agent desktops", () =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      const broker = yield* makeBroker;
+      const events = yield* broker.connect(
+        makeHost({
+          supportedOperations: ["computerRequestControl"],
+          computerDesktopKinds: ["user"],
+        }),
+      );
+      yield* Stream.runDrain(events).pipe(Effect.forkScoped);
+      yield* Effect.yieldNow;
+
+      const listError = yield* broker
+        .invoke<void>({ scope, operation: "agentDesktopList", input: {} })
+        .pipe(Effect.flip);
+      expect(listError).toBeInstanceOf(PreviewAutomationNoAvailableHostError);
+      expect(listError).toMatchObject({
+        computerFailure: {
+          code: "agent-desktop-unavailable",
+          category: "unsupported-operation",
+          backendCode: "environment-agent-desktop-host-required",
+          detail:
+            "Connected hosts: 1; hosts supporting agentDesktopList: 0; advertised desktop kinds: user.",
+        },
+      });
+      expect(listError.message).toContain(
+        "Agent desktops are hosted only by the environment's primary desktop app",
+      );
+
+      const controlError = yield* broker
+        .invoke<void>({
+          scope,
+          operation: "computerRequestControl",
+          input: { desktop: { kind: "agent" } },
+        })
+        .pipe(Effect.flip);
+      expect(controlError).toMatchObject({
+        computerFailure: {
+          backendCode: "environment-agent-desktop-host-required",
+          field: "desktop.kind",
+          received: "agent",
+          expected: ["user"],
+        },
+      });
+    }),
+  ),
+);
+
+it.effect("distinguishes an unsupported operation from a missing desktop kind", () =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      const broker = yield* makeBroker;
+      const events = yield* broker.connect(
+        makeHost({
+          supportedOperations: ["computerRequestControl"],
+          computerDesktopKinds: ["agent"],
+        }),
+      );
+      yield* Stream.runDrain(events).pipe(Effect.forkScoped);
+      yield* Effect.yieldNow;
+
+      const error = yield* broker
+        .invoke<void>({ scope, operation: "agentDesktopList", input: {} })
+        .pipe(Effect.flip);
+      expect(error).toMatchObject({
+        computerFailure: {
+          code: "unsupported-operation",
+          backendCode: "automation-operation-unsupported",
+          field: "operation",
+          received: "agentDesktopList",
+        },
+      });
+      expect(error.message).toContain("do not support agentDesktopList");
+    }),
+  ),
+);
+
 it.effect("does not create host state from focus updates without a live stream", () =>
   Effect.gen(function* () {
     const broker = yield* makeBroker;

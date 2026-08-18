@@ -668,6 +668,40 @@ it.effect("denies preview access without removing computer tools", () =>
   }).pipe(Effect.provide(TestLayer)),
 );
 
+it.effect("surfaces missing environment Agent-desktop hosting through computer tools", () =>
+  Effect.gen(function* () {
+    const server = yield* McpServer.McpServer;
+    const result = yield* server
+      .callTool({
+        name: "computer_request_control",
+        arguments: { desktop: { kind: "agent" } },
+      })
+      .pipe(
+        Effect.provideService(McpInvocationContext.McpInvocationContext, invocation),
+        Effect.provideService(McpSchema.McpServerClient, client),
+      );
+
+    expect(result.isError).toBe(true);
+    expect(result.structuredContent).toMatchObject({
+      error: {
+        _tag: "PreviewAutomationNoAvailableHostError",
+        operation: "computerRequestControl",
+        code: "agent-desktop-unavailable",
+        category: "resource",
+        backendCode: "no-connected-automation-host",
+        detail:
+          "Connected hosts: 0; hosts supporting computerRequestControl: 0; advertised desktop kinds: none.",
+      },
+    });
+    expect(result.content).toEqual([
+      {
+        type: "text",
+        text: expect.stringContaining('"backendCode":"no-connected-automation-host"'),
+      },
+    ]);
+  }).pipe(Effect.provide(TestLayer)),
+);
+
 it.effect("terminates HTTP MCP sessions with DELETE", () =>
   Effect.scoped(
     Effect.gen(function* () {
