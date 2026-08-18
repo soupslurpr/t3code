@@ -19,7 +19,7 @@ const SERVER_CUT_TEXT = 3;
 const ENCODING_RAW = 0;
 
 /** Reports a bounded private-VNC negotiation or frame failure. */
-export class QemuVncError extends Schema.TaggedErrorClass<QemuVncError>()("QemuVncError", {
+export class QemuVncError extends Schema.TaggedError<QemuVncError>()("QemuVncError", {
   code: Schema.Literals([
     "connection-failed",
     "timed-out",

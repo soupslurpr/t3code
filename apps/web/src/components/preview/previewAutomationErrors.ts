@@ -233,7 +233,7 @@ export class PreviewAutomationOperationError extends Schema.TaggedError<PreviewA
         computerFailure.code === "display-locked" ||
         computerFailure.code === "keep-awake-denied")
         ? computerFailure.code
-        : input.operation.startsWith("computer") || input.operation.startsWith("agentDesktop")
+        : input.operation.startsWith("computer")
           ? findComputerAutomationFailureKind(input.cause)
           : undefined;
     return new PreviewAutomationOperationError({

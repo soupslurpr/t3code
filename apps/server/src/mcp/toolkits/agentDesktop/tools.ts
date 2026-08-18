@@ -21,18 +21,19 @@ import {
   AgentDesktopWriteFileInput,
   AgentDesktopWriteFileResult,
   PreviewAutomationError,
+  PreviewAutomationUnavailableError,
 } from "@t3tools/contracts";
 import * as Schema from "effect/Schema";
 import { Tool, Toolkit } from "effect/unstable/ai";
 
 import * as McpInvocationContext from "../../McpInvocationContext.ts";
-import * as PreviewAutomationBroker from "../../PreviewAutomationBroker.ts";
 import * as AgentDesktopTransferService from "../../../agentDesktop/AgentDesktopTransferService.ts";
+import * as AgentDesktopManager from "../../../agentDesktop/AgentDesktopManager.ts";
 import { ProjectionSnapshotQuery } from "../../../orchestration/Services/ProjectionSnapshotQuery.ts";
 
 const dependencies = [
   McpInvocationContext.McpInvocationContext,
-  PreviewAutomationBroker.PreviewAutomationBroker,
+  AgentDesktopManager.AgentDesktopManager,
 ];
 const transferDependencies = [
   ...dependencies,
@@ -40,7 +41,7 @@ const transferDependencies = [
   ProjectionSnapshotQuery,
 ];
 const AgentDesktopTransferToolError = Schema.Union([
-  PreviewAutomationError,
+  PreviewAutomationUnavailableError,
   AgentDesktopTransferLookupError,
 ]);
 const EmptyParameters = Schema.Record(Schema.String, Schema.Never);
@@ -68,7 +69,7 @@ export const AgentDesktopListTool = readonlyAgentDesktopTool(
 export const AgentDesktopSetupTool = agentDesktopTool(
   Tool.make("agent_desktop_setup", {
     description:
-      "Prepare Agent desktops on the attached desktop host. With user approval, this installs only the exact official Arch packages reported by agent_desktop_list through PolicyKit, downloads the pinned official Arch cloud image, verifies its size and SHA-256, provisions the private graphical guest, and atomically installs the base image. It re-probes and returns the full status. A first setup can download about 531 MB and take up to 75 minutes. Report any remaining manual remedy precisely; do not install host packages in the provider shell because it may be a different machine.",
+      "Prepare Agent desktops on this environment server. With user approval, this installs only the exact official Arch packages reported by agent_desktop_list through PolicyKit, downloads the pinned official Arch cloud image, verifies its size and SHA-256, provisions the private graphical guest, and atomically installs the base image. It re-probes and returns the full status. A first setup can download about 531 MB and take up to 75 minutes. Report any remaining manual remedy precisely.",
     parameters: EmptyParameters,
     success: AgentDesktopSetupResult,
     failure: PreviewAutomationError,
@@ -134,7 +135,7 @@ export const AgentDesktopWriteFileTool = agentDesktopTool(
 export const AgentDesktopCopyTool = agentDesktopTool(
   Tool.make("agent_desktop_copy", {
     description:
-      "Copy a file or directory tree between this thread's workspace and an Agent desktop. Safe internal symlinks in directory trees are preserved; a standalone symlink is rejected. Workspace paths are relative to the current worktree. Relative Agent desktop paths resolve from the graphical user's home, while absolute paths can target the isolated system. Omit desktopId to use this session's current assignment. Directories are archived automatically, bytes use a private resumable stream instead of the tool response, auto compression samples content before deciding, and installation is staged and SHA-256 verified. Collision defaults to create; merge is valid only for directories. The call waits up to 15 seconds by default, then returns an active transfer id that agent_desktop_transfer_status can follow.",
+      "Copy a file or directory tree between this thread's workspace and an Agent desktop. Safe internal symlinks in directory trees are preserved; a standalone symlink is rejected. Workspace paths are relative to the current worktree. Relative Agent desktop paths resolve from the graphical user's home, while absolute paths can target the isolated system. Omit desktopId to use this session's current assignment. Directories are archived automatically, bytes use a private bounded server-to-guest stream instead of the tool response, auto compression samples content before deciding, and installation is staged and SHA-256 verified. Collision defaults to create; merge is valid only for directories. The call waits up to 15 seconds by default, then returns an active transfer id that agent_desktop_transfer_status can follow.",
     parameters: AgentDesktopCopyInput,
     success: AgentDesktopTransfer,
     failure: AgentDesktopTransferToolError,
@@ -156,7 +157,7 @@ export const AgentDesktopTransferStatusTool = readonlyAgentDesktopTool(
 export const AgentDesktopTransferCancelTool = safeAgentDesktopTool(
   Tool.make("agent_desktop_transfer_cancel", {
     description:
-      "Cancel one active transfer owned by this agent session. Host and server work are interrupted, held transfer resources are released, and the terminal cancelled status is returned. Cancelling a completed transfer returns its existing result.",
+      "Cancel one active transfer owned by this agent session. Server and guest work are interrupted, held transfer resources are released, and the terminal cancelled status is returned. Cancelling a completed transfer returns its existing result.",
     parameters: AgentDesktopTransferTargetInput,
     success: AgentDesktopTransfer,
     failure: AgentDesktopTransferToolError,

@@ -1,6 +1,6 @@
 // @effect-diagnostics nodeBuiltinImport:off - Transfer archives are streamed by the Node boundary.
 /**
- * Owns resumable workspace-to-Agent-desktop transfers and private byte tickets.
+ * Owns streamed workspace-to-Agent-desktop transfers.
  *
  * @module AgentDesktopTransferService
  */
@@ -9,8 +9,6 @@ import * as NodePath from "node:path";
 
 import {
   type AgentDesktopCopyInput,
-  type AgentDesktopHostTransferInput,
-  type AgentDesktopHostTransferResult,
   type AgentDesktopTransfer,
   type AgentDesktopTransferFailure,
   type AgentDesktopTransferId,
@@ -32,24 +30,18 @@ import * as Data from "effect/Data";
 import * as DateTime from "effect/DateTime";
 import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
-import * as Encoding from "effect/Encoding";
 import * as Fiber from "effect/Fiber";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Ref from "effect/Ref";
-import * as Semaphore from "effect/Semaphore";
 
 import * as ServerConfig from "../config.ts";
 import * as McpInvocationContext from "../mcp/McpInvocationContext.ts";
-import * as PreviewAutomationBroker from "../mcp/PreviewAutomationBroker.ts";
 import { ProjectionSnapshotQuery } from "../orchestration/Services/ProjectionSnapshotQuery.ts";
-
-export const AGENT_DESKTOP_TRANSFER_ROUTE_PREFIX = "/api/agent-desktop-transfers";
-export const AGENT_DESKTOP_TRANSFER_MAX_CHUNK_BYTES = 8 * 1024 * 1024;
+import * as AgentDesktopManager from "./AgentDesktopManager.ts";
 
 const DEFAULT_WAIT_MS = 15_000;
 const DEFAULT_TIMEOUT_MS = 60 * 60 * 1_000;
-const TICKET_TTL_MS = 6 * 60 * 60 * 1_000;
 const TRANSFER_RETENTION_MS = 24 * 60 * 60 * 1_000;
 const MAX_RETAINED_TRANSFERS = 256;
 const MAX_ACTIVE_TRANSFERS_PER_CONTROLLER = 8;
@@ -85,59 +77,11 @@ interface TransferRecord {
   readonly completion: Deferred.Deferred<AgentDesktopTransfer>;
   readonly fiber: Fiber.Fiber<void, never> | null;
   readonly archivePath: string;
-  readonly ticketToken: string | null;
 }
-
-interface DownloadTicket {
-  readonly kind: "download";
-  readonly transferId: AgentDesktopTransferId;
-  readonly path: string;
-  readonly sizeBytes: number;
-  readonly expiresAt: number;
-}
-
-interface UploadTicket {
-  readonly kind: "upload";
-  readonly transferId: AgentDesktopTransferId;
-  readonly path: string;
-  readonly nextOffset: number;
-  readonly totalBytes: number | null;
-  readonly expiresAt: number;
-  readonly semaphore: Semaphore.Semaphore;
-}
-
-type TransferTicket = DownloadTicket | UploadTicket;
-type PendingTransferTicket =
-  | Omit<DownloadTicket, "transferId" | "expiresAt">
-  | Omit<UploadTicket, "transferId" | "expiresAt">;
 
 interface TransferState {
   readonly transfers: ReadonlyMap<AgentDesktopTransferId, TransferRecord>;
-  readonly tickets: ReadonlyMap<string, TransferTicket>;
 }
-
-export interface AgentDesktopTransferDownload {
-  readonly path: string;
-  readonly offset: number;
-  readonly bytesToRead: number;
-  readonly totalBytes: number;
-}
-
-export type AgentDesktopTransferDownloadResult =
-  | { readonly status: "ready"; readonly download: AgentDesktopTransferDownload }
-  | { readonly status: "not-found" }
-  | { readonly status: "range-not-satisfiable"; readonly totalBytes: number };
-
-export type AgentDesktopTransferUploadResult =
-  | { readonly status: "accepted"; readonly nextOffset: number; readonly complete: boolean }
-  | { readonly status: "not-found" }
-  | { readonly status: "offset-mismatch"; readonly nextOffset: number }
-  | { readonly status: "invalid"; readonly detail: string }
-  | {
-      readonly status: "failed";
-      readonly code: "resource-exhausted" | "transport-failed";
-      readonly detail: string;
-    };
 
 class TransferProcessError extends Data.TaggedError("TransferProcessError")<{
   readonly code: AgentDesktopTransferFailure["code"];
@@ -245,7 +189,7 @@ function processError(
   const computerFailure =
     typeof causeRecord?.computerFailure === "object" && causeRecord.computerFailure !== null
       ? (causeRecord.computerFailure as Readonly<Record<string, unknown>>)
-      : undefined;
+      : causeRecord;
   if (typeof causeRecord?.code === "string" && RESOURCE_ERROR_CODES.has(causeRecord.code)) {
     return new TransferProcessError({
       code: "resource-exhausted",
@@ -253,9 +197,9 @@ function processError(
       detail: boundedDetail(cause),
     });
   }
-  const backendCode = computerFailure?.backendCode;
-  if (typeof backendCode === "string" && HOST_TRANSFER_FAILURE_CODES.has(backendCode)) {
-    const code = backendCode as AgentDesktopTransferFailure["code"];
+  const failureCode = computerFailure?.backendCode ?? computerFailure?.code;
+  if (typeof failureCode === "string" && HOST_TRANSFER_FAILURE_CODES.has(failureCode)) {
+    const code = failureCode as AgentDesktopTransferFailure["code"];
     const failurePhase: TransferPhase =
       code === "destination-exists" ||
       code === "destination-type-mismatch" ||
@@ -319,11 +263,12 @@ function failureFromCause(cause: Cause.Cause<TransferProcessError>): TransferPro
     : failure.error;
 }
 
-/** Creates the in-memory transfer service and its private HTTP ticket registry. */
+/** Creates the in-memory transfer service. */
 export const make = Effect.gen(function* () {
   const config = yield* ServerConfig.ServerConfig;
   const crypto = yield* Crypto.Crypto;
-  const state = yield* Ref.make<TransferState>({ transfers: new Map(), tickets: new Map() });
+  const manager = yield* AgentDesktopManager.AgentDesktopManager;
+  const state = yield* Ref.make<TransferState>({ transfers: new Map() });
   const transferDirectory = NodePath.join(config.stateDir, "agent-desktop-transfers");
   yield* Effect.tryPromise({
     try: () => NodeFSP.mkdir(transferDirectory, { recursive: true, mode: 0o700 }),
@@ -551,44 +496,9 @@ export const make = Effect.gen(function* () {
     },
   );
 
-  const createTicket = Effect.fn("AgentDesktopTransfer.createTicket")(function* (
-    transferId: AgentDesktopTransferId,
-    ticket: PendingTransferTicket,
-  ) {
-    const token = Encoding.encodeBase64Url(yield* crypto.randomBytes(32).pipe(Effect.orDie));
-    const expiresAt = (yield* Clock.currentTimeMillis) + TICKET_TTL_MS;
-    yield* Ref.update(state, (current) => {
-      const record = current.transfers.get(transferId);
-      if (record === undefined) return current;
-      const transfers = new Map(current.transfers);
-      transfers.set(transferId, { ...record, ticketToken: token });
-      const tickets = new Map(current.tickets);
-      tickets.set(token, { ...ticket, transferId, expiresAt } as TransferTicket);
-      return { transfers, tickets };
-    });
-    return `${AGENT_DESKTOP_TRANSFER_ROUTE_PREFIX}/${token}`;
-  });
-
-  const invokeHost = Effect.fn("AgentDesktopTransfer.invokeHost")(function* (
-    scope: McpInvocationContext.McpInvocationScope,
-    input: AgentDesktopHostTransferInput,
-    timeoutMs: number,
-  ) {
-    const broker = yield* PreviewAutomationBroker.PreviewAutomationBroker;
-    return yield* broker
-      .invoke<AgentDesktopHostTransferResult>({
-        scope,
-        operation: "agentDesktopTransfer",
-        input,
-        timeoutMs,
-      })
-      .pipe(Effect.mapError((cause) => processError("transferring", cause, "transport-failed")));
-  });
-
   const transferToAgent = Effect.fn("AgentDesktopTransfer.toAgent")(function* (
     record: TransferRecord,
     input: AgentDesktopCopyInput,
-    timeoutMs: number,
   ) {
     if (input.source.kind !== "workspace" || input.destination.kind !== "agent") {
       return yield* new TransferProcessError({
@@ -620,28 +530,30 @@ export const make = Effect.gen(function* () {
       totalBytes: packed.wireBytes,
       tree: transferTree(packed),
     });
-    const url = yield* createTicket(record.snapshot.id, {
-      kind: "download",
-      path: record.archivePath,
-      sizeBytes: packed.wireBytes,
-    });
-    const result = yield* invokeHost(
-      record.scope,
-      {
-        operation: "import",
-        transferId: record.snapshot.id,
-        ...(input.destination.desktopId === undefined
-          ? {}
-          : { desktopId: input.destination.desktopId }),
-        url,
-        guestPath: input.destination.path,
-        collision: input.collision ?? "create",
-        compression: packed.compression,
-        sizeBytes: packed.wireBytes,
-        sha256: packed.sha256,
-      },
-      timeoutMs,
-    );
+    const result = yield* manager
+      .transfer(
+        {
+          environmentId: record.scope.environmentId,
+          threadId: record.scope.threadId,
+          controllerId: record.scope.providerSessionId,
+        },
+        {
+          operation: "import",
+          transferId: record.snapshot.id,
+          ...(input.destination.desktopId === undefined
+            ? {}
+            : { desktopId: input.destination.desktopId }),
+          archivePath: record.archivePath,
+          guestPath: input.destination.path,
+          collision: input.collision ?? "create",
+          compression: packed.compression,
+          sizeBytes: packed.wireBytes,
+          sha256: packed.sha256,
+          onProgress: (transferredBytes, totalBytes) =>
+            setProgress(record.snapshot.id, transferredBytes, totalBytes),
+        },
+      )
+      .pipe(Effect.mapError((cause) => processError("transferring", cause, "transport-failed")));
     yield* setPhase(record.snapshot.id, "verifying");
     if (
       result.transferId !== record.snapshot.id ||
@@ -672,7 +584,6 @@ export const make = Effect.gen(function* () {
   const transferFromAgent = Effect.fn("AgentDesktopTransfer.fromAgent")(function* (
     record: TransferRecord,
     input: AgentDesktopCopyInput,
-    timeoutMs: number,
   ) {
     if (input.source.kind !== "agent" || input.destination.kind !== "workspace") {
       return yield* new TransferProcessError({
@@ -689,34 +600,30 @@ export const make = Effect.gen(function* () {
       source: false,
     });
     yield* Effect.tryPromise({
-      try: async () => {
-        await NodeFSP.mkdir(NodePath.dirname(record.archivePath), { recursive: true, mode: 0o700 });
-        const handle = await NodeFSP.open(record.archivePath, "wx", 0o600);
-        await handle.close();
-      },
+      try: () =>
+        NodeFSP.mkdir(NodePath.dirname(record.archivePath), { recursive: true, mode: 0o700 }),
       catch: (cause) => processError("preparing", cause, "internal-error"),
     });
-    const semaphore = yield* Semaphore.make(1);
-    const url = yield* createTicket(record.snapshot.id, {
-      kind: "upload",
-      path: record.archivePath,
-      nextOffset: 0,
-      totalBytes: null,
-      semaphore,
-    });
     yield* setPhase(record.snapshot.id, "transferring");
-    const result = yield* invokeHost(
-      record.scope,
-      {
-        operation: "export",
-        transferId: record.snapshot.id,
-        ...(input.source.desktopId === undefined ? {} : { desktopId: input.source.desktopId }),
-        url,
-        guestPath: input.source.path,
-        compression: input.compression ?? "auto",
-      },
-      timeoutMs,
-    );
+    const result = yield* manager
+      .transfer(
+        {
+          environmentId: record.scope.environmentId,
+          threadId: record.scope.threadId,
+          controllerId: record.scope.providerSessionId,
+        },
+        {
+          operation: "export",
+          transferId: record.snapshot.id,
+          ...(input.source.desktopId === undefined ? {} : { desktopId: input.source.desktopId }),
+          archivePath: record.archivePath,
+          guestPath: input.source.path,
+          compression: input.compression ?? "auto",
+          onProgress: (transferredBytes, totalBytes) =>
+            setProgress(record.snapshot.id, transferredBytes, totalBytes),
+        },
+      )
+      .pipe(Effect.mapError((cause) => processError("transferring", cause, "transport-failed")));
     if (
       result.transferId !== record.snapshot.id ||
       (input.source.desktopId !== undefined && result.desktopId !== input.source.desktopId)
@@ -733,21 +640,15 @@ export const make = Effect.gen(function* () {
       totalBytes: result.wireBytes,
       tree: result.tree,
     });
-    const current = yield* Ref.get(state);
-    const currentRecord = current.transfers.get(record.snapshot.id);
-    const ticket =
-      currentRecord?.ticketToken === null || currentRecord?.ticketToken === undefined
-        ? undefined
-        : current.tickets.get(currentRecord.ticketToken);
-    if (
-      ticket?.kind !== "upload" ||
-      ticket.nextOffset !== result.wireBytes ||
-      ticket.totalBytes !== result.wireBytes
-    ) {
+    const archiveSize = yield* Effect.tryPromise({
+      try: async () => (await NodeFSP.stat(record.archivePath)).size,
+      catch: (cause) => processError("verifying", cause, "integrity-failed"),
+    });
+    if (archiveSize !== result.wireBytes) {
       return yield* new TransferProcessError({
         code: "integrity-failed",
         phase: "verifying",
-        detail: "the uploaded bundle length did not match the Agent desktop result",
+        detail: "the exported bundle length did not match the Agent desktop result",
       });
     }
     const digest = yield* Effect.tryPromise({
@@ -758,7 +659,7 @@ export const make = Effect.gen(function* () {
       return yield* new TransferProcessError({
         code: "integrity-failed",
         phase: "verifying",
-        detail: "the uploaded bundle SHA-256 did not match the Agent desktop result",
+        detail: "the exported bundle SHA-256 did not match the Agent desktop result",
       });
     }
     yield* setPhase(record.snapshot.id, "installing");
@@ -787,13 +688,7 @@ export const make = Effect.gen(function* () {
   const cleanupTransfer = Effect.fn("AgentDesktopTransfer.cleanup")(function* (
     transferId: AgentDesktopTransferId,
   ) {
-    const archivePath = yield* Ref.modify(state, (current) => {
-      const record = current.transfers.get(transferId);
-      if (record === undefined) return [null, current] as const;
-      const tickets = new Map(current.tickets);
-      if (record.ticketToken !== null) tickets.delete(record.ticketToken);
-      return [record.archivePath, { ...current, tickets }] as const;
-    });
+    const archivePath = (yield* Ref.get(state)).transfers.get(transferId)?.archivePath ?? null;
     if (archivePath !== null) {
       yield* Effect.promise(() => NodeFSP.rm(archivePath, { force: true }).catch(() => undefined));
     }
@@ -806,8 +701,8 @@ export const make = Effect.gen(function* () {
     const timeoutMs = input.timeoutMs ?? DEFAULT_TIMEOUT_MS;
     const operation =
       record.snapshot.direction === "to-agent"
-        ? transferToAgent(record, input, timeoutMs)
-        : transferFromAgent(record, input, timeoutMs);
+        ? transferToAgent(record, input)
+        : transferFromAgent(record, input);
     yield* operation.pipe(
       Effect.timeout(timeoutMs),
       Effect.mapError((cause) =>
@@ -866,12 +761,7 @@ export const make = Effect.gen(function* () {
         )
         .slice(0, MAX_RETAINED_TRANSFERS);
       const transfers = new Map([...active, ...retainedTerminal]);
-      const tickets = new Map(
-        Array.from(current.tickets).filter(
-          ([, ticket]) => ticket.expiresAt > now && transfers.has(ticket.transferId),
-        ),
-      );
-      return { transfers, tickets };
+      return { transfers };
     });
   });
 
@@ -918,7 +808,6 @@ export const make = Effect.gen(function* () {
           completion,
           fiber: null,
           archivePath: NodePath.join(transferDirectory, `${transferId}.bundle`),
-          ticketToken: null,
         };
         const transfers = new Map(stateValue.transfers);
         transfers.set(transferId, record);
@@ -954,27 +843,28 @@ export const make = Effect.gen(function* () {
     Effect.gen(function* () {
       const record = yield* requireOwnedRecord(scope, input.transferId);
       if (isTerminalState(record.snapshot.state)) return record.snapshot;
-      const broker = yield* PreviewAutomationBroker.PreviewAutomationBroker;
       const agentEndpoint =
         record.snapshot.source.kind === "agent"
           ? record.snapshot.source
           : record.snapshot.destination.kind === "agent"
             ? record.snapshot.destination
             : null;
-      if (record.fiber !== null) yield* Fiber.interrupt(record.fiber);
-      yield* broker
-        .invoke<void>({
-          scope,
-          operation: "agentDesktopTransferCancel",
-          input: {
+      yield* manager
+        .cancelTransfer(
+          {
+            environmentId: scope.environmentId,
+            threadId: scope.threadId,
+            controllerId: scope.providerSessionId,
+          },
+          {
             transferId: input.transferId,
             ...(agentEndpoint?.desktopId === undefined
               ? {}
               : { desktopId: agentEndpoint.desktopId }),
           },
-          timeoutMs: 5_000,
-        })
+        )
         .pipe(Effect.ignore);
+      if (record.fiber !== null) yield* Fiber.interrupt(record.fiber);
       yield* finish(input.transferId, "cancelled", {
         error: {
           code: "cancelled",
@@ -985,160 +875,7 @@ export const make = Effect.gen(function* () {
       return (yield* requireOwnedRecord(scope, input.transferId)).snapshot;
     });
 
-  const download = Effect.fn("AgentDesktopTransfer.download")(function* (
-    token: string,
-    rangeHeader: string | undefined,
-  ): Effect.fn.Return<AgentDesktopTransferDownloadResult> {
-    const now = yield* Clock.currentTimeMillis;
-    const ticket = (yield* Ref.get(state)).tickets.get(token);
-    if (ticket?.kind !== "download" || ticket.expiresAt <= now) return { status: "not-found" };
-    const match = /^bytes=(\d+)-(\d+)$/.exec(rangeHeader ?? "");
-    if (match === null) {
-      return { status: "range-not-satisfiable", totalBytes: ticket.sizeBytes };
-    }
-    const offset = Number(match[1]);
-    const requestedEnd = Number(match[2]);
-    if (
-      !Number.isSafeInteger(offset) ||
-      !Number.isSafeInteger(requestedEnd) ||
-      offset < 0 ||
-      requestedEnd < offset ||
-      offset >= ticket.sizeBytes
-    ) {
-      return { status: "range-not-satisfiable", totalBytes: ticket.sizeBytes };
-    }
-    const end = Math.min(
-      requestedEnd,
-      ticket.sizeBytes - 1,
-      offset + AGENT_DESKTOP_TRANSFER_MAX_CHUNK_BYTES - 1,
-    );
-    // Count only preceding ranges as delivered; keep the in-flight range conservative until the
-    // desktop confirms the complete import.
-    yield* setProgress(ticket.transferId, offset, ticket.sizeBytes);
-    return {
-      status: "ready",
-      download: {
-        path: ticket.path,
-        offset,
-        bytesToRead: end - offset + 1,
-        totalBytes: ticket.sizeBytes,
-      },
-    };
-  });
-
-  const upload: AgentDesktopTransferServiceShape["upload"] = (token, input) =>
-    Effect.gen(function* () {
-      const initial = (yield* Ref.get(state)).tickets.get(token);
-      if (initial?.kind !== "upload") return { status: "not-found" } as const;
-      return yield* initial.semaphore.withPermits(1)(
-        Effect.gen(function* () {
-          const now = yield* Clock.currentTimeMillis;
-          const current = yield* Ref.get(state);
-          const ticket = current.tickets.get(token);
-          if (ticket?.kind !== "upload" || ticket.expiresAt <= now) {
-            return { status: "not-found" } as const;
-          }
-          if (
-            input.data.byteLength === 0 ||
-            input.data.byteLength > AGENT_DESKTOP_TRANSFER_MAX_CHUNK_BYTES ||
-            input.start < 0 ||
-            input.end !== input.start + input.data.byteLength - 1 ||
-            input.total <= input.end
-          ) {
-            return { status: "invalid", detail: "invalid Content-Range or chunk length" } as const;
-          }
-          if (ticket.totalBytes !== null && ticket.totalBytes !== input.total) {
-            return { status: "invalid", detail: "upload total changed between chunks" } as const;
-          }
-          if (input.start > ticket.nextOffset) {
-            return { status: "offset-mismatch", nextOffset: ticket.nextOffset } as const;
-          }
-          if (input.start < ticket.nextOffset) {
-            if (input.end >= ticket.nextOffset) {
-              return { status: "offset-mismatch", nextOffset: ticket.nextOffset } as const;
-            }
-            const existing = yield* Effect.promise(async () => {
-              try {
-                const handle = await NodeFSP.open(ticket.path, "r");
-                try {
-                  const bytes = Buffer.allocUnsafe(input.data.byteLength);
-                  const result = await handle.read(bytes, 0, bytes.byteLength, input.start);
-                  return (
-                    result.bytesRead === bytes.byteLength && bytes.equals(Buffer.from(input.data))
-                  );
-                } finally {
-                  await handle.close();
-                }
-              } catch {
-                return false;
-              }
-            });
-            return existing
-              ? ({
-                  status: "accepted",
-                  nextOffset: ticket.nextOffset,
-                  complete: ticket.nextOffset === input.total,
-                } as const)
-              : ({
-                  status: "invalid",
-                  detail: "retried upload chunk did not match stored bytes",
-                } as const);
-          }
-          const writeFailure = yield* Effect.tryPromise({
-            try: async () => {
-              const handle = await NodeFSP.open(ticket.path, "r+");
-              try {
-                let written = 0;
-                while (written < input.data.byteLength) {
-                  const result = await handle.write(
-                    input.data,
-                    written,
-                    input.data.byteLength - written,
-                    input.start + written,
-                  );
-                  if (result.bytesWritten <= 0) throw new Error("upload write made no progress");
-                  written += result.bytesWritten;
-                }
-                await handle.sync();
-              } finally {
-                await handle.close();
-              }
-            },
-            catch: (cause) => processError("transferring", cause, "transport-failed"),
-          }).pipe(
-            Effect.as(null),
-            Effect.catch((failure) => Effect.succeed(failure)),
-          );
-          if (writeFailure !== null) {
-            const code =
-              writeFailure.code === "resource-exhausted"
-                ? "resource-exhausted"
-                : "transport-failed";
-            return {
-              status: "failed",
-              code,
-              detail: writeFailure.detail,
-            } as const;
-          }
-          const nextOffset = input.end + 1;
-          yield* Ref.update(state, (stateValue) => {
-            const latest = stateValue.tickets.get(token);
-            if (latest?.kind !== "upload") return stateValue;
-            const tickets = new Map(stateValue.tickets);
-            tickets.set(token, { ...latest, nextOffset, totalBytes: input.total });
-            return { ...stateValue, tickets };
-          });
-          yield* setProgress(ticket.transferId, nextOffset, input.total);
-          return {
-            status: "accepted",
-            nextOffset,
-            complete: nextOffset === input.total,
-          } as const;
-        }),
-      );
-    });
-
-  return AgentDesktopTransferService.of({ start, status, cancel, download, upload });
+  return AgentDesktopTransferService.of({ start, status, cancel });
 });
 
 export interface AgentDesktopTransferServiceShape {
@@ -1148,7 +885,7 @@ export interface AgentDesktopTransferServiceShape {
   ) => Effect.Effect<
     AgentDesktopTransfer,
     AgentDesktopTransferLookupError,
-    ProjectionSnapshotQuery | PreviewAutomationBroker.PreviewAutomationBroker
+    ProjectionSnapshotQuery
   >;
   readonly status: (
     scope: McpInvocationContext.McpInvocationScope,
@@ -1157,27 +894,10 @@ export interface AgentDesktopTransferServiceShape {
   readonly cancel: (
     scope: McpInvocationContext.McpInvocationScope,
     input: AgentDesktopTransferTargetInput,
-  ) => Effect.Effect<
-    AgentDesktopTransfer,
-    AgentDesktopTransferLookupError,
-    PreviewAutomationBroker.PreviewAutomationBroker
-  >;
-  readonly download: (
-    token: string,
-    rangeHeader: string | undefined,
-  ) => Effect.Effect<AgentDesktopTransferDownloadResult>;
-  readonly upload: (
-    token: string,
-    input: {
-      readonly start: number;
-      readonly end: number;
-      readonly total: number;
-      readonly data: Uint8Array;
-    },
-  ) => Effect.Effect<AgentDesktopTransferUploadResult>;
+  ) => Effect.Effect<AgentDesktopTransfer, AgentDesktopTransferLookupError>;
 }
 
-/** Provides one shared transfer and ticket registry for MCP and HTTP. */
+/** Provides one shared Agent desktop transfer registry. */
 export class AgentDesktopTransferService extends Context.Service<
   AgentDesktopTransferService,
   AgentDesktopTransferServiceShape

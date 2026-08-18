@@ -1,0 +1,169 @@
+/** Fingerprints and encodes 8-bit desktop bitmaps for server-owned observations. */
+import type {
+  ComputerAutomationContentHash,
+  ComputerAutomationScreenshotEncoding,
+  ComputerAutomationScreenshotMimeType,
+} from "@t3tools/contracts";
+import * as NodeCrypto from "node:crypto";
+import sharp from "sharp";
+
+const POINTER_MARKER_RADIUS = 10;
+const POINTER_MARKER_INNER_RADIUS = 7;
+const POINTER_MARKER_CENTER_RADIUS = 2;
+const PIXEL_CHANNEL_COUNT = 4;
+const DEFAULT_WEBP_LOSSY_QUALITY = 82;
+const DEFAULT_WEBP_NEAR_LOSSLESS_QUALITY = 90;
+const WEBP_ENCODING_EFFORT = 1;
+const PNG_COMPRESSION_LEVEL = 6;
+const CONTENT_HASH_PREFIX = "sha256-bgra8-v1:";
+const CONTENT_HASH_DOMAIN = Buffer.from("t3-computer-bgra8-v1\0", "ascii");
+
+export type ResolvedComputerScreenshotEncoding =
+  | { readonly format: "webp"; readonly mode: "lossless" }
+  | { readonly format: "webp"; readonly mode: "near-lossless"; readonly quality: number }
+  | { readonly format: "webp"; readonly mode: "lossy"; readonly quality: number }
+  | { readonly format: "png" };
+
+export interface ComputerScreenshotImage {
+  readonly getSize: () => { readonly width: number; readonly height: number };
+  readonly toBitmap: () => Uint8Array;
+}
+
+export type RenderedComputerScreenshot =
+  | {
+      readonly state: "image";
+      readonly contentHash: ComputerAutomationContentHash;
+      readonly data: Buffer;
+      readonly mimeType: ComputerAutomationScreenshotMimeType;
+      readonly encoding: ResolvedComputerScreenshotEncoding;
+    }
+  | {
+      readonly state: "unchanged";
+      readonly contentHash: ComputerAutomationContentHash;
+    };
+
+/** Resolves optional public encoding settings into explicit encoder parameters. */
+export function resolveComputerScreenshotEncoding(
+  encoding: ComputerAutomationScreenshotEncoding | undefined,
+): ResolvedComputerScreenshotEncoding {
+  if (encoding === undefined) return { format: "webp", mode: "lossless" };
+  if (encoding.format === "png" || encoding.mode === "lossless") return encoding;
+  return {
+    ...encoding,
+    quality:
+      encoding.quality ??
+      (encoding.mode === "near-lossless"
+        ? DEFAULT_WEBP_NEAR_LOSSLESS_QUALITY
+        : DEFAULT_WEBP_LOSSY_QUALITY),
+  };
+}
+
+/** Draws a high-contrast synthetic pointer marker into one BGRA bitmap. */
+function drawPointerMarker(
+  bitmap: Uint8Array,
+  width: number,
+  height: number,
+  point: { readonly x: number; readonly y: number },
+): void {
+  const centerX = Math.round(point.x);
+  const centerY = Math.round(point.y);
+  for (let offsetY = -POINTER_MARKER_RADIUS; offsetY <= POINTER_MARKER_RADIUS; offsetY += 1) {
+    const pixelY = centerY + offsetY;
+    if (pixelY < 0 || pixelY >= height) continue;
+    for (let offsetX = -POINTER_MARKER_RADIUS; offsetX <= POINTER_MARKER_RADIUS; offsetX += 1) {
+      const pixelX = centerX + offsetX;
+      if (pixelX < 0 || pixelX >= width) continue;
+      const distanceSquared = offsetX * offsetX + offsetY * offsetY;
+      const onOuterRing =
+        distanceSquared <= POINTER_MARKER_RADIUS * POINTER_MARKER_RADIUS &&
+        distanceSquared >= POINTER_MARKER_INNER_RADIUS * POINTER_MARKER_INNER_RADIUS;
+      const onCenter =
+        distanceSquared <= POINTER_MARKER_CENTER_RADIUS * POINTER_MARKER_CENTER_RADIUS;
+      if (!onOuterRing && !onCenter) continue;
+      const pixelOffset = (pixelY * width + pixelX) * PIXEL_CHANNEL_COUNT;
+      bitmap[pixelOffset] = onCenter ? 48 : 0;
+      bitmap[pixelOffset + 1] = onCenter ? 48 : 230;
+      bitmap[pixelOffset + 2] = 255;
+      bitmap[pixelOffset + 3] = 255;
+    }
+  }
+}
+
+/** Converts an owned BGRA bitmap to RGBA in place. */
+function convertBgraToRgba(bitmap: Uint8Array): void {
+  for (let offset = 0; offset < bitmap.byteLength; offset += PIXEL_CHANNEL_COUNT) {
+    const blue = bitmap[offset]!;
+    bitmap[offset] = bitmap[offset + 2]!;
+    bitmap[offset + 2] = blue;
+  }
+}
+
+/** Hashes one bounded BGRA8 bitmap without copying its pixels. */
+function hashComputerScreenshot(
+  bitmap: Uint8Array,
+  width: number,
+  height: number,
+): ComputerAutomationContentHash {
+  const dimensions = Buffer.allocUnsafe(8);
+  dimensions.writeUInt32BE(width, 0);
+  dimensions.writeUInt32BE(height, 4);
+  const digest = NodeCrypto.createHash("sha256")
+    .update(CONTENT_HASH_DOMAIN)
+    .update(dimensions)
+    .update(bitmap)
+    .digest("base64url");
+  return `${CONTENT_HASH_PREFIX}${digest}`;
+}
+
+/** Fingerprints and conditionally encodes one BGRA8 image. */
+export async function renderComputerScreenshot(
+  image: ComputerScreenshotImage,
+  pointer: { readonly x: number; readonly y: number } | null,
+  requestedEncoding: ComputerAutomationScreenshotEncoding | undefined,
+  unchangedIfContentHash?: ComputerAutomationContentHash,
+): Promise<RenderedComputerScreenshot> {
+  const size = image.getSize();
+  if (
+    !Number.isInteger(size.width) ||
+    !Number.isInteger(size.height) ||
+    size.width <= 0 ||
+    size.height <= 0
+  ) {
+    throw new Error("desktop screenshot has invalid dimensions");
+  }
+  const bitmap = image.toBitmap();
+  const expectedBytes = size.width * size.height * PIXEL_CHANNEL_COUNT;
+  if (bitmap.byteLength !== expectedBytes) {
+    throw new Error("desktop screenshot bitmap size does not match its dimensions");
+  }
+  if (pointer !== null) drawPointerMarker(bitmap, size.width, size.height, pointer);
+  const contentHash = hashComputerScreenshot(bitmap, size.width, size.height);
+  if (contentHash === unchangedIfContentHash) {
+    return { state: "unchanged", contentHash };
+  }
+  convertBgraToRgba(bitmap);
+  const encoding = resolveComputerScreenshotEncoding(requestedEncoding);
+  const pixels = Buffer.from(bitmap.buffer, bitmap.byteOffset, bitmap.byteLength);
+  const encoder = sharp(pixels, {
+    raw: { width: size.width, height: size.height, channels: PIXEL_CHANNEL_COUNT },
+  });
+  if (encoding.format === "png") {
+    const data = await encoder
+      .png({ compressionLevel: PNG_COMPRESSION_LEVEL, adaptiveFiltering: true })
+      .toBuffer();
+    return { state: "image", contentHash, data, mimeType: "image/png", encoding };
+  }
+  if (encoding.mode === "lossless") {
+    const data = await encoder.webp({ lossless: true, effort: WEBP_ENCODING_EFFORT }).toBuffer();
+    return { state: "image", contentHash, data, mimeType: "image/webp", encoding };
+  }
+  const data = await encoder
+    .webp({
+      quality: encoding.quality,
+      nearLossless: encoding.mode === "near-lossless",
+      smartSubsample: encoding.mode === "lossy",
+      effort: WEBP_ENCODING_EFFORT,
+    })
+    .toBuffer();
+  return { state: "image", contentHash, data, mimeType: "image/webp", encoding };
+}
