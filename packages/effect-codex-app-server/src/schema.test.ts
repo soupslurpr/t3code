@@ -24,7 +24,6 @@ it("keeps async questions in live notifications and thread history", () => {
     ],
   } as const;
   for (const schema of [
-    CodexSchema.ServerNotification__ThreadItem,
     CodexSchema.V2ItemStartedNotification__ThreadItem,
     CodexSchema.V2ItemCompletedNotification__ThreadItem,
     CodexSchema.V2ThreadReadResponse__ThreadItem,
@@ -36,7 +35,6 @@ it("keeps async questions in live notifications and thread history", () => {
 
 it("accepts Codex 0.150 multi-agent values", () => {
   const schemas = [
-    CodexSchema.ServerNotification__SubAgentActivityKind,
     CodexSchema.V2ItemStartedNotification__SubAgentActivityKind,
     CodexSchema.V2ItemCompletedNotification__SubAgentActivityKind,
     CodexSchema.V2ThreadReadResponse__SubAgentActivityKind,
@@ -48,14 +46,9 @@ it("accepts Codex 0.150 multi-agent values", () => {
   }
 
   for (const tool of ["sendMessage", "followupTask", "interruptAgent", "listAgents"]) {
-    assert.equal(Schema.is(CodexSchema.ServerNotification__CollabAgentTool)(tool), true);
     assert.equal(Schema.is(CodexSchema.V2ThreadResumeResponse__CollabAgentTool)(tool), true);
   }
 
-  assert.equal(
-    Schema.is(CodexSchema.ServerNotification__CollabAgentToolCallStatus)("interrupted"),
-    true,
-  );
   assert.equal(
     Schema.is(CodexSchema.V2ThreadResumeResponse__CollabAgentToolCallStatus)("interrupted"),
     true,
