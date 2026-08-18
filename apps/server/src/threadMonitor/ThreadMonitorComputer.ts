@@ -46,6 +46,7 @@ const RELEASE_TIMEOUT_MS = 30_000;
 const DEFAULT_INTERVAL_MS = 30_000;
 const DEFAULT_MAX_IMAGE_DIMENSION = 1_024;
 const DEFAULT_FAILURE_REVIEW_THRESHOLD = 3;
+const DEFAULT_MODEL_REVIEW_EVALUATIONS = 12;
 const isThreadMonitorError = Schema.is(ThreadMonitorError);
 
 type CapturedRegion = {
@@ -139,11 +140,17 @@ function normalizeMatch(
 /** Normalizes an optional controller-review policy. */
 function normalizeReviewPolicy(
   review: ThreadMonitorComputerStartInput["review"],
+  match: ThreadMonitorComputerStartInput["match"],
 ): ThreadMonitorComputerReviewPolicy | null {
   if (review === null) return null;
   const configured = review ?? {};
   const policy = {
-    afterEvaluations: configured.afterEvaluations ?? null,
+    afterEvaluations:
+      configured.afterEvaluations === undefined
+        ? match.type === "model"
+          ? DEFAULT_MODEL_REVIEW_EVALUATIONS
+          : null
+        : configured.afterEvaluations,
     consecutiveUncertain: configured.consecutiveUncertain ?? null,
     consecutiveFailures:
       configured.consecutiveFailures === undefined
@@ -565,7 +572,7 @@ export const make = Effect.gen(function* () {
         match,
         sampling,
         review: {
-          policy: normalizeReviewPolicy(input.watch.review),
+          policy: normalizeReviewPolicy(input.watch.review, input.watch.match),
           state: "idle",
           reason: null,
           sequence: 0,
@@ -808,6 +815,16 @@ export const make = Effect.gen(function* () {
         ...sampled,
         evaluationPending: evaluation.evaluationPending,
       };
+      if (condition.review.state !== "idle") {
+        return {
+          condition: {
+            ...scheduled,
+            evaluationPending: evaluation.evaluate || evaluation.evaluationPending,
+          },
+          observedImages: [],
+          match: null,
+        };
+      }
       if (!evaluation.evaluate) return { condition: scheduled, observedImages: [], match: null };
 
       const contextRegions = condition.observation.regions.filter(
