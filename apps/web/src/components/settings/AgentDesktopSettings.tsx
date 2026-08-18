@@ -236,7 +236,7 @@ function AgentObservationOverlay({
       {positioned.map(({ image, layout }) => (
         <div
           key={image.id}
-          className="absolute overflow-hidden shadow-[0_0_0_1px_rgb(0_0_0/0.65)] ring-2 ring-cyan-300 ring-inset"
+          className="absolute overflow-hidden bg-cyan-950/30"
           style={{
             left: `${layout.leftPercent}%`,
             top: `${layout.topPercent}%`,
@@ -254,7 +254,8 @@ function AgentObservationOverlay({
           ) : (
             <div className="size-full bg-cyan-950/30" />
           )}
-          <span className="absolute left-1 top-1 max-w-[calc(100%-0.5rem)] truncate rounded bg-black/75 px-1.5 py-0.5 text-[10px] leading-none text-white">
+          <div className="absolute inset-0 z-10 border-2 border-cyan-300 shadow-[inset_0_0_0_1px_rgb(0_0_0/0.8)]" />
+          <span className="absolute left-1.5 top-1.5 z-20 max-w-[calc(100%-0.75rem)] truncate rounded bg-black/80 px-1.5 py-0.5 text-[10px] leading-none text-white shadow-sm ring-1 ring-white/15">
             {image.purpose ?? image.id}
           </span>
         </div>
@@ -610,7 +611,7 @@ function DesktopViewer({
 
   return (
     <DialogPopup
-      className="row-start-1 row-end-4 w-[min(96vw,1100px)] max-w-none self-start"
+      className="row-start-1 row-end-4 h-full w-[min(96vw,1100px)] max-w-none self-start"
       bottomStickOnMobile={false}
     >
       <DialogHeader>
