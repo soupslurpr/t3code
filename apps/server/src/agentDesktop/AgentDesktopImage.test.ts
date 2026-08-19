@@ -40,4 +40,24 @@ describe("AgentDesktopImage", () => {
     assert.deepEqual(resized.getSize(), { width: 4, height: 3 });
     assert.equal(resized.toBitmap().byteLength, 4 * 3 * 4);
   });
+
+  it("bilinearly downsamples BGRA pixels without native image transforms", async () => {
+    const source = await decodeAgentDesktopCapture({
+      kind: "bitmap",
+      path: "/capture.raw",
+      width: 2,
+      height: 2,
+      data: new Uint8Array([
+        0, 10, 20, 255, 100, 110, 120, 255, 200, 210, 220, 255, 255, 250, 240, 255,
+      ]),
+    });
+
+    const resized = await cropAgentDesktopImage(
+      source,
+      { x: 0, y: 0, width: 2, height: 2 },
+      { width: 1, height: 1 },
+    );
+
+    assert.deepEqual([...resized.toBitmap()], [139, 145, 150, 255]);
+  });
 });
