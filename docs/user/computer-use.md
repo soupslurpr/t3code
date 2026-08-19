@@ -281,6 +281,24 @@ park to disk after ten minutes, while active operations, viewers, controllers, a
 prevent-parking requests keep them running. An agent can also stop, park, checkpoint, clone, reset,
 recover, hand off, or delete a desktop explicitly.
 
+Agent desktop system maintenance is asynchronous and survives ordinary client or provider changes.
+`agent_desktop_list` reports the installed profile and update phase for the environment's base image
+and every desktop. `agent_desktop_update` can queue either target explicitly. A desktop update is
+accepted only after control, viewers, and guest operations have been released. T3 Code snapshots its
+system and firmware disks, installs the complete signed Arch upgrade, reapplies the current guest
+profile, reboots, and verifies the graphical desktop. A failed or interrupted update restores the
+prior disks automatically.
+
+The base image is a sequence of immutable generations rather than one file rewritten in place. A
+refresh fully provisions and verifies a new generation before future desktops select it; existing
+desktops remain attached to the generation they were created from. T3 Code retains the current base,
+every generation still referenced by a desktop, and one prior unreferenced generation. It checks for
+updates after a guest-profile change or seven days. An overdue base may refresh automatically when
+the host has enough free memory and temporary disk space. Existing desktops update automatically
+only while stopped or cold-parked; running work, human or agent access, active guest operations, and
+software desktops with saved memory are not interrupted. Settings shows due, active, failed, and
+completed maintenance and can queue the same safe path manually.
+
 Stopped or parked desktops using automatic retention enter a seven-day recovery window after 30
 days without activity. The host also maintains a free-space reserve of five percent of the Agent
 desktop filesystem, bounded between 2 GiB and 20 GiB. When storage falls below that reserve,
@@ -328,12 +346,14 @@ UEFI firmware, and passt networking. `agent_desktop_list` reports every prerequi
 When an official Arch package can repair one, `agent_desktop_setup` offers to install only the exact
 reported package set through PolicyKit and then probes again. On first use, the same approved setup
 downloads a pinned official Arch cloud image, checks its exact size and SHA-256, provisions the
-private graphical guest, and atomically installs it. An interrupted download can resume, and a
-verified source image is cached for recovery. Allow up to 75 minutes, 8 GiB of temporary free space,
-and roughly 3 GiB of retained storage. Missing KVM access, firmware settings, GPU device access, or
-graphics drivers remain explicit manual remedies. A custom `T3CODE_AGENT_DESKTOP_IMAGE` path also
-remains caller-managed. Setup applies to the environment server, so the same Agent desktop inventory
-is available whether the thread is opened from a local desktop app, a remote browser, or mobile.
+private graphical guest, and atomically installs its first immutable generation. An interrupted
+download can resume, and a verified source image is cached for recovery. Allow up to 75 minutes and
+8 GiB of temporary free space. Retained storage includes the compressed source, current and prior
+base generations, any older generations still backing desktops, and each desktop's sparse changes.
+Missing KVM access, firmware settings, GPU device access, or graphics drivers remain explicit manual
+remedies. A custom `T3CODE_AGENT_DESKTOP_IMAGE` path also remains caller-managed. Setup applies to
+the environment server, so the same Agent desktop inventory is available whether the thread is
+opened from a local desktop app, a remote browser, or mobile.
 
 ## Troubleshooting
 
