@@ -16,7 +16,7 @@ import {
   HttpClientResponse,
 } from "effect/unstable/http";
 import { ChildProcess, ChildProcessSpawner } from "effect/unstable/process";
-import { zstdDecompressSync } from "node:zlib";
+import * as NodeZlib from "node:zlib";
 
 const UPSTREAM_REF = "3ba0f711642a888aec92a611a3f3b2211157ff89";
 const USER_AGENT = "effect-codex-app-server-generator";
@@ -208,7 +208,7 @@ const fetchPrecomputedExports = Effect.fn("fetchPrecomputedExports")(function* (
     ),
   );
   const json = yield* Effect.try({
-    try: () => new TextDecoder().decode(zstdDecompressSync(new Uint8Array(compressed))),
+    try: () => new TextDecoder().decode(NodeZlib.zstdDecompressSync(new Uint8Array(compressed))),
     catch: (cause) =>
       new GeneratorError({
         detail: "Failed to decompress the precomputed Codex protocol export",

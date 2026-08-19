@@ -26,6 +26,7 @@ import {
   rollbackCodexThreadSnapshot,
 } from "./CodexSessionRuntime.ts";
 const isCodexAppServerRequestError = Schema.is(CodexErrors.CodexAppServerRequestError);
+const isCodexSessionRuntimeRollbackRangeError = Schema.is(CodexSessionRuntimeRollbackRangeError);
 
 describe("CodexSessionRuntimeIdentifierGenerationError", () => {
   it("retains identifier purpose and the random source failure", () => {
@@ -943,7 +944,7 @@ describe("paginated Codex thread history", () => {
         Effect.flip,
       );
 
-      NodeAssert.ok(Schema.is(CodexSessionRuntimeRollbackRangeError)(error));
+      NodeAssert.ok(isCodexSessionRuntimeRollbackRangeError(error));
       NodeAssert.equal(error.availableTurns, 2);
       NodeAssert.equal(error.requestedTurns, 3);
     }),
