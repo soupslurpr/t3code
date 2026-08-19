@@ -17,6 +17,8 @@ export function humanRequestOperation(
       return "agentDesktopList";
     case "setup":
       return "agentDesktopSetup";
+    case "update":
+      return "agentDesktopUpdate";
     case "manage":
       return "agentDesktopManage";
     case "inspect":
@@ -53,6 +55,21 @@ export const runAgentDesktopHumanRequest = Effect.fn("AgentDesktopHuman.run")(fu
     );
   }
   if (request.operation === "setup") return yield* manager.setup;
+  if (request.operation === "update") {
+    const owner = request.owner ?? {
+      environmentId: scope.environmentId,
+      threadId: scope.threadId,
+      controllerId: scope.providerSessionId,
+    };
+    if (owner.environmentId !== scope.environmentId || owner.threadId !== scope.threadId) {
+      return yield* new AgentDesktopManager.AgentDesktopManagerError({
+        code: "desktop-target-mismatch",
+        operation: "update",
+        detail: "the Agent desktop belongs to a different environment or thread",
+      });
+    }
+    return yield* manager.update(owner, request.input);
+  }
   if (
     request.owner.environmentId !== scope.environmentId ||
     request.owner.threadId !== scope.threadId

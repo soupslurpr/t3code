@@ -25,6 +25,7 @@ import {
   AgentDesktopInspectInput,
   AgentDesktopManageInput,
   AgentDesktopOwner,
+  AgentDesktopUpdateInput,
 } from "./agentDesktop.ts";
 
 const BoundedUrl = Schema.String.check(Schema.isTrimmed())
@@ -79,6 +80,11 @@ const AgentDesktopHumanTarget = {
 export const AgentDesktopHumanRequest = Schema.Union([
   Schema.Struct({ operation: Schema.Literal("list") }),
   Schema.Struct({ operation: Schema.Literal("setup") }),
+  Schema.Struct({
+    operation: Schema.Literal("update"),
+    owner: Schema.optional(AgentDesktopOwner),
+    input: AgentDesktopUpdateInput,
+  }),
   Schema.Struct({
     operation: Schema.Literal("manage"),
     owner: AgentDesktopOwner,

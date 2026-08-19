@@ -38,6 +38,7 @@ it("exports object schemas and operation-accurate safety annotations", () => {
     "agent_desktop_command",
     "agent_desktop_copy",
     "agent_desktop_manage",
+    "agent_desktop_update",
     "agent_desktop_write_file",
   ] as const) {
     expect(Context.get(AgentDesktopToolkit.tools[name].annotations, Tool.Destructive)).toBe(true);
