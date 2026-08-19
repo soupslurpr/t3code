@@ -7,7 +7,7 @@ import {
 } from "@t3tools/contracts";
 import * as Cause from "effect/Cause";
 import { AsyncResult } from "effect/reactivity";
-import { beforeEach, expect, it, vi } from "vite-plus/test";
+import { beforeEach, describe, expect, it, vi } from "vite-plus/test";
 
 const state = vi.hoisted(() => ({
   session: null as Pick<AuthSessionState, "authenticated" | "scopes"> | null,
@@ -44,7 +44,7 @@ vi.mock("~/state/assets", () => ({
 }));
 vi.mock("~/state/use-atom-query-runner", () => ({ useAtomQueryRunner: () => state.mint }));
 
-import { useAssetUrlRefresh, useAssetUrlState } from "./assetUrls";
+import { resolveClientAssetUrl, useAssetUrlRefresh, useAssetUrlState } from "./assetUrls";
 
 const environmentId = EnvironmentId.make("asset-environment");
 const threadId = ThreadId.make("asset-thread");
@@ -103,4 +103,24 @@ it("lets the server authorize an explicit refresh before the client grant loads"
   });
   state.mint.mockResolvedValue(AsyncResult.failure(Cause.fail(denied)));
   await expect(useAssetUrlRefresh(environmentId, resource)()).rejects.toBe(denied);
+});
+
+describe("resolveClientAssetUrl", () => {
+  it("keeps signed assets direct in a web client", () => {
+    expect(
+      resolveClientAssetUrl("http://192.168.1.56:3773/", "/api/assets/signed-token/preview.wav"),
+    ).toBe("http://192.168.1.56:3773/api/assets/signed-token/preview.wav");
+  });
+
+  it("routes signed assets through the secure Electron origin", () => {
+    expect(
+      resolveClientAssetUrl(
+        "http://192.168.1.56:3773/",
+        "/api/assets/signed-token/preview.wav",
+        "t3code://app/thread/123",
+      ),
+    ).toBe(
+      "t3code://app/.t3/assets/proxy?url=http%3A%2F%2F192.168.1.56%3A3773%2Fapi%2Fassets%2Fsigned-token%2Fpreview.wav",
+    );
+  });
 });
