@@ -37,6 +37,7 @@ export const PINNED_ARCH_IMAGE = Object.freeze({
   sha256: "9ca8d4b0a60e53b8aa1ac2317166ecffc4e9eae8d0b28b7ca0e3d333578f9a07",
   sizeBytes: 556_424_192,
 });
+export const AGENT_DESKTOP_PROFILE_VERSION = "arch-gnome-v1";
 
 const cloudConfig = `#cloud-config
 hostname: t3-agent-desktop
@@ -93,6 +94,10 @@ packages:
   - xdg-user-dirs
   - xorg-xwayland
 write_files:
+  - path: /etc/t3-agent-desktop-profile
+    permissions: "0644"
+    content: |
+      ${AGENT_DESKTOP_PROFILE_VERSION}
   - path: /etc/gdm/custom.conf
     permissions: "0644"
     defer: true
