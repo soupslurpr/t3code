@@ -17,6 +17,8 @@ import {
   AgentDesktopTransfer,
   AgentDesktopTransferLookupError,
   AgentDesktopTransferTargetInput,
+  AgentDesktopUpdateInput,
+  AgentDesktopUpdateResult,
   AgentDesktopRemovePortRouteInput,
   AgentDesktopWriteFileInput,
   AgentDesktopWriteFileResult,
@@ -75,6 +77,17 @@ export const AgentDesktopSetupTool = agentDesktopTool(
     failure: PreviewAutomationError,
     dependencies,
   }).annotate(Tool.Title, "Set up Agent desktops"),
+);
+
+export const AgentDesktopUpdateTool = agentDesktopTool(
+  Tool.make("agent_desktop_update", {
+    description:
+      "Queue safe system maintenance for the immutable base image or one owned Agent desktop. The call returns immediately; agent_desktop_list reports durable phases and completion. Base refreshes build and verify a new generation without changing existing backing files. Desktop updates require all control, viewers, and active operations to be released, create a rollback point, perform a full signed Arch upgrade plus the current T3 guest profile, reboot and verify the graphical system, and restore the prior disk automatically on failure. T3 Code also queues overdue base images and genuinely cold desktops automatically; use this tool when the agent decides an idle desktop is ready sooner.",
+    parameters: AgentDesktopUpdateInput,
+    success: AgentDesktopUpdateResult,
+    failure: PreviewAutomationError,
+    dependencies,
+  }).annotate(Tool.Title, "Update Agent desktop"),
 );
 
 export const AgentDesktopAcquireTool = safeAgentDesktopTool(
@@ -216,6 +229,7 @@ export const AgentDesktopPacketCaptureTool = safeAgentDesktopTool(
 export const AgentDesktopToolkit = Toolkit.make(
   AgentDesktopListTool,
   AgentDesktopSetupTool,
+  AgentDesktopUpdateTool,
   AgentDesktopAcquireTool,
   AgentDesktopManageTool,
   AgentDesktopCommandTool,

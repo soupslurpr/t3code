@@ -212,7 +212,25 @@ const MonitorTestLayer = Layer.succeed(
 );
 const BrokerTestLayer = PreviewAutomationBroker.layer.pipe(Layer.provide(NodeServices.layer));
 const AgentDesktopManagerTestLayer = Layer.mock(AgentDesktopManager.AgentDesktopManager)({
-  list: Effect.succeed({ available: true, desktops: [], requirements: [] }),
+  list: Effect.succeed({
+    available: true,
+    baseImage: {
+      managed: true,
+      generation: null,
+      sourceRelease: null,
+      builtAt: null,
+      maintenance: {
+        status: "due",
+        targetProfileVersion: "arch-gnome-v1",
+        appliedProfileVersion: null,
+        lastUpdatedAt: null,
+        startedAt: null,
+        completedAt: null,
+      },
+    },
+    desktops: [],
+    requirements: [],
+  }),
   snapshot: (_controllerId, _options, _desktopId) =>
     Effect.succeed(automationResult("computerSnapshot") as ComputerAutomationSnapshot),
 });
