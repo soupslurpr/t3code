@@ -46,8 +46,10 @@ disables guest idle locking and suspend, starts QEMU Guest Agent, and does not e
 builds include a dependency-free image builder. Approved first-use setup downloads an immutable,
 pinned official Arch qcow2 image over HTTPS, validates its exact size and embedded published SHA-256,
 provisions through a NoCloud FAT seed, validates the result, and atomically installs a compressed
-base image. Downloads resume through a private partial file; verified sources are cached while failed
-build overlays are removed. Setup is serialized so concurrent agents cannot race the same image.
+base generation. A small manifest atomically selects the generation used by future desktops; an
+existing overlay continues to reference its exact immutable backing file. Downloads resume through a
+private partial file; verified sources are cached while failed build overlays are removed. Setup and
+refresh are serialized so concurrent agents cannot race the same image.
 The repository command can still consume a caller-supplied qcow2 image and requires a SHA-256 unless
 verification is explicitly skipped.
 
@@ -118,6 +120,36 @@ flushes both live drives, converts them with shared-source access, and resumes t
 copying fails. Deletes are recoverable for seven days unless permanent deletion is explicitly
 requested.
 
+## System Maintenance
+
+The manager records base-image and per-desktop maintenance independently from machine lifecycle.
+Profiles are versioned with the T3 guest configuration, while a seven-day freshness interval keeps
+Arch packages current between profile changes. Maintenance is queued and persisted before work
+begins, and list responses report preparing, installing, restarting, verifying, rollback, and
+terminal states.
+
+Changes to the managed guest package set or system profile must bump the profile version in both the
+image builder and maintenance policy. A focused test keeps those values and package sets aligned.
+
+A base refresh provisions and verifies a complete new generation before switching the manifest.
+It never rewrites a backing file used by an existing overlay. Cleanup retains the current generation,
+every generation referenced by a desktop, and one unreferenced prior generation for recovery.
+Caller-supplied base images remain caller-managed.
+
+An existing desktop update first stops QEMU and creates offline internal snapshots of both the system
+and firmware disks. It starts the guest, performs a complete signed Arch upgrade, reapplies the
+current T3 profile, reboots, verifies the required services and profile marker, and captures a real
+graphical frame. Only then does it discard the rollback point and restore the prior stopped, parked,
+or ready lifecycle. Any failure or manager shutdown restores both disks before access resumes. A
+restart also detects persisted in-progress maintenance and rolls it back before serving the desktop.
+
+The periodic policy may refresh an overdue base when temporary disk and host memory reserves permit.
+It updates an existing desktop automatically only when it is genuinely cold: stopped, or cold-parked
+because accelerated graphics cannot retain machine memory. A running desktop, any control or viewer
+lease, an active guest operation, and a software desktop's saved-memory park are never interrupted.
+Explicit updates use the same admission and rollback path. Failed jobs remain visible and use a
+six-hour automatic retry backoff.
+
 ## Networking
 
 Every machine receives an independent passt NAT connection. The manager combines host interface
@@ -132,8 +164,9 @@ bounded operation that returns a private artifact only after an explicit request
 ## Verification
 
 Focused unit tests cover contracts, admission, routing, input conversion, private framebuffer
-decoding, prerequisite remedies, pinned download validation, image generation, server/guest bundle
-interoperability, direct streamed transfers, integrity checks, and cancellation. The server smoke
-harness starts an isolated environment-owned runtime without an Electron automation host, then
+decoding, prerequisite remedies, pinned download validation, image generation and retention,
+successful maintenance, failed-verification rollback, interrupted-update recovery, server/guest
+bundle interoperability, direct streamed transfers, integrity checks, and cancellation. The server
+smoke harness starts an isolated environment-owned runtime without an Electron automation host, then
 exercises acquisition, guest commands, file transfer, screenshots, graphical input, release, and
 cleanup against a real KVM guest.

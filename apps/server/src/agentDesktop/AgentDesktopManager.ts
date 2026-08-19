@@ -6,6 +6,7 @@ import * as NodeOS from "node:os";
 import {
   AgentDesktop,
   type AgentDesktopAcquireInput,
+  type AgentDesktopBaseImage,
   type AgentDesktopCommandInput,
   type AgentDesktopCommandResult,
   type AgentDesktopCreatePortRouteInput,
@@ -13,6 +14,7 @@ import {
   type AgentDesktopInspectInput,
   AgentDesktopLifecycleState,
   type AgentDesktopList,
+  type AgentDesktopMaintenance,
   type AgentDesktopManageInput,
   type AgentDesktopNetworkConnection,
   type AgentDesktopNetworkTelemetry,
@@ -26,6 +28,8 @@ import {
   type AgentDesktopRequirements,
   type AgentDesktopResourceTelemetry,
   type AgentDesktopSetupResult,
+  type AgentDesktopUpdateInput,
+  type AgentDesktopUpdateResult,
   type AgentDesktopTransfer,
   type AgentDesktopWriteFileInput,
   type AgentDesktopWriteFileResult,
@@ -41,6 +45,7 @@ import {
   type ComputerAutomationStatus,
   type ComputerDesktopSelector,
 } from "@t3tools/contracts";
+import * as Cause from "effect/Cause";
 import * as Clock from "effect/Clock";
 import * as Context from "effect/Context";
 import * as Crypto from "effect/Crypto";
@@ -51,6 +56,7 @@ import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
+import * as Queue from "effect/Queue";
 import * as Ref from "effect/Ref";
 import * as Schema from "effect/Schema";
 import * as Semaphore from "effect/Semaphore";
@@ -59,6 +65,11 @@ import { renderComputerScreenshot } from "../computer/ComputerScreenshotEncoding
 import * as ComputerUse from "../computer/ComputerAutomationFailure.ts";
 import * as AgentDesktopEnvironment from "./AgentDesktopEnvironment.ts";
 import { cropAgentDesktopImage, decodeAgentDesktopCapture } from "./AgentDesktopImage.ts";
+import {
+  AGENT_DESKTOP_PROFILE_VERSION,
+  isAgentDesktopMaintenanceDue,
+  presentAgentDesktopMaintenance,
+} from "./AgentDesktopMaintenance.ts";
 import * as QemuAgentDesktop from "./QemuAgentDesktop.ts";
 import * as QemuInput from "./QemuInput.ts";
 
@@ -92,9 +103,12 @@ const AUTOMATIC_RECOVERY_AFTER = Duration.days(30);
 const STORAGE_PRESSURE_MIN_IDLE = Duration.days(1);
 const MIN_STORAGE_RESERVE_BYTES = 2 * GIB;
 const MAX_STORAGE_RESERVE_BYTES = 20 * GIB;
+const BASE_IMAGE_UPDATE_TEMPORARY_BYTES = 8 * GIB;
+const DESKTOP_UPDATE_TEMPORARY_BYTES = 4 * GIB;
 const STORAGE_RESERVE_RATIO = 0.05;
 const STORAGE_CHECK_INTERVAL = Duration.minutes(5);
 const MAINTENANCE_INTERVAL = Duration.minutes(1);
+const MAINTENANCE_RETRY_INTERVAL = Duration.hours(6);
 const HUMAN_LEASE_TTL = Duration.seconds(30);
 const STATE_FILE_NAME = "desktops.json";
 const DEFAULT_COMMAND_TIMEOUT_MS = 5 * 60 * 1000;
@@ -104,6 +118,7 @@ const MAX_NETWORK_CONNECTIONS = 256;
 const GUEST_ACCESSIBILITY_RESOURCE = "agent-desktop/accessibility.js";
 const GUEST_INPUT_RESOURCE = "agent-desktop/input-helper.py";
 const GUEST_TRANSFER_RESOURCE = "agent-desktop/transfer-helper.py";
+const GUEST_MAINTENANCE_RESOURCE = "agent-desktop/maintenance.sh";
 const GUEST_ACCESSIBILITY_DIRECTORY = "/run/t3-agent-desktop";
 const GUEST_ACCESSIBILITY_PATH = `${GUEST_ACCESSIBILITY_DIRECTORY}/accessibility.js`;
 const GUEST_INPUT_DIRECTORY = "/run/t3-agent-input";
@@ -114,6 +129,9 @@ const GUEST_INTEGRATION_TIMEOUT_MS = 10_000;
 const GUEST_ACCESSIBILITY_OUTPUT_BYTES = 2 * 1024 * 1024;
 const GUEST_TRANSFER_DIRECTORY = "/run/t3-agent-desktop/transfers";
 const GUEST_TRANSFER_HELPER_PATH = `${GUEST_ACCESSIBILITY_DIRECTORY}/transfer-helper.py`;
+const GUEST_MAINTENANCE_PATH = `${GUEST_ACCESSIBILITY_DIRECTORY}/maintenance.sh`;
+const GUEST_PROFILE_MARKER_PATH = "/etc/t3-agent-desktop-profile";
+const GUEST_MAINTENANCE_TIMEOUT_MS = 2 * 60 * 60 * 1_000;
 const GUEST_TRANSFER_CHUNK_BYTES = 8 * 1024 * 1024;
 const GUEST_TRANSFER_TIMEOUT_MS = 6 * 60 * 60 * 1_000;
 const GUEST_TRANSFER_OUTPUT_BYTES = 64 * 1024;
@@ -144,6 +162,13 @@ function transferCauseDetail(cause: unknown): string {
         : undefined;
   }
   return details.join(": ").slice(0, 512);
+}
+
+/** Extracts the actionable failure message from one maintenance effect cause. */
+function maintenanceCauseDetail(cause: Cause.Cause<unknown>, maxLength = 512): string {
+  const failure = Cause.squash(cause);
+  const detail = failure instanceof Error ? failure.message : String(failure);
+  return detail.trim().slice(0, maxLength) || "the Agent desktop maintenance operation failed";
 }
 
 /** Validates padded RFC 4648 base64 without using the JavaScript regex stack. */
@@ -186,12 +211,39 @@ const PersistedResources = Schema.Struct({
   audio: Schema.Boolean,
 });
 
+const PersistedMaintenance = Schema.Struct({
+  status: Schema.optional(
+    Schema.Literals([
+      "current",
+      "due",
+      "queued",
+      "preparing",
+      "installing",
+      "restarting",
+      "verifying",
+      "rolling-back",
+      "failed",
+    ]),
+  ),
+  appliedProfileVersion: Schema.optional(Schema.String),
+  lastUpdatedAt: Schema.optional(Schema.String),
+  startedAt: Schema.optional(Schema.String),
+  completedAt: Schema.optional(Schema.String),
+  baseGeneration: Schema.optional(Schema.String),
+  previousState: Schema.optional(AgentDesktopLifecycleState),
+  rollbackReady: Schema.optional(Schema.Boolean),
+  detail: Schema.optional(Schema.String),
+});
+type PersistedMaintenanceState = typeof PersistedMaintenance.Type;
+
 const PersistedDesktop = Schema.Struct({
   id: Schema.String,
   label: Schema.String,
   owner: AgentDesktopOwner,
   state: AgentDesktopLifecycleState,
   resources: PersistedResources,
+  baseGeneration: Schema.optional(Schema.String),
+  maintenance: Schema.optional(PersistedMaintenance),
   graphicsBackend: Schema.optional(
     Schema.Literals(["compatibility-vga", "virtio-gpu-2d", "virgl"]),
   ),
@@ -226,6 +278,7 @@ type PersistedDesktop = typeof PersistedDesktop.Type;
 const PersistedDocument = Schema.Struct({
   version: Schema.Literal(1),
   desktops: Schema.Array(PersistedDesktop),
+  baseMaintenance: Schema.optional(PersistedMaintenance),
 });
 const decodeDocument = Schema.decodeEffect(Schema.fromJsonString(PersistedDocument));
 const encodeDocument = Schema.encodeEffect(Schema.fromJsonString(PersistedDocument));
@@ -507,6 +560,7 @@ interface ManagerState {
   readonly assignments: ReadonlyMap<string, AgentDesktopId>;
   readonly leases: ReadonlyMap<AgentDesktopId, LeaseState>;
   readonly runtimes: ReadonlyMap<AgentDesktopId, RuntimeState>;
+  readonly baseMaintenance?: PersistedMaintenanceState;
   readonly loadDetail?: string;
 }
 
@@ -515,6 +569,25 @@ interface ActiveTransfer {
   readonly desktopId: AgentDesktopId;
   readonly cancellation: Deferred.Deferred<void>;
 }
+
+type MaintenanceJob =
+  | {
+      readonly kind: "base-image";
+      readonly completion: Deferred.Deferred<AgentDesktopMaintenance>;
+    }
+  | {
+      readonly kind: "desktop";
+      readonly desktopId: AgentDesktopId;
+      readonly completion: Deferred.Deferred<AgentDesktopMaintenance>;
+    };
+
+type PendingMaintenanceJob =
+  | { readonly kind: "base-image" }
+  | { readonly kind: "desktop"; readonly desktopId: AgentDesktopId };
+
+/** Returns the single completion slot owned by one maintenance target. */
+const maintenanceJobKey = (job: PendingMaintenanceJob): string =>
+  job.kind === "base-image" ? "base-image" : job.desktopId;
 
 export interface HostResourceSnapshot {
   readonly totalMemoryBytes: number;
@@ -564,6 +637,14 @@ export interface AgentDesktopManagerTransferResult {
 export interface AgentDesktopManagerShape {
   readonly list: Effect.Effect<AgentDesktopList>;
   readonly setup: Effect.Effect<AgentDesktopSetupResult, AgentDesktopManagerOperationError>;
+  readonly update: (
+    owner: AgentDesktopOwner,
+    input: AgentDesktopUpdateInput,
+  ) => Effect.Effect<AgentDesktopUpdateResult, AgentDesktopManagerOperationError>;
+  readonly awaitUpdate: (
+    owner: AgentDesktopOwner,
+    input: AgentDesktopUpdateInput,
+  ) => Effect.Effect<AgentDesktopMaintenance, AgentDesktopManagerOperationError>;
   readonly acquire: (
     owner: AgentDesktopOwner,
     input: AgentDesktopAcquireInput,
@@ -713,6 +794,36 @@ const ownersShareThread = (left: AgentDesktopOwner, right: AgentDesktopOwner): b
 
 const isRunningState = (state: PersistedDesktop["state"]): boolean =>
   state === "starting" || state === "ready" || state === "active";
+
+const isActiveMaintenanceStatus = (status: PersistedMaintenanceState["status"]): boolean =>
+  status === "queued" ||
+  status === "preparing" ||
+  status === "installing" ||
+  status === "restarting" ||
+  status === "verifying" ||
+  status === "rolling-back";
+
+const canRetryMaintenance = (
+  maintenance: PersistedMaintenanceState | undefined,
+  now: number,
+): boolean => {
+  if (maintenance?.status !== "failed") return true;
+  const completedAt = Date.parse(maintenance.completedAt ?? "");
+  return (
+    !Number.isFinite(completedAt) ||
+    now - completedAt >= Duration.toMillis(MAINTENANCE_RETRY_INTERVAL)
+  );
+};
+
+/** Returns whether persisted base status describes the selected immutable generation. */
+const baseMaintenanceApplies = (
+  maintenance: PersistedMaintenanceState | undefined,
+  generation: string | null,
+): boolean =>
+  maintenance !== undefined &&
+  (isActiveMaintenanceStatus(maintenance.status) ||
+    maintenance.status === "failed" ||
+    (maintenance.baseGeneration ?? null) === generation);
 
 /** Reconciles persisted lifecycle state with the actual QEMU process after restart. */
 export function reconcileAgentDesktopLifecycleState(
@@ -937,6 +1048,10 @@ export const make = Effect.gen(function* () {
   const stateSemaphore = yield* Semaphore.make(1);
   const lifecycleSemaphore = yield* Semaphore.make(1);
   const leaseSemaphore = yield* Semaphore.make(1);
+  const maintenanceQueue = yield* Queue.unbounded<MaintenanceJob>();
+  const maintenanceCompletions = yield* Ref.make<
+    ReadonlyMap<string, Deferred.Deferred<AgentDesktopMaintenance>>
+  >(new Map());
   const activeTransfers = yield* Ref.make<ReadonlyMap<string, ActiveTransfer>>(new Map());
   const nextStorageCheckAt = yield* Ref.make(0);
   const guestAccessibilitySource = yield* Effect.gen(function* () {
@@ -957,6 +1072,13 @@ export const make = Effect.gen(function* () {
   });
   const guestTransferSource = yield* Effect.gen(function* () {
     for (const candidate of environment.resolveResourcePathCandidates(GUEST_TRANSFER_RESOURCE)) {
+      const source = yield* fileSystem.readFileString(candidate).pipe(Effect.option);
+      if (Option.isSome(source)) return source.value;
+    }
+    return null;
+  });
+  const guestMaintenanceSource = yield* Effect.gen(function* () {
+    for (const candidate of environment.resolveResourcePathCandidates(GUEST_MAINTENANCE_RESOURCE)) {
       const source = yield* fileSystem.readFileString(candidate).pipe(Effect.option);
       if (Option.isSome(source)) return source.value;
     }
@@ -993,6 +1115,7 @@ export const make = Effect.gen(function* () {
 
   const loaded: {
     readonly desktops: ReadonlyArray<PersistedDesktop>;
+    readonly baseMaintenance?: PersistedMaintenanceState;
     readonly loadDetail?: string;
   } = yield* fileSystem.readFileString(statePath).pipe(
     Effect.option,
@@ -1001,7 +1124,12 @@ export const make = Effect.gen(function* () {
         onNone: () => Effect.succeed({ desktops: [] as ReadonlyArray<PersistedDesktop> }),
         onSome: (raw) =>
           decodeDocument(raw).pipe(
-            Effect.map((document) => ({ desktops: document.desktops })),
+            Effect.map((document) => ({
+              desktops: document.desktops,
+              ...(document.baseMaintenance === undefined
+                ? {}
+                : { baseMaintenance: document.baseMaintenance }),
+            })),
             Effect.catch((cause) =>
               Effect.succeed({
                 desktops: [] as ReadonlyArray<PersistedDesktop>,
@@ -1040,6 +1168,7 @@ export const make = Effect.gen(function* () {
     assignments,
     leases: new Map(),
     runtimes,
+    ...(loaded.baseMaintenance === undefined ? {} : { baseMaintenance: loaded.baseMaintenance }),
     ...(loaded.loadDetail === undefined ? {} : { loadDetail: loaded.loadDetail }),
   });
 
@@ -1076,6 +1205,7 @@ export const make = Effect.gen(function* () {
     const encoded = yield* encodeDocument({
       version: 1,
       desktops: Array.from(next.desktops.values()),
+      ...(next.baseMaintenance === undefined ? {} : { baseMaintenance: next.baseMaintenance }),
     });
     yield* fileSystem.makeDirectory(environment.agentDesktopsDir, { recursive: true });
     const temporaryPath = `${statePath}.tmp`;
@@ -1129,6 +1259,78 @@ export const make = Effect.gen(function* () {
       return [nextDesktop, { ...current, desktops }] as const;
     });
 
+  const updateBaseMaintenance = (
+    update: (maintenance: PersistedMaintenanceState | undefined) => PersistedMaintenanceState,
+  ) =>
+    modifyState((current) => {
+      const baseMaintenance = update(current.baseMaintenance);
+      return [baseMaintenance, { ...current, baseMaintenance }] as const;
+    });
+
+  const updateDesktopMaintenance = (
+    id: AgentDesktopId,
+    update: (maintenance: PersistedMaintenanceState | undefined) => PersistedMaintenanceState,
+  ) =>
+    updateDesktop(id, (desktop) => ({
+      ...desktop,
+      maintenance: update(desktop.maintenance),
+    }));
+
+  const enqueueMaintenance = Effect.fn("AgentDesktopManager.enqueueMaintenance")(function* (
+    pending: PendingMaintenanceJob,
+  ) {
+    const completion = yield* Deferred.make<AgentDesktopMaintenance>();
+    const key = maintenanceJobKey(pending);
+    yield* Ref.update(maintenanceCompletions, (current) => new Map(current).set(key, completion));
+    yield* Queue.offer(maintenanceQueue, { ...pending, completion });
+    return completion;
+  });
+
+  const interruptedUpdates = Array.from((yield* Ref.get(state)).desktops.values()).filter(
+    (desktop) => isActiveMaintenanceStatus(desktop.maintenance?.status),
+  );
+  for (const desktop of interruptedUpdates) {
+    const previousState = desktop.maintenance?.previousState;
+    const rollbackReady = desktop.maintenance?.rollbackReady === true;
+    const recovery = rollbackReady
+      ? qemu.restoreUpdateRollback(desktop.id)
+      : qemu.discardUpdateRollback(desktop.id);
+    const recovered = yield* Effect.exit(recovery);
+    const completedAt = isoTime(yield* Clock.currentTimeMillis);
+    yield* updateDesktop(desktop.id, (current) => ({
+      ...current,
+      state:
+        recovered._tag === "Failure" ? "failed" : previousState === "parked" ? "parked" : "stopped",
+      maintenance: {
+        ...(current.maintenance?.appliedProfileVersion === undefined
+          ? {}
+          : { appliedProfileVersion: current.maintenance.appliedProfileVersion }),
+        ...(current.maintenance?.lastUpdatedAt === undefined
+          ? {}
+          : { lastUpdatedAt: current.maintenance.lastUpdatedAt }),
+        status: recovered._tag === "Failure" ? "failed" : "due",
+        completedAt,
+        detail:
+          recovered._tag === "Failure"
+            ? `interrupted update rollback failed: ${String(recovered.cause).slice(0, 384)}`
+            : "an interrupted update was rolled back before Agent desktop access resumed",
+      },
+    }));
+  }
+  if (isActiveMaintenanceStatus((yield* Ref.get(state)).baseMaintenance?.status)) {
+    const completedAt = isoTime(yield* Clock.currentTimeMillis);
+    yield* updateBaseMaintenance((current) => ({
+      ...(current?.appliedProfileVersion === undefined
+        ? {}
+        : { appliedProfileVersion: current.appliedProfileVersion }),
+      ...(current?.lastUpdatedAt === undefined ? {} : { lastUpdatedAt: current.lastUpdatedAt }),
+      ...(current?.baseGeneration === undefined ? {} : { baseGeneration: current.baseGeneration }),
+      status: "failed",
+      completedAt,
+      detail: "the previous base-image refresh was interrupted before activation",
+    }));
+  }
+
   const removeDesktopState = (id: AgentDesktopId) =>
     modifyState((current) => {
       const desktops = new Map(current.desktops);
@@ -1142,7 +1344,15 @@ export const make = Effect.gen(function* () {
         if (desktopId === id) assignments.delete(controllerId);
       }
       return [undefined, { ...current, desktops, runtimes, leases, assignments }] as const;
-    });
+    }).pipe(
+      Effect.tap(() =>
+        Ref.update(maintenanceCompletions, (current) => {
+          const next = new Map(current);
+          next.delete(id);
+          return next;
+        }),
+      ),
+    );
 
   const requireDesktop = Effect.fn("AgentDesktopManager.requireDesktop")(function* (
     controllerId: string,
@@ -1151,7 +1361,16 @@ export const make = Effect.gen(function* () {
     const current = yield* Ref.get(state);
     const selectedId = desktopId ?? current.assignments.get(controllerId);
     const desktop = selectedId === undefined ? undefined : current.desktops.get(selectedId);
-    if (desktop !== undefined && desktop.owner.controllerId === controllerId) return desktop;
+    if (desktop !== undefined && desktop.owner.controllerId === controllerId) {
+      if (isActiveMaintenanceStatus(desktop.maintenance?.status)) {
+        return yield* new AgentDesktopManagerError({
+          code: "desktop-busy",
+          operation: "resolve",
+          detail: `the Agent desktop update is ${desktop.maintenance?.status}`,
+        });
+      }
+      return desktop;
+    }
     return yield* new AgentDesktopManagerError({
       code: "desktop-target-mismatch",
       operation: "resolve",
@@ -1193,6 +1412,7 @@ export const make = Effect.gen(function* () {
 
   const summary = Effect.fn("AgentDesktopManager.summary")(function* (desktop: PersistedDesktop) {
     const current = yield* Ref.get(state);
+    const now = yield* Clock.currentTimeMillis;
     const lease = current.leases.get(desktop.id);
     const selectedGraphics = graphicsBackend(desktop);
     const hardwareAccelerated = selectedGraphics === "virgl";
@@ -1223,6 +1443,8 @@ export const make = Effect.gen(function* () {
       lastActiveAt: desktop.lastActiveAt,
       recoverableUntil: desktop.recoverableUntil,
       retention: desktop.requirements?.retention ?? "automatic",
+      baseGeneration: desktop.baseGeneration ?? null,
+      maintenance: presentAgentDesktopMaintenance(desktop.maintenance, now),
       ...(desktop.detail === undefined ? {} : { detail: desktop.detail }),
     } satisfies AgentDesktop;
   });
@@ -1840,6 +2062,13 @@ export const make = Effect.gen(function* () {
   const ensureStarted = Effect.fn("AgentDesktopManager.ensureStarted")(function* (
     desktop: PersistedDesktop,
   ) {
+    if (isActiveMaintenanceStatus(desktop.maintenance?.status)) {
+      return yield* new AgentDesktopManagerError({
+        code: "desktop-busy",
+        operation: "resume",
+        detail: `the Agent desktop update is ${desktop.maintenance?.status}`,
+      });
+    }
     if (desktop.state === "recoverable" || desktop.state === "deleting") {
       return yield* new AgentDesktopManagerError({
         code: "desktop-target-mismatch",
@@ -2034,6 +2263,25 @@ export const make = Effect.gen(function* () {
       owner,
       state: "creating",
       resources,
+      ...(probe.baseImage.generation === null
+        ? {}
+        : { baseGeneration: probe.baseImage.generation }),
+      maintenance: {
+        status:
+          probe.baseImage.profileVersion === AGENT_DESKTOP_PROFILE_VERSION &&
+          probe.baseImage.builtAt !== null
+            ? "current"
+            : "due",
+        ...(probe.baseImage.profileVersion === null
+          ? {}
+          : { appliedProfileVersion: probe.baseImage.profileVersion }),
+        ...(probe.baseImage.builtAt === null
+          ? {}
+          : {
+              lastUpdatedAt: probe.baseImage.builtAt,
+              completedAt: probe.baseImage.builtAt,
+            }),
+      },
       graphicsBackend: selectedGraphics,
       ...(input.requirements === undefined ? {} : { requirements: input.requirements }),
       routes: [],
@@ -2048,7 +2296,7 @@ export const make = Effect.gen(function* () {
       const assignments = new Map(latest.assignments).set(owner.controllerId, id);
       return [undefined, { ...latest, desktops, runtimes, assignments }] as const;
     });
-    yield* qemu.create(id, resources).pipe(
+    yield* qemu.create(id, resources, probe.baseImage).pipe(
       Effect.andThen(setLifecycle(id, "starting")),
       Effect.andThen(qemu.start(id, resources, [], false, selectedGraphics)),
       Effect.tapError((cause) => setLifecycle(id, "failed", cause.message).pipe(Effect.ignore)),
@@ -3451,6 +3699,376 @@ export const make = Effect.gen(function* () {
       return actionResults;
     });
 
+  const setDesktopMaintenancePhase = Effect.fn("AgentDesktopManager.setDesktopMaintenancePhase")(
+    function* (
+      desktopId: AgentDesktopId,
+      status: AgentDesktopMaintenance["status"],
+      changes?: {
+        readonly rollbackReady?: boolean;
+        readonly detail?: string;
+      },
+    ) {
+      return yield* updateDesktopMaintenance(desktopId, (current) => ({
+        status,
+        ...(current?.appliedProfileVersion === undefined
+          ? {}
+          : { appliedProfileVersion: current.appliedProfileVersion }),
+        ...(current?.lastUpdatedAt === undefined ? {} : { lastUpdatedAt: current.lastUpdatedAt }),
+        ...(current?.startedAt === undefined ? {} : { startedAt: current.startedAt }),
+        ...(current?.completedAt === undefined ? {} : { completedAt: current.completedAt }),
+        ...(current?.previousState === undefined ? {} : { previousState: current.previousState }),
+        rollbackReady: changes?.rollbackReady ?? current?.rollbackReady ?? false,
+        ...(changes?.detail === undefined ? {} : { detail: changes.detail }),
+      }));
+    },
+  );
+
+  const waitForUpdatedGuest = Effect.fn("AgentDesktopManager.waitForUpdatedGuest")(function* (
+    desktop: PersistedDesktop,
+  ) {
+    const deadline = (yield* Clock.currentTimeMillis) + 60_000;
+    const identity = yield* resolveGuestDesktopIdentity(desktop);
+    let serviceDetail = "the graphical session did not become ready";
+    while ((yield* Clock.currentTimeMillis) < deadline) {
+      const services = yield* qemu
+        .executeGuestProcess(desktop.id, {
+          executable: "/usr/bin/systemctl",
+          arguments: [
+            "is-active",
+            "qemu-guest-agent.service",
+            "NetworkManager.service",
+            "gdm.service",
+          ],
+          timeoutMs: 10_000,
+          maxOutputBytes: 4_096,
+        })
+        .pipe(Effect.option);
+      if (Option.isSome(services) && services.value.exitCode === 0) {
+        const graphicalSession = yield* qemu
+          .executeGuestProcess(desktop.id, {
+            executable: "/usr/bin/pgrep",
+            arguments: ["-u", identity.username, "-x", "gnome-shell"],
+            timeoutMs: 10_000,
+            maxOutputBytes: 4_096,
+          })
+          .pipe(Effect.option);
+        if (Option.isNone(graphicalSession) || graphicalSession.value.exitCode !== 0) {
+          serviceDetail = "GNOME Shell did not start for the graphical Agent desktop user";
+          yield* Effect.sleep(Duration.millis(500));
+          continue;
+        }
+        const marker = yield* qemu.readGuestFile(desktop.id, GUEST_PROFILE_MARKER_PATH, 0, 256);
+        if (new TextDecoder().decode(marker.data).trim() !== AGENT_DESKTOP_PROFILE_VERSION) {
+          return yield* new AgentDesktopManagerError({
+            code: "internal-error",
+            operation: "verify-update",
+            detail: "the Agent desktop profile marker does not match this T3 Code build",
+          });
+        }
+        yield* qemu.capture(desktop.id);
+        return;
+      }
+      if (Option.isSome(services)) {
+        serviceDetail = (services.value.stderr || services.value.stdout || serviceDetail)
+          .trim()
+          .slice(-384);
+      }
+      yield* Effect.sleep(Duration.millis(500));
+    }
+    return yield* new AgentDesktopManagerError({
+      code: "internal-error",
+      operation: "verify-update",
+      detail: serviceDetail,
+    });
+  });
+
+  const restoreDesktopLifecycle = Effect.fn("AgentDesktopManager.restoreDesktopLifecycle")(
+    function* (
+      desktop: PersistedDesktop,
+      previousState: AgentDesktopLifecycleState,
+      rolledBack: boolean,
+    ) {
+      const shouldRun =
+        previousState === "active" || previousState === "ready" || previousState === "starting";
+      if (shouldRun) {
+        yield* qemu.start(
+          desktop.id,
+          desktop.resources,
+          desktop.routes,
+          false,
+          graphicsBackend(desktop),
+        );
+        yield* updateDesktop(desktop.id, (current) => ({ ...current, state: "ready" }));
+        return;
+      }
+      if (previousState === "parked") {
+        if (!rolledBack && graphicsBackend(desktop) !== "virgl") {
+          yield* qemu.start(
+            desktop.id,
+            desktop.resources,
+            desktop.routes,
+            false,
+            graphicsBackend(desktop),
+          );
+          yield* qemu.park(desktop.id, true);
+        }
+        yield* updateDesktop(desktop.id, (current) => ({ ...current, state: "parked" }));
+        return;
+      }
+      yield* updateDesktop(desktop.id, (current) => ({ ...current, state: "stopped" }));
+    },
+  );
+
+  const performDesktopUpdate = Effect.fn("AgentDesktopManager.performDesktopUpdate")(function* (
+    desktopId: AgentDesktopId,
+  ) {
+    const queuedDesktop = yield* requireDesktopById(desktopId);
+    const previousState = queuedDesktop.maintenance?.previousState ?? queuedDesktop.state;
+    const updateEffect = Effect.gen(function* () {
+      if (guestMaintenanceSource === null) {
+        return yield* new AgentDesktopManagerError({
+          code: "unsupported-operation",
+          operation: "update",
+          detail: "the bundled Agent desktop maintenance helper is missing",
+        });
+      }
+      yield* setDesktopMaintenancePhase(desktopId, "preparing");
+      if (yield* qemu.isRunning(desktopId)) yield* qemu.stop(desktopId);
+      yield* updateDesktop(desktopId, (current) => ({ ...current, state: "stopped" }));
+      yield* qemu.createUpdateRollback(desktopId);
+      yield* setDesktopMaintenancePhase(desktopId, "preparing", { rollbackReady: true });
+      const desktop = yield* requireDesktopById(desktopId);
+      yield* updateDesktop(desktopId, (current) => ({ ...current, state: "starting" }));
+      yield* qemu.start(
+        desktopId,
+        desktop.resources,
+        desktop.routes,
+        previousState === "parked" && graphicsBackend(desktop) !== "virgl",
+        graphicsBackend(desktop),
+      );
+      yield* updateDesktop(desktopId, (current) => ({ ...current, state: "ready" }));
+      yield* setDesktopMaintenancePhase(desktopId, "installing", { rollbackReady: true });
+      yield* qemu
+        .executeGuestProcess(desktopId, {
+          executable: "/usr/bin/install",
+          arguments: ["-d", "-m", "0700", GUEST_ACCESSIBILITY_DIRECTORY],
+          timeoutMs: GUEST_INTEGRATION_TIMEOUT_MS,
+          maxOutputBytes: 4_096,
+        })
+        .pipe(Effect.flatMap((result) => requireGuestProcessSuccess("update-prepare", result)));
+      yield* qemu.writeGuestFile(
+        desktopId,
+        GUEST_MAINTENANCE_PATH,
+        new TextEncoder().encode(guestMaintenanceSource),
+        "overwrite",
+      );
+      yield* qemu
+        .executeGuestProcess(desktopId, {
+          executable: "/usr/bin/chmod",
+          arguments: ["0700", GUEST_MAINTENANCE_PATH],
+          timeoutMs: GUEST_INTEGRATION_TIMEOUT_MS,
+          maxOutputBytes: 4_096,
+        })
+        .pipe(Effect.flatMap((result) => requireGuestProcessSuccess("update-chmod", result)));
+      yield* qemu
+        .executeGuestProcess(desktopId, {
+          executable: GUEST_MAINTENANCE_PATH,
+          arguments: [AGENT_DESKTOP_PROFILE_VERSION],
+          timeoutMs: GUEST_MAINTENANCE_TIMEOUT_MS,
+          maxOutputBytes: 512 * 1_024,
+        })
+        .pipe(Effect.flatMap((result) => requireGuestProcessSuccess("update-packages", result)));
+      yield* setDesktopMaintenancePhase(desktopId, "restarting", { rollbackReady: true });
+      yield* qemu.stop(desktopId);
+      yield* qemu.start(
+        desktopId,
+        desktop.resources,
+        desktop.routes,
+        false,
+        graphicsBackend(desktop),
+      );
+      yield* updateDesktop(desktopId, (current) => ({ ...current, state: "ready" }));
+      yield* setDesktopMaintenancePhase(desktopId, "verifying", { rollbackReady: true });
+      yield* waitForUpdatedGuest(desktop);
+      yield* qemu.stop(desktopId);
+      yield* qemu.discardUpdateRollback(desktopId);
+      yield* setDesktopMaintenancePhase(desktopId, "verifying", { rollbackReady: false });
+      yield* restoreDesktopLifecycle(desktop, previousState, false);
+    });
+
+    yield* Effect.uninterruptibleMask((restore) =>
+      Effect.gen(function* () {
+        const result = yield* Effect.exit(restore(updateEffect));
+        const completedAt = isoTime(yield* Clock.currentTimeMillis);
+        if (result._tag === "Success") {
+          yield* updateDesktopMaintenance(desktopId, () => ({
+            status: "current",
+            appliedProfileVersion: AGENT_DESKTOP_PROFILE_VERSION,
+            lastUpdatedAt: completedAt,
+            completedAt,
+          }));
+          return;
+        }
+        yield* setDesktopMaintenancePhase(desktopId, "rolling-back");
+        const latest = yield* requireDesktopById(desktopId);
+        const rollbackReady = latest.maintenance?.rollbackReady === true;
+        const rollback = rollbackReady
+          ? qemu.restoreUpdateRollback(desktopId)
+          : qemu.stop(desktopId);
+        const rollbackResult = yield* Effect.exit(rollback);
+        const lifecycleResult =
+          rollbackResult._tag === "Success" && rollbackReady
+            ? yield* Effect.exit(restoreDesktopLifecycle(latest, previousState, true))
+            : rollbackResult;
+        if (rollbackResult._tag === "Failure" || lifecycleResult._tag === "Failure") {
+          yield* updateDesktop(desktopId, (current) => ({ ...current, state: "failed" }));
+        } else if (!rollbackReady) {
+          yield* updateDesktop(desktopId, (current) => ({ ...current, state: "stopped" }));
+        }
+        const failureDetail = maintenanceCauseDetail(result.cause, 384);
+        const rollbackDetail =
+          rollbackResult._tag === "Success" && lifecycleResult._tag === "Success"
+            ? rollbackReady
+              ? "the previous disk state was restored"
+              : "the updated disk was preserved and the desktop was stopped"
+            : rollbackResult._tag === "Failure"
+              ? `rollback failed: ${maintenanceCauseDetail(rollbackResult.cause, 192)}`
+              : lifecycleResult._tag === "Failure"
+                ? `lifecycle restoration failed: ${maintenanceCauseDetail(lifecycleResult.cause, 192)}`
+                : "the Agent desktop update failed";
+        yield* updateDesktopMaintenance(desktopId, (current) => ({
+          status: "failed",
+          ...(current?.appliedProfileVersion === undefined
+            ? {}
+            : { appliedProfileVersion: current.appliedProfileVersion }),
+          ...(current?.lastUpdatedAt === undefined ? {} : { lastUpdatedAt: current.lastUpdatedAt }),
+          completedAt,
+          detail: `${failureDetail}; ${rollbackDetail}`.slice(0, 512),
+        }));
+      }),
+    );
+  });
+
+  const performBaseImageUpdate = Effect.fn("AgentDesktopManager.performBaseImageUpdate")(
+    function* () {
+      yield* Effect.uninterruptibleMask((restore) =>
+        Effect.gen(function* () {
+          yield* updateBaseMaintenance((current) => ({
+            status: "preparing",
+            ...(current?.appliedProfileVersion === undefined
+              ? {}
+              : { appliedProfileVersion: current.appliedProfileVersion }),
+            ...(current?.lastUpdatedAt === undefined
+              ? {}
+              : { lastUpdatedAt: current.lastUpdatedAt }),
+            ...(current?.baseGeneration === undefined
+              ? {}
+              : { baseGeneration: current.baseGeneration }),
+            ...(current?.startedAt === undefined ? {} : { startedAt: current.startedAt }),
+          }));
+          yield* updateBaseMaintenance((current) => ({
+            ...current,
+            status: "installing",
+          }));
+          const result = yield* Effect.exit(restore(qemu.refreshBaseImage));
+          const completedAt = isoTime(yield* Clock.currentTimeMillis);
+          if (result._tag === "Success") {
+            yield* updateBaseMaintenance(() => ({
+              status: "current",
+              appliedProfileVersion: result.value.profileVersion ?? AGENT_DESKTOP_PROFILE_VERSION,
+              lastUpdatedAt: result.value.builtAt ?? completedAt,
+              completedAt,
+              ...(result.value.generation === null
+                ? {}
+                : { baseGeneration: result.value.generation }),
+            }));
+            const referencedGenerations = new Set(
+              Array.from((yield* Ref.get(state)).desktops.values()).flatMap((desktop) =>
+                desktop.baseGeneration === undefined ? [] : [desktop.baseGeneration],
+              ),
+            );
+            yield* qemu.pruneBaseImages(referencedGenerations).pipe(
+              Effect.catch((cause) =>
+                Effect.logWarning("agent desktop base-image cleanup failed", {
+                  detail: cause.message,
+                }),
+              ),
+            );
+            return;
+          }
+          yield* updateBaseMaintenance((current) => ({
+            status: "failed",
+            ...(current?.appliedProfileVersion === undefined
+              ? {}
+              : { appliedProfileVersion: current.appliedProfileVersion }),
+            ...(current?.lastUpdatedAt === undefined
+              ? {}
+              : { lastUpdatedAt: current.lastUpdatedAt }),
+            ...(current?.baseGeneration === undefined
+              ? {}
+              : { baseGeneration: current.baseGeneration }),
+            completedAt,
+            detail: maintenanceCauseDetail(result.cause),
+          }));
+        }),
+      );
+    },
+  );
+
+  const runMaintenanceJob = (job: MaintenanceJob) =>
+    job.kind === "base-image" ? performBaseImageUpdate() : performDesktopUpdate(job.desktopId);
+
+  const maintenanceForJob = Effect.fn("AgentDesktopManager.maintenanceForJob")(function* (
+    job: MaintenanceJob,
+  ) {
+    const current = yield* Ref.get(state);
+    const maintenance =
+      job.kind === "base-image"
+        ? current.baseMaintenance
+        : current.desktops.get(job.desktopId)?.maintenance;
+    return presentAgentDesktopMaintenance(maintenance, yield* Clock.currentTimeMillis);
+  });
+
+  const recordMaintenanceWorkerFailure = Effect.fn(
+    "AgentDesktopManager.recordMaintenanceWorkerFailure",
+  )(function* (job: MaintenanceJob, cause: Cause.Cause<unknown>) {
+    const completedAt = isoTime(yield* Clock.currentTimeMillis);
+    const detail = maintenanceCauseDetail(cause);
+    if (job.kind === "base-image") {
+      yield* updateBaseMaintenance((maintenance) => ({
+        status: "failed",
+        ...(maintenance?.appliedProfileVersion === undefined
+          ? {}
+          : { appliedProfileVersion: maintenance.appliedProfileVersion }),
+        ...(maintenance?.lastUpdatedAt === undefined
+          ? {}
+          : { lastUpdatedAt: maintenance.lastUpdatedAt }),
+        ...(maintenance?.baseGeneration === undefined
+          ? {}
+          : { baseGeneration: maintenance.baseGeneration }),
+        completedAt,
+        detail,
+      }));
+    } else {
+      yield* updateDesktopMaintenance(job.desktopId, (maintenance) => ({
+        status: "failed",
+        ...(maintenance?.appliedProfileVersion === undefined
+          ? {}
+          : { appliedProfileVersion: maintenance.appliedProfileVersion }),
+        ...(maintenance?.lastUpdatedAt === undefined
+          ? {}
+          : { lastUpdatedAt: maintenance.lastUpdatedAt }),
+        completedAt,
+        detail,
+      }));
+    }
+    yield* Effect.logError("agent desktop update worker failed", {
+      target: job.kind,
+      ...(job.kind === "desktop" ? { desktopId: job.desktopId } : {}),
+      detail,
+    });
+  });
+
   const release: AgentDesktopManagerShape["release"] = (controllerId, desktopId) =>
     leaseSemaphore.withPermits(1)(
       Effect.gen(function* () {
@@ -3501,6 +4119,13 @@ export const make = Effect.gen(function* () {
             code: "desktop-target-mismatch",
             operation: input.operation,
             detail: "the Agent desktop belongs to a different owner",
+          });
+        }
+        if (isActiveMaintenanceStatus(desktop.maintenance?.status)) {
+          return yield* new AgentDesktopManagerError({
+            code: "desktop-busy",
+            operation: input.operation,
+            detail: `the Agent desktop update is ${desktop.maintenance?.status}`,
           });
         }
         const runtime = (yield* Ref.get(state)).runtimes.get(desktop.id)!;
@@ -3627,6 +4252,173 @@ export const make = Effect.gen(function* () {
         }
       }),
     );
+
+  const update: AgentDesktopManagerShape["update"] = (owner, input) =>
+    lifecycleSemaphore.withPermits(1)(
+      Effect.gen(function* () {
+        const now = yield* Clock.currentTimeMillis;
+        const startedAt = isoTime(now);
+        if (input.target.kind === "base-image") {
+          const current = (yield* Ref.get(state)).baseMaintenance;
+          if (isActiveMaintenanceStatus(current?.status)) {
+            return {
+              accepted: false,
+              target: input.target,
+              maintenance: presentAgentDesktopMaintenance(current, now),
+            } satisfies AgentDesktopUpdateResult;
+          }
+          const selected = yield* qemu.currentBaseImage;
+          if (!selected.managed) {
+            return yield* new AgentDesktopManagerError({
+              code: "unsupported-operation",
+              operation: "update",
+              detail: "the caller-supplied Agent desktop base image is managed outside T3 Code",
+            });
+          }
+          const baseline =
+            current ??
+            ({
+              ...(selected.profileVersion === null
+                ? {}
+                : { appliedProfileVersion: selected.profileVersion }),
+              ...(selected.builtAt === null
+                ? {}
+                : { lastUpdatedAt: selected.builtAt, completedAt: selected.builtAt }),
+              ...(selected.generation === null ? {} : { baseGeneration: selected.generation }),
+            } satisfies PersistedMaintenanceState);
+          const queued = yield* updateBaseMaintenance((maintenance) => {
+            const previous = maintenance ?? baseline;
+            return {
+              status: "queued",
+              ...(previous.appliedProfileVersion === undefined
+                ? {}
+                : { appliedProfileVersion: previous.appliedProfileVersion }),
+              ...(previous.lastUpdatedAt === undefined
+                ? {}
+                : { lastUpdatedAt: previous.lastUpdatedAt }),
+              ...(previous.baseGeneration === undefined
+                ? {}
+                : { baseGeneration: previous.baseGeneration }),
+              startedAt,
+            };
+          });
+          yield* enqueueMaintenance({ kind: "base-image" });
+          return {
+            accepted: true,
+            target: input.target,
+            maintenance: presentAgentDesktopMaintenance(queued, now),
+          } satisfies AgentDesktopUpdateResult;
+        }
+
+        const desktop = yield* requireDesktopById(input.target.desktopId);
+        if (guestMaintenanceSource === null) {
+          return yield* new AgentDesktopManagerError({
+            code: "unsupported-operation",
+            operation: "update",
+            detail: "the bundled Agent desktop maintenance helper is missing",
+          });
+        }
+        if (!ownersMatch(desktop.owner, owner)) {
+          return yield* new AgentDesktopManagerError({
+            code: "desktop-target-mismatch",
+            operation: "update",
+            detail: "the Agent desktop belongs to a different owner",
+          });
+        }
+        if (isActiveMaintenanceStatus(desktop.maintenance?.status)) {
+          return {
+            accepted: false,
+            target: input.target,
+            maintenance: presentAgentDesktopMaintenance(desktop.maintenance, now),
+          } satisfies AgentDesktopUpdateResult;
+        }
+        if (
+          desktop.state !== "ready" &&
+          desktop.state !== "active" &&
+          desktop.state !== "parked" &&
+          desktop.state !== "stopped"
+        ) {
+          return yield* new AgentDesktopManagerError({
+            code: "invalid-action",
+            operation: "update",
+            detail: `an Agent desktop in the ${desktop.state} state cannot be updated`,
+          });
+        }
+        const current = yield* Ref.get(state);
+        const lease = current.leases.get(desktop.id);
+        const runtime = current.runtimes.get(desktop.id);
+        const activeOperationCount =
+          runtime === undefined ? 0 : yield* Ref.get(runtime.activeOperationCount);
+        if (
+          (lease?.controllerId ?? null) !== null ||
+          (lease?.viewers.size ?? 0) > 0 ||
+          activeOperationCount > 0
+        ) {
+          return yield* new AgentDesktopManagerError({
+            code: "desktop-busy",
+            operation: "update",
+            detail: "release Agent desktop control, viewers, and active operations before updating",
+          });
+        }
+        const previousState = desktop.state === "active" ? "ready" : desktop.state;
+        const queued = (yield* updateDesktopMaintenance(desktop.id, (maintenance) => ({
+          status: "queued",
+          ...(maintenance?.appliedProfileVersion === undefined
+            ? {}
+            : { appliedProfileVersion: maintenance.appliedProfileVersion }),
+          ...(maintenance?.lastUpdatedAt === undefined
+            ? {}
+            : { lastUpdatedAt: maintenance.lastUpdatedAt }),
+          startedAt,
+          previousState,
+          rollbackReady: false,
+        })))!;
+        yield* enqueueMaintenance({ kind: "desktop", desktopId: desktop.id });
+        return {
+          accepted: true,
+          target: input.target,
+          maintenance: presentAgentDesktopMaintenance(queued.maintenance, now),
+        } satisfies AgentDesktopUpdateResult;
+      }),
+    );
+
+  const awaitUpdate: AgentDesktopManagerShape["awaitUpdate"] = (owner, input) =>
+    Effect.gen(function* () {
+      const current = yield* Ref.get(state);
+      const maintenance =
+        input.target.kind === "base-image"
+          ? current.baseMaintenance
+          : current.desktops.get(input.target.desktopId)?.maintenance;
+      if (input.target.kind === "desktop") {
+        const desktop = current.desktops.get(input.target.desktopId);
+        if (desktop === undefined || !ownersMatch(desktop.owner, owner)) {
+          return yield* new AgentDesktopManagerError({
+            code: "desktop-target-mismatch",
+            operation: "await-update",
+            detail: "the Agent desktop belongs to a different owner or no longer exists",
+          });
+        }
+      }
+      const now = yield* Clock.currentTimeMillis;
+      if (!isActiveMaintenanceStatus(maintenance?.status)) {
+        return presentAgentDesktopMaintenance(maintenance, now);
+      }
+      const completion = (yield* Ref.get(maintenanceCompletions)).get(
+        maintenanceJobKey(
+          input.target.kind === "base-image"
+            ? { kind: "base-image" }
+            : { kind: "desktop", desktopId: input.target.desktopId },
+        ),
+      );
+      if (completion === undefined) {
+        return yield* new AgentDesktopManagerError({
+          code: "internal-error",
+          operation: "await-update",
+          detail: "the active Agent desktop update has no completion receipt",
+        });
+      }
+      return yield* Deferred.await(completion);
+    });
 
   const useOperationalDesktop = <Value, Error, Requirements>(
     owner: AgentDesktopOwner,
@@ -4458,17 +5250,34 @@ export const make = Effect.gen(function* () {
       const afterCleanup = yield* Ref.get(state);
       const retirementPool = Array.from(afterCleanup.desktops.values()).filter(
         (desktop) =>
-          desktop.state === "parked" ||
-          desktop.state === "stopped" ||
-          desktop.state === "recoverable",
+          !isActiveMaintenanceStatus(desktop.maintenance?.status) &&
+          (desktop.state === "parked" ||
+            desktop.state === "stopped" ||
+            desktop.state === "recoverable"),
       );
       const storageCheckAt = yield* Ref.get(nextStorageCheckAt);
-      const shouldCheckStorage = retirementPool.length > 0 && now >= storageCheckAt;
-      const storage = !shouldCheckStorage
-        ? undefined
-        : yield* qemu.storageCapacity.pipe(Effect.option, Effect.map(Option.getOrUndefined));
-      if (shouldCheckStorage) {
+      const shouldMaintainStorage = now >= storageCheckAt;
+      const storage =
+        !shouldMaintainStorage || retirementPool.length === 0
+          ? undefined
+          : yield* qemu.storageCapacity.pipe(Effect.option, Effect.map(Option.getOrUndefined));
+      if (shouldMaintainStorage) {
         yield* Ref.set(nextStorageCheckAt, now + Duration.toMillis(STORAGE_CHECK_INTERVAL));
+        yield* qemu
+          .pruneBaseImages(
+            new Set(
+              Array.from(afterCleanup.desktops.values()).flatMap((desktop) =>
+                desktop.baseGeneration === undefined ? [] : [desktop.baseGeneration],
+              ),
+            ),
+          )
+          .pipe(
+            Effect.catch((cause) =>
+              Effect.logWarning("agent desktop base-image cleanup failed", {
+                detail: cause.message,
+              }),
+            ),
+          );
       }
       const underStoragePressure =
         storage !== undefined &&
@@ -4516,7 +5325,11 @@ export const make = Effect.gen(function* () {
 
       const current = yield* Ref.get(state);
       const candidates = Array.from(current.desktops.values())
-        .filter((desktop) => isRunningState(desktop.state))
+        .filter(
+          (desktop) =>
+            isRunningState(desktop.state) &&
+            !isActiveMaintenanceStatus(desktop.maintenance?.status),
+        )
         .sort((left, right) => left.lastActiveAt.localeCompare(right.lastActiveAt));
       for (const desktop of candidates) {
         const runtime = current.runtimes.get(desktop.id);
@@ -4543,6 +5356,99 @@ export const make = Effect.gen(function* () {
           ),
         );
       }
+
+      const afterParking = yield* Ref.get(state);
+      const probe = yield* qemu.probe;
+      const persistedBaseMaintenance = afterParking.baseMaintenance;
+      const persistedBaseApplies = baseMaintenanceApplies(
+        persistedBaseMaintenance,
+        probe.baseImage.generation,
+      );
+      const baseMaintenance =
+        (persistedBaseApplies ? persistedBaseMaintenance : undefined) ??
+        ({
+          ...(probe.baseImage.profileVersion === null
+            ? {}
+            : { appliedProfileVersion: probe.baseImage.profileVersion }),
+          ...(probe.baseImage.builtAt === null ? {} : { lastUpdatedAt: probe.baseImage.builtAt }),
+          ...(probe.baseImage.generation === null
+            ? {}
+            : { baseGeneration: probe.baseImage.generation }),
+        } satisfies PersistedMaintenanceState);
+      const freeMemoryBytes = NodeOS.freemem();
+      if (
+        probe.available &&
+        probe.baseImage.managed &&
+        !isActiveMaintenanceStatus(baseMaintenance.status) &&
+        isAgentDesktopMaintenanceDue(baseMaintenance, now) &&
+        canRetryMaintenance(baseMaintenance, now) &&
+        freeMemoryBytes >= MIN_HOST_RESERVE_BYTES + TARGET_MEMORY_BYTES
+      ) {
+        const baseStorage = yield* qemu.storageCapacity.pipe(Effect.option);
+        if (
+          Option.isSome(baseStorage) &&
+          baseStorage.value.availableBytes >=
+            agentDesktopStorageReserveBytes(baseStorage.value.totalBytes) +
+              BASE_IMAGE_UPDATE_TEMPORARY_BYTES
+        ) {
+          yield* updateBaseMaintenance(() => ({
+            status: "queued",
+            ...(baseMaintenance.appliedProfileVersion === undefined
+              ? {}
+              : { appliedProfileVersion: baseMaintenance.appliedProfileVersion }),
+            ...(baseMaintenance.lastUpdatedAt === undefined
+              ? {}
+              : { lastUpdatedAt: baseMaintenance.lastUpdatedAt }),
+            ...(baseMaintenance.baseGeneration === undefined
+              ? {}
+              : { baseGeneration: baseMaintenance.baseGeneration }),
+            startedAt: isoTime(now),
+          }));
+          yield* enqueueMaintenance({ kind: "base-image" });
+        }
+      }
+
+      const coldUpdateCandidates = Array.from((yield* Ref.get(state)).desktops.values())
+        .filter(
+          (desktop) =>
+            guestMaintenanceSource !== null &&
+            (desktop.state === "stopped" ||
+              (desktop.state === "parked" && graphicsBackend(desktop) === "virgl")) &&
+            !isActiveMaintenanceStatus(desktop.maintenance?.status) &&
+            isAgentDesktopMaintenanceDue(desktop.maintenance, now) &&
+            canRetryMaintenance(desktop.maintenance, now),
+        )
+        .sort((left, right) => left.lastActiveAt.localeCompare(right.lastActiveAt));
+      const desktopUpdateStorage =
+        coldUpdateCandidates.length === 0
+          ? undefined
+          : yield* qemu.storageCapacity.pipe(Effect.option, Effect.map(Option.getOrUndefined));
+      const automaticUpdate = coldUpdateCandidates.find(
+        (desktop) =>
+          freeMemoryBytes >= MIN_HOST_RESERVE_BYTES + desktop.resources.memoryBytes &&
+          desktopUpdateStorage !== undefined &&
+          desktopUpdateStorage.availableBytes >=
+            agentDesktopStorageReserveBytes(desktopUpdateStorage.totalBytes) +
+              DESKTOP_UPDATE_TEMPORARY_BYTES,
+      );
+      if (automaticUpdate !== undefined) {
+        yield* updateDesktopMaintenance(automaticUpdate.id, (maintenance) => ({
+          status: "queued",
+          ...(maintenance?.appliedProfileVersion === undefined
+            ? {}
+            : { appliedProfileVersion: maintenance.appliedProfileVersion }),
+          ...(maintenance?.lastUpdatedAt === undefined
+            ? {}
+            : { lastUpdatedAt: maintenance.lastUpdatedAt }),
+          startedAt: isoTime(now),
+          previousState: automaticUpdate.state,
+          rollbackReady: false,
+        }));
+        yield* enqueueMaintenance({
+          kind: "desktop",
+          desktopId: automaticUpdate.id,
+        });
+      }
     }),
   );
 
@@ -4554,8 +5460,6 @@ export const make = Effect.gen(function* () {
       }),
     ),
   );
-  yield* maintenanceCycle.pipe(Effect.forever, Effect.forkScoped);
-
   yield* Effect.addFinalizer(() =>
     lifecycleSemaphore
       .withPermits(1)(
@@ -4586,6 +5490,48 @@ export const make = Effect.gen(function* () {
       )
       .pipe(Effect.ignore),
   );
+  yield* maintenanceCycle.pipe(Effect.forever, Effect.forkScoped);
+  yield* Queue.take(maintenanceQueue).pipe(
+    Effect.flatMap((job) =>
+      runMaintenanceJob(job).pipe(
+        Effect.catchCause((cause) => recordMaintenanceWorkerFailure(job, cause)),
+        Effect.andThen(maintenanceForJob(job)),
+        Effect.flatMap((maintenance) => Deferred.succeed(job.completion, maintenance)),
+      ),
+    ),
+    Effect.forever,
+    Effect.forkScoped,
+  );
+
+  const presentBaseImage = Effect.fn("AgentDesktopManager.presentBaseImage")(function* (
+    probe: QemuAgentDesktop.QemuAgentDesktopProbe,
+  ) {
+    const current = yield* Ref.get(state);
+    const now = yield* Clock.currentTimeMillis;
+    const persisted = current.baseMaintenance;
+    const persistedApplies = baseMaintenanceApplies(persisted, probe.baseImage.generation);
+    const maintenance = presentAgentDesktopMaintenance(
+      (persistedApplies ? persisted : undefined) ?? {
+        ...(probe.baseImage.profileVersion === null
+          ? {}
+          : { appliedProfileVersion: probe.baseImage.profileVersion }),
+        ...(probe.baseImage.builtAt === null
+          ? {}
+          : {
+              lastUpdatedAt: probe.baseImage.builtAt,
+              completedAt: probe.baseImage.builtAt,
+            }),
+      },
+      now,
+    );
+    return {
+      managed: probe.baseImage.managed,
+      generation: probe.baseImage.generation,
+      sourceRelease: probe.baseImage.sourceRelease,
+      builtAt: probe.baseImage.builtAt,
+      maintenance,
+    } satisfies AgentDesktopBaseImage;
+  });
 
   const listFromProbe = Effect.fn("AgentDesktopManager.listFromProbe")(function* (
     probe: QemuAgentDesktop.QemuAgentDesktopProbe,
@@ -4593,6 +5539,7 @@ export const make = Effect.gen(function* () {
     const current = yield* Ref.get(state);
     return {
       available: probe.available,
+      baseImage: yield* presentBaseImage(probe),
       desktops: yield* Effect.forEach(current.desktops.values(), summary),
       requirements: probe.requirements,
       ...(probe.detail === undefined && current.loadDetail === undefined
@@ -4618,6 +5565,8 @@ export const make = Effect.gen(function* () {
   return AgentDesktopManager.of({
     list,
     setup,
+    update,
+    awaitUpdate,
     acquire,
     manage,
     command,

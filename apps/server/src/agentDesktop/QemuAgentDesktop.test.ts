@@ -17,6 +17,7 @@ import {
   qemuKeyChordPhases,
   qemuKeyChordSequence,
   qemuSendKeyArguments,
+  retainedAgentDesktopBaseGenerations,
   parseAgentDesktopStorageCapacity,
   toQemuAbsoluteCoordinate,
   type QemuAgentDesktopPaths,
@@ -84,6 +85,29 @@ describe("QemuAgentDesktop", () => {
       "--output=json",
       "/machine/disk.qcow2",
     ]);
+  });
+
+  it("retains current and referenced base images plus one rollback generation", () => {
+    assert.deepEqual(
+      Array.from(
+        retainedAgentDesktopBaseGenerations(
+          ["arch-gnome-v1-100", "arch-gnome-v1-200", "arch-gnome-v1-300"],
+          "arch-gnome-v1-300",
+          new Set(["arch-gnome-v1-100"]),
+        ),
+      ).sort(),
+      ["arch-gnome-v1-100", "arch-gnome-v1-200", "arch-gnome-v1-300"],
+    );
+    assert.deepEqual(
+      Array.from(
+        retainedAgentDesktopBaseGenerations(
+          ["arch-gnome-v1-100", "arch-gnome-v1-200", "arch-gnome-v1-300"],
+          "arch-gnome-v1-300",
+          new Set(),
+        ),
+      ).sort(),
+      ["arch-gnome-v1-200", "arch-gnome-v1-300"],
+    );
   });
 
   it("parses bounded Agent desktop filesystem capacity", () => {
