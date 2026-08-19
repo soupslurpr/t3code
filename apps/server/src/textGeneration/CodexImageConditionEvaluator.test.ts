@@ -74,6 +74,7 @@ const makeThread = (cwd) => ({
   createdAt: 1,
   cwd,
   ephemeral: false,
+  historyMode: "paginated",
   id: threadId,
   modelProvider: "openai",
   preview: "",
@@ -168,7 +169,7 @@ lines.on("line", (line) => {
       });
       return;
     }
-    case "thread/rollback":
+    case "thread/revert":
       respond(message.id, { thread: makeThread(process.cwd()) });
       return;
     case "thread/delete":
@@ -236,7 +237,7 @@ function imageConditionInput(): TextGeneration.ImageConditionEvaluationInput {
 }
 
 it.layer(NodeServices.layer)("CodexImageConditionEvaluator", (it) => {
-  it.effect("reuses one cache-stable thread and rolls back every evaluation", () =>
+  it.effect("reuses one cache-stable thread and reverts every evaluation", () =>
     Effect.gen(function* () {
       const fileSystem = yield* FileSystem.FileSystem;
       const directory = yield* fileSystem.makeTempDirectoryScoped({
@@ -300,24 +301,29 @@ it.layer(NodeServices.layer)("CodexImageConditionEvaluator", (it) => {
         "initialized",
         "thread/start",
         "turn/start",
-        "thread/rollback",
+        "thread/revert",
         "turn/start",
-        "thread/rollback",
+        "thread/revert",
         "thread/delete",
       ]);
       expect(messages.filter((entry) => entry.method === "turn/start")).toEqual([
         expect.objectContaining({ imagePathsExist: [true, true] }),
         expect.objectContaining({ imagePathsExist: [true, true] }),
       ]);
-      expect(messages.filter((entry) => entry.method === "thread/rollback")).toEqual([
-        expect.objectContaining({ params: { numTurns: 1, threadId: "evaluator-thread-1" } }),
-        expect.objectContaining({ params: { numTurns: 1, threadId: "evaluator-thread-1" } }),
+      expect(messages.filter((entry) => entry.method === "thread/revert")).toEqual([
+        expect.objectContaining({
+          params: { beforeTurnId: "evaluator-turn-1", threadId: "evaluator-thread-1" },
+        }),
+        expect.objectContaining({
+          params: { beforeTurnId: "evaluator-turn-2", threadId: "evaluator-thread-1" },
+        }),
       ]);
       expect(messages.find((entry) => entry.method === "thread/start")?.params).toMatchObject({
         approvalPolicy: "never",
         approvalsReviewer: "user",
         baseInstructions: expect.stringContaining("narrow read-only visual condition evaluator"),
         ephemeral: false,
+        historyMode: "paginated",
         model: "gpt-5.4-mini",
         sandbox: "read-only",
         serviceTier: "priority",
@@ -335,7 +341,7 @@ it.layer(NodeServices.layer)("CodexImageConditionEvaluator", (it) => {
     }).pipe(Effect.scoped),
   );
 
-  it.effect("rolls back invalid output before reusing the evaluator thread", () =>
+  it.effect("reverts invalid output before reusing the evaluator thread", () =>
     Effect.gen(function* () {
       const fileSystem = yield* FileSystem.FileSystem;
       const directory = yield* fileSystem.makeTempDirectoryScoped({
@@ -363,7 +369,7 @@ it.layer(NodeServices.layer)("CodexImageConditionEvaluator", (it) => {
       const messages = log.filter((entry) => entry.kind === "message");
       expect(log.filter((entry) => entry.kind === "started")).toHaveLength(1);
       expect(messages.filter((entry) => entry.method === "turn/start")).toHaveLength(2);
-      expect(messages.filter((entry) => entry.method === "thread/rollback")).toHaveLength(2);
+      expect(messages.filter((entry) => entry.method === "thread/revert")).toHaveLength(2);
       expect(messages.at(-1)?.method).toBe("thread/delete");
     }).pipe(Effect.scoped),
   );

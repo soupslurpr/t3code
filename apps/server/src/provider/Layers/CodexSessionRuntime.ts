@@ -56,6 +56,7 @@ const BENIGN_ERROR_LOG_SNIPPETS = [
   "state db record_discrepancy: find_thread_path_by_id_str_in_subdir, falling_back",
 ];
 const CODEX_APP_SERVER_FORCE_KILL_AFTER = "2 seconds" as const;
+const CODEX_THREAD_TURN_PAGE_SIZE = 100;
 const RECOVERABLE_THREAD_RESUME_ERROR_SNIPPETS = [
   "not found",
   "missing thread",
@@ -164,7 +165,8 @@ export type CodexResumeCursor = typeof CodexResumeCursorSchema.Type;
 type CodexServiceTier = NonNullable<EffectCodexSchema.V2ThreadStartParams["serviceTier"]>;
 type CodexThreadItem =
   | EffectCodexSchema.V2ThreadReadResponse["thread"]["turns"][number]["items"][number]
-  | EffectCodexSchema.V2ThreadRollbackResponse["thread"]["turns"][number]["items"][number];
+  | EffectCodexSchema.V2ThreadRollbackResponse["thread"]["turns"][number]["items"][number]
+  | EffectCodexSchema.V2ThreadTurnsListResponse["data"][number]["items"][number];
 
 export interface CodexSessionRuntimeOptions {
   readonly threadId: ThreadId;
@@ -237,7 +239,8 @@ export type CodexSessionRuntimeError =
   | CodexSessionRuntimePendingApprovalNotFoundError
   | CodexSessionRuntimePendingUserInputNotFoundError
   | CodexSessionRuntimeInvalidUserInputAnswersError
-  | CodexSessionRuntimeThreadIdMissingError;
+  | CodexSessionRuntimeThreadIdMissingError
+  | CodexSessionRuntimeRollbackRangeError;
 
 export class CodexSessionRuntimePendingApprovalNotFoundError extends Schema.TaggedError<CodexSessionRuntimePendingApprovalNotFoundError>()(
   "CodexSessionRuntimePendingApprovalNotFoundError",
@@ -280,6 +283,19 @@ export class CodexSessionRuntimeThreadIdMissingError extends Schema.TaggedError<
 ) {
   override get message(): string {
     return `Codex session is missing a provider thread id for ${this.threadId}`;
+  }
+}
+
+export class CodexSessionRuntimeRollbackRangeError extends Schema.TaggedErrorClass<CodexSessionRuntimeRollbackRangeError>()(
+  "CodexSessionRuntimeRollbackRangeError",
+  {
+    availableTurns: Schema.Int,
+    requestedTurns: Schema.Int,
+    threadId: Schema.String,
+  },
+) {
+  override get message(): string {
+    return `Cannot roll back ${this.requestedTurns} turns from Codex thread '${this.threadId}'; only ${this.availableTurns} are available.`;
   }
 }
 
@@ -542,12 +558,12 @@ function runtimeModeToThreadConfig(input: RuntimeMode): {
   }
 }
 
-function buildThreadStartParams(input: {
+function buildThreadConfigParams(input: {
   readonly cwd: string;
   readonly runtimeMode: RuntimeMode;
   readonly model: string | undefined;
   readonly serviceTier: CodexServiceTier | undefined;
-}): EffectCodexSchema.V2ThreadStartParams {
+}): Omit<EffectCodexSchema.V2ThreadStartParams, "historyMode"> {
   const config = runtimeModeToThreadConfig(input.runtimeMode);
   return {
     cwd: input.cwd,
@@ -731,12 +747,16 @@ export const openCodexThread = (input: {
   readonly resumeThreadId: string | undefined;
 }): Effect.Effect<typeof CodexThreadResumeMetadata.Type, CodexErrors.CodexAppServerError> => {
   const resumeThreadId = input.resumeThreadId;
-  const startParams = buildThreadStartParams({
+  const threadConfigParams = buildThreadConfigParams({
     cwd: input.cwd,
     runtimeMode: input.runtimeMode,
     model: input.requestedModel,
     serviceTier: input.serviceTier,
   });
+  const startParams = {
+    ...threadConfigParams,
+    historyMode: "paginated",
+  } satisfies EffectCodexSchema.V2ThreadStartParams;
 
   if (resumeThreadId === undefined) {
     return input.client.request("thread/start", startParams);
@@ -749,8 +769,7 @@ export const openCodexThread = (input: {
     .request("thread/resume", {
       threadId: resumeThreadId,
       excludeTurns: true,
-      ...startParams,
-      excludeTurns: true,
+      ...threadConfigParams,
     })
     .pipe(
       Effect.flatMap((response) =>
@@ -1186,7 +1205,7 @@ function updateSession(
   });
 }
 
-function parseThreadSnapshot(
+function parseLegacyThreadSnapshot(
   response: EffectCodexSchema.V2ThreadReadResponse | EffectCodexSchema.V2ThreadRollbackResponse,
 ): CodexThreadSnapshot {
   return {
@@ -1198,47 +1217,26 @@ function parseThreadSnapshot(
   };
 }
 
-const CodexThreadHistoryMetadata = Schema.Struct({
-  thread: Schema.Struct({
-    historyMode: Schema.optionalKey(Schema.Literals(["legacy", "paginated"])),
-  }),
-});
-const CodexTurnsPage = Schema.Struct({
-  data: Schema.Array(EffectCodexSchema.V2ThreadReadResponse__Turn),
-  nextCursor: Schema.NullOr(Schema.String),
-});
-const decodeCodexHistoryMetadata = Schema.decodeUnknownEffect(CodexThreadHistoryMetadata);
-const decodeCodexTurnsPage = Schema.decodeUnknownEffect(CodexTurnsPage);
-type CodexHistoryClient = {
-  readonly raw: Pick<CodexClient.CodexAppServerClient["Service"]["raw"], "request">;
-  readonly request: CodexClient.CodexAppServerClient["Service"]["request"];
-};
+type CodexThreadHistoryMethod =
+  | "thread/read"
+  | "thread/revert"
+  | "thread/rollback"
+  | "thread/turns/list";
 
-const readCodexHistoryMode = Effect.fn("readCodexHistoryMode")(function* (
-  client: CodexHistoryClient,
+interface CodexThreadHistoryClient {
+  readonly request: <M extends CodexThreadHistoryMethod>(
+    method: M,
+    payload: CodexRpc.ClientRequestParamsByMethod[M],
+  ) => Effect.Effect<CodexRpc.ClientRequestResponsesByMethod[M], CodexErrors.CodexAppServerError>;
+}
+
+const readPaginatedThreadSnapshot = Effect.fn("readPaginatedThreadSnapshot")(function* (
+  client: CodexThreadHistoryClient,
   threadId: string,
 ) {
-  const response = yield* client.raw.request("thread/read", { threadId, includeTurns: false });
-  const metadata = yield* decodeCodexHistoryMetadata(response).pipe(
-    Effect.mapError((error) =>
-      CodexErrors.CodexAppServerRequestError.invalidPayload("thread/read", "decode-payload", error),
-    ),
-  );
-  return metadata.thread.historyMode;
-});
-
-export const readCodexThread = Effect.fn("readCodexThread")(function* (
-  client: CodexHistoryClient,
-  threadId: string,
-): Effect.fn.Return<CodexThreadSnapshot, CodexErrors.CodexAppServerError> {
-  if ((yield* readCodexHistoryMode(client, threadId)) !== "paginated") {
-    return parseThreadSnapshot(
-      yield* client.request("thread/read", { threadId, includeTurns: true }),
-    );
-  }
-  const turns: Array<CodexThreadTurnSnapshot> = [];
-  const requestedCursors = new Set<string | null>();
-  let cursor: string | null = null;
+  const turns: CodexThreadTurnSnapshot[] = [];
+  let cursor: string | undefined;
+  const requestedCursors = new Set<string | undefined>();
   do {
     if (requestedCursors.has(cursor)) {
       return yield* CodexErrors.CodexAppServerRequestError.internalError(
@@ -1248,45 +1246,100 @@ export const readCodexThread = Effect.fn("readCodexThread")(function* (
       );
     }
     requestedCursors.add(cursor);
-    const response: unknown = yield* client.raw.request("thread/turns/list", {
+    const page = yield* client.request("thread/turns/list", {
       threadId,
-      cursor,
-      limit: 100,
-      sortDirection: "asc",
+      ...(cursor ? { cursor } : {}),
       itemsView: "full",
+      limit: CODEX_THREAD_TURN_PAGE_SIZE,
+      sortDirection: "asc",
     });
-    const page = yield* decodeCodexTurnsPage(response).pipe(
-      Effect.mapError((error) =>
-        CodexErrors.CodexAppServerRequestError.invalidPayload(
-          "thread/turns/list",
-          "decode-payload",
-          error,
-        ),
-      ),
+    turns.push(
+      ...page.data.map((turn) => ({
+        id: TurnId.make(turn.id),
+        items: turn.items,
+      })),
     );
-    turns.push(...page.data.map((turn) => ({ id: TurnId.make(turn.id), items: turn.items })));
-    cursor = page.nextCursor;
-  } while (cursor !== null);
-  return { threadId, turns };
+    cursor = page.nextCursor ?? undefined;
+  } while (cursor !== undefined);
+  return { threadId, turns } satisfies CodexThreadSnapshot;
 });
 
-export const rollbackCodexThread = Effect.fn("rollbackCodexThread")(function* (
-  client: CodexHistoryClient,
+const findPaginatedRollbackBoundary = Effect.fn("findPaginatedRollbackBoundary")(function* (
+  client: CodexThreadHistoryClient,
+  threadId: string,
+  requestedTurns: number,
+) {
+  let availableTurns = 0;
+  let cursor: string | undefined;
+  const requestedCursors = new Set<string | undefined>();
+  do {
+    if (requestedCursors.has(cursor)) {
+      return yield* CodexErrors.CodexAppServerRequestError.internalError(
+        "Thread history pagination repeated a cursor.",
+        undefined,
+        { method: "thread/turns/list", operation: "decode-payload" },
+      );
+    }
+    requestedCursors.add(cursor);
+    const remainingTurns = requestedTurns - availableTurns;
+    const page = yield* client.request("thread/turns/list", {
+      threadId,
+      ...(cursor ? { cursor } : {}),
+      itemsView: "notLoaded",
+      limit: Math.min(CODEX_THREAD_TURN_PAGE_SIZE, remainingTurns),
+      sortDirection: "desc",
+    });
+    const boundary = page.data[remainingTurns - 1];
+    if (boundary !== undefined) return boundary.id;
+    availableTurns += page.data.length;
+    cursor = page.nextCursor ?? undefined;
+  } while (cursor !== undefined);
+
+  return yield* new CodexSessionRuntimeRollbackRangeError({
+    availableTurns,
+    requestedTurns,
+    threadId,
+  });
+});
+
+/** Reads one Codex thread using its persisted history contract. */
+export const readCodexThreadSnapshot = Effect.fn("readCodexThreadSnapshot")(function* (
+  client: CodexThreadHistoryClient,
+  threadId: string,
+) {
+  const response = yield* client.request("thread/read", {
+    threadId,
+    includeTurns: false,
+  });
+  if (response.thread.historyMode === "paginated") {
+    return yield* readPaginatedThreadSnapshot(client, threadId);
+  }
+  return parseLegacyThreadSnapshot(
+    yield* client.request("thread/read", { threadId, includeTurns: true }),
+  );
+});
+
+/** Removes the newest Codex turns using the thread's persisted history contract. */
+export const rollbackCodexThreadSnapshot = Effect.fn("rollbackCodexThreadSnapshot")(function* (
+  client: CodexThreadHistoryClient,
   threadId: string,
   numTurns: number,
-): Effect.fn.Return<CodexThreadSnapshot, CodexErrors.CodexAppServerError> {
-  if ((yield* readCodexHistoryMode(client, threadId)) !== "paginated") {
-    return parseThreadSnapshot(yield* client.request("thread/rollback", { threadId, numTurns }));
+) {
+  const readResponse = yield* client.request("thread/read", {
+    threadId,
+    includeTurns: false,
+  });
+  if (readResponse.thread.historyMode !== "paginated") {
+    const rollbackResponse = yield* client.request("thread/rollback", {
+      threadId,
+      numTurns,
+    });
+    return parseLegacyThreadSnapshot(rollbackResponse);
   }
-  // Paginated threads replace history at a turn boundary instead of supporting
-  // the legacy count-based rollback endpoint.
-  const snapshot = yield* readCodexThread(client, threadId);
-  const retainedCount = Math.max(0, snapshot.turns.length - numTurns);
-  const firstRemoved = snapshot.turns[retainedCount];
-  if (firstRemoved) {
-    yield* client.raw.request("thread/revert", { threadId, beforeTurnId: firstRemoved.id });
-  }
-  return { threadId, turns: snapshot.turns.slice(0, retainedCount) };
+
+  const beforeTurnId = yield* findPaginatedRollbackBoundary(client, threadId, numTurns);
+  yield* client.request("thread/revert", { beforeTurnId, threadId });
+  return yield* readPaginatedThreadSnapshot(client, threadId);
 });
 
 export const makeCodexSessionRuntime = (
@@ -2533,12 +2586,12 @@ export const makeCodexSessionRuntime = (
         }),
       readThread: Effect.gen(function* () {
         const providerThreadId = yield* readProviderThreadId;
-        return yield* readCodexThread(client, providerThreadId);
+        return yield* readCodexThreadSnapshot(client, providerThreadId);
       }),
       rollbackThread: (numTurns) =>
         Effect.gen(function* () {
           const providerThreadId = yield* readProviderThreadId;
-          const snapshot = yield* rollbackCodexThread(client, providerThreadId, numTurns);
+          const snapshot = yield* rollbackCodexThreadSnapshot(client, providerThreadId, numTurns);
           yield* updateSession(sessionRef, {
             status: "ready",
             activeTurnId: undefined,
