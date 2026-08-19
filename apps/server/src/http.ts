@@ -45,8 +45,63 @@ const LOOPBACK_HOSTNAMES = new Set(["127.0.0.1", "::1", "localhost"]);
 const DESKTOP_RENDERER_ORIGINS = ["t3code://app", "t3code-dev://app"];
 const SVG_CONTENT_SECURITY_POLICY = "default-src 'none'; style-src 'unsafe-inline'; sandbox";
 
+export type AssetByteRangeResolution =
+  | { readonly _tag: "full" }
+  | { readonly _tag: "partial"; readonly endInclusive: bigint; readonly start: bigint }
+  | { readonly _tag: "unsatisfiable" };
+
+/** Resolves one HTTP byte range against an asset's current size. */
+export function resolveAssetByteRange(
+  rangeHeader: string | undefined,
+  size: bigint,
+): AssetByteRangeResolution {
+  if (size < 0n) {
+    throw new RangeError("asset size must be non-negative");
+  }
+  if (rangeHeader === undefined) {
+    return { _tag: "full" };
+  }
+
+  const match = /^bytes=(\d*)-(\d*)$/i.exec(rangeHeader.trim());
+  if (match === null) {
+    return { _tag: "unsatisfiable" };
+  }
+  const [, startText = "", endText = ""] = match;
+  if (startText.length === 0 && endText.length === 0) {
+    return { _tag: "unsatisfiable" };
+  }
+
+  if (startText.length === 0) {
+    const suffixLength = BigInt(endText);
+    if (suffixLength === 0n || size === 0n) {
+      return { _tag: "unsatisfiable" };
+    }
+    const bytesToRead = suffixLength < size ? suffixLength : size;
+    return {
+      _tag: "partial",
+      start: size - bytesToRead,
+      endInclusive: size - 1n,
+    };
+  }
+
+  const start = BigInt(startText);
+  if (start >= size) {
+    return { _tag: "unsatisfiable" };
+  }
+  const requestedEnd = endText.length === 0 ? size - 1n : BigInt(endText);
+  if (requestedEnd < start) {
+    return { _tag: "unsatisfiable" };
+  }
+  return {
+    _tag: "partial",
+    start,
+    endInclusive: requestedEnd < size ? requestedEnd : size - 1n,
+  };
+}
+
 export function assetResponseHeaders(filePath: string): Record<string, string> {
   return {
+    "Accept-Ranges": "bytes",
     "Cache-Control": "private, max-age=3600",
     "X-Content-Type-Options": "nosniff",
     ...(filePath.toLowerCase().endsWith(".svg")
@@ -54,6 +109,67 @@ export function assetResponseHeaders(filePath: string): Record<string, string> {
       : {}),
   };
 }
+
+/** Streams an asset as a full response or one satisfiable HTTP byte range. */
+export const assetFileResponse = Effect.fn("assetFileResponse")(function* (
+  filePath: string,
+  rangeHeader: string | undefined,
+) {
+  const responseHeaders = assetResponseHeaders(filePath);
+  const fullResponse = HttpServerResponse.file(filePath, {
+    status: 200,
+    headers: responseHeaders,
+  }).pipe(
+    Effect.tapError((cause) => Effect.logError("failed to serve asset", { path: filePath, cause })),
+    Effect.orElseSucceed(() => HttpServerResponse.text("Internal Server Error", { status: 500 })),
+  );
+  if (rangeHeader === undefined) {
+    return yield* fullResponse;
+  }
+
+  const fileSystem = yield* FileSystem.FileSystem;
+  const fileInfo = yield* fileSystem.stat(filePath).pipe(
+    Effect.tapError((cause) =>
+      Effect.logError("failed to inspect asset range", { path: filePath, cause }),
+    ),
+    Effect.orElseSucceed(() => null),
+  );
+  if (fileInfo === null || fileInfo.type !== "File") {
+    yield* Effect.logError("asset range is no longer a file", {
+      path: filePath,
+      type: fileInfo?.type,
+    });
+    return HttpServerResponse.text("Internal Server Error", { status: 500 });
+  }
+
+  const range = resolveAssetByteRange(rangeHeader, fileInfo.size);
+  if (range._tag === "unsatisfiable") {
+    return HttpServerResponse.empty({
+      status: 416,
+      headers: {
+        ...responseHeaders,
+        "Content-Range": `bytes */${fileInfo.size}`,
+      },
+    });
+  }
+  if (range._tag === "full") {
+    return yield* fullResponse;
+  }
+  return yield* HttpServerResponse.file(filePath, {
+    status: 206,
+    headers: {
+      ...responseHeaders,
+      "Content-Range": `bytes ${range.start}-${range.endInclusive}/${fileInfo.size}`,
+    },
+    offset: range.start,
+    bytesToRead: range.endInclusive - range.start + 1n,
+  }).pipe(
+    Effect.tapError((cause) =>
+      Effect.logError("failed to serve asset range", { path: filePath, cause }),
+    ),
+    Effect.orElseSucceed(() => HttpServerResponse.text("Internal Server Error", { status: 500 })),
+  );
+});
 
 export const httpCompressionLayer = HttpRouter.middleware(HttpMiddleware.compression(), {
   global: true,
@@ -217,12 +333,8 @@ export const assetRouteLayer = HttpRouter.add(
     if (!asset) {
       return HttpServerResponse.text("Not Found", { status: 404 });
     }
-    return yield* HttpServerResponse.file(asset.path, {
-      status: 200,
-      headers: assetResponseHeaders(asset.path),
-    }).pipe(
-      Effect.orElseSucceed(() => HttpServerResponse.text("Internal Server Error", { status: 500 })),
-    );
+
+    return yield* assetFileResponse(asset.path, request.headers.range);
   }),
 );
 
