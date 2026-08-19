@@ -13,105 +13,18 @@ import { buildCodexDeveloperInstructions } from "../CodexDeveloperInstructions.t
 import { codexSessionAppServerArgs } from "./codexLaunchArgs.ts";
 import {
   buildTurnStartParams,
+  CodexSessionRuntimeRollbackRangeError,
   describeMcpElicitation,
   hasConfiguredMcpServer,
   isRecoverableThreadResumeError,
   makeMemoryConsolidationNotificationFilter,
   openCodexThread,
-  readCodexThread,
-  rollbackCodexThread,
+  readCodexThreadSnapshot,
+  rollbackCodexThreadSnapshot,
   toMcpElicitationResponse,
 } from "./CodexSessionRuntime.ts";
 const isCodexAppServerRequestError = Schema.is(CodexErrors.CodexAppServerRequestError);
-
-describe("Codex thread history", () => {
-  for (const numTurns of [1, 2, 3, 5]) {
-    it.effect(`reverts ${numTurns} paginated turns at the durable boundary`, () =>
-      Effect.gen(function* () {
-        let retained = ["turn-1", "turn-2", "turn-3"];
-        const client: Parameters<typeof rollbackCodexThread>[0] = {
-          request: () => Effect.die("Legacy history API must not be used for paginated threads"),
-          raw: {
-            request: (method, params) =>
-              Effect.sync(() => {
-                if (method === "thread/read") return { thread: { historyMode: "paginated" } };
-                if (method === "thread/turns/list") {
-                  const { cursor } = params as { cursor: string | null };
-                  const start = cursor === null ? 0 : Number(cursor);
-                  const ids = retained.slice(start, start + 2);
-                  return {
-                    data: ids.map((id) => ({ id, items: [], status: "completed" })),
-                    nextCursor: start + 2 < retained.length ? String(start + 2) : null,
-                  };
-                }
-                NodeAssert.equal(method, "thread/revert");
-                const { beforeTurnId } = params as { beforeTurnId: string };
-                retained = retained.slice(0, retained.indexOf(beforeTurnId));
-                return { thread: { id: "thread-1", turns: [] } };
-              }),
-          },
-        };
-        const result = yield* rollbackCodexThread(client, "thread-1", numTurns);
-        const expected = ["turn-1", "turn-2", "turn-3"].slice(0, Math.max(0, 3 - numTurns));
-        NodeAssert.deepEqual(
-          result.turns.map((turn) => turn.id),
-          expected,
-        );
-        NodeAssert.deepEqual(
-          (yield* readCodexThread(client, "thread-1")).turns.map((turn) => turn.id),
-          expected,
-        );
-      }),
-    );
-  }
-
-  for (const cursors of [
-    ["next", "next"],
-    ["first", "second", "first"],
-  ]) {
-    it.effect(`rejects a pagination cursor cycle: ${cursors.join(", ")}`, () =>
-      Effect.gen(function* () {
-        let pageCount = 0;
-        const client: Parameters<typeof readCodexThread>[0] = {
-          request: () => Effect.die("Unexpected legacy request"),
-          raw: {
-            request: (method) =>
-              Effect.sync(() => {
-                if (method === "thread/read") return { thread: { historyMode: "paginated" } };
-                NodeAssert.ok(pageCount < cursors.length, "Repeated cursor was requested");
-                return { data: [], nextCursor: cursors[pageCount++] };
-              }),
-          },
-        };
-        const error = yield* Effect.flip(readCodexThread(client, "thread-1"));
-        NodeAssert.ok(isCodexAppServerRequestError(error));
-        NodeAssert.equal(pageCount, cursors.length);
-      }),
-    );
-  }
-
-  it.effect("keeps the count-based rollback API for older threads", () =>
-    Effect.gen(function* () {
-      const client: Parameters<typeof rollbackCodexThread>[0] = {
-        raw: { request: () => Effect.succeed({ thread: {} }) },
-        request: <M extends CodexRpc.ClientRequestMethod>(
-          method: M,
-          params: CodexRpc.ClientRequestParamsByMethod[M],
-        ) => {
-          NodeAssert.equal(method, "thread/rollback");
-          NodeAssert.deepEqual(params, { threadId: "legacy-thread", numTurns: 2 });
-          return Effect.succeed({
-            thread: { id: "legacy-thread", turns: [] },
-          } as unknown as CodexRpc.ClientRequestResponsesByMethod[M]);
-        },
-      };
-      NodeAssert.deepEqual(yield* rollbackCodexThread(client, "legacy-thread", 2), {
-        threadId: "legacy-thread",
-        turns: [],
-      });
-    }),
-  );
-});
+const isCodexSessionRuntimeRollbackRangeError = Schema.is(CodexSessionRuntimeRollbackRangeError);
 
 describe("CodexSessionRuntimeIdentifierGenerationError", () => {
   it("retains identifier purpose and the random source failure", () => {
@@ -1038,6 +951,42 @@ describe("openCodexThread", () => {
     }),
   );
 
+  it.effect("starts new threads with paginated history", () =>
+    Effect.gen(function* () {
+      let payload: CodexRpc.ClientRequestParamsByMethod["thread/start"] | undefined;
+      const client = {
+        request: <M extends "thread/start" | "thread/resume">(
+          method: M,
+          request: CodexRpc.ClientRequestParamsByMethod[M],
+        ) => {
+          NodeAssert.equal(method, "thread/start");
+          payload = request as CodexRpc.ClientRequestParamsByMethod["thread/start"];
+          return Effect.succeed(
+            makeThreadOpenResponse("fresh-thread") as CodexRpc.ClientRequestResponsesByMethod[M],
+          );
+        },
+      };
+
+      yield* openCodexThread({
+        client,
+        threadId: ThreadId.make("thread-1"),
+        runtimeMode: "full-access",
+        cwd: "/tmp/project",
+        requestedModel: undefined,
+        serviceTier: undefined,
+        resumeThreadId: undefined,
+      });
+
+      NodeAssert.deepStrictEqual(payload, {
+        cwd: "/tmp/project",
+        approvalPolicy: "never",
+        sandbox: "danger-full-access",
+        approvalsReviewer: "user",
+        historyMode: "paginated",
+      });
+    }),
+  );
+
   it.effect("falls back to thread/start when resume fails recoverably", () =>
     Effect.gen(function* () {
       const calls: Array<{ method: "thread/start" | "thread/resume"; payload: unknown }> = [];
@@ -1123,3 +1072,258 @@ describe("openCodexThread", () => {
     }),
   );
 });
+
+type ThreadHistoryMethod =
+  | "thread/read"
+  | "thread/revert"
+  | "thread/rollback"
+  | "thread/turns/list";
+
+function makeThreadReadResponse(historyMode: "legacy" | "paginated") {
+  return {
+    thread: {
+      id: "provider-thread-1",
+      historyMode,
+      turns: [],
+    },
+  } as unknown as CodexRpc.ClientRequestResponsesByMethod["thread/read"];
+}
+
+function makeTurnsPage(input: {
+  readonly ids: ReadonlyArray<string>;
+  readonly nextCursor?: string;
+}) {
+  return {
+    data: input.ids.map((id) => ({ id, items: [] })),
+    ...(input.nextCursor ? { nextCursor: input.nextCursor } : {}),
+  } as unknown as CodexRpc.ClientRequestResponsesByMethod["thread/turns/list"];
+}
+
+describe("paginated Codex thread history", () => {
+  it.effect("hydrates every page in ascending turn order", () =>
+    Effect.gen(function* () {
+      const calls: Array<{ readonly method: ThreadHistoryMethod; readonly payload: unknown }> = [];
+      const responses: Array<unknown> = [
+        makeThreadReadResponse("paginated"),
+        makeTurnsPage({ ids: ["turn-1"], nextCursor: "page-2" }),
+        makeTurnsPage({ ids: ["turn-2"] }),
+      ];
+      const client = {
+        request: <M extends ThreadHistoryMethod>(
+          method: M,
+          payload: CodexRpc.ClientRequestParamsByMethod[M],
+        ) => {
+          calls.push({ method, payload });
+          return Effect.succeed(responses.shift() as CodexRpc.ClientRequestResponsesByMethod[M]);
+        },
+      };
+
+      const snapshot = yield* readCodexThreadSnapshot(client, "provider-thread-1");
+
+      NodeAssert.deepStrictEqual(
+        snapshot.turns.map((turn) => turn.id),
+        ["turn-1", "turn-2"],
+      );
+      NodeAssert.deepStrictEqual(calls, [
+        {
+          method: "thread/read",
+          payload: { threadId: "provider-thread-1", includeTurns: false },
+        },
+        {
+          method: "thread/turns/list",
+          payload: {
+            threadId: "provider-thread-1",
+            itemsView: "full",
+            limit: 100,
+            sortDirection: "asc",
+          },
+        },
+        {
+          method: "thread/turns/list",
+          payload: {
+            threadId: "provider-thread-1",
+            cursor: "page-2",
+            itemsView: "full",
+            limit: 100,
+            sortDirection: "asc",
+          },
+        },
+      ]);
+    }),
+  );
+
+  it.effect("hydrates legacy turns only after detecting legacy history", () =>
+    Effect.gen(function* () {
+      const calls: Array<{ readonly method: ThreadHistoryMethod; readonly payload: unknown }> = [];
+      const responses: Array<unknown> = [
+        makeThreadReadResponse("legacy"),
+        {
+          thread: {
+            id: "provider-thread-1",
+            turns: [{ id: "turn-1", items: [] }],
+          },
+        },
+      ];
+      const client = {
+        request: <M extends ThreadHistoryMethod>(
+          method: M,
+          payload: CodexRpc.ClientRequestParamsByMethod[M],
+        ) => {
+          calls.push({ method, payload });
+          return Effect.succeed(responses.shift() as CodexRpc.ClientRequestResponsesByMethod[M]);
+        },
+      };
+
+      const snapshot = yield* readCodexThreadSnapshot(client, "provider-thread-1");
+
+      NodeAssert.deepStrictEqual(
+        snapshot.turns.map((turn) => turn.id),
+        ["turn-1"],
+      );
+      NodeAssert.deepStrictEqual(calls, [
+        {
+          method: "thread/read",
+          payload: { threadId: "provider-thread-1", includeTurns: false },
+        },
+        {
+          method: "thread/read",
+          payload: { threadId: "provider-thread-1", includeTurns: true },
+        },
+      ]);
+    }),
+  );
+
+  it.effect("finds the rollback boundary and reverts atomically", () =>
+    Effect.gen(function* () {
+      const calls: Array<{ readonly method: ThreadHistoryMethod; readonly payload: unknown }> = [];
+      const responses: Array<unknown> = [
+        makeThreadReadResponse("paginated"),
+        makeTurnsPage({ ids: ["turn-3", "turn-2"] }),
+        { thread: { id: "provider-thread-1", turns: [] } },
+        makeTurnsPage({ ids: ["turn-1"] }),
+      ];
+      const client = {
+        request: <M extends ThreadHistoryMethod>(
+          method: M,
+          payload: CodexRpc.ClientRequestParamsByMethod[M],
+        ) => {
+          calls.push({ method, payload });
+          return Effect.succeed(responses.shift() as CodexRpc.ClientRequestResponsesByMethod[M]);
+        },
+      };
+
+      const snapshot = yield* rollbackCodexThreadSnapshot(client, "provider-thread-1", 2);
+
+      NodeAssert.deepStrictEqual(
+        snapshot.turns.map((turn) => turn.id),
+        ["turn-1"],
+      );
+      NodeAssert.deepStrictEqual(
+        calls.map((call) => call.method),
+        ["thread/read", "thread/turns/list", "thread/revert", "thread/turns/list"],
+      );
+      NodeAssert.deepStrictEqual(calls[1]?.payload, {
+        threadId: "provider-thread-1",
+        itemsView: "notLoaded",
+        limit: 2,
+        sortDirection: "desc",
+      });
+      NodeAssert.deepStrictEqual(calls[2]?.payload, {
+        beforeTurnId: "turn-2",
+        threadId: "provider-thread-1",
+      });
+    }),
+  );
+
+  it.effect("keeps rollback compatibility for an existing legacy thread", () =>
+    Effect.gen(function* () {
+      const calls: Array<ThreadHistoryMethod> = [];
+      const responses: Array<unknown> = [
+        makeThreadReadResponse("legacy"),
+        {
+          thread: {
+            id: "provider-thread-1",
+            turns: [{ id: "turn-1", items: [] }],
+          },
+        },
+      ];
+      const client = {
+        request: <M extends ThreadHistoryMethod>(
+          method: M,
+          _payload: CodexRpc.ClientRequestParamsByMethod[M],
+        ) => {
+          calls.push(method);
+          return Effect.succeed(responses.shift() as CodexRpc.ClientRequestResponsesByMethod[M]);
+        },
+      };
+
+      const snapshot = yield* rollbackCodexThreadSnapshot(client, "provider-thread-1", 1);
+
+      NodeAssert.deepStrictEqual(
+        snapshot.turns.map((turn) => turn.id),
+        ["turn-1"],
+      );
+      NodeAssert.deepStrictEqual(calls, ["thread/read", "thread/rollback"]);
+    }),
+  );
+
+  it.effect("reports the available turn count when rollback exceeds history", () =>
+    Effect.gen(function* () {
+      const responses: Array<unknown> = [
+        makeThreadReadResponse("paginated"),
+        makeTurnsPage({ ids: ["turn-2", "turn-1"] }),
+      ];
+      const client = {
+        request: <M extends ThreadHistoryMethod>(
+          _method: M,
+          _payload: CodexRpc.ClientRequestParamsByMethod[M],
+        ) => Effect.succeed(responses.shift() as CodexRpc.ClientRequestResponsesByMethod[M]),
+      };
+
+      const error = yield* rollbackCodexThreadSnapshot(client, "provider-thread-1", 3).pipe(
+        Effect.flip,
+      );
+
+      NodeAssert.ok(isCodexSessionRuntimeRollbackRangeError(error));
+      NodeAssert.equal(error.availableTurns, 2);
+      NodeAssert.equal(error.requestedTurns, 3);
+    }),
+  );
+});
+
+for (const operation of ["read", "rollback"] as const) {
+  for (const cursors of [
+    ["next", "next"],
+    ["first", "second", "first"],
+  ]) {
+    it.effect(`${operation} rejects a pagination cursor cycle: ${cursors.join(", ")}`, () =>
+      Effect.gen(function* () {
+        let pageCount = 0;
+        const client = {
+          request: <M extends ThreadHistoryMethod>(method: M) => {
+            if (method === "thread/read") {
+              return Effect.succeed(
+                makeThreadReadResponse("paginated") as CodexRpc.ClientRequestResponsesByMethod[M],
+              );
+            }
+            NodeAssert.equal(method, "thread/turns/list");
+            NodeAssert.ok(pageCount < cursors.length, "Repeated cursor was requested");
+            return Effect.succeed(
+              makeTurnsPage({
+                ids: [],
+                nextCursor: cursors[pageCount++]!,
+              }) as CodexRpc.ClientRequestResponsesByMethod[M],
+            );
+          },
+        };
+        const error = yield* Effect.flip(
+          operation === "read"
+            ? readCodexThreadSnapshot(client, "provider-thread-1")
+            : rollbackCodexThreadSnapshot(client, "provider-thread-1", 3),
+        );
+        NodeAssert.ok(isCodexAppServerRequestError(error));
+        NodeAssert.equal(pageCount, cursors.length);
+      }),
+    );
+  }
+}
