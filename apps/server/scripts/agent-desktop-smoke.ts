@@ -25,9 +25,17 @@ import * as ServerConfig from "../src/config.ts";
 import * as PreviewAutomationBroker from "../src/mcp/PreviewAutomationBroker.ts";
 
 const repositoryRoot = NodePath.resolve(import.meta.dirname, "../../..");
-const runtimeArguments = process.argv.slice(2).filter((argument) => argument !== "--");
+const verifyUpdate = process.argv.slice(2).includes("--update");
+const verifyBaseUpdate = process.argv.slice(2).includes("--update-base");
+const runtimeArguments = process.argv
+  .slice(2)
+  .filter(
+    (argument) => argument !== "--" && argument !== "--update" && argument !== "--update-base",
+  );
 if (runtimeArguments.length !== 1) {
-  throw new Error("usage: node scripts/agent-desktop-smoke.ts <isolated-base-directory>");
+  throw new Error(
+    "usage: node scripts/agent-desktop-smoke.ts <isolated-base-directory> [--update] [--update-base]",
+  );
 }
 const runtimeRootArgument = runtimeArguments[0]!;
 const runtimeRoot = NodePath.resolve(runtimeRootArgument);
@@ -72,10 +80,6 @@ const owner = {
   threadId: scope.threadId,
   controllerId: scope.providerSessionId,
 };
-const sourceDirectory = NodePath.join(runtimeRoot, "transfer-source");
-const importedArchive = NodePath.join(runtimeRoot, "import.bundle");
-const exportedArchive = NodePath.join(runtimeRoot, "export.bundle");
-const extractedDirectory = NodePath.join(runtimeRoot, "transfer-result");
 const message = "environment server transfer: exact Unicode ’ →\n";
 
 const program = Effect.scoped(
@@ -84,6 +88,30 @@ const program = Effect.scoped(
     const computer = yield* ComputerAutomationRouter.ComputerAutomationRouter;
     const listed = yield* manager.list;
     if (!listed.available) throw new Error(listed.detail ?? "Agent desktops unavailable");
+    const runDirectory = yield* Effect.promise(() =>
+      NodeFSP.mkdtemp(NodePath.join(runtimeRoot, "smoke-")),
+    );
+    const sourceDirectory = NodePath.join(runDirectory, "transfer-source");
+    const importedArchive = NodePath.join(runDirectory, "import.bundle");
+    const exportedArchive = NodePath.join(runDirectory, "export.bundle");
+    const extractedDirectory = NodePath.join(runDirectory, "transfer-result");
+    const baseMaintenance = verifyBaseUpdate
+      ? yield* Effect.gen(function* () {
+          const queued = yield* manager.update(owner, { target: { kind: "base-image" } });
+          if (!queued.accepted) throw new Error("Agent desktop base update was already active");
+          const completed = yield* manager.awaitUpdate(owner, {
+            target: { kind: "base-image" },
+          });
+          if (completed.status !== "current") {
+            throw new Error(completed.detail ?? `Agent desktop base update ${completed.status}`);
+          }
+          const refreshed = (yield* manager.list).baseImage;
+          if (refreshed.generation === null || refreshed.maintenance.status !== "current") {
+            throw new Error("Agent desktop base update did not activate a managed generation");
+          }
+          return refreshed;
+        })
+      : undefined;
 
     const desktop = yield* manager.acquire(owner, {
       fresh: true,
@@ -105,9 +133,24 @@ const program = Effect.scoped(
       }
       const actions = yield* computer.act(scope, {
         desktop: { kind: "agent", desktopId: desktop.id },
-        actions: [{ type: "press", key: "Escape" }],
-        observation: false,
+        actions: [{ type: "press", key: "Meta" }],
+        observation: {
+          includeAccessibility: false,
+          delayMs: 1_000,
+          screenshot: { maxWidth: 800, maxHeight: 450 },
+        },
       });
+      if (actions.snapshot?.screenshot?.state !== "image") {
+        throw new Error("Agent desktop post-input snapshot did not return an image");
+      }
+      const evidenceScreenshot = actions.snapshot.screenshot;
+      const evidencePath = NodePath.join(
+        runDirectory,
+        `agent-desktop-smoke.${evidenceScreenshot.mimeType === "image/png" ? "png" : "webp"}`,
+      );
+      yield* Effect.promise(() =>
+        NodeFSP.writeFile(evidencePath, Buffer.from(evidenceScreenshot.data, "base64")),
+      );
 
       yield* Effect.promise(async () => {
         await NodeFSP.mkdir(sourceDirectory, { recursive: true });
@@ -164,18 +207,54 @@ const program = Effect.scoped(
       const released = yield* computer.release(scope, {
         desktop: { kind: "agent", desktopId: desktop.id },
       });
+      const maintenance = verifyUpdate
+        ? yield* Effect.gen(function* () {
+            yield* manager.manage(owner, { operation: "stop", desktopId: desktop.id });
+            const queued = yield* manager.update(owner, {
+              target: { kind: "desktop", desktopId: desktop.id },
+            });
+            if (!queued.accepted) throw new Error("Agent desktop update was already active");
+            const completed = yield* manager.awaitUpdate(owner, {
+              target: { kind: "desktop", desktopId: desktop.id },
+            });
+            if (completed.status !== "current") {
+              throw new Error(completed.detail ?? `Agent desktop update ${completed.status}`);
+            }
+            yield* manager.acquire(owner, { desktopId: desktop.id });
+            yield* computer.requestControl(scope, {
+              desktop: { kind: "agent", desktopId: desktop.id },
+              observation: false,
+            });
+            const verifiedSnapshot = yield* computer.snapshot(scope, {
+              desktop: { kind: "agent", desktopId: desktop.id },
+              includeAccessibility: false,
+              screenshot: { maxWidth: 800, maxHeight: 450 },
+            });
+            if (verifiedSnapshot.screenshot?.state !== "image") {
+              throw new Error("updated Agent desktop snapshot did not return an image");
+            }
+            yield* computer.release(scope, {
+              desktop: { kind: "agent", desktopId: desktop.id },
+            });
+            return completed;
+          })
+        : undefined;
       return {
         prerequisites: listed.requirements.length,
+        runDirectory,
+        ...(baseMaintenance === undefined ? {} : { baseMaintenance }),
         desktopId: desktop.id,
         backend: control.status?.backend,
         screenshot: {
-          width: snapshot.screenshot.width,
-          height: snapshot.screenshot.height,
-          sizeBytes: snapshot.screenshot.sizeBytes,
-          encoding: snapshot.screenshot.encoding,
+          width: evidenceScreenshot.width,
+          height: evidenceScreenshot.height,
+          sizeBytes: evidenceScreenshot.sizeBytes,
+          encoding: evidenceScreenshot.encoding,
+          path: evidencePath,
         },
         actionResults: actions.actionResults,
         released: released.permission,
+        ...(maintenance === undefined ? {} : { maintenance }),
         imported: {
           wireBytes: imported.wireBytes,
           sha256: imported.sha256,

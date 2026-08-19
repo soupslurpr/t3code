@@ -11,6 +11,7 @@ import {
   AgentDesktopReadFileInput,
   AgentDesktopList,
   AgentDesktopRequirementRemedy,
+  AgentDesktopUpdateInput,
   AgentDesktopWriteFileInput,
 } from "./agentDesktop.ts";
 
@@ -24,6 +25,15 @@ const decodeReadFile = Schema.decodeUnknownSync(AgentDesktopReadFileInput);
 const decodeWriteFile = Schema.decodeUnknownSync(AgentDesktopWriteFileInput);
 const decodeList = Schema.decodeUnknownSync(AgentDesktopList);
 const decodeRemedy = Schema.decodeUnknownSync(AgentDesktopRequirementRemedy);
+const decodeUpdate = Schema.decodeUnknownSync(AgentDesktopUpdateInput);
+const maintenance = {
+  status: "current" as const,
+  targetProfileVersion: "arch-gnome-v1",
+  appliedProfileVersion: "arch-gnome-v1",
+  lastUpdatedAt: "2026-08-12T20:00:00.000Z",
+  startedAt: null,
+  completedAt: "2026-08-12T20:00:00.000Z",
+};
 
 describe("agent desktop contracts", () => {
   it("accepts automatic, fresh, and explicit acquisition", () => {
@@ -66,6 +76,13 @@ describe("agent desktop contracts", () => {
         },
       }).operation,
     ).toBe("handoff");
+  });
+
+  it("targets base and desktop maintenance explicitly", () => {
+    expect(decodeUpdate({ target: { kind: "base-image" } }).target.kind).toBe("base-image");
+    expect(decodeUpdate({ target: { kind: "desktop", desktopId: "desktop-1" } }).target.kind).toBe(
+      "desktop",
+    );
   });
 
   it("bounds exact guest command and file operations", () => {
@@ -158,6 +175,8 @@ describe("agent desktop contracts", () => {
         },
         state: "active",
         automaticParking: true,
+        baseGeneration: "arch-gnome-v1-1",
+        maintenance,
         capabilities: ["computer", "network-telemetry"],
         graphics: {
           backend: "virgl",
@@ -186,6 +205,13 @@ describe("agent desktop contracts", () => {
   it("reports structured host prerequisites and bounded remedies", () => {
     const list = decodeList({
       available: false,
+      baseImage: {
+        managed: true,
+        generation: "arch-gnome-v1-1",
+        sourceRelease: "20260801.566320",
+        builtAt: "2026-08-12T20:00:00.000Z",
+        maintenance,
+      },
       desktops: [],
       requirements: [
         {

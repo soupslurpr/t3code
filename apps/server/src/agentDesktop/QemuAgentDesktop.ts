@@ -6,6 +6,7 @@ import type {
 } from "@t3tools/contracts";
 import * as Clock from "effect/Clock";
 import * as Context from "effect/Context";
+import * as DateTime from "effect/DateTime";
 import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
@@ -20,6 +21,10 @@ import * as NodeCrypto from "node:crypto";
 import * as NodeOS from "node:os";
 
 import * as AgentDesktopEnvironment from "./AgentDesktopEnvironment.ts";
+import {
+  AGENT_DESKTOP_PROFILE_VERSION,
+  AGENT_DESKTOP_SOURCE_RELEASE,
+} from "./AgentDesktopMaintenance.ts";
 import * as QemuProtocol from "./QemuProtocol.ts";
 import * as QemuVnc from "./QemuVnc.ts";
 
@@ -46,12 +51,16 @@ const EGL_HEADLESS_MODULE_PATH = "/usr/lib/qemu/ui-egl-headless.so";
 const OPENGL_UI_MODULE_PATH = "/usr/lib/qemu/ui-opengl.so";
 const DRI_DIRECTORY = "/dev/dri";
 const IMAGE_BUILDER_RESOURCE = "agent-desktop/image-builder.mjs";
+const BASE_IMAGE_MANIFEST_NAME = "current.json";
+const BASE_IMAGE_DIRECTORY_NAME = "images";
+const BASE_IMAGE_MANIFEST_VERSION = 1;
+const UPDATE_ROLLBACK_SNAPSHOT = "t3-pre-update";
 const NVRAM_DRIVE_ID = "t3-nvram";
 const SYSTEM_DISK_DRIVE_ID = "t3-system-disk";
 const ACCELERATED_GRAPHICS_MEMORY_ALLOWANCE_BYTES = 1024 * 1024 * 1024;
 const PROCESS_TIMEOUT = Duration.seconds(30);
 const SETUP_TIMEOUT = Duration.minutes(15);
-const IMAGE_SETUP_TIMEOUT = Duration.minutes(60);
+const IMAGE_SETUP_TIMEOUT = Duration.minutes(75);
 const START_TIMEOUT = Duration.seconds(20);
 const GUEST_START_TIMEOUT = Duration.seconds(90);
 const STOP_TIMEOUT = Duration.seconds(15);
@@ -103,6 +112,16 @@ const decodeDiskInfo = Schema.decodeEffect(
     }),
   ),
 );
+const BaseImageManifest = Schema.Struct({
+  version: Schema.Literal(BASE_IMAGE_MANIFEST_VERSION),
+  generation: Schema.String.check(Schema.isPattern(/^[a-z0-9-]{1,128}$/u)),
+  fileName: Schema.String.check(Schema.isPattern(/^[a-z0-9-]{1,128}\.qcow2$/u)),
+  sourceRelease: Schema.String,
+  profileVersion: Schema.String,
+  builtAt: Schema.String,
+});
+const decodeBaseImageManifest = Schema.decodeEffect(Schema.fromJsonString(BaseImageManifest));
+const encodeBaseImageManifest = Schema.encodeEffect(Schema.fromJsonString(BaseImageManifest));
 
 /** Reports a bounded Agent desktop hypervisor failure. */
 export class QemuAgentDesktopError extends Schema.TaggedErrorClass<QemuAgentDesktopError>()(
@@ -131,10 +150,20 @@ const isQemuAgentDesktopError = Schema.is(QemuAgentDesktopError);
 export interface QemuAgentDesktopProbe {
   readonly available: boolean;
   readonly baseImagePath: string;
+  readonly baseImage: QemuAgentDesktopBaseImage;
   readonly displayDevice: QemuDisplayDevice | null;
   readonly acceleratedGraphicsAvailable: boolean;
   readonly requirements: ReadonlyArray<AgentDesktopRequirement>;
   readonly detail?: string;
+}
+
+export interface QemuAgentDesktopBaseImage {
+  readonly path: string;
+  readonly managed: boolean;
+  readonly generation: string | null;
+  readonly sourceRelease: string | null;
+  readonly profileVersion: string | null;
+  readonly builtAt: string | null;
 }
 
 export interface QemuAgentDesktopSetupResult {
@@ -236,10 +265,16 @@ export type QemuInputEvent =
 export interface QemuAgentDesktopShape {
   readonly probe: Effect.Effect<QemuAgentDesktopProbe>;
   readonly setup: Effect.Effect<QemuAgentDesktopSetupResult>;
+  readonly currentBaseImage: Effect.Effect<QemuAgentDesktopBaseImage>;
+  readonly refreshBaseImage: Effect.Effect<QemuAgentDesktopBaseImage, QemuAgentDesktopError>;
+  readonly pruneBaseImages: (
+    referencedGenerations: ReadonlySet<string>,
+  ) => Effect.Effect<void, QemuAgentDesktopError>;
   readonly paths: (id: AgentDesktopId) => QemuAgentDesktopPaths;
   readonly create: (
     id: AgentDesktopId,
     resources: QemuAgentDesktopResources,
+    baseImage: QemuAgentDesktopBaseImage,
   ) => Effect.Effect<void, QemuAgentDesktopError>;
   readonly clone: (
     sourceId: AgentDesktopId,
@@ -261,6 +296,13 @@ export interface QemuAgentDesktopShape {
   readonly checkpoint: (
     id: AgentDesktopId,
     saveMemoryState: boolean,
+  ) => Effect.Effect<void, QemuAgentDesktopError>;
+  readonly createUpdateRollback: (id: AgentDesktopId) => Effect.Effect<void, QemuAgentDesktopError>;
+  readonly restoreUpdateRollback: (
+    id: AgentDesktopId,
+  ) => Effect.Effect<void, QemuAgentDesktopError>;
+  readonly discardUpdateRollback: (
+    id: AgentDesktopId,
   ) => Effect.Effect<void, QemuAgentDesktopError>;
   readonly remove: (id: AgentDesktopId) => Effect.Effect<void, QemuAgentDesktopError>;
   readonly capture: (
@@ -457,6 +499,25 @@ export function qemuCloneConvertArguments(
 /** Builds a shared-read inspection command for a live QEMU disk. */
 export function qemuDiskUsageArguments(diskPath: string): ReadonlyArray<string> {
   return ["info", "--force-share", "--output=json", diskPath];
+}
+
+/** Retains referenced and current immutable base generations plus one rollback generation. */
+export function retainedAgentDesktopBaseGenerations(
+  generations: ReadonlyArray<string>,
+  currentGeneration: string | null,
+  referencedGenerations: ReadonlySet<string>,
+): ReadonlySet<string> {
+  const retained = new Set(referencedGenerations);
+  if (currentGeneration !== null) retained.add(currentGeneration);
+  const unreferenced = generations
+    .filter((generation) => !retained.has(generation))
+    .sort((left, right) => {
+      const timestamp = (value: string) => Number(/-([0-9]+)$/u.exec(value)?.[1] ?? 0);
+      return timestamp(right) - timestamp(left) || right.localeCompare(left);
+    });
+  const previous = unreferenced[0];
+  if (previous !== undefined) retained.add(previous);
+  return retained;
 }
 
 /** Returns the emulated control whose transitions need observable dwell time. */
@@ -682,12 +743,47 @@ export const make = Effect.gen(function* () {
   const baseImagePath = Option.getOrElse(environment.agentDesktopBaseImage, () =>
     environment.path.join(environment.agentDesktopsDir, "base", "agent-desktop.qcow2"),
   );
+  const baseImageDirectory = environment.path.dirname(baseImagePath);
+  const managedImageDirectory = environment.path.join(
+    baseImageDirectory,
+    BASE_IMAGE_DIRECTORY_NAME,
+  );
+  const baseImageManifestPath = environment.path.join(baseImageDirectory, BASE_IMAGE_MANIFEST_NAME);
   const imageBuilderPath = yield* Effect.gen(function* () {
     for (const candidate of environment.resolveResourcePathCandidates(IMAGE_BUILDER_RESOURCE)) {
       if (yield* fileSystem.exists(candidate)) return Option.some(candidate);
     }
     return Option.none<string>();
   });
+
+  const fallbackBaseImage = (): QemuAgentDesktopBaseImage => ({
+    path: baseImagePath,
+    managed: managesBaseImage,
+    generation: null,
+    sourceRelease: null,
+    profileVersion: null,
+    builtAt: null,
+  });
+
+  const currentBaseImage: QemuAgentDesktopShape["currentBaseImage"] = managesBaseImage
+    ? Effect.gen(function* () {
+        const raw = yield* fileSystem.readFileString(baseImageManifestPath).pipe(Effect.option);
+        if (Option.isNone(raw)) return fallbackBaseImage();
+        const decoded = yield* decodeBaseImageManifest(raw.value).pipe(Effect.option);
+        if (Option.isNone(decoded)) return fallbackBaseImage();
+        const manifest = decoded.value;
+        const path = environment.path.join(managedImageDirectory, manifest.fileName);
+        if (!(yield* fileSystem.exists(path))) return fallbackBaseImage();
+        return {
+          path,
+          managed: true,
+          generation: manifest.generation,
+          sourceRelease: manifest.sourceRelease,
+          profileVersion: manifest.profileVersion,
+          builtAt: manifest.builtAt,
+        };
+      }).pipe(Effect.orElseSucceed(() => fallbackBaseImage()))
+    : Effect.succeed(fallbackBaseImage());
 
   const runProcess = Effect.fn("QemuAgentDesktop.runProcess")(function* (
     executable: string,
@@ -746,6 +842,124 @@ export const make = Effect.gen(function* () {
     return result;
   });
 
+  const refreshBaseImageUnlocked = Effect.fn("QemuAgentDesktop.refreshBaseImage")(
+    function* () {
+      if (!managesBaseImage || Option.isNone(imageBuilderPath)) {
+        return yield* new QemuAgentDesktopError({
+          code: "unsupported-operation",
+          operation: "refresh-base-image",
+          detail: managesBaseImage
+            ? "the packaged Agent desktop image builder is missing"
+            : "a caller-supplied Agent desktop base image cannot be updated by T3 Code",
+        });
+      }
+      const now = yield* Clock.currentTimeMillis;
+      const generation = `${AGENT_DESKTOP_PROFILE_VERSION}-${now}`;
+      const fileName = `${generation}.qcow2`;
+      const output = environment.path.join(managedImageDirectory, fileName);
+      const temporaryOutput = environment.path.join(
+        managedImageDirectory,
+        `.${generation}.tmp-${process.pid}.qcow2`,
+      );
+      const temporaryManifest = `${baseImageManifestPath}.tmp-${process.pid}`;
+      yield* fileSystem.makeDirectory(baseImageDirectory, { recursive: true });
+      yield* fileSystem.chmod(baseImageDirectory, 0o700);
+      yield* fileSystem.makeDirectory(managedImageDirectory, { recursive: true });
+      yield* fileSystem.chmod(managedImageDirectory, 0o700);
+      const cleanup = (paths: ReadonlyArray<string>) =>
+        Effect.forEach(
+          paths,
+          (path) => fileSystem.remove(path, { force: true }).pipe(Effect.ignore),
+          { discard: true },
+        );
+      return yield* Effect.uninterruptibleMask((restore) =>
+        Effect.gen(function* () {
+          const builtAt = yield* restore(
+            Effect.gen(function* () {
+              const build = yield* runProcess(
+                process.execPath,
+                agentDesktopImageBuilderArguments(imageBuilderPath.value, temporaryOutput),
+                IMAGE_SETUP_TIMEOUT,
+                { ELECTRON_RUN_AS_NODE: "1" },
+              ).pipe(Effect.mapError(mapFailure("refresh-base-image")));
+              if (build.exitCode !== 0) {
+                return yield* new QemuAgentDesktopError({
+                  code: "internal-error",
+                  operation: "refresh-base-image",
+                  detail: (build.stderr || build.stdout || "Agent desktop image build failed")
+                    .trim()
+                    .slice(-512),
+                });
+              }
+              yield* runChecked("verify-base-image", QEMU_IMG_EXECUTABLE, [
+                "check",
+                "-q",
+                temporaryOutput,
+              ]);
+              yield* fileSystem.chmod(temporaryOutput, 0o400);
+              const completedAt = DateTime.formatIso(
+                DateTime.makeUnsafe(yield* Clock.currentTimeMillis),
+              );
+              const encoded = yield* encodeBaseImageManifest({
+                version: BASE_IMAGE_MANIFEST_VERSION,
+                generation,
+                fileName,
+                sourceRelease: AGENT_DESKTOP_SOURCE_RELEASE,
+                profileVersion: AGENT_DESKTOP_PROFILE_VERSION,
+                builtAt: completedAt,
+              }).pipe(Effect.mapError(mapFailure("encode-base-image-manifest")));
+              yield* fileSystem.writeFileString(temporaryManifest, `${encoded}\n`);
+              yield* fileSystem.chmod(temporaryManifest, 0o600);
+              return completedAt;
+            }).pipe(Effect.onError(() => cleanup([temporaryOutput, temporaryManifest]))),
+          );
+          yield* Effect.gen(function* () {
+            yield* fileSystem.rename(temporaryOutput, output);
+            yield* fileSystem.rename(temporaryManifest, baseImageManifestPath);
+          }).pipe(Effect.onError(() => cleanup([temporaryOutput, temporaryManifest, output])));
+          return {
+            path: output,
+            managed: true,
+            generation,
+            sourceRelease: AGENT_DESKTOP_SOURCE_RELEASE,
+            profileVersion: AGENT_DESKTOP_PROFILE_VERSION,
+            builtAt,
+          } satisfies QemuAgentDesktopBaseImage;
+        }),
+      );
+    },
+    Effect.mapError(mapFailure("refresh-base-image")),
+  );
+
+  const refreshBaseImage: QemuAgentDesktopShape["refreshBaseImage"] = setupSemaphore.withPermits(1)(
+    refreshBaseImageUnlocked(),
+  );
+
+  const pruneBaseImages: QemuAgentDesktopShape["pruneBaseImages"] = (referencedGenerations) =>
+    Effect.gen(function* () {
+      if (!managesBaseImage || !(yield* fileSystem.exists(managedImageDirectory))) return;
+      const selected = yield* currentBaseImage;
+      const entries = (yield* fileSystem.readDirectory(managedImageDirectory)).filter((entry) =>
+        /^[a-z0-9-]{1,128}\.qcow2$/u.test(entry),
+      );
+      const generationOf = (entry: string) => entry.slice(0, -".qcow2".length);
+      const retained = retainedAgentDesktopBaseGenerations(
+        entries.map(generationOf),
+        selected.generation,
+        referencedGenerations,
+      );
+      yield* Effect.forEach(
+        entries,
+        (entry) =>
+          retained.has(generationOf(entry))
+            ? Effect.void
+            : fileSystem.remove(environment.path.join(managedImageDirectory, entry), {
+                force: true,
+              }),
+        { discard: true },
+      );
+    }).pipe(Effect.mapError(mapFailure("prune-base-images")));
+
   const paths = (id: AgentDesktopId): QemuAgentDesktopPaths => {
     if (!MACHINE_ID_PATTERN.test(id)) throw new Error(`invalid internal Agent desktop id ${id}`);
     const directory = environment.path.join(environment.agentDesktopsDir, "machines", id);
@@ -790,11 +1004,13 @@ export const make = Effect.gen(function* () {
     );
 
   const probe: QemuAgentDesktopShape["probe"] = Effect.gen(function* () {
+    const selectedBaseImage = yield* currentBaseImage;
     if (environment.platform !== "linux" || environment.processArch !== "x64") {
       const detail = "Agent desktops currently require Linux x86-64";
       return {
         available: false,
-        baseImagePath,
+        baseImagePath: selectedBaseImage.path,
+        baseImage: selectedBaseImage,
         displayDevice: null,
         acceleratedGraphicsAvailable: false,
         requirements: [
@@ -833,7 +1049,7 @@ export const make = Effect.gen(function* () {
       EGL_HEADLESS_MODULE_PATH,
       OPENGL_UI_MODULE_PATH,
       DRI_DIRECTORY,
-      baseImagePath,
+      selectedBaseImage.path,
       ...Option.match(imageBuilderPath, {
         onNone: () => [],
         onSome: (path) => [path],
@@ -1032,10 +1248,10 @@ export const make = Effect.gen(function* () {
           },
     );
 
-    const baseImageExists = has(baseImagePath);
+    const baseImageExists = has(selectedBaseImage.path);
     const baseImageValid =
       baseImageExists && qemuReady
-        ? yield* processSucceeds(QEMU_IMG_EXECUTABLE, ["check", "-q", baseImagePath])
+        ? yield* processSucceeds(QEMU_IMG_EXECUTABLE, ["check", "-q", selectedBaseImage.path])
         : false;
     if (!baseImageValid && managesBaseImage) {
       const missingImageTools = [
@@ -1087,8 +1303,8 @@ export const make = Effect.gen(function* () {
             status: baseImageExists ? "unusable" : "missing",
             required: true,
             detail: baseImageExists
-              ? `the image at ${baseImagePath} could not be verified`
-              : `missing ${baseImagePath}`,
+              ? `the image at ${selectedBaseImage.path} could not be verified`
+              : `missing ${selectedBaseImage.path}`,
             remedy: {
               kind: "provision-image",
               automatic: imageProvisioningAutomatic,
@@ -1248,7 +1464,8 @@ export const make = Effect.gen(function* () {
     const detail = blocking?.detail ?? degraded?.detail;
     return {
       available: blocking === undefined,
-      baseImagePath,
+      baseImagePath: selectedBaseImage.path,
+      baseImage: selectedBaseImage,
       displayDevice,
       acceleratedGraphicsAvailable,
       requirements,
@@ -1259,6 +1476,7 @@ export const make = Effect.gen(function* () {
       Effect.succeed({
         available: false,
         baseImagePath,
+        baseImage: fallbackBaseImage(),
         displayDevice: null,
         acceleratedGraphicsAvailable: false,
         requirements: [
@@ -1317,16 +1535,8 @@ export const make = Effect.gen(function* () {
       Option.isSome(imageBuilderPath)
     ) {
       attempted = true;
-      const build = yield* runProcess(
-        process.execPath,
-        agentDesktopImageBuilderArguments(imageBuilderPath.value, baseImagePath),
-        IMAGE_SETUP_TIMEOUT,
-        { ELECTRON_RUN_AS_NODE: "1" },
-      ).pipe(
-        Effect.map((result) => ({
-          exitCode: result.exitCode,
-          detail: (result.stderr || result.stdout).trim().slice(-512),
-        })),
+      const build = yield* refreshBaseImageUnlocked().pipe(
+        Effect.as({ exitCode: 0, detail: "" }),
         Effect.catch((cause) =>
           Effect.succeed({ exitCode: -1, detail: String(cause).slice(0, 512) }),
         ),
@@ -1457,7 +1667,7 @@ export const make = Effect.gen(function* () {
       yield* stopUnit(id);
     });
 
-  const create: QemuAgentDesktopShape["create"] = (id, resources) =>
+  const create: QemuAgentDesktopShape["create"] = (id, resources, baseImage) =>
     Effect.gen(function* () {
       yield* requireAvailable();
       const machine = paths(id);
@@ -1470,7 +1680,7 @@ export const make = Effect.gen(function* () {
         "-F",
         "qcow2",
         "-b",
-        baseImagePath,
+        baseImage.path,
         machine.disk,
         String(resources.diskVirtualBytes),
       ]);
@@ -1703,6 +1913,76 @@ export const make = Effect.gen(function* () {
       if (resumeExit._tag === "Failure") return yield* Effect.failCause(resumeExit.cause);
       if (checkpointExit._tag === "Failure") return yield* Effect.failCause(checkpointExit.cause);
     }).pipe(Effect.uninterruptible, Effect.mapError(mapFailure("checkpoint")));
+
+  const removeUpdateSnapshots = (id: AgentDesktopId) =>
+    Effect.forEach(
+      [paths(id).disk, paths(id).nvram],
+      (path) =>
+        runProcess(QEMU_IMG_EXECUTABLE, ["snapshot", "-d", UPDATE_ROLLBACK_SNAPSHOT, path]).pipe(
+          Effect.ignore,
+        ),
+      { discard: true },
+    );
+
+  const createUpdateRollback: QemuAgentDesktopShape["createUpdateRollback"] = (id) =>
+    Effect.gen(function* () {
+      if (yield* isRunning(id)) {
+        return yield* new QemuAgentDesktopError({
+          code: "unsupported-operation",
+          operation: "create-update-rollback",
+          detail: "the Agent desktop must be stopped before creating an update rollback point",
+        });
+      }
+      yield* removeUpdateSnapshots(id);
+      const created: string[] = [];
+      const machine = paths(id);
+      for (const path of [machine.disk, machine.nvram]) {
+        const result = yield* Effect.exit(
+          runChecked("create-update-rollback", QEMU_IMG_EXECUTABLE, [
+            "snapshot",
+            "-c",
+            UPDATE_ROLLBACK_SNAPSHOT,
+            path,
+          ]),
+        );
+        if (result._tag === "Failure") {
+          yield* Effect.forEach(
+            created,
+            (createdPath) =>
+              runProcess(QEMU_IMG_EXECUTABLE, [
+                "snapshot",
+                "-d",
+                UPDATE_ROLLBACK_SNAPSHOT,
+                createdPath,
+              ]).pipe(Effect.ignore),
+            { discard: true },
+          );
+          return yield* Effect.failCause(result.cause);
+        }
+        created.push(path);
+      }
+    }).pipe(Effect.uninterruptible, Effect.mapError(mapFailure("create-update-rollback")));
+
+  const restoreUpdateRollback: QemuAgentDesktopShape["restoreUpdateRollback"] = (id) =>
+    Effect.gen(function* () {
+      if (yield* isRunning(id)) yield* stop(id);
+      const machine = paths(id);
+      yield* Effect.forEach(
+        [machine.disk, machine.nvram],
+        (path) =>
+          runChecked("restore-update-rollback", QEMU_IMG_EXECUTABLE, [
+            "snapshot",
+            "-a",
+            UPDATE_ROLLBACK_SNAPSHOT,
+            path,
+          ]),
+        { discard: true },
+      );
+      yield* removeUpdateSnapshots(id);
+    }).pipe(Effect.uninterruptible, Effect.mapError(mapFailure("restore-update-rollback")));
+
+  const discardUpdateRollback: QemuAgentDesktopShape["discardUpdateRollback"] = (id) =>
+    removeUpdateSnapshots(id).pipe(Effect.mapError(mapFailure("discard-update-rollback")));
 
   const remove: QemuAgentDesktopShape["remove"] = (id) =>
     Effect.gen(function* () {
@@ -2076,6 +2356,9 @@ export const make = Effect.gen(function* () {
   return QemuAgentDesktop.of({
     probe,
     setup,
+    currentBaseImage,
+    refreshBaseImage,
+    pruneBaseImages,
     paths,
     create,
     clone,
@@ -2084,6 +2367,9 @@ export const make = Effect.gen(function* () {
     stop,
     park,
     checkpoint,
+    createUpdateRollback,
+    restoreUpdateRollback,
+    discardUpdateRollback,
     remove,
     capture,
     sendInput,

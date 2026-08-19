@@ -15,6 +15,7 @@ const MAX_AGENT_DESKTOP_TRANSFER_DETAIL_BYTES = 1_024;
 export const AGENT_DESKTOP_OPERATIONS = [
   "agentDesktopList",
   "agentDesktopSetup",
+  "agentDesktopUpdate",
   "agentDesktopAcquire",
   "agentDesktopManage",
   "agentDesktopCommand",
@@ -192,6 +193,38 @@ export const AgentDesktopGraphics = Schema.Struct({
 });
 export type AgentDesktopGraphics = typeof AgentDesktopGraphics.Type;
 
+/** Reports one base-image or desktop system-maintenance lifecycle. */
+export const AgentDesktopMaintenance = Schema.Struct({
+  status: Schema.Literals([
+    "current",
+    "due",
+    "queued",
+    "preparing",
+    "installing",
+    "restarting",
+    "verifying",
+    "rolling-back",
+    "failed",
+  ]),
+  targetProfileVersion: TrimmedNonEmptyString.check(Schema.isMaxLength(128)),
+  appliedProfileVersion: Schema.NullOr(TrimmedNonEmptyString.check(Schema.isMaxLength(128))),
+  lastUpdatedAt: Schema.NullOr(Schema.String),
+  startedAt: Schema.NullOr(Schema.String),
+  completedAt: Schema.NullOr(Schema.String),
+  detail: Schema.optional(Schema.String.check(Schema.isMaxLength(512))),
+});
+export type AgentDesktopMaintenance = typeof AgentDesktopMaintenance.Type;
+
+/** Reports the immutable base generation selected for future desktops. */
+export const AgentDesktopBaseImage = Schema.Struct({
+  managed: Schema.Boolean,
+  generation: Schema.NullOr(TrimmedNonEmptyString.check(Schema.isMaxLength(128))),
+  sourceRelease: Schema.NullOr(TrimmedNonEmptyString.check(Schema.isMaxLength(128))),
+  builtAt: Schema.NullOr(Schema.String),
+  maintenance: AgentDesktopMaintenance,
+});
+export type AgentDesktopBaseImage = typeof AgentDesktopBaseImage.Type;
+
 /** Summarizes one independently managed agent desktop. */
 export const AgentDesktop = Schema.Struct({
   id: AgentDesktopId,
@@ -208,6 +241,8 @@ export const AgentDesktop = Schema.Struct({
   lastActiveAt: Schema.String,
   recoverableUntil: Schema.NullOr(Schema.String),
   retention: Schema.optional(Schema.Literals(["automatic", "preserve"])),
+  baseGeneration: Schema.NullOr(TrimmedNonEmptyString.check(Schema.isMaxLength(128))),
+  maintenance: AgentDesktopMaintenance,
   graphics: AgentDesktopGraphics,
   resources: Schema.optional(AgentDesktopResourceTelemetry),
   detail: Schema.optional(Schema.String.check(Schema.isMaxLength(512))),
@@ -265,6 +300,7 @@ export type AgentDesktopRequirement = typeof AgentDesktopRequirement.Type;
 /** Reports Agent desktop availability and every retained desktop. */
 export const AgentDesktopList = Schema.Struct({
   available: Schema.Boolean,
+  baseImage: AgentDesktopBaseImage,
   desktops: Schema.Array(AgentDesktop),
   requirements: Schema.Array(AgentDesktopRequirement).check(Schema.isMaxLength(16)),
   detail: Schema.optional(Schema.String.check(Schema.isMaxLength(512))),
@@ -283,6 +319,27 @@ export const AgentDesktopSetupResult = Schema.Struct({
   detail: Schema.optional(Schema.String.check(Schema.isMaxLength(512))),
 });
 export type AgentDesktopSetupResult = typeof AgentDesktopSetupResult.Type;
+
+/** Selects the environment base or one owned desktop for system maintenance. */
+export const AgentDesktopUpdateTarget = Schema.Union([
+  Schema.Struct({ kind: Schema.Literal("base-image") }),
+  Schema.Struct({ kind: Schema.Literal("desktop"), desktopId: AgentDesktopId }),
+]);
+export type AgentDesktopUpdateTarget = typeof AgentDesktopUpdateTarget.Type;
+
+/** Starts one asynchronous Agent desktop maintenance job. */
+export const AgentDesktopUpdateInput = Schema.Struct({
+  target: AgentDesktopUpdateTarget,
+});
+export type AgentDesktopUpdateInput = typeof AgentDesktopUpdateInput.Type;
+
+/** Confirms whether one maintenance job was newly queued or already active. */
+export const AgentDesktopUpdateResult = Schema.Struct({
+  accepted: Schema.Boolean,
+  target: AgentDesktopUpdateTarget,
+  maintenance: AgentDesktopMaintenance,
+});
+export type AgentDesktopUpdateResult = typeof AgentDesktopUpdateResult.Type;
 
 /** Expresses task requirements without exposing hypervisor resource knobs. */
 export const AgentDesktopRequirements = Schema.Struct({
