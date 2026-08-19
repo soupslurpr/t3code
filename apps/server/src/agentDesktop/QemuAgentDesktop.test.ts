@@ -51,6 +51,7 @@ describe("QemuAgentDesktop", () => {
     assert(command.includes("q35,accel=kvm"));
     assert(command.includes(`unix:${paths.qmpSocket},server=on,wait=off`));
     assert(command.includes(`socket,path=${paths.qgaSocket},server=on,wait=off,id=qga0`));
+    assert(command.includes(`unix:${paths.vncSocket},share=force-shared`));
     assert(!command.some((value) => value.includes("param=--stats")));
     assert(command.some((value) => value.includes(`param=${paths.passtControlSocket}`)));
     assert(command.some((value) => value.includes("id=t3-nvram")));
@@ -181,6 +182,7 @@ describe("QemuAgentDesktop", () => {
       graphicsBackend: "compatibility-vga",
     });
     assert(command.includes("VGA,vgamem_mb=64"));
+    assert(command.includes(`unix:${paths.vncSocket},share=force-shared`));
   });
 
   it("builds an accelerated headless display with private framebuffer capture", () => {

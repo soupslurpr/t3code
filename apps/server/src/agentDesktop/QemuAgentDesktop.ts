@@ -518,6 +518,8 @@ export function buildQemuCommand(input: {
       : [
           "-display",
           "none",
+          "-vnc",
+          `unix:${input.paths.vncSocket},share=force-shared`,
           "-device",
           input.graphicsBackend === "compatibility-vga" ? "VGA,vgamem_mb=64" : "virtio-vga",
         ];
