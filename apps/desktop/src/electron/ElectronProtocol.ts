@@ -1,3 +1,4 @@
+import { ASSET_ROUTE_PREFIX, DESKTOP_ASSET_PROXY_PATH } from "@t3tools/contracts";
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
@@ -213,6 +214,58 @@ const proxyRequest = Effect.fn("desktop.protocol.proxyRequest")(function* (
   return withContentSecurityPolicy(response, contentSecurityPolicy);
 });
 
+const REMOTE_ASSET_REQUEST_HEADERS = [
+  "accept",
+  "cache-control",
+  "if-modified-since",
+  "if-none-match",
+  "if-range",
+  "pragma",
+  "range",
+] as const;
+
+function remoteAssetTarget(requestUrl: URL): URL | null {
+  const targetValue = requestUrl.searchParams.get("url");
+  if (targetValue === null) return null;
+  try {
+    const target = new URL(targetValue);
+    if (
+      (target.protocol !== "http:" && target.protocol !== "https:") ||
+      target.username.length > 0 ||
+      target.password.length > 0 ||
+      !target.pathname.startsWith(`${ASSET_ROUTE_PREFIX}/`)
+    ) {
+      return null;
+    }
+    return target;
+  } catch {
+    return null;
+  }
+}
+
+const proxyRemoteAsset = Effect.fn("desktop.protocol.proxyRemoteAsset")(function* (
+  request: Request,
+  requestUrl: URL,
+  contentSecurityPolicy: string,
+) {
+  if (request.method !== "GET" && request.method !== "HEAD") {
+    return new Response(null, { status: 405, headers: { Allow: "GET, HEAD" } });
+  }
+  const target = remoteAssetTarget(requestUrl);
+  if (target === null) return new Response(null, { status: 404 });
+  const headers = new Headers();
+  for (const name of REMOTE_ASSET_REQUEST_HEADERS) {
+    const value = request.headers.get(name);
+    if (value !== null) headers.set(name, value);
+  }
+  const response = yield* fetchWithTransientRetry(target.toString(), {
+    method: request.method,
+    headers,
+    credentials: "omit",
+  });
+  return withContentSecurityPolicy(response, contentSecurityPolicy);
+});
+
 // Serves the packaged web client without a backend: files resolve within the
 // asset directory, and any other path falls back to index.html so the SPA
 // router handles it, except for asset-shaped misses (`/missing.js`) which 404.
@@ -270,6 +323,11 @@ export const make = Effect.gen(function* () {
         Effect.try({
           try: () => {
             Electron.protocol.handle(input.scheme, async (request) => {
+              const requestUrl = new URL(request.url);
+              if (requestUrl.host !== DESKTOP_HOST) return new Response(null, { status: 404 });
+              if (requestUrl.pathname === DESKTOP_ASSET_PROXY_PATH) {
+                return runPromise(proxyRemoteAsset(request, requestUrl, contentSecurityPolicy));
+              }
               if ("assetDirectory" in input) {
                 return withContentSecurityPolicy(
                   await runPromise(serveDesktopAsset(request, input.assetDirectory)),
