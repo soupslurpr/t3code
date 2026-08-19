@@ -5,6 +5,12 @@ import { ProjectFaviconPath } from "./orchestration.ts";
 
 const ASSET_PATH_MAX_LENGTH = 1024;
 
+/** Identifies signed environment assets on every T3 HTTP server. */
+export const ASSET_ROUTE_PREFIX = "/api/assets";
+
+/** Identifies the Electron-only same-origin route for remote signed assets. */
+export const DESKTOP_ASSET_PROXY_PATH = "/.t3/assets/proxy";
+
 export const AssetResource = Schema.Union([
   Schema.TaggedStruct("workspace-file", {
     threadId: ThreadId,
