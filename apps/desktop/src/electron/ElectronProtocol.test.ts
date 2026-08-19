@@ -117,6 +117,89 @@ describe("ElectronProtocol", () => {
     }).pipe(Effect.provide(ElectronProtocol.layer)),
   );
 
+  it.effect("streams remote signed assets through the secure renderer origin", () =>
+    Effect.gen(function* () {
+      let handler: ((request: Request) => Promise<Response>) | undefined;
+      handleMock.mockImplementation((_scheme, nextHandler) => {
+        handler = nextHandler;
+      });
+      netFetchMock.mockResolvedValue(
+        new Response("audio", {
+          status: 206,
+          headers: {
+            "accept-ranges": "bytes",
+            "content-range": "bytes 0-4/5",
+            "content-type": "audio/wav",
+          },
+        }),
+      );
+
+      const response = yield* Effect.scoped(
+        Effect.gen(function* () {
+          const protocol = yield* ElectronProtocol.ElectronProtocol;
+          yield* protocol.registerDesktopProtocol({
+            scheme: "t3code",
+            targetOrigin: new URL("http://127.0.0.1:3773/"),
+            backendOrigin: new URL("http://127.0.0.1:3773/"),
+            clerkFrontendApiHostname: undefined,
+          });
+          const target = encodeURIComponent(
+            "http://192.168.1.56:3773/api/assets/signed-token/preview.wav",
+          );
+          return yield* Effect.promise(() =>
+            handler!(
+              new Request(`t3code://app/.t3/assets/proxy?url=${target}`, {
+                headers: { accept: "audio/*", authorization: "secret", range: "bytes=0-4" },
+              }),
+            ),
+          );
+        }),
+      );
+
+      assert.equal(response.status, 206);
+      assert.equal(response.headers.get("content-range"), "bytes 0-4/5");
+      assert.equal(yield* Effect.promise(() => response.text()), "audio");
+      assert.equal(
+        netFetchMock.mock.calls[0]?.[0],
+        "http://192.168.1.56:3773/api/assets/signed-token/preview.wav",
+      );
+      const init = netFetchMock.mock.calls[0]?.[1];
+      assert.equal(init?.credentials, "omit");
+      const forwardedHeaders = new Headers(init?.headers);
+      assert.equal(forwardedHeaders.get("accept"), "audio/*");
+      assert.equal(forwardedHeaders.get("range"), "bytes=0-4");
+      assert.isNull(forwardedHeaders.get("authorization"));
+    }).pipe(Effect.provide(ElectronProtocol.layer)),
+  );
+
+  it.effect("rejects non-asset targets on the remote asset route", () =>
+    Effect.gen(function* () {
+      let handler: ((request: Request) => Promise<Response>) | undefined;
+      handleMock.mockImplementation((_scheme, nextHandler) => {
+        handler = nextHandler;
+      });
+
+      const response = yield* Effect.scoped(
+        Effect.gen(function* () {
+          const protocol = yield* ElectronProtocol.ElectronProtocol;
+          yield* protocol.registerDesktopProtocol({
+            scheme: "t3code",
+            targetOrigin: new URL("http://127.0.0.1:3773/"),
+            backendOrigin: new URL("http://127.0.0.1:3773/"),
+            clerkFrontendApiHostname: undefined,
+          });
+          const target = encodeURIComponent("http://127.0.0.1:22/admin");
+          return yield* Effect.promise(() =>
+            handler!(new Request(`t3code://app/.t3/assets/proxy?url=${target}`)),
+          );
+        }),
+      );
+
+      assert.equal(response.status, 404);
+      assert.equal(netFetchMock.mock.calls.length, 0);
+    }).pipe(Effect.provide(ElectronProtocol.layer)),
+  );
+
   it.effect("retries transient renderer target failures", () =>
     Effect.gen(function* () {
       let handler: ((request: Request) => Promise<Response>) | undefined;

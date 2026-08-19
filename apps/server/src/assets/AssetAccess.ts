@@ -1,5 +1,6 @@
 import type { AssetResource } from "@t3tools/contracts";
 import {
+  ASSET_ROUTE_PREFIX,
   AssetAttachmentNotFoundError,
   AssetPreviewTypeValidationError,
   AssetProjectFaviconInspectionError,
@@ -53,7 +54,7 @@ import * as WorkspacePaths from "../workspace/WorkspacePaths.ts";
 import * as NativeAppIconResolver from "./NativeAppIconResolver.ts";
 import { openMediaFile, readMediaFileHeader, type OpenMediaFile } from "./MediaFile.ts";
 
-export const ASSET_ROUTE_PREFIX = "/api/assets";
+export { ASSET_ROUTE_PREFIX };
 
 const SIGNING_SECRET_NAME = "asset-access-signing-key";
 const ASSET_TOKEN_TTL_MS = 60 * 60 * 1000;
