@@ -340,7 +340,7 @@ export const makeCodexImageConditionEvaluator = Effect.fn("makeCodexImageConditi
         .request("turn/interrupt", { threadId: lane.threadId, turnId })
         .pipe(Effect.timeoutOption(CODEX_EVALUATOR_CLEANUP_TIMEOUT_MS), Effect.ignore);
       yield* lane.client
-        .request("thread/rollback", { threadId: lane.threadId, numTurns: 1 })
+        .request("thread/revert", { beforeTurnId: turnId, threadId: lane.threadId })
         .pipe(Effect.timeoutOption(CODEX_EVALUATOR_CLEANUP_TIMEOUT_MS), Effect.ignore);
       yield* closeLane(lane);
     });
@@ -381,11 +381,11 @@ export const makeCodexImageConditionEvaluator = Effect.fn("makeCodexImageConditi
           ),
         );
         yield* timeout(
-          lane.client.request("thread/rollback", {
+          lane.client.request("thread/revert", {
+            beforeTurnId: turn.turn.id,
             threadId: lane.threadId,
-            numTurns: 1,
           }),
-          "Codex evaluator rollback timed out.",
+          "Codex evaluator revert timed out.",
         ).pipe(
           Effect.mapError(mapEvaluatorError("Failed to reset the Codex evaluator thread.")),
           Effect.onInterrupt(() => closeLane(lane)),
