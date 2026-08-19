@@ -171,19 +171,13 @@ export interface QemuAgentDesktopPaths {
 export type QemuDisplayDevice = "virtio-vga" | "VGA";
 export type QemuGraphicsBackend = "compatibility-vga" | "virtio-gpu-2d" | "virgl";
 
-export type QemuAgentDesktopCapture =
-  | {
-      readonly kind: "png";
-      readonly path: string;
-      readonly data: Uint8Array;
-    }
-  | {
-      readonly kind: "bitmap";
-      readonly path: string;
-      readonly data: Uint8Array;
-      readonly width: number;
-      readonly height: number;
-    };
+export interface QemuAgentDesktopCapture {
+  readonly kind: "bitmap";
+  readonly path: string;
+  readonly data: Uint8Array;
+  readonly width: number;
+  readonly height: number;
+}
 
 export interface QemuAgentDesktopDiskUsage {
   readonly allocatedBytes: number;
@@ -574,6 +568,8 @@ export function buildQemuCommand(input: {
       : [
           "-display",
           "none",
+          "-vnc",
+          `unix:${input.paths.vncSocket},share=force-shared`,
           "-device",
           input.graphicsBackend === "compatibility-vga" ? "VGA,vgamem_mb=64" : "virtio-vga",
         ];
@@ -1719,22 +1715,14 @@ export const make = Effect.gen(function* () {
   const capture: QemuAgentDesktopShape["capture"] = (id) =>
     Effect.gen(function* () {
       const machine = paths(id);
-      if (yield* fileSystem.exists(machine.vncSocket)) {
-        const frame = yield* QemuVnc.captureFrame(machine.vncSocket);
-        return {
-          kind: "bitmap",
-          path: machine.vncSocket,
-          data: frame.data,
-          width: frame.width,
-          height: frame.height,
-        } as const;
-      }
-      const captureId = yield* Ref.getAndUpdate(nextCaptureId, (value) => value + 1);
-      const capturePath = environment.path.join(machine.captureDirectory, `frame-${captureId}.png`);
-      yield* qmp(id, "screendump", { filename: capturePath, format: "png" });
-      const data = yield* fileSystem.readFile(capturePath);
-      yield* fileSystem.remove(capturePath, { force: true }).pipe(Effect.ignore);
-      return { kind: "png", path: capturePath, data } as const;
+      const frame = yield* QemuVnc.captureFrame(machine.vncSocket);
+      return {
+        kind: "bitmap",
+        path: machine.vncSocket,
+        data: frame.data,
+        width: frame.width,
+        height: frame.height,
+      } as const;
     }).pipe(Effect.mapError(mapFailure("capture", "guest-disconnected")));
 
   const sendInput: QemuAgentDesktopShape["sendInput"] = (id, events) =>
