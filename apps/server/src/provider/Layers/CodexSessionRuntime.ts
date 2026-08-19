@@ -52,6 +52,7 @@ const BENIGN_ERROR_LOG_SNIPPETS = [
   "state db record_discrepancy: find_thread_path_by_id_str_in_subdir, falling_back",
 ];
 const CODEX_APP_SERVER_FORCE_KILL_AFTER = "2 seconds" as const;
+const CODEX_THREAD_TURN_PAGE_SIZE = 100;
 const RECOVERABLE_THREAD_RESUME_ERROR_SNIPPETS = [
   "not found",
   "missing thread",
@@ -92,7 +93,8 @@ export type CodexResumeCursor = typeof CodexResumeCursorSchema.Type;
 type CodexServiceTier = NonNullable<EffectCodexSchema.V2ThreadStartParams["serviceTier"]>;
 type CodexThreadItem =
   | EffectCodexSchema.V2ThreadReadResponse["thread"]["turns"][number]["items"][number]
-  | EffectCodexSchema.V2ThreadRollbackResponse["thread"]["turns"][number]["items"][number];
+  | EffectCodexSchema.V2ThreadRollbackResponse["thread"]["turns"][number]["items"][number]
+  | EffectCodexSchema.V2ThreadTurnsListResponse["data"][number]["items"][number];
 
 export interface CodexSessionRuntimeOptions {
   readonly threadId: ThreadId;
@@ -160,7 +162,8 @@ export type CodexSessionRuntimeError =
   | CodexSessionRuntimePendingApprovalNotFoundError
   | CodexSessionRuntimePendingUserInputNotFoundError
   | CodexSessionRuntimeInvalidUserInputAnswersError
-  | CodexSessionRuntimeThreadIdMissingError;
+  | CodexSessionRuntimeThreadIdMissingError
+  | CodexSessionRuntimeRollbackRangeError;
 
 export class CodexSessionRuntimePendingApprovalNotFoundError extends Schema.TaggedErrorClass<CodexSessionRuntimePendingApprovalNotFoundError>()(
   "CodexSessionRuntimePendingApprovalNotFoundError",
@@ -203,6 +206,19 @@ export class CodexSessionRuntimeThreadIdMissingError extends Schema.TaggedErrorC
 ) {
   override get message(): string {
     return `Codex session is missing a provider thread id for ${this.threadId}`;
+  }
+}
+
+export class CodexSessionRuntimeRollbackRangeError extends Schema.TaggedErrorClass<CodexSessionRuntimeRollbackRangeError>()(
+  "CodexSessionRuntimeRollbackRangeError",
+  {
+    availableTurns: Schema.Int,
+    requestedTurns: Schema.Int,
+    threadId: Schema.String,
+  },
+) {
+  override get message(): string {
+    return `Cannot roll back ${this.requestedTurns} turns from Codex thread '${this.threadId}'; only ${this.availableTurns} are available.`;
   }
 }
 
@@ -299,12 +315,12 @@ function runtimeModeToThreadConfig(input: RuntimeMode): {
   }
 }
 
-function buildThreadStartParams(input: {
+function buildThreadConfigParams(input: {
   readonly cwd: string;
   readonly runtimeMode: RuntimeMode;
   readonly model: string | undefined;
   readonly serviceTier: CodexServiceTier | undefined;
-}): EffectCodexSchema.V2ThreadStartParams {
+}): Omit<EffectCodexSchema.V2ThreadStartParams, "historyMode"> {
   const config = runtimeModeToThreadConfig(input.runtimeMode);
   return {
     cwd: input.cwd,
@@ -476,12 +492,16 @@ export const openCodexThread = (input: {
   readonly resumeThreadId: string | undefined;
 }): Effect.Effect<CodexThreadOpenResponse, CodexErrors.CodexAppServerError> => {
   const resumeThreadId = input.resumeThreadId;
-  const startParams = buildThreadStartParams({
+  const threadConfigParams = buildThreadConfigParams({
     cwd: input.cwd,
     runtimeMode: input.runtimeMode,
     model: input.requestedModel,
     serviceTier: input.serviceTier,
   });
+  const startParams = {
+    ...threadConfigParams,
+    historyMode: "paginated",
+  } satisfies EffectCodexSchema.V2ThreadStartParams;
 
   if (resumeThreadId === undefined) {
     return input.client.request("thread/start", startParams);
@@ -491,7 +511,7 @@ export const openCodexThread = (input: {
     .request("thread/resume", {
       threadId: resumeThreadId,
       excludeTurns: true,
-      ...startParams,
+      ...threadConfigParams,
     })
     .pipe(
       Effect.catchIf(isRecoverableThreadResumeError, (error) =>
@@ -882,7 +902,7 @@ function updateSession(
   });
 }
 
-function parseThreadSnapshot(
+function parseLegacyThreadSnapshot(
   response: EffectCodexSchema.V2ThreadReadResponse | EffectCodexSchema.V2ThreadRollbackResponse,
 ): CodexThreadSnapshot {
   return {
@@ -893,6 +913,113 @@ function parseThreadSnapshot(
     })),
   };
 }
+
+type CodexThreadHistoryMethod =
+  | "thread/read"
+  | "thread/revert"
+  | "thread/rollback"
+  | "thread/turns/list";
+
+interface CodexThreadHistoryClient {
+  readonly request: <M extends CodexThreadHistoryMethod>(
+    method: M,
+    payload: CodexRpc.ClientRequestParamsByMethod[M],
+  ) => Effect.Effect<CodexRpc.ClientRequestResponsesByMethod[M], CodexErrors.CodexAppServerError>;
+}
+
+const readPaginatedThreadSnapshot = Effect.fn("readPaginatedThreadSnapshot")(function* (
+  client: CodexThreadHistoryClient,
+  threadId: string,
+) {
+  const turns: CodexThreadTurnSnapshot[] = [];
+  let cursor: string | undefined;
+  do {
+    const page = yield* client.request("thread/turns/list", {
+      threadId,
+      ...(cursor ? { cursor } : {}),
+      itemsView: "full",
+      limit: CODEX_THREAD_TURN_PAGE_SIZE,
+      sortDirection: "asc",
+    });
+    turns.push(
+      ...page.data.map((turn) => ({
+        id: TurnId.make(turn.id),
+        items: turn.items,
+      })),
+    );
+    cursor = page.nextCursor ?? undefined;
+  } while (cursor !== undefined);
+  return { threadId, turns } satisfies CodexThreadSnapshot;
+});
+
+const findPaginatedRollbackBoundary = Effect.fn("findPaginatedRollbackBoundary")(function* (
+  client: CodexThreadHistoryClient,
+  threadId: string,
+  requestedTurns: number,
+) {
+  let availableTurns = 0;
+  let cursor: string | undefined;
+  do {
+    const remainingTurns = requestedTurns - availableTurns;
+    const page = yield* client.request("thread/turns/list", {
+      threadId,
+      ...(cursor ? { cursor } : {}),
+      itemsView: "notLoaded",
+      limit: Math.min(CODEX_THREAD_TURN_PAGE_SIZE, remainingTurns),
+      sortDirection: "desc",
+    });
+    const boundary = page.data[remainingTurns - 1];
+    if (boundary !== undefined) return boundary.id;
+    availableTurns += page.data.length;
+    cursor = page.nextCursor ?? undefined;
+  } while (cursor !== undefined);
+
+  return yield* new CodexSessionRuntimeRollbackRangeError({
+    availableTurns,
+    requestedTurns,
+    threadId,
+  });
+});
+
+/** Reads one Codex thread using its persisted history contract. */
+export const readCodexThreadSnapshot = Effect.fn("readCodexThreadSnapshot")(function* (
+  client: CodexThreadHistoryClient,
+  threadId: string,
+) {
+  const response = yield* client.request("thread/read", {
+    threadId,
+    includeTurns: false,
+  });
+  if (response.thread.historyMode === "paginated") {
+    return yield* readPaginatedThreadSnapshot(client, threadId);
+  }
+  return parseLegacyThreadSnapshot(
+    yield* client.request("thread/read", { threadId, includeTurns: true }),
+  );
+});
+
+/** Removes the newest Codex turns using the thread's persisted history contract. */
+export const rollbackCodexThreadSnapshot = Effect.fn("rollbackCodexThreadSnapshot")(function* (
+  client: CodexThreadHistoryClient,
+  threadId: string,
+  numTurns: number,
+) {
+  const readResponse = yield* client.request("thread/read", {
+    threadId,
+    includeTurns: false,
+  });
+  if (readResponse.thread.historyMode !== "paginated") {
+    const rollbackResponse = yield* client.request("thread/rollback", {
+      threadId,
+      numTurns,
+    });
+    return parseLegacyThreadSnapshot(rollbackResponse);
+  }
+
+  const beforeTurnId = yield* findPaginatedRollbackBoundary(client, threadId, numTurns);
+  yield* client.request("thread/revert", { beforeTurnId, threadId });
+  return yield* readPaginatedThreadSnapshot(client, threadId);
+});
 
 export const makeCodexSessionRuntime = (
   options: CodexSessionRuntimeOptions,
@@ -1903,24 +2030,17 @@ export const makeCodexSessionRuntime = (
         }),
       readThread: Effect.gen(function* () {
         const providerThreadId = yield* readProviderThreadId;
-        const response = yield* client.request("thread/read", {
-          threadId: providerThreadId,
-          includeTurns: true,
-        });
-        return parseThreadSnapshot(response);
+        return yield* readCodexThreadSnapshot(client, providerThreadId);
       }),
       rollbackThread: (numTurns) =>
         Effect.gen(function* () {
           const providerThreadId = yield* readProviderThreadId;
-          const response = yield* client.request("thread/rollback", {
-            threadId: providerThreadId,
-            numTurns,
-          });
+          const snapshot = yield* rollbackCodexThreadSnapshot(client, providerThreadId, numTurns);
           yield* updateSession(sessionRef, {
             status: "ready",
             activeTurnId: undefined,
           });
-          return parseThreadSnapshot(response);
+          return snapshot;
         }),
       respondToRequest: (requestId, decision) =>
         Effect.gen(function* () {
