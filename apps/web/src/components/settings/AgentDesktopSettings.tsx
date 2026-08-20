@@ -96,9 +96,15 @@ interface ViewerDragStart {
   readonly clientY: number;
 }
 
+type AgentDesktopView = Omit<AgentDesktop, "baseGeneration" | "maintenance"> & {
+  readonly baseGeneration?: AgentDesktop["baseGeneration"];
+  readonly maintenance?: AgentDesktop["maintenance"];
+};
+
 interface EnvironmentAvailability {
   readonly available: boolean;
   readonly baseImage?: AgentDesktopBaseImage;
+  readonly maintenanceSupported: boolean;
   readonly requirements: ReadonlyArray<AgentDesktopRequirement>;
   readonly detail?: string;
 }
@@ -300,7 +306,7 @@ function DesktopViewer({
   onRelease,
   onAction,
 }: {
-  desktop: AgentDesktop;
+  desktop: AgentDesktopView;
   observation: ComputerAutomationSnapshot | null;
   agentObservation: ComputerObservation | null;
   controlling: boolean;
@@ -851,7 +857,7 @@ export function AgentDesktopSettings() {
   const invoke = useAtomCommand(previewEnvironment.invokeAgentDesktopHuman, {
     reportFailure: false,
   });
-  const [desktops, setDesktops] = useState<ReadonlyArray<AgentDesktop>>([]);
+  const [desktops, setDesktops] = useState<ReadonlyArray<AgentDesktopView>>([]);
   const [availability, setAvailability] = useState<
     ReadonlyMap<EnvironmentId, EnvironmentAvailability>
   >(new Map());
@@ -861,10 +867,12 @@ export function AgentDesktopSettings() {
   const [openingViewerId, setOpeningViewerId] = useState<AgentDesktopId | null>(null);
   const [busyEnvironmentId, setBusyEnvironmentId] = useState<EnvironmentId | null>(null);
   const [setupEnvironmentId, setSetupEnvironmentId] = useState<EnvironmentId | null>(null);
-  const [permanentDeleteDesktop, setPermanentDeleteDesktop] = useState<AgentDesktop | null>(null);
+  const [permanentDeleteDesktop, setPermanentDeleteDesktop] = useState<AgentDesktopView | null>(
+    null,
+  );
   const [viewerError, setViewerError] = useState<string | null>(null);
   const [viewer, setViewer] = useState<{
-    readonly desktop: AgentDesktop;
+    readonly desktop: AgentDesktopView;
     readonly observation: ComputerAutomationSnapshot;
     readonly agentObservation: ComputerObservation | null;
     readonly controlling: boolean;
@@ -902,8 +910,8 @@ export function AgentDesktopSettings() {
           try {
             const value = await run<{
               readonly available: boolean;
-              readonly baseImage: AgentDesktopBaseImage;
-              readonly desktops: ReadonlyArray<AgentDesktop>;
+              readonly baseImage?: AgentDesktopBaseImage;
+              readonly desktops: ReadonlyArray<AgentDesktopView>;
               readonly requirements: ReadonlyArray<AgentDesktopRequirement>;
               readonly detail?: string;
             }>(environment.environmentId, {
@@ -916,20 +924,27 @@ export function AgentDesktopSettings() {
           }
         }),
       );
-      const nextDesktops: AgentDesktop[] = [];
+      const nextDesktops: AgentDesktopView[] = [];
       const nextAvailability = new Map<EnvironmentId, EnvironmentAvailability>();
       let firstError: string | null = null;
       for (const result of results) {
         if ("value" in result) {
           nextAvailability.set(result.environmentId, {
             available: result.value.available,
-            baseImage: result.value.baseImage,
+            maintenanceSupported:
+              result.value.baseImage !== undefined &&
+              result.value.desktops.every((desktop) => desktop.maintenance !== undefined),
+            ...(result.value.baseImage === undefined ? {} : { baseImage: result.value.baseImage }),
             requirements: result.value.requirements,
             ...(result.value.detail === undefined ? {} : { detail: result.value.detail }),
           });
           nextDesktops.push(...result.value.desktops);
         } else {
-          nextAvailability.set(result.environmentId, { available: false, requirements: [] });
+          nextAvailability.set(result.environmentId, {
+            available: false,
+            maintenanceSupported: false,
+            requirements: [],
+          });
           firstError ??= failureMessage(result.cause);
         }
       }
@@ -947,7 +962,11 @@ export function AgentDesktopSettings() {
   }, [refresh]);
 
   const maintenanceRunning =
-    desktops.some((desktop) => ACTIVE_MAINTENANCE_STATUSES.has(desktop.maintenance.status)) ||
+    desktops.some(
+      (desktop) =>
+        desktop.maintenance !== undefined &&
+        ACTIVE_MAINTENANCE_STATUSES.has(desktop.maintenance.status),
+    ) ||
     Array.from(availability.values()).some(
       (status) =>
         status.baseImage !== undefined &&
@@ -1012,7 +1031,7 @@ export function AgentDesktopSettings() {
   );
 
   const updateDesktop = useCallback(
-    async (desktop: AgentDesktop) => {
+    async (desktop: AgentDesktopView) => {
       setBusyDesktopId(desktop.id);
       setError(null);
       try {
@@ -1036,7 +1055,7 @@ export function AgentDesktopSettings() {
 
   const manage = useCallback(
     async (
-      desktop: AgentDesktop,
+      desktop: AgentDesktopView,
       operation: "resume" | "park" | "stop" | "delete" | "restore" | "delete-permanently",
     ) => {
       setBusyDesktopId(desktop.id);
@@ -1061,7 +1080,7 @@ export function AgentDesktopSettings() {
   );
 
   const openViewer = useCallback(
-    async (desktop: AgentDesktop) => {
+    async (desktop: AgentDesktopView) => {
       setBusyDesktopId(desktop.id);
       setOpeningViewerId(desktop.id);
       setError(null);
@@ -1288,6 +1307,7 @@ export function AgentDesktopSettings() {
   const environmentNotices = Array.from(availability).filter(
     ([, status]) =>
       !status.available ||
+      !status.maintenanceSupported ||
       status.detail !== undefined ||
       (status.baseImage !== undefined && status.baseImage.maintenance.status !== "current"),
   );
@@ -1341,16 +1361,20 @@ export function AgentDesktopSettings() {
           const baseMaintenance = status.baseImage?.maintenance;
           const canUpdateBase =
             status.available &&
+            status.maintenanceSupported &&
             status.baseImage?.managed === true &&
             (baseMaintenance?.status === "due" || baseMaintenance?.status === "failed");
-          const notice =
-            !status.available || baseMaintenance === undefined
-              ? (status.detail ?? "Agent desktop support is unavailable.")
-              : status.baseImage?.managed === false
-                ? "Base image is managed outside T3 Code."
-                : baseMaintenance.status === "current"
-                  ? (status.detail ?? "Agent desktop support is available.")
-                  : `Base image: ${maintenanceLabel(baseMaintenance.status)}${baseMaintenance.detail === undefined ? "" : ` · ${baseMaintenance.detail}`}`;
+          const notice = !status.available
+            ? (status.detail ?? "Agent desktop support is unavailable.")
+            : !status.maintenanceSupported
+              ? "Update this environment's T3 Code server to manage Agent desktop system updates."
+              : baseMaintenance === undefined
+                ? (status.detail ?? "Agent desktop system update status is unavailable.")
+                : status.baseImage?.managed === false
+                  ? "Base image is managed outside T3 Code."
+                  : baseMaintenance.status === "current"
+                    ? (status.detail ?? "Agent desktop support is available.")
+                    : `Base image: ${maintenanceLabel(baseMaintenance.status)}${baseMaintenance.detail === undefined ? "" : ` · ${baseMaintenance.detail}`}`;
           return (
             <Alert
               key={environmentId}
@@ -1407,7 +1431,9 @@ export function AgentDesktopSettings() {
               const openingViewer = openingViewerId === desktop.id;
               const resumable = desktop.state === "parked" || desktop.state === "stopped";
               const recoverable = desktop.state === "recoverable";
-              const maintenanceActive = ACTIVE_MAINTENANCE_STATUSES.has(desktop.maintenance.status);
+              const maintenance = desktop.maintenance;
+              const maintenanceActive =
+                maintenance !== undefined && ACTIVE_MAINTENANCE_STATUSES.has(maintenance.status);
               return (
                 <Card key={desktop.id}>
                   <CardHeader>
@@ -1422,17 +1448,17 @@ export function AgentDesktopSettings() {
                       {desktop.retention === "preserve" ? (
                         <Badge variant="secondary">preserved</Badge>
                       ) : null}
-                      {desktop.maintenance.status === "current" ? null : (
+                      {maintenance === undefined || maintenance.status === "current" ? null : (
                         <Badge
                           variant={
-                            desktop.maintenance.status === "failed"
+                            maintenance.status === "failed"
                               ? "error"
-                              : desktop.maintenance.status === "due"
+                              : maintenance.status === "due"
                                 ? "warning"
                                 : "secondary"
                           }
                         >
-                          {maintenanceLabel(desktop.maintenance.status)}
+                          {maintenanceLabel(maintenance.status)}
                         </Badge>
                       )}
                     </CardTitle>
@@ -1465,10 +1491,9 @@ export function AgentDesktopSettings() {
                       {desktop.detail === undefined ? null : (
                         <p className="mt-1">{desktop.detail}</p>
                       )}
-                      {desktop.maintenance.status === "current" ? null : (
+                      {maintenance === undefined || maintenance.status === "current" ? null : (
                         <p className="mt-1">
-                          {desktop.maintenance.detail ??
-                            `System maintenance is ${desktop.maintenance.status}.`}
+                          {maintenance.detail ?? `System maintenance is ${maintenance.status}.`}
                         </p>
                       )}
                     </div>
@@ -1497,8 +1522,7 @@ export function AgentDesktopSettings() {
                       ) : (
                         <>
                           {resumable &&
-                          (desktop.maintenance.status === "due" ||
-                            desktop.maintenance.status === "failed") ? (
+                          (maintenance?.status === "due" || maintenance?.status === "failed") ? (
                             <Button
                               size="xs"
                               variant="outline"
