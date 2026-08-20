@@ -1071,7 +1071,7 @@ describe("ProviderRuntimeIngestion", () => {
     expect(message?.streaming).toBe(false);
   });
 
-  it("preserves completed tool metadata on projected tool activities", async () => {
+  it("preserves completed tool identity while compacting projected output", async () => {
     const harness = await createHarness();
     const now = "2026-01-01T00:00:00.000Z";
 
@@ -1091,7 +1091,8 @@ describe("ProviderRuntimeIngestion", () => {
           toolCallId: "tool-read-1",
           kind: "read",
           rawOutput: {
-            content: 'import * as Effect from "effect/Effect"\n',
+            content:
+              'import * as Effect from "effect/Effect"\n' + "implementation detail\n".repeat(2_000),
           },
         },
       },
@@ -1124,7 +1125,8 @@ describe("ProviderRuntimeIngestion", () => {
     expect(payload?.detail).toBeUndefined();
     expect(data?.toolCallId).toBe("tool-read-1");
     expect(data?.kind).toBe("read");
-    expect(rawOutput?.content).toBe('import * as Effect from "effect/Effect"\n');
+    expect(rawOutput?.content).toBe('import * as Effect from "effect/Effect"');
+    expect(JSON.stringify(payload).length).toBeLessThan(300);
   });
 
   it("normalizes command execution activities to ran-command summaries", async () => {
