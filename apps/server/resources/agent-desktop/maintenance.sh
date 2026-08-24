@@ -27,6 +27,7 @@ fi
   gst-plugins-base-libs \
   gst-plugins-good \
   gstreamer \
+  ibus \
   jq \
   mesa \
   mesa-utils \
