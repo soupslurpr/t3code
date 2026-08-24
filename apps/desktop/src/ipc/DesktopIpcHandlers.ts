@@ -168,6 +168,7 @@ export const installDesktopIpcHandlers = Effect.fn("desktop.ipc.installHandlers"
   yield* ipc.handle(getCliCommandState);
   yield* ipc.handle(installCliCommand);
   yield* ipc.handle(uninstallCliCommand);
+  yield* ipc.handleSync(ComputerIpc.getUserDesktopHost);
   for (const previewMethod of PreviewIpc.methods) {
     yield* ipc.handle(previewMethod);
   }

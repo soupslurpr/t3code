@@ -12,12 +12,7 @@ import * as Ref from "effect/Ref";
 import * as Semaphore from "effect/Semaphore";
 
 import * as ComputerUse from "./ComputerUse.ts";
-
-const USER_DESKTOP = {
-  id: "user",
-  kind: "user",
-  label: "Your desktop",
-} as const;
+import * as UserDesktopIdentity from "./UserDesktopIdentity.ts";
 
 interface LeaseState {
   readonly viewers: ReadonlySet<string>;
@@ -43,6 +38,16 @@ export interface ComputerUseCoordinatorShape {
   readonly requestControl: (
     controllerId: string,
   ) => Effect.Effect<ComputerAutomationStatus, ComputerUse.ComputerUseError>;
+  readonly rememberView: (
+    controllerId: string,
+  ) => Effect.Effect<ComputerAutomationStatus, ComputerUse.ComputerUseError>;
+  readonly rememberControl: (
+    controllerId: string,
+  ) => Effect.Effect<ComputerAutomationStatus, ComputerUse.ComputerUseError>;
+  readonly forceRelease: (
+    controllerId: string,
+  ) => Effect.Effect<ComputerAutomationStatus, ComputerUse.ComputerUseError>;
+  readonly forceForget: (controllerId: string) => Effect.Effect<void, ComputerUse.ComputerUseError>;
   readonly requestAvailability: (
     controllerId: string,
   ) => Effect.Effect<ComputerAutomationStatus, ComputerUse.ComputerUseError>;
@@ -68,9 +73,15 @@ export class ComputerUseCoordinator extends Context.Service<
   ComputerUseCoordinatorShape
 >()("@t3tools/desktop/computer/ComputerUseCoordinator") {}
 
-/** Creates exclusive control and shared viewing leases for the user's desktop. */
+/** Creates exclusive control and shared viewing leases for one user desktop. */
 export const make = Effect.gen(function* () {
   const computer = yield* ComputerUse.ComputerUse;
+  const identity = yield* UserDesktopIdentity.UserDesktopIdentity;
+  const userDesktop = {
+    id: identity.registration.desktopId,
+    kind: "user" as const,
+    label: identity.registration.defaultLabel,
+  };
   const state = yield* Ref.make<LeaseState>({
     viewers: new Set(),
     controllerId: null,
@@ -97,7 +108,7 @@ export const make = Effect.gen(function* () {
               ? ("remembered" as const)
               : ("prompt-required" as const)
             : status.permission;
-    return { ...status, desktop: USER_DESKTOP, permission, rememberedAccess };
+    return { ...status, desktop: userDesktop, permission, rememberedAccess };
   });
 
   const requireView = Effect.fn("ComputerUseCoordinator.requireView")(function* (
@@ -157,6 +168,27 @@ export const make = Effect.gen(function* () {
     );
   });
 
+  const beginRemember = Effect.fn("ComputerUseCoordinator.beginRemember")(function* (
+    controllerId: string,
+    access: "view" | "control",
+  ) {
+    yield* withLeaseState(
+      Effect.gen(function* () {
+        const current = yield* Ref.get(state);
+        if (current.pending !== null || current.controllerId !== null || current.viewers.size > 0) {
+          return yield* new ComputerUse.ComputerUseLeaseError({
+            code: "desktop-busy",
+            cause: "another controller holds or is acquiring desktop access",
+          });
+        }
+        yield* Ref.set(state, {
+          ...current,
+          pending: { controllerId, access },
+        });
+      }),
+    );
+  });
+
   const removePendingAcquisition = (controllerId: string, access: "view" | "control") =>
     withLeaseState(
       Ref.update(state, (current) =>
@@ -198,7 +230,9 @@ export const make = Effect.gen(function* () {
     access: "view" | "control",
   ) {
     const shouldAcquire = yield* beginAcquisition(controllerId, access);
-    if (!shouldAcquire) return yield* presentStatus(controllerId);
+    if (!shouldAcquire) {
+      return yield* presentStatus(controllerId);
+    }
     const nativeAccess =
       access === "control"
         ? computer.requestControl
@@ -218,11 +252,28 @@ export const make = Effect.gen(function* () {
     return yield* presentStatus(controllerId);
   });
 
+  const remember = Effect.fn("ComputerUseCoordinator.remember")(function* (
+    controllerId: string,
+    access: "view" | "control",
+  ) {
+    yield* beginRemember(controllerId, access);
+    yield* (access === "control" ? computer.rememberControl : computer.rememberView).pipe(
+      Effect.ensuring(removePendingAcquisition(controllerId, access)),
+    );
+    return yield* presentStatus(controllerId);
+  });
+
   const requestView: ComputerUseCoordinatorShape["requestView"] = (controllerId) =>
     acquire(controllerId, "view");
 
   const requestControl: ComputerUseCoordinatorShape["requestControl"] = (controllerId) =>
     acquire(controllerId, "control");
+
+  const rememberView: ComputerUseCoordinatorShape["rememberView"] = (controllerId) =>
+    remember(controllerId, "view");
+
+  const rememberControl: ComputerUseCoordinatorShape["rememberControl"] = (controllerId) =>
+    remember(controllerId, "control");
 
   const requestAvailability: ComputerUseCoordinatorShape["requestAvailability"] = (controllerId) =>
     computer.requestAvailability.pipe(Effect.andThen(presentStatus(controllerId)));
@@ -272,6 +323,33 @@ export const make = Effect.gen(function* () {
       return yield* presentStatus(controllerId);
     });
 
+  const forceRelease: ComputerUseCoordinatorShape["forceRelease"] = (controllerId) =>
+    Effect.gen(function* () {
+      yield* withLeaseState(
+        Effect.gen(function* () {
+          yield* Ref.set(state, {
+            viewers: new Set<string>(),
+            controllerId: null,
+            pending: null,
+          });
+          yield* computer.release;
+        }),
+      );
+      return yield* presentStatus(controllerId);
+    });
+
+  const forceForget: ComputerUseCoordinatorShape["forceForget"] = () =>
+    withLeaseState(
+      Effect.gen(function* () {
+        yield* Ref.set(state, {
+          viewers: new Set<string>(),
+          controllerId: null,
+          pending: null,
+        });
+        yield* computer.forget;
+      }),
+    );
+
   const forget: ComputerUseCoordinatorShape["forget"] = (controllerId) =>
     withLeaseState(
       Effect.gen(function* () {
@@ -298,6 +376,10 @@ export const make = Effect.gen(function* () {
     status: presentStatus,
     requestView,
     requestControl,
+    rememberView,
+    rememberControl,
+    forceRelease,
+    forceForget,
     requestAvailability,
     releaseAvailability,
     snapshot,

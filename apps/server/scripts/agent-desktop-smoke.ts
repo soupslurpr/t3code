@@ -23,6 +23,7 @@ import * as QemuAgentDesktop from "../src/agentDesktop/QemuAgentDesktop.ts";
 import * as ComputerAutomationRouter from "../src/computer/ComputerAutomationRouter.ts";
 import * as ServerConfig from "../src/config.ts";
 import * as PreviewAutomationBroker from "../src/mcp/PreviewAutomationBroker.ts";
+import * as UserDesktops from "../src/persistence/UserDesktops.ts";
 
 const repositoryRoot = NodePath.resolve(import.meta.dirname, "../../..");
 const verifyUpdate = process.argv.slice(2).includes("--update");
@@ -60,7 +61,10 @@ const managerLayer = AgentDesktopManager.layer.pipe(
   Layer.provide(environmentLayer),
   Layer.provide(NodeServices.layer),
 );
-const brokerLayer = PreviewAutomationBroker.layer.pipe(Layer.provide(NodeServices.layer));
+const brokerLayer = PreviewAutomationBroker.layer.pipe(
+  Layer.provide(UserDesktops.layerMemory),
+  Layer.provide(NodeServices.layer),
+);
 const computerLayer = ComputerAutomationRouter.layer.pipe(
   Layer.provide(brokerLayer),
   Layer.provide(managerLayer),

@@ -76,6 +76,7 @@ import * as ComputerUse from "./computer/ComputerUse.ts";
 import * as ComputerUseCoordinator from "./computer/ComputerUseCoordinator.ts";
 import * as ComputerUseRouter from "./computer/ComputerUseRouter.ts";
 import * as GnomeRemoteDesktop from "./computer/GnomeRemoteDesktop.ts";
+import * as UserDesktopIdentity from "./computer/UserDesktopIdentity.ts";
 import * as DesktopWindow from "./window/DesktopWindow.ts";
 import * as DesktopWslBackend from "./wsl/DesktopWslBackend.ts";
 import * as DesktopWslEnvironment from "./wsl/DesktopWslEnvironment.ts";
@@ -157,6 +158,7 @@ const layerDesktopFoundation = Layer.mergeAll(
   DesktopAssets.layer,
   DesktopObservability.layer,
   DesktopRendererHistory.layer,
+  UserDesktopIdentity.layer,
 ).pipe(Layer.provideMerge(layerDesktopEnvironment));
 
 const layerDesktopSsh = layerDesktopSshEnvironment.pipe(
@@ -184,10 +186,12 @@ const layerDesktopComputerUse = ComputerUse.layer.pipe(
 
 const layerDesktopComputerUseCoordinator = ComputerUseCoordinator.layer.pipe(
   Layer.provideMerge(layerDesktopComputerUse),
+  Layer.provideMerge(layerDesktopFoundation),
 );
 
 const layerDesktopComputerUseRouter = ComputerUseRouter.layer.pipe(
   Layer.provideMerge(layerDesktopComputerUseCoordinator),
+  Layer.provideMerge(layerDesktopFoundation),
 );
 
 const layerDesktopWindow = DesktopWindow.layer.pipe(
