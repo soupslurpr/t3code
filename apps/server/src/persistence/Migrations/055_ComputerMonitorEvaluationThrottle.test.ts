@@ -18,7 +18,7 @@ const decodeMigratedCondition = Schema.decodeUnknownSync(
   ),
 );
 
-layer("051_ComputerMonitorEvaluationThrottle", (it) => {
+layer("055_ComputerMonitorEvaluationThrottle", (it) => {
   it.effect("adds unthrottled defaults to stored computer conditions", () =>
     Effect.gen(function* () {
       const sql = yield* SqlClient.SqlClient;
@@ -63,7 +63,7 @@ layer("051_ComputerMonitorEvaluationThrottle", (it) => {
         resourceState: "viewing",
       });
 
-      yield* runMigrations({ toMigrationInclusive: 50 });
+      yield* runMigrations({ toMigrationInclusive: 54 });
       yield* sql`
         INSERT INTO thread_monitors (
           monitor_id,
@@ -90,7 +90,7 @@ layer("051_ComputerMonitorEvaluationThrottle", (it) => {
         )
       `;
 
-      yield* runMigrations({ toMigrationInclusive: 51 });
+      yield* runMigrations({ toMigrationInclusive: 55 });
 
       const rows = yield* sql<{ readonly conditionJson: string }>`
         SELECT condition_json AS "conditionJson"

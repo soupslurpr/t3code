@@ -27,11 +27,11 @@ const decodeCondition = Schema.decodeUnknownSync(
   ),
 );
 
-layer("053_ComputerMonitorImageEncoding", (it) => {
+layer("057_ComputerMonitorImageEncoding", (it) => {
   it.effect("adds explicit PNG metadata to retained monitor evidence", () =>
     Effect.gen(function* () {
       const sql = yield* SqlClient.SqlClient;
-      yield* runMigrations({ toMigrationInclusive: 52 });
+      yield* runMigrations({ toMigrationInclusive: 56 });
       const condition = {
         type: "computer",
         observation: {
@@ -98,7 +98,7 @@ layer("053_ComputerMonitorImageEncoding", (it) => {
         )
       `;
 
-      yield* runMigrations({ toMigrationInclusive: 53 });
+      yield* runMigrations({ toMigrationInclusive: 57 });
 
       const rows = yield* sql<{
         readonly baselineImagesJson: string;

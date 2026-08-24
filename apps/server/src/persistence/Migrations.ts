@@ -10,6 +10,7 @@
 
 import * as Migrator from "effect/unstable/sql/Migrator";
 import * as Effect from "effect/Effect";
+import * as SqlClient from "effect/unstable/sql/SqlClient";
 
 // Import all migrations statically
 import Migration0001 from "./Migrations/001_OrchestrationEvents.ts";
@@ -59,20 +60,56 @@ import Migration0044 from "./Migrations/044_ClearAutomaticProjectModelDefaults.t
 import Migration0045 from "./Migrations/045_ProjectionProjectsAutoPull.ts";
 import Migration0046 from "./Migrations/046_RepairAutomaticSettlementTimestamps.ts";
 import Migration0047 from "./Migrations/047_ProjectionProjectIcon.ts";
-import UpstreamMigration0048 from "./Migrations/048_ProjectionThreadBranchPullRequest.ts";
-import UpstreamMigration0049 from "./Migrations/049_ProjectionThreadsActiveOrderKey.ts";
-import UpstreamMigration0050 from "./Migrations/050_ProjectionThreadPullRequests.ts";
-import UpstreamMigration0051 from "./Migrations/051_ProjectionThreadMessageContext.ts";
-import Migration0048 from "./Migrations/048_ThreadMonitors.ts";
-import Migration0049 from "./Migrations/049_ThreadMonitorDelivery.ts";
-import Migration0050 from "./Migrations/050_ComputerThreadMonitors.ts";
-import Migration0051 from "./Migrations/051_ComputerMonitorEvaluationThrottle.ts";
-import Migration0052 from "./Migrations/052_AdaptiveComputerMonitors.ts";
-import Migration0053 from "./Migrations/053_ComputerMonitorImageEncoding.ts";
-import Migration0054 from "./Migrations/054_ProjectionThreadMessageSystemEvents.ts";
-import Migration0055 from "./Migrations/055_ComputerMonitorCacheWriteUsage.ts";
-import Migration0056 from "./Migrations/056_UserDesktops.ts";
-import Migration0057 from "./Migrations/057_UserDesktopAccessAudit.ts";
+import Migration0048 from "./Migrations/048_ProjectionThreadBranchPullRequest.ts";
+import Migration0049 from "./Migrations/049_ProjectionThreadsActiveOrderKey.ts";
+import Migration0050 from "./Migrations/050_ProjectionThreadPullRequests.ts";
+import Migration0051 from "./Migrations/051_ProjectionThreadMessageContext.ts";
+import Migration0052 from "./Migrations/052_ThreadMonitors.ts";
+import Migration0053 from "./Migrations/053_ThreadMonitorDelivery.ts";
+import Migration0054 from "./Migrations/054_ComputerThreadMonitors.ts";
+import Migration0055 from "./Migrations/055_ComputerMonitorEvaluationThrottle.ts";
+import Migration0056 from "./Migrations/056_AdaptiveComputerMonitors.ts";
+import Migration0057 from "./Migrations/057_ComputerMonitorImageEncoding.ts";
+import Migration0058 from "./Migrations/058_ProjectionThreadMessageSystemEvents.ts";
+import Migration0059 from "./Migrations/059_ComputerMonitorCacheWriteUsage.ts";
+import Migration0060 from "./Migrations/060_UserDesktops.ts";
+import Migration0061 from "./Migrations/061_UserDesktopAccessAudit.ts";
+import Migration0062 from "./Migrations/062_PreviewSessions.ts";
+import Migration0063 from "./Migrations/063_ToolRuns.ts";
+
+const migrationHistoryOffset = 1_000;
+const preRebaseForkMigrationNames = [
+  "ThreadMonitors",
+  "ThreadMonitorDelivery",
+  "ComputerThreadMonitors",
+  "ComputerMonitorEvaluationThrottle",
+  "AdaptiveComputerMonitors",
+  "ComputerMonitorImageEncoding",
+  "ProjectionThreadMessageSystemEvents",
+  "ComputerMonitorCacheWriteUsage",
+  "UserDesktops",
+  "UserDesktopAccessAudit",
+  "PreviewSessions",
+  "ToolRuns",
+] as const;
+const upstreamRebaseMigrations = [
+  [41, "AuthSessionClientConnection", Migration0041],
+  [42, "ProjectionThreadLinkedPullRequest", Migration0042],
+  [43, "ProjectionThreadsUnsettledAt", Migration0043],
+  [44, "ClearAutomaticProjectModelDefaults", Migration0044],
+  [45, "ProjectionProjectsAutoPull", Migration0045],
+  [46, "RepairAutomaticSettlementTimestamps", Migration0046],
+  [47, "ProjectionProjectIcon", Migration0047],
+  [48, "ProjectionThreadBranchPullRequest", Migration0048],
+  [49, "ProjectionThreadsActiveOrderKey", Migration0049],
+  [50, "ProjectionThreadPullRequests", Migration0050],
+  [51, "ProjectionThreadMessageContext", Migration0051],
+] as const;
+
+type MigrationHistoryRow = {
+  readonly migrationId: number;
+  readonly name: string;
+};
 
 /**
  * Migration loader with all migrations defined inline.
@@ -84,7 +121,7 @@ import Migration0057 from "./Migrations/057_UserDesktopAccessAudit.ts";
  * Uses Migrator.fromRecord which parses the key format and
  * returns migrations sorted by ID.
  */
-const migrationEntries = [
+export const migrationEntries = [
   [1, "OrchestrationEvents", Migration0001],
   [2, "OrchestrationCommandReceipts", Migration0002],
   [3, "CheckpointDiffBlobs", Migration0003],
@@ -132,20 +169,22 @@ const migrationEntries = [
   [45, "ProjectionProjectsAutoPull", Migration0045],
   [46, "RepairAutomaticSettlementTimestamps", Migration0046],
   [47, "ProjectionProjectIcon", Migration0047],
-  [48, "ProjectionThreadBranchPullRequest", UpstreamMigration0048],
-  [49, "ProjectionThreadsActiveOrderKey", UpstreamMigration0049],
-  [50, "ProjectionThreadPullRequests", UpstreamMigration0050],
-  [51, "ProjectionThreadMessageContext", UpstreamMigration0051],
-  [50, "ThreadMonitors", Migration0048],
-  [51, "ThreadMonitorDelivery", Migration0049],
-  [52, "ComputerThreadMonitors", Migration0050],
-  [53, "ComputerMonitorEvaluationThrottle", Migration0051],
-  [54, "AdaptiveComputerMonitors", Migration0052],
-  [55, "ComputerMonitorImageEncoding", Migration0053],
-  [56, "ProjectionThreadMessageSystemEvents", Migration0054],
-  [57, "ComputerMonitorCacheWriteUsage", Migration0055],
-  [58, "UserDesktops", Migration0056],
-  [59, "UserDesktopAccessAudit", Migration0057],
+  [48, "ProjectionThreadBranchPullRequest", Migration0048],
+  [49, "ProjectionThreadsActiveOrderKey", Migration0049],
+  [50, "ProjectionThreadPullRequests", Migration0050],
+  [51, "ProjectionThreadMessageContext", Migration0051],
+  [52, "ThreadMonitors", Migration0052],
+  [53, "ThreadMonitorDelivery", Migration0053],
+  [54, "ComputerThreadMonitors", Migration0054],
+  [55, "ComputerMonitorEvaluationThrottle", Migration0055],
+  [56, "AdaptiveComputerMonitors", Migration0056],
+  [57, "ComputerMonitorImageEncoding", Migration0057],
+  [58, "ProjectionThreadMessageSystemEvents", Migration0058],
+  [59, "ComputerMonitorCacheWriteUsage", Migration0059],
+  [60, "UserDesktops", Migration0060],
+  [61, "UserDesktopAccessAudit", Migration0061],
+  [62, "PreviewSessions", Migration0062],
+  [63, "ToolRuns", Migration0063],
 ] as const;
 
 export const migrationManifest = migrationEntries.map(([id, name]) => [id, name] as const);
@@ -165,6 +204,86 @@ const makeMigrationLoader = (throughId?: number) =>
  */
 const run = Migrator.make({});
 
+/** Reassigns fork migration ids claimed by later upstream migrations. */
+const reconcilePreRebaseForkMigrationHistory = Effect.fn("reconcilePreRebaseForkMigrationHistory")(
+  function* () {
+    const sql = yield* SqlClient.SqlClient;
+    const reconciled = yield* sql.withTransaction(
+      Effect.gen(function* () {
+        const tables = yield* sql<{ readonly name: string }>`
+        SELECT name
+        FROM sqlite_master
+        WHERE type = 'table' AND name = 'effect_sql_migrations'
+      `;
+        if (tables.length === 0) {
+          return false;
+        }
+
+        let changed = false;
+        for (const [claimedId, claimedName, claimedMigration] of upstreamRebaseMigrations) {
+          const history = yield* sql<MigrationHistoryRow>`
+            SELECT migration_id AS "migrationId", name
+            FROM effect_sql_migrations
+            WHERE migration_id >= ${claimedId}
+            ORDER BY migration_id ASC
+          `;
+          const firstHistoryRow = history[0];
+          if (firstHistoryRow === undefined) {
+            continue;
+          }
+          if (firstHistoryRow.migrationId !== claimedId) {
+            return yield* new Migrator.MigrationError({
+              kind: "BadState",
+              message: "cannot reconcile pre-rebase fork migration history",
+            });
+          }
+          if (firstHistoryRow.name === claimedName) {
+            continue;
+          }
+
+          for (const [index, row] of history.entries()) {
+            if (
+              row.migrationId !== claimedId + index ||
+              row.name !== preRebaseForkMigrationNames[index]
+            ) {
+              return yield* new Migrator.MigrationError({
+                kind: "BadState",
+                message: "cannot reconcile pre-rebase fork migration history",
+              });
+            }
+          }
+
+          yield* claimedMigration;
+
+          const lastDisplacedId = claimedId + history.length - 1;
+          yield* sql`
+            UPDATE effect_sql_migrations
+            SET migration_id = migration_id + ${migrationHistoryOffset}
+            WHERE migration_id >= ${claimedId}
+              AND migration_id <= ${lastDisplacedId}
+          `;
+          yield* sql`
+            UPDATE effect_sql_migrations
+            SET migration_id = migration_id - ${migrationHistoryOffset - 1}
+            WHERE migration_id >= ${claimedId + migrationHistoryOffset}
+              AND migration_id <= ${lastDisplacedId + migrationHistoryOffset}
+          `;
+          yield* sql`
+            INSERT INTO effect_sql_migrations (migration_id, name)
+            VALUES (${claimedId}, ${claimedName})
+          `;
+          changed = true;
+        }
+        return changed;
+      }),
+    );
+
+    if (reconciled) {
+      yield* Effect.log("reconciled pre-rebase fork migration history");
+    }
+  },
+);
+
 export interface RunMigrationsOptions {
   readonly toMigrationInclusive?: number | undefined;
 }
@@ -182,6 +301,7 @@ export interface RunMigrationsOptions {
 export const runMigrations = Effect.fn("runMigrations")(function* ({
   toMigrationInclusive,
 }: RunMigrationsOptions = {}) {
+  yield* reconcilePreRebaseForkMigrationHistory();
   const executedMigrations = yield* run({ loader: makeMigrationLoader(toMigrationInclusive) });
   const migrations = executedMigrations.map(([id, name]) => `${id}_${name}`);
   yield* migrations.length === 0

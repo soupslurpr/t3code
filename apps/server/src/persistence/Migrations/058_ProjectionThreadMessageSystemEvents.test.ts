@@ -8,13 +8,13 @@ import * as NodeSqliteClient from "@t3tools/shared/nodeSqliteClient";
 
 const layer = it.layer(Layer.mergeAll(NodeSqliteClient.layerMemory()));
 
-layer("054_ProjectionThreadMessageSystemEvents", (it) => {
+layer("058_ProjectionThreadMessageSystemEvents", (it) => {
   it.effect("adds nullable system-event metadata to message projections", () =>
     Effect.gen(function* () {
       const sql = yield* SqlClient.SqlClient;
 
-      yield* runMigrations({ toMigrationInclusive: 53 });
-      yield* runMigrations({ toMigrationInclusive: 54 });
+      yield* runMigrations({ toMigrationInclusive: 57 });
+      yield* runMigrations({ toMigrationInclusive: 58 });
 
       const columns = yield* sql<{ readonly name: string; readonly notnull: number }>`
         PRAGMA table_info(projection_thread_messages)
