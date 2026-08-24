@@ -8,7 +8,7 @@ import * as SqlClient from "effect/unstable/sql/SqlClient";
 import { runMigrations } from "../Migrations.ts";
 import * as NodeSqliteClient from "@t3tools/shared/nodeSqliteClient";
 
-const layer = it.layer(Layer.mergeAll(NodeSqliteClient.layerMemory()));
+const layer = it.layer(Layer.mergeAll(NodeSqliteClient.layer({ filename: ":memory:" })));
 const encodeJson = Schema.encodeSync(Schema.fromJsonString(Schema.Unknown));
 const decodeCondition = Schema.decodeUnknownSync(
   Schema.fromJsonString(
@@ -19,11 +19,11 @@ const decodeCondition = Schema.decodeUnknownSync(
   ),
 );
 
-layer("055_ComputerMonitorCacheWriteUsage", (it) => {
+layer("061_ComputerMonitorCacheWriteUsage", (it) => {
   it.effect("adds cache-write usage to retained computer monitors", () =>
     Effect.gen(function* () {
       const sql = yield* SqlClient.SqlClient;
-      yield* runMigrations({ toMigrationInclusive: 54 });
+      yield* runMigrations({ toMigrationInclusive: 60 });
       const condition = {
         type: "computer",
         lastUsage: { inputTokens: 20, cachedInputTokens: 16, outputTokens: 5 },
@@ -55,7 +55,7 @@ layer("055_ComputerMonitorCacheWriteUsage", (it) => {
         )
       `;
 
-      yield* runMigrations({ toMigrationInclusive: 55 });
+      yield* runMigrations({ toMigrationInclusive: 61 });
 
       const rows = yield* sql<{ readonly conditionJson: string }>`
         SELECT condition_json AS "conditionJson"
