@@ -6,6 +6,7 @@ import {
   ComputerDesktopSelector,
   ComputerDesktopTarget,
 } from "./agentDesktop.ts";
+import { UserDesktopTarget } from "./userDesktop.ts";
 
 const MAX_TYPE_DURATION_MS = 60_000;
 const MAX_ACTION_BATCH_ACTIONS = 32;
@@ -40,6 +41,10 @@ export const COMPUTER_AUTOMATION_OPERATIONS = [
   "computerReleaseAvailability",
   "computerRequestView",
   "computerRequestControl",
+  "computerRememberView",
+  "computerRememberControl",
+  "computerForceRelease",
+  "computerForceForgetControl",
   "computerSnapshot",
   "computerAct",
   "computerRelease",
@@ -126,6 +131,9 @@ export const ComputerAutomationFailureCode = Schema.Literals([
   "invalid-coordinate",
   "display-not-found",
   "desktop-busy",
+  "desktop-offline",
+  "desktop-identity-conflict",
+  "desktop-client-update-required",
   "desktop-lease-required",
   "desktop-target-mismatch",
   "agent-desktop-unavailable",
@@ -587,7 +595,7 @@ export type ComputerAutomationTemporalCaptureOptions =
 const ComputerAutomationDesktopTargetField = {
   desktop: ComputerDesktopTarget.annotate({
     description:
-      "Existing desktop to use. Pass kind user for the user's desktop or the desktopId returned by Agent desktop access.",
+      "Existing desktop to use. For a user desktop, pass an exact target returned by user_desktop_list. For an Agent desktop, pass its desktopId.",
   }),
 };
 
@@ -627,12 +635,13 @@ export type ComputerAutomationObserveSequenceInput =
   typeof ComputerAutomationObserveSequenceInput.Type;
 
 export const ComputerAutomationAvailabilityInput = Schema.Struct({
-  desktop: Schema.Struct({ kind: Schema.Literal("user") }).annotate({
-    description: "Explicit user desktop whose availability lease should change.",
+  desktop: UserDesktopTarget.annotate({
+    description:
+      "Exact user desktop returned by user_desktop_list whose availability lease should change.",
   }),
 }).annotate({
   description:
-    "Targets the user's desktop availability lease without opening a view or control session.",
+    "Targets one exact user-desktop availability lease without opening a view or control session.",
 });
 export type ComputerAutomationAvailabilityInput = typeof ComputerAutomationAvailabilityInput.Type;
 

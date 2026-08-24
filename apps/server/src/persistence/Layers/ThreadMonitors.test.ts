@@ -27,7 +27,7 @@ function monitor(revision: number): ThreadMonitor {
     condition: {
       type: "computer",
       revision,
-      desktop: { kind: "user" },
+      desktop: { kind: "user", desktopId: "user-desktop-1" },
       observation: {
         regions: [
           {
