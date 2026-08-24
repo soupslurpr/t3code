@@ -1124,6 +1124,20 @@ export const LINUX_BROWSER_SECRET_EXTRA_RESOURCES = [
   { from: "apps/desktop/prod-resources/browser-secret", to: "browser-secret" },
 ] as const;
 
+const EXACT_TEXT_HELPER_SOURCE = "apps/server/resources/agent-desktop/ibus-commit.py";
+
+/** Stages the canonical exact-text helper with the desktop computer-use resources. */
+export const stageExactTextHelper = Effect.fn("buildDesktopArtifact.stageExactTextHelper")(
+  function* (input: { readonly repoRoot: string; readonly stageResourcesDir: string }) {
+    const fs = yield* FileSystem.FileSystem;
+    const path = yield* Path.Path;
+    const destination = path.join(input.stageResourcesDir, "computer-use/ibus-commit.py");
+    yield* fs.makeDirectory(path.dirname(destination), { recursive: true });
+    yield* fs.copyFile(path.join(input.repoRoot, EXACT_TEXT_HELPER_SOURCE), destination);
+    return destination;
+  },
+);
+
 export interface MacPasskeySigningConfiguration {
   readonly appId: string;
   readonly teamId: string;
@@ -3665,6 +3679,7 @@ const buildDesktopArtifact = Effect.fn("buildDesktopArtifact")(function* (
       );
     }
   }
+  yield* stageExactTextHelper({ repoRoot, stageResourcesDir });
   if (options.platform === "mac" && options.target === "dmg") {
     yield* stageDesktopDmgBackground(
       stageResourcesDir,

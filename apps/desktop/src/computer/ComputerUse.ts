@@ -505,7 +505,19 @@ export function toComputerAutomationFailure(cause: unknown): ComputerAutomationF
     return {
       code: "guest-operation-failed",
       category: "internal",
-      message: "The Agent desktop guest rejected the requested operation.",
+      message:
+        detail === undefined
+          ? "The Agent desktop guest rejected the requested operation."
+          : `The Agent desktop guest rejected the requested operation: ${detail}`,
+      ...common,
+      ...diagnostics,
+    };
+  }
+  if (internalCode === "destination-exists") {
+    return {
+      code: "guest-operation-failed",
+      category: "conflict",
+      message: "The Agent desktop destination already exists.",
       ...common,
       ...diagnostics,
     };
@@ -531,9 +543,9 @@ export function toComputerAutomationFailure(cause: unknown): ComputerAutomationF
     return {
       code: "exact-text-unavailable",
       category: "unsupported-operation",
-      message:
-        "Exact text is unavailable in the focused control; focus an accessible editable field or use ASCII text.",
+      message: "Exact text could not be entered into the focused control.",
       ...common,
+      ...diagnostics,
     };
   }
   if (
@@ -1748,17 +1760,21 @@ export const makeWithOptions = Effect.fn("ComputerUse.makeWithOptions")(function
                 if (result.injectedCodePoints > 0) {
                   yield* Effect.sleep(Duration.millis(DEFAULT_TYPE_SETTLE_MS));
                 }
-                if (action.submit === true) {
+                const confirmedCodePoints = result.confirmedCodePoints ?? 0;
+                const verification: "exact" | "partial" | "unavailable" =
+                  confirmedCodePoints === result.requestedCodePoints
+                    ? "exact"
+                    : confirmedCodePoints > 0
+                      ? "partial"
+                      : "unavailable";
+                const withholdSubmission =
+                  action.submit === true &&
+                  action.verification === "required" &&
+                  verification !== "exact";
+                if (action.submit === true && !withholdSubmission) {
                   yield* controller.press({ key: "Enter", modifiers: [] });
                   yield* Effect.sleep(Duration.millis(DEFAULT_SUBMIT_SETTLE_MS));
                 }
-                const confirmedCodePoints = result.confirmedCodePoints ?? 0;
-                const verification: "exact" | "partial" | "unavailable" =
-                  result.delivery === "accessibility" || result.delivery === "none"
-                    ? "exact"
-                    : result.delivery === "mixed"
-                      ? "partial"
-                      : "unavailable";
                 return {
                   index,
                   type: action.type,
@@ -1768,6 +1784,12 @@ export const makeWithOptions = Effect.fn("ComputerUse.makeWithOptions")(function
                   verification,
                   delivery: result.delivery,
                   focusedEditable: result.focusedEditable,
+                  submission:
+                    action.submit !== true
+                      ? ("not-requested" as const)
+                      : withholdSubmission
+                        ? ("withheld-unverified" as const)
+                        : ("submitted" as const),
                 };
               }
               case "press":
