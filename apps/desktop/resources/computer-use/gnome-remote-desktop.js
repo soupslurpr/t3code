@@ -13,6 +13,8 @@ import System from "system";
 
 import { AccessibilityStatusLease } from "./accessibility-status-lease.js";
 import { canTypeExactlyWithKeyboardEvents } from "./exact-keyboard-text.js";
+import { portalPersistMode } from "./portal-persistence.js";
+import { rememberAndRelease } from "./remembered-session.js";
 import {
   mapDesktopPointToStream,
   mapRelativePointerDelta,
@@ -206,6 +208,7 @@ const restoreTokenPath = ARGV[1] ?? "";
 let requestSequence = 0;
 let sessionHandle = null;
 let sessionAccess = null;
+let sessionPersistent = false;
 let sessionClosedSubscription = 0;
 let desktopAvailabilityInhibitHandle = null;
 let desktopAvailabilityRequested = false;
@@ -1629,16 +1632,25 @@ async function closePortalSession(closingHandle, reportFailure) {
 /** Detaches and closes the active session after local input state is settled. */
 async function detachSession() {
   const closingHandle = sessionHandle;
-  sessionHandle = null;
-  sessionAccess = null;
-  grantedDevices = 0;
-  screenStreams = [];
-  pointerPosition = null;
-  if (sessionClosedSubscription !== 0) {
-    connection.signal_unsubscribe(sessionClosedSubscription);
-    sessionClosedSubscription = 0;
+  if (closingHandle === null) return true;
+  if (!(await closePortalSession(closingHandle, true))) {
+    const error = new Error("the desktop portal did not confirm session closure");
+    error.code = "session-close-failed";
+    throw error;
   }
-  return closingHandle === null || (await closePortalSession(closingHandle, true));
+  if (sessionHandle === closingHandle) {
+    sessionHandle = null;
+    sessionAccess = null;
+    sessionPersistent = false;
+    grantedDevices = 0;
+    screenStreams = [];
+    pointerPosition = null;
+    if (sessionClosedSubscription !== 0) {
+      connection.signal_unsubscribe(sessionClosedSubscription);
+      sessionClosedSubscription = 0;
+    }
+  }
+  return true;
 }
 
 /** Closes the active portal session, if any. */
@@ -1656,11 +1668,21 @@ async function releaseAccess() {
   accessGeneration += 1;
   permission = inactivePermission();
   invalidateAccessibilityTargets();
-  await Promise.all([
-    cancelPendingPortalRequests("access"),
-    closeSession(),
-    accessibilityStatusLease.restore(),
-  ]);
+  try {
+    await Promise.all([
+      cancelPendingPortalRequests("access"),
+      closeSession(),
+      accessibilityStatusLease.restore(),
+    ]);
+  } catch (error) {
+    permission =
+      sessionAccess === "control"
+        ? "granted"
+        : sessionAccess === "view"
+          ? "view-only"
+          : inactivePermission();
+    throw error;
+  }
 }
 
 /** Revokes both native access and retained availability after a system override. */
@@ -1940,11 +1962,16 @@ function accessStatus() {
 }
 
 /** Creates and starts one user-authorized view or control session. */
-async function ensureSession(requestedAccess, preventSleep = powerProtectionEnabled) {
+async function ensureSession(
+  requestedAccess,
+  preventSleep = powerProtectionEnabled,
+  remember = false,
+) {
   await retainDesktopAvailability(preventSleep);
   if (
     sessionHandle !== null &&
-    (sessionAccess === "control" || sessionAccess === requestedAccess)
+    (sessionAccess === "control" || sessionAccess === requestedAccess) &&
+    (!remember || sessionPersistent)
   ) {
     try {
       await wakeDisplay();
@@ -2002,6 +2029,7 @@ async function ensureSession(requestedAccess, preventSleep = powerProtectionEnab
         cancelActiveStreamCaptures();
         sessionHandle = null;
         sessionAccess = null;
+        sessionPersistent = false;
         grantedDevices = 0;
         screenStreams = [];
         pointerPosition = null;
@@ -2017,6 +2045,7 @@ async function ensureSession(requestedAccess, preventSleep = powerProtectionEnab
       },
     );
     const reconnectToken = consumeRestoreToken(requestedAccess);
+    const persistMode = portalPersistMode(reconnectToken, remember);
     if (requestedAccess === "control") {
       await portalRequest(
         REMOTE_DESKTOP_INTERFACE,
@@ -2026,7 +2055,7 @@ async function ensureSession(requestedAccess, preventSleep = powerProtectionEnab
           createdHandle,
           {
             types: new GLib.Variant("u", KEYBOARD_DEVICE | POINTER_DEVICE),
-            persist_mode: new GLib.Variant("u", 2),
+            persist_mode: new GLib.Variant("u", persistMode),
             ...(reconnectToken === null
               ? {}
               : { restore_token: new GLib.Variant("s", reconnectToken) }),
@@ -2048,7 +2077,7 @@ async function ensureSession(requestedAccess, preventSleep = powerProtectionEnab
           cursor_mode: new GLib.Variant("u", HIDDEN_CURSOR_MODE),
           ...(requestedAccess === "view"
             ? {
-                persist_mode: new GLib.Variant("u", 2),
+                persist_mode: new GLib.Variant("u", persistMode),
                 ...(reconnectToken === null
                   ? {}
                   : { restore_token: new GLib.Variant("s", reconnectToken) }),
@@ -2081,14 +2110,16 @@ async function ensureSession(requestedAccess, preventSleep = powerProtectionEnab
     sessionAccess = effectiveAccess;
     grantedDevices = effectiveAccess === "control" ? devices : 0;
     const nextRestoreToken = resultField(startResults, "restore_token");
-    if (
+    const receivedRestoreToken =
+      persistMode === 2 &&
       typeof nextRestoreToken === "string" &&
       nextRestoreToken.length > 0 &&
       nextRestoreToken.length <= MAX_RESTORE_TOKEN_LENGTH &&
-      requestedAccess === effectiveAccess
-    ) {
+      requestedAccess === effectiveAccess;
+    if (receivedRestoreToken) {
       saveRestoreToken(effectiveAccess, nextRestoreToken);
     }
+    sessionPersistent = receivedRestoreToken;
     permission = effectiveAccess === "control" ? "granted" : "view-only";
     return accessStatus();
   } catch (error) {
@@ -2104,8 +2135,8 @@ async function ensureSession(requestedAccess, preventSleep = powerProtectionEnab
 }
 
 /** Starts access and enables semantics before subsequently launched applications. */
-async function startPreparedSession(requestedAccess, preventSleep) {
-  const status = await ensureSession(requestedAccess, preventSleep);
+async function startPreparedSession(requestedAccess, preventSleep, remember = false) {
+  const status = await ensureSession(requestedAccess, preventSleep, remember);
   const generation = accessGeneration;
   await accessibilityStatusLease.acquire();
   if (generation !== accessGeneration || sessionHandle === null) {
@@ -2906,6 +2937,20 @@ async function handleCommand(message) {
     }
     case "view": {
       return await startPreparedSession("view", message.params.preventSleep === true);
+    }
+    case "rememberControl": {
+      await rememberAndRelease(
+        () => startPreparedSession("control", message.params.preventSleep === true, true),
+        releaseAccess,
+      );
+      return accessStatus();
+    }
+    case "rememberView": {
+      await rememberAndRelease(
+        () => startPreparedSession("view", message.params.preventSleep === true, true),
+        releaseAccess,
+      );
+      return accessStatus();
     }
     case "move": {
       await runInputPhase("authorization", () => ensureSession("control"));

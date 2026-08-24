@@ -177,6 +177,8 @@ const HelperMethod = Schema.Literals([
   "releaseAvailability",
   "view",
   "start",
+  "rememberView",
+  "rememberControl",
   "move",
   "click",
   "activate",
@@ -351,6 +353,8 @@ export interface GnomeRemoteDesktopShape {
   ) => Effect.Effect<GnomeRemoteDesktopSnapshot, GnomeRemoteDesktopError>;
   readonly view: Effect.Effect<void, GnomeRemoteDesktopError>;
   readonly start: Effect.Effect<void, GnomeRemoteDesktopError>;
+  readonly rememberView: Effect.Effect<void, GnomeRemoteDesktopError>;
+  readonly rememberControl: Effect.Effect<void, GnomeRemoteDesktopError>;
   readonly configurePowerProtection: (
     enabled: boolean,
   ) => Effect.Effect<void, GnomeRemoteDesktopError>;
@@ -444,6 +448,8 @@ const unavailable = (reason: string): GnomeRemoteDesktopShape => {
     snapshot: () => fail,
     view: fail,
     start: fail,
+    rememberView: fail,
+    rememberControl: fail,
     configurePowerProtection: () => Effect.void,
     setAgentWorking: () => Effect.void,
     requestAvailability: fail,
@@ -737,7 +743,7 @@ export const make = Effect.gen(function* () {
     request<void>(operation, params, HELPER_CONTROL_TIMEOUT);
 
   const requestSessionStatus = (
-    operation: "view" | "start",
+    operation: "view" | "start" | "rememberView" | "rememberControl",
     params: unknown,
     expectedGeneration: number,
   ) =>
@@ -763,14 +769,22 @@ export const make = Effect.gen(function* () {
 
   const requestAccess = Effect.fn("GnomeRemoteDesktop.requestAccess")(function* (
     access: "view" | "control",
+    remember = false,
   ) {
     yield* authorizationSemaphore.withPermits(1)(
       Effect.gen(function* () {
         const generation = yield* Ref.get(authorizationGeneration);
         yield* readStatus;
         const settings = yield* appSettings.get;
+        const operation = remember
+          ? access === "control"
+            ? "rememberControl"
+            : "rememberView"
+          : access === "control"
+            ? "start"
+            : "view";
         yield* requestSessionStatus(
-          access === "control" ? "start" : "view",
+          operation,
           { preventSleep: settings.keepAwakeWhileAgentsWork },
           generation,
         );
@@ -883,6 +897,8 @@ export const make = Effect.gen(function* () {
     snapshot,
     view: requestAccess("view"),
     start: requestAccess("control"),
+    rememberView: requestAccess("view", true),
+    rememberControl: requestAccess("control", true),
     configurePowerProtection,
     setAgentWorking,
     requestAvailability,
