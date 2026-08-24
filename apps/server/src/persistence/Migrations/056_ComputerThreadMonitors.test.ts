@@ -8,12 +8,12 @@ import * as NodeSqliteClient from "@t3tools/shared/nodeSqliteClient";
 
 const layer = it.layer(Layer.mergeAll(NodeSqliteClient.layerMemory()));
 
-layer("050_ComputerThreadMonitors", (it) => {
+layer("056_ComputerThreadMonitors", (it) => {
   it.effect("preserves monitors and adds durable computer evidence", () =>
     Effect.gen(function* () {
       const sql = yield* SqlClient.SqlClient;
 
-      yield* runMigrations({ toMigrationInclusive: 49 });
+      yield* runMigrations({ toMigrationInclusive: 55 });
       yield* sql`
         INSERT INTO thread_monitors (
           monitor_id,
@@ -38,7 +38,7 @@ layer("050_ComputerThreadMonitors", (it) => {
         )
       `;
 
-      yield* runMigrations({ toMigrationInclusive: 50 });
+      yield* runMigrations({ toMigrationInclusive: 56 });
 
       const columns = yield* sql<{ readonly name: string }>`
         PRAGMA table_info(thread_monitors)

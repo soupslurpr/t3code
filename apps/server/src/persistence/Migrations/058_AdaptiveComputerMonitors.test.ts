@@ -37,7 +37,7 @@ const decodeImages = Schema.decodeUnknownSync(
   ),
 );
 
-layer("052_AdaptiveComputerMonitors", (it) => {
+layer("058_AdaptiveComputerMonitors", (it) => {
   it.effect("migrates single-crop state and retained images without runtime legacy decoding", () =>
     Effect.gen(function* () {
       const sql = yield* SqlClient.SqlClient;
@@ -79,7 +79,7 @@ layer("052_AdaptiveComputerMonitors", (it) => {
         resourceState: "viewing",
       };
 
-      yield* runMigrations({ toMigrationInclusive: 51 });
+      yield* runMigrations({ toMigrationInclusive: 57 });
       yield* sql`
         INSERT INTO thread_monitors (
           monitor_id,
@@ -113,7 +113,7 @@ layer("052_AdaptiveComputerMonitors", (it) => {
         ) VALUES ('computer-monitor', 'YmFzZWxpbmU=', 'dGVybWluYWw=')
       `;
 
-      yield* runMigrations({ toMigrationInclusive: 52 });
+      yield* runMigrations({ toMigrationInclusive: 58 });
 
       const monitorRows = yield* sql<{ readonly conditionJson: string }>`
         SELECT condition_json AS "conditionJson"
