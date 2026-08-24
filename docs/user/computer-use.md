@@ -50,12 +50,13 @@ native Remote Desktop session for a view-only request while giving the requestin
 watch only a shared view lease. Input remains unavailable to that caller. This avoids another routine
 monitor prompt without broadening what the agent requested or what you previously approved.
 
-The agent can call `computer_release` to cancel pending authorization or end the active sharing
-session immediately. This removes capture and input access but retains any restore tokens you
-explicitly created in Settings and retains desktop availability, so a later task can reconnect before
-automatic locking makes the user desktop unavailable. A later `computer_status` reports `remembered`
-only when reusable approval exists, and `keepAwake` remains true while availability is retained. The
-agent can call
+The agent can call `computer_release` to cancel pending authorization, in-flight or queued input, or
+the active sharing session immediately. Held keys and mouse buttons are released before the final
+status returns. This removes capture and input access but retains any restore tokens you explicitly
+created in Settings and retains desktop availability, so a later task can reconnect before automatic
+locking makes the user desktop unavailable. A later `computer_status` reports `remembered` only when
+reusable approval exists, and `keepAwake` remains true while availability is retained. The agent can
+call
 `computer_release_availability`, or you can select **Allow locking** in General settings, to remove
 only the availability lease without disabling the persistent policy. `computer_forget_control` ends
 the session, deletes both restore tokens, and releases availability, so the next request requires
@@ -177,16 +178,19 @@ emoji. A focused editable accessibility control receives the text directly and c
 inserted substring. The action receipt separates requested, backend-accepted, and
 application-confirmed code-point counts and labels verification as exact, partial, or unavailable.
 Backend acceptance alone never claims that an application consumed or rendered key events. When
-direct insertion is not available, both desktop kinds use keyboard events only for exact ASCII and report
-`exact-text-unavailable` for non-ASCII instead of claiming success after a compositor or application
-silently drops it, or replaying a Unicode input-method sequence that an application might
-misinterpret. Agent desktop key chords use explicit key-down, hold, reverse key-up, and settle
-phases instead of QEMU's asynchronous timed-key shortcut. Keyboard taps and pointer clicks use
+direct insertion is not available, both desktop kinds use keyboard events for exact ASCII and a
+temporary IBus engine for non-ASCII text. The Arch package installs the Python, PyGObject, and IBus
+runtime used by that fallback. If exact delivery is unavailable, the action reports
+`exact-text-unavailable` instead of claiming success after a compositor or application silently
+drops input. Agent desktop key chords combine QEMU's timed self-release with a delayed explicit
+key-up safeguard. Keyboard taps and pointer clicks use
 short human-equivalent transition timing to avoid dropped events or accidental repeats, and typing
 waits briefly for the application input queue before returning. Neither path reads or changes the
 clipboard. On either desktop, a focused multiline
-editable control accepts a whole text block directly; elsewhere Newline and Tab remain real key
-events. Exact insertion never replays text through the keyboard after an uncertain partial failure.
+editable control accepts a whole text block directly. Elsewhere, a type action containing Newline or
+Tab fails before injecting any text; agents use explicit press or hotkey actions when they intend
+those control keys. Exact insertion never replays text through the keyboard after an uncertain
+partial failure.
 
 Taking over an Agent desktop enters full screen and captures host-reserved shortcuts so keys such as
 Super reach only the guest. GNOME may show a first-use prompt to allow shortcut inhibition. Its

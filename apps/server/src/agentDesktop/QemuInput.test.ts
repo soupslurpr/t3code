@@ -1,6 +1,7 @@
 import { assert, describe, it } from "@effect/vitest";
 
 import {
+  canTypeExactlyWithQemu,
   QemuInputValidationError,
   qemuHotkeyQcodes,
   qemuKeyDownEvents,
@@ -61,6 +62,10 @@ describe("QemuInput", () => {
   });
 
   it("builds exact ASCII text chords and rejects unsafe Unicode fallback", () => {
+    assert.isTrue(canTypeExactlyWithQemu("A->"));
+    assert.isFalse(canTypeExactlyWithQemu("A->\n"));
+    assert.isFalse(canTypeExactlyWithQemu("A->\t"));
+    assert.isFalse(canTypeExactlyWithQemu("A’→"));
     const chords = qemuTextChords("A->");
     assert.deepEqual(chords[0], ["shift", "a"]);
     assert.deepEqual(chords.slice(1), [["minus"], ["shift", "dot"]]);
@@ -72,6 +77,7 @@ describe("QemuInput", () => {
     }
     assert.instanceOf(error, QemuInputValidationError);
     assert.equal(error.code, "unsupported-text");
+    assert.throws(() => qemuTextChords("first\nsecond"), QemuInputValidationError);
     assert.deepEqual(qemuPressQcodes("Enter"), ["ret"]);
   });
 });

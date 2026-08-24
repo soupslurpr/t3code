@@ -199,14 +199,6 @@ export function qemuPressQcodes(
 export function qemuTextChords(text: string): ReadonlyArray<ReadonlyArray<string>> {
   const chords: string[][] = [];
   for (const character of text) {
-    if (character === "\n" || character === "\r") {
-      chords.push([...qemuPressQcodes("Enter")]);
-      continue;
-    }
-    if (character === "\t") {
-      chords.push([...qemuPressQcodes("Tab")]);
-      continue;
-    }
     if (/^[\x20-\x7e]$/u.test(character)) {
       chords.push([...qemuPressQcodes(character)]);
       continue;
@@ -214,12 +206,17 @@ export function qemuTextChords(text: string): ReadonlyArray<ReadonlyArray<string
     throw new QemuInputValidationError({
       code: "unsupported-text",
       field: "text",
-      received: "non-ASCII text",
-      expected: ["ASCII text or a focused accessible editable control"],
+      received: "text requiring semantic insertion",
+      expected: ["printable ASCII without newline or tab", "focused accessible editable control"],
       phase: "validation",
     });
   }
   return chords;
+}
+
+/** Reports whether physical QEMU key events preserve every requested code point. */
+export function canTypeExactlyWithQemu(text: string): boolean {
+  return /^[\x20-\x7e]*$/u.test(text);
 }
 
 /** Builds a key transition and the qcodes that must be retained for release. */
