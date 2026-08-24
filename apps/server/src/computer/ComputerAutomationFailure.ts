@@ -451,7 +451,19 @@ export function toComputerAutomationFailure(cause: unknown): ComputerAutomationF
     return {
       code: "guest-operation-failed",
       category: "internal",
-      message: "The Agent desktop guest rejected the requested operation.",
+      message:
+        detail === undefined
+          ? "The Agent desktop guest rejected the requested operation."
+          : `The Agent desktop guest rejected the requested operation: ${detail}`,
+      ...common,
+      ...diagnostics,
+    };
+  }
+  if (internalCode === "destination-exists") {
+    return {
+      code: "guest-operation-failed",
+      category: "conflict",
+      message: "The Agent desktop destination already exists.",
       ...common,
       ...diagnostics,
     };
@@ -478,7 +490,7 @@ export function toComputerAutomationFailure(cause: unknown): ComputerAutomationF
       code: "exact-text-unavailable",
       category: "unsupported-operation",
       message:
-        "Exact text is unavailable in the focused control; focus an accessible editable field or use ASCII text.",
+        "Exact text is unavailable in the focused control; focus an accessible editable field or use printable ASCII without Newline or Tab.",
       ...common,
     };
   }

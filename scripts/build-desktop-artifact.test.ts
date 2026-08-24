@@ -61,6 +61,7 @@ import {
   resolvePackageManagerUserAgent,
   stageLinuxIconSize,
   stageDesktopDmgBackground,
+  stageExactTextHelper,
   stageResourceMonitor,
   stageWslRuntimeArchive,
   bundlesWslRuntime,
@@ -1979,6 +1980,24 @@ it.layer(NodeServices.layer)("build-desktop-artifact", (it) => {
     ),
   );
 
+  it.effect("stages the canonical exact-text helper with computer-use resources", () =>
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      const path = yield* Path.Path;
+      const repoRoot = yield* fs.makeTempDirectoryScoped({ prefix: "t3-exact-text-source-" });
+      const stageResourcesDir = yield* fs.makeTempDirectoryScoped({
+        prefix: "t3-exact-text-stage-",
+      });
+      const source = path.join(repoRoot, "apps/server/resources/agent-desktop/ibus-commit.py");
+      yield* fs.makeDirectory(path.dirname(source), { recursive: true });
+      yield* fs.writeFileString(source, "canonical helper\n");
+
+      const destination = yield* stageExactTextHelper({ repoRoot, stageResourcesDir });
+
+      assert.equal(destination, path.join(stageResourcesDir, "computer-use/ibus-commit.py"));
+      assert.equal(yield* fs.readFileString(destination), "canonical helper\n");
+    }),
+  );
   it("promotes target fff binaries to direct staged dependencies", () => {
     assert.deepStrictEqual(resolveFffNativeDependencies("mac", "arm64", "0.9.4"), {
       "@ff-labs/fff-bin-darwin-arm64": "0.9.4",

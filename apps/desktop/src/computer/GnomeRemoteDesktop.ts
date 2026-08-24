@@ -28,6 +28,7 @@ import * as ElectronPowerMonitor from "../electron/ElectronPowerMonitor.ts";
 import * as DesktopAppSettings from "../settings/DesktopAppSettings.ts";
 
 const HELPER_RESOURCE_PATH = "computer-use/gnome-remote-desktop.js";
+const IBUS_COMMIT_RESOURCE_PATH = "computer-use/ibus-commit.py";
 const RESTORE_TOKEN_FILE_NAME = "computer-control-grant.json";
 const GJS_EXECUTABLE_PATH = "/usr/bin/gjs";
 const HELPER_HANDSHAKE_TIMEOUT = Duration.seconds(5);
@@ -168,7 +169,7 @@ const HelperTypeResult = Schema.Struct({
   confirmedCodePoints: Schema.optional(
     Schema.Int.check(Schema.isBetween({ minimum: 0, maximum: MAX_TYPE_CODE_POINTS })),
   ),
-  delivery: Schema.Literals(["none", "accessibility", "key-events", "mixed"]),
+  delivery: Schema.Literals(["none", "accessibility", "key-events", "input-method", "mixed"]),
   focusedEditable: Schema.Boolean,
 });
 
@@ -349,7 +350,7 @@ export interface GnomeRemoteDesktopTypeResult {
   readonly requestedCodePoints: number;
   readonly injectedCodePoints: number;
   readonly confirmedCodePoints?: number | undefined;
-  readonly delivery: "none" | "accessibility" | "key-events" | "mixed";
+  readonly delivery: "none" | "accessibility" | "key-events" | "input-method" | "mixed";
   readonly focusedEditable: boolean;
 }
 
@@ -531,11 +532,11 @@ export const make = Effect.gen(function* () {
   const appSettings = yield* DesktopAppSettings.DesktopAppSettings;
 
   const assets = yield* DesktopAssets.DesktopAssets;
+  const fileSystem = yield* FileSystem.FileSystem;
   // Give the external GJS process a real file; it cannot traverse Electron's
   // app.asar virtual filesystem.
   const helperPath = environment.isPackaged
     ? yield* Effect.gen(function* () {
-        const fileSystem = yield* FileSystem.FileSystem;
         const externalPath = environment.path.join(environment.resourcesPath, HELPER_RESOURCE_PATH);
         return (yield* fileSystem.exists(externalPath))
           ? Option.some(externalPath)
@@ -545,6 +546,13 @@ export const make = Effect.gen(function* () {
   if (Option.isNone(helperPath)) {
     return unavailable("the bundled GNOME portal helper is missing");
   }
+  const ibusCommitPath = environment.isPackaged
+    ? environment.path.join(environment.resourcesPath, IBUS_COMMIT_RESOURCE_PATH)
+    : environment.path.join(
+        environment.rootDir,
+        "apps/server/resources/agent-desktop/ibus-commit.py",
+      );
+  const availableIbusCommitPath = (yield* fileSystem.exists(ibusCommitPath)) ? ibusCommitPath : "";
 
   const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
   const command = ChildProcess.make(
@@ -556,6 +564,7 @@ export const make = Effect.gen(function* () {
         ? "t3code"
         : environment.linuxDesktopEntryName.replace(/\.desktop$/u, ""),
       environment.path.join(environment.stateDir, RESTORE_TOKEN_FILE_NAME),
+      availableIbusCommitPath,
     ],
     {
       stdin: { stream: "pipe", endOnDone: false },

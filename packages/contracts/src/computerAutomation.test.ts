@@ -647,7 +647,7 @@ describe("computer automation contracts", () => {
       }),
     ).toThrow();
     expect(() =>
-      decodeAct({ ...userDesktop, actions: [{ type: "wait", durationMs: 5_001 }] }),
+      decodeAct({ ...userDesktop, actions: [{ type: "wait", durationMs: 60_001 }] }),
     ).toThrow();
     expect(() =>
       decodeAct({
@@ -738,6 +738,7 @@ describe("computer automation contracts", () => {
             verification: "exact",
             delivery: "accessibility",
             focusedEditable: true,
+            submission: "not-requested",
           },
           {
             index: 1,
@@ -754,6 +755,25 @@ describe("computer automation contracts", () => {
         { type: "wait_for_change", changed: false },
       ],
     });
+    expect(
+      decodeObservation({
+        actionResults: [
+          {
+            index: 0,
+            type: "type",
+            requestedCodePoints: 18,
+            acceptedCodePoints: 18,
+            confirmedCodePoints: 0,
+            verification: "unavailable",
+            delivery: "input-method",
+            focusedEditable: false,
+            submission: "withheld-unverified",
+          },
+        ],
+      }),
+    ).toMatchObject({
+      actionResults: [{ delivery: "input-method", submission: "withheld-unverified" }],
+    });
     expect(() =>
       decodeObservation({
         actionResults: [
@@ -766,6 +786,7 @@ describe("computer automation contracts", () => {
             verification: "exact",
             delivery: "key-events",
             focusedEditable: false,
+            submission: "not-requested",
           },
         ],
       }),

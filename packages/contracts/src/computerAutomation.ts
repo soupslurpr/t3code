@@ -828,10 +828,14 @@ export const ComputerAutomationTypeActionResult = Schema.Struct({
     description:
       "Whether every requested code point, only an accessibility-delivered subset, or none of the result was confirmed through application readback.",
   }),
-  delivery: Schema.Literals(["none", "accessibility", "key-events", "mixed"]),
+  delivery: Schema.Literals(["none", "accessibility", "key-events", "input-method", "mixed"]),
   focusedEditable: Schema.Boolean.annotate({
     description:
       "Whether delivery included accessibility-backed editable insertion; false does not mean the application lacked text focus.",
+  }),
+  submission: Schema.Literals(["not-requested", "submitted", "withheld-unverified"]).annotate({
+    description:
+      "Whether Enter was not requested, injected after typing, or withheld because exact verification was required but unavailable.",
   }),
 }).check(
   Schema.makeFilter(
@@ -856,19 +860,26 @@ export const ComputerAutomationTypeActionResult = Schema.Struct({
   }),
   Schema.makeFilter((result) => {
     const expectedVerification =
-      result.delivery === "accessibility" || result.delivery === "none"
+      result.confirmedCodePoints === result.requestedCodePoints
         ? "exact"
-        : result.delivery === "mixed"
+        : result.confirmedCodePoints > 0
           ? "partial"
           : "unavailable";
     const expectedFocusedEditable =
-      result.delivery === "accessibility" || result.delivery === "mixed";
+      result.delivery === "accessibility" ||
+      (result.delivery === "mixed" && result.confirmedCodePoints > 0);
     return (
       (result.verification === expectedVerification &&
         result.focusedEditable === expectedFocusedEditable) ||
       "Typing delivery must agree with its verification and focused-editable state."
     );
   }),
+  Schema.makeFilter(
+    (result) =>
+      result.submission !== "withheld-unverified" ||
+      result.verification !== "exact" ||
+      "Verified text cannot report a withheld-unverified submission.",
+  ),
 );
 export type ComputerAutomationTypeActionResult = typeof ComputerAutomationTypeActionResult.Type;
 
@@ -1099,7 +1110,7 @@ export type ComputerAutomationWheelInput = typeof ComputerAutomationWheelInput.T
 export const ComputerAutomationTypeInput = Schema.Struct({
   text: Schema.String.check(Schema.isMaxLength(10_000)).annotate({
     description:
-      "Exact text to enter into the focused native control. Newline is inserted directly when the focused editable control explicitly supports multiple lines and otherwise presses Enter; tab presses Tab. Non-ASCII code points require a focused accessible editable control and otherwise fail explicitly without changing the clipboard.",
+      "Exact text to enter into the focused native control. Literal Newline and Tab require an accessible editable control and otherwise fail before any text is injected; use press or hotkey for intentional control keys. Non-ASCII uses accessibility insertion or the desktop input method without changing the clipboard.",
   }),
   intervalMs: Schema.optional(
     Schema.Int.check(Schema.isBetween({ minimum: 0, maximum: 250 })).annotate({
@@ -1110,6 +1121,12 @@ export const ComputerAutomationTypeInput = Schema.Struct({
   submit: Schema.optional(
     Schema.Boolean.annotate({
       description: "Press Enter after typing. Defaults to false.",
+    }),
+  ),
+  verification: Schema.optional(
+    Schema.Literals(["best-effort", "required"]).annotate({
+      description:
+        "Submission policy. Defaults to best-effort. Required withholds Enter unless application accessibility confirms every requested code point exactly.",
     }),
   ),
 })

@@ -588,12 +588,12 @@ describe("T3 computer developer instructions", () => {
       NodeAssert.match(instructions, /computer_release_availability/);
       NodeAssert.match(instructions, /computer_act/);
       NodeAssert.match(instructions, /click \{frameId,x,y,button\?,count\?\}/);
-      NodeAssert.match(instructions, /type \{text,intervalMs\?,submit\?\}/);
+      NodeAssert.match(instructions, /type \{text,intervalMs\?,submit\?,verification\?\}/);
       NodeAssert.match(instructions, /hotkey \{keys\}/);
       NodeAssert.match(instructions, /key_down \{key\}/);
       NodeAssert.match(instructions, /frame-relative region/);
       NodeAssert.match(instructions, /starting a known app is usually one batch/);
-      NodeAssert.match(instructions, /preserves exact Unicode text/);
+      NodeAssert.match(instructions, /preserves exact Unicode through/);
     }
   });
 

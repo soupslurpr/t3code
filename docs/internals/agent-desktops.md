@@ -39,11 +39,12 @@ software-display frames through QMP, and injects input through QEMU's input even
 desktops render OpenGL with virgl through EGL headless. They expose a raw framebuffer over a
 private Unix-domain VNC socket so observation does not require a visible host window or another
 runtime dependency. QEMU events provide hardware-like pointer input and deliberate key holds. Timed
-QEMU key chords provide self-releasing presses, hotkeys, and exact ASCII fallback text. Exact
+QEMU key chords combine self-releasing presses with a delayed explicit key-up safeguard for hotkeys
+and exact printable-ASCII fallback text. Exact
 Unicode uses the guest AT-SPI editable-text interface when one active target can be identified and
 verifies the inserted substring without reading or changing the clipboard. If that interface is
-unavailable, non-ASCII input fails explicitly instead of risking an application-dependent Unicode
-entry sequence.
+unavailable, non-ASCII input uses the guest IBus bridge. Newline and Tab require AT-SPI insertion so
+they cannot become unintended control-key actions after a partial text fallback.
 
 The guest image boots directly into a dedicated GNOME user. It enables toolkit accessibility,
 disables guest idle locking and suspend, starts QEMU Guest Agent, and does not expose SSH. Packaged
