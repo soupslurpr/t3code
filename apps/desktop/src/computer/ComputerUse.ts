@@ -1,19 +1,20 @@
-import type {
-  ComputerAutomationAccessibilitySnapshot,
-  ComputerAutomationAction,
-  ComputerAutomationActionResult,
-  ComputerAutomationActionBatchInput,
-  ComputerAutomationCaptureHealth,
-  ComputerAutomationContentHash,
-  ComputerAutomationDisplay,
-  ComputerAutomationFailure,
-  ComputerAutomationFrame,
-  ComputerAutomationPointer,
-  ComputerAutomationScreenshotOptions,
-  ComputerAutomationScreenshotEncoding,
-  ComputerAutomationSnapshot,
-  ComputerAutomationObservationOptions,
-  ComputerAutomationStatus,
+import {
+  ComputerAutomationInputCleanup,
+  type ComputerAutomationAccessibilitySnapshot,
+  type ComputerAutomationAction,
+  type ComputerAutomationActionResult,
+  type ComputerAutomationActionBatchInput,
+  type ComputerAutomationCaptureHealth,
+  type ComputerAutomationContentHash,
+  type ComputerAutomationDisplay,
+  type ComputerAutomationFailure,
+  type ComputerAutomationFrame,
+  type ComputerAutomationPointer,
+  type ComputerAutomationScreenshotOptions,
+  type ComputerAutomationScreenshotEncoding,
+  type ComputerAutomationSnapshot,
+  type ComputerAutomationObservationOptions,
+  type ComputerAutomationStatus,
 } from "@t3tools/contracts";
 import * as Clock from "effect/Clock";
 import * as Context from "effect/Context";
@@ -143,6 +144,7 @@ export class ComputerUseActionError extends Schema.TaggedErrorClass<ComputerUseA
     completedActionCount: Schema.Int,
     actionType: Schema.String,
     cause: Schema.Defect(),
+    cleanup: Schema.optional(ComputerAutomationInputCleanup),
   },
 ) {
   override get message(): string {
@@ -248,6 +250,24 @@ function boundedCleanup(value: unknown): ComputerAutomationFailure["cleanup"] | 
     : undefined;
 }
 
+/** Preserves the strongest cleanup outcome across automatic release attempts. */
+function mergeCleanup(
+  first: ComputerAutomationFailure["cleanup"] | undefined,
+  second: NonNullable<ComputerAutomationFailure["cleanup"]>,
+): NonNullable<ComputerAutomationFailure["cleanup"]> {
+  if (first === undefined) return second;
+  const priority = {
+    "not-needed": 0,
+    released: 1,
+    "session-closed": 2,
+    "release-failed": 3,
+  } as const;
+  return {
+    keys: priority[first.keys] >= priority[second.keys] ? first.keys : second.keys,
+    buttons: priority[first.buttons] >= priority[second.buttons] ? first.buttons : second.buttons,
+  };
+}
+
 /** Converts an internal computer-use error into a bounded agent-facing failure. */
 export function toComputerAutomationFailure(cause: unknown): ComputerAutomationFailure {
   let current = cause;
@@ -275,6 +295,8 @@ export function toComputerAutomationFailure(cause: unknown): ComputerAutomationF
         completedActionCount: record.completedActionCount,
         actionType: record.actionType as ComputerAutomationAction["type"],
       };
+      const actionCleanup = boundedCleanup(record.cleanup);
+      if (actionCleanup !== undefined) cleanupContext = actionCleanup;
       current = record.cause;
       continue;
     }
@@ -1562,6 +1584,23 @@ export const makeWithOptions = Effect.fn("ComputerUse.makeWithOptions")(function
         }
         const resolvedPoints = new Map<number, ResolvedActionPoint>();
         const resolvedChangeRegions = new Map<number, ResolvedChangeRegion>();
+        yield* controller.validateActions(input.actions).pipe(
+          Effect.mapError(
+            (cause) =>
+              new ComputerUseActionError({
+                actionIndex:
+                  cause._tag === "GnomeRemoteDesktopCommandError" && cause.actionIndex !== undefined
+                    ? cause.actionIndex
+                    : 0,
+                completedActionCount: 0,
+                actionType:
+                  cause._tag === "GnomeRemoteDesktopCommandError" && cause.actionType !== undefined
+                    ? cause.actionType
+                    : firstAction.type,
+                cause,
+              }),
+          ),
+        );
         for (const [index, action] of input.actions.entries()) {
           yield* Effect.gen(function* () {
             switch (action.type) {
@@ -1774,7 +1813,40 @@ export const makeWithOptions = Effect.fn("ComputerUse.makeWithOptions")(function
           actionResults.push(actionResult);
         }
         return actionResults;
-      }).pipe(Effect.mapError(mapOperationError("act"))),
+      }).pipe(
+        Effect.mapError(mapOperationError("act")),
+        Effect.catch((cause) =>
+          controller.releaseInputs.pipe(
+            Effect.match({
+              onFailure: () => ({
+                keys: "release-failed" as const,
+                buttons: "release-failed" as const,
+              }),
+              onSuccess: (cleanup) => cleanup,
+            }),
+            Effect.flatMap((cleanup) =>
+              Effect.fail(
+                cause._tag === "ComputerUseActionError"
+                  ? new ComputerUseActionError({
+                      actionIndex: cause.actionIndex,
+                      completedActionCount: cause.completedActionCount,
+                      actionType: cause.actionType,
+                      cause: cause.cause,
+                      cleanup: mergeCleanup(toComputerAutomationFailure(cause).cleanup, cleanup),
+                    })
+                  : new ComputerUseOperationError({
+                      operation: "act",
+                      cause: {
+                        cause,
+                        cleanup: mergeCleanup(toComputerAutomationFailure(cause).cleanup, cleanup),
+                      },
+                    }),
+              ),
+            ),
+          ),
+        ),
+        Effect.onInterrupt(() => controller.releaseInputs.pipe(Effect.ignore)),
+      ),
     );
 
   const release = controller.stop.pipe(
@@ -1783,6 +1855,7 @@ export const makeWithOptions = Effect.fn("ComputerUse.makeWithOptions")(function
   );
 
   const releaseInputs = controller.releaseInputs.pipe(
+    Effect.asVoid,
     Effect.mapError(mapOperationError("release")),
   );
 
