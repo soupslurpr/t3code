@@ -2865,6 +2865,7 @@ const makeWsRpcLayer = (
               const scope = {
                 environmentId,
                 threadId: input.threadId,
+                controllerId: `human:${currentSessionId}`,
                 providerSessionId: `human:${currentSessionId}`,
                 providerInstanceId: AGENT_DESKTOP_HUMAN_PROVIDER_INSTANCE_ID,
                 capabilities: new Set(["computer" as const]),
@@ -2922,6 +2923,7 @@ const makeWsRpcLayer = (
               const scope = {
                 environmentId,
                 threadId: USER_DESKTOP_SETTINGS_THREAD_ID,
+                controllerId: `human:${currentSessionId}`,
                 providerSessionId: `human:${currentSessionId}`,
                 providerInstanceId: USER_DESKTOP_HUMAN_PROVIDER_INSTANCE_ID,
                 capabilities: new Set(["computer" as const]),

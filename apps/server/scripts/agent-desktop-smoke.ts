@@ -74,6 +74,7 @@ const runtimeLayer = Layer.merge(managerLayer, computerLayer);
 const scope = {
   environmentId: EnvironmentId.make("environment-server-smoke"),
   threadId: ThreadId.make("thread-server-smoke"),
+  controllerId: "controller-server-smoke",
   providerSessionId: "controller-server-smoke",
   providerInstanceId: ProviderInstanceId.make("codex"),
   capabilities: new Set(["computer"] as const),
@@ -82,7 +83,7 @@ const scope = {
 const owner = {
   environmentId: scope.environmentId,
   threadId: scope.threadId,
-  controllerId: scope.providerSessionId,
+  controllerId: scope.controllerId,
 };
 const message = "environment server transfer: exact Unicode ’ →\n";
 

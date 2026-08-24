@@ -49,7 +49,15 @@ const requestEvent = (
   request: request(requestId, overrides),
 });
 
-const consumerState = (handleRequest: (request: PreviewAutomationRequest) => Promise<unknown>) => ({
+const cancelEvent = (requestId: string): PreviewAutomationStreamEvent => ({
+  type: "cancel",
+  connectionId,
+  requestId,
+});
+
+const consumerState = (
+  handleRequest: (request: PreviewAutomationRequest, signal: AbortSignal) => Promise<unknown>,
+) => ({
   connectionAtom: Atom.make<string | null>(null),
   requestHandlerAtom: Atom.make({ handle: handleRequest }),
 });
@@ -151,6 +159,51 @@ describe("previewAutomationRequestConsumer", () => {
       "request-2",
     ]);
     expect(responses.map((response) => response.requestId)).toEqual(["request-1", "request-2"]);
+    registry.dispose();
+  });
+
+  it("aborts and cleans up only the cancelled request", async () => {
+    const requestsAtom = Atom.make<AsyncResult.AsyncResult<PreviewAutomationStreamEvent, Error>>(
+      AsyncResult.initial<PreviewAutomationStreamEvent, Error>(false),
+    );
+    const aborted = vi.fn();
+    const cancel = vi.fn(async () => undefined);
+    const handle = vi.fn(
+      async (_request: PreviewAutomationRequest, signal: AbortSignal): Promise<unknown> =>
+        await new Promise((resolve) => {
+          signal.addEventListener(
+            "abort",
+            () => {
+              aborted();
+              resolve("late result");
+            },
+            { once: true },
+          );
+        }),
+    );
+    const respond = vi.fn(async () => undefined);
+    const connectionAtom = Atom.make<string | null>(null);
+    const requestHandlerAtom = Atom.make({ handle, cancel });
+    const consumerAtom = createPreviewAutomationRequestConsumerAtom({
+      requestsAtom,
+      clientId,
+      connectionAtom,
+      environmentId,
+      requestHandlerAtom,
+      respond,
+      label: "test:preview-automation-cancel",
+    });
+    const registry = AtomRegistry.make();
+    registry.mount(consumerAtom);
+
+    registry.set(requestsAtom, AsyncResult.success(requestEvent("request-cancelled")));
+    await vi.waitFor(() => expect(handle).toHaveBeenCalledTimes(1));
+    registry.set(requestsAtom, AsyncResult.success(cancelEvent("request-cancelled")));
+
+    await vi.waitFor(() => expect(cancel).toHaveBeenCalledTimes(1));
+    expect(aborted).toHaveBeenCalledTimes(1);
+    expect(cancel).toHaveBeenCalledWith(request("request-cancelled"));
+    expect(respond).not.toHaveBeenCalled();
     registry.dispose();
   });
 
