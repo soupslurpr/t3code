@@ -37,6 +37,11 @@ export interface ThreadMonitorRepositoryShape {
     ProjectionRepositoryError
   >;
 
+  /** Reads every member needed to replay one durable continuation, including delivered members. */
+  readonly listByDeliveryGroupId: (
+    groupId: string,
+  ) => Effect.Effect<ReadonlyArray<ThreadMonitor>, ProjectionRepositoryError>;
+
   /** Deletes every monitor owned by a thread. */
   readonly deleteByThread: (threadId: ThreadId) => Effect.Effect<void, ProjectionRepositoryError>;
 

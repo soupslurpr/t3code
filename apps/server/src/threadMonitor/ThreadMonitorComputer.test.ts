@@ -14,6 +14,7 @@ import {
 import { createModelSelection } from "@t3tools/shared/model";
 import * as NodeCrypto from "node:crypto";
 import * as Effect from "effect/Effect";
+import * as Deferred from "effect/Deferred";
 import * as Fiber from "effect/Fiber";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
@@ -124,6 +125,50 @@ function evaluatorInstance(
 }
 
 describe("ThreadMonitorComputer", () => {
+  it.effect("releases view access when a pending start is interrupted", () =>
+    Effect.gen(function* () {
+      const requested = yield* Deferred.make<void>();
+      let released = false;
+      const service = yield* ThreadMonitorComputer.make.pipe(
+        Effect.provide(
+          Layer.mergeAll(
+            Layer.mock(ComputerAutomationRouter.ComputerAutomationRouter)({
+              requestView: () =>
+                Deferred.succeed(requested, undefined).pipe(Effect.andThen(Effect.never)),
+              release: () =>
+                Effect.sync(() => {
+                  released = true;
+                  return {} as never;
+                }),
+            }),
+            Layer.mock(ServerEnvironment.ServerEnvironment)({
+              getEnvironmentId: Effect.succeed(EnvironmentId.make("environment-computer-test")),
+            }),
+            Layer.mock(ComputerObservationStore.ComputerObservationStore)({}),
+            Layer.mock(ProjectionSnapshotQuery)({}),
+            Layer.mock(ProviderInstanceRegistry.ProviderInstanceRegistry)({}),
+          ),
+        ),
+      );
+      const preparing = yield* service
+        .prepare({
+          monitorId: ThreadMonitorId.make("interrupted-start"),
+          threadId,
+          routingInstanceId: instanceId,
+          watch: {
+            label: "Pending desktop",
+            desktop: { kind: "user", desktopId: "pending" },
+            match: { type: "image-change" },
+          },
+          createdAt: initialAt,
+        })
+        .pipe(Effect.forkScoped);
+      yield* Deferred.await(requested);
+      yield* Fiber.interrupt(preparing);
+      expect(released).toBe(true);
+    }),
+  );
+
   it.effect("captures context only when a trigger schedules exact model evaluation", () =>
     Effect.gen(function* () {
       const captures: number[] = [];
