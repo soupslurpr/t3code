@@ -10,6 +10,7 @@ import { AsyncResult, Atom, AtomRegistry } from "effect/unstable/reactivity";
 import { describe, expect, it, vi } from "vite-plus/test";
 
 import {
+  PreviewAutomationComputerControllerRequiredError,
   PreviewAutomationRecordingNotActiveError,
   PreviewAutomationTargetUnavailableError,
   PreviewAutomationViewportTimeoutError,
@@ -266,6 +267,33 @@ describe("previewAutomationRequestConsumer", () => {
     ).toMatchObject({
       _tag: "PreviewAutomationExecutionError",
       detail: { tabId: null },
+    });
+  });
+
+  it("requires current servers to identify computer controllers", () => {
+    const error = new PreviewAutomationComputerControllerRequiredError({
+      requestId: "request-computer",
+      environmentId,
+      threadId,
+    });
+
+    expect(
+      serializePreviewAutomationError(error, {
+        requestId: "request-computer",
+        operation: "computerStatus",
+        environmentId,
+        threadId,
+        tabId: null,
+      }),
+    ).toEqual({
+      _tag: "PreviewAutomationUnsupportedClientError",
+      message:
+        "Computer request request-computer has no controller identity. Update the T3 environment server.",
+      detail: {
+        requestId: "request-computer",
+        environmentId: "environment-1",
+        threadId: "thread-1",
+      },
     });
   });
 

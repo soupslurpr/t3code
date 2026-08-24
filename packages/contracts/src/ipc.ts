@@ -87,6 +87,7 @@ import {
   ComputerAutomationStatus,
   ComputerAutomationTargetInput,
 } from "./computerAutomation.ts";
+import type { UserDesktopHostRegistration } from "./userDesktop.ts";
 import type {
   ClientOrchestrationCommand,
   OrchestrationGetFullThreadDiffInput,
@@ -1300,6 +1301,8 @@ export interface DesktopBridge {
   // info (omits instances whose backend hasn't produced a config yet).
   // The primary backend is identified by id === PRIMARY_LOCAL_ENVIRONMENT_ID.
   getLocalEnvironmentBootstraps: () => readonly DesktopEnvironmentBootstrap[];
+  /** Optional for compatibility with desktop shells that cannot identify their user desktop. */
+  getUserDesktopHost?: () => UserDesktopHostRegistration;
   getLocalEnvironmentBearerToken: () => Promise<string>;
   getClientSettings: () => Promise<ClientSettings | null>;
   setClientSettings: (settings: ClientSettings) => Promise<void>;
@@ -1440,6 +1443,22 @@ export interface DesktopComputerAutomationBridge {
     input: ComputerAutomationAccessInput,
     context?: DesktopComputerAutomationContext,
   ) => Promise<DesktopComputerAutomationResult<ComputerAutomationObservation>>;
+  rememberView: (
+    input: ComputerAutomationAccessInput,
+    context?: DesktopComputerAutomationContext,
+  ) => Promise<DesktopComputerAutomationResult<ComputerAutomationObservation>>;
+  rememberControl: (
+    input: ComputerAutomationAccessInput,
+    context?: DesktopComputerAutomationContext,
+  ) => Promise<DesktopComputerAutomationResult<ComputerAutomationObservation>>;
+  forceRelease: (
+    input: ComputerAutomationTargetInput,
+    context?: DesktopComputerAutomationContext,
+  ) => Promise<DesktopComputerAutomationResult<ComputerAutomationStatus>>;
+  forceForgetControl: (
+    input: ComputerAutomationTargetInput,
+    context?: DesktopComputerAutomationContext,
+  ) => Promise<DesktopComputerAutomationResult<void>>;
   snapshot: (
     input: ComputerAutomationSnapshotInput,
     context?: DesktopComputerAutomationContext,

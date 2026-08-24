@@ -15,7 +15,9 @@ const modelMatch = {
   criterion: "A result is visible",
   modelSelection: { instanceId: "provider", model: "image-evaluator" },
 };
-const userDesktop = { desktop: { kind: "user" as const } };
+const userDesktop = {
+  desktop: { kind: "user" as const, desktopId: "user-desktop-1" },
+};
 
 describe("thread monitor contracts", () => {
   it("requires an explicit watched desktop", () => {
