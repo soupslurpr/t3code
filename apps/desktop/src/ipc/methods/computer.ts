@@ -14,6 +14,7 @@ import {
   DesktopComputerAutomationTargetRequestSchema,
   type DesktopComputerAutomationResult,
   makeDesktopComputerAutomationResultSchema,
+  UserDesktopHostRegistration,
 } from "@t3tools/contracts";
 import {
   captureComputerTemporalFrame,
@@ -25,6 +26,7 @@ import * as Schema from "effect/Schema";
 
 import * as ComputerUse from "../../computer/ComputerUse.ts";
 import * as ComputerUseRouter from "../../computer/ComputerUseRouter.ts";
+import * as UserDesktopIdentity from "../../computer/UserDesktopIdentity.ts";
 import * as IpcChannels from "../channels.ts";
 import * as DesktopIpc from "../DesktopIpc.ts";
 
@@ -34,6 +36,15 @@ const LOCAL_RENDERER_CONTROLLER_ID = "local-renderer";
 const LOCAL_RENDERER_CONTEXT = { controllerId: LOCAL_RENDERER_CONTROLLER_ID } as const;
 
 type TemporalObservation = NonNullable<ComputerAutomationActInput["temporalObservation"]>;
+
+export const getUserDesktopHost = DesktopIpc.makeSyncIpcMethod({
+  channel: IpcChannels.GET_USER_DESKTOP_HOST_CHANNEL,
+  result: UserDesktopHostRegistration,
+  handler: Effect.fn("desktop.ipc.computer.getUserDesktopHost")(function* () {
+    const identity = yield* UserDesktopIdentity.UserDesktopIdentity;
+    return identity.registration;
+  }),
+});
 
 /** Resolves the logical controller used for one context-free local IPC call. */
 const requestContext = (
@@ -188,9 +199,12 @@ const actWithTemporalObservation = Effect.fn("desktop.ipc.computer.actWithTempor
 
 /** Resolves the concrete desktop returned by an access request. */
 function targetFromStatus(status: ComputerAutomationStatus) {
-  return status.desktop?.kind === "agent"
+  if (status.desktop === undefined) {
+    throw new Error("computer status omitted its concrete desktop identity");
+  }
+  return status.desktop.kind === "agent"
     ? ({ desktop: { kind: "agent", desktopId: status.desktop.id } } as const)
-    : ({ desktop: { kind: "user" } } as const);
+    : ({ desktop: { kind: "user", desktopId: status.desktop.id } } as const);
 }
 
 export const status = DesktopIpc.makeIpcMethod({
@@ -277,6 +291,80 @@ export const requestControl = DesktopIpc.makeIpcMethod({
   }),
 });
 
+export const rememberView = DesktopIpc.makeIpcMethod({
+  channel: IpcChannels.COMPUTER_AUTOMATION_REMEMBER_VIEW_CHANNEL,
+  payload: DesktopComputerAutomationAccessRequestSchema,
+  result: makeDesktopComputerAutomationResultSchema(ComputerAutomationObservation),
+  handler: Effect.fn("desktop.ipc.computer.rememberView")(function* (request) {
+    const computer = yield* ComputerUseRouter.ComputerUseRouter;
+    const context = requestContext(request.context);
+    return yield* computerResult(
+      computer
+        .rememberView(context, request.input)
+        .pipe(
+          Effect.flatMap((status) =>
+            observeComputer(
+              computer,
+              request.input.observation ?? false,
+              targetFromStatus(status),
+              status,
+              context,
+            ),
+          ),
+        ),
+    );
+  }),
+});
+
+export const rememberControl = DesktopIpc.makeIpcMethod({
+  channel: IpcChannels.COMPUTER_AUTOMATION_REMEMBER_CONTROL_CHANNEL,
+  payload: DesktopComputerAutomationAccessRequestSchema,
+  result: makeDesktopComputerAutomationResultSchema(ComputerAutomationObservation),
+  handler: Effect.fn("desktop.ipc.computer.rememberControl")(function* (request) {
+    const computer = yield* ComputerUseRouter.ComputerUseRouter;
+    const context = requestContext(request.context);
+    return yield* computerResult(
+      computer
+        .rememberControl(context, request.input)
+        .pipe(
+          Effect.flatMap((status) =>
+            observeComputer(
+              computer,
+              request.input.observation ?? false,
+              targetFromStatus(status),
+              status,
+              context,
+            ),
+          ),
+        ),
+    );
+  }),
+});
+
+export const forceRelease = DesktopIpc.makeIpcMethod({
+  channel: IpcChannels.COMPUTER_AUTOMATION_FORCE_RELEASE_CHANNEL,
+  payload: DesktopComputerAutomationTargetRequestSchema,
+  result: makeDesktopComputerAutomationResultSchema(ComputerAutomationStatus),
+  handler: Effect.fn("desktop.ipc.computer.forceRelease")(function* (request) {
+    const computer = yield* ComputerUseRouter.ComputerUseRouter;
+    return yield* computerResult(
+      computer.forceRelease(requestContext(request.context), request.input),
+    );
+  }),
+});
+
+export const forceForgetControl = DesktopIpc.makeIpcMethod({
+  channel: IpcChannels.COMPUTER_AUTOMATION_FORCE_FORGET_CONTROL_CHANNEL,
+  payload: DesktopComputerAutomationTargetRequestSchema,
+  result: makeDesktopComputerAutomationResultSchema(Schema.Void),
+  handler: Effect.fn("desktop.ipc.computer.forceForgetControl")(function* (request) {
+    const computer = yield* ComputerUseRouter.ComputerUseRouter;
+    return yield* computerResult(
+      computer.forceForget(requestContext(request.context), request.input),
+    );
+  }),
+});
+
 export const snapshot = DesktopIpc.makeIpcMethod({
   channel: IpcChannels.COMPUTER_AUTOMATION_SNAPSHOT_CHANNEL,
   payload: DesktopComputerAutomationSnapshotRequestSchema,
@@ -338,6 +426,10 @@ export const methods = [
   releaseAvailability,
   requestView,
   requestControl,
+  rememberView,
+  rememberControl,
+  forceRelease,
+  forceForgetControl,
   snapshot,
   act,
   release,

@@ -19,6 +19,7 @@ import {
   PanelsTopLeftIcon,
   KeyboardIcon,
   Link2Icon,
+  MonitorIcon,
   MonitorCogIcon,
   PaletteIcon,
   SearchIcon,
@@ -87,6 +88,7 @@ const SETTINGS_SECTION_ICONS: Readonly<
   "/settings/source-control": GitBranchIcon,
   "/settings/storage": HardDriveIcon,
   "/settings/connections": Link2Icon,
+  "/settings/user-desktops": MonitorIcon,
   "/settings/agent-desktops": MonitorCogIcon,
   "/settings/archived": ArchiveIcon,
 };

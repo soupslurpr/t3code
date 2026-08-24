@@ -46,6 +46,7 @@ import * as PullRequestProviderRegistry from "./pullRequest/PullRequestProviderR
 import * as PullRequestService from "./pullRequest/PullRequestService.ts";
 import { layerConfig as SqlitePersistenceLayerLive } from "./persistence/Layers/Sqlite.ts";
 import * as PullRequestFilesViewed from "./persistence/PullRequestFilesViewed.ts";
+import * as UserDesktops from "./persistence/UserDesktops.ts";
 import * as ServerLifecycleEvents from "./serverLifecycleEvents.ts";
 import * as AnalyticsService from "./telemetry/AnalyticsService.ts";
 import { ProviderSessionDirectoryLive } from "./provider/Layers/ProviderSessionDirectory.ts";
@@ -177,7 +178,11 @@ export const HTTP_ROUTER_CONFIG = {
 // already closes the websocket gracefully. Do not add an artificial drain before
 // those finalizers get a chance to run.
 const HTTP_PREEMPTIVE_SHUTDOWN_GRACE_MS = 0;
-const PreviewAutomationBrokerLive = PreviewAutomationBroker.layer;
+const PersistenceLayerLive = Layer.empty.pipe(Layer.provideMerge(SqlitePersistenceLayerLive));
+const PreviewAutomationBrokerLive = PreviewAutomationBroker.layer.pipe(
+  Layer.provide(UserDesktops.layer),
+  Layer.provide(PersistenceLayerLive),
+);
 const ComputerObservationStoreLive = ComputerObservationStore.layer;
 const AgentDesktopEnvironmentLive = AgentDesktopEnvironment.layer;
 const QemuAgentDesktopLive = QemuAgentDesktop.layer.pipe(
@@ -307,8 +312,6 @@ const ProviderLayerLive = ProviderServiceLive.pipe(
   Layer.provide(ProviderAdapterRegistryLive),
   Layer.provideMerge(ProviderSessionDirectoryLayerLive),
 );
-
-const PersistenceLayerLive = Layer.empty.pipe(Layer.provideMerge(SqlitePersistenceLayerLive));
 
 const VcsDriverRegistryLayerLive = VcsDriverRegistry.layer.pipe(
   Layer.provide(VcsProjectConfig.layer),

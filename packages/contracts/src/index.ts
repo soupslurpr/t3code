@@ -43,6 +43,7 @@ export * from "./previewAutomation.ts";
 export * from "./computerAutomation.ts";
 export * from "./computerObservation.ts";
 export * from "./agentDesktop.ts";
+export * from "./userDesktop.ts";
 export * from "./threadMonitor.ts";
 export * from "./resourceTelemetry.ts";
 export * from "./usage.ts";

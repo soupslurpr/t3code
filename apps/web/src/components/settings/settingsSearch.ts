@@ -22,6 +22,7 @@ export type SettingsPath =
   | "/settings/source-control"
   | "/settings/storage"
   | "/settings/connections"
+  | "/settings/user-desktops"
   | "/settings/agent-desktops"
   | "/settings/archived";
 
@@ -92,6 +93,7 @@ export const SETTINGS_SECTION_LABELS: Readonly<Record<SettingsPath, string>> = {
   "/settings/source-control": "Source Control",
   "/settings/storage": "Storage",
   "/settings/connections": "Connections",
+  "/settings/user-desktops": "User desktops",
   "/settings/agent-desktops": "Agent desktops",
   "/settings/archived": "Archive",
 };
@@ -173,6 +175,11 @@ export const SETTINGS_SEARCH_ITEMS = [
     searchTerms: [
       "new thread default runtime mode supervised approvals auto accept edits full access",
     ],
+  },
+  {
+    id: "user-desktops",
+    title: "User desktops",
+    to: "/settings/user-desktops",
   },
   {
     id: "agent-desktops",
@@ -817,6 +824,8 @@ const SETTINGS_CATEGORY_SCOPES: Readonly<Record<SettingsPath, SettingsSearchScop
   // environment at any selection. Neither needs a particular scope to render.
   "/settings/keybindings": null,
   "/settings/providers": null,
+  "/settings/agent-desktops": null,
+  "/settings/user-desktops": null,
   "/settings/integrations": null,
   "/settings/source-control": "environment-defaults",
   "/settings/storage": "project-defaults",
