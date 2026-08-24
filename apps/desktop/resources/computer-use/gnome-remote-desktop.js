@@ -11,8 +11,15 @@ import Gio from "gi://Gio";
 import GLib from "gi://GLib";
 import System from "system";
 
+import {
+  mapAccessibilityBounds,
+  readAccessibilityDocumentTransform,
+} from "./accessibility-bounds.js";
+import { prepareAccessibilityRoot, readAccessibilityWindowFocus } from "./accessibility-root.js";
+import { findAccessibilityTextTarget } from "./accessibility-text-target.js";
 import { AccessibilityStatusLease } from "./accessibility-status-lease.js";
-import { canTypeExactlyWithKeyboardEvents } from "./exact-keyboard-text.js";
+import { canTypeExactlyWithKeyboardEvents, exactTextFallback } from "./exact-keyboard-text.js";
+import { InputCancellationEpoch } from "./input-cancellation.js";
 import { portalPersistMode } from "./portal-persistence.js";
 import { rememberAndRelease } from "./remembered-session.js";
 import {
@@ -26,6 +33,7 @@ import {
   createBatchedIdleCollector,
   createStreamCaptureCompletion,
 } from "./stream-capture-completion.js";
+import { captureTextInsertion, confirmTextInsertion } from "./text-insertion-verification.js";
 
 let Atspi = null;
 let accessibilityImportError = null;
@@ -106,7 +114,6 @@ const ACCESSIBILITY_TEXT_SELECTION_SETTLE_MS = 25;
 const ACCESSIBILITY_TEXT_FOCUS_TIMEOUT_MS = 250;
 const ACCESSIBILITY_TEXT_FOCUS_INTERVAL_MS = 25;
 const ACCESSIBILITY_TEXT_VERIFY_SETTLE_MS = 50;
-const MAX_SEMANTIC_TEXT_SEGMENTS = 32;
 const EXCLUDED_ACCESSIBILITY_APPLICATIONS = new Set([
   "gnome-shell",
   "xdg-desktop-portal-gnome",
@@ -198,6 +205,7 @@ const INPUT_METHODS = new Set([
 ]);
 
 Gio._promisify(Gio.DBusConnection.prototype, "call", "call_finish");
+Gio._promisify(Gio.Subprocess.prototype, "communicate_utf8_async", "communicate_utf8_finish");
 
 const connection = Gio.bus_get_sync(Gio.BusType.SESSION, null);
 let systemConnection = null;
@@ -205,6 +213,7 @@ let loginSessionPath = null;
 const senderToken = connection.get_unique_name().slice(1).replaceAll(".", "_");
 const appId = ARGV[0] ?? "";
 const restoreTokenPath = ARGV[1] ?? "";
+const ibusCommitPath = ARGV[2] ?? "";
 let requestSequence = 0;
 let sessionHandle = null;
 let sessionAccess = null;
@@ -219,6 +228,8 @@ let agentWorking = false;
 let grantedDevices = 0;
 let screenStreams = [];
 let pointerPosition = null;
+const inputCancellation = new InputCancellationEpoch();
+let activeInputGeneration = null;
 let permission = "prompt-required";
 let accessGeneration = 0;
 let accessibilityInitialized = false;
@@ -229,6 +240,8 @@ const heldKeysyms = new Set();
 const heldButtons = new Set();
 const pendingPortalRequests = new Map();
 const activeStreamCaptures = new Set();
+const activeIbusProcesses = new Set();
+const cancelledIbusProcesses = new WeakSet();
 const noteCompletedStreamCapture = createBatchedIdleCollector({
   interval: STREAM_CAPTURE_GC_INTERVAL,
   schedule: (collect) => {
@@ -369,12 +382,35 @@ const accessibilityStatusLease = new AccessibilityStatusLease({
 /** Adds one bounded execution phase without replacing a more specific phase. */
 async function runInputPhase(phase, operation) {
   try {
-    return await operation();
+    requireActiveInputOperation();
+    const result = await operation();
+    requireActiveInputOperation();
+    return result;
   } catch (error) {
-    const failure = mutableError(error);
+    let failure;
+    try {
+      requireActiveInputOperation();
+      failure = mutableError(error);
+    } catch (cancellationError) {
+      failure = mutableError(cancellationError);
+    }
     if (typeof failure.phase !== "string") failure.phase = phase;
     throw failure;
   }
+}
+
+/** Invalidates active and queued input and interrupts any transient input method. */
+function cancelInputOperations() {
+  inputCancellation.cancel();
+  cancelActiveIbusProcesses();
+}
+
+/** Rejects the active input command after it crosses a release boundary. */
+function requireActiveInputOperation() {
+  if (activeInputGeneration === null || !inputCancellation.isCancelled(activeInputGeneration)) {
+    return;
+  }
+  throw portalCancellationError();
 }
 
 /** Initializes the optional system AT-SPI client once. */
@@ -421,15 +457,9 @@ function readAccessibilityTextRange(text, startPosition, endPosition) {
   return Atspi.Text.prototype.get_text.call(text, startPosition, endPosition);
 }
 
-/** Returns the intersection of two rectangles in one coordinate space. */
-function intersectAccessibilityBounds(first, second) {
-  const left = Math.max(first.x, second.x);
-  const top = Math.max(first.y, second.y);
-  const right = Math.min(first.x + first.width, second.x + second.width);
-  const bottom = Math.min(first.y + first.height, second.y + second.height);
-  return right > left && bottom > top
-    ? { x: left, y: top, width: right - left, height: bottom - top }
-    : null;
+/** Reads text selection without invoking Accessible.get_selection in GJS. */
+function readAccessibilityTextSelection(text) {
+  return Atspi.Text.prototype.get_selection.call(text, 0);
 }
 
 /** Lists eligible top-level windows without traversing their content. */
@@ -555,45 +585,28 @@ async function waitForAccessibilityRootFocus(root) {
     ACCESSIBILITY_FOCUS_RETURN_TIMEOUT_MS / ACCESSIBILITY_FOCUS_RETURN_INTERVAL_MS,
   );
   for (let attempt = 0; attempt <= attemptCount; attempt += 1) {
+    requireActiveInputOperation();
     try {
-      if (hasAccessibilityState(root.get_state_set(), Atspi.StateType.ACTIVE)) return true;
+      if (accessibilityWindowIsFocused(root)) return true;
     } catch {
       return false;
     }
     if (attempt < attemptCount) await delay(ACCESSIBILITY_FOCUS_RETURN_INTERVAL_MS);
   }
-  return accessibilityRootContainsFocus(root, MAX_ACCESSIBILITY_NODES).focused;
+  return false;
 }
 
 /** Selects only the active or focused top-level accessibility windows. */
 function selectFocusedAccessibilityRoots(roots) {
-  const active = roots.filter(({ accessible }) => {
-    try {
-      return hasAccessibilityState(accessible.get_state_set(), Atspi.StateType.ACTIVE);
-    } catch {
-      return false;
-    }
-  });
-  if (active.length === 1) return { roots: active, truncated: false };
-
-  const focused = [];
-  let remainingNodes = MAX_ACCESSIBILITY_NODES;
-  let truncated = false;
-  for (const root of active.length > 1 ? active : roots) {
-    if (remainingNodes <= 0) {
-      truncated = true;
-      break;
-    }
-    const result = accessibilityRootContainsFocus(root.accessible, remainingNodes);
-    remainingNodes -= result.scanned;
-    truncated ||= result.truncated;
-    if (result.focused) focused.push(root);
+  const focused = roots.filter(({ accessible }) => accessibilityWindowIsFocused(accessible));
+  for (const root of focused) {
+    prepareAccessibilityRoot(root.accessible);
   }
-  return { roots: focused, truncated };
+  return { roots: focused, truncated: false };
 }
 
-/** Finds the single editable control that currently owns keyboard focus. */
-function findFocusedAccessibilityTextTarget() {
+/** Finds a focused editor, optionally following combobox focus for readback. */
+function findFocusedAccessibilityTextTarget(allowControlledFocus = false) {
   let atspi;
   try {
     atspi = ensureAccessibility();
@@ -602,53 +615,22 @@ function findFocusedAccessibilityTextTarget() {
   }
   const selection = selectFocusedAccessibilityRoots(listAccessibilityRoots(atspi));
   if (selection.roots.length !== 1) return null;
-  const queue = [selection.roots[0].accessible];
-  const focusedTargets = [];
-  let queueIndex = 0;
-  let scanned = 0;
-  while (queueIndex < queue.length && scanned < MAX_ACCESSIBILITY_NODES) {
-    const accessible = queue[queueIndex];
-    queueIndex += 1;
-    scanned += 1;
-    try {
-      const states = accessible.get_state_set();
-      if (!hasAccessibilityState(states, Atspi.StateType.DEFUNCT)) {
-        const interfaces = new Set(accessible.get_interfaces() ?? []);
-        if (
-          interfaces.has("EditableText") &&
-          interfaces.has("Text") &&
-          hasAccessibilityState(states, Atspi.StateType.FOCUSED) &&
-          hasAccessibilityState(states, Atspi.StateType.EDITABLE) &&
-          hasAccessibilityState(states, Atspi.StateType.SHOWING) &&
-          hasAccessibilityState(states, Atspi.StateType.VISIBLE) &&
-          (hasAccessibilityState(states, Atspi.StateType.ENABLED) ||
-            hasAccessibilityState(states, Atspi.StateType.SENSITIVE))
-        ) {
-          focusedTargets.push(accessible);
-        }
-        const childCount = Math.min(
-          MAX_ACCESSIBILITY_CHILDREN,
-          Math.max(0, accessible.get_child_count()),
-        );
-        for (let childIndex = 0; childIndex < childCount; childIndex += 1) {
-          const child = accessible.get_child_at_index(childIndex);
-          if (child !== null) queue.push(child);
-        }
-      }
-    } catch {
-      // The focused accessibility tree can change while it is traversed.
-    }
-  }
-  return focusedTargets.length === 1 ? focusedTargets[0] : null;
+  return findAccessibilityTextTarget(
+    selection.roots[0].accessible,
+    Atspi,
+    { nodes: MAX_ACCESSIBILITY_NODES, children: MAX_ACCESSIBILITY_CHILDREN },
+    allowControlledFocus,
+  );
 }
 
 /** Waits briefly for a newly focused editable control to reach AT-SPI. */
-async function waitForFocusedAccessibilityTextTarget() {
+async function waitForFocusedAccessibilityTextTarget(allowControlledFocus = false) {
   const attemptCount = Math.ceil(
     ACCESSIBILITY_TEXT_FOCUS_TIMEOUT_MS / ACCESSIBILITY_TEXT_FOCUS_INTERVAL_MS,
   );
   for (let attempt = 0; attempt <= attemptCount; attempt += 1) {
-    const target = findFocusedAccessibilityTextTarget();
+    requireActiveInputOperation();
+    const target = findFocusedAccessibilityTextTarget(allowControlledFocus);
     if (target !== null) return target;
     if (attempt < attemptCount) await delay(ACCESSIBILITY_TEXT_FOCUS_INTERVAL_MS);
   }
@@ -658,7 +640,12 @@ async function waitForFocusedAccessibilityTextTarget() {
 /** Inserts exact text directly only when mutation is known to be safe. */
 async function insertFocusedAccessibilityText(textValue, intervalMs) {
   const accessible = await waitForFocusedAccessibilityTextTarget();
-  if (accessible === null) return { status: "unavailable" };
+  if (
+    accessible === null ||
+    !Array.from(accessible.get_interfaces() ?? []).includes("EditableText")
+  ) {
+    return { status: "unavailable" };
+  }
   const states = accessible.get_state_set();
   if (/\n/u.test(textValue) && !hasAccessibilityState(states, Atspi.StateType.MULTI_LINE)) {
     return { status: "unavailable" };
@@ -684,14 +671,17 @@ async function insertFocusedAccessibilityText(textValue, intervalMs) {
     );
   };
   if (intervalMs === 0) {
+    requireActiveInputOperation();
     insertOrFail(textValue);
   } else {
     for (const character of textValue) {
+      requireActiveInputOperation();
       insertOrFail(character);
       await delay(intervalMs);
     }
   }
   await delay(ACCESSIBILITY_TEXT_VERIFY_SETTLE_MS);
+  requireActiveInputOperation();
   let insertedText;
   try {
     insertedText = readAccessibilityTextRange(text, startPosition, position);
@@ -750,7 +740,7 @@ function readAccessibilityActivation(accessible, role, states, interfaces) {
 }
 
 /** Reads one visible interactive target in focused-window coordinates. */
-function readAccessibilityTarget(accessible, root, windowBounds, id) {
+function readAccessibilityTarget(accessible, root, windowBounds, id, transform = null) {
   const states = accessible.get_state_set();
   if (
     hasAccessibilityState(states, Atspi.StateType.DEFUNCT) ||
@@ -769,26 +759,7 @@ function readAccessibilityTarget(accessible, root, windowBounds, id) {
   if (!interfaces.includes("Component")) return null;
 
   const rectangle = accessible.get_component_iface().get_extents(Atspi.CoordType.WINDOW);
-  if (
-    rectangle === null ||
-    !Number.isFinite(rectangle.x) ||
-    !Number.isFinite(rectangle.y) ||
-    !Number.isFinite(rectangle.width) ||
-    !Number.isFinite(rectangle.height) ||
-    rectangle.width <= 0 ||
-    rectangle.height <= 0
-  ) {
-    return null;
-  }
-  const bounds = intersectAccessibilityBounds(
-    {
-      x: Math.round(rectangle.x),
-      y: Math.round(rectangle.y),
-      width: Math.round(rectangle.width),
-      height: Math.round(rectangle.height),
-    },
-    windowBounds,
-  );
+  const bounds = mapAccessibilityBounds(rectangle, windowBounds, transform);
   if (bounds === null) return null;
 
   const description = accessibilityText(accessible.get_description());
@@ -814,6 +785,7 @@ function readAccessibilityTarget(accessible, root, windowBounds, id) {
       root: root.accessible,
       application: root.application,
       windowBounds,
+      transform,
       role,
       name: accessibilityText(accessible.get_name(), 512),
       activation: activation.activation,
@@ -861,13 +833,9 @@ function captureAccessibility(includeTargets = true) {
     const atspi = ensureAccessibility();
     const roots = listAccessibilityRoots(atspi);
     if (!includeTargets) {
-      const activeRoots = roots.filter(({ accessible }) => {
-        try {
-          return hasAccessibilityState(accessible.get_state_set(), Atspi.StateType.ACTIVE);
-        } catch {
-          return false;
-        }
-      });
+      const activeRoots = roots.filter(({ accessible }) =>
+        accessibilityWindowIsFocused(accessible),
+      );
       return {
         available: true,
         coordinateSpace: "focused-window",
@@ -938,14 +906,23 @@ function captureAccessibility(includeTargets = true) {
     let scanned = 0;
     let truncated = selection.truncated || windowsTruncated;
     for (const root of selection.roots) {
-      const queue = [root.accessible];
+      const queue = [{ accessible: root.accessible, parent: null, transform: null }];
       let queueIndex = 0;
       while (queueIndex < queue.length && scanned < MAX_ACCESSIBILITY_NODES) {
-        const accessible = queue[queueIndex];
+        const entry = queue[queueIndex];
+        const { accessible, parent } = entry;
         queueIndex += 1;
         scanned += 1;
         try {
-          const candidate = readAccessibilityTarget(accessible, root, windowBounds, "pending");
+          const transform =
+            entry.transform ?? readAccessibilityDocumentTransform(accessible, parent, Atspi);
+          const candidate = readAccessibilityTarget(
+            accessible,
+            root,
+            windowBounds,
+            "pending",
+            transform,
+          );
           if (candidate !== null) candidates.push(candidate);
           const states = accessible.get_state_set();
           if (hasAccessibilityState(states, Atspi.StateType.DEFUNCT)) continue;
@@ -955,7 +932,7 @@ function captureAccessibility(includeTargets = true) {
           );
           for (let childIndex = 0; childIndex < childCount; childIndex += 1) {
             const child = accessible.get_child_at_index(childIndex);
-            if (child !== null) queue.push(child);
+            if (child !== null) queue.push({ accessible: child, parent: accessible, transform });
           }
         } catch {
           // Ignore one stale node and continue through the remaining tree.
@@ -1005,9 +982,9 @@ function captureAccessibility(includeTargets = true) {
   }
 }
 
-/** Creates the error returned when access is released during authorization. */
+/** Creates the error returned when access or input ownership is released. */
 function portalCancellationError() {
-  const error = new Error("desktop access was released while portal permission was pending");
+  const error = new Error("desktop access or input ownership was released during the request");
   error.code = "request-cancelled";
   return error;
 }
@@ -1658,6 +1635,7 @@ async function detachSession() {
 /** Closes the active portal session, if any. */
 async function closeSession() {
   cancelActiveStreamCaptures();
+  cancelActiveIbusProcesses();
   await releaseHeldKeysyms();
   await releaseHeldButtons();
   heldKeysyms.clear();
@@ -1667,6 +1645,7 @@ async function closeSession() {
 
 /** Cancels authorization and closes the active view or control session. */
 async function releaseAccess() {
+  cancelInputOperations();
   accessGeneration += 1;
   permission = inactivePermission();
   invalidateAccessibilityTargets();
@@ -2029,6 +2008,7 @@ async function ensureSession(
         accessGeneration += 1;
         void cancelPendingPortalRequests("access");
         cancelActiveStreamCaptures();
+        cancelActiveIbusProcesses();
         sessionHandle = null;
         sessionAccess = null;
         sessionPersistent = false;
@@ -2145,6 +2125,12 @@ async function startPreparedSession(requestedAccess, preventSleep, remember = fa
     await accessibilityStatusLease.restore();
     throw portalCancellationError();
   }
+  try {
+    // Start lazy renderer accessibility before the first asynchronous screen capture.
+    selectFocusedAccessibilityRoots(listAccessibilityRoots(ensureAccessibility()));
+  } catch {
+    // Preserve screen access when the optional accessibility service is unavailable.
+  }
   return status;
 }
 
@@ -2212,28 +2198,106 @@ async function typeKeyboardText(text, intervalMs) {
   if (!canTypeExactlyWithKeyboardEvents(text)) {
     throw accessibilityError(
       "exact-text-unavailable",
-      "exact non-ASCII text requires a focused accessible editable control",
+      "exact non-printable text requires a focused accessible editable control",
       {
         field: "text",
-        expected: ["ASCII text or a focused accessible editable control"],
+        expected: ["printable ASCII without newline or tab", "focused accessible editable control"],
         phase: "execution",
       },
     );
   }
   let injectedCodePoints = 0;
   for (const character of text) {
-    if (character === "\n") {
-      await runInputPhase("key-press", () => tapKeysym(NAMED_KEYSYMS.enter, { field: "text" }));
-    } else if (character === "\t") {
-      await runInputPhase("key-press", () => tapKeysym(NAMED_KEYSYMS.tab, { field: "text" }));
-    } else {
-      const keysym = resolveKeysym(character, "text");
-      await runInputPhase("key-press", () => tapKeysym(keysym, { field: "text" }));
-    }
+    const keysym = resolveKeysym(character, "text");
+    await runInputPhase("key-press", () => tapKeysym(keysym, { field: "text" }));
     injectedCodePoints += 1;
     await delay(intervalMs);
+    requireActiveInputOperation();
   }
   return injectedCodePoints;
+}
+
+/** Commits arbitrary Unicode through a transient, clipboard-free IBus engine. */
+async function typeIbusText(text, intervalMs) {
+  if (ibusCommitPath.length === 0) {
+    throw accessibilityError(
+      "exact-text-unavailable",
+      "the bundled exact-text input-method helper is unavailable",
+      { field: "text", expected: ["IBus exact-text helper"], phase: "execution" },
+    );
+  }
+  const encodedInput = GLib.base64_encode(
+    new TextEncoder().encode(JSON.stringify({ text, intervalMs })),
+  );
+  let process;
+  try {
+    process = Gio.Subprocess.new(
+      ["/usr/bin/python", ibusCommitPath, encodedInput],
+      Gio.SubprocessFlags.STDOUT_PIPE | Gio.SubprocessFlags.STDERR_PIPE,
+    );
+  } catch (error) {
+    throw accessibilityError(
+      "exact-text-unavailable",
+      `the IBus exact-text helper could not start: ${normalizeError(error).message}`,
+      { field: "text", expected: ["working Python and IBus session"], phase: "execution" },
+    );
+  }
+  activeIbusProcesses.add(process);
+  try {
+    const [stdout, stderr] = await process.communicate_utf8_async(null, null);
+    if (cancelledIbusProcesses.has(process)) throw portalCancellationError();
+    let response;
+    try {
+      response = JSON.parse(stdout.trim());
+    } catch {
+      response = null;
+    }
+    const acceptedCodePoints = Number.isInteger(response?.acceptedCodePoints)
+      ? response.acceptedCodePoints
+      : 0;
+    if (
+      process.get_successful() &&
+      response?.ok === true &&
+      acceptedCodePoints === Array.from(text).length
+    ) {
+      return acceptedCodePoints;
+    }
+    const detail =
+      typeof response?.detail === "string"
+        ? response.detail
+        : stderr.trim().length > 0
+          ? stderr.trim()
+          : "the IBus exact-text helper failed";
+    throw accessibilityError(
+      acceptedCodePoints === 0 ? "exact-text-unavailable" : "ibus-injection-failed",
+      acceptedCodePoints === 0
+        ? detail
+        : `${detail}; ${acceptedCodePoints} code points may already have been inserted`,
+      {
+        field: "text",
+        expected: ["exact Unicode accepted by the focused application input method"],
+        phase: "execution",
+      },
+    );
+  } finally {
+    activeIbusProcesses.delete(process);
+  }
+}
+
+/** Terminates every in-flight transient IBus engine during access release. */
+function cancelActiveIbusProcesses() {
+  for (const process of Array.from(activeIbusProcesses)) {
+    cancelledIbusProcesses.add(process);
+    try {
+      process.send_signal(15);
+    } catch {
+      try {
+        process.force_exit();
+      } catch {
+        // The process completed between enumeration and cancellation.
+      }
+    }
+  }
 }
 
 /** Best-effort releases every tracked keysym before the portal session closes. */
@@ -2395,8 +2459,8 @@ function validateActionInputs(actions) {
   }
 }
 
-/** Presses and reliably releases one resolved key chord. */
-async function sendKeyChord(resolvedKeys) {
+/** Repeats a chord's final key while retaining its modifiers until completion. */
+async function sendKeyChord(resolvedKeys, repetitions = 1) {
   const pressedKeys = [];
   for (const resolved of resolvedKeys.slice(0, -1)) {
     if (heldKeysyms.has(resolved.keysym)) continue;
@@ -2405,9 +2469,11 @@ async function sendKeyChord(resolvedKeys) {
   }
   if (pressedKeys.length > 0) await delay(KEY_MODIFIER_SETTLE_MS);
   const finalKey = resolvedKeys[resolvedKeys.length - 1];
-  await runInputPhase("key-press", () =>
-    tapKeysym(finalKey.keysym, { field: finalKey.field, received: finalKey.key }),
-  );
+  for (let repetition = 0; repetition < repetitions; repetition += 1) {
+    await runInputPhase("key-press", () =>
+      tapKeysym(finalKey.keysym, { field: finalKey.field, received: finalKey.key }),
+    );
+  }
   for (let keyIndex = pressedKeys.length - 1; keyIndex >= 0; keyIndex -= 1) {
     await runInputPhase("key-up", () => releaseKeysym(pressedKeys[keyIndex]));
   }
@@ -2511,6 +2577,7 @@ async function movePointer(x, y, durationMs, requestedSteps, displayBounds, stre
         : Math.max(1, Math.min(120, requestedSteps));
     const start = pointerPosition;
     for (let step = 1; step <= stepCount; step += 1) {
+      requireActiveInputOperation();
       await sendAbsolutePointer({
         stream: target.stream,
         x: start.x + ((target.x - start.x) * step) / stepCount,
@@ -2550,6 +2617,7 @@ async function movePointer(x, y, durationMs, requestedSteps, displayBounds, stre
       : Math.max(1, Math.min(120, requestedSteps));
   const start = pointerPosition;
   for (let step = 1; step <= stepCount; step += 1) {
+    requireActiveInputOperation();
     await sendRelativePointer({
       stream: target.stream,
       x: start.x + ((target.x - start.x) * step) / stepCount,
@@ -2694,6 +2762,7 @@ async function activateAccessibilityTarget(targetId) {
     { accessible: stored.root, application: stored.application },
     stored.windowBounds,
     targetId,
+    stored.transform,
   );
   if (current === null || !current.target.enabled) {
     throw accessibilityError(
@@ -2768,14 +2837,7 @@ async function activateAccessibilityTarget(targetId) {
 
 /** Tests whether one accessibility root currently owns desktop focus. */
 function accessibilityWindowIsFocused(accessible) {
-  try {
-    return (
-      hasAccessibilityState(accessible.get_state_set(), Atspi.StateType.ACTIVE) ||
-      accessibilityRootContainsFocus(accessible, MAX_ACCESSIBILITY_NODES).focused
-    );
-  } catch {
-    return false;
-  }
+  return readAccessibilityWindowFocus(accessible, Atspi.StateType);
 }
 
 /** Tests one stable top-level accessibility identity. */
@@ -2837,6 +2899,7 @@ async function waitForAccessibilityWindowFocus(identity) {
   let available = false;
   let roots = [];
   for (let attempt = 0; attempt <= attemptCount; attempt += 1) {
+    requireActiveInputOperation();
     roots = listAccessibilityRoots(ensureAccessibility());
     const matches = roots.filter((root) => accessibilityWindowMatches(root, identity));
     if (matches.length > 1) {
@@ -2863,6 +2926,7 @@ async function waitForAccessibilityWindowInventory(identities) {
   );
   let stableSamples = 0;
   for (let attempt = 0; attempt <= attemptCount; attempt += 1) {
+    requireActiveInputOperation();
     const roots = listAccessibilityRoots(ensureAccessibility());
     const complete = identities.every(
       (identity) => roots.filter((root) => accessibilityWindowMatches(root, identity)).length === 1,
@@ -2883,7 +2947,9 @@ async function switchToAccessibilityWindow(identity, initialRoots) {
   ]);
   const maxSwitches = Math.min(MAX_ACCESSIBILITY_WINDOWS, initialRoots.length);
   for (let switchIndex = 0; switchIndex < maxSwitches; switchIndex += 1) {
-    await sendKeyChord(switchChord);
+    requireActiveInputOperation();
+    // Skip the growing MRU prefix created by previously visited windows.
+    await sendKeyChord(switchChord, switchIndex + 1);
     await delay(ACCESSIBILITY_WINDOW_SWITCH_SETTLE_MS);
     const settled = await waitForAccessibilityWindowFocus(identity);
     if (!settled.available) {
@@ -3087,59 +3153,97 @@ async function handleCommand(message) {
     case "type": {
       await runInputPhase("authorization", () => ensureSession("control"));
       const normalizedText = message.params.text.replace(/\r\n|\r/gu, "\n");
-      const segments = normalizedText.match(/[^\t]+|\t/gu) ?? [];
-      const useSemanticInsertion =
-        segments.filter((segment) => segment !== "\t").length <= MAX_SEMANTIC_TEXT_SEGMENTS;
       let injectedCodePoints = 0;
       let confirmedCodePoints = 0;
       let usedAccessibility = false;
       let usedKeyEvents = false;
-      for (const segment of segments) {
-        let insertion =
-          segment === "\t" || !useSemanticInsertion
-            ? { status: "unavailable" }
-            : await runInputPhase("execution", () =>
-                insertFocusedAccessibilityText(segment, message.params.intervalMs),
-              );
-        if (insertion.status === "replace-selection") {
-          await runInputPhase("key-press", () =>
-            tapKeysym(NAMED_KEYSYMS.backspace, { field: "text" }),
-          );
-          await delay(ACCESSIBILITY_TEXT_SELECTION_SETTLE_MS);
-          insertion = await runInputPhase("execution", () =>
-            insertFocusedAccessibilityText(segment, message.params.intervalMs),
-          );
-        }
-        if (insertion.status === "replace-selection") {
-          throw accessibilityError(
-            "accessibility-insertion-failed",
-            "the focused text selection could not be replaced",
-            { field: "text", phase: "execution" },
-          );
-        }
-        if (insertion.status === "unavailable") {
-          injectedCodePoints += await typeKeyboardText(segment, message.params.intervalMs);
-          usedKeyEvents ||= segment.length > 0;
-        } else {
-          injectedCodePoints += insertion.injectedCodePoints;
-          confirmedCodePoints += insertion.confirmedCodePoints;
-          usedAccessibility = true;
-        }
+      let usedInputMethod = false;
+      let focusedEditable = false;
+      let insertion =
+        normalizedText.length === 0
+          ? { status: "unavailable" }
+          : await runInputPhase("execution", () =>
+              insertFocusedAccessibilityText(normalizedText, message.params.intervalMs),
+            );
+      if (insertion.status === "replace-selection") {
+        await runInputPhase("key-press", () =>
+          tapKeysym(NAMED_KEYSYMS.backspace, { field: "text" }),
+        );
+        await delay(ACCESSIBILITY_TEXT_SELECTION_SETTLE_MS);
+        insertion = await runInputPhase("execution", () =>
+          insertFocusedAccessibilityText(normalizedText, message.params.intervalMs),
+        );
       }
+      if (insertion.status === "replace-selection") {
+        throw accessibilityError(
+          "accessibility-insertion-failed",
+          "the focused text selection could not be replaced",
+          { field: "text", phase: "execution" },
+        );
+      }
+      if (insertion.status === "unavailable") {
+        const fallback = exactTextFallback(normalizedText);
+        if (fallback === "semantic-required") {
+          throw accessibilityError(
+            "exact-text-unavailable",
+            "newline and tab text require a focused accessible editable control and were not injected",
+            {
+              field: "text",
+              expected: [
+                "printable ASCII without newline or tab",
+                "focused accessible editable control",
+              ],
+              phase: "execution",
+            },
+          );
+        }
+        // Read controlled comboboxes without granting direct accessibility mutation.
+        const before = captureTextInsertion(
+          await waitForFocusedAccessibilityTextTarget(true),
+          readAccessibilityTextSelection,
+        );
+        focusedEditable = before !== null;
+        if (fallback === "key-events") {
+          injectedCodePoints = await typeKeyboardText(normalizedText, message.params.intervalMs);
+          usedKeyEvents = normalizedText.length > 0;
+        } else {
+          injectedCodePoints = await typeIbusText(normalizedText, message.params.intervalMs);
+          usedInputMethod = normalizedText.length > 0;
+        }
+        if (before !== null && injectedCodePoints > 0) {
+          await delay(ACCESSIBILITY_TEXT_VERIFY_SETTLE_MS);
+          requireActiveInputOperation();
+          confirmedCodePoints = confirmTextInsertion(
+            before,
+            findFocusedAccessibilityTextTarget(true),
+            normalizedText,
+            readAccessibilityTextRange,
+          );
+        }
+      } else {
+        injectedCodePoints = insertion.injectedCodePoints;
+        confirmedCodePoints = insertion.confirmedCodePoints;
+        usedAccessibility = true;
+        focusedEditable = true;
+      }
+      const deliveryMethods =
+        Number(usedAccessibility) + Number(usedKeyEvents) + Number(usedInputMethod);
       const delivery =
-        usedAccessibility && usedKeyEvents
+        deliveryMethods > 1
           ? "mixed"
           : usedAccessibility
             ? "accessibility"
             : usedKeyEvents
               ? "key-events"
-              : "none";
+              : usedInputMethod
+                ? "input-method"
+                : "none";
       return {
         requestedCodePoints: Array.from(normalizedText).length,
         injectedCodePoints,
-        ...(usedAccessibility ? { confirmedCodePoints } : {}),
+        ...(focusedEditable ? { confirmedCodePoints } : {}),
         delivery,
-        focusedEditable: usedAccessibility,
+        focusedEditable,
       };
     }
     case "keyDown": {
@@ -3303,9 +3407,11 @@ let releaseBarrier = Promise.resolve();
 registerSystemRevocationSignals();
 
 /** Executes one decoded helper command and emits its protocol response. */
-async function processCommand(message) {
+async function processCommand(message, inputGeneration = null) {
   const invalidatesAccessibility = INPUT_METHODS.has(message?.method);
+  if (invalidatesAccessibility) activeInputGeneration = inputGeneration;
   try {
+    if (invalidatesAccessibility) requireActiveInputOperation();
     const result = await handleCommand(message);
     respond({ id: message.id, ok: true, result });
   } catch (error) {
@@ -3320,28 +3426,42 @@ async function processCommand(message) {
     }
     respond({ id: message?.id ?? null, ok: false, error: normalizeError(failure) });
   } finally {
-    if (invalidatesAccessibility) invalidateAccessibilityTargets();
+    if (invalidatesAccessibility) {
+      activeInputGeneration = null;
+      invalidateAccessibilityTargets();
+    }
   }
 }
 
 /** Dispatches status and release without placing them behind pending authorization. */
 function dispatchCommand(message) {
+  const inputGeneration = INPUT_METHODS.has(message?.method) ? inputCancellation.capture() : null;
   if (message.method === "status") {
-    void processCommand(message);
+    void processCommand(message, inputGeneration);
     return;
   }
   if (
+    message.method === "releaseInputs" ||
+    message.method === "stop" ||
+    message.method === "forget"
+  ) {
+    cancelInputOperations();
+  }
+  if (
+    message.method === "releaseInputs" ||
     message.method === "stop" ||
     message.method === "forget" ||
     message.method === "configurePower" ||
     message.method === "releaseAvailability"
   ) {
-    releaseQueue = releaseQueue.then(() => processCommand(message));
+    releaseQueue = releaseQueue.then(() => processCommand(message, inputGeneration));
     releaseBarrier = releaseQueue;
     return;
   }
   const precedingRelease = releaseBarrier;
-  commandQueue = Promise.all([commandQueue, precedingRelease]).then(() => processCommand(message));
+  commandQueue = Promise.all([commandQueue, precedingRelease]).then(() =>
+    processCommand(message, inputGeneration),
+  );
 }
 
 GLib.io_add_watch(

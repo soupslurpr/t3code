@@ -75,6 +75,7 @@ packages:
   - gst-plugins-base-libs
   - gst-plugins-good
   - gstreamer
+  - ibus
   - jq
   - mesa
   - nautilus

@@ -20,6 +20,7 @@ import * as Layer from "effect/Layer";
 import * as AgentDesktopEnvironment from "../src/agentDesktop/AgentDesktopEnvironment.ts";
 import * as AgentDesktopManager from "../src/agentDesktop/AgentDesktopManager.ts";
 import * as QemuAgentDesktop from "../src/agentDesktop/QemuAgentDesktop.ts";
+import { toComputerAutomationFailure } from "../src/computer/ComputerAutomationFailure.ts";
 import * as ComputerAutomationRouter from "../src/computer/ComputerAutomationRouter.ts";
 import * as ServerConfig from "../src/config.ts";
 import * as PreviewAutomationBroker from "../src/mcp/PreviewAutomationBroker.ts";
@@ -86,6 +87,10 @@ const owner = {
   controllerId: scope.controllerId,
 };
 const message = "environment server transfer: exact Unicode ’ →\n";
+const directWriteMessage = "Agent desktop create mode is exact.\n";
+const directWritePath = "/tmp/t3-agent-desktop-create-mode";
+const typingMessage = "CODEX_HOME=/home/t3agent/.codex-context-test";
+const typingPath = "/tmp/t3-agent-desktop-typing";
 
 const program = Effect.scoped(
   Effect.gen(function* () {
@@ -138,7 +143,14 @@ const program = Effect.scoped(
       }
       const actions = yield* computer.act(scope, {
         desktop: { kind: "agent", desktopId: desktop.id },
-        actions: [{ type: "press", key: "Meta" }],
+        actions: [
+          { type: "press", key: "Escape" },
+          { type: "press", key: "Meta" },
+          { type: "type", text: "Console" },
+          { type: "wait", durationMs: 500 },
+          { type: "press", key: "Enter" },
+          { type: "wait", durationMs: 2_000 },
+        ],
         observation: {
           includeAccessibility: false,
           delayMs: 1_000,
@@ -156,6 +168,84 @@ const program = Effect.scoped(
       yield* Effect.promise(() =>
         NodeFSP.writeFile(evidencePath, Buffer.from(evidenceScreenshot.data, "base64")),
       );
+
+      const multilineFailure = toComputerAutomationFailure(
+        yield* manager
+          .act(
+            owner.controllerId,
+            {
+              actions: [
+                {
+                  type: "type",
+                  text: "must not submit a prefix\nor leave a suffix",
+                  submit: true,
+                  verification: "required",
+                },
+              ],
+            },
+            desktop.id,
+          )
+          .pipe(Effect.flip),
+      );
+      if (multilineFailure.code !== "exact-text-unavailable") {
+        throw new Error("Agent desktop multiline fallback was not rejected before input");
+      }
+
+      const typing = yield* computer.act(scope, {
+        desktop: { kind: "agent", desktopId: desktop.id },
+        actions: [
+          {
+            type: "type",
+            text: `printf %s '${typingMessage}' > ${typingPath}`,
+          },
+          { type: "press", key: "Enter" },
+          { type: "wait", durationMs: 1_000 },
+        ],
+        observation: false,
+      });
+      const typingResult = typing.actionResults?.[0];
+      if (typingResult?.type !== "type" || typingResult.delivery !== "key-events") {
+        throw new Error("Agent desktop smoke did not exercise physical fallback typing");
+      }
+      const typed = yield* manager.readFile(owner, {
+        desktopId: desktop.id,
+        path: typingPath,
+      });
+      if (typed.data !== typingMessage) {
+        throw new Error(
+          `Agent desktop physical typing changed the expected text: ${Buffer.from(typed.data).toString("base64")}`,
+        );
+      }
+
+      const created = yield* manager.writeFile(owner, {
+        desktopId: desktop.id,
+        path: directWritePath,
+        data: directWriteMessage,
+        mode: "create",
+      });
+      const createdFile = yield* manager.readFile(owner, {
+        desktopId: desktop.id,
+        path: directWritePath,
+      });
+      if (createdFile.data !== directWriteMessage) {
+        throw new Error("Agent desktop create-mode write changed file contents");
+      }
+      const createCollision = toComputerAutomationFailure(
+        yield* manager
+          .writeFile(owner, {
+            desktopId: desktop.id,
+            path: directWritePath,
+            data: "must not replace the first write",
+            mode: "create",
+          })
+          .pipe(Effect.flip),
+      );
+      if (
+        createCollision.backendCode !== "destination-exists" ||
+        !createCollision.message.includes("already exists")
+      ) {
+        throw new Error("Agent desktop create collision lost its actionable diagnostic");
+      }
 
       yield* Effect.promise(async () => {
         await NodeFSP.mkdir(sourceDirectory, { recursive: true });
@@ -258,6 +348,12 @@ const program = Effect.scoped(
           path: evidencePath,
         },
         actionResults: actions.actionResults,
+        typing: typingResult,
+        directWrite: {
+          bytesWritten: created.bytesWritten,
+          collision: createCollision,
+        },
+        multilineFailure,
         released: released.permission,
         ...(maintenance === undefined ? {} : { maintenance }),
         imported: {
