@@ -12,7 +12,7 @@ const MAX_TYPE_DURATION_MS = 60_000;
 const MAX_ACTION_BATCH_ACTIONS = 32;
 const MAX_ACTION_BATCH_DURATION_MS = 60_000;
 const MAX_ACTION_BATCH_TEXT_LENGTH = 10_000;
-const MAX_ACTION_WAIT_MS = 5_000;
+const MAX_ACTION_WAIT_MS = 60_000;
 const MAX_WHEEL_TICKS = 100;
 const MAX_CHANGE_WAIT_MS = 60_000;
 const MIN_CHANGE_POLL_INTERVAL_MS = 100;
@@ -1238,7 +1238,7 @@ export const ComputerAutomationAction = Schema.Union([
     type: Schema.Literal("wait"),
     durationMs: Schema.Int.check(
       Schema.isBetween({ minimum: 0, maximum: MAX_ACTION_WAIT_MS }),
-    ).annotate({ description: "Fixed delay in milliseconds; maximum 5000." }),
+    ).annotate({ description: "Fixed delay in milliseconds; maximum 60000." }),
   }).annotate({ description: "Wait for a fixed bounded duration." }),
   Schema.Struct({
     type: Schema.Literal("wait_for_change"),

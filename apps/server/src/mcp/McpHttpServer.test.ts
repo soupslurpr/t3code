@@ -2061,7 +2061,7 @@ it.effect("registers annotated tools and preserves authenticated request context
           name: "computer_act",
           arguments: {
             desktop: { kind: "user", desktopId: "user-desktop-1" },
-            actions: [{ type: "wait", durationMs: 12_000 }],
+            actions: [{ type: "wait", durationMs: 60_001 }],
           },
         })
         .pipe(
@@ -2082,7 +2082,7 @@ it.effect("registers annotated tools and preserves authenticated request context
         {
           type: "text",
           text: expect.stringMatching(
-            /"field":"actions\[0\]\.durationMs".*"expected":\["Expected a value between 0 and 5000"\]/u,
+            /"field":"actions\[0\]\.durationMs".*"expected":\["Expected a value between 0 and 60000"\]/u,
           ),
         },
       ]);

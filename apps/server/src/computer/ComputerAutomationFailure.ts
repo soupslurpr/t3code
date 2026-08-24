@@ -1,5 +1,9 @@
 /** Normalizes server-local computer-use failures for the public MCP contract. */
-import type { ComputerAutomationAction, ComputerAutomationFailure } from "@t3tools/contracts";
+import {
+  ComputerAutomationInputCleanup,
+  type ComputerAutomationAction,
+  type ComputerAutomationFailure,
+} from "@t3tools/contracts";
 import * as Schema from "effect/Schema";
 
 const ComputerUseOperation = Schema.Literals([
@@ -111,6 +115,7 @@ export class ComputerUseActionError extends Schema.TaggedErrorClass<ComputerUseA
     completedActionCount: Schema.Int,
     actionType: Schema.String,
     cause: Schema.Defect(),
+    cleanup: Schema.optional(ComputerAutomationInputCleanup),
   },
 ) {
   override get message(): string {
@@ -236,6 +241,8 @@ export function toComputerAutomationFailure(cause: unknown): ComputerAutomationF
         completedActionCount: record.completedActionCount,
         actionType: record.actionType as ComputerAutomationAction["type"],
       };
+      const actionCleanup = boundedCleanup(record.cleanup);
+      if (actionCleanup !== undefined) cleanupContext = actionCleanup;
       current = record.cause;
       continue;
     }

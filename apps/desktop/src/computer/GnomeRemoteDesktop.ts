@@ -1,6 +1,8 @@
-import type {
-  ComputerAutomationDisplayState,
-  ComputerAutomationPermission,
+import {
+  ComputerAutomationInputCleanup,
+  type ComputerAutomationAction,
+  type ComputerAutomationDisplayState,
+  type ComputerAutomationPermission,
 } from "@t3tools/contracts";
 import * as Config from "effect/Config";
 import * as Context from "effect/Context";
@@ -66,6 +68,8 @@ const HelperResponse = Schema.Union([
           "observation",
         ]),
       ),
+      actionIndex: Schema.optional(Schema.Int),
+      actionType: Schema.optional(Schema.String),
       cleanup: Schema.optional(
         Schema.Struct({
           keys: Schema.Literals(["not-needed", "released", "session-closed", "release-failed"]),
@@ -185,6 +189,7 @@ const HelperMethod = Schema.Literals([
   "activateWindow",
   "drag",
   "wheel",
+  "validateActions",
   "type",
   "press",
   "hotkey",
@@ -222,6 +227,8 @@ export class GnomeRemoteDesktopCommandError extends Schema.TaggedErrorClass<Gnom
     received: Schema.optional(Schema.String),
     expected: Schema.optional(Schema.Array(Schema.String)),
     phase: Schema.optional(Schema.String),
+    actionIndex: Schema.optional(Schema.Int),
+    actionType: Schema.optional(Schema.String),
     cleanup: Schema.optional(Schema.Defect()),
     cause: Schema.Defect(),
   },
@@ -391,6 +398,9 @@ export interface GnomeRemoteDesktopShape {
     readonly deltaX: number;
     readonly deltaY: number;
   }) => Effect.Effect<void, GnomeRemoteDesktopError>;
+  readonly validateActions: (
+    actions: ReadonlyArray<ComputerAutomationAction>,
+  ) => Effect.Effect<void, GnomeRemoteDesktopError>;
   readonly type: (input: {
     readonly text: string;
     readonly intervalMs: number;
@@ -406,7 +416,7 @@ export interface GnomeRemoteDesktopShape {
     readonly key: string;
   }) => Effect.Effect<void, GnomeRemoteDesktopError>;
   readonly keyUp: (input: { readonly key: string }) => Effect.Effect<void, GnomeRemoteDesktopError>;
-  readonly releaseInputs: Effect.Effect<void, GnomeRemoteDesktopError>;
+  readonly releaseInputs: Effect.Effect<ComputerAutomationInputCleanup, GnomeRemoteDesktopError>;
   readonly stop: Effect.Effect<void, GnomeRemoteDesktopError>;
   readonly forget: Effect.Effect<void, GnomeRemoteDesktopError>;
 }
@@ -460,12 +470,13 @@ const unavailable = (reason: string): GnomeRemoteDesktopShape => {
     activateWindow: () => fail,
     drag: () => fail,
     wheel: () => fail,
+    validateActions: () => fail,
     type: () => fail,
     press: () => fail,
     hotkey: () => fail,
     keyDown: () => fail,
     keyUp: () => fail,
-    releaseInputs: Effect.void,
+    releaseInputs: Effect.succeed({ keys: "not-needed", buttons: "not-needed" }),
     stop: Effect.void,
     forget: fail,
   });
@@ -482,6 +493,8 @@ const helperResponseError = (
     ...(error.received === undefined ? {} : { received: error.received }),
     ...(error.expected === undefined ? {} : { expected: error.expected }),
     ...(error.phase === undefined ? {} : { phase: error.phase }),
+    ...(error.actionIndex === undefined ? {} : { actionIndex: error.actionIndex }),
+    ...(error.actionType === undefined ? {} : { actionType: error.actionType }),
     ...(error.cleanup === undefined ? {} : { cleanup: error.cleanup }),
     cause: error.message,
   });
@@ -494,6 +507,7 @@ const decodeHelperStatus = Schema.decodeUnknownEffect(HelperStatus);
 const decodeHelperSnapshot = Schema.decodeUnknownEffect(HelperSnapshot);
 const decodeHelperActivateResult = Schema.decodeUnknownEffect(HelperActivateResult);
 const decodeHelperTypeResult = Schema.decodeUnknownEffect(HelperTypeResult);
+const decodeHelperInputCleanup = Schema.decodeUnknownEffect(ComputerAutomationInputCleanup);
 const encodeHelperCommand = Schema.encodeEffect(Schema.fromJsonString(HelperCommand));
 
 const sessionEnvironment = Config.all({
@@ -742,6 +756,16 @@ export const make = Effect.gen(function* () {
   const control = <A>(operation: HelperMethod, params: A) =>
     request<void>(operation, params, HELPER_CONTROL_TIMEOUT);
 
+  const releaseInputs = request<unknown>("releaseInputs", {}, HELPER_CONTROL_TIMEOUT).pipe(
+    Effect.flatMap((response) =>
+      decodeHelperInputCleanup(response).pipe(
+        Effect.mapError(
+          (cause) => new GnomeRemoteDesktopProtocolError({ operation: "releaseInputs", cause }),
+        ),
+      ),
+    ),
+  );
+
   const requestSessionStatus = (
     operation: "view" | "start" | "rememberView" | "rememberControl",
     params: unknown,
@@ -909,12 +933,13 @@ export const make = Effect.gen(function* () {
     activateWindow: (input) => control("activateWindow", input),
     drag: (input) => control("drag", input),
     wheel: (input) => control("wheel", input),
+    validateActions: (actions) => control("validateActions", { actions }),
     type: typeText,
     press: (input) => control("press", input),
     hotkey: (input) => control("hotkey", input),
     keyDown: (input) => control("keyDown", input),
     keyUp: (input) => control("keyUp", input),
-    releaseInputs: control("releaseInputs", {}),
+    releaseInputs,
     stop,
     forget,
   });

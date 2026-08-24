@@ -86,6 +86,7 @@ function makeController(records: Array<InputRecord>, onStart: () => void = () =>
     activateWindow: (input) => record("activateWindow", input),
     drag: (input) => record("drag", input),
     wheel: (input) => record("wheel", input),
+    validateActions: () => Effect.void,
     type: (input) =>
       record("type", input).pipe(
         Effect.as({
@@ -99,7 +100,9 @@ function makeController(records: Array<InputRecord>, onStart: () => void = () =>
     hotkey: (input) => record("hotkey", input),
     keyDown: (input) => record("keyDown", input),
     keyUp: (input) => record("keyUp", input),
-    releaseInputs: record("releaseInputs"),
+    releaseInputs: record("releaseInputs").pipe(
+      Effect.as({ keys: "not-needed" as const, buttons: "not-needed" as const }),
+    ),
     stop: record("stop"),
     forget: record("forget"),
   });
@@ -781,7 +784,7 @@ describe("ComputerUse", () => {
         phase: "validation",
         cleanup: { keys: "not-needed", buttons: "not-needed" },
       });
-      assert.deepEqual(records, []);
+      assert.deepEqual(records, [{ operation: "releaseInputs" }]);
     }),
   );
 
@@ -978,25 +981,23 @@ describe("ComputerUse", () => {
     }),
   );
 
-  it.effect("reports completed actions and bounded helper diagnostics", () =>
+  it.effect("rejects an invalid later action before executing the batch", () =>
     Effect.gen(function* () {
       const records: Array<InputRecord> = [];
       const helperError = new GnomeRemoteDesktop.GnomeRemoteDesktopCommandError({
-        operation: "hotkey",
+        operation: "validateActions",
         code: "unsupported-key",
         field: "keys[1]",
         received: "NOPE",
         expected: ["named key", "single printable ASCII character"],
-        phase: "key-press",
-        cleanup: { keys: "released", buttons: "not-needed" },
+        phase: "validation",
+        actionIndex: 1,
+        actionType: "hotkey",
         cause: "private portal diagnostic",
       });
       const controller = GnomeRemoteDesktop.GnomeRemoteDesktop.of({
         ...makeController(records),
-        hotkey: (input) =>
-          Effect.sync(() => records.push({ operation: "hotkey", input })).pipe(
-            Effect.andThen(Effect.fail(helperError)),
-          ),
+        validateActions: () => Effect.fail(helperError),
       });
       const computer = yield* ComputerUse.makeWithOptions(makePlatform(), controller);
 
@@ -1015,18 +1016,14 @@ describe("ComputerUse", () => {
         category: "invalid-input",
         message: "The action contains an unsupported or duplicate key name.",
         actionIndex: 1,
-        completedActionCount: 1,
+        completedActionCount: 0,
         field: "actions[1].keys[1]",
         received: "NOPE",
         expected: ["named key", "single printable ASCII character"],
-        phase: "key-press",
-        cleanup: { keys: "released", buttons: "not-needed" },
+        phase: "validation",
+        cleanup: { keys: "not-needed", buttons: "not-needed" },
       });
-      assert.deepEqual(records, [
-        { operation: "start" },
-        { operation: "press", input: { key: "Meta", modifiers: [] } },
-        { operation: "hotkey", input: { keys: ["Control", "NOPE"] } },
-      ]);
+      assert.deepEqual(records, [{ operation: "releaseInputs" }]);
     }),
   );
 
@@ -1487,7 +1484,7 @@ describe("ComputerUse", () => {
         phase: "validation",
         cleanup: { keys: "not-needed", buttons: "not-needed" },
       });
-      assert.deepEqual(records, []);
+      assert.deepEqual(records, [{ operation: "releaseInputs" }]);
     }),
   );
 
@@ -1510,7 +1507,7 @@ describe("ComputerUse", () => {
       assert.instanceOf(error, ComputerUse.ComputerUseActionError);
       assert.equal(error.actionIndex, 1);
       assert.equal(error.completedActionCount, 0);
-      assert.deepEqual(records, []);
+      assert.deepEqual(records, [{ operation: "releaseInputs" }]);
     }),
   );
 
@@ -1620,8 +1617,9 @@ describe("ComputerUse", () => {
         message: "The desktop operation was cancelled.",
         actionIndex: 0,
         completedActionCount: 0,
+        cleanup: { keys: "not-needed", buttons: "not-needed" },
       });
-      assert.deepEqual(records, [{ operation: "stop" }]);
+      assert.deepEqual(records, [{ operation: "stop" }, { operation: "releaseInputs" }]);
     }),
   );
 });
