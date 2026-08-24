@@ -33,7 +33,7 @@ const invoke = Effect.fn("AgentDesktopToolkit.invoke")(function* <A>(
   return yield* run(manager, {
     environmentId: scope.environmentId,
     threadId: scope.threadId,
-    controllerId: scope.providerSessionId,
+    controllerId: scope.controllerId,
   }).pipe(Effect.mapError((cause) => environmentDesktopFailure(scope, operation, cause)));
 });
 

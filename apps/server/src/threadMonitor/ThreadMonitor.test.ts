@@ -1,4 +1,4 @@
-import { assert, it } from "@effect/vitest";
+import { assert, describe, it } from "@effect/vitest";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import {
   CommandId,
@@ -15,9 +15,12 @@ import {
 import * as DateTime from "effect/DateTime";
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
+import * as Deferred from "effect/Deferred";
+import * as Fiber from "effect/Fiber";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Ref from "effect/Ref";
+import * as Result from "effect/Result";
 import * as TestClock from "effect/testing/TestClock";
 
 import { ServerConfig } from "../config.ts";
@@ -33,13 +36,21 @@ import * as ThreadMonitorRepositoryLayer from "../persistence/Layers/ThreadMonit
 import { ThreadMonitorRepository } from "../persistence/Services/ThreadMonitors.ts";
 import * as RepositoryIdentityResolver from "../project/RepositoryIdentityResolver.ts";
 import { layer as ThreadMonitorLayer } from "./ThreadMonitor.ts";
-import { ThreadMonitorComputerService } from "./ThreadMonitorComputerService.ts";
+import {
+  ThreadMonitorComputerService,
+  type ThreadMonitorComputerPrepareResult,
+} from "./ThreadMonitorComputerService.ts";
 import { ThreadMonitorService } from "./ThreadMonitorService.ts";
 
 const projectId = ProjectId.make("monitor-project");
 const threadId = ThreadId.make("monitor-thread");
 
 interface ComputerMonitorProbeShape {
+  readonly beforePrepare: Ref.Ref<Effect.Effect<void>>;
+  readonly beforeCheck: Ref.Ref<Effect.Effect<void>>;
+  readonly beforeRevise: Ref.Ref<Effect.Effect<void>>;
+  readonly beforeInspect: Ref.Ref<Effect.Effect<void>>;
+  readonly beforeRelease: Ref.Ref<Effect.Effect<void>>;
   readonly checks: Ref.Ref<number>;
   readonly failNextChecks: Ref.Ref<number>;
   readonly failFingerprint: Ref.Ref<boolean>;
@@ -68,6 +79,11 @@ const computerProbeLayer = Layer.effect(
   ComputerMonitorProbe,
   Effect.gen(function* () {
     return ComputerMonitorProbe.of({
+      beforePrepare: yield* Ref.make(Effect.void),
+      beforeCheck: yield* Ref.make(Effect.void),
+      beforeRevise: yield* Ref.make(Effect.void),
+      beforeInspect: yield* Ref.make(Effect.void),
+      beforeRelease: yield* Ref.make(Effect.void),
       checks: yield* Ref.make(0),
       failNextChecks: yield* Ref.make(0),
       failFingerprint: yield* Ref.make(false),
@@ -99,106 +115,111 @@ const workingComputerLayer = Layer.effect(
             encoding: { format: "webp" as const, mode: "lossless" as const },
           },
         ];
-        return Effect.succeed({
-          condition: {
-            type: "computer",
-            revision: 1,
-            desktop: input.watch.desktop,
-            observation: {
-              regions: [
-                {
-                  id: "screen",
-                  role: "trigger",
-                  purpose: null,
-                  region: {
-                    coordinateSpace: "desktop-logical",
-                    displayId: "display-0",
-                    x: 10,
-                    y: 20,
-                    width: 300,
-                    height: 200,
-                  },
-                  maxWidth: 1_024,
-                  maxHeight: 1_024,
-                  encoding: { format: "webp", mode: "lossless" },
-                  baselineHash: "baseline-hash",
-                  lastSampleHash: "baseline-hash",
-                  baselineStored: true,
-                  sampleCount: 0,
-                  changedSampleCount: 0,
-                  unchangedSampleCount: 0,
-                  lastCapturedAt: null,
-                  lastChangedAt: null,
-                },
-              ],
-            },
-            match:
-              input.watch.match.type === "model"
-                ? { ...input.watch.match, baseline: input.watch.match.baseline ?? "none" }
-                : input.watch.match,
-            sampling: {
-              intervalMs: input.watch.sampling?.intervalMs ?? 30_000,
-              minEvaluationIntervalMs: input.watch.sampling?.minEvaluationIntervalMs ?? null,
-              evaluateOnlyAfterChange: input.watch.sampling?.evaluateOnlyAfterChange ?? true,
-            },
-            review: {
-              policy:
-                input.watch.review === null
-                  ? null
-                  : {
-                      afterEvaluations:
-                        input.watch.review?.afterEvaluations === undefined
-                          ? input.watch.match.type === "model"
-                            ? 12
-                            : null
-                          : input.watch.review.afterEvaluations,
-                      consecutiveUncertain: input.watch.review?.consecutiveUncertain ?? null,
-                      consecutiveFailures:
-                        input.watch.review?.consecutiveFailures === undefined
-                          ? 3
-                          : input.watch.review.consecutiveFailures,
-                      at: input.watch.review?.at ?? null,
+        return Ref.get(probe.beforePrepare).pipe(
+          Effect.flatten,
+          Effect.andThen(
+            Effect.succeed<ThreadMonitorComputerPrepareResult>({
+              condition: {
+                type: "computer",
+                revision: 1,
+                desktop: input.watch.desktop,
+                observation: {
+                  regions: [
+                    {
+                      id: "screen",
+                      role: "trigger",
+                      purpose: null,
+                      region: {
+                        coordinateSpace: "desktop-logical",
+                        displayId: "display-0",
+                        x: 10,
+                        y: 20,
+                        width: 300,
+                        height: 200,
+                      },
+                      maxWidth: 1_024,
+                      maxHeight: 1_024,
+                      encoding: { format: "webp", mode: "lossless" },
+                      baselineHash: "baseline-hash",
+                      lastSampleHash: "baseline-hash",
+                      baselineStored: true,
+                      sampleCount: 0,
+                      changedSampleCount: 0,
+                      unchangedSampleCount: 0,
+                      lastCapturedAt: null,
+                      lastChangedAt: null,
                     },
-              state: "idle",
-              reason: null,
-              sequence: 0,
-              requestedAt: null,
-              deliveredAt: null,
-              deliveryAttempts: 0,
-              deliveryRetryAt: null,
-              deliveryFailureCount: 0,
-            },
-            deadlineAt: null,
-            nextCheckAt: DateTime.formatIso(
-              DateTime.makeUnsafe(
-                Date.parse(input.createdAt) + (input.watch.sampling?.intervalMs ?? 30_000),
-              ),
-            ),
-            lastCheckedAt: null,
-            lastEvaluatedAt: null,
-            lastEvaluationDurationMs: null,
-            totalEvaluationDurationMs: 0,
-            evaluationPending: false,
-            lastVerdict: null,
-            lastSummary: null,
-            lastUsage: null,
-            totalUsage: {
-              inputTokens: null,
-              cachedInputTokens: null,
-              cacheWriteInputTokens: null,
-              outputTokens: null,
-            },
-            sampleCount: 0,
-            evaluationCount: 0,
-            uncertainEvaluationCount: 0,
-            consecutiveUncertain: 0,
-            consecutiveFailures: 0,
-            observationError: null,
-            resourceState: "viewing",
-          },
-          capturedBaselineImages: baselineImages,
-          baselineImages,
-        });
+                  ],
+                },
+                match:
+                  input.watch.match.type === "model"
+                    ? { ...input.watch.match, baseline: input.watch.match.baseline ?? "none" }
+                    : input.watch.match,
+                sampling: {
+                  intervalMs: input.watch.sampling?.intervalMs ?? 30_000,
+                  minEvaluationIntervalMs: input.watch.sampling?.minEvaluationIntervalMs ?? null,
+                  evaluateOnlyAfterChange: input.watch.sampling?.evaluateOnlyAfterChange ?? true,
+                },
+                review: {
+                  policy:
+                    input.watch.review === null
+                      ? null
+                      : {
+                          afterEvaluations:
+                            input.watch.review?.afterEvaluations === undefined
+                              ? input.watch.match.type === "model"
+                                ? 12
+                                : null
+                              : input.watch.review.afterEvaluations,
+                          consecutiveUncertain: input.watch.review?.consecutiveUncertain ?? null,
+                          consecutiveFailures:
+                            input.watch.review?.consecutiveFailures === undefined
+                              ? 3
+                              : input.watch.review.consecutiveFailures,
+                          at: input.watch.review?.at ?? null,
+                        },
+                  state: "idle",
+                  reason: null,
+                  sequence: 0,
+                  requestedAt: null,
+                  deliveredAt: null,
+                  deliveryAttempts: 0,
+                  deliveryRetryAt: null,
+                  deliveryFailureCount: 0,
+                },
+                deadlineAt: input.watch.deadlineAt ?? null,
+                nextCheckAt: DateTime.formatIso(
+                  DateTime.makeUnsafe(
+                    Date.parse(input.createdAt) + (input.watch.sampling?.intervalMs ?? 30_000),
+                  ),
+                ),
+                lastCheckedAt: null,
+                lastEvaluatedAt: null,
+                lastEvaluationDurationMs: null,
+                totalEvaluationDurationMs: 0,
+                evaluationPending: false,
+                lastVerdict: null,
+                lastSummary: null,
+                lastUsage: null,
+                totalUsage: {
+                  inputTokens: null,
+                  cachedInputTokens: null,
+                  cacheWriteInputTokens: null,
+                  outputTokens: null,
+                },
+                sampleCount: 0,
+                evaluationCount: 0,
+                uncertainEvaluationCount: 0,
+                consecutiveUncertain: 0,
+                consecutiveFailures: 0,
+                observationError: null,
+                resourceState: "viewing",
+              },
+              capturedBaselineImages: baselineImages,
+              baselineImages,
+            }),
+          ),
+        );
       },
       check: ({ monitor, checkedAt }) => {
         if (monitor.condition.type !== "computer") return Effect.die("expected computer monitor");
@@ -222,6 +243,7 @@ const workingComputerLayer = Layer.effect(
           encoding: { format: "webp" as const, mode: "lossless" as const },
         };
         return Effect.gen(function* () {
+          yield* Effect.flatten(Ref.get(probe.beforeCheck));
           yield* Ref.update(probe.checks, (count) => count + 1);
           if (yield* Ref.get(probe.failFingerprint)) {
             return yield* new ThreadMonitorError({
@@ -245,7 +267,9 @@ const workingComputerLayer = Layer.effect(
           return {
             condition: {
               ...condition,
-              nextCheckAt: checkedAt,
+              nextCheckAt: DateTime.formatIso(
+                DateTime.makeUnsafe(Date.parse(checkedAt) + condition.sampling.intervalMs),
+              ),
               observation: {
                 regions: condition.observation.regions.map((region) => ({
                   ...region,
@@ -427,7 +451,7 @@ const workingComputerLayer = Layer.effect(
           condition,
           capturedBaselineImages: baselineImages,
           baselineImages,
-        });
+        }).pipe(Effect.tap(() => Effect.flatten(Ref.get(probe.beforeRevise))));
       },
       inspectFresh: ({ monitor, regionIds }) => {
         if (monitor.condition.type !== "computer") return Effect.die("expected computer monitor");
@@ -452,9 +476,12 @@ const workingComputerLayer = Layer.effect(
               sizeBytes: 5,
               encoding: { format: "webp" as const, mode: "lossless" as const },
             })),
-        );
+        ).pipe(Effect.tap(() => Effect.flatten(Ref.get(probe.beforeInspect))));
       },
-      release: () => Ref.update(probe.releases, (count) => count + 1),
+      release: () =>
+        Effect.flatten(Ref.get(probe.beforeRelease)).pipe(
+          Effect.andThen(Ref.update(probe.releases, (count) => count + 1)),
+        ),
       capabilities: Effect.succeed({
         evaluators: [],
         deterministicMatches: ["image-change"],
@@ -476,18 +503,19 @@ const testLayer = it.layer(
   ),
 );
 
+const computerMonitorRuntime = ThreadMonitorLayer.pipe(
+  Layer.provide(workingComputerLayer),
+  Layer.provideMerge(OrchestrationLayerLive),
+  Layer.provideMerge(ThreadMonitorRepositoryLayer.layer),
+  Layer.provide(RepositoryIdentityResolver.layer),
+  Layer.provide(ServerConfig.layerTest(process.cwd(), { prefix: "t3-computer-monitor-test-" })),
+  Layer.provide(SqlitePersistenceMemory),
+  Layer.provide(NodeServices.layer),
+  Layer.provideMerge(computerProbeLayer),
+);
+
 const computerMonitorTestLayer = it.layer(
-  ThreadMonitorLayer.pipe(
-    Layer.provide(workingComputerLayer),
-    Layer.provideMerge(OrchestrationLayerLive),
-    Layer.provideMerge(ThreadMonitorRepositoryLayer.layer),
-    Layer.provide(RepositoryIdentityResolver.layer),
-    Layer.provide(ServerConfig.layerTest(process.cwd(), { prefix: "t3-computer-monitor-test-" })),
-    Layer.provide(SqlitePersistenceMemory),
-    Layer.provide(NodeServices.layer),
-    Layer.provide(TestClock.layer()),
-    Layer.provideMerge(computerProbeLayer),
-  ),
+  computerMonitorRuntime.pipe(Layer.provide(TestClock.layer())),
 );
 
 /** Seeds one active thread for monitor tests. */
@@ -751,6 +779,68 @@ testLayer("ThreadMonitor", (it) => {
     }),
   );
 
+  it.effect("checking one pending group member delivers the complete group", () =>
+    Effect.gen(function* () {
+      yield* seedThread;
+      const service = yield* ThreadMonitorService;
+      const repository = yield* ThreadMonitorRepository;
+      const snapshots = yield* ProjectionSnapshotQuery;
+      const monitors = yield* Effect.forEach(["First result", "Second result"], (label) =>
+        service.create({ threadId, monitor: { label, schedule: { type: "signal" } } }),
+      );
+      const groupId = "pending-complete-group";
+      for (const monitor of monitors) {
+        yield* repository.upsert({
+          ...monitor,
+          status: "triggered",
+          trigger: { reason: "signal", summary: monitor.label, evidence: null },
+          triggeredAt: "1969-12-31T23:59:00.000Z",
+          deliveryGroupId: groupId,
+        });
+      }
+      const first = monitors[0];
+      const second = monitors[1];
+      assert.isDefined(first);
+      assert.isDefined(second);
+      if (first === undefined || second === undefined) return;
+      const pendingSecond = Option.getOrThrow(yield* repository.getById(second.id));
+      yield* repository.upsert({ ...pendingSecond, deliveryRetryAt: "2100-01-01T00:00:00.000Z" });
+      assert.strictEqual(
+        (yield* service.checkNow({ threadId, check: { monitorId: first.id } })).monitors[0]?.status,
+        "triggered",
+      );
+      yield* repository.upsert(pendingSecond);
+      const checked = yield* service.checkNow({ threadId, check: { monitorId: first.id } });
+      assert.strictEqual(checked.monitors[0]?.status, "delivered");
+      const status = yield* service.status({ threadId, query: { includeFinished: true } });
+      assert.isTrue(
+        status.monitors
+          .filter((monitor) => monitor.deliveryGroupId === groupId)
+          .every((monitor) => monitor.status === "delivered"),
+      );
+      const detail = Option.getOrThrow(yield* snapshots.getThreadDetailById(threadId));
+      const event = detail.messages.find(
+        (message) => message.id === `thread-monitor-group:${groupId}:continuation`,
+      )?.systemEvent;
+      assert.strictEqual(event?.type, "monitor.continuation");
+      if (event?.type !== "monitor.continuation") return;
+      assert.deepStrictEqual(
+        event.monitors.map((monitor) => monitor.monitorId).toSorted(),
+        monitors.map((monitor) => monitor.id).toSorted(),
+      );
+      const deliveredFirst = Option.getOrThrow(yield* repository.getById(first.id));
+      yield* repository.upsert({ ...deliveredFirst, status: "triggered", deliveredAt: null });
+      yield* TestClock.adjust("11 seconds");
+      const engine = yield* OrchestrationEngineService;
+      const sequence = yield* engine.latestSequence;
+      assert.strictEqual(
+        (yield* service.checkNow({ threadId, check: { monitorId: first.id } })).monitors[0]?.status,
+        "delivered",
+      );
+      assert.strictEqual(yield* engine.latestSequence, sequence);
+    }),
+  );
+
   it.effect("coalesces simultaneous triggers into one continuation", () =>
     Effect.gen(function* () {
       yield* seedThread;
@@ -933,6 +1023,426 @@ testLayer("ThreadMonitor", (it) => {
       assert.isTrue(Option.isNone(lastOverflow));
       assert.strictEqual(liveness.getThreadBackgroundLiveness(threadId), null);
     }),
+  );
+});
+
+describe("ThreadMonitor concurrent computer work", () => {
+  it.effect("pending desktop access does not block other monitor operations", () =>
+    Effect.gen(function* () {
+      yield* seedThread;
+      const service = yield* ThreadMonitorService;
+      const probe = yield* ComputerMonitorProbe;
+      const entered = yield* Deferred.make<void>();
+      const proceed = yield* Deferred.make<void>();
+      yield* Ref.set(
+        probe.beforePrepare,
+        Deferred.succeed(entered, undefined).pipe(Effect.andThen(Deferred.await(proceed))),
+      );
+      const pending = yield* service
+        .createComputer({
+          threadId,
+          monitor: {
+            label: "Pending desktop",
+            desktop: { kind: "user", desktopId: "pending" },
+            match: { type: "image-change" },
+          },
+        })
+        .pipe(Effect.forkScoped);
+      yield* Deferred.await(entered);
+      const monitor = yield* service.create({
+        threadId,
+        monitor: { label: "Independent signal", schedule: { type: "signal" } },
+      });
+      assert.strictEqual(
+        (yield* service.status({ threadId, query: { monitorId: monitor.id } })).monitors[0]?.status,
+        "active",
+      );
+      assert.strictEqual(
+        (yield* service.signal({ threadId, signal: { monitorId: monitor.id } })).status,
+        "triggered",
+      );
+      assert.strictEqual(
+        (yield* service.cancel({ threadId, cancel: { monitorId: monitor.id } })).monitors[0]
+          ?.status,
+        "cancelled",
+      );
+      yield* Deferred.succeed(proceed, undefined);
+      yield* Fiber.join(pending);
+    }).pipe(Effect.provide(computerMonitorRuntime)),
+  );
+
+  it.effect(
+    "a pending evaluation leaves the scheduler and other watches running, and cancellation wins",
+    () =>
+      Effect.gen(function* () {
+        yield* seedThread;
+        const service = yield* ThreadMonitorService;
+        const repository = yield* ThreadMonitorRepository;
+        const probe = yield* ComputerMonitorProbe;
+        const entered = yield* Deferred.make<void>();
+        const proceed = yield* Deferred.make<void>();
+        const interrupted = yield* Deferred.make<void>();
+        yield* Ref.set(
+          probe.beforeCheck,
+          Deferred.succeed(entered, undefined).pipe(
+            Effect.andThen(Deferred.await(proceed)),
+            Effect.onInterrupt(() => Deferred.succeed(interrupted, undefined)),
+          ),
+        );
+        const { monitor } = yield* service.createComputer({
+          threadId,
+          monitor: {
+            label: "Slow evaluator",
+            desktop: { kind: "agent", desktopId: "slow" },
+            match: { type: "image-change" },
+            continuation: "record-only",
+          },
+        });
+        if (monitor.condition.type !== "computer") return;
+        yield* repository.upsert({
+          ...monitor,
+          condition: { ...monitor.condition, nextCheckAt: "1970-01-01T00:00:00.000Z" },
+        });
+        const pending = yield* service
+          .checkNow({ threadId, check: { monitorId: monitor.id } })
+          .pipe(Effect.forkScoped);
+        yield* Deferred.await(entered);
+        yield* Ref.set(probe.beforeCheck, Effect.void);
+        const timer = yield* service.create({
+          threadId,
+          monitor: {
+            label: "Independent timer",
+            schedule: { type: "after", durationMs: 1_000 },
+            continuation: "record-only",
+          },
+        });
+        const second = yield* service.createComputer({
+          threadId,
+          monitor: {
+            label: "Independent watch",
+            desktop: { kind: "agent", desktopId: "fast" },
+            match: { type: "image-change" },
+            sampling: { intervalMs: 1_000 },
+            continuation: "record-only",
+          },
+        });
+        yield* TestClock.adjust("2 seconds");
+        assert.strictEqual(
+          (yield* service.status({ threadId, query: { monitorId: timer.id } })).monitors[0]?.status,
+          "delivered",
+        );
+        assert.strictEqual(
+          (yield* service.checkNow({ threadId, check: { monitorId: second.monitor.id } }))
+            .monitors[0]?.status,
+          "delivered",
+        );
+        assert.strictEqual(
+          (yield* service.status({ threadId, query: { monitorId: monitor.id } })).monitors[0]
+            ?.status,
+          "active",
+        );
+        yield* service.cancel({ threadId, cancel: { monitorId: monitor.id } });
+        yield* Deferred.await(interrupted);
+        yield* Deferred.succeed(proceed, undefined);
+        const final = yield* Fiber.join(pending);
+        assert.strictEqual(final.monitors[0]?.status, "cancelled");
+        const evidence = Option.getOrThrow(yield* repository.getComputerEvidence(monitor.id));
+        assert.lengthOf(evidence.terminalImages, 0);
+      }).pipe(Effect.provide(computerMonitorRuntime)),
+  );
+
+  it.effect("a new revision supersedes an in-flight observation", () =>
+    Effect.gen(function* () {
+      yield* seedThread;
+      const service = yield* ThreadMonitorService;
+      const repository = yield* ThreadMonitorRepository;
+      const probe = yield* ComputerMonitorProbe;
+      const entered = yield* Deferred.make<void>();
+      const proceed = yield* Deferred.make<void>();
+      yield* Ref.set(
+        probe.beforeCheck,
+        Deferred.succeed(entered, undefined).pipe(Effect.andThen(Deferred.await(proceed))),
+      );
+      const { monitor } = yield* service.createComputer({
+        threadId,
+        monitor: {
+          label: "Old criterion",
+          desktop: { kind: "agent", desktopId: "revision" },
+          match: { type: "image-change" },
+        },
+      });
+      if (monitor.condition.type !== "computer") return;
+      yield* repository.upsert({
+        ...monitor,
+        condition: { ...monitor.condition, nextCheckAt: "1970-01-01T00:00:00.000Z" },
+      });
+      const pending = yield* service
+        .checkNow({ threadId, check: { monitorId: monitor.id } })
+        .pipe(Effect.forkScoped);
+      yield* Deferred.await(entered);
+      const revised = yield* service.updateComputer({
+        threadId,
+        update: { monitorId: monitor.id, expectedRevision: 1, label: "New criterion" },
+      });
+      assert.strictEqual(revised.revision, 2);
+      yield* Deferred.succeed(proceed, undefined);
+      const checked = yield* Fiber.join(pending);
+      assert.strictEqual(checked.monitors[0]?.status, "active");
+      assert.strictEqual(checked.monitors[0]?.label, "New criterion");
+      assert.lengthOf(
+        Option.getOrThrow(yield* repository.getComputerEvidence(monitor.id)).terminalImages,
+        0,
+      );
+    }).pipe(Effect.provide(computerMonitorRuntime)),
+  );
+
+  it.effect("a deadline remains schedulable while its observation is pending", () =>
+    Effect.gen(function* () {
+      yield* seedThread;
+      const service = yield* ThreadMonitorService;
+      const probe = yield* ComputerMonitorProbe;
+      const entered = yield* Deferred.make<void>();
+      yield* Ref.set(
+        probe.beforeCheck,
+        Deferred.succeed(entered, undefined).pipe(Effect.andThen(Effect.never)),
+      );
+      const now = DateTime.toEpochMillis(yield* DateTime.now);
+      const { monitor } = yield* service.createComputer({
+        threadId,
+        monitor: {
+          label: "Bounded wait",
+          desktop: { kind: "agent", desktopId: "deadline" },
+          match: { type: "image-change" },
+          sampling: { intervalMs: 1_000 },
+          deadlineAt: DateTime.formatIso(DateTime.makeUnsafe(now + 2_000)),
+          continuation: "record-only",
+        },
+      });
+      yield* TestClock.adjust("1 second");
+      yield* Deferred.await(entered);
+      yield* TestClock.adjust("1 second");
+      const result = yield* service.checkNow({ threadId, check: { monitorId: monitor.id } });
+      assert.strictEqual(result.monitors[0]?.status, "delivered");
+      assert.strictEqual(result.monitors[0]?.trigger?.reason, "deadline");
+    }).pipe(Effect.provide(computerMonitorRuntime)),
+  );
+
+  it.effect("slow desktop release leaves monitor state and other operations available", () =>
+    Effect.gen(function* () {
+      yield* seedThread;
+      const service = yield* ThreadMonitorService;
+      const probe = yield* ComputerMonitorProbe;
+      const entered = yield* Deferred.make<void>();
+      const proceed = yield* Deferred.make<void>();
+      yield* Ref.set(
+        probe.beforeRelease,
+        Deferred.succeed(entered, undefined).pipe(Effect.andThen(Deferred.await(proceed))),
+      );
+      const { monitor } = yield* service.createComputer({
+        threadId,
+        monitor: {
+          label: "Remote lease",
+          desktop: { kind: "agent", desktopId: "remote" },
+          match: { type: "image-change" },
+        },
+      });
+      const cancelling = yield* service
+        .cancel({ threadId, cancel: { monitorId: monitor.id } })
+        .pipe(Effect.forkScoped);
+      yield* Deferred.await(entered);
+      assert.strictEqual(
+        (yield* service.status({ threadId, query: { monitorId: monitor.id } })).monitors[0]?.status,
+        "cancelled",
+      );
+      const independent = yield* service.create({
+        threadId,
+        monitor: { label: "Available", schedule: { type: "signal" } },
+      });
+      yield* service.cancel({ threadId, cancel: { monitorId: independent.id } });
+      yield* Deferred.succeed(proceed, undefined);
+      yield* Fiber.join(cancelling);
+    }).pipe(Effect.provide(computerMonitorRuntime)),
+  );
+
+  it.effect("a pending revision cannot revive a cancelled watch", () =>
+    Effect.gen(function* () {
+      yield* seedThread;
+      const service = yield* ThreadMonitorService;
+      const probe = yield* ComputerMonitorProbe;
+      const entered = yield* Deferred.make<void>();
+      const proceed = yield* Deferred.make<void>();
+      yield* Ref.set(
+        probe.beforeRevise,
+        Deferred.succeed(entered, undefined).pipe(Effect.andThen(Deferred.await(proceed))),
+      );
+      const { monitor } = yield* service.createComputer({
+        threadId,
+        monitor: {
+          label: "Original",
+          desktop: { kind: "agent", desktopId: "revision" },
+          match: { type: "image-change" },
+        },
+      });
+      const revising = yield* service
+        .updateComputer({
+          threadId,
+          update: { monitorId: monitor.id, expectedRevision: 1, label: "Too late" },
+        })
+        .pipe(Effect.result, Effect.forkScoped);
+      yield* Deferred.await(entered);
+      yield* service.cancel({ threadId, cancel: { monitorId: monitor.id } });
+      yield* Deferred.succeed(proceed, undefined);
+      const result = yield* Fiber.join(revising);
+      assert.isTrue(Result.isFailure(result));
+      if (Result.isFailure(result)) assert.strictEqual(result.failure.code, "MONITOR_NOT_ACTIVE");
+      assert.strictEqual(
+        (yield* service.status({ threadId, query: { monitorId: monitor.id } })).monitors[0]?.status,
+        "cancelled",
+      );
+    }).pipe(Effect.provide(computerMonitorRuntime)),
+  );
+  it.effect("cancelling a thread's watches also stops a pending desktop request", () =>
+    Effect.gen(function* () {
+      yield* seedThread;
+      const service = yield* ThreadMonitorService;
+      const probe = yield* ComputerMonitorProbe;
+      const entered = yield* Deferred.make<void>();
+      yield* Ref.set(
+        probe.beforePrepare,
+        Deferred.succeed(entered, undefined).pipe(Effect.andThen(Effect.never)),
+      );
+      const pending = yield* service
+        .createComputer({
+          threadId,
+          monitor: {
+            label: "Pending grant",
+            desktop: { kind: "user", desktopId: "pending" },
+            match: { type: "image-change" },
+          },
+        })
+        .pipe(Effect.result, Effect.forkScoped);
+      yield* Deferred.await(entered);
+      yield* service.cancel({ threadId, cancel: {} });
+      const result = yield* Fiber.join(pending);
+      assert.isTrue(Result.isFailure(result));
+      if (Result.isFailure(result)) assert.strictEqual(result.failure.code, "MONITOR_NOT_ACTIVE");
+      assert.lengthOf(
+        (yield* service.status({ threadId, query: { includeFinished: true } })).monitors,
+        0,
+      );
+    }).pipe(Effect.provide(computerMonitorRuntime)),
+  );
+
+  it.effect("fresh inspection releases a lease reacquired after cancellation", () =>
+    Effect.gen(function* () {
+      yield* seedThread;
+      const service = yield* ThreadMonitorService;
+      const probe = yield* ComputerMonitorProbe;
+      const entered = yield* Deferred.make<void>();
+      const proceed = yield* Deferred.make<void>();
+      yield* Ref.set(
+        probe.beforeInspect,
+        Deferred.succeed(entered, undefined).pipe(Effect.andThen(Deferred.await(proceed))),
+      );
+      const { monitor } = yield* service.createComputer({
+        threadId,
+        monitor: {
+          label: "Inspect",
+          desktop: { kind: "agent", desktopId: "inspection" },
+          match: { type: "image-change" },
+        },
+      });
+      const inspecting = yield* service
+        .inspectComputer({ threadId, inspect: { monitorId: monitor.id, fresh: {} } })
+        .pipe(Effect.result, Effect.forkScoped);
+      yield* Deferred.await(entered);
+      yield* service.cancel({ threadId, cancel: { monitorId: monitor.id } });
+      const releases = yield* Ref.get(probe.releases);
+      yield* Deferred.succeed(proceed, undefined);
+      const result = yield* Fiber.join(inspecting);
+      assert.isTrue(Result.isFailure(result));
+      if (Result.isFailure(result)) assert.strictEqual(result.failure.code, "MONITOR_NOT_ACTIVE");
+      assert.strictEqual(yield* Ref.get(probe.releases), releases + 1);
+    }).pipe(Effect.provide(computerMonitorRuntime)),
+  );
+
+  it.effect(
+    "fresh inspection releases a lease reacquired while continuation delivery is pending",
+    () =>
+      Effect.gen(function* () {
+        yield* seedThread;
+        const service = yield* ThreadMonitorService;
+        const probe = yield* ComputerMonitorProbe;
+        const entered = yield* Deferred.make<void>();
+        const proceed = yield* Deferred.make<void>();
+        yield* Ref.set(
+          probe.beforeInspect,
+          Deferred.succeed(entered, undefined).pipe(Effect.andThen(Deferred.await(proceed))),
+        );
+        const { monitor } = yield* service.createComputer({
+          threadId,
+          monitor: {
+            label: "Inspect until matched",
+            desktop: { kind: "agent", desktopId: "inspection" },
+            match: { type: "image-change" },
+          },
+        });
+        const inspecting = yield* service
+          .inspectComputer({ threadId, inspect: { monitorId: monitor.id, fresh: {} } })
+          .pipe(Effect.result, Effect.forkScoped);
+        yield* Deferred.await(entered);
+        yield* TestClock.adjust("30 seconds");
+        const status = yield* service.checkNow({ threadId, check: { monitorId: monitor.id } });
+        assert.strictEqual(status.monitors[0]?.status, "triggered");
+        const releases = yield* Ref.get(probe.releases);
+        yield* Deferred.succeed(proceed, undefined);
+        const result = yield* Fiber.join(inspecting);
+        assert.isTrue(Result.isFailure(result));
+        if (Result.isFailure(result)) assert.strictEqual(result.failure.code, "MONITOR_NOT_ACTIVE");
+        assert.strictEqual(yield* Ref.get(probe.releases), releases + 1);
+      }).pipe(Effect.provide(computerMonitorRuntime)),
+  );
+
+  it.effect("concurrent revisions cannot overwrite the revision that committed first", () =>
+    Effect.gen(function* () {
+      yield* seedThread;
+      const service = yield* ThreadMonitorService;
+      const probe = yield* ComputerMonitorProbe;
+      const entered = yield* Deferred.make<void>();
+      const proceed = yield* Deferred.make<void>();
+      yield* Ref.set(
+        probe.beforeRevise,
+        Deferred.succeed(entered, undefined).pipe(Effect.andThen(Deferred.await(proceed))),
+      );
+      const { monitor } = yield* service.createComputer({
+        threadId,
+        monitor: {
+          label: "Original",
+          desktop: { kind: "agent", desktopId: "revision" },
+          match: { type: "image-change" },
+        },
+      });
+      const first = yield* service
+        .updateComputer({
+          threadId,
+          update: { monitorId: monitor.id, expectedRevision: 1, label: "Slow revision" },
+        })
+        .pipe(Effect.result, Effect.forkScoped);
+      yield* Deferred.await(entered);
+      yield* Ref.set(probe.beforeRevise, Effect.void);
+      yield* service.updateComputer({
+        threadId,
+        update: { monitorId: monitor.id, expectedRevision: 1, label: "Committed revision" },
+      });
+      yield* Deferred.succeed(proceed, undefined);
+      const result = yield* Fiber.join(first);
+      assert.isTrue(Result.isFailure(result));
+      if (Result.isFailure(result)) assert.strictEqual(result.failure.code, "REVISION_CONFLICT");
+      assert.strictEqual(
+        (yield* service.status({ threadId, query: { monitorId: monitor.id } })).monitors[0]?.label,
+        "Committed revision",
+      );
+    }).pipe(Effect.provide(computerMonitorRuntime)),
   );
 });
 

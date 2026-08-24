@@ -316,6 +316,39 @@ const make = Effect.gen(function* () {
     `,
   });
 
+  const listDeliveryGroupRows = SqlSchema.findAll({
+    Request: Schema.String,
+    Result: ThreadMonitorRow,
+    execute: (groupId) => sql`
+      SELECT
+        monitor_id AS "monitorId",
+        thread_id AS "threadId",
+        label,
+        condition_type AS "conditionType",
+        condition_json AS "conditionJson",
+        wake_at AS "wakeAt",
+        continuation_mode AS "continuationMode",
+        resume_prompt AS "resumePrompt",
+        status,
+        trigger_reason AS "triggerReason",
+        trigger_summary AS "triggerSummary",
+        trigger_evidence AS "triggerEvidence",
+        created_at AS "createdAt",
+        updated_at AS "updatedAt",
+        triggered_at AS "triggeredAt",
+        delivered_at AS "deliveredAt",
+        cancelled_at AS "cancelledAt",
+        last_error AS "lastError",
+        delivery_attempts AS "deliveryAttempts",
+        delivery_group_id AS "deliveryGroupId",
+        delivery_retry_at AS "deliveryRetryAt",
+        delivery_failure_count AS "deliveryFailureCount"
+      FROM thread_monitors
+      WHERE delivery_group_id = ${groupId}
+      ORDER BY COALESCE(wake_at, '9999-12-31T23:59:59.999Z') ASC, monitor_id ASC
+    `,
+  });
+
   const deleteThreadRows = SqlSchema.void({
     Request: Schema.Struct({ threadId: ThreadId }),
     execute: ({ threadId }) => sql`
@@ -406,6 +439,13 @@ const make = Effect.gen(function* () {
       listOutstandingRows(undefined).pipe(
         Effect.map((rows) => rows.map(fromRow)),
         Effect.mapError(toPersistenceSqlError("ThreadMonitorRepository.listOutstanding:query")),
+      ),
+    listByDeliveryGroupId: (groupId) =>
+      listDeliveryGroupRows(groupId).pipe(
+        Effect.map((rows) => rows.map(fromRow)),
+        Effect.mapError(
+          toPersistenceSqlError("ThreadMonitorRepository.listByDeliveryGroupId:query"),
+        ),
       ),
     deleteByThread: (threadId) =>
       deleteThreadRows({ threadId }).pipe(

@@ -535,7 +535,7 @@ export const make = Effect.gen(function* () {
         {
           environmentId: record.scope.environmentId,
           threadId: record.scope.threadId,
-          controllerId: record.scope.providerSessionId,
+          controllerId: record.scope.controllerId,
         },
         {
           operation: "import",
@@ -610,7 +610,7 @@ export const make = Effect.gen(function* () {
         {
           environmentId: record.scope.environmentId,
           threadId: record.scope.threadId,
-          controllerId: record.scope.providerSessionId,
+          controllerId: record.scope.controllerId,
         },
         {
           operation: "export",
@@ -854,7 +854,7 @@ export const make = Effect.gen(function* () {
           {
             environmentId: scope.environmentId,
             threadId: scope.threadId,
-            controllerId: scope.providerSessionId,
+            controllerId: scope.controllerId,
           },
           {
             transferId: input.transferId,

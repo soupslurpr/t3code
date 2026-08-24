@@ -24,6 +24,8 @@ export type McpCapability = (typeof ALL_MCP_CAPABILITIES)[number];
 /** A provider session T3 Code launched for one thread. */
 export interface McpThreadCaller {
   readonly threadId: ThreadId;
+  /** Stable logical owner for recoverable computer and Agent desktop state. */
+  readonly controllerId: string;
   readonly providerSessionId: string;
   readonly providerInstanceId: ProviderInstanceId;
 }

@@ -18,6 +18,7 @@ const settingsThreadId = ThreadId.make("agent-desktop-settings");
 const scope: McpInvocationContext.McpInvocationScope = {
   environmentId,
   threadId: settingsThreadId,
+  controllerId: "human:session-1",
   providerSessionId: "human:session-1",
   providerInstanceId: ProviderInstanceId.make("t3-human"),
   capabilities: new Set(["computer"]),
