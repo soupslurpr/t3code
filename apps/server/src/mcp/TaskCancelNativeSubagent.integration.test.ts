@@ -334,6 +334,7 @@ it.effect("task_cancel ends a delegated child's background native subagent", () 
             threadId: parentThreadId,
             providerSessionId: "provider-session:task-cancel",
             providerInstanceId: instanceId,
+            controllerId: "controller:task-cancel",
           },
           client: undefined,
           capabilities: new Set(["orchestration"]),

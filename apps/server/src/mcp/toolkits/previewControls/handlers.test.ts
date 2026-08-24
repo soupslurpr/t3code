@@ -112,6 +112,7 @@ it.effect("close reports why the server browser refused to close a tab", () =>
         environmentId: EnvironmentId.make("preview-controls-environment"),
         requestNamespace: "preview-controls-provider-session",
         thread: {
+          controllerId: "test-controller",
           threadId,
           providerSessionId: "preview-controls-provider-session",
           providerInstanceId: ProviderInstanceId.make("codex"),
