@@ -77,6 +77,7 @@ import AdaptiveComputerMonitorsMigration from "./Migrations/052_AdaptiveComputer
 import ComputerMonitorImageEncodingMigration from "./Migrations/053_ComputerMonitorImageEncoding.ts";
 import ProjectionThreadMessageSystemEventsMigration from "./Migrations/054_ProjectionThreadMessageSystemEvents.ts";
 import ComputerMonitorCacheWriteUsageMigration from "./Migrations/055_ComputerMonitorCacheWriteUsage.ts";
+import UserDesktopsMigration from "./Migrations/056_UserDesktops.ts";
 
 export const migrationEntries = [
   [1, "OrchestrationEvents", Migration0001],
@@ -154,6 +155,7 @@ export const migrationEntries = [
   [72, "ComputerMonitorImageEncoding", ComputerMonitorImageEncodingMigration],
   [73, "ProjectionThreadMessageSystemEvents", ProjectionThreadMessageSystemEventsMigration],
   [74, "ComputerMonitorCacheWriteUsage", ComputerMonitorCacheWriteUsageMigration],
+  [75, "UserDesktops", UserDesktopsMigration],
 ] as const;
 
 export const migrationManifest = migrationEntries.map(([id, name]) => [id, name] as const);

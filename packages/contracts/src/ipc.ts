@@ -14,6 +14,7 @@ import {
   ComputerAutomationStatus,
   ComputerAutomationTargetInput,
 } from "./computerAutomation.ts";
+import type { UserDesktopHostRegistration } from "./userDesktop.ts";
 import { SnapShotSource } from "./chatAttachment.ts";
 import { EnvironmentId, ThreadId, TrimmedNonEmptyString } from "./baseSchemas.ts";
 import { BrowserProfileId } from "./browserProfile.ts";
@@ -1125,6 +1126,8 @@ export interface DesktopBridge {
   getLocalEnvironmentBootstraps: () => readonly DesktopEnvironmentBootstrap[];
   getLocalEnvironmentEnabled?: () => boolean;
   setLocalEnvironmentEnabled?: (enabled: boolean) => Promise<void>;
+  /** Optional for compatibility with desktop shells that cannot identify their user desktop. */
+  getUserDesktopHost?: () => UserDesktopHostRegistration;
   getLocalEnvironmentBearerToken: () => Promise<string>;
   getClientSettings: () => Promise<ClientSettings | null>;
   setClientSettings: (settings: ClientSettings) => Promise<void>;
@@ -1256,6 +1259,22 @@ export interface DesktopComputerAutomationBridge {
     input: ComputerAutomationAccessInput,
     context?: DesktopComputerAutomationContext,
   ) => Promise<DesktopComputerAutomationResult<ComputerAutomationObservation>>;
+  rememberView: (
+    input: ComputerAutomationAccessInput,
+    context?: DesktopComputerAutomationContext,
+  ) => Promise<DesktopComputerAutomationResult<ComputerAutomationObservation>>;
+  rememberControl: (
+    input: ComputerAutomationAccessInput,
+    context?: DesktopComputerAutomationContext,
+  ) => Promise<DesktopComputerAutomationResult<ComputerAutomationObservation>>;
+  forceRelease: (
+    input: ComputerAutomationTargetInput,
+    context?: DesktopComputerAutomationContext,
+  ) => Promise<DesktopComputerAutomationResult<ComputerAutomationStatus>>;
+  forceForgetControl: (
+    input: ComputerAutomationTargetInput,
+    context?: DesktopComputerAutomationContext,
+  ) => Promise<DesktopComputerAutomationResult<void>>;
   snapshot: (
     input: ComputerAutomationSnapshotInput,
     context?: DesktopComputerAutomationContext,

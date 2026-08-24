@@ -301,6 +301,11 @@ import {
   PreviewAutomationStreamEvent,
 } from "./previewAutomation.ts";
 import {
+  UserDesktopHumanInvokeInput,
+  UserDesktopInventoryError,
+  UserDesktopManagementError,
+} from "./userDesktop.ts";
+import {
   ServerConfigStreamEvent,
   DesktopUpdateCommitInput,
   OtlpEndpointCheckInput,
@@ -470,6 +475,7 @@ export const WS_METHODS = {
   previewAutomationRespond: "previewAutomation.respond",
   previewAutomationFocusHost: "previewAutomation.focusHost",
   agentDesktopHumanInvoke: "agentDesktop.humanInvoke",
+  userDesktopHumanInvoke: "userDesktop.humanInvoke",
 
   deviceConfigure: "device.configure",
   deviceList: "device.list",
@@ -1579,6 +1585,17 @@ const WsAgentDesktopHumanInvokeRpc = Rpc.make(WS_METHODS.agentDesktopHumanInvoke
   error: Schema.Union([PreviewAutomationError, EnvironmentAuthorizationError]),
 });
 
+const WsUserDesktopHumanInvokeRpc = Rpc.make(WS_METHODS.userDesktopHumanInvoke, {
+  payload: UserDesktopHumanInvokeInput,
+  success: Schema.Unknown,
+  error: Schema.Union([
+    PreviewAutomationError,
+    UserDesktopInventoryError,
+    UserDesktopManagementError,
+    EnvironmentAuthorizationError,
+  ]),
+});
+
 const WsSubscribePreviewEventsRpc = Rpc.make(WS_METHODS.subscribePreviewEvents, {
   payload: Schema.Struct({}),
   success: PreviewEvent,
@@ -2083,6 +2100,7 @@ export const WsRpcGroup = RpcGroup.make(
   WsPreviewAutomationRespondRpc,
   WsPreviewAutomationFocusHostRpc,
   WsAgentDesktopHumanInvokeRpc,
+  WsUserDesktopHumanInvokeRpc,
   WsSubscribePreviewEventsRpc,
   WsSubscribeDiscoveredLocalServersRpc,
   WsDeviceConfigureRpc,

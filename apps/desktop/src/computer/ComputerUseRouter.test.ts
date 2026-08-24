@@ -13,6 +13,9 @@ import * as Schema from "effect/Schema";
 import * as ComputerUse from "./ComputerUse.ts";
 import * as ComputerUseCoordinator from "./ComputerUseCoordinator.ts";
 import * as ComputerUseRouter from "./ComputerUseRouter.ts";
+import * as UserDesktopIdentity from "./UserDesktopIdentity.ts";
+
+const isComputerUseOperationError = Schema.is(ComputerUse.ComputerUseOperationError);
 
 const context: DesktopComputerAutomationContext = {
   controllerId: "controller-1",
@@ -21,7 +24,7 @@ const context: DesktopComputerAutomationContext = {
 };
 
 const userStatus: ComputerAutomationStatus = {
-  desktop: { id: "user", kind: "user", label: "Your desktop" },
+  desktop: { id: "user-desktop-1", kind: "user", label: "Test desktop" },
   available: true,
   backend: "gnome-wayland-portal",
   permission: "remembered",
@@ -41,6 +44,10 @@ const routerHarness = Effect.gen(function* () {
     status: () => record("status").pipe(Effect.as(userStatus)),
     requestView: () => record("view").pipe(Effect.as(userStatus)),
     requestControl: () => record("control").pipe(Effect.as(userStatus)),
+    rememberView: () => record("rememberView").pipe(Effect.as(userStatus)),
+    rememberControl: () => record("rememberControl").pipe(Effect.as(userStatus)),
+    forceRelease: () => record("forceRelease").pipe(Effect.as(userStatus)),
+    forceForget: () => record("forceForget"),
     requestAvailability: () => record("requestAvailability").pipe(Effect.as(userStatus)),
     releaseAvailability: () => record("releaseAvailability").pipe(Effect.as(userStatus)),
     snapshot: () => unexpected,
@@ -49,7 +56,23 @@ const routerHarness = Effect.gen(function* () {
     forget: () => record("forget"),
   });
   const layer = ComputerUseRouter.layer.pipe(
-    Layer.provide(Layer.succeed(ComputerUseCoordinator.ComputerUseCoordinator, user)),
+    Layer.provide(
+      Layer.merge(
+        Layer.succeed(ComputerUseCoordinator.ComputerUseCoordinator, user),
+        Layer.succeed(
+          UserDesktopIdentity.UserDesktopIdentity,
+          UserDesktopIdentity.UserDesktopIdentity.of({
+            registration: {
+              protocolVersion: 1,
+              desktopId: "user-desktop-1",
+              defaultLabel: "Test desktop",
+              platform: "linux",
+              capabilities: ["view", "control", "availability"],
+            },
+          }),
+        ),
+      ),
+    ),
   );
   return { calls, layer };
 });
@@ -60,10 +83,28 @@ describe("ComputerUseRouter", () => {
       const harness = yield* routerHarness;
       yield* Effect.gen(function* () {
         const router = yield* ComputerUseRouter.ComputerUseRouter;
-        yield* router.status(context, { desktop: { kind: "user" } });
-        yield* router.requestControl(context, { desktop: { kind: "user" } });
-        yield* router.release(context, { desktop: { kind: "user" } });
-        assert.deepEqual(yield* Ref.get(harness.calls), ["status", "control", "release"]);
+        yield* router.status(context, {
+          desktop: { kind: "user", desktopId: "user-desktop-1" },
+        });
+        yield* router.requestControl(context, {
+          desktop: { kind: "user", desktopId: "user-desktop-1" },
+        });
+        yield* router.release(context, {
+          desktop: { kind: "user", desktopId: "user-desktop-1" },
+        });
+        yield* router.forceRelease(context, {
+          desktop: { kind: "user", desktopId: "user-desktop-1" },
+        });
+        yield* router.forceForget(context, {
+          desktop: { kind: "user", desktopId: "user-desktop-1" },
+        });
+        assert.deepEqual(yield* Ref.get(harness.calls), [
+          "status",
+          "control",
+          "release",
+          "forceRelease",
+          "forceForget",
+        ]);
       }).pipe(Effect.provide(harness.layer));
     }),
   );
@@ -78,8 +119,27 @@ describe("ComputerUseRouter", () => {
             desktop: { kind: "agent", desktopId: "agent-desktop-1" },
           }),
         );
-        assert(Schema.is(ComputerUse.ComputerUseOperationError)(error));
+        assert(isComputerUseOperationError(error));
         assert.match(String(error.cause), /environment server/u);
+        assert.deepEqual(yield* Ref.get(harness.calls), []);
+      }).pipe(Effect.provide(harness.layer));
+    }),
+  );
+
+  it.effect("rejects a different user desktop without touching the local host", () =>
+    Effect.gen(function* () {
+      const harness = yield* routerHarness;
+      yield* Effect.gen(function* () {
+        const router = yield* ComputerUseRouter.ComputerUseRouter;
+        const error = yield* router
+          .status(context, {
+            desktop: { kind: "user", desktopId: "user-desktop-other" },
+          })
+          .pipe(Effect.flip);
+        assert.strictEqual(
+          ComputerUse.toComputerAutomationFailure(error).code,
+          "desktop-target-mismatch",
+        );
         assert.deepEqual(yield* Ref.get(harness.calls), []);
       }).pipe(Effect.provide(harness.layer));
     }),

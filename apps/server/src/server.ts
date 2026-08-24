@@ -50,6 +50,7 @@ import * as SqlitePersistence from "./persistence/Sqlite.ts";
 import * as PullRequestFilesViewed from "./persistence/PullRequestFilesViewed.ts";
 import * as PullRequestReviewGuides from "./persistence/PullRequestReviewGuides.ts";
 import * as PullRequestReviewGuideService from "./pullRequest/PullRequestReviewGuideService.ts";
+import * as UserDesktops from "./persistence/UserDesktops.ts";
 import * as ServerLifecycleEvents from "./serverLifecycleEvents.ts";
 import * as AnalyticsService from "./telemetry/AnalyticsService.ts";
 import * as DelegatedTaskAnalytics from "./telemetry/DelegatedTaskAnalytics.ts";
@@ -208,8 +209,12 @@ const HTTP_ROUTER_CONFIG = {
 // T3's primary transport is long-lived WebSocket RPC, whose Effect scope finalizer
 // already closes the websocket gracefully.
 const HTTP_PREEMPTIVE_SHUTDOWN_GRACE_MS = 0;
+const layerPersistence = Layer.empty.pipe(Layer.provideMerge(SqlitePersistence.layerConfig));
+const layerPreviewAutomationBroker = PreviewAutomationBroker.layer.pipe(
+  Layer.provide(UserDesktops.layer),
+  Layer.provide(layerPersistence),
+);
 const layerComputerObservationStore = ComputerObservationStore.layer;
-const layerPreviewAutomationBroker = PreviewAutomationBroker.layer;
 const layerAgentDesktopEnvironment = AgentDesktopEnvironment.layer;
 const layerQemuAgentDesktop = QemuAgentDesktop.layer.pipe(
   Layer.provide(layerAgentDesktopEnvironment),
@@ -342,7 +347,6 @@ const layerHttpServer = Layer.unwrap(
 
 const layerPlatformServices = NodeServices.layer;
 
-const layerPersistence = Layer.empty.pipe(Layer.provideMerge(SqlitePersistence.layerConfig));
 
 const layerVcsDriverRegistry = VcsDriverRegistry.layer.pipe(Layer.provide(VcsProjectConfig.layer));
 

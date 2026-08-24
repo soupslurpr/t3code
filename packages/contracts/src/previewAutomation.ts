@@ -28,6 +28,7 @@ import {
   AgentDesktopOwner,
   AgentDesktopUpdateInput,
 } from "./agentDesktop.ts";
+import { UserDesktopHostRegistration } from "./userDesktop.ts";
 
 const BoundedUrl = Schema.String.check(Schema.isTrimmed())
   .check(Schema.isNonEmpty())
@@ -843,6 +844,7 @@ export type PreviewAutomationHostIdentity = typeof PreviewAutomationHostIdentity
 
 export const PreviewAutomationHost = Schema.Struct({
   ...PreviewAutomationHostIdentity.fields,
+  userDesktop: Schema.optional(UserDesktopHostRegistration),
   /**
    * Missing means the pre-capability-negotiation V1 operation set.
    */
