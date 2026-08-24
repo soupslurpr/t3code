@@ -12,6 +12,8 @@ export type McpCapability = "preview" | "computer";
 export interface McpInvocationScope {
   readonly environmentId: EnvironmentId;
   readonly threadId: ThreadId;
+  /** Stable logical owner for recoverable computer and Agent desktop state. */
+  readonly controllerId: string;
   readonly providerSessionId: string;
   readonly providerInstanceId: ProviderInstanceId;
   readonly capabilities: ReadonlySet<McpCapability>;

@@ -4,6 +4,7 @@ import * as NodePath from "node:path";
 
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import {
+  type AgentDesktopOwner,
   AgentDesktopId,
   EnvironmentId,
   ProjectId,
@@ -36,6 +37,7 @@ const modelSelection = { instanceId: providerInstanceId, model: "test-model" } a
 const scope: McpInvocationContext.McpInvocationScope = {
   environmentId,
   threadId,
+  controllerId: "controller-transfer-test",
   providerSessionId: "session-transfer-test",
   providerInstanceId,
   capabilities: new Set(["computer"]),
@@ -87,21 +89,23 @@ function projectionLayer(workspaceRoot: string) {
 /** Creates one manager service around an exact server-local transfer handler. */
 function managerLayer(
   handleTransfer: (
+    owner: AgentDesktopOwner,
     input: AgentDesktopManager.AgentDesktopManagerTransferInput,
   ) => Effect.Effect<
     AgentDesktopManager.AgentDesktopManagerTransferResult,
     AgentDesktopManager.AgentDesktopManagerOperationError
   >,
+  handleCancel: (owner: AgentDesktopOwner) => Effect.Effect<void> = () => Effect.void,
 ) {
   return Layer.mock(AgentDesktopManager.AgentDesktopManager)({
-    transfer: (_owner, input) => handleTransfer(input),
-    cancelTransfer: () => Effect.void,
+    transfer: handleTransfer,
+    cancelTransfer: handleCancel,
   });
 }
 
 /** Creates a manager that reports one categorized guest transfer rejection. */
 function rejectingManagerLayer(code: "destination-exists", detail: string) {
-  return managerLayer(() =>
+  return managerLayer((_owner) =>
     Effect.fail(
       new AgentDesktopManager.AgentDesktopManagerError({
         code,
@@ -143,7 +147,8 @@ describe("AgentDesktopTransferService", () => {
 
         yield* withTransferService(
           workspaceRoot,
-          managerLayer((input) => {
+          managerLayer((owner, input) => {
+            assert.equal(owner.controllerId, scope.controllerId);
             assert.equal(input.operation, "import");
             if (input.operation !== "import") return Effect.die("unexpected export");
             return Effect.gen(function* () {
@@ -225,7 +230,8 @@ describe("AgentDesktopTransferService", () => {
 
         yield* withTransferService(
           workspaceRoot,
-          managerLayer((input) => {
+          managerLayer((owner, input) => {
+            assert.equal(owner.controllerId, scope.controllerId);
             assert.equal(input.operation, "export");
             if (input.operation !== "export") return Effect.die("unexpected import");
             return Effect.gen(function* () {
@@ -279,7 +285,13 @@ describe("AgentDesktopTransferService", () => {
 
         yield* withTransferService(
           workspaceRoot,
-          managerLayer(() => Effect.never),
+          managerLayer(
+            () => Effect.never,
+            (owner) => {
+              assert.equal(owner.controllerId, scope.controllerId);
+              return Effect.void;
+            },
+          ),
           Effect.gen(function* () {
             const transfers = yield* AgentDesktopTransfer.AgentDesktopTransferService;
             const started = yield* transfers

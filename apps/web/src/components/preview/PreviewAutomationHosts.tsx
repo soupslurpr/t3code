@@ -301,9 +301,8 @@ function PreviewAutomationHost(props: { readonly environmentId: EnvironmentId })
       clientId: automationClientId,
       environmentId,
       ...previewAutomationHostCapabilities({
-        computerAvailable:
-          window.desktopBridge?.computer !== undefined &&
-          (userDesktop === undefined || userDesktop.capabilities.includes("view")),
+        computerAvailable: window.desktopBridge?.computer !== undefined,
+        computerCapabilities: userDesktop?.capabilities ?? [],
       }),
       ...(userDesktop === undefined ? {} : { userDesktop }),
     }),
@@ -335,7 +334,7 @@ function PreviewAutomationHost(props: { readonly environmentId: EnvironmentId })
   const presentationSuppressedRuntimeTabsRef = useRef(new Map<string, Set<string>>());
 
   const handleRequest = useCallback(
-    async (request: PreviewAutomationRequest): Promise<unknown> => {
+    async (request: PreviewAutomationRequest, _signal: AbortSignal): Promise<unknown> => {
       // Session sync and tab creation consume the same budget as overlay registration.
       const hostDeadlineMs = Date.now() + resolveHostWaitBudgetMs(request.timeoutMs);
       const computer = window.desktopBridge?.computer;
@@ -865,11 +864,41 @@ function PreviewAutomationHost(props: { readonly environmentId: EnvironmentId })
     },
     [environmentId, listPreviews, open, registry, resize],
   );
-  const [requestHandlerAtom] = useState(() => Atom.make({ handle: handleRequest }));
+  const cancelRequest = useCallback(
+    async (request: PreviewAutomationRequest): Promise<void> => {
+      const computer = window.desktopBridge?.computer;
+      if (computer === undefined || request.controllerId === undefined) return;
+      const context = {
+        controllerId: request.controllerId,
+        environmentId,
+        threadId: request.threadId,
+      };
+      switch (request.operation) {
+        case "computerRequestAvailability":
+          await computer.releaseAvailability(
+            request.input as ComputerAutomationAvailabilityInput,
+            context,
+          );
+          return;
+        case "computerRequestView":
+        case "computerRequestControl":
+        case "computerRememberView":
+        case "computerRememberControl":
+        case "computerSnapshot":
+        case "computerAct":
+          await computer.release(request.input as ComputerAutomationTargetInput, context);
+          return;
+      }
+    },
+    [environmentId],
+  );
+  const [requestHandlerAtom] = useState(() =>
+    Atom.make({ handle: handleRequest, cancel: cancelRequest }),
+  );
   const setRequestHandler = useAtomSet(requestHandlerAtom);
   useEffect(() => {
-    setRequestHandler({ handle: handleRequest });
-  }, [handleRequest, setRequestHandler]);
+    setRequestHandler({ handle: handleRequest, cancel: cancelRequest });
+  }, [cancelRequest, handleRequest, setRequestHandler]);
 
   const automationRequestConsumerAtom = useMemo(
     () =>

@@ -694,6 +694,11 @@ export const PreviewAutomationStreamEvent = Schema.Union([
     connectionId: PreviewAutomationConnectionId,
     request: PreviewAutomationRequest,
   }),
+  Schema.Struct({
+    type: Schema.Literal("cancel"),
+    connectionId: PreviewAutomationConnectionId,
+    requestId: TrimmedNonEmptyString,
+  }),
 ]);
 export type PreviewAutomationStreamEvent = typeof PreviewAutomationStreamEvent.Type;
 

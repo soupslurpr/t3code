@@ -38,6 +38,7 @@ const computerContentHash = "sha256-bgra8-v1:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA
 const invocation = {
   environmentId,
   threadId,
+  controllerId: "controller-mcp-test",
   providerSessionId: "provider-session-mcp-test",
   providerInstanceId: ProviderInstanceId.make("codex"),
   capabilities: new Set(["preview", "computer"] as const),
@@ -641,7 +642,7 @@ it.effect("returns bounded structural snapshot failures", () =>
         },
       });
       yield* Stream.runForEach(events, (event) =>
-        event.type === "connected"
+        event.type !== "request"
           ? Effect.void
           : broker.respond({
               clientId: "mcp-failure-client",
@@ -795,7 +796,7 @@ it.effect("registers annotated tools and preserves authenticated request context
         },
       });
       yield* Stream.runForEach(events, (event) => {
-        if (event.type === "connected") return Effect.void;
+        if (event.type !== "request") return Effect.void;
         routedRequests.push(event.request);
         return broker.respond({
           clientId: "mcp-test-client",

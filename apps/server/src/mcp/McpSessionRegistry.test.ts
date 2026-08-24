@@ -72,6 +72,29 @@ it.effect("issues a computer-only credential without browser access", () =>
   }),
 );
 
+it.effect("keeps the logical controller stable across provider restarts", () =>
+  Effect.gen(function* () {
+    const registry = yield* makeRegistry(() => 1_000);
+    const threadId = ThreadId.make("thread-restarted");
+    const first = yield* registry.issue({
+      threadId,
+      providerInstanceId: ProviderInstanceId.make("codex"),
+    });
+    const second = yield* registry.issue({
+      threadId,
+      providerInstanceId: ProviderInstanceId.make("codex"),
+    });
+    const firstToken = first.config.authorizationHeader.replace(/^Bearer\s+/, "");
+    const secondToken = second.config.authorizationHeader.replace(/^Bearer\s+/, "");
+    const firstScope = yield* registry.resolve(firstToken);
+    const secondScope = yield* registry.resolve(secondToken);
+
+    expect(firstScope?.providerSessionId).not.toBe(secondScope?.providerSessionId);
+    expect(firstScope?.controllerId).toBe(secondScope?.controllerId);
+    expect(firstScope?.controllerId).toMatch(/^thread-[0-9a-f]{64}$/);
+  }),
+);
+
 it.effect("builds MCP endpoints from the bound server host", () =>
   Effect.gen(function* () {
     const cases = [

@@ -110,6 +110,12 @@ const makeWithOptions = Effect.fn("McpSessionRegistry.make")(function* (
       .digest("SHA-256", new TextEncoder().encode(token))
       .pipe(Effect.map(bytesToHex), Effect.orDie);
 
+  const controllerIdForThread = (threadId: ThreadId) =>
+    crypto.digest("SHA-256", new TextEncoder().encode(`${environmentId}\u0000${threadId}`)).pipe(
+      Effect.map((bytes) => `thread-${bytesToHex(bytes)}`),
+      Effect.orDie,
+    );
+
   const pruneDead = (records: ReadonlyMap<string, CredentialRecord>, timestamp: number) => {
     const next = new Map(
       Array.from(records).filter(
@@ -123,11 +129,13 @@ const makeWithOptions = Effect.fn("McpSessionRegistry.make")(function* (
     function* (request) {
       const issuedAt = yield* currentTimeMillis;
       const providerSessionId = yield* crypto.randomUUIDv4.pipe(Effect.orDie);
+      const controllerId = yield* controllerIdForThread(request.threadId);
       const rawToken = yield* crypto.randomBytes(32).pipe(Effect.map(tokenFromBytes), Effect.orDie);
       const tokenHash = yield* hashToken(rawToken);
       const scope: McpInvocationContext.McpInvocationScope = {
         environmentId,
         threadId: ThreadId.make(request.threadId),
+        controllerId,
         providerSessionId,
         providerInstanceId: ProviderInstanceId.make(request.providerInstanceId),
         capabilities: new Set(request.capabilities ?? DEFAULT_CAPABILITIES),

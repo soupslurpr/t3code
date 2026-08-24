@@ -213,6 +213,7 @@ export const make = Effect.gen(function* () {
     return McpInvocationContext.McpInvocationContext.of({
       environmentId: yield* environment.getEnvironmentId,
       threadId: input.threadId,
+      controllerId: `thread-monitor:${input.monitorId}`,
       providerSessionId: `thread-monitor:${input.monitorId}`,
       providerInstanceId: input.providerInstanceId,
       capabilities: new Set(["computer"]),
