@@ -273,6 +273,8 @@ function normalizeError(error) {
       ? { expected: error.expected.filter((value) => typeof value === "string").slice(0, 32) }
       : {}),
     ...(typeof error?.phase === "string" ? { phase: error.phase } : {}),
+    ...(Number.isInteger(error?.actionIndex) ? { actionIndex: error.actionIndex } : {}),
+    ...(typeof error?.actionType === "string" ? { actionType: error.actionType } : {}),
     ...(typeof error?.cleanup === "object" && error.cleanup !== null
       ? { cleanup: error.cleanup }
       : {}),
@@ -2318,6 +2320,81 @@ function resolveKeyChord(keys) {
   return resolvedKeys;
 }
 
+/** Validates every keyboard action before any action in the batch executes. */
+function validateActionInputs(actions) {
+  const simulatedHeldKeysyms = new Set(heldKeysyms);
+  for (const [actionIndex, action] of actions.entries()) {
+    try {
+      switch (action.type) {
+        case "press": {
+          const chord = resolveKeyChord([
+            ...(action.modifiers ?? []).map((key, index) => ({
+              key,
+              field: `modifiers[${index}]`,
+            })),
+            { key: action.key, field: "key" },
+          ]);
+          const finalKey = chord[chord.length - 1];
+          if (simulatedHeldKeysyms.has(finalKey.keysym)) {
+            throw accessibilityError(
+              "key-already-held",
+              "the desktop key is already held; release it before pressing it",
+              {
+                field: finalKey.field,
+                received: finalKey.key,
+                expected: ["key not currently held"],
+                phase: "validation",
+              },
+            );
+          }
+          break;
+        }
+        case "hotkey": {
+          const chord = resolveKeyChord(
+            action.keys.map((key, index) => ({ key, field: `keys[${index}]` })),
+          );
+          const finalKey = chord[chord.length - 1];
+          if (simulatedHeldKeysyms.has(finalKey.keysym)) {
+            throw accessibilityError(
+              "key-already-held",
+              "the desktop key is already held; release it before pressing it",
+              {
+                field: finalKey.field,
+                received: finalKey.key,
+                expected: ["key not currently held"],
+                phase: "validation",
+              },
+            );
+          }
+          break;
+        }
+        case "key_down": {
+          const keysym = resolveKeysym(action.key, "key");
+          if (simulatedHeldKeysyms.has(keysym)) {
+            throw accessibilityError("key-already-held", "the desktop key is already held", {
+              field: "key",
+              received: action.key,
+              expected: ["key not currently held"],
+              phase: "validation",
+            });
+          }
+          simulatedHeldKeysyms.add(keysym);
+          break;
+        }
+        case "key_up":
+          simulatedHeldKeysyms.delete(resolveKeysym(action.key, "key"));
+          break;
+      }
+    } catch (error) {
+      const failure = mutableError(error);
+      failure.actionIndex = actionIndex;
+      failure.actionType = action.type;
+      if (typeof failure.phase !== "string") failure.phase = "validation";
+      throw failure;
+    }
+  }
+}
+
 /** Presses and reliably releases one resolved key chord. */
 async function sendKeyChord(resolvedKeys) {
   const pressedKeys = [];
@@ -2686,7 +2763,6 @@ async function activateAccessibilityTarget(targetId) {
       { field: "targetId", received: targetId, phase: "execution" },
     );
   }
-  invalidateAccessibilityTargets();
   return { target: current.target };
 }
 
@@ -2872,7 +2948,6 @@ async function activateAccessibilityWindow(windowId) {
     );
   }
   await waitForAccessibilityWindowInventory(expectedWindows);
-  invalidateAccessibilityTargets();
   return null;
 }
 
@@ -3003,6 +3078,10 @@ async function handleCommand(message) {
       await runInputPhase("execution", () =>
         sendWheelTicks(message.params.deltaX, message.params.deltaY),
       );
+      return null;
+    }
+    case "validateActions": {
+      validateActionInputs(message.params.actions);
       return null;
     }
     case "type": {
@@ -3225,12 +3304,13 @@ registerSystemRevocationSignals();
 
 /** Executes one decoded helper command and emits its protocol response. */
 async function processCommand(message) {
+  const invalidatesAccessibility = INPUT_METHODS.has(message?.method);
   try {
     const result = await handleCommand(message);
     respond({ id: message.id, ok: true, result });
   } catch (error) {
     const failure = mutableError(error);
-    if (INPUT_METHODS.has(message?.method)) {
+    if (invalidatesAccessibility) {
       try {
         failure.cleanup = await recoverHeldInputs();
       } catch (cleanupError) {
@@ -3239,6 +3319,8 @@ async function processCommand(message) {
       }
     }
     respond({ id: message?.id ?? null, ok: false, error: normalizeError(failure) });
+  } finally {
+    if (invalidatesAccessibility) invalidateAccessibilityTargets();
   }
 }
 

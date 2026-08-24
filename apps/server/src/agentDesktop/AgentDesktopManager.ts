@@ -1554,6 +1554,80 @@ export const make = Effect.gen(function* () {
     });
   });
 
+  const validatedQemuInput = <A>(evaluate: () => A, operation: string) =>
+    Effect.try({
+      try: evaluate,
+      catch: (cause) =>
+        isQemuInputValidationError(cause)
+          ? cause
+          : new AgentDesktopManagerError({
+              code: "invalid-action",
+              operation,
+              detail: String(cause).slice(0, 256),
+            }),
+    });
+
+  const preflightAction = Effect.fn("AgentDesktopManager.preflightAction")(function* (
+    runtime: RuntimeState,
+    action: ComputerAutomationAction,
+    simulatedHeldKeys: Map<string, ReadonlyArray<string>>,
+  ) {
+    switch (action.type) {
+      case "click":
+      case "move":
+        yield* resolvePoint(runtime, action.frameId, action.x, action.y);
+        break;
+      case "drag":
+        yield* resolvePoint(runtime, action.frameId, action.startX, action.startY);
+        yield* resolvePoint(runtime, action.frameId, action.endX, action.endY);
+        break;
+      case "wheel":
+        if (action.frameId !== undefined) {
+          yield* resolvePoint(runtime, action.frameId, action.x!, action.y!);
+        }
+        break;
+      case "wait_for_change":
+        yield* resolveChangeRegion(runtime, action);
+        break;
+      case "press":
+        yield* validatedQemuInput(
+          () => QemuInput.qemuPressQcodes(action.key, action.modifiers ?? []),
+          action.type,
+        );
+        break;
+      case "hotkey":
+        yield* validatedQemuInput(() => QemuInput.qemuHotkeyQcodes(action.keys), action.type);
+        break;
+      case "key_down": {
+        const logicalKey = yield* validatedQemuInput(
+          () => QemuInput.qemuLogicalKeyId(action.key),
+          action.type,
+        );
+        if (simulatedHeldKeys.has(logicalKey)) {
+          return yield* new AgentDesktopManagerError({
+            code: "key-already-held",
+            operation: action.type,
+            detail: `key ${action.key} is already held`,
+          });
+        }
+        const transition = yield* validatedQemuInput(
+          () => QemuInput.qemuKeyDownEvents(action.key),
+          action.type,
+        );
+        simulatedHeldKeys.set(logicalKey, transition.heldQcodes);
+        break;
+      }
+      case "key_up": {
+        const logicalKey = yield* validatedQemuInput(
+          () => QemuInput.qemuLogicalKeyId(action.key),
+          action.type,
+        );
+        simulatedHeldKeys.delete(logicalKey);
+        break;
+      }
+    }
+  });
+
   const revokeDesktopLease = Effect.fn("AgentDesktopManager.revokeDesktopLease")(function* (
     desktop: PersistedDesktop,
     runtime: RuntimeState,
@@ -3412,18 +3486,7 @@ export const make = Effect.gen(function* () {
     action: ComputerAutomationAction,
     actionIndex: number,
   ): Effect.fn.Return<ComputerAutomationActionResult, AgentDesktopManagerOperationError> {
-    const validatedInput = <A>(evaluate: () => A) =>
-      Effect.try({
-        try: evaluate,
-        catch: (cause) =>
-          isQemuInputValidationError(cause)
-            ? cause
-            : new AgentDesktopManagerError({
-                code: "invalid-action",
-                operation: action.type,
-                detail: String(cause).slice(0, 256),
-              }),
-      });
+    const validatedInput = <A>(evaluate: () => A) => validatedQemuInput(evaluate, action.type);
     const buttonEvent = (button: string, down: boolean): QemuAgentDesktop.QemuInputEvent => ({
       type: "btn",
       data: { down, button },
@@ -3653,6 +3716,38 @@ export const make = Effect.gen(function* () {
         .withPermits(1)(
           Effect.gen(function* () {
             const results: ComputerAutomationActionResult[] = [];
+            const simulatedHeldKeys = new Map(yield* Ref.get(runtime.heldKeys));
+            for (const [index, action] of input.actions.entries()) {
+              yield* preflightAction(runtime, action, simulatedHeldKeys).pipe(
+                Effect.catch((cause) =>
+                  Effect.gen(function* () {
+                    const keysHeld = (yield* Ref.get(runtime.heldKeys)).size > 0;
+                    const buttonsHeld = (yield* Ref.get(runtime.heldButtons)).size > 0;
+                    const cleanup = yield* releaseInputs(desktop, runtime).pipe(
+                      Effect.match({
+                        onFailure: () => ({
+                          keys: keysHeld ? ("release-failed" as const) : ("not-needed" as const),
+                          buttons: buttonsHeld
+                            ? ("release-failed" as const)
+                            : ("not-needed" as const),
+                        }),
+                        onSuccess: () => ({
+                          keys: keysHeld ? ("released" as const) : ("not-needed" as const),
+                          buttons: buttonsHeld ? ("released" as const) : ("not-needed" as const),
+                        }),
+                      }),
+                    );
+                    return yield* new ComputerUse.ComputerUseActionError({
+                      actionIndex: index,
+                      completedActionCount: 0,
+                      actionType: action.type,
+                      cause,
+                      cleanup,
+                    });
+                  }),
+                ),
+              );
+            }
             for (const [index, action] of input.actions.entries()) {
               const result = yield* executeAction(desktop, runtime, action, index).pipe(
                 Effect.catch((cause) =>
@@ -3677,7 +3772,8 @@ export const make = Effect.gen(function* () {
                       actionIndex: index,
                       completedActionCount: index,
                       actionType: action.type,
-                      cause: { cause, cleanup },
+                      cause,
+                      cleanup,
                     });
                   }),
                 ),
