@@ -8,7 +8,7 @@ import * as SqlClient from "effect/unstable/sql/SqlClient";
 import { runMigrations } from "../Migrations.ts";
 import * as NodeSqliteClient from "@t3tools/shared/nodeSqliteClient";
 
-const layer = it.layer(Layer.mergeAll(NodeSqliteClient.layerMemory()));
+const layer = it.layer(Layer.mergeAll(NodeSqliteClient.layer({ filename: ":memory:" })));
 const encodeJson = Schema.encodeSync(Schema.fromJsonString(Schema.Unknown));
 const decodeImages = Schema.decodeUnknownSync(
   Schema.fromJsonString(Schema.Array(ThreadMonitorComputerEvidenceImage)),
@@ -27,11 +27,11 @@ const decodeCondition = Schema.decodeUnknownSync(
   ),
 );
 
-layer("053_ComputerMonitorImageEncoding", (it) => {
+layer("059_ComputerMonitorImageEncoding", (it) => {
   it.effect("adds explicit PNG metadata to retained monitor evidence", () =>
     Effect.gen(function* () {
       const sql = yield* SqlClient.SqlClient;
-      yield* runMigrations({ toMigrationInclusive: 52 });
+      yield* runMigrations({ toMigrationInclusive: 58 });
       const condition = {
         type: "computer",
         observation: {
@@ -98,7 +98,7 @@ layer("053_ComputerMonitorImageEncoding", (it) => {
         )
       `;
 
-      yield* runMigrations({ toMigrationInclusive: 53 });
+      yield* runMigrations({ toMigrationInclusive: 59 });
 
       const rows = yield* sql<{
         readonly baselineImagesJson: string;
