@@ -15,6 +15,7 @@ it.effect("reports the scoped credential context when preview capability is unav
     environmentId: EnvironmentId.make("environment-1"),
     requestNamespace: "provider-session-1",
     thread: {
+      controllerId: "controller-1",
       threadId: ThreadId.make("thread-1"),
       providerSessionId: "provider-session-1",
       providerInstanceId: ProviderInstanceId.make("codex"),
@@ -103,6 +104,7 @@ it.effect("accepts computer access without granting preview access", () => {
     requestNamespace: "provider-session-1",
     client: undefined,
     thread: {
+      controllerId: "controller-1",
       threadId: ThreadId.make("thread-1"),
       providerSessionId: "provider-session-1",
       providerInstanceId: ProviderInstanceId.make("codex"),

@@ -60,6 +60,7 @@ const invocation = {
   requestNamespace: "provider-session-mcp-test",
   thread: {
     threadId,
+    controllerId: "controller-mcp-test",
     providerSessionId: "provider-session-mcp-test",
     providerInstanceId: ProviderInstanceId.make("codex"),
   },
@@ -727,7 +728,7 @@ it.effect.each([{}, { includeImage: false }])(
           environmentId,
         });
         yield* Stream.runForEach(events, (event) =>
-          event.type === "connected"
+          event.type !== "request"
             ? Effect.void
             : broker.respond({
                 clientId: "mcp-failure-client",
@@ -1445,7 +1446,7 @@ it.effect("registers annotated tools and preserves authenticated request context
         },
       });
       yield* Stream.runForEach(events, (event) => {
-        if (event.type === "connected") return Effect.void;
+        if (event.type !== "request") return Effect.void;
         routedRequests.push(event.request);
         return broker.respond({
           clientId: "mcp-test-client",
@@ -2244,7 +2245,7 @@ it.effect("returns bounded structural computer snapshot failures", () =>
         userDesktop: { protocolVersion: 1, desktopId: "user-desktop-1", defaultLabel: "Test desktop", platform: "linux", capabilities: ["view", "control", "availability"] },
       });
       yield* Stream.runForEach(events, (event) =>
-        event.type === "connected"
+        event.type !== "request"
           ? Effect.void
           : broker.respond({
               clientId: "mcp-failure-client",

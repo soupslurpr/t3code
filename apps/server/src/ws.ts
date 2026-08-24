@@ -2994,6 +2994,7 @@ const layerWsRpc = (
                 requestNamespace: `human:${currentSessionId}`,
                 client: undefined,
                 thread: {
+                  controllerId: `human:${currentSessionId}`,
                   threadId: input.threadId,
                   providerSessionId: `human:${currentSessionId}`,
                   providerInstanceId: AGENT_DESKTOP_HUMAN_PROVIDER_INSTANCE_ID,
@@ -3051,6 +3052,7 @@ const layerWsRpc = (
                 requestNamespace: `human:${currentSessionId}`,
                 client: undefined,
                 thread: {
+                  controllerId: `human:${currentSessionId}`,
                   threadId: USER_DESKTOP_SETTINGS_THREAD_ID,
                   providerSessionId: `human:${currentSessionId}`,
                   providerInstanceId: USER_DESKTOP_HUMAN_PROVIDER_INSTANCE_ID,

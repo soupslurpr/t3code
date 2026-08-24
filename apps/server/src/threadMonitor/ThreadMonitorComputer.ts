@@ -3,7 +3,6 @@ import {
   ComputerAutomationContentHash,
   type ComputerAutomationFailure,
   type ComputerAutomationDesktopRegion,
-  type ComputerAutomationObservation,
   type ComputerAutomationScreenshotRegion,
   type ComputerAutomationSnapshot,
   type ComputerDesktopTarget,
@@ -213,6 +212,7 @@ export const make = Effect.gen(function* () {
     return McpInvocationContext.McpInvocationContext.of({
       environmentId: yield* environment.getEnvironmentId,
       threadId: input.threadId,
+      controllerId: `thread-monitor:${input.monitorId}`,
       providerSessionId: `thread-monitor:${input.monitorId}`,
       providerInstanceId: input.providerInstanceId,
       capabilities: new Set(["computer"]),
@@ -516,8 +516,8 @@ export const make = Effect.gen(function* () {
           ? input.watch.match.modelSelection.instanceId
           : input.routingInstanceId,
     });
-    yield* computer.requestView(scope, { desktop, observation: false });
     return yield* Effect.gen(function* () {
+      yield* computer.requestView(scope, { desktop, observation: false });
       const match = normalizeMatch(input.watch.match);
       const sampling = {
         intervalMs: input.watch.sampling?.intervalMs ?? DEFAULT_INTERVAL_MS,
@@ -585,8 +585,8 @@ export const make = Effect.gen(function* () {
         baselineImages: retainBaseline ? captured.map(({ image }) => image) : [],
       };
     }).pipe(
-      Effect.tapError(() =>
-        input.releaseOnFailure
+      Effect.onExit((exit) =>
+        exit._tag === "Failure" && input.releaseOnFailure
           ? computer.release(scope, { desktop }).pipe(Effect.ignore)
           : Effect.void,
       ),
