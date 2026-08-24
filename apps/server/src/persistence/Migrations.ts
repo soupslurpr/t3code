@@ -10,6 +10,7 @@
 
 import * as Migrator from "effect/unstable/sql/Migrator";
 import * as Effect from "effect/Effect";
+import * as SqlClient from "effect/unstable/sql/SqlClient";
 
 // Import all migrations statically
 import Migration0001 from "./Migrations/001_OrchestrationEvents.ts";
@@ -69,6 +70,34 @@ import Migration0054 from "./Migrations/054_ProjectionThreadMessageSystemEvents.
 import Migration0055 from "./Migrations/055_ComputerMonitorCacheWriteUsage.ts";
 import Migration0056 from "./Migrations/056_UserDesktops.ts";
 import Migration0057 from "./Migrations/057_UserDesktopAccessAudit.ts";
+
+const migrationHistoryOffset = 1_000;
+const preRebaseForkMigrationNames = [
+  "ThreadMonitors",
+  "ThreadMonitorDelivery",
+  "ComputerThreadMonitors",
+  "ComputerMonitorEvaluationThrottle",
+  "AdaptiveComputerMonitors",
+  "ComputerMonitorImageEncoding",
+  "ProjectionThreadMessageSystemEvents",
+  "ComputerMonitorCacheWriteUsage",
+  "UserDesktops",
+  "UserDesktopAccessAudit",
+] as const;
+const upstreamRebaseMigrations = [
+  [41, "AuthSessionClientConnection", Migration0041],
+  [42, "ProjectionThreadLinkedPullRequest", Migration0042],
+  [43, "ProjectionThreadsUnsettledAt", Migration0043],
+  [44, "ClearAutomaticProjectModelDefaults", Migration0044],
+  [45, "ProjectionProjectsAutoPull", Migration0045],
+  [46, "RepairAutomaticSettlementTimestamps", Migration0046],
+  [47, "ProjectionProjectIcon", Migration0047],
+] as const;
+
+type MigrationHistoryRow = {
+  readonly migrationId: number;
+  readonly name: string;
+};
 
 /**
  * Migration loader with all migrations defined inline.
@@ -157,6 +186,86 @@ export const makeMigrationLoader = (throughId?: number) =>
  */
 const run = Migrator.make({});
 
+/** Reassigns fork migration ids claimed by later upstream migrations. */
+const reconcilePreRebaseForkMigrationHistory = Effect.fn("reconcilePreRebaseForkMigrationHistory")(
+  function* () {
+    const sql = yield* SqlClient.SqlClient;
+    const reconciled = yield* sql.withTransaction(
+      Effect.gen(function* () {
+        const tables = yield* sql<{ readonly name: string }>`
+        SELECT name
+        FROM sqlite_master
+        WHERE type = 'table' AND name = 'effect_sql_migrations'
+      `;
+        if (tables.length === 0) {
+          return false;
+        }
+
+        let changed = false;
+        for (const [claimedId, claimedName, claimedMigration] of upstreamRebaseMigrations) {
+          const history = yield* sql<MigrationHistoryRow>`
+            SELECT migration_id AS "migrationId", name
+            FROM effect_sql_migrations
+            WHERE migration_id >= ${claimedId}
+            ORDER BY migration_id ASC
+          `;
+          const firstHistoryRow = history[0];
+          if (firstHistoryRow === undefined) {
+            continue;
+          }
+          if (firstHistoryRow.migrationId !== claimedId) {
+            return yield* new Migrator.MigrationError({
+              kind: "BadState",
+              message: "cannot reconcile pre-rebase fork migration history",
+            });
+          }
+          if (firstHistoryRow.name === claimedName) {
+            continue;
+          }
+
+          for (const [index, row] of history.entries()) {
+            if (
+              row.migrationId !== claimedId + index ||
+              row.name !== preRebaseForkMigrationNames[index]
+            ) {
+              return yield* new Migrator.MigrationError({
+                kind: "BadState",
+                message: "cannot reconcile pre-rebase fork migration history",
+              });
+            }
+          }
+
+          yield* claimedMigration;
+
+          const lastDisplacedId = claimedId + history.length - 1;
+          yield* sql`
+            UPDATE effect_sql_migrations
+            SET migration_id = migration_id + ${migrationHistoryOffset}
+            WHERE migration_id >= ${claimedId}
+              AND migration_id <= ${lastDisplacedId}
+          `;
+          yield* sql`
+            UPDATE effect_sql_migrations
+            SET migration_id = migration_id - ${migrationHistoryOffset - 1}
+            WHERE migration_id >= ${claimedId + migrationHistoryOffset}
+              AND migration_id <= ${lastDisplacedId + migrationHistoryOffset}
+          `;
+          yield* sql`
+            INSERT INTO effect_sql_migrations (migration_id, name)
+            VALUES (${claimedId}, ${claimedName})
+          `;
+          changed = true;
+        }
+        return changed;
+      }),
+    );
+
+    if (reconciled) {
+      yield* Effect.log("reconciled pre-rebase fork migration history");
+    }
+  },
+);
+
 export interface RunMigrationsOptions {
   readonly toMigrationInclusive?: number | undefined;
 }
@@ -174,6 +283,7 @@ export interface RunMigrationsOptions {
 export const runMigrations = Effect.fn("runMigrations")(function* ({
   toMigrationInclusive,
 }: RunMigrationsOptions = {}) {
+  yield* reconcilePreRebaseForkMigrationHistory();
   const executedMigrations = yield* run({ loader: makeMigrationLoader(toMigrationInclusive) });
   const migrations = executedMigrations.map(([id, name]) => `${id}_${name}`);
   yield* migrations.length === 0
