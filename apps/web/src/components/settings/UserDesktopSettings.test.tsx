@@ -13,6 +13,10 @@ const commands = vi.hoisted(() => ({
   invoke: vi.fn(),
 }));
 
+const environmentState = vi.hoisted(() => ({
+  environments: [] as Array<{ readonly environmentId: EnvironmentId; readonly label: string }>,
+}));
+
 vi.mock("react", async (importOriginal) => {
   const actual = await importOriginal<typeof import("react")>();
   const { reactHookHarness } = await import("../../test/reactHookHarness");
@@ -32,12 +36,13 @@ vi.mock("react/compiler-runtime", async () => {
 });
 
 const environmentId = EnvironmentId.make("remote-environment");
+const localEnvironmentId = EnvironmentId.make("local-environment");
 const inventoryRefreshIntervalMs = 5_000;
 
 vi.mock("~/state/environments", () => ({
   useEnvironments: () => ({
     isReady: true,
-    environments: [{ environmentId, label: "Remote environment" }],
+    environments: environmentState.environments,
   }),
 }));
 
@@ -140,6 +145,7 @@ describe("UserDesktopSettings", () => {
     hooks.reset();
     effects.cleanups = [];
     effects.pending = [];
+    environmentState.environments = [{ environmentId, label: "Remote environment" }];
     commands.invoke.mockReset().mockImplementation(async ({ input }) => {
       const request = input.request;
       if (request.operation === "list") {
@@ -205,6 +211,28 @@ describe("UserDesktopSettings", () => {
         timeoutMs: 120_000,
       },
     });
+  });
+
+  it("groups routes to the same physical desktop", async () => {
+    environmentState.environments = [
+      { environmentId, label: "Remote environment" },
+      { environmentId: localEnvironmentId, label: "Local environment" },
+    ];
+
+    renderSettings();
+    await applyEffects();
+
+    const settings = renderSettings();
+    const text = textContent(settings).replace(/\s+/gu, " ");
+    expect(text.match(/Workstation/gu)).toHaveLength(1);
+    expect(text.match(/user-workstation/gu)).toHaveLength(1);
+    expect(text).toContain("Available through Remote environment, Local environment");
+
+    const rememberViewButtons = findElements(
+      settings,
+      (element) => textContent(element.props.children).trim() === "Remember view",
+    );
+    expect(rememberViewButtons).toHaveLength(2);
   });
 
   it("remembers approval without a separate release request", async () => {
