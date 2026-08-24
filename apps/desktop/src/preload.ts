@@ -50,6 +50,10 @@ contextBridge.exposeInMainWorld("desktopBridge", {
     }
     return result as ReturnType<DesktopBridge["getLocalEnvironmentBootstraps"]>;
   },
+  getUserDesktopHost: () =>
+    ipcRenderer.sendSync(IpcChannels.GET_USER_DESKTOP_HOST_CHANNEL) as ReturnType<
+      NonNullable<DesktopBridge["getUserDesktopHost"]>
+    >,
   getLocalEnvironmentBearerToken: () =>
     ipcRenderer.invoke(IpcChannels.GET_LOCAL_ENVIRONMENT_BEARER_TOKEN_CHANNEL),
   getClientSettings: () => ipcRenderer.invoke(IpcChannels.GET_CLIENT_SETTINGS_CHANNEL),
@@ -225,6 +229,26 @@ contextBridge.exposeInMainWorld("desktopBridge", {
       }),
     requestControl: (input, context) =>
       ipcRenderer.invoke(IpcChannels.COMPUTER_AUTOMATION_REQUEST_CONTROL_CHANNEL, {
+        input,
+        context,
+      }),
+    rememberView: (input, context) =>
+      ipcRenderer.invoke(IpcChannels.COMPUTER_AUTOMATION_REMEMBER_VIEW_CHANNEL, {
+        input,
+        context,
+      }),
+    rememberControl: (input, context) =>
+      ipcRenderer.invoke(IpcChannels.COMPUTER_AUTOMATION_REMEMBER_CONTROL_CHANNEL, {
+        input,
+        context,
+      }),
+    forceRelease: (input, context) =>
+      ipcRenderer.invoke(IpcChannels.COMPUTER_AUTOMATION_FORCE_RELEASE_CHANNEL, {
+        input,
+        context,
+      }),
+    forceForgetControl: (input, context) =>
+      ipcRenderer.invoke(IpcChannels.COMPUTER_AUTOMATION_FORCE_FORGET_CONTROL_CHANNEL, {
         input,
         context,
       }),

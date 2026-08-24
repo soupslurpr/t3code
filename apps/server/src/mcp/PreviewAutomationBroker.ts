@@ -2,6 +2,7 @@ import {
   ComputerAutomationFailure,
   COMPUTER_AUTOMATION_OPERATIONS,
   isComputerAutomationFailureKind,
+  MAX_USER_DESKTOPS,
   PREVIEW_AUTOMATION_V1_OPERATIONS,
   PreviewAutomationClientDisconnectedError,
   PreviewAutomationControlInterruptedError,
@@ -18,16 +19,23 @@ import {
   PreviewAutomationTimeoutError,
   PreviewAutomationUnsupportedClientError,
   PreviewTabId,
+  type IsoDateTime,
   type PreviewAutomationError,
   type PreviewAutomationOperation,
   type PreviewAutomationHost,
   type PreviewAutomationHostFocus,
   type PreviewAutomationResponse,
   type PreviewAutomationStreamEvent,
+  type UserDesktopCapability,
+  UserDesktopId,
+  type UserDesktopList,
+  UserDesktopManagementError,
+  type UserDesktopRenameInput,
 } from "@t3tools/contracts";
 import * as Context from "effect/Context";
 import * as Crypto from "effect/Crypto";
 import * as Deferred from "effect/Deferred";
+import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
@@ -37,6 +45,7 @@ import * as Stream from "effect/Stream";
 import * as SynchronizedRef from "effect/SynchronizedRef";
 
 import * as McpInvocationContext from "./McpInvocationContext.ts";
+import * as UserDesktops from "../persistence/UserDesktops.ts";
 
 const isComputerAutomationFailure = Schema.is(ComputerAutomationFailure);
 
@@ -61,6 +70,16 @@ export class PreviewAutomationBroker extends Context.Service<
     readonly invoke: <A = unknown>(
       request: PreviewAutomationInvokeInput,
     ) => Effect.Effect<A, PreviewAutomationError>;
+    readonly listUserDesktops: (
+      environmentId: PreviewAutomationHost["environmentId"],
+    ) => Effect.Effect<UserDesktopList, UserDesktops.UserDesktopRepositoryError>;
+    readonly renameUserDesktop: (
+      input: UserDesktopRenameInput,
+    ) => Effect.Effect<void, UserDesktops.UserDesktopRepositoryError | UserDesktopManagementError>;
+    readonly removeUserDesktop: (
+      environmentId: PreviewAutomationHost["environmentId"],
+      desktopId: UserDesktopId,
+    ) => Effect.Effect<void, UserDesktops.UserDesktopRepositoryError | UserDesktopManagementError>;
   }
 >()("t3/mcp/PreviewAutomationBroker") {}
 
@@ -69,8 +88,11 @@ interface ClientConnection {
   readonly connectionId: string;
   readonly environmentId: PreviewAutomationHost["environmentId"];
   readonly supportedOperations: ReadonlySet<PreviewAutomationOperation>;
+  readonly userDesktop: PreviewAutomationHost["userDesktop"];
   readonly focused: boolean;
   readonly focusOrder: number;
+  readonly lastActiveAt: IsoDateTime | null;
+  readonly connectedAt: IsoDateTime;
   readonly queue: Queue.Queue<PreviewAutomationStreamEvent>;
 }
 
@@ -123,6 +145,12 @@ interface UnavailableHostDiagnostics {
   readonly connectedHostCount: number;
   readonly operationHostCount: number;
   readonly assignedHostIncompatible: boolean;
+  readonly incompatibleClientCount: number;
+  readonly targetConnectionCount: number;
+  readonly targetOperationHostCount: number;
+  readonly targetCapabilities: ReadonlySet<UserDesktopCapability>;
+  readonly requestedDesktopId?: UserDesktopId | undefined;
+  readonly connectedDesktopTargets: ReadonlyArray<string>;
 }
 
 type HostRoute =
@@ -132,11 +160,11 @@ type HostRoute =
     }
   | {
       readonly _tag: "route";
-      readonly assignmentKey: string;
       readonly connection: ClientConnection;
       readonly requestId: string;
       readonly requestContext: PreviewAutomationRequestErrorContext;
       readonly requestSequence: number;
+      readonly assignmentKey?: string | undefined;
     };
 
 const removeConnectionFromState = (
@@ -192,28 +220,93 @@ function hostAssignmentKey(
   return `${scope.environmentId}\u0000${scope.providerSessionId}\u0000computer`;
 }
 
-/** Reads an explicit computer target without trusting arbitrary tool input. */
-function requestedComputerDesktopKind(input: unknown): "user" | "agent" | undefined {
-  if (typeof input !== "object" || input === null || !("desktop" in input)) return undefined;
-  const desktop = input.desktop;
-  if (typeof desktop !== "object" || desktop === null || !("kind" in desktop)) return undefined;
-  return desktop.kind === "user" || desktop.kind === "agent" ? desktop.kind : undefined;
+interface RequestedComputerDesktop {
+  readonly kind: "user" | "agent" | undefined;
+  readonly desktopId: UserDesktopId | undefined;
 }
 
-const USER_DESKTOP_TARGETS = ['{"kind":"user"}'] as const;
+const isUserDesktopId = Schema.is(UserDesktopId);
+
+/** Reads an explicit computer target without trusting arbitrary tool input. */
+function requestedComputerDesktop(input: unknown): RequestedComputerDesktop {
+  if (typeof input !== "object" || input === null || !("desktop" in input)) {
+    return { kind: undefined, desktopId: undefined };
+  }
+  const desktop = input.desktop;
+  if (typeof desktop !== "object" || desktop === null || !("kind" in desktop)) {
+    return { kind: undefined, desktopId: undefined };
+  }
+  const kind = desktop.kind === "user" || desktop.kind === "agent" ? desktop.kind : undefined;
+  const desktopId =
+    kind === "user" && "desktopId" in desktop && isUserDesktopId(desktop.desktopId)
+      ? desktop.desktopId
+      : undefined;
+  return { kind, desktopId };
+}
+
+const USER_DESKTOP_TARGETS = ['{"kind":"user","desktopId":"<id from user_desktop_list>"}'] as const;
 
 /** Describes connected host capabilities without exposing client identities. */
 function unavailableHostDiagnostics(
   connections: ReadonlyArray<ClientConnection>,
   operation: PreviewAutomationOperation,
   assignedHostIncompatible: boolean,
+  requestedDesktopId?: UserDesktopId,
 ): UnavailableHostDiagnostics {
+  const targetConnections =
+    requestedDesktopId === undefined
+      ? []
+      : connections.filter(
+          (connection) => connection.userDesktop?.desktopId === requestedDesktopId,
+        );
   return {
     connectedHostCount: connections.length,
     operationHostCount: connections.filter((connection) => supportsOperation(connection, operation))
       .length,
     assignedHostIncompatible,
+    incompatibleClientCount: connections.filter(
+      (connection) =>
+        connection.userDesktop === undefined &&
+        Array.from(computerOperations).some((candidate) =>
+          connection.supportedOperations.has(candidate as PreviewAutomationOperation),
+        ),
+    ).length,
+    targetConnectionCount: targetConnections.length,
+    targetOperationHostCount: targetConnections.filter((connection) =>
+      supportsOperation(connection, operation),
+    ).length,
+    targetCapabilities: new Set(
+      targetConnections.flatMap((connection) => connection.userDesktop?.capabilities ?? []),
+    ),
+    ...(requestedDesktopId === undefined ? {} : { requestedDesktopId }),
+    connectedDesktopTargets: connections.flatMap((connection) =>
+      connection.userDesktop === undefined
+        ? []
+        : [
+            JSON.stringify({
+              kind: "user",
+              desktopId: connection.userDesktop.desktopId,
+            }),
+          ],
+    ),
   };
+}
+
+/** Maps one computer operation to the coarse user-desktop capability it needs. */
+function requiredUserDesktopCapability(
+  operation: PreviewAutomationOperation,
+): UserDesktopCapability {
+  if (operation === "computerRequestAvailability" || operation === "computerReleaseAvailability") {
+    return "availability";
+  }
+  if (
+    operation === "computerRequestControl" ||
+    operation === "computerRememberControl" ||
+    operation === "computerAct"
+  ) {
+    return "control";
+  }
+  return "view";
 }
 
 /** Builds one actionable computer-use failure from broker routing state. */
@@ -223,7 +316,70 @@ function unavailableComputerHostFailure(input: {
   readonly diagnostics: UnavailableHostDiagnostics;
 }): ComputerAutomationFailure {
   const { diagnostics } = input;
-  const detail = `Connected hosts: ${diagnostics.connectedHostCount}; hosts supporting ${input.operation}: ${diagnostics.operationHostCount}.`;
+  const detail = `Connected hosts: ${diagnostics.connectedHostCount}; current user desktops: ${diagnostics.connectedDesktopTargets.length}; hosts supporting ${input.operation}: ${diagnostics.operationHostCount}; incompatible desktop clients: ${diagnostics.incompatibleClientCount}.`;
+
+  if (diagnostics.targetConnectionCount > 1) {
+    return {
+      code: "desktop-identity-conflict",
+      category: "conflict",
+      message: `More than one connected client claims user desktop ${diagnostics.requestedDesktopId}.`,
+      backendCode: "duplicate-user-desktop-identity",
+      detail,
+      field: "desktop.desktopId",
+      received: diagnostics.requestedDesktopId,
+      phase: "execution",
+      cleanup: { keys: "not-needed", buttons: "not-needed" },
+    };
+  }
+
+  if (diagnostics.targetConnectionCount === 1 && diagnostics.targetOperationHostCount === 0) {
+    const requiredCapability = requiredUserDesktopCapability(input.operation);
+    if (!diagnostics.targetCapabilities.has(requiredCapability)) {
+      return {
+        code: "unsupported-operation",
+        category: "unsupported-operation",
+        message: `User desktop ${diagnostics.requestedDesktopId} does not support ${requiredCapability} access on its current platform.`,
+        backendCode: "user-desktop-capability-unavailable",
+        detail,
+        field: "operation",
+        received: input.operation,
+        expected: Array.from(diagnostics.targetCapabilities),
+        phase: "execution",
+        cleanup: { keys: "not-needed", buttons: "not-needed" },
+      };
+    }
+    return {
+      code: "desktop-client-update-required",
+      category: "unsupported-operation",
+      message: `User desktop ${diagnostics.requestedDesktopId} does not support ${input.operation}. Update its T3 desktop client.`,
+      backendCode: "user-desktop-operation-unsupported",
+      detail,
+      field: "operation",
+      received: input.operation,
+      phase: "execution",
+      cleanup: { keys: "not-needed", buttons: "not-needed" },
+    };
+  }
+
+  if (diagnostics.requestedDesktopId !== undefined && diagnostics.targetConnectionCount === 0) {
+    return {
+      code: "desktop-offline",
+      category: "resource",
+      message: `User desktop ${diagnostics.requestedDesktopId} is offline or unknown.`,
+      backendCode:
+        diagnostics.incompatibleClientCount > 0
+          ? "connected-client-update-required"
+          : "user-desktop-offline",
+      detail,
+      field: "desktop.desktopId",
+      received: diagnostics.requestedDesktopId,
+      ...(diagnostics.connectedDesktopTargets.length === 0
+        ? {}
+        : { expected: diagnostics.connectedDesktopTargets }),
+      phase: "execution",
+      cleanup: { keys: "not-needed", buttons: "not-needed" },
+    };
+  }
 
   if (diagnostics.connectedHostCount === 0) {
     return {
@@ -431,6 +587,7 @@ const classifyResponseError = (
 
 export const make = Effect.gen(function* PreviewAutomationBrokerMake() {
   const crypto = yield* Crypto.Crypto;
+  const userDesktops = yield* UserDesktops.UserDesktopRepository;
   const state = yield* SynchronizedRef.make<BrokerState>({
     clients: new Map(),
     assignments: new Map(),
@@ -458,9 +615,20 @@ export const make = Effect.gen(function* PreviewAutomationBrokerMake() {
   ) {
     const disconnected = yield* SynchronizedRef.modify(state, (current) => {
       const removed = removeConnectionFromState(current, clientId, queue);
-      return [removed.disconnected, removed.state] as const;
+      const userDesktop = current.clients.get(clientId)?.userDesktop;
+      return [{ pending: removed.disconnected, userDesktop }, removed.state] as const;
     });
-    yield* closeConnection(queue, disconnected);
+    if (disconnected.userDesktop !== undefined) {
+      const lastSeenAt = DateTime.formatIso(yield* DateTime.now);
+      yield* userDesktops
+        .upsertHost(disconnected.userDesktop, lastSeenAt)
+        .pipe(
+          Effect.catch((error) =>
+            Effect.logWarning("user desktop disconnect persistence failed", { error }),
+          ),
+        );
+    }
+    yield* closeConnection(queue, disconnected.pending);
   });
 
   const acquireConnection = Effect.fn("PreviewAutomationBroker.acquireConnection")(function* (
@@ -469,16 +637,29 @@ export const make = Effect.gen(function* PreviewAutomationBrokerMake() {
     const clientId = host.clientId;
     const queue = yield* Queue.unbounded<PreviewAutomationStreamEvent>();
     const connectionId = yield* crypto.randomUUIDv4.pipe(Effect.orDie);
+    const connectedAt = DateTime.formatIso(yield* DateTime.now);
     yield* Queue.offer(queue, { type: "connected", connectionId });
     const connection: ClientConnection = {
       clientId,
       connectionId,
       environmentId: host.environmentId,
       supportedOperations: new Set(host.supportedOperations ?? PREVIEW_AUTOMATION_V1_OPERATIONS),
+      userDesktop: host.userDesktop,
       focused: false,
       focusOrder: 0,
+      lastActiveAt: null,
+      connectedAt,
       queue,
     };
+    if (host.userDesktop !== undefined) {
+      yield* userDesktops
+        .upsertHost(host.userDesktop, connectedAt)
+        .pipe(
+          Effect.catch((error) =>
+            Effect.logWarning("user desktop registration persistence failed", { error }),
+          ),
+        );
+    }
     const registration = yield* SynchronizedRef.modify(state, (current) => {
       const previousConnection = current.clients.get(clientId);
       const removed = previousConnection
@@ -518,14 +699,15 @@ export const make = Effect.gen(function* PreviewAutomationBrokerMake() {
   const focusHost: PreviewAutomationBroker["Service"]["focusHost"] = Effect.fn(
     "PreviewAutomationBroker.focusHost",
   )(function* (host) {
-    yield* SynchronizedRef.update(state, (current) => {
+    const lastActiveAt = host.focused ? DateTime.formatIso(yield* DateTime.now) : null;
+    const focusedDesktop = yield* SynchronizedRef.modify(state, (current) => {
       const currentHost = current.clients.get(host.clientId);
       if (
         !currentHost ||
         currentHost.environmentId !== host.environmentId ||
         currentHost.connectionId !== host.connectionId
       ) {
-        return current;
+        return [undefined, current] as const;
       }
       const clients = new Map(current.clients);
       const focusSequence = host.focused ? current.focusSequence + 1 : current.focusSequence;
@@ -533,9 +715,130 @@ export const make = Effect.gen(function* PreviewAutomationBrokerMake() {
         ...currentHost,
         focused: host.focused,
         focusOrder: host.focused ? focusSequence : currentHost.focusOrder,
+        lastActiveAt: lastActiveAt ?? currentHost.lastActiveAt,
       });
-      return { ...current, clients, focusSequence };
+      return [
+        host.focused ? currentHost.userDesktop : undefined,
+        { ...current, clients, focusSequence },
+      ] as const;
     });
+    if (focusedDesktop !== undefined && lastActiveAt !== null) {
+      yield* userDesktops
+        .markActive(focusedDesktop.desktopId, lastActiveAt)
+        .pipe(
+          Effect.catch((error) =>
+            Effect.logWarning("user desktop activity persistence failed", { error }),
+          ),
+        );
+    }
+  });
+
+  const listUserDesktops: PreviewAutomationBroker["Service"]["listUserDesktops"] = Effect.fn(
+    "PreviewAutomationBroker.listUserDesktops",
+  )(function* (environmentId) {
+    const [records, current] = yield* Effect.all([userDesktops.list(), SynchronizedRef.get(state)]);
+    const connections = Array.from(current.clients.values()).filter(
+      (connection) => connection.environmentId === environmentId,
+    );
+    const recordsById = new Map(records.map((record) => [record.desktopId, record]));
+    for (const connection of connections) {
+      const host = connection.userDesktop;
+      if (host === undefined || recordsById.has(host.desktopId)) continue;
+      recordsById.set(host.desktopId, {
+        desktopId: host.desktopId,
+        defaultLabel: host.defaultLabel,
+        customLabel: null,
+        platform: host.platform,
+        capabilities: host.capabilities,
+        lastSeenAt: connection.connectedAt,
+        lastActiveAt: connection.lastActiveAt,
+      });
+    }
+    const desktops = Array.from(recordsById.values()).map((record) => {
+      const matches = connections.filter(
+        (connection) => connection.userDesktop?.desktopId === record.desktopId,
+      );
+      const liveConnection = matches.length === 1 ? matches[0] : undefined;
+      const liveHost = liveConnection?.userDesktop;
+      const liveLastActiveAt = matches
+        .map((connection) => connection.lastActiveAt)
+        .filter((value): value is IsoDateTime => value !== null)
+        .sort()
+        .at(-1);
+      return {
+        desktop: { kind: "user" as const, desktopId: record.desktopId },
+        label: record.customLabel ?? liveHost?.defaultLabel ?? record.defaultLabel,
+        defaultLabel: liveHost?.defaultLabel ?? record.defaultLabel,
+        platform: liveHost?.platform ?? record.platform,
+        capabilities: liveHost?.capabilities ?? record.capabilities,
+        connectionState:
+          matches.length > 1
+            ? ("identity-conflict" as const)
+            : matches.length === 1
+              ? ("online" as const)
+              : ("offline" as const),
+        lastSeenAt: liveConnection?.connectedAt ?? record.lastSeenAt,
+        t3Focused: matches.some((connection) => connection.focused),
+        lastActiveAt: liveLastActiveAt ?? record.lastActiveAt,
+      };
+    });
+    desktops.sort(
+      (left, right) =>
+        Number(right.t3Focused) - Number(left.t3Focused) ||
+        Number(right.connectionState === "online") - Number(left.connectionState === "online") ||
+        right.lastSeenAt.localeCompare(left.lastSeenAt) ||
+        left.label.localeCompare(right.label),
+    );
+    return {
+      desktops: desktops.slice(0, MAX_USER_DESKTOPS),
+      incompatibleClientCount: connections.filter(
+        (connection) =>
+          connection.userDesktop === undefined &&
+          Array.from(computerOperations).some((operation) =>
+            connection.supportedOperations.has(operation as PreviewAutomationOperation),
+          ),
+      ).length,
+    };
+  });
+
+  const renameUserDesktop: PreviewAutomationBroker["Service"]["renameUserDesktop"] = Effect.fn(
+    "PreviewAutomationBroker.renameUserDesktop",
+  )(function* (input) {
+    const records = yield* userDesktops.list();
+    if (!records.some((record) => record.desktopId === input.desktopId)) {
+      return yield* new UserDesktopManagementError({
+        code: "user-desktop-not-found",
+        desktopId: input.desktopId,
+        detail: "The selected user desktop is not known to this environment.",
+      });
+    }
+    yield* userDesktops.rename(input);
+  });
+
+  const removeUserDesktop: PreviewAutomationBroker["Service"]["removeUserDesktop"] = Effect.fn(
+    "PreviewAutomationBroker.removeUserDesktop",
+  )(function* (environmentId, desktopId) {
+    const [records, current] = yield* Effect.all([userDesktops.list(), SynchronizedRef.get(state)]);
+    if (!records.some((record) => record.desktopId === desktopId)) {
+      return yield* new UserDesktopManagementError({
+        code: "user-desktop-not-found",
+        desktopId,
+        detail: "The selected user desktop is not known to this environment.",
+      });
+    }
+    const connected = Array.from(current.clients.values()).some(
+      (connection) =>
+        connection.environmentId === environmentId &&
+        connection.userDesktop?.desktopId === desktopId,
+    );
+    if (connected) {
+      return yield* new UserDesktopManagementError({
+        code: "user-desktop-online",
+        desktopId,
+        detail: "Disconnect this user desktop before removing it from the inventory.",
+      });
+    }
+    yield* userDesktops.remove(desktopId);
   });
 
   const respond: PreviewAutomationBroker["Service"]["respond"] = Effect.fn(
@@ -572,11 +875,15 @@ export const make = Effect.gen(function* PreviewAutomationBrokerMake() {
   ): Effect.fn.Return<A, PreviewAutomationError> {
     const timeoutMs = input.timeoutMs ?? 15_000;
     const computerOperation = isComputerOperation(input.operation);
-    const explicitDesktopKind = computerOperation
-      ? requestedComputerDesktopKind(input.input)
-      : undefined;
-    if (computerOperation && explicitDesktopKind !== "user") {
-      const missingDesktop = explicitDesktopKind === undefined;
+    const requestedDesktop = computerOperation
+      ? requestedComputerDesktop(input.input)
+      : { kind: undefined, desktopId: undefined };
+    if (
+      computerOperation &&
+      (requestedDesktop.kind !== "user" || requestedDesktop.desktopId === undefined)
+    ) {
+      const missingDesktop = requestedDesktop.kind === undefined;
+      const missingDesktopId = requestedDesktop.kind === "user";
       return yield* new PreviewAutomationDesktopTargetRequiredError({
         operation: input.operation,
         environmentId: input.scope.environmentId,
@@ -586,11 +893,21 @@ export const make = Effect.gen(function* PreviewAutomationBrokerMake() {
         computerFailure: {
           code: "desktop-target-required",
           category: "invalid-input",
-          message: missingDesktop
-            ? "An explicit desktop target is required."
-            : "The client automation broker accepts only the user desktop.",
-          field: missingDesktop ? "desktop" : "desktop.kind",
-          received: missingDesktop ? "missing" : explicitDesktopKind,
+          message: missingDesktopId
+            ? "A concrete user desktopId is required. Call user_desktop_list and select one result."
+            : missingDesktop
+              ? "An explicit desktop target is required."
+              : "The client automation broker accepts only a user desktop.",
+          field: missingDesktop
+            ? "desktop"
+            : missingDesktopId
+              ? "desktop.desktopId"
+              : "desktop.kind",
+          received: missingDesktop
+            ? "missing"
+            : missingDesktopId
+              ? "missing"
+              : requestedDesktop.kind,
           expected: USER_DESKTOP_TARGETS,
           phase: "validation",
           cleanup: { keys: "not-needed", buttons: "not-needed" },
@@ -608,19 +925,28 @@ export const make = Effect.gen(function* PreviewAutomationBrokerMake() {
           );
         }),
       );
-      const assignmentKey = hostAssignmentKey(input.scope, input.operation);
-      const assigned = assignments.get(assignmentKey);
-      const assignedConnection = assigned ? current.clients.get(assigned.clientId) : undefined;
-      const hasLiveAssignment = assignedConnection?.environmentId === input.scope.environmentId;
-      // Browser and computer affinity are independent: opening a collaborative
-      // preview must not strand later native computer use on a browser-only host.
-      // Within each domain, retain physical-host affinity so stateful interactions
-      // cannot jump clients.
       const environmentConnections = Array.from(current.clients.values()).filter(
         (host) => host.environmentId === input.scope.environmentId,
       );
-      const connection =
-        hasLiveAssignment && supportsOperation(assignedConnection, input.operation)
+      const assignmentKey = computerOperation
+        ? undefined
+        : hostAssignmentKey(input.scope, input.operation);
+      const assigned = assignmentKey === undefined ? undefined : assignments.get(assignmentKey);
+      const assignedConnection = assigned ? current.clients.get(assigned.clientId) : undefined;
+      const hasLiveAssignment = assignedConnection?.environmentId === input.scope.environmentId;
+      const targetConnections = computerOperation
+        ? environmentConnections.filter(
+            (connection) => connection.userDesktop?.desktopId === requestedDesktop.desktopId,
+          )
+        : [];
+      // Browser operations retain their prior focused-host affinity. Computer
+      // operations ignore focus and provider affinity and route only by desktopId.
+      const connection = computerOperation
+        ? targetConnections.length === 1 &&
+          supportsOperation(targetConnections[0]!, input.operation)
+          ? targetConnections[0]
+          : undefined
+        : hasLiveAssignment && supportsOperation(assignedConnection, input.operation)
           ? assignedConnection
           : hasLiveAssignment
             ? undefined
@@ -633,13 +959,14 @@ export const make = Effect.gen(function* PreviewAutomationBrokerMake() {
                     right.supportedOperations.size - left.supportedOperations.size,
                 )[0];
       if (!connection) {
-        if (!hasLiveAssignment) assignments.delete(assignmentKey);
+        if (assignmentKey !== undefined && !hasLiveAssignment) assignments.delete(assignmentKey);
         const unavailableRoute: HostRoute = {
           _tag: "unavailable",
           diagnostics: unavailableHostDiagnostics(
             environmentConnections,
             input.operation,
-            hasLiveAssignment,
+            computerOperation ? false : hasLiveAssignment,
+            requestedDesktop.desktopId,
           ),
         };
         return [unavailableRoute, { ...current, assignments }] as const;
@@ -648,19 +975,23 @@ export const make = Effect.gen(function* PreviewAutomationBrokerMake() {
         assigned !== undefined &&
         assigned.connectionId === connection.connectionId &&
         assigned.queue === connection.queue;
-      assignments.set(assignmentKey, {
-        clientId: connection.clientId,
-        connectionId: connection.connectionId,
-        queue: connection.queue,
-        ...(canReuseAssignedTab && assigned.tabId !== undefined ? { tabId: assigned.tabId } : {}),
-        ...(canReuseAssignedTab && assigned.tabSequence !== undefined
-          ? { tabSequence: assigned.tabSequence }
-          : {}),
-      });
+      if (assignmentKey !== undefined) {
+        assignments.set(assignmentKey, {
+          clientId: connection.clientId,
+          connectionId: connection.connectionId,
+          queue: connection.queue,
+          ...(canReuseAssignedTab && assigned?.tabId !== undefined
+            ? { tabId: assigned.tabId }
+            : {}),
+          ...(canReuseAssignedTab && assigned?.tabSequence !== undefined
+            ? { tabSequence: assigned.tabSequence }
+            : {}),
+        });
+      }
 
       const requestSequence = current.requestSequence;
       const requestId = `preview-${requestSequence}`;
-      const tabId = input.tabId ?? (canReuseAssignedTab ? assigned.tabId : undefined);
+      const tabId = input.tabId ?? (canReuseAssignedTab ? assigned?.tabId : undefined);
       const selectorDiagnostics = selectorDiagnosticsFromInput(input.input);
       const context: PreviewAutomationRequestErrorContext = {
         operation: input.operation,
@@ -679,7 +1010,7 @@ export const make = Effect.gen(function* PreviewAutomationBrokerMake() {
       pending.set(requestId, { queue: connection.queue, deferred, context });
       const routed: HostRoute = {
         _tag: "route",
-        assignmentKey,
+        ...(assignmentKey === undefined ? {} : { assignmentKey }),
         connection,
         requestId,
         requestContext: context,
@@ -745,6 +1076,7 @@ export const make = Effect.gen(function* PreviewAutomationBrokerMake() {
       });
     });
     const result = yield* awaitResponse().pipe(Effect.ensuring(removePending));
+    if (assignmentKey === undefined) return result;
     const responseTabId = readResultTabId(result);
     const resultTabId = responseTabId === undefined ? input.tabId : responseTabId;
     if (resultTabId === undefined) return result;
@@ -774,7 +1106,15 @@ export const make = Effect.gen(function* PreviewAutomationBrokerMake() {
     return result;
   });
 
-  return PreviewAutomationBroker.of({ connect, focusHost, respond, invoke });
+  return PreviewAutomationBroker.of({
+    connect,
+    focusHost,
+    respond,
+    invoke,
+    listUserDesktops,
+    renameUserDesktop,
+    removeUserDesktop,
+  });
 }).pipe(Effect.withSpan("PreviewAutomationBroker.make"));
 
 export const layer = Layer.effect(PreviewAutomationBroker, make);

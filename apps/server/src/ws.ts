@@ -63,6 +63,8 @@ import {
   RpcClientId,
   EnvironmentAuthorizationError,
   ThreadId,
+  UserDesktopInventoryError,
+  UserDesktopManagementError,
   type TerminalAttachStreamEvent,
   type TerminalError,
   type TerminalEvent,
@@ -164,6 +166,9 @@ const isOrchestrationDispatchCommandError = Schema.is(OrchestrationDispatchComma
 const nowIso = Effect.map(DateTime.now, DateTime.formatIso);
 const CONFIG_DISCOVERY_TIMEOUT = Duration.seconds(5);
 const AGENT_DESKTOP_HUMAN_PROVIDER_INSTANCE_ID = ProviderInstanceId.make("agent-desktop-human");
+const USER_DESKTOP_HUMAN_PROVIDER_INSTANCE_ID = ProviderInstanceId.make("user-desktop-human");
+const USER_DESKTOP_SETTINGS_THREAD_ID = ThreadId.make("user-desktop-settings");
+const isUserDesktopManagementError = Schema.is(UserDesktopManagementError);
 
 const resolveDiscoveryForConfig = <A, E, R>(
   discovery: Effect.Effect<A, E, R>,
@@ -2706,6 +2711,74 @@ const makeWsRpcLayer = (
               );
             }),
             { "rpc.aggregate": "agent-desktop" },
+          ),
+        [WS_METHODS.userDesktopHumanInvoke]: (input) =>
+          observeRpcEffect(
+            WS_METHODS.userDesktopHumanInvoke,
+            Effect.gen(function* () {
+              const environmentId = yield* serverEnvironment.getEnvironmentId.pipe(Effect.orDie);
+              const inventoryFailure = () =>
+                new UserDesktopInventoryError({
+                  code: "user-desktop-inventory-unavailable",
+                  detail: "The user-desktop inventory is temporarily unavailable.",
+                });
+              if (input.request.operation === "list") {
+                return yield* previewAutomationBroker
+                  .listUserDesktops(environmentId)
+                  .pipe(Effect.mapError(inventoryFailure));
+              }
+              if (input.request.operation === "rename") {
+                return yield* previewAutomationBroker.renameUserDesktop(input.request.input).pipe(
+                  Effect.mapError((error) =>
+                    isUserDesktopManagementError(error) ? error : inventoryFailure(),
+                  ),
+                  Effect.as(null),
+                );
+              }
+              if (input.request.operation === "remove") {
+                return yield* previewAutomationBroker
+                  .removeUserDesktop(environmentId, input.request.input.desktopId)
+                  .pipe(
+                    Effect.mapError((error) =>
+                      isUserDesktopManagementError(error) ? error : inventoryFailure(),
+                    ),
+                    Effect.as(null),
+                  );
+              }
+              const desktop = {
+                kind: "user" as const,
+                desktopId: input.request.desktopId,
+              };
+              const scope = {
+                environmentId,
+                threadId: USER_DESKTOP_SETTINGS_THREAD_ID,
+                providerSessionId: `human:${currentSessionId}`,
+                providerInstanceId: USER_DESKTOP_HUMAN_PROVIDER_INSTANCE_ID,
+                capabilities: new Set(["computer" as const]),
+                issuedAt: yield* Clock.currentTimeMillis,
+              };
+              const operation =
+                input.request.operation === "status"
+                  ? ("computerStatus" as const)
+                  : input.request.operation === "remember-view"
+                    ? ("computerRememberView" as const)
+                    : input.request.operation === "remember-control"
+                      ? ("computerRememberControl" as const)
+                      : input.request.operation === "release"
+                        ? ("computerForceRelease" as const)
+                        : ("computerForceForgetControl" as const);
+              const operationInput =
+                operation === "computerRememberView" || operation === "computerRememberControl"
+                  ? { desktop, observation: false as const }
+                  : { desktop };
+              return yield* previewAutomationBroker.invoke({
+                scope,
+                operation,
+                input: operationInput,
+                ...(input.timeoutMs === undefined ? {} : { timeoutMs: input.timeoutMs }),
+              });
+            }),
+            { "rpc.aggregate": "user-desktop" },
           ),
         [WS_METHODS.subscribePreviewEvents]: (_input) =>
           observeRpcStream(WS_METHODS.subscribePreviewEvents, previewManager.events, {

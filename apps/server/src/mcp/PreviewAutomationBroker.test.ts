@@ -19,12 +19,17 @@ import {
 import * as Effect from "effect/Effect";
 import * as Deferred from "effect/Deferred";
 import * as Fiber from "effect/Fiber";
+import * as Layer from "effect/Layer";
 import * as Result from "effect/Result";
 import * as Stream from "effect/Stream";
 
 import * as PreviewAutomationBroker from "./PreviewAutomationBroker.ts";
+import { PersistenceSqlError } from "../persistence/Errors.ts";
+import * as UserDesktops from "../persistence/UserDesktops.ts";
 
-const makeBroker = PreviewAutomationBroker.make.pipe(Effect.provide(NodeServices.layer));
+const makeBroker = PreviewAutomationBroker.make.pipe(
+  Effect.provide(Layer.merge(UserDesktops.layerMemory, NodeServices.layer)),
+);
 
 const scope = {
   environmentId: EnvironmentId.make("environment-1"),
@@ -38,6 +43,13 @@ const scope = {
 const makeHost = (overrides: Partial<PreviewAutomationHost> = {}): PreviewAutomationHost => ({
   clientId: "client-1",
   environmentId: scope.environmentId,
+  userDesktop: {
+    protocolVersion: 1,
+    desktopId: "user-desktop-1",
+    defaultLabel: "Test desktop",
+    platform: "linux",
+    capabilities: ["view", "control", "availability"],
+  },
   ...overrides,
 });
 
@@ -82,6 +94,98 @@ it.effect("atomically registers a connected host and correlates its response", (
       });
 
       expect(result).toEqual({ available: true });
+    }),
+  ),
+);
+
+it.effect("lists a live user desktop when inventory persistence is degraded", () =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      const degradedRepository = UserDesktops.UserDesktopRepository.of({
+        upsertHost: () =>
+          Effect.fail(
+            new PersistenceSqlError({
+              operation: "test.userDesktop.upsertHost",
+              cause: new Error("test database unavailable"),
+            }),
+          ),
+        list: () => Effect.succeed([]),
+        rename: () => Effect.void,
+        remove: () => Effect.void,
+        markActive: () => Effect.void,
+      });
+      const broker = yield* PreviewAutomationBroker.make.pipe(
+        Effect.provide(
+          Layer.merge(
+            Layer.succeed(UserDesktops.UserDesktopRepository, degradedRepository),
+            NodeServices.layer,
+          ),
+        ),
+      );
+      const events = yield* broker.connect(makeHost());
+      yield* Stream.runDrain(events).pipe(Effect.forkScoped);
+      yield* Effect.yieldNow;
+
+      const listed = yield* broker.listUserDesktops(scope.environmentId);
+
+      expect(listed.desktops).toHaveLength(1);
+      expect(listed.desktops[0]).toMatchObject({
+        desktop: { kind: "user", desktopId: "user-desktop-1" },
+        connectionState: "online",
+      });
+    }),
+  ),
+);
+
+it.effect("prefers live host metadata over a stale persisted record", () =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      const degradedRepository = UserDesktops.UserDesktopRepository.of({
+        upsertHost: () =>
+          Effect.fail(
+            new PersistenceSqlError({
+              operation: "test.userDesktop.upsertHost",
+              cause: new Error("test database unavailable"),
+            }),
+          ),
+        list: () =>
+          Effect.succeed([
+            UserDesktops.UserDesktopRecord.make({
+              desktopId: "user-desktop-1",
+              defaultLabel: "Stale label",
+              customLabel: null,
+              platform: "unknown",
+              capabilities: [],
+              lastSeenAt: "2026-01-01T00:00:00.000Z",
+              lastActiveAt: null,
+            }),
+          ]),
+        rename: () => Effect.void,
+        remove: () => Effect.void,
+        markActive: () => Effect.void,
+      });
+      const broker = yield* PreviewAutomationBroker.make.pipe(
+        Effect.provide(
+          Layer.merge(
+            Layer.succeed(UserDesktops.UserDesktopRepository, degradedRepository),
+            NodeServices.layer,
+          ),
+        ),
+      );
+      const events = yield* broker.connect(makeHost());
+      yield* Stream.runDrain(events).pipe(Effect.forkScoped);
+      yield* Effect.yieldNow;
+
+      const listed = yield* broker.listUserDesktops(scope.environmentId);
+
+      expect(listed.desktops[0]).toMatchObject({
+        label: "Test desktop",
+        defaultLabel: "Test desktop",
+        platform: "linux",
+        capabilities: ["view", "control", "availability"],
+        connectionState: "online",
+      });
+      expect(listed.desktops[0]?.lastSeenAt).not.toBe("2026-01-01T00:00:00.000Z");
     }),
   ),
 );
@@ -248,7 +352,7 @@ it.effect("does not let a no-tab response suppress an earlier tab decision", () 
 
       yield* broker.invoke({ scope, operation: "open", input: {} });
       const older = yield* broker
-        .invoke({
+        .invoke<void>({
           scope,
           operation: "open",
           input: { marker: "older", reuseExistingTab: false },
@@ -391,7 +495,7 @@ it.effect("surfaces a safe diagnosis for a blank desktop display", () => {
         .invoke<void>({
           scope,
           operation: "computerRequestControl",
-          input: { desktop: { kind: "user" } },
+          input: { desktop: { kind: "user", desktopId: "user-desktop-1" } },
           timeoutMs: 1_234,
         })
         .pipe(Effect.flip);
@@ -519,7 +623,7 @@ it.effect("rejects Agent desktops at the client automation boundary", () =>
         code: "desktop-target-required",
         field: "desktop.kind",
         received: "agent",
-        expected: ['{"kind":"user"}'],
+        expected: ['{"kind":"user","desktopId":"<id from user_desktop_list>"}'],
       },
     });
   }),
@@ -628,20 +732,291 @@ it.effect("gives parallel provider sessions distinct computer controller identit
         yield* broker.invoke<string>({
           scope,
           operation: "computerRequestControl",
-          input: { desktop: { kind: "user" } },
+          input: { desktop: { kind: "user", desktopId: "user-desktop-1" } },
         }),
       ).toBe(scope.providerSessionId);
       expect(
         yield* broker.invoke<string>({
           scope: secondScope,
           operation: "computerRequestControl",
-          input: { desktop: { kind: "user" } },
+          input: { desktop: { kind: "user", desktopId: "user-desktop-1" } },
         }),
       ).toBe(secondScope.providerSessionId);
       expect(routedRequests.map(({ controllerId }) => controllerId)).toEqual([
         scope.providerSessionId,
         secondScope.providerSessionId,
       ]);
+    }),
+  ),
+);
+
+it.effect("routes user desktops by stable id without falling back to another host", () =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      const broker = yield* makeBroker;
+      const firstEvents = requestsFrom(
+        yield* broker.connect(
+          makeHost({
+            clientId: "client-first",
+            supportedOperations: ["computerStatus"],
+            userDesktop: {
+              protocolVersion: 1,
+              desktopId: "user-desktop-first",
+              defaultLabel: "First desktop",
+              platform: "linux",
+              capabilities: ["view", "control", "availability"],
+            },
+          }),
+        ),
+      );
+      const secondEvents = requestsFrom(
+        yield* broker.connect(
+          makeHost({
+            clientId: "client-second",
+            supportedOperations: ["computerStatus"],
+            userDesktop: {
+              protocolVersion: 1,
+              desktopId: "user-desktop-second",
+              defaultLabel: "Second desktop",
+              platform: "linux",
+              capabilities: ["view", "control", "availability"],
+            },
+          }),
+        ),
+      );
+      const firstConsumer = yield* Stream.runForEach(firstEvents, (request) =>
+        broker.respond({
+          clientId: "client-first",
+          connectionId: request.connectionId,
+          requestId: request.requestId,
+          ok: true,
+          result: "first",
+        }),
+      ).pipe(Effect.forkScoped);
+      yield* Stream.runForEach(secondEvents, (request) =>
+        broker.respond({
+          clientId: "client-second",
+          connectionId: request.connectionId,
+          requestId: request.requestId,
+          ok: true,
+          result: "second",
+        }),
+      ).pipe(Effect.forkScoped);
+      yield* Effect.yieldNow;
+
+      expect(
+        yield* broker.invoke<string>({
+          scope,
+          operation: "computerStatus",
+          input: { desktop: { kind: "user", desktopId: "user-desktop-first" } },
+        }),
+      ).toBe("first");
+
+      yield* Fiber.interrupt(firstConsumer);
+      const error = yield* broker
+        .invoke<void>({
+          scope,
+          operation: "computerStatus",
+          input: { desktop: { kind: "user", desktopId: "user-desktop-first" } },
+        })
+        .pipe(Effect.flip);
+      expect(error).toBeInstanceOf(PreviewAutomationNoAvailableHostError);
+      expect(error).toMatchObject({ computerFailure: { code: "desktop-offline" } });
+
+      const reconnectedEvents = requestsFrom(
+        yield* broker.connect(
+          makeHost({
+            clientId: "client-first-reconnected",
+            supportedOperations: ["computerStatus"],
+            userDesktop: {
+              protocolVersion: 1,
+              desktopId: "user-desktop-first",
+              defaultLabel: "First desktop",
+              platform: "linux",
+              capabilities: ["view", "control", "availability"],
+            },
+          }),
+        ),
+      );
+      yield* Stream.runForEach(reconnectedEvents, (request) =>
+        broker.respond({
+          clientId: "client-first-reconnected",
+          connectionId: request.connectionId,
+          requestId: request.requestId,
+          ok: true,
+          result: "first-reconnected",
+        }),
+      ).pipe(Effect.forkScoped);
+      yield* Effect.yieldNow;
+
+      expect(
+        yield* broker.invoke<string>({
+          scope,
+          operation: "computerStatus",
+          input: { desktop: { kind: "user", desktopId: "user-desktop-first" } },
+        }),
+      ).toBe("first-reconnected");
+    }),
+  ),
+);
+
+it.effect("retains offline inventory and permits explicit management", () =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      const broker = yield* makeBroker;
+      const events = requestsFrom(yield* broker.connect(makeHost()));
+      const consumer = yield* Stream.runDrain(events).pipe(Effect.forkScoped);
+      yield* Effect.yieldNow;
+
+      expect(yield* broker.listUserDesktops(scope.environmentId)).toMatchObject({
+        desktops: [
+          {
+            desktop: { kind: "user", desktopId: "user-desktop-1" },
+            label: "Test desktop",
+            connectionState: "online",
+          },
+        ],
+      });
+      const onlineError = yield* broker
+        .removeUserDesktop(scope.environmentId, "user-desktop-1")
+        .pipe(Effect.flip);
+      expect(onlineError).toMatchObject({ code: "user-desktop-online" });
+
+      yield* broker.renameUserDesktop({
+        desktopId: "user-desktop-1",
+        label: "Renamed desktop",
+      });
+      yield* Fiber.interrupt(consumer);
+      expect(yield* broker.listUserDesktops(scope.environmentId)).toMatchObject({
+        desktops: [
+          {
+            label: "Renamed desktop",
+            connectionState: "offline",
+          },
+        ],
+      });
+
+      yield* broker.removeUserDesktop(scope.environmentId, "user-desktop-1");
+      expect((yield* broker.listUserDesktops(scope.environmentId)).desktops).toEqual([]);
+    }),
+  ),
+);
+
+it.effect("blocks duplicate live claims for one user desktop identity", () =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      const broker = yield* makeBroker;
+      const first = requestsFrom(yield* broker.connect(makeHost({ clientId: "client-first" })));
+      const second = requestsFrom(yield* broker.connect(makeHost({ clientId: "client-second" })));
+      yield* Stream.runDrain(first).pipe(Effect.forkScoped);
+      yield* Stream.runDrain(second).pipe(Effect.forkScoped);
+      yield* Effect.yieldNow;
+
+      expect(yield* broker.listUserDesktops(scope.environmentId)).toMatchObject({
+        desktops: [{ connectionState: "identity-conflict" }],
+      });
+      const error = yield* broker
+        .invoke<void>({
+          scope,
+          operation: "computerStatus",
+          input: { desktop: { kind: "user", desktopId: "user-desktop-1" } },
+        })
+        .pipe(Effect.flip);
+      expect(error).toBeInstanceOf(PreviewAutomationNoAvailableHostError);
+      expect(error).toMatchObject({
+        computerFailure: { code: "desktop-identity-conflict" },
+      });
+    }),
+  ),
+);
+
+it.effect("rejects a user desktop target without its concrete id", () =>
+  Effect.gen(function* () {
+    const broker = yield* makeBroker;
+    const error = yield* broker
+      .invoke<void>({
+        scope,
+        operation: "computerStatus",
+        input: { desktop: { kind: "user" } },
+      })
+      .pipe(Effect.flip);
+
+    expect(error).toBeInstanceOf(PreviewAutomationDesktopTargetRequiredError);
+    expect(error).toMatchObject({
+      computerFailure: {
+        code: "desktop-target-required",
+        field: "desktop.desktopId",
+      },
+    });
+  }),
+);
+
+it.effect("reports a connected desktop client that cannot identify its target", () =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      const broker = yield* makeBroker;
+      const events = yield* broker.connect(
+        makeHost({
+          userDesktop: undefined,
+          supportedOperations: ["computerStatus"],
+        }),
+      );
+      yield* Stream.runDrain(events).pipe(Effect.forkScoped);
+      yield* Effect.yieldNow;
+
+      expect(yield* broker.listUserDesktops(scope.environmentId)).toEqual({
+        desktops: [],
+        incompatibleClientCount: 1,
+      });
+      const error = yield* broker
+        .invoke<void>({
+          scope,
+          operation: "computerStatus",
+          input: { desktop: { kind: "user", desktopId: "user-desktop-unknown" } },
+        })
+        .pipe(Effect.flip);
+      expect(error).toMatchObject({
+        computerFailure: {
+          code: "desktop-offline",
+          backendCode: "connected-client-update-required",
+        },
+      });
+    }),
+  ),
+);
+
+it.effect("reports a target whose platform has no computer-use capability", () =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      const broker = yield* makeBroker;
+      const events = yield* broker.connect(
+        makeHost({
+          userDesktop: {
+            protocolVersion: 1,
+            desktopId: "user-desktop-unsupported",
+            defaultLabel: "Unsupported desktop",
+            platform: "unknown",
+            capabilities: [],
+          },
+          supportedOperations: ["status"],
+        }),
+      );
+      yield* Stream.runDrain(events).pipe(Effect.forkScoped);
+      yield* Effect.yieldNow;
+
+      const error = yield* broker
+        .invoke<void>({
+          scope,
+          operation: "computerStatus",
+          input: { desktop: { kind: "user", desktopId: "user-desktop-unsupported" } },
+        })
+        .pipe(Effect.flip);
+      expect(error).toMatchObject({
+        computerFailure: {
+          code: "unsupported-operation",
+          backendCode: "user-desktop-capability-unavailable",
+        },
+      });
     }),
   ),
 );

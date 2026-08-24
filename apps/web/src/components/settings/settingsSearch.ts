@@ -9,6 +9,7 @@ export type SettingsPath =
   | "/settings/integrations"
   | "/settings/source-control"
   | "/settings/connections"
+  | "/settings/user-desktops"
   | "/settings/agent-desktops"
   | "/settings/archived";
 
@@ -55,6 +56,7 @@ export const SETTINGS_SECTION_LABELS: Readonly<Record<SettingsPath, string>> = {
   "/settings/integrations": "Integrations",
   "/settings/source-control": "Source Control",
   "/settings/connections": "Connections",
+  "/settings/user-desktops": "User desktops",
   "/settings/agent-desktops": "Agent desktops",
   "/settings/archived": "Archive",
 };
@@ -65,6 +67,11 @@ export const SETTINGS_SECTION_LABELS: Readonly<Record<SettingsPath, string>> = {
  * that may not be mounted point at their nearest stable section instead.
  */
 export const SETTINGS_SEARCH_ITEMS = [
+  {
+    id: "user-desktops",
+    title: "User desktops",
+    to: "/settings/user-desktops",
+  },
   {
     id: "agent-desktops",
     title: "Agent desktops",

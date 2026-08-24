@@ -999,7 +999,7 @@ computerMonitorTestLayer("ThreadMonitor computer conditions", (it) => {
         threadId,
         monitor: {
           label: "Cancel the rendered result watch",
-          desktop: { kind: "user" },
+          desktop: { kind: "user", desktopId: "user-desktop-1" },
           baselineObservation: false,
           match: { type: "image-change" },
           continuation: "record-only",
@@ -1026,7 +1026,7 @@ computerMonitorTestLayer("ThreadMonitor computer conditions", (it) => {
         threadId,
         monitor: {
           label: "Review an uncertain visual condition",
-          desktop: { kind: "user" },
+          desktop: { kind: "user", desktopId: "user-desktop-1" },
           match: {
             type: "model",
             criterion: "The result is visibly complete.",
@@ -1129,7 +1129,7 @@ computerMonitorTestLayer("ThreadMonitor computer conditions", (it) => {
         threadId,
         monitor: {
           label: "Retry a conflicting controller review",
-          desktop: { kind: "user" },
+          desktop: { kind: "user", desktopId: "user-desktop-1" },
           match: {
             type: "model",
             criterion: "The result is visibly complete.",
@@ -1194,7 +1194,7 @@ computerMonitorTestLayer("ThreadMonitor computer conditions", (it) => {
         threadId,
         monitor: {
           label: "Watch from an older build",
-          desktop: { kind: "user" },
+          desktop: { kind: "user", desktopId: "user-desktop-1" },
           match: { type: "image-change" },
           continuation: "record-only",
         },
@@ -1231,7 +1231,7 @@ computerMonitorTestLayer("ThreadMonitor computer conditions", (it) => {
         threadId,
         monitor: {
           label: "Watch a temporarily unavailable display",
-          desktop: { kind: "user" },
+          desktop: { kind: "user", desktopId: "user-desktop-1" },
           match: { type: "image-change" },
           sampling: { intervalMs: 1_000 },
           continuation: "record-only",
@@ -1299,7 +1299,7 @@ computerMonitorTestLayer("ThreadMonitor computer conditions", (it) => {
         threadId,
         monitor: {
           label: "Adapt the watched regions",
-          desktop: { kind: "user" },
+          desktop: { kind: "user", desktopId: "user-desktop-1" },
           match: { type: "image-change" },
           sampling: { intervalMs: 60 * 60 * 1_000 },
           continuation: "record-only",

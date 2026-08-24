@@ -44,6 +44,24 @@ export function resolveComputerUseVmConfig(environment = process.env) {
   };
 }
 
+/** Targets retained-VM computer calls at the desktop hosting the renderer. */
+export function targetComputerUseVmBridge(desktopBridge) {
+  const computer = desktopBridge?.computer;
+  if (computer === undefined) throw new Error("desktop computer bridge is unavailable");
+  const host = desktopBridge.getUserDesktopHost?.();
+  if (host === undefined) throw new Error("user desktop host identity is unavailable");
+  const desktop = { kind: "user", desktopId: host.desktopId };
+  const target = (input) => ({ ...input, desktop });
+  return {
+    requestAvailability: (input) => computer.requestAvailability(target(input)),
+    requestControl: (input) => computer.requestControl(target(input)),
+    snapshot: (input) => computer.snapshot(target(input)),
+    act: (input) => computer.act(target(input)),
+    release: (input) => computer.release(target(input)),
+    releaseAvailability: (input) => computer.releaseAvailability(target(input)),
+  };
+}
+
 /** Selects the app renderer while allowing its normal hash-based navigation. */
 export function selectComputerUseVmTarget(targets) {
   return targets.find(

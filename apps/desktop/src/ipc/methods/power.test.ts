@@ -22,6 +22,8 @@ function makeGnomeRemoteDesktop(
     snapshot: () => unexpected,
     view: unexpected,
     start: unexpected,
+    rememberView: unexpected,
+    rememberControl: unexpected,
     configurePowerProtection: (enabled) =>
       Effect.sync(() => {
         configured.push(enabled);

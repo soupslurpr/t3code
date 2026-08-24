@@ -2,11 +2,12 @@ import {
   evaluateComputerUseVm,
   readVmToolkitAccessibility,
   resolveComputerUseVmConfig,
+  targetComputerUseVmBridge,
 } from "./computer-use-vm-lib.mjs";
 
 const smokeExpression = String.raw`(async () => {
-  const computer = window.desktopBridge?.computer;
-  if (computer === undefined) throw new Error("desktop computer bridge is unavailable");
+  const targetComputerUseVmBridge = ${targetComputerUseVmBridge.toString()};
+  const computer = targetComputerUseVmBridge(window.desktopBridge);
 
   const state = {
     textEditorTargets: 0,

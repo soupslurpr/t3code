@@ -61,6 +61,7 @@ import { useAtomCommand } from "~/state/use-atom-command";
 import { previewBridge } from "./previewBridge";
 import {
   PreviewAutomationOperationError,
+  PreviewAutomationComputerControllerRequiredError,
   PreviewAutomationOverlayTimeoutError,
   PreviewAutomationRecordingNotActiveError,
   PreviewAutomationTargetUnavailableError,
@@ -294,15 +295,19 @@ function PreviewAutomationHost(props: { readonly environmentId: EnvironmentId })
   const { environmentId } = props;
   const registry = useContext(RegistryContext);
   const [automationClientId] = useState(createPreviewAutomationClientId);
+  const [userDesktop] = useState(() => window.desktopBridge?.getUserDesktopHost?.());
   const initialAutomationHost = useMemo<PreviewAutomationHostState>(
     () => ({
       clientId: automationClientId,
       environmentId,
       ...previewAutomationHostCapabilities({
-        computerAvailable: window.desktopBridge?.computer !== undefined,
+        computerAvailable:
+          window.desktopBridge?.computer !== undefined &&
+          (userDesktop === undefined || userDesktop.capabilities.includes("view")),
       }),
+      ...(userDesktop === undefined ? {} : { userDesktop }),
     }),
-    [automationClientId, environmentId],
+    [automationClientId, environmentId, userDesktop],
   );
   const automationRequestsAtom = previewEnvironment.automationRequests({
     environmentId,
@@ -334,59 +339,109 @@ function PreviewAutomationHost(props: { readonly environmentId: EnvironmentId })
       // Session sync and tab creation consume the same budget as overlay registration.
       const hostDeadlineMs = Date.now() + resolveHostWaitBudgetMs(request.timeoutMs);
       const computer = window.desktopBridge?.computer;
-      const controllerId = request.controllerId ?? `legacy:${request.threadId}`;
-      const computerContext = {
-        controllerId,
-        environmentId,
-        threadId: request.threadId,
+      const computerContext =
+        request.controllerId === undefined
+          ? null
+          : {
+              controllerId: request.controllerId,
+              environmentId,
+              threadId: request.threadId,
+            };
+      const requireComputerContext = () => {
+        if (computerContext !== null) return computerContext;
+        throw new PreviewAutomationComputerControllerRequiredError({
+          requestId: request.requestId,
+          environmentId,
+          threadId: request.threadId,
+        });
       };
       switch (request.operation) {
         case "computerStatus":
           return await resolveDesktopComputerAutomation(
-            computer?.status(request.input as ComputerAutomationTargetInput, computerContext),
+            computer?.status(
+              request.input as ComputerAutomationTargetInput,
+              requireComputerContext(),
+            ),
           );
         case "computerRequestAvailability":
           return await resolveDesktopComputerAutomation(
             computer?.requestAvailability(
               request.input as ComputerAutomationAvailabilityInput,
-              computerContext,
+              requireComputerContext(),
             ),
           );
         case "computerReleaseAvailability":
           return await resolveDesktopComputerAutomation(
             computer?.releaseAvailability(
               request.input as ComputerAutomationAvailabilityInput,
-              computerContext,
+              requireComputerContext(),
             ),
           );
         case "computerRequestView":
           return await resolveDesktopComputerAutomation(
-            computer?.requestView(request.input as ComputerAutomationAccessInput, computerContext),
+            computer?.requestView(
+              request.input as ComputerAutomationAccessInput,
+              requireComputerContext(),
+            ),
           );
         case "computerRequestControl":
           return await resolveDesktopComputerAutomation(
             computer?.requestControl(
               request.input as ComputerAutomationAccessInput,
-              computerContext,
+              requireComputerContext(),
+            ),
+          );
+        case "computerRememberView":
+          return await resolveDesktopComputerAutomation(
+            computer?.rememberView(
+              request.input as ComputerAutomationAccessInput,
+              requireComputerContext(),
+            ),
+          );
+        case "computerRememberControl":
+          return await resolveDesktopComputerAutomation(
+            computer?.rememberControl(
+              request.input as ComputerAutomationAccessInput,
+              requireComputerContext(),
+            ),
+          );
+        case "computerForceRelease":
+          return await resolveDesktopComputerAutomation(
+            computer?.forceRelease(
+              request.input as ComputerAutomationTargetInput,
+              requireComputerContext(),
+            ),
+          );
+        case "computerForceForgetControl":
+          return await resolveDesktopComputerAutomation(
+            computer?.forceForgetControl(
+              request.input as ComputerAutomationTargetInput,
+              requireComputerContext(),
             ),
           );
         case "computerSnapshot":
           return await resolveDesktopComputerAutomation(
-            computer?.snapshot(request.input as ComputerAutomationSnapshotInput, computerContext),
+            computer?.snapshot(
+              request.input as ComputerAutomationSnapshotInput,
+              requireComputerContext(),
+            ),
           );
         case "computerAct":
           return await resolveDesktopComputerAutomation(
-            computer?.act(request.input as ComputerAutomationActInput, computerContext),
+            computer?.act(request.input as ComputerAutomationActInput, requireComputerContext()),
           );
         case "computerRelease":
           return await resolveDesktopComputerAutomation(
-            computer?.release(request.input as ComputerAutomationTargetInput, computerContext),
+            computer?.release(
+              request.input as ComputerAutomationTargetInput,
+              requireComputerContext(),
+            ),
           );
         case "computerForgetControl":
           return await resolveDesktopComputerAutomation(
             computer?.forgetControl(
               request.input as ComputerAutomationTargetInput,
-              computerContext,
+              requireComputerContext(),
             ),
           );
       }

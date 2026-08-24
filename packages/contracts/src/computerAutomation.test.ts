@@ -38,20 +38,29 @@ const decodeStatus = Schema.decodeUnknownSync(ComputerAutomationStatus);
 const decodeTarget = Schema.decodeUnknownSync(ComputerAutomationTargetInput);
 const decodeType = Schema.decodeUnknownSync(ComputerAutomationTypeInput);
 const contentHash = "sha256-bgra8-v1:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA";
-const userDesktop = { desktop: { kind: "user" as const } };
+const userDesktop = {
+  desktop: { kind: "user" as const, desktopId: "user-desktop-1" },
+};
 
 describe("computer automation contracts", () => {
   it("selects user or independently managed agent desktops", () => {
     expect(() => decodeAvailability({})).toThrow();
-    expect(decodeAvailability({ desktop: { kind: "user" } })).toEqual({
-      desktop: { kind: "user" },
+    expect(decodeAvailability({ desktop: { kind: "user", desktopId: "user-desktop-1" } })).toEqual({
+      desktop: { kind: "user", desktopId: "user-desktop-1" },
     });
+    expect(() => decodeAvailability({ desktop: { kind: "user" } })).toThrow();
     expect(() => decodeAvailability({ desktop: { kind: "agent" } })).toThrow();
     expect(() => decodeAccess({})).toThrow();
-    expect(decodeAccess({ desktop: { kind: "user" }, observation: false })).toEqual({
-      desktop: { kind: "user" },
+    expect(
+      decodeAccess({
+        desktop: { kind: "user", desktopId: "user-desktop-1" },
+        observation: false,
+      }),
+    ).toEqual({
+      desktop: { kind: "user", desktopId: "user-desktop-1" },
       observation: false,
     });
+    expect(() => decodeAccess({ desktop: { kind: "user" } })).toThrow();
     expect(decodeAccess({ desktop: { kind: "agent" } })).toEqual({
       desktop: { kind: "agent" },
     });

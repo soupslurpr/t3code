@@ -120,6 +120,23 @@ export class PreviewAutomationTargetUnavailableError extends Schema.TaggedErrorC
   }
 }
 
+export class PreviewAutomationComputerControllerRequiredError extends Schema.TaggedErrorClass<PreviewAutomationComputerControllerRequiredError>()(
+  "PreviewAutomationComputerControllerRequiredError",
+  {
+    requestId: TrimmedNonEmptyString,
+    environmentId: EnvironmentId,
+    threadId: ThreadId,
+  },
+) {
+  get responseTag() {
+    return "PreviewAutomationUnsupportedClientError" as const;
+  }
+
+  override get message(): string {
+    return `Computer request ${this.requestId} has no controller identity. Update the T3 environment server.`;
+  }
+}
+
 export class PreviewAutomationRecordingNotActiveError extends Schema.TaggedErrorClass<PreviewAutomationRecordingNotActiveError>()(
   "PreviewAutomationRecordingNotActiveError",
   {
@@ -253,6 +270,7 @@ export const PreviewAutomationHostError = Schema.Union([
   PreviewAutomationNavigationTimeoutError,
   PreviewAutomationViewportTimeoutError,
   PreviewAutomationTargetUnavailableError,
+  PreviewAutomationComputerControllerRequiredError,
   PreviewAutomationRecordingNotActiveError,
   PreviewAutomationTargetNotEditableHostError,
   PreviewAutomationOperationError,

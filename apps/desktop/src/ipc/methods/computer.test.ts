@@ -21,6 +21,7 @@ import * as GnomeRemoteDesktop from "../../computer/GnomeRemoteDesktop.ts";
 import { act, releaseAvailability, requestAvailability, requestView } from "./computer.ts";
 
 const status = {
+  desktop: { id: "user-desktop-1", kind: "user" as const, label: "Test desktop" },
   available: true,
   backend: "gnome-wayland-portal" as const,
   permission: "remembered" as const,
@@ -41,7 +42,7 @@ const snapshot = {
   cursor: null,
   captureSource: "remote-desktop-stream" as const,
 };
-const userDesktop = { kind: "user" as const };
+const userDesktop = { kind: "user" as const, desktopId: "user-desktop-1" };
 const decodeRequestViewResult = Schema.decodeUnknownSync(
   makeDesktopComputerAutomationResultSchema(ComputerAutomationObservation),
 );
@@ -58,6 +59,8 @@ function makeComputer(options: {
     status: options.status ?? Effect.succeed(status),
     requestView: options.requestView,
     requestControl: unexpected,
+    rememberView: unexpected,
+    rememberControl: unexpected,
     requestAvailability: unexpected,
     releaseAvailability: unexpected,
     snapshot: options.snapshot ?? (() => unexpected),
@@ -76,6 +79,10 @@ const computerRouterLayer = (computer: ComputerUse.ComputerUseShape) =>
       status: () => computer.status,
       requestView: () => computer.requestView,
       requestControl: () => computer.requestControl,
+      rememberView: () => computer.rememberView,
+      rememberControl: () => computer.rememberControl,
+      forceRelease: () => computer.release.pipe(Effect.andThen(computer.status)),
+      forceForget: () => computer.forget,
       requestAvailability: () => computer.requestAvailability,
       releaseAvailability: () => computer.releaseAvailability,
       snapshot: (_context, { desktop: _desktop, ...input }) => computer.snapshot(input),
@@ -107,6 +114,10 @@ describe("computer IPC methods", () => {
           }),
         requestView: () => Effect.die("unexpected request view"),
         requestControl: () => Effect.die("unexpected request control"),
+        rememberView: () => Effect.die("unexpected remember view"),
+        rememberControl: () => Effect.die("unexpected remember control"),
+        forceRelease: () => Effect.die("unexpected force release"),
+        forceForget: () => Effect.die("unexpected force forget"),
         snapshot: () => Effect.die("unexpected snapshot"),
         act: () => Effect.die("unexpected act"),
         release: () => Effect.die("unexpected access release"),
@@ -224,6 +235,10 @@ describe("computer IPC methods", () => {
             return status;
           }),
         requestControl: () => Effect.die("unexpected request control"),
+        rememberView: () => Effect.die("unexpected remember view"),
+        rememberControl: () => Effect.die("unexpected remember control"),
+        forceRelease: () => Effect.die("unexpected force release"),
+        forceForget: () => Effect.die("unexpected force forget"),
         requestAvailability: () => Effect.die("unexpected request availability"),
         releaseAvailability: () => Effect.die("unexpected release availability"),
         snapshot: () => Effect.die("unexpected snapshot"),

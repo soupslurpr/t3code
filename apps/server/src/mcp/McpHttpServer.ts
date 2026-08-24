@@ -49,7 +49,9 @@ const COMPUTER_AVAILABILITY_TOOL_NAMES = new Set([
   "computer_release_availability",
 ]);
 const COMPUTER_ACCESS_TOOL_NAMES = new Set(["computer_request_view", "computer_request_control"]);
-const EXPLICIT_DESKTOP_TARGET_TOOL_NAMES = new Set(Object.keys(ComputerToolkit.tools));
+const EXPLICIT_DESKTOP_TARGET_TOOL_NAMES = new Set(
+  Object.keys(ComputerToolkit.tools).filter((name) => name !== "user_desktop_list"),
+);
 
 const unauthorized = HttpServerResponse.jsonUnsafe(
   {
@@ -359,31 +361,54 @@ const computerToolFailure = <E>(toolName: string, cause: Cause.Cause<E>, payload
         : validationFieldFromMessage(validationDescription);
   const actionIndex = actionIndexFromField(schemaField);
   const invalidInput = schemaIssues !== undefined || toolParameterValidation !== undefined;
+  const desktop =
+    typeof payload === "object" && payload !== null && "desktop" in payload
+      ? payload.desktop
+      : undefined;
+  const desktopKind =
+    typeof desktop === "object" && desktop !== null && "kind" in desktop ? desktop.kind : undefined;
+  const desktopId =
+    typeof desktop === "object" && desktop !== null && "desktopId" in desktop
+      ? desktop.desktopId
+      : undefined;
+  const missingConcreteDesktopId =
+    desktopKind === "user" ||
+    (desktopKind === "agent" && !COMPUTER_ACCESS_TOOL_NAMES.has(toolName));
   const desktopTargetMissing =
     invalidInput &&
     EXPLICIT_DESKTOP_TARGET_TOOL_NAMES.has(toolName) &&
-    (typeof payload !== "object" ||
-      payload === null ||
-      !("desktop" in payload) ||
-      payload.desktop === undefined);
+    (desktop === undefined || (missingConcreteDesktopId && desktopId === undefined));
   const expectedDesktopTargets = COMPUTER_AVAILABILITY_TOOL_NAMES.has(toolName)
-    ? ['{"kind":"user"}']
+    ? ['{"kind":"user","desktopId":"<id from user_desktop_list>"}']
     : COMPUTER_ACCESS_TOOL_NAMES.has(toolName)
-      ? ['{"kind":"user"}', '{"kind":"agent"}', '{"kind":"agent","desktopId":"..."}']
-      : ['{"kind":"user"}', '{"kind":"agent","desktopId":"..."}'];
+      ? [
+          '{"kind":"user","desktopId":"<id from user_desktop_list>"}',
+          '{"kind":"agent"}',
+          '{"kind":"agent","desktopId":"..."}',
+        ]
+      : [
+          '{"kind":"user","desktopId":"<id from user_desktop_list>"}',
+          '{"kind":"agent","desktopId":"..."}',
+        ];
   const computerFailure = !invalidInput
     ? (remoteComputerFailure ?? directFailure)
     : {
         code: desktopTargetMissing ? "desktop-target-required" : "invalid-action",
         category: "invalid-input",
         message: desktopTargetMissing
-          ? "An explicit desktop target is required."
+          ? missingConcreteDesktopId
+            ? "A concrete desktop id is required."
+            : "An explicit desktop target is required."
           : "The computer-use request is invalid.",
         ...(actionIndex === undefined ? {} : { actionIndex }),
         completedActionCount: 0,
         cleanup: { keys: "not-needed", buttons: "not-needed" },
         ...(desktopTargetMissing
-          ? { field: "desktop", received: "missing", expected: expectedDesktopTargets }
+          ? {
+              field: missingConcreteDesktopId ? "desktop.desktopId" : "desktop",
+              received: "missing",
+              expected: expectedDesktopTargets,
+            }
           : schemaField === undefined || schemaField.length === 0
             ? {}
             : { field: schemaField }),
@@ -804,6 +829,7 @@ const registerComputerTools = Effect.fn("McpHttpServer.registerComputerTools")(f
   const server = yield* McpServer.McpServer;
   const computer = yield* ComputerAutomationRouter.ComputerAutomationRouter;
   const observations = yield* ComputerObservationStore.ComputerObservationStore;
+  const broker = yield* PreviewAutomationBroker.PreviewAutomationBroker;
   const built = yield* ComputerToolkit;
   for (const tool of Object.values(built.tools)) {
     yield* server.addTool({
@@ -835,6 +861,7 @@ const registerComputerTools = Effect.fn("McpHttpServer.registerComputerTools")(f
             Effect.flatMap(Effect.fromOption),
             Effect.provideService(ComputerAutomationRouter.ComputerAutomationRouter, computer),
             Effect.provideService(ComputerObservationStore.ComputerObservationStore, observations),
+            Effect.provideService(PreviewAutomationBroker.PreviewAutomationBroker, broker),
             Effect.provideService(McpInvocationContext.McpInvocationContext, invocation),
             Effect.matchCauseEffect({
               onFailure: (cause) => computerToolFailure(tool.name, cause, payload),

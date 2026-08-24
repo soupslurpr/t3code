@@ -10,6 +10,7 @@ import type {
   ComputerAutomationTargetInput,
   ComputerDesktopSelector,
 } from "@t3tools/contracts";
+import { UserDesktopInventoryError } from "@t3tools/contracts";
 import {
   captureComputerTemporalFrame,
   captureComputerTemporalSequence,
@@ -20,6 +21,7 @@ import * as Effect from "effect/Effect";
 import * as McpInvocationContext from "../../McpInvocationContext.ts";
 import * as ComputerAutomationRouter from "../../../computer/ComputerAutomationRouter.ts";
 import * as ComputerObservationStore from "../../../computer/ComputerObservationStore.ts";
+import * as PreviewAutomationBroker from "../../PreviewAutomationBroker.ts";
 import { ComputerImageToolkit, ComputerStandardToolkit, ComputerToolkit } from "./tools.ts";
 
 /** Resolves the concrete Agent desktop selected by an access request. */
@@ -154,6 +156,20 @@ const actWithTemporalObservation = Effect.fn("ComputerToolkit.actWithTemporalObs
 );
 
 const handlers = {
+  user_desktop_list: () =>
+    Effect.gen(function* () {
+      const scope = yield* McpInvocationContext.requireMcpCapability("computer");
+      const broker = yield* PreviewAutomationBroker.PreviewAutomationBroker;
+      return yield* broker.listUserDesktops(scope.environmentId).pipe(
+        Effect.mapError(
+          () =>
+            new UserDesktopInventoryError({
+              code: "user-desktop-inventory-unavailable",
+              detail: "The user-desktop inventory is temporarily unavailable.",
+            }),
+        ),
+      );
+    }),
   computer_status: (input) => statusComputer(input),
   computer_request_availability: (input) => requestComputerAvailability(input),
   computer_release_availability: (input) => releaseComputerAvailability(input),

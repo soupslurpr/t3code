@@ -3,11 +3,12 @@ import {
   evaluateComputerUseVm,
   gpt56OriginalImageTokens,
   resolveComputerUseVmConfig,
+  targetComputerUseVmBridge,
 } from "./computer-use-vm-lib.mjs";
 
 const benchmarkExpression = String.raw`(async () => {
-  const computer = window.desktopBridge?.computer;
-  if (computer === undefined) throw new Error("desktop computer bridge is unavailable");
+  const targetComputerUseVmBridge = ${targetComputerUseVmBridge.toString()};
+  const computer = targetComputerUseVmBridge(window.desktopBridge);
   const results = [];
   const iterations = 3;
 

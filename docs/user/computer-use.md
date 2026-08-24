@@ -1,8 +1,9 @@
-# Desktop Computer Use
+# Computer Use
 
-Agents running through T3 Code can capture and control native desktop applications when a supported
-T3 Code desktop client is attached to the same environment. This is separate from the collaborative
-browser: it targets the host desktop itself.
+Agents running through T3 Code can capture and control native graphical applications when a
+supported T3 Code desktop client is attached to the same environment. This is separate from the
+collaborative browser. Computer use targets either a concrete user desktop exposed by a desktop
+client or a managed, isolated Agent desktop.
 
 The current implementation is intentionally host-specific. It supports Linux desktop builds running
 in a GNOME Wayland session with the system GJS runtime and XDG Remote Desktop portal. It installs no
@@ -30,11 +31,18 @@ Code keeps the resulting view-only session instead of immediately closing it. Sn
 work, while input remains unavailable until the agent requests control again and GNOME grants both
 keyboard and pointer access.
 
-After approval, GNOME can return separate opaque restore tokens for view and control access. T3 Code
-stores them in its local state directory with owner-only file permissions and uses them to reconnect
-without a routine dialog. GNOME remains in control: it can reject or invalidate a token, require
-approval again, and shows its active sharing indicator whenever a session is connected. T3 Code does
-not receive or store your portal choices directly.
+Ordinary agent access requests are transient. T3 Code asks GNOME for a nonpersistent portal session,
+so approving one request does not create remembered access. **Settings → User desktops** provides
+separate **Remember view** and **Remember control** actions when you intentionally want reusable
+approval for a particular user desktop. Those actions can receive separate opaque GNOME restore
+tokens. T3 Code stores the tokens in its local state directory with owner-only file permissions and
+uses them to reconnect without a routine dialog. GNOME remains in control: it can reject or
+invalidate a token, require approval again, and shows its active sharing indicator whenever a
+session is connected. T3 Code does not receive or store your portal choices directly.
+
+The same Settings page can end all active access or forget approval for a selected user desktop.
+Those user actions interrupt every agent lease on that desktop, including pending authorization,
+rather than waiting for the agent that acquired access to release it.
 
 A remembered control grant necessarily includes its monitor stream, so status reports it as both
 view and control access. When that combined token is the only reusable grant, T3 Code can restore its
@@ -43,10 +51,11 @@ watch only a shared view lease. Input remains unavailable to that caller. This a
 monitor prompt without broadening what the agent requested or what you previously approved.
 
 The agent can call `computer_release` to cancel pending authorization or end the active sharing
-session immediately. This removes capture and input access but retains both GNOME restore tokens and
-desktop availability, so a later task can reconnect before automatic locking makes the user desktop
-unavailable. A later `computer_status` reports `remembered` while no sharing session is active, and
-`keepAwake` remains true while availability is retained. The agent can call
+session immediately. This removes capture and input access but retains any restore tokens you
+explicitly created in Settings and retains desktop availability, so a later task can reconnect before
+automatic locking makes the user desktop unavailable. A later `computer_status` reports `remembered`
+only when reusable approval exists, and `keepAwake` remains true while availability is retained. The
+agent can call
 `computer_release_availability`, or you can select **Allow locking** in General settings, to remove
 only the availability lease without disabling the persistent policy. `computer_forget_control` ends
 the session, deletes both restore tokens, and releases availability, so the next request requires
@@ -188,6 +197,8 @@ the human control lease.
 
 The environment exposes tools for:
 
+- listing known user desktops with stable opaque identifiers, labels, online state, platform, and
+  limited activity metadata before selecting one
 - checking support, active permission, remembered access, and displays
 - requesting view-only access early without requesting input
 - requesting combined screen-and-input access early without sending input
@@ -247,15 +258,18 @@ own display, files, processes, and network connection. The same computer tools w
 the virtual machine remains on the device hosting its T3 environment. Other connected T3 clients can
 watch or control it remotely without installing QEMU or creating a second local inventory. The
 environment server must remain running, but no particular T3 client needs to stay connected. The
-machine does not need the host-desktop sharing dialog because its display and emulated input devices
+machine does not need the GNOME user-desktop sharing dialog because its display and emulated input devices
 exist specifically for agent work.
 
-An agent can ask for a clean desktop, reuse a suitable prior desktop, or select a known desktop
-explicitly. Access returns the concrete desktop identifier, and every later status, snapshot, action,
-release, or forget operation names that identifier. Every computer operation explicitly names either
-your desktop or a concrete Agent desktop; a missing target is rejected rather than inferred. This
-stateless routing lets parallel agents in one thread hold independent desktops without silently
-redirecting or releasing each other's sessions.
+An agent can ask for a clean Agent desktop, reuse a suitable prior Agent desktop, or select a known
+desktop explicitly. Each user desktop also has a durable opaque identifier and an editable label in
+**Settings → User desktops**. An agent lists those user desktops before selection and passes the exact
+selected target to every later status, access, snapshot, action, release, or forget operation. The
+approval prompt appears on that selected desktop, even when the thread is being viewed from another
+client. A disconnected target fails as offline; T3 Code never redirects the operation to a different
+user desktop. A missing target is rejected rather than inferred. This stateless routing lets parallel
+agents in one thread hold independent desktops without silently redirecting or releasing each other's
+sessions.
 A provider or harness restart does not strand prior desktops: they remain listed for the same thread,
 and acquiring one explicitly reclaims it when no other controller is actively using it. Automatic
 acquisition prefers the current controller's suitable desktop, then the most recent suitable idle

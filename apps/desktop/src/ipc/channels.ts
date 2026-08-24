@@ -94,6 +94,7 @@ export const PREVIEW_RECORDING_FRAME_CHANNEL = "desktop:preview-recording-frame"
 export const PREVIEW_STATE_CHANGE_CHANNEL = "desktop:preview-state-change";
 export const PREVIEW_POINTER_EVENT_CHANNEL = "desktop:preview-pointer-event";
 export const COMPUTER_AUTOMATION_STATUS_CHANNEL = "desktop:computer-automation-status";
+export const GET_USER_DESKTOP_HOST_CHANNEL = "desktop:get-user-desktop-host";
 export const COMPUTER_AUTOMATION_REQUEST_AVAILABILITY_CHANNEL =
   "desktop:computer-automation-request-availability";
 export const COMPUTER_AUTOMATION_RELEASE_AVAILABILITY_CHANNEL =
@@ -101,6 +102,14 @@ export const COMPUTER_AUTOMATION_RELEASE_AVAILABILITY_CHANNEL =
 export const COMPUTER_AUTOMATION_REQUEST_VIEW_CHANNEL = "desktop:computer-automation-request-view";
 export const COMPUTER_AUTOMATION_REQUEST_CONTROL_CHANNEL =
   "desktop:computer-automation-request-control";
+export const COMPUTER_AUTOMATION_REMEMBER_VIEW_CHANNEL =
+  "desktop:computer-automation-remember-view";
+export const COMPUTER_AUTOMATION_REMEMBER_CONTROL_CHANNEL =
+  "desktop:computer-automation-remember-control";
+export const COMPUTER_AUTOMATION_FORCE_RELEASE_CHANNEL =
+  "desktop:computer-automation-force-release";
+export const COMPUTER_AUTOMATION_FORCE_FORGET_CONTROL_CHANNEL =
+  "desktop:computer-automation-force-forget-control";
 export const COMPUTER_AUTOMATION_SNAPSHOT_CHANNEL = "desktop:computer-automation-snapshot";
 export const COMPUTER_AUTOMATION_ACT_CHANNEL = "desktop:computer-automation-act";
 export const COMPUTER_AUTOMATION_RELEASE_CHANNEL = "desktop:computer-automation-release";

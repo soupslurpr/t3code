@@ -1,6 +1,7 @@
 import * as Schema from "effect/Schema";
 
 import { EnvironmentId, ThreadId, TrimmedNonEmptyString } from "./baseSchemas.ts";
+import { UserDesktopId, UserDesktopTarget } from "./userDesktop.ts";
 
 const MAX_AGENT_DESKTOP_CONNECTIONS = 256;
 const MAX_AGENT_DESKTOP_PORT_ROUTES = 64;
@@ -35,9 +36,9 @@ export type AgentDesktopId = typeof AgentDesktopId.Type;
 export const AgentDesktopControllerId = TrimmedNonEmptyString.check(Schema.isMaxLength(128));
 export type AgentDesktopControllerId = typeof AgentDesktopControllerId.Type;
 
-/** Selects the user's current desktop or an independently managed agent desktop. */
+/** Selects one explicit user desktop or an independently managed Agent desktop. */
 export const ComputerDesktopSelector = Schema.Union([
-  Schema.Struct({ kind: Schema.Literal("user") }),
+  UserDesktopTarget,
   Schema.Struct({
     kind: Schema.Literal("agent"),
     desktopId: Schema.optional(AgentDesktopId),
@@ -63,7 +64,7 @@ export type ComputerDesktopSelector = typeof ComputerDesktopSelector.Type;
 
 /** Targets one existing desktop without creating or changing an assignment. */
 export const ComputerDesktopTarget = Schema.Union([
-  Schema.Struct({ kind: Schema.Literal("user") }),
+  UserDesktopTarget,
   Schema.Struct({
     kind: Schema.Literal("agent"),
     desktopId: AgentDesktopId,
@@ -75,7 +76,7 @@ export type ComputerDesktopTarget = typeof ComputerDesktopTarget.Type;
 
 /** Describes the concrete desktop selected for one computer-use session. */
 export const ComputerDesktopIdentity = Schema.Struct({
-  id: AgentDesktopId,
+  id: Schema.Union([UserDesktopId, AgentDesktopId]),
   kind: Schema.Literals(["user", "agent"]),
   label: TrimmedNonEmptyString.check(Schema.isMaxLength(256)),
 });
