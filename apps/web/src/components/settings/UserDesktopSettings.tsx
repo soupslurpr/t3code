@@ -47,6 +47,16 @@ interface UserDesktopEntry {
   readonly status: ComputerAutomationStatus | null;
 }
 
+interface UserDesktopGroup {
+  readonly desktopId: string;
+  readonly routes: ReadonlyArray<UserDesktopEntry>;
+  readonly primary: UserDesktopEntry;
+  readonly connectionState: UserDesktopView["connectionState"];
+  readonly hasIdentityConflict: boolean;
+  readonly t3Focused: boolean;
+  readonly rememberedAccess: ComputerAutomationStatus["rememberedAccess"];
+}
+
 interface PendingRequest {
   readonly environmentId: EnvironmentId;
   readonly desktopId: string;
@@ -54,9 +64,43 @@ interface PendingRequest {
   readonly operation: "remember-view" | "remember-control" | "release" | "forget";
 }
 
-/** Keeps duplicate desktop ids from different environments distinct in React state. */
-function entryKey(entry: UserDesktopEntry): string {
-  return `${entry.environmentId}:${entry.desktop.desktop.desktopId}`;
+/** Groups environment-scoped routes that lead to one physical desktop identity. */
+function groupEntries(entries: ReadonlyArray<UserDesktopEntry>): ReadonlyArray<UserDesktopGroup> {
+  const routesByDesktop = new Map<string, Array<UserDesktopEntry>>();
+  for (const entry of entries) {
+    const desktopId = entry.desktop.desktop.desktopId;
+    const routes = routesByDesktop.get(desktopId);
+    if (routes === undefined) routesByDesktop.set(desktopId, [entry]);
+    else routes.push(entry);
+  }
+
+  const groups: Array<UserDesktopGroup> = [];
+  for (const [desktopId, routes] of routesByDesktop) {
+    const primary =
+      routes.find((entry) => entry.desktop.connectionState === "online" && entry.status !== null) ??
+      routes.find((entry) => entry.desktop.connectionState === "online") ??
+      routes[0];
+    if (primary === undefined) continue;
+    const hasIdentityConflict = routes.some(
+      (entry) => entry.desktop.connectionState === "identity-conflict",
+    );
+    groups.push({
+      desktopId,
+      routes,
+      primary,
+      connectionState: routes.some((entry) => entry.desktop.connectionState === "online")
+        ? "online"
+        : hasIdentityConflict
+          ? "identity-conflict"
+          : "offline",
+      hasIdentityConflict,
+      t3Focused: routes.some((entry) => entry.desktop.t3Focused),
+      rememberedAccess: (["view", "control"] as const).filter((access) =>
+        routes.some((entry) => entry.status?.rememberedAccess.includes(access) === true),
+      ),
+    });
+  }
+  return groups;
 }
 
 /** Converts an RPC failure into bounded user-facing prose. */
@@ -91,13 +135,14 @@ export function UserDesktopSettings() {
   const [pending, setPending] = useState<PendingRequest | null>(null);
   const [editingKey, setEditingKey] = useState<string | null>(null);
   const [editingLabel, setEditingLabel] = useState("");
-  const [removeEntry, setRemoveEntry] = useState<UserDesktopEntry | null>(null);
+  const [removeGroup, setRemoveGroup] = useState<UserDesktopGroup | null>(null);
   const refreshing = useRef<Promise<void> | null>(null);
 
   const environmentById = useMemo(
     () => new Map(environments.map((environment) => [environment.environmentId, environment])),
     [environments],
   );
+  const desktopGroups = useMemo(() => groupEntries(entries), [entries]);
 
   const run = useCallback(
     async <Value,>(environmentId: EnvironmentId, input: UserDesktopHumanInvokeInput) => {
@@ -194,10 +239,17 @@ export function UserDesktopSettings() {
   }, [environmentsReady, refresh]);
 
   const performAccessAction = useCallback(
-    async (entry: UserDesktopEntry, operation: PendingRequest["operation"]) => {
+    async (group: UserDesktopGroup, operation: PendingRequest["operation"]) => {
+      const requiredCapability = operation === "remember-control" ? "control" : "view";
+      const entry =
+        group.routes.find(
+          (route) =>
+            route.desktop.connectionState === "online" &&
+            route.desktop.capabilities.includes(requiredCapability),
+        ) ?? group.primary;
       const request = {
         environmentId: entry.environmentId,
-        desktopId: entry.desktop.desktop.desktopId,
+        desktopId: group.desktopId,
         label: entry.desktop.label,
         operation,
       } satisfies PendingRequest;
@@ -225,17 +277,21 @@ export function UserDesktopSettings() {
   );
 
   const saveRename = useCallback(
-    async (entry: UserDesktopEntry) => {
+    async (group: UserDesktopGroup) => {
       const label = editingLabel.trim();
       if (label.length === 0) return;
       setError(null);
       try {
-        await run(entry.environmentId, {
-          request: {
-            operation: "rename",
-            input: { desktopId: entry.desktop.desktop.desktopId, label },
-          },
-        });
+        await Promise.all(
+          group.routes.map((route) =>
+            run(route.environmentId, {
+              request: {
+                operation: "rename",
+                input: { desktopId: group.desktopId, label },
+              },
+            }),
+          ),
+        );
         setEditingKey(null);
         await refresh(true, true);
       } catch (cause) {
@@ -246,22 +302,26 @@ export function UserDesktopSettings() {
   );
 
   const confirmRemove = useCallback(async () => {
-    const entry = removeEntry;
-    if (entry === null) return;
+    const group = removeGroup;
+    if (group === null) return;
     setError(null);
     try {
-      await run(entry.environmentId, {
-        request: {
-          operation: "remove",
-          input: { desktopId: entry.desktop.desktop.desktopId },
-        },
-      });
-      setRemoveEntry(null);
+      await Promise.all(
+        group.routes.map((route) =>
+          run(route.environmentId, {
+            request: {
+              operation: "remove",
+              input: { desktopId: group.desktopId },
+            },
+          }),
+        ),
+      );
+      setRemoveGroup(null);
       await refresh(true, true);
     } catch (cause) {
       setError(failureMessage(cause));
     }
-  }, [refresh, removeEntry, run]);
+  }, [refresh, removeGroup, run]);
 
   return (
     <SettingsPageContainer>
@@ -306,12 +366,12 @@ export function UserDesktopSettings() {
             </AlertDescription>
           </Alert>
         ) : null}
-        {loading && entries.length === 0 ? (
+        {loading && desktopGroups.length === 0 ? (
           <div role="status" className="rounded-xl border border-dashed px-5 py-10 text-center">
             <RefreshCwIcon className="mx-auto mb-3 size-6 animate-spin text-muted-foreground" />
             <p className="font-medium">Loading user desktops…</p>
           </div>
-        ) : entries.length === 0 ? (
+        ) : desktopGroups.length === 0 ? (
           <div className="rounded-xl border border-dashed px-5 py-10 text-center">
             <MonitorIcon className="mx-auto mb-3 size-6 text-muted-foreground" />
             <p className="font-medium">No user desktops known</p>
@@ -321,36 +381,50 @@ export function UserDesktopSettings() {
           </div>
         ) : (
           <div className="grid gap-3">
-            {entries.map((entry) => {
-              const desktop = entry.desktop;
-              const desktopId = desktop.desktop.desktopId;
-              const key = entryKey(entry);
+            {desktopGroups.map((group) => {
+              const desktop = group.primary.desktop;
               const busy = pending !== null;
-              const remembered = entry.status?.rememberedAccess ?? [];
-              const supportsView = desktop.capabilities.includes("view");
-              const supportsControl = desktop.capabilities.includes("control");
-              const environment = environmentById.get(entry.environmentId);
+              const supportsView = group.routes.some(
+                (route) =>
+                  route.desktop.connectionState === "online" &&
+                  route.desktop.capabilities.includes("view"),
+              );
+              const supportsControl = group.routes.some(
+                (route) =>
+                  route.desktop.connectionState === "online" &&
+                  route.desktop.capabilities.includes("control"),
+              );
+              const environmentLabels = [
+                ...new Set(
+                  group.routes.map(
+                    (route) =>
+                      environmentById.get(route.environmentId)?.label ?? "Unknown environment",
+                  ),
+                ),
+              ];
               return (
-                <Card key={key}>
+                <Card key={group.desktopId}>
                   <CardHeader>
                     <CardTitle className="flex flex-wrap items-center gap-2 text-base">
                       {desktop.label}
                       <Badge
                         variant={
-                          desktop.connectionState === "online"
+                          group.connectionState === "online"
                             ? "default"
-                            : desktop.connectionState === "identity-conflict"
+                            : group.connectionState === "identity-conflict"
                               ? "error"
                               : "secondary"
                         }
                       >
-                        {connectionLabel(desktop.connectionState)}
+                        {connectionLabel(group.connectionState)}
                       </Badge>
-                      {desktop.t3Focused ? <Badge variant="secondary">T3 focused</Badge> : null}
+                      {group.t3Focused ? <Badge variant="secondary">T3 focused</Badge> : null}
                     </CardTitle>
                     <CardDescription>
-                      {environment?.label ?? "Unknown environment"} ·{" "}
-                      {platformLabel(desktop.platform)}
+                      {environmentLabels.length === 1
+                        ? environmentLabels[0]
+                        : `Available through ${environmentLabels.join(", ")}`}{" "}
+                      · {platformLabel(desktop.platform)}
                       {" · "}seen {formatRelativeTimeLabel(desktop.lastSeenAt)}
                     </CardDescription>
                     <CardAction>
@@ -359,7 +433,7 @@ export function UserDesktopSettings() {
                         size="icon-sm"
                         aria-label={`Rename ${desktop.label}`}
                         onClick={() => {
-                          setEditingKey(key);
+                          setEditingKey(group.desktopId);
                           setEditingLabel(desktop.label);
                         }}
                       >
@@ -368,7 +442,7 @@ export function UserDesktopSettings() {
                     </CardAction>
                   </CardHeader>
                   <CardPanel className="grid gap-3">
-                    {editingKey === key ? (
+                    {editingKey === group.desktopId ? (
                       <div className="flex gap-2">
                         <Input
                           value={editingLabel}
@@ -376,11 +450,11 @@ export function UserDesktopSettings() {
                           aria-label="User desktop name"
                           onChange={(event) => setEditingLabel(event.target.value)}
                           onKeyDown={(event) => {
-                            if (event.key === "Enter") void saveRename(entry);
+                            if (event.key === "Enter") void saveRename(group);
                             if (event.key === "Escape") setEditingKey(null);
                           }}
                         />
-                        <Button onClick={() => void saveRename(entry)}>Save</Button>
+                        <Button onClick={() => void saveRename(group)}>Save</Button>
                         <Button variant="ghost" onClick={() => setEditingKey(null)}>
                           Cancel
                         </Button>
@@ -388,22 +462,26 @@ export function UserDesktopSettings() {
                     ) : null}
                     <div className="flex flex-wrap gap-2 text-xs text-muted-foreground">
                       <span>
-                        View: {remembered.includes("view") ? "remembered" : "ask each time"}
+                        View:{" "}
+                        {group.rememberedAccess.includes("view") ? "remembered" : "ask each time"}
                       </span>
                       <span>
-                        Control: {remembered.includes("control") ? "remembered" : "ask each time"}
+                        Control:{" "}
+                        {group.rememberedAccess.includes("control")
+                          ? "remembered"
+                          : "ask each time"}
                       </span>
-                      <span className="font-mono">{desktopId}</span>
+                      <span className="font-mono">{group.desktopId}</span>
                     </div>
-                    {desktop.connectionState === "identity-conflict" ? (
+                    {group.hasIdentityConflict ? (
                       <Alert variant="error">
                         <AlertDescription>
-                          Multiple connected clients claim this identity. Computer use is blocked
-                          until only the original desktop remains connected.
+                          At least one environment reports multiple clients claiming this identity.
+                          Actions use a healthy route when one is available.
                         </AlertDescription>
                       </Alert>
                     ) : null}
-                    {desktop.connectionState === "online" && !supportsView ? (
+                    {group.connectionState === "online" && !supportsView ? (
                       <Alert>
                         <AlertDescription>
                           Computer use is unavailable for this desktop on its current platform.
@@ -414,8 +492,8 @@ export function UserDesktopSettings() {
                       <Button
                         size="sm"
                         variant="outline"
-                        disabled={busy || desktop.connectionState !== "online" || !supportsView}
-                        onClick={() => void performAccessAction(entry, "remember-view")}
+                        disabled={busy || group.connectionState !== "online" || !supportsView}
+                        onClick={() => void performAccessAction(group, "remember-view")}
                       >
                         <EyeIcon />
                         Remember view
@@ -423,33 +501,33 @@ export function UserDesktopSettings() {
                       <Button
                         size="sm"
                         variant="outline"
-                        disabled={busy || desktop.connectionState !== "online" || !supportsControl}
-                        onClick={() => void performAccessAction(entry, "remember-control")}
+                        disabled={busy || group.connectionState !== "online" || !supportsControl}
+                        onClick={() => void performAccessAction(group, "remember-control")}
                       >
                         <KeyboardIcon />
                         Remember control
                       </Button>
-                      {desktop.connectionState === "online" && supportsView ? (
+                      {group.connectionState === "online" && supportsView ? (
                         <Button
                           size="sm"
                           variant="outline"
                           disabled={busy}
-                          onClick={() => void performAccessAction(entry, "release")}
+                          onClick={() => void performAccessAction(group, "release")}
                         >
-                          {pending?.desktopId === desktopId && pending.operation === "release"
+                          {pending?.desktopId === group.desktopId && pending.operation === "release"
                             ? "Ending access…"
                             : "End all access"}
                         </Button>
                       ) : null}
-                      {remembered.length > 0 ? (
+                      {group.rememberedAccess.length > 0 ? (
                         <Button
                           size="sm"
                           variant="outline"
                           disabled={busy}
-                          onClick={() => void performAccessAction(entry, "forget")}
+                          onClick={() => void performAccessAction(group, "forget")}
                         >
                           <ShieldOffIcon />
-                          {pending?.desktopId === desktopId && pending.operation === "forget"
+                          {pending?.desktopId === group.desktopId && pending.operation === "forget"
                             ? "Forgetting…"
                             : "Forget approval"}
                         </Button>
@@ -457,8 +535,8 @@ export function UserDesktopSettings() {
                       <Button
                         size="sm"
                         variant="ghost"
-                        disabled={desktop.connectionState !== "offline"}
-                        onClick={() => setRemoveEntry(entry)}
+                        disabled={group.connectionState !== "offline"}
+                        onClick={() => setRemoveGroup(group)}
                       >
                         <Trash2Icon />
                         Remove
@@ -473,9 +551,9 @@ export function UserDesktopSettings() {
       </SettingsSection>
 
       <AlertDialog
-        open={removeEntry !== null}
+        open={removeGroup !== null}
         onOpenChange={(open) => {
-          if (!open) setRemoveEntry(null);
+          if (!open) setRemoveGroup(null);
         }}
       >
         <AlertDialogPopup>
