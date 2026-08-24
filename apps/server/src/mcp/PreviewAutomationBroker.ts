@@ -225,7 +225,7 @@ function hostAssignmentKey(
   if (!isComputerOperation(operation)) {
     return `${scope.environmentId}\u0000${scope.providerSessionId}\u0000preview`;
   }
-  return `${scope.environmentId}\u0000${scope.providerSessionId}\u0000computer`;
+  return `${scope.environmentId}\u0000${scope.controllerId}\u0000computer`;
 }
 
 interface RequestedComputerDesktop {
@@ -1068,11 +1068,20 @@ export const make = Effect.gen(function* PreviewAutomationBrokerMake() {
     }
     const { assignmentKey, connection, requestId, requestContext, requestSequence } = route;
     input.onTargetTab?.(requestContext.tabId);
-    const removePending = SynchronizedRef.update(state, (next) => {
-      if (!next.pending.has(requestId)) return next;
-      const pending = new Map(next.pending);
-      pending.delete(requestId);
-      return { ...next, pending };
+    const cancelPending = Effect.gen(function* () {
+      const cancelled = yield* SynchronizedRef.modify(state, (next) => {
+        const entry = next.pending.get(requestId);
+        if (entry === undefined) return [false, next] as const;
+        const pending = new Map(next.pending);
+        pending.delete(requestId);
+        return [true, { ...next, pending }] as const;
+      });
+      if (!cancelled) return;
+      yield* Queue.offer(connection.queue, {
+        type: "cancel",
+        connectionId: connection.connectionId,
+        requestId,
+      }).pipe(Effect.ignore);
     });
     const awaitResponse = Effect.fn("PreviewAutomationBroker.awaitResponse")(function* () {
       const offered = yield* Queue.offer(connection.queue, {
@@ -1082,7 +1091,7 @@ export const make = Effect.gen(function* PreviewAutomationBrokerMake() {
           requestId,
           threadId: input.scope.threadId,
           ...(isComputerOperation(input.operation)
-            ? { controllerId: input.scope.providerSessionId }
+            ? { controllerId: input.scope.controllerId }
             : {}),
           tabId: requestContext.tabId,
           tabIdExplicit: input.tabId !== undefined,
@@ -1110,7 +1119,7 @@ export const make = Effect.gen(function* PreviewAutomationBrokerMake() {
         onSome: (value) => Effect.succeed(value as A),
       });
     });
-    const result = yield* awaitResponse().pipe(Effect.ensuring(removePending));
+    const result = yield* awaitResponse().pipe(Effect.ensuring(cancelPending));
     if (input.updateCurrentTab === false || assignmentKey === undefined) return result;
     const responseTabId = readResultTabId(result);
     const resultTabId = responseTabId === undefined ? input.tabId : responseTabId;

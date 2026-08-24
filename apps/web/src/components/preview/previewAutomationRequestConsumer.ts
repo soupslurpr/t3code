@@ -29,7 +29,8 @@ export function createPreviewAutomationRequestConsumerAtom<E>(options: {
   readonly connectionAtom: Atom.Writable<PreviewAutomationStreamEvent["connectionId"] | null>;
   readonly environmentId: PreviewAutomationHost["environmentId"];
   readonly requestHandlerAtom: Atom.Atom<{
-    readonly handle: (request: PreviewAutomationRequest) => Promise<unknown>;
+    readonly handle: (request: PreviewAutomationRequest, signal: AbortSignal) => Promise<unknown>;
+    readonly cancel?: (request: PreviewAutomationRequest) => Promise<void>;
   }>;
   readonly respond: (response: PreviewAutomationResponse) => Promise<unknown>;
   readonly label: string;
@@ -42,11 +43,36 @@ export function createPreviewAutomationRequestConsumerAtom<E>(options: {
     let connectionExplicitlyAnnounced = false;
     let reportedConnectionId: PreviewAutomationStreamEvent["connectionId"] | null = null;
     let requestsVersion = 0;
+    const activeRequests = new Map<
+      string,
+      {
+        readonly controller: AbortController;
+        readonly request: PreviewAutomationRequest;
+        readonly cancel: ((request: PreviewAutomationRequest) => Promise<void>) | undefined;
+      }
+    >();
+
+    const cancelRequest = (requestId: string) => {
+      const active = activeRequests.get(requestId);
+      if (active === undefined) return;
+      activeRequests.delete(requestId);
+      active.controller.abort();
+      if (active.cancel !== undefined) {
+        void active.cancel(active.request).catch(() => undefined);
+      }
+    };
+
+    const cancelAllRequests = () => {
+      for (const requestId of activeRequests.keys()) cancelRequest(requestId);
+    };
 
     const consume = (result: AutomationStreamResult<E>) => {
       if (!AsyncResult.isSuccess(result)) return;
       const event = result.value;
       if (event.type === "connected") {
+        if (activeConnectionId !== null && activeConnectionId !== event.connectionId) {
+          cancelAllRequests();
+        }
         activeConnectionId = event.connectionId;
         connectionExplicitlyAnnounced = true;
       } else if (activeConnectionId === null) {
@@ -62,21 +88,32 @@ export function createPreviewAutomationRequestConsumerAtom<E>(options: {
       if (event.type === "connected") {
         return;
       }
+      if (event.type === "cancel") {
+        cancelRequest(event.requestId);
+        return;
+      }
       const request = event.request;
-      void get
-        .once(options.requestHandlerAtom)
-        .handle(request)
+      cancelRequest(request.requestId);
+      const handler = get.once(options.requestHandlerAtom);
+      const controller = new AbortController();
+      const active = { controller, request, cancel: handler.cancel };
+      activeRequests.set(request.requestId, active);
+      void handler
+        .handle(request, controller.signal)
         .then(
-          (value) =>
-            options.respond({
+          (value) => {
+            if (controller.signal.aborted) return;
+            return options.respond({
               clientId: options.clientId,
               connectionId: event.connectionId,
               requestId: request.requestId,
               ok: true,
               ...(value === undefined ? {} : { result: value }),
-            }),
-          (error) =>
-            options.respond({
+            });
+          },
+          (error) => {
+            if (controller.signal.aborted) return;
+            return options.respond({
               clientId: options.clientId,
               connectionId: event.connectionId,
               requestId: request.requestId,
@@ -88,12 +125,19 @@ export function createPreviewAutomationRequestConsumerAtom<E>(options: {
                 threadId: request.threadId,
                 tabId: request.tabId ?? null,
               }),
-            }),
-        );
+            });
+          },
+        )
+        .finally(() => {
+          if (activeRequests.get(request.requestId) === active) {
+            activeRequests.delete(request.requestId);
+          }
+        });
     };
 
     get.addFinalizer(() => {
       disposed = true;
+      cancelAllRequests();
     });
     const initialRequest = get.once(options.requestsAtom);
     if (AsyncResult.isSuccess(initialRequest)) {

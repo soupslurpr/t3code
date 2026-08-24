@@ -9,6 +9,7 @@ import {
   PreviewAutomationMalformedResponseError,
   PreviewAutomationNoAvailableHostError,
   PreviewAutomationTargetNotEditableError,
+  PreviewAutomationTimeoutError,
   PreviewTabId,
   ProviderInstanceId,
   ThreadId,
@@ -37,6 +38,7 @@ const makeBroker = PreviewAutomationBroker.make.pipe(
 const scope = {
   environmentId: EnvironmentId.make("environment-1"),
   threadId: ThreadId.make("thread-1"),
+  controllerId: "controller-1",
   providerSessionId: "provider-session-1",
   providerInstanceId: ProviderInstanceId.make("codex"),
   capabilities: new Set(["preview", "computer"] as const),
@@ -70,6 +72,7 @@ const requestsFrom = (
         onConnected(event.connectionId);
         return Result.failVoid;
       }
+      if (event.type === "cancel") return Result.failVoid;
       return Result.succeed({ ...event.request, connectionId: event.connectionId });
     }),
   );
@@ -97,6 +100,38 @@ it.effect("atomically registers a connected host and correlates its response", (
       });
 
       expect(result).toEqual({ available: true });
+    }),
+  ),
+);
+
+it.effect("cancels the routed request when its caller times out", () =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      const broker = yield* makeBroker;
+      const events = yield* broker.connect(makeHost());
+      const received: PreviewAutomationStreamEvent[] = [];
+      const consumer = yield* events.pipe(
+        Stream.take(3),
+        Stream.runForEach((event) => Effect.sync(() => void received.push(event))),
+        Effect.forkScoped,
+      );
+      yield* Effect.yieldNow;
+
+      const invocation = yield* broker
+        .invoke<void>({ scope, operation: "status", input: {}, timeoutMs: 1_000 })
+        .pipe(Effect.flip, Effect.forkScoped);
+      yield* Effect.yieldNow;
+      yield* TestClock.adjust("1 second");
+
+      const error = yield* Fiber.join(invocation);
+      yield* Fiber.join(consumer);
+      expect(error).toBeInstanceOf(PreviewAutomationTimeoutError);
+      expect(received.map((event) => event.type)).toEqual(["connected", "request", "cancel"]);
+      expect(received[2]).toMatchObject({
+        type: "cancel",
+        requestId: "preview-0",
+        connectionId: received[1]?.connectionId,
+      });
     }),
   ),
 );
@@ -404,7 +439,7 @@ it.effect("announces a live replacement stream before delivering requests", () =
         Stream.take(2),
         Stream.runForEach((event) => {
           receivedTypes.push(event.type);
-          return event.type === "connected"
+          return event.type !== "request"
             ? Effect.void
             : broker.respond({
                 clientId: "client-1",
@@ -757,6 +792,7 @@ it.effect("routes requests for background threads through an environment-level h
         scope: {
           ...scope,
           threadId: backgroundThreadId,
+          controllerId: "controller-background",
           providerSessionId: "provider-session-background",
         },
         operation: "status",
@@ -769,7 +805,7 @@ it.effect("routes requests for background threads through an environment-level h
   ),
 );
 
-it.effect("gives parallel provider sessions distinct computer controller identities", () =>
+it.effect("gives parallel logical controllers distinct computer identities", () =>
   Effect.scoped(
     Effect.gen(function* () {
       const broker = yield* makeBroker;
@@ -793,24 +829,28 @@ it.effect("gives parallel provider sessions distinct computer controller identit
       }).pipe(Effect.forkScoped);
       yield* Effect.yieldNow;
 
-      const secondScope = { ...scope, providerSessionId: "provider-session-2" };
+      const secondScope = {
+        ...scope,
+        controllerId: "controller-2",
+        providerSessionId: "provider-session-2",
+      };
       expect(
         yield* broker.invoke<string>({
           scope,
           operation: "computerRequestControl",
           input: { desktop: { kind: "user", desktopId: "user-desktop-1" } },
         }),
-      ).toBe(scope.providerSessionId);
+      ).toBe(scope.controllerId);
       expect(
         yield* broker.invoke<string>({
           scope: secondScope,
           operation: "computerRequestControl",
           input: { desktop: { kind: "user", desktopId: "user-desktop-1" } },
         }),
-      ).toBe(secondScope.providerSessionId);
+      ).toBe(secondScope.controllerId);
       expect(routedRequests.map(({ controllerId }) => controllerId)).toEqual([
-        scope.providerSessionId,
-        secondScope.providerSessionId,
+        scope.controllerId,
+        secondScope.controllerId,
       ]);
     }),
   ),
