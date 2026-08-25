@@ -606,6 +606,38 @@ describe("T3 computer developer instructions", () => {
   });
 });
 
+describe("T3 current TODO developer instructions", () => {
+  const runtime = { model: "gpt-5.3-codex", reasoningEffort: "high" };
+
+  it("gives both collaboration modes the same durable milestone rules", () => {
+    for (const mode of ["default", "plan"] as const) {
+      const instructions = buildCodexDeveloperInstructions(mode, runtime, true, true);
+      NodeAssert.match(instructions, /current_todo_read/);
+      NodeAssert.match(instructions, /current_todo_write/);
+      NodeAssert.match(instructions, /Current status/);
+      NodeAssert.match(instructions, /Decisions and constraints/);
+      NodeAssert.match(instructions, /outside the project workspace/);
+      NodeAssert.match(instructions, /do not create one for a simple request/);
+      NodeAssert.match(instructions, /UI Tasks/);
+      NodeAssert.match(instructions, /immediate execution steps/);
+      NodeAssert.match(instructions, /Read the tracker before resuming tracked work/);
+      NodeAssert.match(instructions, /Update it at milestone transitions/);
+      NodeAssert.match(instructions, /newest direct user instruction always wins/);
+      NodeAssert.match(instructions, /Only the primary agent writes the tracker/);
+      NodeAssert.match(instructions, /immediately before every final response/);
+      NodeAssert.match(instructions, /do not begin the next milestone/);
+    }
+  });
+
+  it("omits tracker guidance when the T3 MCP server is not attached", () => {
+    for (const mode of ["default", "plan"] as const) {
+      const instructions = buildCodexDeveloperInstructions(mode, runtime, false, false);
+      NodeAssert.doesNotMatch(instructions, /current_todo_read/);
+      NodeAssert.doesNotMatch(instructions, /Current TODO tracker/);
+    }
+  });
+});
+
 describe("hasConfiguredMcpServer", () => {
   it("detects inline Codex MCP configuration arguments", () => {
     NodeAssert.equal(hasConfiguredMcpServer(undefined), false);

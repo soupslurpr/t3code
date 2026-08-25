@@ -35,6 +35,7 @@ import type { OrchestrationDispatchError } from "../Errors.ts";
 import { VcsStatusBroadcaster } from "../../vcs/VcsStatusBroadcaster.ts";
 import * as WorkspaceEntries from "../../workspace/WorkspaceEntries.ts";
 import * as PullRequestService from "../../pullRequest/PullRequestService.ts";
+import * as CurrentTodoStore from "../../currentTodo/CurrentTodoStore.ts";
 
 const nowIso = Effect.map(DateTime.now, DateTime.formatIso);
 const BASELINE_CAPTURE_RETRY_DELAY_MS = 60_000;
@@ -83,6 +84,7 @@ const make = Effect.gen(function* () {
   const projectionSnapshotQuery = yield* ProjectionSnapshotQuery;
   const providerService = yield* ProviderService;
   const checkpointStore = yield* CheckpointStore.CheckpointStore;
+  const currentTodoStore = yield* CurrentTodoStore.CurrentTodoStore;
   const receiptBus = yield* RuntimeReceiptBus;
   const workspaceEntries = yield* WorkspaceEntries.WorkspaceEntries;
   const vcsStatusBroadcaster = yield* VcsStatusBroadcaster;
@@ -244,6 +246,7 @@ const make = Effect.gen(function* () {
       (maxTurnCount, checkpoint) => Math.max(maxTurnCount, checkpoint.checkpointTurnCount),
       0,
     );
+    yield* currentTodoStore.captureCheckpoint(thread.id, currentTurnCount);
     const baselineCheckpointRef = checkpointRefForThreadTurn(thread.id, currentTurnCount);
     const baselineExists = yield* checkpointStore.hasCheckpointRef({
       cwd: checkpointCwd,
@@ -323,6 +326,7 @@ const make = Effect.gen(function* () {
       cwd: input.cwd,
       checkpointRef: targetCheckpointRef,
     });
+    yield* currentTodoStore.captureCheckpoint(input.threadId, input.turnCount);
 
     // Refresh the workspace entry index so the @-mention file picker
     // reflects files created or deleted during this turn.
@@ -730,6 +734,11 @@ const make = Effect.gen(function* () {
 
     yield* providerService.assertConversationRollbackSupported(event.payload.threadId);
 
+    // Validate the tracker snapshot before mutating either the workspace or
+    // provider history. The second read during restore is serialized through
+    // this reactor worker, so the checkpoint cannot change between the two.
+    yield* currentTodoStore.readCheckpoint(event.payload.threadId, event.payload.turnCount);
+
     const restored = yield* checkpointStore.restoreCheckpoint({
       cwd: sessionRuntime.value.cwd,
       checkpointRef: targetCheckpointRef,
@@ -744,6 +753,8 @@ const make = Effect.gen(function* () {
       }).pipe(Effect.catch(() => Effect.void));
       return;
     }
+
+    yield* currentTodoStore.restoreCheckpoint(event.payload.threadId, event.payload.turnCount);
 
     // Refresh the workspace entry index so the @-mention file picker
     // reflects the reverted filesystem state.
@@ -770,6 +781,7 @@ const make = Effect.gen(function* () {
         checkpointRefs: staleCheckpointRefs,
       });
     }
+    yield* currentTodoStore.deleteCheckpointsAfter(event.payload.threadId, event.payload.turnCount);
 
     yield* orchestrationEngine
       .dispatch({
@@ -885,7 +897,10 @@ const make = Effect.gen(function* () {
     input: ReactorInput,
   ): Effect.Effect<
     void,
-    CheckpointStoreError | OrchestrationDispatchError | PlatformError.PlatformError,
+    | CheckpointStoreError
+    | CurrentTodoStore.CurrentTodoStoreError
+    | OrchestrationDispatchError
+    | PlatformError.PlatformError,
     never
   > =>
     input.source === "domain" ? processDomainEvent(input.event) : processRuntimeEvent(input.event);

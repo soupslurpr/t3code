@@ -93,6 +93,11 @@ also survive normalization; a display label is not necessarily a valid reply.
 
 ## Attachments and stored history
 
+Codex's per-thread current TODO is temporary T3 state, not a repository artifact. The
+`current_todo_read` and `current_todo_write` MCP tools access a real `CURRENT_TODO.md` below the
+server's state directory without accepting a path. Checkpoint snapshots and thread deletion manage
+that file with the rest of the thread lifecycle.
+
 Attachments live outside the project workspace. [ProviderService](../../apps/server/src/provider/Layers/ProviderService.ts)
 puts their environment-local paths in turn input and lets adapters choose native input formats.
 A path in the prompt does not grant filesystem access. Keep provider sandbox and approval rules

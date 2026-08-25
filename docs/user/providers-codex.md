@@ -72,3 +72,14 @@ In an existing Codex thread, send `/feedback` with an optional description, for
 example `/feedback The agent stopped before finishing the tests`. This uploads
 the conversation and Codex logs to OpenAI. The returned thread ID can be shared
 with OpenAI support.
+
+## Long-running work tracking
+
+For work with several milestones, Codex can maintain a concise current TODO for the T3 thread. T3
+stores this tracker in its own state rather than adding a scratch file to your project. Codex reads
+it when resuming long-running work and updates it as milestones, decisions, or blockers change.
+
+The tracker is independent of the Tasks indicator in the composer. Tasks describe the agent's
+immediate execution steps; the current TODO preserves the durable state of a longer piece of work.
+It is retained when a thread is archived, follows checkpoint reverts, and is removed when the thread
+is deleted.

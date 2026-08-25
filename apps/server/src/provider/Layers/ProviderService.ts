@@ -24,8 +24,8 @@ import {
   ProviderUploadFeedbackInput,
   ThreadId,
   TurnId,
+  ProviderDriverKind,
   type ProviderInstanceId,
-  type ProviderDriverKind,
   type ProviderRuntimeEvent,
   type ProviderSession,
 } from "@t3tools/contracts";
@@ -74,6 +74,7 @@ import * as McpProviderSession from "../../mcp/McpProviderSession.ts";
 import * as McpSessionRegistry from "../../mcp/McpSessionRegistry.ts";
 import * as ServerSettings from "../../serverSettings.ts";
 const isModelSelection = Schema.is(ModelSelection);
+const CODEX_PROVIDER = ProviderDriverKind.make("codex");
 
 interface PendingCompaction {
   readonly completion: Deferred.Deferred<string>;
@@ -709,10 +710,15 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
     ),
   );
 
-  const prepareMcpSession = (threadId: ThreadId, providerInstanceId: ProviderInstanceId) =>
+  const prepareMcpSession = (
+    threadId: ThreadId,
+    providerInstanceId: ProviderInstanceId,
+    provider: ProviderDriverKind,
+  ) =>
     Effect.gen(function* () {
       const capabilities = new Set<McpInvocationContext.McpCapability>(["computer"]);
       if (yield* agentBrowserAccessEnabled) capabilities.add("preview");
+      if (provider === CODEX_PROVIDER) capabilities.add("currentTodo");
       const credential = yield* issueMcpCredential({
         threadId,
         providerInstanceId,
@@ -1006,7 +1012,7 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
       const persistedCwd = readPersistedCwd(input.binding.runtimePayload);
       const persistedModelSelection = readPersistedModelSelection(input.binding.runtimePayload);
 
-      yield* prepareMcpSession(input.binding.threadId, bindingInstanceId);
+      yield* prepareMcpSession(input.binding.threadId, bindingInstanceId, input.binding.provider);
       const resumed = yield* adapter
         .startSession({
           threadId: input.binding.threadId,
@@ -1237,7 +1243,7 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
         }
         const adapter = yield* registry.getByInstance(resolvedInstanceId);
         yield* clearTurnAnalyticsSession(resolvedInstanceId, threadId);
-        yield* prepareMcpSession(threadId, resolvedInstanceId);
+        yield* prepareMcpSession(threadId, resolvedInstanceId, resolvedProvider);
         const session = yield* adapter
           .startSession({
             ...input,

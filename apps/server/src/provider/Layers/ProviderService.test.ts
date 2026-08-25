@@ -4304,13 +4304,18 @@ boundedListing.layer("ProviderServiceLive session listing", (it) => {
 });
 
 describe("agent browser access", () => {
-  const startSessionWith = (enableAgentBrowserAccess: boolean, threadId: ThreadId) =>
+  const startSessionWith = (
+    enableAgentBrowserAccess: boolean,
+    threadId: ThreadId,
+    provider = CODEX_DRIVER,
+    providerInstanceId = codexInstanceId,
+  ) =>
     Effect.gen(function* () {
       const issued: Array<McpCredentialRequest> = [];
-      const codex = makeFakeCodexAdapter();
+      const adapter = makeFakeCodexAdapter(provider);
       const providerAdapterLayer = Layer.succeed(
         ProviderAdapterRegistry.ProviderAdapterRegistry,
-        makeAdapterRegistryMock({ [CODEX_DRIVER]: codex.adapter }),
+        makeAdapterRegistryMock({ [provider]: adapter.adapter }),
       );
       const runtimeRepositoryLayer = ProviderSessionRuntime.layer.pipe(
         Layer.provide(SqlitePersistenceMemory),
@@ -4339,10 +4344,10 @@ describe("agent browser access", () => {
       );
 
       yield* Effect.gen(function* () {
-        const provider = yield* ProviderService.ProviderService;
-        return yield* provider.startSession(threadId, {
-          provider: CODEX_DRIVER,
-          providerInstanceId: codexInstanceId,
+        const providerService = yield* ProviderService.ProviderService;
+        return yield* providerService.startSession(threadId, {
+          provider,
+          providerInstanceId,
           threadId,
           runtimeMode: "full-access",
         });
@@ -4356,7 +4361,7 @@ describe("agent browser access", () => {
       const issued = yield* startSessionWith(false, asThreadId("thread-browser-off"));
 
       assert.equal(issued.length, 1);
-      assert.deepEqual(Array.from(issued[0]?.capabilities ?? []), ["computer"]);
+      assert.deepEqual(Array.from(issued[0]?.capabilities ?? []), ["computer", "currentTodo"]);
     }).pipe(Effect.provide(NodeServices.layer)),
   );
 
@@ -4368,6 +4373,24 @@ describe("agent browser access", () => {
 
       assert.equal(issued.length, 1);
       assert.equal(issued[0]?.threadId, threadId);
+      assert.deepEqual(Array.from(issued[0]?.capabilities ?? []), [
+        "computer",
+        "preview",
+        "currentTodo",
+      ]);
+    }).pipe(Effect.provide(NodeServices.layer)),
+  );
+
+  it.effect("withholds current TODO capability from non-Codex providers", () =>
+    Effect.gen(function* () {
+      const issued = yield* startSessionWith(
+        true,
+        asThreadId("thread-claude-mcp"),
+        CLAUDE_AGENT_DRIVER,
+        claudeAgentInstanceId,
+      );
+
+      assert.equal(issued.length, 1);
       assert.deepEqual(Array.from(issued[0]?.capabilities ?? []), ["computer", "preview"]);
     }).pipe(Effect.provide(NodeServices.layer)),
   );

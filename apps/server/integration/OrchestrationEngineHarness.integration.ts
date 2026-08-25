@@ -87,6 +87,7 @@ import { GitWorkflowService } from "../src/git/GitWorkflowService.ts";
 import * as VcsProcess from "../src/vcs/VcsProcess.ts";
 import * as AgentAwarenessRelay from "../src/relay/AgentAwarenessRelay.ts";
 import * as PullRequestService from "../src/pullRequest/PullRequestService.ts";
+import * as CurrentTodoStore from "../src/currentTodo/CurrentTodoStore.ts";
 
 const decodeCodexSettings = Schema.decodeEffect(CodexSettings);
 
@@ -351,6 +352,7 @@ export const makeOrchestrationIntegrationHarness = (
     );
     const checkpointReactorLayer = CheckpointReactorLive.pipe(
       Layer.provideMerge(runtimeServicesLayer),
+      Layer.provideMerge(CurrentTodoStore.layer),
       Layer.provideMerge(
         Layer.mock(PullRequestService.PullRequestService)({
           refreshAfterTurn: Effect.void,

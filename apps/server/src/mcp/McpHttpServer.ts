@@ -41,6 +41,8 @@ import {
 } from "./toolkits/monitor/handlers.ts";
 import { MonitorImageToolkit, MonitorStandardToolkit } from "./toolkits/monitor/tools.ts";
 import { ThreadMonitorService } from "../threadMonitor/ThreadMonitorService.ts";
+import { CurrentTodoToolkitHandlersLive } from "./toolkits/currentTodo/handlers.ts";
+import { CurrentTodoToolkit } from "./toolkits/currentTodo/tools.ts";
 
 const MAX_VALIDATION_EXPECTATION_LENGTH = 128;
 const MAX_VALIDATION_FIELD_LENGTH = 128;
@@ -963,11 +965,16 @@ const MonitorToolkitRegistrationLive = Layer.mergeAll(
   MonitorImageToolkitRegistrationLive,
 );
 
+const CurrentTodoToolkitRegistrationLive = McpServer.toolkit(CurrentTodoToolkit).pipe(
+  Layer.provide(CurrentTodoToolkitHandlersLive),
+);
+
 export const ToolkitRegistrationLive = Layer.mergeAll(
   PreviewToolkitRegistrationLive,
   ComputerToolkitRegistrationLive,
   AgentDesktopToolkitRegistrationLive,
   MonitorToolkitRegistrationLive,
+  CurrentTodoToolkitRegistrationLive,
 );
 
 const McpTransportLive = McpServer.layerHttp({

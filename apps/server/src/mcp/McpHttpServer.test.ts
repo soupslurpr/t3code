@@ -15,6 +15,7 @@ import {
 import * as Effect from "effect/Effect";
 import * as Fiber from "effect/Fiber";
 import * as Layer from "effect/Layer";
+import * as Sink from "effect/Sink";
 import * as Stream from "effect/Stream";
 import * as TestClock from "effect/testing/TestClock";
 import { McpProtocol, McpSchema, McpServer } from "effect/unstable/ai";
@@ -29,6 +30,10 @@ import * as ComputerAutomationRouter from "../computer/ComputerAutomationRouter.
 import * as AgentDesktopManager from "../agentDesktop/AgentDesktopManager.ts";
 import * as AgentDesktopTransfer from "../agentDesktop/AgentDesktopTransferService.ts";
 import * as UserDesktops from "../persistence/UserDesktops.ts";
+import * as CurrentTodoStore from "../currentTodo/CurrentTodoStore.ts";
+import * as ServerConfig from "../config.ts";
+import { CurrentTodoToolkitHandlersLive } from "./toolkits/currentTodo/handlers.ts";
+import { CurrentTodoToolkit } from "./toolkits/currentTodo/tools.ts";
 
 const environmentId = EnvironmentId.make("environment-mcp-test");
 const threadId = ThreadId.make("thread-mcp-test");
@@ -41,7 +46,7 @@ const invocation = {
   controllerId: "controller-mcp-test",
   providerSessionId: "provider-session-mcp-test",
   providerInstanceId: ProviderInstanceId.make("codex"),
-  capabilities: new Set(["preview", "computer"] as const),
+  capabilities: new Set(["preview", "computer", "currentTodo"] as const),
   issuedAt: 1,
 };
 const client = McpSchema.McpServerClient.of({
@@ -246,12 +251,20 @@ const ComputerAutomationRouterTestLayer = ComputerAutomationRouter.layer.pipe(
 const AgentDesktopTransferTestLayer = Layer.mock(AgentDesktopTransfer.AgentDesktopTransferService)(
   {},
 );
+const CurrentTodoStoreTestLayer = CurrentTodoStore.layer.pipe(
+  Layer.provide(ServerConfig.layerTest(process.cwd(), { prefix: "t3-mcp-current-todo-test-" })),
+  Layer.provide(NodeServices.layer),
+);
+const CurrentTodoToolkitTestLayer = CurrentTodoToolkitHandlersLive.pipe(
+  Layer.provideMerge(CurrentTodoStoreTestLayer),
+);
 
 const TestLayer = McpHttpServer.ToolkitRegistrationLive.pipe(
   Layer.provide(MonitorTestLayer),
   Layer.provide(AgentDesktopTransferTestLayer),
   Layer.provide(AgentDesktopManagerTestLayer),
   Layer.provide(ComputerAutomationRouterTestLayer),
+  Layer.provide(CurrentTodoStoreTestLayer),
   Layer.provideMerge(ComputerObservationStore.layer),
   Layer.provideMerge(McpServer.McpServer.layer),
   Layer.provideMerge(BrokerTestLayer),
@@ -719,6 +732,71 @@ it.effect("denies preview access without removing computer tools", () =>
   }).pipe(Effect.provide(TestLayer)),
 );
 
+it.effect("reads and atomically replaces the authenticated thread's current TODO", () =>
+  Effect.gen(function* () {
+    const server = yield* McpServer.McpServer;
+    const callTool = (request: Parameters<typeof server.callTool>[0]) =>
+      server
+        .callTool(request)
+        .pipe(
+          Effect.provideService(McpInvocationContext.McpInvocationContext, invocation),
+          Effect.provideService(McpSchema.McpServerClient, client),
+        );
+
+    const absent = yield* callTool({ name: "current_todo_read", arguments: {} });
+    expect(absent.isError).toBe(false);
+    expect(absent.structuredContent).toEqual({ exists: false, content: null });
+
+    const content = "# Current status\n\nWorking on the MCP integration.\n";
+    const written = yield* callTool({
+      name: "current_todo_write",
+      arguments: { content },
+    });
+    expect(written).toEqual(
+      expect.objectContaining({ isError: false, structuredContent: { written: true } }),
+    );
+
+    const present = yield* callTool({ name: "current_todo_read", arguments: {} });
+    expect(present.isError).toBe(false);
+    expect(present.structuredContent).toEqual({ exists: true, content });
+  }).pipe(Effect.provide(TestLayer)),
+);
+
+it.effect("encodes the current TODO write handler result", () =>
+  Effect.gen(function* () {
+    const built = yield* CurrentTodoToolkit;
+    const result = yield* built
+      .handle("current_todo_write", { content: "milestone" })
+      .pipe(Stream.unwrap, Stream.run(Sink.last()), Effect.flatMap(Effect.fromOption));
+
+    expect(result.encodedResult).toEqual({ written: true });
+  }).pipe(
+    Effect.provideService(McpInvocationContext.McpInvocationContext, invocation),
+    Effect.provide(CurrentTodoToolkitTestLayer),
+  ),
+);
+
+it.effect("denies current TODO access to credentials without the Codex capability", () =>
+  Effect.gen(function* () {
+    const server = yield* McpServer.McpServer;
+    const nonCodexInvocation = {
+      ...invocation,
+      capabilities: new Set(["computer"] as const),
+    };
+    const result = yield* server
+      .callTool({ name: "current_todo_read", arguments: {} })
+      .pipe(
+        Effect.provideService(McpInvocationContext.McpInvocationContext, nonCodexInvocation),
+        Effect.provideService(McpSchema.McpServerClient, client),
+      );
+
+    expect(result.isError).toBe(true);
+    expect(result.content).toEqual([
+      { type: "text", text: "MCP credential does not grant the current TODO capability." },
+    ]);
+  }).pipe(Effect.provide(TestLayer)),
+);
+
 it.effect("terminates HTTP MCP sessions with DELETE", () =>
   Effect.scoped(
     Effect.gen(function* () {
@@ -868,6 +946,21 @@ it.effect("registers annotated tools and preserves authenticated request context
       expect(computerActTool?.tool.annotations?.destructiveHint).toBe(true);
       expect(computerActTool?.tool.annotations?.openWorldHint).toBe(true);
       expect(computerActTool?.tool.description).toContain("Batch predictable actions");
+
+      const currentTodoReadTool = server.tools.find(
+        ({ tool }) => tool.name === "current_todo_read",
+      );
+      expect(currentTodoReadTool?.tool.annotations?.readOnlyHint).toBe(true);
+      expect(currentTodoReadTool?.tool.annotations?.destructiveHint).toBe(false);
+      expect(currentTodoReadTool?.tool.annotations?.openWorldHint).toBe(false);
+
+      const currentTodoWriteTool = server.tools.find(
+        ({ tool }) => tool.name === "current_todo_write",
+      );
+      expect(currentTodoWriteTool?.tool.annotations?.readOnlyHint).toBe(false);
+      expect(currentTodoWriteTool?.tool.annotations?.destructiveHint).toBe(false);
+      expect(currentTodoWriteTool?.tool.annotations?.idempotentHint).toBe(true);
+      expect(currentTodoWriteTool?.tool.annotations?.openWorldHint).toBe(false);
 
       const routedBeforeMissingTargets = routedRequests.length;
       for (const request of [

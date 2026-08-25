@@ -7,7 +7,8 @@ import {
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
 
-export type McpCapability = "preview" | "computer";
+export type McpCapability = "preview" | "computer" | "currentTodo";
+type AutomationMcpCapability = Exclude<McpCapability, "currentTodo">;
 
 export interface McpInvocationScope {
   readonly environmentId: EnvironmentId;
@@ -26,7 +27,7 @@ export class McpInvocationContext extends Context.Service<
 >()("t3/mcp/McpInvocationContext") {}
 
 export const requireMcpCapability = Effect.fn("mcp.requireCapability")(function* (
-  capability: McpCapability,
+  capability: AutomationMcpCapability,
 ) {
   const invocation = yield* McpInvocationContext;
   if (!invocation.capabilities.has(capability)) {

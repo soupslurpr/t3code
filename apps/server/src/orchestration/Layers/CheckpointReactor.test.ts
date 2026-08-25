@@ -67,6 +67,7 @@ import { ServerConfig } from "../../config.ts";
 import * as WorkspaceEntries from "../../workspace/WorkspaceEntries.ts";
 import * as WorkspacePaths from "../../workspace/WorkspacePaths.ts";
 import { PullRequestService } from "../../pullRequest/PullRequestService.ts";
+import * as CurrentTodoStore from "../../currentTodo/CurrentTodoStore.ts";
 
 const asProjectId = (value: string): ProjectId => ProjectId.make(value);
 const asTurnId = (value: string): TurnId => TurnId.make(value);
@@ -401,6 +402,17 @@ describe("CheckpointReactor", () => {
         }).pipe(Effect.as(null)),
       streamStatus: () => Stream.empty,
     });
+    let currentTodoStore!: CurrentTodoStore.CurrentTodoStoreShape;
+    const currentTodoStoreLayer = Layer.effect(
+      CurrentTodoStore.CurrentTodoStore,
+      CurrentTodoStore.CurrentTodoStore.pipe(
+        Effect.tap((service) =>
+          Effect.sync(() => {
+            currentTodoStore = service;
+          }),
+        ),
+      ),
+    ).pipe(Layer.provide(CurrentTodoStore.layer));
 
     const layer = CheckpointReactorLive.pipe(
       Layer.provideMerge(orchestrationLayer),
@@ -417,6 +429,7 @@ describe("CheckpointReactor", () => {
         ),
       ),
       Layer.provideMerge(WorkspacePaths.layer),
+      Layer.provideMerge(currentTodoStoreLayer),
       Layer.provideMerge(VcsProcess.layer),
       Layer.provideMerge(ServerConfigLayer),
       Layer.provideMerge(NodeServices.layer),
@@ -505,6 +518,10 @@ describe("CheckpointReactor", () => {
 
     if (options?.seedFilesystemCheckpoints ?? true) {
       await runtime.runPromise(
+        currentTodoStore.write(ThreadId.make("thread-1"), "tracker at turn 0"),
+      );
+      await runtime.runPromise(currentTodoStore.captureCheckpoint(ThreadId.make("thread-1"), 0));
+      await runtime.runPromise(
         checkpointStore.captureCheckpoint({
           cwd,
           checkpointRef: checkpointRefForThreadTurn(ThreadId.make("thread-1"), 0),
@@ -512,12 +529,20 @@ describe("CheckpointReactor", () => {
       );
       NodeFS.writeFileSync(NodePath.join(cwd, "README.md"), "v2\n", "utf8");
       await runtime.runPromise(
+        currentTodoStore.write(ThreadId.make("thread-1"), "tracker at turn 1"),
+      );
+      await runtime.runPromise(currentTodoStore.captureCheckpoint(ThreadId.make("thread-1"), 1));
+      await runtime.runPromise(
         checkpointStore.captureCheckpoint({
           cwd,
           checkpointRef: checkpointRefForThreadTurn(ThreadId.make("thread-1"), 1),
         }),
       );
       NodeFS.writeFileSync(NodePath.join(cwd, "README.md"), "v3\n", "utf8");
+      await runtime.runPromise(
+        currentTodoStore.write(ThreadId.make("thread-1"), "tracker at turn 2"),
+      );
+      await runtime.runPromise(currentTodoStore.captureCheckpoint(ThreadId.make("thread-1"), 2));
       await runtime.runPromise(
         checkpointStore.captureCheckpoint({
           cwd,
@@ -530,6 +555,7 @@ describe("CheckpointReactor", () => {
       engine,
       readModel: () => Effect.runPromise(snapshotQuery.getSnapshot()),
       provider,
+      currentTodoStore,
       cwd,
       drain,
       nextReceipt: Queue.take(receipts),
@@ -1756,6 +1782,14 @@ describe("CheckpointReactor", () => {
       numTurns: 1,
     });
     expect(NodeFS.readFileSync(NodePath.join(harness.cwd, "README.md"), "utf8")).toBe("v2\n");
+    expect(
+      await runtime!.runPromise(harness.currentTodoStore.read(ThreadId.make("thread-1"))),
+    ).toEqual({ exists: true, content: "tracker at turn 1" });
+    expect(
+      await runtime!.runPromiseExit(
+        harness.currentTodoStore.readCheckpoint(ThreadId.make("thread-1"), 2),
+      ),
+    ).toMatchObject({ _tag: "Failure" });
     expect(
       gitRefExists(harness.cwd, checkpointRefForThreadTurn(ThreadId.make("thread-1"), 2)),
     ).toBe(false);

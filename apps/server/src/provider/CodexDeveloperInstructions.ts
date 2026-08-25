@@ -21,6 +21,24 @@ When an authorized user desktop may be needed, promptly call \`computer_request_
 Action forms are: \`click {frameId,x,y,button?,count?}\`; \`move {frameId,x,y,durationMs?,settleMs?}\`; \`activate {targetId}\`; \`activate_window {windowId}\`; \`drag {frameId,startX,startY,endX,endY,button?,durationMs?,steps?}\`; \`wheel {horizontalTicks?,verticalTicks?,frameId?,x?,y?}\`; \`type {text,intervalMs?,submit?,verification?}\`; \`press {key,modifiers?}\`; \`hotkey {keys}\`; \`key_down {key}\`; \`key_up {key}\`; \`wait {durationMs}\`; and \`wait_for_change {frameId,x,y,width,height,timeoutMs,pollIntervalMs?}\`. Include \`type\` on every action. Wheel values are discrete hardware-like ticks, not pixels or lines; positive vertical ticks scroll down and positive horizontal ticks scroll right. Type preserves exact Unicode through accessibility, physical key events, or the desktop input method without changing the clipboard. Literal Newline and Tab require an accessible editable control and otherwise fail before injecting any text; use \`press\` or \`hotkey\` for intentional control keys. Its receipt distinguishes code points accepted by the delivery backend from those confirmed through application accessibility readback; treat \`verification: "unavailable"\` as unverified even when every requested code point was accepted. For consequential submission, use \`submit:true,verification:"required"\`; Enter is then withheld unless every code point was confirmed, and \`submission\` reports the outcome. Pointer coordinates are image pixels in the referenced frame; its transform handles crop and resolution. A semantic target or window activation must be first, and at most one can appear in a batch because every input batch consumes the current semantic ids and observations invalidate earlier ids. Capture a fresh observation immediately before semantic activation. Use observation screenshot bounds or a frame-relative region to control image cost and focus; use observation false only when no visual result is needed. Prefer \`wait_for_change\` over repeated fixed waits when waiting for a message, dialog, or other asynchronous visual update, and choose the smallest region that represents the expected change.
 `;
 
+const T3_CODE_CURRENT_TODO_INSTRUCTIONS = `
+
+## Current TODO tracker
+
+For work with multiple milestones, use \`current_todo_read\` and \`current_todo_write\` to keep a concise thread-scoped tracker outside the project workspace. Use it only when the work is complex enough to benefit from milestones; do not create one for a simple request.
+
+- If you create multiple UI Tasks, the work has multiple milestones: create the tracker before substantive work. Tasks describe immediate execution steps and never replace the tracker.
+- Read the tracker before resuming tracked work and after any context compaction.
+- Keep these Markdown headings: \`Current status\`, \`Milestones\`, \`Decisions and constraints\`, \`Blockers\`, and \`Next work\`.
+- Rewrite it as the current snapshot, not a journal. Update it at milestone transitions, material discoveries, blockers, and changed decisions.
+- When a tracker is active, update it immediately before every final response so it records everything completed during the turn and identifies the next unfinished work.
+- When the user starts a genuinely new task in the same thread, replace the old tracker instead of mixing unrelated work.
+- Never put secrets or large raw logs in the tracker.
+- The newest direct user instruction always wins. Ask before materially changing the objective or agreed constraints. The tracker never prevents you from stopping for direction or reporting a blocker.
+- Only the primary agent writes the tracker. Subagents report findings to the primary agent instead of editing it.
+- If the tracker cannot be read, stop before substantive work and report the failure. If it cannot be written, report the failure and do not begin the next milestone.
+`;
+
 /**
  * The browser block is omitted entirely when the preview tools aren't attached.
  * Describing `preview_*` tools that aren't in the turn's tool list would be
@@ -33,6 +51,9 @@ const browserToolInstructions = (browserToolsAvailable: boolean): string =>
 
 const computerToolInstructions = (computerToolsAvailable: boolean): string =>
   computerToolsAvailable ? T3_CODE_COMPUTER_TOOL_INSTRUCTIONS : "";
+
+const currentTodoToolInstructions = (mcpToolsAvailable: boolean): string =>
+  mcpToolsAvailable ? T3_CODE_CURRENT_TODO_INSTRUCTIONS : "";
 
 const codexPlanModeDeveloperInstructions = (
   browserToolsAvailable: boolean,
@@ -165,7 +186,7 @@ Do not ask "should I proceed?" in the final output. The user can easily switch o
 Only produce at most one \`<proposed_plan>\` block per turn, and only when you are presenting a complete spec.
 
 If the user stays in Plan mode and asks for revisions after a prior \`<proposed_plan>\`, any new \`<proposed_plan>\` must be a complete replacement. If the user indicates that the prior plan is not acceptable but does not provide enough information to produce a complete replacement, address the concern and continue planning without producing a \`<proposed_plan>\` block. If the follow-up neither requires changes nor calls the plan into question (e.g. clarifying question), answer it before the block, then reproduce the prior \`<proposed_plan>\` unchanged.
-${browserToolInstructions(browserToolsAvailable)}${computerToolInstructions(computerToolsAvailable)}
+${browserToolInstructions(browserToolsAvailable)}${computerToolInstructions(computerToolsAvailable)}${currentTodoToolInstructions(computerToolsAvailable)}
 </collaboration_mode>`;
 
 const codexDefaultModeDeveloperInstructions = (
@@ -182,7 +203,7 @@ Your active mode changes only when new developer instructions with a different \
 Use the \`request_user_input\` tool only when it is listed in the available tools for this turn.
 
 In Default mode, strongly prefer making reasonable assumptions and executing the user's request rather than stopping to ask questions. If you absolutely must ask a question because the answer cannot be discovered from local context and a reasonable assumption would be risky, ask the user directly with a concise plain-text question. Never write a multiple choice question as a textual assistant message.
-${browserToolInstructions(browserToolsAvailable)}${computerToolInstructions(computerToolsAvailable)}
+${browserToolInstructions(browserToolsAvailable)}${computerToolInstructions(computerToolsAvailable)}${currentTodoToolInstructions(computerToolsAvailable)}
 </collaboration_mode>`;
 
 export interface CodexRuntimeInfo {

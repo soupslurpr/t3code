@@ -16,6 +16,7 @@ import * as Ref from "effect/Ref";
 import * as Stream from "effect/Stream";
 import { describe, expect, it } from "vite-plus/test";
 
+import * as CurrentTodoStore from "../../currentTodo/CurrentTodoStore.ts";
 import {
   ProviderService,
   type ProviderServiceShape,
@@ -109,6 +110,9 @@ describe("ThreadDeletionReactor drain", () => {
         close: () => Effect.void,
       } as unknown as TerminalManager.TerminalManager["Service"];
       const layer = ThreadDeletionReactorLive.pipe(
+        Layer.provide(
+          Layer.mock(CurrentTodoStore.CurrentTodoStore)({ deleteThread: () => Effect.void }),
+        ),
         Layer.provide(Layer.succeed(ProviderService, providerService)),
         Layer.provide(Layer.succeed(TerminalManager.TerminalManager, terminalManager)),
         Layer.provide(Layer.succeed(OrchestrationEngineService, engine)),

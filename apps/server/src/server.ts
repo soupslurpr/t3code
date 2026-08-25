@@ -81,6 +81,7 @@ import * as ThreadSettlementReactor from "./orchestration/ThreadSettlementReacto
 import * as ThreadMonitor from "./threadMonitor/ThreadMonitor.ts";
 import * as ThreadMonitorComputer from "./threadMonitor/ThreadMonitorComputer.ts";
 import * as ComputerObservationStore from "./computer/ComputerObservationStore.ts";
+import * as CurrentTodoStore from "./currentTodo/CurrentTodoStore.ts";
 import * as AgentAwarenessRelay from "./relay/AgentAwarenessRelay.ts";
 import { hasCloudPublicConfig } from "./cloud/publicConfig.ts";
 import { ProviderRegistryLive } from "./provider/Layers/ProviderRegistry.ts";
@@ -489,7 +490,9 @@ const RuntimeCoreProviderDependenciesLive = ReactorLayerLive.pipe(
   Layer.provideMerge(AntigravityInstallationRefreshLive),
   Layer.provideMerge(ProviderAuthServiceLive),
   // Core Services
-  Layer.provideMerge(Layer.mergeAll(ComputerObservationStoreLive, ServerSettingsLayerLive)),
+  Layer.provideMerge(
+    Layer.mergeAll(ComputerObservationStoreLive, ServerSettingsLayerLive, CurrentTodoStore.layer),
+  ),
   Layer.provideMerge(AgentDesktopServicesLive),
   Layer.provideMerge(CheckpointingLayerLive),
   Layer.provideMerge(
