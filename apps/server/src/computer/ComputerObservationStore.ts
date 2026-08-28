@@ -6,6 +6,8 @@ import {
   type ComputerObservation,
   ComputerObservationId,
   type ComputerObservationImage,
+  type ComputerObservationList,
+  type ComputerObservationSummary,
   type ComputerObservationUpdate,
   type EnvironmentId,
   type ModelSelection,
@@ -23,7 +25,7 @@ import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as SynchronizedRef from "effect/SynchronizedRef";
 
-const MAX_RETAINED_DESKTOPS = 32;
+const MAX_RETAINED_OBSERVATIONS = 128;
 const MAX_RETAINED_IMAGE_BYTES = 128 * 1_024 * 1_024;
 const RETENTION_MS = 30 * 60 * 1_000;
 
@@ -34,6 +36,7 @@ type ControllerObservationSource = Extract<
 
 interface RetainedObservation {
   readonly environmentId: EnvironmentId;
+  readonly retentionKey: string;
   readonly retainedAtMs: number;
   readonly imageBytes: number;
   readonly observation: ComputerObservation;
@@ -86,6 +89,15 @@ export interface ComputerObservationStoreShape {
     readonly threadId: ThreadId;
     readonly desktopId: string;
     readonly afterId?: string;
+  }) => Effect.Effect<ComputerObservationUpdate>;
+  readonly list: (input: {
+    readonly environmentId: EnvironmentId;
+    readonly desktopId: string;
+  }) => Effect.Effect<ComputerObservationList>;
+  readonly readById: (input: {
+    readonly environmentId: EnvironmentId;
+    readonly desktopId: string;
+    readonly observationId: string;
   }) => Effect.Effect<ComputerObservationUpdate>;
 }
 
@@ -194,7 +206,7 @@ function pruneObservations(
   );
   while (
     retained.size > 1 &&
-    (retained.size > MAX_RETAINED_DESKTOPS || imageBytes > MAX_RETAINED_IMAGE_BYTES)
+    (retained.size > MAX_RETAINED_OBSERVATIONS || imageBytes > MAX_RETAINED_IMAGE_BYTES)
   ) {
     const oldest = retained.entries().next().value;
     if (oldest === undefined) break;
@@ -202,6 +214,33 @@ function pruneObservations(
     retained.delete(oldest[0]);
   }
   return retained;
+}
+
+/** Builds the stable replacement key for one observation recipient and thread. */
+function observationRetentionKey(
+  observation: Pick<ComputerObservation, "desktopId" | "threadId" | "recipient">,
+): string {
+  const recipient = observation.recipient;
+  const recipientKey =
+    recipient.kind === "controller"
+      ? `controller:${recipient.instanceId}`
+      : `watch:${recipient.monitorId}`;
+  return `${observation.desktopId}\u0000${observation.threadId}\u0000${recipientKey}`;
+}
+
+/** Removes image bytes from one retained observation list entry. */
+function observationSummary(observation: ComputerObservation): ComputerObservationSummary {
+  return {
+    id: observation.id,
+    desktopId: observation.desktopId,
+    threadId: observation.threadId,
+    observedAt: observation.observedAt,
+    source: observation.source,
+    recipient: observation.recipient,
+    ...(observation.label === undefined ? {} : { label: observation.label }),
+    imageCount: observation.images.length,
+    hasAccessibility: observation.accessibility !== undefined,
+  };
 }
 
 /** Creates the bounded in-memory observation store. */
@@ -232,10 +271,16 @@ export const make = Effect.gen(function* () {
         images: input.images,
         ...(input.accessibility === undefined ? {} : { accessibility: input.accessibility }),
       };
+      const retentionKey = observationRetentionKey(observation);
       const observations = new Map(current.observations);
-      observations.delete(input.desktopId);
-      observations.set(input.desktopId, {
+      for (const [id, entry] of observations) {
+        if (entry.environmentId === input.environmentId && entry.retentionKey === retentionKey) {
+          observations.delete(id);
+        }
+      }
+      observations.set(observation.id, {
         environmentId: input.environmentId,
+        retentionKey,
         retainedAtMs: nowMs,
         imageBytes: observationImageBytes(observation),
         observation,
@@ -371,11 +416,14 @@ export const make = Effect.gen(function* () {
       const nowMs = yield* Clock.currentTimeMillis;
       return yield* SynchronizedRef.modify(state, (current) => {
         const observations = pruneObservations(current.observations, nowMs);
-        const entry = observations.get(input.desktopId);
-        const matchesOwner =
-          entry?.environmentId === input.environmentId &&
-          entry.observation.threadId === input.threadId;
-        const observation = matchesOwner ? entry.observation : undefined;
+        const observation = Array.from(observations.values())
+          .toReversed()
+          .find(
+            (entry) =>
+              entry.environmentId === input.environmentId &&
+              entry.observation.desktopId === input.desktopId &&
+              entry.observation.threadId === input.threadId,
+          )?.observation;
         const update: ComputerObservationUpdate =
           observation === undefined
             ? { latestId: null }
@@ -386,12 +434,52 @@ export const make = Effect.gen(function* () {
       });
     });
 
+  const list: ComputerObservationStoreShape["list"] = (input) =>
+    Effect.gen(function* () {
+      const nowMs = yield* Clock.currentTimeMillis;
+      return yield* SynchronizedRef.modify(state, (current) => {
+        const observations = pruneObservations(current.observations, nowMs);
+        const result: ComputerObservationList = {
+          observations: Array.from(observations.values())
+            .filter(
+              (entry) =>
+                entry.environmentId === input.environmentId &&
+                entry.observation.desktopId === input.desktopId,
+            )
+            .toReversed()
+            .map((entry) => observationSummary(entry.observation)),
+        };
+        return [result, { ...current, observations }] as const;
+      });
+    });
+
+  const readById: ComputerObservationStoreShape["readById"] = (input) =>
+    Effect.gen(function* () {
+      const nowMs = yield* Clock.currentTimeMillis;
+      return yield* SynchronizedRef.modify(state, (current) => {
+        const observations = pruneObservations(current.observations, nowMs);
+        const entry = observations.get(input.observationId);
+        const observation =
+          entry?.environmentId === input.environmentId &&
+          entry.observation.desktopId === input.desktopId
+            ? entry.observation
+            : undefined;
+        const result: ComputerObservationUpdate =
+          observation === undefined
+            ? { latestId: null }
+            : { latestId: observation.id, observation };
+        return [result, { ...current, observations }] as const;
+      });
+    });
+
   return ComputerObservationStore.of({
     publishController,
     publishWatchRevision,
     publishWatchEvaluation,
     publishWatchInspection,
     read,
+    list,
+    readById,
   });
 });
 
