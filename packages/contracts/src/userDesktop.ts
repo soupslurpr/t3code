@@ -51,6 +51,16 @@ export const UserDesktopView = Schema.Struct({
 });
 export type UserDesktopView = typeof UserDesktopView.Type;
 
+/** Identifies the User desktop that owns the current T3 environment when known. */
+export const UserDesktopEnvironmentHost = Schema.Union([
+  Schema.Struct({
+    status: Schema.Literal("identified"),
+    desktop: UserDesktopTarget,
+  }),
+  Schema.Struct({ status: Schema.Literal("unidentified") }),
+]);
+export type UserDesktopEnvironmentHost = typeof UserDesktopEnvironmentHost.Type;
+
 /** Names one durable, metadata-only User desktop access transition. */
 export const UserDesktopAuditAction = Schema.Literals([
   "view-granted",
@@ -88,6 +98,8 @@ export type UserDesktopAuditLog = typeof UserDesktopAuditLog.Type;
 export const UserDesktopList = Schema.Struct({
   desktops: Schema.Array(UserDesktopView).check(Schema.isMaxLength(MAX_USER_DESKTOPS)),
   incompatibleClientCount: Schema.Int.check(Schema.isGreaterThanOrEqualTo(0)),
+  /** Missing only when decoding a response from an older environment server. */
+  environmentHost: Schema.optionalKey(UserDesktopEnvironmentHost),
 });
 export type UserDesktopList = typeof UserDesktopList.Type;
 

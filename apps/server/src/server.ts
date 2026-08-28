@@ -199,6 +199,12 @@ const HTTP_ROUTER_CONFIG = {
 const HTTP_PREEMPTIVE_SHUTDOWN_GRACE_MS = 0;
 const layerPersistence = Layer.empty.pipe(Layer.provideMerge(SqlitePersistence.layerConfig));
 const layerPreviewAutomationBroker = PreviewAutomationBroker.layer.pipe(
+  Layer.provide(
+    Layer.effect(
+      PreviewAutomationBroker.EnvironmentUserDesktopHost,
+      Effect.map(ServerConfig.ServerConfig, (config) => config.environmentHost),
+    ),
+  ),
   Layer.provide(UserDesktops.layer),
   Layer.provide(layerPersistence),
 );
