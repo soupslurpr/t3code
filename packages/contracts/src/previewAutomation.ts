@@ -165,6 +165,7 @@ export const UserDesktopHumanRequest = Schema.Union([
   Schema.Struct({ operation: Schema.Literal("release"), ...UserDesktopHumanTarget }),
   Schema.Struct({ operation: Schema.Literal("end-all-access"), ...UserDesktopHumanTarget }),
   Schema.Struct({ operation: Schema.Literal("forget"), ...UserDesktopHumanTarget }),
+  Schema.Struct({ operation: Schema.Literal("audit"), ...UserDesktopHumanTarget }),
   Schema.Struct({ operation: Schema.Literal("observation-list"), ...UserDesktopHumanTarget }),
   Schema.Struct({
     operation: Schema.Literal("observation"),
