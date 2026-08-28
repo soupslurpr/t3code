@@ -217,10 +217,10 @@ const MonitorTestLayer = Layer.succeed(
       });
     },
     updateComputer: () => Effect.die("unused"),
-    status: () => Effect.die("unused"),
+    status: () => Effect.succeed({ monitors: [] }),
     signal: () => Effect.die("unused"),
-    cancel: () => Effect.die("unused"),
-    checkNow: () => Effect.die("unused"),
+    cancel: () => Effect.succeed({ monitors: [] }),
+    checkNow: () => Effect.succeed({ monitors: [] }),
   }),
 );
 const BrokerTestLayer = PreviewAutomationBroker.layer.pipe(
@@ -1162,6 +1162,67 @@ it.effect("denies preview access without removing computer tools", () =>
       { type: "text", text: "MCP credential does not grant the preview capability." },
     ]);
     expect(computer.isError).toBe(false);
+  }).pipe(Effect.provide(TestLayer)),
+);
+
+it.effect("accepts advertised nullable optional monitor arguments over MCP", () =>
+  Effect.gen(function* () {
+    const server = yield* McpServer.McpServer;
+    for (const name of ["monitor_status", "monitor_cancel", "monitor_check_now"]) {
+      const result = yield* server
+        .callTool({
+          name,
+          arguments: {
+            monitorId: null,
+            ...(name === "monitor_status" ? { includeFinished: null } : {}),
+          },
+        })
+        .pipe(
+          Effect.provideService(McpInvocationContext.McpInvocationContext, invocation),
+          Effect.provideService(McpSchema.McpServerClient, client),
+        );
+      expect(result).toMatchObject({ isError: false, structuredContent: { monitors: [] } });
+    }
+  }).pipe(Effect.provide(TestLayer)),
+);
+
+it.effect("returns structured monitor parameter failures", () =>
+  Effect.gen(function* () {
+    const server = yield* McpServer.McpServer;
+    const callTool = (request: Parameters<typeof server.callTool>[0]) =>
+      server
+        .callTool(request)
+        .pipe(
+          Effect.provideService(McpInvocationContext.McpInvocationContext, invocation),
+          Effect.provideService(McpSchema.McpServerClient, client),
+        );
+
+    const status = yield* callTool({ name: "monitor_status", arguments: {} });
+    expect(status).toMatchObject({
+      isError: false,
+      structuredContent: { monitors: [] },
+    });
+
+    const invalidSignal = yield* callTool({
+      name: "monitor_signal",
+      arguments: { monitorId: "monitor-1", evidence: { exitCode: 0 } },
+    });
+    expect(invalidSignal.isError).toBe(true);
+    expect(invalidSignal.structuredContent).toMatchObject({
+      error: {
+        _tag: "ToolParameterValidationError",
+        operation: "monitor_signal",
+        field: "evidence",
+        phase: "validation",
+        expected: [expect.stringContaining("Expected string")],
+      },
+    });
+    expect(invalidSignal.content).toEqual([
+      {
+        type: "text",
+        text: expect.stringContaining('"field":"evidence"'),
+      },
+    ]);
   }).pipe(Effect.provide(TestLayer)),
 );
 

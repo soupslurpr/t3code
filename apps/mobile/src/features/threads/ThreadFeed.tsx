@@ -1805,9 +1805,6 @@ function MonitorSystemEventCard(props: {
                     Evidence: {monitor.observation.evidence}
                   </Text>
                 ) : null}
-                <Text selectable className="text-xs text-foreground-muted">
-                  Stored continuation: {monitor.continuation.prompt}
-                </Text>
               </View>
             ))
           ) : (

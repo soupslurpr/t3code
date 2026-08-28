@@ -74,6 +74,9 @@ export const ProviderSendTurnInput = Schema.Struct({
   input: Schema.optional(
     TrimmedNonEmptyString.check(Schema.isMaxLength(PROVIDER_SEND_TURN_MAX_INPUT_CHARS)),
   ),
+  /** Automated input uses a native tool-result channel where available.
+      Other adapters retain the explicitly attributed input text as their fallback. */
+  inputSource: Schema.optional(Schema.Literal("harness")),
   attachments: Schema.optional(
     Schema.Array(ChatAttachment).check(Schema.isMaxLength(PROVIDER_SEND_TURN_MAX_ATTACHMENTS)),
   ),

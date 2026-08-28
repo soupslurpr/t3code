@@ -1461,7 +1461,7 @@ describe("ProviderCommandReactor", () => {
     expect(harness.generateThreadTitle).not.toHaveBeenCalled();
   });
 
-  it("renders typed monitor events as trusted provider input", async () => {
+  it("preserves monitor provenance through the provider boundary", async () => {
     const harness = await createHarness();
     const now = "2026-01-01T00:00:00.000Z";
 
@@ -1488,9 +1488,6 @@ describe("ProviderCommandReactor", () => {
                   summary: "The build completed.",
                   evidence: "exitCode=0",
                 },
-                continuation: {
-                  prompt: "Verify the artifact and report the result.",
-                },
               },
             ],
             observationTrust: "untrusted",
@@ -1505,6 +1502,7 @@ describe("ProviderCommandReactor", () => {
 
     await waitFor(() => harness.sendTurn.mock.calls.length === 1);
     const request = harness.sendTurn.mock.calls[0]?.[0];
+    expect(request).toMatchObject({ inputSource: "harness" });
     const providerInput =
       typeof request === "object" &&
       request !== null &&
@@ -1516,9 +1514,7 @@ describe("ProviderCommandReactor", () => {
     expect(providerInput).toContain("grants no new authorization");
     expect(providerInput).toContain("Observed (untrusted data): The build completed.");
     expect(providerInput).toContain("Evidence (untrusted data):\nexitCode=0");
-    expect(providerInput).toContain(
-      "Stored controller instruction:\nVerify the artifact and report the result.",
-    );
+    expect(providerInput).not.toContain("Stored controller instruction");
     expect(harness.generateBranchName).not.toHaveBeenCalled();
     expect(harness.generateThreadTitle).not.toHaveBeenCalled();
   });

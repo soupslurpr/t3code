@@ -21,6 +21,7 @@ import {
   openCodexThread,
   readCodexThreadSnapshot,
   rollbackCodexThreadSnapshot,
+  supportsCodexToolOutput,
   toMcpElicitationResponse,
 } from "./CodexSessionRuntime.ts";
 const isCodexAppServerRequestError = Schema.is(CodexErrors.CodexAppServerRequestError);
@@ -67,6 +68,54 @@ function makeThreadOpenResponse(
 }
 
 describe("buildTurnStartParams", () => {
+  it.effect("sends monitor text as standalone tool output with Astra/max", () =>
+    Effect.gen(function* () {
+      const params = yield* buildTurnStartParams({
+        threadId: "provider-thread-1",
+        runtimeMode: "full-access",
+        model: DEFAULT_MODEL,
+        effort: "max",
+        inputSource: "harness",
+        prompt: "Automated T3 monitor continuation. Build finished: exitCode=0.",
+      });
+      NodeAssert.deepStrictEqual(params.input, []);
+      NodeAssert.deepStrictEqual(params.toolOutput, {
+        namespace: "t3_code",
+        name: "monitor",
+        output: "Automated T3 monitor continuation. Build finished: exitCode=0.",
+      });
+      NodeAssert.equal(params.model, DEFAULT_MODEL);
+      NodeAssert.equal(params.effort, "max");
+    }),
+  );
+
+  it.effect("keeps automated image evidence in the same tool output", () =>
+    Effect.gen(function* () {
+      const params = yield* buildTurnStartParams({
+        threadId: "provider-thread-1",
+        runtimeMode: "full-access",
+        model: DEFAULT_MODEL,
+        effort: "max",
+        inputSource: "harness",
+        prompt: "Observed build result",
+        attachments: [{ type: "image", url: "data:image/png;base64,abc" }],
+      });
+      NodeAssert.deepStrictEqual(params.input, []);
+      NodeAssert.deepStrictEqual(params.toolOutput?.output, [
+        { type: "input_text", text: "Observed build result" },
+        { type: "input_image", image_url: "data:image/png;base64,abc" },
+      ]);
+    }),
+  );
+
+  it("requires a Codex version whose protocol supports standalone tool output", () => {
+    NodeAssert.equal(supportsCodexToolOutput("t3code_desktop/0.150.1 (Linux)"), false);
+    NodeAssert.equal(supportsCodexToolOutput("unknown"), false);
+    NodeAssert.equal(supportsCodexToolOutput("t3code_desktop/0.151.0 (Linux)"), true);
+    NodeAssert.equal(supportsCodexToolOutput("t3code_desktop/0.154.0 (Linux)"), true);
+    NodeAssert.equal(supportsCodexToolOutput("t3code_desktop/1.0.0 (Linux)"), true);
+  });
+
   it("keeps invalid turn values only in the schema cause", () => {
     const secret = "codex-turn-input-secret-sentinel";
     const error = Effect.runSync(

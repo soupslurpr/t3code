@@ -837,7 +837,6 @@ describe("resolveMonitorSystemEventPresentation", () => {
               summary: "Build passed.",
               evidence: null,
             },
-            continuation: { prompt: "Report the result." },
           },
         ],
         observationTrust: "untrusted",

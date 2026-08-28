@@ -735,7 +735,6 @@ describe("applyThreadDetailEvent", () => {
               summary: "The monitor deadline was reached.",
               evidence: null,
             },
-            continuation: { prompt: "Inspect the build result." },
           },
         ],
         observationTrust: "untrusted" as const,

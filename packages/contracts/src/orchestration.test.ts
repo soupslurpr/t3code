@@ -511,7 +511,6 @@ it.effect("reserves system turn messages for internal orchestration", () =>
                 summary: "The build completed.",
                 evidence: "exitCode=0",
               },
-              continuation: { prompt: "Verify the artifact." },
             },
           ],
           observationTrust: "untrusted",
