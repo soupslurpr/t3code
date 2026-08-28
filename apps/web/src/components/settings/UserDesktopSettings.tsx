@@ -10,6 +10,9 @@ import type {
   ComputerObservationSummary,
   ComputerObservationUpdate,
   EnvironmentId,
+  UserDesktopAuditAction,
+  UserDesktopAuditEvent,
+  UserDesktopAuditLog,
   UserDesktopHumanInvokeInput,
   UserDesktopList,
   UserDesktopView,
@@ -64,6 +67,12 @@ interface UserDesktopEntry {
   readonly environmentId: EnvironmentId;
   readonly desktop: UserDesktopView;
   readonly status: ComputerAutomationStatus | null;
+  readonly audit: UserDesktopAuditLog["events"];
+}
+
+interface UserDesktopAuditEntry {
+  readonly environmentId: EnvironmentId;
+  readonly event: UserDesktopAuditEvent;
 }
 
 interface UserDesktopGroup {
@@ -74,6 +83,7 @@ interface UserDesktopGroup {
   readonly hasIdentityConflict: boolean;
   readonly t3Focused: boolean;
   readonly rememberedAccess: ComputerAutomationStatus["rememberedAccess"];
+  readonly audit: ReadonlyArray<UserDesktopAuditEntry>;
 }
 
 interface PendingRequest {
@@ -137,6 +147,15 @@ function groupEntries(entries: ReadonlyArray<UserDesktopEntry>): ReadonlyArray<U
       rememberedAccess: (["view", "control"] as const).filter((access) =>
         routes.some((entry) => entry.status?.rememberedAccess.includes(access) === true),
       ),
+      audit: routes
+        .flatMap((entry) =>
+          entry.audit.map((event) => ({ environmentId: entry.environmentId, event })),
+        )
+        .toSorted(
+          (left, right) =>
+            right.event.occurredAt.localeCompare(left.event.occurredAt) ||
+            right.event.sequence - left.event.sequence,
+        ),
     });
   }
   return groups;
@@ -159,6 +178,30 @@ function platformLabel(platform: UserDesktopView["platform"]): string {
   if (platform === "windows") return "Windows";
   if (platform === "linux") return "Linux";
   return "Unknown platform";
+}
+
+/** Formats one durable access transition for the User desktop card. */
+function auditActionLabel(action: UserDesktopAuditAction): string {
+  switch (action) {
+    case "view-granted":
+      return "Started viewing";
+    case "control-granted":
+      return "Took control";
+    case "control-released":
+      return "Released control";
+    case "control-returned-to-agent":
+      return "Returned control to agent";
+    case "access-released":
+      return "Ended own access";
+    case "all-access-ended":
+      return "Ended all access";
+    case "view-remembered":
+      return "Remembered view approval";
+    case "control-remembered":
+      return "Remembered control approval";
+    case "approval-forgotten":
+      return "Forgot approval";
+  }
 }
 
 /** Labels one retained model-facing observation for the Agent lens selector. */
@@ -214,10 +257,15 @@ export function UserDesktopSettings() {
     () => window.desktopBridge?.getUserDesktopHost?.().desktopId ?? null,
   );
   const refreshing = useRef<Promise<void> | null>(null);
+  const entriesRef = useRef(entries);
   const viewerRef = useRef(viewer);
   const viewerActionQueue = useRef<Promise<void>>(Promise.resolve());
   const confirmedTakeoverLeaseId = useRef<ComputerAutomationLeaseId | null>(null);
   const takeoverConfirmationRef = useRef<TakeoverConfirmation | null>(null);
+
+  useEffect(() => {
+    entriesRef.current = entries;
+  }, [entries]);
 
   useEffect(() => {
     viewerRef.current = viewer;
@@ -249,6 +297,19 @@ export function UserDesktopSettings() {
       const previous = active?.catch(() => undefined) ?? Promise.resolve();
       const next = previous.then(async () => {
         if (!silent) setLoading(true);
+        const includeAudit = !silent || afterCurrent;
+        const priorByEnvironment = new Map<EnvironmentId, Map<string, UserDesktopEntry>>();
+        for (const entry of entriesRef.current) {
+          const routes = priorByEnvironment.get(entry.environmentId);
+          if (routes === undefined) {
+            priorByEnvironment.set(
+              entry.environmentId,
+              new Map([[entry.desktop.desktop.desktopId, entry]]),
+            );
+          } else {
+            routes.set(entry.desktop.desktop.desktopId, entry);
+          }
+        }
         try {
           const results = await Promise.all(
             environments.map(async (environment) => {
@@ -258,23 +319,30 @@ export function UserDesktopSettings() {
                 });
                 const desktops = await Promise.all(
                   list.desktops.map(async (desktop): Promise<UserDesktopEntry> => {
-                    if (desktop.connectionState !== "online") {
-                      return { environmentId: environment.environmentId, desktop, status: null };
-                    }
-                    try {
-                      const status = await run<ComputerAutomationStatus>(
-                        environment.environmentId,
-                        {
+                    const prior = priorByEnvironment
+                      .get(environment.environmentId)
+                      ?.get(desktop.desktop.desktopId);
+                    const statusPromise: Promise<ComputerAutomationStatus | null> =
+                      desktop.connectionState === "online"
+                        ? run<ComputerAutomationStatus>(environment.environmentId, {
+                            request: {
+                              operation: "status",
+                              desktopId: desktop.desktop.desktopId,
+                            },
+                          }).catch(() => null)
+                        : Promise.resolve(null);
+                    const auditPromise: Promise<UserDesktopAuditLog["events"]> = includeAudit
+                      ? run<UserDesktopAuditLog>(environment.environmentId, {
                           request: {
-                            operation: "status",
+                            operation: "audit",
                             desktopId: desktop.desktop.desktopId,
                           },
-                        },
-                      );
-                      return { environmentId: environment.environmentId, desktop, status };
-                    } catch {
-                      return { environmentId: environment.environmentId, desktop, status: null };
-                    }
+                        })
+                          .then((audit) => audit.events)
+                          .catch(() => prior?.audit ?? [])
+                      : Promise.resolve(prior?.audit ?? []);
+                    const [status, audit] = await Promise.all([statusPromise, auditPromise]);
+                    return { environmentId: environment.environmentId, desktop, status, audit };
                   }),
                 );
                 return { environmentId: environment.environmentId, desktops, list } as const;
@@ -299,6 +367,7 @@ export function UserDesktopSettings() {
             ): result is { readonly environmentId: EnvironmentId; readonly cause: unknown } =>
               "cause" in result,
           );
+          entriesRef.current = nextEntries;
           setEntries(nextEntries);
           setIncompatibleClientCount(
             results.reduce(
@@ -1028,6 +1097,7 @@ export function UserDesktopSettings() {
                   ),
                 ),
               ];
+              const recentAudit = group.audit.slice(0, 3);
               return (
                 <Card key={group.desktopId}>
                   <CardHeader>
@@ -1126,6 +1196,42 @@ export function UserDesktopSettings() {
                       </span>
                       <span className="font-mono">{group.desktopId}</span>
                     </div>
+                    {recentAudit.length > 0 ? (
+                      <div
+                        aria-label={`Recent access for ${desktop.label}`}
+                        className="grid gap-2 rounded-lg border bg-muted/20 p-3"
+                      >
+                        <div className="flex items-center gap-2 text-xs font-medium">
+                          <HistoryIcon className="size-4 text-muted-foreground" />
+                          Recent access
+                        </div>
+                        {recentAudit.map(({ environmentId, event }) => {
+                          const actorLabel =
+                            event.actorLabel ?? (event.actorKind === "human" ? "Human" : "Agent");
+                          const threadLabel =
+                            event.threadId === undefined
+                              ? null
+                              : (threadById.get(event.threadId)?.title ?? event.threadId);
+                          const environmentLabel =
+                            environmentById.get(environmentId)?.label ?? "Unknown environment";
+                          return (
+                            <div
+                              key={`${environmentId}:${event.sequence}`}
+                              className="flex flex-wrap items-baseline gap-x-2 gap-y-0.5 text-xs"
+                            >
+                              <span className="font-medium">{auditActionLabel(event.action)}</span>
+                              {event.takeover ? <Badge variant="secondary">Takeover</Badge> : null}
+                              <span className="text-muted-foreground">
+                                {[actorLabel, threadLabel, environmentLabel]
+                                  .filter((label) => label !== null)
+                                  .join(" · ")}{" "}
+                                · {formatRelativeTimeLabel(event.occurredAt)}
+                              </span>
+                            </div>
+                          );
+                        })}
+                      </div>
+                    ) : null}
                     {group.hasIdentityConflict ? (
                       <Alert variant="error">
                         <AlertDescription>

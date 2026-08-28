@@ -101,6 +101,12 @@ describe("computer observation contracts", () => {
   it("decodes scoped User desktop observation reads", () => {
     expect(
       decodeUserDesktopHumanRequest({
+        operation: "audit",
+        desktopId: "user-desktop-1",
+      }),
+    ).toEqual({ operation: "audit", desktopId: "user-desktop-1" });
+    expect(
+      decodeUserDesktopHumanRequest({
         operation: "observation-list",
         desktopId: "user-desktop-1",
       }),

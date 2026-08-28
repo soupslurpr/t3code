@@ -2761,6 +2761,11 @@ const makeWsRpcLayer = (
                   observationId: input.request.observationId,
                 });
               }
+              if (input.request.operation === "audit") {
+                return yield* previewAutomationBroker
+                  .listUserDesktopAudit(input.request.desktopId)
+                  .pipe(Effect.mapError(inventoryFailure));
+              }
               const desktop = {
                 kind: "user" as const,
                 desktopId: input.request.desktopId,

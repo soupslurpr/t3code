@@ -204,6 +204,28 @@ describe("UserDesktopSettings", () => {
         }
         return { _tag: "Success", value: status };
       }
+      if (request.operation === "audit") {
+        return {
+          _tag: "Success",
+          value: {
+            events:
+              request.desktopId === "user-workstation"
+                ? [
+                    {
+                      sequence: 1,
+                      desktopId: "user-workstation",
+                      occurredAt: "2026-08-23T17:58:00.000Z",
+                      actorKind: "agent",
+                      action: "control-granted",
+                      threadId: "thread-1",
+                      actorLabel: "codex",
+                      takeover: true,
+                    },
+                  ]
+                : [],
+          },
+        };
+      }
       if (request.operation === "observation-list") {
         return { _tag: "Success", value: { observations: [] } };
       }
@@ -236,6 +258,10 @@ describe("UserDesktopSettings", () => {
     expect(text).toContain("T3 focused");
     expect(text).toContain("1 connected desktop client cannot identify a user desktop");
     expect(text).toContain("Computer use is unavailable for this desktop");
+    expect(text).toContain("Recent access");
+    expect(text).toContain("Took control");
+    expect(text).toContain("codex");
+    expect(text).toContain("Takeover");
 
     const rememberViewButtons = findElements(
       settings,

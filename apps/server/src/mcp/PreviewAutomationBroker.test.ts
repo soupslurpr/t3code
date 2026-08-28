@@ -149,6 +149,8 @@ it.effect("lists a live user desktop when inventory persistence is degraded", ()
         rename: () => Effect.void,
         remove: () => Effect.void,
         markActive: () => Effect.void,
+        recordAudit: () => Effect.void,
+        listAudit: () => Effect.succeed({ events: [] }),
       });
       const broker = yield* PreviewAutomationBroker.make.pipe(
         Effect.provide(
@@ -199,6 +201,8 @@ it.effect("prefers live host metadata over a stale persisted record", () =>
         rename: () => Effect.void,
         remove: () => Effect.void,
         markActive: () => Effect.void,
+        recordAudit: () => Effect.void,
+        listAudit: () => Effect.succeed({ events: [] }),
       });
       const broker = yield* PreviewAutomationBroker.make.pipe(
         Effect.provide(
@@ -792,6 +796,66 @@ it.effect("gives parallel logical controllers distinct computer identities", () 
         "agent",
         "human",
       ]);
+    }),
+  ),
+);
+
+it.effect("records successful user desktop access transitions without authorization data", () =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      const broker = yield* makeBroker;
+      const requests = requestsFrom(
+        yield* broker.connect(
+          makeHost({
+            supportedOperations: ["computerRequestControl", "computerRequestView"],
+          }),
+        ),
+      );
+      yield* Stream.runForEach(requests, (request) =>
+        broker.respond({
+          clientId: "client-1",
+          connectionId: request.connectionId,
+          requestId: request.requestId,
+          ok: true,
+          result: {},
+        }),
+      ).pipe(Effect.forkScoped);
+      yield* Effect.yieldNow;
+
+      const desktop = { kind: "user" as const, desktopId: "user-desktop-1" };
+      yield* broker.invoke({
+        scope,
+        operation: "computerRequestControl",
+        input: { desktop, takeoverLeaseId: "opaque-takeover-token" },
+      });
+      yield* broker.invoke({
+        scope: {
+          ...scope,
+          controllerId: "human-controller-1",
+          controllerKind: "human",
+          providerSessionId: "human-session-1",
+        },
+        operation: "computerRequestView",
+        input: { desktop, releaseControlToView: true },
+      });
+
+      const audit = yield* broker.listUserDesktopAudit(desktop.desktopId);
+      expect(audit.events).toHaveLength(2);
+      expect(audit.events[0]).toMatchObject({
+        actorKind: "human",
+        action: "control-released",
+        takeover: false,
+      });
+      expect(audit.events[0]).not.toHaveProperty("threadId");
+      expect(audit.events[0]).not.toHaveProperty("actorLabel");
+      expect(audit.events[1]).toMatchObject({
+        actorKind: "agent",
+        action: "control-granted",
+        threadId: scope.threadId,
+        actorLabel: scope.providerInstanceId,
+        takeover: true,
+      });
+      expect(audit.events.every((event) => !("takeoverLeaseId" in event))).toBe(true);
     }),
   ),
 );
