@@ -1,6 +1,6 @@
 import * as Schema from "effect/Schema";
 
-import { IsoDateTime, NonNegativeInt, TrimmedNonEmptyString } from "./baseSchemas.ts";
+import { IsoDateTime, NonNegativeInt, ThreadId, TrimmedNonEmptyString } from "./baseSchemas.ts";
 import {
   ComputerDesktopIdentity,
   ComputerDesktopSelector,
@@ -107,6 +107,12 @@ export type ComputerAutomationPermission = typeof ComputerAutomationPermission.T
 
 export const ComputerAutomationAccess = Schema.Literals(["view", "control"]);
 export type ComputerAutomationAccess = typeof ComputerAutomationAccess.Type;
+
+export const ComputerAutomationControllerKind = Schema.Literals(["agent", "human", "local"]);
+export type ComputerAutomationControllerKind = typeof ComputerAutomationControllerKind.Type;
+
+export const ComputerAutomationLeaseId = TrimmedNonEmptyString.check(Schema.isMaxLength(128));
+export type ComputerAutomationLeaseId = typeof ComputerAutomationLeaseId.Type;
 
 export const ComputerAutomationDisplayState = Schema.Literals([
   "active",
@@ -250,6 +256,24 @@ export const ComputerAutomationCaptureHealth = Schema.Struct({
 });
 export type ComputerAutomationCaptureHealth = typeof ComputerAutomationCaptureHealth.Type;
 
+export const ComputerAutomationLeaseController = Schema.Struct({
+  kind: ComputerAutomationControllerKind,
+  sameEnvironment: Schema.Boolean,
+  threadId: Schema.optional(ThreadId),
+});
+export type ComputerAutomationLeaseController = typeof ComputerAutomationLeaseController.Type;
+
+export const ComputerAutomationLeaseStatus = Schema.Struct({
+  access: Schema.Literals(["none", "view", "control"]),
+  controller: Schema.NullOr(ComputerAutomationLeaseController),
+  takeoverLeaseId: Schema.optional(ComputerAutomationLeaseId).annotate({
+    description:
+      "Opaque confirmation bound to the current conflicting lease. It is omitted when takeover needs no additional confirmation.",
+  }),
+  canReturnControl: Schema.Boolean,
+});
+export type ComputerAutomationLeaseStatus = typeof ComputerAutomationLeaseStatus.Type;
+
 /** Finds a bounded, public computer-use failure in an internal error chain. */
 export function findComputerAutomationFailureKind(
   cause: unknown,
@@ -291,6 +315,10 @@ export const ComputerAutomationStatus = Schema.Struct({
       "Per-display capture health. Absence means the connected desktop host does not report it.",
   }),
   cursor: Schema.NullOr(ComputerAutomationPoint),
+  lease: Schema.optional(ComputerAutomationLeaseStatus).annotate({
+    description:
+      "Logical view and control ownership reported by hosts that support human supervision.",
+  }),
   detail: Schema.optional(Schema.String),
 });
 export type ComputerAutomationStatus = typeof ComputerAutomationStatus.Type;
@@ -690,7 +718,21 @@ export const ComputerAutomationAccessInput = Schema.Struct({
         "Initial observation options. Defaults to a full-display screenshot and semantic targets; false returns status only.",
     }),
   ),
-});
+  takeoverLeaseId: Schema.optional(ComputerAutomationLeaseId).annotate({
+    description:
+      "Confirms takeover of the exact conflicting human or cross-environment lease reported by status.",
+  }),
+  returnControlToAgent: Schema.optional(Schema.Literal(true)).annotate({
+    description: "Returns control to the still-viewing agent displaced by this human controller.",
+  }),
+}).check(
+  Schema.makeFilter(
+    (input) =>
+      input.takeoverLeaseId === undefined ||
+      input.returnControlToAgent !== true ||
+      "takeoverLeaseId and returnControlToAgent cannot be combined.",
+  ),
+);
 export type ComputerAutomationAccessInput = typeof ComputerAutomationAccessInput.Type;
 
 export const ComputerAutomationDesktopLogicalTransform = Schema.Struct({

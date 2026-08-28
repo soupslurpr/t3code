@@ -2,8 +2,7 @@ import { Schema } from "effect";
 import { describe, expect, it } from "vite-plus/test";
 
 import { ComputerObservation, ComputerObservationList } from "./computerObservation.ts";
-import { AgentDesktopHumanRequest } from "./previewAutomation.ts";
-import { UserDesktopHumanRequest } from "./userDesktop.ts";
+import { AgentDesktopHumanRequest, UserDesktopHumanRequest } from "./previewAutomation.ts";
 
 const decodeObservation = Schema.decodeUnknownSync(ComputerObservation);
 const decodeObservationList = Schema.decodeUnknownSync(ComputerObservationList);
