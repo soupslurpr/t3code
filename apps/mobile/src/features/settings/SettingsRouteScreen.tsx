@@ -137,6 +137,7 @@ function LocalSettingsRouteScreen() {
             value={`${environmentCount}`}
             target="SettingsEnvironments"
           />
+          <SettingsRow icon="desktopcomputer" label="User Desktops" target="SettingsUserDesktops" />
         </SettingsSection>
 
         <GeneralSettingsSection />
@@ -485,6 +486,7 @@ function ConfiguredSettingsRouteScreen() {
             value={`${environmentCount}`}
             target="SettingsEnvironments"
           />
+          <SettingsRow icon="desktopcomputer" label="User Desktops" target="SettingsUserDesktops" />
           <SettingsSwitchRow
             icon="bell.badge"
             label="Device Notifications"

@@ -54,6 +54,8 @@ import { SettingsAppearanceRouteScreen } from "./features/settings/SettingsAppea
 import { SettingsClientStorageRouteScreen } from "./features/settings/SettingsClientStorageRouteScreen";
 import { SettingsAuthRouteScreen } from "./features/settings/SettingsAuthRouteScreen";
 import { SettingsEnvironmentsRouteScreen } from "./features/settings/SettingsEnvironmentsRouteScreen";
+import { SettingsUserDesktopsRouteScreen } from "./features/settings/SettingsUserDesktopsRouteScreen";
+import { UserDesktopSupervisionRouteScreen } from "./features/settings/UserDesktopSupervisionRouteScreen";
 import { SettingsLegalRouteScreen } from "./features/settings/SettingsLegalRouteScreen";
 import { SettingsProjectGroupingRouteScreen } from "./features/settings/SettingsProjectGroupingRouteScreen";
 import { UsageRouteScreen } from "./features/usage/UsageRouteScreen";
@@ -155,6 +157,13 @@ const SettingsContentStack = createNativeStackNavigator({
       linking: "environments",
       options: {
         title: "Environments",
+      },
+    }),
+    SettingsUserDesktops: createNativeStackScreen({
+      screen: SettingsUserDesktopsRouteScreen,
+      linking: "user-desktops",
+      options: {
+        title: "User Desktops",
       },
     }),
     SettingsEnvironmentNew: createNativeStackScreen({
@@ -568,6 +577,14 @@ export const RootStack = createNativeStackNavigator({
               sheetAllowedDetents: [0.7, 0.92],
               sheetGrabberVisible: true,
             }),
+      },
+    }),
+    UserDesktopSupervision: createNativeStackScreen({
+      screen: UserDesktopSupervisionRouteScreen,
+      options: {
+        ...SOLID_HEADER_OPTIONS,
+        presentation: "fullScreenModal",
+        title: "User Desktop",
       },
     }),
     SettingsLegal: createNativeStackScreen({
