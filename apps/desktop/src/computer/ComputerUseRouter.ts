@@ -130,18 +130,16 @@ export const make = Effect.gen(function* () {
     );
     return yield* remember
       ? access === "control"
-        ? user.rememberControl(context.controllerId)
-        : user.rememberView(context.controllerId)
+        ? user.rememberControl(context)
+        : user.rememberView(context)
       : access === "control"
-        ? user.requestControl(context.controllerId)
-        : user.requestView(context.controllerId);
+        ? user.requestControl(context, input)
+        : user.requestView(context);
   });
 
   const status: ComputerUseRouterShape["status"] = (context, input) => {
     const desktop = targetFromInput(input);
-    return requireLocalUserDesktop(desktop, "status").pipe(
-      Effect.andThen(user.status(context.controllerId)),
-    );
+    return requireLocalUserDesktop(desktop, "status").pipe(Effect.andThen(user.status(context)));
   };
 
   const requestView: ComputerUseRouterShape["requestView"] = (context, input) =>
@@ -158,50 +156,44 @@ export const make = Effect.gen(function* () {
 
   const forceRelease: ComputerUseRouterShape["forceRelease"] = (context, input) =>
     requireLocalUserDesktop(input.desktop, "release").pipe(
-      Effect.andThen(user.forceRelease(context.controllerId)),
+      Effect.andThen(user.forceRelease(context)),
     );
 
   const forceForget: ComputerUseRouterShape["forceForget"] = (context, input) =>
     requireLocalUserDesktop(input.desktop, "forget").pipe(
-      Effect.andThen(user.forceForget(context.controllerId)),
+      Effect.andThen(user.forceForget(context)),
     );
 
   const requestAvailability: ComputerUseRouterShape["requestAvailability"] = (context, input) =>
     requireLocalUserDesktop(input.desktop, "requestAvailability").pipe(
-      Effect.andThen(user.requestAvailability(context.controllerId)),
+      Effect.andThen(user.requestAvailability(context)),
     );
 
   const releaseAvailability: ComputerUseRouterShape["releaseAvailability"] = (context, input) =>
     requireLocalUserDesktop(input.desktop, "releaseAvailability").pipe(
-      Effect.andThen(user.releaseAvailability(context.controllerId)),
+      Effect.andThen(user.releaseAvailability(context)),
     );
 
   const snapshot: ComputerUseRouterShape["snapshot"] = (context, input) => {
     const { desktop, ...observation } = input;
     return requireLocalUserDesktop(desktop, "snapshot").pipe(
-      Effect.andThen(user.snapshot(context.controllerId, observation)),
+      Effect.andThen(user.snapshot(context, observation)),
     );
   };
 
   const act: ComputerUseRouterShape["act"] = (context, input) => {
     const { desktop, ...actions } = input;
-    return requireLocalUserDesktop(desktop, "act").pipe(
-      Effect.andThen(user.act(context.controllerId, actions)),
-    );
+    return requireLocalUserDesktop(desktop, "act").pipe(Effect.andThen(user.act(context, actions)));
   };
 
   const release: ComputerUseRouterShape["release"] = (context, input) => {
     const desktop = targetFromInput(input);
-    return requireLocalUserDesktop(desktop, "release").pipe(
-      Effect.andThen(user.release(context.controllerId)),
-    );
+    return requireLocalUserDesktop(desktop, "release").pipe(Effect.andThen(user.release(context)));
   };
 
   const forget: ComputerUseRouterShape["forget"] = (context, input) => {
     const desktop = targetFromInput(input);
-    return requireLocalUserDesktop(desktop, "forget").pipe(
-      Effect.andThen(user.forget(context.controllerId)),
-    );
+    return requireLocalUserDesktop(desktop, "forget").pipe(Effect.andThen(user.forget(context)));
   };
 
   return ComputerUseRouter.of({
