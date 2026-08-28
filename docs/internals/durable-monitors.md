@@ -130,11 +130,14 @@ check-in, but the server does not invent model-specific cache policy.
 The default continuation dispatches an internal `thread.turn.start` with a
 typed `monitor.continuation` system event. Client commands remain user-only, so
 automation cannot be mistaken for user speech. The event mechanically separates
-trusted harness facts, untrusted trigger observations, the stored controller
-instruction, and the fact that it grants no new authorization. Computer-watch
+trusted harness facts, untrusted trigger observations, and the fact that it
+grants no new authorization. Computer-watch
 checkpoints use the related `monitor.review` event. The projected message stores
 the structured event once and only a compact fallback label as text; the
 provider reactor renders the full provider-neutral input at delivery time.
+Codex receives it through native `toolOutput`, which requires Codex 0.151.0 or
+later. Sending it as user input would cause compaction to retain automated
+notifications as user requests. Other providers keep the attributed text input.
 
 Web and mobile clients show these messages as compact, collapsible event cards
 instead of user bubbles. The delivery reads the thread's current provider

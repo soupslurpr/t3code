@@ -23,7 +23,8 @@ also record a result without starting another turn.
 
 An automated continuation appears as a compact **Monitor triggered** or
 **Monitor review** event rather than as a message from you. Expanding the event
-shows its trigger, observation, evidence, and stored continuation instruction.
+shows its trigger, observation, and evidence. The agent resumes using the
+existing conversation, without a separate handoff prompt.
 T3 Code marks observational content as untrusted and records that the event
 does not grant fresh authorization.
 

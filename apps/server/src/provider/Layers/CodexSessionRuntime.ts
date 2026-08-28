@@ -141,11 +141,18 @@ const McpElicitationForm = Schema.Struct({
 const isMcpElicitationMetadata = Schema.is(McpElicitationMetadata);
 const isMcpElicitationForm = Schema.is(McpElicitationForm);
 
-// TODO: Verify `packages/effect-codex-app-server/scripts/generate.ts` so the generated
-// `V2TurnStartParams` schema includes `collaborationMode` directly.
+// Experimental fields omitted by the checked-in bindings must survive decoding
+// at this boundary, especially toolOutput's distinction from user input.
 const CodexTurnStartParamsWithCollaborationMode = EffectCodexSchema.V2TurnStartParams.pipe(
   Schema.fieldsAssign({
     collaborationMode: Schema.optionalKey(EffectCodexSchema.V2TurnStartParams__CollaborationMode),
+    toolOutput: Schema.optionalKey(
+      Schema.Struct({
+        namespace: Schema.String,
+        name: Schema.String,
+        output: EffectCodexSchema.V2ThreadResumeParams__FunctionCallOutputBody,
+      }),
+    ),
   }),
 );
 const decodeCodexTurnStartParamsWithCollaborationMode = Schema.decodeUnknownEffect(
@@ -187,10 +194,11 @@ export interface CodexSessionRuntimeOptions {
 
 export interface CodexSessionRuntimeSendTurnInput {
   readonly input?: string;
-  readonly attachments?: ReadonlyArray<{
-    readonly type: "localImage";
-    readonly path: string;
-  }>;
+  readonly inputSource?: "harness";
+  readonly attachments?: ReadonlyArray<
+    | { readonly type: "localImage"; readonly path: string }
+    | { readonly type: "image"; readonly url: string }
+  >;
   readonly model?: string;
   readonly serviceTier?: CodexServiceTier | undefined;
   readonly effort?: EffectCodexSchema.V2TurnStartParams__ReasoningEffort | undefined;
@@ -627,14 +635,22 @@ function buildCodexCollaborationMode(input: {
 const SKILL_MENTION_PATTERN =
   /(^|\s)\p{Sc}(?![0-9][0-9_]*(?:[kKmMbBtT]|[eE][0-9]+)?(?:\s|$))(?=[a-zA-Z0-9:_-]*[a-zA-Z])([a-zA-Z0-9][a-zA-Z0-9:_-]*)(?=\s|$)/gu;
 
+/** Standalone tool output was added to the experimental protocol in Codex 0.151. */
+export function supportsCodexToolOutput(userAgent: string): boolean {
+  const version = /\/(\d+)\.(\d+)\.(\d+)/.exec(userAgent);
+  return version !== null && (Number(version[1]) > 0 || Number(version[2]) >= 151);
+}
+
+/** Delivers user input or an automated tool result with Codex mode settings. */
 export function buildTurnStartParams(input: {
   readonly threadId: string;
   readonly runtimeMode: RuntimeMode;
   readonly prompt?: string;
-  readonly attachments?: ReadonlyArray<{
-    readonly type: "localImage";
-    readonly path: string;
-  }>;
+  readonly inputSource?: "harness";
+  readonly attachments?: ReadonlyArray<
+    | { readonly type: "localImage"; readonly path: string }
+    | { readonly type: "image"; readonly url: string }
+  >;
   readonly model?: string;
   readonly serviceTier?: CodexServiceTier;
   readonly effort?: EffectCodexSchema.V2TurnStartParams__ReasoningEffort;
@@ -648,14 +664,15 @@ export function buildTurnStartParams(input: {
   CodexErrors.CodexAppServerProtocolParseError
 > {
   const turnInput: Array<EffectCodexSchema.V2TurnStartParams__UserInput> = [];
-  if (input.prompt) {
+  const isHarnessInput = input.inputSource === "harness";
+  if (input.prompt && !isHarnessInput) {
     turnInput.push({
       type: "text",
       text: input.prompt.replace(SKILL_MENTION_PATTERN, "$1$$$2"),
     });
   }
   for (const attachment of input.attachments ?? []) {
-    turnInput.push(attachment);
+    if (!isHarnessInput) turnInput.push(attachment);
   }
 
   const config = runtimeModeToThreadConfig(input.runtimeMode);
@@ -670,6 +687,23 @@ export function buildTurnStartParams(input: {
   return decodeCodexTurnStartParamsWithCollaborationMode({
     threadId: input.threadId,
     input: turnInput,
+    ...(isHarnessInput
+      ? {
+          toolOutput: {
+            namespace: "t3_code",
+            name: "monitor",
+            output: input.attachments?.length
+              ? [
+                  { type: "input_text", text: input.prompt ?? "" },
+                  ...input.attachments.map((attachment) => ({
+                    type: "input_image",
+                    image_url: attachment.type === "image" ? attachment.url : undefined,
+                  })),
+                ]
+              : (input.prompt ?? ""),
+          },
+        }
+      : {}),
     approvalPolicy: config.approvalPolicy,
     approvalsReviewer: config.approvalsReviewer,
     sandboxPolicy: runtimeModeToTurnSandboxPolicy(input.runtimeMode),
@@ -1438,6 +1472,7 @@ export const makeCodexSessionRuntime = (
       updatedAt: sessionCreatedAt,
     } satisfies ProviderSession;
     const sessionRef = yield* Ref.make<ProviderSession>(initialSession);
+    const toolOutputSupportedRef = yield* Ref.make(false);
     const offerEvent = (event: ProviderEvent) => Queue.offer(events, event).pipe(Effect.asVoid);
 
     const emitEvent = (event: Omit<ProviderEvent, "id" | "provider" | "createdAt">) =>
@@ -2427,7 +2462,8 @@ export const makeCodexSessionRuntime = (
 
     const start = Effect.fn("CodexSessionRuntime.start")(function* () {
       yield* emitSessionEvent("session/connecting", "Starting Codex App Server session.");
-      yield* client.request("initialize", buildCodexInitializeParams());
+      const initialized = yield* client.request("initialize", buildCodexInitializeParams());
+      yield* Ref.set(toolOutputSupportedRef, supportsCodexToolOutput(initialized.userAgent));
       yield* client.notify("initialized", undefined);
 
       const requestedModel = normalizeCodexModelSlug(options.model);
@@ -2496,6 +2532,14 @@ export const makeCodexSessionRuntime = (
       }),
       sendTurn: (input) =>
         Effect.gen(function* () {
+          if (input.inputSource === "harness" && !(yield* Ref.get(toolOutputSupportedRef))) {
+            return yield* new CodexErrors.CodexAppServerRequestError({
+              method: "turn/start",
+              code: -32600,
+              errorMessage:
+                "Automated monitor delivery requires Codex CLI 0.151.0 or later. Update Codex to resume this thread from a monitor.",
+            });
+          }
           const providerThreadId = yield* readProviderThreadId;
           if (hasConfiguredMcpServer(options.appServerArgs)) {
             yield* client.request("config/mcpServer/reload", undefined).pipe(
@@ -2513,6 +2557,7 @@ export const makeCodexSessionRuntime = (
             threadId: providerThreadId,
             runtimeMode: options.runtimeMode,
             ...(input.input ? { prompt: input.input } : {}),
+            ...(input.inputSource !== undefined ? { inputSource: input.inputSource } : {}),
             ...(input.attachments ? { attachments: input.attachments } : {}),
             ...(normalizedModel ? { model: normalizedModel } : {}),
             ...(input.serviceTier ? { serviceTier: input.serviceTier } : {}),
@@ -2525,7 +2570,9 @@ export const makeCodexSessionRuntime = (
               options.appServerArgs,
               options.mcpCapabilities,
             ),
-            computerToolsAvailable: hasConfiguredMcpServer(options.appServerArgs) && (options.mcpCapabilities?.has("computer") ?? true),
+            computerToolsAvailable:
+              hasConfiguredMcpServer(options.appServerArgs) &&
+              (options.mcpCapabilities?.has("computer") ?? true),
           });
           const rawResponse = yield* client.raw.request("turn/start", params);
           const response = yield* decodeV2TurnStartResponse(rawResponse).pipe(
