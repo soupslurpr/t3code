@@ -1,6 +1,7 @@
 import * as Schema from "effect/Schema";
 
 import { PortSchema, PositiveInt, TrimmedNonEmptyString } from "./baseSchemas.ts";
+import { UserDesktopHostRegistration } from "./userDesktop.ts";
 
 // A supervisor must not restart a server refused by the state-directory owner.
 export const SERVER_EXIT_CODE_STATE_DIR_OWNED = 78;
@@ -36,6 +37,8 @@ export const DesktopBackendBootstrap = Schema.Struct({
   /** Server -> desktop: commands for those tabs. */
   desktopBrowserControlFd: Schema.optionalKey(PositiveInt),
   resourceMonitorPath: Schema.optionalKey(TrimmedNonEmptyString),
+  /** Names the physical User desktop that owns this desktop-managed backend. */
+  environmentHost: Schema.optionalKey(UserDesktopHostRegistration),
 });
 
 export type DesktopBackendBootstrap = typeof DesktopBackendBootstrap.Type;
