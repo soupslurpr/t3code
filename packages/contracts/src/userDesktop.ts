@@ -108,6 +108,12 @@ export const UserDesktopHumanRequest = Schema.Union([
   Schema.Struct({ operation: Schema.Literal("remember-control"), desktopId: UserDesktopId }),
   Schema.Struct({ operation: Schema.Literal("release"), desktopId: UserDesktopId }),
   Schema.Struct({ operation: Schema.Literal("forget"), desktopId: UserDesktopId }),
+  Schema.Struct({ operation: Schema.Literal("observation-list"), desktopId: UserDesktopId }),
+  Schema.Struct({
+    operation: Schema.Literal("observation"),
+    desktopId: UserDesktopId,
+    observationId: TrimmedNonEmptyString.check(Schema.isMaxLength(128)),
+  }),
 ]);
 export type UserDesktopHumanRequest = typeof UserDesktopHumanRequest.Type;
 
