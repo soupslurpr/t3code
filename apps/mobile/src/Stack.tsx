@@ -118,6 +118,8 @@ import {
 } from "./features/settings/ScheduledTaskPickerScreens";
 import { ScheduledTaskEditorProvider } from "./features/settings/scheduled-task-editor";
 import { SettingsKeyboardRouteScreen } from "./features/settings/SettingsKeyboardRouteScreen";
+import { SettingsUserDesktopsRouteScreen } from "./features/settings/SettingsUserDesktopsRouteScreen";
+import { UserDesktopSupervisionRouteScreen } from "./features/settings/UserDesktopSupervisionRouteScreen";
 import { SettingsLegalRouteScreen } from "./features/settings/SettingsLegalRouteScreen";
 import { SettingsMicrophoneRouteScreen } from "./features/settings/SettingsMicrophoneRouteScreen";
 import {
@@ -277,6 +279,13 @@ const SettingsContentStack = createV5SheetStackNavigator({
       screen: SettingsAboutRouteScreen,
       linking: "about",
       options: { title: "About T3 Code" },
+    }),
+    SettingsUserDesktops: createNativeStackScreen({
+      screen: SettingsUserDesktopsRouteScreen,
+      linking: "user-desktops",
+      options: {
+        title: "User Desktops",
+      },
     }),
     SettingsEnvironmentNew: createNativeStackScreen({
       screen: ConnectionsNewRouteScreen,
@@ -933,6 +942,14 @@ const RootStackConfig = createWorkspaceStackNavigator({
         headerShown: false,
         // Android opens Settings as a top-level tab, so it swaps like the other tabs.
         ...(Platform.OS === "android" ? { animation: "none" as const } : null),
+      },
+    }),
+    UserDesktopSupervision: createNativeStackScreen({
+      screen: UserDesktopSupervisionRouteScreen,
+      options: {
+        ...SOLID_HEADER_OPTIONS,
+        presentation: "fullScreenModal",
+        title: "User Desktop",
       },
     }),
     SettingsLegal: createNativeStackScreen({

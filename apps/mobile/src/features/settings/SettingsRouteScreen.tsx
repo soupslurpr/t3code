@@ -92,6 +92,7 @@ function ConfiguredSettingsRouteScreen() {
             valuePosition="trailing"
             target="SettingsEnvironments"
           />
+          <SettingsRow icon="desktopcomputer" label="User Desktops" target="SettingsUserDesktops" />
           <SettingsRow icon="bell.badge" label="Notifications" target="SettingsNotifications" />
         </SettingsSection>
 
@@ -125,6 +126,7 @@ function LocalSettingsRouteScreen() {
             valuePosition="trailing"
             target="SettingsEnvironments"
           />
+          <SettingsRow icon="desktopcomputer" label="User Desktops" target="SettingsUserDesktops" />
         </SettingsSection>
 
         <SettingsIndexSections />
