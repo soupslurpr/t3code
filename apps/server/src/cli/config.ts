@@ -365,6 +365,7 @@ export const resolveServerConfig = Effect.fn("config.resolveServerConfig")(funct
   const desktopBootstrapToken = bootstrap?.desktopBootstrapToken;
   const desktopBootstrapSecret = bootstrap?.desktopBootstrapSecret;
   const shellEnvironmentPrepared = bootstrap?.shellEnvironmentPrepared;
+  const environmentHost = bootstrap?.environmentHost;
   const desktopTelemetryFd = bootstrap?.desktopTelemetryFd;
   const desktopTelemetryControlFd = bootstrap?.desktopTelemetryControlFd;
   const desktopBrowserFd = bootstrap?.desktopBrowserFd;
@@ -472,6 +473,7 @@ export const resolveServerConfig = Effect.fn("config.resolveServerConfig")(funct
     desktopBootstrapToken,
     ...(desktopBootstrapSecret === undefined ? {} : { desktopBootstrapSecret }),
     ...(shellEnvironmentPrepared === undefined ? {} : { shellEnvironmentPrepared }),
+    ...(environmentHost === undefined ? {} : { environmentHost }),
     desktopTelemetryFd,
     desktopTelemetryControlFd,
     desktopBrowserFd,
