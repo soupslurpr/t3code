@@ -725,13 +725,17 @@ export const ComputerAutomationAccessInput = Schema.Struct({
   returnControlToAgent: Schema.optional(Schema.Literal(true)).annotate({
     description: "Returns control to the still-viewing agent displaced by this human controller.",
   }),
+  releaseControlToView: Schema.optional(Schema.Literal(true)).annotate({
+    description: "Releases human control while retaining its existing view lease.",
+  }),
 }).check(
-  Schema.makeFilter(
-    (input) =>
-      input.takeoverLeaseId === undefined ||
-      input.returnControlToAgent !== true ||
-      "takeoverLeaseId and returnControlToAgent cannot be combined.",
-  ),
+  Schema.makeFilter((input) => {
+    const exclusiveOptionCount =
+      Number(input.takeoverLeaseId !== undefined) +
+      Number(input.returnControlToAgent === true) +
+      Number(input.releaseControlToView === true);
+    return exclusiveOptionCount <= 1 || "Desktop control transition options cannot be combined.";
+  }),
 );
 export type ComputerAutomationAccessInput = typeof ComputerAutomationAccessInput.Type;
 
