@@ -197,6 +197,48 @@ Super reach only the guest. GNOME may show a first-use prompt to allow shortcut 
 emergency Super+Escape chord immediately restores host shortcuts, and leaving full screen releases
 the human control lease.
 
+## Supervising User Desktops
+
+**Settings → User desktops** groups every connected route to the same physical desktop under its
+stable identity. Select **Supervise** from the web app, desktop app, or mobile app to inspect that
+desktop directly. An active agent is not required, and opening the supervisor does not start screen
+capture.
+
+The supervisor opens in **Agent lens** mode. It lists short-lived observations that T3 Code already
+delivered to an agent or watch evaluator, including the recipient, thread, environment, source, and
+capture time. Selecting one shows those exact retained pixels and accessibility metadata without
+capturing a new frame or calling a model. Lens content is kept only in bounded server memory and
+expires after about 30 minutes.
+
+Select **Live** to request a transient view lease and begin snapshot-driven viewing. Live updates at
+roughly one or two frames per second, refreshes after human input, and lets you switch among exposed
+displays. If the selected User desktop is the same desktop displaying T3 Code, Live is disabled to
+avoid a recursive mirror; Agent lens, access status, and **End all access** remain available.
+
+**Take control** gives the human the single control lease. A human can directly preempt an agent in
+the same environment. Before the handoff, T3 Code invalidates queued agent input and releases held
+keys and pointer buttons; it does not stop the agent's turn. Taking control from another human or
+across an environment route requires an explicit confirmation tied to the current lease, so an old
+confirmation cannot take over a newer controller.
+
+Web and desktop enter full screen before capturing keyboard shortcuts. Mobile uses a dedicated
+full-screen supervisor. While controlling, choose **Release control** to leave control unowned while
+keeping your view, or **Return to agent** to give control directly back to the displaced agent when
+it is still viewing. Physical keyboard or pointer activity at the desktop does not silently revoke a
+remote lease; use **End all access** when every viewer and controller should be disconnected.
+
+Human access and its keep-awake request are temporary. Closing or hiding the web/desktop supervisor,
+backgrounding the mobile app, disconnecting, or allowing its short renewal lease to expire releases
+the human's access. GNOME continues to show its native sharing indicator whenever the portal session
+is active. Remembered view or control approval is created only by the separate explicit Settings
+actions.
+
+Each User desktop card shows recent successful access transitions, such as viewing, taking or
+releasing control, returning control, remembered approval, and ending access. This durable history
+contains only transition metadata such as time, human or agent actor, environment, thread when
+applicable, and whether a takeover occurred. It never stores screenshots, typed text, accessibility
+contents, input actions, session identifiers, or takeover confirmation tokens.
+
 ## Agent Tools
 
 The environment exposes tools for:
