@@ -82,7 +82,7 @@ export async function acquireAgentDesktopKeyboardCapture(
     try {
       await enterFullscreen(fullscreenDocument);
     } catch (cause) {
-      throw new Error("T3 Code could not enter full screen for Agent desktop control.", { cause });
+      throw new Error("T3 Code could not enter full screen for desktop control.", { cause });
     }
   }
   try {
@@ -91,7 +91,7 @@ export async function acquireAgentDesktopKeyboardCapture(
     if (enteredFullscreen && fullscreenDocument.fullscreenElement !== null) {
       await fullscreenDocument.exitFullscreen().catch(() => undefined);
     }
-    throw new Error("T3 Code could not capture host shortcuts for Agent desktop control.", {
+    throw new Error("T3 Code could not capture host shortcuts for desktop control.", {
       cause,
     });
   }

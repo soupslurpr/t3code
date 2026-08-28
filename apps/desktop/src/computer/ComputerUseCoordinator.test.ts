@@ -655,6 +655,36 @@ describe("ComputerUseCoordinator", () => {
     );
   });
 
+  it.effect("releases human control to an unowned desktop while retaining view", () => {
+    const calls: string[] = [];
+    return withCoordinator(
+      Effect.gen(function* () {
+        const coordinator = yield* ComputerUseCoordinator.ComputerUseCoordinator;
+        const agentController = agent("release-agent");
+        const supervisor = human("release-supervisor");
+        yield* coordinator.requestControl(agentController);
+        yield* coordinator.requestControl(supervisor);
+
+        const watching = yield* coordinator.requestView(supervisor, {
+          releaseControlToView: true,
+        });
+        assert.strictEqual(watching.lease?.access, "view");
+        assert.strictEqual(watching.lease?.controller, null);
+        assert.strictEqual(watching.lease?.canReturnControl, false);
+
+        const reacquired = yield* coordinator.requestControl(agentController);
+        assert.strictEqual(reacquired.lease?.access, "control");
+        assert.deepEqual(calls, [
+          "requestControl",
+          "releaseInputs",
+          "releaseInputs",
+          "requestControl",
+        ]);
+      }),
+      makeComputer(calls),
+    );
+  });
+
   it.effect("invalidates queued agent actions before a human takeover releases inputs", () =>
     Effect.gen(function* () {
       const calls: string[] = [];

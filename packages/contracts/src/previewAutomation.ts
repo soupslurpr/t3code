@@ -149,6 +149,7 @@ export const UserDesktopHumanRequest = Schema.Union([
     takeoverLeaseId: Schema.optional(ComputerAutomationLeaseId),
   }),
   Schema.Struct({ operation: Schema.Literal("return-control"), ...UserDesktopHumanTarget }),
+  Schema.Struct({ operation: Schema.Literal("release-control"), ...UserDesktopHumanTarget }),
   Schema.Struct({
     operation: Schema.Literal("snapshot"),
     ...UserDesktopHumanTarget,
