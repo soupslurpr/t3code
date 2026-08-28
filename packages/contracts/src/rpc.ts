@@ -265,12 +265,9 @@ import {
   PreviewAutomationHostFocus,
   PreviewAutomationResponse,
   PreviewAutomationStreamEvent,
-} from "./previewAutomation.ts";
-import {
   UserDesktopHumanInvokeInput,
-  UserDesktopInventoryError,
-  UserDesktopManagementError,
-} from "./userDesktop.ts";
+} from "./previewAutomation.ts";
+import { UserDesktopInventoryError, UserDesktopManagementError } from "./userDesktop.ts";
 import {
   ServerConfigStreamEvent,
   DesktopUpdateCommitInput,

@@ -33,7 +33,10 @@ import * as DesktopIpc from "../DesktopIpc.ts";
 const DEFAULT_ACTION_OBSERVATION_DELAY_MS = 250;
 const OBSERVATION_FAILURE_DETAIL = "desktop action completed, but its follow-up observation failed";
 const LOCAL_RENDERER_CONTROLLER_ID = "local-renderer";
-const LOCAL_RENDERER_CONTEXT = { controllerId: LOCAL_RENDERER_CONTROLLER_ID } as const;
+const LOCAL_RENDERER_CONTEXT = {
+  controllerId: LOCAL_RENDERER_CONTROLLER_ID,
+  controllerKind: "local",
+} as const;
 
 type TemporalObservation = NonNullable<ComputerAutomationActInput["temporalObservation"]>;
 
