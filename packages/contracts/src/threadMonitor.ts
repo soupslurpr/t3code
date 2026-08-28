@@ -1,4 +1,5 @@
 import * as Schema from "effect/Schema";
+import * as SchemaTransformation from "effect/SchemaTransformation";
 
 import {
   IsoDateTime,
@@ -22,7 +23,13 @@ import { ProviderInstanceId } from "./providerInstance.ts";
 const MonitorLabel = TrimmedNonEmptyString.check(Schema.isMaxLength(500));
 const MonitorPrompt = TrimmedNonEmptyString.check(Schema.isMaxLength(20_000));
 const MonitorResultSummary = TrimmedNonEmptyString.check(Schema.isMaxLength(2_000));
-const MonitorEvidence = Schema.String.check(Schema.isMaxLength(20_000));
+// Keep the wire schema simple for MCP clients while validating the decoded value.
+const MonitorEvidence = Schema.String.pipe(
+  Schema.decodeTo(
+    Schema.String.check(Schema.isMaxLength(20_000)),
+    SchemaTransformation.passthrough(),
+  ),
+);
 const MonitorDeliveryGroupId = TrimmedNonEmptyString.check(Schema.isMaxLength(100));
 const ComputerWatchCriterion = TrimmedNonEmptyString.check(Schema.isMaxLength(8_000));
 const ComputerWatchHash = TrimmedNonEmptyString.check(Schema.isMaxLength(128));

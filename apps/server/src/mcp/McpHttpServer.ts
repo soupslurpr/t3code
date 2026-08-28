@@ -469,6 +469,83 @@ const computerToolFailure = <E>(toolName: string, cause: Cause.Cause<E>, payload
   }).pipe(Effect.as(result));
 };
 
+/** Renders monitor failures as visible text and structured diagnostics. */
+const monitorToolFailure = <E>(toolName: string, cause: Cause.Cause<E>) => {
+  if (Cause.hasInterrupts(cause) || cause.reasons.some(Cause.isDieReason)) {
+    return Effect.failCause(cause).pipe(Effect.orDie);
+  }
+  const failures = cause.reasons.filter(Cause.isFailReason);
+  const firstFailure = failures[0]?.error;
+  const parameterValidation =
+    typeof firstFailure === "object" &&
+    firstFailure !== null &&
+    "_tag" in firstFailure &&
+    firstFailure._tag === "AiError" &&
+    "reason" in firstFailure &&
+    typeof firstFailure.reason === "object" &&
+    firstFailure.reason !== null &&
+    "_tag" in firstFailure.reason &&
+    firstFailure.reason._tag === "ToolParameterValidationError" &&
+    "description" in firstFailure.reason &&
+    typeof firstFailure.reason.description === "string"
+      ? firstFailure.reason.description
+      : undefined;
+  const declaredFailure =
+    typeof firstFailure === "object" &&
+    firstFailure !== null &&
+    "_tag" in firstFailure &&
+    firstFailure._tag === "ThreadMonitorError" &&
+    "code" in firstFailure &&
+    typeof firstFailure.code === "string" &&
+    "operation" in firstFailure &&
+    typeof firstFailure.operation === "string" &&
+    "detail" in firstFailure &&
+    typeof firstFailure.detail === "string"
+      ? firstFailure
+      : undefined;
+  const validationField =
+    parameterValidation === undefined ? undefined : validationFieldFromMessage(parameterValidation);
+  const error =
+    parameterValidation !== undefined
+      ? {
+          _tag: "ToolParameterValidationError",
+          operation: toolName,
+          failureCount: failures.length,
+          message: "The monitor request is invalid.",
+          ...(validationField === undefined ? {} : { field: validationField }),
+          expected: [validationExpectation(parameterValidation)],
+          phase: "validation",
+        }
+      : declaredFailure !== undefined
+        ? {
+            _tag: declaredFailure._tag,
+            code: declaredFailure.code,
+            operation: declaredFailure.operation,
+            failureCount: failures.length,
+            message: declaredFailure.detail,
+            ...("monitorId" in declaredFailure && typeof declaredFailure.monitorId === "string"
+              ? { monitorId: declaredFailure.monitorId }
+              : {}),
+          }
+        : {
+            _tag: "ThreadMonitorToolError",
+            operation: toolName,
+            failureCount: failures.length,
+            message: "The monitor request failed.",
+          };
+  const result = new McpSchema.CallToolResult({
+    isError: true,
+    structuredContent: { error },
+    content: [{ type: "text", text: JSON.stringify({ error }) }],
+  });
+  return Effect.logWarning("monitor tool failed", {
+    toolName,
+    errorTag: error._tag,
+    operation: error.operation,
+    failureCount: failures.length,
+  }).pipe(Effect.as(result));
+};
+
 type ComputerImageResult = {
   readonly snapshot?: ComputerSnapshotResult;
   readonly screenshot?: ComputerScreenshotResult;
@@ -875,6 +952,66 @@ const registerComputerTools = Effect.fn("McpHttpServer.registerComputerTools")(f
   }
 });
 
+/** Registers standard monitor tools with structured failure results. */
+const registerMonitorStandardTools = Effect.fn("McpHttpServer.registerMonitorStandardTools")(
+  function* () {
+    const server = yield* McpServer.McpServer;
+    const service = yield* ThreadMonitorService;
+    const observations = yield* ComputerObservationStore.ComputerObservationStore;
+    const built = yield* MonitorStandardToolkit;
+    for (const tool of Object.values(built.tools)) {
+      yield* server.addTool({
+        tool: new McpSchema.Tool({
+          name: tool.name,
+          description: Tool.getDescription(tool),
+          inputSchema: Tool.getJsonSchema(tool),
+          annotations: {
+            ...Context.getOption(tool.annotations, Tool.Title).pipe(
+              Option.map((title) => ({ title })),
+              Option.getOrUndefined,
+            ),
+            readOnlyHint: Context.get(tool.annotations, Tool.Readonly),
+            destructiveHint: Context.get(tool.annotations, Tool.Destructive),
+            idempotentHint: Context.get(tool.annotations, Tool.Idempotent),
+            openWorldHint: Context.get(tool.annotations, Tool.OpenWorld),
+          },
+        }),
+        annotations: tool.annotations,
+        handle: (payload) =>
+          Effect.withFiber((fiber) => {
+            const invocation = Context.getUnsafe(
+              fiber.context,
+              McpInvocationContext.McpInvocationContext,
+            );
+            return built.handle(tool.name, payload).pipe(
+              Stream.unwrap,
+              Stream.run(Sink.last()),
+              Effect.flatMap(Effect.fromOption),
+              Effect.provideService(ThreadMonitorService, service),
+              Effect.provideService(
+                ComputerObservationStore.ComputerObservationStore,
+                observations,
+              ),
+              Effect.provideService(McpInvocationContext.McpInvocationContext, invocation),
+              Effect.matchCauseEffect({
+                onFailure: (cause) => monitorToolFailure(tool.name, cause),
+                onSuccess: ({ encodedResult }) =>
+                  Effect.succeed(
+                    new McpSchema.CallToolResult({
+                      isError: false,
+                      structuredContent:
+                        typeof encodedResult === "object" ? encodedResult : undefined,
+                      content: [{ type: "text", text: JSON.stringify(encodedResult) }],
+                    }),
+                  ),
+              }),
+            );
+          }),
+      });
+    }
+  },
+);
+
 const registerMonitorImageTools = Effect.fn("McpHttpServer.registerMonitorImageTools")(
   function* () {
     const server = yield* McpServer.McpServer;
@@ -952,9 +1089,9 @@ const AgentDesktopToolkitRegistrationLive = McpServer.toolkit(AgentDesktopToolki
   Layer.provide(AgentDesktopToolkitHandlersLive),
 );
 
-const MonitorStandardToolkitRegistrationLive = McpServer.toolkit(MonitorStandardToolkit).pipe(
-  Layer.provide(MonitorStandardToolkitHandlersLive),
-);
+const MonitorStandardToolkitRegistrationLive = Layer.effectDiscard(
+  registerMonitorStandardTools(),
+).pipe(Layer.provide(MonitorStandardToolkitHandlersLive));
 
 const MonitorImageToolkitRegistrationLive = Layer.effectDiscard(registerMonitorImageTools()).pipe(
   Layer.provide(MonitorImageToolkitHandlersLive),

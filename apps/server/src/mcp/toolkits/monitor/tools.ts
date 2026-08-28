@@ -64,7 +64,7 @@ export const MonitorStatusTool = Tool.make("monitor_status", {
 export const MonitorSignalTool = mutatingMonitorTool(
   Tool.make("monitor_signal", {
     description:
-      "Signal that a signal-scheduled monitor's condition is satisfied. Supply a concise summary and optional bounded evidence. This call is idempotent after the first trigger. A resume-thread continuation is queued until the original thread is safe to resume; the signalling watcher should then finish rather than waiting for that turn.",
+      "Signal that a signal-scheduled monitor's condition is satisfied. Supply a concise summary and optional bounded evidence string. This call is idempotent after the first trigger. A resume-thread continuation is queued until the original thread is safe to resume; the signalling watcher should then finish rather than waiting for that turn.",
     parameters: ThreadMonitorSignalInput,
     success: ThreadMonitor,
     failure: ThreadMonitorError,

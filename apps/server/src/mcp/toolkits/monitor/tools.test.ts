@@ -47,6 +47,13 @@ it("exports bounded object schemas and provider-neutral lifecycle tools", () => 
   expect(Context.get(start.annotations, Tool.Destructive)).toBe(true);
   expect(Context.get(start.annotations, Tool.OpenWorld)).toBe(true);
 
+  const signalSchema = Tool.getJsonSchema(MonitorToolkit.tools.monitor_signal) as {
+    readonly properties?: Readonly<Record<string, unknown>>;
+  };
+  expect(signalSchema.properties?.evidence).toEqual({
+    anyOf: [{ type: "string" }, { type: "null" }],
+  });
+
   const capabilities = MonitorToolkit.tools.computer_watch_capabilities;
   expect(Context.get(capabilities.annotations, Tool.Readonly)).toBe(true);
 

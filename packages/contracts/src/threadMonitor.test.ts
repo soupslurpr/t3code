@@ -5,11 +5,13 @@ import {
   ThreadMonitorComputerInspectInput,
   ThreadMonitorComputerStartInput,
   ThreadMonitorComputerUpdateInput,
+  ThreadMonitorSignalInput,
 } from "./threadMonitor.ts";
 
 const decodeComputerWatch = Schema.decodeUnknownSync(ThreadMonitorComputerStartInput);
 const decodeComputerWatchUpdate = Schema.decodeUnknownSync(ThreadMonitorComputerUpdateInput);
 const decodeComputerWatchInspect = Schema.decodeUnknownSync(ThreadMonitorComputerInspectInput);
+const decodeSignal = Schema.decodeUnknownSync(ThreadMonitorSignalInput);
 const modelMatch = {
   type: "model" as const,
   criterion: "A result is visible",
@@ -20,6 +22,14 @@ const userDesktop = {
 };
 
 describe("thread monitor contracts", () => {
+  it("accepts only bounded string evidence", () => {
+    expect(decodeSignal({ monitorId: "monitor-1", evidence: "exitCode=0" }).evidence).toBe(
+      "exitCode=0",
+    );
+    expect(() => decodeSignal({ monitorId: "monitor-1", evidence: { exitCode: 0 } })).toThrow();
+    expect(() => decodeSignal({ monitorId: "monitor-1", evidence: "x".repeat(20_001) })).toThrow();
+  });
+
   it("requires an explicit watched desktop", () => {
     expect(() =>
       decodeComputerWatch({ label: "Wait for a result", match: { type: "image-change" } }),
