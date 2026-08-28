@@ -43,6 +43,14 @@ const makeDesktopBootstrap = (
   ...overrides,
 });
 
+const ENVIRONMENT_HOST = {
+  protocolVersion: 1,
+  desktopId: "user-desktop-1",
+  defaultLabel: "Test desktop",
+  platform: "linux",
+  capabilities: ["view", "control", "availability"],
+} as const;
+
 it.layer(NodeServices.layer)("cli config resolution", (it) => {
   const defaultObservabilityConfig = {
     traceMinLevel: "Info",
@@ -395,6 +403,7 @@ it.layer(NodeServices.layer)("cli config resolution", (it) => {
           t3Home: "/tmp/t3-bootstrap-home",
           noBrowser: true,
           desktopBootstrapToken: "desktop-token",
+          environmentHost: ENVIRONMENT_HOST,
           desktopTelemetryFd: 4,
           desktopTelemetryControlFd: 5,
           tailscaleServeEnabled: false,
@@ -454,6 +463,7 @@ it.layer(NodeServices.layer)("cli config resolution", (it) => {
         noBrowser: true,
         startupPresentation: "browser",
         desktopBootstrapToken: "desktop-token",
+        environmentHost: ENVIRONMENT_HOST,
         desktopTelemetryFd: 4,
         desktopTelemetryControlFd: 5,
         resourceMonitorPath: undefined,
