@@ -16,6 +16,7 @@ import { describe, expect } from "vite-plus/test";
 import * as ComputerObservationStore from "./ComputerObservationStore.ts";
 
 const environmentId = EnvironmentId.make("environment-observation-test");
+const differentEnvironmentId = EnvironmentId.make("different-environment");
 const threadId = ThreadId.make("thread-observation-test");
 const instanceId = ProviderInstanceId.make("codex");
 const desktopId = "agent-observation-test";
@@ -182,6 +183,62 @@ describe("ComputerObservationStore", () => {
         "current",
       ]);
       expect(result.observation?.images[1]?.region).toMatchObject({ x: 100, width: 300 });
+    }),
+  );
+
+  it.effect("lists retained recipients and scopes exact reads to one environment and desktop", () =>
+    Effect.gen(function* () {
+      const store = yield* ComputerObservationStore.make;
+      const secondThreadId = ThreadId.make("thread-observation-second");
+      yield* store.publishController({
+        environmentId,
+        threadId,
+        instanceId,
+        desktopId,
+        source: "snapshot",
+        observation: controllerObservation(),
+      });
+      yield* store.publishController({
+        environmentId,
+        threadId: secondThreadId,
+        instanceId,
+        desktopId,
+        source: "act",
+        observation: controllerObservation(),
+      });
+
+      const list = yield* store.list({ environmentId, desktopId });
+      expect(list.observations).toHaveLength(2);
+      expect(list.observations.map((summary) => summary.threadId)).toEqual([
+        secondThreadId,
+        threadId,
+      ]);
+      expect(list.observations[0]).toMatchObject({
+        source: "act",
+        imageCount: 1,
+        hasAccessibility: true,
+      });
+      expect(list.observations[0]).not.toHaveProperty("images");
+
+      const observationId = list.observations[0]!.id;
+      expect(yield* store.readById({ environmentId, desktopId, observationId })).toMatchObject({
+        latestId: observationId,
+        observation: { threadId: secondThreadId },
+      });
+      expect(
+        yield* store.readById({
+          environmentId: differentEnvironmentId,
+          desktopId,
+          observationId,
+        }),
+      ).toEqual({ latestId: null });
+      expect(
+        yield* store.readById({
+          environmentId,
+          desktopId: "different-desktop",
+          observationId,
+        }),
+      ).toEqual({ latestId: null });
     }),
   );
 

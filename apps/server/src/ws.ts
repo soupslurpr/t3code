@@ -2746,6 +2746,19 @@ const makeWsRpcLayer = (
                     Effect.as(null),
                   );
               }
+              if (input.request.operation === "observation-list") {
+                return yield* computerObservations.list({
+                  environmentId,
+                  desktopId: input.request.desktopId,
+                });
+              }
+              if (input.request.operation === "observation") {
+                return yield* computerObservations.readById({
+                  environmentId,
+                  desktopId: input.request.desktopId,
+                  observationId: input.request.observationId,
+                });
+              }
               const desktop = {
                 kind: "user" as const,
                 desktopId: input.request.desktopId,
