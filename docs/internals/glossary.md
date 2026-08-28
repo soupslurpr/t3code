@@ -19,16 +19,24 @@ Terms whose meaning matters across T3 Code. Architecture and lifecycle constrain
 
 ## Orchestration
 
-| Term                    | Meaning                                                                                                   |
-| ----------------------- | --------------------------------------------------------------------------------------------------------- |
-| Command                 | A request to change domain state. Accepting it does not mean its side effects have finished.              |
-| Event                   | A persisted fact produced by a command.                                                                   |
-| Orchestrator            | The service that serializes commands and decides their events from current state, without I/O.            |
-| Projection / read model | A persisted view of current state, committed in the same transaction as the events that change it.        |
-| Command receipt         | A durable record of a command's result, used to make retries idempotent.                                  |
-| Outbox effect           | Side-effect intent committed with the events, such as starting a provider turn or capturing a checkpoint. |
-| Effect worker           | The worker that runs outbox effects after commit and feeds their results back as commands.                |
-| Durable monitor | A persisted timer, external signal, or screen condition owned by a thread that can record a result or request a continuation. See [durable monitors](./durable-monitors.md). |
+| Term                    | Meaning                                                                                                                                                                      |
+| ----------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Command                 | A request to change domain state. Accepting it does not mean its side effects have finished.                                                                                 |
+| Event                   | A persisted fact produced by a command.                                                                                                                                      |
+| Orchestrator            | The service that serializes commands and decides their events from current state, without I/O.                                                                               |
+| Projection / read model | A persisted view of current state, committed in the same transaction as the events that change it.                                                                           |
+| Command receipt         | A durable record of a command's result, used to make retries idempotent.                                                                                                     |
+| Outbox effect           | Side-effect intent committed with the events, such as starting a provider turn or capturing a checkpoint.                                                                    |
+| Effect worker           | The worker that runs outbox effects after commit and feeds their results back as commands.                                                                                   |
+| Durable monitor         | A persisted timer, external signal, or screen condition owned by a thread that can record a result or request a continuation. See [durable monitors](./durable-monitors.md). |
+
+## Computer use
+
+| Term              | Meaning                                                                                                                                                                                                                                                             |
+| ----------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| User desktop      | A physical graphical session exposed by a connected desktop client, with a stable identity across environment routes and host-owned view/control leases. It does not isolate providers on that host. See [User desktop supervision](./user-desktop-supervision.md). |
+| Agent desktop     | An environment-owned QEMU/KVM machine for isolated graphical agent work. Its lifecycle and authorization belong to an environment and thread. See [Agent desktops](./agent-desktops.md).                                                                            |
+| Supervision lease | A transient human view or control claim on a User or Agent desktop. View can be shared; control is exclusive and ends when released, expired, or its supervising client disconnects.                                                                                |
 
 ## Providers and checkpoints
 
