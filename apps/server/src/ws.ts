@@ -3059,6 +3059,12 @@ const layerWsRpc = (
                     observation: false,
                     returnControlToAgent: true,
                   });
+                case "release-control":
+                  return yield* invokeComputer("computerRequestView", {
+                    desktop,
+                    observation: false,
+                    releaseControlToView: true,
+                  });
                 case "snapshot":
                   return yield* invokeComputer("computerSnapshot", {
                     desktop,
