@@ -1,8 +1,33 @@
 import { expect, it } from "@effect/vitest";
 import * as Context from "effect/Context";
+import * as Schema from "effect/Schema";
 import { Tool } from "effect/unstable/ai";
 
 import { MonitorImageToolkit, MonitorStandardToolkit, MonitorToolkit } from "./tools.ts";
+
+it("decodes JSON defaults without erasing explicit watch resets or validation", () => {
+  const decode = Schema.decodeUnknownSync(
+    MonitorToolkit.tools.computer_watch_update.parametersSchema,
+  );
+  const updated = decode({
+    monitorId: "monitor-1",
+    expectedRevision: 1,
+    label: null,
+    sampling: { intervalMs: null, minEvaluationIntervalMs: null },
+    review: { afterEvaluations: null, consecutiveFailures: null },
+    deadlineAt: null,
+  });
+  expect(updated.label).toBeUndefined();
+  expect(updated.sampling?.intervalMs).toBeUndefined();
+  expect(updated.sampling?.minEvaluationIntervalMs).toBeNull();
+  expect(updated.review).toEqual({ afterEvaluations: null, consecutiveFailures: null });
+  expect(updated.deadlineAt).toBeNull();
+  expect(decode({ monitorId: "monitor-1", expectedRevision: 1, review: null }).review).toBeNull();
+  expect(() =>
+    decode({ monitorId: "monitor-1", expectedRevision: 1, label: "x".repeat(1_000) }),
+  ).toThrow();
+  expect(() => decode({ monitorId: null, expectedRevision: 1, review: null })).toThrow();
+});
 
 it("exports bounded object schemas and provider-neutral lifecycle tools", () => {
   const names = Object.keys(MonitorToolkit.tools);
@@ -46,6 +71,13 @@ it("exports bounded object schemas and provider-neutral lifecycle tools", () => 
   const start = MonitorToolkit.tools.monitor_start;
   expect(Context.get(start.annotations, Tool.Destructive)).toBe(true);
   expect(Context.get(start.annotations, Tool.OpenWorld)).toBe(true);
+
+  const signalSchema = Tool.getJsonSchema(MonitorToolkit.tools.monitor_signal) as {
+    readonly properties?: Readonly<Record<string, unknown>>;
+  };
+  expect(signalSchema.properties?.evidence).toEqual({
+    anyOf: [{ type: "string" }, { type: "null" }],
+  });
 
   const capabilities = MonitorToolkit.tools.computer_watch_capabilities;
   expect(Context.get(capabilities.annotations, Tool.Readonly)).toBe(true);

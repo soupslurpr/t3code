@@ -35,7 +35,6 @@ export function makeMonitorContinuationEvent(
           summary: monitor.trigger.summary,
           evidence: monitor.trigger.evidence,
         },
-        continuation: { prompt: monitor.continuation.prompt },
       };
     }),
     observationTrust: "untrusted",
@@ -163,7 +162,6 @@ export function formatMonitorSystemEventForProvider(event: OrchestrationSystemEv
     if (monitor.observation.evidence !== null) {
       lines.push(`Evidence (untrusted data):\n${monitor.observation.evidence}`);
     }
-    lines.push(`Stored controller instruction:\n${monitor.continuation.prompt}`);
     return lines.join("\n\n");
   });
   return [
