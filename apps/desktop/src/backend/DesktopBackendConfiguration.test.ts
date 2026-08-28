@@ -15,6 +15,7 @@ import * as DesktopEnvironment from "../app/DesktopEnvironment.ts";
 import * as DesktopBackendConfiguration from "./DesktopBackendConfiguration.ts";
 import * as DesktopConfig from "../app/DesktopConfig.ts";
 import * as DesktopServerExposure from "./DesktopServerExposure.ts";
+import * as UserDesktopIdentity from "../computer/UserDesktopIdentity.ts";
 import * as DesktopAppSettings from "../settings/DesktopAppSettings.ts";
 import * as DesktopWslEnvironment from "../wsl/DesktopWslEnvironment.ts";
 import * as DesktopWslServerTree from "../wsl/DesktopWslServerTree.ts";
@@ -62,7 +63,7 @@ function makeEnvironmentLayer(
     readonly processArch?: NodeJS.Architecture;
   },
 ) {
-  return DesktopEnvironment.layer({
+  const environmentLayer = DesktopEnvironment.layer({
     dirname: options?.dirname ?? "/repo/apps/desktop/src",
     homeDirectory: baseDir,
     platform: options?.platform ?? "darwin",
@@ -84,6 +85,13 @@ function makeEnvironmentLayer(
           VITE_DEV_SERVER_URL: options?.devServerUrl,
         }),
       ),
+    ),
+  );
+  return Layer.merge(
+    environmentLayer,
+    UserDesktopIdentity.layer.pipe(
+      Layer.provide(environmentLayer),
+      Layer.provide(NodeServices.layer),
     ),
   );
 }
@@ -251,8 +259,12 @@ describe("DesktopBackendConfiguration", () => {
         assert.equal(first.bootstrap.t3Home, environment.baseDir);
         assert.equal(first.bootstrap.tailscaleServeEnabled, true);
         assert.equal(first.bootstrap.tailscaleServePort, 8443);
+        assert.isDefined(first.bootstrap.environmentHost);
+        assert.match(first.bootstrap.environmentHost.desktopId, /^user-[0-9a-f-]{36}$/u);
+        assert.equal(first.bootstrap.environmentHost.defaultLabel.length !== 0, true);
         assert.match(first.bootstrap.desktopBootstrapToken, /^[0-9a-f]{48}$/i);
         assert.equal(second.bootstrap.desktopBootstrapToken, first.bootstrap.desktopBootstrapToken);
+        assert.deepEqual(second.bootstrap.environmentHost, first.bootstrap.environmentHost);
       }),
     ),
   );
@@ -312,6 +324,7 @@ describe("DesktopBackendConfiguration", () => {
         const wsl = yield* configuration.resolveWsl({ port: 5000, distro: null });
 
         assert.equal(wsl.bootstrap.desktopBootstrapToken, primary.bootstrap.desktopBootstrapToken);
+        assert.deepEqual(wsl.bootstrap.environmentHost, primary.bootstrap.environmentHost);
       }),
     ),
   );

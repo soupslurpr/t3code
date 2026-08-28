@@ -1,6 +1,7 @@
 import * as Schema from "effect/Schema";
 
 import { PortSchema, PositiveInt, TrimmedNonEmptyString } from "./baseSchemas.ts";
+import { UserDesktopHostRegistration } from "./userDesktop.ts";
 
 export const DesktopBackendBootstrap = Schema.Struct({
   mode: Schema.Literal("desktop"),
@@ -19,6 +20,8 @@ export const DesktopBackendBootstrap = Schema.Struct({
   desktopTelemetryFd: Schema.optionalKey(PositiveInt),
   desktopTelemetryControlFd: Schema.optionalKey(PositiveInt),
   resourceMonitorPath: Schema.optionalKey(TrimmedNonEmptyString),
+  /** Names the physical User desktop that owns this desktop-managed backend. */
+  environmentHost: Schema.optionalKey(UserDesktopHostRegistration),
 });
 
 export type DesktopBackendBootstrap = typeof DesktopBackendBootstrap.Type;

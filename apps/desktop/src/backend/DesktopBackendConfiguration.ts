@@ -17,6 +17,7 @@ import serverPackageJson from "../../../server/package.json" with { type: "json"
 import * as DesktopBackendManager from "./DesktopBackendManager.ts";
 import * as DesktopEnvironment from "../app/DesktopEnvironment.ts";
 import * as DesktopServerExposure from "./DesktopServerExposure.ts";
+import * as UserDesktopIdentity from "../computer/UserDesktopIdentity.ts";
 import * as DesktopAppSettings from "../settings/DesktopAppSettings.ts";
 import * as DesktopWslEnvironment from "../wsl/DesktopWslEnvironment.ts";
 import * as DesktopWslServerTree from "../wsl/DesktopWslServerTree.ts";
@@ -208,6 +209,7 @@ const readPersistedBackendObservabilitySettings = Effect.gen(function* () {
 interface SharedBootstrapInput {
   readonly bootstrapToken: string;
   readonly observabilitySettings: BackendObservabilitySettings;
+  readonly environmentHost: UserDesktopIdentity.UserDesktopIdentity["Service"]["registration"];
 }
 
 interface WslPreflightSuccess {
@@ -488,6 +490,7 @@ const resolvePrimaryStartConfig = Effect.fn("desktop.backendConfiguration.resolv
       t3Home: environment.baseDir,
       host: backendExposure.bindHost,
       desktopBootstrapToken: input.bootstrapToken,
+      environmentHost: input.environmentHost,
       tailscaleServeEnabled: backendExposure.tailscaleServeEnabled,
       tailscaleServePort: backendExposure.tailscaleServePort,
       desktopTelemetryFd: 4,
@@ -558,6 +561,7 @@ const resolveWslStartConfig = Effect.fn("desktop.backendConfiguration.resolveWsl
     // the SQLite file with the primary).
     host: wslBindHost,
     desktopBootstrapToken: input.bootstrapToken,
+    environmentHost: input.environmentHost,
     // PortSchema rejects 0, so when tailscale serve is disabled we still
     // need a valid number in this slot. The backend reads tailscaleServePort
     // only when tailscaleServeEnabled is true, so the actual value here is
@@ -744,6 +748,7 @@ export const make = Effect.gen(function* () {
   const wslEnvironment = yield* DesktopWslEnvironment.DesktopWslEnvironment;
   const wslServerTree = yield* DesktopWslServerTree.DesktopWslServerTree;
   const settings = yield* DesktopAppSettings.DesktopAppSettings;
+  const userDesktopIdentity = yield* UserDesktopIdentity.UserDesktopIdentity;
   const crypto = yield* Crypto.Crypto;
   // SynchronizedRef (not a plain Ref) so the read-generate-write is atomic.
   // crypto.randomBytes is a yield point, and resolvePrimary + resolveWsl can
@@ -777,7 +782,11 @@ export const make = Effect.gen(function* () {
       Effect.provideService(FileSystem.FileSystem, fileSystem),
       Effect.provideService(DesktopEnvironment.DesktopEnvironment, environment),
     );
-    return { bootstrapToken, observabilitySettings } satisfies SharedBootstrapInput;
+    return {
+      bootstrapToken,
+      observabilitySettings,
+      environmentHost: userDesktopIdentity.registration,
+    } satisfies SharedBootstrapInput;
   });
 
   const buildWslPrimaryConfig = Effect.gen(function* () {

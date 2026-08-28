@@ -2,6 +2,7 @@ import * as NodeServices from "@effect/platform-node/NodeServices";
 import { expect, it } from "@effect/vitest";
 import {
   EnvironmentId,
+  MAX_USER_DESKTOPS,
   PreviewAutomationClientDisconnectedError,
   PreviewAutomationDesktopTargetRequiredError,
   PreviewAutomationExecutionError,
@@ -16,6 +17,7 @@ import {
   type PreviewAutomationHost,
   type PreviewAutomationRequest,
   type PreviewAutomationStreamEvent,
+  type UserDesktopHostRegistration,
 } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
 import * as Deferred from "effect/Deferred";
@@ -43,16 +45,18 @@ const scope = {
   issuedAt: 1,
 };
 
+const USER_DESKTOP = {
+  protocolVersion: 1,
+  desktopId: "user-desktop-1",
+  defaultLabel: "Test desktop",
+  platform: "linux",
+  capabilities: ["view", "control", "availability"],
+} satisfies UserDesktopHostRegistration;
+
 const makeHost = (overrides: Partial<PreviewAutomationHost> = {}): PreviewAutomationHost => ({
   clientId: "client-1",
   environmentId: scope.environmentId,
-  userDesktop: {
-    protocolVersion: 1,
-    desktopId: "user-desktop-1",
-    defaultLabel: "Test desktop",
-    platform: "linux",
-    capabilities: ["view", "control", "availability"],
-  },
+  userDesktop: USER_DESKTOP,
   ...overrides,
 });
 
@@ -100,6 +104,76 @@ it.effect("atomically registers a connected host and correlates its response", (
       expect(result).toEqual({ available: true });
     }),
   ),
+);
+
+it.effect("identifies the desktop-managed environment host while it is offline", () =>
+  Effect.gen(function* () {
+    const broker = yield* PreviewAutomationBroker.make.pipe(
+      Effect.provideService(PreviewAutomationBroker.EnvironmentUserDesktopHost, USER_DESKTOP),
+      Effect.provide(Layer.merge(UserDesktops.layerMemory, NodeServices.layer)),
+    );
+
+    expect(yield* broker.listUserDesktops(scope.environmentId)).toMatchObject({
+      environmentHost: {
+        status: "identified",
+        desktop: { kind: "user", desktopId: USER_DESKTOP.desktopId },
+      },
+      desktops: [
+        {
+          desktop: { kind: "user", desktopId: USER_DESKTOP.desktopId },
+          connectionState: "offline",
+        },
+      ],
+    });
+  }),
+);
+
+it.effect("retains the environment host when the inventory reaches its bound", () =>
+  Effect.gen(function* () {
+    const records = [
+      ...Array.from({ length: MAX_USER_DESKTOPS }, (_, index) =>
+        UserDesktops.UserDesktopRecord.make({
+          desktopId: `other-desktop-${index}`,
+          defaultLabel: `Other desktop ${index}`,
+          customLabel: null,
+          platform: "linux",
+          capabilities: ["view", "control", "availability"],
+          lastSeenAt: "2026-01-01T00:00:00.000Z",
+          lastActiveAt: null,
+        }),
+      ),
+      UserDesktops.UserDesktopRecord.make({
+        desktopId: USER_DESKTOP.desktopId,
+        defaultLabel: USER_DESKTOP.defaultLabel,
+        customLabel: null,
+        platform: USER_DESKTOP.platform,
+        capabilities: USER_DESKTOP.capabilities,
+        lastSeenAt: "2025-01-01T00:00:00.000Z",
+        lastActiveAt: null,
+      }),
+    ];
+    const repository = UserDesktops.UserDesktopRepository.of({
+      upsertHost: () => Effect.void,
+      list: () => Effect.succeed(records),
+      rename: () => Effect.void,
+      remove: () => Effect.void,
+      markActive: () => Effect.void,
+      recordAudit: () => Effect.void,
+      listAudit: () => Effect.succeed({ events: [] }),
+    });
+    const broker = yield* PreviewAutomationBroker.make.pipe(
+      Effect.provideService(PreviewAutomationBroker.EnvironmentUserDesktopHost, USER_DESKTOP),
+      Effect.provideService(UserDesktops.UserDesktopRepository, repository),
+      Effect.provide(NodeServices.layer),
+    );
+
+    const listed = yield* broker.listUserDesktops(scope.environmentId);
+
+    expect(listed.desktops).toHaveLength(MAX_USER_DESKTOPS);
+    expect(
+      listed.desktops.some((desktop) => desktop.desktop.desktopId === USER_DESKTOP.desktopId),
+    ).toBe(true);
+  }),
 );
 
 it.effect("cancels the routed request when its caller times out", () =>
@@ -1077,6 +1151,7 @@ it.effect("reports a connected desktop client that cannot identify its target", 
       expect(yield* broker.listUserDesktops(scope.environmentId)).toEqual({
         desktops: [],
         incompatibleClientCount: 1,
+        environmentHost: { status: "unidentified" },
       });
       const error = yield* broker
         .invoke<void>({

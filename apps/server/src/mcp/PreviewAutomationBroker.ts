@@ -29,6 +29,7 @@ import {
   type UserDesktopCapability,
   type UserDesktopAuditAction,
   type UserDesktopAuditLog,
+  type UserDesktopHostRegistration,
   UserDesktopId,
   type UserDesktopList,
   UserDesktopManagementError,
@@ -634,9 +635,28 @@ const classifyResponseError = (
   }
 };
 
+/** Supplies the authoritative User desktop owner for a desktop-managed environment. */
+export class EnvironmentUserDesktopHost extends Context.Reference<
+  UserDesktopHostRegistration | undefined
+>("t3/mcp/PreviewAutomationBroker/EnvironmentUserDesktopHost", {
+  defaultValue: () => undefined,
+}) {}
+
 export const make = Effect.gen(function* PreviewAutomationBrokerMake() {
   const crypto = yield* Crypto.Crypto;
   const userDesktops = yield* UserDesktops.UserDesktopRepository;
+  const environmentHost = yield* EnvironmentUserDesktopHost;
+  const environmentHostLastSeenAt =
+    environmentHost === undefined ? undefined : DateTime.formatIso(yield* DateTime.now);
+  if (environmentHost !== undefined && environmentHostLastSeenAt !== undefined) {
+    yield* userDesktops
+      .upsertHost(environmentHost, environmentHostLastSeenAt)
+      .pipe(
+        Effect.catch((error) =>
+          Effect.logWarning("environment host desktop persistence failed", { error }),
+        ),
+      );
+  }
   const state = yield* SynchronizedRef.make<BrokerState>({
     clients: new Map(),
     assignments: new Map(),
@@ -790,6 +810,21 @@ export const make = Effect.gen(function* PreviewAutomationBrokerMake() {
       (connection) => connection.environmentId === environmentId,
     );
     const recordsById = new Map(records.map((record) => [record.desktopId, record]));
+    if (
+      environmentHost !== undefined &&
+      environmentHostLastSeenAt !== undefined &&
+      !recordsById.has(environmentHost.desktopId)
+    ) {
+      recordsById.set(environmentHost.desktopId, {
+        desktopId: environmentHost.desktopId,
+        defaultLabel: environmentHost.defaultLabel,
+        customLabel: null,
+        platform: environmentHost.platform,
+        capabilities: environmentHost.capabilities,
+        lastSeenAt: environmentHostLastSeenAt,
+        lastActiveAt: null,
+      });
+    }
     for (const connection of connections) {
       const host = connection.userDesktop;
       if (host === undefined || recordsById.has(host.desktopId)) continue;
@@ -838,8 +873,20 @@ export const make = Effect.gen(function* PreviewAutomationBrokerMake() {
         right.lastSeenAt.localeCompare(left.lastSeenAt) ||
         left.label.localeCompare(right.label),
     );
+    const boundedDesktops = desktops.slice(0, MAX_USER_DESKTOPS);
+    const environmentHostView =
+      environmentHost === undefined
+        ? undefined
+        : desktops.find((desktop) => desktop.desktop.desktopId === environmentHost.desktopId);
+    const listedDesktops =
+      environmentHostView !== undefined &&
+      !boundedDesktops.some(
+        (desktop) => desktop.desktop.desktopId === environmentHostView.desktop.desktopId,
+      )
+        ? [...boundedDesktops.slice(0, -1), environmentHostView]
+        : boundedDesktops;
     return {
-      desktops: desktops.slice(0, MAX_USER_DESKTOPS),
+      desktops: listedDesktops,
       incompatibleClientCount: connections.filter(
         (connection) =>
           connection.userDesktop === undefined &&
@@ -847,6 +894,13 @@ export const make = Effect.gen(function* PreviewAutomationBrokerMake() {
             connection.supportedOperations.has(operation as PreviewAutomationOperation),
           ),
       ).length,
+      environmentHost:
+        environmentHost === undefined
+          ? ({ status: "unidentified" } as const)
+          : ({
+              status: "identified",
+              desktop: { kind: "user", desktopId: environmentHost.desktopId },
+            } as const),
     };
   });
 
