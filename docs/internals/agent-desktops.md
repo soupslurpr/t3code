@@ -79,6 +79,12 @@ minutes, retains at most 32 desktops and 128 MiB of compressed images, and evict
 under either bound. The newest observation is preserved even when a single valid tool result exceeds
 the aggregate image target.
 
+User desktops publish direct model-facing observations into the same store. Their Settings
+supervisor lists all retained recipients for the selected physical desktop without starting capture,
+then reads exact bytes only for the selected observation. Live viewing remains a separate transient
+view lease. See [User desktop supervision](./user-desktop-supervision.md) for its host-wide lease,
+routing, and audit boundaries.
+
 ## Workspace Transfer Boundary
 
 The Agent desktop toolkit copies files and directory trees only across a typed workspace/guest
