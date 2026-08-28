@@ -14,6 +14,13 @@ desktop host owns active permission and lease state. Routes from several environ
 converge on one host-wide control boundary. A duplicate live identity inside one environment is an
 identity conflict and blocks routing.
 
+A desktop-managed backend also receives its owning User desktop registration through the private
+bootstrap envelope. `user_desktop_list` returns that authoritative association as `environmentHost`,
+including while the automation connection is offline. Primary and desktop-local WSL backends share
+the same owner. Standalone environments report the host as unidentified, and the server never
+infers ownership from focus, activity, labels, hostnames, or connection recency. The field remains
+optional on the wire so newer clients treat responses from older servers as unidentified.
+
 Every request names the exact User desktop id. The preview-automation broker routes only to a live
 host claiming that id; client focus is selection metadata and never a fallback. A disconnected or
 unsupported target fails explicitly. Human supervision uses the same privileged environment RPC as
