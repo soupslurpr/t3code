@@ -1,4 +1,5 @@
 import * as Schema from "effect/Schema";
+import * as SchemaTransformation from "effect/SchemaTransformation";
 
 import {
   IsoDateTime,
@@ -20,9 +21,14 @@ import { ModelSelection } from "./orchestration.ts";
 import { ProviderInstanceId } from "./providerInstance.ts";
 
 const MonitorLabel = TrimmedNonEmptyString.check(Schema.isMaxLength(500));
-const MonitorPrompt = TrimmedNonEmptyString.check(Schema.isMaxLength(20_000));
 const MonitorResultSummary = TrimmedNonEmptyString.check(Schema.isMaxLength(2_000));
-const MonitorEvidence = Schema.String.check(Schema.isMaxLength(20_000));
+// Keep the wire schema simple for MCP clients while validating the decoded value.
+const MonitorEvidence = Schema.String.pipe(
+  Schema.decodeTo(
+    Schema.String.check(Schema.isMaxLength(20_000)),
+    SchemaTransformation.passthrough(),
+  ),
+);
 const MonitorDeliveryGroupId = TrimmedNonEmptyString.check(Schema.isMaxLength(100));
 const ComputerWatchCriterion = TrimmedNonEmptyString.check(Schema.isMaxLength(8_000));
 const ComputerWatchHash = TrimmedNonEmptyString.check(Schema.isMaxLength(128));
@@ -265,15 +271,9 @@ export const ThreadMonitorCondition = Schema.Union([
 export type ThreadMonitorCondition = typeof ThreadMonitorCondition.Type;
 
 /** Chooses what T3 does after a monitor triggers. */
-export const ThreadMonitorContinuation = Schema.Union([
-  Schema.Struct({
-    mode: Schema.Literal("resume-thread"),
-    prompt: MonitorPrompt,
-  }),
-  Schema.Struct({
-    mode: Schema.Literal("record-only"),
-  }),
-]);
+export const ThreadMonitorContinuation = Schema.Struct({
+  mode: Schema.Literals(["resume-thread", "record-only"]),
+});
 export type ThreadMonitorContinuation = typeof ThreadMonitorContinuation.Type;
 
 export const ThreadMonitorTriggerReason = Schema.Literals(["signal", "deadline", "condition"]);
@@ -330,20 +330,7 @@ export const ThreadMonitorStartInput = Schema.Struct({
         "Defaults to resume-thread. record-only persists and reports the trigger without starting a model turn.",
     }),
   ),
-  resumePrompt: Schema.optional(
-    MonitorPrompt.annotate({
-      description:
-        "Instruction supplied when the thread resumes. Defaults to the label and is only valid for resume-thread.",
-    }),
-  ),
-}).check(
-  Schema.makeFilter(
-    (input) =>
-      input.continuation !== "record-only" ||
-      input.resumePrompt === undefined ||
-      "resumePrompt cannot be used with continuation=record-only.",
-  ),
-);
+});
 export type ThreadMonitorStartInput = typeof ThreadMonitorStartInput.Type;
 
 export const ThreadMonitorComputerMatchInput = Schema.Union([
@@ -451,20 +438,10 @@ export const ThreadMonitorComputerStartInput = Schema.Struct({
   }),
   deadlineAt: Schema.optional(IsoDateTime),
   continuation: Schema.optional(Schema.Literals(["resume-thread", "record-only"])),
-  resumePrompt: Schema.optional(MonitorPrompt),
-})
-  .check(
-    Schema.makeFilter(
-      (input) =>
-        input.continuation !== "record-only" ||
-        input.resumePrompt === undefined ||
-        "resumePrompt cannot be used with continuation=record-only.",
-    ),
-  )
-  .annotate({
-    description:
-      "Creates a durable multi-region screen condition. The server owns capture, sampling, evaluation, restart recovery, and continuation delivery after this call returns.",
-  });
+}).annotate({
+  description:
+    "Creates a durable multi-region screen condition. The server owns capture, sampling, evaluation, restart recovery, and continuation delivery after this call returns.",
+});
 export type ThreadMonitorComputerStartInput = typeof ThreadMonitorComputerStartInput.Type;
 
 export const ThreadMonitorComputerUpdateInput = Schema.Struct({
@@ -496,7 +473,6 @@ export const ThreadMonitorComputerUpdateInput = Schema.Struct({
   }),
   deadlineAt: Schema.optional(Schema.NullOr(IsoDateTime)),
   continuation: Schema.optional(Schema.Literals(["resume-thread", "record-only"])),
-  resumePrompt: Schema.optional(MonitorPrompt),
   acknowledgeReview: Schema.optional(Schema.Boolean).annotate({
     description: "Clear the delivered or pending review after the controller has inspected it.",
   }),
@@ -512,15 +488,8 @@ export const ThreadMonitorComputerUpdateInput = Schema.Struct({
         input.review !== undefined ||
         input.deadlineAt !== undefined ||
         input.continuation !== undefined ||
-        input.resumePrompt !== undefined ||
         input.acknowledgeReview === true ||
         "At least one watch update must be supplied.",
-    ),
-    Schema.makeFilter(
-      (input) =>
-        input.continuation !== "record-only" ||
-        input.resumePrompt === undefined ||
-        "resumePrompt cannot be used with continuation=record-only.",
     ),
   )
   .annotate({

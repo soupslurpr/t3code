@@ -9,6 +9,7 @@ import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
+import * as SqlClient from "effect/unstable/sql/SqlClient";
 
 import { ThreadMonitorRepository } from "../Services/ThreadMonitors.ts";
 import { SqlitePersistenceMemory } from "./Sqlite.ts";
@@ -135,6 +136,25 @@ function baseline(revision: number): ThreadMonitorComputerEvidenceImage {
 const layer = it.layer(ThreadMonitors.layer.pipe(Layer.provideMerge(SqlitePersistenceMemory)));
 
 layer("ThreadMonitorRepository", (it) => {
+  it.effect(
+    "loads old prompt-bearing rows and saves prompt-free monitors with existing constraints",
+    () =>
+      Effect.gen(function* () {
+        const repository = yield* ThreadMonitorRepository;
+        const sql = yield* SqlClient.SqlClient;
+        yield* repository.upsert({ ...monitor(1), continuation: { mode: "resume-thread" } });
+        yield* sql`UPDATE thread_monitors SET resume_prompt = 'Old handoff' WHERE monitor_id = ${monitorId}`;
+
+        const stored = Option.getOrThrow(yield* repository.getById(monitorId));
+        assert.deepEqual(stored.continuation, { mode: "resume-thread" });
+        yield* repository.upsert({ ...stored, label: "Updated build watch" });
+        const rows = yield* sql<{
+          resume_prompt: string;
+        }>`SELECT resume_prompt FROM thread_monitors WHERE monitor_id = ${monitorId}`;
+        assert.strictEqual(rows[0]?.resume_prompt, "Updated build watch");
+      }),
+  );
+
   it.effect("atomically replaces a monitor revision and its retained evidence", () =>
     Effect.gen(function* () {
       const repository = yield* ThreadMonitorRepository;

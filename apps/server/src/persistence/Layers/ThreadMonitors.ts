@@ -30,7 +30,6 @@ const ThreadMonitorRow = Schema.Struct({
   conditionJson: Schema.NullOr(Schema.String),
   wakeAt: Schema.NullOr(IsoDateTime),
   continuationMode: Schema.Literals(["resume-thread", "record-only"]),
-  resumePrompt: Schema.NullOr(Schema.String),
   status: ThreadMonitorStatus,
   triggerReason: Schema.NullOr(Schema.Literals(["signal", "deadline", "condition"])),
   triggerSummary: Schema.NullOr(Schema.String),
@@ -74,7 +73,6 @@ const toRow = (monitor: ThreadMonitor): ThreadMonitorRow => ({
         ? monitor.condition.deadlineAt
         : monitor.condition.nextCheckAt,
   continuationMode: monitor.continuation.mode,
-  resumePrompt: monitor.continuation.mode === "resume-thread" ? monitor.continuation.prompt : null,
   status: monitor.status,
   triggerReason: monitor.trigger?.reason ?? null,
   triggerSummary: monitor.trigger?.summary ?? null,
@@ -109,10 +107,7 @@ const fromRow = (row: ThreadMonitorRow): ThreadMonitor => ({
       : row.conditionType === "signal"
         ? { type: "signal", deadlineAt: row.wakeAt }
         : computerConditionFromRow(row),
-  continuation:
-    row.continuationMode === "resume-thread"
-      ? { mode: "resume-thread", prompt: row.resumePrompt ?? row.label }
-      : { mode: "record-only" },
+  continuation: { mode: row.continuationMode },
   status: row.status,
   trigger:
     row.triggerReason === null
@@ -137,6 +132,8 @@ const fromRow = (row: ThreadMonitorRow): ThreadMonitor => ({
 const make = Effect.gen(function* () {
   const sql = yield* SqlClient.SqlClient;
 
+  // Existing databases require resume_prompt for resume-thread monitors. Keep
+  // the label in that legacy column; it is never read or supplied to agents.
   const upsertRow = SqlSchema.void({
     Request: ThreadMonitorRow,
     execute: (row) => sql`
@@ -171,7 +168,7 @@ const make = Effect.gen(function* () {
         ${row.conditionJson},
         ${row.wakeAt},
         ${row.continuationMode},
-        ${row.resumePrompt},
+        ${row.label},
         ${row.status},
         ${row.triggerReason},
         ${row.triggerSummary},
@@ -224,7 +221,6 @@ const make = Effect.gen(function* () {
         condition_json AS "conditionJson",
         wake_at AS "wakeAt",
         continuation_mode AS "continuationMode",
-        resume_prompt AS "resumePrompt",
         status,
         trigger_reason AS "triggerReason",
         trigger_summary AS "triggerSummary",
@@ -260,7 +256,6 @@ const make = Effect.gen(function* () {
         condition_json AS "conditionJson",
         wake_at AS "wakeAt",
         continuation_mode AS "continuationMode",
-        resume_prompt AS "resumePrompt",
         status,
         trigger_reason AS "triggerReason",
         trigger_summary AS "triggerSummary",
@@ -295,7 +290,6 @@ const make = Effect.gen(function* () {
         condition_json AS "conditionJson",
         wake_at AS "wakeAt",
         continuation_mode AS "continuationMode",
-        resume_prompt AS "resumePrompt",
         status,
         trigger_reason AS "triggerReason",
         trigger_summary AS "triggerSummary",
@@ -328,7 +322,6 @@ const make = Effect.gen(function* () {
         condition_json AS "conditionJson",
         wake_at AS "wakeAt",
         continuation_mode AS "continuationMode",
-        resume_prompt AS "resumePrompt",
         status,
         trigger_reason AS "triggerReason",
         trigger_summary AS "triggerSummary",
