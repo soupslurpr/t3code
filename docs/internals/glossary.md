@@ -32,6 +32,14 @@ Terms whose meaning matters across T3 Code. Architecture and lifecycle constrain
 | Durable monitor         | A persisted timer, external signal, or screen condition owned by a thread that can record a result or request a continuation. See [durable monitors](./durable-monitors.md). |
 | Quiesced                | The relevant follow-up workers have finished, beyond the provider turn merely ending.                                                                                        |
 
+## Computer use
+
+| Term              | Meaning                                                                                                                                                                                                                                                             |
+| ----------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| User desktop      | A physical graphical session exposed by a connected desktop client, with a stable identity across environment routes and host-owned view/control leases. It does not isolate providers on that host. See [User desktop supervision](./user-desktop-supervision.md). |
+| Agent desktop     | An environment-owned QEMU/KVM machine for isolated graphical agent work. Its lifecycle and authorization belong to an environment and thread. See [Agent desktops](./agent-desktops.md).                                                                            |
+| Supervision lease | A transient human view or control claim on a User or Agent desktop. View can be shared; control is exclusive and ends when released, expired, or its supervising client disconnects.                                                                                |
+
 ## Providers and checkpoints
 
 | Term                | Meaning                                                                                                      |
