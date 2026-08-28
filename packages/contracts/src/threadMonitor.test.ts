@@ -5,11 +5,17 @@ import {
   ThreadMonitorComputerInspectInput,
   ThreadMonitorComputerStartInput,
   ThreadMonitorComputerUpdateInput,
+  ThreadMonitorContinuation,
+  ThreadMonitorSignalInput,
+  ThreadMonitorStartInput,
 } from "./threadMonitor.ts";
 
 const decodeComputerWatch = Schema.decodeUnknownSync(ThreadMonitorComputerStartInput);
 const decodeComputerWatchUpdate = Schema.decodeUnknownSync(ThreadMonitorComputerUpdateInput);
 const decodeComputerWatchInspect = Schema.decodeUnknownSync(ThreadMonitorComputerInspectInput);
+const decodeSignal = Schema.decodeUnknownSync(ThreadMonitorSignalInput);
+const decodeStart = Schema.decodeUnknownSync(ThreadMonitorStartInput);
+const decodeContinuation = Schema.decodeUnknownSync(ThreadMonitorContinuation);
 const modelMatch = {
   type: "model" as const,
   criterion: "A result is visible",
@@ -20,6 +26,27 @@ const userDesktop = {
 };
 
 describe("thread monitor contracts", () => {
+  it("discards retired prompts when decoding existing monitor calls and state", () => {
+    const start = { label: "Wait for the build", schedule: { type: "signal" } };
+    expect(decodeStart({ ...start, resumePrompt: "Old handoff" })).toEqual(start);
+    const watch = { ...userDesktop, label: "Wait for the build", match: modelMatch };
+    expect(decodeComputerWatch({ ...watch, resumePrompt: "Old handoff" })).toEqual(watch);
+    expect(
+      decodeContinuation({
+        mode: "resume-thread",
+        prompt: "Old handoff",
+      }),
+    ).toEqual({ mode: "resume-thread" });
+  });
+
+  it("accepts only bounded string evidence", () => {
+    expect(decodeSignal({ monitorId: "monitor-1", evidence: "exitCode=0" }).evidence).toBe(
+      "exitCode=0",
+    );
+    expect(() => decodeSignal({ monitorId: "monitor-1", evidence: { exitCode: 0 } })).toThrow();
+    expect(() => decodeSignal({ monitorId: "monitor-1", evidence: "x".repeat(20_001) })).toThrow();
+  });
+
   it("requires an explicit watched desktop", () => {
     expect(() =>
       decodeComputerWatch({ label: "Wait for a result", match: { type: "image-change" } }),

@@ -564,7 +564,6 @@ testLayer("ThreadMonitor", (it) => {
         monitor: {
           label: "Wait for the build",
           schedule: { type: "signal" },
-          resumePrompt: "Inspect the completed build and report the result.",
         },
       });
       assert.strictEqual(liveness.getThreadBackgroundLiveness(threadId), "monitoring");
@@ -615,9 +614,7 @@ testLayer("ThreadMonitor", (it) => {
           summary: "The build completed.",
           evidence: "exitCode=0",
         });
-        assert.deepEqual(systemEvent.monitors[0]?.continuation, {
-          prompt: "Inspect the completed build and report the result.",
-        });
+        assert.notProperty(systemEvent.monitors[0], "continuation");
       }
 
       const deliveredMonitor = status.monitors[0];
