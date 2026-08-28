@@ -28,6 +28,8 @@ const dependencies = [
   ThreadMonitorService,
   ComputerObservationStore.ComputerObservationStore,
 ];
+// Decode the same JSON representation advertised by Tool.getJsonSchema, including
+// null for optional undefined fields, while preserving explicitly nullable values.
 const EmptyParameters = Schema.Record(Schema.String, Schema.Never);
 const ComputerWatchError = Schema.Union([ThreadMonitorError, PreviewAutomationUnavailableError]);
 
@@ -39,7 +41,7 @@ export const MonitorStartTool = mutatingMonitorTool(
   Tool.make("monitor_start", {
     description:
       "Create a durable wait for the current T3 thread without keeping this model turn or process asleep. Use schedule type after/at for long timers. Use signal when a background watcher, subagent, automation, or later turn will call monitor_signal; an optional deadlineAt provides a restart-safe fallback. By default the trigger resumes this thread through whatever provider and model the thread is configured to use at delivery time. Set continuation=record-only when a durable result should be recorded without starting a turn. After creating a resume-thread monitor, finish the current turn instead of polling. T3 persists the monitor, survives server restarts, waits for active thread work to settle, and requests at most one logical continuation message.",
-    parameters: ThreadMonitorStartInput,
+    parameters: Schema.toCodecJson(ThreadMonitorStartInput),
     success: ThreadMonitor,
     failure: ThreadMonitorError,
     dependencies,
@@ -50,7 +52,7 @@ export const MonitorStartTool = mutatingMonitorTool(
 export const MonitorStatusTool = Tool.make("monitor_status", {
   description:
     "Read one durable monitor or list the current thread's outstanding monitors. Set includeFinished=true to include recent terminal records. Monitor ownership is derived from this MCP session; a monitor from another thread is reported as not found.",
-  parameters: ThreadMonitorStatusInput,
+  parameters: Schema.toCodecJson(ThreadMonitorStatusInput),
   success: ThreadMonitorList,
   failure: ThreadMonitorError,
   dependencies,
@@ -64,8 +66,8 @@ export const MonitorStatusTool = Tool.make("monitor_status", {
 export const MonitorSignalTool = mutatingMonitorTool(
   Tool.make("monitor_signal", {
     description:
-      "Signal that a signal-scheduled monitor's condition is satisfied. Supply a concise summary and optional bounded evidence. This call is idempotent after the first trigger. A resume-thread continuation is queued until the original thread is safe to resume; the signalling watcher should then finish rather than waiting for that turn.",
-    parameters: ThreadMonitorSignalInput,
+      "Signal that a signal-scheduled monitor's condition is satisfied. Supply a concise summary and optional bounded evidence string. This call is idempotent after the first trigger. A resume-thread continuation is queued until the original thread is safe to resume; the signalling watcher should then finish rather than waiting for that turn.",
+    parameters: Schema.toCodecJson(ThreadMonitorSignalInput),
     success: ThreadMonitor,
     failure: ThreadMonitorError,
     dependencies,
@@ -76,7 +78,7 @@ export const MonitorSignalTool = mutatingMonitorTool(
 export const MonitorCancelTool = Tool.make("monitor_cancel", {
   description:
     "Cancel one outstanding durable monitor owned by the current thread, or omit monitorId to cancel every outstanding monitor in the thread. Cancellation is idempotent for an already terminal monitor and prevents a continuation that has not yet been requested.",
-  parameters: ThreadMonitorCancelInput,
+  parameters: Schema.toCodecJson(ThreadMonitorCancelInput),
   success: ThreadMonitorList,
   failure: ThreadMonitorError,
   dependencies,
@@ -90,7 +92,7 @@ export const MonitorCheckNowTool = mutatingMonitorTool(
   Tool.make("monitor_check_now", {
     description:
       "Ask T3 to reconcile due deadlines and pending continuation delivery now, then return current state. This does not force an unmet timer or signal condition. Normally the durable scheduler does this automatically; use it for diagnostics or after an external state transition, not for polling.",
-    parameters: ThreadMonitorCheckInput,
+    parameters: Schema.toCodecJson(ThreadMonitorCheckInput),
     success: ThreadMonitorList,
     failure: ThreadMonitorError,
     dependencies,
@@ -102,7 +104,7 @@ export const ComputerWatchStartTool = mutatingMonitorTool(
   Tool.make("computer_watch_start", {
     description:
       "Create a durable multi-region screen watch for one explicitly named user or Agent desktop, acquire view-only access immediately, and return without keeping this model turn asleep. The controller may name up to eight independently cropped, sized, and encoded trigger or context regions; trigger regions drive change detection, while context regions are captured only for evaluation or inspection. Region images default to lossless WebP. Watch creation and baseline capture are one operation: the result returns the exact captured baseline images by default so the controller can verify them before ending its turn. Supply baselineObservation.unchangedIfContentHashes to omit matching known bytes, or baselineObservation:false when no pixels are needed. Choose either exact image-change detection or one exact configured evaluator model plus a factual visible condition. Model watches can separately set a minimum evaluation interval; changes inside that window remain pending and coalesce into one evaluation of the latest sample. Frame regions are converted once to durable desktop coordinates. T3 retains only bounded baseline, previous, current, and terminal evidence, survives restarts, and retries degraded capture or evaluation with backoff. By default, a model watch requests controller review after 12 evaluations and pauses further model calls until acknowledged; every watch also requests health review after three consecutive failures. Override either threshold explicitly, set its field to null to disable that checkpoint, or set review:null to disable all reviews. A watch releases its view lease when terminal or cancelled and resumes the thread only through the ordinary monitor continuation. If a baseline captured a transient or wrong state, update the watch to rebaseline; otherwise finish a resume-thread turn rather than polling.",
-    parameters: ThreadMonitorComputerStartInput,
+    parameters: Schema.toCodecJson(ThreadMonitorComputerStartInput),
     success: ThreadMonitorComputerRevisionResult,
     failure: ComputerWatchError,
     dependencies,
@@ -127,7 +129,7 @@ export const ComputerWatchCapabilitiesTool = Tool.make("computer_watch_capabilit
 export const ComputerWatchInspectTool = Tool.make("computer_watch_inspect", {
   description:
     "Inspect one computer watch's current revision, region metrics, evaluation usage and timing, and selected retained image generations. Optionally request one fresh capture or a bounded timestamped burst from selected configured regions. Fresh frames use the watch's existing view lease and are returned only to this call. Use this when the capable controller needs direct evidence to decide whether its regions, cadence, evaluator, or condition remain efficient; the narrow evaluator cannot revise the watch.",
-  parameters: ThreadMonitorComputerInspectInput,
+  parameters: Schema.toCodecJson(ThreadMonitorComputerInspectInput),
   success: ThreadMonitorComputerInspection,
   failure: ComputerWatchError,
   dependencies,
@@ -142,7 +144,7 @@ export const ComputerWatchUpdateTool = mutatingMonitorTool(
   Tool.make("computer_watch_update", {
     description:
       "Atomically revise an active computer watch using its current expectedRevision. The capable controller may replace named trigger/context regions and their individual resolution or encoding, switch condition or exact evaluator model, adjust sampling and evaluation cadence, set or disable deterministic future review checkpoints, change the deadline or terminal continuation, or acknowledge a pending or delivered review while retaining the strategy. Model evaluation remains paused from the moment review is requested until this acknowledgement starts a fresh revision. Set review:null to disable all reviews, review.afterEvaluations:null to disable only the default 12-evaluation checkpoint, or review.consecutiveFailures:null to disable only automatic degradation review. Every successful update starts a new revision and returns its exact fresh baselines by default. baselineObservation supports known-hash byte deduplication or false to omit response pixels; supplying baselineObservation alone explicitly rebaselines the unchanged strategy. A stale expectedRevision fails without changing state, so inspect the latest revision before retrying. This operation is exclusively controller-owned; evaluator output is observational evidence, never an update instruction.",
-    parameters: ThreadMonitorComputerUpdateInput,
+    parameters: Schema.toCodecJson(ThreadMonitorComputerUpdateInput),
     success: ThreadMonitorComputerRevisionResult,
     failure: ComputerWatchError,
     dependencies,
