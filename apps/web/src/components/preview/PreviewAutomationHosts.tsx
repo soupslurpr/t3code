@@ -377,6 +377,7 @@ function PreviewAutomationHost(props: { readonly environmentId: EnvironmentId })
           ? null
           : {
               controllerId: request.controllerId,
+              controllerKind: request.controllerKind ?? ("agent" as const),
               environmentId,
               threadId: request.threadId,
             };
@@ -924,6 +925,7 @@ function PreviewAutomationHost(props: { readonly environmentId: EnvironmentId })
       if (computer === undefined || request.controllerId === undefined) return;
       const context = {
         controllerId: request.controllerId,
+        controllerKind: request.controllerKind ?? ("agent" as const),
         environmentId,
         threadId: request.threadId,
       };

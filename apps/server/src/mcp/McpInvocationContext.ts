@@ -1,5 +1,6 @@
 import {
   type AuthMcpClientAccess,
+  type ComputerAutomationControllerKind,
   type EnvironmentId,
   McpCapabilityUnavailableError,
   OrchestratorMcpFailure,
@@ -26,6 +27,7 @@ export interface McpThreadCaller {
   readonly threadId: ThreadId;
   /** Stable logical owner for recoverable computer and Agent desktop state. */
   readonly controllerId: string;
+  readonly controllerKind?: ComputerAutomationControllerKind;
   readonly providerSessionId: string;
   readonly providerInstanceId: ProviderInstanceId;
 }

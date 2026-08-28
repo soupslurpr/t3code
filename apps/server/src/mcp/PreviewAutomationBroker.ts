@@ -1169,7 +1169,10 @@ export const make = Effect.gen(function* PreviewAutomationBrokerMake() {
             requestId,
             threadId: input.scope.thread.threadId,
             ...(isComputerOperation(input.operation)
-              ? { controllerId: input.scope.thread.controllerId }
+              ? {
+                  controllerId: input.scope.thread.controllerId,
+                  controllerKind: input.scope.thread.controllerKind ?? ("agent" as const),
+                }
               : {}),
             tabId: requestContext.tabId,
             tabIdExplicit: input.tabId !== undefined,

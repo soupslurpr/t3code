@@ -97,31 +97,3 @@ export class UserDesktopManagementError extends Schema.TaggedErrorClass<UserDesk
     return this.detail;
   }
 }
-
-/** Describes one authenticated human request for user-desktop management. */
-export const UserDesktopHumanRequest = Schema.Union([
-  Schema.Struct({ operation: Schema.Literal("list") }),
-  Schema.Struct({ operation: Schema.Literal("rename"), input: UserDesktopRenameInput }),
-  Schema.Struct({ operation: Schema.Literal("remove"), input: UserDesktopRemoveInput }),
-  Schema.Struct({ operation: Schema.Literal("status"), desktopId: UserDesktopId }),
-  Schema.Struct({ operation: Schema.Literal("remember-view"), desktopId: UserDesktopId }),
-  Schema.Struct({ operation: Schema.Literal("remember-control"), desktopId: UserDesktopId }),
-  Schema.Struct({ operation: Schema.Literal("release"), desktopId: UserDesktopId }),
-  Schema.Struct({ operation: Schema.Literal("forget"), desktopId: UserDesktopId }),
-  Schema.Struct({ operation: Schema.Literal("observation-list"), desktopId: UserDesktopId }),
-  Schema.Struct({
-    operation: Schema.Literal("observation"),
-    desktopId: UserDesktopId,
-    observationId: TrimmedNonEmptyString.check(Schema.isMaxLength(128)),
-  }),
-]);
-export type UserDesktopHumanRequest = typeof UserDesktopHumanRequest.Type;
-
-/** Carries one user-desktop management request through an environment server. */
-export const UserDesktopHumanInvokeInput = Schema.Struct({
-  request: UserDesktopHumanRequest,
-  timeoutMs: Schema.optional(
-    Schema.Int.check(Schema.isBetween({ minimum: 1_000, maximum: 120_000 })),
-  ),
-});
-export type UserDesktopHumanInvokeInput = typeof UserDesktopHumanInvokeInput.Type;

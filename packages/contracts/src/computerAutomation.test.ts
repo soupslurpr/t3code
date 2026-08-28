@@ -55,11 +55,26 @@ describe("computer automation contracts", () => {
       decodeAccess({
         desktop: { kind: "user", desktopId: "user-desktop-1" },
         observation: false,
+        takeoverLeaseId: "computer-lease-1",
       }),
     ).toEqual({
       desktop: { kind: "user", desktopId: "user-desktop-1" },
       observation: false,
+      takeoverLeaseId: "computer-lease-1",
     });
+    expect(
+      decodeAccess({
+        desktop: { kind: "user", desktopId: "user-desktop-1" },
+        returnControlToAgent: true,
+      }),
+    ).toMatchObject({ returnControlToAgent: true });
+    expect(() =>
+      decodeAccess({
+        desktop: { kind: "user", desktopId: "user-desktop-1" },
+        takeoverLeaseId: "computer-lease-1",
+        returnControlToAgent: true,
+      }),
+    ).toThrow(/cannot be combined/u);
     expect(() => decodeAccess({ desktop: { kind: "user" } })).toThrow();
     expect(decodeAccess({ desktop: { kind: "agent" } })).toEqual({
       desktop: { kind: "agent" },
@@ -522,6 +537,33 @@ describe("computer automation contracts", () => {
         cursor: null,
       }),
     ).toMatchObject({ available: true, permission: "view-only" });
+  });
+
+  it("represents redacted logical lease ownership", () => {
+    expect(
+      decodeStatus({
+        available: true,
+        backend: "gnome-wayland-portal",
+        permission: "view-only",
+        rememberedAccess: ["view", "control"],
+        displayState: "active",
+        keepAwake: true,
+        displays: [],
+        cursor: null,
+        lease: {
+          access: "view",
+          controller: { kind: "agent", sameEnvironment: false },
+          takeoverLeaseId: "computer-lease-2",
+          canReturnControl: false,
+        },
+      }),
+    ).toMatchObject({
+      lease: {
+        access: "view",
+        controller: { kind: "agent", sameEnvironment: false },
+        takeoverLeaseId: "computer-lease-2",
+      },
+    });
   });
 
   it("reports a locked display separately from its keep-awake lease", () => {
