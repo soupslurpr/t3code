@@ -13,8 +13,10 @@ import { ProviderInstanceId } from "./providerInstance.ts";
 import {
   COMPUTER_AUTOMATION_OPERATIONS,
   ComputerAutomationActionBatchInput,
+  ComputerAutomationControllerKind,
   ComputerAutomationFailure,
   ComputerAutomationFailureKind,
+  ComputerAutomationLeaseId,
   ComputerAutomationObservationOptions,
 } from "./computerAutomation.ts";
 import { ComputerObservationId } from "./computerObservation.ts";
@@ -27,7 +29,12 @@ import {
   AgentDesktopOwner,
   AgentDesktopUpdateInput,
 } from "./agentDesktop.ts";
-import { UserDesktopHostRegistration } from "./userDesktop.ts";
+import {
+  UserDesktopHostRegistration,
+  UserDesktopId,
+  UserDesktopRemoveInput,
+  UserDesktopRenameInput,
+} from "./userDesktop.ts";
 
 const BoundedUrl = Schema.String.check(Schema.isTrimmed())
   .check(Schema.isNonEmpty())
@@ -126,6 +133,54 @@ export const AgentDesktopHumanInvokeInput = Schema.Struct({
   ),
 });
 export type AgentDesktopHumanInvokeInput = typeof AgentDesktopHumanInvokeInput.Type;
+
+const UserDesktopHumanTarget = { desktopId: UserDesktopId };
+
+/** Describes one authenticated human request for User desktop management and supervision. */
+export const UserDesktopHumanRequest = Schema.Union([
+  Schema.Struct({ operation: Schema.Literal("list") }),
+  Schema.Struct({ operation: Schema.Literal("rename"), input: UserDesktopRenameInput }),
+  Schema.Struct({ operation: Schema.Literal("remove"), input: UserDesktopRemoveInput }),
+  Schema.Struct({ operation: Schema.Literal("status"), ...UserDesktopHumanTarget }),
+  Schema.Struct({ operation: Schema.Literal("request-view"), ...UserDesktopHumanTarget }),
+  Schema.Struct({
+    operation: Schema.Literal("request-control"),
+    ...UserDesktopHumanTarget,
+    takeoverLeaseId: Schema.optional(ComputerAutomationLeaseId),
+  }),
+  Schema.Struct({ operation: Schema.Literal("return-control"), ...UserDesktopHumanTarget }),
+  Schema.Struct({
+    operation: Schema.Literal("snapshot"),
+    ...UserDesktopHumanTarget,
+    input: ComputerAutomationObservationOptions,
+  }),
+  Schema.Struct({
+    operation: Schema.Literal("act"),
+    ...UserDesktopHumanTarget,
+    input: ComputerAutomationActionBatchInput,
+  }),
+  Schema.Struct({ operation: Schema.Literal("remember-view"), ...UserDesktopHumanTarget }),
+  Schema.Struct({ operation: Schema.Literal("remember-control"), ...UserDesktopHumanTarget }),
+  Schema.Struct({ operation: Schema.Literal("release"), ...UserDesktopHumanTarget }),
+  Schema.Struct({ operation: Schema.Literal("end-all-access"), ...UserDesktopHumanTarget }),
+  Schema.Struct({ operation: Schema.Literal("forget"), ...UserDesktopHumanTarget }),
+  Schema.Struct({ operation: Schema.Literal("observation-list"), ...UserDesktopHumanTarget }),
+  Schema.Struct({
+    operation: Schema.Literal("observation"),
+    ...UserDesktopHumanTarget,
+    observationId: ComputerObservationId,
+  }),
+]);
+export type UserDesktopHumanRequest = typeof UserDesktopHumanRequest.Type;
+
+/** Carries one User desktop management or supervision request through an environment server. */
+export const UserDesktopHumanInvokeInput = Schema.Struct({
+  request: UserDesktopHumanRequest,
+  timeoutMs: Schema.optional(
+    Schema.Int.check(Schema.isBetween({ minimum: 1_000, maximum: 120_000 })),
+  ),
+});
+export type UserDesktopHumanInvokeInput = typeof UserDesktopHumanInvokeInput.Type;
 
 const PreviewAutomationTabTargetFields = {
   tabId: Schema.optional(
@@ -676,6 +731,7 @@ export const PreviewAutomationRequest = Schema.Struct({
   threadId: ThreadId,
   /** Stable owner for exclusive computer-control leases. */
   controllerId: Schema.optional(AgentDesktopControllerId),
+  controllerKind: Schema.optional(ComputerAutomationControllerKind),
   tabId: Schema.optional(PreviewTabId),
   tabIdExplicit: Schema.optional(Schema.Boolean),
   operation: PreviewAutomationOperation,

@@ -767,6 +767,7 @@ it.effect("gives parallel logical controllers distinct computer identities", () 
       const secondScope = {
         ...scope,
         controllerId: "controller-2",
+        controllerKind: "human" as const,
         providerSessionId: "provider-session-2",
       };
       expect(
@@ -786,6 +787,10 @@ it.effect("gives parallel logical controllers distinct computer identities", () 
       expect(routedRequests.map(({ controllerId }) => controllerId)).toEqual([
         scope.controllerId,
         secondScope.controllerId,
+      ]);
+      expect(routedRequests.map(({ controllerKind }) => controllerKind)).toEqual([
+        "agent",
+        "human",
       ]);
     }),
   ),

@@ -1,4 +1,5 @@
 import {
+  type ComputerAutomationControllerKind,
   type EnvironmentId,
   PreviewAutomationUnavailableError,
   type ProviderInstanceId,
@@ -15,6 +16,7 @@ export interface McpInvocationScope {
   readonly threadId: ThreadId;
   /** Stable logical owner for recoverable computer and Agent desktop state. */
   readonly controllerId: string;
+  readonly controllerKind?: ComputerAutomationControllerKind;
   readonly providerSessionId: string;
   readonly providerInstanceId: ProviderInstanceId;
   readonly capabilities: ReadonlySet<McpCapability>;

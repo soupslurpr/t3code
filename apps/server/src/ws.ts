@@ -51,6 +51,7 @@ import {
   ProviderUploadFeedbackError,
   ProviderSetupError,
   ProviderInstanceId,
+  type PreviewAutomationOperation,
   RelayClientInstallFailedError,
   type RelayClientInstallProgressEvent,
   ServerSelfUpdateError,
@@ -2696,6 +2697,7 @@ const makeWsRpcLayer = (
                 environmentId,
                 threadId: input.threadId,
                 controllerId: `human:${currentSessionId}`,
+                controllerKind: "human" as const,
                 providerSessionId: `human:${currentSessionId}`,
                 providerInstanceId: AGENT_DESKTOP_HUMAN_PROVIDER_INSTANCE_ID,
                 capabilities: new Set(["computer" as const]),
@@ -2767,31 +2769,68 @@ const makeWsRpcLayer = (
                 environmentId,
                 threadId: USER_DESKTOP_SETTINGS_THREAD_ID,
                 controllerId: `human:${currentSessionId}`,
+                controllerKind: "human" as const,
                 providerSessionId: `human:${currentSessionId}`,
                 providerInstanceId: USER_DESKTOP_HUMAN_PROVIDER_INSTANCE_ID,
                 capabilities: new Set(["computer" as const]),
                 issuedAt: yield* Clock.currentTimeMillis,
               };
-              const operation =
-                input.request.operation === "status"
-                  ? ("computerStatus" as const)
-                  : input.request.operation === "remember-view"
-                    ? ("computerRememberView" as const)
-                    : input.request.operation === "remember-control"
-                      ? ("computerRememberControl" as const)
-                      : input.request.operation === "release"
-                        ? ("computerForceRelease" as const)
-                        : ("computerForceForgetControl" as const);
-              const operationInput =
-                operation === "computerRememberView" || operation === "computerRememberControl"
-                  ? { desktop, observation: false as const }
-                  : { desktop };
-              return yield* previewAutomationBroker.invoke({
-                scope,
-                operation,
-                input: operationInput,
-                ...(input.timeoutMs === undefined ? {} : { timeoutMs: input.timeoutMs }),
-              });
+              const invokeComputer = (operation: PreviewAutomationOperation, request: unknown) =>
+                previewAutomationBroker.invoke({
+                  scope,
+                  operation,
+                  input: request,
+                  ...(input.timeoutMs === undefined ? {} : { timeoutMs: input.timeoutMs }),
+                });
+              switch (input.request.operation) {
+                case "status":
+                  return yield* invokeComputer("computerStatus", { desktop });
+                case "request-view":
+                  return yield* invokeComputer("computerRequestView", {
+                    desktop,
+                    observation: false,
+                  });
+                case "request-control":
+                  return yield* invokeComputer("computerRequestControl", {
+                    desktop,
+                    observation: false,
+                    ...(input.request.takeoverLeaseId === undefined
+                      ? {}
+                      : { takeoverLeaseId: input.request.takeoverLeaseId }),
+                  });
+                case "return-control":
+                  return yield* invokeComputer("computerRequestControl", {
+                    desktop,
+                    observation: false,
+                    returnControlToAgent: true,
+                  });
+                case "snapshot":
+                  return yield* invokeComputer("computerSnapshot", {
+                    desktop,
+                    ...input.request.input,
+                  });
+                case "act":
+                  return yield* invokeComputer("computerAct", {
+                    desktop,
+                    ...input.request.input,
+                  });
+                case "remember-view":
+                  return yield* invokeComputer("computerRememberView", {
+                    desktop,
+                    observation: false,
+                  });
+                case "remember-control":
+                  return yield* invokeComputer("computerRememberControl", {
+                    desktop,
+                    observation: false,
+                  });
+                case "release":
+                  return yield* invokeComputer("computerRelease", { desktop });
+                case "end-all-access":
+                  return yield* invokeComputer("computerForceRelease", { desktop });
+                case "forget":
+                  return yield* invokeComputer("computerForceForgetControl", { desktop });
+              }
             }),
             { "rpc.aggregate": "user-desktop" },
           ),
