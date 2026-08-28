@@ -46,6 +46,10 @@ vi.mock("~/state/environments", () => ({
   }),
 }));
 
+vi.mock("~/state/entities", () => ({
+  useThreadShells: () => [],
+}));
+
 vi.mock("~/state/preview", () => ({
   previewEnvironment: { invokeUserDesktopHuman: Symbol("invokeUserDesktopHuman") },
 }));
@@ -54,6 +58,7 @@ vi.mock("~/state/use-atom-command", () => ({
   useAtomCommand: () => commands.invoke,
 }));
 
+import { ComputerDesktopViewer } from "./AgentDesktopSettings";
 import { UserDesktopSettings } from "./UserDesktopSettings";
 
 const onlineDesktop = {
@@ -90,6 +95,37 @@ const status = {
   keepAwake: true,
   displays: [],
   cursor: null,
+  lease: { access: "none" as const, controller: null, canReturnControl: false },
+};
+
+const snapshot = {
+  display: {
+    id: "display-1",
+    label: "Primary display",
+    primary: true,
+    bounds: { x: 0, y: 0, width: 1280, height: 720 },
+    scaleFactor: 1,
+  },
+  cursor: null,
+  captureSource: "screen-cast-stream" as const,
+  frame: {
+    id: "frame-1",
+    displayId: "display-1",
+    coordinateSpace: "image-pixels" as const,
+    width: 1280,
+    height: 720,
+    toDesktopLogical: { scaleX: 1, scaleY: 1, offsetX: 0, offsetY: 0 },
+  },
+  screenshot: {
+    state: "image" as const,
+    contentHash: `sha256-bgra8-v1:${"A".repeat(43)}`,
+    mimeType: "image/webp" as const,
+    data: "dGVzdA==",
+    width: 1280,
+    height: 720,
+    sizeBytes: 4,
+    encoding: { format: "webp" as const, mode: "lossless" as const },
+  },
 };
 
 /** Runs one deterministic hook-harness render. */
@@ -142,6 +178,11 @@ describe("UserDesktopSettings", () => {
       clearInterval: globalThis.clearInterval,
       setInterval: globalThis.setInterval,
     });
+    vi.stubGlobal("document", {
+      visibilityState: "visible",
+      addEventListener: vi.fn(),
+      removeEventListener: vi.fn(),
+    });
     hooks.reset();
     effects.cleanups = [];
     effects.pending = [];
@@ -162,6 +203,15 @@ describe("UserDesktopSettings", () => {
           throw new Error("unsupported test desktop");
         }
         return { _tag: "Success", value: status };
+      }
+      if (request.operation === "observation-list") {
+        return { _tag: "Success", value: { observations: [] } };
+      }
+      if (request.operation === "request-view" || request.operation === "release-control") {
+        return { _tag: "Success", value: status };
+      }
+      if (request.operation === "snapshot") {
+        return { _tag: "Success", value: snapshot };
       }
       return { _tag: "Success", value: null };
     });
@@ -207,7 +257,7 @@ describe("UserDesktopSettings", () => {
     expect(commands.invoke).toHaveBeenCalledWith({
       environmentId,
       input: {
-        request: { operation: "release", desktopId: "user-workstation" },
+        request: { operation: "end-all-access", desktopId: "user-workstation" },
         timeoutMs: 120_000,
       },
     });
@@ -254,6 +304,63 @@ describe("UserDesktopSettings", () => {
     );
     expect(operations).toContain("remember-view");
     expect(operations).not.toContain("release");
+  });
+
+  it("opens supervision passively and starts Live only when requested", async () => {
+    renderSettings();
+    await applyEffects();
+
+    const settings = renderSettings();
+    const supervise = findElements(
+      settings,
+      (element) =>
+        textContent(element.props.children).trim() === "Supervise" &&
+        typeof element.props.onClick === "function",
+    )[0];
+    expect(supervise?.props.onClick).toBeTypeOf("function");
+    commands.invoke.mockClear();
+    if (typeof supervise?.props.onClick === "function") supervise.props.onClick();
+    await flushCommands();
+
+    const passiveOperations = commands.invoke.mock.calls.map(
+      ([request]) => request.input.request.operation,
+    );
+    expect(passiveOperations).toEqual(expect.arrayContaining(["status", "observation-list"]));
+    expect(passiveOperations).not.toContain("request-view");
+    expect(passiveOperations).not.toContain("snapshot");
+
+    const passiveViewer = findElements(
+      renderSettings(),
+      (element) => element.type === ComputerDesktopViewer,
+    )[0];
+    expect(passiveViewer?.props.liveStarted).toBe(false);
+    expect(passiveViewer?.props.liveDisabledReason).toBeNull();
+    expect(passiveViewer?.props.onStartLive).toBeTypeOf("function");
+    await applyEffects();
+
+    commands.invoke.mockClear();
+    if (typeof passiveViewer?.props.onStartLive === "function") {
+      await passiveViewer.props.onStartLive();
+    }
+    const liveOperations = commands.invoke.mock.calls.map(
+      ([request]) => request.input.request.operation,
+    );
+    expect(liveOperations).toEqual(expect.arrayContaining(["request-view", "snapshot"]));
+
+    const liveViewer = findElements(
+      renderSettings(),
+      (element) => element.type === ComputerDesktopViewer,
+    )[0];
+    expect(liveViewer?.props.liveStarted).toBe(true);
+    expect(liveViewer?.props.onRelease).toBeTypeOf("function");
+    commands.invoke.mockClear();
+    if (typeof liveViewer?.props.onRelease === "function") await liveViewer.props.onRelease();
+    expect(commands.invoke).toHaveBeenCalledWith({
+      environmentId,
+      input: {
+        request: { operation: "release-control", desktopId: "user-workstation" },
+      },
+    });
   });
 
   it("queues a fresh inventory read after a mutation races with polling", async () => {
