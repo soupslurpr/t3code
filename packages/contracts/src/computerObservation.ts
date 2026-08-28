@@ -11,9 +11,13 @@ import {
 } from "./computerAutomation.ts";
 import { ModelSelection } from "./orchestration.ts";
 import { ProviderInstanceId } from "./providerInstance.ts";
+import { UserDesktopId } from "./userDesktop.ts";
 
 export const ComputerObservationId = TrimmedNonEmptyString.check(Schema.isMaxLength(128));
 export type ComputerObservationId = typeof ComputerObservationId.Type;
+
+export const ComputerObservationDesktopId = Schema.Union([AgentDesktopId, UserDesktopId]);
+export type ComputerObservationDesktopId = typeof ComputerObservationDesktopId.Type;
 
 export const ComputerObservationRecipient = Schema.Union([
   Schema.Struct({
@@ -53,7 +57,7 @@ export type ComputerObservationImage = typeof ComputerObservationImage.Type;
 
 export const ComputerObservation = Schema.Struct({
   id: ComputerObservationId,
-  desktopId: AgentDesktopId,
+  desktopId: ComputerObservationDesktopId,
   threadId: ThreadId,
   observedAt: IsoDateTime,
   source: Schema.Literals([
@@ -72,6 +76,26 @@ export const ComputerObservation = Schema.Struct({
   accessibility: Schema.optional(ComputerAutomationAccessibilitySnapshot),
 });
 export type ComputerObservation = typeof ComputerObservation.Type;
+
+/** Identifies one retained model-facing observation without repeating its image bytes. */
+export const ComputerObservationSummary = Schema.Struct({
+  id: ComputerObservationId,
+  desktopId: ComputerObservationDesktopId,
+  threadId: ThreadId,
+  observedAt: IsoDateTime,
+  source: ComputerObservation.fields.source,
+  recipient: ComputerObservationRecipient,
+  label: Schema.optional(Schema.String.check(Schema.isMaxLength(256))),
+  imageCount: NonNegativeInt,
+  hasAccessibility: Schema.Boolean,
+});
+export type ComputerObservationSummary = typeof ComputerObservationSummary.Type;
+
+/** Lists retained observations without transferring their potentially large images. */
+export const ComputerObservationList = Schema.Struct({
+  observations: Schema.Array(ComputerObservationSummary).check(Schema.isMaxLength(128)),
+});
+export type ComputerObservationList = typeof ComputerObservationList.Type;
 
 /** Returns only changed observation bytes while preserving the current cache identity. */
 export const ComputerObservationUpdate = Schema.Struct({
