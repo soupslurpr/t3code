@@ -332,6 +332,7 @@ export const resolveServerConfig = (
       () => mode === "desktop",
     );
     const desktopBootstrapToken = bootstrap?.desktopBootstrapToken;
+    const environmentHost = bootstrap?.environmentHost;
     const desktopTelemetryFd = bootstrap?.desktopTelemetryFd;
     const desktopTelemetryControlFd = bootstrap?.desktopTelemetryControlFd;
     const resourceMonitorPath = bootstrap?.resourceMonitorPath;
@@ -411,6 +412,7 @@ export const resolveServerConfig = (
       noBrowser,
       startupPresentation,
       desktopBootstrapToken,
+      ...(environmentHost === undefined ? {} : { environmentHost }),
       desktopTelemetryFd,
       desktopTelemetryControlFd,
       resourceMonitorPath,
