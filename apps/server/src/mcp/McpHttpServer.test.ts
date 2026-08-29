@@ -176,6 +176,13 @@ const watchImage = {
 const MonitorTestLayer = Layer.succeed(
   ThreadMonitorService,
   ThreadMonitorService.of({
+    capabilities: () =>
+      Effect.succeed({
+        controllerPromptCache: {
+          minimumLifetimeMs: 30 * 60 * 1_000,
+          source: "provider-documented",
+        },
+      }),
     create: () => Effect.die("unused"),
     createComputer: ({ threadId }) => {
       const monitor = computerWatchMonitor(threadId, ThreadMonitorId.make("created-watch"));
@@ -187,10 +194,15 @@ const MonitorTestLayer = Layer.succeed(
         },
       });
     },
-    computerCapabilities: Effect.succeed({
-      evaluators: [],
-      deterministicMatches: ["image-change"],
-    }),
+    computerCapabilities: () =>
+      Effect.succeed({
+        controllerPromptCache: {
+          minimumLifetimeMs: 30 * 60 * 1_000,
+          source: "provider-documented",
+        },
+        evaluators: [],
+        deterministicMatches: ["image-change"],
+      }),
     inspectComputer: ({ threadId, inspect }) => {
       if (inspect.monitorId === "missing-watch") {
         return Effect.fail(
@@ -1139,6 +1151,30 @@ it.effect("sheds log entries before locators when every list is full", () =>
   ).pipe(Effect.provide(TestLayer)),
 );
 
+it.effect("reports controller prompt-cache timing before starting a durable monitor", () =>
+  Effect.gen(function* () {
+    const server = yield* McpServer.McpServer;
+    const monitorInvocation: McpInvocationContext.McpInvocationScope = {
+      ...invocation,
+      capabilities: new Set(),
+    };
+    const result = yield* server
+      .callTool({ name: "monitor_capabilities", arguments: {} })
+      .pipe(
+        Effect.provideService(McpInvocationContext.McpInvocationContext, monitorInvocation),
+        Effect.provideService(McpSchema.McpServerClient, client),
+      );
+
+    expect(result.isError).toBe(false);
+    expect(result.structuredContent).toEqual({
+      controllerPromptCache: {
+        minimumLifetimeMs: 30 * 60 * 1_000,
+        source: "provider-documented",
+      },
+    });
+  }).pipe(Effect.provide(TestLayer)),
+);
+
 it.effect("denies preview access without removing computer tools", () =>
   Effect.gen(function* () {
     const server = yield* McpServer.McpServer;
@@ -1162,6 +1198,14 @@ it.effect("denies preview access without removing computer tools", () =>
       { type: "text", text: "MCP credential does not grant the preview capability." },
     ]);
     expect(computer.isError).toBe(false);
+    expect(computer.structuredContent).toEqual({
+      controllerPromptCache: {
+        minimumLifetimeMs: 30 * 60 * 1_000,
+        source: "provider-documented",
+      },
+      evaluators: [],
+      deterministicMatches: ["image-change"],
+    });
   }).pipe(Effect.provide(TestLayer)),
 );
 

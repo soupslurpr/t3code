@@ -21,9 +21,11 @@ export interface SelectableModelOption {
 
 export function createModelCapabilities(input: {
   optionDescriptors: ReadonlyArray<ProviderOptionDescriptor>;
+  promptCache?: ModelCapabilities["promptCache"];
 }): ModelCapabilities {
   return {
     optionDescriptors: input.optionDescriptors.map(cloneDescriptor),
+    ...(input.promptCache ? { promptCache: { ...input.promptCache } } : {}),
   };
 }
 
