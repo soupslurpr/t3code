@@ -18,6 +18,7 @@ import {
   ComputerAutomationScreenshotRegion,
 } from "./computerAutomation.ts";
 import { ModelSelection } from "./orchestration.ts";
+import { PromptCacheTiming } from "./model.ts";
 import { ProviderInstanceId } from "./providerInstance.ts";
 
 const MonitorLabel = TrimmedNonEmptyString.check(Schema.isMaxLength(500));
@@ -513,7 +514,16 @@ export const ThreadMonitorComputerEvaluator = Schema.Struct({
 });
 export type ThreadMonitorComputerEvaluator = typeof ThreadMonitorComputerEvaluator.Type;
 
+export const ThreadMonitorCapabilities = Schema.Struct({
+  controllerPromptCache: Schema.optional(PromptCacheTiming).annotate({
+    description:
+      "Prompt-cache timing for the current controller model. Omitted when the provider exposes no reliable minimum.",
+  }),
+});
+export type ThreadMonitorCapabilities = typeof ThreadMonitorCapabilities.Type;
+
 export const ThreadMonitorComputerCapabilities = Schema.Struct({
+  ...ThreadMonitorCapabilities.fields,
   evaluators: Schema.Array(ThreadMonitorComputerEvaluator).check(Schema.isMaxLength(64)),
   deterministicMatches: Schema.Array(Schema.Literal("image-change")),
 });
@@ -691,7 +701,7 @@ export const ThreadMonitorErrorCode = Schema.Literals([
 export type ThreadMonitorErrorCode = typeof ThreadMonitorErrorCode.Type;
 
 /** Reports a stable, structured durable-monitor failure. */
-export class ThreadMonitorError extends Schema.TaggedErrorClass<ThreadMonitorError>()(
+export class ThreadMonitorError extends Schema.TaggedError<ThreadMonitorError>()(
   "ThreadMonitorError",
   {
     code: ThreadMonitorErrorCode,

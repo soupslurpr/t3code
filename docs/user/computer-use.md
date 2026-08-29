@@ -140,8 +140,11 @@ previous, current, terminal, or freshly captured frames, then atomically update 
 against the revision it inspected. A stale update is rejected instead of overwriting a newer one.
 Reviews leave the watch active, and each successful update begins a fresh revision with new baselines
 and metrics. An agent may time a review before its provider's prompt cache expires when another turn
-is expected to cost less than rebuilding that context; it can instead let the cache expire for a long
-or low-value wait. These retained frames are bounded monitoring evidence, not a continuous recording.
+is expected to cost less than rebuilding that context. When available, T3 Code gives the agent the
+provider's minimum cache lifetime and identifies whether it was reported directly or documented by
+the provider. This is a planning hint rather than an exact expiration time. The agent can instead let
+the cache expire for a long or low-value wait. These retained frames are bounded monitoring evidence,
+not a continuous recording.
 
 Desktop screenshots can contain information from any visible application. They become part of the
 agent's tool context, so close or hide sensitive windows before allowing computer use. This matters

@@ -94,6 +94,16 @@ const REASONING_EFFORT_LABELS: Readonly<Record<string, string>> = {
 };
 
 const DEFAULT_SERVICE_TIER_ID = "default";
+// https://developers.openai.com/api/docs/guides/prompt-caching#cache-lifetime
+const CODEX_PROMPT_CACHE_MINIMUM_LIFETIME_MS = 30 * 60 * 1_000;
+/** Matches the documented GPT-5.6-and-later minimum, leaving other model families unknown. */
+function hasDocumentedPromptCacheMinimum(model: string): boolean {
+  const version = /^gpt-(\d+)(?:\.(\d+))?(?:-|$)/u.exec(codexModelFamily(model));
+  if (version === null) return false;
+  const major = Number(version[1]);
+  const minor = Number(version[2] ?? 0);
+  return major > 5 || (major === 5 && minor >= 6);
+}
 
 function reasoningEffortLabel(reasoningEffort: string): string {
   return REASONING_EFFORT_LABELS[reasoningEffort] ?? reasoningEffort;
@@ -219,6 +229,14 @@ export function mapCodexModelCapabilities(
 
   return createModelCapabilities({
     optionDescriptors,
+    ...(hasDocumentedPromptCacheMinimum(model.model)
+      ? {
+          promptCache: {
+            minimumLifetimeMs: CODEX_PROMPT_CACHE_MINIMUM_LIFETIME_MS,
+            source: "provider-documented" as const,
+          },
+        }
+      : {}),
   });
 }
 
@@ -280,7 +298,12 @@ function appendCustomCodexModels(
   }
 
   const seen = new Set(models.map((model) => model.slug));
-  const fallbackCapabilities = models.find((model) => model.capabilities)?.capabilities ?? null;
+  const fallbackModelCapabilities = models.find((model) => model.capabilities)?.capabilities;
+  const fallbackCapabilities = fallbackModelCapabilities
+    ? createModelCapabilities({
+        optionDescriptors: fallbackModelCapabilities.optionDescriptors ?? [],
+      })
+    : null;
   const customEntries: ServerProviderModel[] = [];
   for (const entry of readCustomModelEntries(customModels)) {
     if (seen.has(entry.slug)) {
