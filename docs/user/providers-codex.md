@@ -81,3 +81,11 @@ In an existing Codex thread, send `/feedback` with an optional description, for
 example `/feedback The agent stopped before finishing the tests`. This uploads
 the conversation and Codex logs to OpenAI. The returned thread ID can be shared
 with OpenAI support.
+
+## Codex plugins
+
+Codex plugins depend on host capabilities that T3 Code does not expose. T3 Code disables plugins in
+the Codex processes it starts, while repo, personal, and system skills remain available.
+
+Codex owns its plugin cache and may recreate it during an update. You do not need to delete that
+cache because T3 Code sessions ignore it. Running Codex directly keeps its normal plugin settings.

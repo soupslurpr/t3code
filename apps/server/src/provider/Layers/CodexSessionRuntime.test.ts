@@ -808,6 +808,8 @@ describe("codexSessionAppServerArgs", () => {
   it("keeps the app-server subcommand when explicit args are provided", () => {
     NodeAssert.deepStrictEqual(codexSessionAppServerArgs(["-c", "model=gpt-5"], undefined), [
       "app-server",
+      "--disable",
+      "plugins",
       "-c",
       "model=gpt-5",
     ]);
@@ -821,6 +823,8 @@ describe("codexSessionAppServerArgs", () => {
       ),
       [
         "app-server",
+        "--disable",
+        "plugins",
         "--strict-config",
         "--enable",
         "foo",

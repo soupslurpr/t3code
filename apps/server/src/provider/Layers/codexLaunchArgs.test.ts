@@ -29,13 +29,15 @@ describe("resolveCodexLaunchArgs", () => {
 });
 
 describe("codexAppServerArgs", () => {
-  it("returns the app-server command for empty launch args", () => {
-    NodeAssert.deepStrictEqual(codexAppServerArgs(""), ["app-server"]);
+  it("disables unsupported Codex plugins", () => {
+    NodeAssert.deepStrictEqual(codexAppServerArgs(""), ["app-server", "--disable", "plugins"]);
   });
 
   it("appends parsed launch args after app-server", () => {
     NodeAssert.deepStrictEqual(codexAppServerArgs("--strict-config --enable foo"), [
       "app-server",
+      "--disable",
+      "plugins",
       "--strict-config",
       "--enable",
       "foo",
@@ -47,12 +49,14 @@ describe("codexExecLaunchArgs", () => {
   it("keeps shared codex flags and omits app-server-only flags", () => {
     NodeAssert.deepStrictEqual(
       codexExecLaunchArgs('--strict-config --enable foo --listen off --config model="gpt 5"'),
-      ["--strict-config", "--enable", "foo", "--config", "model=gpt 5"],
+      ["--disable", "plugins", "--strict-config", "--enable", "foo", "--config", "model=gpt 5"],
     );
   });
 
   it("does not pair value-taking flags with adjacent flags", () => {
     NodeAssert.deepStrictEqual(codexExecLaunchArgs("--config --strict-config --enable --disable"), [
+      "--disable",
+      "plugins",
       "--strict-config",
     ]);
   });
