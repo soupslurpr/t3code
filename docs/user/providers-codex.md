@@ -83,3 +83,11 @@ The tracker is independent of the Tasks indicator in the composer. Tasks describ
 immediate execution steps; the current TODO preserves the durable state of a longer piece of work.
 It is retained when a thread is archived, follows checkpoint reverts, and is removed when the thread
 is deleted.
+
+## Codex plugins
+
+Codex plugins depend on host capabilities that T3 Code does not expose. T3 Code disables plugins in
+the Codex processes it starts, while repo, personal, and system skills remain available.
+
+Codex owns its plugin cache and may recreate it during an update. You do not need to delete that
+cache because T3 Code sessions ignore it. Running Codex directly keeps its normal plugin settings.
