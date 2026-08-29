@@ -7,18 +7,8 @@ keeping a provider process or one timer fiber per monitor alive.
 
 ## State and ownership
 
-Migration 41 creates `thread_monitors`, migration 42 adds coalesced delivery and
-durable retry state, migration 43 adds structured computer conditions and
-`thread_monitor_computer_evidence`, and migration 44 adds model-evaluation
-throttling. Migration 45 replaces the single-region computer condition with a
-revisioned, multi-region condition and bounded evidence generations. Migration
-46 makes retained images format-aware and migrates existing PNG evidence, and
-migration 47 adds typed system-event metadata to projected thread messages.
-Migration 48 adds cache-write usage accounting to retained computer monitors.
-Each monitor row stores its normalized condition, continuation policy, trigger
-evidence, terminal timestamps, and delivery attempts. MCP invocation credentials
-determine the owning thread. A request scoped to another thread receives the
-same not-found result as a missing monitor.
+MCP invocation credentials determine the owning thread. A request scoped to
+another thread receives the same not-found result as a missing monitor.
 
 The public lifecycle is:
 
@@ -41,6 +31,12 @@ in-memory liveness from SQLite. Thread deletion retires outstanding rows.
 has a fallback deadline. The scheduler sleeps until the nearest deadline or an
 orchestration/monitor event wakes it. Triggered continuations retry while a
 thread is busy or an earlier delivery attempt failed.
+
+`monitor_capabilities` resolves the invoking thread's current controller model
+before a caller chooses a timer. Its optional `controllerPromptCache` reports a
+provider-backed minimum lifetime and provenance, not an exact expiration or
+remaining lifetime. The lookup is read-only and does not require computer
+access.
 
 Computer conditions use the same scheduler. Their next sample and optional
 deadline compete for the row's next wake time. Capture or evaluator failures
@@ -110,20 +106,18 @@ captures fresh baselines, resets counters and evidence generations, and begins
 the next revision. A stale update returns `REVISION_CONFLICT` without changing
 state.
 
-Optional deterministic review checkpoints can fire after a configured number
-of evaluations, consecutive uncertain verdicts, consecutive failures, or at a
-wall-clock time. A review starts a normal system-role continuation for the
-capable thread controller, which may inspect evidence and revise the strategy.
-New watches default to one review after three consecutive failures, and include
-the latest bounded observation error in that continuation. An explicit null
-review disables all checkpoints; a null consecutive-failure threshold disables
-only the automatic health review. Existing persisted revisions retain their
-stored policy.
-The evaluator never receives this responsibility. A delivered review leaves the
+Review checkpoints bound evaluation costs while leaving decisions about watch
+strategy to the controller. Evaluation checkpoints pause model calls
+until the controller inspects and acknowledges the review; the evaluator only
+reports observations. The [review policy](../../packages/contracts/src/threadMonitor.ts)
+defines the available checkpoints and defaults. A delivered review leaves the
 watch active and does not repeat within that revision; acknowledging it through
 an update begins a fresh revision. Controllers can place reviews before an
 expected provider prompt-cache expiry when the saved context cost justifies a
-check-in, but the server does not invent model-specific cache policy.
+check-in. Computer-watch capabilities include the same current-controller cache
+timing as generic monitor capabilities so the watch-planning call remains
+self-contained. The duration begins when an eligible entry is created or
+refreshed, is not an expiration deadline, and is omitted when unknown.
 
 ## Continuation delivery
 
