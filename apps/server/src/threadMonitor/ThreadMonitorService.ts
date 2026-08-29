@@ -8,6 +8,7 @@ import type {
   ThreadMonitor,
   ThreadMonitorCancelInput,
   ThreadMonitorCheckInput,
+  ThreadMonitorCapabilities,
   ThreadMonitorComputerCapabilities,
   ThreadMonitorComputerInspectInput,
   ThreadMonitorComputerInspection,
@@ -25,6 +26,9 @@ import type * as Effect from "effect/Effect";
 
 /** Defines durable monitor lifecycle operations. */
 export interface ThreadMonitorServiceShape {
+  /** Lists controller capabilities used to plan a durable monitor. */
+  readonly capabilities: (threadId: ThreadId) => Effect.Effect<ThreadMonitorCapabilities>;
+
   /** Creates one monitor owned by a thread. */
   readonly create: (input: {
     readonly threadId: ThreadId;
@@ -37,8 +41,10 @@ export interface ThreadMonitorServiceShape {
     readonly monitor: ThreadMonitorComputerStartInput;
   }) => Effect.Effect<ThreadMonitorComputerRevisionResult, ThreadMonitorError>;
 
-  /** Lists configured evaluator routes and deterministic computer conditions. */
-  readonly computerCapabilities: Effect.Effect<ThreadMonitorComputerCapabilities>;
+  /** Lists controller cache timing, evaluator routes, and deterministic conditions. */
+  readonly computerCapabilities: (
+    threadId: ThreadId,
+  ) => Effect.Effect<ThreadMonitorComputerCapabilities>;
 
   /** Reads retained and optional fresh images for one active computer watch. */
   readonly inspectComputer: (input: {

@@ -4,6 +4,16 @@ import * as SchemaTransformation from "effect/SchemaTransformation";
 import { TrimmedNonEmptyString } from "./baseSchemas.ts";
 import { ProviderDriverKind } from "./providerInstance.ts";
 
+/** Describes a provider-backed minimum lifetime for eligible prompt-cache entries. */
+export const PromptCacheTiming = Schema.Struct({
+  minimumLifetimeMs: Schema.Int.check(Schema.isGreaterThan(0)).annotate({
+    description:
+      "Minimum lifetime after an eligible cache entry is created or refreshed; this is not an expiration deadline.",
+  }),
+  source: Schema.Literals(["provider-reported", "provider-documented"]),
+});
+export type PromptCacheTiming = typeof PromptCacheTiming.Type;
+
 export const ProviderOptionDescriptorType = Schema.Literals(["select", "boolean"]);
 export type ProviderOptionDescriptorType = typeof ProviderOptionDescriptorType.Type;
 
@@ -124,6 +134,7 @@ function canonicalSelectionsToLegacyObject(
 
 export const ModelCapabilities = Schema.Struct({
   optionDescriptors: Schema.optional(Schema.Array(ProviderOptionDescriptor)),
+  promptCache: Schema.optional(PromptCacheTiming),
 });
 export type ModelCapabilities = typeof ModelCapabilities.Type;
 

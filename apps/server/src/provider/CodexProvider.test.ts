@@ -62,6 +62,7 @@ it("maps current Codex model capability fields", () => {
       currentValue: "flex",
     },
   ]);
+  assert.equal(capabilities.promptCache, undefined);
 });
 
 it.each(["gpt-6-astra", "openai.gpt-6-astra"])(
@@ -104,6 +105,67 @@ it.each(["gpt-6-astra", "openai.gpt-6-astra"])(
     ]);
   },
 );
+
+for (const model of [
+  "gpt-5.6-sol",
+  "gpt-5.6-terra",
+  "gpt-5.7",
+  "gpt-6-astra",
+  "gpt-6-astra-2026-09-01",
+  "openai.gpt-5.6-sol",
+  "openai.gpt-6-astra",
+  "openai.gpt-6-astra-2026-09-01",
+  "gpt-10",
+]) {
+  it(`reports documented prompt-cache timing for ${model}`, () => {
+    const capabilities = mapCodexModelCapabilities({
+      additionalSpeedTiers: [],
+      defaultReasoningEffort: "low",
+      defaultServiceTier: null,
+      description: "Test model",
+      displayName: model,
+      hidden: false,
+      id: model,
+      isDefault: false,
+      model,
+      serviceTiers: [],
+      supportedReasoningEfforts: [],
+    });
+    assert.deepStrictEqual(capabilities.promptCache, {
+      minimumLifetimeMs: 30 * 60 * 1_000,
+      source: "provider-documented",
+    });
+  });
+}
+
+for (const model of [
+  "gpt-5.5",
+  "gpt-5.5-pro",
+  "gpt-5",
+  "gpt-4.1",
+  "gpt-6ish",
+  "custom-gpt-6-astra",
+  "openai.gpt-5.5",
+  "openai.gpt-6ish",
+  "custom.openai.gpt-6-astra",
+]) {
+  it(`leaves minimum cache lifetime unknown for ${model}`, () => {
+    const capabilities = mapCodexModelCapabilities({
+      additionalSpeedTiers: [],
+      defaultReasoningEffort: "low",
+      defaultServiceTier: null,
+      description: "Test model",
+      displayName: model,
+      hidden: false,
+      id: model,
+      isDefault: false,
+      model,
+      serviceTiers: [],
+      supportedReasoningEfforts: [],
+    });
+    assert.equal(capabilities.promptCache, undefined);
+  });
+}
 
 it("uses standard routing when the catalog has no default service tier", () => {
   const capabilities = mapCodexModelCapabilities({
