@@ -734,12 +734,14 @@ const buildAppUnderTest = (options?: {
       Layer.provide(Layer.succeed(HostProcessEnvironment, {})),
     );
     const threadMonitorLayer = Layer.mock(ThreadMonitorService)({
+      capabilities: () => Effect.succeed({}),
       create: () => Effect.die("unused"),
       createComputer: () => Effect.die("unused"),
-      computerCapabilities: Effect.succeed({
-        evaluators: [],
-        deterministicMatches: ["image-change"],
-      }),
+      computerCapabilities: () =>
+        Effect.succeed({
+          evaluators: [],
+          deterministicMatches: ["image-change"],
+        }),
       inspectComputer: () => Effect.die("unused"),
       updateComputer: () => Effect.die("unused"),
       status: () => Effect.die("unused"),

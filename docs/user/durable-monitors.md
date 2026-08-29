@@ -21,6 +21,13 @@ thread at delivery time. If another turn, approval, or user-input request is
 active, the continuation waits until the thread is available. An agent can
 also record a result without starting another turn.
 
+Before choosing a timer intended to resume within a provider's prompt-cache
+window, an agent can ask T3 Code for the current controller model's optional
+minimum cache lifetime. T3 Code also identifies whether the value came from
+provider output or provider documentation. The duration begins when an eligible
+entry is created or refreshed; it is not an exact expiration or remaining
+lifetime, and T3 Code omits it when the provider exposes no reliable minimum.
+
 An automated continuation appears as a compact **Monitor triggered** or
 **Monitor review** event rather than as a message from you. Expanding the event
 shows its trigger, observation, evidence, and stored continuation instruction.

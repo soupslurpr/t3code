@@ -60,7 +60,15 @@ const computerLayer = Layer.succeed(
     revise: () => Effect.die("computer monitoring is not used by this test layer"),
     inspectFresh: () => Effect.die("computer monitoring is not used by this test layer"),
     release: () => Effect.void,
-    capabilities: Effect.succeed({ evaluators: [], deterministicMatches: ["image-change"] }),
+    monitorCapabilities: () =>
+      Effect.succeed({
+        controllerPromptCache: {
+          minimumLifetimeMs: 30 * 60 * 1_000,
+          source: "provider-documented",
+        },
+      }),
+    computerCapabilities: () =>
+      Effect.succeed({ evaluators: [], deterministicMatches: ["image-change"] }),
   }),
 );
 
@@ -455,10 +463,12 @@ const workingComputerLayer = Layer.effect(
         );
       },
       release: () => Ref.update(probe.releases, (count) => count + 1),
-      capabilities: Effect.succeed({
-        evaluators: [],
-        deterministicMatches: ["image-change"],
-      }),
+      monitorCapabilities: () => Effect.succeed({}),
+      computerCapabilities: () =>
+        Effect.succeed({
+          evaluators: [],
+          deterministicMatches: ["image-change"],
+        }),
     });
   }),
 );
@@ -522,6 +532,19 @@ const seedThread = Effect.gen(function* () {
 });
 
 testLayer("ThreadMonitor", (it) => {
+  it.effect("exposes controller capabilities before starting a monitor", () =>
+    Effect.gen(function* () {
+      const service = yield* ThreadMonitorService;
+
+      assert.deepStrictEqual(yield* service.capabilities(threadId), {
+        controllerPromptCache: {
+          minimumLifetimeMs: 30 * 60 * 1_000,
+          source: "provider-documented",
+        },
+      });
+    }),
+  );
+
   it.effect("signals a provider-neutral continuation exactly once", () =>
     Effect.gen(function* () {
       yield* seedThread;

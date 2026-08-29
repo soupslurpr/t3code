@@ -62,6 +62,7 @@ it("maps current Codex model capability fields", () => {
       currentValue: "flex",
     },
   ]);
+  assert.equal(capabilities.promptCache, undefined);
 });
 
 it("defaults GPT-6-Astra to max reasoning when supported", () => {
@@ -100,6 +101,26 @@ it("defaults GPT-6-Astra to max reasoning when supported", () => {
       currentValue: "max",
     },
   ]);
+});
+
+it("reports documented prompt-cache timing for Sol", () => {
+  const capabilities = mapCodexModelCapabilities({
+    additionalSpeedTiers: [],
+    defaultReasoningEffort: "low",
+    defaultServiceTier: null,
+    description: "Test model",
+    displayName: "GPT-5.6-Sol",
+    hidden: false,
+    id: "gpt-5.6-sol",
+    isDefault: false,
+    model: "gpt-5.6-sol",
+    serviceTiers: [],
+    supportedReasoningEfforts: [],
+  });
+  assert.deepStrictEqual(capabilities.promptCache, {
+    minimumLifetimeMs: 30 * 60 * 1_000,
+    source: "provider-documented",
+  });
 });
 
 it("uses standard routing when the catalog has no default service tier", () => {

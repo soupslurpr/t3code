@@ -2,6 +2,7 @@
 import {
   ThreadMonitor,
   ThreadMonitorCancelInput,
+  ThreadMonitorCapabilities,
   ThreadMonitorCheckInput,
   ThreadMonitorComputerCapabilities,
   ThreadMonitorComputerInspectInput,
@@ -38,13 +39,27 @@ const mutatingMonitorTool = <T extends Tool.Any>(tool: T): T =>
 export const MonitorStartTool = mutatingMonitorTool(
   Tool.make("monitor_start", {
     description:
-      "Create a durable wait for the current T3 thread without keeping this model turn or process asleep. Use schedule type after/at for long timers. Use signal when a background watcher, subagent, automation, or later turn will call monitor_signal; an optional deadlineAt provides a restart-safe fallback. By default the trigger resumes this thread through whatever provider and model the thread is configured to use at delivery time. Set continuation=record-only when a durable result should be recorded without starting a turn. After creating a resume-thread monitor, finish the current turn instead of polling. T3 persists the monitor, survives server restarts, waits for active thread work to settle, and requests at most one logical continuation message.",
+      "Create a durable wait for the current T3 thread without keeping this model turn or process asleep. Use schedule type after/at for long timers. Before choosing a cache-conscious timer, call monitor_capabilities for the current controller model's optional minimum prompt-cache lifetime. Use signal when a background watcher, subagent, automation, or later turn will call monitor_signal; an optional deadlineAt provides a restart-safe fallback. By default the trigger resumes this thread through whatever provider and model the thread is configured to use at delivery time. Set continuation=record-only when a durable result should be recorded without starting a turn. After creating a resume-thread monitor, finish the current turn instead of polling. T3 persists the monitor, survives server restarts, waits for active thread work to settle, and requests at most one logical continuation message.",
     parameters: ThreadMonitorStartInput,
     success: ThreadMonitor,
     failure: ThreadMonitorError,
     dependencies,
   }).annotate(Tool.Title, "Start durable monitor"),
 );
+
+/** Lists controller capabilities used to plan a durable monitor. */
+export const MonitorCapabilitiesTool = Tool.make("monitor_capabilities", {
+  description:
+    "List optional prompt-cache timing for the current controller model before scheduling a durable timer or signal monitor. controllerPromptCache.minimumLifetimeMs is measured from creation or refresh and is not an expiration deadline or remaining lifetime; its source distinguishes provider-reported data from provider documentation, and absence means unknown.",
+  parameters: EmptyParameters,
+  success: ThreadMonitorCapabilities,
+  failure: ThreadMonitorError,
+  dependencies,
+})
+  .annotate(Tool.Title, "Get durable monitor capabilities")
+  .annotate(Tool.Readonly, true)
+  .annotate(Tool.Destructive, false)
+  .annotate(Tool.Idempotent, true);
 
 /** Lists the invoking thread's monitor state. */
 export const MonitorStatusTool = Tool.make("monitor_status", {
@@ -112,7 +127,7 @@ export const ComputerWatchStartTool = mutatingMonitorTool(
 /** Lists exact configured model routes that can evaluate watched screen images. */
 export const ComputerWatchCapabilitiesTool = Tool.make("computer_watch_capabilities", {
   description:
-    "List configured provider instances and models that support read-only screen-condition evaluation, plus deterministic conditions that need no model. Select an exact returned instanceId and model; T3 does not silently substitute another evaluator. tokenUsage reports whether evaluation usage is measurable, and promptCacheRefresh reports whether an adapter can explicitly refresh a model cache without creating a thread message.",
+    "List optional prompt-cache timing for the current controller model, configured provider instances and models that support read-only screen-condition evaluation, and deterministic conditions that need no model. controllerPromptCache.minimumLifetimeMs is measured from creation or refresh and is not an expiration deadline; its source distinguishes provider-reported data from provider documentation, and absence means unknown. Select an exact returned evaluator instanceId and model; T3 does not silently substitute another evaluator. tokenUsage reports whether evaluation usage is measurable, and promptCacheRefresh reports whether an adapter can explicitly refresh an evaluator cache without creating a thread message.",
   parameters: EmptyParameters,
   success: ThreadMonitorComputerCapabilities,
   failure: ComputerWatchError,
@@ -152,6 +167,7 @@ export const ComputerWatchUpdateTool = mutatingMonitorTool(
 /** Groups every durable monitor MCP operation. */
 export const MonitorToolkit = Toolkit.make(
   MonitorStartTool,
+  MonitorCapabilitiesTool,
   MonitorStatusTool,
   MonitorSignalTool,
   MonitorCancelTool,
@@ -172,6 +188,7 @@ export const MonitorImageToolkit = Toolkit.make(
 /** Groups monitor operations handled by the standard structured registration. */
 export const MonitorStandardToolkit = Toolkit.make(
   MonitorStartTool,
+  MonitorCapabilitiesTool,
   MonitorStatusTool,
   MonitorSignalTool,
   MonitorCancelTool,

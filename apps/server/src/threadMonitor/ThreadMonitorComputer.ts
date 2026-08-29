@@ -1040,33 +1040,74 @@ export const make = Effect.gen(function* () {
     );
   };
 
-  const capabilities: ThreadMonitorComputerServiceShape["capabilities"] = Effect.gen(function* () {
-    const instances = yield* registry.listInstances;
-    const evaluators = yield* Effect.forEach(
-      instances.filter((instance) => instance.enabled && supportsImageEvaluation(instance)),
-      (instance) =>
-        instance.snapshot.getSnapshot.pipe(
-          Effect.map((snapshot) => ({
-            instanceId: instance.instanceId,
-            driver: instance.driverKind,
-            displayName: instance.displayName ?? null,
-            models: snapshot.models.map((model) => ({ model: model.slug, name: model.name })),
-            tokenUsage:
-              instance.textGeneration.imageConditionTokenUsage === "exact"
-                ? ("exact" as const)
-                : ("unavailable" as const),
-            promptCacheRefresh: "unsupported" as const,
-          })),
-        ),
-      { concurrency: "unbounded" },
-    );
-    return { evaluators, deterministicMatches: ["image-change"] as const };
-  }).pipe(
-    Effect.orElseSucceed(() => ({
-      evaluators: [],
-      deterministicMatches: ["image-change"] as const,
-    })),
+  const readControllerModel = Effect.fn("ThreadMonitorComputer.readControllerModel")(
+    function* (input: {
+      readonly threadId: ThreadId;
+      readonly instances: ReadonlyArray<ProviderInstance>;
+    }) {
+      const shell = yield* snapshots.getThreadShellById(input.threadId);
+      if (Option.isNone(shell)) return null;
+      const instance = input.instances.find(
+        (candidate) => candidate.instanceId === shell.value.modelSelection.instanceId,
+      );
+      if (instance === undefined) return null;
+      const snapshot = yield* instance.snapshot.getSnapshot;
+      const promptCache = snapshot.models.find(
+        (model) => model.slug === shell.value.modelSelection.model,
+      )?.capabilities?.promptCache;
+      return { instance, snapshot, promptCache };
+    },
   );
+
+  const monitorCapabilities: ThreadMonitorComputerServiceShape["monitorCapabilities"] = (
+    threadId,
+  ) =>
+    Effect.gen(function* () {
+      const instances = yield* registry.listInstances;
+      const controller = yield* readControllerModel({ threadId, instances });
+      return controller?.promptCache ? { controllerPromptCache: controller.promptCache } : {};
+    }).pipe(Effect.orElseSucceed(() => ({})));
+
+  const computerCapabilities: ThreadMonitorComputerServiceShape["computerCapabilities"] = (
+    threadId,
+  ) =>
+    Effect.gen(function* () {
+      const instances = yield* registry.listInstances;
+      const controller = yield* readControllerModel({ threadId, instances }).pipe(
+        Effect.orElseSucceed(() => null),
+      );
+      const evaluators = yield* Effect.forEach(
+        instances.filter((instance) => instance.enabled && supportsImageEvaluation(instance)),
+        (instance) =>
+          (instance.instanceId === controller?.instance.instanceId
+            ? Effect.succeed(controller.snapshot)
+            : instance.snapshot.getSnapshot
+          ).pipe(
+            Effect.map((snapshot) => ({
+              instanceId: instance.instanceId,
+              driver: instance.driverKind,
+              displayName: instance.displayName ?? null,
+              models: snapshot.models.map((model) => ({ model: model.slug, name: model.name })),
+              tokenUsage:
+                instance.textGeneration.imageConditionTokenUsage === "exact"
+                  ? ("exact" as const)
+                  : ("unavailable" as const),
+              promptCacheRefresh: "unsupported" as const,
+            })),
+          ),
+        { concurrency: "unbounded" },
+      );
+      return {
+        ...(controller?.promptCache ? { controllerPromptCache: controller.promptCache } : {}),
+        evaluators,
+        deterministicMatches: ["image-change"] as const,
+      };
+    }).pipe(
+      Effect.orElseSucceed(() => ({
+        evaluators: [],
+        deterministicMatches: ["image-change"] as const,
+      })),
+    );
 
   return ThreadMonitorComputerService.of({
     prepare,
@@ -1074,7 +1115,8 @@ export const make = Effect.gen(function* () {
     revise,
     inspectFresh,
     release,
-    capabilities,
+    monitorCapabilities,
+    computerCapabilities,
   });
 });
 

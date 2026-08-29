@@ -106,7 +106,18 @@ function evaluatorInstance(
       resolveMaintenance: () => Effect.die("unused"),
       applyUsageLimits: () => Effect.void,
       getSnapshot: Effect.succeed({
-        models: [{ slug: modelSelection.model, name: "Small vision model" }],
+        models: [
+          {
+            slug: modelSelection.model,
+            name: "Small vision model",
+            capabilities: {
+              promptCache: {
+                minimumLifetimeMs: 30 * 60 * 1_000,
+                source: "provider-documented",
+              },
+            },
+          },
+        ],
       } as never),
       refresh: Effect.die("unused"),
       streamChanges: Stream.empty,
@@ -210,7 +221,13 @@ describe("ThreadMonitorComputer", () => {
         ),
       );
       const service = yield* ThreadMonitorComputer.make.pipe(Effect.provide(dependencies));
-      const capabilities = yield* service.capabilities;
+      const monitorCapabilities = yield* service.monitorCapabilities(threadId);
+      expect(monitorCapabilities.controllerPromptCache).toEqual({
+        minimumLifetimeMs: 30 * 60 * 1_000,
+        source: "provider-documented",
+      });
+      const capabilities = yield* service.computerCapabilities(threadId);
+      expect(capabilities.controllerPromptCache).toEqual(monitorCapabilities.controllerPromptCache);
       expect(capabilities.evaluators).toEqual([
         expect.objectContaining({ instanceId, tokenUsage: "exact" }),
       ]);

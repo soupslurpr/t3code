@@ -85,6 +85,9 @@ const REASONING_EFFORT_LABELS: Readonly<Record<string, string>> = {
 };
 
 const DEFAULT_SERVICE_TIER_ID = "default";
+// OpenAI documents 30 minutes as GPT-5.6's only supported minimum prompt-cache TTL.
+const CODEX_PROMPT_CACHE_MINIMUM_LIFETIME_MS = 30 * 60 * 1_000;
+const CODEX_PROMPT_CACHE_MODEL_PATTERN = /^gpt-5\.6(?:-|$)/u;
 
 function reasoningEffortLabel(reasoningEffort: string): string {
   return REASONING_EFFORT_LABELS[reasoningEffort] ?? reasoningEffort;
@@ -210,6 +213,14 @@ export function mapCodexModelCapabilities(
 
   return createModelCapabilities({
     optionDescriptors,
+    ...(CODEX_PROMPT_CACHE_MODEL_PATTERN.test(model.model)
+      ? {
+          promptCache: {
+            minimumLifetimeMs: CODEX_PROMPT_CACHE_MINIMUM_LIFETIME_MS,
+            source: "provider-documented" as const,
+          },
+        }
+      : {}),
   });
 }
 
@@ -271,7 +282,12 @@ function appendCustomCodexModels(
   }
 
   const seen = new Set(models.map((model) => model.slug));
-  const fallbackCapabilities = models.find((model) => model.capabilities)?.capabilities ?? null;
+  const fallbackModelCapabilities = models.find((model) => model.capabilities)?.capabilities;
+  const fallbackCapabilities = fallbackModelCapabilities
+    ? createModelCapabilities({
+        optionDescriptors: fallbackModelCapabilities.optionDescriptors ?? [],
+      })
+    : null;
   const customEntries: ServerProviderModel[] = [];
   for (const entry of readCustomModelEntries(customModels)) {
     if (seen.has(entry.slug)) {

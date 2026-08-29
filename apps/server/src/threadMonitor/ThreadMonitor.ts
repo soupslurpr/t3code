@@ -1054,7 +1054,8 @@ const make = Effect.gen(function* () {
       }),
     );
 
-  const computerCapabilities = computer.capabilities;
+  const capabilities = computer.monitorCapabilities;
+  const computerCapabilities = computer.computerCapabilities;
 
   const inspectComputer: ThreadMonitorServiceShape["inspectComputer"] = ({ threadId, inspect }) =>
     mutex.withPermits(1)(
@@ -1503,6 +1504,7 @@ const make = Effect.gen(function* () {
 
   yield* start();
   return {
+    capabilities,
     create,
     createComputer,
     computerCapabilities,

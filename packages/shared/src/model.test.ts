@@ -17,6 +17,10 @@ import {
 } from "./model.ts";
 
 const codexCaps: ModelCapabilities = createModelCapabilities({
+  promptCache: {
+    minimumLifetimeMs: 30 * 60 * 1_000,
+    source: "provider-documented",
+  },
   optionDescriptors: [
     {
       id: "reasoningEffort",
@@ -64,6 +68,13 @@ const claudeCaps: ModelCapabilities = createModelCapabilities({
 });
 
 describe("descriptor helpers", () => {
+  it("copies prompt-cache timing into model capabilities", () => {
+    expect(codexCaps.promptCache).toEqual({
+      minimumLifetimeMs: 30 * 60 * 1_000,
+      source: "provider-documented",
+    });
+  });
+
   it("applies selection values to capability descriptors", () => {
     expect(
       getProviderOptionDescriptors({

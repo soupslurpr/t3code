@@ -3,6 +3,7 @@ import type {
   ProviderInstanceId,
   ThreadId,
   ThreadMonitor,
+  ThreadMonitorCapabilities,
   ThreadMonitorComputerCapabilities,
   ThreadMonitorComputerCondition,
   ThreadMonitorComputerEvidenceImage,
@@ -73,8 +74,13 @@ export interface ThreadMonitorComputerServiceShape {
   /** Releases the monitor's view-only desktop lease. */
   readonly release: (monitor: ThreadMonitor) => Effect.Effect<void>;
 
-  /** Lists exact configured model routes that support image evaluation. */
-  readonly capabilities: Effect.Effect<ThreadMonitorComputerCapabilities>;
+  /** Lists controller capabilities used to plan any durable monitor. */
+  readonly monitorCapabilities: (threadId: ThreadId) => Effect.Effect<ThreadMonitorCapabilities>;
+
+  /** Lists controller cache timing and exact configured image-evaluation routes. */
+  readonly computerCapabilities: (
+    threadId: ThreadId,
+  ) => Effect.Effect<ThreadMonitorComputerCapabilities>;
 }
 
 export class ThreadMonitorComputerService extends Context.Service<

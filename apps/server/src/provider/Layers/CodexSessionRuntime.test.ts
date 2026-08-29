@@ -594,6 +594,9 @@ describe("T3 computer developer instructions", () => {
       NodeAssert.match(instructions, /frame-relative region/);
       NodeAssert.match(instructions, /starting a known app is usually one batch/);
       NodeAssert.match(instructions, /preserves exact Unicode through/);
+      NodeAssert.match(instructions, /controllerPromptCache\.minimumLifetimeMs/);
+      NodeAssert.match(instructions, /minimum guaranteed cache window/);
+      NodeAssert.doesNotMatch(instructions, /prompt cache expires/);
     }
   });
 

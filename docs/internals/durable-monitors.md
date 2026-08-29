@@ -42,6 +42,12 @@ has a fallback deadline. The scheduler sleeps until the nearest deadline or an
 orchestration/monitor event wakes it. Triggered continuations retry while a
 thread is busy or an earlier delivery attempt failed.
 
+`monitor_capabilities` resolves the invoking thread's current controller model
+before a caller chooses a timer. Its optional `controllerPromptCache` reports a
+provider-backed minimum lifetime and provenance, not an exact expiration or
+remaining lifetime. The lookup is read-only and does not require computer
+access.
+
 Computer conditions use the same scheduler. Their next sample and optional
 deadline compete for the row's next wake time. Capture or evaluator failures
 persist a bounded diagnostic, mark the view resource degraded, and use bounded
@@ -123,7 +129,10 @@ The evaluator never receives this responsibility. A delivered review leaves the
 watch active and does not repeat within that revision; acknowledging it through
 an update begins a fresh revision. Controllers can place reviews before an
 expected provider prompt-cache expiry when the saved context cost justifies a
-check-in, but the server does not invent model-specific cache policy.
+check-in. Computer-watch capabilities include the same current-controller cache
+timing as generic monitor capabilities so the watch-planning call remains
+self-contained. The duration begins when an eligible entry is created or
+refreshed, is not an expiration deadline, and is omitted when unknown.
 
 ## Continuation delivery
 
