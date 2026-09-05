@@ -7,12 +7,25 @@ describe("previewAutomationHostCapabilities", () => {
   it("advertises browser and user-desktop automation", () => {
     const capabilities = previewAutomationHostCapabilities({
       computerAvailable: true,
+      computerInterruptAvailable: true,
       computerCapabilities: ["view", "control", "availability"],
     });
 
     expect(capabilities.supportedOperations).toEqual([
       ...PREVIEW_AUTOMATION_OPERATIONS,
       ...COMPUTER_AUTOMATION_OPERATIONS,
+    ]);
+  });
+
+  it("omits control-only interruption on an older native bridge", () => {
+    expect(
+      previewAutomationHostCapabilities({
+        computerAvailable: true,
+        computerCapabilities: ["view", "control", "availability"],
+      }).supportedOperations,
+    ).toEqual([
+      ...PREVIEW_AUTOMATION_OPERATIONS,
+      ...COMPUTER_AUTOMATION_OPERATIONS.filter((operation) => operation !== "computerInterrupt"),
     ]);
   });
 

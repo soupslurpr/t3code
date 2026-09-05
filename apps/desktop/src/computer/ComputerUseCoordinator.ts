@@ -39,6 +39,7 @@ interface LeaseHolder {
 interface PendingAcquisition {
   readonly holder: LeaseHolder;
   readonly access: "view" | "control";
+  readonly native: boolean;
 }
 
 interface LeaseState {
@@ -187,6 +188,9 @@ export interface ComputerUseCoordinatorShape {
   readonly forceRelease: (
     context: DesktopComputerAutomationContext,
   ) => Effect.Effect<ComputerAutomationStatus, ComputerUse.ComputerUseError>;
+  readonly interrupt: (
+    context: DesktopComputerAutomationContext,
+  ) => Effect.Effect<ComputerAutomationStatus, ComputerUse.ComputerUseError>;
   readonly forceForget: (
     context: DesktopComputerAutomationContext,
   ) => Effect.Effect<void, ComputerUse.ComputerUseError>;
@@ -229,6 +233,7 @@ export const make = Effect.gen(function* () {
   const state = yield* Ref.make<LeaseState>(emptyLeaseState());
   const leaseSemaphore = yield* Semaphore.make(1);
   const actionSemaphore = yield* Semaphore.make(1);
+  const actionGeneration = yield* Ref.make(0);
   const activeAction = yield* Ref.make<Fiber.Fiber<
     ReadonlyArray<ComputerAutomationActionResult>,
     ComputerUse.ComputerUseError
@@ -251,6 +256,7 @@ export const make = Effect.gen(function* () {
   );
 
   const cancelActiveAction = Effect.fn("ComputerUseCoordinator.cancelActiveAction")(function* () {
+    yield* Ref.update(actionGeneration, (generation) => generation + 1);
     const action = yield* Ref.get(activeAction);
     if (action !== null) yield* Fiber.interrupt(action);
   });
@@ -464,11 +470,18 @@ export const make = Effect.gen(function* () {
   const startAction = Effect.fn("ComputerUseCoordinator.startAction")(function* (
     input: DesktopComputerAutomationContext,
     batch: ComputerAutomationActionBatchInput,
+    generation: number,
   ) {
     yield* expireHumanLeases().pipe(Effect.ignore);
     yield* refreshHumanLease(input);
     return yield* withLeaseState(
       Effect.gen(function* () {
+        if ((yield* Ref.get(actionGeneration)) !== generation) {
+          return yield* new ComputerUse.ComputerUseLeaseError({
+            code: "request-cancelled",
+            cause: "desktop control changed while an action was queued",
+          });
+        }
         const key = controllerKey(normalizeContext(input));
         const leases = yield* Ref.get(state);
         if (leases.pending?.access === "control" && leases.pending.holder.key !== key) {
@@ -530,7 +543,7 @@ export const make = Effect.gen(function* () {
           yield* Ref.set(state, {
             ...current,
             sequence,
-            pending: { holder, access },
+            pending: { holder, access, native: false },
           });
           return plan;
         }
@@ -548,7 +561,7 @@ export const make = Effect.gen(function* () {
         yield* Ref.set(state, {
           ...current,
           sequence,
-          pending: { holder, access },
+          pending: { holder, access, native: plan.nativeAccess !== null },
           explicitAvailability:
             context.controllerKind === "human"
               ? current.explicitAvailability
@@ -745,7 +758,7 @@ export const make = Effect.gen(function* () {
         }
         yield* Ref.set(state, {
           ...current,
-          pending: { holder: displaced, access: "control" },
+          pending: { holder: displaced, access: "control", native: false },
         });
         return { human: current.controller, agent: displaced };
       }),
@@ -843,7 +856,7 @@ export const make = Effect.gen(function* () {
           return yield* leaseConflict("another controller holds or is changing desktop access");
         }
         const [holder, sequence] = leaseHolder(current, context, nowMs);
-        yield* Ref.set(state, { ...current, sequence, pending: { holder, access } });
+        yield* Ref.set(state, { ...current, sequence, pending: { holder, access, native: true } });
         return holder;
       }),
     );
@@ -913,22 +926,67 @@ export const make = Effect.gen(function* () {
     requireView(context).pipe(Effect.andThen(computer.snapshot(input)));
 
   const act: ComputerUseCoordinatorShape["act"] = (context, input) =>
-    actionSemaphore.withPermits(1)(
-      Effect.gen(function* () {
-        const action = yield* startAction(context, input);
-        const result = yield* Fiber.await(action).pipe(
-          Effect.onInterrupt(() => Fiber.interrupt(action)),
-          Effect.ensuring(Ref.set(activeAction, null)),
-        );
-        if (Exit.isFailure(result) && Cause.hasInterruptsOnly(result.cause)) {
-          return yield* new ComputerUse.ComputerUseLeaseError({
-            code: "request-cancelled",
-            cause: "desktop control was released while an action was running",
-          });
-        }
-        return yield* result;
+    Effect.gen(function* () {
+      const generation = yield* Ref.get(actionGeneration);
+      return yield* actionSemaphore.withPermits(1)(
+        Effect.gen(function* () {
+          const action = yield* startAction(context, input, generation);
+          const result = yield* Fiber.await(action).pipe(
+            Effect.onInterrupt(() => Fiber.interrupt(action)),
+            Effect.ensuring(Ref.set(activeAction, null)),
+          );
+          if (Exit.isFailure(result) && Cause.hasInterruptsOnly(result.cause)) {
+            return yield* new ComputerUse.ComputerUseLeaseError({
+              code: "request-cancelled",
+              cause: "desktop control was released while an action was running",
+            });
+          }
+          return yield* result;
+        }),
+      );
+    });
+
+  const interrupt: ComputerUseCoordinatorShape["interrupt"] = Effect.fn(
+    "ComputerUseCoordinator.interrupt",
+  )(function* (input) {
+    const context = normalizeContext(input);
+    if (context.controllerKind !== "agent") {
+      return yield* leaseConflict("only agent desktop access can be interrupted by a turn stop");
+    }
+    const key = controllerKey(context);
+    const cleanup = yield* withLeaseState(
+      Ref.modify(state, (current) => {
+        const pending = current.pending?.holder.key === key ? current.pending : null;
+        const releasedControl = current.controller?.key === key;
+        const displaced = current.displacedController?.key === key;
+        if (pending === null && !releasedControl && !displaced) return [null, current] as const;
+        return [
+          { releasedControl, cancelNative: pending?.native === true },
+          {
+            ...current,
+            controller: releasedControl ? null : current.controller,
+            displacedController: releasedControl || displaced ? null : current.displacedController,
+            pending: pending === null ? current.pending : null,
+            transitioning: current.transitioning || releasedControl || pending?.native === true,
+          },
+        ] as const;
       }),
     );
+    if (cleanup !== null) {
+      yield* Effect.gen(function* () {
+        if (cleanup.releasedControl) yield* cancelActiveAction();
+        if (cleanup.cancelNative) yield* computer.cancelPendingAccess;
+        if (cleanup.releasedControl) {
+          yield* actionSemaphore.withPermits(1)(computer.releaseInputs);
+        }
+      }).pipe(
+        Effect.ensuring(
+          cleanup.releasedControl || cleanup.cancelNative ? finishTransition : Effect.void,
+        ),
+      );
+    }
+    return yield* presentStatus(context);
+  });
 
   const release: ComputerUseCoordinatorShape["release"] = (input) =>
     Effect.gen(function* () {
@@ -1057,6 +1115,7 @@ export const make = Effect.gen(function* () {
     rememberView,
     rememberControl,
     forceRelease,
+    interrupt,
     forceForget,
     requestAvailability,
     releaseAvailability,

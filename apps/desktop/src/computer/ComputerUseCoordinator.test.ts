@@ -94,6 +94,7 @@ function makeComputer(calls: string[]): ComputerUse.ComputerUseShape {
     snapshot: () => record("snapshot").pipe(Effect.as(snapshot)),
     act: () => record("act").pipe(Effect.as([])),
     releaseInputs: record("releaseInputs"),
+    cancelPendingAccess: record("cancelPendingAccess"),
     release: record("release"),
     forget: record("forget"),
   };
@@ -124,6 +125,17 @@ function makePendingComputer(
   started: Deferred.Deferred<void>,
   authorization: Deferred.Deferred<void, ComputerUse.ComputerUseError>,
 ): ComputerUse.ComputerUseShape {
+  const cancel = (operation: string) =>
+    Effect.gen(function* () {
+      calls.push(operation);
+      yield* Deferred.fail(
+        authorization,
+        new ComputerUse.ComputerUseLeaseError({
+          code: "request-cancelled",
+          cause: "authorization cancelled",
+        }),
+      );
+    });
   return {
     ...makeComputer(calls),
     requestControl: Effect.gen(function* () {
@@ -132,16 +144,8 @@ function makePendingComputer(
       yield* Deferred.await(authorization);
       return nativeStatus;
     }),
-    release: Effect.gen(function* () {
-      calls.push("release");
-      yield* Deferred.fail(
-        authorization,
-        new ComputerUse.ComputerUseLeaseError({
-          code: "request-cancelled",
-          cause: "authorization cancelled",
-        }),
-      );
-    }),
+    release: cancel("release"),
+    cancelPendingAccess: cancel("cancelPendingAccess"),
   };
 }
 
@@ -529,7 +533,13 @@ describe("ComputerUseCoordinator", () => {
     );
   });
 
-  for (const transition of ["release", "takeover", "forceRelease", "forget"] as const) {
+  for (const transition of [
+    "release",
+    "interrupt",
+    "takeover",
+    "forceRelease",
+    "forget",
+  ] as const) {
     it.effect(`cancels a running action during ${transition}`, () =>
       Effect.gen(function* () {
         const calls: string[] = [];
@@ -556,6 +566,13 @@ describe("ComputerUseCoordinator", () => {
             yield* Deferred.await(started);
 
             if (transition === "release") yield* coordinator.release(controller);
+            if (transition === "interrupt") {
+              const stopped = yield* coordinator.interrupt(controller);
+              assert.strictEqual(stopped.lease?.access, "view");
+              assert.strictEqual(stopped.lease?.controller, null);
+              assert.isTrue(stopped.keepAwake);
+              assert.strictEqual((yield* coordinator.snapshot(controller, {})).display.id, "1");
+            }
             if (transition === "takeover") yield* coordinator.requestControl(human("supervisor"));
             if (transition === "forceRelease") yield* coordinator.forceRelease(human("supervisor"));
             if (transition === "forget") yield* coordinator.forget(controller);
@@ -565,7 +582,11 @@ describe("ComputerUseCoordinator", () => {
               ComputerUse.toComputerAutomationFailure(failure).code,
               "request-cancelled",
             );
-            if (transition === "release" || transition === "takeover") {
+            if (
+              transition === "release" ||
+              transition === "interrupt" ||
+              transition === "takeover"
+            ) {
               assert.strictEqual((yield* coordinator.status(viewer)).lease?.access, "view");
               assert.strictEqual((yield* coordinator.snapshot(viewer, {})).display.id, "1");
               assert.notInclude(calls, "release");
@@ -614,6 +635,165 @@ describe("ComputerUseCoordinator", () => {
       makeComputer(calls),
     );
   });
+
+  it.effect(
+    "retains stopped viewing and independent availability until explicitly released",
+    () => {
+      const calls: string[] = [];
+      const controller = agent("controller");
+      const watch = {
+        ...agent("thread-monitor:watch"),
+        threadId: ThreadId.make("thread-controller"),
+      };
+      return withCoordinator(
+        Effect.gen(function* () {
+          const coordinator = yield* ComputerUseCoordinator.ComputerUseCoordinator;
+          yield* coordinator.requestControl(controller);
+          yield* coordinator.requestView(watch);
+          const stopped = yield* coordinator.interrupt(controller);
+          assert.strictEqual(stopped.lease?.access, "view");
+          assert.strictEqual(stopped.lease?.controller, null);
+          assert.isTrue(stopped.keepAwake);
+          yield* coordinator.snapshot(controller, {});
+          yield* coordinator.snapshot(watch, {});
+          yield* coordinator.release(controller);
+          yield* coordinator.release(watch);
+          assert.isTrue((yield* coordinator.releaseAvailability(controller)).keepAwake);
+          assert.isFalse((yield* coordinator.releaseAvailability(watch)).keepAwake);
+          assert.deepEqual(calls, [
+            "requestControl",
+            "releaseInputs",
+            "snapshot",
+            "snapshot",
+            "release",
+            "releaseAvailability",
+          ]);
+        }),
+        makeAvailabilityComputer(calls),
+      );
+    },
+  );
+
+  it.effect("does not let human return-to-agent restore a stopped controller", () => {
+    const calls: string[] = [];
+    return withCoordinator(
+      Effect.gen(function* () {
+        const coordinator = yield* ComputerUseCoordinator.ComputerUseCoordinator;
+        const controller = agent("controller");
+        const supervisor = human("supervisor");
+        yield* coordinator.requestControl(controller);
+        yield* coordinator.requestControl(supervisor);
+        assert.isTrue((yield* coordinator.status(supervisor)).lease?.canReturnControl);
+        yield* coordinator.interrupt(controller);
+        const supervising = yield* coordinator.status(supervisor);
+        assert.strictEqual(supervising.lease?.access, "control");
+        assert.isFalse(supervising.lease?.canReturnControl);
+        yield* Effect.flip(coordinator.requestControl(supervisor, { returnControlToAgent: true }));
+        yield* coordinator.act(supervisor, { actions: [{ type: "press", key: "A" }] });
+        yield* coordinator.snapshot(controller, {});
+        assert.notInclude(calls, "release");
+        assert.notInclude(calls, "cancelPendingAccess");
+      }),
+      makeComputer(calls),
+    );
+  });
+
+  it.effect("scopes Stop by controller kind and environment without acquiring access", () => {
+    const calls: string[] = [];
+    return withCoordinator(
+      Effect.gen(function* () {
+        const coordinator = yield* ComputerUseCoordinator.ComputerUseCoordinator;
+        const controller = agent("controller");
+        yield* coordinator.requestControl(controller);
+        yield* coordinator.interrupt(agent("unrelated"));
+        yield* coordinator.interrupt(agent("controller", differentEnvironmentId));
+        yield* Effect.flip(coordinator.interrupt(human("controller")));
+        assert.strictEqual((yield* coordinator.status(controller)).lease?.access, "control");
+        assert.deepEqual(calls, ["requestControl"]);
+      }),
+      makeComputer(calls),
+    );
+  });
+
+  it.effect("cancels a pending return-to-agent without disconnecting the human viewer", () =>
+    Effect.gen(function* () {
+      const calls: string[] = [];
+      const returning = yield* Deferred.make<void>();
+      const allowReturn = yield* Deferred.make<void>();
+      let releases = 0;
+      const computer = {
+        ...makeComputer(calls),
+        releaseInputs: Effect.gen(function* () {
+          releases += 1;
+          if (releases === 2) {
+            yield* Deferred.succeed(returning, undefined);
+            yield* Deferred.await(allowReturn);
+          }
+        }),
+      };
+      yield* withCoordinator(
+        Effect.gen(function* () {
+          const coordinator = yield* ComputerUseCoordinator.ComputerUseCoordinator;
+          const controller = agent("controller");
+          const supervisor = human("supervisor");
+          yield* coordinator.requestControl(controller);
+          yield* coordinator.requestControl(supervisor);
+          const handoff = yield* Effect.forkChild(
+            coordinator.requestControl(supervisor, { returnControlToAgent: true }),
+          );
+          yield* Deferred.await(returning);
+          yield* coordinator.interrupt(controller);
+          yield* Deferred.succeed(allowReturn, undefined);
+          const cancelled = yield* Effect.flip(Fiber.join(handoff));
+          assert.strictEqual(
+            ComputerUse.toComputerAutomationFailure(cancelled).code,
+            "request-cancelled",
+          );
+          assert.strictEqual((yield* coordinator.status(supervisor)).lease?.access, "control");
+          assert.strictEqual((yield* coordinator.status(controller)).lease?.access, "view");
+          assert.notInclude(calls, "release");
+          assert.notInclude(calls, "cancelPendingAccess");
+        }),
+        computer,
+      );
+    }),
+  );
+
+  it.effect("cancels pending native access while preserving a shared granted session", () =>
+    Effect.gen(function* () {
+      const calls: string[] = [];
+      const started = yield* Deferred.make<void>();
+      const authorization = yield* Deferred.make<void>();
+      const computer = {
+        ...makeComputer(calls),
+        requestControl: Deferred.succeed(started, undefined).pipe(
+          Effect.andThen(Deferred.await(authorization)),
+          Effect.as(nativeStatus),
+        ),
+      };
+      yield* withCoordinator(
+        Effect.gen(function* () {
+          const coordinator = yield* ComputerUseCoordinator.ComputerUseCoordinator;
+          const controller = agent("controller");
+          const viewer = agent("watch");
+          yield* coordinator.requestView(viewer);
+          const acquisition = yield* Effect.forkChild(coordinator.requestControl(controller));
+          yield* Deferred.await(started);
+          yield* coordinator.interrupt(controller);
+          yield* Deferred.succeed(authorization, undefined);
+          const cancelled = yield* Effect.flip(Fiber.join(acquisition));
+          assert.strictEqual(
+            ComputerUse.toComputerAutomationFailure(cancelled).code,
+            "request-cancelled",
+          );
+          yield* coordinator.snapshot(viewer, {});
+          assert.strictEqual((yield* coordinator.status(controller)).lease?.access, "none");
+          assert.deepEqual(calls, ["requestView", "cancelPendingAccess", "snapshot"]);
+        }),
+        computer,
+      );
+    }),
+  );
 
   it.effect("requires a current lease token for human and cross-environment takeover", () => {
     const calls: string[] = [];
@@ -736,7 +916,7 @@ describe("ComputerUseCoordinator", () => {
           const cancelled = yield* Effect.flip(Fiber.join(queued));
           assert.strictEqual(
             ComputerUse.toComputerAutomationFailure(cancelled).code,
-            "desktop-busy",
+            "request-cancelled",
           );
           yield* Fiber.join(takeover);
           assert.deepEqual(calls, [
@@ -773,6 +953,80 @@ describe("ComputerUseCoordinator", () => {
       makeComputer(calls),
     );
   });
+
+  it.effect("rejects queued input on Stop even when the same controller reacquires access", () =>
+    Effect.gen(function* () {
+      const calls: string[] = [];
+      const started = yield* Deferred.make<void>();
+      let actionCount = 0;
+      const computer = {
+        ...makeComputer(calls),
+        act: () =>
+          Effect.gen(function* () {
+            actionCount += 1;
+            if (actionCount === 1) {
+              yield* Deferred.succeed(started, undefined);
+              return yield* Effect.never;
+            }
+            return [];
+          }),
+      };
+      yield* withCoordinator(
+        Effect.gen(function* () {
+          const coordinator = yield* ComputerUseCoordinator.ComputerUseCoordinator;
+          const controller = agent("controller");
+          yield* coordinator.requestControl(controller);
+          const active = yield* Effect.forkChild(
+            coordinator.act(controller, { actions: [{ type: "wait", durationMs: 60_000 }] }),
+          );
+          yield* Deferred.await(started);
+          const queued = yield* Effect.forkChild(
+            coordinator.act(controller, { actions: [{ type: "press", key: "A" }] }),
+          );
+          yield* Effect.yieldNow;
+          yield* coordinator.interrupt(controller);
+          yield* coordinator.requestControl(controller);
+          for (const action of [active, queued]) {
+            const cancelled = yield* Effect.flip(Fiber.join(action));
+            assert.strictEqual(
+              ComputerUse.toComputerAutomationFailure(cancelled).code,
+              "request-cancelled",
+            );
+          }
+          assert.strictEqual(actionCount, 1);
+          yield* coordinator.act(controller, { actions: [{ type: "press", key: "B" }] });
+          assert.strictEqual(actionCount, 2);
+        }),
+        computer,
+      );
+    }),
+  );
+
+  it.effect("dismisses pending native approval on Stop without releasing availability", () =>
+    Effect.gen(function* () {
+      const calls: string[] = [];
+      const started = yield* Deferred.make<void>();
+      const authorization = yield* Deferred.make<void, ComputerUse.ComputerUseError>();
+      yield* withCoordinator(
+        Effect.gen(function* () {
+          const coordinator = yield* ComputerUseCoordinator.ComputerUseCoordinator;
+          const controller = agent("controller");
+          const pending = yield* Effect.forkChild(coordinator.requestControl(controller));
+          yield* Deferred.await(started);
+          const stopped = yield* coordinator.interrupt(controller);
+          assert.strictEqual(stopped.lease?.access, "none");
+          assert.isTrue(stopped.keepAwake);
+          const cancelled = yield* Effect.flip(Fiber.join(pending));
+          assert.strictEqual(
+            ComputerUse.toComputerAutomationFailure(cancelled).code,
+            "request-cancelled",
+          );
+          assert.deepEqual(calls, ["requestControl", "cancelPendingAccess"]);
+        }),
+        makePendingComputer(calls, started, authorization),
+      );
+    }),
+  );
 
   it.effect("starts a human lease when delayed authorization completes", () =>
     Effect.gen(function* () {
@@ -973,57 +1227,65 @@ describe("ComputerUseCoordinator", () => {
     }
   }
 
-  for (const completion of ["success", "failure"] as const) {
-    it.effect(`ignores late authorization ${completion} after a replacement request starts`, () =>
-      Effect.gen(function* () {
-        const calls: string[] = [];
-        const firstStarted = yield* Deferred.make<void>();
-        const secondStarted = yield* Deferred.make<void>();
-        const firstAuthorization = yield* Deferred.make<void, ComputerUse.ComputerUseError>();
-        const secondAuthorization = yield* Deferred.make<void>();
-        let requestCount = 0;
-        const computer = {
-          ...makeComputer(calls),
-          requestControl: Effect.gen(function* () {
-            requestCount += 1;
-            calls.push("requestControl");
-            const isFirstRequest = requestCount === 1;
-            yield* Deferred.succeed(isFirstRequest ? firstStarted : secondStarted, undefined);
-            yield* isFirstRequest
-              ? Deferred.await(firstAuthorization)
-              : Deferred.await(secondAuthorization);
-            return nativeStatus;
-          }),
-        };
-        yield* withCoordinator(
+  for (const transition of ["release", "interrupt"] as const) {
+    for (const completion of ["success", "failure"] as const) {
+      it.effect(
+        `ignores late authorization ${completion} after ${transition} and a replacement request`,
+        () =>
           Effect.gen(function* () {
-            const coordinator = yield* ComputerUseCoordinator.ComputerUseCoordinator;
-            const controller = agent("controller");
-            const first = yield* Effect.forkChild(coordinator.requestControl(controller));
-            yield* Deferred.await(firstStarted);
-            yield* coordinator.release(controller);
-            const second = yield* Effect.forkChild(coordinator.requestControl(controller));
-            yield* Deferred.await(secondStarted);
-            if (completion === "success") {
-              yield* Deferred.succeed(firstAuthorization, undefined);
-            } else {
-              yield* Deferred.fail(
-                firstAuthorization,
-                new ComputerUse.ComputerUseOperationError({
-                  operation: "requestControl",
-                  cause: "native authorization failed",
-                }),
-              );
-            }
-            yield* Effect.flip(Fiber.join(first));
-            yield* Deferred.succeed(secondAuthorization, undefined);
-            assert.strictEqual((yield* Fiber.join(second)).lease?.access, "control");
-            assert.deepEqual(calls, ["requestControl", "release", "requestControl"]);
+            const calls: string[] = [];
+            const firstStarted = yield* Deferred.make<void>();
+            const secondStarted = yield* Deferred.make<void>();
+            const firstAuthorization = yield* Deferred.make<void, ComputerUse.ComputerUseError>();
+            const secondAuthorization = yield* Deferred.make<void>();
+            let requestCount = 0;
+            const computer = {
+              ...makeComputer(calls),
+              requestControl: Effect.gen(function* () {
+                requestCount += 1;
+                calls.push("requestControl");
+                const isFirstRequest = requestCount === 1;
+                yield* Deferred.succeed(isFirstRequest ? firstStarted : secondStarted, undefined);
+                yield* isFirstRequest
+                  ? Deferred.await(firstAuthorization)
+                  : Deferred.await(secondAuthorization);
+                return nativeStatus;
+              }),
+            };
+            yield* withCoordinator(
+              Effect.gen(function* () {
+                const coordinator = yield* ComputerUseCoordinator.ComputerUseCoordinator;
+                const controller = agent("controller");
+                const first = yield* Effect.forkChild(coordinator.requestControl(controller));
+                yield* Deferred.await(firstStarted);
+                yield* coordinator[transition](controller);
+                const second = yield* Effect.forkChild(coordinator.requestControl(controller));
+                yield* Deferred.await(secondStarted);
+                if (completion === "success") {
+                  yield* Deferred.succeed(firstAuthorization, undefined);
+                } else {
+                  yield* Deferred.fail(
+                    firstAuthorization,
+                    new ComputerUse.ComputerUseOperationError({
+                      operation: "requestControl",
+                      cause: "native authorization failed",
+                    }),
+                  );
+                }
+                yield* Effect.flip(Fiber.join(first));
+                yield* Deferred.succeed(secondAuthorization, undefined);
+                assert.strictEqual((yield* Fiber.join(second)).lease?.access, "control");
+                assert.deepEqual(calls, [
+                  "requestControl",
+                  transition === "interrupt" ? "cancelPendingAccess" : "release",
+                  "requestControl",
+                ]);
+              }),
+              computer,
+            );
           }),
-          computer,
-        );
-      }),
-    );
+      );
+    }
   }
 
   it.effect("lets a human cancel another controller's pending authorization", () =>

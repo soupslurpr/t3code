@@ -344,6 +344,19 @@ export const rememberControl = DesktopIpc.makeIpcMethod({
   }),
 });
 
+/** Interrupts one agent controller without ending its existing view or availability leases. */
+export const interrupt = DesktopIpc.makeIpcMethod({
+  channel: IpcChannels.COMPUTER_AUTOMATION_INTERRUPT_CHANNEL,
+  payload: DesktopComputerAutomationTargetRequestSchema,
+  result: makeDesktopComputerAutomationResultSchema(ComputerAutomationStatus),
+  handler: Effect.fn("desktop.ipc.computer.interrupt")(function* (request) {
+    const computer = yield* ComputerUseRouter.ComputerUseRouter;
+    return yield* computerResult(
+      computer.interrupt(requestContext(request.context), request.input),
+    );
+  }),
+});
+
 export const forceRelease = DesktopIpc.makeIpcMethod({
   channel: IpcChannels.COMPUTER_AUTOMATION_FORCE_RELEASE_CHANNEL,
   payload: DesktopComputerAutomationTargetRequestSchema,
@@ -432,6 +445,7 @@ export const methods = [
   rememberView,
   rememberControl,
   forceRelease,
+  interrupt,
   forceForgetControl,
   snapshot,
   act,

@@ -230,6 +230,13 @@ keeping your view, or **Return to agent** to give control directly back to the d
 it is still viewing. Physical keyboard or pointer activity at the desktop does not silently revoke a
 remote lease; use **End all access** when every viewer and controller should be disconnected.
 
+**Stop** in a thread cancels its pending User desktop access requests and input, including queued
+actions, and releases its exclusive input control. Existing viewing, keep-awake availability, and
+independent screen watches remain active. Continuing the thread does not automatically restore input
+control. Stop does not disconnect other viewers or end their control, and **Return to agent** cannot
+restore control to the stopped thread. Update the desktop host if T3 reports that control cleanup is
+unsupported; an offline host cannot receive Stop cleanup.
+
 Human access and its keep-awake request are temporary. Closing or hiding the web/desktop supervisor,
 backgrounding the mobile app, disconnecting, or allowing its short renewal lease to expire releases
 the human's access. GNOME continues to show its native sharing indicator whenever the portal session
