@@ -6,6 +6,7 @@ import {
   qemuHotkeyQcodes,
   qemuKeyDownEvents,
   qemuKeyUpEvents,
+  qemuLogicalKeyId,
   qemuPressQcodes,
   qemuTextChords,
   resolveQemuKey,
@@ -59,6 +60,41 @@ describe("QemuInput", () => {
       { type: "key", data: { down: false, key: { type: "qcode", data: "a" } } },
       { type: "key", data: { down: false, key: { type: "qcode", data: "shift" } } },
     ]);
+  });
+
+  it("keeps keypad keys distinct from the main keyboard", () => {
+    for (const digit of "0123456789") {
+      assert.deepEqual(qemuPressQcodes(`Numpad${digit}`), [`kp_${digit}`]);
+      assert.deepEqual(qemuPressQcodes(digit), [digit]);
+    }
+    for (const [key, qcode] of [
+      ["NumpadEnter", "kp_enter"],
+      ["NumpadMultiply", "kp_multiply"],
+      ["NumpadAdd", "kp_add"],
+      ["NumpadSubtract", "kp_subtract"],
+      ["NumpadDecimal", "kp_decimal"],
+      ["NumpadDivide", "kp_divide"],
+      ["NumpadEqual", "kp_equals"],
+      ["NumLock", "num_lock"],
+    ] as const) {
+      assert.deepEqual(qemuPressQcodes(key), [qcode]);
+    }
+    assert.deepEqual(qemuHotkeyQcodes(["Enter", "NumpadEnter"]), ["ret", "kp_enter"]);
+    assert.throws(() => resolveQemuKey("Numpad10"), QemuInputValidationError);
+    assert.throws(() => resolveQemuKey("constructor"), QemuInputValidationError);
+  });
+
+  it("supports keypad camera chords and pairs held-key aliases without implicit modifiers", () => {
+    assert.deepEqual(qemuHotkeyQcodes(["Numpad0", "Alt", "Control"]), ["ctrl", "alt", "kp_0"]);
+    const held = qemuKeyDownEvents("Numpad4");
+    assert.deepEqual(held.events, [
+      { type: "key", data: { down: true, key: { type: "qcode", data: "kp_4" } } },
+    ]);
+    assert.deepEqual(qemuKeyUpEvents(held.heldQcodes), [
+      { type: "key", data: { down: false, key: { type: "qcode", data: "kp_4" } } },
+    ]);
+    assert.equal(qemuLogicalKeyId("Numpad4"), qemuLogicalKeyId("NUMPAD4"));
+    assert.throws(() => qemuHotkeyQcodes(["Numpad4", "numpad4"]), QemuInputValidationError);
   });
 
   it("builds exact ASCII text chords and rejects unsafe Unicode fallback", () => {
