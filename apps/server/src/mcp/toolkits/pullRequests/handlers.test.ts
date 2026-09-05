@@ -43,6 +43,7 @@ const invocation = (
   environmentId: EnvironmentId.make("environment-1"),
   requestNamespace: "provider-session-1",
   thread: {
+    controllerId: "controller-test",
     threadId: THREAD_ID,
     providerSessionId: "provider-session-1",
     providerInstanceId: ProviderInstanceId.make("codex"),
