@@ -43,6 +43,7 @@ it.effect("reports other missing capabilities with the neutral error", () => {
   const invocation: McpInvocationContext.McpInvocationScope = {
     environmentId: EnvironmentId.make("environment-1"),
     threadId: ThreadId.make("thread-1"),
+    controllerId: "controller-1",
     providerSessionId: "provider-session-1",
     providerInstanceId: ProviderInstanceId.make("codex"),
     capabilities: new Set(["preview"]),

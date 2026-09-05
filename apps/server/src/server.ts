@@ -293,7 +293,7 @@ const ReactorLayerLive = Layer.empty.pipe(
     ),
   ),
   Layer.provideMerge(ProviderRuntimeIngestionLive),
-  Layer.provideMerge(ProviderCommandReactorLive),
+  Layer.provideMerge(ProviderCommandReactorLive.pipe(Layer.provide(PreviewAutomationBrokerLive))),
   Layer.provideMerge(CheckpointReactorLive),
   Layer.provideMerge(StorageCleanup.layer),
   Layer.provideMerge(ThreadDeletionReactorLive),

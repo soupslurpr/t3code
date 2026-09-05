@@ -40,6 +40,7 @@ const invocation = (
 ): McpInvocationContext.McpInvocationScope => ({
   environmentId: EnvironmentId.make("environment-1"),
   threadId: THREAD_ID,
+  controllerId: "controller-test",
   providerSessionId: "provider-session-1",
   providerInstanceId: ProviderInstanceId.make("codex"),
   capabilities: new Set(capabilities),

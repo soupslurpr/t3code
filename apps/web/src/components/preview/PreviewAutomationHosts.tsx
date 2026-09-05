@@ -309,6 +309,7 @@ function PreviewAutomationHost(props: { readonly environmentId: EnvironmentId })
       ...previewAutomationHostCapabilities({
         computerAvailable: window.desktopBridge?.computer !== undefined,
         computerCapabilities: userDesktop?.capabilities ?? [],
+        computerInterruptAvailable: typeof window.desktopBridge?.computer?.interrupt === "function",
       }),
       ...(userDesktop === undefined ? {} : { userDesktop }),
     }),
@@ -408,6 +409,13 @@ function PreviewAutomationHost(props: { readonly environmentId: EnvironmentId })
           return await resolveDesktopComputerAutomation(
             computer?.rememberControl(
               request.input as ComputerAutomationAccessInput,
+              requireComputerContext(),
+            ),
+          );
+        case "computerInterrupt":
+          return await resolveDesktopComputerAutomation(
+            computer?.interrupt?.(
+              request.input as ComputerAutomationTargetInput,
               requireComputerContext(),
             ),
           );

@@ -178,7 +178,7 @@ it.effect("retains the environment host when the inventory reaches its bound", (
   }),
 );
 
-it.effect("cancels the routed request when its caller times out", () =>
+it.effect("disconnects the routed host when its caller times out", () =>
   Effect.scoped(
     Effect.gen(function* () {
       const broker = yield* makeBroker;
@@ -198,14 +198,17 @@ it.effect("cancels the routed request when its caller times out", () =>
       yield* TestClock.adjust("1 second");
 
       const error = yield* Fiber.join(invocation);
-      yield* Fiber.join(consumer);
+      const consumerExit = yield* Fiber.await(consumer);
       expect(error).toBeInstanceOf(PreviewAutomationTimeoutError);
-      expect(received.map((event) => event.type)).toEqual(["connected", "request", "cancel"]);
-      expect(received[2]).toMatchObject({
-        type: "cancel",
-        requestId: "preview-0",
-        connectionId: received[1]?.connectionId,
-      });
+      expect(received.map((event) => event.type)).toEqual(["connected", "request"]);
+      expect(Exit.isFailure(consumerExit)).toBe(true);
+      if (Exit.isFailure(consumerExit)) {
+        expect(Cause.hasInterruptsOnly(consumerExit.cause)).toBe(true);
+      }
+      const nextError = yield* broker
+        .invoke<void>({ scope, operation: "status", input: {} })
+        .pipe(Effect.flip);
+      expect(nextError).toBeInstanceOf(PreviewAutomationNoAvailableHostError);
     }),
   ),
 );
@@ -1796,6 +1799,7 @@ it.effect("evicts an unanswered host and lets later calls use a healthy runtime"
       const events = yield* broker.connect(makeHost());
       const consumer = yield* Stream.runForEach(events, (event) => {
         if (event.type === "connected") return Deferred.succeed(connected, event.connectionId);
+        if (event.type !== "request") return Effect.void;
         const request = { ...event.request, connectionId: event.connectionId };
         if (request.operation === "open") {
           return broker.respond({
@@ -1818,6 +1822,7 @@ it.effect("evicts an unanswered host and lets later calls use a healthy runtime"
       const healthy = yield* broker.connect(makeHost({ clientId: "healthy" }));
       yield* Stream.runForEach(healthy, (event) => {
         if (event.type === "connected") return Deferred.succeed(healthyConnected, undefined);
+        if (event.type !== "request") return Effect.void;
         healthyRequests.push({ ...event.request, connectionId: event.connectionId });
         return broker.respond({
           clientId: "healthy",
@@ -1892,6 +1897,7 @@ it.effect("keeps a host that responds with an operation timeout", () =>
       const events = yield* broker.connect(makeHost());
       yield* Stream.runForEach(events, (event) => {
         if (event.type === "connected") return Deferred.succeed(connected, undefined);
+        if (event.type !== "request") return Effect.void;
         return broker.respond({
           clientId: "client-1",
           connectionId: event.connectionId,

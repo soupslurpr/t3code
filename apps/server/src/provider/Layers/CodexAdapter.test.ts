@@ -645,7 +645,7 @@ sessionErrorLayer("CodexAdapterLive session errors", (it) => {
         providerInstanceId: ProviderInstanceId.make("codex"),
         endpoint: "http://127.0.0.1:43123/mcp",
         authorizationHeader: "Bearer test-token",
-        browserToolsAvailable: false,
+        capabilities: new Set(["computer", "device", "pull-requests"]),
       });
       const adapter = yield* CodexAdapter;
       yield* adapter.startSession({
@@ -656,7 +656,10 @@ sessionErrorLayer("CodexAdapterLive session errors", (it) => {
 
       const runtime = runtimeFactory.lastRuntime;
       NodeAssert.ok(runtime);
-      NodeAssert.equal(runtime.options.browserToolsAvailable, false);
+      NodeAssert.deepEqual(
+        runtime.options.mcpCapabilities,
+        new Set(["computer", "device", "pull-requests"]),
+      );
       NodeAssert.equal(
         runtime.options.appServerArgs?.some((argument) => argument.includes("mcp_servers.t3-code")),
         true,
