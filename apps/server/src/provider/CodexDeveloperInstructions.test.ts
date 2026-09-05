@@ -1,57 +1,105 @@
+/** Verifies mode-independent T3 guidance and capability gating. */
 import * as NodeAssert from "node:assert/strict";
-
 import { describe, it } from "vite-plus/test";
+import { buildCodexApplicationContext } from "./CodexDeveloperInstructions.ts";
 
-import {
-  buildCodexAdditionalContext,
-  buildCodexDeveloperInstructions,
-} from "./CodexDeveloperInstructions.ts";
+/** Joins source fragments to assert the guidance independent of transport boundaries. */
+function buildCodexDeveloperInstructions(
+  runtime: Parameters<typeof buildCodexApplicationContext>[0],
+  browserToolsAvailable = true,
+  computerToolsAvailable = true,
+): string {
+  return Object.values(
+    buildCodexApplicationContext(runtime, browserToolsAvailable, computerToolsAvailable),
+  )
+    .map((context) => context.value)
+    .join("\n\n");
+}
 
-describe("buildCodexDeveloperInstructions", () => {
-  it("appends runtime info after the mode instructions", () => {
-    const instructions = runtimeInstructions({
+const runtime = { model: "gpt-5.3-codex", reasoningEffort: "high" };
+
+describe("buildCodexApplicationContext", () => {
+  it("keeps every trusted fragment below the observed Codex 4,000-byte source limit", () => {
+    const maxContextSourceBytes = 4_000;
+    const context = buildCodexApplicationContext(runtime, { browser: true, device: true });
+    NodeAssert.deepStrictEqual(Object.keys(context).filter((key) => !key.startsWith("t3_code_orchestration")), [
+      "t3_code_browser",
+      "t3_code_devices",
+      "t3_code_desktop",
+      "t3_code_desktop_actions",
+      "t3_code_runtime",
+    ]);
+    for (const [source, fragment] of Object.entries(context)) {
+      NodeAssert.equal(fragment.kind, "application");
+      NodeAssert.ok(Buffer.byteLength(fragment.value, "utf8") <= maxContextSourceBytes, source);
+    }
+    NodeAssert.match(
+      context.t3_code_desktop?.value ?? "",
+      /promptly call `computer_request_availability`/,
+    );
+    NodeAssert.match(context.t3_code_desktop_actions?.value ?? "", /^Action forms are:/);
+  });
+
+  it.each([
+    { browser: false, device: false },
+    { browser: false, device: true },
+    { browser: true, device: false },
+    { browser: true, device: true },
+  ])("gates browser and device guidance independently: %j", (availability) => {
+    const context = buildCodexApplicationContext(runtime, availability, false);
+    const instructions = Object.values(context)
+      .map((fragment) => fragment.value)
+      .join("\n");
+
+    NodeAssert.equal(instructions.includes("preview_open"), availability.browser);
+    NodeAssert.equal(
+      instructions.includes("Do not switch to global browser skills"),
+      availability.browser,
+    );
+    NodeAssert.equal(instructions.includes("device_open"), availability.device);
+    NodeAssert.equal(instructions.includes("Do not call simctl, adb"), availability.device);
+    NodeAssert.doesNotMatch(instructions, /computer_request_control/);
+    NodeAssert.match(instructions, /Codex harness/);
+  });
+  it("appends runtime info after the tool instructions", () => {
+    const instructions = buildCodexDeveloperInstructions({
       model: "gpt-5.3-codex",
       reasoningEffort: "high",
     });
 
-    NodeAssert.match(
-      buildCodexDeveloperInstructions("default"),
-      /^<collaboration_mode># Collaboration Mode: Default/,
-    );
+    NodeAssert.doesNotMatch(instructions, /<collaboration_mode>|# Plan Mode|# Collaboration Mode/);
     NodeAssert.match(instructions, /T3 Code/);
     NodeAssert.match(instructions, /Codex harness/);
     NodeAssert.match(instructions, /as gpt-5\.3-codex with high reasoning effort/);
   });
 
-  it("describes Markdown media support in the runtime context in both modes", () => {
-    {
-      const instructions = runtimeInstructions({
-        model: "gpt-5.3-codex",
-        reasoningEffort: "high",
-      });
-      NodeAssert.match(
-        instructions,
-        /<runtime_info>.*embed images and videos.*Markdown.*<\/runtime_info>/,
-      );
-    }
+  it("describes Markdown media support in the runtime context", () => {
+    const instructions = buildCodexDeveloperInstructions({
+      model: "gpt-5.3-codex",
+      reasoningEffort: "high",
+    });
+    NodeAssert.match(
+      instructions,
+      /<runtime_info>.*embed images and videos.*Markdown.*<\/runtime_info>/,
+    );
   });
 
-  it("includes runtime info alongside plan mode instructions", () => {
-    const instructions = runtimeInstructions({
+  it("includes runtime info without mode-specific instructions", () => {
+    const instructions = buildCodexDeveloperInstructions({
       model: "gpt-5.3-codex",
       reasoningEffort: "medium",
     });
 
-    NodeAssert.match(buildCodexDeveloperInstructions("plan"), /^<collaboration_mode># Plan Mode/);
+    NodeAssert.doesNotMatch(instructions, /<collaboration_mode>|# Plan Mode|# Collaboration Mode/);
     NodeAssert.match(instructions, /as gpt-5\.3-codex with medium reasoning effort/);
   });
 
   it("varies with the model and effort of each turn", () => {
-    const first = runtimeInstructions({
+    const first = buildCodexDeveloperInstructions({
       model: "gpt-5.3-codex",
       reasoningEffort: "medium",
     });
-    const second = runtimeInstructions({
+    const second = buildCodexDeveloperInstructions({
       model: "gpt-5.4",
       reasoningEffort: "high",
     });
@@ -60,7 +108,7 @@ describe("buildCodexDeveloperInstructions", () => {
   });
 
   it("flattens multiline metadata into single-line runtime info", () => {
-    const instructions = runtimeInstructions({
+    const instructions = buildCodexDeveloperInstructions({
       model: "gpt\n5.3\ncodex",
       reasoningEffort: " high\neffort ",
     });
@@ -71,45 +119,77 @@ describe("buildCodexDeveloperInstructions", () => {
 });
 
 describe("T3 browser developer instructions", () => {
-  const runtime = { model: "gpt-5.3-codex", reasoningEffort: "high" };
-
-  it("prefers the product-native preview tools in both collaboration modes", () => {
-    {
-      const instructions = toolInstructions(runtime, true);
-      NodeAssert.match(instructions, /t3-code/);
-      NodeAssert.match(instructions, /preview_status/);
-      NodeAssert.match(instructions, /preview_open/);
-      NodeAssert.match(instructions, /Do not switch to global browser skills/);
-    }
+  it("prefers the product-native preview tools", () => {
+    const instructions = buildCodexDeveloperInstructions(runtime, true);
+    NodeAssert.match(instructions, /t3-code/);
+    NodeAssert.match(instructions, /preview_status/);
+    NodeAssert.match(instructions, /preview_open/);
+    NodeAssert.match(instructions, /Do not switch to global browser skills/);
   });
 
   it("omits the browser block entirely when the preview tools are not attached", () => {
-    for (const mode of ["default", "plan"] as const) {
-      const instructions = toolInstructions(runtime, false);
-      NodeAssert.doesNotMatch(instructions, /preview_status/);
-      NodeAssert.doesNotMatch(instructions, /preview_open/);
-      NodeAssert.doesNotMatch(instructions, /T3 Code collaborative browser/);
-      // Steering away from other browser automation must go with the tools;
-      // keeping it would leave the model talked out of its only option.
-      NodeAssert.doesNotMatch(instructions, /Do not switch to global browser skills/);
-      // The rest of the collaboration mode is untouched.
-      NodeAssert.match(buildCodexDeveloperInstructions(mode), /<collaboration_mode>/);
-      NodeAssert.match(buildCodexDeveloperInstructions(mode), /<\/collaboration_mode>/);
-    }
+    const instructions = buildCodexDeveloperInstructions(runtime, false);
+    NodeAssert.doesNotMatch(instructions, /preview_status/);
+    NodeAssert.doesNotMatch(instructions, /preview_open/);
+    NodeAssert.doesNotMatch(instructions, /T3 Code collaborative browser/);
+    // Steering away from other browser automation must go with the tools;
+    // keeping it would leave the model talked out of its only option.
+    NodeAssert.doesNotMatch(instructions, /Do not switch to global browser skills/);
+    // Keep the independently available computer tools.
+    NodeAssert.doesNotMatch(instructions, /<collaboration_mode>/);
+    NodeAssert.match(instructions, /computer_request_control/);
   });
 
   it("tracks the turn's MCP configuration rather than defaulting to on", () => {
-    NodeAssert.match(toolInstructions(runtime, true), /preview_open/);
-    NodeAssert.doesNotMatch(toolInstructions(runtime, false), /preview_open/);
+    NodeAssert.match(buildCodexDeveloperInstructions(runtime, true), /preview_open/);
+    NodeAssert.doesNotMatch(buildCodexDeveloperInstructions(runtime, false), /preview_open/);
+    NodeAssert.match(buildCodexDeveloperInstructions(runtime, false), /computer_request_control/);
   });
 });
 
-function runtimeInstructions(runtime: Parameters<typeof buildCodexAdditionalContext>[0]) {
-  return buildCodexAdditionalContext(runtime).t3_code_runtime!.value;
-}
-function toolInstructions(
-  runtime: Parameters<typeof buildCodexAdditionalContext>[0],
-  available: boolean,
-) {
-  return buildCodexAdditionalContext(runtime, available).t3_code_tools?.value ?? "";
-}
+describe("T3 computer developer instructions", () => {
+  it("prioritizes desktop availability while leaving access timing to the agent", () => {
+    const instructions = buildCodexDeveloperInstructions(runtime, true, true);
+    NodeAssert.match(
+      instructions,
+      /When an authorized user desktop may be needed, promptly call `computer_request_availability`/,
+    );
+    NodeAssert.match(
+      instructions,
+      /Call `computer_request_view` or `computer_request_control` when useful/,
+    );
+    NodeAssert.match(
+      instructions,
+      /User-desktop view and control requests establish availability automatically, and `computer_release` retains it/,
+    );
+    NodeAssert.match(
+      instructions,
+      /Retain availability while foreseeable work may need that desktop, and call `computer_release_availability` only when allowing automatic locking is appropriate/,
+    );
+    NodeAssert.doesNotMatch(instructions, /a task needs a GUI|might be needed only later/);
+  });
+
+  it("documents the deferred desktop action schema", () => {
+    const instructions = buildCodexDeveloperInstructions(runtime, true, true);
+    NodeAssert.match(instructions, /computer_request_control/);
+    NodeAssert.match(instructions, /computer_request_availability/);
+    NodeAssert.match(instructions, /computer_release_availability/);
+    NodeAssert.match(instructions, /computer_act/);
+    NodeAssert.match(instructions, /click \{frameId,x,y,button\?,count\?\}/);
+    NodeAssert.match(instructions, /type \{text,intervalMs\?,submit\?,verification\?\}/);
+    NodeAssert.match(instructions, /hotkey \{keys\}/);
+    NodeAssert.match(instructions, /key_down \{key\}/);
+    NodeAssert.match(instructions, /frame-relative region/);
+    NodeAssert.match(instructions, /starting a known app is usually one batch/);
+    NodeAssert.match(instructions, /preserves exact Unicode through/);
+    NodeAssert.match(instructions, /controllerPromptCache\.minimumLifetimeMs/);
+    NodeAssert.match(instructions, /minimum guaranteed cache window/);
+    NodeAssert.doesNotMatch(instructions, /prompt cache expires/);
+  });
+
+  it("omits computer guidance when the T3 MCP server is not attached", () => {
+    const instructions = buildCodexDeveloperInstructions(runtime, false, false);
+    NodeAssert.doesNotMatch(instructions, /computer_request_control/);
+    NodeAssert.doesNotMatch(instructions, /T3 Code desktop computer use/);
+  });
+});
