@@ -14,15 +14,16 @@ import System from "system";
 import { AccessibilityStatusLease } from "./accessibility-status-lease.js";
 import { canTypeExactlyWithKeyboardEvents, exactTextFallback } from "./exact-keyboard-text.js";
 import { InputCancellationEpoch } from "./input-cancellation.js";
-import { portalPersistMode } from "./portal-persistence.js";
-import { rememberAndRelease } from "./remembered-session.js";
+import { keypadEvdevCode, resolveNamedKeysym } from "./named-keysyms.js";
 import {
   mapDesktopPointToStream,
   mapRelativePointerDelta,
   relativePointerAnchor,
   streamRequiresRelativePointerMotion,
 } from "./pointer-coordinate-transform.js";
+import { portalPersistMode } from "./portal-persistence.js";
 import { isMissingPortalSessionError } from "./portal-session.js";
+import { rememberAndRelease } from "./remembered-session.js";
 import {
   createBatchedIdleCollector,
   createStreamCaptureCompletion,
@@ -142,46 +143,6 @@ const BUTTON_CODES = {
   left: 0x110,
   right: 0x111,
   middle: 0x112,
-};
-const MODIFIER_KEYSYMS = {
-  Alt: 0xffe9,
-  Control: 0xffe3,
-  Meta: 0xffeb,
-  Shift: 0xffe1,
-};
-const NAMED_KEYSYMS = {
-  alt: MODIFIER_KEYSYMS.Alt,
-  control: MODIFIER_KEYSYMS.Control,
-  ctrl: MODIFIER_KEYSYMS.Control,
-  meta: MODIFIER_KEYSYMS.Meta,
-  super: MODIFIER_KEYSYMS.Meta,
-  cmd: MODIFIER_KEYSYMS.Meta,
-  command: MODIFIER_KEYSYMS.Meta,
-  win: MODIFIER_KEYSYMS.Meta,
-  windows: MODIFIER_KEYSYMS.Meta,
-  shift: MODIFIER_KEYSYMS.Shift,
-  option: MODIFIER_KEYSYMS.Alt,
-  backspace: 0xff08,
-  tab: 0xff09,
-  enter: 0xff0d,
-  return: 0xff0d,
-  escape: 0xff1b,
-  esc: 0xff1b,
-  home: 0xff50,
-  arrowleft: 0xff51,
-  left: 0xff51,
-  arrowup: 0xff52,
-  up: 0xff52,
-  arrowright: 0xff53,
-  right: 0xff53,
-  arrowdown: 0xff54,
-  down: 0xff54,
-  pageup: 0xff55,
-  pagedown: 0xff56,
-  end: 0xff57,
-  insert: 0xff63,
-  delete: 0xffff,
-  space: 0x20,
 };
 const INPUT_METHODS = new Set([
   "move",
@@ -2206,15 +2167,15 @@ function requireDevice(device, name) {
   throw error;
 }
 
-/** Sends one keysym press or release. */
+/** Sends one key transition while preserving physical keypad modifiers. */
 async function sendKeysym(keysym, pressed) {
   requireDevice(KEYBOARD_DEVICE, "keyboard");
-  await portalCall("NotifyKeyboardKeysym", "(oa{sv}iu)", [
-    sessionHandle,
-    {},
-    keysym,
-    pressed ? 1 : 0,
-  ]);
+  const keycode = keypadEvdevCode(keysym);
+  await portalCall(
+    keycode === undefined ? "NotifyKeyboardKeysym" : "NotifyKeyboardKeycode",
+    "(oa{sv}iu)",
+    [sessionHandle, {}, keycode ?? keysym, pressed ? 1 : 0],
+  );
 }
 
 /** Holds one keysym while tracking it for automatic cleanup. */
@@ -2395,7 +2356,7 @@ function resolveKeysym(key, field = "key") {
       phase: "validation",
     });
   }
-  const named = NAMED_KEYSYMS[key.toLowerCase()];
+  const named = resolveNamedKeysym(key);
   if (named !== undefined) return named;
   const functionMatch = /^f([1-9]|1[0-9]|2[0-4])$/iu.exec(key);
   if (functionMatch) return 0xffbd + Number(functionMatch[1]);
@@ -2882,7 +2843,7 @@ async function activateAccessibilityTarget(targetId) {
         (await trySelectKeyboardAccessibilityTarget(current.stored.accessible)));
     if (focused && activation === "keyboard") {
       await delay(ACCESSIBILITY_FOCUS_SETTLE_MS);
-      await runInputPhase("key-press", () => tapKeysym(NAMED_KEYSYMS.enter));
+      await runInputPhase("key-press", () => tapKeysym(resolveNamedKeysym("Enter")));
     }
     return focused;
   });
@@ -3233,7 +3194,7 @@ async function handleCommand(message) {
             );
       if (insertion.status === "replace-selection") {
         await runInputPhase("key-press", () =>
-          tapKeysym(NAMED_KEYSYMS.backspace, { field: "text" }),
+          tapKeysym(resolveNamedKeysym("Backspace"), { field: "text" }),
         );
         await delay(ACCESSIBILITY_TEXT_SELECTION_SETTLE_MS);
         insertion = await runInputPhase("execution", () =>

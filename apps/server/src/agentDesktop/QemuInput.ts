@@ -48,6 +48,24 @@ const NAMED_KEYS: Readonly<Record<string, string>> = {
   meta: "meta_l",
   metaleft: "meta_l",
   metaright: "meta_r",
+  numlock: "num_lock",
+  numpad0: "kp_0",
+  numpad1: "kp_1",
+  numpad2: "kp_2",
+  numpad3: "kp_3",
+  numpad4: "kp_4",
+  numpad5: "kp_5",
+  numpad6: "kp_6",
+  numpad7: "kp_7",
+  numpad8: "kp_8",
+  numpad9: "kp_9",
+  numpadadd: "kp_add",
+  numpaddecimal: "kp_decimal",
+  numpaddivide: "kp_divide",
+  numpadenter: "kp_enter",
+  numpadequal: "kp_equals",
+  numpadmultiply: "kp_multiply",
+  numpadsubtract: "kp_subtract",
   pagedown: "pgdn",
   pageup: "pgup",
   return: "ret",
@@ -131,8 +149,9 @@ export function resolveQemuKey(key: string, field = "key"): ResolvedQemuKey {
     }
   }
   const normalized = normalizedKeyName(key);
-  const named = NAMED_KEYS[normalized];
-  if (named !== undefined) return { qcode: named, implicitModifiers: [] };
+  if (Object.hasOwn(NAMED_KEYS, normalized)) {
+    return { qcode: NAMED_KEYS[normalized]!, implicitModifiers: [] };
+  }
   const functionMatch = /^f([1-9]|1[0-9]|2[0-4])$/u.exec(normalized);
   if (functionMatch !== null) return { qcode: normalized, implicitModifiers: [] };
   throw new QemuInputValidationError({

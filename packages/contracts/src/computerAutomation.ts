@@ -1191,7 +1191,7 @@ export type ComputerAutomationTypeInput = typeof ComputerAutomationTypeInput.Typ
 
 const ComputerAutomationKey = TrimmedNonEmptyString.check(Schema.isMaxLength(64)).annotate({
   description:
-    "Case-insensitive key name such as Alt, Control, Meta, Shift, Enter, Escape, Tab, ArrowDown, F1, or a single printable ASCII character. Use type for exact text and arbitrary Unicode.",
+    "Case-insensitive key name such as Alt, Control, Meta, Shift, Enter, Escape, Tab, ArrowDown, F1, Numpad0-Numpad9, NumpadEnter, NumpadDecimal, NumpadAdd, NumpadSubtract, NumpadMultiply, NumpadDivide, NumpadEqual, NumLock, or a single printable ASCII character. Keypad keys are distinct from the main keyboard. Use type for exact text and arbitrary Unicode.",
 });
 
 export const ComputerAutomationKeyInput = Schema.Struct({
