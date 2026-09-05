@@ -57,6 +57,8 @@ import {
 import { VcsStatusBroadcaster } from "../../vcs/VcsStatusBroadcaster.ts";
 import { GitWorkflowService } from "../../git/GitWorkflowService.ts";
 import { formatMonitorSystemEventForProvider } from "../../threadMonitor/ThreadMonitorContinuation.ts";
+import { PreviewAutomationBroker } from "../../mcp/PreviewAutomationBroker.ts";
+import { ServerEnvironment } from "../../environment/ServerEnvironment.ts";
 const isProviderAdapterRequestError = Schema.is(ProviderAdapterRequestError);
 const isProviderAdapterValidationError = Schema.is(ProviderAdapterValidationError);
 const isProviderWorkspaceMissingError = Schema.is(ProviderWorkspaceMissingError);
@@ -330,6 +332,8 @@ const make = Effect.gen(function* () {
   const vcsStatusBroadcaster = yield* VcsStatusBroadcaster;
   const textGeneration = yield* TextGeneration;
   const serverSettingsService = yield* ServerSettingsService;
+  const computerBroker = yield* PreviewAutomationBroker;
+  const environmentId = yield* (yield* ServerEnvironment).getEnvironmentId;
   const serverCommandId = (tag: string) =>
     crypto.randomUUIDv4.pipe(Effect.map((uuid) => CommandId.make(`server:${tag}:${uuid}`)));
   const serverEventId = () => crypto.randomUUIDv4.pipe(Effect.map(EventId.make));
@@ -355,6 +359,7 @@ const make = Effect.gen(function* () {
     readonly kind:
       | "provider.turn.start.failed"
       | "provider.turn.interrupt.failed"
+      | "computer.turn.interrupt.failed"
       | "provider.approval.respond.failed"
       | "provider.user-input.respond.failed"
       | "provider.session.stop.failed";
@@ -1458,6 +1463,7 @@ const make = Effect.gen(function* () {
       return;
     }
 
+    yield* computerBroker.resumeThread({ environmentId, threadId: event.payload.threadId });
     yield* providerService
       .sendTurn(sendTurnRequest.value)
       .pipe(Effect.asVoid, Effect.catchCause(recoverTurnStartFailure), Effect.forkScoped);
@@ -1471,7 +1477,32 @@ const make = Effect.gen(function* () {
       return;
     }
     const session = thread.session;
+    if (
+      event.payload.turnId !== undefined &&
+      session?.activeTurnId != null &&
+      session.activeTurnId !== event.payload.turnId
+    )
+      return;
+    const computerInterruption = yield* computerBroker.beginThreadInterruption({
+      environmentId,
+      threadId: event.payload.threadId,
+      providerInstanceId: session?.providerInstanceId ?? thread.modelSelection.instanceId,
+    });
+    const finishComputerInterruption = computerInterruption.pipe(
+      Effect.catchCause((cause) => {
+        if (Cause.hasInterruptsOnly(cause)) return Effect.interrupt;
+        return appendProviderFailureActivity({
+          threadId: event.payload.threadId,
+          kind: "computer.turn.interrupt.failed",
+          summary: "Desktop control cleanup failed",
+          detail: formatFailureDetail(cause),
+          turnId: event.payload.turnId ?? null,
+          createdAt: event.payload.createdAt,
+        });
+      }),
+    );
     if (!session || session.status === "stopped") {
+      yield* finishComputerInterruption;
       return yield* appendProviderFailureActivity({
         threadId: event.payload.threadId,
         kind: "provider.turn.interrupt.failed",
@@ -1553,9 +1584,15 @@ const make = Effect.gen(function* () {
     };
 
     // Orchestration turn ids are not provider turn ids, so interrupt by session.
-    yield* providerService
-      .interruptTurn({ threadId: event.payload.threadId })
-      .pipe(Effect.catchCause(recoverInterruptFailure));
+    yield* Effect.all(
+      [
+        providerService
+          .interruptTurn({ threadId: event.payload.threadId })
+          .pipe(Effect.catchCause(recoverInterruptFailure)),
+        finishComputerInterruption,
+      ],
+      { concurrency: "unbounded", discard: true },
+    );
   });
 
   const processApprovalResponseRequested = Effect.fn("processApprovalResponseRequested")(function* (

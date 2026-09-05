@@ -113,5 +113,6 @@ export const COMPUTER_AUTOMATION_FORCE_FORGET_CONTROL_CHANNEL =
 export const COMPUTER_AUTOMATION_SNAPSHOT_CHANNEL = "desktop:computer-automation-snapshot";
 export const COMPUTER_AUTOMATION_ACT_CHANNEL = "desktop:computer-automation-act";
 export const COMPUTER_AUTOMATION_RELEASE_CHANNEL = "desktop:computer-automation-release";
+export const COMPUTER_AUTOMATION_INTERRUPT_CHANNEL = "desktop:computer-automation-interrupt";
 export const COMPUTER_AUTOMATION_FORGET_CONTROL_CHANNEL =
   "desktop:computer-automation-forget-control";

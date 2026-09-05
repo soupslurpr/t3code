@@ -10,6 +10,8 @@ import {
   ProviderDriverKind,
   ProviderInstanceId,
   ProviderSetupError,
+  PreviewAutomationNoAvailableHostError,
+  type PreviewAutomationError,
 } from "@t3tools/contracts";
 import { createModelSelection } from "@t3tools/shared/model";
 import {
@@ -74,6 +76,8 @@ import { ServerSettingsService } from "../../serverSettings.ts";
 import { ServerActivation } from "../../serverActivation.ts";
 import { VcsStatusBroadcaster } from "../../vcs/VcsStatusBroadcaster.ts";
 import * as GitWorkflowService from "../../git/GitWorkflowService.ts";
+import * as PreviewAutomationBroker from "../../mcp/PreviewAutomationBroker.ts";
+import * as ServerEnvironment from "../../environment/ServerEnvironment.ts";
 
 const asProjectId = (value: string): ProjectId => ProjectId.make(value);
 const asApprovalRequestId = (value: string): ApprovalRequestId => ApprovalRequestId.make(value);
@@ -178,6 +182,7 @@ describe("ProviderCommandReactor", () => {
     readonly beforeReadySessionDispatch?: () => Effect.Effect<void>;
     readonly compactThreadEffect?: () => Effect.Effect<void, ProviderAdapterRequestError>;
     readonly interruptTurnEffect?: () => Effect.Effect<void, ProviderAdapterRequestError>;
+    readonly computerInterruptionEffect?: Effect.Effect<void, PreviewAutomationError>;
     readonly stopSessionEffect?: () => Effect.Effect<void, ProviderAdapterRequestError>;
     readonly failOnFullThreadDetailQuery?: boolean;
     readonly startSessionEffect?: (
@@ -271,6 +276,12 @@ describe("ProviderCommandReactor", () => {
     );
     const compactThread = vi.fn((_: ThreadId) => input?.compactThreadEffect?.() ?? Effect.void);
     const interruptTurn = vi.fn((_: unknown) => input?.interruptTurnEffect?.() ?? Effect.void);
+    const beginThreadInterruption = vi.fn<
+      PreviewAutomationBroker.PreviewAutomationBroker["Service"]["beginThreadInterruption"]
+    >(() => Effect.succeed(input?.computerInterruptionEffect ?? Effect.void));
+    const resumeThread = vi.fn<
+      PreviewAutomationBroker.PreviewAutomationBroker["Service"]["resumeThread"]
+    >(() => Effect.void);
     const respondToRequest = vi.fn<ProviderServiceShape["respondToRequest"]>(() => Effect.void);
     const respondToUserInput = vi.fn<ProviderServiceShape["respondToUserInput"]>(() => Effect.void);
     const stopSession = vi.fn((stopInput: unknown) =>
@@ -460,6 +471,17 @@ describe("ProviderCommandReactor", () => {
       }),
     ).pipe(Layer.provide(orchestrationLayer));
     const layer = ProviderCommandReactorLive.pipe(
+      Layer.provide(
+        Layer.mock(PreviewAutomationBroker.PreviewAutomationBroker, {
+          beginThreadInterruption,
+          resumeThread,
+        }),
+      ),
+      Layer.provide(
+        Layer.mock(ServerEnvironment.ServerEnvironment, {
+          getEnvironmentId: Effect.succeed(EnvironmentId.make("environment-1")),
+        }),
+      ),
       Layer.provideMerge(reactorOrchestrationLayer),
       Layer.provideMerge(reactorProjectionSnapshotLayer),
       Layer.provideMerge(Layer.succeed(ProviderService, service)),
@@ -611,6 +633,8 @@ describe("ProviderCommandReactor", () => {
       sendTurn,
       compactThread,
       interruptTurn,
+      beginThreadInterruption,
+      resumeThread,
       respondToRequest,
       respondToUserInput,
       stopSession,
@@ -867,6 +891,14 @@ describe("ProviderCommandReactor", () => {
 
     await waitFor(() => harness.startSession.mock.calls.length === 1);
     await waitFor(() => harness.sendTurn.mock.calls.length === 1);
+    expect(harness.resumeThread).toHaveBeenCalledWith({
+      environmentId: "environment-1",
+      threadId: "thread-1",
+    });
+    expect(harness.resumeThread.mock.invocationCallOrder[0]).toBeLessThan(
+      harness.sendTurn.mock.invocationCallOrder[0]!,
+    );
+    expect(harness.beginThreadInterruption).not.toHaveBeenCalled();
     expect(harness.startSession.mock.calls[0]?.[0]).toEqual(ThreadId.make("thread-1"));
     expect(harness.startSession.mock.calls[0]?.[1]).toMatchObject({
       cwd: "/tmp/provider-project",
@@ -3365,10 +3397,151 @@ describe("ProviderCommandReactor", () => {
       }),
     );
 
-    await waitFor(() => harness.interruptTurn.mock.calls.length === 1);
+    await harness.drain();
     expect(harness.interruptTurn.mock.calls[0]?.[0]).toEqual({
       threadId: "thread-1",
     });
+    expect(harness.beginThreadInterruption).toHaveBeenCalledWith({
+      environmentId: "environment-1",
+      threadId: "thread-1",
+      providerInstanceId: "codex",
+    });
+    expect(harness.beginThreadInterruption.mock.invocationCallOrder[0]).toBeLessThan(
+      harness.interruptTurn.mock.invocationCallOrder[0]!,
+    );
+  });
+
+  effectIt.effect(
+    "sends provider Stop while desktop cleanup is still awaiting acknowledgement",
+    () =>
+      Effect.gen(function* () {
+        const providerStopped = yield* Deferred.make<void>();
+        const desktopStarted = yield* Deferred.make<void>();
+        const desktopAcknowledged = yield* Deferred.make<void>();
+        const harness = yield* Effect.promise(() =>
+          createHarness({
+            interruptTurnEffect: () =>
+              Deferred.succeed(providerStopped, undefined).pipe(Effect.asVoid),
+            computerInterruptionEffect: Deferred.succeed(desktopStarted, undefined).pipe(
+              Effect.andThen(Deferred.await(desktopAcknowledged)),
+            ),
+          }),
+        );
+        const now = "2026-01-01T00:00:00.000Z";
+        yield* harness.engine.dispatch({
+          type: "thread.session.set",
+          commandId: CommandId.make("session-stop"),
+          threadId: ThreadId.make("thread-1"),
+          session: {
+            threadId: ThreadId.make("thread-1"),
+            status: "running",
+            providerName: "codex",
+            runtimeMode: "approval-required",
+            activeTurnId: asTurnId("turn-1"),
+            lastError: null,
+            updatedAt: now,
+          },
+          createdAt: now,
+        });
+        yield* harness.engine.dispatch({
+          type: "thread.turn.interrupt",
+          commandId: CommandId.make("concurrent-stop"),
+          threadId: ThreadId.make("thread-1"),
+          turnId: asTurnId("turn-1"),
+          createdAt: now,
+        });
+        yield* Deferred.await(desktopStarted);
+        yield* Deferred.await(providerStopped);
+        expect(harness.beginThreadInterruption.mock.invocationCallOrder[0]).toBeLessThan(
+          harness.interruptTurn.mock.invocationCallOrder[0]!,
+        );
+        yield* Deferred.succeed(desktopAcknowledged, undefined);
+        yield* Effect.promise(() => harness.drain());
+      }),
+  );
+
+  it("reports desktop cleanup failure separately without skipping provider Stop", async () => {
+    const harness = await createHarness({
+      computerInterruptionEffect: Effect.fail(
+        new PreviewAutomationNoAvailableHostError({
+          operation: "computerInterrupt",
+          environmentId: EnvironmentId.make("environment-1"),
+          threadId: ThreadId.make("thread-1"),
+          providerSessionId: "stop",
+          providerInstanceId: ProviderInstanceId.make("codex"),
+        }),
+      ),
+    });
+    const now = "2026-01-01T00:00:00.000Z";
+    await harness.runEffect(
+      harness.engine.dispatch({
+        type: "thread.session.set",
+        commandId: CommandId.make("session-cleanup-failure"),
+        threadId: ThreadId.make("thread-1"),
+        session: {
+          threadId: ThreadId.make("thread-1"),
+          status: "running",
+          providerName: "codex",
+          runtimeMode: "approval-required",
+          activeTurnId: asTurnId("turn-1"),
+          lastError: null,
+          updatedAt: now,
+        },
+        createdAt: now,
+      }),
+    );
+    await harness.runEffect(
+      harness.engine.dispatch({
+        type: "thread.turn.interrupt",
+        commandId: CommandId.make("cleanup-failure-stop"),
+        threadId: ThreadId.make("thread-1"),
+        turnId: asTurnId("turn-1"),
+        createdAt: now,
+      }),
+    );
+    await harness.drain();
+    expect(harness.interruptTurn).toHaveBeenCalledTimes(1);
+    const thread = (await harness.readModel()).threads.find((thread) => thread.id === "thread-1");
+    expect(
+      thread?.activities.find((activity) => activity.kind === "computer.turn.interrupt.failed"),
+    ).toMatchObject({ summary: "Desktop control cleanup failed" });
+    expect(
+      thread?.activities.some((activity) => activity.kind === "provider.turn.interrupt.failed"),
+    ).toBe(false);
+  });
+
+  it("ignores stale Stop requests for an earlier turn without releasing newer control", async () => {
+    const harness = await createHarness();
+    const now = "2026-01-01T00:00:00.000Z";
+    await harness.runEffect(
+      harness.engine.dispatch({
+        type: "thread.session.set",
+        commandId: CommandId.make("newer-session"),
+        threadId: ThreadId.make("thread-1"),
+        session: {
+          threadId: ThreadId.make("thread-1"),
+          status: "running",
+          providerName: "codex",
+          runtimeMode: "approval-required",
+          activeTurnId: asTurnId("new-turn"),
+          lastError: null,
+          updatedAt: now,
+        },
+        createdAt: now,
+      }),
+    );
+    await harness.runEffect(
+      harness.engine.dispatch({
+        type: "thread.turn.interrupt",
+        commandId: CommandId.make("stale-stop"),
+        threadId: ThreadId.make("thread-1"),
+        turnId: asTurnId("old-turn"),
+        createdAt: now,
+      }),
+    );
+    await harness.drain();
+    expect(harness.interruptTurn).not.toHaveBeenCalled();
+    expect(harness.beginThreadInterruption).not.toHaveBeenCalled();
   });
 
   effectIt.effect(

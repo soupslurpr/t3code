@@ -247,6 +247,8 @@ contextBridge.exposeInMainWorld("desktopBridge", {
         input,
         context,
       }),
+    interrupt: (input, context) =>
+      ipcRenderer.invoke(IpcChannels.COMPUTER_AUTOMATION_INTERRUPT_CHANNEL, { input, context }),
     forceForgetControl: (input, context) =>
       ipcRenderer.invoke(IpcChannels.COMPUTER_AUTOMATION_FORCE_FORGET_CONTROL_CHANNEL, {
         input,

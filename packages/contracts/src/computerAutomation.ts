@@ -47,6 +47,7 @@ export const COMPUTER_AUTOMATION_OPERATIONS = [
   "computerForceForgetControl",
   "computerSnapshot",
   "computerAct",
+  "computerInterrupt",
   "computerRelease",
   "computerForgetControl",
 ] as const;

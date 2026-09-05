@@ -197,6 +197,7 @@ const HelperMethod = Schema.Literals([
   "keyDown",
   "keyUp",
   "releaseInputs",
+  "cancelPendingAccess",
   "stop",
   "forget",
 ]);
@@ -418,6 +419,7 @@ export interface GnomeRemoteDesktopShape {
   }) => Effect.Effect<void, GnomeRemoteDesktopError>;
   readonly keyUp: (input: { readonly key: string }) => Effect.Effect<void, GnomeRemoteDesktopError>;
   readonly releaseInputs: Effect.Effect<ComputerAutomationInputCleanup, GnomeRemoteDesktopError>;
+  readonly cancelPendingAccess: Effect.Effect<void, GnomeRemoteDesktopError>;
   readonly stop: Effect.Effect<void, GnomeRemoteDesktopError>;
   readonly forget: Effect.Effect<void, GnomeRemoteDesktopError>;
 }
@@ -479,6 +481,7 @@ const unavailable = (reason: string): GnomeRemoteDesktopShape => {
     keyUp: () => fail,
     releaseInputs: Effect.succeed({ keys: "not-needed", buttons: "not-needed" }),
     stop: Effect.void,
+    cancelPendingAccess: Effect.void,
     forget: fail,
   });
 };
@@ -798,6 +801,9 @@ export const make = Effect.gen(function* () {
   );
 
   const stop = cancelPendingAuthorization().pipe(Effect.andThen(control("stop", {})));
+  const cancelPendingAccess = cancelPendingAuthorization().pipe(
+    Effect.andThen(control("cancelPendingAccess", {})),
+  );
   const forget = cancelPendingAuthorization().pipe(Effect.andThen(control("forget", {})));
 
   const requestAccess = Effect.fn("GnomeRemoteDesktop.requestAccess")(function* (
@@ -949,6 +955,7 @@ export const make = Effect.gen(function* () {
     keyDown: (input) => control("keyDown", input),
     keyUp: (input) => control("keyUp", input),
     releaseInputs,
+    cancelPendingAccess,
     stop,
     forget,
   });
