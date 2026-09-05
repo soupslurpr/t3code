@@ -39,7 +39,7 @@ import * as EffectCodexSchema from "effect-codex-app-server/schema";
 import { buildCodexInitializeParams } from "./CodexProvider.ts";
 import { codexSessionAppServerArgs } from "./codexLaunchArgs.ts";
 import { expandHomePath } from "../../pathExpansion.ts";
-import { buildCodexDeveloperInstructions } from "../CodexDeveloperInstructions.ts";
+import { buildCodexApplicationContext } from "../CodexDeveloperInstructions.ts";
 const decodeV2TurnStartResponse = Schema.decodeUnknownEffect(EffectCodexSchema.V2TurnStartResponse);
 
 const PROVIDER = ProviderDriverKind.make("codex");
@@ -582,12 +582,11 @@ function runtimeModeToTurnSandboxPolicy(
   }
 }
 
+/** Selects Codex's built-in mode instructions without using its legacy text override. */
 function buildCodexCollaborationMode(input: {
   readonly interactionMode?: ProviderInteractionMode;
   readonly model?: string;
   readonly effort?: EffectCodexSchema.V2TurnStartParams__ReasoningEffort;
-  readonly browserToolsAvailable?: boolean;
-  readonly computerToolsAvailable?: boolean;
 }): EffectCodexSchema.V2TurnStartParams__CollaborationMode | undefined {
   if (input.interactionMode === undefined) {
     return undefined;
@@ -599,16 +598,12 @@ function buildCodexCollaborationMode(input: {
     settings: {
       model,
       reasoning_effort: reasoningEffort,
-      developer_instructions: buildCodexDeveloperInstructions(
-        input.interactionMode,
-        { model, reasoningEffort },
-        input.browserToolsAvailable ?? true,
-        input.computerToolsAvailable ?? true,
-      ),
+      developer_instructions: null,
     },
   };
 }
 
+/** Delivers current T3 application context alongside user input and Codex mode settings. */
 export function buildTurnStartParams(input: {
   readonly threadId: string;
   readonly runtimeMode: RuntimeMode;
@@ -645,13 +640,20 @@ export function buildTurnStartParams(input: {
     ...(input.interactionMode ? { interactionMode: input.interactionMode } : {}),
     ...(input.model ? { model: input.model } : {}),
     ...(input.effort ? { effort: input.effort } : {}),
-    browserToolsAvailable: input.browserToolsAvailable ?? true,
-    computerToolsAvailable: input.computerToolsAvailable ?? true,
   });
 
   return decodeCodexTurnStartParamsWithCollaborationMode({
     threadId: input.threadId,
     input: turnInput,
+    // Keep T3 guidance outside mode overrides, which Codex can replace with model-catalog text.
+    additionalContext: buildCodexApplicationContext(
+      {
+        model: normalizeCodexModelSlug(input.model) ?? DEFAULT_MODEL,
+        reasoningEffort: input.effort ?? "medium",
+      },
+      input.browserToolsAvailable ?? true,
+      input.computerToolsAvailable ?? true,
+    ),
     approvalPolicy: config.approvalPolicy,
     approvalsReviewer: config.approvalsReviewer,
     sandboxPolicy: runtimeModeToTurnSandboxPolicy(input.runtimeMode),
