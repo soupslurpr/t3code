@@ -72,7 +72,7 @@ class FakeCodexRuntime implements CodexSessionRuntimeShape {
       runtimeMode: this.options.runtimeMode,
       threadId: this.options.threadId,
       cwd: this.options.cwd,
-      ...(this.options.model ? { model: this.options.model } : {}),
+      ...(this.options.modelSettings ? { model: this.options.modelSettings.model } : {}),
       createdAt: this.now,
       updatedAt: this.now,
     } satisfies ProviderSession),
@@ -292,9 +292,8 @@ validationLayer("CodexAdapterLive validation", (it) => {
         binaryPath: "codex",
         cwd: process.cwd(),
         launchArgs: "",
-        model: "gpt-5.3-codex",
+        modelSettings: { model: "gpt-5.3-codex", effort: null, serviceTier: "priority" },
         providerInstanceId: ProviderInstanceId.make("codex"),
-        serviceTier: "priority",
         threadId: asThreadId("thread-1"),
         runtimeMode: "full-access",
       });
@@ -445,9 +444,7 @@ sessionErrorLayer("CodexAdapterLive session errors", (it) => {
       NodeAssert.deepStrictEqual(runtime.sendTurnImpl.mock.calls[0]?.[0], {
         input: "hello",
         inputSource: "harness",
-        model: "gpt-5.3-codex",
-        effort: "high",
-        serviceTier: "priority",
+        modelSettings: { model: "gpt-5.3-codex", effort: "high", serviceTier: "priority" },
       });
     }),
   );
@@ -481,8 +478,14 @@ sessionErrorLayer("CodexAdapterLive session errors", (it) => {
       NodeAssert.deepStrictEqual(
         runtime.sendTurnImpl.mock.calls.map(([input]) => input),
         [
-          { input: "hello", model: "gpt-6-astra", effort: "max" },
-          { input: "hello", model: "gpt-6-astra", effort: "low" },
+          {
+            input: "hello",
+            modelSettings: { model: "gpt-6-astra", effort: "max", serviceTier: null },
+          },
+          {
+            input: "hello",
+            modelSettings: { model: "gpt-6-astra", effort: "low", serviceTier: null },
+          },
         ],
       );
     }),
@@ -748,9 +751,7 @@ sessionErrorLayer("CodexAdapterLive session errors", (it) => {
 
       NodeAssert.deepStrictEqual(runtime.sendTurnImpl.mock.calls[0]?.[0], {
         input: "hello",
-        model: "gpt-5.3-codex",
-        effort: "high",
-        serviceTier: "flex",
+        modelSettings: { model: "gpt-5.3-codex", effort: "high", serviceTier: "flex" },
       });
     }).pipe(Effect.provide(customLayer));
   });

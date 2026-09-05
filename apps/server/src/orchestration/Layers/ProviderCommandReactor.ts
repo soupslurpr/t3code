@@ -868,7 +868,7 @@ const make = Effect.gen(function* () {
               model: activeSession.model,
             }
           : requestedModelSelection
-        : input.modelSelection;
+        : requestedModelSelection;
 
     return {
       threadId: input.threadId,
@@ -1217,7 +1217,10 @@ const make = Effect.gen(function* () {
       threadId: thread.id,
       messageId: event.payload.messageId,
     });
-    if (Option.isNone(turnStart) || (turnStart.value.message.role !== "user" && turnStart.value.message.role !== "system")) {
+    if (
+      Option.isNone(turnStart) ||
+      (turnStart.value.message.role !== "user" && turnStart.value.message.role !== "system")
+    ) {
       yield* appendProviderFailureActivity({
         threadId: event.payload.threadId,
         kind: "provider.turn.start.failed",
@@ -1780,6 +1783,9 @@ const make = Effect.gen(function* () {
     });
     switch (event.type) {
       case "thread.meta-updated":
+        if (event.payload.modelSelection !== undefined) {
+          threadModelSelections.delete(event.payload.threadId);
+        }
         if (event.payload.regenerateTitle) yield* threadTitleRegenerationWorker.enqueue(event);
         else if (event.payload.titleState?.needsRefinement)
           yield* maybeRefineThreadTitle(event.payload.threadId);
@@ -1883,6 +1889,7 @@ const make = Effect.gen(function* () {
       if (
         (event.type === "thread.meta-updated" &&
           (event.payload.regenerateTitle === true ||
+            event.payload.modelSelection !== undefined ||
             event.payload.titleState?.needsRefinement === true)) ||
         (event.type === "thread.session-set" && event.payload.session.status === "ready") ||
         event.type === "thread.runtime-mode-set" ||

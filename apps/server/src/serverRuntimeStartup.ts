@@ -707,6 +707,7 @@ export const reconcileProviderSessions = Effect.gen(function* () {
                 ? { continuation: true }
                 : { input: SERVER_UPDATE_CONTINUATION_PROMPT }),
               interactionMode: thread.interactionMode,
+              modelSelection: thread.modelSelection,
             });
           });
           const continuationExit = yield* Effect.exit(continuation);
