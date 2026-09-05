@@ -49,7 +49,7 @@ const ComputerUseOperation = Schema.Literals([
 type ComputerUseOperation = typeof ComputerUseOperation.Type;
 
 /** Reports that an observed desktop display is no longer present. */
-export class ComputerUseDisplayNotFoundError extends Schema.TaggedErrorClass<ComputerUseDisplayNotFoundError>()(
+export class ComputerUseDisplayNotFoundError extends Schema.TaggedError<ComputerUseDisplayNotFoundError>()(
   "ComputerUseDisplayNotFoundError",
   {
     displayId: Schema.String,
@@ -61,7 +61,7 @@ export class ComputerUseDisplayNotFoundError extends Schema.TaggedErrorClass<Com
 }
 
 /** Reports a pointer coordinate outside its referenced screenshot frame. */
-export class ComputerUseCoordinateOutOfBoundsError extends Schema.TaggedErrorClass<ComputerUseCoordinateOutOfBoundsError>()(
+export class ComputerUseCoordinateOutOfBoundsError extends Schema.TaggedError<ComputerUseCoordinateOutOfBoundsError>()(
   "ComputerUseCoordinateOutOfBoundsError",
   {
     frameId: Schema.String,
@@ -80,7 +80,7 @@ export class ComputerUseCoordinateOutOfBoundsError extends Schema.TaggedErrorCla
 }
 
 /** Reports an expired or unknown screenshot frame. */
-export class ComputerUseFrameNotFoundError extends Schema.TaggedErrorClass<ComputerUseFrameNotFoundError>()(
+export class ComputerUseFrameNotFoundError extends Schema.TaggedError<ComputerUseFrameNotFoundError>()(
   "ComputerUseFrameNotFoundError",
   {
     frameId: Schema.String,
@@ -92,7 +92,7 @@ export class ComputerUseFrameNotFoundError extends Schema.TaggedErrorClass<Compu
 }
 
 /** Reports a requested screenshot region outside its source frame. */
-export class ComputerUseRegionOutOfBoundsError extends Schema.TaggedErrorClass<ComputerUseRegionOutOfBoundsError>()(
+export class ComputerUseRegionOutOfBoundsError extends Schema.TaggedError<ComputerUseRegionOutOfBoundsError>()(
   "ComputerUseRegionOutOfBoundsError",
   {
     frameId: Schema.String,
@@ -113,7 +113,7 @@ export class ComputerUseRegionOutOfBoundsError extends Schema.TaggedErrorClass<C
 }
 
 /** Reports screenshot views that cannot share one native display capture. */
-export class ComputerUseMixedDisplayCaptureError extends Schema.TaggedErrorClass<ComputerUseMixedDisplayCaptureError>()(
+export class ComputerUseMixedDisplayCaptureError extends Schema.TaggedError<ComputerUseMixedDisplayCaptureError>()(
   "ComputerUseMixedDisplayCaptureError",
   {
     field: Schema.String,
@@ -127,7 +127,7 @@ export class ComputerUseMixedDisplayCaptureError extends Schema.TaggedErrorClass
 }
 
 /** Identifies a pointer failure before a click or drag begins. */
-class ComputerUseMoveToStartError extends Schema.TaggedErrorClass<ComputerUseMoveToStartError>()(
+class ComputerUseMoveToStartError extends Schema.TaggedError<ComputerUseMoveToStartError>()(
   "ComputerUseMoveToStartError",
   { cause: Schema.Defect() },
 ) {
@@ -137,7 +137,7 @@ class ComputerUseMoveToStartError extends Schema.TaggedErrorClass<ComputerUseMov
 }
 
 /** Adds batch progress to one failed desktop action. */
-export class ComputerUseActionError extends Schema.TaggedErrorClass<ComputerUseActionError>()(
+export class ComputerUseActionError extends Schema.TaggedError<ComputerUseActionError>()(
   "ComputerUseActionError",
   {
     actionIndex: Schema.Int,
@@ -153,7 +153,7 @@ export class ComputerUseActionError extends Schema.TaggedErrorClass<ComputerUseA
 }
 
 /** Adds operation context to an unexpected desktop failure. */
-export class ComputerUseOperationError extends Schema.TaggedErrorClass<ComputerUseOperationError>()(
+export class ComputerUseOperationError extends Schema.TaggedError<ComputerUseOperationError>()(
   "ComputerUseOperationError",
   {
     operation: ComputerUseOperation,
@@ -166,7 +166,7 @@ export class ComputerUseOperationError extends Schema.TaggedErrorClass<ComputerU
 }
 
 /** Reports an invalid or conflicting logical lease above the native session. */
-export class ComputerUseLeaseError extends Schema.TaggedErrorClass<ComputerUseLeaseError>()(
+export class ComputerUseLeaseError extends Schema.TaggedError<ComputerUseLeaseError>()(
   "ComputerUseLeaseError",
   {
     code: Schema.Literals([
@@ -672,6 +672,7 @@ export interface ComputerUseShape {
     input: ComputerAutomationActionBatchInput,
   ) => Effect.Effect<ReadonlyArray<ComputerAutomationActionResult>, ComputerUseError>;
   readonly releaseInputs: Effect.Effect<void, ComputerUseError>;
+  readonly cancelPendingAccess: Effect.Effect<void, ComputerUseError>;
   readonly release: Effect.Effect<void, ComputerUseError>;
   readonly forget: Effect.Effect<void, ComputerUseError>;
 }
@@ -1881,6 +1882,10 @@ export const makeWithOptions = Effect.fn("ComputerUse.makeWithOptions")(function
     Effect.mapError(mapOperationError("release")),
   );
 
+  const cancelPendingAccess = controller.cancelPendingAccess.pipe(
+    Effect.mapError(mapOperationError("release")),
+  );
+
   const requestControl = inputSemaphore.withPermits(1)(
     controller.start.pipe(
       Effect.tap(() => Ref.set(captureHealth, new Map())),
@@ -1939,6 +1944,7 @@ export const makeWithOptions = Effect.fn("ComputerUse.makeWithOptions")(function
     snapshot,
     act,
     releaseInputs,
+    cancelPendingAccess,
     release,
     forget,
   });

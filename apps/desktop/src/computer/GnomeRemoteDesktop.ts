@@ -197,6 +197,7 @@ const HelperMethod = Schema.Literals([
   "keyDown",
   "keyUp",
   "releaseInputs",
+  "cancelPendingAccess",
   "stop",
   "forget",
 ]);
@@ -208,7 +209,7 @@ const HelperCommand = Schema.Struct({
   params: Schema.Unknown,
 });
 
-export class GnomeRemoteDesktopUnavailableError extends Schema.TaggedErrorClass<GnomeRemoteDesktopUnavailableError>()(
+export class GnomeRemoteDesktopUnavailableError extends Schema.TaggedError<GnomeRemoteDesktopUnavailableError>()(
   "GnomeRemoteDesktopUnavailableError",
   {
     reason: Schema.String,
@@ -219,7 +220,7 @@ export class GnomeRemoteDesktopUnavailableError extends Schema.TaggedErrorClass<
   }
 }
 
-export class GnomeRemoteDesktopCommandError extends Schema.TaggedErrorClass<GnomeRemoteDesktopCommandError>()(
+export class GnomeRemoteDesktopCommandError extends Schema.TaggedError<GnomeRemoteDesktopCommandError>()(
   "GnomeRemoteDesktopCommandError",
   {
     operation: HelperMethod,
@@ -239,7 +240,7 @@ export class GnomeRemoteDesktopCommandError extends Schema.TaggedErrorClass<Gnom
   }
 }
 
-export class GnomeRemoteDesktopProtocolError extends Schema.TaggedErrorClass<GnomeRemoteDesktopProtocolError>()(
+export class GnomeRemoteDesktopProtocolError extends Schema.TaggedError<GnomeRemoteDesktopProtocolError>()(
   "GnomeRemoteDesktopProtocolError",
   {
     operation: HelperMethod,
@@ -251,7 +252,7 @@ export class GnomeRemoteDesktopProtocolError extends Schema.TaggedErrorClass<Gno
   }
 }
 
-export class GnomeRemoteDesktopTimeoutError extends Schema.TaggedErrorClass<GnomeRemoteDesktopTimeoutError>()(
+export class GnomeRemoteDesktopTimeoutError extends Schema.TaggedError<GnomeRemoteDesktopTimeoutError>()(
   "GnomeRemoteDesktopTimeoutError",
   {
     operation: HelperMethod,
@@ -418,6 +419,7 @@ export interface GnomeRemoteDesktopShape {
   }) => Effect.Effect<void, GnomeRemoteDesktopError>;
   readonly keyUp: (input: { readonly key: string }) => Effect.Effect<void, GnomeRemoteDesktopError>;
   readonly releaseInputs: Effect.Effect<ComputerAutomationInputCleanup, GnomeRemoteDesktopError>;
+  readonly cancelPendingAccess: Effect.Effect<void, GnomeRemoteDesktopError>;
   readonly stop: Effect.Effect<void, GnomeRemoteDesktopError>;
   readonly forget: Effect.Effect<void, GnomeRemoteDesktopError>;
 }
@@ -479,6 +481,7 @@ const unavailable = (reason: string): GnomeRemoteDesktopShape => {
     keyUp: () => fail,
     releaseInputs: Effect.succeed({ keys: "not-needed", buttons: "not-needed" }),
     stop: Effect.void,
+    cancelPendingAccess: Effect.void,
     forget: fail,
   });
 };
@@ -798,6 +801,9 @@ export const make = Effect.gen(function* () {
   );
 
   const stop = cancelPendingAuthorization().pipe(Effect.andThen(control("stop", {})));
+  const cancelPendingAccess = cancelPendingAuthorization().pipe(
+    Effect.andThen(control("cancelPendingAccess", {})),
+  );
   const forget = cancelPendingAuthorization().pipe(Effect.andThen(control("forget", {})));
 
   const requestAccess = Effect.fn("GnomeRemoteDesktop.requestAccess")(function* (
@@ -949,6 +955,7 @@ export const make = Effect.gen(function* () {
     keyDown: (input) => control("keyDown", input),
     keyUp: (input) => control("keyUp", input),
     releaseInputs,
+    cancelPendingAccess,
     stop,
     forget,
   });

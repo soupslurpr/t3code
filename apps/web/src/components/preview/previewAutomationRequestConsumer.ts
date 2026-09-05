@@ -52,12 +52,12 @@ export function createPreviewAutomationRequestConsumerAtom<E>(options: {
       }
     >();
 
-    const cancelRequest = (requestId: string) => {
+    const cancelRequest = (requestId: string, preserveDesktopAccess = false) => {
       const active = activeRequests.get(requestId);
       if (active === undefined) return;
       activeRequests.delete(requestId);
       active.controller.abort();
-      if (active.cancel !== undefined) {
+      if (!preserveDesktopAccess && active.cancel !== undefined) {
         void active.cancel(active.request).catch(() => undefined);
       }
     };
@@ -67,6 +67,14 @@ export function createPreviewAutomationRequestConsumerAtom<E>(options: {
     };
 
     const consume = (result: AutomationStreamResult<E>) => {
+      if (AsyncResult.isFailure(result)) {
+        cancelAllRequests();
+        activeConnectionId = null;
+        connectionExplicitlyAnnounced = false;
+        reportedConnectionId = null;
+        get.set(options.connectionAtom, null);
+        return;
+      }
       if (!AsyncResult.isSuccess(result)) return;
       const event = result.value;
       if (event.type === "connected") {
@@ -89,7 +97,7 @@ export function createPreviewAutomationRequestConsumerAtom<E>(options: {
         return;
       }
       if (event.type === "cancel") {
-        cancelRequest(event.requestId);
+        cancelRequest(event.requestId, event.preserveDesktopAccess);
         return;
       }
       const request = event.request;
