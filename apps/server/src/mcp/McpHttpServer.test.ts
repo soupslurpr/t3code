@@ -45,6 +45,7 @@ import * as OrchestratorMcpService from "./OrchestratorMcpService.ts";
 import * as PreviewAutomationBroker from "./PreviewAutomationBroker.ts";
 import { OrchestratorToolkit } from "./toolkits/orchestrator/tools.ts";
 import { ProjectToolkit } from "./toolkits/project/tools.ts";
+import * as DeviceService from "../device/DeviceService.ts";
 import { ThreadMonitorService } from "../threadMonitor/ThreadMonitorService.ts";
 import * as ComputerObservationStore from "../computer/ComputerObservationStore.ts";
 import * as ComputerAutomationRouter from "../computer/ComputerAutomationRouter.ts";
@@ -289,6 +290,9 @@ const AgentDesktopTransferTestLayer = Layer.mock(AgentDesktopTransfer.AgentDeskt
 );
 
 const layerTest = McpHttpServer.ToolkitRegistrationLive.pipe(
+  Layer.provide(Layer.mock(DeviceService.DeviceService)({})),
+  Layer.provide(Layer.mock(OrchestrationEngineService)({})),
+  Layer.provide(Layer.mock(ProjectionSnapshotQuery)({})),
   Layer.provide(MonitorTestLayer),
   Layer.provide(AgentDesktopTransferTestLayer),
   Layer.provide(AgentDesktopManagerTestLayer),

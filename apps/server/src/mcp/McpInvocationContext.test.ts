@@ -49,6 +49,7 @@ it.effect("reports other missing capabilities with the neutral error", () => {
     environmentId: EnvironmentId.make("environment-1"),
     requestNamespace: "provider-session-1",
     thread: {
+      controllerId: "controller-1",
       threadId: ThreadId.make("thread-1"),
       providerSessionId: "provider-session-1",
       providerInstanceId: ProviderInstanceId.make("codex"),
