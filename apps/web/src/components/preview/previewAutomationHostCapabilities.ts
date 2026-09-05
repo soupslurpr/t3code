@@ -16,6 +16,7 @@ const sharedComputerOperations = new Set([
   "computerForceRelease",
   "computerForceForgetControl",
   "computerRelease",
+  "computerInterrupt",
   "computerForgetControl",
 ]);
 
@@ -23,6 +24,7 @@ const sharedComputerOperations = new Set([
 export function previewAutomationHostCapabilities(input: {
   readonly computerAvailable: boolean;
   readonly computerCapabilities: ReadonlyArray<UserDesktopCapability>;
+  readonly computerInterruptAvailable?: boolean;
 }): Pick<PreviewAutomationHost, "supportedOperations"> {
   const capabilities = new Set(input.computerCapabilities);
   const hasAccessCapability = capabilities.has("view") || capabilities.has("control");
@@ -32,10 +34,11 @@ export function previewAutomationHostCapabilities(input: {
       ...(input.computerAvailable
         ? COMPUTER_AUTOMATION_OPERATIONS.filter(
             (operation) =>
-              (hasAccessCapability && sharedComputerOperations.has(operation)) ||
-              Array.from(capabilities).some((capability) =>
-                operationsByCapability[capability].has(operation),
-              ),
+              (operation !== "computerInterrupt" || input.computerInterruptAvailable === true) &&
+              ((hasAccessCapability && sharedComputerOperations.has(operation)) ||
+                Array.from(capabilities).some((capability) =>
+                  operationsByCapability[capability].has(operation),
+                )),
           )
         : []),
     ],

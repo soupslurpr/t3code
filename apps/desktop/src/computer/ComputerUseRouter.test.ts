@@ -52,6 +52,7 @@ const routerHarness = Effect.gen(function* () {
     releaseAvailability: () => record("releaseAvailability").pipe(Effect.as(userStatus)),
     snapshot: () => unexpected,
     act: () => unexpected,
+    interrupt: () => record("interrupt").pipe(Effect.as(userStatus)),
     release: () => record("release").pipe(Effect.as(userStatus)),
     forget: () => record("forget"),
   });
@@ -92,6 +93,9 @@ describe("ComputerUseRouter", () => {
         yield* router.release(context, {
           desktop: { kind: "user", desktopId: "user-desktop-1" },
         });
+        yield* router.interrupt(context, {
+          desktop: { kind: "user", desktopId: "user-desktop-1" },
+        });
         yield* router.forceRelease(context, {
           desktop: { kind: "user", desktopId: "user-desktop-1" },
         });
@@ -102,6 +106,7 @@ describe("ComputerUseRouter", () => {
           "status",
           "control",
           "release",
+          "interrupt",
           "forceRelease",
           "forceForget",
         ]);

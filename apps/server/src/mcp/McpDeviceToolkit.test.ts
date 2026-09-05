@@ -20,6 +20,7 @@ const threadId = ThreadId.make("thread-device-test");
 const invocation = (capabilities: ReadonlyArray<McpInvocationContext.McpCapability>) => ({
   environmentId,
   threadId,
+  controllerId: "controller-test",
   providerSessionId: "provider-session-device-test",
   providerInstanceId: ProviderInstanceId.make("codex"),
   capabilities: new Set(capabilities),

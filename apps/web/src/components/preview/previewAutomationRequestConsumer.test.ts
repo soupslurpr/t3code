@@ -63,6 +63,62 @@ const consumerState = (
 });
 
 describe("previewAutomationRequestConsumer", () => {
+  it("suppresses late results without disconnecting access during acknowledged Stop cleanup", async () => {
+    let notifyStarted!: (signal: AbortSignal) => void;
+    const started = new Promise<AbortSignal>((resolve) => {
+      notifyStarted = resolve;
+    });
+    let finishRequest!: (value: unknown) => void;
+    const completed = new Promise<unknown>((resolve) => {
+      finishRequest = resolve;
+    });
+    const requestsAtom = Atom.make(
+      AsyncResult.success<PreviewAutomationStreamEvent, Error>({ type: "connected", connectionId }),
+    );
+    const cancel = vi.fn(async () => undefined);
+    const respond = vi.fn(async () => undefined);
+    const requestHandlerAtom = Atom.make({
+      handle: (_request: PreviewAutomationRequest, signal: AbortSignal) => {
+        notifyStarted(signal);
+        return completed;
+      },
+      cancel,
+    });
+    const registry = AtomRegistry.make();
+    registry.mount(
+      createPreviewAutomationRequestConsumerAtom({
+        requestsAtom,
+        clientId,
+        environmentId,
+        requestHandlerAtom,
+        respond,
+        connectionAtom: Atom.make<string | null>(null),
+        label: "test:preview-automation-stop",
+      }),
+    );
+    registry.set(
+      requestsAtom,
+      AsyncResult.success(requestEvent("pending-control", { operation: "computerRequestControl" })),
+    );
+    const signal = await started;
+    registry.set(
+      requestsAtom,
+      AsyncResult.success({
+        type: "cancel",
+        connectionId,
+        requestId: "pending-control",
+        preserveDesktopAccess: true,
+      }),
+    );
+    expect(signal.aborted).toBe(true);
+    expect(cancel).not.toHaveBeenCalled();
+    finishRequest({ lateGrant: true });
+    await completed;
+    expect(respond).not.toHaveBeenCalled();
+    registry.dispose();
+    expect(cancel).not.toHaveBeenCalled();
+  });
+
   it("acknowledges a replacement stream before consuming requests from it", async () => {
     const requestsAtom = Atom.make(
       AsyncResult.success<PreviewAutomationStreamEvent, Error>({

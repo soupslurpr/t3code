@@ -104,6 +104,7 @@ function makeController(records: Array<InputRecord>, onStart: () => void = () =>
       Effect.as({ keys: "not-needed" as const, buttons: "not-needed" as const }),
     ),
     stop: record("stop"),
+    cancelPendingAccess: record("cancelPendingAccess"),
     forget: record("forget"),
   });
 }

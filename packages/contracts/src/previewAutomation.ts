@@ -758,6 +758,8 @@ export const PreviewAutomationStreamEvent = Schema.Union([
     type: Schema.Literal("cancel"),
     connectionId: PreviewAutomationConnectionId,
     requestId: TrimmedNonEmptyString,
+    /** Leaves desktop cleanup to the following acknowledged thread interruption. */
+    preserveDesktopAccess: Schema.optional(Schema.Literal(true)),
   }),
 ]);
 export type PreviewAutomationStreamEvent = typeof PreviewAutomationStreamEvent.Type;
