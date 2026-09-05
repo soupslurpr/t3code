@@ -979,7 +979,7 @@ const make = Effect.gen(function* () {
               model: activeSession.model,
             }
           : requestedModelSelection
-        : input.modelSelection;
+        : requestedModelSelection;
 
     return {
       threadId: input.threadId,
@@ -1296,7 +1296,10 @@ const make = Effect.gen(function* () {
       threadId: thread.id,
       messageId: event.payload.messageId,
     });
-    if (Option.isNone(turnStart) || (turnStart.value.message.role !== "user" && turnStart.value.message.role !== "system")) {
+    if (
+      Option.isNone(turnStart) ||
+      (turnStart.value.message.role !== "user" && turnStart.value.message.role !== "system")
+    ) {
       yield* appendProviderFailureActivity({
         threadId: event.payload.threadId,
         kind: "provider.turn.start.failed",
@@ -1854,7 +1857,12 @@ const make = Effect.gen(function* () {
     });
     switch (event.type) {
       case "thread.meta-updated":
-        yield* threadTitleRegenerationWorker.enqueue(event);
+        if (event.payload.modelSelection !== undefined) {
+          threadModelSelections.delete(event.payload.threadId);
+        }
+        if (event.payload.regenerateTitle === true) {
+          yield* threadTitleRegenerationWorker.enqueue(event);
+        }
         return;
       case "thread.runtime-mode-set": {
         const thread = yield* resolveThreadShell(event.payload.threadId);
@@ -1942,7 +1950,8 @@ const make = Effect.gen(function* () {
     );
     const processEvent = Effect.fn("processEvent")(function* (event: OrchestrationEvent) {
       if (
-        (event.type === "thread.meta-updated" && event.payload.regenerateTitle === true) ||
+        (event.type === "thread.meta-updated" &&
+          (event.payload.regenerateTitle === true || event.payload.modelSelection !== undefined)) ||
         event.type === "thread.runtime-mode-set" ||
         event.type === "thread.turn-start-requested" ||
         event.type === "thread.turn-interrupt-requested" ||

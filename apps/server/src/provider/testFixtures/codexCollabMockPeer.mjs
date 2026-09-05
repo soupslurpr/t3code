@@ -28,6 +28,26 @@ rl.on("line", (line) => {
     return;
   }
   const { id, method } = message;
+  if (script.trackSettings && ["thread/start", "thread/resume", "turn/start"].includes(method)) {
+    NodeFS.appendFileSync(
+      `${process.env.T3_CODEX_COLLAB_SCRIPT}.settings-requests`,
+      `${JSON.stringify({ method, params: message.params })}\n`,
+    );
+    if (method !== "turn/start") {
+      const settings = script.savedSettings ?? {};
+      write({
+        id,
+        result: {
+          ...fixture.responses.threadStart,
+          model: message.params.model ?? settings.model ?? "gpt-6-astra",
+          reasoningEffort:
+            message.params.config?.model_reasoning_effort ?? settings.effort ?? "medium",
+          serviceTier: message.params.serviceTier ?? settings.serviceTier ?? null,
+        },
+      });
+      return;
+    }
+  }
   if (method === undefined && script.serverRequests?.some((request) => request.id === id)) {
     NodeFS.appendFileSync(
       `${process.env.T3_CODEX_COLLAB_SCRIPT}.responses`,

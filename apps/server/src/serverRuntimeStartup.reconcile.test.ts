@@ -9,6 +9,7 @@ import {
   TurnId,
 } from "@t3tools/contracts";
 import { assert, it } from "@effect/vitest";
+import { createModelSelection } from "@t3tools/shared/model";
 import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
@@ -42,6 +43,10 @@ const makeThread = (
   archivedAt,
   deletedAt,
   interactionMode: "default" as const,
+  modelSelection: createModelSelection(providerInstanceId, "gpt-6-astra", [
+    { id: "reasoningEffort", value: "max" },
+    { id: "serviceTier", value: "flex" },
+  ]),
   session: {
     threadId: ThreadId.make(id),
     status,
@@ -187,12 +192,18 @@ it.effect.each(
         TurnId.make("turn-continue-codex"),
       );
       const fallbackContinuationTurnId = TurnId.make("turn-continue-fallback");
-      const fallback = makeThread(
-        "thread-continue-fallback",
-        recovery === "marked update" ? "starting" : "running",
-        recovery === "marked update" ? null : fallbackContinuationTurnId,
-      );
       const fallbackProviderInstanceId = ProviderInstanceId.make("claudeAgent");
+      const fallback = {
+        ...makeThread(
+          "thread-continue-fallback",
+          recovery === "marked update" ? "starting" : "running",
+          recovery === "marked update" ? null : fallbackContinuationTurnId,
+        ),
+        modelSelection: createModelSelection(fallbackProviderInstanceId, "claude-opus-4-6", [
+          { id: "effort", value: "high" },
+          { id: "thinking", value: false },
+        ]),
+      };
       const continuationSent = yield* Deferred.make<void>();
       const continuationCleared = yield* Deferred.make<void>();
       const sends: ProviderSendTurnInput[] = [];
@@ -304,11 +315,17 @@ it.effect.each(
           String(left.threadId).localeCompare(String(right.threadId)),
         ),
         [
-          { threadId: codex.id, continuation: true, interactionMode: "default" },
+          {
+            threadId: codex.id,
+            continuation: true,
+            interactionMode: "default",
+            modelSelection: codex.modelSelection,
+          },
           {
             threadId: fallback.id,
             input: "Continue where you left off.",
             interactionMode: "default",
+            modelSelection: fallback.modelSelection,
           },
         ],
       );
@@ -906,7 +923,12 @@ for (const preparedStatus of [
       yield* runReconciliation(input);
       yield* Deferred.await(cleared);
       assert.deepStrictEqual(sends, [
-        { threadId: thread.id, continuation: true, interactionMode: "default" },
+        {
+          threadId: thread.id,
+          continuation: true,
+          interactionMode: "default",
+          modelSelection: thread.modelSelection,
+        },
       ]);
       assert.deepStrictEqual(binding.runtimePayload, {
         activeTurnId: null,

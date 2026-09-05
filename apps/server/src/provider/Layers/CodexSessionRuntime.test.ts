@@ -9,7 +9,7 @@ import * as CodexErrors from "effect-codex-app-server/errors";
 import * as CodexRpc from "effect-codex-app-server/rpc";
 import * as EffectCodexSchema from "effect-codex-app-server/schema";
 
-import { buildCodexDeveloperInstructions } from "../CodexDeveloperInstructions.ts";
+import { buildCodexApplicationContext } from "../CodexDeveloperInstructions.ts";
 import { codexSessionAppServerArgs } from "./codexLaunchArgs.ts";
 import {
   buildTurnStartParams,
@@ -122,6 +122,8 @@ describe("buildTurnStartParams", () => {
       buildTurnStartParams({
         threadId: "provider-thread-1",
         runtimeMode: "full-access",
+        model: DEFAULT_MODEL,
+        effort: "max",
         attachments: [
           {
             type: "image",
@@ -155,6 +157,10 @@ describe("buildTurnStartParams", () => {
     );
 
     NodeAssert.deepStrictEqual(params, {
+      additionalContext: buildCodexApplicationContext({
+        model: "gpt-5.3-codex",
+        reasoningEffort: "medium",
+      }),
       threadId: "provider-thread-1",
       approvalPolicy: "never",
       approvalsReviewer: "user",
@@ -174,10 +180,7 @@ describe("buildTurnStartParams", () => {
         settings: {
           model: "gpt-5.3-codex",
           reasoning_effort: "medium",
-          developer_instructions: buildCodexDeveloperInstructions("plan", {
-            model: "gpt-5.3-codex",
-            reasoningEffort: "medium",
-          }),
+          developer_instructions: null,
         },
       },
     });
@@ -190,6 +193,7 @@ describe("buildTurnStartParams", () => {
         runtimeMode: "auto-accept-edits",
         prompt: "Implement it",
         model: "gpt-5.3-codex",
+        effort: "medium",
         interactionMode: "default",
         attachments: [
           {
@@ -201,6 +205,10 @@ describe("buildTurnStartParams", () => {
     );
 
     NodeAssert.deepStrictEqual(params, {
+      additionalContext: buildCodexApplicationContext({
+        model: "gpt-5.3-codex",
+        reasoningEffort: "medium",
+      }),
       threadId: "provider-thread-1",
       approvalPolicy: "on-request",
       approvalsReviewer: "user",
@@ -218,34 +226,55 @@ describe("buildTurnStartParams", () => {
         },
       ],
       model: "gpt-5.3-codex",
+      effort: "medium",
       collaborationMode: {
         mode: "default",
         settings: {
           model: "gpt-5.3-codex",
           reasoning_effort: "medium",
-          developer_instructions: buildCodexDeveloperInstructions("default", {
-            model: "gpt-5.3-codex",
-            reasoningEffort: "medium",
-          }),
+          developer_instructions: null,
         },
       },
     });
   });
 
-  it("reports the same fallback model and effort in settings and instructions", () => {
+  it("reports the resolved model and effort consistently", () => {
     const params = Effect.runSync(
       buildTurnStartParams({
         threadId: "provider-thread-1",
         runtimeMode: "full-access",
+        model: DEFAULT_MODEL,
+        effort: "max",
         prompt: "Go",
         interactionMode: "default",
       }),
     );
+    NodeAssert.equal(params.effort, "max");
+    NodeAssert.equal(params.collaborationMode?.settings.model, DEFAULT_MODEL);
+    NodeAssert.equal(params.collaborationMode?.settings.reasoning_effort, "max");
+    NodeAssert.match(
+      params.additionalContext?.t3_code_runtime?.value ?? "",
+      /with max reasoning effort/,
+    );
+  });
 
-    const settings = params.collaborationMode?.settings;
-    NodeAssert.equal(settings?.model, DEFAULT_MODEL);
-    NodeAssert.equal(settings?.reasoning_effort, "medium");
-    NodeAssert.ok(settings?.developer_instructions?.includes(`as ${DEFAULT_MODEL} with medium`));
+  it("does not invent an effort when the provider owns the default", () => {
+    const params = Effect.runSync(
+      buildTurnStartParams({
+        threadId: "provider-thread-1",
+        runtimeMode: "full-access",
+        model: "custom-model",
+        effort: null,
+        prompt: "Go",
+        interactionMode: "default",
+      }),
+    );
+    NodeAssert.equal(params.effort, null);
+    NodeAssert.equal(params.collaborationMode?.settings.reasoning_effort, null);
+    NodeAssert.doesNotMatch(
+      params.additionalContext?.t3_code_runtime?.value ?? "",
+      /reasoning effort/,
+    );
   });
 
   it.effect("routes approvals to the auto reviewer in auto mode", () =>
@@ -253,11 +282,19 @@ describe("buildTurnStartParams", () => {
       const params = yield* buildTurnStartParams({
         threadId: "provider-thread-1",
         runtimeMode: "auto",
+        model: DEFAULT_MODEL,
+        effort: "max",
         prompt: "Ship it",
       });
 
       NodeAssert.deepStrictEqual(params, {
+        additionalContext: buildCodexApplicationContext({
+          model: DEFAULT_MODEL,
+          reasoningEffort: "max",
+        }),
         threadId: "provider-thread-1",
+        model: DEFAULT_MODEL,
+        effort: "max",
         approvalPolicy: "on-request",
         approvalsReviewer: "auto_review",
         sandboxPolicy: {
@@ -273,30 +310,108 @@ describe("buildTurnStartParams", () => {
     }),
   );
 
-  it("omits collaboration mode when interaction mode is absent", () => {
-    const params = Effect.runSync(
-      buildTurnStartParams({
+  it.effect("omits collaboration mode when interaction mode is absent", () =>
+    Effect.gen(function* () {
+      const params = yield* buildTurnStartParams({
         threadId: "provider-thread-1",
         runtimeMode: "approval-required",
+        model: DEFAULT_MODEL,
+        effort: "max",
         prompt: "Review",
-      }),
-    );
+      });
 
-    NodeAssert.deepStrictEqual(params, {
-      threadId: "provider-thread-1",
-      approvalPolicy: "untrusted",
-      approvalsReviewer: "user",
-      sandboxPolicy: {
-        type: "readOnly",
-      },
-      input: [
-        {
-          type: "text",
-          text: "Review",
+      NodeAssert.deepStrictEqual(params, {
+        additionalContext: buildCodexApplicationContext({
+          model: DEFAULT_MODEL,
+          reasoningEffort: "max",
+        }),
+        threadId: "provider-thread-1",
+        model: DEFAULT_MODEL,
+        effort: "max",
+        approvalPolicy: "untrusted",
+        approvalsReviewer: "user",
+        sandboxPolicy: {
+          type: "readOnly",
         },
-      ],
-    });
-  });
+        input: [
+          {
+            type: "text",
+            text: "Review",
+          },
+        ],
+      });
+    }),
+  );
+  it.effect("delivers application guidance independently of the selected collaboration mode", () =>
+    Effect.gen(function* () {
+      for (const interactionMode of [undefined, "default", "plan"] as const) {
+        const params = yield* buildTurnStartParams({
+          threadId: "provider-thread-1",
+          runtimeMode: "auto",
+          model: DEFAULT_MODEL,
+          effort: "max",
+          ...(interactionMode ? { interactionMode } : {}),
+          browserToolsAvailable: false,
+          computerToolsAvailable: true,
+        });
+
+        const context = params.additionalContext?.t3_code_desktop;
+        NodeAssert.equal(context?.kind, "application");
+        NodeAssert.match(context?.value ?? "", /promptly call `computer_request_availability`/);
+        NodeAssert.equal(params.additionalContext?.t3_code_browser, undefined);
+        NodeAssert.doesNotMatch(context?.value ?? "", /preview_open|<collaboration_mode>/);
+        if (interactionMode) {
+          NodeAssert.equal(params.collaborationMode?.mode, interactionMode);
+          NodeAssert.equal(params.collaborationMode?.settings.developer_instructions, null);
+        } else {
+          NodeAssert.equal(params.collaborationMode, undefined);
+        }
+      }
+    }),
+  );
+
+  it.effect(
+    "refreshes application-context sources with the next turn's runtime and capabilities",
+    () =>
+      Effect.gen(function* () {
+        const first = yield* buildTurnStartParams({
+          threadId: "resumed-provider-thread",
+          runtimeMode: "auto",
+          prompt: "First turn",
+          model: "gpt-5.3-codex",
+          effort: "medium",
+          interactionMode: "plan",
+          browserToolsAvailable: true,
+          computerToolsAvailable: true,
+        });
+        const next = yield* buildTurnStartParams({
+          threadId: "resumed-provider-thread",
+          runtimeMode: "auto",
+          prompt: "Next turn",
+          model: "gpt-5.4",
+          effort: "high",
+          interactionMode: "default",
+          browserToolsAvailable: false,
+          computerToolsAvailable: false,
+        });
+
+        NodeAssert.deepStrictEqual(Object.keys(next.additionalContext ?? {}), ["t3_code_runtime"]);
+        NodeAssert.match(
+          first.additionalContext?.t3_code_desktop?.value ?? "",
+          /computer_request_control/,
+        );
+        NodeAssert.match(first.additionalContext?.t3_code_browser?.value ?? "", /preview_open/);
+        NodeAssert.match(
+          next.additionalContext?.t3_code_runtime?.value ?? "",
+          /as gpt-5\.4 with high reasoning effort/,
+        );
+        NodeAssert.doesNotMatch(
+          next.additionalContext?.t3_code_runtime?.value ?? "",
+          /gpt-5\.3-codex|preview_open|computer_request_control/,
+        );
+        NodeAssert.deepStrictEqual(next.input, [{ type: "text", text: "Next turn" }]);
+      }),
+  );
 });
 
 describe("Codex MCP elicitation approvals", () => {
@@ -498,163 +613,6 @@ describe("Codex MCP elicitation approvals", () => {
       { decision: "decline", label: "Decline" },
       { decision: "accept", label: "Approve" },
     ]);
-  });
-});
-
-describe("buildCodexDeveloperInstructions", () => {
-  it("appends runtime info after the mode instructions", () => {
-    const instructions = buildCodexDeveloperInstructions("default", {
-      model: "gpt-5.3-codex",
-      reasoningEffort: "high",
-    });
-
-    NodeAssert.match(instructions, /^<collaboration_mode># Collaboration Mode: Default/);
-    NodeAssert.match(instructions, /T3 Code/);
-    NodeAssert.match(instructions, /Codex harness/);
-    NodeAssert.match(instructions, /as gpt-5\.3-codex with high reasoning effort/);
-  });
-
-  it("describes Markdown media support in the runtime context in both modes", () => {
-    for (const mode of ["default", "plan"] as const) {
-      const instructions = buildCodexDeveloperInstructions(mode, {
-        model: "gpt-5.3-codex",
-        reasoningEffort: "high",
-      });
-      NodeAssert.match(
-        instructions,
-        /<runtime_info>.*embed images and videos.*Markdown.*<\/runtime_info>/,
-      );
-    }
-  });
-
-  it("includes runtime info alongside plan mode instructions", () => {
-    const instructions = buildCodexDeveloperInstructions("plan", {
-      model: "gpt-5.3-codex",
-      reasoningEffort: "medium",
-    });
-
-    NodeAssert.match(instructions, /^<collaboration_mode># Plan Mode/);
-    NodeAssert.match(instructions, /as gpt-5\.3-codex with medium reasoning effort/);
-  });
-
-  it("varies with the model and effort of each turn", () => {
-    const first = buildCodexDeveloperInstructions("default", {
-      model: "gpt-5.3-codex",
-      reasoningEffort: "medium",
-    });
-    const second = buildCodexDeveloperInstructions("default", {
-      model: "gpt-5.4",
-      reasoningEffort: "high",
-    });
-
-    NodeAssert.notEqual(first, second);
-  });
-
-  it("flattens multiline metadata into single-line runtime info", () => {
-    const instructions = buildCodexDeveloperInstructions("default", {
-      model: "gpt\n5.3\ncodex",
-      reasoningEffort: " high\neffort ",
-    });
-
-    NodeAssert.match(instructions, /as gpt 5\.3 codex with high effort reasoning effort/);
-    NodeAssert.doesNotMatch(instructions, /<runtime_info>[^<]*\n/);
-  });
-});
-
-describe("T3 browser developer instructions", () => {
-  const runtime = { model: "gpt-5.3-codex", reasoningEffort: "high" };
-
-  it("prefers the product-native preview tools in both collaboration modes", () => {
-    for (const mode of ["default", "plan"] as const) {
-      const instructions = buildCodexDeveloperInstructions(mode, runtime, true);
-      NodeAssert.match(instructions, /t3-code/);
-      NodeAssert.match(instructions, /preview_status/);
-      NodeAssert.match(instructions, /preview_open/);
-      NodeAssert.match(instructions, /Do not switch to global browser skills/);
-    }
-  });
-
-  it("omits the browser block entirely when the preview tools are not attached", () => {
-    for (const mode of ["default", "plan"] as const) {
-      const instructions = buildCodexDeveloperInstructions(mode, runtime, false);
-      NodeAssert.doesNotMatch(instructions, /preview_status/);
-      NodeAssert.doesNotMatch(instructions, /preview_open/);
-      NodeAssert.doesNotMatch(instructions, /T3 Code collaborative browser/);
-      // Steering away from other browser automation must go with the tools;
-      // keeping it would leave the model talked out of its only option.
-      NodeAssert.doesNotMatch(instructions, /Do not switch to global browser skills/);
-      // The rest of the collaboration mode is untouched.
-      NodeAssert.match(instructions, /<collaboration_mode>/);
-      NodeAssert.match(instructions, /<\/collaboration_mode>/);
-      NodeAssert.match(instructions, /computer_request_control/);
-    }
-  });
-
-  it("tracks the turn's MCP configuration rather than defaulting to on", () => {
-    NodeAssert.match(buildCodexDeveloperInstructions("default", runtime, true), /preview_open/);
-    NodeAssert.doesNotMatch(
-      buildCodexDeveloperInstructions("default", runtime, false),
-      /preview_open/,
-    );
-    NodeAssert.match(
-      buildCodexDeveloperInstructions("default", runtime, false),
-      /computer_request_control/,
-    );
-  });
-});
-
-describe("T3 computer developer instructions", () => {
-  const runtime = { model: "gpt-5.3-codex", reasoningEffort: "high" };
-
-  it("prioritizes desktop availability while leaving access timing to the agent", () => {
-    for (const mode of ["default", "plan"] as const) {
-      const instructions = buildCodexDeveloperInstructions(mode, runtime, true, true);
-      NodeAssert.match(
-        instructions,
-        /When an authorized user desktop may be needed, promptly call `computer_request_availability`/,
-      );
-      NodeAssert.match(
-        instructions,
-        /Call `computer_request_view` or `computer_request_control` when useful/,
-      );
-      NodeAssert.match(
-        instructions,
-        /User-desktop view and control requests establish availability automatically, and `computer_release` retains it/,
-      );
-      NodeAssert.match(
-        instructions,
-        /Retain availability while foreseeable work may need that desktop, and call `computer_release_availability` only when allowing automatic locking is appropriate/,
-      );
-      NodeAssert.doesNotMatch(instructions, /a task needs a GUI|might be needed only later/);
-    }
-  });
-
-  it("documents the deferred desktop action schema in both collaboration modes", () => {
-    for (const mode of ["default", "plan"] as const) {
-      const instructions = buildCodexDeveloperInstructions(mode, runtime, true, true);
-      NodeAssert.match(instructions, /computer_request_control/);
-      NodeAssert.match(instructions, /computer_request_availability/);
-      NodeAssert.match(instructions, /computer_release_availability/);
-      NodeAssert.match(instructions, /computer_act/);
-      NodeAssert.match(instructions, /click \{frameId,x,y,button\?,count\?\}/);
-      NodeAssert.match(instructions, /type \{text,intervalMs\?,submit\?,verification\?\}/);
-      NodeAssert.match(instructions, /hotkey \{keys\}/);
-      NodeAssert.match(instructions, /key_down \{key\}/);
-      NodeAssert.match(instructions, /frame-relative region/);
-      NodeAssert.match(instructions, /starting a known app is usually one batch/);
-      NodeAssert.match(instructions, /preserves exact Unicode through/);
-      NodeAssert.match(instructions, /controllerPromptCache\.minimumLifetimeMs/);
-      NodeAssert.match(instructions, /minimum guaranteed cache window/);
-      NodeAssert.doesNotMatch(instructions, /prompt cache expires/);
-    }
-  });
-
-  it("omits computer guidance when the T3 MCP server is not attached", () => {
-    for (const mode of ["default", "plan"] as const) {
-      const instructions = buildCodexDeveloperInstructions(mode, runtime, false, false);
-      NodeAssert.doesNotMatch(instructions, /computer_request_control/);
-      NodeAssert.doesNotMatch(instructions, /T3 Code desktop computer use/);
-    }
   });
 });
 
@@ -994,6 +952,7 @@ describe("openCodexThread", () => {
     Effect.gen(function* () {
       let payload: CodexRpc.ClientRequestParamsByMethod["thread/start"] | undefined;
       const client = {
+        raw: { request: () => Effect.die("new threads must not resume") },
         request: <M extends "thread/start" | "thread/resume">(
           method: M,
           request: CodexRpc.ClientRequestParamsByMethod[M],

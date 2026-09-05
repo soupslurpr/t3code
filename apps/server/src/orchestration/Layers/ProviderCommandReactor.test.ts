@@ -2631,6 +2631,56 @@ describe("ProviderCommandReactor", () => {
     );
   });
 
+  it("inherits current saved options on automatic turns after turn and settings changes", async () => {
+    const maxSelection = createModelSelection(ProviderInstanceId.make("codex"), "gpt-6-astra", [
+      { id: "reasoningEffort", value: "max" },
+      { id: "serviceTier", value: "default" },
+    ]);
+    const lowSelection = createModelSelection(ProviderInstanceId.make("codex"), "gpt-6-astra", [
+      { id: "reasoningEffort", value: "low" },
+      { id: "serviceTier", value: "fast" },
+    ]);
+    const harness = await createHarness({ threadModelSelection: maxSelection });
+    const choices = [undefined, lowSelection, undefined, undefined] as const;
+    for (const [index, modelSelection] of choices.entries()) {
+      if (index === 3) {
+        await Effect.runPromise(
+          harness.engine.dispatch({
+            type: "thread.meta.update",
+            commandId: CommandId.make("settings-restore-max"),
+            threadId: ThreadId.make("thread-1"),
+            modelSelection: maxSelection,
+          }),
+        );
+        await harness.drain();
+      }
+      await Effect.runPromise(
+        harness.engine.dispatch({
+          type: "thread.turn.start",
+          commandId: CommandId.make(`settings-turn-${index}`),
+          threadId: ThreadId.make("thread-1"),
+          message: {
+            messageId: asMessageId(`settings-message-${index}`),
+            role: "system",
+            text: "Continue the existing work.",
+            attachments: [],
+          },
+          ...(modelSelection ? { modelSelection } : {}),
+          runtimeMode: "approval-required",
+          interactionMode: "default",
+          createdAt: `2026-01-01T00:00:0${index}.000Z`,
+        }),
+      );
+      await harness.drain();
+    }
+    expect(harness.sendTurn.mock.calls.map(([request]) => request)).toEqual([
+      expect.objectContaining({ modelSelection: maxSelection }),
+      expect.objectContaining({ modelSelection: lowSelection }),
+      expect.objectContaining({ modelSelection: lowSelection }),
+      expect.objectContaining({ modelSelection: maxSelection }),
+    ]);
+  });
+
   it("forwards codex model options through session start and turn send", async () => {
     const harness = await createHarness();
     const now = "2026-01-01T00:00:00.000Z";

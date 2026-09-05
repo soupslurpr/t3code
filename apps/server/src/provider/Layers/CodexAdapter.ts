@@ -45,10 +45,7 @@ import { ChildProcessSpawner } from "effect/unstable/process";
 import * as CodexErrors from "effect-codex-app-server/errors";
 import * as EffectCodexSchema from "effect-codex-app-server/schema";
 
-import {
-  getCodexReasoningEffortOptionValue,
-  getCodexServiceTierOptionValue,
-} from "../../codexModelOptions.ts";
+import { resolveCodexModelSettings } from "../../codexModelOptions.ts";
 import * as McpProviderSession from "../../mcp/McpProviderSession.ts";
 
 import {
@@ -2240,9 +2237,9 @@ export const makeCodexAdapter = Effect.fn("makeCodexAdapter")(function* (
           yield* Effect.suspend(() => stopSessionInternal(existing));
         }
 
-        const serviceTier =
+        const modelSettings =
           input.modelSelection?.instanceId === boundInstanceId
-            ? getCodexServiceTierOptionValue(input.modelSelection)
+            ? resolveCodexModelSettings(input.modelSelection)
             : undefined;
         const mcpSession = McpProviderSession.readMcpProviderSession(input.threadId);
         const runtimeInput: CodexSessionRuntimeOptions = {
@@ -2257,10 +2254,7 @@ export const makeCodexAdapter = Effect.fn("makeCodexAdapter")(function* (
             ? { resumeCursor: input.resumeCursor }
             : {}),
           runtimeMode: input.runtimeMode,
-          ...(input.modelSelection?.instanceId === boundInstanceId
-            ? { model: input.modelSelection.model }
-            : {}),
-          ...(serviceTier ? { serviceTier } : {}),
+          ...(modelSettings ? { modelSettings } : {}),
           ...(mcpSession
             ? {
                 environment: {
@@ -2509,27 +2503,15 @@ export const makeCodexAdapter = Effect.fn("makeCodexAdapter")(function* (
     );
 
     const session = yield* requireSession(input.threadId);
-    const reasoningEffort =
+    const modelSettings =
       input.modelSelection?.instanceId === boundInstanceId
-        ? getCodexReasoningEffortOptionValue(input.modelSelection)
-        : undefined;
-    const serviceTier =
-      input.modelSelection?.instanceId === boundInstanceId
-        ? getCodexServiceTierOptionValue(input.modelSelection)
+        ? resolveCodexModelSettings(input.modelSelection)
         : undefined;
     return yield* session.runtime
       .sendTurn({
         ...(input.input !== undefined ? { input: input.input } : {}),
         ...(input.inputSource !== undefined ? { inputSource: input.inputSource } : {}),
-        ...(input.modelSelection?.instanceId === boundInstanceId
-          ? { model: input.modelSelection.model }
-          : {}),
-        ...(reasoningEffort
-          ? {
-              effort: reasoningEffort as EffectCodexSchema.V2TurnStartParams__ReasoningEffort,
-            }
-          : {}),
-        ...(serviceTier ? { serviceTier } : {}),
+        ...(modelSettings ? { modelSettings } : {}),
         ...(input.interactionMode !== undefined ? { interactionMode: input.interactionMode } : {}),
         ...(codexAttachments.length > 0 ? { attachments: codexAttachments } : {}),
       })

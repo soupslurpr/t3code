@@ -1,6 +1,5 @@
 import {
   ApprovalRequestId,
-  DEFAULT_MODEL,
   EventId,
   ProviderDriverKind,
   ProviderItemId,
@@ -18,7 +17,6 @@ import {
   TurnId,
 } from "@t3tools/contracts";
 import { resolveSpawnCommand } from "@t3tools/shared/shell";
-import { normalizeModelSlug } from "@t3tools/shared/model";
 import * as Crypto from "effect/Crypto";
 import * as DateTime from "effect/DateTime";
 import * as Deferred from "effect/Deferred";
@@ -36,11 +34,12 @@ import * as CodexErrors from "effect-codex-app-server/errors";
 import * as CodexRpc from "effect-codex-app-server/rpc";
 import * as EffectCodexSchema from "effect-codex-app-server/schema";
 
+import { resolveCodexModelSettings, type CodexModelSettings } from "../../codexModelOptions.ts";
 import { buildCodexInitializeParams } from "./CodexProvider.ts";
 import { codexSessionAppServerArgs } from "./codexLaunchArgs.ts";
 import { expandHomePath } from "../../pathExpansion.ts";
 import {
-  buildCodexDeveloperInstructions,
+  buildCodexApplicationContext,
   type T3CodeToolAvailability,
 } from "../CodexDeveloperInstructions.ts";
 const decodeV2TurnStartResponse = Schema.decodeUnknownEffect(EffectCodexSchema.V2TurnStartResponse);
@@ -184,8 +183,7 @@ export interface CodexSessionRuntimeOptions {
   readonly environment?: NodeJS.ProcessEnv;
   readonly cwd: string;
   readonly runtimeMode: RuntimeMode;
-  readonly model?: string;
-  readonly serviceTier?: CodexServiceTier | undefined;
+  readonly modelSettings?: CodexModelSettings;
   readonly resumeCursor?: CodexResumeCursor;
   readonly appServerArgs?: ReadonlyArray<string>;
   /** Capabilities the session's `t3-code` MCP credential grants; drives the prompt blocks. */
@@ -199,9 +197,7 @@ export interface CodexSessionRuntimeSendTurnInput {
     readonly type: "image";
     readonly url: string;
   }>;
-  readonly model?: string;
-  readonly serviceTier?: CodexServiceTier | undefined;
-  readonly effort?: EffectCodexSchema.V2TurnStartParams__ReasoningEffort | undefined;
+  readonly modelSettings?: CodexModelSettings;
   readonly interactionMode?: ProviderInteractionMode;
 }
 
@@ -294,7 +290,7 @@ export class CodexSessionRuntimeThreadIdMissingError extends Schema.TaggedError<
   }
 }
 
-export class CodexSessionRuntimeRollbackRangeError extends Schema.TaggedErrorClass<CodexSessionRuntimeRollbackRangeError>()(
+export class CodexSessionRuntimeRollbackRangeError extends Schema.TaggedError<CodexSessionRuntimeRollbackRangeError>()(
   "CodexSessionRuntimeRollbackRangeError",
   {
     availableTurns: Schema.Int,
@@ -510,20 +506,6 @@ function makeCodexServerNotification<M extends CodexRpc.ServerNotificationMethod
   return { method, params } as CodexServerNotification;
 }
 
-function normalizeCodexModelSlug(
-  model: string | undefined | null,
-  preferredId?: string,
-): string | undefined {
-  const normalized = normalizeModelSlug(model);
-  if (!normalized) {
-    return undefined;
-  }
-  if (preferredId?.endsWith("-codex") && preferredId !== normalized) {
-    return preferredId;
-  }
-  return normalized;
-}
-
 function readResumeCursorThreadId(
   resumeCursor: ProviderSession["resumeCursor"],
 ): string | undefined {
@@ -570,7 +552,8 @@ function buildThreadConfigParams(input: {
   readonly cwd: string;
   readonly runtimeMode: RuntimeMode;
   readonly model: string | undefined;
-  readonly serviceTier: CodexServiceTier | undefined;
+  readonly serviceTier: CodexServiceTier | null | undefined;
+  readonly effort?: string | null;
 }): Omit<EffectCodexSchema.V2ThreadStartParams, "historyMode"> {
   const config = runtimeModeToThreadConfig(input.runtimeMode);
   return {
@@ -580,6 +563,7 @@ function buildThreadConfigParams(input: {
     approvalsReviewer: config.approvalsReviewer,
     ...(input.model ? { model: input.model } : {}),
     ...(input.serviceTier ? { serviceTier: input.serviceTier } : {}),
+    ...(input.effort ? { config: { model_reasoning_effort: input.effort } } : {}),
   };
 }
 
@@ -604,29 +588,21 @@ function runtimeModeToTurnSandboxPolicy(
   }
 }
 
+/** Selects Codex's built-in mode instructions without using its legacy text override. */
 function buildCodexCollaborationMode(input: {
   readonly interactionMode?: ProviderInteractionMode;
-  readonly model?: string;
-  readonly effort?: EffectCodexSchema.V2TurnStartParams__ReasoningEffort;
-  readonly browserToolsAvailable?: boolean | T3CodeToolAvailability;
-  readonly computerToolsAvailable?: boolean;
+  readonly model: string;
+  readonly effort: string | null;
 }): EffectCodexSchema.V2TurnStartParams__CollaborationMode | undefined {
   if (input.interactionMode === undefined) {
     return undefined;
   }
-  const model = normalizeCodexModelSlug(input.model) ?? DEFAULT_MODEL;
-  const reasoningEffort = input.effort ?? "medium";
   return {
     mode: input.interactionMode,
     settings: {
-      model,
-      reasoning_effort: reasoningEffort,
-      developer_instructions: buildCodexDeveloperInstructions(
-        input.interactionMode,
-        { model, reasoningEffort },
-        input.browserToolsAvailable ?? true,
-        input.computerToolsAvailable ?? true,
-      ),
+      model: input.model,
+      reasoning_effort: input.effort,
+      developer_instructions: null,
     },
   };
 }
@@ -637,7 +613,7 @@ export function supportsCodexToolOutput(userAgent: string): boolean {
   return version !== null && (Number(version[1]) > 0 || Number(version[2]) >= 151);
 }
 
-/** Delivers user input or an automated tool result with Codex mode settings. */
+/** Delivers T3 application context alongside user input or an automated tool result. */
 export function buildTurnStartParams(input: {
   readonly threadId: string;
   readonly runtimeMode: RuntimeMode;
@@ -647,9 +623,9 @@ export function buildTurnStartParams(input: {
     readonly type: "image";
     readonly url: string;
   }>;
-  readonly model?: string;
-  readonly serviceTier?: CodexServiceTier;
-  readonly effort?: EffectCodexSchema.V2TurnStartParams__ReasoningEffort;
+  readonly model: string;
+  readonly serviceTier?: CodexServiceTier | null;
+  readonly effort: string | null;
   readonly interactionMode?: ProviderInteractionMode;
   /** Defaults to true so callers that predate the agent-access gate are unchanged. */
   readonly browserToolsAvailable?: boolean | T3CodeToolAvailability;
@@ -674,10 +650,8 @@ export function buildTurnStartParams(input: {
   const config = runtimeModeToThreadConfig(input.runtimeMode);
   const collaborationMode = buildCodexCollaborationMode({
     ...(input.interactionMode ? { interactionMode: input.interactionMode } : {}),
-    ...(input.model ? { model: input.model } : {}),
-    ...(input.effort ? { effort: input.effort } : {}),
-    browserToolsAvailable: input.browserToolsAvailable ?? true,
-    computerToolsAvailable: input.computerToolsAvailable ?? true,
+    model: input.model,
+    effort: input.effort,
   });
 
   return decodeCodexTurnStartParamsWithCollaborationMode({
@@ -700,12 +674,21 @@ export function buildTurnStartParams(input: {
           },
         }
       : {}),
+    // Keep T3 guidance outside mode overrides, which Codex can replace with model-catalog text.
+    additionalContext: buildCodexApplicationContext(
+      {
+        model: input.model,
+        ...(input.effort === null ? {} : { reasoningEffort: input.effort }),
+      },
+      input.browserToolsAvailable ?? true,
+      input.computerToolsAvailable ?? true,
+    ),
     approvalPolicy: config.approvalPolicy,
     approvalsReviewer: config.approvalsReviewer,
     sandboxPolicy: runtimeModeToTurnSandboxPolicy(input.runtimeMode),
-    ...(input.model ? { model: input.model } : {}),
-    ...(input.serviceTier ? { serviceTier: input.serviceTier } : {}),
-    ...(input.effort ? { effort: input.effort } : {}),
+    model: input.model,
+    effort: input.effort,
+    ...(input.serviceTier !== undefined ? { serviceTier: input.serviceTier } : {}),
     ...(collaborationMode ? { collaborationMode } : {}),
   }).pipe(
     Effect.mapError((cause) =>
@@ -749,6 +732,8 @@ export function isRecoverableThreadResumeError(error: unknown): boolean {
 const CodexThreadResumeMetadata = Schema.Struct({
   cwd: Schema.String,
   model: Schema.String,
+  reasoningEffort: Schema.optionalKey(Schema.NullOr(Schema.String)),
+  serviceTier: Schema.optionalKey(Schema.NullOr(Schema.String)),
   thread: Schema.Struct({ id: Schema.String }),
 });
 const decodeCodexThreadResumeMetadata = Schema.decodeUnknownEffect(CodexThreadResumeMetadata);
@@ -777,7 +762,8 @@ export const openCodexThread = (input: {
   readonly runtimeMode: RuntimeMode;
   readonly cwd: string;
   readonly requestedModel: string | undefined;
-  readonly serviceTier: CodexServiceTier | undefined;
+  readonly serviceTier: CodexServiceTier | null | undefined;
+  readonly effort?: string | null;
   readonly resumeThreadId: string | undefined;
 }): Effect.Effect<typeof CodexThreadResumeMetadata.Type, CodexErrors.CodexAppServerError> => {
   const resumeThreadId = input.resumeThreadId;
@@ -786,6 +772,7 @@ export const openCodexThread = (input: {
     runtimeMode: input.runtimeMode,
     model: input.requestedModel,
     serviceTier: input.serviceTier,
+    ...(input.effort !== undefined ? { effort: input.effort } : {}),
   });
   const startParams = {
     ...threadConfigParams,
@@ -1398,6 +1385,7 @@ export const makeCodexSessionRuntime = (
     const collabChildLiveTurnsRef = yield* Ref.make(new Map<string, string>());
     const suppressMemoryConsolidationNotification = makeMemoryConsolidationNotificationFilter();
     const closedRef = yield* Ref.make(false);
+    const modelSettingsRef = yield* Ref.make<CodexModelSettings | undefined>(undefined);
 
     // `~` is not shell-expanded when env vars are set via
     // `child_process.spawn`; `expandHomePath` lets a configured
@@ -1461,7 +1449,7 @@ export const makeCodexSessionRuntime = (
       status: "connecting",
       runtimeMode: options.runtimeMode,
       cwd: options.cwd,
-      ...(options.model ? { model: options.model } : {}),
+      ...(options.modelSettings ? { model: options.modelSettings.model } : {}),
       threadId: options.threadId,
       ...(options.resumeCursor !== undefined ? { resumeCursor: options.resumeCursor } : {}),
       createdAt: sessionCreatedAt,
@@ -2462,18 +2450,27 @@ export const makeCodexSessionRuntime = (
       yield* Ref.set(toolOutputSupportedRef, supportsCodexToolOutput(initialized.userAgent));
       yield* client.notify("initialized", undefined);
 
-      const requestedModel = normalizeCodexModelSlug(options.model);
+      const resumeThreadId = readResumeCursorThreadId(options.resumeCursor);
+      const requestedSettings =
+        options.modelSettings ??
+        (resumeThreadId === undefined ? resolveCodexModelSettings() : undefined);
 
       const opened = yield* openCodexThread({
         client,
         threadId: options.threadId,
         runtimeMode: options.runtimeMode,
         cwd: options.cwd,
-        requestedModel,
-        serviceTier: options.serviceTier,
-        resumeThreadId: readResumeCursorThreadId(options.resumeCursor),
+        requestedModel: requestedSettings?.model,
+        serviceTier: requestedSettings?.serviceTier,
+        ...(requestedSettings ? { effort: requestedSettings.effort } : {}),
+        resumeThreadId,
       });
 
+      yield* Ref.set(modelSettingsRef, {
+        model: opened.model,
+        effort: opened.reasoningEffort ?? requestedSettings?.effort ?? null,
+        serviceTier: opened.serviceTier ?? requestedSettings?.serviceTier ?? null,
+      });
       const providerThreadId = opened.thread.id;
       const session = {
         ...(yield* Ref.get(sessionRef)),
@@ -2546,18 +2543,19 @@ export const makeCodexSessionRuntime = (
               ),
             );
           }
-          const normalizedModel = normalizeCodexModelSlug(
-            input.model ?? (yield* Ref.get(sessionRef)).model,
-          );
+          const modelSettings = input.modelSettings ?? (yield* Ref.get(modelSettingsRef));
+          if (modelSettings === undefined) {
+            return yield* new CodexSessionRuntimeThreadIdMissingError({
+              threadId: options.threadId,
+            });
+          }
           const params = yield* buildTurnStartParams({
             threadId: providerThreadId,
             runtimeMode: options.runtimeMode,
             ...(input.input ? { prompt: input.input } : {}),
             ...(input.inputSource !== undefined ? { inputSource: input.inputSource } : {}),
             ...(input.attachments ? { attachments: input.attachments } : {}),
-            ...(normalizedModel ? { model: normalizedModel } : {}),
-            ...(input.serviceTier ? { serviceTier: input.serviceTier } : {}),
-            ...(input.effort ? { effort: input.effort } : {}),
+            ...modelSettings,
             ...(input.interactionMode ? { interactionMode: input.interactionMode } : {}),
             // Derived from the session's own credential rather than the
             // setting, so the prompt describes the tools this turn actually
@@ -2580,6 +2578,7 @@ export const makeCodexSessionRuntime = (
               ),
             ),
           );
+          yield* Ref.set(modelSettingsRef, modelSettings);
           const turnId = TurnId.make(response.turn.id);
           yield* updateSession(sessionRef, (session) => ({
             status: "running",
@@ -2587,7 +2586,7 @@ export const makeCodexSessionRuntime = (
             // running. The response contains the queued turn id, but
             // turn/interrupt only accepts the id that is active now.
             activeTurnId: session.activeTurnId ?? turnId,
-            ...(normalizedModel ? { model: normalizedModel } : {}),
+            model: modelSettings.model,
           }));
           const resumedProviderThreadId = currentProviderThreadId(yield* Ref.get(sessionRef));
           return {
