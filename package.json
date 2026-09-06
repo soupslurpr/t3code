@@ -43,6 +43,7 @@
     "package:desktop:arch:publish": "node scripts/local-arch-package.ts publish",
     "package:desktop:arch:clean": "node scripts/local-arch-package.ts clean",
     "package:desktop:arch:prune": "node scripts/local-arch-artifacts.ts",
+    "package:desktop:arch:restart": "node scripts/local-arch-restart.ts",
     "dist:desktop:win": "node scripts/build-desktop-artifact.ts --platform win --target nsis",
     "dist:desktop:win:arm64": "node scripts/build-desktop-artifact.ts --platform win --target nsis --arch arm64",
     "dist:desktop:win:x64": "node scripts/build-desktop-artifact.ts --platform win --target nsis --arch x64",

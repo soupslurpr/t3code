@@ -114,6 +114,49 @@ Fully quit and relaunch T3 Code after installation. Future fork updates repeat t
 new package release. Do not update this installation with `yay -S t3code-bin`: that package follows
 official upstream releases and can replace the fork behavior.
 
+### Restart from the thread doing the update
+
+When the controlling agent runs inside the app being updated, use the guarded helper instead of
+manually installing and quitting. This Linux/user-systemd workflow keeps the installed app's state
+location and resumes the existing durable thread; it does not preserve the old provider process.
+
+1. Record the selected full commit, audited package path, completed checks, and any database backup
+   in the current thread tracker. Keep rollback packages and never restore a database automatically.
+2. Create a durable `monitor_start` timer in this thread, with `continuation: "resume-thread"` and a
+   deadline about ten minutes away. Its `resumePrompt` must say to read the tracker, avoid repeating
+   completed deployment steps, verify the new service/backend, HTTP readiness, installed/running
+   commit and same-thread resumption, and report any failure. Do not use an in-process sleep.
+3. Resolve the current app's user service and backend listening-port owner again. Confirm the app
+   executable, backend ASAR path, and state database before supplying their identities. Preview:
+
+   ```bash
+   vp run package:desktop:arch:restart \
+     --package /absolute/path/to/audited.pkg.tar.zst \
+     --commit FULL_40_CHARACTER_COMMIT \
+     --service CURRENT_APP.service --backend-pid BACKEND_PID \
+     --state-db /absolute/path/to/userdata/state.sqlite \
+     --thread-id CURRENT_THREAD_ID --monitor-id PENDING_MONITOR_ID
+   ```
+
+4. Repeat with `--apply` to install and queue the restart. The helper requires noninteractive sudo
+   authorization for `pacman -U` if the package is not installed yet. It verifies package hashes,
+   installed metadata, file integrity, exact process ownership and a persisted future continuation.
+   A copied standalone worker and private plan live under `~/.local/state/t3code-maintenance/`, so
+   relaunch does not depend on the provider, checkout, or temporary build directories surviving.
+5. Record the printed recovery-plan path and service/timer names in the tracker and finish the turn.
+   The independent worker starts after sixty seconds, revalidates the handoff, sends only SIGTERM
+   to the captured app service's main process, waits for that app and backend to exit, then replaces
+   itself with the installed launcher. It never escalates to a forced kill or starts a second app
+   after a shutdown timeout.
+6. On continuation, inspect the new service and its journal, discover the new backend/port, check
+   HTTP readiness and the embedded commit against the recovery plan, and confirm this same thread
+   resumed. A queued timer or successful package installation alone is not deployment completion.
+
+If a guard fails, inspect the exact error and recovery plan before retrying; the helper does not
+silently bypass a failed check. Cancel an abandoned timer and continuation explicitly. Installations
+with custom app arguments or a backend not directly owned by the app need a separately reviewed
+restart procedure. Never reuse recorded PIDs as future restart targets or edit live T3 state.
+
 ## Retain rollback builds
 
 Preview reclaimable build artifacts with `vp run package:desktop:arch:prune`. Add `--apply` to
