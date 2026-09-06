@@ -113,3 +113,17 @@ sudo pacman -U /home/soupslurpr/projects/t3code/release/t3code-bin-0.0.33-38-x86
 Fully quit and relaunch T3 Code after installation. Future fork updates repeat this runbook and use a
 new package release. Do not update this installation with `yay -S t3code-bin`: that package follows
 official upstream releases and can replace the fork behavior.
+
+## Retain rollback builds
+
+Preview reclaimable build artifacts with `vp run package:desktop:arch:prune`. Add `--apply` to
+delete the listed archives and AppImages, or `--keep N` to retain more than three builds. The
+helper preserves the newest builds, the installed build and its recent rollback candidates,
+and all publication receipts. It verifies retained packages and deletion candidates before
+removing anything. Deleted binaries can be rebuilt, but are not moved to trash.
+
+Only direct `release/` artifacts with matching publication receipts and hashes qualify. Unmanaged
+files, unpublished AppImages, database backups, test directories, and VM/backing disks are left
+alone. Do not prune concurrently with packaging or installation. Inspect backing chains and live
+references separately before removing old test state; a retired VM directory can still supply a
+base disk to another desktop.

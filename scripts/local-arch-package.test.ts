@@ -108,4 +108,15 @@ describe("local Arch package workflow", () => {
       "unsupported local Arch package manifest version",
     );
   });
+
+  it("does not reuse releases after their package archives are pruned", () => {
+    assert.equal(
+      resolveNextPackageRelease({
+        version: "0.0.33",
+        releaseEntries: ["t3code-bin-0.0.33-44-x86_64.pkg.tar.zst.provenance.json"],
+        installedPackageVersion: "t3code-bin 0.0.38-10",
+      }),
+      45,
+    );
+  });
 });

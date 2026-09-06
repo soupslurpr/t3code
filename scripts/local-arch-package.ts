@@ -20,7 +20,7 @@ const MANIFEST_SCHEMA_VERSION = 1;
 const FORK_URL = "https://github.com/soupslurpr/t3code";
 const SHA256_PATTERN = /^[0-9a-f]{64}$/;
 const VERSION_PATTERN = /^[0-9A-Za-z][0-9A-Za-z.+_-]*$/;
-const PACKAGE_FILE_PATTERN = /^t3code-bin-(.+)-(\d+)-x86_64\.pkg\.tar\.zst$/;
+const PACKAGE_FILE_PATTERN = /^t3code-bin-(.+)-(\d+)-x86_64\.pkg\.tar\.zst(?:\.provenance\.json)?$/;
 const DEFAULT_ICON_SIZES = [
   "16x16",
   "22x22",
@@ -166,7 +166,7 @@ export function renderLocalArchPkgbuild(
   return rendered;
 }
 
-/** Extracts the numeric package release from a matching package filename. */
+/** Extracts a package release from an archive or its retained publication receipt. */
 function packageReleaseFromFilename(filename: string, version: string): number | undefined {
   const match = PACKAGE_FILE_PATTERN.exec(filename);
   if (!match || match[1] !== version || match[2] === undefined) {
@@ -208,7 +208,7 @@ export function resolveNextPackageRelease(options: ResolveNextPackageReleaseOpti
 }
 
 /** Computes a streaming SHA-256 digest without loading a desktop artifact into memory. */
-async function sha256File(filePath: string): Promise<string> {
+export async function sha256File(filePath: string): Promise<string> {
   const hash = NodeCrypto.createHash("sha256");
   for await (const chunk of NodeFS.createReadStream(filePath)) {
     hash.update(chunk);
