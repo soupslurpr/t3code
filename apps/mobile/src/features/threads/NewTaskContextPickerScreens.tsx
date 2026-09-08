@@ -326,7 +326,7 @@ export function NewTaskBranchPickerRouteScreen() {
   );
 
   const branchListHeader =
-    flow.workspaceMode === "worktree" ? (
+    flow.workspaceMode === "worktree" && flow.hasOriginRemote ? (
       <View className="mb-3 overflow-hidden rounded-2xl">
         <ToggleRow
           onValueChange={flow.setStartFromOrigin}

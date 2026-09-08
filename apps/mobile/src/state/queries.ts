@@ -212,6 +212,7 @@ export function useBranches(input: {
   );
 }
 
+/** Loads ref pages and refreshes the repository snapshot with the unfiltered first page. */
 export function usePaginatedBranches(target: VcsRefTarget) {
   const query = target.query?.trim() ?? "";
   const targetKey =
@@ -236,6 +237,7 @@ export function usePaginatedBranches(target: VcsRefTarget) {
                 cwd: target.cwd!,
                 ...(query.length > 0 ? { query } : {}),
                 ...(cursor === undefined ? {} : { cursor }),
+                ...(query.length === 0 && cursor === undefined ? { refresh: true } : {}),
                 limit: VCS_REF_LIST_LIMIT,
               },
             }),

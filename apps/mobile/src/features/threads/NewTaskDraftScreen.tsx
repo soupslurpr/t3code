@@ -909,6 +909,7 @@ export function NewTaskDraftScreen(props: {
   const selectedBranchLabel = resolveNewTaskBranchLabel({
     branchName: selectedBranchName,
     startFromOrigin: flow.startFromOrigin,
+    hasOriginRemote: flow.hasOriginRemote,
     workspaceMode: flow.workspaceMode,
   });
   const workspaceLabel = resolveNewTaskWorkspaceLabel({
@@ -1360,6 +1361,9 @@ export function NewTaskDraftScreen(props: {
   const openContextPicker = (routeName: "NewTaskBranch" | "NewTaskEnvironment") => {
     if (isComposerInteractionLocked) {
       return;
+    }
+    if (routeName === "NewTaskBranch") {
+      flow.loadBranches();
     }
     promptInputRef.current?.blur();
     void KeyboardController.dismiss({ animated: true });

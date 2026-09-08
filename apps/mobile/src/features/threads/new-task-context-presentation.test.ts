@@ -86,11 +86,23 @@ describe("resolveNewTaskBranchWorktreePath", () => {
 });
 
 describe("resolveNewTaskBranchLabel", () => {
+  it("shows the local fallback when the repository has no origin", () => {
+    expect(
+      resolveNewTaskBranchLabel({
+        branchName: "main",
+        startFromOrigin: true,
+        hasOriginRemote: false,
+        workspaceMode: "worktree",
+      }),
+    ).toBe("From main");
+  });
+
   it("shows the checked-out branch without a base-ref prefix", () => {
     expect(
       resolveNewTaskBranchLabel({
         branchName: "feature/mobile",
         startFromOrigin: true,
+        hasOriginRemote: true,
         workspaceMode: "local",
       }),
     ).toBe("feature/mobile");
@@ -101,6 +113,7 @@ describe("resolveNewTaskBranchLabel", () => {
       resolveNewTaskBranchLabel({
         branchName: "main",
         startFromOrigin: false,
+        hasOriginRemote: true,
         workspaceMode: "worktree",
       }),
     ).toBe("From main");
@@ -111,6 +124,7 @@ describe("resolveNewTaskBranchLabel", () => {
       resolveNewTaskBranchLabel({
         branchName: "main",
         startFromOrigin: true,
+        hasOriginRemote: true,
         workspaceMode: "worktree",
       }),
     ).toBe("From origin/main");
@@ -121,6 +135,7 @@ describe("resolveNewTaskBranchLabel", () => {
       resolveNewTaskBranchLabel({
         branchName: null,
         startFromOrigin: true,
+        hasOriginRemote: true,
         workspaceMode: "worktree",
       }),
     ).toBe("Choose branch");

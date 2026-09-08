@@ -270,6 +270,8 @@ export function BranchToolbarBranchSelector({
   const prReference = parsePullRequestReference(trimmedBranchQuery);
   const isSelectingWorktreeBase =
     effectiveEnvMode === "worktree" && !envLocked && !activeWorktreePath;
+  const hasOriginRemote =
+    branchRefState.data?.hasPrimaryRemote ?? branchStatusQuery.data?.hasPrimaryRemote ?? false;
   const checkoutPullRequestItemValue =
     prReference && onCheckoutPullRequestRequest ? `__checkout_pull_request__:${prReference}` : null;
   const canCreateBranch = !isSelectingWorktreeBase && trimmedBranchQuery.length > 0;
@@ -527,13 +529,19 @@ export function BranchToolbarBranchSelector({
   // ---------------------------------------------------------------------------
   const branchListScrollElementRef = useRef<HTMLElement | null>(null);
   const previousBranchListScrollTopRef = useRef<number | null>(null);
-  const handleOpenChange = useCallback((open: boolean) => {
-    previousBranchListScrollTopRef.current = null;
-    setIsBranchMenuOpen(open);
-    if (!open) {
-      setBranchQuery("");
-    }
-  }, []);
+  const refreshBranches = branchRefState.refresh;
+  const handleOpenChange = useCallback(
+    (open: boolean) => {
+      previousBranchListScrollTopRef.current = null;
+      setIsBranchMenuOpen(open);
+      if (open) {
+        refreshBranches();
+      } else {
+        setBranchQuery("");
+      }
+    },
+    [refreshBranches],
+  );
 
   const [showTopBranchScrollFade, setShowTopBranchScrollFade] = useState(false);
   const [showBottomBranchScrollFade, setShowBottomBranchScrollFade] = useState(false);
@@ -618,6 +626,7 @@ export function BranchToolbarBranchSelector({
     resolvedActiveBranch,
     resolvedActiveBranchIsRemote,
     startFromOrigin,
+    hasOriginRemote,
   });
 
   // Branch status is the fallback when this thread has no linked pull requests.
@@ -776,6 +785,7 @@ export function BranchToolbarBranchSelector({
             // No press-scale: the popup aligns live to this trigger, so a
             // momentary 0.97 shrink would drag the open popup ~3px sideways.
             className="min-w-0 max-w-full font-normal text-muted-foreground/70 text-xs! hover:text-foreground/80 active:scale-100"
+            aria-label={`Ref: ${triggerLabel}`}
             disabled={isInitialBranchesLoadPending || isBranchActionPending}
           >
             <GitBranchIcon className="size-3 shrink-0 opacity-70" />
@@ -809,6 +819,7 @@ export function BranchToolbarBranchSelector({
             <ComboboxInput
               className="[&_input]:h-6.5 [&_input]:ps-5 [&_input]:font-sans [&_input]:leading-6.5"
               inputClassName="rounded-none bg-transparent text-sm"
+              aria-label="Search refs"
               placeholder="Search refs..."
               showTrigger={false}
               size="sm"
@@ -856,7 +867,7 @@ export function BranchToolbarBranchSelector({
               />
             </ComboboxListVirtualized>
           </div>
-          {isSelectingWorktreeBase ? (
+          {isSelectingWorktreeBase && hasOriginRemote ? (
             <Tooltip>
               <TooltipTrigger
                 render={
