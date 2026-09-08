@@ -14,6 +14,7 @@ import {
 import {
   PreviewAutomationHost,
   PreviewAutomationError,
+  PreviewAutomationEvaluateInput,
   PreviewAutomationOpenInput,
   PreviewAutomationResizeInput,
   PreviewAutomationResizeResult,
@@ -28,18 +29,44 @@ const decodeConfiguredLocalServerUrls = Schema.decodeUnknownSync(ConfiguredLocal
 const decodeViewport = Schema.decodeUnknownSync(PreviewViewportSetting);
 const decodeResizeInput = Schema.decodeUnknownSync(PreviewAutomationResizeInput);
 const decodeOpenInput = Schema.decodeUnknownSync(PreviewAutomationOpenInput);
+const decodeEvaluateInput = Schema.decodeUnknownSync(PreviewAutomationEvaluateInput);
 const decodeResizeResult = Schema.decodeUnknownSync(PreviewAutomationResizeResult);
 const decodeAutomationHost = Schema.decodeUnknownSync(PreviewAutomationHost);
 const decodeAutomationError = Schema.decodeUnknownSync(PreviewAutomationError);
 const decodeAutomationStatus = Schema.decodeUnknownSync(PreviewAutomationStatus);
 
 describe("PreviewAutomationOpenInput", () => {
+  it("accepts concrete desktop selection and an explicit automatic reset", () => {
+    const desktop = { kind: "user", desktopId: "desktop-1" };
+    expect(decodeOpenInput({ desktop })).toEqual({ desktop });
+    expect(decodeOpenInput({ desktop: null })).toEqual({ desktop: null });
+    expect(() => decodeOpenInput({ desktop: { kind: "user" } })).toThrow();
+    expect(() => decodeOpenInput({ desktop: { kind: "agent", desktopId: "desktop-1" } })).toThrow();
+  });
+
   it("accepts the inline preview visibility flag", () => {
     expect(decodeOpenInput({ open: false })).toEqual({ open: false });
   });
 
   it("retains the legacy show visibility alias", () => {
     expect(decodeOpenInput({ show: false })).toEqual({ show: false });
+  });
+});
+
+describe("PreviewAutomationEvaluateInput", () => {
+  it.each(["document.title\n", "\r\n  (() => {\r\n    return document.title;\r\n  })()\r\n"])(
+    "preserves source indentation and line endings: %j",
+    (expression) => {
+      expect(decodeEvaluateInput({ expression }).expression).toBe(expression);
+    },
+  );
+
+  it("retains the nonempty source and size boundaries", () => {
+    const maxSourceLength = 64_000;
+    expect(() => decodeEvaluateInput({ expression: "" })).toThrow();
+    expect(() => decodeEvaluateInput({ expression: "1".repeat(maxSourceLength + 1) })).toThrow();
+    const expression = "1".repeat(maxSourceLength);
+    expect(decodeEvaluateInput({ expression }).expression).toBe(expression);
   });
 });
 

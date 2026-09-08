@@ -16,6 +16,8 @@ import {
   PreviewAutomationTargetUnavailableError,
   PreviewAutomationViewportTimeoutError,
   resolveDesktopComputerAutomation,
+  resolveDesktopPreviewAutomation,
+  resolveDesktopPreviewAutomationEvaluation,
 } from "./previewAutomationErrors";
 import {
   createPreviewAutomationRequestConsumerAtom,
@@ -512,6 +514,66 @@ describe("previewAutomationRequestConsumer", () => {
         selectorLength: 6,
       },
     });
+  });
+
+  it.each([
+    "PreviewAutomationTargetNotFoundError",
+    "PreviewAutomationCoordinatesOutsideViewportError",
+    "PreviewAutomationInvalidSelectorError",
+    "PreviewAutomationTargetNotEditableError",
+    "PreviewAutomationTimeoutError",
+    "PreviewAutomationControlInterruptedError",
+  ] as const)("preserves desktop target diagnosis %s returned over the bridge", async (tag) => {
+    const cause = await resolveDesktopPreviewAutomation(
+      Promise.resolve(structuredClone({ ok: false as const, error: { _tag: tag } })),
+    ).catch((error: unknown) => error);
+    const response = serializePreviewAutomationError(cause, {
+      requestId: "request-click",
+      operation: "click",
+      environmentId,
+      threadId,
+      tabId,
+    });
+
+    expect(response).toMatchObject({
+      _tag: tag,
+      detail: { operation: "click", tabId: "tab-1" },
+    });
+  });
+
+  it("unwraps evaluation values and forwards only validated exception summaries", async () => {
+    for (const value of [null, false, 0, "", { ok: false, error: { _tag: "page-data" } }]) {
+      await expect(
+        resolveDesktopPreviewAutomationEvaluation(
+          Promise.resolve(structuredClone({ ok: true as const, value })),
+        ),
+      ).resolves.toEqual(value);
+    }
+    for (const evaluationMessage of ["Error: deliberate failure", "x".repeat(2001), ""]) {
+      const cause = await resolveDesktopPreviewAutomationEvaluation(
+        Promise.resolve({
+          ok: false,
+          error: { _tag: "PreviewAutomationEvaluationError", evaluationMessage },
+        }),
+      ).catch((error: unknown) => error);
+      const response = serializePreviewAutomationError(cause, {
+        requestId: "evaluation-1",
+        operation: "evaluate",
+        environmentId,
+        threadId,
+        tabId,
+      });
+      expect(response._tag).toBe("PreviewAutomationEvaluationError");
+      if (evaluationMessage === "Error: deliberate failure") {
+        expect(response.detail).toMatchObject({ evaluationMessage });
+      } else {
+        expect(response.detail).not.toHaveProperty("evaluationMessage");
+      }
+    }
+  });
+
+  it("accepts successful commands from current and older desktop bridges", async () => {
+    await expect(resolveDesktopPreviewAutomation(Promise.resolve())).resolves.toBeUndefined();
   });
 
   it("exposes the safe reason when GNOME inhibits a computer session", () => {

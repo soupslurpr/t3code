@@ -11,6 +11,14 @@ input-driver package. Direct command execution is available on Linux, macOS, and
 clients independently of screen sharing. The desktop app and connected environment server must both
 support command execution.
 
+## Choose a browser desktop
+
+Ask the agent to use the collaborative browser on a named desktop. That choice remains in effect
+through reconnects until the agent selects another desktop or restores automatic selection. A
+disconnected desktop does not cause browsing to move to another computer. Browser profiles and
+`localhost` addresses belong to the selected desktop, so choose the computer running your dev server
+when opening a loopback URL. The agent can inspect which desktop hosts its browser.
+
 ## Commands on a user desktop
 
 Ask an agent to run a command on a named desktop. It selects that desktop and requests execution

@@ -10,6 +10,7 @@ import { readThreadPreviewState } from "~/previewStateStore";
 import { previewBridge } from "./previewBridge";
 import {
   PreviewAutomationNavigationTimeoutError,
+  resolveDesktopPreviewAutomationEvaluation,
   PreviewAutomationTargetUnavailableError,
 } from "./previewAutomationErrors";
 
@@ -53,9 +54,11 @@ export async function waitForNavigationReadiness(
   while (Date.now() <= deadline) {
     assertPreviewRuntimeCurrent(threadRef, tabId, runtimeTabId, { operation, requestId });
     if (targetReadiness === "domContentLoaded") {
-      const readyState = await previewBridge.automation.evaluate(runtimeTabId, {
-        expression: "document.readyState",
-      });
+      const readyState = await resolveDesktopPreviewAutomationEvaluation(
+        previewBridge.automation.evaluate(runtimeTabId, {
+          expression: "document.readyState",
+        }),
+      );
       if (readyState === "interactive" || readyState === "complete") return;
     } else {
       const status = await previewBridge.automation.status(runtimeTabId);

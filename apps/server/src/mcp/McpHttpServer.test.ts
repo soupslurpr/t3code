@@ -324,6 +324,7 @@ const serveSnapshots = (clientId: string, result: unknown) =>
     const events = yield* broker.connect({ clientId, environmentId });
     yield* Stream.runForEach(events, (event) => {
       if (event.type === "connected") return Deferred.succeed(connected, undefined);
+      if (event.type !== "request") return Effect.void;
       inputs.push(event.request.input);
       return broker.respond({
         clientId,
@@ -350,6 +351,8 @@ const callSnapshot = (args: Record<string, unknown>) =>
 /** Returns a valid renderer response for each operation exercised by this suite. */
 function automationResult(operation: string, input?: unknown): unknown {
   switch (operation) {
+    case "evaluate":
+      return ["Connect", "Continue"];
     case "snapshot":
       return {
         url: "http://example.test/",
@@ -781,13 +784,15 @@ it.effect.each([
       yield* Stream.runForEach(events, (event) =>
         event.type === "connected"
           ? Deferred.succeed(connected, undefined)
-          : broker.respond({
-              clientId: "mcp-no-tab-client",
-              connectionId: event.connectionId,
-              requestId: event.request.requestId,
-              ok: false,
-              error: { _tag: "PreviewAutomationTabNotFoundError", message: "no tab" },
-            }),
+          : event.type === "request"
+            ? broker.respond({
+                clientId: "mcp-no-tab-client",
+                connectionId: event.connectionId,
+                requestId: event.request.requestId,
+                ok: false,
+                error: { _tag: "PreviewAutomationTabNotFoundError", message: "no tab" },
+              })
+            : Effect.void,
       ).pipe(Effect.forkScoped);
       yield* Deferred.await(connected);
 
@@ -854,6 +859,7 @@ it.effect.each([
       const events = yield* broker.connect({ clientId: "mcp-image-option-client", environmentId });
       yield* Stream.runForEach(events, (event) => {
         if (event.type === "connected") return Deferred.succeed(connected, undefined);
+        if (event.type !== "request") return Effect.void;
         requests += 1;
         expect(event.request).toMatchObject({
           operation: "snapshot",
@@ -885,7 +891,12 @@ it.effect.each([
             Effect.provideService(McpInvocationContext.McpInvocationContext, invocation),
             Effect.provideService(McpSchema.McpServerClient, client),
           );
-        const metadata = { ...page, title: `Snapshot ${call}`, screenshot };
+        const metadata = {
+          ...page,
+          title: `Snapshot ${call}`,
+          screenshot,
+          host: { clientId: "mcp-image-option-client" },
+        };
         const { accessibilityTree: _tree, ...boundedMetadata } = metadata;
         expect(snapshot.isError).toBe(false);
         expect(snapshot.structuredContent).toEqual({
@@ -930,7 +941,11 @@ it.effect.each([
         "text",
         "image",
       ]);
-      expect(nextDefault.structuredContent).toMatchObject({ title: "Snapshot 7", screenshot });
+      expect(nextDefault.structuredContent).toMatchObject({
+        title: "Snapshot 7",
+        screenshot,
+        host: { clientId: "mcp-image-option-client" },
+      });
       expect(nextDefault.structuredContent).not.toHaveProperty("accessibilityTree");
       expect(requests).toBe(7);
     }),
@@ -1303,7 +1318,10 @@ it.effect("denies preview access without removing computer tools", () =>
 
     expect(preview.isError).toBe(true);
     expect(preview.content).toEqual([
-      { type: "text", text: "MCP credential does not grant the preview capability." },
+      {
+        type: "text",
+        text: expect.stringContaining("MCP credential does not grant the preview capability"),
+      },
     ]);
     expect(computer.isError).toBe(false);
     expect(computer.structuredContent).toEqual({
@@ -1600,8 +1618,47 @@ it.effect("registers annotated tools and preserves authenticated request context
         ],
       });
 
+      const beforeUnavailableDesktop = routedRequests.length;
+      const unavailableDesktop = yield* server
+        .callTool({
+          name: "preview_status",
+          arguments: { desktop: { kind: "user", desktopId: "offline-desktop" } },
+        })
+        .pipe(
+          Effect.provideService(McpInvocationContext.McpInvocationContext, invocation),
+          Effect.provideService(McpSchema.McpServerClient, client),
+        );
+      expect(unavailableDesktop.isError).toBe(true);
+      expect(unavailableDesktop.content).toContainEqual(
+        expect.objectContaining({ type: "text", text: expect.stringContaining("offline-desktop") }),
+      );
+      expect(routedRequests).toHaveLength(beforeUnavailableDesktop);
+      const unavailableSnapshot = yield* server
+        .callTool({ name: "preview_snapshot", arguments: {} })
+        .pipe(
+          Effect.provideService(McpInvocationContext.McpInvocationContext, invocation),
+          Effect.provideService(McpSchema.McpServerClient, client),
+        );
+      expect(unavailableSnapshot.isError).toBe(true);
+      expect(unavailableSnapshot.structuredContent).toMatchObject({
+        error: {
+          desktop: { kind: "user", desktopId: "offline-desktop" },
+          reason: "offline",
+        },
+      });
+      expect(unavailableSnapshot.content).toContainEqual(
+        expect.objectContaining({
+          type: "text",
+          text: expect.stringContaining("user_desktop_list"),
+        }),
+      );
+      expect(routedRequests).toHaveLength(beforeUnavailableDesktop);
+
       const status = yield* server
-        .callTool({ name: "preview_status", arguments: {} })
+        .callTool({
+          name: "preview_status",
+          arguments: { desktop: { kind: "user", desktopId: "user-desktop-1" } },
+        })
         .pipe(
           Effect.provideService(McpInvocationContext.McpInvocationContext, invocation),
           Effect.provideService(McpSchema.McpServerClient, client),
@@ -1610,6 +1667,12 @@ it.effect("registers annotated tools and preserves authenticated request context
       expect(status.structuredContent).toMatchObject({
         available: true,
         tabId,
+        host: {
+          clientId: "mcp-test-client",
+          desktop: { kind: "user", desktopId: "user-desktop-1" },
+          defaultLabel: "Test desktop",
+          platform: "linux",
+        },
       });
 
       const malformed = yield* server
@@ -1630,6 +1693,7 @@ it.effect("registers annotated tools and preserves authenticated request context
       expect(snapshot.isError).toBe(false);
       expect(snapshot.content.some((content) => content.type === "image")).toBe(true);
       expect(snapshot.structuredContent).toMatchObject({
+        host: { desktop: { kind: "user", desktopId: "user-desktop-1" } },
         screenshot: { mimeType: "image/png", width: 10, height: 5 },
       });
       expect(routedRequests.find(({ operation }) => operation === "snapshot")?.tabId).toBe(
@@ -2252,7 +2316,13 @@ it.effect("returns bounded structural computer snapshot failures", () =>
         clientId: "mcp-failure-client",
         environmentId,
         supportedOperations: [...DESKTOP_AUTOMATION_OPERATIONS],
-        userDesktop: { protocolVersion: 1, desktopId: "user-desktop-1", defaultLabel: "Test desktop", platform: "linux", capabilities: ["view", "control", "availability"] },
+        userDesktop: {
+          protocolVersion: 1,
+          desktopId: "user-desktop-1",
+          defaultLabel: "Test desktop",
+          platform: "linux",
+          capabilities: ["view", "control", "availability"],
+        },
       });
       yield* Stream.runForEach(events, (event) =>
         event.type !== "request"
@@ -2279,7 +2349,10 @@ it.effect("returns bounded structural computer snapshot failures", () =>
         },
       ] as const) {
         const snapshot = yield* server
-          .callTool({ name: testCase.tool, arguments: { desktop: { kind: "user", desktopId: "user-desktop-1" } } })
+          .callTool({
+            name: testCase.tool,
+            arguments: { desktop: { kind: "user", desktopId: "user-desktop-1" } },
+          })
           .pipe(
             Effect.provideService(McpInvocationContext.McpInvocationContext, invocation),
             Effect.provideService(McpSchema.McpServerClient, client),

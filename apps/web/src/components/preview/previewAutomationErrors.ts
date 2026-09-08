@@ -2,6 +2,10 @@ import {
   ComputerAutomationFailure,
   ComputerAutomationFailureKind,
   type DesktopComputerAutomationResult,
+  DesktopPreviewAutomationFailureTag,
+  type DesktopPreviewAutomationEvaluationResult,
+  PreviewAutomationEvaluationMessage,
+  type DesktopPreviewAutomationCommandResult,
   EnvironmentId,
   findComputerAutomationFailureKind,
   type PreviewAutomationHost,
@@ -16,7 +20,27 @@ import {
   ThreadId,
   TrimmedNonEmptyString,
 } from "@t3tools/contracts";
+import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
+
+/** Recognizes the bounded failure tags preserved by the desktop bridge. */
+const isDesktopPreviewAutomationFailureTag = Schema.is(DesktopPreviewAutomationFailureTag);
+
+/** Validates the exception summary explicitly preserved by the desktop bridge. */
+const decodeEvaluationFailure = Schema.decodeUnknownOption(
+  Schema.TaggedStruct("PreviewAutomationEvaluationError", {
+    evaluationMessage: PreviewAutomationEvaluationMessage,
+  }),
+);
+
+/** Unwraps evaluation values without interpreting objects returned by page JavaScript. */
+export async function resolveDesktopPreviewAutomationEvaluation(
+  result: Promise<DesktopPreviewAutomationEvaluationResult>,
+): Promise<unknown> {
+  const resolved = await result;
+  if (resolved.ok) return resolved.value;
+  throw resolved.error;
+}
 
 class DesktopComputerAutomationError extends Error {
   readonly code: ComputerAutomationFailure["code"];
@@ -37,6 +61,14 @@ export async function resolveDesktopComputerAutomation<Value>(
   const resolved = await result;
   if (resolved.ok) return resolved.value;
   throw new DesktopComputerAutomationError(resolved.error);
+}
+
+/** Unwraps target failures in the renderer after the context bridge copies their data. */
+export async function resolveDesktopPreviewAutomation(
+  result: Promise<DesktopPreviewAutomationCommandResult>,
+): Promise<void> {
+  const resolved = await result;
+  if (resolved !== undefined) throw resolved.error;
 }
 
 export interface PreviewAutomationOperationContext {
@@ -224,6 +256,7 @@ export class PreviewAutomationOperationError extends Schema.TaggedError<PreviewA
     tabId: Schema.NullOr(PreviewTabId),
     failureKind: Schema.optional(ComputerAutomationFailureKind),
     computerFailure: Schema.optional(ComputerAutomationFailure),
+    evaluationMessage: Schema.optional(PreviewAutomationEvaluationMessage),
     cause: Schema.Defect(),
   },
 ) {
@@ -242,6 +275,7 @@ export class PreviewAutomationOperationError extends Schema.TaggedError<PreviewA
         ...diagnostics,
       });
     }
+    const evaluationFailure = Option.getOrUndefined(decodeEvaluationFailure(input.cause));
     const computerFailure =
       input.cause instanceof DesktopComputerAutomationError ? input.cause.failure : undefined;
     const kind =
@@ -255,12 +289,23 @@ export class PreviewAutomationOperationError extends Schema.TaggedError<PreviewA
           : undefined;
     return new PreviewAutomationOperationError({
       ...input,
+      ...(evaluationFailure === undefined
+        ? {}
+        : { evaluationMessage: evaluationFailure.evaluationMessage }),
       ...(kind === undefined ? {} : { failureKind: kind }),
       ...(computerFailure === undefined ? {} : { computerFailure }),
     });
   }
 
   get responseTag() {
+    if (
+      typeof this.cause === "object" &&
+      this.cause !== null &&
+      "_tag" in this.cause &&
+      isDesktopPreviewAutomationFailureTag(this.cause._tag)
+    ) {
+      return this.cause._tag;
+    }
     return "PreviewAutomationExecutionError" as const;
   }
 

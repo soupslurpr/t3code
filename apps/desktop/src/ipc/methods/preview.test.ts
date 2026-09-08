@@ -154,6 +154,140 @@ describe("preview IPC methods", () => {
     }),
   );
 
+  effectIt.effect("returns target failures as cloneable IPC data without native context", () =>
+    Effect.gen(function* () {
+      const failures = [
+        new PreviewManager.PreviewAutomationInvalidSelectorError({
+          operation: "click",
+          tabId: "private-native-tab",
+          selectorKind: "locator",
+          selectorLength: 11,
+          reasonLength: 20,
+          cause: { message: "private page content" },
+        }),
+        new PreviewManager.PreviewAutomationTargetNotEditableError({
+          tabId: "private-native-tab",
+          selectorKind: "locator",
+          selectorLength: 11,
+        }),
+        new PreviewManager.PreviewAutomationTargetNotActionableError({
+          tabId: "private-native-tab",
+          selectorKind: "locator",
+          selectorLength: 11,
+        }),
+        new PreviewManager.PreviewAutomationTimeoutError({
+          tabId: "private-native-tab",
+          timeoutMs: 1000,
+        }),
+        new PreviewManager.PreviewAutomationControlInterruptedError({
+          operation: "press",
+          tabId: "private-native-tab",
+          webContentsId: 42,
+        }),
+        new PreviewManager.PreviewAutomationTargetNotFoundError({
+          operation: "click",
+          tabId: "private-native-tab",
+          selectorKind: "selector",
+          selectorLength: 10,
+        }),
+        new PreviewManager.PreviewAutomationCoordinatesOutsideViewportError({
+          tabId: "private-native-tab",
+          x: 1200,
+          y: 100,
+          viewportWidth: 1100,
+          viewportHeight: 760,
+        }),
+      ];
+      const commands = [
+        { method: PreviewIpc.automationClick, input: { selector: "#private" } },
+        { method: PreviewIpc.automationType, input: { selector: "#private", text: "private" } },
+        { method: PreviewIpc.automationScroll, input: { selector: "#private", deltaY: 100 } },
+        { method: PreviewIpc.automationWaitFor, input: { selector: "#private" } },
+        { method: PreviewIpc.automationPress, input: { key: "Escape" } },
+      ];
+
+      for (const failure of failures) {
+        const manager = PreviewManager.PreviewManager.of({
+          automationClick: () => Effect.fail(failure),
+          automationType: () => Effect.fail(failure),
+          automationScroll: () => Effect.fail(failure),
+          automationWaitFor: () => Effect.fail(failure),
+          automationPress: () => Effect.fail(failure),
+        } as unknown as PreviewManager.PreviewManager["Service"]);
+
+        for (const command of commands) {
+          const result = yield* command.method
+            .handler({ tabId: "private-native-tab", input: command.input })
+            .pipe(Effect.provideService(PreviewManager.PreviewManager, manager));
+          expect(structuredClone(result)).toEqual({ ok: false, error: { _tag: failure._tag } });
+        }
+      }
+
+      const manager = PreviewManager.PreviewManager.of({
+        automationClick: () => Effect.void,
+        automationType: () => Effect.void,
+        automationScroll: () => Effect.void,
+        automationWaitFor: () => Effect.void,
+        automationPress: () => Effect.void,
+      } as unknown as PreviewManager.PreviewManager["Service"]);
+      for (const command of commands) {
+        const result = yield* command.method
+          .handler({ tabId: "tab-1", input: command.input })
+          .pipe(Effect.provideService(PreviewManager.PreviewManager, manager));
+        expect(result).toBeUndefined();
+      }
+    }),
+  );
+
+  effectIt.effect("preserves arbitrary evaluation values and bounded exception summaries", () =>
+    Effect.gen(function* () {
+      for (const value of [
+        null,
+        false,
+        0,
+        "",
+        { ok: false, error: { _tag: "page-data" } },
+        { type: "object", objectId: "remote-1" },
+      ]) {
+        const manager = PreviewManager.PreviewManager.of({
+          automationEvaluate: () => Effect.succeed(value),
+        } as unknown as PreviewManager.PreviewManager["Service"]);
+        const result = yield* PreviewIpc.automationEvaluate
+          .handler({ tabId: "tab-1", input: { expression: "value" } })
+          .pipe(Effect.provideService(PreviewManager.PreviewManager, manager));
+        expect(structuredClone(result)).toEqual({ ok: true, value });
+      }
+      for (const description of [
+        "Error: deliberate failure\n    at private-stack",
+        "x".repeat(3000),
+      ]) {
+        const manager = PreviewManager.PreviewManager.of({
+          automationEvaluate: () =>
+            Effect.fail(
+              new PreviewManager.PreviewAutomationEvaluationError({
+                tabId: "private-tab",
+                detailKind: "exception-description",
+                detailLength: description.length,
+                cause: { exception: { description }, privateField: "private payload" },
+              }),
+            ),
+        } as unknown as PreviewManager.PreviewManager["Service"]);
+        const result = yield* PreviewIpc.automationEvaluate
+          .handler({ tabId: "tab-1", input: { expression: "throw value" } })
+          .pipe(Effect.provideService(PreviewManager.PreviewManager, manager));
+        expect(structuredClone(result)).toEqual({
+          ok: false,
+          error: {
+            _tag: "PreviewAutomationEvaluationError",
+            evaluationMessage: description.startsWith("Error")
+              ? "Error: deliberate failure"
+              : "x".repeat(2000),
+          },
+        });
+      }
+    }),
+  );
+
   it("keeps the public automation status tab id limit", () => {
     const encode = Schema.encodeUnknownSync(PreviewAutomationStatus);
     const tabId = "t".repeat(129);

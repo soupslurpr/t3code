@@ -21,6 +21,7 @@ import type {
   ComputerAutomationScreenshotMimeType,
   ThreadMonitorComputerRevisionResult,
 } from "@t3tools/contracts";
+import { PreviewAutomationNoAvailableHostError } from "@t3tools/contracts";
 
 import packageJson from "../../package.json" with { type: "json" };
 import * as ServerConfig from "../config.ts";
@@ -81,6 +82,7 @@ import { ThreadMonitorService } from "../threadMonitor/ThreadMonitorService.ts";
 
 const MAX_VALIDATION_EXPECTATION_LENGTH = 128;
 const MAX_VALIDATION_FIELD_LENGTH = 128;
+const isPreviewHostUnavailable = Schema.is(PreviewAutomationNoAvailableHostError);
 const USER_DESKTOP_ONLY_TOOL_NAMES = new Set([
   "user_desktop_execution",
   "user_desktop_command",
@@ -382,6 +384,7 @@ const saveScreenshot = Effect.fn("McpHttpServer.saveScreenshot")(function* (
 
 const isPreviewAutomationError = Schema.is(PreviewAutomationError);
 
+/** Preserves routing guidance while withholding arbitrary renderer failure details. */
 const previewSnapshotFailure = <E>(cause: Cause.Cause<E>) => {
   if (Cause.hasInterrupts(cause) || cause.reasons.some(Cause.isDieReason)) {
     return Effect.failCause(cause).pipe(Effect.orDie);
@@ -398,6 +401,10 @@ const previewSnapshotFailure = <E>(cause: Cause.Cause<E>) => {
   // Preview errors build their message on the server, never from page output,
   // and it tells the agent what to do next, such as falling back to a shell browser.
   const message = isPreviewAutomationError(firstFailure) ? firstFailure.message : undefined;
+  const routingFailure =
+    isPreviewHostUnavailable(firstFailure) && firstFailure.desktop !== undefined
+      ? firstFailure
+      : undefined;
   const result = new McpSchema.CallToolResult({
     isError: true,
     structuredContent: {
@@ -406,9 +413,15 @@ const previewSnapshotFailure = <E>(cause: Cause.Cause<E>) => {
         operation: "snapshot",
         failureCount: failures.length,
         ...(message === undefined ? {} : { message }),
+        ...(routingFailure === undefined
+          ? {}
+          : {
+              desktop: routingFailure.desktop,
+              reason: routingFailure.reason,
+            }),
       },
     },
-    // Some clients show only the text content and others only structuredContent, so both carry it.
+    // Agents usually see only the text content, so name the tag there too.
     content: [{ type: "text", text: `Preview snapshot failed: ${message ?? `${errorTag}.`}` }],
   });
   return Effect.logWarning("preview snapshot failed", {
