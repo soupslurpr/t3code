@@ -225,6 +225,7 @@ export function resolveBranchTriggerLabel(input: {
   resolvedActiveBranch: string | null;
   resolvedActiveBranchIsRemote: boolean | null;
   startFromOrigin: boolean;
+  hasOriginRemote: boolean;
 }): string {
   const {
     activeWorktreePath,
@@ -232,13 +233,14 @@ export function resolveBranchTriggerLabel(input: {
     resolvedActiveBranch,
     resolvedActiveBranchIsRemote,
     startFromOrigin,
+    hasOriginRemote,
   } = input;
   if (!resolvedActiveBranch) {
     return "Select ref";
   }
   if (effectiveEnvMode === "worktree" && !activeWorktreePath) {
     const baseRef =
-      startFromOrigin && resolvedActiveBranchIsRemote === false
+      startFromOrigin && hasOriginRemote && resolvedActiveBranchIsRemote === false
         ? `origin/${resolvedActiveBranch}`
         : resolvedActiveBranch;
     return `From ${baseRef}`;

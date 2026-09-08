@@ -272,6 +272,8 @@ export function BranchToolbarBranchSelector({
   const prReference = parsePullRequestReference(trimmedBranchQuery);
   const isSelectingWorktreeBase =
     effectiveEnvMode === "worktree" && !envLocked && !activeWorktreePath;
+  const hasOriginRemote =
+    branchRefState.data?.hasPrimaryRemote ?? branchStatusQuery.data?.hasPrimaryRemote ?? false;
   const checkoutPullRequestItemValue =
     prReference && onCheckoutPullRequestRequest ? `__checkout_pull_request__:${prReference}` : null;
   const canCreateBranch = !isSelectingWorktreeBase && trimmedBranchQuery.length > 0;
@@ -527,12 +529,12 @@ export function BranchToolbarBranchSelector({
   // ---------------------------------------------------------------------------
   // Combobox / list plumbing
   // ---------------------------------------------------------------------------
+  const refreshBranches = branchRefState.refresh;
   const handleOpenChange = useCallback((open: boolean) => {
     setIsBranchMenuOpen(open);
-    if (!open) {
-      setBranchQuery("");
-    }
-  }, []);
+    if (open) refreshBranches();
+    else setBranchQuery("");
+  }, [refreshBranches]);
 
   useImperativeHandle(
     ref,
@@ -551,6 +553,7 @@ export function BranchToolbarBranchSelector({
     resolvedActiveBranch,
     resolvedActiveBranchIsRemote,
     startFromOrigin,
+    hasOriginRemote,
   });
 
   // Branch status is the fallback when this thread has no linked pull requests.
@@ -677,7 +680,7 @@ export function BranchToolbarBranchSelector({
             : "branch"
       }
       originControl={
-        isSelectingWorktreeBase
+        isSelectingWorktreeBase && hasOriginRemote
           ? { checked: startFromOrigin, onCheckedChange: onStartFromOriginChange }
           : undefined
       }
@@ -727,6 +730,7 @@ export function BranchToolbarBranchSelector({
               )
             }
             className="min-w-0 max-w-full active:scale-100"
+            aria-label={`Ref: ${triggerLabel}`}
             disabled={isInitialBranchesLoadPending || isBranchActionPending}
           >
             <GitBranchIcon
