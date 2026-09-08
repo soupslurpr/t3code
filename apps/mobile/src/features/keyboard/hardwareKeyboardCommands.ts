@@ -53,6 +53,7 @@ export function subscribeToHardwareKeyboardCommandRegistrations(listener: () => 
   return () => registrationListeners.delete(listener);
 }
 
+/** Dispatches a command to the most recently registered handler that accepts it. */
 export function dispatchHardwareKeyboardCommand(command: HardwareKeyboardCommand): boolean {
   const commandHandlers = handlers.get(command);
   if (!commandHandlers) return false;

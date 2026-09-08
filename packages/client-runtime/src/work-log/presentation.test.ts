@@ -5,6 +5,7 @@ import { ThreadId } from "@t3tools/contracts";
 import {
   commandDetailRepeatsCommand,
   extractCommandOutputText,
+  omitSupersededLifecycleMarkers,
   resolveViewedImageAsset,
   resolveWorkEntryToolPresentation,
   summarizeToolGroup,
@@ -133,6 +134,28 @@ describe("workEntryIndicatesToolFailure", () => {
         detail: "File not found in conversation",
       }),
     ).toBe(false);
+  });
+});
+
+describe("omitSupersededLifecycleMarkers", () => {
+  it("preserves chronological order and input without Hermes-unsupported array methods", () => {
+    const entries: ReadonlyArray<WorkLogPresentationEntry> = Object.freeze([
+      { label: "Read", tone: "tool", sourceActivityKind: "tool.started" },
+      { label: "Plan", tone: "thinking" },
+      { label: "Read completed", tone: "tool", sourceActivityKind: "tool.completed" },
+    ]);
+    const descriptor = Object.getOwnPropertyDescriptor(Array.prototype, "toReversed");
+    Reflect.deleteProperty(Array.prototype, "toReversed");
+    try {
+      expect(omitSupersededLifecycleMarkers(entries, (entry) => entry)).toEqual([
+        entries[1],
+        entries[2],
+      ]);
+      expect(entries).toHaveLength(3);
+    } finally {
+      if (descriptor !== undefined)
+        Reflect.defineProperty(Array.prototype, "toReversed", descriptor);
+    }
   });
 });
 
