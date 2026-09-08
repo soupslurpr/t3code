@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vite-plus/test";
+import { afterEach, beforeEach, describe, expect, it } from "vite-plus/test";
 
 import {
   CheckpointRef,
@@ -1523,6 +1523,15 @@ describe("applyThreadDetailEvent", () => {
   });
 
   describe("thread.reverted", () => {
+    const sortDescriptor = Object.getOwnPropertyDescriptor(Array.prototype, "toSorted");
+    beforeEach(() => {
+      Reflect.deleteProperty(Array.prototype, "toSorted");
+    });
+    afterEach(() => {
+      if (sortDescriptor !== undefined)
+        Reflect.defineProperty(Array.prototype, "toSorted", sortDescriptor);
+    });
+
     it("keeps imported history and removes the first live prompt at checkpoint zero", () => {
       const threadWithImportedHistory: OrchestrationThread = {
         ...baseThread,

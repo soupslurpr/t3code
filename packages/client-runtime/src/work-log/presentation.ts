@@ -634,6 +634,7 @@ export function summarizeToolGroup(entries: ReadonlyArray<WorkLogPresentationEnt
   return `${sentenceLabels.slice(0, -1).join(", ")}, and ${sentenceLabels.at(-1)}`;
 }
 
+/** Removes superseded lifecycle markers while preserving the remaining entry order. */
 export function omitSupersededLifecycleMarkers<T>(
   entries: readonly T[],
   workEntryFor: (entry: T) => WorkLogPresentationEntry,
