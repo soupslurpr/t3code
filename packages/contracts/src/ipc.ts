@@ -1,3 +1,4 @@
+import { UserDesktopExecutionInput, type UserDesktopExecutionResult } from "./desktopExecution.ts";
 import * as Schema from "effect/Schema";
 import type { PreviewCaptureFailureEncoded } from "./previewCapture.ts";
 
@@ -1058,6 +1059,12 @@ export const DesktopComputerAutomationContextSchema = Schema.Struct({
   threadId: Schema.optionalKey(ThreadId),
 });
 
+/** Carries execution requests independently of graphical access. */
+export const DesktopExecutionRequestSchema = Schema.Struct({
+  input: UserDesktopExecutionInput,
+  context: DesktopComputerAutomationContextSchema,
+});
+
 export const DesktopComputerAutomationAccessRequestSchema = Schema.Struct({
   input: ComputerAutomationAccessInput,
   context: Schema.optional(DesktopComputerAutomationContextSchema),
@@ -1106,6 +1113,10 @@ export type DesktopComputerAutomationResult<Value> =
     };
 
 export interface DesktopBridge {
+  execution?: (
+    input: UserDesktopExecutionInput,
+    context: DesktopComputerAutomationContext,
+  ) => Promise<DesktopComputerAutomationResult<UserDesktopExecutionResult>>;
   getAppBranding: () => DesktopAppBranding | null;
   getRelayTelemetryEnabled?: () => boolean;
   getPathForFile?: (file: File) => string;
