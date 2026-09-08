@@ -33,8 +33,11 @@ import {
 import {
   UserDesktopHostRegistration,
   UserDesktopId,
+  UserDesktopLabel,
+  UserDesktopPlatform,
   UserDesktopRemoveInput,
   UserDesktopRenameInput,
+  UserDesktopTarget,
 } from "./userDesktop.ts";
 
 const BoundedUrl = Schema.String.check(Schema.isTrimmed())
@@ -195,6 +198,10 @@ export const UserDesktopHumanInvokeInput = Schema.Struct({
 export type UserDesktopHumanInvokeInput = typeof UserDesktopHumanInvokeInput.Type;
 
 const PreviewAutomationTabTargetFields = {
+  desktop: Schema.optional(Schema.NullOr(UserDesktopTarget)).annotate({
+    description:
+      "Desktop hosting the browser, selected from user_desktop_list. The choice persists for this agent session, including reconnects. Omit to retain it; pass null to return to automatic host selection. Localhost resolves on this desktop.",
+  }),
   tabId: Schema.optional(
     PreviewTabId.annotate({
       description:
@@ -209,7 +216,18 @@ const PreviewAutomationTabTargetFields = {
 export const PreviewAutomationTabTargetInput = Schema.Struct(PreviewAutomationTabTargetFields);
 export type PreviewAutomationTabTargetInput = typeof PreviewAutomationTabTargetInput.Type;
 
+/** Identifies where browser requests run and loopback URLs resolve. */
+export const PreviewAutomationBrowserHost = Schema.Struct({
+  clientId: TrimmedNonEmptyString,
+  desktop: Schema.optional(UserDesktopTarget),
+  defaultLabel: Schema.optional(UserDesktopLabel),
+  platform: Schema.optional(UserDesktopPlatform),
+});
+export type PreviewAutomationBrowserHost = typeof PreviewAutomationBrowserHost.Type;
+
 export const PreviewAutomationStatus = Schema.Struct({
+  /** Supplied by the broker, including for hosts that predate desktop targeting. */
+  host: Schema.optional(PreviewAutomationBrowserHost),
   available: Schema.Boolean,
   visible: Schema.Boolean,
   tabId: Schema.NullOr(PreviewTabId),
@@ -563,13 +581,12 @@ export type PreviewAutomationScrollInput = typeof PreviewAutomationScrollInput.T
 
 export const PreviewAutomationEvaluateInput = Schema.Struct({
   ...PreviewAutomationTabTargetFields,
-  expression: Schema.String.check(Schema.isTrimmed())
-    .check(
-      Schema.isNonEmpty({
-        description:
-          "JavaScript expression evaluated in the page's main frame, for example document.title or (() => ({href: location.href}))().",
-      }),
-    )
+  expression: Schema.String.check(
+    Schema.isNonEmpty({
+      description:
+        "JavaScript expression evaluated in the page's main frame, for example document.title or (() => ({href: location.href}))().",
+    }),
+  )
     .check(Schema.isMaxLength(64_000))
     .annotateKey({
       description:
@@ -581,7 +598,7 @@ export const PreviewAutomationEvaluateInput = Schema.Struct({
   returnByValue: Schema.optional(
     Schema.Boolean.annotate({
       description:
-        "Serialize and return the value instead of a remote object reference. Defaults to true.",
+        "Return the JSON value by default. Set false to return Chromium's remote object descriptor, including type, description, objectId when present, and unserializableValue for values such as bigint or NaN.",
     }),
   ),
 }).annotate({
@@ -637,6 +654,9 @@ export const PreviewAutomationElement = Schema.Struct({
   tag: Schema.String,
   role: Schema.NullOr(Schema.String),
   name: Schema.String,
+  locator: Schema.optionalKey(Schema.String).annotate({
+    description: "Preferred Playwright locator generated for this target.",
+  }),
   selector: Schema.String,
   x: Schema.Number,
   y: Schema.Number,
@@ -674,6 +694,7 @@ export const PreviewAutomationActionEvent = Schema.Struct({
 export type PreviewAutomationActionEvent = typeof PreviewAutomationActionEvent.Type;
 
 export const PreviewAutomationSnapshot = Schema.Struct({
+  host: Schema.optional(PreviewAutomationBrowserHost),
   url: Schema.String,
   title: Schema.String,
   loading: Schema.Boolean,
@@ -836,7 +857,7 @@ const EnvironmentDesktopAutomationOperation = Schema.Literals([
 ]);
 
 /** Reports a server-owned desktop operation failure without inventing a remote host. */
-export class EnvironmentDesktopAutomationError extends Schema.TaggedErrorClass<EnvironmentDesktopAutomationError>()(
+export class EnvironmentDesktopAutomationError extends Schema.TaggedError<EnvironmentDesktopAutomationError>()(
   "EnvironmentDesktopAutomationError",
   {
     operation: EnvironmentDesktopAutomationOperation,
@@ -889,11 +910,19 @@ export class PreviewAutomationNoAvailableHostError extends Schema.TaggedError<Pr
     tabId: Schema.optional(PreviewTabId),
     timeoutMs: Schema.optional(Schema.Int.check(Schema.isGreaterThan(0))),
     computerFailure: Schema.optional(ComputerAutomationFailure),
+    desktop: Schema.optional(UserDesktopTarget),
+    reason: Schema.optional(
+      Schema.Literals(["offline", "identity-conflict", "unsupported-operation"]),
+    ),
     ...PreviewAutomationOptionalRemoteDiagnosticFields,
   },
 ) {
   override get message(): string {
     if (this.computerFailure !== undefined) return this.computerFailure.message;
+    if (this.desktop !== undefined) {
+      const reason = this.reason === undefined ? "" : ` (${this.reason})`;
+      return `preview desktop ${this.desktop.desktopId} is unavailable for ${this.operation}${reason}; use user_desktop_list to check the desktop, or pass desktop to select another host (null restores automatic selection)`;
+    }
     const summary = `No preview automation host is available for ${this.operation} in environment ${this.environmentId}.`;
     return summary;
   }
@@ -963,6 +992,14 @@ export class PreviewAutomationControlInterruptedError extends Schema.TaggedError
   }
 }
 
+export const MAX_PREVIEW_EVALUATION_ERROR_LENGTH = 2_000;
+
+/** Bounds the page exception summary returned to the evaluation caller. */
+export const PreviewAutomationEvaluationMessage = Schema.String.check(
+  Schema.isMinLength(1),
+  Schema.isMaxLength(MAX_PREVIEW_EVALUATION_ERROR_LENGTH),
+);
+
 export class PreviewAutomationExecutionError extends Schema.TaggedError<PreviewAutomationExecutionError>()(
   "PreviewAutomationExecutionError",
   {
@@ -970,9 +1007,16 @@ export class PreviewAutomationExecutionError extends Schema.TaggedError<PreviewA
     ...PreviewAutomationRemoteDiagnosticFields,
     remoteFailureKind: Schema.optional(ComputerAutomationFailureKind),
     computerFailure: Schema.optional(ComputerAutomationFailure),
+    evaluationMessage: Schema.optional(PreviewAutomationEvaluationMessage),
   },
 ) {
   override get message(): string {
+    if (
+      this.remoteTag === "PreviewAutomationEvaluationError" &&
+      this.evaluationMessage !== undefined
+    ) {
+      return `preview JavaScript evaluation failed: ${this.evaluationMessage}`;
+    }
     if (this.remoteFailureKind === "display-inactive") {
       return `Preview automation ${this.operation} could not wake the blank desktop display safely. Wake it, then try again.`;
     }
@@ -983,6 +1027,15 @@ export class PreviewAutomationExecutionError extends Schema.TaggedError<PreviewA
       return `Preview automation ${this.operation} did not start because the user declined the session keep-awake request.`;
     }
     if (this.computerFailure !== undefined) return this.computerFailure.message;
+    if (this.remoteTag === "PreviewAutomationTargetNotFoundError") {
+      return `Preview automation ${this.operation} could not find an available target. Inspect the page again before retrying.`;
+    }
+    if (this.remoteTag === "PreviewAutomationTargetNotActionableError") {
+      return "preview click target moved or is covered; inspect the page before retrying";
+    }
+    if (this.remoteTag === "PreviewAutomationCoordinatesOutsideViewportError") {
+      return `Preview automation ${this.operation} targeted a point outside the viewport. Inspect the page again and bring the target into view before retrying.`;
+    }
     return `Preview automation ${this.operation} failed on client ${this.clientId}.`;
   }
 }
@@ -998,9 +1051,9 @@ export class PreviewAutomationInvalidSelectorError extends Schema.TaggedError<Pr
 ) {
   override get message(): string {
     if (this.selectorKind !== undefined && this.selectorLength !== undefined) {
-      return `Preview automation ${this.operation} received an invalid ${this.selectorKind} (${this.selectorLength} characters).`;
+      return `Preview automation ${this.operation} received an invalid or ambiguous ${this.selectorKind} (${this.selectorLength} characters). Check its syntax and use the latest snapshot to identify a target.`;
     }
-    return `Preview automation ${this.operation} received an invalid selector.`;
+    return `Preview automation ${this.operation} received an invalid or ambiguous selector. Check its syntax and use the latest snapshot to identify a target.`;
   }
 }
 

@@ -243,6 +243,7 @@ const artifactSiteSlug = (rawUrl: string): string => {
 
 interface CdpEvaluationResult {
   readonly result?: {
+    readonly type?: string;
     readonly value?: unknown;
     readonly description?: string;
   };
@@ -1531,7 +1532,10 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
       Effect.flatMap((rawResponse) => {
         const response = rawResponse as CdpEvaluationResult;
         if (!response.exceptionDetails) {
-          return Effect.succeed(response.result?.value as A);
+          if (!returnByValue) return Effect.succeed(response.result as A);
+          // Represent successful void evaluations as JSON null across the IPC boundary.
+          const value = response.result?.type === "undefined" ? null : response.result?.value;
+          return Effect.succeed(value as A);
         }
         const detail = previewAutomationEvaluationDetail(response.exceptionDetails);
         return Effect.fail(
@@ -3553,6 +3557,7 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
         concurrency: 2,
         discard: true,
       });
+      yield* ensurePlaywrightInjected(tabId, send);
       const page = yield* evaluateWithDebugger<{
         url: string;
         title: string;
@@ -3563,6 +3568,15 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
         tabId,
         send,
         `(() => {
+          const injected = globalThis.__t3PlaywrightInjected;
+          const locatorFor = (element) => {
+            try {
+              return injected.generateSelectorSimple(element);
+            } catch {
+              // Preserve the snapshot if one target cannot produce a preferred locator.
+              return undefined;
+            }
+          };
           const selectorFor = (element) => {
             if (element.id) return "#" + CSS.escape(element.id);
             for (const attribute of ["data-testid", "name"]) {
@@ -3586,18 +3600,26 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
             return buildParts(element).join(" > ");
           };
           const visible = (element) => {
+            for (let ancestor = element; ancestor; ancestor = ancestor.assignedSlot ?? ancestor.parentElement ?? ancestor.getRootNode().host) {
+              if (ancestor.matches('[aria-hidden="true" i], [inert]')) return false;
+            }
             const style = getComputedStyle(element);
             const rect = element.getBoundingClientRect();
             return style.visibility !== "hidden" && style.display !== "none" && rect.width > 0 && rect.height > 0;
           };
-          const elements = Array.from(document.querySelectorAll(
-            "a[href],button,input,textarea,select,[role],[tabindex]"
-          )).filter(visible).slice(0, ${MAX_INTERACTIVE_ELEMENTS}).map((element) => {
+          const { getAriaRole, getElementAccessibleName } = injected.utils;
+          const elements = injected.querySelectorAll(injected.parseSelector(
+            'a[href],button,input,textarea,select,summary,[role],[tabindex],[contenteditable=""],[contenteditable="true" i],[contenteditable="plaintext-only" i]'
+          ), document).filter(visible).map((element) => ({ element, role: getAriaRole(element) }))
+            .filter(({ element, role }) =>
+              (role !== "presentation" && role !== "none") || element.hasAttribute("tabindex") || element.isContentEditable
+            ).slice(0, ${MAX_INTERACTIVE_ELEMENTS}).map(({ element, role }) => {
             const rect = element.getBoundingClientRect();
             return {
               tag: element.tagName.toLowerCase(),
-              role: element.getAttribute("role"),
-              name: (element.getAttribute("aria-label") || element.innerText || element.getAttribute("name") || "").slice(0, ${MAX_INTERACTIVE_ELEMENT_NAME_LENGTH}),
+              role,
+              name: getElementAccessibleName(element, false).slice(0, ${MAX_INTERACTIVE_ELEMENT_NAME_LENGTH}),
+              locator: locatorFor(element),
               selector: selectorFor(element),
               x: rect.x,
               y: rect.y,
@@ -3665,6 +3687,7 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
     tabId: string,
     send: SendCommand,
     input: PreviewAutomationClickInput,
+    guardTarget = false,
   ) {
     if (!("selector" in input) && !("locator" in input)) {
       return { x: input.x!, y: input.y! };
@@ -3676,7 +3699,10 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
       locator,
     );
     const point = yield* evaluateWithDebugger<
-      { x: number; y: number } | { invalidSelector: true; message: string } | { notFound: true }
+      | { x: number; y: number }
+      | { invalidSelector: true; message: string }
+      | { notFound: true }
+      | { notActionable: true }
     >(
       tabId,
       send,
@@ -3691,7 +3717,13 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
             if (!visible.matches || !enabled.matches) return { notFound: true };
             element.scrollIntoView({ block: "center", inline: "center" });
             const rect = element.getBoundingClientRect();
-            return { x: rect.left + rect.width / 2, y: rect.top + rect.height / 2 };
+            const point = { x: rect.left + rect.width / 2, y: rect.top + rect.height / 2 };
+            if (${guardTarget}) {
+              const interceptor = injected.setupHitTargetInterceptor(element, "mouse", point, false);
+              if (typeof interceptor === "string") return { notActionable: true };
+              globalThis.__t3PreviewClickInterceptor = interceptor;
+            }
+            return point;
           } catch (error) {
             return { invalidSelector: true, message: String(error) };
           }
@@ -3714,8 +3746,27 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
         ...automationSelectorDiagnostics(input),
       });
     }
+    if ("notActionable" in point) {
+      return yield* new PreviewAutomationTargetNotActionableError({
+        tabId,
+        ...automationSelectorDiagnostics(input),
+      });
+    }
     return point;
   });
+
+  /** Removes the page's input guard, including after control cancellation or failed dispatch. */
+  const stopClickInterceptor = (tabId: string, send: SendCommand) =>
+    evaluateWithDebugger<unknown>(
+      tabId,
+      send,
+      `(() => {
+        const interceptor = globalThis.__t3PreviewClickInterceptor;
+        delete globalThis.__t3PreviewClickInterceptor;
+        return interceptor?.stop() ?? "done";
+      })()`,
+      true,
+    );
 
   const emitPointerEvent = Effect.fn("PreviewManager.emitPointerEvent")(function* (
     event: DesktopPreviewPointerEvent,
@@ -3732,6 +3783,7 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
     tabId: string,
     input: PreviewAutomationClickInput,
     send: SendCommand,
+    sendCleanup: SendCommand,
   ) {
     yield* prepareAutomationInput(send, true);
     const point = yield* resolveClickPoint(tabId, send, input);
@@ -3770,19 +3822,45 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
       createdAt: clickCreatedAt,
     });
     yield* Effect.sleep(AGENT_CURSOR_CLICK_LEAD_MS);
-    yield* expectAgentInput(tabId, { kind: "pointer", ...point, button: 0 });
-    yield* send("Input.dispatchMouseEvent", {
-      type: "mousePressed",
-      ...point,
-      button: "left",
-      clickCount: 1,
-    });
-    yield* send("Input.dispatchMouseEvent", {
-      type: "mouseReleased",
-      ...point,
-      button: "left",
-      clickCount: 1,
-    });
+    const targeted = automationLocator(input) !== null;
+    yield* Effect.gen(function* () {
+      const clickPoint = targeted ? yield* resolveClickPoint(tabId, send, input, true) : point;
+      if (clickPoint.x !== point.x || clickPoint.y !== point.y) {
+        yield* emitPointerEvent({
+          tabId,
+          phase: "click",
+          ...clickPoint,
+          sequence: yield* nextCounter(pointerSequenceRef),
+          createdAt: yield* currentIso,
+        });
+      }
+      yield* expectAgentInput(tabId, { kind: "pointer", ...clickPoint, button: 0 });
+      const release = { type: "mouseReleased", ...clickPoint, button: "left", clickCount: 1 };
+      let released = false;
+      yield* Effect.gen(function* () {
+        yield* send("Input.dispatchMouseEvent", { ...release, type: "mousePressed" });
+        yield* send("Input.dispatchMouseEvent", release);
+        released = true;
+      }).pipe(
+        Effect.ensuring(
+          Effect.suspend(() =>
+            released
+              ? Effect.void
+              : sendCleanup("Input.dispatchMouseEvent", release).pipe(Effect.ignore),
+          ),
+        ),
+      );
+      if (targeted && (yield* stopClickInterceptor(tabId, send)) !== "done") {
+        return yield* new PreviewAutomationTargetNotActionableError({
+          tabId,
+          ...automationSelectorDiagnostics(input),
+        });
+      }
+    }).pipe(
+      Effect.ensuring(
+        targeted ? stopClickInterceptor(tabId, sendCleanup).pipe(Effect.ignore) : Effect.void,
+      ),
+    );
   });
 
   const automationClick = Effect.fn("PreviewManager.automationClick")(function* (
@@ -3790,8 +3868,8 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
     input: PreviewAutomationClickInput,
   ) {
     const wc = yield* requireWebContents(tabId);
-    yield* withControlSession(tabId, wc, "click", (send) =>
-      performAutomationClick(tabId, input, send),
+    yield* withControlSession(tabId, wc, "click", (send, sendCleanup) =>
+      performAutomationClick(tabId, input, send, sendCleanup),
     );
   });
 
@@ -3834,22 +3912,44 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
               if (textControl) {
                 element.select();
               } else {
-                const range = document.createRange();
-                range.selectNodeContents(element);
-                const selection = document.getSelection();
-                selection?.removeAllRanges();
-                selection?.addRange(range);
+                // Select native text boundaries so nested paragraphs are included.
+                document.execCommand("selectAll", false);
+                // Synchronize rich editors' model selections before their paste handlers run.
+                document.dispatchEvent(new Event("selectionchange"));
               }
             }
             const text = ${textJson};
             let inserted = true;
             if (text.length > 0) {
-              inserted = document.execCommand("insertText", false, text);
+              let handledPaste = false;
+              if (!textControl) {
+                // Let rich editors insert plain text through their own document model.
+                const clipboardData = new DataTransfer();
+                clipboardData.setData("text/plain", text);
+                const paste = new ClipboardEvent("paste", {
+                  bubbles: true,
+                  cancelable: true,
+                  composed: true,
+                  clipboardData,
+                });
+                element.dispatchEvent(paste);
+                handledPaste = paste.defaultPrevented;
+              }
+              if (!handledPaste) {
+                inserted = document.execCommand("insertText", false, text);
+              }
             } else if (clear) {
-              document.execCommand("delete", false);
-              const cleared = textControl
-                ? element.value.length === 0
-                : (element.textContent ?? "").length === 0;
+              const beforeInput = new InputEvent("beforeinput", {
+                bubbles: true,
+                cancelable: true,
+                composed: true,
+                inputType: "deleteContentBackward",
+              });
+              element.dispatchEvent(beforeInput);
+              if (!beforeInput.defaultPrevented) document.execCommand("delete", false);
+              const cleared = beforeInput.defaultPrevented || (
+                textControl ? element.value.length === 0 : (element.textContent ?? "").length === 0
+              );
               if (!cleared) {
                 if (textControl) {
                   const prototype = element instanceof HTMLTextAreaElement
@@ -4374,7 +4474,7 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
         send,
         `(() => {
               try {
-                const selectorMatched = ${locatorJson ? `(() => { const injected = globalThis.__t3PlaywrightInjected; return injected.querySelector(injected.parseSelector(${locatorJson}), document, false) !== null; })()` : "true"};
+                const selectorMatched = ${locatorJson ? `(() => { const injected = globalThis.__t3PlaywrightInjected; return Boolean(injected.querySelector(injected.parseSelector(${locatorJson}), document, false)); })()` : "true"};
                 const textMatched = ${
                   textJson ? `(document.body?.innerText || "").includes(${textJson})` : "true"
                 };
@@ -4680,6 +4780,20 @@ export class PreviewAutomationTargetNotFoundError extends Schema.TaggedError<Pre
   }
 }
 
+/** Reports a target that could not receive the requested pointer input. */
+export class PreviewAutomationTargetNotActionableError extends Schema.TaggedError<PreviewAutomationTargetNotActionableError>()(
+  "PreviewAutomationTargetNotActionableError",
+  {
+    tabId: Schema.String,
+    selectorKind: PreviewAutomationSelectorKind,
+    selectorLength: Schema.optionalKey(Schema.Number),
+  },
+) {
+  override get message(): string {
+    return `preview click target moved or is covered in tab ${this.tabId}; inspect the page before retrying`;
+  }
+}
+
 export class PreviewAutomationTargetNotEditableError extends Schema.TaggedError<PreviewAutomationTargetNotEditableError>()(
   "PreviewAutomationTargetNotEditableError",
   {
@@ -4798,6 +4912,7 @@ export const PreviewManagerError = Schema.Union([
   PreviewAutomationDebuggerAttachedError,
   PreviewAutomationEvaluationError,
   PreviewAutomationTargetNotFoundError,
+  PreviewAutomationTargetNotActionableError,
   PreviewAutomationTargetNotEditableError,
   PreviewAutomationCoordinatesOutsideViewportError,
   PreviewAutomationInvalidSelectorError,

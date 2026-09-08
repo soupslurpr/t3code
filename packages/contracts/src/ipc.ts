@@ -66,6 +66,7 @@ import type {
 import {
   PreviewAutomationClickInput,
   PreviewAutomationEvaluateInput,
+  PreviewAutomationEvaluationMessage,
   PreviewAutomationHost,
   PreviewAutomationHostFocus,
   PreviewAutomationPressInput,
@@ -1295,6 +1296,44 @@ export type DesktopComputerAutomationResult<Value> =
       readonly error: ComputerAutomationFailure;
     };
 
+/** Preserves actionable target failures across Electron's error serialization boundary. */
+export const DesktopPreviewAutomationFailureTag = Schema.Literals([
+  "PreviewAutomationTargetNotFoundError",
+  "PreviewAutomationTargetNotActionableError",
+  "PreviewAutomationCoordinatesOutsideViewportError",
+  "PreviewAutomationInvalidSelectorError",
+  "PreviewAutomationTargetNotEditableError",
+  "PreviewAutomationTimeoutError",
+  "PreviewAutomationControlInterruptedError",
+  "PreviewAutomationEvaluationError",
+  "PreviewAutomationResultTooLargeError",
+]);
+
+const DesktopPreviewAutomationFailureSchema = Schema.Struct({
+  ok: Schema.Literal(false),
+  error: Schema.Struct({
+    _tag: DesktopPreviewAutomationFailureTag,
+    evaluationMessage: Schema.optionalKey(PreviewAutomationEvaluationMessage),
+  }),
+});
+
+/** Returns command failures as data while retaining existing void success results. */
+export const DesktopPreviewAutomationCommandResultSchema = Schema.Union([
+  Schema.Undefined,
+  DesktopPreviewAutomationFailureSchema,
+]);
+export type DesktopPreviewAutomationCommandResult =
+  | void
+  | typeof DesktopPreviewAutomationCommandResultSchema.Type;
+
+/** Separates evaluation values from failures, including values resembling error envelopes. */
+export const DesktopPreviewAutomationEvaluationResultSchema = Schema.Union([
+  Schema.Struct({ ok: Schema.Literal(true), value: Schema.Unknown }),
+  DesktopPreviewAutomationFailureSchema,
+]);
+export type DesktopPreviewAutomationEvaluationResult =
+  typeof DesktopPreviewAutomationEvaluationResultSchema.Type;
+
 export interface DesktopBridge {
   execution?: (
     input: UserDesktopExecutionInput,
@@ -1589,12 +1628,30 @@ export interface DesktopPreviewBridge {
   automation: {
     status: (tabId: string) => Promise<DesktopPreviewAutomationStatus>;
     snapshot: (tabId: string) => Promise<PreviewAutomationSnapshot>;
-    click: (tabId: string, input: PreviewAutomationClickInput) => Promise<void>;
-    type: (tabId: string, input: PreviewAutomationTypeInput) => Promise<void>;
-    press: (tabId: string, input: PreviewAutomationPressInput) => Promise<void>;
-    scroll: (tabId: string, input: PreviewAutomationScrollInput) => Promise<void>;
-    evaluate: (tabId: string, input: PreviewAutomationEvaluateInput) => Promise<unknown>;
-    waitFor: (tabId: string, input: PreviewAutomationWaitForInput) => Promise<void>;
+    click: (
+      tabId: string,
+      input: PreviewAutomationClickInput,
+    ) => Promise<DesktopPreviewAutomationCommandResult>;
+    type: (
+      tabId: string,
+      input: PreviewAutomationTypeInput,
+    ) => Promise<DesktopPreviewAutomationCommandResult>;
+    press: (
+      tabId: string,
+      input: PreviewAutomationPressInput,
+    ) => Promise<DesktopPreviewAutomationCommandResult>;
+    scroll: (
+      tabId: string,
+      input: PreviewAutomationScrollInput,
+    ) => Promise<DesktopPreviewAutomationCommandResult>;
+    evaluate: (
+      tabId: string,
+      input: PreviewAutomationEvaluateInput,
+    ) => Promise<DesktopPreviewAutomationEvaluationResult>;
+    waitFor: (
+      tabId: string,
+      input: PreviewAutomationWaitForInput,
+    ) => Promise<DesktopPreviewAutomationCommandResult>;
   };
   onStateChange: (listener: (tabId: string, state: DesktopPreviewTabState) => void) => () => void;
   onPointerEvent: (listener: (event: DesktopPreviewPointerEvent) => void) => () => void;

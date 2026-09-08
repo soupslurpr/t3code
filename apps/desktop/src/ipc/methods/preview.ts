@@ -2,7 +2,10 @@ import {
   DesktopPreviewAnnotationThemeInputSchema,
   DesktopPreviewArtifactInputSchema,
   DesktopPreviewAutomationClickInputSchema,
+  DesktopPreviewAutomationCommandResultSchema,
   DesktopPreviewAutomationEvaluateInputSchema,
+  DesktopPreviewAutomationEvaluationResultSchema,
+  MAX_PREVIEW_EVALUATION_ERROR_LENGTH,
   DesktopPreviewAutomationPressInputSchema,
   DesktopPreviewAutomationScrollInputSchema,
   DesktopPreviewAutomationStatusSchema,
@@ -397,63 +400,116 @@ export const automationSnapshot = DesktopIpc.makeIpcMethod({
   }),
 });
 
+/** Returns actionable failures as data so Electron preserves their classification. */
+function preserveAutomationFailure<Value, Requirements>(
+  command: Effect.Effect<Value, PreviewManager.PreviewManagerError, Requirements>,
+) {
+  return command.pipe(
+    Effect.catchTags({
+      PreviewAutomationTargetNotFoundError: (error) =>
+        Effect.succeed({ ok: false as const, error: { _tag: error._tag } }),
+      PreviewAutomationTargetNotActionableError: (error) =>
+        Effect.succeed({ ok: false as const, error: { _tag: error._tag } }),
+      PreviewAutomationCoordinatesOutsideViewportError: (error) =>
+        Effect.succeed({ ok: false as const, error: { _tag: error._tag } }),
+      PreviewAutomationInvalidSelectorError: (error) =>
+        Effect.succeed({ ok: false as const, error: { _tag: error._tag } }),
+      PreviewAutomationTargetNotEditableError: (error) =>
+        Effect.succeed({ ok: false as const, error: { _tag: error._tag } }),
+      PreviewAutomationTimeoutError: (error) =>
+        Effect.succeed({ ok: false as const, error: { _tag: error._tag } }),
+      PreviewAutomationControlInterruptedError: (error) =>
+        Effect.succeed({ ok: false as const, error: { _tag: error._tag } }),
+      PreviewAutomationResultTooLargeError: (error) =>
+        Effect.succeed({ ok: false as const, error: { _tag: error._tag } }),
+      PreviewAutomationEvaluationError: (error) =>
+        Effect.succeed({
+          ok: false as const,
+          error: {
+            _tag: error._tag,
+            evaluationMessage: (
+              PreviewManager.PreviewAutomationEvaluationError.toTimelineMessage(error).split(
+                "\n",
+                1,
+              )[0] || error.message
+            ).slice(0, MAX_PREVIEW_EVALUATION_ERROR_LENGTH),
+          },
+        }),
+    }),
+  );
+}
+
 export const automationClick = DesktopIpc.makeIpcMethod({
   channel: IpcChannels.PREVIEW_AUTOMATION_CLICK_CHANNEL,
   payload: DesktopPreviewAutomationClickInputSchema,
-  result: Schema.Void,
+  result: DesktopPreviewAutomationCommandResultSchema,
   handler: Effect.fn("desktop.ipc.preview.automationClick")(function* ({ tabId, input }) {
     const manager = yield* PreviewManager.PreviewManager;
-    yield* manager.automationClick(tabId, input);
+    return yield* preserveAutomationFailure(
+      manager.automationClick(tabId, input).pipe(Effect.as(undefined)),
+    );
   }),
 });
 
 export const automationType = DesktopIpc.makeIpcMethod({
   channel: IpcChannels.PREVIEW_AUTOMATION_TYPE_CHANNEL,
   payload: DesktopPreviewAutomationTypeInputSchema,
-  result: Schema.Void,
+  result: DesktopPreviewAutomationCommandResultSchema,
   handler: Effect.fn("desktop.ipc.preview.automationType")(function* ({ tabId, input }) {
     const manager = yield* PreviewManager.PreviewManager;
-    yield* manager.automationType(tabId, input);
+    return yield* preserveAutomationFailure(
+      manager.automationType(tabId, input).pipe(Effect.as(undefined)),
+    );
   }),
 });
 
 export const automationPress = DesktopIpc.makeIpcMethod({
   channel: IpcChannels.PREVIEW_AUTOMATION_PRESS_CHANNEL,
   payload: DesktopPreviewAutomationPressInputSchema,
-  result: Schema.Void,
+  result: DesktopPreviewAutomationCommandResultSchema,
   handler: Effect.fn("desktop.ipc.preview.automationPress")(function* ({ tabId, input }) {
     const manager = yield* PreviewManager.PreviewManager;
-    yield* manager.automationPress(tabId, input);
+    return yield* preserveAutomationFailure(
+      manager.automationPress(tabId, input).pipe(Effect.as(undefined)),
+    );
   }),
 });
 
 export const automationScroll = DesktopIpc.makeIpcMethod({
   channel: IpcChannels.PREVIEW_AUTOMATION_SCROLL_CHANNEL,
   payload: DesktopPreviewAutomationScrollInputSchema,
-  result: Schema.Void,
+  result: DesktopPreviewAutomationCommandResultSchema,
   handler: Effect.fn("desktop.ipc.preview.automationScroll")(function* ({ tabId, input }) {
     const manager = yield* PreviewManager.PreviewManager;
-    yield* manager.automationScroll(tabId, input);
+    return yield* preserveAutomationFailure(
+      manager.automationScroll(tabId, input).pipe(Effect.as(undefined)),
+    );
   }),
 });
 
 export const automationEvaluate = DesktopIpc.makeIpcMethod({
   channel: IpcChannels.PREVIEW_AUTOMATION_EVALUATE_CHANNEL,
   payload: DesktopPreviewAutomationEvaluateInputSchema,
-  result: Schema.Unknown,
+  result: DesktopPreviewAutomationEvaluationResultSchema,
   handler: Effect.fn("desktop.ipc.preview.automationEvaluate")(function* ({ tabId, input }) {
     const manager = yield* PreviewManager.PreviewManager;
-    return yield* manager.automationEvaluate(tabId, input);
+    return yield* preserveAutomationFailure(
+      manager
+        .automationEvaluate(tabId, input)
+        .pipe(Effect.map((value) => ({ ok: true as const, value }))),
+    );
   }),
 });
 
 export const automationWaitFor = DesktopIpc.makeIpcMethod({
   channel: IpcChannels.PREVIEW_AUTOMATION_WAIT_FOR_CHANNEL,
   payload: DesktopPreviewAutomationWaitForInputSchema,
-  result: Schema.Void,
+  result: DesktopPreviewAutomationCommandResultSchema,
   handler: Effect.fn("desktop.ipc.preview.automationWaitFor")(function* ({ tabId, input }) {
     const manager = yield* PreviewManager.PreviewManager;
-    yield* manager.automationWaitFor(tabId, input);
+    return yield* preserveAutomationFailure(
+      manager.automationWaitFor(tabId, input).pipe(Effect.as(undefined)),
+    );
   }),
 });
 
