@@ -70,7 +70,7 @@ describe("UserDesktopIdentity", () => {
           desktopId: first.registration.desktopId,
           defaultLabel: "coolcrab",
           platform: "linux",
-          capabilities: ["view", "control", "availability"],
+          capabilities: ["view", "control", "availability", "execution"],
         });
 
         const stored = decodeIdentityDocument(
@@ -104,13 +104,13 @@ describe("UserDesktopIdentity", () => {
     ),
   );
 
-  it.effect("does not advertise computer use on unsupported platforms", () =>
+  it.effect("advertises execution independently of graphical platform support", () =>
     withIdentityEnvironment(
       Effect.gen(function* () {
         const identity = yield* UserDesktopIdentity.makeWithHostname("windows-client");
 
         assert.strictEqual(identity.registration.platform, "windows");
-        assert.deepEqual(identity.registration.capabilities, []);
+        assert.deepEqual(identity.registration.capabilities, ["execution"]);
       }),
       "win32",
     ),

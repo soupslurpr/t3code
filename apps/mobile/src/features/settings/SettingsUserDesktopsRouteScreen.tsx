@@ -29,8 +29,15 @@ import { previewEnvironment } from "../../state/preview";
 import { useAtomCommand } from "../../state/use-atom-command";
 import { useRemoteConnectionStatus } from "../../state/use-remote-environment-registry";
 import { relativeTime } from "../../lib/time";
+import { UserDesktopExecutionPanel } from "./UserDesktopExecutionPanel";
 
 const INVENTORY_REFRESH_INTERVAL_MS = 5_000;
+const PLATFORM_LABELS = {
+  linux: "Linux",
+  macos: "macOS",
+  windows: "Windows",
+  unknown: "Unknown platform",
+} satisfies Record<UserDesktopView["platform"], string>;
 
 interface UserDesktopRoute {
   readonly environmentId: EnvironmentId;
@@ -103,7 +110,7 @@ export function groupMobileUserDesktops(
             event,
           })),
         )
-        .toSorted(
+        .sort(
           (left, right) =>
             right.event.occurredAt.localeCompare(left.event.occurredAt) ||
             right.event.sequence - left.event.sequence,
@@ -192,7 +199,7 @@ export function SettingsUserDesktopsRouteScreen() {
           environments.map(async (environment) => {
             try {
               const list = await run<UserDesktopList>(environment.environmentId, {
-                request: { operation: "list" },
+                request: { operation: "list", includeExecution: true },
               });
               const routes = await Promise.all(
                 list.desktops.map(async (desktop): Promise<UserDesktopRoute> => {
@@ -320,7 +327,7 @@ export function SettingsUserDesktopsRouteScreen() {
                       {desktop.label}
                     </Text>
                     <Text className="text-sm text-foreground-muted" numberOfLines={2}>
-                      {environmentLabels.join(", ")} · {desktop.platform}
+                      Via {environmentLabels.join(", ")} · {PLATFORM_LABELS[desktop.platform]}
                     </Text>
                     <Text
                       className={
@@ -337,6 +344,20 @@ export function SettingsUserDesktopsRouteScreen() {
                     </Text>
                   </View>
                 </View>
+                {group.routes
+                  .filter(
+                    (route) =>
+                      route.desktop.connectionState === "online" &&
+                      route.desktop.capabilities.includes("execution"),
+                  )
+                  .map((route) => (
+                    <UserDesktopExecutionPanel
+                      key={route.environmentId}
+                      environmentId={route.environmentId}
+                      environmentLabel={route.environmentLabel}
+                      desktop={route.desktop.desktop}
+                    />
+                  ))}
                 {recentAudit.length > 0 ? (
                   <View
                     accessibilityLabel={`Recent access for ${desktop.label}`}

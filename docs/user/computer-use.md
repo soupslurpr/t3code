@@ -5,9 +5,29 @@ supported T3 Code desktop client is attached to the same environment. This is se
 collaborative browser. Computer use targets either a concrete user desktop exposed by a desktop
 client or a managed, isolated Agent desktop.
 
-The current implementation is intentionally host-specific. It supports Linux desktop builds running
+Screen sharing supports Linux desktop builds running
 in a GNOME Wayland session with the system GJS runtime and XDG Remote Desktop portal. It installs no
-input-driver package and reports computer use as unavailable on other systems.
+input-driver package. Direct command execution is available on Linux, macOS, and Windows desktop
+clients independently of screen sharing. The desktop app and connected environment server must both
+support command execution.
+
+## Commands on a user desktop
+
+Ask an agent to run a command on a named desktop. It selects that desktop and requests execution
+permission there. Approve the local T3 Code prompt for one thread, one environment, or all connected
+environments. You can set an expiry or choose to remember permission after restarting T3 Code.
+Commands run as the account running the desktop app. Commands that need administrator access can
+use the operating system's local authentication prompt.
+
+Use **Settings → User desktops → Command execution** on web, desktop, or mobile to manage permission,
+inspect running commands and captured output, stop a process, or remove completed output. Each
+connected environment has its own process list. Screen viewing and control permission are separate.
+
+Commands continue when a tool finishes waiting, a turn stops, or a client disconnects. Quitting the
+desktop app stops its commands and removes their captured output. Revoking permission stops commands
+started with that grant by default; agents can explicitly leave them running when revoking. Expiry
+prevents further agent access without stopping existing commands, which you can still supervise in
+Settings. Output is retained up to 64 MiB per stream unless the agent selects a different limit.
 
 ## Permission And Safety
 
