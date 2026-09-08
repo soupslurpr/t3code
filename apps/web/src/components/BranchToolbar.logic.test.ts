@@ -178,6 +178,19 @@ describe("resolveBranchToolbarValue", () => {
 });
 
 describe("resolveBranchTriggerLabel", () => {
+  it("shows the local fallback when the repository has no origin", () => {
+    expect(
+      resolveBranchTriggerLabel({
+        activeWorktreePath: null,
+        effectiveEnvMode: "worktree",
+        resolvedActiveBranch: "main",
+        resolvedActiveBranchIsRemote: false,
+        startFromOrigin: true,
+        hasOriginRemote: false,
+      }),
+    ).toBe("From main");
+  });
+
   it("shows the origin ref when a new worktree will start from origin", () => {
     expect(
       resolveBranchTriggerLabel({
@@ -186,6 +199,7 @@ describe("resolveBranchTriggerLabel", () => {
         resolvedActiveBranch: "main",
         resolvedActiveBranchIsRemote: false,
         startFromOrigin: true,
+        hasOriginRemote: true,
       }),
     ).toBe("From origin/main");
   });
@@ -198,6 +212,7 @@ describe("resolveBranchTriggerLabel", () => {
         resolvedActiveBranch: "feature/demo",
         resolvedActiveBranchIsRemote: false,
         startFromOrigin: true,
+        hasOriginRemote: true,
       }),
     ).toBe("From origin/feature/demo");
   });
@@ -210,6 +225,7 @@ describe("resolveBranchTriggerLabel", () => {
         resolvedActiveBranch: "main",
         resolvedActiveBranchIsRemote: false,
         startFromOrigin: false,
+        hasOriginRemote: true,
       }),
     ).toBe("From main");
   });
@@ -222,6 +238,7 @@ describe("resolveBranchTriggerLabel", () => {
         resolvedActiveBranch: "origin/feature/demo",
         resolvedActiveBranchIsRemote: true,
         startFromOrigin: true,
+        hasOriginRemote: true,
       }),
     ).toBe("From origin/feature/demo");
   });
@@ -234,6 +251,7 @@ describe("resolveBranchTriggerLabel", () => {
         resolvedActiveBranch: "upstream/feature/demo",
         resolvedActiveBranchIsRemote: true,
         startFromOrigin: true,
+        hasOriginRemote: true,
       }),
     ).toBe("From upstream/feature/demo");
   });
@@ -246,6 +264,7 @@ describe("resolveBranchTriggerLabel", () => {
         resolvedActiveBranch: "main",
         resolvedActiveBranchIsRemote: false,
         startFromOrigin: true,
+        hasOriginRemote: true,
       }),
     ).toBe("main");
     expect(
@@ -255,6 +274,7 @@ describe("resolveBranchTriggerLabel", () => {
         resolvedActiveBranch: null,
         resolvedActiveBranchIsRemote: null,
         startFromOrigin: true,
+        hasOriginRemote: true,
       }),
     ).toBe("Select ref");
   });
@@ -267,6 +287,7 @@ describe("resolveBranchTriggerLabel", () => {
         resolvedActiveBranch: "upstream/feature/demo",
         resolvedActiveBranchIsRemote: null,
         startFromOrigin: true,
+        hasOriginRemote: true,
       }),
     ).toBe("From upstream/feature/demo");
   });

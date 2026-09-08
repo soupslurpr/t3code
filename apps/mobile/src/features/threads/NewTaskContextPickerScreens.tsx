@@ -384,7 +384,7 @@ export function NewTaskBranchPickerRouteScreen() {
   );
 
   const branchListHeader =
-    flow.workspaceMode === "worktree" ? (
+    flow.workspaceMode === "worktree" && flow.hasOriginRemote ? (
       <View
         className={cn(
           "mb-3 overflow-hidden",

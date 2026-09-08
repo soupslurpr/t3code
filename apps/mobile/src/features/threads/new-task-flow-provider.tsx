@@ -160,6 +160,7 @@ type NewTaskFlowContextValue = {
   readonly hasMoreBranches: boolean;
   readonly availableBranches: ReadonlyArray<VcsRef>;
   readonly currentCheckoutBranchName: string | null;
+  readonly hasOriginRemote: boolean;
   readonly runtimeMode: RuntimeMode;
   readonly interactionMode: ProviderInteractionMode;
   readonly planModeEnabled: boolean;
@@ -675,6 +676,8 @@ export function NewTaskFlowProvider(props: React.PropsWithChildren) {
       : null,
   );
   const currentCheckoutBranchName = projectGitStatus.data?.refName ?? null;
+  const hasOriginRemote =
+    branchState.data?.hasPrimaryRemote ?? projectGitStatus.data?.hasPrimaryRemote ?? false;
 
   const filteredBranches = useMemo(() => {
     const query = branchQuery.trim().toLowerCase();
@@ -1168,6 +1171,7 @@ export function NewTaskFlowProvider(props: React.PropsWithChildren) {
       hasMoreBranches,
       availableBranches,
       currentCheckoutBranchName,
+      hasOriginRemote,
       runtimeMode,
       interactionMode,
       planModeEnabled,
@@ -1217,6 +1221,7 @@ export function NewTaskFlowProvider(props: React.PropsWithChildren) {
       buildPendingTaskMessage,
       cancelEditingPendingTask,
       currentCheckoutBranchName,
+      hasOriginRemote,
       editingPendingTask,
       environments,
       expandedProvider,
