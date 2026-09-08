@@ -125,6 +125,14 @@ export const SETTINGS_SEARCH_ITEMS = [
     id: "user-desktops",
     title: "User desktops",
     to: "/settings/user-desktops",
+    searchTerms: ["computer screen sharing view control supervise permissions remembered approval"],
+  },
+  {
+    id: "desktop-command-execution",
+    title: "Command execution",
+    to: "/settings/user-desktops",
+    targetId: "user-desktops",
+    searchTerms: ["run commands desktop processes output stdout stderr permissions stop revoke"],
   },
   {
     id: "agent-desktops",

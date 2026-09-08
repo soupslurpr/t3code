@@ -12,6 +12,12 @@ import {
   PreviewAutomationError,
   UserDesktopInventoryError,
   UserDesktopList,
+  UserDesktopCommandInput,
+  UserDesktopProcessInput,
+  UserDesktopExecutionAccessInput,
+  DesktopProcessResult,
+  DesktopProcessList,
+  DesktopExecutionAccess,
 } from "@t3tools/contracts";
 import * as Schema from "effect/Schema";
 import { Tool, Toolkit } from "effect/unstable/ai";
@@ -173,7 +179,43 @@ export const ComputerForgetControlTool = safeComputerTool(
     .annotate(Tool.Idempotent, true),
 );
 
+export const UserDesktopExecutionTool = computerTool(
+  Tool.make("user_desktop_execution", {
+    description:
+      "Inspect, request, or revoke command execution permission on one exact user desktop. Execution is independent of screen sharing. Request scope may be thread, environment, or desktop, with an optional duration. Approval appears locally on the selected desktop; the user may choose to remember the grant across app restarts. Revocation stops processes started with the removed grants by default; set stopProcesses:false to leave them running. Expiry prevents further agent access and does not itself stop running processes. Status grants no access.",
+    parameters: UserDesktopExecutionAccessInput,
+    success: DesktopExecutionAccess,
+    failure: PreviewAutomationError,
+    dependencies: userDesktopDependencies,
+  }).annotate(Tool.Title, "Manage desktop execution access"),
+);
+
+export const UserDesktopCommandTool = computerTool(
+  Tool.make("user_desktop_command", {
+    description:
+      "Start an exact executable and argv on the selected user desktop after user_desktop_execution grants access. Use a unique commandId; retrying the same id and command in this environment returns the original process, while different input is rejected. Retry IDs last until the process is forgotten or T3 Desktop quits. Invoke a shell explicitly for shell syntax, or a platform elevation command such as pkexec for local authentication. Set terminal:true or {columns,rows} for an interactive PTY; PTYs combine stdout and stderr. Environment inherits the desktop host account's environment unless inheritEnvironment:false; null entries remove variables. stdin supports UTF-8 or canonical base64; keepStdinOpen permits later pipe input. waitMs only bounds this call, while timeoutMs optionally limits process lifetime. Processes otherwise continue across turns, cancelled waits, and reconnects until stopped or T3 Desktop quits. Read, write, signal, resize, and forget through user_desktop_process. Output is stored on the selected host, 64 MiB per stream by default; maxStoredOutputBytes:null removes that storage limit. Returned byte offsets page output; use base64 for exact binary data. Never rerun an uncertain command under a new id before checking its original id or the process list.",
+    parameters: UserDesktopCommandInput,
+    success: DesktopProcessResult,
+    failure: PreviewAutomationError,
+    dependencies: userDesktopDependencies,
+  }).annotate(Tool.Title, "Run user desktop command"),
+);
+
+export const UserDesktopProcessTool = computerTool(
+  Tool.make("user_desktop_process", {
+    description:
+      "List or control continuing processes on one explicit user desktop. Read returns bounded stdout and stderr with byte continuation offsets; waitMs waits for new output or exit without stopping the process. Write supports exact UTF-8 or base64 input and closes pipe stdin when close:true; send a terminal's control character for terminal EOF. Resize changes an active PTY. Signal defaults to SIGTERM; use SIGKILL for forced process-tree termination. Windows supports SIGTERM/SIGKILL; send terminal control characters for interactive signals. Forget removes an exited process and its captured files. Output files belong to the selected desktop, which can differ from this environment's filesystem. Processes and their supervision remain independent of graphical view/control leases.",
+    parameters: UserDesktopProcessInput,
+    success: Schema.Union([DesktopProcessResult, DesktopProcessList]),
+    failure: PreviewAutomationError,
+    dependencies: userDesktopDependencies,
+  }).annotate(Tool.Title, "Manage user desktop process"),
+);
+
 export const ComputerToolkit = Toolkit.make(
+  UserDesktopExecutionTool,
+  UserDesktopCommandTool,
+  UserDesktopProcessTool,
   UserDesktopListTool,
   ComputerStatusTool,
   ComputerRequestAvailabilityTool,
@@ -188,6 +230,9 @@ export const ComputerToolkit = Toolkit.make(
 );
 
 export const ComputerStandardToolkit = Toolkit.make(
+  UserDesktopExecutionTool,
+  UserDesktopCommandTool,
+  UserDesktopProcessTool,
   UserDesktopListTool,
   ComputerStatusTool,
   ComputerRequestAvailabilityTool,

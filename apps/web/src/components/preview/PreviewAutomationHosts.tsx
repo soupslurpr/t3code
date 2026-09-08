@@ -22,6 +22,7 @@ import {
   type PreviewRenderedViewportSize,
   type PreviewViewportSetting,
   type ScopedThreadRef,
+  type UserDesktopExecutionInput,
 } from "@t3tools/contracts";
 import { resolvePreviewViewport } from "@t3tools/shared/previewViewport";
 import { useCallback, useContext, useEffect, useMemo, useRef, useState } from "react";
@@ -61,6 +62,7 @@ import { previewRuntimeTabId } from "~/browser/previewRuntimeTabId";
 import { isElectron } from "~/env";
 import { useEnvironments } from "~/state/environments";
 import { previewEnvironment } from "~/state/preview";
+import { serverEnvironment } from "~/state/server";
 import { useAtomQueryRunner } from "~/state/use-atom-query-runner";
 import { useAtomCommand } from "~/state/use-atom-command";
 
@@ -302,18 +304,23 @@ function PreviewAutomationHost(props: { readonly environmentId: EnvironmentId })
   const registry = useContext(RegistryContext);
   const [automationClientId] = useState(createPreviewAutomationClientId);
   const [userDesktop] = useState(() => window.desktopBridge?.getUserDesktopHost?.());
+  const serverConfig = useAtomValue(serverEnvironment.configValueAtom(environmentId));
+  const executionAvailable =
+    window.desktopBridge?.execution !== undefined &&
+    serverConfig?.environment.capabilities.userDesktopExecution === true;
   const initialAutomationHost = useMemo<PreviewAutomationHostState>(
     () => ({
       clientId: automationClientId,
       environmentId,
       ...previewAutomationHostCapabilities({
         computerAvailable: window.desktopBridge?.computer !== undefined,
+        executionAvailable,
         computerCapabilities: userDesktop?.capabilities ?? [],
+        ...(userDesktop === undefined ? {} : { userDesktop }),
         computerInterruptAvailable: typeof window.desktopBridge?.computer?.interrupt === "function",
       }),
-      ...(userDesktop === undefined ? {} : { userDesktop }),
     }),
-    [automationClientId, environmentId, userDesktop],
+    [automationClientId, environmentId, userDesktop, executionAvailable],
   );
   const automationRequestsAtom = previewEnvironment.automationRequests({
     environmentId,
@@ -363,6 +370,13 @@ function PreviewAutomationHost(props: { readonly environmentId: EnvironmentId })
         });
       };
       switch (request.operation) {
+        case "computerExecution":
+          return await resolveDesktopComputerAutomation(
+            window.desktopBridge?.execution?.(
+              request.input as UserDesktopExecutionInput,
+              requireComputerContext(),
+            ),
+          );
         case "computerStatus":
           return await resolveDesktopComputerAutomation(
             computer?.status(
@@ -899,6 +913,21 @@ function PreviewAutomationHost(props: { readonly environmentId: EnvironmentId })
   );
   const cancelRequest = useCallback(
     async (request: PreviewAutomationRequest): Promise<void> => {
+      if (request.operation === "computerExecution" && request.controllerId !== undefined) {
+        const input = request.input as UserDesktopExecutionInput;
+        if (input.operation === "access" && input.input.action === "request") {
+          await window.desktopBridge?.execution?.(
+            { operation: "cancel", desktop: input.desktop },
+            {
+              controllerId: request.controllerId,
+              controllerKind: request.controllerKind ?? "agent",
+              environmentId,
+              threadId: request.threadId,
+            },
+          );
+        }
+        return;
+      }
       const computer = window.desktopBridge?.computer;
       if (computer === undefined || request.controllerId === undefined) return;
       const context = {

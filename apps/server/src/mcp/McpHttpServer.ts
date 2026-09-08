@@ -63,7 +63,10 @@ import { ThreadMonitorService } from "../threadMonitor/ThreadMonitorService.ts";
 
 const MAX_VALIDATION_EXPECTATION_LENGTH = 128;
 const MAX_VALIDATION_FIELD_LENGTH = 128;
-const COMPUTER_AVAILABILITY_TOOL_NAMES = new Set([
+const USER_DESKTOP_ONLY_TOOL_NAMES = new Set([
+  "user_desktop_execution",
+  "user_desktop_command",
+  "user_desktop_process",
   "computer_request_availability",
   "computer_release_availability",
 ]);
@@ -768,7 +771,7 @@ const computerToolFailure = <E>(toolName: string, cause: Cause.Cause<E>, payload
     invalidInput &&
     EXPLICIT_DESKTOP_TARGET_TOOL_NAMES.has(toolName) &&
     (desktop === undefined || (missingConcreteDesktopId && desktopId === undefined));
-  const expectedDesktopTargets = COMPUTER_AVAILABILITY_TOOL_NAMES.has(toolName)
+  const expectedDesktopTargets = USER_DESKTOP_ONLY_TOOL_NAMES.has(toolName)
     ? ['{"kind":"user","desktopId":"<id from user_desktop_list>"}']
     : COMPUTER_ACCESS_TOOL_NAMES.has(toolName)
       ? [
