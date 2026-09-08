@@ -1676,7 +1676,9 @@ const ConversationTimeline = memo(function ConversationTimeline({
                   ? false
                   : maintainVisibleContentPosition
               }
-              maintainScrollAtEndThreshold={1}
+              // Let explicit navigation end live-follow; a large catch-up can
+              // move the end beyond any finite distance before rows settle.
+              maintainScrollAtEndThreshold={Infinity}
               onScroll={handleScroll}
               onItemSizeChanged={handleItemSizeChanged}
               className={cn(
