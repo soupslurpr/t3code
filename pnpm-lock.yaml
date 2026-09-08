@@ -115,6 +115,7 @@ patchedDependencies:
   react-native-nitro-markdown@0.5.8: 642b47830730acff3761fe29cf54271d18b493c0070c750097850b7ea032e00c
   react-native-nitro-modules@0.35.9: daf4a639ce3f951af630a3711e4082d58e3a11e5a79f45efb0b59925327ebde2
   react-native-screens@4.28.0: cc1301436ee62c39860acc9ee1a1e60b7d47e6abd211c42effa62c056d165483
+  react-native-shiki-engine@0.3.12: 8875d5ff70e7004ca891a439b7d8fa1e87d9824400b016adb4d4d0481a350201
   uniwind@1.11.0: a91f3953483cfd434436de6358ff5b63c49974ef148fad91246c26ba95332625
 
 importers:
@@ -473,7 +474,7 @@ importers:
         version: 4.28.0(patch_hash=cc1301436ee62c39860acc9ee1a1e60b7d47e6abd211c42effa62c056d165483)(react-native@0.88.0-rc.3(@babel/core@7.29.7)(@react-native/metro-config@0.88.0-rc.3(@babel/core@7.29.7)(bufferutil@4.1.0)(utf-8-validate@6.0.6))(@types/react@19.3.0)(bufferutil@4.1.0)(react@19.3.0)(utf-8-validate@6.0.6))(react@19.3.0)
       react-native-shiki-engine:
         specifier: ^0.3.12
-        version: 0.3.12(react-native@0.88.0-rc.3(@babel/core@7.29.7)(@react-native/metro-config@0.88.0-rc.3(@babel/core@7.29.7)(bufferutil@4.1.0)(utf-8-validate@6.0.6))(@types/react@19.3.0)(bufferutil@4.1.0)(react@19.3.0)(utf-8-validate@6.0.6))(react@19.3.0)
+        version: 0.3.12(patch_hash=8875d5ff70e7004ca891a439b7d8fa1e87d9824400b016adb4d4d0481a350201)(react-native@0.88.0-rc.3(@babel/core@7.29.7)(@react-native/metro-config@0.88.0-rc.3(@babel/core@7.29.7)(bufferutil@4.1.0)(utf-8-validate@6.0.6))(@types/react@19.3.0)(bufferutil@4.1.0)(react@19.3.0)(utf-8-validate@6.0.6))(react@19.3.0)
       react-native-svg:
         specifier: 15.15.5
         version: 15.15.5(react-native@0.88.0-rc.3(@babel/core@7.29.7)(@react-native/metro-config@0.88.0-rc.3(@babel/core@7.29.7)(bufferutil@4.1.0)(utf-8-validate@6.0.6))(@types/react@19.3.0)(bufferutil@4.1.0)(react@19.3.0)(utf-8-validate@6.0.6))(react@19.3.0)
@@ -562,15 +563,15 @@ importers:
       proper-lockfile:
         specifier: 4.1.2
         version: 4.1.2
+      sharp:
+        specifier: 0.34.5
+        version: 0.34.5
       stream-chain:
         specifier: ^4.2.5
         version: 4.2.5
       stream-json:
         specifier: 3.6.0
         version: 3.6.0
-      sharp:
-        specifier: 0.34.5
-        version: 0.34.5
       yaml:
         specifier: ^2.9.0
         version: 2.9.0
@@ -20345,7 +20346,7 @@ snapshots:
       react-native: 0.88.0-rc.3(@babel/core@7.29.7)(@react-native/metro-config@0.88.0-rc.3(@babel/core@7.29.7)(bufferutil@4.1.0)(utf-8-validate@6.0.6))(@types/react@19.3.0)(bufferutil@4.1.0)(react@19.3.0)(utf-8-validate@6.0.6)
       warn-once: 0.1.1
 
-  react-native-shiki-engine@0.3.12(react-native@0.88.0-rc.3(@babel/core@7.29.7)(@react-native/metro-config@0.88.0-rc.3(@babel/core@7.29.7)(bufferutil@4.1.0)(utf-8-validate@6.0.6))(@types/react@19.3.0)(bufferutil@4.1.0)(react@19.3.0)(utf-8-validate@6.0.6))(react@19.3.0):
+  react-native-shiki-engine@0.3.12(patch_hash=8875d5ff70e7004ca891a439b7d8fa1e87d9824400b016adb4d4d0481a350201)(react-native@0.88.0-rc.3(@babel/core@7.29.7)(@react-native/metro-config@0.88.0-rc.3(@babel/core@7.29.7)(bufferutil@4.1.0)(utf-8-validate@6.0.6))(@types/react@19.3.0)(bufferutil@4.1.0)(react@19.3.0)(utf-8-validate@6.0.6))(react@19.3.0):
     dependencies:
       '@shikijs/types': 4.3.0
       '@shikijs/vscode-textmate': 10.0.2
