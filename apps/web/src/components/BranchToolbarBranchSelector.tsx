@@ -507,7 +507,9 @@ export function BranchToolbarBranchSelector({
 
   const handleOpenChange = (open: boolean) => {
     setIsBranchMenuOpen(open);
-    if (!open) {
+    if (open) {
+      branchRefState.refresh();
+    } else {
       setBranchQuery("");
     }
   };
@@ -714,6 +716,7 @@ export function BranchToolbarBranchSelector({
                 <ComposerControl size="xs" />
               )
             }
+            aria-label={`Ref: ${triggerLabel}`}
             className="min-w-0 max-w-full active:scale-100"
             disabled={isInitialBranchesLoadPending || isBranchActionPending}
           >

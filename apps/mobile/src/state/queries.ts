@@ -225,6 +225,7 @@ export function usePaginatedBranches(target: VcsRefTarget) {
               cwd: target.cwd!,
               ...(query.length > 0 ? { query } : {}),
               ...(cursor === undefined ? {} : { cursor }),
+              ...(query.length === 0 && cursor === undefined ? { refresh: true } : {}),
               limit: VCS_REF_LIST_LIMIT,
             },
           }),

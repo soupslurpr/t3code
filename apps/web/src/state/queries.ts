@@ -105,6 +105,7 @@ function vcsRefPageAtom(targetKey: string, cursor: number | undefined) {
       cwd,
       ...(query.length > 0 ? { query } : {}),
       ...(cursor === undefined ? {} : { cursor }),
+      ...(query.length === 0 && cursor === undefined ? { refresh: true } : {}),
       limit: VCS_REF_LIST_LIMIT,
     },
   });
