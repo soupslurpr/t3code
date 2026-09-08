@@ -18,6 +18,16 @@ const auditThreadId = ThreadId.make("thread-audit-1");
 const layer = it.layer(UserDesktops.layer.pipe(Layer.provideMerge(SqlitePersistenceMemory)));
 
 layer("UserDesktopRepository", (it) => {
+  it.effect("retains execution alongside graphical desktop capabilities", () =>
+    Effect.gen(function* () {
+      const repository = yield* UserDesktops.UserDesktopRepository;
+      const capabilities = ["view", "control", "availability", "execution"] as const;
+      yield* repository.upsertHost({ ...host, capabilities }, "2026-09-08T00:00:00.000Z");
+      assert.deepEqual((yield* repository.list())[0]?.capabilities, capabilities);
+      yield* repository.remove(host.desktopId);
+    }),
+  );
+
   it.effect("preserves user metadata while refreshing host registration", () =>
     Effect.gen(function* () {
       const repository = yield* UserDesktops.UserDesktopRepository;

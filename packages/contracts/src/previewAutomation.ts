@@ -1,4 +1,5 @@
 import { Schema } from "effect";
+import { UserDesktopExecutionInput } from "./desktopExecution.ts";
 
 import { EnvironmentId, ThreadId, TrimmedNonEmptyString } from "./baseSchemas.ts";
 import {
@@ -138,7 +139,16 @@ const UserDesktopHumanTarget = { desktopId: UserDesktopId };
 
 /** Describes one authenticated human request for User desktop management and supervision. */
 export const UserDesktopHumanRequest = Schema.Union([
-  Schema.Struct({ operation: Schema.Literal("list") }),
+  Schema.Struct({
+    operation: Schema.Literal("execution"),
+    ...UserDesktopHumanTarget,
+    input: UserDesktopExecutionInput,
+  }),
+  Schema.Struct({
+    operation: Schema.Literal("list"),
+    /** Opts into execution capabilities that older clients cannot decode. */
+    includeExecution: Schema.optionalKey(Schema.Boolean),
+  }),
   Schema.Struct({ operation: Schema.Literal("rename"), input: UserDesktopRenameInput }),
   Schema.Struct({ operation: Schema.Literal("remove"), input: UserDesktopRemoveInput }),
   Schema.Struct({ operation: Schema.Literal("status"), ...UserDesktopHumanTarget }),

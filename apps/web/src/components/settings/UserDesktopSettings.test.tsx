@@ -257,7 +257,7 @@ describe("UserDesktopSettings", () => {
     expect(text).toContain("user-workstation");
     expect(text).toContain("T3 focused");
     expect(text).toContain("1 connected desktop client cannot identify a user desktop");
-    expect(text).toContain("Computer use is unavailable for this desktop");
+    expect(text).toContain("Screen sharing is unavailable for this desktop");
     expect(text).toContain("Recent access");
     expect(text).toContain("Took control");
     expect(text).toContain("codex");

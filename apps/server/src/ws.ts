@@ -3521,7 +3521,9 @@ const makeWsRpcLayer = (
                 });
               if (input.request.operation === "list") {
                 return yield* previewAutomationBroker
-                  .listUserDesktops(environmentId)
+                  .listUserDesktops(environmentId, {
+                    includeExecution: input.request.includeExecution === true,
+                  })
                   .pipe(Effect.mapError(inventoryFailure));
               }
               if (input.request.operation === "rename") {
@@ -3582,6 +3584,11 @@ const makeWsRpcLayer = (
                   ...(input.timeoutMs === undefined ? {} : { timeoutMs: input.timeoutMs }),
                 });
               switch (input.request.operation) {
+                case "execution":
+                  return yield* invokeComputer("computerExecution", {
+                    ...input.request.input,
+                    desktop,
+                  });
                 case "status":
                   return yield* invokeComputer("computerStatus", { desktop });
                 case "request-view":
