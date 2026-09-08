@@ -1,3 +1,5 @@
+/** Verifies browser recording lifecycle, format selection, and saved artifacts. */
+
 import {
   DESKTOP_PREVIEW_RECORDING_CAPTURE_TRIGGER,
   EnvironmentId,
@@ -28,7 +30,7 @@ const {
         value.tabIds.size === 0 ? "clear" : `publish:${Array.from(value.tabIds).join(",")}`,
       );
     }),
-    save: vi.fn(async (tabId: string) => ({
+    save: vi.fn(async (tabId: string, _mimeType: string, _data: Uint8Array) => ({
       id: "recording-test",
       tabId,
       path: "/tmp/recording-test.webm",
@@ -116,6 +118,15 @@ class FakeMediaRecorder {
     this.state = "recording";
   }
 
+  /** Delivers encoded bytes through the recorder's data event. */
+  emitData(data: Blob): void {
+    const event = Object.assign(new Event("dataavailable"), { data });
+    for (const listener of this.listeners.get("dataavailable") ?? []) {
+      if (typeof listener === "function") listener(event);
+      else listener.handleEvent(event);
+    }
+  }
+
   stop(): void {
     if (FakeMediaRecorder.stopError !== undefined) throw FakeMediaRecorder.stopError;
     this.state = "inactive";
@@ -162,6 +173,7 @@ describe("browser recording", () => {
 
   afterEach(() => {
     vi.useRealTimers();
+    vi.restoreAllMocks();
     vi.unstubAllGlobals();
   });
 
@@ -380,6 +392,49 @@ describe("browser recording", () => {
       expect.any(Uint8Array),
     );
   });
+
+  it.each([false, true])(
+    "saves media duration excluding startup and finalization delays (ended: %s)",
+    async (ended) => {
+      const now = vi.spyOn(performance, "now").mockReturnValue(100);
+      getDisplayMedia.mockImplementationOnce(async () => {
+        now.mockReturnValue(1_100);
+        return { getTracks: () => [{ stop: vi.fn() }] };
+      });
+      await startBrowserRecording("duration-tab");
+      const recorder = FakeMediaRecorder.instances[0]!;
+      recorder.emitData(
+        new Blob(
+          [
+            new Uint8Array([
+              0x1a, 0x45, 0xdf, 0xa3, 0x80, 0x18, 0x53, 0x80, 0x67, 0xff, 0x15, 0x49, 0xa9, 0x66,
+              0x80, 0x1f, 0x43, 0xb6, 0x75, 0xff, 0xe7, 0x81, 0,
+            ]),
+          ],
+          { type: recorder.mimeType },
+        ),
+      );
+      now.mockReturnValue(2_600);
+      if (ended) {
+        recorder.stop();
+        now.mockReturnValue(9_000);
+      } else {
+        const stop = recorder.stop.bind(recorder);
+        vi.spyOn(recorder, "stop").mockImplementation(() => {
+          now.mockReturnValue(9_000);
+          stop();
+        });
+      }
+
+      await stopBrowserRecording("duration-tab");
+
+      const data = save.mock.calls[0]![2];
+      expect(data.subarray(15, 26)).toEqual(
+        new Uint8Array([0x44, 0x89, 0x88, 0x40, 0x97, 0x70, 0, 0, 0, 0, 0]),
+      );
+      expect(readActiveBrowserRecordingTabIds()).toEqual(new Set());
+    },
+  );
 
   it("reports when MediaRecorder provides no output format", async () => {
     FakeMediaRecorder.supportedTypes = new Set();

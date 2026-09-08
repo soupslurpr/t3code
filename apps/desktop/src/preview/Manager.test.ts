@@ -337,6 +337,7 @@ const makeTestPreviewWebContents = (
     getURL: () => "https://example.com",
     getTitle: () => "Example",
     isLoading: () => false,
+    isDevToolsOpened: () => false,
     getZoomFactor: () => 1,
     setZoomFactor: vi.fn(),
     setAudioMuted: vi.fn(),
@@ -359,6 +360,169 @@ const makeTestPreviewWebContents = (
     capturePage,
   } as unknown as TestPreviewWebContents;
 };
+
+/** Models native fields and an editor whose paste handler owns its text and selection. */
+function makeTextInsertionRuntime(kind: "textarea" | "managed") {
+  let value = "existing text";
+  let selected = false;
+  let editorSelected = false;
+  let nativeInsertions = 0;
+  let pasteInsertions = 0;
+  let deletions = 0;
+  class ClipboardData {
+    readonly values = new Map<string, string>();
+    setData(format: string, text: string) {
+      this.values.set(format, text);
+    }
+    getData(format: string) {
+      return this.values.get(format) ?? "";
+    }
+  }
+  class PasteEvent extends Event {
+    readonly clipboardData: ClipboardData;
+    constructor(type: string, init: EventInit & { clipboardData: ClipboardData }) {
+      super(type, init);
+      this.clipboardData = init.clipboardData;
+    }
+  }
+  class TextElement {
+    readonly isContentEditable = kind !== "textarea";
+    readonly disabled = false;
+    readonly readOnly = false;
+    get value() {
+      return value;
+    }
+    get textContent() {
+      return value;
+    }
+    focus() {
+      document.activeElement = this;
+    }
+    select() {
+      selected = true;
+    }
+    dispatchEvent(event: Event) {
+      if (kind === "managed" && event instanceof PasteEvent) {
+        value = (editorSelected ? "" : value) + event.clipboardData.getData("text/plain");
+        selected = false;
+        editorSelected = false;
+        pasteInsertions += 1;
+        event.preventDefault();
+      }
+      if (kind === "managed" && event.type === "beforeinput") {
+        if (editorSelected) value = "";
+        editorSelected = false;
+        selected = false;
+        deletions += 1;
+        event.preventDefault();
+      }
+      return !event.defaultPrevented;
+    }
+  }
+  class TextArea extends TextElement {}
+  class TextInput extends TextElement {}
+  const element = kind === "textarea" ? new TextArea() : new TextElement();
+  const document = {
+    activeElement: element,
+    dispatchEvent: (event: Event) => {
+      if (event.type === "selectionchange") editorSelected = selected;
+      return true;
+    },
+    execCommand: (command: string, _showUi: boolean, text: string) => {
+      if (command === "selectAll") {
+        selected = true;
+        return true;
+      }
+      if (command === "delete") {
+        if (selected) value = "";
+        selected = false;
+        deletions += 1;
+        return true;
+      }
+      if (command !== "insertText") {
+        throw new Error("unexpected edit command");
+      }
+      value = (selected ? "" : value) + text;
+      selected = false;
+      nativeInsertions += 1;
+      return true;
+    },
+  };
+  const globals = {
+    document,
+    Event,
+    InputEvent: Event,
+    ClipboardEvent: PasteEvent,
+    DataTransfer: ClipboardData,
+    HTMLTextAreaElement: TextArea,
+    HTMLInputElement: TextInput,
+  };
+  return {
+    evaluate: (expression: string) => NodeVM.runInNewContext(expression, globals),
+    read: () => ({ value, nativeInsertions, pasteInsertions, deletions }),
+  };
+}
+
+/** Models a moving target, an obstructing element, and the injected runtime's input guard. */
+function makeClickRuntime() {
+  let top = 80;
+  let connected = true;
+  let covered = false;
+  let guarded = false;
+  let blocked = false;
+  let pressed: "target" | "other" | null = null;
+  let held = false;
+  const clicks = { target: 0, other: 0 };
+  const target = {
+    scrollIntoView: () => {},
+    getBoundingClientRect: () => ({ left: 80, top, width: 240, height: 64 }),
+  };
+  const globals = {
+    window: { innerWidth: 800, innerHeight: 600 },
+    document: {},
+    __t3PlaywrightInjected: {
+      parseSelector: (selector: string) => selector,
+      querySelector: () => (connected ? target : undefined),
+      elementState: () => ({ matches: connected }),
+      setupHitTargetInterceptor: () => {
+        if (covered) return "another element covers the target";
+        guarded = true;
+        return {
+          stop: () => {
+            guarded = false;
+            return blocked ? { hitTargetDescription: "another element" } : "done";
+          },
+        };
+      },
+    },
+  };
+  return {
+    evaluate: (expression: string): unknown => NodeVM.runInNewContext(expression, globals),
+    move: () => {
+      top = 220;
+    },
+    cover: () => {
+      covered = true;
+    },
+    detach: () => {
+      connected = false;
+    },
+    dispatch: (params: Record<string, unknown>) => {
+      if (params.type === "mousePressed") {
+        held = true;
+        const hit = connected && !covered && params.y === top + 32 ? "target" : "other";
+        if (guarded && hit === "other") blocked = true;
+        else pressed = hit;
+      }
+      if (params.type === "mouseReleased") {
+        held = false;
+        if (pressed !== null) clicks[pressed] += 1;
+        pressed = null;
+      }
+    },
+    read: () => ({ ...clicks, held, guarded }),
+  };
+}
 
 /** Two ready tabs (41, 42) sharing one window, so they contend for the single display-media slot. */
 const setupRecordingRaceTabs = (manager: PreviewManager.PreviewManager["Service"]) =>
@@ -2602,6 +2766,250 @@ describe("PreviewManager", () => {
     ),
   );
 
+  effectIt.effect("retains snapshot targets when one preferred locator cannot be generated", () =>
+    withManager((manager) =>
+      Effect.gen(function* () {
+        const elements = ["first", "second"].map((id) => ({
+          id,
+          tagName: "BUTTON",
+          innerText: id,
+          closest: () => null,
+          matches: () => false,
+          getRootNode: () => ({}),
+          getAttribute: () => null,
+          getBoundingClientRect: () => ({ x: 10, y: 20, width: 100, height: 30 }),
+        }));
+        const page = {
+          location: { href: "https://example.com" },
+          document: {
+            title: "Example",
+            readyState: "complete",
+            body: { innerText: "first second" },
+            querySelectorAll: () => elements,
+          },
+          CSS: { escape: (value: string) => value },
+          getComputedStyle: () => ({ visibility: "visible", display: "block" }),
+          __t3PlaywrightInjected: {
+            parseSelector: (selector: string) => selector,
+            querySelectorAll: () => elements,
+            utils: {
+              getAriaRole: () => "button",
+              getElementAccessibleName: (element: (typeof elements)[number]) => element.innerText,
+            },
+            generateSelectorSimple: (element: (typeof elements)[number]) => {
+              if (element.id === "second") throw new Error("target detached");
+              return 'internal:role=button[name="first"i]';
+            },
+          },
+        };
+        const preview = makeTestPreviewWebContents(async () => ({
+          toPNG: () => Buffer.from("preview-png"),
+          toJPEG: () => Buffer.from("preview-jpeg"),
+          getSize: () => ({ width: 100, height: 80 }),
+        }));
+        vi.mocked(preview.debugger.sendCommand).mockImplementation(async (method, params) => {
+          if (method !== "Runtime.evaluate") return undefined;
+          const value: unknown = NodeVM.runInNewContext(params.expression, page);
+          return { result: { type: typeof value, value } };
+        });
+        fromId.mockReturnValue(preview);
+        yield* manager.createTab("tab_locators");
+        yield* manager.registerWebview("tab_locators", 42);
+
+        const snapshot = yield* manager.automationSnapshot("tab_locators");
+        expect(snapshot.interactiveElements).toMatchObject([
+          { selector: "#first", locator: 'internal:role=button[name="first"i]' },
+          { selector: "#second" },
+        ]);
+        expect(snapshot.interactiveElements[1]?.locator).toBeUndefined();
+      }),
+    ),
+  );
+
+  effectIt.effect(
+    "keeps accessible controls after hidden fields and presentation wrappers exhaust the raw limit",
+    () =>
+      withManager((manager) =>
+        Effect.gen(function* () {
+          const hiddenFields = Array.from({ length: 200 }, (_, index) => ({
+            id: `hidden-${index}`,
+            tagName: "INPUT",
+            role: "textbox",
+            accessibleName: "",
+            innerText: "",
+            tabIndex: "-1",
+            closest: () => ({}),
+          }));
+          const wrappers = Array.from({ length: 200 }, (_, index) => ({
+            id: `wrapper-${index}`,
+            tagName: "DIV",
+            role: "presentation",
+            accessibleName: "",
+            innerText: "container text",
+            tabIndex: null,
+          }));
+          const controls = [
+            {
+              id: "email",
+              tagName: "INPUT",
+              role: "textbox",
+              accessibleName: "Email address",
+              innerText: "",
+              tabIndex: null,
+            },
+            {
+              id: "save",
+              tagName: "BUTTON",
+              role: "button",
+              accessibleName: "Save changes",
+              innerText: "★",
+              tabIndex: null,
+            },
+            {
+              id: "focus-target",
+              tagName: "DIV",
+              role: "presentation",
+              accessibleName: "",
+              innerText: "section text",
+              tabIndex: "-1",
+            },
+          ];
+          const elements = [...hiddenFields, ...wrappers, ...controls].map((element) => ({
+            closest: () => null,
+            matches: () => element.id.startsWith("hidden-"),
+            getRootNode: () => ({}),
+            ...element,
+            getAttribute: (name: string) => (name === "tabindex" ? element.tabIndex : null),
+            hasAttribute: (name: string) => name === "tabindex" && element.tabIndex !== null,
+            getBoundingClientRect: () => ({
+              x: 10,
+              y: element.id === "email" ? 2_000 : 20,
+              width: 100,
+              height: 30,
+            }),
+          }));
+          const page = {
+            location: { href: "https://example.com" },
+            document: {
+              title: "Example",
+              readyState: "complete",
+              body: { innerText: "Email address Save changes" },
+              querySelectorAll: () => elements,
+            },
+            CSS: { escape: (value: string) => value },
+            getComputedStyle: () => ({ visibility: "visible", display: "block" }),
+            __t3PlaywrightInjected: {
+              parseSelector: (selector: string) => selector,
+              querySelectorAll: () => elements,
+              utils: {
+                getAriaRole: (element: (typeof elements)[number]) => element.role,
+                getElementAccessibleName: (element: (typeof elements)[number]) =>
+                  element.accessibleName,
+              },
+              generateSelectorSimple: (element: (typeof elements)[number]) => `#${element.id}`,
+            },
+          };
+          const preview = makeTestPreviewWebContents(async () => ({
+            toPNG: () => Buffer.from("preview-png"),
+            toJPEG: () => Buffer.from("preview-jpeg"),
+            getSize: () => ({ width: 100, height: 80 }),
+          }));
+          vi.mocked(preview.debugger.sendCommand).mockImplementation(async (method, params) => {
+            if (method !== "Runtime.evaluate") return undefined;
+            const value: unknown = NodeVM.runInNewContext(params.expression, page);
+            return { result: { type: typeof value, value } };
+          });
+          fromId.mockReturnValue(preview);
+          yield* manager.createTab("tab_semantics");
+          yield* manager.registerWebview("tab_semantics", 42);
+          const snapshot = yield* manager.automationSnapshot("tab_semantics");
+          expect(snapshot.interactiveElements).toMatchObject([
+            { selector: "#email", role: "textbox", name: "Email address", y: 2_000 },
+            { selector: "#save", role: "button", name: "Save changes" },
+            { selector: "#focus-target", role: "presentation", name: "" },
+          ]);
+        }),
+      ),
+  );
+
+  effectIt.effect("includes shadow controls and excludes hidden composed ancestors", () =>
+    withManager((manager) =>
+      Effect.gen(function* () {
+        const visibleHost = {
+          matches: () => false,
+          getRootNode: () => ({}),
+        };
+        const hiddenHost = {
+          matches: () => true,
+          getRootNode: () => ({}),
+        };
+        const nestedHost = {
+          matches: () => false,
+          getRootNode: () => ({ host: hiddenHost }),
+        };
+        const hiddenSlot = {
+          matches: () => true,
+          getRootNode: () => ({ host: visibleHost }),
+        };
+        const targets = [
+          { id: "light", host: undefined, assignedSlot: undefined },
+          { id: "shadow-file", host: visibleHost, assignedSlot: undefined },
+          { id: "hidden-shadow", host: hiddenHost, assignedSlot: undefined },
+          { id: "nested-hidden-shadow", host: nestedHost, assignedSlot: undefined },
+          { id: "hidden-slotted", host: undefined, assignedSlot: hiddenSlot },
+        ].map(({ id, host, assignedSlot }) => ({
+          id,
+          assignedSlot,
+          tagName: "BUTTON",
+          closest: () => null,
+          matches: () => false,
+          getRootNode: () => ({ host }),
+          getAttribute: () => null,
+          getBoundingClientRect: () => ({ x: 10, y: 20, width: 100, height: 30 }),
+        }));
+        const page = {
+          location: { href: "https://example.com" },
+          document: {
+            title: "Example",
+            readyState: "complete",
+            body: { innerText: "Light document" },
+            querySelectorAll: () => targets.filter((target) => target.id === "light"),
+          },
+          CSS: { escape: (value: string) => value },
+          getComputedStyle: () => ({ visibility: "visible", display: "block" }),
+          __t3PlaywrightInjected: {
+            parseSelector: (selector: string) => selector,
+            querySelectorAll: () => targets,
+            utils: {
+              getAriaRole: () => "button",
+              getElementAccessibleName: (element: (typeof targets)[number]) => element.id,
+            },
+            generateSelectorSimple: (element: (typeof targets)[number]) => `#${element.id}`,
+          },
+        };
+        const preview = makeTestPreviewWebContents(async () => ({
+          toPNG: () => Buffer.from("preview-png"),
+          toJPEG: () => Buffer.from("preview-jpeg"),
+          getSize: () => ({ width: 100, height: 80 }),
+        }));
+        vi.mocked(preview.debugger.sendCommand).mockImplementation(async (method, params) => {
+          if (method !== "Runtime.evaluate") return undefined;
+          const value: unknown = NodeVM.runInNewContext(params.expression, page);
+          return { result: { type: typeof value, value } };
+        });
+        fromId.mockReturnValue(preview);
+        yield* manager.createTab("tab_shadow");
+        yield* manager.registerWebview("tab_shadow", 42);
+
+        const snapshot = yield* manager.automationSnapshot("tab_shadow");
+        expect(snapshot.interactiveElements.map(({ name }) => name)).toEqual([
+          "light",
+          "shadow-file",
+        ]);
+      }),
+    ),
+  );
+
   effectIt.effect("releases snapshot control when every capture attempt stalls", () =>
     withManager((manager) =>
       Effect.gen(function* () {
@@ -3922,6 +4330,114 @@ describe("PreviewManager", () => {
     ),
   );
 
+  for (const [change, description] of Object.entries({
+    moves: "follows a locator target after it moves",
+    covered: "does not click a target covered during cursor animation",
+    detaches: "does not click the former position of a detached target",
+    intercepted: "blocks an obstruction that arrives during click dispatch",
+    "release-fails": "releases input and its guard after mouse dispatch fails",
+  })) {
+    effectIt.effect(description, () =>
+      withManager((manager) =>
+        Effect.gen(function* () {
+          const page = makeClickRuntime();
+          const preview = makeTestPreviewWebContents(async () => ({
+            toJPEG: () => Buffer.from("unused"),
+            getSize: () => ({ width: 800, height: 600 }),
+          }));
+          let failRelease = change === "release-fails";
+          vi.mocked(preview.debugger.sendCommand).mockImplementation(async (method, params) => {
+            if (method === "Runtime.evaluate") {
+              return { result: { value: page.evaluate(params.expression) } };
+            }
+            if (method === "Input.dispatchMouseEvent") {
+              if (change === "intercepted" && params.type === "mousePressed") page.cover();
+              if (failRelease && params.type === "mouseReleased") {
+                failRelease = false;
+                throw new Error("mouse release failed");
+              }
+              page.dispatch(params);
+            }
+            return undefined;
+          });
+          fromId.mockReturnValue(preview);
+          yield* manager.subscribePointerEvents((event) =>
+            Effect.sync(() => {
+              if (event.phase !== "move") return;
+              if (change === "moves") page.move();
+              if (change === "covered") page.cover();
+              if (change === "detaches") page.detach();
+            }),
+          );
+          yield* manager.createTab("tab_click");
+          yield* manager.registerWebview("tab_click", 42);
+          const click = yield* manager
+            .automationClick("tab_click", { selector: "#target" })
+            .pipe(Effect.exit, Effect.forkChild({ startImmediately: true }));
+          yield* TestClock.adjust(200);
+          const exit = yield* Fiber.join(click);
+          expect(Exit.isSuccess(exit)).toBe(change === "moves");
+          expect(page.read()).toEqual({
+            target: change === "moves" || change === "release-fails" ? 1 : 0,
+            other: 0,
+            held: false,
+            guarded: false,
+          });
+          if (Exit.isFailure(exit) && (change === "covered" || change === "intercepted")) {
+            expect(Option.getOrThrow(Cause.findErrorOption(exit.cause))).toBeInstanceOf(
+              PreviewManager.PreviewAutomationTargetNotActionableError,
+            );
+          }
+        }),
+      ),
+    );
+  }
+
+  effectIt.effect("replaces, appends and clears text through managed and native editors", () =>
+    withManager((manager) =>
+      Effect.gen(function* () {
+        const preview = makeTestPreviewWebContents(async () => ({
+          toJPEG: () => Buffer.from("unused"),
+          getSize: () => ({ width: 800, height: 600 }),
+        }));
+        fromId.mockReturnValue(preview);
+        yield* manager.createTab("tab_text");
+        yield* manager.registerWebview("tab_text", 42);
+
+        for (const kind of ["textarea", "managed"] as const) {
+          const page = makeTextInsertionRuntime(kind);
+          vi.mocked(preview.debugger.sendCommand).mockImplementation(async (method, params) =>
+            method === "Runtime.evaluate"
+              ? { result: { value: page.evaluate(params.expression) } }
+              : undefined,
+          );
+          const text = '\nalpha  beta\t\t雪 <tag> & "quoted"\n\nlast\n\n';
+          yield* manager.automationType("tab_text", { text, clear: true });
+          expect(page.read()).toEqual({
+            value: text,
+            nativeInsertions: kind === "managed" ? 0 : 1,
+            pasteInsertions: kind === "managed" ? 1 : 0,
+            deletions: 0,
+          });
+          yield* manager.automationType("tab_text", { text: "\nlast line" });
+          expect(page.read()).toEqual({
+            value: `${text}\nlast line`,
+            nativeInsertions: kind === "managed" ? 0 : 2,
+            pasteInsertions: kind === "managed" ? 2 : 0,
+            deletions: 0,
+          });
+          yield* manager.automationType("tab_text", { text: "", clear: true });
+          expect(page.read()).toEqual({
+            value: "",
+            nativeInsertions: kind === "managed" ? 0 : 2,
+            pasteInsertions: kind === "managed" ? 2 : 0,
+            deletions: 1,
+          });
+        }
+      }),
+    ),
+  );
+
   effectIt.effect("types in background webviews and enables native key input", () =>
     withManager((manager) =>
       Effect.gen(function* () {
@@ -4268,6 +4784,143 @@ describe("PreviewManager", () => {
           expect(error.name).toBe("PreviewAutomationControlInterruptedError");
         }
         expect("cause" in error).toBe(false);
+      }),
+    ),
+  );
+
+  effectIt.effect(
+    "returns null for successful void evaluations without repeating their effects",
+    () =>
+      withManager((manager) =>
+        Effect.gen(function* () {
+          const page = { mutations: 0 };
+          const preview = makeTestPreviewWebContents(async () => ({
+            toJPEG: () => Buffer.from("unused"),
+            getSize: () => ({ width: 800, height: 600 }),
+          }));
+          vi.mocked(preview.debugger.sendCommand).mockImplementation(async (method, params) => {
+            if (method !== "Runtime.evaluate") return undefined;
+            const value: unknown = NodeVM.runInNewContext(params.expression, page);
+            return {
+              result: value === undefined ? { type: "undefined" } : { type: typeof value, value },
+            };
+          });
+          fromId.mockReturnValue(preview);
+          yield* manager.createTab("tab_void");
+          yield* manager.registerWebview("tab_void", 42);
+
+          const result = yield* manager.automationEvaluate("tab_void", {
+            expression: "mutations += 1; void 0",
+          });
+          expect(result).toBeNull();
+          expect(page.mutations).toBe(1);
+
+          for (const [expression, expected] of [
+            ["null", null],
+            ["false", false],
+            ["0", 0],
+            ['""', ""],
+            ["({ ready: true })", { ready: true }],
+          ] as const) {
+            expect(yield* manager.automationEvaluate("tab_void", { expression })).toEqual(expected);
+          }
+        }),
+      ),
+  );
+
+  effectIt.effect("waits for a selector match instead of accepting an undefined query result", () =>
+    withManager((manager) =>
+      Effect.gen(function* () {
+        let match: object | null | undefined;
+        const page = {
+          document: { body: { innerText: "Ready" } },
+          location: { href: "https://example.com/ready" },
+          __t3PlaywrightInjected: {
+            parseSelector: (selector: string) => selector,
+            querySelector: () => match,
+          },
+        };
+        const preview = makeTestPreviewWebContents(async () => ({
+          toJPEG: () => Buffer.from("unused"),
+          getSize: () => ({ width: 800, height: 600 }),
+        }));
+        vi.mocked(preview.debugger.sendCommand).mockImplementation(async (method, params) => {
+          if (method !== "Runtime.evaluate") return undefined;
+          const value: unknown = NodeVM.runInNewContext(params.expression, page);
+          return { result: { type: typeof value, value } };
+        });
+        fromId.mockReturnValue(preview);
+        yield* manager.createTab("tab_wait");
+        yield* manager.registerWebview("tab_wait", 42);
+
+        for (const absent of [undefined, null]) {
+          match = absent;
+          const wait = yield* manager
+            .automationWaitFor("tab_wait", { selector: "#ready", timeoutMs: 1000 })
+            .pipe(Effect.forkChild({ startImmediately: true }));
+          yield* TestClock.adjust(1100);
+          const exit = yield* Fiber.await(wait);
+          expect(Exit.isFailure(exit)).toBe(true);
+          if (Exit.isSuccess(exit)) return;
+          expect(Option.getOrThrow(Cause.findErrorOption(exit.cause))).toMatchObject({
+            _tag: "PreviewAutomationTimeoutError",
+          });
+        }
+
+        match = {};
+        yield* manager.automationWaitFor("tab_wait", {
+          locator: "role=button[name='Ready']",
+          text: "Ready",
+          urlIncludes: "/ready",
+          timeoutMs: 1000,
+        });
+      }),
+    ),
+  );
+
+  effectIt.effect("returns remote descriptors when evaluation requests references", () =>
+    withManager((manager) =>
+      Effect.gen(function* () {
+        const preview = makeTestPreviewWebContents(async () => ({
+          toJPEG: () => Buffer.from("unused"),
+          getSize: () => ({ width: 800, height: 600 }),
+        }));
+        const results = [
+          {
+            type: "object",
+            className: "HTMLInputElement",
+            description: "input",
+            objectId: "node-1",
+          },
+          { type: "function", description: "() => 42", objectId: "function-1" },
+          {
+            type: "bigint",
+            unserializableValue: "9007199254740993n",
+            description: "9007199254740993n",
+          },
+          { type: "number", unserializableValue: "NaN", description: "NaN" },
+          { type: "undefined" },
+          { type: "number", value: 42 },
+        ];
+        let resultIndex = 0;
+        vi.mocked(preview.debugger.sendCommand).mockImplementation(async (method, params) => {
+          if (method !== "Runtime.evaluate") return undefined;
+          expect(params.returnByValue).toBe(false);
+          return { result: results[resultIndex++] };
+        });
+        fromId.mockReturnValue(preview);
+        yield* manager.createTab("tab_references");
+        yield* manager.registerWebview("tab_references", 42);
+
+        for (const expected of results) {
+          expect(
+            yield* manager.automationEvaluate("tab_references", {
+              expression: "inspectedValue",
+              returnByValue: false,
+            }),
+          ).toEqual(expected);
+        }
+        expect(resultIndex).toBe(results.length);
       }),
     ),
   );

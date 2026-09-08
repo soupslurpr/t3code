@@ -101,7 +101,15 @@ it.effect("atomically registers a connected host and correlates its response", (
         input: {},
       });
 
-      expect(result).toEqual({ available: true });
+      expect(result).toEqual({
+        available: true,
+        host: {
+          clientId: "client-1",
+          desktop: { kind: "user", desktopId: USER_DESKTOP.desktopId },
+          defaultLabel: USER_DESKTOP.defaultLabel,
+          platform: USER_DESKTOP.platform,
+        },
+      });
     }),
   ),
 );
@@ -661,7 +669,7 @@ it.effect("preserves bounded request and remote selector diagnostics", () => {
         remoteDetailKind: "object",
       });
       expect(error.message).toBe(
-        `Preview automation click received an invalid locator (${locator.length} characters).`,
+        `Preview automation click received an invalid or ambiguous locator (${locator.length} characters). Check its syntax and use the latest snapshot to identify a target.`,
       );
       expect(error.message).not.toContain("secret");
       expect(error.cause).toBe(remoteError);
@@ -671,6 +679,128 @@ it.effect("preserves bounded request and remote selector diagnostics", () => {
     }),
   );
 });
+
+it.effect("preserves actionable target failures without exposing remote page content", () =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      const broker = yield* makeBroker;
+      const requests = requestsFrom(yield* broker.connect(makeHost()));
+      const failures = [
+        {
+          tag: "PreviewAutomationTargetNotFoundError",
+          message:
+            "Preview automation click could not find an available target. Inspect the page again before retrying.",
+        },
+        {
+          tag: "PreviewAutomationTargetNotActionableError",
+          message: "preview click target moved or is covered; inspect the page before retrying",
+        },
+        {
+          tag: "PreviewAutomationCoordinatesOutsideViewportError",
+          message:
+            "Preview automation click targeted a point outside the viewport. Inspect the page again and bring the target into view before retrying.",
+        },
+        {
+          tag: "UnknownHostError",
+          message: "Preview automation click failed on client client-1.",
+        },
+      ];
+      yield* Stream.runForEach(requests, (request) =>
+        broker.respond({
+          clientId: "client-1",
+          connectionId: request.connectionId,
+          requestId: request.requestId,
+          ok: false,
+          error: {
+            _tag:
+              typeof request.input === "object" &&
+              request.input !== null &&
+              "selector" in request.input
+                ? String(request.input.selector)
+                : "UnexpectedTestInput",
+            message: "private page content",
+            detail: { selector: "private selector" },
+          },
+        }),
+      ).pipe(Effect.forkScoped);
+
+      yield* Effect.yieldNow;
+
+      for (const failure of failures) {
+        const error = yield* broker
+          .invoke<void>({
+            scope,
+            operation: "click",
+            input: { selector: failure.tag },
+            tabId: PreviewTabId.make("tab-1"),
+          })
+          .pipe(Effect.flip);
+        expect(error).toBeInstanceOf(PreviewAutomationExecutionError);
+        expect(error).toMatchObject({ remoteTag: failure.tag });
+        expect(error.message).toBe(failure.message);
+        expect(error.message).not.toContain("private");
+      }
+    }),
+  ),
+);
+
+it.effect("returns only validated evaluation exception summaries", () =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      const broker = yield* makeBroker;
+      const requests = requestsFrom(yield* broker.connect(makeHost()));
+      const failures = [
+        {
+          _tag: "PreviewAutomationEvaluationError",
+          message: "private context",
+          detail: { evaluationMessage: "Error: deliberate failure" },
+        },
+        {
+          _tag: "PreviewAutomationEvaluationError",
+          message: "private context",
+          detail: { evaluationMessage: "x".repeat(2001) },
+        },
+        {
+          _tag: "PreviewAutomationEvaluationError",
+          message: "private context",
+          detail: { evaluationMessage: 42 },
+        },
+        {
+          _tag: "UnknownHostError",
+          message: "private context",
+          detail: { evaluationMessage: "private summary" },
+        },
+      ];
+      yield* Stream.runForEach(requests, (request) =>
+        broker.respond({
+          clientId: "client-1",
+          connectionId: request.connectionId,
+          requestId: request.requestId,
+          ok: false,
+          error: failures[Number(request.input)]!,
+        }),
+      ).pipe(Effect.forkScoped);
+      yield* Effect.yieldNow;
+      for (const [index, failure] of failures.entries()) {
+        const error = yield* broker
+          .invoke<void>({
+            scope,
+            operation: "evaluate",
+            input: index,
+            tabId: PreviewTabId.make("tab-1"),
+          })
+          .pipe(Effect.flip);
+        expect(error).toBeInstanceOf(PreviewAutomationExecutionError);
+        expect(error.message).toBe(
+          index === 0
+            ? "preview JavaScript evaluation failed: Error: deliberate failure"
+            : "Preview automation evaluate failed on client client-1.",
+        );
+        expect(error.message).not.toContain(failure.message);
+      }
+    }),
+  ),
+);
 
 it.effect("surfaces a safe diagnosis for a blank desktop display", () => {
   const remoteError = {
@@ -1662,8 +1792,8 @@ it.effect("fails over a pinned provider session only after its host disconnects"
         connectionId: firstConnectionId,
         focused: true,
       });
-      expect(yield* broker.invoke({ scope, operation: "open", input: {} })).toEqual({
-        host: "first",
+      expect(yield* broker.invoke({ scope, operation: "open", input: {} })).toMatchObject({
+        host: { clientId: "client-first" },
         tabId: firstTabId,
       });
 
@@ -1758,8 +1888,8 @@ it.effect("does not carry a tab id across a replacement automation stream", () =
       ).pipe(Effect.forkScoped);
       yield* Effect.yieldNow;
 
-      expect(yield* broker.invoke({ scope, operation: "open", input: {} })).toEqual({
-        host: "first",
+      expect(yield* broker.invoke({ scope, operation: "open", input: {} })).toMatchObject({
+        host: { clientId: "client-1" },
         tabId: openedTabId,
       });
 

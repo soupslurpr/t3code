@@ -75,6 +75,8 @@ import {
   PreviewAutomationTargetUnavailableError,
   PreviewAutomationViewportTimeoutError,
   resolveDesktopComputerAutomation,
+  resolveDesktopPreviewAutomation,
+  resolveDesktopPreviewAutomationEvaluation,
 } from "./previewAutomationErrors";
 import {
   explicitlySuppressesPreviewMiniPlayer,
@@ -801,44 +803,56 @@ function PreviewAutomationHost(props: { readonly environmentId: EnvironmentId })
           }
           case "click": {
             const ready = await requireReadyTab();
-            return await ready.bridge.automation.click(
-              ready.runtimeTabId,
-              request.input as Parameters<typeof ready.bridge.automation.click>[1],
+            return await resolveDesktopPreviewAutomation(
+              ready.bridge.automation.click(
+                ready.runtimeTabId,
+                request.input as Parameters<typeof ready.bridge.automation.click>[1],
+              ),
             );
           }
           case "type": {
             const ready = await requireReadyTab();
-            return await ready.bridge.automation.type(
-              ready.runtimeTabId,
-              request.input as Parameters<typeof ready.bridge.automation.type>[1],
+            return await resolveDesktopPreviewAutomation(
+              ready.bridge.automation.type(
+                ready.runtimeTabId,
+                request.input as Parameters<typeof ready.bridge.automation.type>[1],
+              ),
             );
           }
           case "press": {
             const ready = await requireReadyTab();
-            return await ready.bridge.automation.press(
-              ready.runtimeTabId,
-              request.input as Parameters<typeof ready.bridge.automation.press>[1],
+            return await resolveDesktopPreviewAutomation(
+              ready.bridge.automation.press(
+                ready.runtimeTabId,
+                request.input as Parameters<typeof ready.bridge.automation.press>[1],
+              ),
             );
           }
           case "scroll": {
             const ready = await requireReadyTab();
-            return await ready.bridge.automation.scroll(
-              ready.runtimeTabId,
-              request.input as Parameters<typeof ready.bridge.automation.scroll>[1],
+            return await resolveDesktopPreviewAutomation(
+              ready.bridge.automation.scroll(
+                ready.runtimeTabId,
+                request.input as Parameters<typeof ready.bridge.automation.scroll>[1],
+              ),
             );
           }
           case "evaluate": {
             const ready = await requireReadyTab();
-            return await ready.bridge.automation.evaluate(
-              ready.runtimeTabId,
-              request.input as Parameters<typeof ready.bridge.automation.evaluate>[1],
+            return await resolveDesktopPreviewAutomationEvaluation(
+              ready.bridge.automation.evaluate(
+                ready.runtimeTabId,
+                request.input as Parameters<typeof ready.bridge.automation.evaluate>[1],
+              ),
             );
           }
           case "waitFor": {
             const ready = await requireReadyTab();
-            return await ready.bridge.automation.waitFor(
-              ready.runtimeTabId,
-              request.input as Parameters<typeof ready.bridge.automation.waitFor>[1],
+            return await resolveDesktopPreviewAutomation(
+              ready.bridge.automation.waitFor(
+                ready.runtimeTabId,
+                request.input as Parameters<typeof ready.bridge.automation.waitFor>[1],
+              ),
             );
           }
           case "recordingStart": {

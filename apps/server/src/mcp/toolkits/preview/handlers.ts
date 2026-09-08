@@ -6,6 +6,7 @@ import {
   PREVIEW_RECORDING_STOP_TIMEOUT_MS,
   PreviewAutomationRecordingTransferError,
   PreviewAutomationRecordingDesktopUpdateRequiredError,
+  type UserDesktopTarget,
   PreviewAutomationRecordingArtifact,
   type ToolActivityIcon,
   type ThreadId,
@@ -55,6 +56,7 @@ const invoke = Effect.fn("PreviewToolkit.invoke")(function* <A>(
   input: unknown,
   timeoutMs?: number,
   tabId?: PreviewTabId,
+  desktop?: UserDesktopTarget | null,
 ): Effect.fn.Return<
   { result: A; toolIcon?: ToolActivityIcon },
   import("@t3tools/contracts").PreviewAutomationError,
@@ -72,6 +74,7 @@ const invoke = Effect.fn("PreviewToolkit.invoke")(function* <A>(
     input,
     ...(timeoutMs === undefined ? {} : { timeoutMs }),
     ...(tabId === undefined ? {} : { tabId }),
+    ...(desktop === undefined ? {} : { desktop }),
   });
   if (["status", "open", "navigate", "snapshot"].includes(operation)) return { result };
   const statusTabId =
@@ -100,12 +103,13 @@ const invokeTargeted = <A extends object>(
   operation: PreviewAutomationOperation,
   input: {
     readonly tabId?: PreviewTabId | undefined;
+    readonly desktop?: UserDesktopTarget | null | undefined;
     readonly [key: string]: unknown;
   },
   timeoutMs?: number,
 ) => {
-  const { tabId, ...operationInput } = input;
-  return invoke<A>(operation, operationInput, timeoutMs, tabId).pipe(
+  const { tabId, desktop, ...operationInput } = input;
+  return invoke<A>(operation, operationInput, timeoutMs, tabId, desktop).pipe(
     Effect.map(({ result, toolIcon }) => ({
       ...result,
       ...(toolIcon ? { toolIcon } : {}),

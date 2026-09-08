@@ -21,12 +21,41 @@ vi.mock("./previewBridge", () => ({
   },
 }));
 
+import { previewBridge } from "./previewBridge";
+
 import { previewRuntimeTabId } from "~/browser/previewRuntimeTabId";
 
 import { PreviewAutomationTargetUnavailableError } from "./previewAutomationErrors";
 import { waitForNavigationReadiness } from "./previewNavigationReadiness";
 
 describe("waitForNavigationReadiness", () => {
+  it("accepts DOM readiness returned in an evaluation success envelope", async () => {
+    const threadRef = {
+      environmentId: EnvironmentId.make("environment-1"),
+      threadId: ThreadId.make("thread-1"),
+    };
+    const tabId = "tab_1";
+    mocks.readThreadPreviewState.mockReturnValue({
+      serverEpoch: "epoch-1",
+      sessions: { [tabId]: { tabId } },
+    });
+    vi.mocked(previewBridge!.automation.evaluate).mockResolvedValue({
+      ok: true,
+      value: "interactive",
+    });
+    await expect(
+      waitForNavigationReadiness(
+        threadRef,
+        "request-1",
+        tabId,
+        previewRuntimeTabId(threadRef, "epoch-1", tabId),
+        "navigate",
+        "domContentLoaded",
+        100,
+      ),
+    ).resolves.toBeUndefined();
+  });
+
   it("rejects a replaced runtime target even when readiness polling is disabled", async () => {
     const threadRef = {
       environmentId: EnvironmentId.make("environment-2"),

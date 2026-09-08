@@ -9,6 +9,7 @@ import {
   PreviewAutomationControlInterruptedError,
   PreviewAutomationDesktopTargetRequiredError,
   PreviewAutomationExecutionError,
+  PreviewAutomationEvaluationMessage,
   PreviewAutomationInvalidSelectorError,
   PreviewAutomationMalformedResponseError,
   PreviewAutomationNoAvailableHostError,
@@ -38,6 +39,7 @@ import {
   type UserDesktopAuditAction,
   type UserDesktopAuditLog,
   type UserDesktopHostRegistration,
+  type UserDesktopTarget,
   UserDesktopId,
   type UserDesktopList,
   UserDesktopManagementError,
@@ -67,6 +69,7 @@ export interface PreviewAutomationInvokeInput {
   readonly operation: PreviewAutomationOperation;
   readonly input: unknown;
   readonly tabId?: PreviewTabId;
+  readonly desktop?: UserDesktopTarget | null;
   readonly timeoutMs?: number;
   /** Background metadata reads must not change the agent's current tab. */
   readonly updateCurrentTab?: boolean;
@@ -146,17 +149,13 @@ interface PendingRequest {
 }
 
 /**
- * A lease pinning one provider session to one desktop runtime. It lives exactly
- * as long as the connection it names: `connectionId`/`queue` identity is what
- * makes a lease valid, so a disconnected or replaced host is dropped on the next
- * lookup. The lease deliberately has no clock of its own — it used to inherit
- * the MCP credential's expiry, which coupled host stickiness to an unrelated
- * auth deadline and could migrate a live session to another runtime mid-flow.
+ * Retains a provider session's browser host independently of credential expiry.
+ * Automatic assignments last until disconnect. An explicit desktop selection
+ * survives reconnects; only its live connection lease is released on disconnect.
  */
 interface HostAssignment {
-  readonly clientId: ClientConnection["clientId"];
-  readonly connectionId: ClientConnection["connectionId"];
-  readonly queue: ClientConnection["queue"];
+  readonly desktopId?: UserDesktopId;
+  readonly connection?: Pick<ClientConnection, "clientId" | "connectionId" | "queue">;
   readonly tabId?: PreviewTabId;
   readonly tabSequence?: number;
 }
@@ -223,7 +222,13 @@ const removeConnectionFromState = (
   const disconnected: PendingRequest[] = [];
   if (current.clients.get(clientId)?.queue === queue) clients.delete(clientId);
   for (const [assignmentKey, assignment] of assignments) {
-    if (assignment.queue === queue) assignments.delete(assignmentKey);
+    if (assignment.connection?.queue !== queue) continue;
+    if (assignment.desktopId === undefined) {
+      assignments.delete(assignmentKey);
+    } else {
+      const { connection: _connection, ...selection } = assignment;
+      assignments.set(assignmentKey, selection);
+    }
   }
   for (const [requestId, entry] of pending) {
     if (entry.queue !== queue) continue;
@@ -235,6 +240,39 @@ const removeConnectionFromState = (
     disconnected,
   };
 };
+
+/** Adds trusted routing metadata only to browser results with a declared host field. */
+function withBrowserHost<A>(
+  operation: PreviewAutomationOperation,
+  result: A,
+  connection: ClientConnection,
+): A {
+  if (
+    (operation !== "status" &&
+      operation !== "open" &&
+      operation !== "navigate" &&
+      operation !== "snapshot") ||
+    result === null ||
+    typeof result !== "object" ||
+    Array.isArray(result)
+  ) {
+    return result;
+  }
+  const desktop = connection.userDesktop;
+  return {
+    ...result,
+    host: {
+      clientId: connection.clientId,
+      ...(desktop === undefined
+        ? {}
+        : {
+            desktop: { kind: "user", desktopId: desktop.desktopId },
+            defaultLabel: desktop.defaultLabel,
+            platform: desktop.platform,
+          }),
+    },
+  };
+}
 
 const selectorDiagnosticsFromInput = (
   input: unknown,
@@ -576,6 +614,13 @@ function remoteDetailKind(detail: unknown): RemoteDetailKind {
   }
 }
 
+/** Validates bounded exception summaries before returning them to evaluation callers. */
+const decodeEvaluationDetail = Schema.decodeUnknownOption(
+  Schema.Struct({
+    evaluationMessage: PreviewAutomationEvaluationMessage,
+  }),
+);
+
 const classifyResponseError = (
   context: PreviewAutomationRequestErrorContext,
   error: NonNullable<PreviewAutomationResponse["error"]>,
@@ -607,6 +652,14 @@ const classifyResponseError = (
         threadId: context.threadId,
         cause: error,
       });
+    case "PreviewAutomationEvaluationError": {
+      const detail = Option.getOrUndefined(decodeEvaluationDetail(error.detail));
+      return new PreviewAutomationExecutionError({
+        ...context,
+        ...remoteDiagnostics,
+        ...(detail === undefined ? {} : { evaluationMessage: detail.evaluationMessage }),
+      });
+    }
     case "PreviewAutomationNoAvailableHostError": {
       const detail =
         typeof error.detail === "object" && error.detail !== null ? error.detail : undefined;
@@ -1119,76 +1172,94 @@ export const make = Effect.gen(function* PreviewAutomationBrokerMake() {
       ) {
         return [{ _tag: "interrupted" }, current] as const;
       }
-      const assignments = new Map(
-        Array.from(current.assignments).filter(([, assignment]) => {
-          const connection = current.clients.get(assignment.clientId);
-          return (
-            connection?.connectionId === assignment.connectionId &&
-            connection.queue === assignment.queue
-          );
-        }),
-      );
+      const assignments = new Map(current.assignments);
       const environmentConnections = Array.from(current.clients.values()).filter(
         (host) => host.environmentId === input.scope.environmentId,
       );
       const assignmentKey = computerOperation
         ? undefined
         : hostAssignmentKey(input.scope, input.operation);
+      if (assignmentKey !== undefined && input.desktop !== undefined) {
+        if (input.desktop === null) {
+          assignments.delete(assignmentKey);
+        } else {
+          const previous = assignments.get(assignmentKey);
+          const previousDesktopId =
+            previous?.desktopId ??
+            (previous?.connection
+              ? current.clients.get(previous.connection.clientId)?.userDesktop?.desktopId
+              : undefined);
+          assignments.set(assignmentKey, {
+            ...(previousDesktopId === input.desktop.desktopId ? previous : {}),
+            desktopId: input.desktop.desktopId,
+          });
+        }
+      }
       const assigned = assignmentKey === undefined ? undefined : assignments.get(assignmentKey);
-      const assignedConnection = assigned ? current.clients.get(assigned.clientId) : undefined;
+      const assignedConnection = assigned?.connection
+        ? current.clients.get(assigned.connection.clientId)
+        : undefined;
       const hasLiveAssignment = assignedConnection?.environmentId === input.scope.environmentId;
-      const targetConnections = computerOperation
-        ? environmentConnections.filter(
-            (connection) => connection.userDesktop?.desktopId === requestedDesktop.desktopId,
-          )
-        : [];
-      // Browser operations retain their prior focused-host affinity. Computer
-      // operations ignore focus and provider affinity and route only by desktopId.
-      const connection = computerOperation
-        ? targetConnections.length === 1 &&
-          supportsOperation(targetConnections[0]!, input.operation)
-          ? targetConnections[0]
-          : undefined
-        : hasLiveAssignment && supportsOperation(assignedConnection, input.operation)
-          ? assignedConnection
-          : hasLiveAssignment
-            ? undefined
-            : environmentConnections
-                .filter((host) => supportsOperation(host, input.operation))
-                .sort(
-                  (left, right) =>
-                    Number(right.focused) - Number(left.focused) ||
-                    right.focusOrder - left.focusOrder ||
-                    right.supportedOperations.size - left.supportedOperations.size,
-                )[0];
+      const targetDesktopId = computerOperation ? requestedDesktop.desktopId : assigned?.desktopId;
+      const targetConnections =
+        targetDesktopId !== undefined
+          ? environmentConnections.filter(
+              (connection) => connection.userDesktop?.desktopId === targetDesktopId,
+            )
+          : [];
+      // Honor explicit targets even when focus changes or the host disconnects.
+      const connection =
+        targetDesktopId !== undefined
+          ? targetConnections.length === 1 &&
+            supportsOperation(targetConnections[0]!, input.operation)
+            ? targetConnections[0]
+            : undefined
+          : hasLiveAssignment && supportsOperation(assignedConnection, input.operation)
+            ? assignedConnection
+            : hasLiveAssignment
+              ? undefined
+              : environmentConnections
+                  .filter((host) => supportsOperation(host, input.operation))
+                  .sort(
+                    (left, right) =>
+                      Number(right.focused) - Number(left.focused) ||
+                      right.focusOrder - left.focusOrder ||
+                      right.supportedOperations.size - left.supportedOperations.size,
+                  )[0];
       if (!connection) {
-        if (assignmentKey !== undefined && !hasLiveAssignment) assignments.delete(assignmentKey);
         const unavailableRoute: HostRoute = {
           _tag: "unavailable",
           diagnostics: unavailableHostDiagnostics(
             environmentConnections,
             input.operation,
             computerOperation ? false : hasLiveAssignment,
-            requestedDesktop.desktopId,
+            targetDesktopId,
           ),
         };
         return [unavailableRoute, { ...current, assignments }] as const;
       }
       const canReuseAssignedTab =
         assigned !== undefined &&
-        assigned.connectionId === connection.connectionId &&
-        assigned.queue === connection.queue;
+        ((assigned.desktopId === connection.userDesktop?.desktopId &&
+          assigned.desktopId !== undefined) ||
+          (assigned.connection?.connectionId === connection.connectionId &&
+            assigned.connection.queue === connection.queue));
       if (assignmentKey !== undefined) {
         assignments.set(assignmentKey, {
-          clientId: connection.clientId,
-          connectionId: connection.connectionId,
-          queue: connection.queue,
+          ...(assigned?.desktopId === undefined ? {} : { desktopId: assigned.desktopId }),
+          connection: {
+            clientId: connection.clientId,
+            connectionId: connection.connectionId,
+            queue: connection.queue,
+          },
           ...(canReuseAssignedTab && assigned?.tabId !== undefined
             ? { tabId: assigned.tabId }
             : {}),
-          ...(canReuseAssignedTab && assigned?.tabSequence !== undefined
-            ? { tabSequence: assigned.tabSequence }
-            : {}),
+          ...(canReuseAssignedTab
+            ? assigned.tabSequence === undefined
+              ? {}
+              : { tabSequence: assigned.tabSequence }
+            : { tabSequence: current.requestSequence }),
         });
       }
 
@@ -1254,6 +1325,17 @@ export const make = Effect.gen(function* PreviewAutomationBrokerMake() {
         providerSessionId: input.scope.providerSessionId,
         providerInstanceId: input.scope.providerInstanceId,
         ...(computerFailure === undefined ? {} : { computerFailure }),
+        ...(!computerOperation && route.diagnostics.requestedDesktopId !== undefined
+          ? {
+              desktop: { kind: "user" as const, desktopId: route.diagnostics.requestedDesktopId },
+              reason:
+                route.diagnostics.targetConnectionCount === 0
+                  ? ("offline" as const)
+                  : route.diagnostics.targetConnectionCount > 1
+                    ? ("identity-conflict" as const)
+                    : ("unsupported-operation" as const),
+            }
+          : {}),
       });
     }
     const { assignmentKey, connection, requestId, requestContext, requestSequence } = route;
@@ -1310,7 +1392,11 @@ export const make = Effect.gen(function* PreviewAutomationBrokerMake() {
         onSome: (value) => Effect.succeed(value as A),
       });
     });
-    const result = yield* awaitResponse().pipe(Effect.ensuring(cancelPending));
+    const result = withBrowserHost(
+      input.operation,
+      yield* awaitResponse().pipe(Effect.ensuring(cancelPending)),
+      connection,
+    );
     const auditTransition = userDesktopAuditTransition(input.operation, input.input);
     if (requestedDesktop.desktopId !== undefined && auditTransition !== null) {
       const occurredAt = DateTime.formatIso(yield* DateTime.now);
@@ -1344,8 +1430,8 @@ export const make = Effect.gen(function* PreviewAutomationBrokerMake() {
       const assignment = current.assignments.get(assignmentKey);
       if (
         !assignment ||
-        assignment.connectionId !== connection.connectionId ||
-        assignment.queue !== connection.queue ||
+        assignment.connection?.connectionId !== connection.connectionId ||
+        assignment.connection.queue !== connection.queue ||
         (assignment.tabSequence ?? -1) > requestSequence
       ) {
         return current;
