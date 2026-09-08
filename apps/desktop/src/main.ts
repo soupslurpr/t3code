@@ -75,6 +75,7 @@ import * as PreviewPasskeys from "./preview/Passkeys.ts";
 import * as ComputerUse from "./computer/ComputerUse.ts";
 import * as ComputerUseCoordinator from "./computer/ComputerUseCoordinator.ts";
 import * as ComputerUseRouter from "./computer/ComputerUseRouter.ts";
+import * as DesktopExecution from "./process/DesktopExecution.ts";
 import * as GnomeRemoteDesktop from "./computer/GnomeRemoteDesktop.ts";
 import * as UserDesktopIdentity from "./computer/UserDesktopIdentity.ts";
 import * as DesktopWindow from "./window/DesktopWindow.ts";
@@ -195,6 +196,7 @@ const layerDesktopComputerUseRouter = ComputerUseRouter.layer.pipe(
 );
 
 const layerDesktopWindow = DesktopWindow.layer.pipe(
+  Layer.provideMerge(DesktopExecution.layer.pipe(Layer.provideMerge(layerDesktopFoundation))),
   Layer.provideMerge(layerDesktopServerExposure),
   Layer.provideMerge(layerDesktopPreview),
   Layer.provideMerge(layerDesktopComputerUseRouter),

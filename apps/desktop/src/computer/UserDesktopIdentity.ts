@@ -40,7 +40,7 @@ const IdentityOperation = Schema.Literals([
 ]);
 
 /** Reports that a stable user-desktop identity could not be loaded safely. */
-export class UserDesktopIdentityError extends Schema.TaggedErrorClass<UserDesktopIdentityError>()(
+export class UserDesktopIdentityError extends Schema.TaggedError<UserDesktopIdentityError>()(
   "UserDesktopIdentityError",
   {
     operation: IdentityOperation,
@@ -77,7 +77,11 @@ function defaultLabel(hostname: string): UserDesktopLabel {
 
 /** Advertises only the platforms implemented by the current computer-use host. */
 function platformCapabilities(platform: UserDesktopPlatform): ReadonlyArray<UserDesktopCapability> {
-  return platform === "linux" ? ["view", "control", "availability"] : [];
+  return platform === "linux"
+    ? ["view", "control", "availability", "execution"]
+    : platform === "macos" || platform === "windows"
+      ? ["execution"]
+      : [];
 }
 
 const writeIdentity = Effect.fn("userDesktopIdentity.write")(function* (input: {

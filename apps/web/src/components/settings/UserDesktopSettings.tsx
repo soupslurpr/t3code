@@ -54,6 +54,7 @@ import { Input } from "../ui/input";
 import { Dialog } from "../ui/dialog";
 import { Select, SelectItem, SelectPopup, SelectTrigger, SelectValue } from "../ui/select";
 import { ComputerDesktopViewer } from "./AgentDesktopSettings";
+import { UserDesktopExecutionPanel } from "./UserDesktopExecutionPanel";
 import { SettingsPageContainer, SettingsSection } from "./settingsLayout";
 
 const INVENTORY_REFRESH_INTERVAL_MS = 5_000;
@@ -315,7 +316,7 @@ export function UserDesktopSettings() {
             environments.map(async (environment) => {
               try {
                 const list = await run<UserDesktopList>(environment.environmentId, {
-                  request: { operation: "list" },
+                  request: { operation: "list", includeExecution: true },
                 });
                 const desktops = await Promise.all(
                   list.desktops.map(async (desktop): Promise<UserDesktopEntry> => {
@@ -1028,8 +1029,8 @@ export function UserDesktopSettings() {
         }
       >
         <p className="px-3 pb-1 text-sm text-muted-foreground sm:px-4">
-          Graphical desktops exposed by T3 desktop clients. Each has a stable identity, and agents
-          must target one explicitly; T3 never redirects an operation to another machine.
+          Computers exposed by T3 desktop clients. Each has a stable identity, and agents must
+          target one explicitly; T3 never redirects an operation to another machine.
         </p>
         {pending !== null ? (
           <Alert>
@@ -1128,10 +1129,7 @@ export function UserDesktopSettings() {
                       ) : null}
                     </CardTitle>
                     <CardDescription>
-                      {environmentLabels.length === 1
-                        ? environmentLabels[0]
-                        : `Available through ${environmentLabels.join(", ")}`}{" "}
-                      · {platformLabel(desktop.platform)}
+                      Via {environmentLabels.join(", ")} · {platformLabel(desktop.platform)}
                       {group.connectionState !== "identity-conflict" && (
                         <>
                           {" · "}
@@ -1249,7 +1247,7 @@ export function UserDesktopSettings() {
                     {group.connectionState === "online" && !supportsView ? (
                       <Alert>
                         <AlertDescription>
-                          Computer use is unavailable for this desktop on its current platform.
+                          Screen sharing is unavailable for this desktop on its current platform.
                         </AlertDescription>
                       </Alert>
                     ) : null}
@@ -1308,6 +1306,22 @@ export function UserDesktopSettings() {
                         Remove
                       </Button>
                     </div>
+                    {group.routes
+                      .filter(
+                        (entry) =>
+                          entry.desktop.connectionState === "online" &&
+                          entry.desktop.capabilities.includes("execution"),
+                      )
+                      .map((entry) => (
+                        <UserDesktopExecutionPanel
+                          key={entry.environmentId}
+                          environmentId={entry.environmentId}
+                          environmentLabel={
+                            environmentById.get(entry.environmentId)?.label ?? "Unknown environment"
+                          }
+                          desktop={entry.desktop.desktop}
+                        />
+                      ))}
                   </CardPanel>
                 </Card>
               );
