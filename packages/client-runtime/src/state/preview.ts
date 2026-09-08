@@ -1,4 +1,4 @@
-import { WS_METHODS } from "@t3tools/contracts";
+import { WS_METHODS, type UserDesktopHumanInvokeInput } from "@t3tools/contracts";
 import { Atom } from "effect/unstable/reactivity";
 
 import type { EnvironmentRegistry } from "../connection/registry.ts";
@@ -16,6 +16,28 @@ export const previewAutomationHostFocusConcurrencyKey = (value: {
     readonly connectionId: string;
   };
 }): string => JSON.stringify([value.environmentId, value.input.clientId, value.input.connectionId]);
+
+/** Keeps supervision available while a command or local permission request is waiting. */
+export function userDesktopHumanConcurrencyKey(value: {
+  readonly environmentId: string;
+  readonly input: UserDesktopHumanInvokeInput;
+}): string {
+  const request = value.input.request;
+  if (request.operation !== "execution") return value.environmentId;
+  const input = request.input;
+  return JSON.stringify([
+    value.environmentId,
+    "execution",
+    request.desktopId,
+    input.operation,
+    input.operation === "command"
+      ? input.commandId
+      : input.operation === "cancel"
+        ? null
+        : input.input.action,
+    input.operation === "process" ? input.input.processId : null,
+  ]);
+}
 
 export function createPreviewEnvironmentAtoms<R, E>(
   runtime: Atom.AtomRuntime<EnvironmentRegistry | R, E>,
@@ -127,7 +149,7 @@ export function createPreviewEnvironmentAtoms<R, E>(
       scheduler: automationScheduler,
       concurrency: {
         mode: "serial",
-        key: ({ environmentId }) => environmentId,
+        key: userDesktopHumanConcurrencyKey,
       },
     }),
   };

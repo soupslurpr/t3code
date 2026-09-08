@@ -108,6 +108,77 @@ it.effect("atomically registers a connected host and correlates its response", (
   ),
 );
 
+it.effect("routes execution to its exact desktop without requiring graphical access", () =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      const broker = yield* makeBroker;
+      const connected = yield* Deferred.make<void>();
+      const requests = requestsFrom(
+        (yield* broker.connect(
+          makeHost({
+            userDesktop: { ...USER_DESKTOP, platform: "macos", capabilities: ["execution"] },
+            supportedOperations: ["computerExecution"],
+          }),
+        )).pipe(
+          Stream.tap((event) =>
+            event.type === "connected" ? Deferred.succeed(connected, undefined) : Effect.void,
+          ),
+        ),
+      );
+      const observed = yield* Deferred.make<RoutedRequest>();
+      yield* Stream.runForEach(requests, (request) =>
+        Deferred.succeed(observed, request).pipe(
+          Effect.andThen(
+            broker.respond({
+              clientId: "client-1",
+              connectionId: request.connectionId,
+              requestId: request.requestId,
+              ok: true,
+              result: { kind: "list", processes: [] },
+            }),
+          ),
+        ),
+      ).pipe(Effect.forkScoped);
+      yield* Deferred.await(connected);
+      const input = {
+        operation: "process",
+        desktop: { kind: "user", desktopId: USER_DESKTOP.desktopId },
+        input: { action: "list", desktop: { kind: "user", desktopId: USER_DESKTOP.desktopId } },
+      };
+      expect(
+        yield* broker.invoke<{ kind: "list"; processes: readonly unknown[] }>({
+          scope,
+          operation: "computerExecution",
+          input,
+        }),
+      ).toEqual({
+        kind: "list",
+        processes: [],
+      });
+      expect(yield* Deferred.await(observed)).toMatchObject({
+        operation: "computerExecution",
+        input,
+        threadId: scope.threadId,
+      });
+      expect(
+        (yield* broker.listUserDesktops(scope.environmentId, { includeExecution: true }))
+          .desktops[0]?.capabilities,
+      ).toEqual(["execution"]);
+      expect(
+        (yield* broker.listUserDesktops(scope.environmentId)).desktops[0]?.capabilities,
+      ).toEqual([]);
+      const wrongTarget = yield* broker
+        .invoke<{ kind: "list"; processes: readonly unknown[] }>({
+          scope,
+          operation: "computerExecution",
+          input: { ...input, desktop: { kind: "user", desktopId: "unavailable-desktop" } },
+        })
+        .pipe(Effect.flip);
+      expect(wrongTarget).toBeInstanceOf(PreviewAutomationNoAvailableHostError);
+    }),
+  ),
+);
+
 it.effect("identifies the desktop-managed environment host while it is offline", () =>
   Effect.gen(function* () {
     const broker = yield* PreviewAutomationBroker.make.pipe(

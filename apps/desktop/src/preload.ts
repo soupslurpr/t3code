@@ -284,6 +284,8 @@ contextBridge.exposeInMainWorld("desktopBridge", {
       };
     },
   },
+  execution: (input, context) =>
+    ipcRenderer.invoke(IpcChannels.DESKTOP_EXECUTION_CHANNEL, { input, context }),
   computer: {
     status: (input, context) =>
       ipcRenderer.invoke(IpcChannels.COMPUTER_AUTOMATION_STATUS_CHANNEL, { input, context }),

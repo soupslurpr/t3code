@@ -17,7 +17,12 @@ export const UserDesktopPlatform = Schema.Literals(["linux", "macos", "windows",
 export type UserDesktopPlatform = typeof UserDesktopPlatform.Type;
 
 /** Advertises coarse computer-use capabilities without granting access. */
-export const UserDesktopCapability = Schema.Literals(["view", "control", "availability"]);
+export const UserDesktopCapability = Schema.Literals([
+  "view",
+  "control",
+  "availability",
+  "execution",
+]);
 export type UserDesktopCapability = typeof UserDesktopCapability.Type;
 
 /** Registers one current user-desktop protocol host with an environment. */
@@ -26,7 +31,7 @@ export const UserDesktopHostRegistration = Schema.Struct({
   desktopId: UserDesktopId,
   defaultLabel: UserDesktopLabel,
   platform: UserDesktopPlatform,
-  capabilities: Schema.Array(UserDesktopCapability).check(Schema.isMaxLength(3)),
+  capabilities: Schema.Array(UserDesktopCapability).check(Schema.isMaxLength(4)),
 });
 export type UserDesktopHostRegistration = typeof UserDesktopHostRegistration.Type;
 
@@ -43,7 +48,7 @@ export const UserDesktopView = Schema.Struct({
   label: UserDesktopLabel,
   defaultLabel: UserDesktopLabel,
   platform: UserDesktopPlatform,
-  capabilities: Schema.Array(UserDesktopCapability).check(Schema.isMaxLength(3)),
+  capabilities: Schema.Array(UserDesktopCapability).check(Schema.isMaxLength(4)),
   connectionState: Schema.Literals(["online", "offline", "identity-conflict"]),
   lastSeenAt: IsoDateTime,
   t3Focused: Schema.Boolean,
@@ -117,7 +122,7 @@ export const UserDesktopRemoveInput = Schema.Struct({
 export type UserDesktopRemoveInput = typeof UserDesktopRemoveInput.Type;
 
 /** Reports that the environment could not read its durable user-desktop inventory. */
-export class UserDesktopInventoryError extends Schema.TaggedErrorClass<UserDesktopInventoryError>()(
+export class UserDesktopInventoryError extends Schema.TaggedError<UserDesktopInventoryError>()(
   "UserDesktopInventoryError",
   {
     code: Schema.Literal("user-desktop-inventory-unavailable"),
@@ -130,7 +135,7 @@ export class UserDesktopInventoryError extends Schema.TaggedErrorClass<UserDeskt
 }
 
 /** Reports a rejected user-desktop inventory mutation. */
-export class UserDesktopManagementError extends Schema.TaggedErrorClass<UserDesktopManagementError>()(
+export class UserDesktopManagementError extends Schema.TaggedError<UserDesktopManagementError>()(
   "UserDesktopManagementError",
   {
     code: Schema.Literals(["user-desktop-not-found", "user-desktop-online"]),
