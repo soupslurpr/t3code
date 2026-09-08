@@ -1,3 +1,4 @@
+/** Presents a paired environment and its connection controls. */
 import { SymbolView } from "../../components/AppSymbol";
 import { connectionStatusText } from "@t3tools/client-runtime/connection";
 import type { AtomCommandResult } from "@t3tools/client-runtime/state/runtime";
@@ -18,6 +19,7 @@ import type { ConnectedEnvironmentSummary } from "../../state/remote-runtime-typ
 import { serverEnvironment } from "../../state/server";
 import { ConnectionStatusDot } from "./ConnectionStatusDot";
 
+/** Formats the current connection state for the environment row. */
 function connectionStatusLabel(environment: ConnectedEnvironmentSummary): string | null {
   if (!environment.isEnabled) {
     return "Off";
@@ -29,6 +31,7 @@ function connectionStatusLabel(environment: ConnectedEnvironmentSummary): string
   });
 }
 
+/** Edits, reconnects, or removes an environment from either connection list. */
 export function ConnectionEnvironmentRow(props: {
   readonly environment: ConnectedEnvironmentSummary;
   readonly expanded: boolean;
@@ -73,6 +76,8 @@ export function ConnectionEnvironmentRow(props: {
   return (
     <Animated.View layout={LinearTransition.duration(250)} className="bg-card">
       <Pressable
+        accessibilityRole="button"
+        accessibilityState={{ expanded: props.expanded }}
         className="flex-row items-center gap-3 px-4 py-3.5 active:opacity-70"
         onPress={props.onToggle}
       >
@@ -164,6 +169,7 @@ export function ConnectionEnvironmentRow(props: {
                   Label
                 </Text>
                 <TextInput
+                  accessibilityLabel="Environment label"
                   autoCapitalize="words"
                   autoCorrect={false}
                   placeholder="My MacBook"
@@ -178,6 +184,7 @@ export function ConnectionEnvironmentRow(props: {
                   URL
                 </Text>
                 <TextInput
+                  accessibilityLabel="Environment URL"
                   autoCapitalize="none"
                   autoCorrect={false}
                   keyboardType="url"
@@ -193,6 +200,8 @@ export function ConnectionEnvironmentRow(props: {
           <View className="flex-row justify-end gap-2">
             {props.environment.isRelayManaged ? null : (
               <Pressable
+                accessibilityRole="button"
+                accessibilityLabel="Save environment"
                 className="min-h-[42px] flex-1 flex-row items-center justify-center gap-1.5 rounded-[14px] bg-primary px-3.5 py-2.5 active:opacity-70"
                 onPress={handleSave}
               >
@@ -211,6 +220,8 @@ export function ConnectionEnvironmentRow(props: {
             <Pressable
               className="h-[42px] w-[42px] items-center justify-center rounded-[14px] border border-input-border bg-input active:opacity-70 disabled:opacity-40"
               disabled={!enabled}
+              accessibilityRole="button"
+              accessibilityLabel={`Reconnect ${props.environment.environmentLabel}`}
               onPress={() => props.onReconnect(props.environment.environmentId)}
             >
               <SymbolView
@@ -222,6 +233,8 @@ export function ConnectionEnvironmentRow(props: {
             </Pressable>
 
             <Pressable
+              accessibilityRole="button"
+              accessibilityLabel={`Remove ${props.environment.environmentLabel}`}
               className="h-[42px] w-[42px] items-center justify-center rounded-[14px] border border-danger-border bg-danger active:opacity-70"
               onPress={() => props.onRemove(props.environment.environmentId)}
             >
