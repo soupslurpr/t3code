@@ -13,6 +13,7 @@ import { appAtomRegistry } from "~/rpc/atomRegistry";
 
 import { createRecordingCompositor } from "./recordingCompositor";
 
+import { withBrowserRecordingDuration } from "./browserRecordingDuration";
 import { acquireBrowserSurfaceActivity } from "./browserSurfaceStore";
 
 const isPreviewCaptureFailure = Schema.is(PreviewCaptureFailure);
@@ -147,6 +148,8 @@ interface ActiveRecording {
   compositor: Awaited<ReturnType<typeof createRecordingCompositor>>;
   savedBlob?: Blob;
   uploadPromise?: Promise<string>;
+  captureStartedAt: number | null;
+  captureStoppedAt: number | null;
   lifecycle: BrowserRecordingLifecycle;
 }
 
@@ -546,6 +549,8 @@ export async function startBrowserRecording(
     stream: null,
     recorder: null,
     compositor: null,
+    captureStartedAt: null,
+    captureStoppedAt: null,
     lifecycle: startingLifecycle,
   };
   activeRecordings.set(tabId, recording);
@@ -651,6 +656,13 @@ export async function startBrowserRecording(
       recorder.addEventListener("dataavailable", (event) => {
         if (event.data.size > 0) chunks.push(event.data);
       });
+      recorder.addEventListener(
+        "stop",
+        () => {
+          recording.captureStoppedAt ??= performance.now();
+        },
+        { once: true },
+      );
     } catch (cause) {
       const cleanupCause = await cleanupFailedRecordingStart(bridge, recording);
       throw new BrowserRecordingOperationError({
@@ -667,6 +679,7 @@ export async function startBrowserRecording(
       });
     }
     try {
+      recording.captureStartedAt = performance.now();
       recorder.start(1_000);
     } catch (cause) {
       const cleanupCause = await cleanupFailedRecordingStart(bridge, recording);
@@ -718,6 +731,7 @@ const finalizeBrowserRecording = async (
       result = { _tag: "Success", artifact: null };
     } else {
       try {
+        recording.captureStoppedAt ??= performance.now();
         await stopMediaRecorder(recording.recorder);
       } catch (cause) {
         throw new BrowserRecordingOperationError({
@@ -737,7 +751,12 @@ const finalizeBrowserRecording = async (
         throw new BrowserRecordingFormatUnavailableError({ tabId });
       }
       try {
-        const blob = new Blob(recording.chunks, { type: mimeType });
+        const blob = await withBrowserRecordingDuration(
+          new Blob(recording.chunks, { type: mimeType }),
+          recording.captureStartedAt === null
+            ? 0
+            : recording.captureStoppedAt - recording.captureStartedAt,
+        );
         const artifact = await bridge.recording.save(
           tabId,
           mimeType,
