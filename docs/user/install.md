@@ -1,5 +1,9 @@
 # Install T3 Code
 
+For the `soupslurpr/t3code` fork, follow [Install this fork](../../README.md#install-this-fork).
+The downloads and package-manager commands below install upstream T3 Code. The
+provider setup guidance also applies to this fork.
+
 T3 Code runs coding agents on your computer and lets you control them from its
 desktop, web, or mobile app. Set up the machine where the agents will work first.
 
