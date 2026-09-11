@@ -137,3 +137,5 @@ export const COMPUTER_AUTOMATION_RELEASE_CHANNEL = "desktop:computer-automation-
 export const COMPUTER_AUTOMATION_INTERRUPT_CHANNEL = "desktop:computer-automation-interrupt";
 export const COMPUTER_AUTOMATION_FORGET_CONTROL_CHANNEL =
   "desktop:computer-automation-forget-control";
+
+export const DESKTOP_TRANSFER_CHANNEL = "desktop:transfer";

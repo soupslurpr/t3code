@@ -1,3 +1,5 @@
+import { UserDesktopTransfers } from "../computer/UserDesktopTransfers.ts";
+import { ProjectionSnapshotQuery } from "../orchestration/Services/ProjectionSnapshotQuery.ts";
 import * as NodeCrypto from "node:crypto";
 import * as Cause from "effect/Cause";
 import * as Clock from "effect/Clock";
@@ -1316,6 +1318,8 @@ const registerComputerTools = Effect.fn("McpHttpServer.registerComputerTools")(f
   const computer = yield* ComputerAutomationRouter.ComputerAutomationRouter;
   const observations = yield* ComputerObservationStore.ComputerObservationStore;
   const broker = yield* PreviewAutomationBroker.PreviewAutomationBroker;
+  const transfers = yield* UserDesktopTransfers;
+  const projections = yield* ProjectionSnapshotQuery;
   const built = yield* ComputerToolkit;
   for (const tool of Object.values(built.tools)) {
     yield* server.addTool({
@@ -1345,6 +1349,8 @@ const registerComputerTools = Effect.fn("McpHttpServer.registerComputerTools")(f
             Stream.unwrap,
             Stream.run(Sink.last()),
             Effect.flatMap(Effect.fromOption),
+            Effect.provideService(UserDesktopTransfers, transfers),
+            Effect.provideService(ProjectionSnapshotQuery, projections),
             Effect.provideService(ComputerAutomationRouter.ComputerAutomationRouter, computer),
             Effect.provideService(ComputerObservationStore.ComputerObservationStore, observations),
             Effect.provideService(PreviewAutomationBroker.PreviewAutomationBroker, broker),

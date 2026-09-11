@@ -447,7 +447,7 @@ function unavailableHostDiagnostics(
 function requiredUserDesktopCapability(
   operation: PreviewAutomationOperation,
 ): UserDesktopCapability {
-  if (operation === "computerExecution") return "execution";
+  if (operation === "computerExecution" || operation === "computerTransfer") return "execution";
   if (operation === "computerRequestAvailability" || operation === "computerReleaseAvailability") {
     return "availability";
   }

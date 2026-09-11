@@ -1,3 +1,4 @@
+import { UserDesktopTransfers } from "../computer/UserDesktopTransfers.ts";
 import { expect, it } from "@effect/vitest";
 import { NodeHttpServer } from "@effect/platform-node";
 import * as NodeServices from "@effect/platform-node/NodeServices";
@@ -272,6 +273,7 @@ const AgentDesktopTransferTestLayer = Layer.mock(AgentDesktopTransfer.AgentDeskt
 );
 
 const TestLayer = McpHttpServer.ToolkitRegistrationLive.pipe(
+  Layer.provide(Layer.mock(UserDesktopTransfers)({ download: () => null })),
   Layer.provide(Layer.mock(DeviceService.DeviceService)({})),
   Layer.provide(Layer.mock(OrchestrationEngineService)({})),
   Layer.provide(Layer.mock(ProjectionSnapshotQuery)({})),

@@ -80,6 +80,38 @@ function withExecution<A, E, R>(
 }
 
 describe("desktop execution permission", () => {
+  it.effect("requires execution permission and exact target identity for file transfers", () =>
+    withExecution(
+      Effect.gen(function* () {
+        const service = yield* DesktopExecution.DesktopExecution;
+        const identity = yield* UserDesktopIdentity.UserDesktopIdentity;
+        const desktop = { kind: "user", desktopId: identity.registration.desktopId } as const;
+        const input = {
+          operation: "run",
+          desktop,
+          transferId: "transfer-test",
+          direction: "from-desktop",
+          desktopPath: "file",
+          collision: "create",
+          compression: "auto",
+          timeoutMs: 1000,
+          token: "a".repeat(64),
+          url: "http://127.0.0.1/api/user-desktop-transfers/transfer-test",
+        } as const;
+        assert.equal(
+          (yield* service.transfer(context, input).pipe(Effect.flip)).code,
+          "permission-denied",
+        );
+        assert.equal(
+          (yield* service
+            .transfer(context, { ...input, desktop: { kind: "user", desktopId: "wrong" } })
+            .pipe(Effect.flip)).code,
+          "desktop-target-mismatch",
+        );
+      }),
+    ),
+  );
+
   it.effect("requires local permission and enforces the selected scope and desktop", () =>
     withExecution(
       Effect.gen(function* () {
