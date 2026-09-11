@@ -1,4 +1,10 @@
+import { UserDesktopTransfers } from "../../../computer/UserDesktopTransfers.ts";
+import { ProjectionSnapshotQuery } from "../../../orchestration/Services/ProjectionSnapshotQuery.ts";
 import {
+  UserDesktopCopyInput,
+  UserDesktopTransfer,
+  UserDesktopTransferTargetInput,
+  UserDesktopTransferRequestError,
   ComputerAutomationAccessInput,
   ComputerAutomationActInput,
   ComputerAutomationAvailabilityInput,
@@ -212,7 +218,42 @@ export const UserDesktopProcessTool = computerTool(
   }).annotate(Tool.Title, "Manage user desktop process"),
 );
 
+const transferDependencies = [McpInvocationContext.McpInvocationContext, UserDesktopTransfers];
+export const UserDesktopCopyTool = computerTool(
+  Tool.make("user_desktop_copy", {
+    description:
+      "Copy a file or directory between this thread's workspace and one explicit user desktop from user_desktop_list. Requires that desktop's execution permission. Archive bytes stream over the existing T3 connection without entering model context. workspacePath is relative to this thread's workspace; desktopPath is absolute or relative to the desktop account's home. The destination is the exact resulting file or directory path, not its parent. create (default) refuses existing destinations; replace replaces them; merge combines directories and may partially apply on failure. Compression is automatic by default. Use a unique copyId; retries with the same ID and arguments return the original result while retained. waitMs defaults to 15000; running transfers have bounded progress and can be inspected or cancelled with user_desktop_transfer_status/cancel. Status is retained in this server lifetime, up to 256 entries. A restart or disconnect can leave a completed destination without its acknowledgement; inspect before retrying. Symlinks escaping the copied tree are rejected.",
+    parameters: UserDesktopCopyInput,
+    success: UserDesktopTransfer,
+    failure: Schema.Union([PreviewAutomationError, UserDesktopTransferRequestError]),
+    dependencies: [...transferDependencies, ProjectionSnapshotQuery],
+  }).annotate(Tool.Title, "Copy files to or from user desktop"),
+);
+export const UserDesktopTransferStatusTool = readonlyComputerTool(
+  Tool.make("user_desktop_transfer_status", {
+    description:
+      "Read a file transfer owned by this thread, including bytes, checksum, completion or bounded failure. waitMs optionally waits up to 60000 ms for completion. File data is never included.",
+    parameters: UserDesktopTransferTargetInput,
+    success: UserDesktopTransfer,
+    failure: Schema.Union([PreviewAutomationError, UserDesktopTransferRequestError]),
+    dependencies: transferDependencies,
+  }).annotate(Tool.Title, "Read user desktop transfer"),
+);
+export const UserDesktopTransferCancelTool = safeComputerTool(
+  Tool.make("user_desktop_transfer_cancel", {
+    description:
+      "Cancel this thread's active file transfer and clean staging files. Completed copies are retained. Cancellation during installation or a lost desktop acknowledgement can leave destination changes; inspect before retrying.",
+    parameters: UserDesktopTransferTargetInput,
+    success: UserDesktopTransfer,
+    failure: Schema.Union([PreviewAutomationError, UserDesktopTransferRequestError]),
+    dependencies: transferDependencies,
+  }).annotate(Tool.Title, "Cancel user desktop transfer"),
+);
+
 export const ComputerToolkit = Toolkit.make(
+  UserDesktopCopyTool,
+  UserDesktopTransferStatusTool,
+  UserDesktopTransferCancelTool,
   UserDesktopExecutionTool,
   UserDesktopCommandTool,
   UserDesktopProcessTool,
@@ -230,6 +271,9 @@ export const ComputerToolkit = Toolkit.make(
 );
 
 export const ComputerStandardToolkit = Toolkit.make(
+  UserDesktopCopyTool,
+  UserDesktopTransferStatusTool,
+  UserDesktopTransferCancelTool,
   UserDesktopExecutionTool,
   UserDesktopCommandTool,
   UserDesktopProcessTool,

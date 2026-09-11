@@ -76,7 +76,7 @@ import {
   takeLegacyLocalStorage,
 } from "./methods/legacyLocalStorage.ts";
 import * as ComputerIpc from "./methods/computer.ts";
-import { execution } from "./methods/execution.ts";
+import { execution, transfer } from "./methods/execution.ts";
 import {
   getPowerSettings,
   releaseDesktopAvailability,
@@ -94,6 +94,7 @@ export const installDesktopIpcHandlers = Effect.fn("desktop.ipc.installHandlers"
   yield* installNotificationBadge();
   yield* PreviewIpc.installPreviewEventForwarding();
   yield* ipc.handle(execution);
+  yield* ipc.handle(transfer);
 
   yield* ipc.handle(AppActivationIpc.setReady);
   yield* ipc.handle(AppActivationIpc.complete);

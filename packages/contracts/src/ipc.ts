@@ -1,3 +1,4 @@
+import { UserDesktopTransferRequest, type UserDesktopTransferResult } from "./desktopTransfer.ts";
 import { UserDesktopExecutionInput, type UserDesktopExecutionResult } from "./desktopExecution.ts";
 import * as Schema from "effect/Schema";
 
@@ -1156,6 +1157,11 @@ export const DesktopComputerAutomationContextSchema = Schema.Struct({
 });
 
 /** Carries execution requests independently of graphical access. */
+export const DesktopTransferRequestSchema = Schema.Struct({
+  input: UserDesktopTransferRequest,
+  context: DesktopComputerAutomationContextSchema,
+});
+
 export const DesktopExecutionRequestSchema = Schema.Struct({
   input: UserDesktopExecutionInput,
   context: DesktopComputerAutomationContextSchema,
@@ -1209,6 +1215,10 @@ export type DesktopComputerAutomationResult<Value> =
     };
 
 export interface DesktopBridge {
+  transfer?: (
+    input: UserDesktopTransferRequest,
+    context: DesktopComputerAutomationContext,
+  ) => Promise<DesktopComputerAutomationResult<UserDesktopTransferResult>>;
   execution?: (
     input: UserDesktopExecutionInput,
     context: DesktopComputerAutomationContext,
