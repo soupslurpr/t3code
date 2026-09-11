@@ -27,6 +27,8 @@ import * as AgentDesktopEnvironment from "./agentDesktop/AgentDesktopEnvironment
 import * as AgentDesktopManager from "./agentDesktop/AgentDesktopManager.ts";
 import * as QemuAgentDesktop from "./agentDesktop/QemuAgentDesktop.ts";
 import * as ComputerAutomationRouter from "./computer/ComputerAutomationRouter.ts";
+import * as UserDesktopTransfers from "./computer/UserDesktopTransfers.ts";
+import { userDesktopTransferRouteLayer } from "./computer/userDesktopTransferHttp.ts";
 import {
   otlpTracesProxyRouteLayer,
   assetRouteLayer,
@@ -205,7 +207,11 @@ const ComputerAutomationRouterLive = ComputerAutomationRouter.layer.pipe(
 const AgentDesktopTransferLive = AgentDesktopTransfer.layer.pipe(
   Layer.provide(AgentDesktopManagerLive),
 );
-const AgentDesktopServicesLive = Layer.mergeAll(
+const UserDesktopTransfersLive = UserDesktopTransfers.layer.pipe(
+  Layer.provide(PreviewAutomationBrokerLive),
+);
+const DesktopServicesLive = Layer.mergeAll(
+  UserDesktopTransfersLive,
   AgentDesktopManagerLive,
   ComputerAutomationRouterLive,
   AgentDesktopTransferLive,
@@ -534,7 +540,7 @@ const RuntimeCoreProviderDependenciesLive = ReactorLayerLive.pipe(
   Layer.provideMerge(ProviderAuthServiceLive),
   // Core Services
   Layer.provideMerge(Layer.mergeAll(ComputerObservationStoreLive, ServerSettingsLayerLive)),
-  Layer.provideMerge(AgentDesktopServicesLive),
+  Layer.provideMerge(DesktopServicesLive),
   Layer.provideMerge(CheckpointingLayerLive),
   // `GitHubCli` is the registry's own instance, exposed because the asset route fetches
   // GitHub-hosted pull request media with the repository's credential.
@@ -636,6 +642,7 @@ export const makeRoutesLayer = Layer.mergeAll(
     otlpTracesProxyRouteLayer,
     assetRouteLayer,
     attachmentUploadRouteLayer,
+    userDesktopTransferRouteLayer,
     deviceHubProxyRouteLayer,
     staticAndDevRouteLayer,
     websocketRpcRouteLayer,
@@ -645,7 +652,7 @@ export const makeRoutesLayer = Layer.mergeAll(
   // Both transports consume the same service instance, so caches single-flight across clients
   // and mutations observed on WebSocket invalidate patches subsequently read over HTTP.
   Layer.provide(PullRequestServiceLive),
-  Layer.provide(AgentDesktopServicesLive),
+  Layer.provide(DesktopServicesLive),
   Layer.provide(PreviewAutomationBrokerLive),
   Layer.provide(ServerSelfUpdate.layer.pipe(Layer.provide(DesktopAppUpdateLayerLive))),
   Layer.provide(commandReadinessLayer),

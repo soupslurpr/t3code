@@ -1,5 +1,8 @@
 "use client";
 
+import { readPreparedConnection } from "../../state/session";
+import type { UserDesktopTransferRequest } from "@t3tools/contracts";
+
 import { RegistryContext, useAtomSet, useAtomValue } from "@effect/atom-react";
 import { squashAtomCommandFailure } from "@t3tools/client-runtime/state/runtime";
 import {
@@ -310,6 +313,10 @@ function PreviewAutomationHost(props: { readonly environmentId: EnvironmentId })
   const executionAvailable =
     window.desktopBridge?.execution !== undefined &&
     serverConfig?.environment.capabilities.userDesktopExecution === true;
+  const transferAvailable =
+    executionAvailable &&
+    window.desktopBridge?.transfer !== undefined &&
+    serverConfig?.environment.capabilities.userDesktopTransfers === true;
   const initialAutomationHost = useMemo<PreviewAutomationHostState>(
     () => ({
       clientId: automationClientId,
@@ -317,12 +324,13 @@ function PreviewAutomationHost(props: { readonly environmentId: EnvironmentId })
       ...previewAutomationHostCapabilities({
         computerAvailable: window.desktopBridge?.computer !== undefined,
         executionAvailable,
+        transferAvailable,
         computerCapabilities: userDesktop?.capabilities ?? [],
         ...(userDesktop === undefined ? {} : { userDesktop }),
         computerInterruptAvailable: typeof window.desktopBridge?.computer?.interrupt === "function",
       }),
     }),
-    [automationClientId, environmentId, userDesktop, executionAvailable],
+    [automationClientId, environmentId, userDesktop, executionAvailable, transferAvailable],
   );
   const automationRequestsAtom = previewEnvironment.automationRequests({
     environmentId,
@@ -372,6 +380,19 @@ function PreviewAutomationHost(props: { readonly environmentId: EnvironmentId })
         });
       };
       switch (request.operation) {
+        case "computerTransfer": {
+          const input = request.input as UserDesktopTransferRequest;
+          const connection = readPreparedConnection(environmentId);
+          if (connection === null) throw new Error("The transfer environment is disconnected.");
+          return await resolveDesktopComputerAutomation(
+            window.desktopBridge?.transfer?.(
+              input.operation === "run"
+                ? { ...input, url: new URL(input.url, connection.httpBaseUrl).toString() }
+                : input,
+              requireComputerContext(),
+            ),
+          );
+        }
         case "computerExecution":
           return await resolveDesktopComputerAutomation(
             window.desktopBridge?.execution?.(
@@ -927,6 +948,19 @@ function PreviewAutomationHost(props: { readonly environmentId: EnvironmentId })
   );
   const cancelRequest = useCallback(
     async (request: PreviewAutomationRequest): Promise<void> => {
+      if (request.operation === "computerTransfer" && request.controllerId !== undefined) {
+        const input = request.input as UserDesktopTransferRequest;
+        await window.desktopBridge?.transfer?.(
+          { operation: "cancel", desktop: input.desktop, transferId: input.transferId },
+          {
+            controllerId: request.controllerId,
+            controllerKind: request.controllerKind ?? "agent",
+            environmentId,
+            threadId: request.threadId,
+          },
+        );
+        return;
+      }
       if (request.operation === "computerExecution" && request.controllerId !== undefined) {
         const input = request.input as UserDesktopExecutionInput;
         if (input.operation === "access" && input.input.action === "request") {

@@ -284,6 +284,8 @@ contextBridge.exposeInMainWorld("desktopBridge", {
       };
     },
   },
+  transfer: (input, context) =>
+    ipcRenderer.invoke(IpcChannels.DESKTOP_TRANSFER_CHANNEL, { input, context }),
   execution: (input, context) =>
     ipcRenderer.invoke(IpcChannels.DESKTOP_EXECUTION_CHANNEL, { input, context }),
   computer: {

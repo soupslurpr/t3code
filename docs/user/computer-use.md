@@ -37,6 +37,19 @@ started with that grant by default; agents can explicitly leave them running whe
 prevents further agent access without stopping existing commands, which you can still supervise in
 Settings. Output is retained up to 64 MiB per stream unless the agent selects a different limit.
 
+## Copy Files Between Computers
+
+Ask an agent to copy a file or directory between its workspace and a named connected desktop.
+Transfers use the existing T3 connection and that desktop's command execution permission, so screen
+sharing and a separate file server are unnecessary. The agent can report progress or cancel a copy.
+Revoking execution permission also cancels transfers using that grant.
+
+Copies verify their size and checksum before extraction. By default, an existing destination is
+preserved; ask explicitly to replace it or merge directories. A cancelled directory merge can leave
+partial changes. If a connection drops during installation, have the agent check the destination
+before retrying. Both the environment server and the desktop receiving or sending files need a
+version that supports transfers; you can direct the work from web, desktop, or mobile.
+
 ## Permission And Safety
 
 Desktop access has two agent-facing levels. A fresh view-only approval asks GNOME only for the
