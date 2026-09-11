@@ -37,6 +37,7 @@ const COMPUTER_AUTOMATION_CONTENT_HASH_PATTERN = /^sha256-bgra8-v1:[A-Za-z0-9_-]
 /** Operations that target the host computer rather than a browser preview. */
 export const COMPUTER_AUTOMATION_OPERATIONS = [
   "computerExecution",
+  "computerTransfer",
   "computerStatus",
   "computerRequestAvailability",
   "computerReleaseAvailability",

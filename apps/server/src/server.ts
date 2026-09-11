@@ -32,6 +32,8 @@ import * as AgentDesktopEnvironment from "./agentDesktop/AgentDesktopEnvironment
 import * as AgentDesktopManager from "./agentDesktop/AgentDesktopManager.ts";
 import * as QemuAgentDesktop from "./agentDesktop/QemuAgentDesktop.ts";
 import * as ComputerAutomationRouter from "./computer/ComputerAutomationRouter.ts";
+import * as UserDesktopTransfers from "./computer/UserDesktopTransfers.ts";
+import { userDesktopTransferRouteLayer } from "./computer/userDesktopTransferHttp.ts";
 import { withUntracedRequests } from "./http.ts";
 import * as ServerHttp from "./http.ts";
 import { guardHttpResponseWriteErrors } from "./httpResponseErrorGuard.ts";
@@ -224,7 +226,11 @@ const layerComputerAutomationRouter = ComputerAutomationRouter.layer.pipe(
 const layerAgentDesktopTransfer = AgentDesktopTransfer.layer.pipe(
   Layer.provide(layerAgentDesktopManager),
 );
-const layerAgentDesktopServices = Layer.mergeAll(
+const layerUserDesktopTransfers = UserDesktopTransfers.layer.pipe(
+  Layer.provide(layerPreviewAutomationBroker),
+);
+const layerDesktopServices = Layer.mergeAll(
+  layerUserDesktopTransfers,
   layerAgentDesktopManager,
   layerComputerAutomationRouter,
   layerAgentDesktopTransfer,
@@ -619,7 +625,7 @@ const layerRuntimeCoreDependenciesBase = Layer.mergeAll(
   Layer.provideMerge(RuntimeLayer.layerEventInfrastructure),
   Layer.provideMerge(Layer.merge(ProjectStore.layer, ThreadSearch.layer)),
   Layer.provideMerge(Layer.mergeAll(layerComputerObservationStore, layerServerSettings)),
-  Layer.provideMerge(layerAgentDesktopServices),
+  Layer.provideMerge(layerDesktopServices),
   // The asset route uses the registry's GitHub credential for private PR media, which the
   // built-in drivers' layer provides alongside the registry.
   Layer.provideMerge(layerSourceControlProviderRegistry),
@@ -745,6 +751,7 @@ const layerMakeRoutes = Layer.mergeAll(
       Layer.provide(WebhookRoute.layer.pipe(Layer.provide(RelayDeliveryProof.layer))),
       Layer.provide(AuthHttp.layerAuthenticatedAuth),
     ),
+    userDesktopTransferRouteLayer,
     ServerHttp.layerOtlpTracesProxyRoute,
     ServerHttp.layerAssetRoute,
     ServerHttp.layerAttachmentUploadRoute,
@@ -765,7 +772,7 @@ const layerMakeRoutes = Layer.mergeAll(
 ).pipe(
   // Both transports consume the same service instance, so caches single-flight across clients
   // and mutations observed on WebSocket invalidate patches subsequently read over HTTP.
-  Layer.provide(layerAgentDesktopServices),
+  Layer.provide(layerDesktopServices),
   Layer.provide(layerPullRequestService),
   // The stream route and the WebSocket RPCs share one browser.
   Layer.provide(ServerBrowser.layer.pipe(Layer.provide(DesktopBrowserChannel.layer))),

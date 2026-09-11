@@ -1,3 +1,4 @@
+import { UserDesktopTransfers } from "../../../computer/UserDesktopTransfers.ts";
 import type {
   DesktopExecutionAccess,
   DesktopProcessResult,
@@ -174,6 +175,24 @@ const invokeExecution = Effect.fn("ComputerToolkit.invokeExecution")(function* <
 });
 
 const handlers = {
+  user_desktop_copy: (input) =>
+    Effect.gen(function* () {
+      const scope = yield* McpInvocationContext.requireMcpCapability("computer");
+      const transfers = yield* UserDesktopTransfers;
+      return yield* transfers.start(scope, input);
+    }),
+  user_desktop_transfer_status: (input) =>
+    Effect.gen(function* () {
+      const scope = yield* McpInvocationContext.requireMcpCapability("computer");
+      const transfers = yield* UserDesktopTransfers;
+      return yield* transfers.status(scope, input);
+    }),
+  user_desktop_transfer_cancel: (input) =>
+    Effect.gen(function* () {
+      const scope = yield* McpInvocationContext.requireMcpCapability("computer");
+      const transfers = yield* UserDesktopTransfers;
+      return yield* transfers.cancel(scope, input);
+    }),
   user_desktop_execution: (input) =>
     invokeExecution<DesktopExecutionAccess>({ operation: "access", desktop: input.desktop, input }),
   user_desktop_command: (input) =>

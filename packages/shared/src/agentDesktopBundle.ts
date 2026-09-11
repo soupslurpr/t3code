@@ -508,6 +508,23 @@ export async function packAgentDesktopBundle(
   const rawPath = `${outputPath}.${NodeCrypto.randomUUID()}.raw`;
   let ownsOutput = false;
   await NodeFSP.mkdir(NodePath.dirname(outputPath), { recursive: true });
+  if ((await NodeFSP.lstat(input.sourcePath)).isDirectory()) {
+    // A source containing its own growing archive can never produce a stable copy.
+    const sourceRoot = await NodeFSP.realpath(input.sourcePath);
+    const outputParent = await NodeFSP.realpath(NodePath.dirname(outputPath));
+    const relativeParent = NodePath.relative(sourceRoot, outputParent);
+    if (
+      relativeParent !== ".." &&
+      !relativeParent.startsWith(`..${NodePath.sep}`) &&
+      !NodePath.isAbsolute(relativeParent)
+    ) {
+      throw new AgentDesktopBundleError({
+        code: "invalid-entry",
+        message:
+          "The copied directory contains the transfer staging directory. Choose a narrower source directory or stage the archive elsewhere.",
+      });
+    }
+  }
   try {
     const summary = await writeRawBundle({
       sourcePath: input.sourcePath,
@@ -812,6 +829,7 @@ async function extractRawBundle(input: {
       await NodeFSP.chmod(directory.path, directory.mode);
       await applyEntryTime(directory.path, directory.mtimeMs);
     }
+    throwIfAborted(input.signal);
     await installStaging({
       stagingPath,
       destinationPath: input.destinationPath,

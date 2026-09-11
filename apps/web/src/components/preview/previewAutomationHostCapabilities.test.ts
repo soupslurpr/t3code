@@ -9,6 +9,7 @@ describe("previewAutomationHostCapabilities", () => {
       computerAvailable: true,
       computerInterruptAvailable: true,
       executionAvailable: true,
+      transferAvailable: true,
       computerCapabilities: ["view", "control", "availability", "execution"],
     });
 
@@ -27,7 +28,10 @@ describe("previewAutomationHostCapabilities", () => {
     ).toEqual([
       ...PREVIEW_AUTOMATION_OPERATIONS,
       ...COMPUTER_AUTOMATION_OPERATIONS.filter(
-        (operation) => operation !== "computerInterrupt" && operation !== "computerExecution",
+        (operation) =>
+          operation !== "computerInterrupt" &&
+          operation !== "computerExecution" &&
+          operation !== "computerTransfer",
       ),
     ]);
   });

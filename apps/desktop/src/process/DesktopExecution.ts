@@ -4,12 +4,17 @@ import * as NodeOS from "node:os";
 
 import {
   DesktopExecutionGrant,
+  type UserDesktopTransferRequest,
+  type UserDesktopTransferResult,
   type DesktopComputerAutomationContext,
   type DesktopExecutionAccess,
   type UserDesktopExecutionAccessInput,
   type UserDesktopExecutionInput,
   type UserDesktopExecutionResult,
 } from "@t3tools/contracts";
+import { DesktopTransferError } from "@t3tools/shared/desktopTransfer";
+import { AgentDesktopBundleError } from "@t3tools/shared/agentDesktopBundle";
+import { DesktopTransferManager } from "./DesktopTransferManager.ts";
 import { HostProcessEnvironment } from "@t3tools/shared/hostProcess";
 import * as Clock from "effect/Clock";
 import * as Context from "effect/Context";
@@ -41,6 +46,10 @@ const encodeGrants = Schema.encodeEffect(GrantsDocument);
 export class DesktopExecution extends Context.Service<
   DesktopExecution,
   {
+    readonly transfer: (
+      context: DesktopComputerAutomationContext,
+      input: UserDesktopTransferRequest,
+    ) => Effect.Effect<UserDesktopTransferResult, DesktopExecutionError>;
     readonly invoke: (
       context: DesktopComputerAutomationContext,
       input: UserDesktopExecutionInput,
@@ -53,7 +62,9 @@ export function executionError(cause: unknown): DesktopExecutionError {
   return cause instanceof DesktopExecutionError
     ? cause
     : new DesktopExecutionError(
-        "execution-failed",
+        cause instanceof DesktopTransferError || cause instanceof AgentDesktopBundleError
+          ? cause.code
+          : "execution-failed",
         cause instanceof Error ? cause.message : "desktop execution failed",
       );
 }
@@ -104,9 +115,14 @@ export const make = Effect.gen(function* () {
     homeDirectory: environment.homeDirectory,
     now: () => clock.currentTimeMillisUnsafe(),
   });
+  const transfers = new DesktopTransferManager({
+    directory: environment.path.join(environment.stateDir, "desktop-transfers"),
+    now: () => clock.currentTimeMillisUnsafe(),
+    homeDirectory: environment.homeDirectory,
+  });
   yield* Effect.addFinalizer(() => {
     for (const prompt of pending.values()) prompt.abort.abort();
-    return Effect.tryPromise(() => manager.close()).pipe(
+    return Effect.tryPromise(() => Promise.all([manager.close(), transfers.revoke()])).pipe(
       Effect.catch((cause) => Effect.logWarning("desktop process cleanup failed", cause)),
     );
   });
@@ -166,6 +182,7 @@ export const make = Effect.gen(function* () {
           );
           const ids = new Set(revoked.map((grant) => grant.grantId));
           yield* persist(grants.filter((grant) => !ids.has(grant.grantId)));
+          yield* Effect.tryPromise(() => transfers.revoke(ids));
           if (input.stopProcesses !== false) yield* Effect.tryPromise(() => manager.revoke(ids));
         }),
       );
@@ -189,7 +206,7 @@ export const make = Effect.gen(function* () {
           type: "question",
           title: "Allow command execution",
           message: `Allow agents to run commands on ${identity.registration.defaultLabel}?`,
-          detail: `${scopeLabel}. Commands run as ${user} and can read or change files accessible to this account. Screen sharing is independent.\n\n${input.durationMs === undefined ? "Permission lasts until revoked or T3 Code quits." : `Permission expires ${input.durationMs / 1000} seconds after approval.`}\nRunning commands can be inspected and stopped in Settings → User desktops.`,
+          detail: `${scopeLabel}. Commands and file transfers run as ${user} and can read or change files accessible to this account. Screen sharing is independent.\n\n${input.durationMs === undefined ? "Permission lasts until revoked or T3 Code quits." : `Permission expires ${input.durationMs / 1000} seconds after approval.`}\nRunning commands can be inspected and stopped in Settings → User desktops.`,
           buttons: ["Cancel", "Allow execution"],
           defaultId: 0,
           cancelId: 0,
@@ -326,7 +343,43 @@ export const make = Effect.gen(function* () {
     Effect.mapError(executionError),
   );
 
-  return DesktopExecution.of({ invoke });
+  const transfer: DesktopExecution["Service"]["transfer"] = Effect.fn("DesktopExecution.transfer")(
+    function* (context, input) {
+      if (input.desktop.desktopId !== desktop.desktopId)
+        return yield* Effect.fail(
+          new DesktopExecutionError(
+            "desktop-target-mismatch",
+            "Transfer request does not match this desktop.",
+          ),
+        );
+      if (context.environmentId === undefined || context.threadId === undefined)
+        return yield* Effect.fail(
+          new DesktopExecutionError(
+            "invalid-context",
+            "Transfers require an environment and thread context.",
+          ),
+        );
+      const owner = { environmentId: context.environmentId, threadId: context.threadId };
+      if (input.operation === "cancel")
+        return yield* Effect.tryPromise(() => transfers.cancel(owner, input.transferId));
+      if (grantLoadError !== null) return yield* Effect.fail(grantLoadError);
+      const grant = grants.find((candidate) =>
+        grantMatches(candidate, owner, clock.currentTimeMillisUnsafe()),
+      );
+      if (grant === undefined)
+        return yield* Effect.fail(
+          new DesktopExecutionError(
+            "permission-denied",
+            "Request execution permission on this desktop before transferring files.",
+          ),
+        );
+      return yield* Effect.tryPromise(() => transfers.run(owner, grant.grantId, input)).pipe(
+        Effect.onInterrupt(() => Effect.promise(() => transfers.cancel(owner, input.transferId))),
+      );
+    },
+    Effect.mapError(executionError),
+  );
+  return DesktopExecution.of({ invoke, transfer });
 });
 
 export const layer = Layer.effect(DesktopExecution, make);
