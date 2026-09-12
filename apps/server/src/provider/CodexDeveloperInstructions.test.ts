@@ -57,7 +57,11 @@ describe("buildCodexApplicationContext", () => {
       availability.browser,
     );
     NodeAssert.equal(instructions.includes("device_open"), availability.device);
-    NodeAssert.equal(instructions.includes("Do not call simctl, adb"), availability.device);
+    NodeAssert.doesNotMatch(instructions, /Do not call simctl, adb|CLI, which is on PATH/);
+    NodeAssert.equal(
+      instructions.includes("standalone automation remain available"),
+      availability.device,
+    );
     NodeAssert.doesNotMatch(instructions, /computer_request_control/);
     NodeAssert.match(instructions, /Codex harness/);
   });

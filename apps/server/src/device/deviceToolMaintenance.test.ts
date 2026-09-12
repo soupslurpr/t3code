@@ -14,43 +14,48 @@ import { pruneLocalDeviceTools, deviceToolMaintenanceScript } from "./deviceTool
 const exec = NodeUtil.promisify(NodeChildProcess.execFile);
 
 describe.each([false, true])("device tool cleanup, flat=%s", (flat) => {
-  it("keeps current, previous, active and incomplete installs, pruning unused completed versions", async () => {
-    const root = await NodeFSP.mkdtemp(NodePath.join(NodeOS.tmpdir(), "t3-tool-cleanup-"));
-    const name = "expo-device-hub";
-    const directory = (version: string) =>
-      flat ? NodePath.join(root, `${name}@${version}`) : NodePath.join(root, name, version);
-    try {
-      for (const version of ["0.1.0", "0.2.0", "0.3.0", "0.4.0", "0.5.0", "0.6.0"]) {
-        await NodeFSP.mkdir(directory(version), { recursive: true });
-        if (version === "0.5.0") continue;
-        const sentinel = NodePath.join(directory(version), ".install-complete");
-        await NodeFSP.writeFile(sentinel, version);
-        await NodeFSP.utimes(
-          sentinel,
-          Number(version.split(".")[1]),
-          Number(version.split(".")[1]),
-        );
-      }
-      const script =
-        deviceToolMaintenanceScript +
-        `
+  it.each(["", "-0123456789abcdef"])(
+    "keeps current, previous, active and incomplete installs with revision %s",
+    async (revision) => {
+      const root = await NodeFSP.mkdtemp(NodePath.join(NodeOS.tmpdir(), "t3-tool-cleanup-"));
+      const name = "expo-device-hub";
+      const directory = (version: string) =>
+        flat
+          ? NodePath.join(root, `${name}@${version}${revision}`)
+          : NodePath.join(root, name, `${version}${revision}`);
+      try {
+        for (const version of ["0.1.0", "0.2.0", "0.3.0", "0.4.0", "0.5.0", "0.6.0"]) {
+          await NodeFSP.mkdir(directory(version), { recursive: true });
+          if (version === "0.5.0") continue;
+          const sentinel = NodePath.join(directory(version), ".install-complete");
+          await NodeFSP.writeFile(sentinel, version);
+          await NodeFSP.utimes(
+            sentinel,
+            Number(version.split(".")[1]),
+            Number(version.split(".")[1]),
+          );
+        }
+        const script =
+          deviceToolMaintenanceScript +
+          `
 (async () => {
   const root = ${JSON.stringify(root)};
-  await pruneTools(root, [['${name}', '0.6.0']], ${flat});
+  await pruneTools(root, [['${name}', '0.6.0${revision}']], ${flat});
 })().catch(error => { console.error(error); process.exitCode = 1; });`;
-      await exec(process.execPath, [
-        "-e",
-        script,
-        NodePath.join(directory("0.2.0"), "active-helper.cjs"),
-      ]);
-      await expect(NodeFSP.stat(directory("0.1.0"))).rejects.toThrow();
-      await expect(NodeFSP.stat(directory("0.3.0"))).rejects.toThrow();
-      for (const version of ["0.2.0", "0.4.0", "0.5.0", "0.6.0"])
-        expect((await NodeFSP.stat(directory(version))).isDirectory()).toBe(true);
-    } finally {
-      await NodeFSP.rm(root, { recursive: true, force: true });
-    }
-  });
+        await exec(process.execPath, [
+          "-e",
+          script,
+          NodePath.join(directory("0.2.0"), "active-helper.cjs"),
+        ]);
+        await expect(NodeFSP.stat(directory("0.1.0"))).rejects.toThrow();
+        await expect(NodeFSP.stat(directory("0.3.0"))).rejects.toThrow();
+        for (const version of ["0.2.0", "0.4.0", "0.5.0", "0.6.0"])
+          expect((await NodeFSP.stat(directory(version))).isDirectory()).toBe(true);
+      } finally {
+        await NodeFSP.rm(root, { recursive: true, force: true });
+      }
+    },
+  );
 
   it("keeps every install when the process scan fails", async () => {
     const root = await NodeFSP.mkdtemp(NodePath.join(NodeOS.tmpdir(), "t3-tool-scan-"));

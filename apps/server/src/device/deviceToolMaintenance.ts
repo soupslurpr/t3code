@@ -4,6 +4,7 @@ import * as Effect from "effect/Effect";
 import * as Path from "effect/Path";
 import * as ProcessRunner from "../processRunner.ts";
 import { AGENT_DEVICE_VERSION, DEVICE_HUB_VERSION } from "./DeviceToolchain.ts";
+import { deviceToolRevision } from "./DeviceToolManifest.ts";
 
 /** Shared with the SSH bootstrap. Cleanup runs only after successful startup. */
 export const deviceToolMaintenanceScript = String.raw`
@@ -80,7 +81,9 @@ function pruneTools(root, specs, flat) {
         const directory = maintenancePath.join(parent, item);
         try {
           if (!maintenanceFs.lstatSync(directory).isDirectory()) continue;
-          if (maintenanceFs.readFileSync(maintenancePath.join(directory, '.install-complete'), 'utf8').trim() !== version) continue;
+          const installedVersion = maintenanceFs.readFileSync(maintenancePath.join(directory, '.install-complete'), 'utf8').trim();
+          if (!/^[0-9]+\.[0-9]+\.[0-9]+(?:-[a-zA-Z0-9.-]+)?$/.test(installedVersion)) continue;
+          if (version !== installedVersion && !(version.startsWith(installedVersion + '-') && /^[0-9a-f]{16}$/.test(version.slice(installedVersion.length + 1)))) continue;
           completed.push({ version, directory, modified: maintenanceFs.statSync(maintenancePath.join(directory, '.install-complete')).mtimeMs });
         } catch {}
       }
@@ -144,7 +147,7 @@ export const pruneLocalDeviceTools = Effect.fn("DeviceToolchain.prune")(function
   const path = yield* Path.Path;
   yield* runMaintenance(
     nodePath,
-    `pruneTools(${JSON.stringify(path.join(baseDir, "tools"))}, ${JSON.stringify(tool === "hub" ? [["expo-device-hub", DEVICE_HUB_VERSION]] : [["agent-device", AGENT_DEVICE_VERSION]])}, false)`,
+    `pruneTools(${JSON.stringify(path.join(baseDir, "tools"))}, ${JSON.stringify(tool === "hub" ? [["expo-device-hub", `${DEVICE_HUB_VERSION}-${deviceToolRevision("expo-device-hub")}`]] : [["agent-device", `${AGENT_DEVICE_VERSION}-${deviceToolRevision("agent-device")}`]])}, false)`,
     "prune",
     tool,
   );

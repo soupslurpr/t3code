@@ -1,0 +1,35 @@
+{
+  "name": "t3-agent-device",
+  "version": "1.0.0",
+  "lockfileVersion": 3,
+  "requires": true,
+  "packages": {
+    "": {
+      "name": "t3-agent-device",
+      "version": "1.0.0",
+      "dependencies": {
+        "agent-device": "0.21.23"
+      }
+    },
+    "node_modules/agent-device": {
+      "version": "0.21.23",
+      "resolved": "https://registry.npmjs.org/agent-device/-/agent-device-0.21.23.tgz",
+      "integrity": "sha512-TZAuh3fMFa12Wh+1etcEll7FNvSCg1PjFkkfGz3XIYr9Ap9rJixHq89AnPqpTqnQ5fN2sp1UQgMFr7KcYoyqkA==",
+      "license": "MIT",
+      "bin": {
+        "agent-device": "bin/agent-device.mjs"
+      },
+      "engines": {
+        "node": ">=22.12"
+      },
+      "peerDependencies": {
+        "ai": "^6.0.0 || ^7.0.0"
+      },
+      "peerDependenciesMeta": {
+        "ai": {
+          "optional": true
+        }
+      }
+    }
+  }
+}
