@@ -421,7 +421,14 @@ export const makeWithHosts = Effect.fn("DeviceService.makeWithHosts")(function* 
         }
       }
     }
-    return { devices, detail: list.errors?.map((error) => error.message).join("\n") || undefined };
+    const iosAvailable = (yield* host.summary).platforms.some(
+      (platform) => platform.platform === "ios" && platform.available,
+    );
+    const errors = list.errors?.filter(
+      (error) =>
+        iosAvailable || !error.message.startsWith("[apple-utils] Failed to run `xcrun simctl "),
+    );
+    return { devices, detail: errors?.map((error) => error.message).join("\n") || undefined };
   });
 
   const refresh = Effect.fn("DeviceService.refresh")(function* (ready: DeviceReadiness) {
@@ -556,9 +563,14 @@ export const makeWithHosts = Effect.fn("DeviceService.makeWithHosts")(function* 
           }
           yield* publish((state) => ({
             ...state,
-            hostStatus: nextEnabled ? "idle" : "disabled",
-            hostStatusDetail: undefined,
-            hostStatuses: {},
+            hostStatus: !nextEnabled
+              ? "disabled"
+              : currentSettings.enabled
+                ? state.hostStatus
+                : "idle",
+            ...(nextEnabled === currentSettings.enabled
+              ? {}
+              : { hostStatusDetail: undefined, hostStatuses: {} }),
             devices: nextEnabled ? state.devices : [],
             sessions: nextEnabled ? state.sessions : [],
             bootingDevices: nextEnabled ? state.bootingDevices : [],
@@ -567,10 +579,7 @@ export const makeWithHosts = Effect.fn("DeviceService.makeWithHosts")(function* 
           }));
         }),
       );
-      if (nextEnabled && nextAgentAccess && input.agentAccessEnabled === true) {
-        yield* agentReadinessIfSupported();
-      }
-      return yield* list;
+      return (yield* SynchronizedRef.get(stateRef)).state;
     },
   );
 

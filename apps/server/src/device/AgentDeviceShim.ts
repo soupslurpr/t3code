@@ -1,10 +1,5 @@
 // @effect-diagnostics preferSchemaOverJson:off - JSON string literals embed paths safely into generated JavaScript.
-/**
- * A directory holding an `agent-device` launcher that runs the pinned install
- * with a Node runtime. Prepended to provider subprocess PATHs so the agent
- * types `agent-device …` and gets the version the injected instructions were
- * written for, regardless of what is or is not globally installed.
- */
+/** Explicit launcher for a T3-managed device session; never added to provider PATH. */
 import { HostProcessPlatform } from "@t3tools/shared/hostProcess";
 import { resolveNodeExecutable } from "@t3tools/shared/nodeRuntime";
 import * as Effect from "effect/Effect";
@@ -35,7 +30,7 @@ if (!informational && !(hasValue("--config") && hasValue("--session"))) {
   console.error("Call device_open first and include its --config and --session flags.");
   process.exit(1);
 }
-const env = { ...process.env };
+const env = { ...process.env, AGENT_DEVICE_NO_UPDATE_NOTIFIER: "1", AGENT_DEVICE_STATE_DIR: ${JSON.stringify(path.join(input.stateDir, "device", "agent-client"))} };
 delete env.AGENT_DEVICE_DAEMON_BASE_URL;
 delete env.AGENT_DEVICE_DAEMON_AUTH_TOKEN;
 delete env.AGENT_DEVICE_CONFIG;

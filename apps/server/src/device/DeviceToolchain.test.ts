@@ -7,6 +7,7 @@ import * as Path from "effect/Path";
 import * as ChildProcessSpawner from "effect/unstable/process/ChildProcessSpawner";
 
 import * as ProcessRunner from "../processRunner.ts";
+import { deviceToolRevision } from "./DeviceToolManifest.ts";
 import {
   deviceToolVersions,
   DEVICE_HUB_VERSION,
@@ -36,7 +37,7 @@ it.effect("failed installation cleans staging and exposes only a safe failure me
       Effect.flip,
     );
     expect(error.message).toBe(
-      "Installing expo-device-hub failed while running npm install (exit code 1).",
+      "Installing expo-device-hub failed while running npm ci (exit code 1).",
     );
     expect(error.cause).toBe(result);
     expect(yield* isDeviceHubInstalled(baseDir)).toBe(false);
@@ -96,4 +97,31 @@ it.effect("unreadable inventory stays unknown instead of reporting no installs",
     ),
     Effect.provide(NodeServices.layer),
   ),
+);
+
+it.effect("reports revision-stamped installs and ignores mismatched completion records", () =>
+  Effect.gen(function* () {
+    const fs = yield* FileSystem.FileSystem;
+    const path = yield* Path.Path;
+    const base = yield* fs.makeTempDirectoryScoped();
+    for (const [directory, version] of [
+      [`${DEVICE_HUB_VERSION}-${deviceToolRevision("expo-device-hub")}`, DEVICE_HUB_VERSION],
+      ["0.8.0-0123456789abcdef", "0.8.0"],
+      ["0.7.0-0123456789abcdef", "0.6.0"],
+    ]) {
+      const dir = path.join(base, "tools", "expo-device-hub", directory!);
+      yield* fs.makeDirectory(path.join(dir, "node_modules/expo-device-hub/dist/server"), {
+        recursive: true,
+      });
+      yield* fs.writeFileString(
+        path.join(dir, "node_modules/expo-device-hub/dist/server/cli.mjs"),
+        "",
+      );
+      yield* fs.writeFileString(path.join(dir, ".install-complete"), version!);
+    }
+    expect((yield* deviceToolVersions(base))?.hub.installedVersions).toEqual(
+      ["0.8.0", DEVICE_HUB_VERSION].sort(),
+    );
+    expect(yield* isDeviceHubInstalled(base)).toBe(true);
+  }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
 );

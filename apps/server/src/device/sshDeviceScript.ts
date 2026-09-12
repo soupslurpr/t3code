@@ -1,5 +1,11 @@
 import { deviceToolMaintenanceScript } from "./deviceToolMaintenance.ts";
-import { AGENT_DEVICE_VERSION, DEVICE_HUB_VERSION } from "./DeviceToolchain.ts";
+import {
+  AGENT_DEVICE_VERSION,
+  DEVICE_HUB_VERSION,
+  deviceToolLocks,
+  deviceToolRevision,
+  finishDeviceNativeInstall,
+} from "./DeviceToolManifest.ts";
 
 export const quoteRemoteArg = (value: string) => `'${value.replaceAll("'", "'\"'\"'")}'`;
 
@@ -28,6 +34,9 @@ const owner = ${JSON.stringify(owner)};
 const mode = ${JSON.stringify(mode)};
 const hubVersion = ${JSON.stringify(DEVICE_HUB_VERSION)};
 const agentVersion = ${JSON.stringify(AGENT_DEVICE_VERSION)};
+const toolLocks = ${JSON.stringify(deviceToolLocks)};
+const toolRevisions = ${JSON.stringify({ "expo-device-hub": deviceToolRevision("expo-device-hub"), "agent-device": deviceToolRevision("agent-device") })};
+const finishNativeInstall = ${finishDeviceNativeInstall};
 ` +
   deviceToolMaintenanceScript +
   String.raw`
@@ -47,19 +56,22 @@ const toolVersions = (name, requiredVersion, entry, record) => {
   let names = [];
   try { names = fs.readdirSync(directory); } catch (error) { if (error.code !== 'ENOENT') return null; }
   let unreadable = false;
-  const installedVersions = names.filter(name => name.startsWith(prefix)).map(name => name.slice(prefix.length)).filter(version => {
-    if (!/^[0-9]+\.[0-9]+\.[0-9]+(?:-[a-zA-Z0-9.-]+)?$/.test(version)) return false;
-    const dir = path.join(directory, prefix + version);
-    try { return fs.readFileSync(path.join(dir, '.install-complete'), 'utf8').trim() === version && fs.existsSync(path.join(dir, 'node_modules', name, entry)); } catch (error) { if (error.code !== 'ENOENT') unreadable = true; return false; }
-  }).sort();
+  const installs = names.filter(name => name.startsWith(prefix)).map(name => name.slice(prefix.length)).flatMap(installId => {
+    if (!/^[0-9]+\.[0-9]+\.[0-9]+(?:-[a-zA-Z0-9.-]+)?$/.test(installId)) return [];
+    const dir = path.join(directory, prefix + installId);
+    try {
+      const version = fs.readFileSync(path.join(dir, '.install-complete'), 'utf8').trim();
+      if (!/^[0-9]+\.[0-9]+\.[0-9]+(?:-[a-zA-Z0-9.-]+)?$/.test(version)) return [];
+      if (installId !== version && !(installId.startsWith(version + '-') && /^[0-9a-f]{16}$/.test(installId.slice(version.length + 1)))) return [];
+      return fs.existsSync(path.join(dir, 'node_modules', name, entry)) ? [{ version, directory: dir }] : [];
+    } catch (error) { if (error.code !== 'ENOENT') unreadable = true; return []; }
+  });
+  const installedVersions = [...new Set(installs.map(install => install.version))].sort();
   if (unreadable) return null;
   let runningVersion = null;
   if (record?.entryPath && record?.pid) {
     const command = run('ps', ['-p', String(record.pid), '-o', 'command=']).stdout || '';
-    runningVersion = installedVersions.find(version => {
-      const install = path.join(directory, prefix + version);
-      return record.entryPath === path.join(install, 'node_modules', name, entry) && command.includes(install + path.sep);
-    }) ?? null;
+    runningVersion = installs.find(install => record.entryPath === path.join(install.directory, 'node_modules', name, entry) && command.includes(install.directory + path.sep))?.version ?? null;
   }
   return { requiredVersion, installedVersions, runningVersion };
 };
@@ -108,7 +120,7 @@ async function acquireLock(lock, complete = () => false) {
   }
 }
 async function install(name, version, entry) {
-  const dir = path.join(root, 'tools', name + '@' + version);
+  const dir = path.join(root, 'tools', name + '@' + version + '-' + toolRevisions[name]);
   const file = path.join(dir, 'node_modules', name, entry);
   const complete = () => fs.existsSync(file) && fs.existsSync(path.join(dir, '.install-complete')) && fs.readFileSync(path.join(dir, '.install-complete'), 'utf8').trim() === version;
   if (complete()) return file;
@@ -120,8 +132,11 @@ async function install(name, version, entry) {
   try {
     if (complete()) return file;
     staging = fs.mkdtempSync(path.join(path.dirname(dir), '.install-'));
-    const result = run('npm', ['install', '--prefix', staging, '--no-fund', '--no-audit', name + '@' + version], { timeout: 600000, maxBuffer: 8 * 1024 * 1024 });
+    fs.writeFileSync(path.join(staging, 'package.json'), JSON.stringify(toolLocks[name].packages['']));
+    fs.writeFileSync(path.join(staging, 'package-lock.json'), JSON.stringify(toolLocks[name]));
+    const result = run('npm', ['ci', '--prefix', staging, '--no-fund', '--no-audit', '--ignore-scripts', '--omit=dev'], { timeout: 600000, maxBuffer: 8 * 1024 * 1024 });
     if (result.status !== 0) throw Error('Installing ' + name + ': ' + (result.error?.message || result.stderr?.slice(-2000)));
+    if (name === 'expo-device-hub') await finishNativeInstall(staging);
     if (!fs.existsSync(path.join(staging, 'node_modules', name, entry))) throw Error('Missing installed entry for ' + name);
     fs.writeFileSync(path.join(staging, '.install-complete'), version);
     fs.rmSync(dir, { recursive: true, force: true });
@@ -158,7 +173,7 @@ async function install(name, version, entry) {
       stopHub(hub);
       fs.rmSync(hubFile, { force: true });
     }
-    const entry = read(agentFile)?.entryPath || path.join(root, 'tools', 'agent-device@' + agentVersion, 'node_modules', 'agent-device', 'bin', 'agent-device.mjs');
+    const entry = read(agentFile)?.entryPath || path.join(root, 'tools', 'agent-device@' + agentVersion + '-' + toolRevisions['agent-device'], 'node_modules', 'agent-device', 'bin', 'agent-device.mjs');
     if (fs.existsSync(entry)) run(process.execPath, [entry, 'daemon', 'stop', '--state-dir', state]);
     return;
   }
@@ -216,7 +231,7 @@ async function install(name, version, entry) {
   }
   const vendor = path.resolve(path.dirname(hubEntry), '../../vendor/serve-sim/dist');
   const optional = file => fs.existsSync(file) ? file : null;
-  await pruneTools(path.join(root, 'tools'), [['expo-device-hub', hubVersion], ...(mode === 'agent-start' ? [['agent-device', agentVersion]] : [])], true).catch(() => {});
+  await pruneTools(path.join(root, 'tools'), [['expo-device-hub', hubVersion + '-' + toolRevisions['expo-device-hub']], ...(mode === 'agent-start' ? [['agent-device', agentVersion + '-' + toolRevisions['agent-device']]] : [])], true).catch(() => {});
   console.log(JSON.stringify({ nodePath: process.execPath, platforms, tools: versions(), hubPort: hub.port, ...agentResult,
     helpers: { serveSimAxSettings: optional(path.join(vendor, 'simax/serve-sim-ax-settings')), serveSimCli: optional(path.join(vendor, 'serve-sim.js')) } }));
   } finally { releaseHost(); }

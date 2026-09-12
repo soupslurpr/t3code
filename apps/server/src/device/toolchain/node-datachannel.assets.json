@@ -1,0 +1,13 @@
+{
+  "node-datachannel-v0.32.3-napi-v8-darwin-arm64.tar.gz": "69fbffdacb9abda2a76809693443328b6aad71af25947e0733913340365f4da8",
+  "node-datachannel-v0.32.3-napi-v8-darwin-x64.tar.gz": "4f79b7ff0fe035db8d2006842537aca2a2def957569aae6ff578107b56adec38",
+  "node-datachannel-v0.32.3-napi-v8-linux-arm.tar.gz": "4212da9a978bf6fb37e6147230268cbdf4ac19297ffa9b93cc05acde129137fb",
+  "node-datachannel-v0.32.3-napi-v8-linux-arm64.tar.gz": "4bdbd80aeb11fb0a903318defe663a833a1f0af2615450fe10dab75c81723445",
+  "node-datachannel-v0.32.3-napi-v8-linux-x64.tar.gz": "4092afc9cd594a3326eb1bd823da452b227b742ea8222689b2cea6f7344cf67a",
+  "node-datachannel-v0.32.3-napi-v8-linuxmusl-arm.tar.gz": "c1d9eaf66a5c14c719947b755db91d7604ebaa6d09b8e75b7a177f239ea19950",
+  "node-datachannel-v0.32.3-napi-v8-linuxmusl-arm64.tar.gz": "894f7ad9f7a78c2f8cf3ba8c1dc24774322cc3f1bad68891cadf5f1223dcfd63",
+  "node-datachannel-v0.32.3-napi-v8-linuxmusl-x64.tar.gz": "543dbd84b2f15b531714b51f8ce29a4690a8d6af6ee69affd5cec5b85c54e871",
+  "node-datachannel-v0.32.3-napi-v8-win32-arm64.tar.gz": "64fe160b953f6dfd44ae3e1f75da0d654e7d23c75c976a2e6a94102fbbc08bb0",
+  "node-datachannel-v0.32.3-napi-v8-win32-x64.tar.gz": "3bfacc4125b296197fe9e22ebd9a52f05321c50aca9d80b92897507f898c12c3",
+  "node-datachannel-v0.32.3-napi-v8-win32-x86.tar.gz": "cf97f107bc73864ec7907f25baf7a7691010ed3bdedde56d6720542deb806d27"
+}
