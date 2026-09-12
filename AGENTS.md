@@ -4,6 +4,17 @@ T3 Code is a minimal GUI for coding agents. A Node WebSocket server wraps provid
 
 You can think of T3 Code as an open source "bring-your-own-subscription" alternative to apps like Claude Desktop, Codex App, Cursor Glass and Conductor.
 
+## Fork maintenance
+
+This checkout is the `soupslurpr/t3code` fork. Maintain a coherent patch series on top of upstream.
+Prefer folding related work into existing fork commits, with new commits for distinct changes.
+This keeps the fork easy to review and rebase.
+
+When integrating upstream, explain what changes for this fork and existing installations, including
+optional capabilities and changes to defaults, permissions, dependencies, or agent behavior. Review
+the full incoming implementation and report material findings, with links to the upstream changes,
+before deployment.
+
 ## What makes T3 Code special?
 
 We have over 200,000 users who love T3 Code. It's important we maintain the things they love as we continue to iterate on the product. Here's a brief list of the things we can never compromise on.
