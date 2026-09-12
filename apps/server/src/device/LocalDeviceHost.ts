@@ -3,8 +3,8 @@
  *
  * Runs expo-device-hub as a supervised child on a loopback port and starts the
  * agent-device daemon in HTTP mode under a T3-owned state directory. Both are
- * lazy: the device service requires explicit setup consent before it calls
- * ensureReady to install tools or start helper processes.
+ * lazy: the device service checks the environment's device settings and calls
+ * ensureReady only when a device operation needs helper processes.
  *
  * The hub runs in its standalone mode (origin root). The T3 proxy strips its
  * own prefix, and the Device panel derives stream and socket URLs from the

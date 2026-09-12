@@ -7,11 +7,12 @@ yourself. Agents get the same device through `device_*` tools and the
 
 ## Open a device
 
-Open the right panel in a project thread and choose **Device**. On first use,
-the panel walks through three steps: starting the device hub, checking iOS and
-Android support, and choosing whether agents may control devices. Opening the
-panel alone does not download or start anything. If the hub is already
-installed, the setup screen says so and reuses it.
+Open the right panel in a project thread and choose **Device**. Device support
+and agent access default to on in new and existing installations. Explicitly
+saved off settings stay off; change them in **Settings → Integrations → Devices**.
+Helpers are downloaded and started when you first discover or open devices,
+not when T3 starts or an ordinary agent session begins. Changing the switches
+alone does not install or start anything. Node and npm are needed for setup.
 
 Choose a running device to watch it, or choose **Start** next to a stopped
 device to boot it. The panel shows when you or an agent starts a device.
@@ -57,14 +58,17 @@ connected to the thread, the same way an agent-driven browser does. Turn off
 **Auto-show floating preview** in **Settings → Integrations → Browser** to open a
 right-panel tab instead. Mobile clients show device activity in the thread
 timeline. Agents drive the device through the `agent-device` command line. T3
-Code installs and starts it only after **Agent device access** is enabled. iOS
-taps build a small test runner on first use, which takes a couple of minutes
-once per server. Restart an existing agent session after granting access so it
-receives the device CLI environment.
+Code installs its managed CLI when an agent first opens a device. The returned
+command includes the host and session, allowing several devices to be used
+independently. Native commands and standalone automation remain available;
+T3 does not change the agent's PATH. iOS taps build a small test runner on
+first use, which can take a couple of minutes.
 
-To keep agents away from simulators, turn off **Agent device access** in
-**Settings → Integrations → Devices**. This hides the device tools from agents
-started from then on; your own Device panel is unaffected.
+Turn off **Agent device access** in **Settings → Integrations → Devices** to
+stop the agent helper and deny access to new agent sessions. The manual Device
+panel remains available. Restart an existing agent session after granting
+access so it receives the new permission. A disabled tool may still appear in
+an agent's tool catalog, but calls are rejected.
 
 ## Remote connections
 

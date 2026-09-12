@@ -36,7 +36,6 @@ import {
   type ServerSettings as ServerSettingsValue,
 } from "@t3tools/contracts";
 import { expandAssistantCitationsForProvider } from "@t3tools/shared/assistantCitations";
-import { HostProcessPlatform } from "@t3tools/shared/hostProcess";
 import { causeErrorTag } from "@t3tools/shared/observability";
 import { getModelSelectionStringOptionValue } from "@t3tools/shared/model";
 import { resolveProjectSettings } from "@t3tools/shared/projectSettings";
@@ -46,7 +45,6 @@ import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
-import * as Path from "effect/Path";
 import * as PubSub from "effect/PubSub";
 import * as Ref from "effect/Ref";
 import * as Schema from "effect/Schema";
@@ -56,8 +54,6 @@ import * as Stream from "effect/Stream";
 import { appendUserInputAttachmentPaths } from "../userInputAttachments.ts";
 import { resolveAttachmentPath } from "../../attachmentStore.ts";
 import * as ServerConfig from "../../config.ts";
-import * as DeviceService from "../../device/DeviceService.ts";
-import { ensureAgentDeviceShim } from "../../device/AgentDeviceShim.ts";
 import {
   increment,
   providerMetricAttributes,
@@ -485,7 +481,6 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
   const issueMcpCredential =
     options?.issueMcpCredential ?? McpSessionRegistry.issueActiveMcpCredential;
   const fileSystem = yield* FileSystem.FileSystem;
-  const pathService = yield* Path.Path;
   const runtimeEventPubSub = yield* PubSub.unbounded<ProviderRuntimeEvent>();
   const pendingCompactions = new Map<ThreadId, PendingCompaction>();
   const timedOutNativeCompactions = new Set<ThreadId>();
@@ -913,47 +908,12 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
     return capabilities;
   });
 
-  /** Install only the local CLI here. device_open supplies a separate config for each host. */
-  const hostPlatform = yield* HostProcessPlatform;
-  const agentDeviceEnvironment = Effect.gen(function* () {
-    const devices = yield* Effect.serviceOption(DeviceService.DeviceService);
-    if (Option.isNone(devices)) return undefined;
-    const entryPath = yield* devices.value.agentCli.pipe(
-      Effect.catch((cause) =>
-        Effect.logWarning("Agent device CLI unavailable", { cause }).pipe(Effect.as(null)),
-      ),
-    );
-    if (!entryPath) return undefined;
-    const shimDir = yield* ensureAgentDeviceShim({
-      entryPath,
-      stateDir: serverConfig.stateDir,
-    }).pipe(
-      Effect.provideService(FileSystem.FileSystem, fileSystem),
-      Effect.provideService(Path.Path, pathService),
-      Effect.orElseSucceed(() => undefined),
-    );
-    if (!shimDir) return undefined;
-    return {
-      PATH: shimDir,
-      PATH_SEPARATOR: hostPlatform === "win32" ? ";" : ":",
-      AGENT_DEVICE_NO_UPDATE_NOTIFIER: "1",
-    } satisfies Record<string, string>;
-  });
-
   const prepareMcpSession = (threadId: ThreadId, providerInstanceId: ProviderInstanceId) =>
     Effect.gen(function* () {
       const capabilities = yield* agentAccessCapabilities(threadId);
       const credential = yield* issueMcpCredential({ threadId, providerInstanceId, capabilities });
       if (credential) {
-        const deviceEnvironment = capabilities.has("device")
-          ? yield* agentDeviceEnvironment
-          : undefined;
-        yield* Effect.sync(() =>
-          McpProviderSession.setMcpProviderSession({
-            ...credential.config,
-            ...(deviceEnvironment ? { agentDeviceEnvironment: deviceEnvironment } : {}),
-          }),
-        );
+        yield* Effect.sync(() => McpProviderSession.setMcpProviderSession(credential.config));
       }
       return credential;
     });

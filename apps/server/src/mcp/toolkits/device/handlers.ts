@@ -49,7 +49,7 @@ export function agentDeviceQuickStart(
       : "The Android snapshot helper installs itself on first use.";
   return [
     `The user is watching ${device.name} (${device.version}) in the Device panel.`,
-    `Drive it with ${executable}. Use this exact executable path; login shells may reset PATH. Always pass ${target}.`,
+    `Drive it with ${executable}. For this managed session, use this executable path and pass ${target}.`,
     "Typical loop:",
     `  ${executable} open <bundle-or-package-id> ${target}     # or: open <app> <deep-link-url>`,
     `  ${executable} snapshot -i ${target}                     # accessibility tree with @eN refs`,
@@ -58,7 +58,7 @@ export function agentDeviceQuickStart(
     `  ${executable} screenshot /tmp/shot.png ${target}        # or call device_screenshot`,
     `  ${executable} install <app> <path-to-.app-or-.apk> ${target}`,
     `Prefer snapshot refs over coordinates. Run ${executable} help for workflow guides and ${executable} <command> --help for flags.`,
-    "Do not call simctl, adb, xcrun, or serve-sim directly while these tools are attached; use agent-device.",
+    "Native tools (adb, simctl, xcrun) and standalone automation remain available; choose whichever fits the task.",
     "For remote hosts, arrange builds, app installation, and any Metro reverse forwarding yourself. T3 provides discovery, streaming, and control only.",
     "Keep the returned --config and --session flags on every command. Other hosts can be used concurrently; opening one does not switch these commands.",
     platformNotes,

@@ -1,4 +1,10 @@
-import { AGENT_DEVICE_VERSION, DEVICE_HUB_VERSION } from "./DeviceToolchain.ts";
+import {
+  AGENT_DEVICE_VERSION,
+  DEVICE_HUB_VERSION,
+  deviceToolLocks,
+  deviceToolRevision,
+  finishDeviceNativeInstall,
+} from "./DeviceToolManifest.ts";
 
 export const quoteRemoteArg = (value: string) => `'${value.replaceAll("'", "'\"'\"'")}'`;
 
@@ -27,6 +33,9 @@ const owner = ${JSON.stringify(owner)};
 const mode = ${JSON.stringify(mode)};
 const hubVersion = ${JSON.stringify(DEVICE_HUB_VERSION)};
 const agentVersion = ${JSON.stringify(AGENT_DEVICE_VERSION)};
+const toolLocks = ${JSON.stringify(deviceToolLocks)};
+const toolRevisions = ${JSON.stringify({ "expo-device-hub": deviceToolRevision("expo-device-hub"), "agent-device": deviceToolRevision("agent-device") })};
+const finishNativeInstall = ${finishDeviceNativeInstall};
 ` +
   String.raw`
 const fs = require('node:fs');
@@ -77,7 +86,7 @@ async function acquireLock(lock, complete = () => false) {
   }
 }
 async function install(name, version, entry) {
-  const dir = path.join(root, 'tools', name + '@' + version);
+  const dir = path.join(root, 'tools', name + '@' + version + '-' + toolRevisions[name]);
   const file = path.join(dir, 'node_modules', name, entry);
   const complete = () => fs.existsSync(file) && fs.existsSync(path.join(dir, '.install-complete')) && fs.readFileSync(path.join(dir, '.install-complete'), 'utf8').trim() === version;
   if (complete()) return file;
@@ -89,8 +98,11 @@ async function install(name, version, entry) {
   try {
     if (complete()) return file;
     staging = fs.mkdtempSync(path.join(path.dirname(dir), '.install-'));
-    const result = run('npm', ['install', '--prefix', staging, '--no-fund', '--no-audit', name + '@' + version], { timeout: 600000, maxBuffer: 8 * 1024 * 1024 });
+    fs.writeFileSync(path.join(staging, 'package.json'), JSON.stringify(toolLocks[name].packages['']));
+    fs.writeFileSync(path.join(staging, 'package-lock.json'), JSON.stringify(toolLocks[name]));
+    const result = run('npm', ['ci', '--prefix', staging, '--no-fund', '--no-audit', '--ignore-scripts', '--omit=dev'], { timeout: 600000, maxBuffer: 8 * 1024 * 1024 });
     if (result.status !== 0) throw Error('Installing ' + name + ': ' + (result.error?.message || result.stderr?.slice(-2000)));
+    if (name === 'expo-device-hub') await finishNativeInstall(staging);
     if (!fs.existsSync(path.join(staging, 'node_modules', name, entry))) throw Error('Missing installed entry for ' + name);
     fs.writeFileSync(path.join(staging, '.install-complete'), version);
     fs.rmSync(dir, { recursive: true, force: true });
@@ -127,7 +139,7 @@ async function install(name, version, entry) {
       stopHub(hub);
       fs.rmSync(hubFile, { force: true });
     }
-    const entry = read(agentFile)?.entryPath || path.join(root, 'tools', 'agent-device@' + agentVersion, 'node_modules', 'agent-device', 'bin', 'agent-device.mjs');
+    const entry = read(agentFile)?.entryPath || path.join(root, 'tools', 'agent-device@' + agentVersion + '-' + toolRevisions['agent-device'], 'node_modules', 'agent-device', 'bin', 'agent-device.mjs');
     if (fs.existsSync(entry)) run(process.execPath, [entry, 'daemon', 'stop', '--state-dir', state]);
     return;
   }

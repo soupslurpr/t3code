@@ -33,7 +33,7 @@ const decodeServerSettings = Schema.decodeUnknownEffect(ServerSettings);
 
 const makeServerSettingsLayer = () =>
   ServerSettingsModule.layer.pipe(
-    Layer.provide(ServerSecretStore.layer),
+    Layer.provideMerge(ServerSecretStore.layer),
     Layer.provideMerge(Layer.fresh(SqlitePersistenceMemory)),
     Layer.provideMerge(
       Layer.fresh(
@@ -122,6 +122,79 @@ it.layer(NodeServices.layer)("server settings", (it) => {
       assert.notInclude(error.message, cause.message);
     }).pipe(Effect.provide(settingsLayer));
   });
+
+  it.effect("new environments enable lazy device access and persist both choices", () =>
+    Effect.gen(function* () {
+      const settings = yield* ServerSettingsModule.ServerSettingsService;
+      const config = yield* ServerConfig.ServerConfig;
+      const fs = yield* FileSystem.FileSystem;
+      const initial = yield* settings.getSettings;
+      assert.isTrue(initial.enableDeviceSupport);
+      assert.isTrue(initial.enableAgentDeviceAccess);
+      yield* settings.updateSettings({ enableDeviceSupport: false });
+      const saved = yield* fs.readFileString(config.settingsPath).pipe(
+        Effect.flatMap(
+          Schema.decodeUnknownEffect(
+            Schema.fromJsonString(
+              Schema.Struct({
+                enableDeviceSupport: Schema.Boolean,
+                enableAgentDeviceAccess: Schema.Boolean,
+              }),
+            ),
+          ),
+        ),
+      );
+      assert.deepEqual(saved, { enableDeviceSupport: false, enableAgentDeviceAccess: true });
+      const reloaded = yield* Effect.gen(function* () {
+        return yield* (yield* ServerSettingsModule.ServerSettingsService).getSettings;
+      }).pipe(Effect.provide(Layer.fresh(ServerSettingsModule.layer)));
+      assert.isFalse(reloaded.enableDeviceSupport);
+      assert.isTrue(reloaded.enableAgentDeviceAccess);
+    }).pipe(Effect.provide(makeServerSettingsLayer())),
+  );
+
+  for (const [label, raw, enabled, agentAccess] of [
+    ["an existing file without device settings", "{}", true, true],
+    ["explicit opt-ins", '{"enableDeviceSupport":true,"enableAgentDeviceAccess":true}', true, true],
+    [
+      "explicit opt-outs",
+      '{"enableDeviceSupport":false,"enableAgentDeviceAccess":false}',
+      false,
+      false,
+    ],
+    ["only the hub disabled", '{"enableDeviceSupport":false}', false, true],
+    ["only agent access disabled", '{"enableAgentDeviceAccess":false}', true, false],
+    ["malformed settings", "{invalid json", true, true],
+  ] as const) {
+    it.effect(`loads and persists device defaults for ${label}`, () =>
+      Effect.gen(function* () {
+        const settings = yield* ServerSettingsModule.ServerSettingsService;
+        const config = yield* ServerConfig.ServerConfig;
+        const fs = yield* FileSystem.FileSystem;
+        yield* fs.writeFileString(config.settingsPath, raw);
+        const loaded = yield* settings.getSettings;
+        assert.equal(loaded.enableDeviceSupport, enabled);
+        assert.equal(loaded.enableAgentDeviceAccess, agentAccess);
+        yield* settings.updateSettings({ deviceOnboardingCompleted: true });
+        const saved = yield* fs.readFileString(config.settingsPath).pipe(
+          Effect.flatMap(
+            Schema.decodeUnknownEffect(
+              Schema.fromJsonString(
+                Schema.Struct({
+                  enableDeviceSupport: Schema.Boolean,
+                  enableAgentDeviceAccess: Schema.Boolean,
+                }),
+              ),
+            ),
+          ),
+        );
+        assert.deepEqual(saved, {
+          enableDeviceSupport: enabled,
+          enableAgentDeviceAccess: agentAccess,
+        });
+      }).pipe(Effect.provide(makeServerSettingsLayer())),
+    );
+  }
 
   it.effect("identifies provider history query failures", () =>
     Effect.gen(function* () {
@@ -1028,6 +1101,8 @@ it.layer(NodeServices.layer)("server settings", (it) => {
       const raw = yield* fileSystem.readFileString(serverConfig.settingsPath);
       // @effect-diagnostics-next-line preferSchemaOverJson:off
       assert.deepEqual(JSON.parse(raw), {
+        enableDeviceSupport: true,
+        enableAgentDeviceAccess: true,
         addProjectBaseDirectory: "~/Development",
         observability: {
           otlpTracesUrl: "http://localhost:4318/v1/traces",

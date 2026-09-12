@@ -77,6 +77,9 @@ import * as ServerConfig from "../../config.ts";
 import * as ServerSettings from "../../serverSettings.ts";
 import * as AnalyticsService from "../../telemetry/AnalyticsService.ts";
 import { makeAdapterRegistryMock } from "../testUtils/providerAdapterRegistryMock.ts";
+import * as DeviceService from "../../device/DeviceService.ts";
+import * as McpProviderSession from "../../mcp/McpProviderSession.ts";
+import { HttpClient } from "effect/unstable/http";
 import * as ProjectionSnapshotQuery from "../../orchestration/Services/ProjectionSnapshotQuery.ts";
 
 const encodeJson = Schema.encodeSync(Schema.fromJsonString(Schema.Unknown));
@@ -5014,9 +5017,34 @@ describe("agent browser access", () => {
               threadId: request.threadId,
               capabilities: [...request.capabilities].toSorted(),
             });
-            return undefined;
+            return {
+              config: {
+                ...request,
+                environmentId: EnvironmentId.make("device-startup-test"),
+                providerSessionId: "device-startup-test",
+                endpoint: "http://127.0.0.1/mcp",
+                authorizationHeader: "Bearer test",
+              },
+            };
           }),
       }).pipe(
+        Layer.provide(
+          Layer.effect(
+            DeviceService.DeviceService,
+            DeviceService.makeWithHosts(new Map()).pipe(
+              Effect.map((service) => ({
+                ...service,
+                agentCli: Effect.die("Provider startup must not install device tools"),
+              })),
+              Effect.provideService(
+                HttpClient.HttpClient,
+                HttpClient.make(() =>
+                  Effect.die("Provider startup must not contact device helpers"),
+                ),
+              ),
+            ),
+          ),
+        ),
         Layer.provide(providerAdapterLayer),
         Layer.provide(directoryLayer),
         Layer.provide(options?.withoutOrchestration ? Layer.empty : projectionLayer),
@@ -5053,12 +5081,16 @@ describe("agent browser access", () => {
 
       yield* Effect.gen(function* () {
         const provider = yield* ProviderService.ProviderService;
-        return yield* provider.startSession(threadId, {
+        const session = yield* provider.startSession(threadId, {
           provider: CODEX_DRIVER,
           providerInstanceId: codexInstanceId,
           threadId,
           runtimeMode: "full-access",
         });
+        assert.isFalse(
+          "agentDeviceEnvironment" in McpProviderSession.readMcpProviderSession(threadId)!,
+        );
+        return session;
       }).pipe(Effect.provide(providerLayer));
 
       return issued;
@@ -5077,16 +5109,18 @@ describe("agent browser access", () => {
     }).pipe(Effect.provide(NodeServices.layer)),
   );
 
-  it.effect("issues a credential with preview when agent browser access is on", () =>
-    Effect.gen(function* () {
-      const threadId = asThreadId("thread-browser-on");
+  it.effect(
+    "starts a device-enabled session without installing helpers or overriding its environment",
+    () =>
+      Effect.gen(function* () {
+        const threadId = asThreadId("thread-browser-on");
 
-      const issued = yield* startSessionWith(true, threadId);
+        const issued = yield* startSessionWith(true, threadId);
 
-      assert.deepEqual(issued, [
-        { threadId, capabilities: ["computer", "device", "preview", "pull-requests"] },
-      ]);
-    }).pipe(Effect.provide(NodeServices.layer)),
+        assert.deepEqual(issued, [
+          { threadId, capabilities: ["computer", "device", "preview", "pull-requests"] },
+        ]);
+      }).pipe(Effect.provide(NodeServices.layer)),
   );
 
   it.effect("drops only the preview capability when browser access alone is off", () =>
@@ -5095,7 +5129,9 @@ describe("agent browser access", () => {
 
       const issued = yield* startSessionWith({ browser: false, device: true }, threadId);
 
-      assert.deepEqual(issued, [{ threadId, capabilities: ["computer", "device", "pull-requests"] }]);
+      assert.deepEqual(issued, [
+        { threadId, capabilities: ["computer", "device", "pull-requests"] },
+      ]);
     }).pipe(Effect.provide(NodeServices.layer)),
   );
 
@@ -5111,7 +5147,9 @@ describe("agent browser access", () => {
     Effect.gen(function* () {
       const threadId = asThreadId("thread-project-browser-off-device-on");
       const issued = yield* startSessionWith(true, threadId, false);
-      assert.deepEqual(issued, [{ threadId, capabilities: ["computer", "device", "pull-requests"] }]);
+      assert.deepEqual(issued, [
+        { threadId, capabilities: ["computer", "device", "pull-requests"] },
+      ]);
     }).pipe(Effect.provide(NodeServices.layer)),
   );
 
@@ -5119,7 +5157,9 @@ describe("agent browser access", () => {
     Effect.gen(function* () {
       const threadId = asThreadId("thread-project-browser-on");
       const issued = yield* startSessionWith({ browser: false, device: false }, threadId, true);
-      assert.deepEqual(issued, [{ threadId, capabilities: ["computer", "preview", "pull-requests"] }]);
+      assert.deepEqual(issued, [
+        { threadId, capabilities: ["computer", "preview", "pull-requests"] },
+      ]);
     }).pipe(Effect.provide(NodeServices.layer)),
   );
 

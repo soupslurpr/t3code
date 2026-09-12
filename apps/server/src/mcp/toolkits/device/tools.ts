@@ -27,7 +27,7 @@ const dependencies = [McpInvocationContext.McpInvocationContext, DeviceService.D
  */
 const DeviceListTool = Tool.make("device_list", {
   description:
-    "List iOS Simulators and Android Emulators on this environment's device hosts, which platforms each host can run, and which devices are already open in this thread's Device panel. Call this before device_open when you do not know a device id.",
+    "List iOS Simulators and Android Emulators on this environment's device hosts, which platforms each host can run, and which devices are already open in this thread's Device panel. Call this before device_open when you do not know a device id. First discovery installs and starts the device hub on available hosts.",
   // An empty struct serializes as `anyOf [object, array]`, which some
   // providers reject and then drop every tool on the server with it.
   parameters: Schema.Struct({
@@ -40,10 +40,10 @@ const DeviceListTool = Tool.make("device_list", {
   dependencies,
 })
   .annotate(Tool.Title, "List devices")
-  .annotate(Tool.Readonly, true)
+  .annotate(Tool.Readonly, false)
   .annotate(Tool.Destructive, false)
   .annotate(Tool.Idempotent, true)
-  .annotate(Tool.OpenWorld, false);
+  .annotate(Tool.OpenWorld, true);
 
 const DeviceOpenTool = Tool.make("device_open", {
   description:

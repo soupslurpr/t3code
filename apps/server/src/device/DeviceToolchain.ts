@@ -1,18 +1,5 @@
-/**
- * Pinned installs of the two external tools device support is built on.
- *
- * `expo-device-hub` streams simulator and emulator screens and `agent-device`
- * drives them. Each is npm-installed separately after its matching consent
- * step into `<baseDir>/tools/<name>/<version>` and executed from there with the
- * server's own Node, never `npx`: an ephemeral
- * npx cache would make every first `device_open` after a reboot depend on the
- * registry, and the pinned versions are part of the contract the injected
- * agent instructions describe.
- *
- * Install follows the pinned-runtime recipe: stage into a temp sibling, write a
- * sentinel only after npm exits 0, then rename into place. npm extracts files
- * before it finishes, so an entry file alone does not prove a usable tree.
- */
+// @effect-diagnostics preferSchemaOverJson:off - serialize bundled, trusted npm manifests.
+/** Lazy, reproducible device helper installs, staged atomically and never placed on provider PATH. */
 import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
@@ -24,10 +11,15 @@ import * as Semaphore from "effect/Semaphore";
 
 import * as ProcessRunner from "../processRunner.ts";
 
-const DEVICE_HUB_PACKAGE = "expo-device-hub";
-export const DEVICE_HUB_VERSION = "0.9.0";
-const AGENT_DEVICE_PACKAGE = "agent-device";
-export const AGENT_DEVICE_VERSION = "0.20.10";
+import {
+  AGENT_DEVICE_VERSION,
+  DEVICE_HUB_VERSION,
+  deviceToolLocks,
+  deviceToolRevision,
+  finishDeviceNativeInstall,
+  type DeviceToolName,
+} from "./DeviceToolManifest.ts";
+export { AGENT_DEVICE_VERSION, DEVICE_HUB_VERSION } from "./DeviceToolManifest.ts";
 
 const INSTALL_TIMEOUT = Duration.minutes(10);
 const installLock = Semaphore.makeUnsafe(1);
@@ -60,25 +52,30 @@ export class DeviceToolchainInstallError extends Schema.TaggedError<DeviceToolch
 }
 
 interface ToolSpec {
-  readonly name: string;
+  readonly name: DeviceToolName;
   readonly version: string;
   readonly entry: ReadonlyArray<string>;
 }
 
 const HUB_SPEC: ToolSpec = {
-  name: DEVICE_HUB_PACKAGE,
+  name: "expo-device-hub",
   version: DEVICE_HUB_VERSION,
   entry: ["dist", "server", "cli.mjs"],
 };
 
 const AGENT_DEVICE_SPEC: ToolSpec = {
-  name: AGENT_DEVICE_PACKAGE,
+  name: "agent-device",
   version: AGENT_DEVICE_VERSION,
   entry: ["bin", "agent-device.mjs"],
 };
 
 const toolPaths = (path: Path.Path, baseDir: string, spec: ToolSpec): DeviceToolPaths => {
-  const installDir = path.join(baseDir, "tools", spec.name, spec.version);
+  const installDir = path.join(
+    baseDir,
+    "tools",
+    spec.name,
+    `${spec.version}-${deviceToolRevision(spec.name)}`,
+  );
   return {
     installDir,
     entryPath: path.join(installDir, "node_modules", spec.name, ...spec.entry),
@@ -131,13 +128,21 @@ const installTool = Effect.fn("DeviceToolchain.installTool")(function* (
     .pipe(Effect.mapError(fail("preparing the install directory")));
 
   return yield* Effect.gen(function* () {
+    const lock = deviceToolLocks[spec.name];
+    yield* fs
+      .writeFileString(path.join(stagingDir, "package.json"), JSON.stringify(lock.packages[""]))
+      .pipe(Effect.mapError(fail("writing the package manifest")));
+    yield* fs
+      .writeFileString(path.join(stagingDir, "package-lock.json"), JSON.stringify(lock))
+      .pipe(Effect.mapError(fail("writing the dependency lock")));
     const installArgs = [
-      "install",
+      "ci",
       "--prefix",
       stagingDir,
       "--no-fund",
       "--no-audit",
-      `${spec.name}@${spec.version}`,
+      "--ignore-scripts",
+      "--omit=dev",
     ];
     const result = yield* runner
       .run({ command: "npm", args: installArgs, timeout: INSTALL_TIMEOUT })
@@ -148,20 +153,39 @@ const installTool = Effect.fn("DeviceToolchain.installTool")(function* (
             error.cause.reason._tag === "NotFound"
               ? runner.run({
                   command: "pnpm",
-                  args: ["--package=npm@11", "dlx", "npm", ...installArgs],
+                  args: ["--package=npm@11.12.1", "dlx", "npm", ...installArgs],
                   timeout: INSTALL_TIMEOUT,
                 })
               : Effect.fail(error),
         }),
-        Effect.mapError(fail("running npm install")),
+        Effect.mapError(fail("running npm ci")),
       );
     if (result.code !== 0) {
       return yield* new DeviceToolchainInstallError({
         tool: spec.name,
-        step: "running npm install",
+        step: "running npm ci",
         exitCode: Number(result.code),
         cause: result,
       });
+    }
+    if (spec.name === "expo-device-hub") {
+      const native = yield* runner
+        .run({
+          command: process.execPath,
+          args: [
+            "-e",
+            `(${finishDeviceNativeInstall})(${JSON.stringify(stagingDir)}).catch(error => { console.error(error.message); process.exitCode = 1; });`,
+          ],
+          timeout: INSTALL_TIMEOUT,
+        })
+        .pipe(Effect.mapError(fail("installing the verified streaming binary")));
+      if (native.code !== 0)
+        return yield* new DeviceToolchainInstallError({
+          tool: spec.name,
+          step: "installing the verified streaming binary",
+          exitCode: Number(native.code),
+          cause: native,
+        });
     }
     const stagedEntry = path.join(stagingDir, "node_modules", spec.name, ...spec.entry);
     if (!(yield* fs.exists(stagedEntry).pipe(Effect.orElseSucceed(() => false)))) {

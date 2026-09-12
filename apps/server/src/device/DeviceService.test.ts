@@ -61,8 +61,13 @@ const fixture = Effect.fn("fixture")(function* (
   onBoot: Effect.Effect<void> = Effect.void,
   bootError?: string,
   failListAfterShutdown = false,
+  discoveryErrors: ReadonlyArray<string> = [],
 ) {
-  const settings = yield* Ref.make(DEFAULT_SERVER_SETTINGS);
+  const settings = yield* Ref.make({
+    ...DEFAULT_SERVER_SETTINGS,
+    enableDeviceSupport: false,
+    enableAgentDeviceAccess: false,
+  });
   const starts: string[] = [];
   const agentStarts: string[] = [];
   const agentStops: string[] = [];
@@ -166,6 +171,7 @@ const fixture = Effect.fn("fixture")(function* (
             request,
             Response.json({
               simulators: [],
+              errors: discoveryErrors.map((message) => ({ message })),
               emulators: booted
                 ? [
                     {
@@ -187,6 +193,17 @@ const fixture = Effect.fn("fixture")(function* (
   return { service, starts, agentStarts, agentStops, requests, settings };
 });
 
+it.effect("omits an unavailable iOS probe failure without hiding Android discovery errors", () =>
+  Effect.gen(function* () {
+    const { service } = yield* fixture(Effect.void, undefined, false, [
+      "[apple-utils] Failed to run `xcrun simctl list devices --json:",
+      "Android discovery failed",
+    ]);
+    yield* service.configure({ enabled: true });
+    expect((yield* service.list).hostStatusDetail).toBe("Android discovery failed");
+  }).pipe(Effect.scoped),
+);
+
 describe("device setup consent", () => {
   it.effect("listing and provider startup do not start helpers before consent", () =>
     Effect.gen(function* () {
@@ -205,11 +222,17 @@ describe("device setup consent", () => {
     () =>
       Effect.gen(function* () {
         const { service, starts, settings } = yield* fixture();
-        const state = yield* service.configure({ enabled: true });
+        yield* service.configure({ enabled: true });
+        expect(starts).toEqual([]);
+        const state = yield* service.list;
         expect((yield* Ref.get(settings)).enableDeviceSupport).toBe(true);
         expect(state.devices.map((device) => [device.id, device.booted])).toEqual([
           ["Pixel_API_35", false],
         ]);
+        expect(starts).toEqual(["start"]);
+        const completed = yield* service.configure({ onboardingCompleted: true });
+        expect(completed.hostStatus).toBe("ready");
+        expect(completed.hostStatuses).toEqual(state.hostStatuses);
         expect(starts).toEqual(["start"]);
         const disabled = yield* service.configure({ enabled: false });
         expect(disabled.hostStatus).toBe("disabled");
@@ -237,7 +260,7 @@ describe("device setup consent", () => {
     }).pipe(Effect.scoped),
   );
 
-  it.effect("installs agent support only after the separate agent permission", () =>
+  it.effect("starting agent tools requires permission and a device operation", () =>
     Effect.gen(function* () {
       const { service, agentStarts, agentStops, settings } = yield* fixture();
       yield* service.configure({ enabled: true });
@@ -245,6 +268,8 @@ describe("device setup consent", () => {
       expect(yield* service.agentReadinessIfSupported()).toBeNull();
 
       yield* service.configure({ agentAccessEnabled: true });
+      expect(agentStarts).toEqual([]);
+      expect(yield* service.agentReadinessIfSupported()).not.toBeNull();
       expect(agentStarts).toEqual(["start"]);
       expect((yield* Ref.get(settings)).enableAgentDeviceAccess).toBe(true);
       expect((yield* service.state).agentAccessEnabled).toBe(true);
