@@ -14,9 +14,9 @@ import { cn } from "~/lib/utils";
 const platformName = (platform: DevicePlatform) => (platform === "ios" ? "iOS" : "Android");
 
 export const deviceHubDescription =
-  "Enable this environment to open simulators and emulators, whether they run here or on a remote device host.";
+  "Open local or remote simulators and emulators. Device helpers are installed when you first discover or open devices.";
 export const agentDeviceDescription =
-  "Allow new agent sessions in this environment to start and control local and remote devices, with required tools set up automatically.";
+  "Allow new agent sessions to control local and remote devices. Agent tools are installed when an agent first opens a device.";
 
 export function platformSetupStatus(state: DeviceServiceState, platform: DevicePlatform) {
   const availability = state.hosts
@@ -170,15 +170,12 @@ export function DeviceSetup(props: {
           </Button>
         )}
         {step < 2 ? (
-          <Button
-            disabled={props.state.hostStatus !== "ready" || pending !== null}
-            onClick={() => setStep(step + 1)}
-          >
+          <Button disabled={!enabled || busy || pending !== null} onClick={() => setStep(step + 1)}>
             Continue
           </Button>
         ) : (
           <Button
-            disabled={props.state.hostStatus !== "ready" || pending !== null}
+            disabled={!enabled || busy || pending !== null}
             onClick={() => void update("complete", { onboardingCompleted: true })}
           >
             {pending === "complete" ? "Saving…" : "Done"}

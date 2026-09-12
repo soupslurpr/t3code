@@ -8,7 +8,13 @@ import * as NodeOS from "node:os";
 import * as NodePath from "node:path";
 import * as NodeUtil from "node:util";
 import { quoteRemoteArg, remoteDeviceEnvironment, remoteDeviceScript } from "./sshDeviceScript.ts";
-import { AGENT_DEVICE_VERSION, DEVICE_HUB_VERSION } from "./DeviceToolchain.ts";
+import {
+  AGENT_DEVICE_VERSION,
+  DEVICE_HUB_VERSION,
+  deviceToolRevision,
+  finishDeviceNativeInstall,
+  type DeviceToolName,
+} from "./DeviceToolManifest.ts";
 
 const exec = NodeUtil.promisify(NodeChildProcess.execFile);
 
@@ -57,8 +63,14 @@ describe("remote helper lifecycle", () => {
         await NodeFSP.mkdir(bin);
         await NodeFSP.writeFile(NodePath.join(bin, "adb"), "#!/bin/sh\nexit 0\n", { mode: 0o755 });
         const root = NodePath.join(home, ".t3/device");
-        const hubDir = NodePath.join(root, `tools/expo-device-hub@${DEVICE_HUB_VERSION}`);
-        const agentDir = NodePath.join(root, `tools/agent-device@${AGENT_DEVICE_VERSION}`);
+        const hubDir = NodePath.join(
+          root,
+          `tools/expo-device-hub@${DEVICE_HUB_VERSION}-${deviceToolRevision("expo-device-hub")}`,
+        );
+        const agentDir = NodePath.join(
+          root,
+          `tools/agent-device@${AGENT_DEVICE_VERSION}-${deviceToolRevision("agent-device")}`,
+        );
         const hub = NodePath.join(hubDir, "node_modules/expo-device-hub/dist/server/cli.mjs");
         const agent = NodePath.join(agentDir, "node_modules/agent-device/bin/agent-device.mjs");
         await NodeFSP.mkdir(NodePath.join(hubDir, "node_modules/expo-device-hub/dist/server"), {
@@ -99,6 +111,11 @@ else { const child=spawn(process.execPath,[process.argv[1],'serve'],{detached:tr
             file,
             `const originalKill = process.kill; process.kill = (pid, signal) => { if (signal === 'SIGTERM') require('node:fs').appendFileSync(${JSON.stringify(NodePath.join(home, "stops"))}, pid+'\\n'); return originalKill(pid, signal); };\n` +
               remoteDeviceScript(owner, mode)
+                // This fixture exercises helper ownership; native verification has its own test.
+                .replace(
+                  `const finishNativeInstall = ${finishDeviceNativeInstall};`,
+                  "const finishNativeInstall = async () => {};",
+                )
                 .replace(DEVICE_HUB_VERSION, upgraded ? nextHubVersion : DEVICE_HUB_VERSION)
                 .replace(AGENT_DEVICE_VERSION, upgraded ? nextAgentVersion : AGENT_DEVICE_VERSION),
           );
@@ -162,7 +179,10 @@ else { const child=spawn(process.execPath,[process.argv[1],'serve'],{detached:tr
             [hubDir, "expo-device-hub", nextHubVersion],
             [agentDir, "agent-device", nextAgentVersion],
           ]) {
-            const destination = NodePath.join(root, `tools/${name}@${version}`);
+            const destination = NodePath.join(
+              root,
+              `tools/${name}@${version}-${deviceToolRevision(name as DeviceToolName)}`,
+            );
             await NodeFSP.cp(source!, destination, { recursive: true });
             await NodeFSP.writeFile(NodePath.join(destination, ".install-complete"), version!);
           }

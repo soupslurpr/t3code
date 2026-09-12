@@ -4578,12 +4578,12 @@ export default function ChatView(props: ChatViewProps) {
   const [deviceSetupThread, setDeviceSetupThread] = useState<ScopedThreadRef | null>(null);
   const addDeviceSurface = useCallback(() => {
     if (!activeThreadRef) return;
-    if (!deviceState.onboardingCompleted || deviceState.hostStatus === "disabled") {
+    if (deviceState.hostStatus === "disabled") {
       setDeviceSetupThread(activeThreadRef);
       return;
     }
     useRightPanelStore.getState().open(activeThreadRef, "device");
-  }, [activeThreadRef, deviceState.onboardingCompleted, deviceState.hostStatus]);
+  }, [activeThreadRef, deviceState.hostStatus]);
   // A device the agent opens floats over chat like an agent-driven browser,
   // or becomes a panel tab when floating previews are off. Sessions opened by
   // another client arrive the same way; sheet layouts get neither. The first

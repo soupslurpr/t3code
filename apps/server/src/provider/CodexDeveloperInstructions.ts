@@ -16,7 +16,7 @@ const T3_CODE_DEVICE_TOOL_INSTRUCTIONS = `
 
 ## T3 Code devices
 
-The \`t3-code\` MCP server also exposes \`device_*\` tools for iOS Simulators and Android Emulators on this environment. For mobile verification, call \`device_list\`, then \`device_open\` so the user can watch the device in their Device panel; its result explains how to drive the device. Driving happens through the \`agent-device\` CLI, which is on PATH. Keep the host config and session flags returned by \`device_open\` on every command so concurrent devices stay independent: prefer \`agent-device snapshot -i\` refs over coordinates, and use \`device_screenshot\` when you need to see the screen. Do not call simctl, adb, xcrun, or serve-sim directly while these tools are present. If \`device_list\` reports a platform as unavailable, say so instead of trying another route.
+The \`t3-code\` MCP server exposes \`device_*\` tools for sharing iOS Simulator and Android Emulator sessions with the user. Call \`device_list\` to discover devices and \`device_open\` to stream one into the Device panel. Its result includes an explicit agent-device executable and host/session flags; retain those flags on each command to keep concurrent devices independent. Helpers are installed on first use. Native tools such as adb, simctl, xcrun, and standalone automation remain available; choose the approach that fits the task. A platform unavailable through T3 may still be usable through another route.
 `;
 
 export interface T3CodeToolAvailability {

@@ -166,7 +166,7 @@ export function DevicePanel(props: {
       .map((platform) => ({ ...platform, hostId: host.id, hostLabel: host.label })),
   );
 
-  if (loaded && (!state.onboardingCompleted || hostDisabled)) {
+  if (loaded && hostDisabled) {
     return (
       <Dialog
         open={props.visible}

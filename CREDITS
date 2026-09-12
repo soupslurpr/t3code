@@ -27,3 +27,18 @@ LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ```
+
+## Device helper dependency manifests
+
+Source: [expo-device-hub 0.9.0](https://registry.npmjs.org/expo-device-hub/0.9.0),
+[agent-device 0.20.10](https://registry.npmjs.org/agent-device/0.20.10).
+
+- `apps/server/src/device/toolchain/expo-device-hub.lock.json`: adapted; generated npm dependency metadata, with exact registry locations and integrity hashes.
+- `apps/server/src/device/toolchain/agent-device.lock.json`: adapted; generated npm dependency metadata, with exact registry locations and integrity hashes.
+
+Source: [node-datachannel v0.32.3 release](https://github.com/murat-dogan/node-datachannel/releases/tag/v0.32.3).
+
+- `apps/server/src/device/toolchain/node-datachannel.assets.json`: adapted; release asset filenames and SHA-256 digests, recorded for verification before extraction.
+
+These files contain dependency metadata. Downloaded packages retain their own
+license files and notices; third-party source is not copied into these manifests.

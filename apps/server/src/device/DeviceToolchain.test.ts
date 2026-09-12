@@ -30,7 +30,7 @@ it.effect("failed installation cleans staging and exposes only a safe failure me
       Effect.flip,
     );
     expect(error.message).toBe(
-      "Installing expo-device-hub failed while running npm install (exit code 1).",
+      "Installing expo-device-hub failed while running npm ci (exit code 1).",
     );
     expect(error.cause).toBe(result);
     expect(yield* isDeviceHubInstalled(baseDir)).toBe(false);

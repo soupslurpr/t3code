@@ -363,6 +363,9 @@ const ATOMIC_SETTINGS_KEYS: ReadonlySet<string> = new Set([
 // Preserve both enabled states because provider history cannot recover a new opt-in.
 const PERSISTED_SERVER_SETTINGS_DEFAULTS = {
   ...DEFAULT_SERVER_SETTINGS,
+  // Persist device choices explicitly so they survive future default changes.
+  enableDeviceSupport: undefined,
+  enableAgentDeviceAccess: undefined,
   providers: {
     ...DEFAULT_SERVER_SETTINGS.providers,
     cursor: { ...DEFAULT_SERVER_SETTINGS.providers.cursor, enabled: undefined },
