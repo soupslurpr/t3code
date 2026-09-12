@@ -50,6 +50,7 @@ export const makeDeviceHubOperations = (options: {
   readonly run: DeviceHostReady["run"];
   /** Whether to list AVDs, which the hub does not report until they boot. */
   readonly androidAvailable: Effect.Effect<boolean>;
+  readonly iosAvailable: Effect.Effect<boolean>;
 }): DeviceOperations => {
   const { hostId, origin, run } = options;
   const httpClient = options.http.pipe(HttpClient.withScope);
@@ -97,8 +98,10 @@ export const makeDeviceHubOperations = (options: {
       "list",
     );
     const devices: Array<HostDevice> = [...hubList.simulators, ...hubList.emulators];
+    const iosAvailable = yield* options.iosAvailable;
     const warnings = hubList.errors?.filter(
       (error) =>
+        (iosAvailable || !error.message.startsWith("[apple-utils] Failed to run `xcrun simctl ")) &&
         // CoreSimulator can retain deleted devices; their optional usage timestamps are absent.
         !(
           error.message.startsWith("[apple-utils] Failed to read CoreSimulator plist at ") &&

@@ -3810,7 +3810,7 @@ export default function ChatView(props: ChatViewProps) {
   );
   const addDeviceSurface = () => {
     if (!activeThreadRef) return;
-    if (!deviceState.onboardingCompleted || deviceState.hostStatus === "disabled") {
+    if (deviceState.hostStatus === "disabled") {
       openDeviceSetupDialog(scopedThreadKey(activeThreadRef));
       return;
     }

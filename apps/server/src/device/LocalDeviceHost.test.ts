@@ -16,6 +16,7 @@ import { FetchHttpClient, HttpClient, HttpClientResponse } from "effect/http";
 import * as NetService from "@t3tools/shared/Net";
 import * as ServerConfig from "../config.ts";
 import * as ProcessRunner from "../processRunner.ts";
+import { deviceToolRevision } from "./DeviceToolManifest.ts";
 import {
   AGENT_DEVICE_VERSION,
   DEVICE_HUB_VERSION,
@@ -46,12 +47,12 @@ const agentFixture = Effect.fn("agentFixture")(function* (
   for (const [name, version, entry] of [
     ["expo-device-hub", DEVICE_HUB_VERSION, "dist/server/cli.mjs"],
     ["agent-device", AGENT_DEVICE_VERSION, "bin/agent-device.mjs"],
-  ]) {
-    const installDir = path.join(baseDir, "tools", name!, version!);
-    const entryPath = path.join(installDir, "node_modules", name!, entry!);
+  ] as const) {
+    const installDir = path.join(baseDir, "tools", name, `${version}-${deviceToolRevision(name)}`);
+    const entryPath = path.join(installDir, "node_modules", name, entry);
     yield* fs.makeDirectory(path.dirname(entryPath), { recursive: true });
     yield* fs.writeFileString(entryPath, "");
-    yield* fs.writeFileString(path.join(installDir, ".install-complete"), version!);
+    yield* fs.writeFileString(path.join(installDir, ".install-complete"), version);
   }
   const host = yield* LocalDeviceHost.make().pipe(
     Effect.provide(Layer.mergeAll(ServerConfig.layerTest(baseDir, baseDir), NetService.layer)),
@@ -551,10 +552,13 @@ it.live("limits hub discovery to Android unless the host is a Mac", () =>
     if ((yield* HostProcess.Platform) === "win32") return;
     const fs = yield* FileSystem.FileSystem;
     const path = yield* Path.Path;
-    const environment = yield* HostProcess.Environment;
     const hubArguments = Effect.fn(function* (platform: NodeJS.Platform) {
       const baseDir = yield* fs.makeTempDirectoryScoped({ prefix: "t3-device-hub-" });
-      const installDir = path.join(baseDir, "tools/expo-device-hub", DEVICE_HUB_VERSION);
+      const installDir = path.join(
+        baseDir,
+        "tools/expo-device-hub",
+        `${DEVICE_HUB_VERSION}-${deviceToolRevision("expo-device-hub")}`,
+      );
       const entryPath = path.join(installDir, "node_modules/expo-device-hub/dist/server/cli.mjs");
       const argumentsPath = path.join(baseDir, "hub-args.json");
       yield* fs.makeDirectory(path.dirname(entryPath), { recursive: true });
@@ -570,11 +574,19 @@ http.createServer((req,res)=>res.end('ok')).listen(Number(args[args.indexOf('--p
           Layer.mergeAll(
             ServerConfig.layerTest(baseDir, baseDir),
             NetService.layer,
-            ProcessRunner.layer,
             FetchHttpClient.layer,
           ),
         ),
-        Effect.provideService(HostProcess.Environment, { ...environment, HOME: baseDir }),
+        Effect.provideService(ProcessRunner.ProcessRunner, {
+          run: (input) => {
+            expect(input.command).toBe(process.execPath);
+            expect(input.args).toEqual(["-e", expect.stringContaining("pruneTools(")]);
+            return Effect.succeed(processOutput(0));
+          },
+        }),
+        Effect.provideService(HostProcess.Environment, { HOME: baseDir, PATH: "" }),
+        Effect.provideService(HostProcess.IsExecutable, false),
+        Effect.provideService(HostProcess.WorkingDirectory, baseDir),
         Effect.provideService(HostProcess.Platform, platform),
       );
       yield* host.ensureReady(() => Effect.void).pipe(Effect.ensuring(host.stop));

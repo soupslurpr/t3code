@@ -320,6 +320,9 @@ export const make = Effect.fn("SshDeviceHost.make")(function* (
         androidAvailable: platformAvailability("android").pipe(
           Effect.map((availability) => availability.available),
         ),
+        iosAvailable: platformAvailability("ios").pipe(
+          Effect.map((availability) => availability.available),
+        ),
       }),
       ...(remote.daemonPort !== undefined &&
       remote.token !== undefined &&

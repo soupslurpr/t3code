@@ -91,7 +91,11 @@ const fixture = Effect.fn("fixture")(function* (
   installTool?: Parameters<typeof DeviceService.makeWithHosts>[3],
   options: { readonly endsDevices?: boolean } = {},
 ) {
-  const settings = yield* Ref.make(DEFAULT_SERVER_SETTINGS);
+  const settings = yield* Ref.make({
+    ...DEFAULT_SERVER_SETTINGS,
+    enableDeviceSupport: false,
+    enableAgentDeviceAccess: false,
+  });
   const starts: string[] = [];
   const agentStarts: string[] = [];
   const agentStops: string[] = [];
@@ -168,6 +172,7 @@ const fixture = Effect.fn("fixture")(function* (
         http,
         run,
         androidAvailable: Effect.succeed(true),
+        iosAvailable: Effect.succeed(false),
       }),
       ...(options.endsDevices ? { endsDevices: true } : {}),
     },
@@ -274,6 +279,18 @@ const fixture = Effect.fn("fixture")(function* (
   };
 });
 
+it.effect("omits an unavailable iOS probe failure without hiding Android discovery errors", () =>
+  Effect.gen(function* () {
+    const { service, discoveryErrors } = yield* fixture();
+    yield* Ref.set(discoveryErrors, [
+      { message: "[apple-utils] Failed to run `xcrun simctl list devices --json:" },
+      { message: "Android discovery failed" },
+    ]);
+    yield* service.configure({ enabled: true });
+    expect((yield* service.list).hostStatusDetail).toBe("Android discovery failed");
+  }).pipe(Effect.scoped),
+);
+
 describe("device setup consent", () => {
   it.effect("exposes daemon startup diagnostics through agent readiness and host status", () =>
     Effect.gen(function* () {
@@ -359,11 +376,17 @@ describe("device setup consent", () => {
     () =>
       Effect.gen(function* () {
         const { service, starts, settings } = yield* fixture();
-        const state = yield* service.configure({ enabled: true });
+        yield* service.configure({ enabled: true });
+        expect(starts).toEqual([]);
+        const state = yield* service.list;
         expect((yield* Ref.get(settings)).enableDeviceSupport).toBe(true);
         expect(state.devices.map((device) => [device.id, device.booted])).toEqual([
           ["Pixel_API_35", false],
         ]);
+        expect(starts).toEqual(["start"]);
+        const completed = yield* service.configure({ onboardingCompleted: true });
+        expect(completed.hostStatus).toBe("ready");
+        expect(completed.hostStatuses).toEqual(state.hostStatuses);
         expect(starts).toEqual(["start"]);
         const disabled = yield* service.configure({ enabled: false });
         expect(disabled.hostStatus).toBe("disabled");
@@ -413,7 +436,8 @@ describe("device setup consent", () => {
         },
       );
       yield* Ref.set(encoderResult, { code: 127, stdout: "", stderr: "spawn ffmpeg ENOENT" });
-      const state = yield* service.configure({ enabled: true });
+      yield* service.configure({ enabled: true });
+      const state = yield* service.list;
       expect(state.devices.map((device) => device.id)).toEqual([
         "ios-simulator",
         "physical-android",
@@ -473,7 +497,7 @@ describe("device setup consent", () => {
     }).pipe(Effect.scoped),
   );
 
-  it.effect("installs agent support only after the separate agent permission", () =>
+  it.effect("starting agent tools requires permission and a device operation", () =>
     Effect.gen(function* () {
       const { service, agentStarts, agentStops, settings } = yield* fixture();
       yield* service.configure({ enabled: true });
@@ -481,6 +505,8 @@ describe("device setup consent", () => {
       expect(yield* service.agentReadinessIfSupported()).toBeNull();
 
       yield* service.configure({ agentAccessEnabled: true });
+      expect(agentStarts).toEqual([]);
+      expect(yield* service.agentReadinessIfSupported()).not.toBeNull();
       expect(agentStarts).toEqual(["start"]);
       expect((yield* Ref.get(settings)).enableAgentDeviceAccess).toBe(true);
       expect((yield* service.state).agentAccessEnabled).toBe(true);
@@ -592,7 +618,8 @@ it.effect.each([
   Effect.gen(function* () {
     const { service, discoveryErrors } = yield* fixture();
     yield* Ref.set(discoveryErrors, [{ message, ...(error ? { error } : {}) }]);
-    const state = yield* service.configure({ enabled: true });
+    yield* service.configure({ enabled: true });
+    const state = yield* service.list;
     expect(state.hostStatus).toBe("ready");
     expect(state.devices.map((device) => device.id)).toEqual(["Pixel_API_35"]);
     expect(state.hostStatusDetail).toBe(ignored ? undefined : message);
@@ -608,7 +635,8 @@ it.effect("keeps other discovery warnings and clears them when only a deleted pl
       error: "Error: ENOENT: no such file or directory",
     };
     yield* Ref.set(discoveryErrors, [missing, { message: "Android discovery failed." }]);
-    const initial = yield* service.configure({ enabled: true });
+    yield* service.configure({ enabled: true });
+    const initial = yield* service.list;
     expect(initial.hostStatusDetail).toBe("Android discovery failed.");
     yield* Ref.set(discoveryErrors, [missing]);
     const refreshed = yield* service.list;
@@ -752,6 +780,7 @@ it.effect.each(["shutdown", "close"] as const)(
           http,
           run,
           androidAvailable: Effect.succeed(true),
+          iosAvailable: Effect.succeed(true),
         }),
         helpers: { serveSimAxSettings: null, serveSimCli: null },
         run,
@@ -851,6 +880,7 @@ it.effect.each([
           http,
           run,
           androidAvailable: Effect.succeed(true),
+          iosAvailable: Effect.succeed(true),
         }),
         helpers: { serveSimAxSettings: null, serveSimCli: null },
         run,
@@ -923,6 +953,7 @@ it.effect.each([LOCAL_DEVICE_HOST_ID, "ssh-fixture"])(
           http,
           run,
           androidAvailable: Effect.succeed(true),
+          iosAvailable: Effect.succeed(true),
         }),
         helpers: { serveSimAxSettings: null, serveSimCli: null },
         run,
@@ -978,7 +1009,12 @@ it.effect.each([LOCAL_DEVICE_HOST_ID, "ssh-fixture"])(
       ]);
       expect(recovered.hostStatuses[hostId]).toEqual({ status: "ready" });
       if (hostId === LOCAL_DEVICE_HOST_ID) expect(recovered.hostStatusDetail).toBeUndefined();
-    }).pipe(Effect.provide(ServerSettings.layerTest({ enableDeviceSupport: true })), Effect.scoped),
+    }).pipe(
+      Effect.provide(
+        ServerSettings.layerTest({ enableDeviceSupport: true, enableAgentDeviceAccess: false }),
+      ),
+      Effect.scoped,
+    ),
 );
 
 it.effect("retry keeps device and agent consent unchanged", () =>
@@ -1002,6 +1038,7 @@ it.effect("publishes update detail for the correct host", () =>
     const { service } = yield* fixture();
     const changes = yield* service.subscribe;
     yield* service.configure({ enabled: true });
+    yield* service.list;
     const states = yield* PubSub.takeAll(changes);
     expect(
       states.some(
