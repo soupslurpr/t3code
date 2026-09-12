@@ -17,12 +17,15 @@ The workspace also needs Node and Vite+ as described in the
 
 ## Update and verify the source
 
-1. Fetch only upstream `main` and the fork's `main`.
-2. Rebase the fork commits onto the selected upstream commit. Do not introduce merge commits or
+1. Record the current upstream base, then fetch only upstream `main` and the fork's `main`.
+2. Review the incoming upstream range and report notable changes using the
+   [fork maintenance guidance](../../AGENTS.md#fork-maintenance), including features that default
+   to off. Share the findings before installing or restarting the updated app.
+3. Rebase the fork commits onto the selected upstream commit. Do not introduce merge commits or
    duplicate fork changes.
-3. Install dependencies with `vp i` when the lockfile changed.
-4. Run focused tests, typechecks, lint, and formatting checks for the integrated changes.
-5. Commit every integration adjustment and push the clean linear `main` branch.
+4. Install dependencies with `vp i` when the lockfile changed.
+5. Run focused tests, typechecks, lint, and formatting checks for the integrated changes.
+6. Commit every integration adjustment and push the clean linear `main` branch.
 
 The package helper requires a clean checkout and later rejects publication if `HEAD` changed after
 preparation. A moving upstream remote does not invalidate the selected build commit; start another
