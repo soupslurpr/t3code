@@ -104,8 +104,15 @@ describe("guarded restart", () => {
     );
   });
 
-  it.each([{}, null, { continueThreadsAfterServerUpdate: false }])(
-    "requires an explicit native restart preference: %j",
+  it.each([{}, null])("uses default continuation for sparse settings %j", (settings) => {
+    using fixture = activeTurnFixture();
+    if (settings === null) NodeFS.rmSync(fixture.settingsPath);
+    else NodeFS.writeFileSync(fixture.settingsPath, JSON.stringify(settings));
+    assert.equal(verifyActiveTurn(fixture.databasePath, "same-thread"), "active-turn");
+  });
+
+  it.each([{ continueThreadsAfterServerUpdate: false }])(
+    "honors an explicit restart opt-out: %j",
     (settings) => {
       using fixture = activeTurnFixture();
       NodeFS.writeFileSync(fixture.settingsPath, JSON.stringify(settings));
@@ -117,6 +124,8 @@ describe("guarded restart", () => {
     { environment: false, project: true, enabled: true },
     { environment: true, project: false, enabled: false },
     { environment: true, project: undefined, enabled: true },
+    { environment: undefined, project: false, enabled: false },
+    { environment: undefined, project: undefined, enabled: true },
     { environment: false, project: undefined, enabled: false },
   ])(
     "resolves the running project's restart preference: %j",

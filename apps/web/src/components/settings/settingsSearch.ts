@@ -404,7 +404,7 @@ export const SETTINGS_SEARCH_ITEMS = [
     to: "/settings/general",
     scope: "project-defaults",
     searchTerms: [
-      "resume running active interrupted work restart reboot machine crash desktop update automatically",
+      "resume running active interrupted work restart reboot machine crash desktop update automatically quit reopen relaunch stop",
     ],
   },
   {
