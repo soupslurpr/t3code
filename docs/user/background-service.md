@@ -21,8 +21,9 @@ Install and update use the version of the CLI you invoke. For nightly, use
 one. An older CLI refuses to replace a newer service unless you explicitly add
 `--allow-downgrade`.
 
-Updating restarts the server. Finish active work first, and wait for any remote
-update already in progress. To match a remote client's version, follow
+Updating restarts the server. Supported active threads resume by default;
+terminal commands can still be interrupted. Wait for any remote update already
+in progress. To match a remote client's version, follow
 [Updating T3 Code](./updating.md).
 
 ## Platform support
