@@ -230,7 +230,8 @@ export function verifyActiveTurn(
         ? settings?.projectSettingsOverrides?.[session.project_id]?.continueThreadsAfterServerUpdate
         : undefined;
     NodeAssert.equal(
-      projectPreference ?? settings?.continueThreadsAfterServerUpdate,
+      // This copied worker runs without workspace imports; match ServerSettings' default.
+      projectPreference ?? settings?.continueThreadsAfterServerUpdate ?? true,
       true,
       "automatic restart continuation is not enabled for this project",
     );
