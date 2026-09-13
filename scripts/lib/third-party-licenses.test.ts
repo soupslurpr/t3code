@@ -124,6 +124,41 @@ describe("third-party license generation", () => {
     });
   });
 
+  it("preserves a README licensing section when a binary package has no license file", async () => {
+    const fixture = await createFixture();
+    await NodeFSP.rm(NodePath.join(fixture.dependencyRoot, "LICENSE"));
+    await NodeFSP.writeFile(
+      NodePath.join(fixture.dependencyRoot, "README.md"),
+      "# Binary package\n\nInstall instructions.\n\n## Licensing\n\nLibrary | License\n--- | ---\nlibvips | LGPLv3\n\n### Source\n\nhttps://example.com/source\n\n## Usage\n\nUnrelated instructions.\n",
+      "utf8",
+    );
+    const manifest = await generateThirdPartyLicenseManifest({
+      configFile: fixture.configFile,
+      packageManifests: [{ bundle: "desktop", path: fixture.appManifest }],
+    });
+
+    expect(manifest.entries.find((entry) => entry.kind === "package")?.noticeText).toBe(
+      "README.md\n\n## Licensing\n\nLibrary | License\n--- | ---\nlibvips | LGPLv3\n\n### Source\n\nhttps://example.com/source",
+    );
+  });
+
+  it("prefers a standalone notice over a README license summary", async () => {
+    const fixture = await createFixture();
+    await NodeFSP.writeFile(
+      NodePath.join(fixture.dependencyRoot, "README.md"),
+      "## License\n\nMIT\n",
+      "utf8",
+    );
+    const manifest = await generateThirdPartyLicenseManifest({
+      configFile: fixture.configFile,
+      packageManifests: [{ bundle: "desktop", path: fixture.appManifest }],
+    });
+
+    expect(manifest.entries.find((entry) => entry.kind === "package")?.noticeText).toBe(
+      "Demo MIT license text",
+    );
+  });
+
   it("renders generated notices from the ignored SPDX cache", async () => {
     const fixture = await createFixture();
     await writeJson(
