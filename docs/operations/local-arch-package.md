@@ -125,7 +125,7 @@ location and resumes the existing durable thread; it does not preserve the old p
 
 1. Record the selected full commit, audited package path, completed checks, and any database backup
    in saved work notes. Keep rollback packages and never restore a database automatically.
-2. Enable automatic thread continuation after restart in the environment's settings and keep this
+2. Confirm automatic thread continuation is enabled (the default) in the environment's settings and keep this
    turn running. The helper checks that both durable session records identify the same unfinished
    turn and that the provider has a resume cursor. T3 resumes that turn when the server restarts;
    no monitor or extra wait is needed.
