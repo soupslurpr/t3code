@@ -685,7 +685,25 @@ async function readPackageNoticeText(packageRoot: string): Promise<string | null
       .map((entry) => collectNestedNoticeFiles(entry.name, 2)),
   );
   noticeFiles.sort((left, right) => left.localeCompare(right));
-  if (noticeFiles.length === 0) return null;
+  if (noticeFiles.length === 0) {
+    // Some binary packages, including sharp-libvips, publish their bundled
+    // libraries' notices in a README licensing section instead of a LICENSE file.
+    const sections: string[] = [];
+    for (const entry of rootEntries.toSorted((left, right) =>
+      left.name.localeCompare(right.name),
+    )) {
+      if (!entry.isFile() || !/^readme\.(?:md|markdown)$/i.test(entry.name)) continue;
+      const contents = await NodeFSP.readFile(NodePath.join(packageRoot, entry.name), "utf8");
+      const heading = /^(#{1,6})\s+licen[cs](?:e|ing)\s*#*\s*$/im.exec(contents);
+      if (!heading) continue;
+      const start = heading.index + heading[0].length;
+      const remainder = contents.slice(start);
+      const nextHeading = new RegExp(`^#{1,${heading[1]!.length}}\\s+`, "m").exec(remainder);
+      const body = remainder.slice(0, nextHeading?.index).trim();
+      if (body.length > 0) sections.push(`${entry.name}\n\n${heading[0].trim()}\n\n${body}`);
+    }
+    return sections.length > 0 ? sections.join("\n\n---\n\n") : null;
+  }
 
   const sections: string[] = [];
   for (const fileName of noticeFiles) {
