@@ -1,6 +1,17 @@
 {
   "customNotices": [
     {
+      "bundles": ["server"],
+      "includeInBundles": ["desktop", "mobile", "web"],
+      "license": "Apache-2.0",
+      "name": "OpenAI Codex app-server protocol",
+      "sourceUrl": "https://github.com/openai/codex/tree/687a119f0fcaace47e1f1abcc77cec6c813fd6da/codex-rs/app-server-protocol",
+      "noticeFiles": [
+        "packages/effect-codex-app-server/NOTICE.codex.txt",
+        "packages/effect-codex-app-server/LICENSE.codex.txt"
+      ]
+    },
+    {
       "bundles": ["assets", "desktop", "web"],
       "license": "CC0-1.0",
       "name": "Notification Sound 1 by deadrobotmusic",

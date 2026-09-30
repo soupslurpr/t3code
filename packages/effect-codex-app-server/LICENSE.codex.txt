@@ -1,66 +1,3 @@
-## react-native-shiki-engine
-
-Source: [react-native-shiki-engine](https://github.com/skiniks/react-native-shiki-engine/blob/c957d0d0f8f56f4b25283c1295c7807efff8285f/packages/react-native-shiki-engine/android/CMakeLists.txt)
-
-- `patches/react-native-shiki-engine@0.3.12.patch`: adapted; resolve the bundled Oniguruma library by Android ABI and fail if it is missing.
-
-```text
-MIT License
-
-Copyright (c) 2024-present Ryan Skinner
-
-Permission is hereby granted, free of charge, to any person obtaining a copy
-of this software and associated documentation files (the "Software"), to deal
-in the Software without restriction, including without limitation the rights
-to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
-copies of the Software, and to permit persons to whom the Software is
-furnished to do so, subject to the following conditions:
-
-The above copyright notice and this permission notice shall be included in all
-copies or substantial portions of the Software.
-
-THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
-IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
-FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
-AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
-LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
-OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
-SOFTWARE.
-```
-
-## Device helper dependency manifests
-
-Source: [expo-device-hub 0.15.3](https://registry.npmjs.org/expo-device-hub/0.15.3),
-[agent-device 0.21.23](https://registry.npmjs.org/agent-device/0.21.23).
-
-- `apps/server/src/device/toolchain/expo-device-hub.lock.json`: adapted; generated npm dependency metadata, with exact registry locations and integrity hashes.
-- `apps/server/src/device/toolchain/agent-device.lock.json`: adapted; generated npm dependency metadata, with exact registry locations and integrity hashes.
-
-Source: [node-datachannel v0.32.3 release](https://github.com/murat-dogan/node-datachannel/releases/tag/v0.32.3).
-
-- `apps/server/src/device/toolchain/node-datachannel.assets.json`: adapted; release asset filenames and SHA-256 digests, recorded for verification before extraction.
-
-These files contain dependency metadata. Downloaded packages retain their own
-license files and notices; third-party source is not copied into these manifests.
-
-## OpenAI Codex app-server protocol
-
-Source: [OpenAI Codex](https://github.com/openai/codex/tree/687a119f0fcaace47e1f1abcc77cec6c813fd6da/codex-rs/app-server-protocol)
-
-- `packages/effect-codex-app-server/src/_generated/schema.gen.ts`: adapted; generated Effect schemas with compatibility overrides.
-- `packages/effect-codex-app-server/src/_generated/meta.gen.ts`: adapted; generated protocol method tables and parameter mappings.
-- `packages/effect-codex-app-server/src/_generated/namespaces.gen.ts`: adapted; generated namespace exports.
-- `packages/effect-codex-app-server/LICENSE.codex.txt`: copied unchanged from the source revision's root `LICENSE`.
-- `packages/effect-codex-app-server/NOTICE.codex.txt`: copied unchanged from the source revision's root `NOTICE`.
-
-```text
-OpenAI Codex
-Copyright 2025 OpenAI
-
-This project includes code derived from [Ratatui](https://github.com/ratatui/ratatui), licensed under the MIT license.
-Copyright (c) 2016-2022 Florian Dehau
-Copyright (c) 2023-2025 The Ratatui Developers
-
                                  Apache License
                            Version 2.0, January 2004
                         http://www.apache.org/licenses/
@@ -262,5 +199,3 @@ distributed under the License is distributed on an "AS IS" BASIS,
 WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 See the License for the specific language governing permissions and
 limitations under the License.
-
-```
