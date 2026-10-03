@@ -1634,6 +1634,8 @@ export function makeCodexAdapterV2(adapterOptions: CodexAdapterV2Options): Provi
           );
         const initialized = yield* Ref.make(false);
         const toolOutputSupported = yield* Ref.make(false);
+        // Restart recovery resumes multiple threads through this shared connection.
+        const initializationPermit = yield* Semaphore.make(1);
         const ensureInitialized = Effect.gen(function* () {
           const alreadyInitialized = yield* Ref.get(initialized);
           if (alreadyInitialized) {
@@ -1649,7 +1651,7 @@ export function makeCodexAdapterV2(adapterOptions: CodexAdapterV2Options): Provi
           yield* Ref.set(toolOutputSupported, supportsCodexToolOutput(handshake.userAgent));
           yield* client.notify("initialized", undefined);
           yield* Ref.set(initialized, true);
-        });
+        }).pipe(initializationPermit.withPermits(1));
         const now = yield* DateTime.now;
         const session = providerSession({
           providerSessionId: input.providerSessionId,

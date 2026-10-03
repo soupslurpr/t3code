@@ -1657,9 +1657,8 @@ describe("CodexAdapterV2 post-settle continuation", () => {
       return yield* Effect.die(`Timed out waiting for ${label}.`);
     });
 
-  const makeCodexReplayHarness = (
+  const makeCodexReplayRuntime = (
     transcript: CodexReplay.CodexAppServerReplayTranscript,
-    onEvent: (event: ProviderAdapterV2Event) => Effect.Effect<unknown> = () => Effect.void,
     onRequest: (method: string, params: unknown) => Effect.Effect<void> = () => Effect.void,
     readChildMetadata?: (threadId: string) => Effect.Effect<unknown>,
   ) =>
@@ -1721,6 +1720,21 @@ describe("CodexAdapterV2 post-settle continuation", () => {
         modelSelection: CODEX_TEST_MODEL_SELECTION,
         runtimePolicy: CODEX_TEST_RUNTIME_POLICY,
       });
+      return { runtime, threadId, continuationRequests };
+    });
+
+  const makeCodexReplayHarness = (
+    transcript: CodexReplay.CodexAppServerReplayTranscript,
+    onEvent: (event: ProviderAdapterV2Event) => Effect.Effect<unknown> = () => Effect.void,
+    onRequest: (method: string, params: unknown) => Effect.Effect<void> = () => Effect.void,
+    readChildMetadata?: (threadId: string) => Effect.Effect<unknown>,
+  ) =>
+    Effect.gen(function* () {
+      const { runtime, threadId, continuationRequests } = yield* makeCodexReplayRuntime(
+        transcript,
+        onRequest,
+        readChildMetadata,
+      );
       const providerThread = yield* runtime.ensureThread({
         threadId,
         modelSelection: CODEX_TEST_MODEL_SELECTION,
@@ -2075,6 +2089,127 @@ describe("CodexAdapterV2 post-settle continuation", () => {
         );
         assert.equal(requests.filter((method) => method === "turn/start").length, 1);
         assert.isBelow(requests.indexOf("thread/inject_items"), requests.indexOf("turn/start"));
+      }).pipe(Effect.scoped, Effect.provide(Layer.merge(IdAllocator.layer, NodeServices.layer))),
+  );
+
+  it.effect.each([false, true])(
+    "preserves native sessions during concurrent cold resumes (initialization fails: %s)",
+    (initializationFails) =>
+      Effect.gen(function* () {
+        const scenario = `concurrent-resume-${initializationFails}`;
+        const nativeIds = ["native-resume-first", "native-resume-second"] as const;
+        const handshake = codexReplayPreamble({
+          nativeThreadId: "unused",
+          nativeTurnId: "unused",
+          prompt: "unused",
+        }).slice(0, 3);
+        const transcript = makeCodexReplayTranscript({
+          scenario,
+          entries: [
+            ...(initializationFails
+              ? [
+                  handshake[0]!,
+                  {
+                    type: "emit_inbound" as const,
+                    frame: { id: 1, error: { code: -32603, message: "Initialization failed" } },
+                  },
+                ]
+              : []),
+            ...handshake.map((entry) =>
+              initializationFails &&
+              "frame" in entry &&
+              Predicate.isObject(entry.frame) &&
+              "id" in entry.frame
+                ? { ...entry, frame: { ...entry.frame, id: 2 } }
+                : entry,
+            ),
+            ...(initializationFails ? nativeIds.toReversed() : nativeIds).flatMap(
+              (nativeId, index): Array<CodexReplay.CodexAppServerReplayEntry> => [
+                {
+                  type: "expect_outbound",
+                  frame: {
+                    id: index + (initializationFails ? 3 : 2),
+                    method: "thread/resume",
+                    params: {
+                      threadId: nativeId,
+                      excludeTurns: true,
+                      config: CodexAdapterV2.CODEX_THREAD_CONFIG,
+                    },
+                  },
+                },
+                {
+                  type: "emit_inbound",
+                  frame: {
+                    id: index + (initializationFails ? 3 : 2),
+                    result: { thread: { id: nativeId, updatedAt: 1782622450 } },
+                  },
+                },
+              ],
+            ),
+          ],
+        });
+        const initializationStarted = yield* Deferred.make<void>();
+        const releaseInitialization = yield* Deferred.make<void>();
+        const secondStarted = yield* Deferred.make<void>();
+        let initializeCount = 0;
+        const { runtime } = yield* makeCodexReplayRuntime(transcript, (method) =>
+          Effect.gen(function* () {
+            if (method !== "initialize") return;
+            initializeCount++;
+            yield* Deferred.succeed(initializationStarted, undefined);
+            yield* Deferred.await(releaseInitialization);
+          }),
+        );
+        const now = yield* DateTime.now;
+        const resume = (nativeId: string) =>
+          runtime.resumeThread({
+            providerThread: {
+              id: ProviderThreadId.make(`provider-${nativeId}`),
+              driver: CodexAdapterV2.CODEX_DRIVER_KIND,
+              providerInstanceId: CodexAdapterV2.CODEX_DEFAULT_INSTANCE_ID,
+              providerSessionId: runtime.providerSession.id,
+              appThreadId: ThreadId.make(`app-${nativeId}`),
+              ownerNodeId: null,
+              nativeThreadRef: {
+                driver: CodexAdapterV2.CODEX_DRIVER_KIND,
+                nativeId,
+                strength: "strong",
+              },
+              nativeConversationHeadRef: null,
+              status: "idle",
+              firstRunOrdinal: 1,
+              lastRunOrdinal: 1,
+              handoffIds: [],
+              forkedFrom: null,
+              createdAt: now,
+              updatedAt: now,
+            },
+            modelSelection: CODEX_TEST_MODEL_SELECTION,
+            runtimePolicy: CODEX_TEST_RUNTIME_POLICY,
+          });
+        const first = yield* resume(nativeIds[0]).pipe(Effect.result, Effect.forkChild);
+        yield* Deferred.await(initializationStarted);
+        const second = yield* Deferred.succeed(secondStarted, undefined).pipe(
+          Effect.andThen(resume(nativeIds[1])),
+          Effect.forkChild,
+        );
+        yield* Deferred.await(secondStarted);
+        assert.equal(initializeCount, 1);
+        yield* Deferred.succeed(releaseInitialization, undefined);
+        const firstResult = yield* Fiber.join(first);
+        const resumedSecond = yield* Fiber.join(second);
+        assert.equal(resumedSecond.nativeThreadRef?.nativeId, nativeIds[1]);
+        if (initializationFails) {
+          assert.equal(firstResult._tag, "Failure");
+          const retried = yield* resume(nativeIds[0]);
+          assert.equal(retried.nativeThreadRef?.nativeId, nativeIds[0]);
+        } else {
+          assert.equal(firstResult._tag, "Success");
+          if (firstResult._tag === "Success") {
+            assert.equal(firstResult.success.nativeThreadRef?.nativeId, nativeIds[0]);
+          }
+        }
+        assert.equal(initializeCount, initializationFails ? 2 : 1);
       }).pipe(Effect.scoped, Effect.provide(Layer.merge(IdAllocator.layer, NodeServices.layer))),
   );
 
