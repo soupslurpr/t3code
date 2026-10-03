@@ -1,4 +1,5 @@
 import { resolveProjectSettings } from "@t3tools/shared/projectSettings";
+import { latestExecutedRun } from "@t3tools/shared/orchestrationV2ThreadError";
 import {
   CommandId,
   MessageId,
@@ -30,10 +31,7 @@ export function restartContinuationRun(
   cancelledWorkProviderThreadIds: ReadonlySet<ProviderThreadId> = new Set(),
 ): OrchestrationV2Run | undefined {
   if (projection.thread.archivedAt !== null || projection.thread.deletedAt !== null) return;
-  const run = projection.runs.reduce<OrchestrationV2Run | undefined>(
-    (latest, candidate) => (!latest || candidate.ordinal > latest.ordinal ? candidate : latest),
-    undefined,
-  );
+  const run = latestExecutedRun(projection.runs);
   if (!run) return;
   const preparedContinuation =
     run.status === "starting" && run.restartContinuationOfRunId !== undefined;
@@ -90,7 +88,11 @@ export function restartContinuationRun(
 }
 
 export const continueRestartedRun = Effect.fn("RestartContinuation.continueRestartedRun")(
-  function* (input: { readonly threadId: ThreadId; readonly sourceRunId: RunId }) {
+  function* (input: {
+    readonly threadId: ThreadId;
+    readonly sourceRunId: RunId;
+    readonly lastRunOrdinal?: number;
+  }) {
     const settings = yield* ServerSettings.ServerSettingsService;
     const enabled = yield* settings.getSettings.pipe(Effect.orElseSucceed(() => null));
     if (!enabled) return;
@@ -114,8 +116,12 @@ export const continueRestartedRun = Effect.fn("RestartContinuation.continueResta
     const noteSource =
       source !== undefined && isRestartNoteSource(source, projection.providerTurns);
     if (!source || (source.status !== "cancelled" && !noteSource)) return;
-    // A user submission after reconciliation takes precedence over an automatic prompt.
-    if (projection.runs.some((run) => run.ordinal > source.ordinal)) return;
+    // Preserve inputs already queued at capture, but never overtake new user work.
+    if (
+      (latestExecutedRun(projection.runs)?.ordinal ?? 0) > source.ordinal ||
+      projection.runs.some((run) => run.ordinal > (input.lastRunOrdinal ?? source.ordinal))
+    )
+      return;
     if (projection.thread.providerInstanceId !== source.providerInstanceId) return;
     yield* threads.dispatch({
       type: "message.dispatch",
@@ -131,6 +137,7 @@ export const continueRestartedRun = Effect.fn("RestartContinuation.continueResta
       createdBy: "agent",
       creationSource: "server",
       restartContinuationOfRunId: input.sourceRunId,
+      restartContinuationLastRunOrdinal: input.lastRunOrdinal ?? source.ordinal,
     });
   },
 );

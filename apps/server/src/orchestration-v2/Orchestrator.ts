@@ -4359,7 +4359,10 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
           projection.thread.archivedAt !== null ||
           projection.thread.deletedAt !== null ||
           projection.thread.providerInstanceId !== source.providerInstanceId ||
-          projection.runs.some((run) => run.ordinal > source.ordinal)
+          (latestExecutedRun(projection.runs)?.ordinal ?? 0) > source.ordinal ||
+          projection.runs.some(
+            (run) => run.ordinal > (command.restartContinuationLastRunOrdinal ?? source.ordinal),
+          )
         ) {
           // Preserve the current row so stale automatic deliveries receive an
           // accepted receipt without changing work or repeatedly retrying.

@@ -2681,6 +2681,10 @@ export const OrchestrationV2Command = Schema.Union([
     modelSelection: Schema.optional(ModelSelection),
     sourcePlanRef: Schema.optional(Schema.Struct({ threadId: ThreadId, planId: PlanId })),
     restartContinuationOfRunId: Schema.optional(RunId),
+    /** Highest input ordinal present when restart recovery captured the source. */
+    restartContinuationLastRunOrdinal: Schema.optional(
+      Schema.Number.check(Schema.isInt(), Schema.isGreaterThan(0)),
+    ),
     usageLimitContinuationOfRunId: Schema.optional(RunId),
     manualContinuationOfRunId: Schema.optional(RunId),
     usageLimitRecoveryRequestId: Schema.optional(CommandId),

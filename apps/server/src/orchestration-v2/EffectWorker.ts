@@ -112,6 +112,9 @@ export const executorLayer: Layer.Layer<
             return continueRestartedRun({
               threadId: effect.threadId,
               sourceRunId: effect.request.sourceRunId,
+              ...(effect.request.lastRunOrdinal === undefined
+                ? {}
+                : { lastRunOrdinal: effect.request.lastRunOrdinal }),
             }).pipe(
               Effect.provideService(ThreadManagementService.ThreadManagementService, threads),
               Effect.provideService(ServerSettings.ServerSettingsService, settings),

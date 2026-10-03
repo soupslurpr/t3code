@@ -2462,18 +2462,18 @@ it.layer(TestLayer)("OrchestrationV2LayerLive lifecycle", (it) => {
     }),
   );
 
-  it.effect(
-    "admits restart continuations once and rejects a stale continuation behind newer work",
-    () =>
+  it.effect.each(["none", "captured queue", "captured steer", "new queue"] as const)(
+    "admits restart continuations once with %s and rejects newer work",
+    (inputs) =>
       Effect.gen(function* () {
         const orchestrator = yield* Orchestrator.OrchestratorV2;
         const eventSink = yield* EventSink.EventSinkV2;
-        const threadId = ThreadId.make("runtime-layer-restart-continuation");
+        const threadId = ThreadId.make(`runtime-layer-restart-continuation-${inputs}`);
         yield* orchestrator.dispatch({
           type: "thread.create",
           createdBy: "user",
           creationSource: "web",
-          commandId: CommandId.make("restart-create"),
+          commandId: CommandId.make(`restart-create-${inputs}`),
           threadId,
           projectId: ProjectId.make("restart-project"),
           title: "Restart",
@@ -2487,9 +2487,9 @@ it.layer(TestLayer)("OrchestrationV2LayerLive lifecycle", (it) => {
           type: "message.dispatch",
           createdBy: "user",
           creationSource: "web",
-          commandId: CommandId.make("restart-user-message"),
+          commandId: CommandId.make(`restart-user-message-${inputs}`),
           threadId,
-          messageId: MessageId.make("restart-user-message"),
+          messageId: MessageId.make(`restart-user-message-${inputs}`),
           text: "Original work",
           attachments: [],
           modelSelection,
@@ -2497,19 +2497,51 @@ it.layer(TestLayer)("OrchestrationV2LayerLive lifecycle", (it) => {
         });
         const original = (yield* orchestrator.getThreadProjection(threadId)).runs[0]!;
         const now = yield* DateTime.now;
+        if (inputs !== "none") {
+          yield* orchestrator.dispatch({
+            type: "message.dispatch",
+            createdBy: "user",
+            creationSource: "web",
+            commandId: CommandId.make(`restart-queued-message-${inputs}`),
+            threadId,
+            messageId: MessageId.make(`restart-queued-message-${inputs}`),
+            text: "Follow-up work",
+            attachments: [],
+            dispatchMode: { type: "queue_after_active" },
+          });
+          const queued = (yield* orchestrator.getThreadProjection(threadId)).runs[1]!;
+          yield* eventSink.write({
+            events: [
+              {
+                id: EventId.make(`restart-held-input-${inputs}`),
+                type: "run.updated",
+                threadId,
+                runId: queued.id,
+                occurredAt: now,
+                payload: {
+                  ...queued,
+                  queueHeld: true,
+                  ...(inputs === "captured steer"
+                    ? { status: "cancelled", startedAt: null, completedAt: now }
+                    : {}),
+                },
+              },
+            ],
+          });
+        }
         yield* eventSink.commitCommand({
-          commandId: CommandId.make("restart-cancel"),
+          commandId: CommandId.make(`restart-cancel-${inputs}`),
           threadId,
           commandType: "provider-runtime.reconcile",
           acceptedAt: now,
           events: [
             {
-              id: EventId.make("restart-cancel-event"),
+              id: EventId.make(`restart-cancel-event-${inputs}`),
               type: "run.updated",
               threadId,
               runId: original.id,
               occurredAt: now,
-              payload: { ...original, status: "cancelled", completedAt: now },
+              payload: { ...original, status: "cancelled", startedAt: now, completedAt: now },
             },
           ],
           effects: [],
@@ -2518,29 +2550,40 @@ it.layer(TestLayer)("OrchestrationV2LayerLive lifecycle", (it) => {
           type: "message.dispatch" as const,
           createdBy: "agent" as const,
           creationSource: "server" as const,
-          commandId: CommandId.make("restart-automatic-message"),
+          commandId: CommandId.make(`restart-automatic-message-${inputs}`),
           threadId,
-          messageId: MessageId.make("restart-automatic-message"),
+          messageId: MessageId.make(`restart-automatic-message-${inputs}`),
           text: "Continue where you left off.",
           attachments: [],
           modelSelection,
           dispatchMode: { type: "start_immediately" as const },
           restartContinuationOfRunId: original.id,
+          restartContinuationLastRunOrdinal: inputs.startsWith("captured")
+            ? original.ordinal + 1
+            : original.ordinal,
         };
         yield* orchestrator.dispatch(command);
         yield* orchestrator.dispatch(command);
         const admitted = yield* orchestrator.getThreadProjection(threadId);
-        assert.lengthOf(admitted.runs, 2);
-        assert.equal(admitted.runs[1]?.restartContinuationOfRunId, original.id);
+        const expectedCount = inputs === "none" || inputs === "new queue" ? 2 : 3;
+        assert.lengthOf(admitted.runs, expectedCount);
+        if (inputs === "new queue") {
+          assert.isFalse(admitted.messages.some((message) => message.id === command.messageId));
+        } else {
+          assert.equal(admitted.runs.at(-1)?.restartContinuationOfRunId, original.id);
+        }
+        if (inputs !== "none") assert.isTrue(admitted.runs[1]?.queueHeld);
         // A differently identified stale delivery still must not create another run.
         yield* orchestrator.dispatch({
           ...command,
-          commandId: CommandId.make("restart-stale-race"),
-          messageId: MessageId.make("restart-stale-race"),
+          commandId: CommandId.make(`restart-stale-race-${inputs}`),
+          messageId: MessageId.make(`restart-stale-race-${inputs}`),
         });
         const raced = yield* orchestrator.getThreadProjection(threadId);
-        assert.lengthOf(raced.runs, 2);
-        assert.isFalse(raced.messages.some((message) => message.id === "restart-stale-race"));
+        assert.lengthOf(raced.runs, expectedCount);
+        assert.isFalse(
+          raced.messages.some((message) => message.id === `restart-stale-race-${inputs}`),
+        );
       }),
   );
 
