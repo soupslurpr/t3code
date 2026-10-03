@@ -83,7 +83,9 @@ keeps retrying and does not repeat the warning within the same revision. An
 agent can disable this safeguard while retaining other review checkpoints, or
 disable reviews entirely when silence is intentional.
 
-Ask the agent to list or cancel its waits at any time. Signal-based monitoring
+On web and desktop, open the thread details and find **Automations** to inspect
+outstanding monitors and cancel an individual wait. You can also ask the agent
+to list or cancel its waits from any client. Signal-based monitoring
 usually combines a durable wait with background work that reports when its
 condition is satisfied. If that background work can stop independently, use a
 fallback deadline when missing the wake-up would matter.

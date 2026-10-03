@@ -319,6 +319,26 @@ export const ThreadMonitor = Schema.Struct({
 });
 export type ThreadMonitor = typeof ThreadMonitor.Type;
 
+/** Lightweight client rows; screen regions, samples, and evidence stay on the server. */
+export const ThreadMonitorSummary = Schema.Struct({
+  id: ThreadMonitorId,
+  label: MonitorLabel,
+  status: ThreadMonitorStatus,
+  condition: Schema.Literals(["time", "signal", "image-change", "model"]),
+  criterion: Schema.NullOr(ComputerWatchCriterion),
+  nextCheckAt: Schema.NullOr(IsoDateTime),
+  deadlineAt: Schema.NullOr(IsoDateTime),
+  continuation: ThreadMonitorContinuation,
+  reviewRequired: Schema.Boolean,
+  lastError: Schema.NullOr(Schema.String),
+});
+export type ThreadMonitorSummary = typeof ThreadMonitorSummary.Type;
+
+export const ThreadMonitorSummaryList = Schema.Struct({
+  monitors: Schema.Array(ThreadMonitorSummary).check(Schema.isMaxLength(100)),
+});
+export type ThreadMonitorSummaryList = typeof ThreadMonitorSummaryList.Type;
+
 /** Creates one durable monitor for the invoking thread. */
 export const ThreadMonitorStartInput = Schema.Struct({
   label: MonitorLabel.annotate({
