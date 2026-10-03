@@ -85,17 +85,17 @@ describe("UsageAggregator", () => {
   it("splits a bucket's cost by category and speed", () => {
     const [bucket] = aggregate([record(), record({ speed: "fast" })]).buckets;
 
-    // Standard costs $0.005625 and fast twice that.
+    // Standard costs $0.004625 and fast twice that.
     expect(bucket).toMatchObject({
-      costUsd: expect.closeTo(0.016875),
+      costUsd: expect.closeTo(0.013875, 9),
       categoryCostUsd: {
-        input: expect.closeTo(0.003),
-        cacheRead: expect.closeTo(0.003),
-        cacheWrite: expect.closeTo(0.000375),
-        output: expect.closeTo(0.0075),
+        input: expect.closeTo(0.003, 9),
+        cacheRead: expect.closeTo(0.003, 9),
+        cacheWrite: expect.closeTo(0.000375, 9),
+        output: expect.closeTo(0.0075, 9),
       },
-      fastCostUsd: expect.closeTo(0.01125),
-      speedPremiumUsd: expect.closeTo(0.005625),
+      fastCostUsd: expect.closeTo(0.00925, 9),
+      speedPremiumUsd: expect.closeTo(0.004625, 9),
     });
     expect(bucket).not.toHaveProperty("ultrafastCostUsd");
   });
