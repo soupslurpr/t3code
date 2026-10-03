@@ -114,12 +114,14 @@ open.
 
 ### Fold working threads (beta)
 
-Turn on **Settings → General → Working section (beta)** on web and desktop, or **Settings →
-Thread behavior → Working section** on iOS and Android, to move threads that are working or
-monitoring into a collapsed **Working** section below the active list. A thread returns to the top
-of the active list when it finishes, fails, or needs an approval or answer. The Working section
-lists the thread you last sent work to first. Pinned threads stay in the pinned section. Each
-device keeps its own choice.
+On web and desktop, working and monitoring threads move into a collapsed **Working** section
+at the bottom of the sidebar by default. A thread returns to the top of the active list when
+it finishes, fails, or needs an approval or answer. The Working section lists the thread you last sent work to first. Pinned threads stay in
+the pinned section.
+Turn off **Settings → General → Working section (beta)** to keep busy threads in the active list.
+
+On iOS and Android, turn on **Settings → Thread behavior → Working section** to use this
+behavior. Each device keeps its own choice.
 
 While this is on, the active list is ordered by when each thread last came back to you, so you
 cannot drag or move threads within it. Your saved order returns when you turn it off.
@@ -199,10 +201,10 @@ or interrupted turn manually.
 Queued messages stay saved while the limit blocks the thread. They run after
 the continuation finishes. If the queue was held by a restart, resume it then.
 
-When the provider reports a reset time, choose **Resume at reset** to schedule a
-continuation. You can cancel it from the thread. Enable **Auto-resume limited
-threads** in **Settings → General** on web and desktop, or **Settings → Thread
-behavior** on mobile, to schedule limit stops by default.
+When the provider reports a reset time, a continuation is scheduled by default.
+You can cancel it from the thread. Turn off **Auto-resume limited threads** in
+**Settings → General** on web and desktop, or **Settings → Thread behavior** on
+mobile, to choose **Resume at reset** manually instead.
 The environment must be running when the reset arrives; it resumes overdue
 continuations after a restart. Sending a new message, archiving, or settling the
 thread prevents a pending continuation from starting.
