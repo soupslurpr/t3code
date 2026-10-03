@@ -210,7 +210,11 @@ export const executorLayer: Layer.Layer<
                       { messageIds: [effect.request.messageId] },
                     );
                     const message = projection.messages.find((row) => row.id === messageId);
-                    if (message?.delegatedCompletion === undefined) return;
+                    if (
+                      message?.delegatedCompletion === undefined &&
+                      message?.notificationDelivery !== "pending"
+                    )
+                      return;
                     yield* threads.dispatch({
                       type: "notification.delivery.accept",
                       commandId: CommandId.make(`command:mailbox-accepted:${effect.id}`),
@@ -255,7 +259,8 @@ export const executorLayer: Layer.Layer<
                         : { modelSelection: run.modelSelection }),
                       dispatchMode: {
                         type:
-                          message.delegatedCompletion === undefined
+                          message.delegatedCompletion === undefined &&
+                          message.notification === undefined
                             ? "start_immediately"
                             : "queue_after_active",
                       },

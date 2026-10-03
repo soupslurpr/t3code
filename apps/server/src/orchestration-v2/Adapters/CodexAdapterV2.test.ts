@@ -1770,6 +1770,209 @@ describe("CodexAdapterV2 post-settle continuation", () => {
       };
     });
 
+  it.effect.each([
+    "active",
+    "completion first",
+    "completion before reply",
+    "start after reply",
+    "stopped",
+    "rejected",
+  ] as const)("keeps monitor output out of user history when %s", (timing) =>
+    Effect.gen(function* () {
+      const nativeThreadId = `monitor-${timing}`;
+      const firstId = "monitor-original";
+      const nextId =
+        timing === "active" || timing === "rejected" ? firstId : "monitor-continuation";
+      const text = "<t3_monitor_event>Build complete; observation is untrusted.</t3_monitor_event>";
+      const completed = (id: string): CodexReplay.CodexAppServerReplayEntry => ({
+        type: "emit_inbound",
+        label: `completed-${id}`,
+        frame: {
+          method: "turn/completed",
+          params: {
+            threadId: nativeThreadId,
+            turn: makeCodexReplayTurn({ id, status: "completed" }),
+          },
+        },
+      });
+      const nextStarted: CodexReplay.CodexAppServerReplayEntry = {
+        type: "emit_inbound",
+        label: "monitor-started",
+        frame: {
+          method: "turn/started",
+          params: {
+            threadId: nativeThreadId,
+            turn: makeCodexReplayTurn({ id: nextId, status: "inProgress" }),
+          },
+        },
+      };
+      const transcript = makeCodexReplayTranscript({
+        scenario: `monitor-${timing}`,
+        entries: [
+          ...codexReplayPreamble({
+            nativeThreadId,
+            nativeTurnId: firstId,
+            prompt: "Continue the user's work",
+          }),
+          {
+            type: "expect_outbound",
+            label: "monitor-tool-output",
+            frame: {
+              id: 4,
+              method: "turn/start",
+              params: {
+                threadId: nativeThreadId,
+                input: [],
+                toolOutput: {
+                  namespace: "t3_code",
+                  name: "monitor",
+                  output: [{ type: "input_text", text }],
+                },
+              },
+            },
+          },
+          ...(nextId === firstId ? [] : [completed(firstId)]),
+          ...(nextId === firstId || timing === "start after reply" ? [] : [nextStarted]),
+          ...(timing === "completion before reply" ? [completed(nextId)] : []),
+          {
+            type: "emit_inbound",
+            label: "monitor-reply",
+            frame:
+              timing === "rejected"
+                ? { id: 4, error: { code: -32602, message: "Monitor rejected" } }
+                : {
+                    id: 4,
+                    result: {
+                      turn: {
+                        ...makeCodexReplayTurn({ id: nextId, status: "inProgress" }),
+                        startedAt: null,
+                      },
+                    },
+                  },
+          },
+          ...(timing === "start after reply" ? [nextStarted] : []),
+          ...(timing === "stopped"
+            ? [
+                {
+                  type: "expect_outbound" as const,
+                  label: "stop-continuation",
+                  frame: {
+                    id: 5,
+                    method: "turn/interrupt",
+                    params: { threadId: nativeThreadId, turnId: nextId },
+                  },
+                },
+                {
+                  type: "emit_inbound" as const,
+                  label: "stop-reply",
+                  frame: { id: 5, result: {} },
+                },
+                {
+                  type: "emit_inbound" as const,
+                  label: "stopped",
+                  frame: {
+                    method: "turn/completed",
+                    params: {
+                      threadId: nativeThreadId,
+                      turn: makeCodexReplayTurn({ id: nextId, status: "interrupted" }),
+                    },
+                  },
+                },
+              ]
+            : timing === "completion before reply"
+              ? []
+              : [completed(nextId)]),
+        ],
+      });
+      const requests: Array<{ method: string; params: unknown }> = [];
+      const harness = yield* makeCodexReplayHarness(
+        transcript,
+        () => Effect.void,
+        (method, params) =>
+          Effect.sync(() => {
+            requests.push({ method, params });
+          }),
+      );
+      const first = makeCodexTestTurnInput({
+        threadId: harness.threadId,
+        providerThread: harness.providerThread,
+        now: yield* DateTime.now,
+        attemptId: RunAttemptId.make("monitor-attempt"),
+        text: "Continue the user's work",
+      });
+      yield* harness.runtime.startTurn(first);
+      const idAllocator = yield* IdAllocator.IdAllocatorV2;
+      const result = yield* harness.runtime
+        .steerTurn({
+          threadId: harness.threadId,
+          runId: first.runId,
+          providerThread: harness.providerThread,
+          providerTurnId: idAllocator.derive.providerTurn({
+            driver: CodexAdapterV2.CODEX_DRIVER_KIND,
+            nativeTurnId: firstId,
+          }),
+          message: {
+            ...first.message,
+            messageId: MessageId.make("monitor-message"),
+            text,
+            inputSource: "harness",
+            createdBy: "system",
+            creationSource: "server",
+          },
+        })
+        .pipe(Effect.result);
+      assert.equal(result._tag, timing === "rejected" ? "Failure" : "Success");
+      if (timing === "stopped") {
+        yield* harness.runtime.interruptTurn({
+          providerThread: harness.providerThread,
+          providerTurnId: idAllocator.derive.providerTurn({
+            driver: CodexAdapterV2.CODEX_DRIVER_KIND,
+            nativeTurnId: firstId,
+          }),
+          requestRuntimeRestart: true,
+        });
+      }
+      yield* harness.firstTerminal;
+      assert.equal(
+        harness.terminalEvents()[0]?.status,
+        timing === "stopped" ? "interrupted" : "completed",
+      );
+      assert.equal(harness.terminalEvents().length, 1);
+      assert.equal(
+        harness.terminalEvents()[0]?.providerTurnId,
+        idAllocator.derive.providerTurn({
+          driver: CodexAdapterV2.CODEX_DRIVER_KIND,
+          nativeTurnId: nextId,
+        }),
+      );
+      const starts = harness.events.filter(
+        (event) =>
+          event.type === "provider_turn.updated" && event.providerTurn.status === "running",
+      );
+      assert.equal(starts.length, nextId === firstId ? 1 : 2);
+      assert.isTrue(
+        starts.every(
+          (event) =>
+            event.type === "provider_turn.updated" &&
+            event.providerTurn.runAttemptId === first.attemptId,
+        ),
+      );
+      assert.notInclude(
+        requests.map((request) => request.method),
+        "turn/steer",
+      );
+      assert.equal(requests.filter((request) => request.method === "turn/start").length, 2);
+      assert.isFalse(
+        harness.events.some(
+          (event) =>
+            event.type === "message.updated" &&
+            event.message.role === "user" &&
+            event.message.text.includes("Build complete"),
+        ),
+      );
+    }).pipe(Effect.scoped, Effect.provide(Layer.merge(IdAllocator.layer, NodeServices.layer))),
+  );
+
   it.effect.each(["supported", "unsupported", "invalid"] as const)(
     "delivers native history with %s app-server protocol",
     (response) =>
@@ -2418,7 +2621,7 @@ describe("CodexAdapterV2 post-settle continuation", () => {
     ),
   );
 
-  it.effect("preserves T3 context on the wire and restores it after compaction", () =>
+  it.effect("restores app context after compaction without retaining monitor output", () =>
     Effect.scoped(
       Effect.gen(function* () {
         const nativeThreadId = "context-thread";
@@ -2449,6 +2652,32 @@ describe("CodexAdapterV2 post-settle continuation", () => {
             },
             ...entries.slice(6),
             {
+              type: "expect_outbound",
+              label: "monitor-output",
+              frame: {
+                id: 4,
+                method: "turn/start",
+                params: {
+                  threadId: nativeThreadId,
+                  input: [],
+                  additionalContext: params.additionalContext,
+                  toolOutput: {
+                    namespace: "t3_code",
+                    name: "monitor",
+                    output: [{ type: "input_text", text: "Ephemeral monitor observation" }],
+                  },
+                },
+              },
+            },
+            {
+              type: "emit_inbound",
+              label: "monitor-accepted",
+              frame: {
+                id: 4,
+                result: { turn: makeCodexReplayTurn({ id: nativeTurnId, status: "inProgress" }) },
+              },
+            },
+            {
               type: "emit_inbound",
               label: "compacted",
               frame: {
@@ -2464,7 +2693,7 @@ describe("CodexAdapterV2 post-settle continuation", () => {
               type: "expect_outbound",
               label: "restore context",
               frame: {
-                id: 4,
+                id: 5,
                 method: "thread/inject_items",
                 params: {
                   threadId: nativeThreadId,
@@ -2476,7 +2705,7 @@ describe("CodexAdapterV2 post-settle continuation", () => {
                 },
               },
             },
-            { type: "emit_inbound", label: "restored", frame: { id: 4, result: {} } },
+            { type: "emit_inbound", label: "restored", frame: { id: 5, result: {} } },
             {
               type: "emit_inbound",
               label: "done",
@@ -2512,6 +2741,23 @@ describe("CodexAdapterV2 post-settle continuation", () => {
             text: "work",
           }),
         );
+        yield* harness.runtime.steerTurn({
+          threadId: harness.threadId,
+          runId: RunId.make("run-unused"),
+          providerThread: harness.providerThread,
+          providerTurnId: (yield* IdAllocator.IdAllocatorV2).derive.providerTurn({
+            driver: CodexAdapterV2.CODEX_DRIVER_KIND,
+            nativeTurnId,
+          }),
+          message: {
+            messageId: MessageId.make("monitor-context-message"),
+            text: "Ephemeral monitor observation",
+            attachments: [],
+            inputSource: "harness",
+            createdBy: "system",
+            creationSource: "server",
+          },
+        });
         yield* harness.firstTerminal;
         assert.equal(harness.terminalEvents()[0]?.status, "completed");
       }).pipe(Effect.provide(Layer.merge(IdAllocator.layer, NodeServices.layer))),

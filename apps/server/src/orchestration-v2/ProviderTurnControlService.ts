@@ -1,4 +1,5 @@
 import { ProviderComputerLifecycle } from "./ProviderComputerLifecycle.ts";
+import { formatMonitorSystemEventForProvider } from "../threadMonitor/ThreadMonitorContinuation.ts";
 import { projectComposerContextForProvider } from "@t3tools/shared/composerContextReferences";
 import {
   MessageId,
@@ -322,13 +323,19 @@ export const layer: Layer.Layer<
               providerTurnId: loaded.providerTurn.id,
               message: {
                 messageId: message.id,
-                text: projectComposerContextForProvider({
-                  text: message.text,
-                  records: message.context?.records ?? [],
-                }),
+                text:
+                  message.notification?.systemEvent === undefined
+                    ? projectComposerContextForProvider({
+                        text: message.text,
+                        records: message.context?.records ?? [],
+                      })
+                    : formatMonitorSystemEventForProvider(message.notification.systemEvent),
                 attachments: message.attachments,
                 createdBy: message.createdBy,
                 creationSource: message.creationSource,
+                ...(message.notification?.systemEvent === undefined
+                  ? {}
+                  : { inputSource: "harness" as const }),
                 ...(message.scheduledTaskId === undefined
                   ? {}
                   : { scheduledTaskId: message.scheduledTaskId }),

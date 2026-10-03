@@ -41,7 +41,7 @@ const mutatingMonitorTool = <T extends Tool.Any>(tool: T): T =>
 export const MonitorStartTool = mutatingMonitorTool(
   Tool.make("monitor_start", {
     description:
-      "Create a one-time durable wait for the current T3 thread without keeping this model turn or process asleep. Use schedule_task for recurring prompts and computer_watch_start for screen conditions. Use schedule type after/at for long timers. Before choosing a cache-conscious timer, call monitor_capabilities for the current controller model's optional minimum prompt-cache lifetime. Use signal when a background watcher, subagent, automation, or later turn will call monitor_signal; an optional deadlineAt provides a restart-safe fallback. By default the trigger resumes this thread through whatever provider and model the thread is configured to use at delivery time. Set continuation=record-only when a durable result should be recorded without starting a turn. After creating a resume-thread monitor, finish the current turn instead of polling. T3 persists the monitor, survives server restarts, waits for active thread work to settle, and requests at most one logical continuation message.",
+      "Create a one-time durable wait for the current T3 thread without keeping this model turn or process asleep. Use schedule type after/at for long timers. Before choosing a cache-conscious timer, call monitor_capabilities for the current controller model's optional minimum prompt-cache lifetime. Use signal when a background watcher, subagent, automation, or later turn will call monitor_signal; an optional deadlineAt provides a restart-safe fallback. By default the trigger delivers its result into the active turn when the provider supports live input; otherwise it queues a follow-up turn using the thread's configuration. Pending approvals or user-input requests delay delivery. Set continuation=record-only when a durable result should be recorded without starting a turn. T3 persists the monitor across server restarts and retains one logical continuation message across delivery retries.",
     parameters: Schema.toCodecJson(ThreadMonitorStartInput),
     success: ThreadMonitor,
     failure: ThreadMonitorError,
@@ -81,7 +81,7 @@ export const MonitorStatusTool = Tool.make("monitor_status", {
 export const MonitorSignalTool = mutatingMonitorTool(
   Tool.make("monitor_signal", {
     description:
-      "Signal that a signal-scheduled monitor's condition is satisfied. Supply a concise summary and optional bounded evidence string. This call is idempotent after the first trigger. A resume-thread continuation is queued until the original thread is safe to resume; the signalling watcher should then finish rather than waiting for that turn.",
+      "Signal that a signal-scheduled monitor's condition is satisfied. Supply a concise summary and optional bounded evidence string. This call is idempotent after the first trigger. A resume-thread monitor delivers into supported active turns or queues a follow-up, waiting for pending approvals or user-input requests.",
     parameters: Schema.toCodecJson(ThreadMonitorSignalInput),
     success: ThreadMonitor,
     failure: ThreadMonitorError,

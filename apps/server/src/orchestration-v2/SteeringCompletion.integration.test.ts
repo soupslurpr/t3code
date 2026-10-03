@@ -10,6 +10,8 @@ import {
   ProviderThreadId,
   ProviderTurnId,
   ThreadId,
+  ThreadMonitorId,
+  RuntimeRequestId,
   type ModelSelection,
   type OrchestrationV2DomainEvent,
 } from "@t3tools/contracts";
@@ -17,6 +19,10 @@ import * as DateTime from "effect/DateTime";
 import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
 import * as Fiber from "effect/Fiber";
+import * as Layer from "effect/Layer";
+import { SqlitePersistenceMemory } from "../persistence/Layers/Sqlite.ts";
+import * as ThreadMonitorRepositoryLayer from "../persistence/Layers/ThreadMonitors.ts";
+import { ThreadMonitorRepository } from "../persistence/Services/ThreadMonitors.ts";
 import * as Queue from "effect/Queue";
 import * as Stream from "effect/Stream";
 import { CodexProviderCapabilitiesV2 } from "./Adapters/CodexAdapterV2.ts";
@@ -36,10 +42,54 @@ import { checkpointWorkspace } from "./testkit/ReplayFixtureWorkspace.ts";
 const driver = ProviderDriverKind.make("codex");
 const instanceId = ProviderInstanceId.make("codex");
 const modelSelection = { instanceId, model: "test-model" };
+const monitorNotification = {
+  source: { kind: "monitor" as const },
+  outcome: "updated" as const,
+  summary: "Build finished",
+  systemEvent: {
+    type: "monitor.continuation" as const,
+    deliveryGroupId: "build-group",
+    monitors: [
+      {
+        monitorId: ThreadMonitorId.make("build-monitor"),
+        triggeredAt: "2026-01-01T00:00:00.000Z",
+        triggerReason: "signal" as const,
+        observation: { label: "Wait for build", summary: "Build finished", evidence: "exitCode=0" },
+      },
+    ],
+    observationTrust: "untrusted" as const,
+    grantsAuthorization: false as const,
+  },
+};
+
+const seedMonitor = (threadId: ThreadId) =>
+  Effect.gen(function* () {
+    const repository = yield* ThreadMonitorRepository;
+    const now = DateTime.formatIso(yield* DateTime.now);
+    yield* repository.upsert({
+      id: ThreadMonitorId.make("build-monitor"),
+      threadId,
+      label: "Wait for build",
+      condition: { type: "signal", deadlineAt: null },
+      continuation: { mode: "resume-thread" },
+      status: "triggered",
+      trigger: { reason: "signal", summary: "Build finished", evidence: "exitCode=0" },
+      createdAt: now,
+      updatedAt: now,
+      triggeredAt: now,
+      deliveredAt: null,
+      cancelledAt: null,
+      lastError: null,
+      deliveryAttempts: 1,
+      deliveryGroupId: "build-group",
+      deliveryRetryAt: null,
+      deliveryFailureCount: 0,
+    });
+  });
 
 it.effect.each(
-  [false, true]
-    .flatMap((mailbox) =>
+  (["user", "delegated", "monitor"] as const)
+    .flatMap((kind) =>
       (
         [
           "before delivery",
@@ -50,16 +100,19 @@ it.effect.each(
           "settled only",
         ] as const
       ).map((timing) => ({
-        mailbox,
+        mailbox: kind === "delegated",
+        monitor: kind === "monitor",
         timing,
-        label: mailbox ? "mailbox notification" : "steering",
+        label: kind,
       })),
     )
     .filter(
-      ({ mailbox, timing }) =>
-        mailbox || (timing !== "without native steering" && timing !== "settled only"),
+      ({ mailbox, monitor, timing }) =>
+        mailbox ||
+        (monitor && timing !== "settled only") ||
+        (timing !== "without native steering" && timing !== "settled only"),
     ),
-)("delivers $label when completion wins $timing", ({ mailbox, timing }) =>
+)("delivers $label when completion wins $timing", ({ mailbox, monitor, timing }) =>
   Effect.scoped(
     Effect.gen(function* () {
       const cwd = yield* checkpointWorkspace(`steering-completion-${timing.replaceAll(" ", "-")}`);
@@ -145,6 +198,10 @@ it.effect.each(
               steerTurn: (turn) =>
                 Effect.gen(function* () {
                   steerCalls += 1;
+                  if (monitor) {
+                    assert.equal(turn.message.inputSource, "harness");
+                    assert.include(turn.message.text, "exitCode=0");
+                  }
                   if (timing === "after delivery") return;
                   yield* Deferred.succeed(steerEntered, undefined);
                   yield* Deferred.await(rejectSteer);
@@ -263,6 +320,7 @@ it.effect.each(
             ],
           });
         }
+        if (monitor) yield* seedMonitor(threadId);
         const dispatchSteer = orchestrator.dispatch({
           type: "message.dispatch",
           commandId: CommandId.make("steer"),
@@ -278,11 +336,13 @@ it.effect.each(
               sizeBytes: 10,
             },
           ],
-          dispatchMode: mailbox
-            ? { type: "queue_after_active" }
-            : { type: "steer_active", targetRunId: first.runId },
-          createdBy: mailbox ? "agent" : "user",
-          creationSource: mailbox ? "server" : "web",
+          dispatchMode:
+            mailbox || monitor
+              ? { type: "queue_after_active" }
+              : { type: "steer_active", targetRunId: first.runId },
+          createdBy: monitor ? "system" : mailbox ? "agent" : "user",
+          creationSource: mailbox || monitor ? "server" : "web",
+          ...(monitor ? { notification: monitorNotification } : {}),
           ...(mailbox
             ? {
                 delegatedCompletion: {
@@ -333,6 +393,31 @@ it.effect.each(
         if (timing === "after delivery") {
           assert.equal(steerCalls, 1);
           assert.equal(started.length, 1);
+          if (monitor) {
+            const delivered = yield* orchestrator.getThreadProjection(threadId);
+            assert.equal(
+              delivered.messages.find((message) => message.id === messageId)?.notificationDelivery,
+              "accepted",
+            );
+            assert.equal(
+              delivered.turnItems.filter((item) => item.type === "notification").length,
+              1,
+            );
+            yield* orchestrator.dispatch({
+              type: "message.dispatch",
+              commandId: CommandId.make("monitor-retry"),
+              threadId,
+              messageId,
+              text: "Build finished",
+              attachments: [],
+              notification: monitorNotification,
+              createdBy: "system",
+              creationSource: "server",
+              dispatchMode: { type: "queue_after_active" },
+            });
+            yield* worker.drain();
+            assert.equal(started.length, 1);
+          }
           if (mailbox) {
             const delivered = yield* orchestrator.getThreadProjection(threadId);
             assert.equal(delivered.subagents[0]?.completionDelivery?.state, "delivered");
@@ -365,7 +450,10 @@ it.effect.each(
         assert.equal(started.length, 2);
         assert.equal(started[1]?.message.messageId, messageId);
         if (mailbox) assert.include(started[1]?.message.text ?? "", String(taskId));
-        else assert.equal(started[1]?.message.text, "fix the popover");
+        else if (monitor) {
+          assert.equal(started[1]?.message.inputSource, "harness");
+          assert.include(started[1]?.message.text ?? "", "exitCode=0");
+        } else assert.equal(started[1]?.message.text, "fix the popover");
         assert.deepEqual(started[1]?.message.attachments, [
           {
             type: "image",
@@ -384,7 +472,7 @@ it.effect.each(
         );
         assert.equal(
           final.turnItems.filter((item) =>
-            mailbox
+            mailbox || monitor
               ? item.type === "notification"
               : item.type === "user_message" && item.messageId === messageId,
           ).length,
@@ -394,10 +482,13 @@ it.effect.each(
         assert.equal(started.length, 2);
       }).pipe(
         Effect.provide(
-          makeOrchestratorV2ReplayLayerWithRegistry(
-            { name: `steering-completion-${timing}` },
-            ProviderAdapterRegistry.makeSingleLayer(adapter),
-            { runEffectWorker: false },
+          Layer.merge(
+            makeOrchestratorV2ReplayLayerWithRegistry(
+              { name: `steering-completion-${timing}` },
+              ProviderAdapterRegistry.makeSingleLayer(adapter),
+              { runEffectWorker: false },
+            ),
+            ThreadMonitorRepositoryLayer.layer.pipe(Layer.provide(SqlitePersistenceMemory)),
           ),
         ),
       );
@@ -701,4 +792,83 @@ it.effect("starts a steer that missed the turn on the saved next-turn selection"
       }).pipe(Effect.provide(layer));
     }),
   ),
+);
+
+it.effect.each(["none", "command", "user_input"] as const)(
+  "keeps monitor delivery on the active selection with pending request %s",
+  (requestKind) =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const { started, steered, layer, startFirstTurn } =
+          yield* nextTurnSelectionHarness("monitor-selection");
+        yield* Effect.gen(function* () {
+          const orchestrator = yield* Orchestrator.OrchestratorV2;
+          const worker = yield* EffectWorker.OrchestrationEffectWorkerV2;
+          const threadId = yield* startFirstTurn;
+          yield* seedMonitor(threadId);
+          yield* orchestrator.dispatch({
+            type: "thread.model-selection.set",
+            commandId: CommandId.make("next-selection"),
+            threadId,
+            modelSelection: composerSelection,
+          });
+          if (requestKind !== "none") {
+            const projection = yield* orchestrator.getThreadProjection(threadId);
+            const turn = projection.providerTurns[0]!;
+            const now = yield* DateTime.now;
+            yield* (yield* EventSink.EventSinkV2).write({
+              events: [
+                {
+                  id: EventId.make("pending-request"),
+                  type: "runtime-request.updated",
+                  threadId,
+                  runId: started[0]!.runId,
+                  occurredAt: now,
+                  payload: {
+                    id: RuntimeRequestId.make("approval"),
+                    nodeId: started[0]!.rootNodeId,
+                    providerTurnId: turn.id,
+                    nativeRequestRef: null,
+                    kind: requestKind,
+                    status: "pending",
+                    responseCapability: { type: "message" },
+                    createdAt: now,
+                    resolvedAt: null,
+                  },
+                },
+              ],
+            });
+          }
+          yield* orchestrator.dispatch({
+            type: "message.dispatch",
+            commandId: CommandId.make("monitor-dispatch"),
+            threadId,
+            messageId: MessageId.make("monitor-selection-message"),
+            text: "Build finished",
+            attachments: [],
+            notification: monitorNotification,
+            createdBy: "system",
+            creationSource: "server",
+            dispatchMode: { type: "queue_after_active" },
+          });
+          yield* worker.drain();
+          const final = yield* orchestrator.getThreadProjection(threadId);
+          assert.deepEqual(final.thread.modelSelection, composerSelection);
+          assert.deepEqual(final.runs[0]?.modelSelection, runSelection);
+          assert.equal(started.length, 1);
+          assert.equal(steered.length, requestKind === "none" ? 1 : 0);
+          if (requestKind !== "none") {
+            assert.equal(final.runtimeRequests[0]?.status, "pending");
+            assert.equal(final.runs.at(-1)?.status, "queued");
+          }
+        }).pipe(
+          Effect.provide(
+            Layer.merge(
+              layer,
+              ThreadMonitorRepositoryLayer.layer.pipe(Layer.provide(SqlitePersistenceMemory)),
+            ),
+          ),
+        );
+      }),
+    ),
 );

@@ -697,6 +697,27 @@ export function supportsCodexToolOutput(userAgent: string): boolean {
   return version !== null && (Number(version[1]) > 0 || Number(version[2]) >= 151);
 }
 
+function codexMonitorToolOutput(
+  input: ReadonlyArray<CodexSchema.V2TurnStartParams__UserInput>,
+): CodexSchema.V2TurnStartParams__TurnToolOutput {
+  return {
+    namespace: "t3_code",
+    name: "monitor",
+    output: input.flatMap(
+      (item): Array<CodexSchema.V2TurnStartParams__FunctionCallOutputContentItem> => {
+        if (item.type === "text") return [{ type: "input_text", text: item.text }];
+        if (item.type === "image")
+          return [
+            "url" in item
+              ? { type: "input_image", image_url: item.url }
+              : { type: "input_image", file_id: item.fileId },
+          ];
+        return [];
+      },
+    ),
+  };
+}
+
 export function buildCodexTurnStartParams(input: {
   readonly nativeThreadId: string;
   readonly codexInput: ReadonlyArray<CodexSchema.V2TurnStartParams__UserInput>;
@@ -1011,6 +1032,8 @@ interface ActiveCodexTurnContext {
     readonly failure: OrchestrationV2ProviderFailure;
   };
   readonly nativeStartReady?: Deferred.Deferred<void>;
+  /** Earlier native turns replaced by a monitor input in this same app attempt. */
+  readonly predecessorTurnIds?: ReadonlySet<ProviderTurnId>;
   readonly input: ProviderAdapterV2TurnInput;
   readonly projectionAppThread: OrchestrationV2AppThread;
   readonly projectionThreadId: ThreadId;
@@ -1106,9 +1129,10 @@ const isDescendantCodexTurn = (
   candidate: ActiveCodexTurnContext,
   ancestor: ActiveCodexTurnContext,
 ): boolean => {
+  if (candidate.predecessorTurnIds?.has(ancestor.providerTurnId)) return true;
   let parent = candidate.subagent?.parentContext;
   while (parent !== undefined) {
-    if (parent === ancestor) {
+    if (parent === ancestor || ancestor.predecessorTurnIds?.has(parent.providerTurnId)) {
       return true;
     }
     parent = parent.subagent?.parentContext;
@@ -1668,6 +1692,18 @@ export function makeCodexAdapterV2(adapterOptions: CodexAdapterV2Options): Provi
           ).hasSubagents = true;
         };
         const pendingRootTurns = yield* Ref.make(new Map<string, ProviderAdapterV2TurnInput>());
+        // turn/start is Codex's only harness-output API. It can start a new native
+        // turn if completion wins the race; keep that turn in the same app run.
+        const pendingHarnessInputs = yield* Ref.make(
+          new Map<
+            string,
+            {
+              readonly previousTurn: ActiveCodexTurnContext;
+              readonly acceptedNativeTurnId?: string;
+            }
+          >(),
+        );
+        const supersededRootTurns = yield* Ref.make(new Set<string>());
         const turnWaiters = yield* Ref.make(new Map<string, Deferred.Deferred<void, never>>());
         const subagentThreads = yield* Ref.make(new Map<string, CodexSubagentThreadContext>());
         const subagentModels = new Map<string, string>();
@@ -1755,6 +1791,7 @@ export function makeCodexAdapterV2(adapterOptions: CodexAdapterV2Options): Provi
           readonly nativeTurnId: string;
           readonly startedAt: DateTime.Utc;
           readonly waitForNativeStart?: boolean;
+          readonly predecessorTurnIds?: ReadonlySet<ProviderTurnId> | undefined;
         }) =>
           Effect.gen(function* () {
             const existing = (yield* Ref.get(activeTurns)).get(input.nativeTurnId);
@@ -1769,6 +1806,9 @@ export function makeCodexAdapterV2(adapterOptions: CodexAdapterV2Options): Provi
               ...(input.waitForNativeStart
                 ? { nativeStartReady: yield* Deferred.make<void>() }
                 : {}),
+              ...(input.predecessorTurnIds === undefined
+                ? {}
+                : { predecessorTurnIds: input.predecessorTurnIds }),
               input: input.turnInput,
               projectionAppThread: input.turnInput.appThread,
               projectionThreadId: input.turnInput.threadId,
@@ -1818,6 +1858,39 @@ export function makeCodexAdapterV2(adapterOptions: CodexAdapterV2Options): Provi
               },
             });
             return context;
+          });
+
+        const harnessPredecessors = (nativeThreadId: string) =>
+          Effect.gen(function* () {
+            const previous = (yield* Ref.get(pendingHarnessInputs)).get(
+              nativeThreadId,
+            )?.previousTurn;
+            return previous === undefined
+              ? undefined
+              : new Set([...(previous.predecessorTurnIds ?? []), previous.providerTurnId]);
+          });
+
+        const acceptHarnessTurn = (nativeThreadId: string, nativeTurnId: string) =>
+          Effect.gen(function* () {
+            const pending = (yield* Ref.get(pendingHarnessInputs)).get(nativeThreadId);
+            if (pending === undefined) return;
+            yield* Ref.update(pendingHarnessInputs, (current) =>
+              new Map(current).set(nativeThreadId, {
+                ...pending,
+                acceptedNativeTurnId: nativeTurnId,
+              }),
+            );
+            if (pending.previousTurn.nativeTurnId === nativeTurnId) return;
+            yield* Ref.update(deferredRootTerminals, (current) => {
+              const next = new Map(current);
+              next.delete(pending.previousTurn.nativeTurnId);
+              return next;
+            });
+            if ((yield* Ref.get(activeTurns)).has(pending.previousTurn.nativeTurnId)) {
+              yield* Ref.update(supersededRootTurns, (current) =>
+                new Set(current).add(pending.previousTurn.nativeTurnId),
+              );
+            }
           });
 
         const findActiveTurnByNativeThreadId = (nativeThreadId: string) =>
@@ -3899,8 +3972,10 @@ export function makeCodexAdapterV2(adapterOptions: CodexAdapterV2Options): Provi
             }
             const pendingRootTurn = (yield* Ref.get(pendingRootTurns)).get(payload.threadId);
             if (pendingRootTurn !== undefined) {
+              yield* acceptHarnessTurn(payload.threadId, payload.turn.id);
               yield* registerRootTurn({
                 turnInput: pendingRootTurn,
+                predecessorTurnIds: yield* harnessPredecessors(payload.threadId),
                 nativeTurnId: payload.turn.id,
                 startedAt: codexTimestamp(payload.turn.startedAt),
               });
@@ -5040,11 +5115,22 @@ export function makeCodexAdapterV2(adapterOptions: CodexAdapterV2Options): Provi
             readonly failureCode?: string | null;
             readonly providerRetry?: ActiveCodexProviderRetry;
           }) {
+            if ((yield* Ref.get(supersededRootTurns)).has(input.nativeTurnId)) {
+              yield* Ref.update(supersededRootTurns, (current) => {
+                const next = new Set(current);
+                next.delete(input.nativeTurnId);
+                return next;
+              });
+              return;
+            }
+            const harnessInputPending = (yield* Ref.get(pendingHarnessInputs)).has(
+              input.context.providerThread.nativeThreadRef?.nativeId ?? "",
+            );
             const event = yield* makeRootTerminalEvent(input);
             const hasActiveDescendants = Array.from((yield* Ref.get(activeTurns)).values()).some(
               (candidate) => isDescendantCodexTurn(candidate, input.context),
             );
-            if (event.status !== "completed" && hasActiveDescendants) {
+            if (harnessInputPending || (event.status !== "completed" && hasActiveDescendants)) {
               yield* Ref.update(deferredRootTerminals, (current) => {
                 const updated = new Map(current);
                 updated.set(input.nativeTurnId, { context: input.context, event });
@@ -5059,6 +5145,7 @@ export function makeCodexAdapterV2(adapterOptions: CodexAdapterV2Options): Provi
         const flushReadyRootTerminals = Effect.fn("CodexAdapterV2.flushReadyRootTerminals")(
           function* () {
             const activeTurnContexts = Array.from((yield* Ref.get(activeTurns)).values());
+            const pendingHarness = yield* Ref.get(pendingHarnessInputs);
             const readyEvents = yield* Ref.modify(deferredRootTerminals, (current) => {
               const updated = new Map(current);
               const ready: Array<{
@@ -5066,6 +5153,12 @@ export function makeCodexAdapterV2(adapterOptions: CodexAdapterV2Options): Provi
                 event: CodexRootTerminalEvent;
               }> = [];
               for (const [nativeTurnId, deferred] of current) {
+                if (
+                  pendingHarness.has(
+                    deferred.context.providerThread.nativeThreadRef?.nativeId ?? "",
+                  )
+                )
+                  continue;
                 if (
                   !activeTurnContexts.some((candidate) =>
                     isDescendantCodexTurn(candidate, deferred.context),
@@ -5552,26 +5645,7 @@ export function makeCodexAdapterV2(adapterOptions: CodexAdapterV2Options): Provi
                 return yield* toProtocolError(
                   "Automated monitor delivery requires Codex CLI 0.151.0 or later. Update Codex to resume this thread from a monitor.",
                 );
-              const toolOutput = harness
-                ? ({
-                    namespace: "t3_code",
-                    name: "monitor",
-                    output: codexInput.flatMap(
-                      (
-                        item,
-                      ): Array<CodexSchema.V2TurnStartParams__FunctionCallOutputContentItem> => {
-                        if (item.type === "text") return [{ type: "input_text", text: item.text }];
-                        if (item.type === "image")
-                          return [
-                            "url" in item
-                              ? { type: "input_image", image_url: item.url }
-                              : { type: "input_image", file_id: item.fileId },
-                          ];
-                        return [];
-                      },
-                    ),
-                  } satisfies CodexSchema.V2TurnStartParams__TurnToolOutput)
-                : undefined;
+              const toolOutput = harness ? codexMonitorToolOutput(codexInput) : undefined;
               const mcpSession = McpProviderSession.readMcpProviderSession(turnInput.threadId);
               const turnStartParams = yield* buildCodexTurnStartParams({
                 nativeThreadId: threadId,
@@ -5635,7 +5709,9 @@ export function makeCodexAdapterV2(adapterOptions: CodexAdapterV2Options): Provi
             Effect.gen(function* () {
               const threadId = yield* getNativeThreadId(turnInput.providerThread);
               const activeTurn = Array.from((yield* Ref.get(activeTurns)).values()).find(
-                (candidate) => candidate.providerTurnId === turnInput.providerTurnId,
+                (candidate) =>
+                  candidate.providerTurnId === turnInput.providerTurnId ||
+                  candidate.predecessorTurnIds?.has(turnInput.providerTurnId),
               );
               if (activeTurn === undefined) {
                 return yield* toProtocolError(
@@ -5644,6 +5720,98 @@ export function makeCodexAdapterV2(adapterOptions: CodexAdapterV2Options): Provi
               }
 
               const codexInput = yield* toCodexInput(turnInput);
+              if (turnInput.message.inputSource === "harness") {
+                if (!(yield* Ref.get(toolOutputSupported)))
+                  return yield* toProtocolError(
+                    "Automated monitor delivery requires Codex CLI 0.151.0 or later.",
+                  );
+                const continuationInput = {
+                  ...activeTurn.input,
+                  message: turnInput.message,
+                  providerTurnOrdinal: activeTurn.providerTurnOrdinal + 1,
+                };
+                yield* turnTerminalizationPermit.withPermits(1)(
+                  Effect.gen(function* () {
+                    if ((yield* Ref.get(activeTurns)).get(activeTurn.nativeTurnId) !== activeTurn) {
+                      return yield* toProtocolError(
+                        `Provider turn ${turnInput.providerTurnId} is no longer active.`,
+                      );
+                    }
+                    yield* Ref.update(pendingHarnessInputs, (current) =>
+                      new Map(current).set(threadId, { previousTurn: activeTurn }),
+                    );
+                    yield* Ref.update(pendingRootTurns, (current) =>
+                      new Map(current).set(threadId, continuationInput),
+                    );
+                  }),
+                );
+                yield* Effect.gen(function* () {
+                  // Keep the current app context if Codex starts a native turn;
+                  // leave the active model and permission settings alone.
+                  const additionalContext = (yield* Ref.get(additionalContextByThread)).get(
+                    threadId,
+                  );
+                  const started = yield* client
+                    .request("turn/start", {
+                      threadId,
+                      input: [],
+                      toolOutput: codexMonitorToolOutput(codexInput),
+                      ...(additionalContext === undefined ? {} : { additionalContext }),
+                    })
+                    .pipe(
+                      Effect.map((response) => ({
+                        id: response.turn.id,
+                        startedAt: response.turn.startedAt,
+                      })),
+                      Effect.catch((error) =>
+                        Effect.gen(function* () {
+                          const accepted = (yield* Ref.get(pendingHarnessInputs)).get(
+                            threadId,
+                          )?.acceptedNativeTurnId;
+                          return accepted === undefined
+                            ? yield* error
+                            : { id: accepted, startedAt: null };
+                        }),
+                      ),
+                    );
+                  yield* turnTerminalizationPermit.withPermits(1)(
+                    Effect.gen(function* () {
+                      yield* acceptHarnessTurn(threadId, started.id);
+                      if (
+                        started.id !== activeTurn.nativeTurnId &&
+                        !(yield* Ref.get(deferredRootTerminals)).has(started.id)
+                      ) {
+                        yield* registerRootTurn({
+                          turnInput: continuationInput,
+                          predecessorTurnIds: yield* harnessPredecessors(threadId),
+                          nativeTurnId: started.id,
+                          startedAt: codexTimestamp(started.startedAt),
+                          waitForNativeStart: started.startedAt === null,
+                        });
+                      }
+                    }),
+                  );
+                }).pipe(
+                  Effect.ensuring(
+                    turnTerminalizationPermit.withPermits(1)(
+                      Effect.gen(function* () {
+                        yield* Ref.update(pendingHarnessInputs, (current) => {
+                          const next = new Map(current);
+                          next.delete(threadId);
+                          return next;
+                        });
+                        yield* Ref.update(pendingRootTurns, (current) => {
+                          const next = new Map(current);
+                          next.delete(threadId);
+                          return next;
+                        });
+                        yield* flushReadyRootTerminals();
+                      }),
+                    ),
+                  ),
+                );
+                return;
+              }
               yield* client.request("turn/steer", {
                 expectedTurnId: activeTurn.nativeTurnId,
                 input: codexInput,
@@ -5691,7 +5859,9 @@ export function makeCodexAdapterV2(adapterOptions: CodexAdapterV2Options): Provi
                 );
               const activeTurn =
                 activeTurnContexts.find(
-                  (candidate) => candidate.providerTurnId === turnInput.providerTurnId,
+                  (candidate) =>
+                    candidate.providerTurnId === turnInput.providerTurnId ||
+                    candidate.predecessorTurnIds?.has(turnInput.providerTurnId),
                 ) ??
                 (turnInput.requestRuntimeRestart === true
                   ? settledTurnContexts.find(

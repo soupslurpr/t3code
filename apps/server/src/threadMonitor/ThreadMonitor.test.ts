@@ -14,6 +14,8 @@ import {
   type ThreadMonitorSummaryList,
   EventId,
   ProviderTurnId,
+  ProviderSessionId,
+  ProviderThreadId,
 } from "@t3tools/contracts";
 import * as DateTime from "effect/DateTime";
 import * as Context from "effect/Context";
@@ -29,6 +31,8 @@ import * as Result from "effect/Result";
 import * as SqlClient from "effect/unstable/sql/SqlClient";
 import * as TestClock from "effect/testing/TestClock";
 
+import * as EffectOutbox from "../orchestration-v2/EffectOutbox.ts";
+import { makeMonitorContinuationEvent } from "./ThreadMonitorContinuation.ts";
 import { ServerConfig } from "../config.ts";
 import { makeOrchestratorV2ReplayLayerWithRegistry } from "../orchestration-v2/testkit/ProviderReplayHarness.ts";
 import { CodexProviderCapabilitiesV2 } from "../orchestration-v2/Adapters/CodexAdapterV2.ts";
@@ -546,6 +550,7 @@ const orchestrationLayer = (
     ),
     ProjectionStore.layer,
     WorkspaceQuery.layer,
+    EffectOutbox.layer,
   ).pipe(Layer.provideMerge(database));
 
 const OrchestrationLayerLive = orchestrationLayer();
@@ -915,7 +920,7 @@ describe("ThreadMonitor", () => {
     }).pipe(Effect.provide(Layer.fresh(testRuntime))),
   );
 
-  it.effect("delivers after active work settles and supports cancellation", () =>
+  it.effect("queues behind unsupported active work and supports cancellation", () =>
     Effect.gen(function* () {
       yield* seedThread;
       const service = yield* ThreadMonitorService;
@@ -931,9 +936,33 @@ describe("ThreadMonitor", () => {
         threadId,
         check: { monitorId: monitor.id },
       });
-      assert.strictEqual(blocked.monitors[0]?.status, "triggered");
+      assert.strictEqual(blocked.monitors[0]?.status, "delivered");
+      const snapshots = yield* ProjectionStore.ProjectionStoreV2;
+      const busy = yield* snapshots.getThreadProjection(threadId);
+      const queued = busy.runs.find((run) => run.status === "queued");
+      assert.isDefined(queued);
+      assert.isTrue(busy.runs.some((run) => run.status === "starting"));
+      assert.isDefined(
+        busy.messages.find((message) => message.id === queued?.userMessageId)?.notification,
+      );
 
-      yield* completeTestRun;
+      const active = busy.runs.find((run) => run.status === "starting")!;
+      const now = yield* DateTime.now;
+      yield* (yield* EventSinkV2).write({
+        events: [
+          {
+            id: EventId.make("busy-completed"),
+            type: "run.updated",
+            threadId,
+            runId: active.id,
+            occurredAt: now,
+            payload: { ...active, status: "completed", completedAt: now },
+          },
+        ],
+      });
+      yield* (yield* OrchestratorV2).resumeQueuedRuns;
+      const resumed = yield* snapshots.getThreadProjection(threadId);
+      assert.equal(resumed.runs.find((run) => run.id === queued?.id)?.status, "starting");
       const delivered = yield* service.checkNow({
         threadId,
         check: { monitorId: monitor.id },
@@ -954,6 +983,109 @@ describe("ThreadMonitor", () => {
         cancel: { monitorId: cancellable.id },
       });
       assert.strictEqual(cancelledAgain.monitors[0]?.status, "cancelled");
+    }).pipe(Effect.provide(Layer.fresh(testRuntime))),
+  );
+
+  it.effect("waits for native acceptance and recovers a shutdown-cancelled delivery once", () =>
+    Effect.gen(function* () {
+      yield* seedThread;
+      const service = yield* ThreadMonitorService;
+      const repository = yield* ThreadMonitorRepository;
+      const snapshots = yield* ProjectionStore.ProjectionStoreV2;
+      const outbox = yield* EffectOutbox.EffectOutboxV2;
+      const run = yield* startTestRun();
+      const created = yield* service.create({
+        threadId,
+        monitor: { label: "Build", schedule: { type: "signal" } },
+      });
+      const now = yield* DateTime.now;
+      const monitor = {
+        ...created,
+        status: "triggered" as const,
+        trigger: { reason: "signal" as const, summary: "Done", evidence: null },
+        triggeredAt: DateTime.formatIso(DateTime.makeUnsafe(DateTime.toEpochMillis(now) - 1000)),
+        deliveryGroupId: "pending-native",
+        deliveryAttempts: 1,
+      };
+      yield* repository.upsert(monitor);
+      const original = (yield* snapshots.getThreadProjection(threadId)).messages[0]!;
+      const messageId = MessageId.make("thread-monitor-group:pending-native:continuation");
+      const commandId = CommandId.make("thread-monitor-group:pending-native:resume:1");
+      yield* (yield* EventSinkV2).write({
+        events: [
+          {
+            id: EventId.make("pending-native-message"),
+            type: "message.updated",
+            threadId,
+            runId: run.id,
+            occurredAt: now,
+            payload: {
+              ...original,
+              id: messageId,
+              text: "Build done",
+              createdBy: "system",
+              creationSource: "server",
+              notificationDelivery: "pending",
+              notification: {
+                source: { kind: "monitor" },
+                outcome: "updated",
+                summary: "Build done",
+                systemEvent: makeMonitorContinuationEvent([monitor]),
+              },
+            },
+          },
+          {
+            id: EventId.make("pending-native-completed"),
+            type: "run.updated",
+            threadId,
+            runId: run.id,
+            occurredAt: now,
+            payload: { ...run, status: "cancelled", startedAt: now, completedAt: now },
+          },
+        ],
+      });
+      yield* outbox.enqueue([
+        {
+          id: "pending-native-effect",
+          commandId,
+          threadId,
+          request: {
+            type: "provider-turn.steer",
+            providerSessionId: ProviderSessionId.make("old-session"),
+            providerThreadId: ProviderThreadId.make("old-thread"),
+            providerTurnId: ProviderTurnId.make("old-turn"),
+            messageId,
+          },
+        },
+      ]);
+      assert.equal(
+        (yield* service.checkNow({ threadId, check: { monitorId: monitor.id } })).monitors[0]
+          ?.status,
+        "triggered",
+      );
+      assert.lengthOf((yield* snapshots.getThreadProjection(threadId)).runs, 1);
+      yield* outbox.cancelUnsettled({
+        threadId,
+        effectTypes: ["provider-turn.steer"],
+        reason: "Server shutdown",
+      });
+      assert.equal(
+        (yield* service.checkNow({ threadId, check: { monitorId: monitor.id } })).monitors[0]
+          ?.status,
+        "delivered",
+      );
+      yield* service.checkNow({ threadId, check: { monitorId: monitor.id } });
+      const recovered = yield* snapshots.getThreadProjection(threadId);
+      assert.lengthOf(recovered.runs, 2);
+      assert.equal(recovered.runs[1]?.userMessageId, messageId);
+      assert.lengthOf(
+        recovered.messages.filter((message) => message.id === messageId),
+        1,
+      );
+      assert.equal(
+        recovered.messages.find((message) => message.id === messageId)?.notification?.source.kind,
+        "monitor",
+      );
     }).pipe(Effect.provide(Layer.fresh(testRuntime))),
   );
 
