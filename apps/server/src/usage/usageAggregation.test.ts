@@ -85,15 +85,15 @@ describe("UsageAggregator", () => {
     const [bucket] = aggregate([record(), record({ speed: "fast" })]).buckets;
 
     expect(bucket).toMatchObject({
-      costUsd: expect.closeTo(0.016875),
+      costUsd: expect.closeTo(0.013875, 9),
       categoryCostUsd: {
-        input: expect.closeTo(0.003),
-        cacheRead: expect.closeTo(0.003),
-        cacheWrite: expect.closeTo(0.000375),
-        output: expect.closeTo(0.0075),
+        input: expect.closeTo(0.003, 9),
+        cacheRead: expect.closeTo(0.003, 9),
+        cacheWrite: expect.closeTo(0.000375, 9),
+        output: expect.closeTo(0.0075, 9),
       },
-      fastCostUsd: expect.closeTo(0.01125),
-      speedPremiumUsd: expect.closeTo(0.005625),
+      fastCostUsd: expect.closeTo(0.00925, 9),
+      speedPremiumUsd: expect.closeTo(0.004625, 9),
     });
     expect(bucket).not.toHaveProperty("ultrafastCostUsd");
   });
