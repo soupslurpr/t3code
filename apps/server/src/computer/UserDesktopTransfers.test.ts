@@ -1,6 +1,6 @@
 import type * as Scope from "effect/Scope";
 import * as TestClock from "effect/testing/TestClock";
-import { HttpRouter } from "effect/unstable/http";
+import { HttpRouter } from "effect/http";
 import { userDesktopTransferRouteLayer } from "./userDesktopTransferHttp.ts";
 // @effect-diagnostics nodeBuiltinImport:off - Exercises actual archives and isolated workspaces.
 import * as NodeFSP from "node:fs/promises";
@@ -34,7 +34,7 @@ import * as Schema from "effect/Schema";
 import * as ServerConfig from "../config.ts";
 import type * as McpInvocationContext from "../mcp/McpInvocationContext.ts";
 import { PreviewAutomationBroker } from "../mcp/PreviewAutomationBroker.ts";
-import { ProjectionSnapshotQuery } from "../orchestration/Services/ProjectionSnapshotQuery.ts";
+import { ThreadWorkspaceQuery } from "../orchestration-v2/ThreadWorkspaceQuery.ts";
 import * as Transfers from "./UserDesktopTransfers.ts";
 
 const decodeRequest = Schema.decodeUnknownEffect(UserDesktopTransferRequest);
@@ -44,12 +44,16 @@ const threadId = ThreadId.make("thread-transfer-test");
 const providerInstanceId = ProviderInstanceId.make("codex");
 const now = "2026-09-11T00:00:00.000Z";
 const modelSelection = { instanceId: providerInstanceId, model: "test-model" } as const;
-const owner: McpInvocationContext.McpInvocationScope = {
+const owner: McpInvocationContext.McpThreadInvocationScope = {
   environmentId,
-  threadId,
-  controllerId: "controller",
-  providerSessionId: "session",
-  providerInstanceId,
+  thread: {
+    threadId,
+    controllerId: "controller",
+    providerSessionId: "session",
+    providerInstanceId,
+  },
+  requestNamespace: "computer-test",
+  client: undefined,
   capabilities: new Set(["computer"]),
   issuedAt: 0,
 };
@@ -63,7 +67,7 @@ const input: UserDesktopCopyInput = {
   waitMs: 0,
 };
 function projectionLayer(workspaceRoot: string) {
-  return Layer.mock(ProjectionSnapshotQuery)({
+  return Layer.mock(ThreadWorkspaceQuery)({
     getThreadShellById: () =>
       Effect.succeed(
         Option.some({
@@ -76,7 +80,8 @@ function projectionLayer(workspaceRoot: string) {
           interactionMode: "default",
           branch: null,
           worktreePath: null,
-          latestTurn: null,
+          activeRunId: null,
+          pendingRuntimeRequest: null,
           createdAt: now,
           updatedAt: now,
           archivedAt: null,
@@ -135,7 +140,7 @@ const fixture = Effect.gen(function* () {
 const withFixture = <A, E>(
   run: (
     value: Effect.Success<typeof fixture>,
-  ) => Effect.Effect<A, E, Transfers.UserDesktopTransfers | ProjectionSnapshotQuery | Scope.Scope>,
+  ) => Effect.Effect<A, E, Transfers.UserDesktopTransfers | ThreadWorkspaceQuery | Scope.Scope>,
 ) =>
   Effect.gen(function* () {
     const value = yield* fixture;
@@ -318,7 +323,10 @@ describe("user desktop transfers", () => {
           .start(owner, { ...input, desktopPath: "different" })
           .pipe(Effect.flip);
         assert.include(changed.message, "different transfer");
-        const foreign = { ...owner, threadId: ThreadId.make("other-thread") };
+        const foreign = {
+          ...owner,
+          thread: { ...owner.thread, threadId: ThreadId.make("other-thread") },
+        };
         assert.include(
           (yield* transfers.status(foreign, { transferId: copies[0].id }).pipe(Effect.flip))
             .message,

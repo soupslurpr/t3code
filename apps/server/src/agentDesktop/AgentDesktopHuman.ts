@@ -41,7 +41,7 @@ export function humanRequestOperation(
 /** Runs one supervision request inside its authenticated environment and thread boundary. */
 export const runAgentDesktopHumanRequest = Effect.fn("AgentDesktopHuman.run")(function* (
   manager: AgentDesktopManager.AgentDesktopManagerShape,
-  scope: McpInvocationContext.McpInvocationScope,
+  scope: McpInvocationContext.McpThreadInvocationScope,
   request: AgentDesktopHumanRequest,
 ) {
   if (request.operation === "list") {
@@ -58,10 +58,10 @@ export const runAgentDesktopHumanRequest = Effect.fn("AgentDesktopHuman.run")(fu
   if (request.operation === "update") {
     const owner = request.owner ?? {
       environmentId: scope.environmentId,
-      threadId: scope.threadId,
-      controllerId: scope.providerSessionId,
+      threadId: scope.thread.threadId,
+      controllerId: scope.thread.providerSessionId,
     };
-    if (owner.environmentId !== scope.environmentId || owner.threadId !== scope.threadId) {
+    if (owner.environmentId !== scope.environmentId || owner.threadId !== scope.thread.threadId) {
       return yield* new AgentDesktopManager.AgentDesktopManagerError({
         code: "desktop-target-mismatch",
         operation: "update",
@@ -72,7 +72,7 @@ export const runAgentDesktopHumanRequest = Effect.fn("AgentDesktopHuman.run")(fu
   }
   if (
     request.owner.environmentId !== scope.environmentId ||
-    request.owner.threadId !== scope.threadId
+    request.owner.threadId !== scope.thread.threadId
   ) {
     return yield* new AgentDesktopManager.AgentDesktopManagerError({
       code: "desktop-target-mismatch",
@@ -88,21 +88,25 @@ export const runAgentDesktopHumanRequest = Effect.fn("AgentDesktopHuman.run")(fu
     case "request-view":
       return yield* manager.requestHumanView(
         request.owner,
-        scope.providerSessionId,
+        scope.thread.providerSessionId,
         request.desktopId,
       );
     case "request-control":
       return yield* manager.requestHumanControl(
         request.owner,
-        scope.providerSessionId,
+        scope.thread.providerSessionId,
         request.desktopId,
       );
     case "snapshot":
-      return yield* manager.snapshot(scope.providerSessionId, request.input, request.desktopId);
+      return yield* manager.snapshot(
+        scope.thread.providerSessionId,
+        request.input,
+        request.desktopId,
+      );
     case "act":
-      return yield* manager.act(scope.providerSessionId, request.input, request.desktopId);
+      return yield* manager.act(scope.thread.providerSessionId, request.input, request.desktopId);
     case "release":
-      return yield* manager.release(scope.providerSessionId, request.desktopId);
+      return yield* manager.release(scope.thread.providerSessionId, request.desktopId);
     case "observation":
       return yield* new AgentDesktopManager.AgentDesktopManagerError({
         code: "unsupported-operation",

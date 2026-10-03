@@ -3637,8 +3637,10 @@ export default function ChatView(props: ChatViewProps) {
     [activeThreadLiveTokenUsage, serverVisibleTurnItems, serverProjection],
   );
   const pendingBackgroundTasks = useMemo(() => {
+    const monitors =
+      activeThread?.pendingBackgroundTasks?.filter((task) => task.kind === "monitor") ?? [];
     if (serverProjection === null || serverProjection === undefined) {
-      return [];
+      return monitors;
     }
     const sessionError =
       serverProjection.providerSessions.findLast(
@@ -3659,8 +3661,9 @@ export default function ChatView(props: ChatViewProps) {
         runs: serverProjection.runs,
         pullRequests: serverProjection.thread.pullRequests,
       }),
+      ...monitors,
     ];
-  }, [serverProjection]);
+  }, [serverProjection, activeThread?.pendingBackgroundTasks]);
   const activeWorkStartedAt =
     deriveActiveWorkStartedAt(activeActivityRun, activeRuntime, localDispatchStartedAt) ??
     runlessWorkStartedAt;
@@ -4575,7 +4578,9 @@ export default function ChatView(props: ChatViewProps) {
     composerRef.current?.focusAtEnd();
   }, [composerRef]);
   const canInterruptRunningThread =
-    canOperateThread && deriveCanInterruptRunningThread(activeThread !== undefined, activeRuntime);
+    canOperateThread &&
+    (activeThread?.backgroundLiveness === "monitoring" ||
+      deriveCanInterruptRunningThread(activeThread !== undefined, activeRuntime));
   const onInterrupt = useCallback(async () => {
     if (
       !activeThread ||
@@ -4584,7 +4589,10 @@ export default function ChatView(props: ChatViewProps) {
       return;
     const result = await interruptThreadTurn({
       environmentId,
-      input: { threadId: activeThread.id },
+      input: {
+        threadId: activeThread.id,
+        cancelMonitors: activeThread.backgroundLiveness === "monitoring",
+      },
     });
     if (result._tag === "Failure" && !isAtomCommandInterrupted(result)) {
       const error = squashAtomCommandFailure(result);
@@ -7392,7 +7400,10 @@ export default function ChatView(props: ChatViewProps) {
     setStoppingBackgroundWorkKey(requestKey);
     const result = await interruptThreadTurn({
       environmentId,
-      input: { threadId: activeThread.id },
+      input: {
+        threadId: activeThread.id,
+        cancelMonitors: activeThread.backgroundLiveness === "monitoring",
+      },
     });
     // Acceptance does not confirm termination. Allow retry while the provider
     // finishes stopping the tasks or reports a failure.

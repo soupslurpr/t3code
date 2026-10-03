@@ -7,14 +7,12 @@ import * as DateTime from "effect/DateTime";
 import * as Duration from "effect/Duration";
 import * as Base64 from "effect/encoding/Base64";
 import * as Effect from "effect/Effect";
-import * as Fiber from "effect/Fiber";
 import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Path from "effect/Path";
 import * as Queue from "effect/Queue";
 import * as Ref from "effect/Ref";
-import * as Schedule from "effect/Schedule";
 import * as Schema from "effect/Schema";
 import * as Result from "effect/Result";
 import * as Stream from "effect/Stream";
@@ -95,7 +93,6 @@ import {
   EnvironmentAuthorizationError,
   type ProjectId,
   type ProviderDriverKind,
-  type ProviderInstanceId,
   ThreadId,
   UserDesktopInventoryError,
   UserDesktopManagementError,
@@ -215,7 +212,6 @@ import * as ProjectEnrichmentService from "./project/ProjectEnrichmentService.ts
 import * as ProjectService from "./project/ProjectService.ts";
 import * as ManagedProjectFolders from "./project/ManagedProjectFolders.ts";
 import { projectMutationOperation } from "./project/ProjectMutation.ts";
-import * as ProjectSetupScriptRunner from "./project/ProjectSetupScriptRunner.ts";
 import * as ProjectCloneTracker from "./project/ProjectCloneTracker.ts";
 import * as RepositoryIdentityResolver from "./project/RepositoryIdentityResolver.ts";
 import * as WorktreeSetupTracker from "./project/WorktreeSetupTracker.ts";
@@ -1262,7 +1258,6 @@ const layerWsRpc = (
             );
       const usage = yield* UsageService.UsageService;
       const usageLimitSources = yield* UsageLimitSources.UsageLimitSources;
-      const projectSetupScriptRunner = yield* ProjectSetupScriptRunner.ProjectSetupScriptRunner;
       const worktreeSetupTracker = yield* WorktreeSetupTracker.WorktreeSetupTracker;
       const projectCloneTracker = yield* ProjectCloneTracker.ProjectCloneTracker;
       const repositoryIdentityResolver =
@@ -2922,188 +2917,188 @@ const layerWsRpc = (
         [WS_METHODS.subscribePreviewEvents]: (_input) => previewManager.events,
         [WS_METHODS.deviceConfigure]: (input) => deviceService.configure(input),
         [WS_METHODS.deviceTestHost]: (input) => deviceService.testHost(input),
-        [WS_METHODS.previewAutomationConnect]: (input) => previewAutomationBroker.connect(input),
+        [WS_METHODS.previewAutomationConnect]: (input) =>
+          Stream.unwrap(previewAutomationBroker.connect(input)),
         [WS_METHODS.previewAutomationRespond]: (input) => previewAutomationBroker.respond(input),
-        [WS_METHODS.previewAutomationFocusHost]: (input) => previewAutomationBroker.focusHost(input),
+        [WS_METHODS.previewAutomationFocusHost]: (input) =>
+          previewAutomationBroker.focusHost(input),
         [WS_METHODS.agentDesktopHumanInvoke]: (input) =>
           Effect.gen(function* () {
             const environmentId = yield* serverEnvironment.getEnvironmentId.pipe(Effect.orDie);
-              if (input.request.operation === "observation") {
-                if (
-                  input.request.owner.environmentId !== environmentId ||
-                  input.request.owner.threadId !== input.threadId
-                ) {
-                  return { latestId: null };
-                }
-                return yield* computerObservations.read({
-                  environmentId,
-                  threadId: input.threadId,
-                  desktopId: input.request.desktopId,
-                  ...(input.request.afterId === undefined
-                    ? {}
-                    : { afterId: input.request.afterId }),
-                });
+            if (input.request.operation === "observation") {
+              if (
+                input.request.owner.environmentId !== environmentId ||
+                input.request.owner.threadId !== input.threadId
+              ) {
+                return { latestId: null };
               }
-            const scope = {
+              return yield* computerObservations.read({
                 environmentId,
-                requestNamespace: `human:${currentSessionId}`,
-                client: undefined,
-                thread: {
-                  controllerKind: "human" as const,
-                  controllerId: `human:${currentSessionId}`,
-                  threadId: input.threadId,
-                  providerSessionId: `human:${currentSessionId}`,
-                  providerInstanceId: AGENT_DESKTOP_HUMAN_PROVIDER_INSTANCE_ID,
-                },
-                capabilities: new Set(["computer" as const]),
-                issuedAt: yield* Clock.currentTimeMillis,
-              };
-              return yield* runAgentDesktopHumanRequest(
-                agentDesktopManager,
-                scope,
-                input.request,
-              ).pipe(
-                Effect.mapError((cause) =>
-                  environmentDesktopFailure(scope, humanRequestOperation(input.request), cause),
-                ),
-              );
+                threadId: input.threadId,
+                desktopId: input.request.desktopId,
+                ...(input.request.afterId === undefined ? {} : { afterId: input.request.afterId }),
+              });
+            }
+            const scope = {
+              environmentId,
+              requestNamespace: `human:${currentSessionId}`,
+              client: undefined,
+              thread: {
+                controllerKind: "human" as const,
+                controllerId: `human:${currentSessionId}`,
+                threadId: input.threadId,
+                providerSessionId: `human:${currentSessionId}`,
+                providerInstanceId: AGENT_DESKTOP_HUMAN_PROVIDER_INSTANCE_ID,
+              },
+              capabilities: new Set(["computer" as const]),
+              issuedAt: yield* Clock.currentTimeMillis,
+            };
+            return yield* runAgentDesktopHumanRequest(
+              agentDesktopManager,
+              scope,
+              input.request,
+            ).pipe(
+              Effect.mapError((cause) =>
+                environmentDesktopFailure(scope, humanRequestOperation(input.request), cause),
+              ),
+            );
           }),
         [WS_METHODS.userDesktopHumanInvoke]: (input) =>
           Effect.gen(function* () {
-              const environmentId = yield* serverEnvironment.getEnvironmentId.pipe(Effect.orDie);
-              const inventoryFailure = () =>
-                new UserDesktopInventoryError({
-                  code: "user-desktop-inventory-unavailable",
-                  detail: "The user-desktop inventory is temporarily unavailable.",
-                });
-              if (input.request.operation === "list") {
-                return yield* previewAutomationBroker
-                  .listUserDesktops(environmentId, {
-                    includeExecution: input.request.includeExecution === true,
-                  })
-                  .pipe(Effect.mapError(inventoryFailure));
-              }
-              if (input.request.operation === "rename") {
-                return yield* previewAutomationBroker.renameUserDesktop(input.request.input).pipe(
+            const environmentId = yield* serverEnvironment.getEnvironmentId.pipe(Effect.orDie);
+            const inventoryFailure = () =>
+              new UserDesktopInventoryError({
+                code: "user-desktop-inventory-unavailable",
+                detail: "The user-desktop inventory is temporarily unavailable.",
+              });
+            if (input.request.operation === "list") {
+              return yield* previewAutomationBroker
+                .listUserDesktops(environmentId, {
+                  includeExecution: input.request.includeExecution === true,
+                })
+                .pipe(Effect.mapError(inventoryFailure));
+            }
+            if (input.request.operation === "rename") {
+              return yield* previewAutomationBroker.renameUserDesktop(input.request.input).pipe(
+                Effect.mapError((error) =>
+                  isUserDesktopManagementError(error) ? error : inventoryFailure(),
+                ),
+                Effect.as(null),
+              );
+            }
+            if (input.request.operation === "remove") {
+              return yield* previewAutomationBroker
+                .removeUserDesktop(environmentId, input.request.input.desktopId)
+                .pipe(
                   Effect.mapError((error) =>
                     isUserDesktopManagementError(error) ? error : inventoryFailure(),
                   ),
                   Effect.as(null),
                 );
-              }
-              if (input.request.operation === "remove") {
-                return yield* previewAutomationBroker
-                  .removeUserDesktop(environmentId, input.request.input.desktopId)
-                  .pipe(
-                    Effect.mapError((error) =>
-                      isUserDesktopManagementError(error) ? error : inventoryFailure(),
-                    ),
-                    Effect.as(null),
-                  );
-              }
-              if (input.request.operation === "observation-list") {
-                return yield* computerObservations.list({
-                  environmentId,
-                  desktopId: input.request.desktopId,
-                });
-              }
-              if (input.request.operation === "observation") {
-                return yield* computerObservations.readById({
-                  environmentId,
-                  desktopId: input.request.desktopId,
-                  observationId: input.request.observationId,
-                });
-              }
-              if (input.request.operation === "audit") {
-                return yield* previewAutomationBroker
-                  .listUserDesktopAudit(input.request.desktopId)
-                  .pipe(Effect.mapError(inventoryFailure));
-              }
-              const desktop = {
-                kind: "user" as const,
-                desktopId: input.request.desktopId,
-              };
-              const scope = {
+            }
+            if (input.request.operation === "observation-list") {
+              return yield* computerObservations.list({
                 environmentId,
-                requestNamespace: `human:${currentSessionId}`,
-                client: undefined,
-                thread: {
-                  controllerKind: "human" as const,
-                  controllerId: `human:${currentSessionId}`,
-                  threadId: USER_DESKTOP_SETTINGS_THREAD_ID,
-                  providerSessionId: `human:${currentSessionId}`,
-                  providerInstanceId: USER_DESKTOP_HUMAN_PROVIDER_INSTANCE_ID,
-                },
-                capabilities: new Set(["computer" as const]),
-                issuedAt: yield* Clock.currentTimeMillis,
-              };
-              const invokeComputer = (operation: PreviewAutomationOperation, request: unknown) =>
-                previewAutomationBroker.invoke({
-                  scope,
-                  operation,
-                  input: request,
-                  ...(input.timeoutMs === undefined ? {} : { timeoutMs: input.timeoutMs }),
+                desktopId: input.request.desktopId,
+              });
+            }
+            if (input.request.operation === "observation") {
+              return yield* computerObservations.readById({
+                environmentId,
+                desktopId: input.request.desktopId,
+                observationId: input.request.observationId,
+              });
+            }
+            if (input.request.operation === "audit") {
+              return yield* previewAutomationBroker
+                .listUserDesktopAudit(input.request.desktopId)
+                .pipe(Effect.mapError(inventoryFailure));
+            }
+            const desktop = {
+              kind: "user" as const,
+              desktopId: input.request.desktopId,
+            };
+            const scope = {
+              environmentId,
+              requestNamespace: `human:${currentSessionId}`,
+              client: undefined,
+              thread: {
+                controllerKind: "human" as const,
+                controllerId: `human:${currentSessionId}`,
+                threadId: USER_DESKTOP_SETTINGS_THREAD_ID,
+                providerSessionId: `human:${currentSessionId}`,
+                providerInstanceId: USER_DESKTOP_HUMAN_PROVIDER_INSTANCE_ID,
+              },
+              capabilities: new Set(["computer" as const]),
+              issuedAt: yield* Clock.currentTimeMillis,
+            };
+            const invokeComputer = (operation: PreviewAutomationOperation, request: unknown) =>
+              previewAutomationBroker.invoke({
+                scope,
+                operation,
+                input: request,
+                ...(input.timeoutMs === undefined ? {} : { timeoutMs: input.timeoutMs }),
+              });
+            switch (input.request.operation) {
+              case "execution":
+                return yield* invokeComputer("computerExecution", {
+                  ...input.request.input,
+                  desktop,
                 });
-              switch (input.request.operation) {
-                case "execution":
-                  return yield* invokeComputer("computerExecution", {
-                    ...input.request.input,
-                    desktop,
-                  });
-                case "status":
-                  return yield* invokeComputer("computerStatus", { desktop });
-                case "request-view":
-                  return yield* invokeComputer("computerRequestView", {
-                    desktop,
-                    observation: false,
-                  });
-                case "request-control":
-                  return yield* invokeComputer("computerRequestControl", {
-                    desktop,
-                    observation: false,
-                    ...(input.request.takeoverLeaseId === undefined
-                      ? {}
-                      : { takeoverLeaseId: input.request.takeoverLeaseId }),
-                  });
-                case "return-control":
-                  return yield* invokeComputer("computerRequestControl", {
-                    desktop,
-                    observation: false,
-                    returnControlToAgent: true,
-                  });
-                case "release-control":
-                  return yield* invokeComputer("computerRequestView", {
-                    desktop,
-                    observation: false,
-                    releaseControlToView: true,
-                  });
-                case "snapshot":
-                  return yield* invokeComputer("computerSnapshot", {
-                    desktop,
-                    ...input.request.input,
-                  });
-                case "act":
-                  return yield* invokeComputer("computerAct", {
-                    desktop,
-                    ...input.request.input,
-                  });
-                case "remember-view":
-                  return yield* invokeComputer("computerRememberView", {
-                    desktop,
-                    observation: false,
-                  });
-                case "remember-control":
-                  return yield* invokeComputer("computerRememberControl", {
-                    desktop,
-                    observation: false,
-                  });
-                case "release":
-                  return yield* invokeComputer("computerRelease", { desktop });
-                case "end-all-access":
-                  return yield* invokeComputer("computerForceRelease", { desktop });
-                case "forget":
-                  return yield* invokeComputer("computerForceForgetControl", { desktop });
-              }
+              case "status":
+                return yield* invokeComputer("computerStatus", { desktop });
+              case "request-view":
+                return yield* invokeComputer("computerRequestView", {
+                  desktop,
+                  observation: false,
+                });
+              case "request-control":
+                return yield* invokeComputer("computerRequestControl", {
+                  desktop,
+                  observation: false,
+                  ...(input.request.takeoverLeaseId === undefined
+                    ? {}
+                    : { takeoverLeaseId: input.request.takeoverLeaseId }),
+                });
+              case "return-control":
+                return yield* invokeComputer("computerRequestControl", {
+                  desktop,
+                  observation: false,
+                  returnControlToAgent: true,
+                });
+              case "release-control":
+                return yield* invokeComputer("computerRequestView", {
+                  desktop,
+                  observation: false,
+                  releaseControlToView: true,
+                });
+              case "snapshot":
+                return yield* invokeComputer("computerSnapshot", {
+                  desktop,
+                  ...input.request.input,
+                });
+              case "act":
+                return yield* invokeComputer("computerAct", {
+                  desktop,
+                  ...input.request.input,
+                });
+              case "remember-view":
+                return yield* invokeComputer("computerRememberView", {
+                  desktop,
+                  observation: false,
+                });
+              case "remember-control":
+                return yield* invokeComputer("computerRememberControl", {
+                  desktop,
+                  observation: false,
+                });
+              case "release":
+                return yield* invokeComputer("computerRelease", { desktop });
+              case "end-all-access":
+                return yield* invokeComputer("computerForceRelease", { desktop });
+              case "forget":
+                return yield* invokeComputer("computerForceForgetControl", { desktop });
+            }
           }),
         [WS_METHODS.deviceList]: (input) =>
           input.inspectOnly && !input.updateTool

@@ -1,4 +1,5 @@
 import {
+  OrchestratorMcpFailure,
   AgentDesktop,
   AgentDesktopAcquireInput,
   AgentDesktopCommandInput,
@@ -26,23 +27,27 @@ import {
   PreviewAutomationUnavailableError,
 } from "@t3tools/contracts";
 import * as Schema from "effect/Schema";
-import { Tool, Toolkit } from "effect/unstable/ai";
+import { Tool, Toolkit } from "effect/ai";
 
 import * as McpInvocationContext from "../../McpInvocationContext.ts";
 import * as AgentDesktopTransferService from "../../../agentDesktop/AgentDesktopTransferService.ts";
 import * as AgentDesktopManager from "../../../agentDesktop/AgentDesktopManager.ts";
-import { ProjectionSnapshotQuery } from "../../../orchestration/Services/ProjectionSnapshotQuery.ts";
+import { ThreadWorkspaceQuery } from "../../../orchestration-v2/ThreadWorkspaceQuery.ts";
+
+import * as ThreadManagementService from "../../../orchestration-v2/ThreadManagementService.ts";
 
 const dependencies = [
+  ThreadManagementService.ThreadManagementService,
   McpInvocationContext.McpInvocationContext,
   AgentDesktopManager.AgentDesktopManager,
 ];
 const transferDependencies = [
   ...dependencies,
   AgentDesktopTransferService.AgentDesktopTransferService,
-  ProjectionSnapshotQuery,
+  ThreadWorkspaceQuery,
 ];
 const AgentDesktopTransferToolError = Schema.Union([
+  OrchestratorMcpFailure,
   PreviewAutomationUnavailableError,
   AgentDesktopTransferLookupError,
 ]);
@@ -63,7 +68,7 @@ export const AgentDesktopListTool = readonlyAgentDesktopTool(
       "List this thread's isolated Agent desktops and probe every host prerequisite. Desktops remain discoverable after a provider or harness restart; acquire a prior controller's desktop before using owner-scoped lifecycle or guest operations. Each missing, unusable, or degraded requirement includes a bounded remedy. Call agent_desktop_setup when any automatic remedy is offered; it may install official host packages or provision the verified base image. Continue once the returned status is ready. States distinguish running, parked, stopped, recoverable, and failed desktops. Use agent_desktop_inspect only when live accounting is useful.",
     parameters: EmptyParameters,
     success: AgentDesktopList,
-    failure: PreviewAutomationError,
+    failure: Schema.Union([PreviewAutomationError, OrchestratorMcpFailure]),
     dependencies,
   }).annotate(Tool.Title, "List Agent desktops"),
 );
@@ -74,7 +79,7 @@ export const AgentDesktopSetupTool = agentDesktopTool(
       "Prepare Agent desktops on this environment server. With user approval, this installs only the exact official Arch packages reported by agent_desktop_list through PolicyKit, downloads the pinned official Arch cloud image, verifies its size and SHA-256, provisions the private graphical guest, and atomically installs the base image. It re-probes and returns the full status. A first setup can download about 531 MB and take up to 75 minutes. Report any remaining manual remedy precisely.",
     parameters: EmptyParameters,
     success: AgentDesktopSetupResult,
-    failure: PreviewAutomationError,
+    failure: Schema.Union([PreviewAutomationError, OrchestratorMcpFailure]),
     dependencies,
   }).annotate(Tool.Title, "Set up Agent desktops"),
 );
@@ -85,7 +90,7 @@ export const AgentDesktopUpdateTool = agentDesktopTool(
       "Queue safe system maintenance for the immutable base image or one owned Agent desktop. The call returns immediately; agent_desktop_list reports durable phases and completion. Base refreshes build and verify a new generation without changing existing backing files. Desktop updates require all control, viewers, and active operations to be released, create a rollback point, perform a full signed Arch upgrade plus the current T3 guest profile, reboot and verify the graphical system, and restore the prior disk automatically on failure. T3 Code also queues overdue base images and genuinely cold desktops automatically; use this tool when the agent decides an idle desktop is ready sooner.",
     parameters: AgentDesktopUpdateInput,
     success: AgentDesktopUpdateResult,
-    failure: PreviewAutomationError,
+    failure: Schema.Union([PreviewAutomationError, OrchestratorMcpFailure]),
     dependencies,
   }).annotate(Tool.Title, "Update Agent desktop"),
 );
@@ -96,7 +101,7 @@ export const AgentDesktopAcquireTool = safeAgentDesktopTool(
       "Acquire this thread's suitable prior Agent desktop or create and boot a clean one. Omit all fields for automatic reuse. Set fresh=true for a separate clean desktop, especially for parallel work, or desktopId to reclaim a known same-thread desktop after a provider or harness restart. Reclaiming never steals a desktop with another controller's active work or control lease. Describe task needs, not CPU or RAM sizes; the host manages resources automatically. preventParking=true persists across releases and restarts until the same desktop is acquired with preventParking=false, so use it only for work that must remain live while idle and clear it afterward. Retention defaults to automatic; request preserve when desktop state must remain until explicitly deleted. Retain the returned desktopId and pass it to every later Agent desktop and computer tool so parallel agents remain isolated.",
     parameters: AgentDesktopAcquireInput,
     success: AgentDesktop,
-    failure: PreviewAutomationError,
+    failure: Schema.Union([PreviewAutomationError, OrchestratorMcpFailure]),
     dependencies,
   }).annotate(Tool.Title, "Acquire Agent desktop"),
 );
@@ -107,7 +112,7 @@ export const AgentDesktopManageTool = agentDesktopTool(
       "Manage one owned Agent desktop. Resume, park to disk, stop, checkpoint, clone, reset, delete recoverably, restore, hand off to another known agent owner, or delete permanently. Reset, explicit delete, and automatic retirement preserve recovery for seven days; delete-permanently does not. Automatic retention retires desktops after 30 inactive days or under host storage pressure. A preserve retention request exempts a desktop from automatic retirement. Prefer park when future reuse is likely.",
     parameters: AgentDesktopManageInput,
     success: AgentDesktop,
-    failure: PreviewAutomationError,
+    failure: Schema.Union([PreviewAutomationError, OrchestratorMcpFailure]),
     dependencies,
   }).annotate(Tool.Title, "Manage Agent desktop"),
 );
@@ -118,7 +123,7 @@ export const AgentDesktopCommandTool = agentDesktopTool(
       "Execute one exact process inside an Agent desktop through its private guest channel. This is argv-based and does not invoke a shell; run /bin/sh or /bin/bash explicitly when shell syntax is useful. Omit desktopId to use this session's current assignment. Root is the default inside the isolated guest; set user to run as another guest account. Environment accepts either a name/value object or {name, value} entries. stdin is literal text; use a shell redirect for a guest file. Output, runtime, timeout, truncation, and guest failures are reported precisely.",
     parameters: AgentDesktopCommandInput,
     success: AgentDesktopCommandResult,
-    failure: PreviewAutomationError,
+    failure: Schema.Union([PreviewAutomationError, OrchestratorMcpFailure]),
     dependencies,
   }).annotate(Tool.Title, "Run Agent desktop command"),
 );
@@ -129,7 +134,7 @@ export const AgentDesktopReadFileTool = readonlyAgentDesktopTool(
       "Read a bounded file range directly from an Agent desktop through its private guest channel. Omit desktopId for the current assignment. Choose UTF-8 for text or base64 for exact binary bytes; use offset and maxBytes to page large files. The result explicitly reports EOF and truncation.",
     parameters: AgentDesktopReadFileInput,
     success: AgentDesktopReadFileResult,
-    failure: PreviewAutomationError,
+    failure: Schema.Union([PreviewAutomationError, OrchestratorMcpFailure]),
     dependencies,
   }).annotate(Tool.Title, "Read Agent desktop file"),
 );
@@ -140,7 +145,7 @@ export const AgentDesktopWriteFileTool = agentDesktopTool(
       "Write bounded UTF-8 or base64 data directly into an Agent desktop through its private guest channel. Omit desktopId for the current assignment. Choose create to refuse replacement, overwrite to replace, or append to extend an existing file.",
     parameters: AgentDesktopWriteFileInput,
     success: AgentDesktopWriteFileResult,
-    failure: PreviewAutomationError,
+    failure: Schema.Union([PreviewAutomationError, OrchestratorMcpFailure]),
     dependencies,
   }).annotate(Tool.Title, "Write Agent desktop file"),
 );
@@ -186,7 +191,7 @@ export const AgentDesktopInspectTool = readonlyAgentDesktopTool(
       "Inspect one Agent desktop's live CPU, memory, disk, independent network counters and rates, drops, addresses, routes, and optionally bounded process-attributed TCP/UDP sockets. Omit desktopId for the current assignment. Calling twice produces meaningful interval rates.",
     parameters: AgentDesktopInspectInput,
     success: AgentDesktop,
-    failure: PreviewAutomationError,
+    failure: Schema.Union([PreviewAutomationError, OrchestratorMcpFailure]),
     dependencies,
   }).annotate(Tool.Title, "Inspect Agent desktop"),
 );
@@ -197,7 +202,7 @@ export const AgentDesktopCreatePortRouteTool = safeAgentDesktopTool(
       "Publish one Agent desktop guest port through an automatically allocated host port. Local binds loopback, tailnet binds the active Tailscale interface, and network binds all host interfaces. Omit desktopId for the current assignment. The exact address and port are returned and remain attached to this desktop across restarts.",
     parameters: AgentDesktopCreatePortRouteInput,
     success: AgentDesktopPortRoute,
-    failure: PreviewAutomationError,
+    failure: Schema.Union([PreviewAutomationError, OrchestratorMcpFailure]),
     dependencies,
   }).annotate(Tool.Title, "Publish Agent desktop port"),
 );
@@ -208,7 +213,7 @@ export const AgentDesktopRemovePortRouteTool = safeAgentDesktopTool(
       "Remove one exact route previously returned for an Agent desktop. Omit desktopId for the current assignment.",
     parameters: AgentDesktopRemovePortRouteInput,
     success: Schema.Null,
-    failure: PreviewAutomationError,
+    failure: Schema.Union([PreviewAutomationError, OrchestratorMcpFailure]),
     dependencies,
   })
     .annotate(Tool.Title, "Remove Agent desktop route")
@@ -221,7 +226,7 @@ export const AgentDesktopPacketCaptureTool = safeAgentDesktopTool(
       "Capture only one Agent desktop's virtual network traffic for a bounded duration and byte limit, then return a private host artifact path, exact size, and whether the limit truncated it. Omit desktopId for the current assignment. Packet contents are retained only because this call explicitly requests them.",
     parameters: AgentDesktopPacketCaptureInput,
     success: AgentDesktopPacketCapture,
-    failure: PreviewAutomationError,
+    failure: Schema.Union([PreviewAutomationError, OrchestratorMcpFailure]),
     dependencies,
   }).annotate(Tool.Title, "Capture Agent desktop packets"),
 );

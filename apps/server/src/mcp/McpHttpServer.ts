@@ -1,6 +1,5 @@
 import { UserDesktopTransfers } from "../computer/UserDesktopTransfers.ts";
-import { ProjectionSnapshotQuery } from "../orchestration/Services/ProjectionSnapshotQuery.ts";
-import * as NodeCrypto from "node:crypto";
+import { ThreadWorkspaceQuery } from "../orchestration-v2/ThreadWorkspaceQuery.ts";
 import * as Cause from "effect/Cause";
 import * as Clock from "effect/Clock";
 import * as Context from "effect/Context";
@@ -869,13 +868,14 @@ const computerToolFailure = <E>(toolName: string, cause: Cause.Cause<E>, payload
     firstFailure.computerFailure !== null
       ? firstFailure.computerFailure
       : undefined;
-  const directFailure =
-    typeof firstFailure === "object" &&
-    firstFailure !== null &&
-    "code" in firstFailure &&
-    typeof firstFailure.code === "string" &&
-    "detail" in firstFailure &&
-    typeof firstFailure.detail === "string"
+  const directFailure = isOrchestratorMcpFailure(firstFailure)
+    ? { code: firstFailure.code, message: firstFailure.message }
+    : typeof firstFailure === "object" &&
+        firstFailure !== null &&
+        "code" in firstFailure &&
+        typeof firstFailure.code === "string" &&
+        "detail" in firstFailure &&
+        typeof firstFailure.detail === "string"
       ? {
           code: firstFailure.code,
           message: firstFailure.detail,
@@ -1042,8 +1042,14 @@ const monitorToolFailure = <E>(toolName: string, cause: Cause.Cause<E>) => {
       : undefined;
   const validationField =
     parameterValidation === undefined ? undefined : validationFieldFromMessage(parameterValidation);
-  const error =
-    parameterValidation !== undefined
+  const error = isOrchestratorMcpFailure(firstFailure)
+    ? {
+        _tag: firstFailure._tag,
+        operation: toolName,
+        code: firstFailure.code,
+        message: firstFailure.message,
+      }
+    : parameterValidation !== undefined
       ? {
           _tag: "ToolParameterValidationError",
           operation: toolName,
@@ -1443,11 +1449,12 @@ export const encodeComputerWatchRevisionResult = (encodedResult: unknown) => {
 
 const registerComputerTools = Effect.fn("McpHttpServer.registerComputerTools")(function* () {
   const server = yield* McpServer.McpServer;
+  const threads = yield* ThreadManagementService.ThreadManagementService;
   const computer = yield* ComputerAutomationRouter.ComputerAutomationRouter;
   const observations = yield* ComputerObservationStore.ComputerObservationStore;
   const broker = yield* PreviewAutomationBroker.PreviewAutomationBroker;
   const transfers = yield* UserDesktopTransfers;
-  const projections = yield* ProjectionSnapshotQuery;
+  const projections = yield* ThreadWorkspaceQuery;
   const built = yield* ComputerToolkit;
   for (const tool of Object.values(built.tools)) {
     yield* server.addTool({
@@ -1477,8 +1484,9 @@ const registerComputerTools = Effect.fn("McpHttpServer.registerComputerTools")(f
             Stream.unwrap,
             Stream.run(Sink.last()),
             Effect.flatMap(Effect.fromOption),
+            Effect.provideService(ThreadManagementService.ThreadManagementService, threads),
             Effect.provideService(UserDesktopTransfers, transfers),
-            Effect.provideService(ProjectionSnapshotQuery, projections),
+            Effect.provideService(ThreadWorkspaceQuery, projections),
             Effect.provideService(ComputerAutomationRouter.ComputerAutomationRouter, computer),
             Effect.provideService(ComputerObservationStore.ComputerObservationStore, observations),
             Effect.provideService(PreviewAutomationBroker.PreviewAutomationBroker, broker),
@@ -1497,6 +1505,7 @@ const registerComputerTools = Effect.fn("McpHttpServer.registerComputerTools")(f
 const registerMonitorStandardTools = Effect.fn("McpHttpServer.registerMonitorStandardTools")(
   function* () {
     const server = yield* McpServer.McpServer;
+    const threads = yield* ThreadManagementService.ThreadManagementService;
     const service = yield* ThreadMonitorService;
     const observations = yield* ComputerObservationStore.ComputerObservationStore;
     const built = yield* MonitorStandardToolkit;
@@ -1528,6 +1537,7 @@ const registerMonitorStandardTools = Effect.fn("McpHttpServer.registerMonitorSta
               Stream.unwrap,
               Stream.run(Sink.last()),
               Effect.flatMap(Effect.fromOption),
+              Effect.provideService(ThreadManagementService.ThreadManagementService, threads),
               Effect.provideService(ThreadMonitorService, service),
               Effect.provideService(
                 ComputerObservationStore.ComputerObservationStore,
@@ -1556,6 +1566,7 @@ const registerMonitorStandardTools = Effect.fn("McpHttpServer.registerMonitorSta
 const registerMonitorImageTools = Effect.fn("McpHttpServer.registerMonitorImageTools")(
   function* () {
     const server = yield* McpServer.McpServer;
+    const threads = yield* ThreadManagementService.ThreadManagementService;
     const service = yield* ThreadMonitorService;
     const observations = yield* ComputerObservationStore.ComputerObservationStore;
     const built = yield* MonitorImageToolkit;
@@ -1587,6 +1598,7 @@ const registerMonitorImageTools = Effect.fn("McpHttpServer.registerMonitorImageT
               Stream.unwrap,
               Stream.run(Sink.last()),
               Effect.flatMap(Effect.fromOption),
+              Effect.provideService(ThreadManagementService.ThreadManagementService, threads),
               Effect.provideService(ThreadMonitorService, service),
               Effect.provideService(
                 ComputerObservationStore.ComputerObservationStore,
@@ -1733,19 +1745,27 @@ export const layerDeviceToolkit = Layer.mergeAll(
   layerDeviceScreenshotRegistration,
 );
 
-const ComputerToolkitRegistrationLive = Layer.effectDiscard(registerComputerTools()).pipe(
-  Layer.provide(ComputerToolkitHandlersLive),
+export const ComputerToolkitRegistrationLive = imageToolRegistration(
+  registerComputerTools(),
+  ComputerToolkitHandlersLive,
 );
 
-const MonitorStandardToolkitRegistrationLive = Layer.effectDiscard(
+export const AgentDesktopToolkitRegistrationLive = toolkitRegistration(
+  AgentDesktopToolkit,
+  AgentDesktopToolkitHandlersLive,
+);
+
+const MonitorStandardToolkitRegistrationLive = imageToolRegistration(
   registerMonitorStandardTools(),
-).pipe(Layer.provide(MonitorStandardToolkitHandlersLive));
-
-const MonitorImageToolkitRegistrationLive = Layer.effectDiscard(registerMonitorImageTools()).pipe(
-  Layer.provide(MonitorImageToolkitHandlersLive),
+  MonitorStandardToolkitHandlersLive,
 );
 
-const MonitorToolkitRegistrationLive = Layer.mergeAll(
+const MonitorImageToolkitRegistrationLive = imageToolRegistration(
+  registerMonitorImageTools(),
+  MonitorImageToolkitHandlersLive,
+);
+
+export const MonitorToolkitRegistrationLive = Layer.mergeAll(
   MonitorStandardToolkitRegistrationLive,
   MonitorImageToolkitRegistrationLive,
 );
@@ -1757,9 +1777,6 @@ export const layerMcpTransport = McpServer.layerHttp({
   protocols: [McpProtocol.v2025_06_18],
   allowSessionTermination: true,
 }).pipe(Layer.provide(layerMcpAuthMiddleware));
-const AgentDesktopToolkitRegistrationLive = McpServer.toolkit(AgentDesktopToolkit).pipe(
-  Layer.provide(AgentDesktopToolkitHandlersLive),
-);
 
 export const ToolkitRegistrationLive = Layer.mergeAll(
   layerPreviewToolkit,

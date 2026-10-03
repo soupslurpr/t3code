@@ -1,20 +1,22 @@
 import { assert, it } from "@effect/vitest";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
-import * as SqlClient from "effect/unstable/sql/SqlClient";
+import * as SqlClient from "effect/sql/SqlClient";
 
-import { runMigrations } from "../Migrations.ts";
+import { migrationManifest, runMigrations } from "../Migrations.ts";
 import * as NodeSqliteClient from "@t3tools/shared/nodeSqliteClient";
+
+const migrationId = migrationManifest.find(([, name]) => name === "ThreadMonitors")![0];
 
 const layer = it.layer(Layer.mergeAll(NodeSqliteClient.layer({ filename: ":memory:" })));
 
-layer("054_ThreadMonitors", (it) => {
+layer("055_ThreadMonitors", (it) => {
   it.effect("creates durable monitor state and lookup indexes", () =>
     Effect.gen(function* () {
       const sql = yield* SqlClient.SqlClient;
 
-      yield* runMigrations({ toMigrationInclusive: 42 });
-      yield* runMigrations({ toMigrationInclusive: 54 });
+      yield* runMigrations({ toMigrationInclusive: migrationId - 1 });
+      yield* runMigrations({ toMigrationInclusive: migrationId });
 
       const columns = yield* sql<{ readonly name: string }>`
         PRAGMA table_info(thread_monitors)

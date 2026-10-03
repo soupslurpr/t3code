@@ -1,5 +1,4 @@
 /** Authorizes desktop execution separately from screen sharing and owns its lifetime. */
-import * as NodeCrypto from "node:crypto";
 import * as NodeOS from "node:os";
 
 import {
@@ -15,9 +14,10 @@ import {
 import { DesktopTransferError } from "@t3tools/shared/desktopTransfer";
 import { AgentDesktopBundleError } from "@t3tools/shared/agentDesktopBundle";
 import { DesktopTransferManager } from "./DesktopTransferManager.ts";
-import { HostProcessEnvironment } from "@t3tools/shared/hostProcess";
+import * as HostProcess from "@t3tools/shared/HostProcess";
 import * as Clock from "effect/Clock";
 import * as Context from "effect/Context";
+import * as Crypto from "effect/Crypto";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
@@ -90,7 +90,8 @@ export const make = Effect.gen(function* () {
   const dialog = yield* ElectronDialog.ElectronDialog;
   const windows = yield* ElectronWindow.ElectronWindow;
   const fileSystem = yield* FileSystem.FileSystem;
-  const hostEnvironment = yield* HostProcessEnvironment;
+  const hostEnvironment = yield* HostProcess.Environment;
+  const crypto = yield* Crypto.Crypto;
   const clock = yield* Clock.Clock;
   const user = NodeOS.userInfo().username;
   const desktop = { kind: "user", desktopId: identity.registration.desktopId } as const;
@@ -134,7 +135,7 @@ export const make = Effect.gen(function* () {
       version: 1,
       grants: next.filter((grant) => grant.remembered),
     });
-    const temporaryPath = `${grantsPath}.${NodeCrypto.randomUUID()}.tmp`;
+    const temporaryPath = `${grantsPath}.${yield* crypto.randomUUIDv4}.tmp`;
     yield* fileSystem.makeDirectory(environment.stateDir, { recursive: true });
     yield* fileSystem.writeFileString(temporaryPath, encoded, { mode: 0o600 });
     yield* fileSystem
@@ -190,7 +191,7 @@ export const make = Effect.gen(function* () {
     }
     const scope = input.scope ?? "thread";
     const abort = new AbortController();
-    const promptId = NodeCrypto.randomUUID();
+    const promptId = yield* crypto.randomUUIDv4;
     pending.set(promptId, { owner, abort });
     const scopeLabel =
       scope === "desktop"
@@ -224,7 +225,7 @@ export const make = Effect.gen(function* () {
           ),
         );
       const grant: DesktopExecutionGrant = {
-        grantId: NodeCrypto.randomUUID(),
+        grantId: yield* crypto.randomUUIDv4,
         scope,
         environmentId:
           scope === "desktop"

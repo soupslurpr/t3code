@@ -4,6 +4,7 @@ import type {
   ComputerAutomationScreenshotEncoding,
   ComputerAutomationScreenshotMimeType,
 } from "@t3tools/contracts";
+// @effect-diagnostics-next-line nodeBuiltinImport:off - Bitmap fingerprints are synchronous values shared with native capture boundaries.
 import * as NodeCrypto from "node:crypto";
 import sharp from "sharp";
 

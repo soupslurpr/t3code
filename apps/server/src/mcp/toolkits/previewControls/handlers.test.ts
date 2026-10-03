@@ -16,6 +16,7 @@ import * as Stream from "effect/Stream";
 import * as ServerConfig from "../../../config.ts";
 import * as Preview from "../../../preview/Manager.ts";
 import * as ServerSettings from "../../../serverSettings.ts";
+import * as UserDesktops from "../../../persistence/UserDesktops.ts";
 import * as McpInvocationContext from "../../McpInvocationContext.ts";
 import * as McpToolAccess from "../../McpToolAccess.ts";
 import * as McpToolAccessTestkit from "../../McpToolAccess.testkit.ts";
@@ -43,6 +44,7 @@ it.effect.each([
         environmentId: EnvironmentId.make("preview-controls-environment"),
         requestNamespace: "preview-controls-provider-session",
         thread: {
+          controllerId: "test-controller",
           threadId,
           providerSessionId: "preview-controls-provider-session",
           providerInstanceId: ProviderInstanceId.make("codex"),
@@ -63,7 +65,10 @@ it.effect.each([
       );
       const tab = yield* manager.open({ threadId, url: "http://localhost:3000" });
       const layerDependencies = Layer.mergeAll(
-        PreviewAutomationBroker.layer.pipe(Layer.provide(NodeServices.layer)),
+        PreviewAutomationBroker.layer.pipe(
+          Layer.provide(UserDesktops.layerMemory),
+          Layer.provide(NodeServices.layer),
+        ),
         Layer.succeed(Preview.PreviewManager, manager),
         Layer.succeed(McpInvocationContext.McpInvocationContext, scope),
         McpToolAccessTestkit.liveThreadsLayer,

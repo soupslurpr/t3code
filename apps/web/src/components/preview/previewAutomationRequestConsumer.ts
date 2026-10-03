@@ -4,7 +4,7 @@ import type {
   PreviewAutomationResponse,
   PreviewAutomationStreamEvent,
 } from "@t3tools/contracts";
-import { AsyncResult, Atom } from "effect/unstable/reactivity";
+import { AsyncResult, Atom } from "effect/reactivity";
 
 import {
   PreviewAutomationOperationError,
@@ -160,6 +160,7 @@ export function createPreviewAutomationRequestConsumerAtom<E>(options: {
       requestsVersion += 1;
       consume(result);
     });
+    get.mount(options.requestsAtom);
     queueMicrotask(() => {
       const initialConnectionWasSkipped =
         AsyncResult.isSuccess(initialRequest) &&

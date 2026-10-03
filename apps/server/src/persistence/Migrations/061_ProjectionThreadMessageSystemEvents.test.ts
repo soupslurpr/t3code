@@ -1,20 +1,24 @@
 import { assert, it } from "@effect/vitest";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
-import * as SqlClient from "effect/unstable/sql/SqlClient";
+import * as SqlClient from "effect/sql/SqlClient";
 
-import { runMigrations } from "../Migrations.ts";
+import { migrationManifest, runMigrations } from "../Migrations.ts";
 import * as NodeSqliteClient from "@t3tools/shared/nodeSqliteClient";
+
+const migrationId = migrationManifest.find(
+  ([, name]) => name === "ProjectionThreadMessageSystemEvents",
+)![0];
 
 const layer = it.layer(Layer.mergeAll(NodeSqliteClient.layer({ filename: ":memory:" })));
 
-layer("060_ProjectionThreadMessageSystemEvents", (it) => {
+layer("061_ProjectionThreadMessageSystemEvents", (it) => {
   it.effect("adds nullable system-event metadata to message projections", () =>
     Effect.gen(function* () {
       const sql = yield* SqlClient.SqlClient;
 
-      yield* runMigrations({ toMigrationInclusive: 59 });
-      yield* runMigrations({ toMigrationInclusive: 60 });
+      yield* runMigrations({ toMigrationInclusive: migrationId - 1 });
+      yield* runMigrations({ toMigrationInclusive: migrationId });
 
       const columns = yield* sql<{ readonly name: string; readonly notnull: number }>`
         PRAGMA table_info(projection_thread_messages)

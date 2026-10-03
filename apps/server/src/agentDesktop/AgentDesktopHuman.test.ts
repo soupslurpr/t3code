@@ -15,12 +15,16 @@ import * as AgentDesktopManager from "./AgentDesktopManager.ts";
 
 const environmentId = EnvironmentId.make("environment-human-test");
 const settingsThreadId = ThreadId.make("agent-desktop-settings");
-const scope: McpInvocationContext.McpInvocationScope = {
+const scope: McpInvocationContext.McpThreadInvocationScope = {
   environmentId,
-  threadId: settingsThreadId,
-  controllerId: "human:session-1",
-  providerSessionId: "human:session-1",
-  providerInstanceId: ProviderInstanceId.make("t3-human"),
+  thread: {
+    threadId: settingsThreadId,
+    controllerId: "human:session-1",
+    providerSessionId: "human:session-1",
+    providerInstanceId: ProviderInstanceId.make("t3-human"),
+  },
+  requestNamespace: "computer-test",
+  client: undefined,
   capabilities: new Set(["computer"]),
   issuedAt: 0,
 };
@@ -121,8 +125,8 @@ describe("AgentDesktopHuman", () => {
             update: (updateOwner, input) =>
               Effect.sync(() => {
                 assert.equal(updateOwner.environmentId, scope.environmentId);
-                assert.equal(updateOwner.threadId, scope.threadId);
-                assert.equal(updateOwner.controllerId, scope.providerSessionId);
+                assert.equal(updateOwner.threadId, scope.thread.threadId);
+                assert.equal(updateOwner.controllerId, scope.thread.providerSessionId);
                 assert.deepEqual(input.target, { kind: "base-image" });
                 return { accepted: true, target: input.target, maintenance };
               }),

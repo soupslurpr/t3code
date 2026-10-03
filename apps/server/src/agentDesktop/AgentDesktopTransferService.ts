@@ -37,7 +37,7 @@ import * as Ref from "effect/Ref";
 
 import * as ServerConfig from "../config.ts";
 import * as McpInvocationContext from "../mcp/McpInvocationContext.ts";
-import { ProjectionSnapshotQuery } from "../orchestration/Services/ProjectionSnapshotQuery.ts";
+import { ThreadWorkspaceQuery } from "../orchestration-v2/ThreadWorkspaceQuery.ts";
 import * as AgentDesktopManager from "./AgentDesktopManager.ts";
 
 const DEFAULT_WAIT_MS = 15_000;
@@ -72,7 +72,7 @@ interface TransferOwner {
 
 interface TransferRecord {
   readonly owner: TransferOwner;
-  readonly scope: McpInvocationContext.McpInvocationScope;
+  readonly scope: McpInvocationContext.McpThreadInvocationScope;
   readonly snapshot: AgentDesktopTransfer;
   readonly completion: Deferred.Deferred<AgentDesktopTransfer>;
   readonly fiber: Fiber.Fiber<void, never> | null;
@@ -95,12 +95,12 @@ function isTerminalState(state: AgentDesktopTransfer["state"]): state is Termina
 }
 
 /** Converts a scope into the stable transfer owner used for authorization. */
-function ownerFromScope(scope: McpInvocationContext.McpInvocationScope): TransferOwner {
+function ownerFromScope(scope: McpInvocationContext.McpThreadInvocationScope): TransferOwner {
   return {
     environmentId: scope.environmentId,
-    threadId: scope.threadId,
-    providerSessionId: scope.providerSessionId,
-    providerInstanceId: scope.providerInstanceId,
+    threadId: scope.thread.threadId,
+    providerSessionId: scope.thread.providerSessionId,
+    providerInstanceId: scope.thread.providerInstanceId,
   };
 }
 
@@ -368,7 +368,7 @@ export const make = Effect.gen(function* () {
   });
 
   const requireOwnedRecord = Effect.fn("AgentDesktopTransfer.requireOwnedRecord")(function* (
-    scope: McpInvocationContext.McpInvocationScope,
+    scope: McpInvocationContext.McpThreadInvocationScope,
     transferId: AgentDesktopTransferId,
   ) {
     const record = (yield* Ref.get(state)).transfers.get(transferId);
@@ -382,7 +382,7 @@ export const make = Effect.gen(function* () {
   });
 
   const waitForSnapshot = Effect.fn("AgentDesktopTransfer.waitForSnapshot")(function* (
-    scope: McpInvocationContext.McpInvocationScope,
+    scope: McpInvocationContext.McpThreadInvocationScope,
     input: AgentDesktopTransferTargetInput,
     defaultWaitMs = 0,
   ) {
@@ -395,11 +395,11 @@ export const make = Effect.gen(function* () {
   });
 
   const resolveWorkspaceRoot = Effect.fn("AgentDesktopTransfer.resolveWorkspaceRoot")(function* (
-    scope: McpInvocationContext.McpInvocationScope,
+    scope: McpInvocationContext.McpThreadInvocationScope,
   ) {
-    const projections = yield* ProjectionSnapshotQuery;
+    const projections = yield* ThreadWorkspaceQuery;
     const shell = yield* projections
-      .getThreadShellById(scope.threadId)
+      .getThreadShellById(scope.thread.threadId)
       .pipe(Effect.mapError((cause) => processError("preparing", cause, "invalid-source")));
     if (Option.isNone(shell)) {
       return yield* new TransferProcessError({
@@ -534,8 +534,8 @@ export const make = Effect.gen(function* () {
       .transfer(
         {
           environmentId: record.scope.environmentId,
-          threadId: record.scope.threadId,
-          controllerId: record.scope.controllerId,
+          threadId: record.scope.thread.threadId,
+          controllerId: record.scope.thread.controllerId,
         },
         {
           operation: "import",
@@ -609,8 +609,8 @@ export const make = Effect.gen(function* () {
       .transfer(
         {
           environmentId: record.scope.environmentId,
-          threadId: record.scope.threadId,
-          controllerId: record.scope.controllerId,
+          threadId: record.scope.thread.threadId,
+          controllerId: record.scope.thread.controllerId,
         },
         {
           operation: "export",
@@ -853,8 +853,8 @@ export const make = Effect.gen(function* () {
         .cancelTransfer(
           {
             environmentId: scope.environmentId,
-            threadId: scope.threadId,
-            controllerId: scope.controllerId,
+            threadId: scope.thread.threadId,
+            controllerId: scope.thread.controllerId,
           },
           {
             transferId: input.transferId,
@@ -880,19 +880,15 @@ export const make = Effect.gen(function* () {
 
 export interface AgentDesktopTransferServiceShape {
   readonly start: (
-    scope: McpInvocationContext.McpInvocationScope,
+    scope: McpInvocationContext.McpThreadInvocationScope,
     input: AgentDesktopCopyInput,
-  ) => Effect.Effect<
-    AgentDesktopTransfer,
-    AgentDesktopTransferLookupError,
-    ProjectionSnapshotQuery
-  >;
+  ) => Effect.Effect<AgentDesktopTransfer, AgentDesktopTransferLookupError, ThreadWorkspaceQuery>;
   readonly status: (
-    scope: McpInvocationContext.McpInvocationScope,
+    scope: McpInvocationContext.McpThreadInvocationScope,
     input: AgentDesktopTransferTargetInput,
   ) => Effect.Effect<AgentDesktopTransfer, AgentDesktopTransferLookupError>;
   readonly cancel: (
-    scope: McpInvocationContext.McpInvocationScope,
+    scope: McpInvocationContext.McpThreadInvocationScope,
     input: AgentDesktopTransferTargetInput,
   ) => Effect.Effect<AgentDesktopTransfer, AgentDesktopTransferLookupError>;
 }

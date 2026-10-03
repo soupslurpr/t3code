@@ -14,8 +14,8 @@ import * as Layer from "effect/Layer";
 import * as Schema from "effect/Schema";
 import * as Struct from "effect/Struct";
 import * as SynchronizedRef from "effect/SynchronizedRef";
-import * as SqlClient from "effect/unstable/sql/SqlClient";
-import * as SqlSchema from "effect/unstable/sql/SqlSchema";
+import * as SqlClient from "effect/sql/SqlClient";
+import * as SqlSchema from "effect/sql/SqlSchema";
 
 import { PersistenceDecodeError, PersistenceSqlError } from "./Errors.ts";
 
@@ -92,7 +92,9 @@ function repositoryError(operation: string) {
 }
 
 /** Creates the SQL-backed user-desktop repository. */
-export const make = Effect.gen(function* () {
+export const decodeAuditEvent = Schema.decodeUnknownEffect(UserDesktopAuditEvent);
+
+const make = Effect.gen(function* () {
   const sql = yield* SqlClient.SqlClient;
 
   const writeHost = SqlSchema.void({
@@ -240,7 +242,7 @@ export const make = Effect.gen(function* () {
   });
   const decodeAuditRow = (row: typeof RawAuditDbRow.Type) => {
     const { threadId, actorLabel, ...event } = row;
-    return Schema.decodeUnknownEffect(UserDesktopAuditEvent)({
+    return decodeAuditEvent({
       ...event,
       takeover: event.takeover === 1,
       ...(threadId === null ? {} : { threadId }),

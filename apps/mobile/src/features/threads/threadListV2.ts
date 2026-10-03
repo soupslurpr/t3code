@@ -184,7 +184,10 @@ export function threadHasUnseenCompletion(
 }
 
 export function resolveThreadListV2Status(
-  thread: Pick<EnvironmentThreadShell, "hasPendingApprovals" | "hasPendingUserInput" | "runtime" | "backgroundLiveness">,
+  thread: Pick<
+    EnvironmentThreadShell,
+    "hasPendingApprovals" | "hasPendingUserInput" | "runtime" | "backgroundLiveness"
+  >,
 ): ThreadListV2Status {
   if (thread.hasPendingApprovals) {
     return "approval";
@@ -198,18 +201,13 @@ export function resolveThreadListV2Status(
   ) {
     return "working";
   }
-  if (thread.runtime?.status === "idle") {
-    return "waiting";
-  }
   if (thread.runtime?.status === "failed") {
     return thread.runtime.lastErrorClass === "usage_limit" ? "limited" : "failed";
-  }
-  if (thread.backgroundLiveness === "working") {
-    return "working";
   }
   if (thread.backgroundLiveness === "monitoring") {
     return "monitoring";
   }
+  if (thread.runtime?.status === "idle") return "waiting";
   return "ready";
 }
 

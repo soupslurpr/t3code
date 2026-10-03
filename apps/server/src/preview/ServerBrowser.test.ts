@@ -25,6 +25,7 @@ import { beforeEach, expect, vi } from "vite-plus/test";
 import * as ServerConfig from "../config.ts";
 import * as ServerEnvironment from "../environment/ServerEnvironment.ts";
 import * as Broker from "../mcp/PreviewAutomationBroker.ts";
+import * as UserDesktops from "../persistence/UserDesktops.ts";
 import * as DesktopChannel from "./DesktopBrowserChannel.ts";
 import * as Manager from "./Manager.ts";
 import * as ServerBrowser from "./ServerBrowser.ts";
@@ -171,6 +172,7 @@ const desktopRenders = (tabId: string) => {
 const releasedDesktopTabs: Array<string> = [];
 const desktopConnections: Array<{ endpoint: string; context: ReturnType<typeof makeContext> }> = [];
 const testThread = {
+  controllerId: "browser-test-controller",
   threadId: ThreadId.make("browser-test-thread"),
   providerSessionId: "agent-a",
   providerInstanceId: ProviderInstanceId.make("codex"),
@@ -189,7 +191,7 @@ const asSession = (providerSessionId: string) => ({
   thread: { ...testThread, providerSessionId },
 });
 const dependencies = Layer.mergeAll(
-  Broker.layer,
+  Broker.layer.pipe(Layer.provide(UserDesktops.layerMemory)),
   Manager.layer,
   Layer.succeed(ServerEnvironment.ServerEnvironment, {
     getEnvironmentId: Effect.succeed(scope.environmentId),

@@ -1,6 +1,5 @@
 import {
   COMPUTER_AUTOMATION_OPERATIONS,
-  PREVIEW_AUTOMATION_OPERATIONS,
   type PreviewAutomationHost,
   type UserDesktopCapability,
   type UserDesktopHostRegistration,
@@ -44,9 +43,8 @@ export function previewAutomationHostCapabilities(input: {
             ),
           },
         }),
-    supportedOperations: [
-      ...PREVIEW_AUTOMATION_OPERATIONS,
-      ...(input.computerAvailable || input.executionAvailable
+    supportedOperations:
+      input.computerAvailable || input.executionAvailable
         ? COMPUTER_AUTOMATION_OPERATIONS.filter(
             (operation) =>
               (operation === "computerExecution"
@@ -60,7 +58,6 @@ export function previewAutomationHostCapabilities(input: {
                   operationsByCapability[capability].has(operation),
                 )),
           )
-        : []),
-    ],
+        : [],
   };
 }

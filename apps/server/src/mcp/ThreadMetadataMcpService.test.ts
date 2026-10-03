@@ -14,6 +14,7 @@ const scope: McpInvocationContext.McpInvocationScope = {
   environmentId: EnvironmentId.make("environment:metadata-test"),
   requestNamespace: "provider-session:metadata-test",
   thread: {
+    controllerId: "test-controller",
     threadId,
     providerSessionId: "provider-session:metadata-test",
     providerInstanceId: ProviderInstanceId.make("codex"),

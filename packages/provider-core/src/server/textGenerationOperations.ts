@@ -26,7 +26,10 @@ import {
   sanitizeThreadTitle,
 } from "./textGenerationUtils.ts";
 
-export type Operation = keyof ProviderTextGeneration;
+export type Operation = Exclude<
+  keyof ProviderTextGeneration,
+  "evaluateImageCondition" | "imageConditionTokenUsage"
+>;
 
 /** One prompt for a provider to run. */
 export interface Request<S extends Schema.Top> {

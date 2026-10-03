@@ -35,9 +35,15 @@ const makeScope = Effect.gen(function* () {
     thread.threadId,
   );
   return {
-    ...thread,
-    controllerId,
-    providerSessionId: "session-before-stop",
+    environmentId: thread.environmentId,
+    requestNamespace: "session-before-stop",
+    thread: {
+      threadId: thread.threadId,
+      providerInstanceId: thread.providerInstanceId,
+      controllerId,
+      providerSessionId: "session-before-stop",
+    },
+    client: undefined,
     capabilities: new Set(["computer"] as const),
     issuedAt: 0,
   };
@@ -92,7 +98,7 @@ it.effect("cancels only the normal thread controller and resumes without restori
       const scope = yield* makeScope;
       const { events, host } = yield* connectHost(broker);
       const invoke = (
-        controller: McpInvocationContext.McpInvocationScope,
+        controller: McpInvocationContext.McpThreadInvocationScope,
         operation: "computerRequestControl" | "computerSnapshot" | "computerStatus",
       ) =>
         broker.invoke<{ retained: boolean } | string>({
@@ -106,20 +112,33 @@ it.effect("cancels only the normal thread controller and resumes without restori
         invoke(
           {
             ...scope,
-            controllerId: "thread-monitor:watch",
-            providerSessionId: "thread-monitor:watch",
+            thread: {
+              ...scope.thread,
+              controllerId: "thread-monitor:watch",
+              providerSessionId: "thread-monitor:watch",
+            },
           },
           "computerSnapshot",
         ),
       );
       const watchRequest = yield* takeRequest(events);
       const human = yield* Effect.forkChild(
-        invoke({ ...scope, controllerKind: "human" }, "computerStatus"),
+        invoke(
+          { ...scope, thread: { ...scope.thread, controllerKind: "human" } },
+          "computerStatus",
+        ),
       );
       const humanRequest = yield* takeRequest(events);
       const other = yield* Effect.forkChild(
         invoke(
-          { ...scope, threadId: ThreadId.make("other-thread"), controllerId: "other-controller" },
+          {
+            ...scope,
+            thread: {
+              ...scope.thread,
+              threadId: ThreadId.make("other-thread"),
+              controllerId: "other-controller",
+            },
+          },
           "computerSnapshot",
         ),
       );
@@ -137,14 +156,17 @@ it.effect("cancels only the normal thread controller and resumes without restori
       });
       expect(
         yield* Effect.flip(
-          invoke({ ...scope, providerSessionId: "late-session" }, "computerRequestControl"),
+          invoke(
+            { ...scope, thread: { ...scope.thread, providerSessionId: "late-session" } },
+            "computerRequestControl",
+          ),
         ),
       ).toMatchObject({ computerFailure: { code: "request-cancelled" } });
       const stopped = yield* Effect.forkChild(cleanup);
       const interruption = yield* takeRequest(events);
       expect(interruption.request).toMatchObject({
         operation: "computerInterrupt",
-        controllerId: scope.controllerId,
+        controllerId: scope.thread.controllerId,
         controllerKind: "agent",
         threadId: thread.threadId,
         input: { desktop },

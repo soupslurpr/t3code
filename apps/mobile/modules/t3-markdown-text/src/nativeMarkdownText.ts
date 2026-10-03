@@ -139,8 +139,6 @@ export function nativeMarkdownContextCopyRanges(
   }
   return ranges;
 }
-import { fileBasename } from "@t3tools/client-runtime/markdown-links";
-
 import type { SelectableMarkdownSkill } from "./SelectableMarkdownText.types";
 import {
   resolveMarkdownInlineCodePresentation,

@@ -43,6 +43,7 @@ const makeScope = (): McpInvocationContext.McpInvocationScope => ({
   environmentId,
   requestNamespace: "provider-session-mcp-orchestrator-detail",
   thread: {
+    controllerId: "test-controller",
     threadId: parentThreadId,
     providerSessionId: "provider-session-mcp-orchestrator-detail",
     providerInstanceId: parentInstanceId,

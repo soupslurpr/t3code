@@ -1,5 +1,5 @@
 import * as Effect from "effect/Effect";
-import * as SqlClient from "effect/unstable/sql/SqlClient";
+import * as SqlClient from "effect/sql/SqlClient";
 
 /** Adds restart-safe model-evaluation throttling to computer monitors. */
 export default Effect.gen(function* () {

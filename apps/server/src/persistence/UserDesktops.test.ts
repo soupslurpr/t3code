@@ -3,7 +3,7 @@ import { ThreadId } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 
-import { SqlitePersistenceMemory } from "./Layers/Sqlite.ts";
+import * as SqlitePersistence from "./Sqlite.ts";
 import * as UserDesktops from "./UserDesktops.ts";
 
 const host = {
@@ -15,7 +15,7 @@ const host = {
 };
 const auditThreadId = ThreadId.make("thread-audit-1");
 
-const layer = it.layer(UserDesktops.layer.pipe(Layer.provideMerge(SqlitePersistenceMemory)));
+const layer = it.layer(UserDesktops.layer.pipe(Layer.provideMerge(SqlitePersistence.layerMemory)));
 
 layer("UserDesktopRepository", (it) => {
   it.effect("retains execution alongside graphical desktop capabilities", () =>

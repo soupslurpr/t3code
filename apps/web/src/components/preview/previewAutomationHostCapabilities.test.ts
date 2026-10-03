@@ -1,10 +1,10 @@
-import { COMPUTER_AUTOMATION_OPERATIONS, PREVIEW_AUTOMATION_OPERATIONS } from "@t3tools/contracts";
+import { COMPUTER_AUTOMATION_OPERATIONS } from "@t3tools/contracts";
 import { describe, expect, it } from "@effect/vitest";
 
 import { previewAutomationHostCapabilities } from "./previewAutomationHostCapabilities";
 
 describe("previewAutomationHostCapabilities", () => {
-  it("advertises browser and user-desktop automation", () => {
+  it("advertises only user-desktop automation", () => {
     const capabilities = previewAutomationHostCapabilities({
       computerAvailable: true,
       computerInterruptAvailable: true,
@@ -13,10 +13,7 @@ describe("previewAutomationHostCapabilities", () => {
       computerCapabilities: ["view", "control", "availability", "execution"],
     });
 
-    expect(capabilities.supportedOperations).toEqual([
-      ...PREVIEW_AUTOMATION_OPERATIONS,
-      ...COMPUTER_AUTOMATION_OPERATIONS,
-    ]);
+    expect(capabilities.supportedOperations).toEqual([...COMPUTER_AUTOMATION_OPERATIONS]);
   });
 
   it("omits control-only interruption on an older native bridge", () => {
@@ -25,15 +22,14 @@ describe("previewAutomationHostCapabilities", () => {
         computerAvailable: true,
         computerCapabilities: ["view", "control", "availability"],
       }).supportedOperations,
-    ).toEqual([
-      ...PREVIEW_AUTOMATION_OPERATIONS,
-      ...COMPUTER_AUTOMATION_OPERATIONS.filter(
+    ).toEqual(
+      COMPUTER_AUTOMATION_OPERATIONS.filter(
         (operation) =>
           operation !== "computerInterrupt" &&
           operation !== "computerExecution" &&
           operation !== "computerTransfer",
       ),
-    ]);
+    );
   });
 
   it("omits user-desktop automation without a local bridge", () => {
@@ -43,7 +39,7 @@ describe("previewAutomationHostCapabilities", () => {
         computerCapabilities: ["view", "control", "availability"],
       }),
     ).toEqual({
-      supportedOperations: [...PREVIEW_AUTOMATION_OPERATIONS],
+      supportedOperations: [],
     });
   });
 
@@ -54,7 +50,7 @@ describe("previewAutomationHostCapabilities", () => {
         executionAvailable: true,
         computerCapabilities: ["execution"],
       }).supportedOperations,
-    ).toEqual([...PREVIEW_AUTOMATION_OPERATIONS, "computerExecution"]);
+    ).toEqual(["computerExecution"]);
   });
 
   it("keeps desktop registration compatible with an environment without execution", () => {
@@ -85,7 +81,6 @@ describe("previewAutomationHostCapabilities", () => {
         computerCapabilities: ["view"],
       }).supportedOperations,
     ).toEqual([
-      ...PREVIEW_AUTOMATION_OPERATIONS,
       "computerStatus",
       "computerRequestView",
       "computerRememberView",

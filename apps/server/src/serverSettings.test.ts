@@ -32,6 +32,8 @@ import { writeFileStringAtomically } from "@t3tools/shared/atomicWrite";
 import * as ServerSettingsModule from "./serverSettings.ts";
 import { resolveProviderInstanceTerminalEnvironment } from "./terminal/Manager.ts";
 
+const encodeModelJson = Schema.encodeEffect(Schema.fromJsonString(ModelSelection));
+const encodeScriptsJson = Schema.encodeEffect(Schema.fromJsonString(Schema.Array(ProjectScript)));
 const decodeSettingsPatch = Schema.decodeUnknownEffect(ServerSettingsPatch);
 const decodeServerSettings = Schema.decodeUnknownEffect(ServerSettings);
 const decodeServerSettingsJson = Schema.decodeUnknownEffect(Schema.fromJsonString(ServerSettings));
@@ -248,36 +250,34 @@ it.layer(NodeServices.layer)("server settings", (it) => {
     ).pipe(TestClock.withLive, Effect.provide(layerServerSettings())),
   );
 
-  for (const [label, raw, enabled] of [
+  it.effect.each([
     ["new environments", null, true],
     ["existing sparse settings", "{}", true],
     ["existing On settings", '{"continueThreadsAfterServerUpdate":true}', true],
     ["existing Off settings", '{"continueThreadsAfterServerUpdate":false}', false],
-  ] as const) {
-    it.effect(
-      `preserves restart continuation for ${label} across settings writes and reloads`,
-      () =>
-        Effect.gen(function* () {
-          const settings = yield* ServerSettingsModule.ServerSettingsService;
-          const config = yield* ServerConfig.ServerConfig;
-          const fs = yield* FileSystem.FileSystem;
-          if (raw !== null) yield* fs.writeFileString(config.settingsPath, raw);
-          assert.equal((yield* settings.getSettings).continueThreadsAfterServerUpdate, enabled);
+  ] as const)(
+    "preserves restart continuation for %s across settings writes and reloads",
+    ([_label, raw, enabled]) =>
+      Effect.gen(function* () {
+        const settings = yield* ServerSettingsModule.ServerSettingsService;
+        const config = yield* ServerConfig.ServerConfig;
+        const fs = yield* FileSystem.FileSystem;
+        if (raw !== null) yield* fs.writeFileString(config.settingsPath, raw);
+        assert.equal((yield* settings.getSettings).continueThreadsAfterServerUpdate, enabled);
 
-          yield* settings.updateSettings({ enableProviderUpdateChecks: false });
-          const persisted = yield* fs
-            .readFileString(config.settingsPath)
-            .pipe(Effect.flatMap(decodePersistedRestartSettings));
-          if (enabled) assert.notProperty(persisted, "continueThreadsAfterServerUpdate");
-          else assert.strictEqual(persisted.continueThreadsAfterServerUpdate, false);
+        yield* settings.updateSettings({ enableProviderUpdateChecks: false });
+        const persisted = yield* fs
+          .readFileString(config.settingsPath)
+          .pipe(Effect.flatMap(decodePersistedRestartSettings));
+        if (enabled) assert.notProperty(persisted, "continueThreadsAfterServerUpdate");
+        else assert.strictEqual(persisted.continueThreadsAfterServerUpdate, false);
 
-          const reloaded = yield* Effect.gen(function* () {
-            return yield* (yield* ServerSettingsModule.ServerSettingsService).getSettings;
-          }).pipe(Effect.provide(Layer.fresh(ServerSettingsModule.layer)));
-          assert.equal(reloaded.continueThreadsAfterServerUpdate, enabled);
-        }).pipe(Effect.provide(makeServerSettingsLayer())),
-    );
-  }
+        const reloaded = yield* Effect.gen(function* () {
+          return yield* (yield* ServerSettingsModule.ServerSettingsService).getSettings;
+        }).pipe(Effect.provide(Layer.fresh(ServerSettingsModule.layer)));
+        assert.equal(reloaded.continueThreadsAfterServerUpdate, enabled);
+      }).pipe(Effect.provide(layerServerSettings())),
+  );
 
   it.effect(
     "resetting restart continuation removes the environment value and preserves project opt-outs",
@@ -306,7 +306,7 @@ it.layer(NodeServices.layer)("server settings", (it) => {
         assert.isFalse(
           reloaded.projectSettingsOverrides[projectId]?.continueThreadsAfterServerUpdate,
         );
-      }).pipe(Effect.provide(makeServerSettingsLayer())),
+      }).pipe(Effect.provide(layerServerSettings())),
   );
 
   it.effect("preserves context when reading a provider environment secret fails", () => {
@@ -381,10 +381,10 @@ it.layer(NodeServices.layer)("server settings", (it) => {
       }).pipe(Effect.provide(Layer.fresh(ServerSettingsModule.layer)));
       assert.isFalse(reloaded.enableDeviceSupport);
       assert.isTrue(reloaded.enableAgentDeviceAccess);
-    }).pipe(Effect.provide(makeServerSettingsLayer())),
+    }).pipe(Effect.provide(layerServerSettings())),
   );
 
-  for (const [label, raw, enabled, agentAccess] of [
+  it.effect.each([
     ["an existing file without device settings", "{}", true, true],
     ["explicit opt-ins", '{"enableDeviceSupport":true,"enableAgentDeviceAccess":true}', true, true],
     [
@@ -396,36 +396,34 @@ it.layer(NodeServices.layer)("server settings", (it) => {
     ["only the hub disabled", '{"enableDeviceSupport":false}', false, true],
     ["only agent access disabled", '{"enableAgentDeviceAccess":false}', true, false],
     ["malformed settings", "{invalid json", true, true],
-  ] as const) {
-    it.effect(`loads and persists device defaults for ${label}`, () =>
-      Effect.gen(function* () {
-        const settings = yield* ServerSettingsModule.ServerSettingsService;
-        const config = yield* ServerConfig.ServerConfig;
-        const fs = yield* FileSystem.FileSystem;
-        yield* fs.writeFileString(config.settingsPath, raw);
-        const loaded = yield* settings.getSettings;
-        assert.equal(loaded.enableDeviceSupport, enabled);
-        assert.equal(loaded.enableAgentDeviceAccess, agentAccess);
-        yield* settings.updateSettings({ deviceOnboardingCompleted: true });
-        const saved = yield* fs.readFileString(config.settingsPath).pipe(
-          Effect.flatMap(
-            Schema.decodeUnknownEffect(
-              Schema.fromJsonString(
-                Schema.Struct({
-                  enableDeviceSupport: Schema.Boolean,
-                  enableAgentDeviceAccess: Schema.Boolean,
-                }),
-              ),
+  ] as const)("loads and persists device defaults for %s", ([_label, raw, enabled, agentAccess]) =>
+    Effect.gen(function* () {
+      const settings = yield* ServerSettingsModule.ServerSettingsService;
+      const config = yield* ServerConfig.ServerConfig;
+      const fs = yield* FileSystem.FileSystem;
+      yield* fs.writeFileString(config.settingsPath, raw);
+      const loaded = yield* settings.getSettings;
+      assert.equal(loaded.enableDeviceSupport, enabled);
+      assert.equal(loaded.enableAgentDeviceAccess, agentAccess);
+      yield* settings.updateSettings({ deviceOnboardingCompleted: true });
+      const saved = yield* fs.readFileString(config.settingsPath).pipe(
+        Effect.flatMap(
+          Schema.decodeUnknownEffect(
+            Schema.fromJsonString(
+              Schema.Struct({
+                enableDeviceSupport: Schema.Boolean,
+                enableAgentDeviceAccess: Schema.Boolean,
+              }),
             ),
           ),
-        );
-        assert.deepEqual(saved, {
-          enableDeviceSupport: enabled,
-          enableAgentDeviceAccess: agentAccess,
-        });
-      }).pipe(Effect.provide(makeServerSettingsLayer())),
-    );
-  }
+        ),
+      );
+      assert.deepEqual(saved, {
+        enableDeviceSupport: enabled,
+        enableAgentDeviceAccess: agentAccess,
+      });
+    }).pipe(Effect.provide(layerServerSettings())),
+  );
 
   it.effect("identifies provider history query failures", () =>
     Effect.gen(function* () {
@@ -1956,10 +1954,8 @@ it.layer(NodeServices.layer)("server settings", (it) => {
         runOnWorktreeCreate: false,
       };
       const model = createModelSelection(ProviderInstanceId.make("codex"), "gpt-5.5");
-      const modelJson = yield* Schema.encodeEffect(Schema.fromJsonString(ModelSelection))(model);
-      const scriptsJson = yield* Schema.encodeEffect(
-        Schema.fromJsonString(Schema.Array(ProjectScript)),
-      )([script]);
+      const modelJson = yield* encodeModelJson(model);
+      const scriptsJson = yield* encodeScriptsJson([script]);
       for (const [projectId, modelColumn, envMode, autoPull, scripts] of [
         // The legacy project also carries aggregate scripts, but its stored
         // null override reset them; the fold must not bring them back.

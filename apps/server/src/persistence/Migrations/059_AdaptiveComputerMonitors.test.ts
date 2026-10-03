@@ -2,10 +2,12 @@ import { assert, it } from "@effect/vitest";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Schema from "effect/Schema";
-import * as SqlClient from "effect/unstable/sql/SqlClient";
+import * as SqlClient from "effect/sql/SqlClient";
 
-import { runMigrations } from "../Migrations.ts";
+import { migrationManifest, runMigrations } from "../Migrations.ts";
 import * as NodeSqliteClient from "@t3tools/shared/nodeSqliteClient";
+
+const migrationId = migrationManifest.find(([, name]) => name === "AdaptiveComputerMonitors")![0];
 
 const layer = it.layer(Layer.mergeAll(NodeSqliteClient.layer({ filename: ":memory:" })));
 const encodeJson = Schema.encodeSync(Schema.fromJsonString(Schema.Unknown));
@@ -37,7 +39,7 @@ const decodeImages = Schema.decodeUnknownSync(
   ),
 );
 
-layer("058_AdaptiveComputerMonitors", (it) => {
+layer("059_AdaptiveComputerMonitors", (it) => {
   it.effect("migrates single-crop state and retained images without runtime legacy decoding", () =>
     Effect.gen(function* () {
       const sql = yield* SqlClient.SqlClient;
@@ -79,7 +81,7 @@ layer("058_AdaptiveComputerMonitors", (it) => {
         resourceState: "viewing",
       };
 
-      yield* runMigrations({ toMigrationInclusive: 57 });
+      yield* runMigrations({ toMigrationInclusive: migrationId - 1 });
       yield* sql`
         INSERT INTO thread_monitors (
           monitor_id,
@@ -113,7 +115,7 @@ layer("058_AdaptiveComputerMonitors", (it) => {
         ) VALUES ('computer-monitor', 'YmFzZWxpbmU=', 'dGVybWluYWw=')
       `;
 
-      yield* runMigrations({ toMigrationInclusive: 58 });
+      yield* runMigrations({ toMigrationInclusive: migrationId });
 
       const monitorRows = yield* sql<{ readonly conditionJson: string }>`
         SELECT condition_json AS "conditionJson"

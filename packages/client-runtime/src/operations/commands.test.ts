@@ -502,55 +502,89 @@ describe("V2 environment commands", () => {
     }).pipe(Effect.provide(layerTestCrypto)),
   );
 
-  it.effect("Stop with no run left ends the thread's pull request watches", () =>
-    Effect.gen(function* () {
-      const link = {
-        host: "github.com",
-        repository: "pingdotgg/t3code",
-        url: "https://github.com/pingdotgg/t3code/pull/7",
-        source: "agent" as const,
-        linkedAt: "2026-10-05T00:00:00.000Z",
-        snapshot: null,
-        stack: null,
-      };
-      const watch = {
-        startedAt: "2026-10-05T00:00:00.000Z",
-        headSha: null,
-        failedChecks: [],
-        passed: false,
-        passedChecks: [],
-        remarksThrough: "2026-10-05T00:00:00.000Z",
-        remarkIds: [],
-        conflicting: false,
-        wakes: 0,
-      };
-      const projection: OrchestrationV2ThreadProjection = {
-        ...v2Projection,
-        thread: {
-          ...v2Projection.thread,
-          pullRequests: [
-            { ...link, number: 7, watch },
-            { ...link, number: 8 },
-            { ...link, number: 9, source: "stack-dismissed", watch },
-          ],
-        },
-      };
-      const commands: OrchestrationV2Command[] = [];
-      const supervisor = yield* makeSupervisor({ commands, projects: [], projection });
-
-      yield* interruptThreadTurn({ threadId: v2ThreadId }).pipe(
-        Effect.provideService(EnvironmentSupervisor.EnvironmentSupervisor, supervisor),
-      );
-
-      expect(commands).toEqual([
-        {
-          type: "thread.pull-request.watch",
-          commandId: expect.any(String),
-          threadId: v2ThreadId,
+  it.effect.each([false, true])(
+    "Stop with no run left ends pull request watches (cancel monitors: %s)",
+    (cancelMonitors) =>
+      Effect.gen(function* () {
+        const link = {
           host: "github.com",
           repository: "pingdotgg/t3code",
-          number: 7,
-          watching: false,
+          url: "https://github.com/pingdotgg/t3code/pull/7",
+          source: "agent" as const,
+          linkedAt: "2026-10-05T00:00:00.000Z",
+          snapshot: null,
+          stack: null,
+        };
+        const watch = {
+          startedAt: "2026-10-05T00:00:00.000Z",
+          headSha: null,
+          failedChecks: [],
+          passed: false,
+          passedChecks: [],
+          remarksThrough: "2026-10-05T00:00:00.000Z",
+          remarkIds: [],
+          conflicting: false,
+          wakes: 0,
+        };
+        const projection: OrchestrationV2ThreadProjection = {
+          ...v2Projection,
+          thread: {
+            ...v2Projection.thread,
+            pullRequests: [
+              { ...link, number: 7, watch },
+              { ...link, number: 8 },
+              { ...link, number: 9, source: "stack-dismissed", watch },
+            ],
+          },
+        };
+        const commands: OrchestrationV2Command[] = [];
+        const supervisor = yield* makeSupervisor({ commands, projects: [], projection });
+
+        yield* interruptThreadTurn({ threadId: v2ThreadId, cancelMonitors }).pipe(
+          Effect.provideService(EnvironmentSupervisor.EnvironmentSupervisor, supervisor),
+        );
+
+        expect(commands).toEqual([
+          ...(cancelMonitors
+            ? [
+                {
+                  type: "thread.monitors.cancel",
+                  commandId: expect.any(String),
+                  threadId: v2ThreadId,
+                },
+              ]
+            : []),
+          {
+            type: "thread.pull-request.watch",
+            commandId: expect.any(String),
+            threadId: v2ThreadId,
+            host: "github.com",
+            repository: "pingdotgg/t3code",
+            number: 7,
+            watching: false,
+          },
+        ]);
+      }).pipe(Effect.provide(layerTestCrypto)),
+  );
+
+  it.effect("stops imported monitors without requiring a V2 run", () =>
+    Effect.gen(function* () {
+      const commands: OrchestrationV2Command[] = [];
+      const supervisor = yield* makeSupervisor({
+        commands,
+        projects: [],
+        projection: { ...v2Projection, runs: [], turnItems: [] },
+      });
+      const result = yield* interruptThreadTurn({
+        threadId: v2ThreadId,
+        cancelMonitors: true,
+      }).pipe(Effect.provideService(EnvironmentSupervisor.EnvironmentSupervisor, supervisor));
+      expect(result.sequence).toBe(1);
+      expect(commands).toEqual([
+        {
+          type: "thread.monitors.cancel",
+          commandId: expect.any(String),
+          threadId: v2ThreadId,
         },
       ]);
     }).pipe(Effect.provide(layerTestCrypto)),

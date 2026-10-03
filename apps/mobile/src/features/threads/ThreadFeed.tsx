@@ -52,7 +52,7 @@ import {
   renderCodexFileCitationsAsMarkdown,
   splitCodexArtifactTemplateMarkdown,
 } from "@t3tools/shared/codexMarkdownDirectives";
-import { formatSubagentTokenCount } from "@t3tools/client-runtime/state/subagentRuntime";
+import { formatTokens } from "@t3tools/shared/usageFormat";
 import { CHAT_LIST_ANCHOR_OFFSET, resolveChatListAnchoredEndSpace } from "@t3tools/shared/chatList";
 import { imageMimeType } from "@t3tools/shared/image";
 import { videoMimeType } from "@t3tools/shared/video";
@@ -1675,17 +1675,21 @@ function renderFeedEntry(
     );
   }
 
-  if (entry.type === "message") {
-    const { message } = entry;
-    if (message.role === "system") {
-      return message.systemEvent === undefined ? null : (
+  if (entry.type === "activity-group" && entry.activities.length === 1) {
+    const item = entry.activities[0]!.projectedItem.item;
+    if (item.type === "notification" && item.systemEvent !== undefined) {
+      return (
         <MonitorSystemEventCard
-          createdAt={message.createdAt}
-          event={message.systemEvent}
+          createdAt={entry.createdAt}
+          event={item.systemEvent}
           iconSubtleColor={iconSubtleColor}
         />
       );
     }
+  }
+
+  if (entry.type === "message") {
+    const { message } = entry;
     const isUser = message.role === "user";
     const presentation = resolveUserMessagePresentation(message);
     const renderedText = renderAssistantCitationsAsText(presentation.text);
@@ -2107,16 +2111,16 @@ function MonitorSystemEventCard(props: {
                 <Text className="text-xs tabular-nums text-foreground-muted">
                   {props.event.metrics.totalUsage.inputTokens === null
                     ? "Input usage unavailable"
-                    : `${formatSubagentTokenCount(props.event.metrics.totalUsage.inputTokens)} input tokens`}
+                    : `${formatTokens(props.event.metrics.totalUsage.inputTokens)} input tokens`}
                   {props.event.metrics.totalUsage.cachedInputTokens === null
                     ? ""
-                    : ` · ${formatSubagentTokenCount(props.event.metrics.totalUsage.cachedInputTokens)} cached`}
+                    : ` · ${formatTokens(props.event.metrics.totalUsage.cachedInputTokens)} cached`}
                   {props.event.metrics.totalUsage.cacheWriteInputTokens === null
                     ? ""
-                    : ` · ${formatSubagentTokenCount(props.event.metrics.totalUsage.cacheWriteInputTokens)} cache writes`}
+                    : ` · ${formatTokens(props.event.metrics.totalUsage.cacheWriteInputTokens)} cache writes`}
                   {props.event.metrics.totalUsage.outputTokens === null
                     ? ""
-                    : ` · ${formatSubagentTokenCount(props.event.metrics.totalUsage.outputTokens)} output tokens`}
+                    : ` · ${formatTokens(props.event.metrics.totalUsage.outputTokens)} output tokens`}
                 </Text>
               ) : null}
               {props.event.metrics.regions.map((region) => (

@@ -41,12 +41,16 @@ it.effect("keeps one stable controller identity across Agent desktop operations"
     cursor: null,
     captureSource: "virtual-display",
   } satisfies ComputerAutomationSnapshot;
-  const scope: McpInvocationContext.McpInvocationScope = {
+  const scope: McpInvocationContext.McpThreadInvocationScope = {
     environmentId: EnvironmentId.make("environment-router-test"),
-    threadId: ThreadId.make("thread-router-test"),
-    controllerId: "controller-stable",
-    providerSessionId: "provider-session-transient",
-    providerInstanceId: ProviderInstanceId.make("codex"),
+    thread: {
+      threadId: ThreadId.make("thread-router-test"),
+      controllerId: "controller-stable",
+      providerSessionId: "provider-session-transient",
+      providerInstanceId: ProviderInstanceId.make("codex"),
+    },
+    requestNamespace: "computer-test",
+    client: undefined,
     capabilities: new Set(["computer"]),
     issuedAt: 1,
   };
@@ -105,16 +109,16 @@ it.effect("keeps one stable controller identity across Agent desktop operations"
     assert.deepEqual(owners, [
       {
         environmentId: scope.environmentId,
-        threadId: scope.threadId,
-        controllerId: scope.controllerId,
+        threadId: scope.thread.threadId,
+        controllerId: scope.thread.controllerId,
       },
       {
         environmentId: scope.environmentId,
-        threadId: scope.threadId,
-        controllerId: scope.controllerId,
+        threadId: scope.thread.threadId,
+        controllerId: scope.thread.controllerId,
       },
     ]);
-    assert.deepEqual(controllerIds, Array(7).fill(scope.controllerId));
-    assert.notInclude(controllerIds, scope.providerSessionId);
+    assert.deepEqual(controllerIds, Array(7).fill(scope.thread.controllerId));
+    assert.notInclude(controllerIds, scope.thread.providerSessionId);
   }).pipe(Effect.provide(testLayer));
 });

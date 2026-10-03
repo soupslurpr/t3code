@@ -1,3 +1,5 @@
+// @effect-diagnostics nodeBuiltinImport:off - Streaming SHA-256 avoids copying screenshot pixels in this Promise-based encoder.
+
 /** Fingerprints and encodes 8-bit desktop bitmaps for computer observations. */
 import type {
   ComputerAutomationContentHash,

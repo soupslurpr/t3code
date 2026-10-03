@@ -1,7 +1,7 @@
 import { EnvironmentId, ProviderInstanceId, RunId, ThreadId } from "@t3tools/contracts";
 import { describe, expect, it } from "vite-plus/test";
 
-import { createInboxReturnTracker, sortWorkingThreadsBySend } from "./threadInbox.ts";
+import { createInboxReturnTracker, sortWorkingThreadsBySend, isThreadWorking } from "./threadInbox.ts";
 
 const environmentId = EnvironmentId.make("environment-1");
 
@@ -30,6 +30,25 @@ function thread(id: string, working: boolean) {
 }
 
 describe("createInboxReturnTracker", () => {
+  it("keeps monitored threads working until completion or a request for user attention", () => {
+    const monitoring = { ...thread("a", false), backgroundLiveness: "monitoring" as const };
+    expect(isThreadWorking(monitoring)).toBe(true);
+    expect(isThreadWorking({ ...monitoring, hasPendingApprovals: true })).toBe(false);
+    expect(isThreadWorking({ ...monitoring, hasPendingUserInput: true })).toBe(false);
+    expect(
+      isThreadWorking({
+        ...monitoring,
+        runtime: { ...thread("a", true).runtime!, status: "failed" },
+      }),
+    ).toBe(false);
+
+    const tracker = createInboxReturnTracker();
+    tracker.observe([monitoring]);
+    expect(tracker.returnedAt(monitoring)).toBeUndefined();
+    tracker.observe([{ ...monitoring, backgroundLiveness: null }]);
+    expect(tracker.returnedAt(monitoring)).toBeDefined();
+  });
+
   it("stamps a thread when it stops working, but never on the first observation", () => {
     const tracker = createInboxReturnTracker();
     tracker.observe([thread("a", true), thread("b", false)]);

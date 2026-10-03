@@ -2419,6 +2419,7 @@ const make = Effect.gen(function* () {
               hostConnectionId = event.connectionId;
               return Effect.sync(reportLiveTabs);
             }
+            if (event.type === "cancel") return Effect.void;
             return handleRequest(event.connectionId, event.request).pipe(
               Effect.forkScoped,
               Effect.asVoid,

@@ -183,6 +183,8 @@ export interface StartThreadTurnInput extends ThreadCommandInput {
 
 export interface InterruptThreadTurnInput extends ThreadCommandInput {
   readonly runId?: RunId;
+  /** Include durable waits that can outlive, or predate, a V2 run. */
+  readonly cancelMonitors?: boolean;
   /** Temporary caller compatibility while UI naming moves from turns to runs. */
   readonly turnId?: string;
 }
@@ -775,7 +777,7 @@ export const startThreadTurn = Effect.fn("EnvironmentCommands.startThreadTurn")(
 /**
  * Stop for the thread's latest work: interrupts the active run, or the settled run whose
  * background work still runs. With no run to stop, it ends the thread's pull request
- * watches, the only background work that has no run.
+ * watches and any imported monitors, which can exist without a run.
  */
 export const interruptThreadTurn = Effect.fn("EnvironmentCommands.interruptThreadTurn")(function* (
   input: InterruptThreadTurnInput,
@@ -805,7 +807,13 @@ export const interruptThreadTurn = Effect.fn("EnvironmentCommands.interruptThrea
       }
     }
     if (runId === undefined) {
-      let result = { sequence: 0 };
+      let result = input.cancelMonitors
+        ? yield* dispatch({
+            type: "thread.monitors.cancel",
+            commandId: yield* allocateCommandId(input),
+            threadId: input.threadId,
+          })
+        : { sequence: 0 };
       for (const link of visibleThreadPullRequests(projection.thread.pullRequests ?? [])) {
         if (link.watch === undefined) continue;
         result = yield* dispatch({
@@ -821,7 +829,6 @@ export const interruptThreadTurn = Effect.fn("EnvironmentCommands.interruptThrea
       return result;
     }
   }
-  if (runId === undefined) return { sequence: 0 };
   return yield* dispatch({
     type: "run.interrupt",
     commandId: yield* allocateCommandId(input),

@@ -31,6 +31,7 @@ import * as ServerLifecycleEvents from "./serverLifecycleEvents.ts";
 import * as ServerRuntimeStartup from "./serverRuntimeStartup.ts";
 import * as ServerSettings from "./serverSettings.ts";
 import * as AnalyticsService from "./telemetry/AnalyticsService.ts";
+import * as ThreadMonitor from "./threadMonitor/ThreadMonitorService.ts";
 import * as GitVcsDriver from "./vcs/GitVcsDriver.ts";
 
 it.effect("parks automatic pull until activation without delaying command readiness", () =>
@@ -104,6 +105,7 @@ it.effect("parks automatic pull until activation without delaying command readin
           autoBootstrapProjectFromCwd: false,
         }),
         Layer.mock(Keybindings.Keybindings)({ start: Effect.void }),
+        Layer.mock(ThreadMonitor.ThreadMonitorService)({ start: Effect.void }),
         Layer.mock(LegacyV1ThreadImporter.LegacyV1ThreadImporter)({
           pendingThreadCount: Effect.succeed(0),
           reconcileShells: Effect.succeed(importSummary),

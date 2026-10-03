@@ -36,7 +36,6 @@ import * as Scope from "effect/Scope";
 import * as Stream from "effect/Stream";
 
 import * as ProviderHost from "@t3tools/provider-core/server/ProviderHost";
-import * as McpProviderSession from "@t3tools/provider-core/server/mcpSession";
 import * as McpProviderSessions from "@t3tools/provider-core/server/McpProviderSessions";
 import { buildRuntimeInstructions } from "@t3tools/provider-core/server/runtimeInstructions";
 import { museModelCapabilities, resolveMuseReasoningEffort } from "./modelCatalog.ts";
@@ -1366,16 +1365,12 @@ export const makeMuseAdapterV2 = Effect.fn("makeMuseAdapterV2")(function* (
       );
       const launchHost = Effect.fnUntraced(function* () {
         const epoch = ++hostEpoch;
-        const mcpSession = yield* mcpSessions.read(input.threadId);
         const created = yield* Effect.acquireRelease(
           createMuseSdkHostEffect(
             {
               binaryPath: options.settings.binaryPath || "muse",
               cwd,
-              environment: McpProviderSession.withAgentDeviceEnvironment(
-                options.environment,
-                mcpSession,
-              ),
+              environment: options.environment,
               runtimeMode: input.runtimePolicy.runtimeMode,
             },
             options.createHost,

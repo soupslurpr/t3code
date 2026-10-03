@@ -16,8 +16,8 @@ import * as Ref from "effect/Ref";
 import * as Semaphore from "effect/Semaphore";
 import * as Schema from "effect/Schema";
 import * as Stream from "effect/Stream";
-import { ChildProcess, ChildProcessSpawner } from "effect/unstable/process";
-import * as NodeCrypto from "node:crypto";
+import { ChildProcess, ChildProcessSpawner } from "effect/process";
+import * as Crypto from "effect/Crypto";
 import * as NodeOS from "node:os";
 
 import * as AgentDesktopEnvironment from "./AgentDesktopEnvironment.ts";
@@ -734,6 +734,7 @@ const mapFailure =
 
 /** Creates the Linux QEMU/KVM implementation used by Agent desktop management. */
 export const make = Effect.gen(function* () {
+  const crypto = yield* Crypto.Crypto;
   const environment = yield* AgentDesktopEnvironment.AgentDesktopEnvironment;
   const fileSystem = yield* FileSystem.FileSystem;
   const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
@@ -2240,12 +2241,17 @@ export const make = Effect.gen(function* () {
     const directory =
       separatorIndex < 0 ? "." : separatorIndex === 0 ? "/" : path.slice(0, separatorIndex);
     const separator = directory === "/" ? "" : "/";
-    const temporaryPath = `${directory}${separator}.t3-create-${NodeCrypto.randomUUID()}`;
     return Effect.gen(function* () {
-      const bytesWritten = yield* writeGuestFileContents(id, temporaryPath, data, guestMode);
-      yield* installCreatedGuestFile(id, temporaryPath, path);
-      return bytesWritten;
-    }).pipe(Effect.ensuring(removeGuestFile(id, temporaryPath)));
+      const nonce = yield* crypto.randomUUIDv4.pipe(
+        Effect.mapError(mapFailure("guest-file-create", "internal-error")),
+      );
+      const temporaryPath = `${directory}${separator}.t3-create-${nonce}`;
+      return yield* Effect.gen(function* () {
+        const bytesWritten = yield* writeGuestFileContents(id, temporaryPath, data, guestMode);
+        yield* installCreatedGuestFile(id, temporaryPath, path);
+        return bytesWritten;
+      }).pipe(Effect.ensuring(removeGuestFile(id, temporaryPath)));
+    });
   };
 
   const diskUsage: QemuAgentDesktopShape["diskUsage"] = (id) =>

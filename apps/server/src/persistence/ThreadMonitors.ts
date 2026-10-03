@@ -9,18 +9,99 @@ import {
   ThreadMonitorId,
   ThreadMonitorStatus,
 } from "@t3tools/contracts";
+import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
-import * as SqlClient from "effect/unstable/sql/SqlClient";
-import * as SqlSchema from "effect/unstable/sql/SqlSchema";
+import * as SqlClient from "effect/sql/SqlClient";
+import * as SqlSchema from "effect/sql/SqlSchema";
 
-import { toPersistenceSqlError } from "../Errors.ts";
-import {
+import { toPersistenceSqlError, type ProjectionRepositoryError } from "./Errors.ts";
+
+/** Persists durable, thread-scoped monitor state. */
+export class ThreadMonitorRepository extends Context.Service<
   ThreadMonitorRepository,
-  type ThreadMonitorRepositoryShape,
-} from "../Services/ThreadMonitors.ts";
+  {
+    /** Inserts or replaces one monitor. */
+    readonly upsert: (
+      monitor: ThreadMonitor,
+      initialCreation?: { readonly afterSequence: number },
+    ) => Effect.Effect<void, ProjectionRepositoryError>;
+
+    /** Signals an active owned monitor only if no accepted Stop has cancelled it. */
+    readonly trySignal: (input: {
+      readonly monitorId: ThreadMonitorId;
+      readonly threadId: ThreadId;
+      readonly triggeredAt: IsoDateTime;
+      readonly summary: string | null;
+      readonly evidence: string | null;
+    }) => Effect.Effect<boolean, ProjectionRepositoryError>;
+
+    /** Reads one monitor by id. */
+    readonly getById: (
+      monitorId: ThreadMonitorId,
+    ) => Effect.Effect<Option.Option<ThreadMonitor>, ProjectionRepositoryError>;
+
+    /** Lists a thread's monitors in reverse creation order. */
+    readonly listByThread: (input: {
+      readonly threadId: ThreadId;
+      readonly includeFinished: boolean;
+    }) => Effect.Effect<ReadonlyArray<ThreadMonitor>, ProjectionRepositoryError>;
+
+    /** Lists every monitor that can still trigger or be delivered. */
+    readonly listOutstanding: () => Effect.Effect<
+      ReadonlyArray<ThreadMonitor>,
+      ProjectionRepositoryError
+    >;
+
+    /** Reads the exact targets retained by accepted Stop commands. */
+    readonly listCancellationRequests: () => Effect.Effect<
+      ReadonlyArray<{ readonly threadId: ThreadId; readonly monitorId: ThreadMonitorId }>,
+      ProjectionRepositoryError
+    >;
+
+    /** Acknowledges a Stop only after cancellation and resource cleanup complete. */
+    readonly acknowledgeCancellation: (
+      monitorId: ThreadMonitorId,
+    ) => Effect.Effect<void, ProjectionRepositoryError>;
+
+    /** Reads every member needed to replay one durable continuation, including delivered members. */
+    readonly listByDeliveryGroupId: (
+      groupId: string,
+    ) => Effect.Effect<ReadonlyArray<ThreadMonitor>, ProjectionRepositoryError>;
+
+    /** Deletes every monitor owned by a thread. */
+    readonly deleteByThread: (threadId: ThreadId) => Effect.Effect<void, ProjectionRepositoryError>;
+
+    /** Deletes one monitor by id. */
+    readonly deleteById: (
+      monitorId: ThreadMonitorId,
+    ) => Effect.Effect<void, ProjectionRepositoryError>;
+
+    /** Reads bounded retained image generations for a computer monitor. */
+    readonly getComputerEvidence: (monitorId: ThreadMonitorId) => Effect.Effect<
+      Option.Option<{
+        readonly baselineImages: ReadonlyArray<ThreadMonitorComputerEvidenceImage>;
+        readonly previousImages: ReadonlyArray<ThreadMonitorComputerEvidenceImage>;
+        readonly currentImages: ReadonlyArray<ThreadMonitorComputerEvidenceImage>;
+        readonly terminalImages: ReadonlyArray<ThreadMonitorComputerEvidenceImage>;
+      }>,
+      ProjectionRepositoryError
+    >;
+
+    /** Atomically writes one computer-monitor revision and all bounded evidence. */
+    readonly upsertComputerRevision: (input: {
+      readonly monitor: ThreadMonitor;
+      /** On initial creation, retain Stops accepted after preparation began. */
+      readonly afterSequence?: number;
+      readonly baselineImages: ReadonlyArray<ThreadMonitorComputerEvidenceImage>;
+      readonly previousImages: ReadonlyArray<ThreadMonitorComputerEvidenceImage>;
+      readonly currentImages: ReadonlyArray<ThreadMonitorComputerEvidenceImage>;
+      readonly terminalImages: ReadonlyArray<ThreadMonitorComputerEvidenceImage>;
+    }) => Effect.Effect<void, ProjectionRepositoryError>;
+  }
+>()("t3/persistence/ThreadMonitors/ThreadMonitorRepository") {}
 
 const ThreadMonitorRow = Schema.Struct({
   monitorId: ThreadMonitorId,
@@ -342,6 +423,15 @@ const make = Effect.gen(function* () {
     `,
   });
 
+  const listCancellationRequests = SqlSchema.findAll({
+    Request: Schema.Void,
+    Result: Schema.Struct({ threadId: ThreadId, monitorId: ThreadMonitorId }),
+    execute: () => sql`
+      SELECT thread_id AS "threadId", monitor_id AS "monitorId"
+      FROM thread_monitors WHERE cancellation_requested = 1
+    `,
+  });
+
   const deleteThreadRows = SqlSchema.void({
     Request: Schema.Struct({ threadId: ThreadId }),
     execute: ({ threadId }) => sql`
@@ -409,12 +499,33 @@ const make = Effect.gen(function* () {
     `,
   });
 
-  const upsert: ThreadMonitorRepositoryShape["upsert"] = (monitor) =>
-    upsertRow(toRow(monitor)).pipe(
-      Effect.mapError(toPersistenceSqlError("ThreadMonitorRepository.upsert:query")),
-    );
+  // A Stop can commit while initial validation or desktop preparation has no row.
+  // Run this lookup in the same transaction as the first monitor write.
+  const retainAcceptedStops = (monitor: ThreadMonitor, afterSequence: number) =>
+    sql`
+    UPDATE thread_monitors SET cancellation_requested = 1
+    WHERE monitor_id = ${monitor.id} AND EXISTS (
+      SELECT 1 FROM orchestration_events
+      WHERE aggregate_kind = 'thread' AND stream_id = ${monitor.threadId}
+        AND application_event_version = 2
+        AND sequence > ${afterSequence}
+        AND event_type = 'turn-item.updated'
+        AND json_extract(payload_json, '$.type') = 'run_interrupt_request'
+    )
+  `.pipe(Effect.asVoid);
 
-  const getById: ThreadMonitorRepositoryShape["getById"] = (monitorId) =>
+  const upsert: ThreadMonitorRepository["Service"]["upsert"] = (monitor, initialCreation) => {
+    const write = upsertRow(toRow(monitor));
+    return (
+      initialCreation === undefined
+        ? write
+        : sql.withTransaction(
+            write.pipe(Effect.andThen(retainAcceptedStops(monitor, initialCreation.afterSequence))),
+          )
+    ).pipe(Effect.mapError(toPersistenceSqlError("ThreadMonitorRepository.upsert:query")));
+  };
+
+  const getById: ThreadMonitorRepository["Service"]["getById"] = (monitorId) =>
     getRow({ monitorId }).pipe(
       Effect.map(Option.map(fromRow)),
       Effect.mapError(toPersistenceSqlError("ThreadMonitorRepository.getById:query")),
@@ -422,6 +533,25 @@ const make = Effect.gen(function* () {
 
   return {
     upsert,
+    trySignal: ({ monitorId, threadId, triggeredAt, summary, evidence }) =>
+      sql<{ monitorId: ThreadMonitorId }>`
+        UPDATE thread_monitors SET
+          status = 'triggered',
+          trigger_reason = 'signal',
+          trigger_summary = ${summary},
+          trigger_evidence = ${evidence},
+          updated_at = ${triggeredAt},
+          triggered_at = ${triggeredAt},
+          last_error = NULL,
+          delivery_retry_at = NULL
+        WHERE monitor_id = ${monitorId} AND thread_id = ${threadId}
+          AND condition_type = 'signal' AND status = 'active'
+          AND cancellation_requested = 0
+        RETURNING monitor_id AS "monitorId"
+      `.pipe(
+        Effect.map((rows) => rows.length > 0),
+        Effect.mapError(toPersistenceSqlError("ThreadMonitorRepository.trySignal:query")),
+      ),
     getById,
     listByThread: (input) =>
       listThreadRows(input).pipe(
@@ -432,6 +562,21 @@ const make = Effect.gen(function* () {
       listOutstandingRows(undefined).pipe(
         Effect.map((rows) => rows.map(fromRow)),
         Effect.mapError(toPersistenceSqlError("ThreadMonitorRepository.listOutstanding:query")),
+      ),
+    listCancellationRequests: () =>
+      listCancellationRequests(undefined).pipe(
+        Effect.mapError(
+          toPersistenceSqlError("ThreadMonitorRepository.listCancellationRequests:query"),
+        ),
+      ),
+    acknowledgeCancellation: (monitorId) =>
+      sql`
+      UPDATE thread_monitors SET cancellation_requested = 0 WHERE monitor_id = ${monitorId}
+    `.pipe(
+        Effect.asVoid,
+        Effect.mapError(
+          toPersistenceSqlError("ThreadMonitorRepository.acknowledgeCancellation:query"),
+        ),
       ),
     listByDeliveryGroupId: (groupId) =>
       listDeliveryGroupRows(groupId).pipe(
@@ -463,24 +608,26 @@ const make = Effect.gen(function* () {
     upsertComputerRevision: (input) =>
       sql
         .withTransaction(
-          upsertRow(toRow(input.monitor)).pipe(
-            Effect.flatMap(() =>
-              putComputerEvidenceRow({
-                monitorId: input.monitor.id,
-                baselineImagesJson: encodeComputerEvidenceImages(input.baselineImages),
-                previousImagesJson: encodeComputerEvidenceImages(input.previousImages),
-                currentImagesJson: encodeComputerEvidenceImages(input.currentImages),
-                terminalImagesJson: encodeComputerEvidenceImages(input.terminalImages),
-              }),
-            ),
-          ),
+          Effect.gen(function* () {
+            yield* upsertRow(toRow(input.monitor));
+            if (input.afterSequence !== undefined) {
+              yield* retainAcceptedStops(input.monitor, input.afterSequence);
+            }
+            yield* putComputerEvidenceRow({
+              monitorId: input.monitor.id,
+              baselineImagesJson: encodeComputerEvidenceImages(input.baselineImages),
+              previousImagesJson: encodeComputerEvidenceImages(input.previousImages),
+              currentImagesJson: encodeComputerEvidenceImages(input.currentImages),
+              terminalImagesJson: encodeComputerEvidenceImages(input.terminalImages),
+            });
+          }),
         )
         .pipe(
           Effect.mapError(
             toPersistenceSqlError("ThreadMonitorRepository.upsertComputerRevision:query"),
           ),
         ),
-  } satisfies ThreadMonitorRepositoryShape;
+  } satisfies ThreadMonitorRepository["Service"];
 });
 
 export const layer = Layer.effect(ThreadMonitorRepository, make);

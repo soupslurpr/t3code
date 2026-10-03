@@ -86,6 +86,7 @@ import Migration0063 from "./Migrations/063_UserDesktops.ts";
 import Migration0064 from "./Migrations/064_UserDesktopAccessAudit.ts";
 import Migration0065 from "./Migrations/065_PreviewSessions.ts";
 import Migration0066 from "./Migrations/066_ToolRuns.ts";
+import Migration0069 from "./Migrations/069_ThreadMonitorCancellation.ts";
 
 const migrationHistoryOffset = 1_000;
 const preRebaseForkMigrationNames = [
@@ -101,6 +102,7 @@ const preRebaseForkMigrationNames = [
   "UserDesktopAccessAudit",
   "PreviewSessions",
   "ToolRuns",
+  "ThreadMonitorCancellation",
 ] as const;
 const upstreamRebaseMigrations = [
   [41, "AuthSessionClientConnection", Migration0041],
@@ -214,6 +216,7 @@ export const migrationEntries = [
   [70, "UserDesktopAccessAudit", Migration0064],
   [71, "PreviewSessions", Migration0065],
   [72, "ToolRuns", Migration0066],
+  [73, "ThreadMonitorCancellation", Migration0069],
 ] as const;
 
 export const migrationManifest = migrationEntries.map(([id, name]) => [id, name] as const);
@@ -282,7 +285,18 @@ const reconcilePreRebaseForkMigrationHistory = Effect.fn("reconcilePreRebaseFork
             }
           }
 
-          yield* claimedMigration;
+          yield* Effect.gen(function* () {
+            yield* claimedMigration;
+          }).pipe(
+            Effect.mapError(
+              (cause) =>
+                new Migrator.MigrationError({
+                  kind: "Failed",
+                  message: `Failed to reconcile upstream migration ${claimedId}_${claimedName}.`,
+                  cause,
+                }),
+            ),
+          );
 
           const lastDisplacedId = claimedId + history.length - 1;
           yield* sql`

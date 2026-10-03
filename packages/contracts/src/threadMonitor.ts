@@ -17,7 +17,7 @@ import {
   ComputerAutomationScreenshotMimeType,
   ComputerAutomationScreenshotRegion,
 } from "./computerAutomation.ts";
-import { ModelSelection } from "./orchestration.ts";
+import { ModelSelection } from "./modelSelection.ts";
 import { PromptCacheTiming } from "./model.ts";
 import { ProviderInstanceId } from "./providerInstance.ts";
 

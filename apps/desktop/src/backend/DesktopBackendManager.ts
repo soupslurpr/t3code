@@ -49,7 +49,7 @@ import {
   type DesktopTelemetryControlMessage as DesktopTelemetryControlMessageValue,
 } from "@t3tools/contracts";
 import { waitForHttpReady as waitForHttpReadyShared } from "@t3tools/shared/httpReadiness";
-import { HostProcessPlatform } from "@t3tools/shared/hostProcess";
+import * as HostProcess from "@t3tools/shared/HostProcess";
 
 import * as DesktopObservability from "../app/DesktopObservability.ts";
 import * as DesktopTelemetryPublisher from "../telemetry/DesktopTelemetryPublisher.ts";
@@ -520,7 +520,7 @@ export const runBackendProcess = Effect.fn("runBackendProcess")(function* (
         }),
     ),
   );
-  if ((yield* HostProcessPlatform) !== "win32") {
+  if ((yield* HostProcess.Platform) !== "win32") {
     // Let the backend persist interrupted work before the spawner stops its group.
     yield* Effect.addFinalizer(() =>
       Effect.gen(function* () {

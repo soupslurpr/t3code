@@ -57,7 +57,7 @@ import {
   RuntimeMode,
   ThreadLinkedPullRequest,
   ThreadId,
-  type TurnItemId,
+  TurnItemId,
 } from "@t3tools/contracts";
 import { modelSelectionsEqual } from "@t3tools/shared/model";
 import {
@@ -461,6 +461,7 @@ function commandThreadId(command: OrchestrationV2ServerCommand): ThreadId {
     case "prepared-run.fail":
     case "prepared-run.retry":
     case "run.interrupt":
+    case "thread.monitors.cancel":
     case "queued-message.promote-to-steer":
     case "queue.resume":
     case "queued-run.reorder":
@@ -4669,7 +4670,12 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       }
       if (
         command.notification !== undefined &&
-        (command.createdBy !== "agent" ||
+        ((command.createdBy !== "agent" &&
+          !(
+            command.createdBy === "system" &&
+            command.creationSource === "server" &&
+            command.notification.systemEvent !== undefined
+          )) ||
           (command.creationSource !== "server" && command.creationSource !== "provider") ||
           dispatchMode.type !== "queue_after_active")
       ) {
@@ -8679,13 +8685,20 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
           : projection.providerThreads.find((candidate) => candidate.id === run?.providerThreadId);
       const hasBackgroundWork =
         run?.id === projection.runs.findLast((candidate) => candidate.status !== "queued")?.id &&
-        derivePendingBackgroundWork({
+        (derivePendingBackgroundWork({
           latestRun: run,
           providerThreads: projection.providerThreads,
           turnItems: projection.turnItems,
           activeProviderThreadId: projection.thread.activeProviderThreadId,
           runs: projection.runs,
-        }).length > 0;
+        }).length > 0 ||
+          (yield* projectionStore
+            .getThreadShell(command.threadId)
+            .pipe(
+              Effect.mapError(
+                (cause) => new OrchestratorProjectionError({ threadId: command.threadId, cause }),
+              ),
+            ))?.backgroundLiveness === "monitoring");
       // A failed start has no provider turn. Background work still belongs
       // to the provider thread, so Stop reaches its latest accepted turn.
       const providerTurn =
@@ -10310,6 +10323,37 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       case "thread.stop":
         cancelUnsettledEffects = yield* dispatchThreadStop(command, events, effects);
         break;
+      case "thread.monitors.cancel": {
+        const projection = yield* loadProjectionForCommand(command, []);
+        const now = yield* DateTime.now;
+        yield* emit(
+          events,
+          command,
+        )({
+          type: "turn-item.updated",
+          threadId: command.threadId,
+          occurredAt: now,
+          payload: {
+            id: TurnItemId.make(`monitor-interrupt:${command.commandId}`),
+            threadId: command.threadId,
+            runId: null,
+            nodeId: null,
+            providerThreadId: null,
+            providerTurnId: null,
+            nativeItemRef: null,
+            parentItemId: null,
+            ordinal: yield* nextTurnItemOrdinal(projection),
+            status: "completed",
+            title: "Monitor cancellation requested",
+            startedAt: now,
+            completedAt: now,
+            updatedAt: now,
+            type: "run_interrupt_request",
+            message: "Cancel outstanding monitors",
+          },
+        });
+        break;
+      }
       case "queued-message.promote-to-steer":
         yield* dispatchQueuedMessagePromoteToSteer(command, events, effects);
         break;

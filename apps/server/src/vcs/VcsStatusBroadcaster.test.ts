@@ -432,7 +432,7 @@ describe("VcsStatusBroadcaster", () => {
       };
       const testLayer = VcsStatusBroadcaster.layer.pipe(
         Layer.provideMerge(NodeServices.layer),
-        Layer.provide(makeBackgroundPolicyLayer(() => true)),
+        Layer.provide(layerBackgroundPolicy(() => true)),
         Layer.provide(
           Layer.mock(GitWorkflowService.GitWorkflowService)({
             localStatus: () =>
@@ -464,7 +464,7 @@ describe("VcsStatusBroadcaster", () => {
         yield* Effect.yieldNow;
 
         assert.deepStrictEqual(state, {
-          localStatusCalls: 1,
+          localStatusCalls: 0,
           remoteStatusCalls: 1,
           invalidationCalls: 1,
         });
@@ -472,6 +472,11 @@ describe("VcsStatusBroadcaster", () => {
         yield* Fiber.interrupt(first);
         yield* Deferred.succeed(releaseRemote, undefined);
         assert.deepStrictEqual(yield* Fiber.join(second), baseStatus);
+        assert.deepStrictEqual(state, {
+          localStatusCalls: 1,
+          remoteStatusCalls: 1,
+          invalidationCalls: 1,
+        });
 
         assert.deepStrictEqual(yield* broadcaster.refreshStatus("/repo"), baseStatus);
         assert.deepStrictEqual(state, {

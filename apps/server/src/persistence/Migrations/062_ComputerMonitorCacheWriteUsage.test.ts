@@ -3,10 +3,14 @@ import { ThreadMonitorComputerUsage } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Schema from "effect/Schema";
-import * as SqlClient from "effect/unstable/sql/SqlClient";
+import * as SqlClient from "effect/sql/SqlClient";
 
-import { runMigrations } from "../Migrations.ts";
+import { migrationManifest, runMigrations } from "../Migrations.ts";
 import * as NodeSqliteClient from "@t3tools/shared/nodeSqliteClient";
+
+const migrationId = migrationManifest.find(
+  ([, name]) => name === "ComputerMonitorCacheWriteUsage",
+)![0];
 
 const layer = it.layer(Layer.mergeAll(NodeSqliteClient.layer({ filename: ":memory:" })));
 const encodeJson = Schema.encodeSync(Schema.fromJsonString(Schema.Unknown));
@@ -19,11 +23,11 @@ const decodeCondition = Schema.decodeUnknownSync(
   ),
 );
 
-layer("061_ComputerMonitorCacheWriteUsage", (it) => {
+layer("062_ComputerMonitorCacheWriteUsage", (it) => {
   it.effect("adds cache-write usage to retained computer monitors", () =>
     Effect.gen(function* () {
       const sql = yield* SqlClient.SqlClient;
-      yield* runMigrations({ toMigrationInclusive: 60 });
+      yield* runMigrations({ toMigrationInclusive: migrationId - 1 });
       const condition = {
         type: "computer",
         lastUsage: { inputTokens: 20, cachedInputTokens: 16, outputTokens: 5 },
@@ -55,7 +59,7 @@ layer("061_ComputerMonitorCacheWriteUsage", (it) => {
         )
       `;
 
-      yield* runMigrations({ toMigrationInclusive: 61 });
+      yield* runMigrations({ toMigrationInclusive: migrationId });
 
       const rows = yield* sql<{ readonly conditionJson: string }>`
         SELECT condition_json AS "conditionJson"

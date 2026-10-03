@@ -23,6 +23,10 @@ const supervisedThreadId = ThreadId.make("thread:supervised");
 const planThreadId = ThreadId.make("thread:plan");
 const fullAccessThreadId = ThreadId.make("thread:full-access");
 const endedThreadId = ThreadId.make("thread:ended");
+const archivedThreadId = ThreadId.make("thread:archived");
+const deletedThreadId = ThreadId.make("thread:deleted");
+const archivedShell = liveThreadShell(archivedThreadId, { activeRunId: null });
+const deletedShell = liveThreadShell(deletedThreadId, { activeRunId: null });
 
 const shells = new Map([
   [supervisedThreadId, liveThreadShell(supervisedThreadId, { runtimeMode: "approval-required" })],
@@ -32,12 +36,15 @@ const shells = new Map([
   ],
   [fullAccessThreadId, liveThreadShell(fullAccessThreadId)],
   [endedThreadId, liveThreadShell(endedThreadId, { activeRunId: null })],
+  [archivedThreadId, { ...archivedShell, archivedAt: archivedShell.createdAt }],
+  [deletedThreadId, { ...deletedShell, deletedAt: deletedShell.createdAt }],
 ]);
 
 const threadCaller = (threadId: ThreadId): McpInvocationContext.McpInvocationScope => ({
   environmentId: EnvironmentId.make("environment"),
   requestNamespace: `provider:${threadId}`,
   thread: {
+    controllerId: "controller-test",
     threadId,
     providerSessionId: `provider:${threadId}`,
     providerInstanceId: ProviderInstanceId.make("codex"),
@@ -86,6 +93,7 @@ const ProbeToolkit = Toolkit.make(
   Tool.make("reads", probe),
   Tool.make("reads_as_caller", probe),
   Tool.make("acts_as_caller", probe),
+  Tool.make("completes_as_caller", probe),
   Tool.make("writes", probe),
   Tool.make("writes_threads", {
     ...probe,
@@ -105,6 +113,7 @@ const probeHandlers: McpToolAccess.Handlers<typeof ProbeToolkit.tools> = {
   reads: McpToolAccess.reads(() => ran),
   reads_as_caller: McpToolAccess.readsAsCaller(() => ran),
   acts_as_caller: McpToolAccess.actsAsCaller(() => ran),
+  completes_as_caller: McpToolAccess.completesAsCaller(() => ran),
   writes: McpToolAccess.writes(() => ran),
   writes_threads: McpToolAccess.writesThreads(
     (input) => [input.threadId],
@@ -139,7 +148,7 @@ export const refusedAtCompileTime = () => {
   // @ts-expect-error a declaration built outside McpToolAccess
   McpToolAccess.Declaration.make(unchecked);
   // @ts-expect-error a declaration constructed directly
-  new McpToolAccess.Declaration(unchecked);
+  void new McpToolAccess.Declaration(unchecked);
   // @ts-expect-error a handlers layer built outside McpToolAccess
   McpToolAccess.HandlersLayer.make(Layer.empty);
   // The refused layer below types its error and services as unknown, which is fine here.
@@ -151,6 +160,7 @@ export const refusedAtCompileTime = () => {
       reads: unchecked,
       reads_as_caller: unchecked,
       acts_as_caller: unchecked,
+      completes_as_caller: unchecked,
       writes: unchecked,
       writes_threads: unchecked,
       starts_threads: unchecked,
@@ -216,7 +226,25 @@ it.effect.each([
   ["acts_as_caller", ended, {}, "parent_not_active"],
   ["acts_as_caller", fullAccessClient, {}, "thread_credential_required"],
 
-  // Any change needs a thread caller's live turn; a client has none to lose.
+  // Existing durable work can complete after its turn or provider changes.
+  ["completes_as_caller", supervised, {}, "ran"],
+  ["completes_as_caller", ended, {}, "ran"],
+  [
+    "completes_as_caller",
+    {
+      ...ended,
+      thread: { ...ended.thread!, providerInstanceId: ProviderInstanceId.make("old-provider") },
+    },
+    {},
+    "ran",
+  ],
+  ["completes_as_caller", fullAccessClient, {}, "thread_credential_required"],
+  ["completes_as_caller", threadCaller(archivedThreadId), {}, "parent_not_active"],
+  ["completes_as_caller", threadCaller(deletedThreadId), {}, "thread_not_found"],
+  ["completes_as_caller", threadCaller(ThreadId.make("thread:missing")), {}, "thread_not_found"],
+  ["completes_as_caller", { ...ended, client: readOnlyClient.client }, {}, "capability_denied"],
+
+  // Other changes need a thread caller's live turn; a client has none to lose.
   ["writes", supervised, {}, "ran"],
   ["writes", ended, {}, "parent_not_active"],
   ["writes", supervisedClient, {}, "ran"],
