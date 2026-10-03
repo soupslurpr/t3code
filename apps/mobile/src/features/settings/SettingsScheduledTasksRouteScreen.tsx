@@ -1,3 +1,4 @@
+import { vcsEnvironment } from "../../state/vcs";
 import type {
   EnvironmentId,
   ProjectId,
@@ -551,6 +552,15 @@ function TaskForm({
     serverEnvironment.scheduledTasksLive({ environmentId, input: {} }),
   );
   const projects = useProjects().filter((project) => project.environmentId === environmentId);
+  const workspaceRoot = projects.find((project) => project.id === draft.projectId)?.workspaceRoot;
+  const refs = useEnvironmentQuery(
+    workspaceRoot && draft.workspace === "worktree"
+      ? vcsEnvironment.listRefs({
+          environmentId,
+          input: { cwd: workspaceRoot, limit: 1 },
+        })
+      : null,
+  );
   const config = useEnvironmentServerConfig(environmentId);
   const modelOptions = useMemo(() => buildModelOptions(config, null), [config]);
   const upsert = useAtomCommand(serverEnvironment.upsertScheduledTask, {
@@ -772,6 +782,7 @@ function TaskForm({
               branchName: draft.baseRef,
               startFromOrigin: draft.startFromOrigin,
               workspaceMode: "worktree",
+              hasOriginRemote: refs.data?.hasPrimaryRemote ?? false,
             })}
             borderTop
             disabled={!draft.projectId || saving || dictationPending || environmentUnavailable}

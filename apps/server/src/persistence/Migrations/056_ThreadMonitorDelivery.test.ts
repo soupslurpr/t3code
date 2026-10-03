@@ -14,7 +14,7 @@ layer("055_ThreadMonitorDelivery", (it) => {
       const sql = yield* SqlClient.SqlClient;
 
       yield* runMigrations({ toMigrationInclusive: 43 });
-      yield* runMigrations({ toMigrationInclusive: 55 });
+      yield* runMigrations({ toMigrationInclusive: 58 });
 
       const columns = yield* sql<{ readonly name: string }>`
         PRAGMA table_info(thread_monitors)

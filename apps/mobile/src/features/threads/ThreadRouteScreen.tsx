@@ -674,17 +674,18 @@ function ThreadRouteContent(
     void navigation.navigate("Connections");
   }, [navigation]);
   const handleStopThread = useCallback(() => {
-    if (!selectedThread || composer.interruptibleRunId === null) {
+    if (!selectedThread || !composer.canStopThread) {
       return;
     }
     return interruptThreadTurn({
       environmentId: selectedThread.environmentId,
       input: {
         threadId: selectedThread.id,
-        runId: composer.interruptibleRunId,
+        ...(composer.interruptibleRunId === null ? {} : { runId: composer.interruptibleRunId }),
+        cancelMonitors: selectedThread.backgroundLiveness === "monitoring",
       },
     });
-  }, [composer.interruptibleRunId, interruptThreadTurn, selectedThread]);
+  }, [composer.canStopThread, composer.interruptibleRunId, interruptThreadTurn, selectedThread]);
 
   const handleOpenTerminal = useCallback(
     (nextTerminalId?: string | null) => {
@@ -1041,7 +1042,7 @@ function ThreadRouteContent(
           threadSyncStatus={selectedThreadDetailState.status}
           historyControls={historyControls}
           activeThreadBusy={composer.activeThreadBusy}
-          canStopThread={awaitingBootstrapTurn || composer.interruptibleRunId !== null}
+          canStopThread={awaitingBootstrapTurn || composer.canStopThread}
           queuedRunEdit={composer.queuedRunEdit}
           composerDraftKey={composer.composerDraftKey}
           followUpBehavior={composer.followUpBehavior}

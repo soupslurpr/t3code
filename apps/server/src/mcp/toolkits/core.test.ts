@@ -79,6 +79,7 @@ const threadId = ThreadId.make("mcp-core-thread");
 const scope: McpInvocationContext.McpInvocationScope = {
   environmentId: EnvironmentId.make("mcp-core-environment"),
   threadId,
+  controllerId: "test-controller",
   providerSessionId: "mcp-core-session",
   providerInstanceId: ProviderInstanceId.make("codex"),
   issuedAt: 0,

@@ -34,7 +34,7 @@ import * as Schema from "effect/Schema";
 import * as ServerConfig from "../config.ts";
 import type * as McpInvocationContext from "../mcp/McpInvocationContext.ts";
 import { PreviewAutomationBroker } from "../mcp/PreviewAutomationBroker.ts";
-import { ProjectionSnapshotQuery } from "../orchestration/Services/ProjectionSnapshotQuery.ts";
+import { ThreadWorkspaceQuery } from "../orchestration-v2/ThreadWorkspaceQuery.ts";
 import * as Transfers from "./UserDesktopTransfers.ts";
 
 const decodeRequest = Schema.decodeUnknownEffect(UserDesktopTransferRequest);
@@ -63,7 +63,7 @@ const input: UserDesktopCopyInput = {
   waitMs: 0,
 };
 function projectionLayer(workspaceRoot: string) {
-  return Layer.mock(ProjectionSnapshotQuery)({
+  return Layer.mock(ThreadWorkspaceQuery)({
     getThreadShellById: () =>
       Effect.succeed(
         Option.some({
@@ -76,7 +76,8 @@ function projectionLayer(workspaceRoot: string) {
           interactionMode: "default",
           branch: null,
           worktreePath: null,
-          latestTurn: null,
+          activeRunId: null,
+          pendingRuntimeRequest: null,
           createdAt: now,
           updatedAt: now,
           archivedAt: null,
@@ -135,7 +136,7 @@ const fixture = Effect.gen(function* () {
 const withFixture = <A, E>(
   run: (
     value: Effect.Success<typeof fixture>,
-  ) => Effect.Effect<A, E, Transfers.UserDesktopTransfers | ProjectionSnapshotQuery | Scope.Scope>,
+  ) => Effect.Effect<A, E, Transfers.UserDesktopTransfers | ThreadWorkspaceQuery | Scope.Scope>,
 ) =>
   Effect.gen(function* () {
     const value = yield* fixture;

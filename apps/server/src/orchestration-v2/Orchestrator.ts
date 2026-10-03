@@ -47,6 +47,7 @@ import {
   RunId,
   ThreadLinkedPullRequest,
   ThreadId,
+  TurnItemId,
 } from "@t3tools/contracts";
 import { modelSelectionsEqual } from "@t3tools/shared/model";
 import {
@@ -387,6 +388,7 @@ function commandThreadId(command: OrchestrationV2ServerCommand): ThreadId {
     case "prepared-run.progress":
     case "prepared-run.fail":
     case "run.interrupt":
+    case "thread.monitors.cancel":
     case "queued-message.promote-to-steer":
     case "queue.resume":
     case "queued-run.reorder":
@@ -4483,7 +4485,12 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       }
       if (
         command.notification !== undefined &&
-        (command.createdBy !== "agent" ||
+        ((command.createdBy !== "agent" &&
+          !(
+            command.createdBy === "system" &&
+            command.creationSource === "server" &&
+            command.notification.systemEvent !== undefined
+          )) ||
           (command.creationSource !== "server" && command.creationSource !== "provider") ||
           dispatchMode.type !== "queue_after_active")
       ) {
@@ -7906,13 +7913,20 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
           : projection.providerThreads.find((candidate) => candidate.id === run?.providerThreadId);
       const hasBackgroundWork =
         run?.id === projection.runs.at(-1)?.id &&
-        derivePendingBackgroundWork({
+        (derivePendingBackgroundWork({
           latestRun: run,
           providerThreads: projection.providerThreads,
           turnItems: projection.turnItems,
           activeProviderThreadId: projection.thread.activeProviderThreadId,
           runs: projection.runs,
-        }).length > 0;
+        }).length > 0 ||
+          (yield* projectionStore
+            .getThreadShell(command.threadId)
+            .pipe(
+              Effect.mapError(
+                (cause) => new OrchestratorProjectionError({ threadId: command.threadId, cause }),
+              ),
+            ))?.backgroundLiveness === "monitoring");
       const providerTurn = projection.providerTurns.findLast(
         (candidate) =>
           candidate.runAttemptId === run?.activeAttemptId &&
@@ -9332,6 +9346,37 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       case "run.interrupt":
         cancelUnsettledEffects = yield* dispatchRunInterrupt(command, events, effects);
         break;
+      case "thread.monitors.cancel": {
+        const projection = yield* loadProjectionForCommand(command, []);
+        const now = yield* DateTime.now;
+        yield* emit(
+          events,
+          command,
+        )({
+          type: "turn-item.updated",
+          threadId: command.threadId,
+          occurredAt: now,
+          payload: {
+            id: TurnItemId.make(`monitor-interrupt:${command.commandId}`),
+            threadId: command.threadId,
+            runId: null,
+            nodeId: null,
+            providerThreadId: null,
+            providerTurnId: null,
+            nativeItemRef: null,
+            parentItemId: null,
+            ordinal: yield* nextTurnItemOrdinal(projection),
+            status: "completed",
+            title: "Monitor cancellation requested",
+            startedAt: now,
+            completedAt: now,
+            updatedAt: now,
+            type: "run_interrupt_request",
+            message: "Cancel outstanding monitors",
+          },
+        });
+        break;
+      }
       case "queued-message.promote-to-steer":
         yield* dispatchQueuedMessagePromoteToSteer(command, events, effects);
         break;

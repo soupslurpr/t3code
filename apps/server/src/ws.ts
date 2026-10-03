@@ -90,7 +90,6 @@ import {
   EnvironmentAuthorizationError,
   type ProjectId,
   type ProviderDriverKind,
-  type ProviderInstanceId,
   ThreadId,
   UserDesktopInventoryError,
   UserDesktopManagementError,

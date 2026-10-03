@@ -21,17 +21,30 @@ export interface ProcessIdentity {
   readonly startTicks: string;
 }
 
-export interface RestartContinuation {
-  readonly type: "active-turn";
-  readonly turnId: string;
-}
+export type RestartContinuation =
+  | {
+      readonly type: "active-run";
+      readonly runId: string;
+      readonly attemptId: string;
+      readonly providerThreadId: string;
+      readonly providerSessionId: string;
+      readonly providerTurnId: string;
+      readonly nativeThreadId: string;
+    }
+  | {
+      readonly type: "migration-monitor";
+      readonly monitorId: string;
+      readonly turnId: string;
+      readonly wakeAt: string;
+    };
 
 export interface RestartPlan {
   readonly unit: string;
   readonly backendUnit?: string;
   readonly app: ProcessIdentity;
   readonly backend: ProcessIdentity;
-  readonly databasePath: string;
+  readonly sourceDatabasePath: string;
+  readonly restartDatabasePath: string;
   readonly threadId: string;
   readonly continuation: RestartContinuation;
   readonly packageVersion: string;
@@ -141,7 +154,7 @@ export function verifyUnitMembership(input: {
 
 /** Confirms exact unit ownership, backend ancestry, and the backend's open state database. */
 export function verifyDesktopOwnership(
-  plan: Pick<RestartPlan, "unit" | "backendUnit" | "app" | "backend" | "databasePath">,
+  plan: Pick<RestartPlan, "unit" | "backendUnit" | "app" | "backend" | "sourceDatabasePath">,
 ): void {
   NodeAssert.match(plan.unit, USER_UNIT_NAME, "invalid user unit name");
   if (plan.backendUnit !== undefined)
@@ -184,7 +197,7 @@ export function verifyDesktopOwnership(
     argumentsList.includes(`${INSTALLED_ASAR}/apps/server/dist/bin.mjs`),
     "backend is not running the installed ASAR",
   );
-  const databasePath = NodeFS.realpathSync(plan.databasePath);
+  const databasePath = NodeFS.realpathSync(plan.sourceDatabasePath);
   const ownsDatabase = NodeFS.readdirSync(`/proc/${plan.backend.pid}/fd`).some((descriptor) => {
     try {
       return NodeFS.readlinkSync(`/proc/${plan.backend.pid}/fd/${descriptor}`) === databasePath;
@@ -196,12 +209,8 @@ export function verifyDesktopOwnership(
   NodeAssert.ok(ownsDatabase, "backend does not own the continuation database");
 }
 
-/** Requires native recovery to be enabled and both durable records to identify the running turn. */
-export function verifyActiveTurn(
-  databasePath: string,
-  threadId: string,
-  expectedTurnId?: string,
-): string {
+/** Requires the effective project preference used by V2 recovery, including its default. */
+function verifyContinuationPreference(databasePath: string, projectId: string): void {
   const settingsPath = NodePath.join(NodePath.dirname(databasePath), "settings.json");
   const settings = (
     NodeFS.existsSync(settingsPath) ? JSON.parse(NodeFS.readFileSync(settingsPath, "utf8")) : null
@@ -211,67 +220,244 @@ export function verifyActiveTurn(
       Record<string, { readonly continueThreadsAfterServerUpdate?: unknown }>
     >;
   } | null;
-  const database = new NodeSqlite.DatabaseSync(databasePath, { readOnly: true });
-  try {
-    const session = database
-      .prepare(`SELECT threads.project_id, threads.archived_at, threads.deleted_at,
-        sessions.status, sessions.active_turn_id,
-        runtime.status AS provider_status,
-        json_type(runtime.resume_cursor_json) AS resume_cursor_type,
-        json_extract(runtime.runtime_payload_json, '$.activeTurnId') AS provider_turn_id
-      FROM projection_threads threads
-      JOIN projection_thread_sessions sessions USING (thread_id)
-      JOIN provider_session_runtime runtime USING (thread_id)
-      WHERE threads.thread_id = ?`)
-      .get(threadId);
-    NodeAssert.ok(session, "thread has no durable provider session");
-    const projectPreference =
-      typeof session.project_id === "string"
-        ? settings?.projectSettingsOverrides?.[session.project_id]?.continueThreadsAfterServerUpdate
-        : undefined;
-    NodeAssert.equal(
-      // This copied worker runs without workspace imports; match ServerSettings' default.
-      projectPreference ?? settings?.continueThreadsAfterServerUpdate ?? true,
+  NodeAssert.equal(
+    // This copied worker runs without workspace imports; match ServerSettings' default.
+    settings?.projectSettingsOverrides?.[projectId]?.continueThreadsAfterServerUpdate ??
+      settings?.continueThreadsAfterServerUpdate ??
       true,
-      "automatic restart continuation is not enabled for this project",
-    );
-    NodeAssert.equal(session.archived_at, null, "thread is archived");
-    NodeAssert.equal(session.deleted_at, null, "thread is deleted");
-    NodeAssert.equal(session.status, "running", "keep the thread running through restart");
-    NodeAssert.equal(session.provider_status, "running", "provider session is not running");
-    NodeAssert.ok(
-      typeof session.active_turn_id === "string" && session.active_turn_id.length > 0,
-      "thread has no active turn",
-    );
+    true,
+    "automatic restart continuation is not enabled for this project",
+  );
+}
+
+function requiredString(value: unknown, message: string): string {
+  NodeAssert.ok(typeof value === "string" && value.length > 0, message);
+  return value;
+}
+
+/** Checks the live-root-run subset of orchestration-v2/RestartContinuation.restartContinuationRun. */
+function activeRun(
+  database: NodeSqlite.DatabaseSync,
+  databasePath: string,
+  threadId: string,
+): RestartContinuation {
+  const state = database
+    .prepare(`SELECT threads.project_id, threads.archived_at, threads.deleted_at,
+        json_extract(threads.payload_json, '$.providerInstanceId') AS thread_instance,
+        runs.run_id, runs.status AS run_status,
+        json_extract(runs.payload_json, '$.providerInstanceId') AS run_instance,
+        json_extract(runs.payload_json, '$.activeAttemptId') AS attempt_id,
+        provider_threads.provider_thread_id, provider_threads.provider_session_id,
+        json_extract(provider_threads.payload_json, '$.appThreadId') AS app_thread_id,
+        json_extract(provider_threads.payload_json, '$.ownerNodeId') AS owner_node_id,
+        json_extract(provider_threads.payload_json, '$.providerInstanceId') AS provider_instance,
+        json_extract(provider_threads.payload_json, '$.driver') AS driver,
+        json_extract(provider_threads.payload_json, '$.nativeThreadRef.nativeId') AS native_id,
+        json_extract(provider_threads.payload_json, '$.nativeThreadRef.driver') AS native_driver,
+        json_extract(provider_threads.payload_json, '$.nativeThreadRef.strength') AS native_strength,
+        provider_threads.status AS provider_thread_status,
+        sessions.status AS session_status,
+        json_extract(sessions.payload_json, '$.providerInstanceId') AS session_instance,
+        json_extract(sessions.payload_json, '$.driver') AS session_driver,
+        bindings.thread_id AS bound_thread_id, turns.provider_turn_id
+      FROM orchestration_v2_projection_threads threads
+      LEFT JOIN orchestration_v2_projection_runs runs ON runs.run_id = (
+        SELECT latest.run_id FROM orchestration_v2_projection_runs latest
+        WHERE latest.thread_id = threads.thread_id ORDER BY latest.ordinal DESC LIMIT 1
+      )
+      LEFT JOIN orchestration_v2_projection_provider_threads provider_threads
+        ON provider_threads.provider_thread_id = runs.provider_thread_id
+      LEFT JOIN orchestration_v2_projection_provider_sessions sessions
+        ON sessions.provider_session_id = provider_threads.provider_session_id
+      LEFT JOIN orchestration_v2_projection_provider_session_bindings bindings
+        ON bindings.provider_session_id = sessions.provider_session_id
+        AND bindings.thread_id = threads.thread_id
+      LEFT JOIN orchestration_v2_projection_run_attempts attempts
+        ON attempts.attempt_id = json_extract(runs.payload_json, '$.activeAttemptId')
+        AND attempts.run_id = runs.run_id AND attempts.thread_id = threads.thread_id
+      LEFT JOIN orchestration_v2_projection_provider_turns turns
+        ON turns.run_attempt_id = attempts.attempt_id
+        AND turns.provider_thread_id = provider_threads.provider_thread_id
+        AND turns.thread_id = threads.thread_id AND turns.status = 'running'
+      WHERE threads.thread_id = ?`)
+    .get(threadId);
+  NodeAssert.ok(state, "thread has no V2 runtime state");
+  NodeAssert.equal(state.archived_at, null, "thread is archived");
+  NodeAssert.equal(state.deleted_at, null, "thread is deleted");
+  verifyContinuationPreference(
+    databasePath,
+    requiredString(state.project_id, "thread has no project"),
+  );
+  const runId = requiredString(
+    state.run_id,
+    "thread has no V2 run; legacy turns need a migration monitor",
+  );
+  NodeAssert.equal(state.run_status, "running", "keep the V2 run running through restart");
+  const instance = requiredString(state.run_instance, "run has no provider instance");
+  NodeAssert.equal(
+    state.thread_instance,
+    instance,
+    "thread provider changed since the run started",
+  );
+  NodeAssert.equal(state.app_thread_id, threadId, "provider thread belongs to another app thread");
+  NodeAssert.equal(state.owner_node_id, null, "provider thread is a subagent, not the root run");
+  NodeAssert.equal(
+    state.provider_instance,
+    instance,
+    "provider thread instance does not match the run",
+  );
+  NodeAssert.equal(state.provider_thread_status, "active", "provider thread is not active");
+  const driver = requiredString(state.driver, "provider thread has no driver");
+  NodeAssert.equal(state.native_driver, driver, "native thread driver does not match");
+  NodeAssert.equal(
+    state.native_strength,
+    "strong",
+    "provider thread has no strong native identity",
+  );
+  const nativeThreadId = requiredString(
+    state.native_id,
+    "provider thread has no native resume identity",
+  );
+  NodeAssert.equal(
+    state.session_instance,
+    instance,
+    "provider session instance does not match the run",
+  );
+  NodeAssert.equal(state.session_driver, driver, "provider session driver does not match");
+  NodeAssert.equal(state.bound_thread_id, threadId, "provider session is not bound to the thread");
+  NodeAssert.ok(
+    typeof state.session_status === "string" &&
+      !["stopped", "error"].includes(state.session_status),
+    "provider session is stopped or failed",
+  );
+  return {
+    type: "active-run",
+    runId,
+    attemptId: requiredString(state.attempt_id, "run has no active attempt"),
+    providerThreadId: requiredString(state.provider_thread_id, "run has no provider thread"),
+    providerSessionId: requiredString(state.provider_session_id, "run has no provider session"),
+    providerTurnId: requiredString(
+      state.provider_turn_id,
+      "run has no matching running provider turn",
+    ),
+    nativeThreadId,
+  };
+}
+
+/** Verifies the explicit one-time handoff before V1 state is copied into statev2.sqlite. */
+function migrationMonitor(
+  database: NodeSqlite.DatabaseSync,
+  threadId: string,
+  monitorId: string,
+): RestartContinuation {
+  const state = database
+    .prepare(`SELECT threads.archived_at, threads.deleted_at,
+      sessions.status, sessions.active_turn_id,
+      runtime.status AS provider_status,
+      json_extract(runtime.runtime_payload_json, '$.activeTurnId') AS provider_turn_id
+    FROM projection_threads threads
+    JOIN projection_thread_sessions sessions USING (thread_id)
+    JOIN provider_session_runtime runtime USING (thread_id)
+    WHERE threads.thread_id = ?`)
+    .get(threadId);
+  NodeAssert.ok(state, "migration thread has no active V1 provider session");
+  NodeAssert.equal(state.archived_at, null, "thread is archived");
+  NodeAssert.equal(state.deleted_at, null, "thread is deleted");
+  NodeAssert.equal(state.status, "running", "keep the V1 thread running through migration");
+  NodeAssert.equal(state.provider_status, "running", "V1 provider session is not running");
+  const turnId = requiredString(state.active_turn_id, "V1 thread has no active turn");
+  NodeAssert.equal(
+    state.provider_turn_id,
+    turnId,
+    "V1 durable records disagree on the active turn",
+  );
+  const monitor = database
+    .prepare(`SELECT thread_id, condition_type, wake_at,
+      continuation_mode, resume_prompt, status, delivered_at, cancelled_at
+    FROM thread_monitors WHERE monitor_id = ?`)
+    .get(monitorId);
+  NodeAssert.ok(monitor, "migration monitor does not exist");
+  NodeAssert.equal(monitor.thread_id, threadId, "migration monitor belongs to another thread");
+  NodeAssert.equal(monitor.condition_type, "time", "migration monitor must have a time condition");
+  NodeAssert.equal(
+    monitor.continuation_mode,
+    "resume-thread",
+    "migration monitor must resume the thread",
+  );
+  requiredString(monitor.resume_prompt, "migration monitor has no resume prompt");
+  NodeAssert.ok(
+    monitor.status === "active" || monitor.status === "triggered",
+    "migration monitor is no longer pending",
+  );
+  NodeAssert.equal(monitor.delivered_at, null, "migration monitor was already delivered");
+  NodeAssert.equal(monitor.cancelled_at, null, "migration monitor was cancelled");
+  const wakeAt = requiredString(monitor.wake_at, "migration monitor has no deadline");
+  NodeAssert.ok(Number.isFinite(Date.parse(wakeAt)), "migration monitor has an invalid deadline");
+  return { type: "migration-monitor", monitorId, turnId, wakeAt };
+}
+
+/** Captures a recoverable run, or an explicitly selected pending monitor for the first V2 launch. */
+export function captureRestartContinuation(
+  sourceDatabasePath: string,
+  restartDatabasePath: string,
+  threadId: string,
+  migrationMonitorId?: string,
+): RestartContinuation {
+  const directory = NodeFS.realpathSync(NodePath.dirname(sourceDatabasePath));
+  NodeAssert.equal(
+    sourceDatabasePath,
+    NodePath.join(directory, migrationMonitorId === undefined ? "statev2.sqlite" : "state.sqlite"),
+    migrationMonitorId === undefined
+      ? "native restart requires statev2.sqlite; the first V2 upgrade needs --migration-monitor"
+      : "migration monitor requires the original state.sqlite",
+  );
+  NodeAssert.equal(
+    restartDatabasePath,
+    NodePath.join(directory, "statev2.sqlite"),
+    "restart must use statev2.sqlite in the same T3 home",
+  );
+  if (migrationMonitorId !== undefined) {
+    requiredString(migrationMonitorId, "migration monitor id is empty");
     NodeAssert.equal(
-      session.provider_turn_id,
-      session.active_turn_id,
-      "durable records disagree on the active turn",
+      NodeFS.lstatSync(restartDatabasePath, { throwIfNoEntry: false }),
+      undefined,
+      "statev2.sqlite already exists; V1 state and its monitor would not be imported again",
     );
-    NodeAssert.ok(
-      typeof session.resume_cursor_type === "string" && session.resume_cursor_type !== "null",
-      "provider session has no resume cursor",
-    );
-    if (expectedTurnId !== undefined) {
-      NodeAssert.equal(
-        session.active_turn_id,
-        expectedTurnId,
-        "active turn changed before restart",
-      );
-    }
-    return session.active_turn_id;
+  }
+  const database = new NodeSqlite.DatabaseSync(sourceDatabasePath, { readOnly: true });
+  try {
+    // Keep the thread and monitor checks in one read snapshot while the app writes concurrently.
+    database.exec("BEGIN");
+    return migrationMonitorId === undefined
+      ? activeRun(database, sourceDatabasePath, threadId)
+      : migrationMonitor(database, threadId, migrationMonitorId);
   } finally {
     database.close();
   }
 }
 
-/** Rechecks that native recovery still owns the captured unfinished turn. */
+/** Rechecks the same captured work and the one-time migration guard immediately before shutdown. */
 export function verifyRestartContinuation(
-  plan: Pick<RestartPlan, "databasePath" | "threadId" | "continuation">,
+  plan: Pick<
+    RestartPlan,
+    "sourceDatabasePath" | "restartDatabasePath" | "threadId" | "continuation"
+  >,
 ): void {
-  NodeAssert.equal(plan.continuation.type, "active-turn", "invalid restart continuation");
-  NodeAssert.ok(plan.continuation.turnId, "restart plan has no captured turn");
-  verifyActiveTurn(plan.databasePath, plan.threadId, plan.continuation.turnId);
+  NodeAssert.ok(
+    plan.continuation.type === "active-run" || plan.continuation.type === "migration-monitor",
+    "invalid restart continuation",
+  );
+  const current = captureRestartContinuation(
+    plan.sourceDatabasePath,
+    plan.restartDatabasePath,
+    plan.threadId,
+    plan.continuation.type === "migration-monitor" ? plan.continuation.monitorId : undefined,
+  );
+  NodeAssert.deepEqual(
+    current,
+    plan.continuation,
+    "captured restart continuation changed before restart",
+  );
 }
 
 /** Hashes an installed payload without retaining the whole file in memory. */
@@ -341,7 +527,6 @@ async function main(): Promise<void> {
     plan.executableSha256,
     "installed executable changed before restart",
   );
-  verifyRestartContinuation(plan);
   verifyDesktopOwnership(plan);
   NodeAssert.ok(process.execve, "node does not support independent app replacement");
   NodeAssert.ok(
@@ -353,6 +538,7 @@ async function main(): Promise<void> {
   console.log(
     `restarting ${plan.unit} for commit ${plan.gitCommit}; ${plan.continuation.type} continuation for thread ${plan.threadId}`,
   );
+  verifyRestartContinuation(plan);
   NodeAssert.deepEqual(
     captureProcess(plan.app.pid),
     plan.app,

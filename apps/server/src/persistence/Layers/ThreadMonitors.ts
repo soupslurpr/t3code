@@ -342,6 +342,15 @@ const make = Effect.gen(function* () {
     `,
   });
 
+  const listCancellationRequests = SqlSchema.findAll({
+    Request: Schema.Void,
+    Result: Schema.Struct({ threadId: ThreadId, monitorId: ThreadMonitorId }),
+    execute: () => sql`
+      SELECT thread_id AS "threadId", monitor_id AS "monitorId"
+      FROM thread_monitors WHERE cancellation_requested = 1
+    `,
+  });
+
   const deleteThreadRows = SqlSchema.void({
     Request: Schema.Struct({ threadId: ThreadId }),
     execute: ({ threadId }) => sql`
@@ -409,10 +418,31 @@ const make = Effect.gen(function* () {
     `,
   });
 
-  const upsert: ThreadMonitorRepositoryShape["upsert"] = (monitor) =>
-    upsertRow(toRow(monitor)).pipe(
-      Effect.mapError(toPersistenceSqlError("ThreadMonitorRepository.upsert:query")),
-    );
+  // A Stop can commit while initial validation or desktop preparation has no row.
+  // Run this lookup in the same transaction as the first monitor write.
+  const retainAcceptedStops = (monitor: ThreadMonitor, afterSequence: number) =>
+    sql`
+    UPDATE thread_monitors SET cancellation_requested = 1
+    WHERE monitor_id = ${monitor.id} AND EXISTS (
+      SELECT 1 FROM orchestration_events
+      WHERE aggregate_kind = 'thread' AND stream_id = ${monitor.threadId}
+        AND application_event_version = 2
+        AND sequence > ${afterSequence}
+        AND event_type = 'turn-item.updated'
+        AND json_extract(payload_json, '$.type') = 'run_interrupt_request'
+    )
+  `.pipe(Effect.asVoid);
+
+  const upsert: ThreadMonitorRepositoryShape["upsert"] = (monitor, initialCreation) => {
+    const write = upsertRow(toRow(monitor));
+    return (
+      initialCreation === undefined
+        ? write
+        : sql.withTransaction(
+            write.pipe(Effect.andThen(retainAcceptedStops(monitor, initialCreation.afterSequence))),
+          )
+    ).pipe(Effect.mapError(toPersistenceSqlError("ThreadMonitorRepository.upsert:query")));
+  };
 
   const getById: ThreadMonitorRepositoryShape["getById"] = (monitorId) =>
     getRow({ monitorId }).pipe(
@@ -432,6 +462,21 @@ const make = Effect.gen(function* () {
       listOutstandingRows(undefined).pipe(
         Effect.map((rows) => rows.map(fromRow)),
         Effect.mapError(toPersistenceSqlError("ThreadMonitorRepository.listOutstanding:query")),
+      ),
+    listCancellationRequests: () =>
+      listCancellationRequests(undefined).pipe(
+        Effect.mapError(
+          toPersistenceSqlError("ThreadMonitorRepository.listCancellationRequests:query"),
+        ),
+      ),
+    acknowledgeCancellation: (monitorId) =>
+      sql`
+      UPDATE thread_monitors SET cancellation_requested = 0 WHERE monitor_id = ${monitorId}
+    `.pipe(
+        Effect.asVoid,
+        Effect.mapError(
+          toPersistenceSqlError("ThreadMonitorRepository.acknowledgeCancellation:query"),
+        ),
       ),
     listByDeliveryGroupId: (groupId) =>
       listDeliveryGroupRows(groupId).pipe(
@@ -463,17 +508,19 @@ const make = Effect.gen(function* () {
     upsertComputerRevision: (input) =>
       sql
         .withTransaction(
-          upsertRow(toRow(input.monitor)).pipe(
-            Effect.flatMap(() =>
-              putComputerEvidenceRow({
-                monitorId: input.monitor.id,
-                baselineImagesJson: encodeComputerEvidenceImages(input.baselineImages),
-                previousImagesJson: encodeComputerEvidenceImages(input.previousImages),
-                currentImagesJson: encodeComputerEvidenceImages(input.currentImages),
-                terminalImagesJson: encodeComputerEvidenceImages(input.terminalImages),
-              }),
-            ),
-          ),
+          Effect.gen(function* () {
+            yield* upsertRow(toRow(input.monitor));
+            if (input.afterSequence !== undefined) {
+              yield* retainAcceptedStops(input.monitor, input.afterSequence);
+            }
+            yield* putComputerEvidenceRow({
+              monitorId: input.monitor.id,
+              baselineImagesJson: encodeComputerEvidenceImages(input.baselineImages),
+              previousImagesJson: encodeComputerEvidenceImages(input.previousImages),
+              currentImagesJson: encodeComputerEvidenceImages(input.currentImages),
+              terminalImagesJson: encodeComputerEvidenceImages(input.terminalImages),
+            });
+          }),
         )
         .pipe(
           Effect.mapError(

@@ -1,3 +1,4 @@
+import { OrchestrationSystemEvent } from "./orchestrationSystemEvent.ts";
 import { OrchestrationMessageContext } from "./composerContext.ts";
 import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
@@ -1018,6 +1019,7 @@ export type OrchestrationV2NotificationSource = typeof OrchestrationV2Notificati
 // A notification records an observed event, not whether its payload has reached the agent.
 // Provider delivery, wake policy, and agent-facing instructions belong to the backend.
 export const OrchestrationV2Notification = Schema.Struct({
+  systemEvent: Schema.optional(OrchestrationSystemEvent),
   source: OrchestrationV2NotificationSource,
   // Item status describes this timeline record; outcome describes the reported work.
   outcome: Schema.Literals(["completed", "failed", "cancelled", "updated", "unknown"]),
@@ -1683,6 +1685,7 @@ export type OrchestrationV2LatestVisibleMessageSummary =
   typeof OrchestrationV2LatestVisibleMessageSummary.Type;
 
 export const OrchestrationV2ThreadShell = Schema.Struct({
+  backgroundLiveness: Schema.optional(Schema.NullOr(Schema.Literal("monitoring"))),
   ...OrchestrationV2CreationFields,
   id: ThreadId,
   projectId: ProjectId,
@@ -2732,6 +2735,11 @@ export const OrchestrationV2Command = Schema.Union([
     runId: RunId,
     reason: Schema.optional(Schema.String),
     holdQueue: Schema.optional(Schema.Boolean),
+  }),
+  Schema.Struct({
+    type: Schema.Literal("thread.monitors.cancel"),
+    commandId: CommandId,
+    threadId: ThreadId,
   }),
   Schema.Struct({
     type: Schema.Literal("queued-message.promote-to-steer"),

@@ -18,7 +18,10 @@ import type { ProjectionRepositoryError } from "../Errors.ts";
 /** Defines the durable monitor persistence operations. */
 export interface ThreadMonitorRepositoryShape {
   /** Inserts or replaces one monitor. */
-  readonly upsert: (monitor: ThreadMonitor) => Effect.Effect<void, ProjectionRepositoryError>;
+  readonly upsert: (
+    monitor: ThreadMonitor,
+    initialCreation?: { readonly afterSequence: number },
+  ) => Effect.Effect<void, ProjectionRepositoryError>;
 
   /** Reads one monitor by id. */
   readonly getById: (
@@ -36,6 +39,17 @@ export interface ThreadMonitorRepositoryShape {
     ReadonlyArray<ThreadMonitor>,
     ProjectionRepositoryError
   >;
+
+  /** Reads the exact targets retained by accepted Stop commands. */
+  readonly listCancellationRequests: () => Effect.Effect<
+    ReadonlyArray<{ readonly threadId: ThreadId; readonly monitorId: ThreadMonitorId }>,
+    ProjectionRepositoryError
+  >;
+
+  /** Acknowledges a Stop only after cancellation and resource cleanup complete. */
+  readonly acknowledgeCancellation: (
+    monitorId: ThreadMonitorId,
+  ) => Effect.Effect<void, ProjectionRepositoryError>;
 
   /** Reads every member needed to replay one durable continuation, including delivered members. */
   readonly listByDeliveryGroupId: (
@@ -64,6 +78,8 @@ export interface ThreadMonitorRepositoryShape {
   /** Atomically writes one computer-monitor revision and all bounded evidence. */
   readonly upsertComputerRevision: (input: {
     readonly monitor: ThreadMonitor;
+    /** On initial creation, retain Stops accepted after preparation began. */
+    readonly afterSequence?: number;
     readonly baselineImages: ReadonlyArray<ThreadMonitorComputerEvidenceImage>;
     readonly previousImages: ReadonlyArray<ThreadMonitorComputerEvidenceImage>;
     readonly currentImages: ReadonlyArray<ThreadMonitorComputerEvidenceImage>;

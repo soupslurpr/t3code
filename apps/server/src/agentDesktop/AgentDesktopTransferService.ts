@@ -37,7 +37,7 @@ import * as Ref from "effect/Ref";
 
 import * as ServerConfig from "../config.ts";
 import * as McpInvocationContext from "../mcp/McpInvocationContext.ts";
-import { ProjectionSnapshotQuery } from "../orchestration/Services/ProjectionSnapshotQuery.ts";
+import { ThreadWorkspaceQuery } from "../orchestration-v2/ThreadWorkspaceQuery.ts";
 import * as AgentDesktopManager from "./AgentDesktopManager.ts";
 
 const DEFAULT_WAIT_MS = 15_000;
@@ -397,7 +397,7 @@ export const make = Effect.gen(function* () {
   const resolveWorkspaceRoot = Effect.fn("AgentDesktopTransfer.resolveWorkspaceRoot")(function* (
     scope: McpInvocationContext.McpInvocationScope,
   ) {
-    const projections = yield* ProjectionSnapshotQuery;
+    const projections = yield* ThreadWorkspaceQuery;
     const shell = yield* projections
       .getThreadShellById(scope.threadId)
       .pipe(Effect.mapError((cause) => processError("preparing", cause, "invalid-source")));
@@ -882,11 +882,7 @@ export interface AgentDesktopTransferServiceShape {
   readonly start: (
     scope: McpInvocationContext.McpInvocationScope,
     input: AgentDesktopCopyInput,
-  ) => Effect.Effect<
-    AgentDesktopTransfer,
-    AgentDesktopTransferLookupError,
-    ProjectionSnapshotQuery
-  >;
+  ) => Effect.Effect<AgentDesktopTransfer, AgentDesktopTransferLookupError, ThreadWorkspaceQuery>;
   readonly status: (
     scope: McpInvocationContext.McpInvocationScope,
     input: AgentDesktopTransferTargetInput,

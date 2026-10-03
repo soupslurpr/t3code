@@ -13,7 +13,7 @@ layer("056_ComputerThreadMonitors", (it) => {
     Effect.gen(function* () {
       const sql = yield* SqlClient.SqlClient;
 
-      yield* runMigrations({ toMigrationInclusive: 55 });
+      yield* runMigrations({ toMigrationInclusive: 58 });
       yield* sql`
         INSERT INTO thread_monitors (
           monitor_id,
@@ -38,7 +38,7 @@ layer("056_ComputerThreadMonitors", (it) => {
         )
       `;
 
-      yield* runMigrations({ toMigrationInclusive: 56 });
+      yield* runMigrations({ toMigrationInclusive: 59 });
 
       const columns = yield* sql<{ readonly name: string }>`
         PRAGMA table_info(thread_monitors)

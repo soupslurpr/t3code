@@ -86,6 +86,7 @@ function threadRunStatusIsActive(status: ThreadRuntimeSummary["status"]): boolea
 }
 
 export interface EnvironmentThreadShell {
+  readonly backgroundLiveness?: OrchestrationV2ThreadShell["backgroundLiveness"];
   readonly environmentId: EnvironmentId;
   readonly id: ThreadId;
   readonly projectId: ProjectId;
@@ -248,6 +249,7 @@ export function presentThreadShell(
     hasPendingUserInput: thread.pendingRuntimeRequest?.kind === "user_input",
     hasActionableProposedPlan: thread.hasActionableProposedPlan,
     pendingBackgroundTasks: thread.pendingBackgroundTasks ?? [],
+    backgroundLiveness: thread.backgroundLiveness ?? null,
     providerInstanceHistory: thread.providerInstanceHistory ?? [],
     itemCount: thread.itemCount,
     visibleItemCount: thread.visibleItemCount,

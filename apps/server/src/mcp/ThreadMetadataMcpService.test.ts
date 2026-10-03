@@ -13,6 +13,7 @@ const threadId = ThreadId.make("thread:metadata-caller");
 const scope: McpInvocationContext.McpInvocationScope = {
   environmentId: EnvironmentId.make("environment:metadata-test"),
   threadId,
+  controllerId: "test-controller",
   providerSessionId: "provider-session:metadata-test",
   providerInstanceId: ProviderInstanceId.make("codex"),
   capabilities: new Set(["orchestration"]),

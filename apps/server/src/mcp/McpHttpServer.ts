@@ -1,5 +1,5 @@
 import { UserDesktopTransfers } from "../computer/UserDesktopTransfers.ts";
-import { ProjectionSnapshotQuery } from "../orchestration/Services/ProjectionSnapshotQuery.ts";
+import { ThreadWorkspaceQuery } from "../orchestration-v2/ThreadWorkspaceQuery.ts";
 import * as NodeCrypto from "node:crypto";
 import * as Cause from "effect/Cause";
 import * as Clock from "effect/Clock";
@@ -1372,7 +1372,7 @@ const registerComputerTools = Effect.fn("McpHttpServer.registerComputerTools")(f
   const observations = yield* ComputerObservationStore.ComputerObservationStore;
   const broker = yield* PreviewAutomationBroker.PreviewAutomationBroker;
   const transfers = yield* UserDesktopTransfers;
-  const projections = yield* ProjectionSnapshotQuery;
+  const projections = yield* ThreadWorkspaceQuery;
   const built = yield* ComputerToolkit;
   for (const tool of Object.values(built.tools)) {
     yield* server.addTool({
@@ -1403,7 +1403,7 @@ const registerComputerTools = Effect.fn("McpHttpServer.registerComputerTools")(f
             Stream.run(Sink.last()),
             Effect.flatMap(Effect.fromOption),
             Effect.provideService(UserDesktopTransfers, transfers),
-            Effect.provideService(ProjectionSnapshotQuery, projections),
+            Effect.provideService(ThreadWorkspaceQuery, projections),
             Effect.provideService(ComputerAutomationRouter.ComputerAutomationRouter, computer),
             Effect.provideService(ComputerObservationStore.ComputerObservationStore, observations),
             Effect.provideService(PreviewAutomationBroker.PreviewAutomationBroker, broker),
@@ -1595,11 +1595,11 @@ export const DeviceToolkitRegistrationLive = Layer.mergeAll(
   DeviceScreenshotRegistrationLive,
 );
 
-const ComputerToolkitRegistrationLive = Layer.effectDiscard(registerComputerTools()).pipe(
+export const ComputerToolkitRegistrationLive = Layer.effectDiscard(registerComputerTools()).pipe(
   Layer.provide(ComputerToolkitHandlersLive),
 );
 
-const AgentDesktopToolkitRegistrationLive = McpServer.toolkit(AgentDesktopToolkit).pipe(
+export const AgentDesktopToolkitRegistrationLive = McpServer.toolkit(AgentDesktopToolkit).pipe(
   Layer.provide(AgentDesktopToolkitHandlersLive),
 );
 
@@ -1611,7 +1611,7 @@ const MonitorImageToolkitRegistrationLive = Layer.effectDiscard(registerMonitorI
   Layer.provide(MonitorImageToolkitHandlersLive),
 );
 
-const MonitorToolkitRegistrationLive = Layer.mergeAll(
+export const MonitorToolkitRegistrationLive = Layer.mergeAll(
   MonitorStandardToolkitRegistrationLive,
   MonitorImageToolkitRegistrationLive,
 );

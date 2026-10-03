@@ -9,28 +9,39 @@ import { assert, it } from "@effect/vitest";
 import { ThreadId } from "@t3tools/contracts";
 import * as NodeSqliteClient from "@t3tools/shared/nodeSqliteClient";
 import * as Effect from "effect/Effect";
+import * as Schema from "effect/Schema";
 import * as Layer from "effect/Layer";
 import * as SqlClient from "effect/unstable/sql/SqlClient";
 
 import * as ServerConfig from "../config.ts";
 import * as SqlitePersistence from "./Layers/Sqlite.ts";
-import { runMigrations } from "./Migrations.ts";
+import { migrationEntries, runMigrations } from "./Migrations.ts";
 import { initializeV2Database } from "./initializeV2Database.ts";
 import * as EventStore from "../orchestration-v2/EventStore.ts";
 import * as ProjectionStore from "../orchestration-v2/ProjectionStore.ts";
 import * as EventSink from "../orchestration-v2/EventSink.ts";
 import * as LegacyV1ThreadImporter from "../orchestration-v2/legacy/LegacyV1ThreadImporter.ts";
 
-it.effect(
-  "snapshots V1, imports transcripts lazily, and preserves both databases across switches",
-  () => {
+const encodeJson = Schema.encodeSync(Schema.fromJsonString(Schema.Unknown));
+
+it.effect.each([false, true])(
+  "snapshots V1, imports transcripts lazily, and preserves both databases (fork: %s)",
+  (fork) => {
     const directory = NodeFS.mkdtempSync(NodePath.join(NodeOS.tmpdir(), "t3-v1-v2-"));
     const sourcePath = NodePath.join(directory, "state.sqlite");
     const destinationPath = NodePath.join(directory, "statev2.sqlite");
     const threadId = ThreadId.make("legacy-thread");
     const seed = Effect.gen(function* () {
       const sql = yield* SqlClient.SqlClient;
-      yield* runMigrations({ toMigrationInclusive: 52 });
+      yield* runMigrations({ toMigrationInclusive: fork ? 54 : 52 });
+      if (fork) {
+        // Reproduce the pre-rebase fork ledger, before upstream claimed 55 and 56.
+        for (const [id, name, migration] of migrationEntries) {
+          if (id < 57) continue;
+          yield* migration;
+          yield* sql`INSERT INTO effect_sql_migrations (migration_id, name) VALUES (${id - 2}, ${name})`;
+        }
+      }
       yield* sql`INSERT INTO projection_projects (project_id, title, workspace_root, scripts_json, created_at, updated_at)
       VALUES ('project', 'Project', '/tmp/project', '[]', '2026-01-01T00:00:00.000Z', '2026-01-01T00:00:00.000Z')`;
       yield* sql`INSERT INTO projection_threads (thread_id, project_id, title, model_selection_json, runtime_mode, interaction_mode, created_at, updated_at)
@@ -38,6 +49,25 @@ it.effect(
       for (let index = 0; index < 6; index++) {
         yield* sql`INSERT INTO projection_thread_messages (message_id, thread_id, role, text, is_streaming, created_at, updated_at)
         VALUES (${`message-${index}`}, ${threadId}, ${index % 2 ? "assistant" : "user"}, ${`Text ${index}`}, 0, ${`2026-01-0${index + 1}T00:00:00.000Z`}, ${`2026-01-0${index + 1}T00:00:00.000Z`})`;
+      }
+      if (fork) {
+        yield* sql`INSERT INTO projection_thread_messages (message_id, thread_id, role, text, system_event_json, is_streaming, created_at, updated_at)
+          VALUES ('monitor-message', ${threadId}, 'system', 'Monitor fired', ${encodeJson({
+            type: "monitor.continuation",
+            deliveryGroupId: "saved-group",
+            observationTrust: "untrusted",
+            grantsAuthorization: false,
+            monitors: [
+              {
+                monitorId: "saved-monitor",
+                triggeredAt: "2026-01-03T12:00:00.000Z",
+                triggerReason: "signal",
+                observation: { label: "Saved monitor", summary: "Monitor fired", evidence: null },
+              },
+            ],
+          })}, 0, '2026-01-03T12:00:00.000Z', '2026-01-03T12:00:00.000Z')`;
+        yield* sql`INSERT INTO thread_monitors (monitor_id, thread_id, label, condition_type, continuation_mode, status, created_at, updated_at)
+          VALUES ('active-monitor', ${threadId}, 'Keep watching', 'signal', 'record-only', 'active', '2026-01-01T00:00:00.000Z', '2026-01-01T00:00:00.000Z')`;
       }
     }).pipe(Effect.provide(NodeSqliteClient.layer({ filename: sourcePath })));
 
@@ -73,11 +103,36 @@ it.effect(
         const transcript = yield* projections.getThreadProjection(threadId);
         assert.deepEqual(
           transcript.messages.map((message) => message.text),
-          ["Text 0", "Text 1", "Text 2", "Text 3", "Text 4", "Text 5"],
+          [
+            "Text 0",
+            "Text 1",
+            "Text 2",
+            "Text 3",
+            "Text 4",
+            "Text 5",
+            ...(fork ? ["Monitor fired"] : []),
+          ],
         );
         const imported =
           yield* sql`SELECT imported_message_count, transcript_imported_at FROM orchestration_v2_legacy_imports`;
-        assert.equal(imported[0]?.imported_message_count, 6);
+        assert.equal(imported[0]?.imported_message_count, fork ? 7 : 6);
+        if (fork) {
+          assert.equal(
+            transcript.messages.find((message) => message.id === "monitor-message")?.notification
+              ?.systemEvent?.type,
+            "monitor.continuation",
+          );
+          const notification = transcript.turnItems.find(
+            (item) =>
+              item.type === "notification" && item.systemEvent?.type === "monitor.continuation",
+          );
+          assert.equal(notification?.ordinal, 4);
+          assert.deepEqual(yield* projections.getSettlementCandidates(threadId), []);
+          assert.equal(
+            (yield* projections.getThreadShell(threadId))?.backgroundLiveness,
+            "monitoring",
+          );
+        }
         assert.isNotNull(imported[0]?.transcript_imported_at);
         yield* sql`CREATE TABLE v2_work (text TEXT)`;
         yield* sql`INSERT INTO v2_work VALUES ('Keep V2 work')`;
@@ -87,7 +142,7 @@ it.effect(
       try {
         assert.equal(
           v1.prepare("SELECT MAX(migration_id) AS id FROM effect_sql_migrations").get()?.id,
-          52,
+          fork ? 66 : 52,
         );
         assert.equal(
           v1

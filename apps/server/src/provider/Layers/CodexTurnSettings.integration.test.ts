@@ -5,18 +5,46 @@ import * as NodeOS from "node:os";
 import * as NodePath from "node:path";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { it } from "@effect/vitest";
-import { CodexSettings, ProviderInstanceId, ThreadId } from "@t3tools/contracts";
+import {
+  CodexSettings,
+  ChatAttachmentId,
+  EnvironmentId,
+  MessageId,
+  NodeId,
+  ProjectId,
+  ProviderInstanceId,
+  ProviderSessionId,
+  RunAttemptId,
+  RunId,
+  ThreadId,
+  type ModelSelection,
+  type OrchestrationV2ProviderThread,
+} from "@t3tools/contracts";
 import { HostProcessPlatform } from "@t3tools/shared/hostProcess";
 import { createModelSelection } from "@t3tools/shared/model";
 import * as Effect from "effect/Effect";
+import * as Layer from "effect/Layer";
+import * as DateTime from "effect/DateTime";
+import * as Scope from "effect/Scope";
+import * as Exit from "effect/Exit";
 import * as Schema from "effect/Schema";
 import { assert } from "vite-plus/test";
 
 import { ServerConfig } from "../../config.ts";
-import type { CodexModelSettings } from "../../codexModelOptions.ts";
-import type { CodexAdapterShape } from "../Services/CodexAdapter.ts";
+import { resolveAttachmentPath } from "../../attachmentStore.ts";
+import {
+  ProviderAdapterV2RuntimePolicy,
+  type ProviderAdapterV2Shape,
+  type ProviderAdapterV2TurnInput,
+} from "../../orchestration-v2/ProviderAdapter.ts";
+import * as IdAllocator from "../../orchestration-v2/IdAllocator.ts";
+import * as ProviderEventLoggers from "./ProviderEventLoggers.ts";
+import * as McpProviderSession from "../../mcp/McpProviderSession.ts";
 import wireFixture from "../testFixtures/codexMultiAgentWire.json" with { type: "json" };
-import { makeCodexAdapter } from "./CodexAdapter.ts";
+import {
+  createCodexAdapterV2,
+  codexAppServerClientFactoryFromSettingsLayer,
+} from "../../orchestration-v2/Adapters/CodexAdapterV2.ts";
 
 const peerPath = NodePath.join(
   import.meta.dirname,
@@ -30,6 +58,8 @@ const decodeCodexSettings = Schema.decodeEffect(CodexSettings);
 const RecordedRequest = Schema.Struct({
   method: Schema.String,
   params: Schema.Struct({
+    input: Schema.optionalKey(Schema.Array(Schema.Json)),
+    toolOutput: Schema.optionalKey(Schema.Json),
     model: Schema.optionalKey(Schema.String),
     effort: Schema.optionalKey(Schema.NullOr(Schema.String)),
     serviceTier: Schema.optionalKey(Schema.NullOr(Schema.String)),
@@ -40,6 +70,7 @@ const RecordedRequest = Schema.Struct({
         settings: Schema.Struct({
           model: Schema.String,
           reasoning_effort: Schema.NullOr(Schema.String),
+          developer_instructions: Schema.NullOr(Schema.String),
         }),
       }),
     ),
@@ -55,13 +86,8 @@ const encodeScript = Schema.encodeSync(
       trackSettings: Schema.Boolean,
       rootThreadId: Schema.String,
       notifications: Schema.Array(Schema.Json),
-      savedSettings: Schema.optionalKey(
-        Schema.Struct({
-          model: Schema.String,
-          effort: Schema.NullOr(Schema.String),
-          serviceTier: Schema.NullOr(Schema.String),
-        }),
-      ),
+      userAgent: Schema.String,
+      turnIds: Schema.Array(Schema.String),
     }),
   ),
 );
@@ -77,10 +103,11 @@ function readRecordedRequests(scriptPath: string) {
 /** Runs the real adapter against a peer that records acknowledged request payloads. */
 const withSettingsPeer = Effect.fn("withSettingsPeer")(function* <Error>(
   run: (
-    adapter: CodexAdapterShape,
+    adapter: ProviderAdapterV2Shape,
     readRequests: () => ReadonlyArray<typeof RecordedRequest.Type>,
-  ) => Effect.Effect<void, Error>,
-  savedSettings?: CodexModelSettings,
+    attachmentsDir: string,
+  ) => Effect.Effect<void, Error, Scope.Scope>,
+  userAgent = "t3-collab-mock/0.156.0",
 ) {
   const directory = yield* Effect.acquireRelease(
     Effect.sync(() => NodeFS.mkdtempSync(NodePath.join(NodeOS.tmpdir(), "t3-codex-settings-"))),
@@ -93,42 +120,145 @@ const withSettingsPeer = Effect.fn("withSettingsPeer")(function* <Error>(
       trackSettings: true,
       rootThreadId: wireFixture.rootThreadId,
       notifications: [],
-      ...(savedSettings ? { savedSettings } : {}),
+      userAgent,
+      turnIds: ["turn-1", "turn-2", "turn-3", "turn-4"],
     }),
   );
   const config = yield* decodeCodexSettings({ binaryPath: peerPath });
-  const adapter = yield* makeCodexAdapter(config, {
-    environment: { ...process.env, T3_CODEX_COLLAB_SCRIPT: scriptPath },
-  }).pipe(Effect.provide(ServerConfig.layerTest(directory, directory)));
-  yield* run(adapter, () => readRecordedRequests(scriptPath));
+  const adapter = yield* createCodexAdapterV2({
+    instanceId,
+    displayName: "Test Codex",
+    enabled: true,
+    config,
+    environment: [{ name: "T3_CODEX_COLLAB_SCRIPT", value: scriptPath, sensitive: false }],
+  }).pipe(
+    Effect.provide(
+      Layer.mergeAll(
+        codexAppServerClientFactoryFromSettingsLayer,
+        IdAllocator.layer,
+        ServerConfig.layerTest(directory, directory),
+      ).pipe(
+        Layer.provideMerge(
+          Layer.succeed(
+            ProviderEventLoggers.ProviderEventLoggers,
+            ProviderEventLoggers.NoOpProviderEventLoggers,
+          ),
+        ),
+      ),
+    ),
+  );
+  const serverConfig = yield* ServerConfig.pipe(
+    Effect.provide(ServerConfig.layerTest(directory, directory)),
+  );
+  yield* run(adapter, () => readRecordedRequests(scriptPath), serverConfig.attachmentsDir);
 });
+
+const runtimePolicy = ProviderAdapterV2RuntimePolicy.make({
+  runtimeMode: "full-access",
+  interactionMode: "default",
+  cwd: null,
+});
+const defaults = createModelSelection(instanceId, "gpt-6-astra");
+const selected = createModelSelection(instanceId, "gpt-6-astra", [
+  { id: "reasoningEffort", value: "low" },
+  { id: "serviceTier", value: "fast" },
+]);
+
+const open = Effect.fn("openSettingsSession")(function* (
+  adapter: ProviderAdapterV2Shape,
+  threadId: ThreadId,
+  modelSelection = defaults,
+) {
+  const providerSessionId = ProviderSessionId.make(`session-${threadId}`);
+  yield* Effect.acquireRelease(
+    Effect.sync(() =>
+      McpProviderSession.setMcpProviderSession({
+        environmentId: EnvironmentId.make("test"),
+        threadId,
+        providerSessionId,
+        providerInstanceId: instanceId,
+        endpoint: "http://localhost/mcp",
+        authorizationHeader: "Bearer test",
+        browserToolsAvailable: true,
+      }),
+    ),
+    () => Effect.sync(() => McpProviderSession.clearMcpProviderSession(threadId)),
+  );
+  const scope = yield* Scope.make();
+  const close = Scope.close(scope, Exit.void);
+  yield* Effect.addFinalizer(() => close);
+  const runtime = yield* adapter
+    .openSession({ threadId, providerSessionId, modelSelection, runtimePolicy })
+    .pipe(Effect.provideService(Scope.Scope, scope));
+  return { ...runtime, close };
+});
+
+function turnInput(
+  threadId: ThreadId,
+  providerThread: OrchestrationV2ProviderThread,
+  ordinal: number,
+  modelSelection: ModelSelection,
+  plan = false,
+): ProviderAdapterV2TurnInput {
+  const now = DateTime.makeUnsafe("2026-10-02T00:00:00.000Z");
+  return {
+    threadId,
+    providerThread,
+    modelSelection,
+    runtimePolicy: { ...runtimePolicy, interactionMode: plan ? "plan" : "default" },
+    runId: RunId.make(`run-${ordinal}`),
+    runOrdinal: ordinal,
+    providerTurnOrdinal: ordinal,
+    attemptId: RunAttemptId.make(`attempt-${ordinal}`),
+    rootNodeId: NodeId.make(`node-${ordinal}`),
+    appThread: {
+      createdBy: "user",
+      creationSource: "web",
+      id: threadId,
+      projectId: ProjectId.make("project"),
+      title: "Settings",
+      providerInstanceId: instanceId,
+      modelSelection,
+      runtimeMode: "full-access",
+      interactionMode: "default",
+      branch: null,
+      worktreePath: null,
+      activeProviderThreadId: providerThread.id,
+      lineage: { parentThreadId: null, relationshipToParent: null, rootThreadId: threadId },
+      forkedFrom: null,
+      createdAt: now,
+      updatedAt: now,
+      archivedAt: null,
+      settledOverride: null,
+      settledAt: null,
+      lastVisitedAt: null,
+      deletedAt: null,
+    },
+    message: {
+      createdBy: "user",
+      creationSource: "web",
+      messageId: MessageId.make(`message-${ordinal}`),
+      text: "Continue",
+      attachments: [],
+    },
+  };
+}
 
 it.live("preserves Astra defaults and explicit effort through native continuations", () =>
   withSettingsPeer((adapter, readRequests) =>
     Effect.gen(function* () {
       const threadId = ThreadId.make("settings-continuation");
-      yield* adapter.startSession({
+      const runtime = yield* open(adapter, threadId);
+      const providerThread = yield* runtime.ensureThread({
         threadId,
-        runtimeMode: "full-access",
-        modelSelection: createModelSelection(instanceId, "gpt-6-astra"),
+        modelSelection: defaults,
+        runtimePolicy,
       });
-      yield* adapter.sendTurn({ threadId, input: "first", interactionMode: "default" });
-      yield* adapter.sendTurn({
-        threadId,
-        input: "change effort",
-        interactionMode: "plan",
-        modelSelection: createModelSelection(instanceId, "gpt-6-astra", [
-          { id: "reasoningEffort", value: "low" },
-          { id: "serviceTier", value: "fast" },
-        ]),
-      });
-      yield* adapter.sendTurn({ threadId, input: "continue", interactionMode: "default" });
-      yield* adapter.sendTurn({
-        threadId,
-        input: "use model defaults",
-        interactionMode: "default",
-        modelSelection: createModelSelection(instanceId, "gpt-6-astra"),
-      });
+      for (const [index, selection] of [defaults, selected, selected, defaults].entries()) {
+        yield* runtime.startTurn(
+          turnInput(threadId, providerThread, index + 1, selection, index === 1),
+        );
+      }
       const requests = readRequests();
       assert.containSubset(requests[0], {
         method: "thread/start",
@@ -141,7 +271,14 @@ it.live("preserves Astra defaults and explicit effort through native continuatio
           params: {
             model: "gpt-6-astra",
             effort,
-            collaborationMode: { settings: { model: "gpt-6-astra", reasoning_effort: effort } },
+            collaborationMode: {
+              mode: index === 1 ? "plan" : "default",
+              settings: {
+                model: "gpt-6-astra",
+                reasoning_effort: effort,
+                developer_instructions: null,
+              },
+            },
           },
         });
         assert.include(
@@ -151,7 +288,7 @@ it.live("preserves Astra defaults and explicit effort through native continuatio
       }
       assert.equal(turns[2]?.params.serviceTier, "fast");
       assert.equal(turns[3]?.params.serviceTier, null);
-      yield* adapter.stopSession(threadId);
+      yield* runtime.close;
     }),
   ).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
 );
@@ -160,24 +297,22 @@ it.live("restores selected effort and service tier when recreating a provider pr
   withSettingsPeer((adapter, readRequests) =>
     Effect.gen(function* () {
       const threadId = ThreadId.make("settings-restart");
-      const modelSelection = createModelSelection(instanceId, "gpt-6-astra", [
-        { id: "reasoningEffort", value: "low" },
-        { id: "serviceTier", value: "fast" },
-      ]);
-      yield* adapter.startSession({ threadId, modelSelection, runtimeMode: "full-access" });
-      const first = yield* adapter.sendTurn({
+      const first = yield* open(adapter, threadId, selected);
+      const providerThread = yield* first.ensureThread({
         threadId,
-        input: "first",
-        interactionMode: "default",
+        modelSelection: selected,
+        runtimePolicy,
       });
-      yield* adapter.stopSession(threadId);
-      yield* adapter.startSession({
+      yield* first.startTurn(turnInput(threadId, providerThread, 1, selected));
+      yield* first.close;
+      const second = yield* open(adapter, threadId, selected);
+      const resumed = yield* second.resumeThread({
+        providerThread,
         threadId,
-        modelSelection,
-        runtimeMode: "full-access",
-        resumeCursor: first.resumeCursor,
+        modelSelection: selected,
+        runtimePolicy,
       });
-      yield* adapter.sendTurn({ threadId, input: "resume", interactionMode: "plan" });
+      yield* second.startTurn(turnInput(threadId, resumed, 2, selected, true));
       const requests = readRequests();
       assert.containSubset(
         requests.find((request) => request.method === "thread/resume"),
@@ -197,31 +332,83 @@ it.live("restores selected effort and service tier when recreating a provider pr
           collaborationMode: { settings: { reasoning_effort: "low" } },
         },
       });
-      yield* adapter.stopSession(threadId);
+      yield* second.close;
     }),
   ).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
 );
 
-it.live("inherits native resume settings when no model selection is supplied", () =>
+it.live("delivers monitor observations as harness tool output", () =>
+  withSettingsPeer((adapter, readRequests, attachmentsDir) =>
+    Effect.gen(function* () {
+      const threadId = ThreadId.make("settings-monitor");
+      const runtime = yield* open(adapter, threadId);
+      const providerThread = yield* runtime.ensureThread({
+        threadId,
+        modelSelection: defaults,
+        runtimePolicy,
+      });
+      const png =
+        "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAusB9Y9ZlY8AAAAASUVORK5CYII=";
+      const bytes = Buffer.from(png, "base64");
+      const attachment = {
+        type: "image" as const,
+        id: ChatAttachmentId.make("settings-monitor-00000000-0000-4000-8000-000000000001"),
+        name: "frame.png",
+        mimeType: "image/png",
+        sizeBytes: bytes.length,
+      };
+      const imagePath = resolveAttachmentPath({ attachmentsDir, attachment });
+      if (imagePath === null) return yield* Effect.die("Invalid test attachment");
+      NodeFS.mkdirSync(attachmentsDir, { recursive: true });
+      NodeFS.writeFileSync(imagePath, bytes);
+      const input = turnInput(threadId, providerThread, 1, defaults);
+      yield* runtime.startTurn({
+        ...input,
+        message: {
+          ...input.message,
+          inputSource: "harness",
+          text: "Observed €review on screen.",
+          attachments: [attachment],
+        },
+      });
+      assert.containSubset(readRequests().at(-1), {
+        method: "turn/start",
+        params: {
+          input: [],
+          toolOutput: {
+            namespace: "t3_code",
+            name: "monitor",
+            output: [
+              { type: "input_text", text: "Observed €review on screen." },
+              { type: "input_image", image_url: `data:image/png;base64,${png}` },
+            ],
+          },
+        },
+      });
+      yield* runtime.close;
+    }),
+  ).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
+);
+
+it.live("rejects monitor delivery on Codex versions without harness tool output", () =>
   withSettingsPeer(
     (adapter, readRequests) =>
       Effect.gen(function* () {
-        const threadId = ThreadId.make("settings-native-resume");
-        yield* adapter.startSession({
+        const threadId = ThreadId.make("settings-old-codex");
+        const runtime = yield* open(adapter, threadId);
+        const providerThread = yield* runtime.ensureThread({
           threadId,
-          runtimeMode: "full-access",
-          resumeCursor: { threadId: wireFixture.rootThreadId },
+          modelSelection: defaults,
+          runtimePolicy,
         });
-        yield* adapter.sendTurn({ threadId, input: "resume", interactionMode: "default" });
-        const requests = readRequests();
-        assert.equal(requests[0]?.params.model, undefined);
-        assert.equal(requests[0]?.params.config, undefined);
-        assert.containSubset(requests.at(-1), {
-          method: "turn/start",
-          params: { model: "gpt-5.6-sol", effort: "high", serviceTier: "fast" },
-        });
-        yield* adapter.stopSession(threadId);
+        const input = turnInput(threadId, providerThread, 1, defaults);
+        const result = yield* runtime
+          .startTurn({ ...input, message: { ...input.message, inputSource: "harness" } })
+          .pipe(Effect.result);
+        assert.equal(result._tag, "Failure");
+        assert.isFalse(readRequests().some((request) => request.method === "turn/start"));
+        yield* runtime.close;
       }),
-    { model: "gpt-5.6-sol", effort: "high", serviceTier: "fast" },
+    "t3-collab-mock/0.150.0",
   ).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
 );

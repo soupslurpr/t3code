@@ -192,7 +192,7 @@ it.effect("issues a computer-only credential without browser access", () =>
     const token = issued.config.authorizationHeader.replace(/^Bearer\s+/, "");
     const resolved = yield* registry.resolve(token);
 
-    expect(issued.config.capabilities.has("preview")).toBe(false);
+    expect(issued.config.capabilities?.has("preview")).toBe(false);
     expect(Array.from(resolved?.capabilities ?? []).sort()).toEqual(["computer", "pull-requests"]);
   }),
 );

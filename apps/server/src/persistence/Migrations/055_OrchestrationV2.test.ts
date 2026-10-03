@@ -3,7 +3,7 @@ import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as SqlClient from "effect/unstable/sql/SqlClient";
 
-import { migrationEntries, runMigrations } from "../Migrations.ts";
+import { migrationEntries, migrationManifest, runMigrations } from "../Migrations.ts";
 import * as NodeSqliteClient from "@t3tools/shared/nodeSqliteClient";
 
 const layer = it.layer(Layer.mergeAll(NodeSqliteClient.layer({ filename: ":memory:" })));
@@ -13,7 +13,7 @@ layer("055_OrchestrationV2", (it) => {
     Effect.sync(() => {
       assert.deepStrictEqual(
         migrationEntries.map(([id]) => id),
-        Array.from({ length: 56 }, (_, index) => index + 1),
+        Array.from({ length: migrationEntries.length }, (_, index) => index + 1),
       );
     }),
   );
@@ -28,6 +28,7 @@ layer("055_OrchestrationV2", (it) => {
         [54, "ProjectionThreadsAutoSettleDisabledAt"],
         [55, "OrchestrationV2"],
         [56, "RemoveRedundantProjectionIndexes"],
+        ...migrationManifest.filter(([id]) => id > 56),
       ]);
       assert.deepStrictEqual(yield* runMigrations(), []);
 
@@ -50,6 +51,9 @@ layer("055_OrchestrationV2", (it) => {
         { migration_id: 54, name: "ProjectionThreadsAutoSettleDisabledAt" },
         { migration_id: 55, name: "OrchestrationV2" },
         { migration_id: 56, name: "RemoveRedundantProjectionIndexes" },
+        ...migrationManifest
+          .filter(([id]) => id > 56)
+          .map(([migration_id, name]) => ({ migration_id, name })),
       ]);
 
       const tables = yield* sql<{ readonly name: string }>`

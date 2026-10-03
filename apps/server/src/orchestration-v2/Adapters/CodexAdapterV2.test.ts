@@ -485,7 +485,7 @@ describe("CodexAdapterV2 runtime policy", () => {
     }),
   );
 
-  it.effect("adds default-mode developer instructions when the T3 MCP server is attached", () =>
+  it.effect("keeps orchestration guidance in application context with native default mode", () =>
     Effect.gen(function* () {
       const params = yield* CodexAdapterV2.buildCodexTurnStartParams({
         nativeThreadId: "native-orchestration-instructions",
@@ -504,17 +504,23 @@ describe("CodexAdapterV2 runtime policy", () => {
 
       assert.equal(params.collaborationMode?.mode, "default");
       assert.include(
-        params.additionalContext?.t3_code_orchestration?.value ?? "",
+        Object.entries(params.additionalContext ?? {})
+          .filter(([key]) => key.startsWith("t3_code_orchestration"))
+          .map(([, entry]) => entry.value)
+          .join("\n\n"),
         "Use `delegate_task`",
       );
       assert.include(
-        params.additionalContext?.t3_code_orchestration?.value ?? "",
+        Object.entries(params.additionalContext ?? {})
+          .filter(([key]) => key.startsWith("t3_code_orchestration"))
+          .map(([, entry]) => entry.value)
+          .join("\n\n"),
         "structured object, never as JSON text",
       );
     }),
   );
 
-  it.effect("omits default-mode collaboration settings without the T3 MCP server", () =>
+  it.effect("resets native default mode without advertising an unattached MCP server", () =>
     Effect.gen(function* () {
       const params = yield* CodexAdapterV2.buildCodexTurnStartParams({
         nativeThreadId: "native-default-without-t3-mcp",
@@ -531,11 +537,13 @@ describe("CodexAdapterV2 runtime policy", () => {
         hasT3Mcp: false,
       });
 
-      assert.isUndefined(params.collaborationMode);
+      assert.equal(params.collaborationMode?.mode, "default");
+      assert.isNull(params.collaborationMode?.settings.developer_instructions);
+      assert.isUndefined(params.additionalContext);
     }),
   );
 
-  it.effect("adds T3 plan-mode developer instructions when the T3 MCP server is attached", () =>
+  it.effect("keeps native plan instructions separate from T3 application context", () =>
     Effect.gen(function* () {
       const params = yield* CodexAdapterV2.buildCodexTurnStartParams({
         nativeThreadId: "native-plan-with-t3-mcp",
@@ -553,11 +561,8 @@ describe("CodexAdapterV2 runtime policy", () => {
       });
 
       assert.equal(params.collaborationMode?.mode, "plan");
-      assert.include(
-        params.collaborationMode?.settings.developer_instructions ?? "",
-        "request_user_input",
-      );
-      assert.include(params.additionalContext?.t3_code_tools?.value ?? "", "preview_status");
+      assert.isNull(params.collaborationMode?.settings.developer_instructions);
+      assert.include(params.additionalContext?.t3_code_browser?.value ?? "", "preview_status");
     }),
   );
 
@@ -579,7 +584,7 @@ describe("CodexAdapterV2 runtime policy", () => {
       });
 
       assert.equal(params.collaborationMode?.mode, "plan");
-      assert.notProperty(params.collaborationMode?.settings, "developer_instructions");
+      assert.isNull(params.collaborationMode?.settings.developer_instructions);
     }),
   );
 
@@ -649,7 +654,10 @@ describe("CodexAdapterV2 process spawning", () => {
       assert.deepEqual(
         CodexAdapterV2.codexThreadRuntimeParams({
           threadId,
-          modelSelection: { model: "gpt-5.4" },
+          modelSelection: {
+            instanceId: CodexAdapterV2.CODEX_DEFAULT_INSTANCE_ID,
+            model: "gpt-5.4",
+          },
           runtimePolicy: {
             runtimeMode: "full-access",
             interactionMode: "default",
@@ -771,8 +779,15 @@ describe("CodexAdapterV2 process spawning", () => {
       yield* open({ T3CODE_CODEX_LAUNCH_ARGS: " --enable env-feature " });
 
       assert.deepEqual(spawnedArgs, [
-        ["app-server", "--strict-config", "-c", "model_reasoning_summary=detailed"],
-        ["app-server", "--enable", "env-feature"],
+        [
+          "app-server",
+          "--disable",
+          "plugins",
+          "--strict-config",
+          "-c",
+          "model_reasoning_summary=detailed",
+        ],
+        ["app-server", "--disable", "plugins", "--enable", "env-feature"],
       ]);
     }).pipe(Effect.provideService(HostProcessPlatform, "linux")),
   );
@@ -1586,6 +1601,12 @@ function codexReplayPreamble(input: {
           approvalsReviewer: "user",
           sandboxPolicy: { type: "dangerFullAccess" },
           summary: "detailed",
+          effort: null,
+          serviceTier: null,
+          collaborationMode: {
+            mode: "default",
+            settings: { model: "gpt-5.4", reasoning_effort: null, developer_instructions: null },
+          },
         },
       },
     },
@@ -2410,7 +2431,10 @@ describe("CodexAdapterV2 post-settle continuation", () => {
           hasT3Mcp: true,
         });
         assert.include(
-          params.additionalContext?.t3_code_orchestration?.value ?? "",
+          Object.entries(params.additionalContext ?? {})
+            .filter(([key]) => key.startsWith("t3_code_orchestration"))
+            .map(([, entry]) => entry.value)
+            .join("\n\n"),
           "delegate_task",
         );
         const entries = codexReplayPreamble({ nativeThreadId, nativeTurnId, prompt: "work" });
@@ -2666,6 +2690,16 @@ describe("CodexAdapterV2 post-settle continuation", () => {
                   approvalsReviewer: "user",
                   sandboxPolicy: { type: "dangerFullAccess" },
                   summary: "detailed",
+                  effort: null,
+                  serviceTier: null,
+                  collaborationMode: {
+                    mode: "default",
+                    settings: {
+                      model: "gpt-5.4",
+                      reasoning_effort: null,
+                      developer_instructions: null,
+                    },
+                  },
                 },
               },
             },

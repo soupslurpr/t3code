@@ -1925,11 +1925,11 @@ const make = Effect.gen(function* () {
                   ),
             ),
           );
-        if (result.type === "no_active_run") {
+        if (result.type === "no_active_run" || result.type === "monitors_cancel_requested") {
           return {
             threadId: input.threadId,
             runId: null,
-            status: "no_active_run",
+            status: result.type === "no_active_run" ? "no_active_run" : "interrupt_requested",
           } satisfies OrchestratorMcpThreadInterruptResult;
         }
         return {

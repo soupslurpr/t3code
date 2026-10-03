@@ -106,6 +106,7 @@ describe("OrchestratorMcpService", () => {
       const scope: McpInvocationScope = {
         environmentId: EnvironmentId.make("environment:mcp-ack"),
         threadId: parentThreadId,
+        controllerId: "test-controller",
         providerSessionId: "provider-session:mcp-ack",
         providerInstanceId: ProviderInstanceId.make("codex"),
         capabilities: new Set(["orchestration"]),
@@ -183,6 +184,7 @@ describe("OrchestratorMcpService", () => {
       const scope: McpInvocationScope = {
         environmentId: EnvironmentId.make("environment:mcp-cancel"),
         threadId: parentThreadId,
+        controllerId: "test-controller",
         providerSessionId: "provider-session:mcp-cancel",
         providerInstanceId: ProviderInstanceId.make("codex"),
         capabilities: new Set(["orchestration"]),
@@ -251,6 +253,7 @@ describe("OrchestratorMcpService", () => {
       const scope: McpInvocationScope = {
         environmentId: EnvironmentId.make("environment:mcp-cancel-failed"),
         threadId: parentThreadId,
+        controllerId: "test-controller",
         providerSessionId: "provider-session:mcp-cancel-failed",
         providerInstanceId: ProviderInstanceId.make("codex"),
         capabilities: new Set(["orchestration"]),
@@ -326,6 +329,7 @@ describe("OrchestratorMcpService", () => {
       const scope: McpInvocationScope = {
         environmentId: EnvironmentId.make("environment:mcp-cancel-dispose-failed"),
         threadId: parentThreadId,
+        controllerId: "test-controller",
         providerSessionId: "provider-session:mcp-cancel-dispose-failed",
         providerInstanceId: ProviderInstanceId.make("codex"),
         capabilities: new Set(["orchestration"]),
@@ -361,6 +365,7 @@ describe("OrchestratorMcpService provider resolution", () => {
   const scope: McpInvocationScope = {
     environmentId: EnvironmentId.make("environment:mcp-providers"),
     threadId: parentThreadId,
+    controllerId: "test-controller",
     providerSessionId: "provider-session:mcp-providers",
     providerInstanceId: codexInstanceId,
     capabilities: new Set(["orchestration"]),

@@ -39,7 +39,7 @@ import * as Schema from "effect/Schema";
 import * as ServerConfig from "../config.ts";
 import type { McpInvocationScope } from "../mcp/McpInvocationContext.ts";
 import { PreviewAutomationBroker } from "../mcp/PreviewAutomationBroker.ts";
-import { ProjectionSnapshotQuery } from "../orchestration/Services/ProjectionSnapshotQuery.ts";
+import { ThreadWorkspaceQuery } from "../orchestration-v2/ThreadWorkspaceQuery.ts";
 
 const isFailureCode = Schema.is(UserDesktopTransferFailure.fields.code);
 const decodeResult = Schema.decodeUnknownEffect(UserDesktopTransferResult);
@@ -318,7 +318,7 @@ export const make = Effect.gen(function* () {
       input.compression ?? "auto",
       String(input.timeoutMs ?? 3_600_000),
     ];
-    const projections = yield* ProjectionSnapshotQuery;
+    const projections = yield* ThreadWorkspaceQuery;
     const shell = yield* projections
       .getThreadShellById(owner.threadId)
       .pipe(Effect.mapError(() => requestError("Cannot read the transfer thread.")));

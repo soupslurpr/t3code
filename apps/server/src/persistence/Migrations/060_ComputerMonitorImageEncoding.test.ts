@@ -31,7 +31,7 @@ layer("059_ComputerMonitorImageEncoding", (it) => {
   it.effect("adds explicit PNG metadata to retained monitor evidence", () =>
     Effect.gen(function* () {
       const sql = yield* SqlClient.SqlClient;
-      yield* runMigrations({ toMigrationInclusive: 58 });
+      yield* runMigrations({ toMigrationInclusive: 61 });
       const condition = {
         type: "computer",
         observation: {
@@ -98,7 +98,7 @@ layer("059_ComputerMonitorImageEncoding", (it) => {
         )
       `;
 
-      yield* runMigrations({ toMigrationInclusive: 59 });
+      yield* runMigrations({ toMigrationInclusive: 62 });
 
       const rows = yield* sql<{
         readonly baselineImagesJson: string;

@@ -677,6 +677,7 @@ describe("orchestrator MCP toolkit", () => {
             const invocation: McpInvocationContext.McpInvocationScope = {
               environmentId: EnvironmentId.make("environment:mcp-orchestrator"),
               threadId: parentThreadId,
+              controllerId: "test-controller",
               providerSessionId: "mcp-provider-session-parent",
               providerInstanceId: codexInstanceId,
               capabilities: new Set(["orchestration"]),
@@ -3603,6 +3604,7 @@ describe("orchestrator MCP toolkit", () => {
           const invocation: McpInvocationContext.McpInvocationScope = {
             environmentId: EnvironmentId.make("environment:mcp-replay"),
             threadId: parentThreadId,
+            controllerId: "test-controller",
             providerSessionId: "mcp-provider-session-replay-parent",
             providerInstanceId: codexInstanceId,
             capabilities: new Set(["orchestration"]),

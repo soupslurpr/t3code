@@ -1233,7 +1233,11 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: {
   const isUnread = hasUnseenCompletion({ ...thread, lastVisitedAt });
   const status = resolveSidebarThreadStatus(thread);
   const isInFlight =
-    status === "working" || status === "waiting" || status === "approval" || status === "input";
+    status === "working" ||
+    status === "waiting" ||
+    status === "monitoring" ||
+    status === "approval" ||
+    status === "input";
   // A woken thread reappears at its original position (the sort is
   // deliberately static), so the pill has to carry the weight. Snoozing is
   // an explicit act, so the pill clears only when the user re-engages:
@@ -1269,11 +1273,11 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: {
           // full of them (and repaints every vsync on high-refresh displays).
           className: "text-info",
         }
-      : status === "waiting"
+      : status === "waiting" || status === "monitoring"
         ? {
             // Waiting is calm background presence (post-settle background
             // roster), not active progress, so the label keeps full strength.
-            label: "Waiting",
+            label: status === "monitoring" ? "Monitoring" : "Waiting",
             icon: null,
             className: "text-muted-foreground",
           }

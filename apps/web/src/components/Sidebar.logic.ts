@@ -596,6 +596,7 @@ export interface ThreadStatusPill {
     | "Completed"
     | "Pending Approval"
     | "Awaiting Input"
+    | "Monitoring"
     | "Waiting"
     | "Plan Ready";
   colorClass: string;
@@ -609,6 +610,7 @@ const THREAD_STATUS_PRIORITY: Record<ThreadStatusPill["label"], number> = {
   Working: 3,
   Connecting: 3,
   Waiting: 2.5,
+  Monitoring: 2.5,
   "Plan Ready": 2,
   Completed: 1,
 };
@@ -624,6 +626,7 @@ type ThreadStatusInput = Pick<
 > & {
   lastVisitedAt?: string | null | undefined;
   pendingBackgroundTasks?: SidebarThreadSummary["pendingBackgroundTasks"] | undefined;
+  backgroundLiveness?: SidebarThreadSummary["backgroundLiveness"];
 };
 
 export interface ThreadJumpHintVisibilityController {
@@ -922,6 +925,7 @@ export type SidebarThreadStatus =
   | "input"
   | "working"
   | "waiting"
+  | "monitoring"
   | "failed"
   | "limited"
   | "ready";
@@ -934,7 +938,8 @@ export function shouldRecedeSidebarThread(input: {
   isSelected: boolean;
 }): boolean {
   if (input.isActive || input.isSelected || input.status === "input") return false;
-  if (input.status === "working" || input.status === "waiting") return true;
+  if (input.status === "working" || input.status === "waiting" || input.status === "monitoring")
+    return true;
   if (input.status === "ready" || input.status === "approval") {
     return !input.isUnread && !input.isWoke;
   }
@@ -943,7 +948,7 @@ export function shouldRecedeSidebarThread(input: {
 
 type SidebarThreadStatusInput = Pick<
   SidebarThreadSummary,
-  "hasPendingApprovals" | "hasPendingUserInput" | "runtime"
+  "hasPendingApprovals" | "hasPendingUserInput" | "runtime" | "backgroundLiveness"
 >;
 
 export function resolveSidebarThreadStatus(thread: SidebarThreadStatusInput): SidebarThreadStatus {
@@ -959,12 +964,11 @@ export function resolveSidebarThreadStatus(thread: SidebarThreadStatusInput): Si
   ) {
     return "working";
   }
-  if (thread.runtime?.status === "idle") {
-    return "waiting";
-  }
   if (thread.runtime?.status === "failed") {
     return thread.runtime.lastErrorClass === "usage_limit" ? "limited" : "failed";
   }
+  if (thread.backgroundLiveness === "monitoring") return "monitoring";
+  if (thread.runtime?.status === "idle") return "waiting";
   return "ready";
 }
 
@@ -976,6 +980,7 @@ export type SidebarV2TopStatusKind =
   | "input"
   | "waiting"
   | "woke"
+  | "monitoring"
   | "working";
 
 export function resolveSidebarV2TopStatus(input: {
@@ -986,6 +991,7 @@ export function resolveSidebarV2TopStatus(input: {
   if (input.status === "working") {
     return "working";
   }
+  if (input.status === "monitoring") return "monitoring";
   if (input.status === "waiting") {
     return "waiting";
   }
@@ -1014,7 +1020,7 @@ export function shouldShowSidebarV2Duration(status: SidebarThreadStatus): boolea
     inbox. */
 export function isSidebarThreadWorking(thread: ThreadStatusInput): boolean {
   const status = resolveSidebarThreadStatus(thread);
-  if (status !== "working" && status !== "waiting") return false;
+  if (status !== "working" && status !== "waiting" && status !== "monitoring") return false;
   // A plan prompt outranks lingering background work: the user has to act on it.
   return !(
     thread.interactionMode === "plan" &&
@@ -1219,6 +1225,14 @@ export function resolveThreadStatusPill(input: {
       pulse: false,
     };
   }
+
+  if (thread.backgroundLiveness === "monitoring")
+    return {
+      label: "Monitoring",
+      colorClass: "text-sidebar-muted-foreground",
+      dotClass: "bg-sidebar-muted-foreground",
+      pulse: false,
+    };
 
   const hasPlanReadyPrompt =
     !thread.hasPendingUserInput &&

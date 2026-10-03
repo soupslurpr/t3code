@@ -63,7 +63,7 @@ layer("057_ComputerMonitorEvaluationThrottle", (it) => {
         resourceState: "viewing",
       });
 
-      yield* runMigrations({ toMigrationInclusive: 56 });
+      yield* runMigrations({ toMigrationInclusive: 59 });
       yield* sql`
         INSERT INTO thread_monitors (
           monitor_id,
@@ -90,7 +90,7 @@ layer("057_ComputerMonitorEvaluationThrottle", (it) => {
         )
       `;
 
-      yield* runMigrations({ toMigrationInclusive: 57 });
+      yield* runMigrations({ toMigrationInclusive: 60 });
 
       const rows = yield* sql<{ readonly conditionJson: string }>`
         SELECT condition_json AS "conditionJson"

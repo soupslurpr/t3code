@@ -1,3 +1,7 @@
+import * as ProviderComputerLifecycle from "./orchestration-v2/ProviderComputerLifecycle.ts";
+import * as ThreadWorkspaceQuery from "./orchestration-v2/ThreadWorkspaceQuery.ts";
+import * as ThreadMonitor from "./threadMonitor/ThreadMonitor.ts";
+import * as ThreadMonitorComputer from "./threadMonitor/ThreadMonitorComputer.ts";
 import type { RelayManagedEndpointRuntimeConfig } from "@t3tools/contracts/relay";
 import * as Clock from "effect/Clock";
 import * as Random from "effect/Random";
@@ -163,6 +167,7 @@ import * as UsageService from "./usage/UsageService.ts";
 import {
   OrchestrationEventInfrastructureLayerLive,
   OrchestrationV2ProductionLayerLive,
+  OrchestrationV2EventSinkLayerLive,
   ProjectServiceLayerLive,
   ProjectSetupScriptRunnerLayerLive,
 } from "./orchestration-v2/runtimeLayer.ts";
@@ -231,7 +236,7 @@ const DesktopServicesLive = Layer.mergeAll(
   AgentDesktopManagerLive,
   ComputerAutomationRouterLive,
   AgentDesktopTransferLive,
-);
+).pipe(Layer.provide(ThreadWorkspaceQuery.layer));
 const ResourceAttributionLayerLive = ResourceAttribution.layer;
 const ApplicationObservabilityLive = EventLoopMonitor.layer.pipe(
   Layer.provideMerge(ObservabilityLive),
@@ -307,7 +312,6 @@ const HttpServerLive = Layer.unwrap(
 );
 
 const PlatformServicesLive = NodeServices.layer;
-
 
 const VcsDriverRegistryLayerLive = VcsDriverRegistry.layer.pipe(
   Layer.provide(VcsProjectConfig.layer),
@@ -489,6 +493,7 @@ const CloudManagedEndpointRuntimeLive = Layer.mergeAll(
 );
 
 const OrchestrationV2RuntimeLayerLive = OrchestrationV2ProductionLayerLive.pipe(
+  Layer.provide(ProviderComputerLifecycle.layer.pipe(Layer.provide(PreviewAutomationBrokerLive))),
   Layer.provide(ProviderEventIngestor.analyticsLive),
   Layer.provide(CheckpointStoreLayerLive),
   Layer.provide(GitWorkflowLayerLive),
@@ -660,8 +665,15 @@ const RuntimeCoreDependenciesLive = RuntimeCoreProviderDependenciesLive.pipe(
   ),
 );
 
-const RuntimeCoreWithAgentPowerLive = AgentPowerReporter.layer.pipe(
+const ThreadMonitorLive = ThreadMonitor.layer.pipe(
+  Layer.provide(OrchestrationV2EventSinkLayerLive),
+  Layer.provide(ThreadMonitorComputer.layer),
+  Layer.provideMerge(ThreadWorkspaceQuery.layer),
+  Layer.provideMerge(ProjectionStoreV2.layer),
   Layer.provideMerge(RuntimeCoreDependenciesLive),
+);
+const RuntimeCoreWithAgentPowerLive = AgentPowerReporter.layer.pipe(
+  Layer.provideMerge(ThreadMonitorLive),
   Layer.provideMerge(DesktopTelemetryReceiverLayerLive),
 );
 

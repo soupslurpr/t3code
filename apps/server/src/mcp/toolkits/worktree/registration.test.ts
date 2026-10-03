@@ -1,3 +1,9 @@
+import { ComputerAutomationRouter } from "../../../computer/ComputerAutomationRouter.ts";
+import { ComputerObservationStore } from "../../../computer/ComputerObservationStore.ts";
+import { ThreadMonitorService } from "../../../threadMonitor/ThreadMonitorService.ts";
+import { ThreadWorkspaceQuery } from "../../../orchestration-v2/ThreadWorkspaceQuery.ts";
+import { UserDesktopRepository } from "../../../persistence/UserDesktops.ts";
+import { UserDesktopTransfers } from "../../../computer/UserDesktopTransfers.ts";
 import * as Orchestrator from "../../../orchestration-v2/Orchestrator.ts";
 import * as ProjectionStore from "../../../orchestration-v2/ProjectionStore.ts";
 import * as DeviceService from "../../../device/DeviceService.ts";
@@ -29,6 +35,12 @@ const StubServicesLive = Layer.mergeAll(
   Layer.mock(Orchestrator.OrchestratorV2)({}),
   Layer.mock(ProjectionStore.ProjectionStoreV2)({}),
   Layer.mock(DeviceService.DeviceService)({}),
+  Layer.mock(ComputerAutomationRouter)({}),
+  Layer.mock(ComputerObservationStore)({}),
+  Layer.mock(ThreadMonitorService)({}),
+  Layer.mock(ThreadWorkspaceQuery)({}),
+  Layer.mock(UserDesktopRepository)({}),
+  Layer.mock(UserDesktopTransfers)({ download: () => null }),
   Layer.mock(ThreadManagementService.ThreadManagementService)({}),
   Layer.mock(ProviderRegistry.ProviderRegistry)({}),
   Layer.mock(ProviderAdapterRegistry.ProviderAdapterRegistryV2)({}),

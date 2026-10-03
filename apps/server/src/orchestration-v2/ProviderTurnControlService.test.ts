@@ -21,6 +21,9 @@ import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Ref from "effect/Ref";
 import * as Stream from "effect/Stream";
+import * as Deferred from "effect/Deferred";
+import { ProviderComputerLifecycle } from "./ProviderComputerLifecycle.ts";
+import { ProviderAdapterInterruptError } from "./ProviderAdapter.ts";
 
 import { CodexProviderCapabilitiesV2 } from "./Adapters/CodexAdapterV2.ts";
 import * as ProjectionStore from "./ProjectionStore.ts";
@@ -320,5 +323,108 @@ it.effect(
       assert.equal(interrupted?.providerSessionId, oldSessionId);
       assert.equal(interrupted?.id, providerThreadId);
       assert.equal(interrupted?.nativeThreadRef?.nativeId, "native-thread:restart-session");
+    }),
+);
+
+it.effect.each([false, true])(
+  "gates desktop control before provider Stop and drains cleanup (provider failure: %s)",
+  (fail) =>
+    Effect.gen(function* () {
+      const now = yield* DateTime.now;
+      const threadId = ThreadId.make("stop-computer");
+      const providerThreadId = ProviderThreadId.make("stop-provider-thread");
+      const providerTurnId = ProviderTurnId.make("stop-provider-turn");
+      const providerSessionId = ProviderSessionId.make("stop-session");
+      const providerThread: OrchestrationV2ProviderThread = {
+        id: providerThreadId,
+        driver,
+        providerInstanceId,
+        providerSessionId,
+        appThreadId: threadId,
+        ownerNodeId: null,
+        nativeThreadRef: null,
+        nativeConversationHeadRef: null,
+        status: "active",
+        firstRunOrdinal: 1,
+        lastRunOrdinal: 1,
+        handoffIds: [],
+        forkedFrom: null,
+        createdAt: now,
+        updatedAt: now,
+      };
+      const projection = makeProjection({
+        now,
+        threadId,
+        providerThread,
+        providerTurnId,
+        attemptId: RunAttemptId.make("stop-attempt"),
+      });
+      const interrupted = yield* Deferred.make<void>();
+      let gated = false;
+      let cleaned = false;
+      const interruptTurn = Effect.gen(function* () {
+        assert.isTrue(gated);
+        yield* Deferred.succeed(interrupted, undefined);
+        if (fail)
+          return yield* new ProviderAdapterInterruptError({
+            driver,
+            providerThreadId,
+            providerTurnId,
+            cause: "provider failed",
+          });
+      });
+      const runtime = {
+        interruptTurn: () => interruptTurn,
+      } as unknown as ProviderAdapterV2SessionRuntime;
+      const result = yield* Effect.gen(function* () {
+        const control = yield* ProviderTurnControlService.ProviderTurnControlServiceV2;
+        return yield* control
+          .interrupt({ threadId, providerSessionId, providerThreadId, providerTurnId })
+          .pipe(Effect.result);
+      }).pipe(
+        Effect.provide(
+          ProviderTurnControlService.layer.pipe(
+            Layer.provide(
+              Layer.mergeAll(
+                Layer.mock(ProjectionStore.ProjectionStoreV2)({
+                  getProviderControlContext: () =>
+                    Effect.succeed({
+                      providerThread,
+                      providerTurn: projection.providerTurns[0],
+                      attempt: undefined,
+                      message: undefined,
+                      run: undefined,
+                    }),
+                  getRunningTurnContext: () =>
+                    Effect.succeed({
+                      run: undefined,
+                      providerThread,
+                      providerTurn: projection.providerTurns[0],
+                    }),
+                }),
+                Layer.mock(ProviderSessionManager.ProviderSessionManagerV2)({
+                  get: () => Effect.succeedSome(runtime),
+                }),
+              ),
+            ),
+          ),
+        ),
+        Effect.provideService(ProviderComputerLifecycle, {
+          resume: () => Effect.void,
+          beginInterruption: () =>
+            Effect.sync(() => {
+              gated = true;
+              return Deferred.await(interrupted).pipe(
+                Effect.andThen(
+                  Effect.sync(() => {
+                    cleaned = true;
+                  }),
+                ),
+              );
+            }),
+        }),
+      );
+      assert.equal(result._tag, fail ? "Failure" : "Success");
+      assert.isTrue(cleaned);
     }),
 );

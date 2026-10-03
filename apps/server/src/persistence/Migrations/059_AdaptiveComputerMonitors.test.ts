@@ -79,7 +79,7 @@ layer("058_AdaptiveComputerMonitors", (it) => {
         resourceState: "viewing",
       };
 
-      yield* runMigrations({ toMigrationInclusive: 57 });
+      yield* runMigrations({ toMigrationInclusive: 60 });
       yield* sql`
         INSERT INTO thread_monitors (
           monitor_id,
@@ -113,7 +113,7 @@ layer("058_AdaptiveComputerMonitors", (it) => {
         ) VALUES ('computer-monitor', 'YmFzZWxpbmU=', 'dGVybWluYWw=')
       `;
 
-      yield* runMigrations({ toMigrationInclusive: 58 });
+      yield* runMigrations({ toMigrationInclusive: 61 });
 
       const monitorRows = yield* sql<{ readonly conditionJson: string }>`
         SELECT condition_json AS "conditionJson"

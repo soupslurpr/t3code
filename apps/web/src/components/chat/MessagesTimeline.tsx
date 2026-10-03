@@ -1,3 +1,5 @@
+import { formatTokens } from "@t3tools/shared/usageFormat";
+import type { OrchestrationSystemEvent } from "@t3tools/contracts";
 import { ComputerUseAppIcon } from "~/components/Icons";
 import { useChatCanvas } from "./ChatCanvasContext";
 import { WorkLogBlock, WorkLogButton, WorkLogDetails, WorkLogList, WorkLogRow } from "./WorkLog";
@@ -1807,9 +1809,6 @@ const TimelineRowContent = memo(function TimelineRowContent({ row }: { row: Time
         <AssistantTimelineRow row={row} />
       ) : null}
       {row.kind === "assistant-meta" ? <AssistantMetaTimelineRow row={row} /> : null}
-      {row.kind === "message" && row.message.role === "system" ? (
-        <MonitorSystemEventTimelineRow row={row} />
-      ) : null}
       {row.kind === "proposed-plan" ? <ProposedPlanTimelineRow row={row} /> : null}
       {row.kind === "working" ? <WorkingTimelineRow row={row} /> : null}
       {row.kind === "worktree-setup" ? <WorktreeSetupTimelineRow row={row} /> : null}
@@ -1931,14 +1930,14 @@ function MessageAuthorHeading({ children }: { children: string }) {
 }
 
 function MonitorSystemEventTimelineRow({
-  row,
+  event,
+  createdAt,
 }: {
-  row: Extract<TimelineRow, { kind: "message" }>;
+  event: OrchestrationSystemEvent;
+  createdAt: string;
 }) {
   const [expanded, setExpanded] = useState(false);
   const ctx = use(TimelineRowCtx);
-  const event = row.message.systemEvent;
-  if (event === undefined) return null;
   const presentation = resolveMonitorSystemEventPresentation(event);
   const Chevron = expanded ? ChevronDownIcon : ChevronRightIcon;
   const Icon = event.type === "monitor.review" ? CircleAlertIcon : EyeIcon;
@@ -1961,11 +1960,9 @@ function MonitorSystemEventTimelineRow({
           <TooltipTrigger
             render={<time className="shrink-0 text-2xs text-muted-foreground/55 tabular-nums" />}
           >
-            {formatDayAwareTimestamp(row.message.createdAt, ctx.timestampFormat)}
+            {formatDayAwareTimestamp(createdAt, ctx.timestampFormat)}
           </TooltipTrigger>
-          <TooltipPopup>
-            {formatChatTimestampTooltip(row.message.createdAt, ctx.timestampFormat)}
-          </TooltipPopup>
+          <TooltipPopup>{formatChatTimestampTooltip(createdAt, ctx.timestampFormat)}</TooltipPopup>
         </Tooltip>
         <Chevron className="size-3.5 shrink-0 text-muted-foreground/65" />
       </button>
@@ -2016,16 +2013,16 @@ function MonitorSystemEventTimelineRow({
                 <p className="tabular-nums">
                   {reviewUsage.inputTokens === null
                     ? "Input usage unavailable"
-                    : `${formatSubagentTokenCount(reviewUsage.inputTokens)} input tokens`}
+                    : `${formatTokens(reviewUsage.inputTokens)} input tokens`}
                   {reviewUsage.cachedInputTokens === null
                     ? ""
-                    : ` · ${formatSubagentTokenCount(reviewUsage.cachedInputTokens)} cached`}
+                    : ` · ${formatTokens(reviewUsage.cachedInputTokens)} cached`}
                   {reviewUsage.cacheWriteInputTokens === null
                     ? ""
-                    : ` · ${formatSubagentTokenCount(reviewUsage.cacheWriteInputTokens)} cache writes`}
+                    : ` · ${formatTokens(reviewUsage.cacheWriteInputTokens)} cache writes`}
                   {reviewUsage.outputTokens === null
                     ? ""
-                    : ` · ${formatSubagentTokenCount(reviewUsage.outputTokens)} output tokens`}
+                    : ` · ${formatTokens(reviewUsage.outputTokens)} output tokens`}
                 </p>
               ) : null}
               {event.metrics.regions.map((region) => (
@@ -5095,6 +5092,14 @@ const SimpleWorkEntryRow = memo(function SimpleWorkEntryRow(props: {
     setExpanded(next);
   };
   const failureItem = workEntry.projectedItem?.item;
+  if (failureItem?.type === "notification" && failureItem.systemEvent !== undefined) {
+    return (
+      <MonitorSystemEventTimelineRow
+        event={failureItem.systemEvent}
+        createdAt={workEntry.createdAt}
+      />
+    );
+  }
   if (failureItem?.type === "error" && failureItem.status === "failed") {
     const warning = failureItem.failure.class === "usage_limit";
     const resetAt = failureItem.failure.resetAt;

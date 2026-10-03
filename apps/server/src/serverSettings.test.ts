@@ -138,36 +138,34 @@ it.layer(NodeServices.layer)("server settings", (it) => {
     }).pipe(Effect.provide(makeServerSettingsLayer())),
   );
 
-  for (const [label, raw, enabled] of [
+  it.effect.each([
     ["new environments", null, true],
     ["existing sparse settings", "{}", true],
     ["existing On settings", '{"continueThreadsAfterServerUpdate":true}', true],
     ["existing Off settings", '{"continueThreadsAfterServerUpdate":false}', false],
-  ] as const) {
-    it.effect(
-      `preserves restart continuation for ${label} across settings writes and reloads`,
-      () =>
-        Effect.gen(function* () {
-          const settings = yield* ServerSettingsModule.ServerSettingsService;
-          const config = yield* ServerConfig.ServerConfig;
-          const fs = yield* FileSystem.FileSystem;
-          if (raw !== null) yield* fs.writeFileString(config.settingsPath, raw);
-          assert.equal((yield* settings.getSettings).continueThreadsAfterServerUpdate, enabled);
+  ] as const)(
+    "preserves restart continuation for %s across settings writes and reloads",
+    ([_label, raw, enabled]) =>
+      Effect.gen(function* () {
+        const settings = yield* ServerSettingsModule.ServerSettingsService;
+        const config = yield* ServerConfig.ServerConfig;
+        const fs = yield* FileSystem.FileSystem;
+        if (raw !== null) yield* fs.writeFileString(config.settingsPath, raw);
+        assert.equal((yield* settings.getSettings).continueThreadsAfterServerUpdate, enabled);
 
-          yield* settings.updateSettings({ enableProviderUpdateChecks: false });
-          const persisted = yield* fs
-            .readFileString(config.settingsPath)
-            .pipe(Effect.flatMap(decodePersistedRestartSettings));
-          if (enabled) assert.notProperty(persisted, "continueThreadsAfterServerUpdate");
-          else assert.strictEqual(persisted.continueThreadsAfterServerUpdate, false);
+        yield* settings.updateSettings({ enableProviderUpdateChecks: false });
+        const persisted = yield* fs
+          .readFileString(config.settingsPath)
+          .pipe(Effect.flatMap(decodePersistedRestartSettings));
+        if (enabled) assert.notProperty(persisted, "continueThreadsAfterServerUpdate");
+        else assert.strictEqual(persisted.continueThreadsAfterServerUpdate, false);
 
-          const reloaded = yield* Effect.gen(function* () {
-            return yield* (yield* ServerSettingsModule.ServerSettingsService).getSettings;
-          }).pipe(Effect.provide(Layer.fresh(ServerSettingsModule.layer)));
-          assert.equal(reloaded.continueThreadsAfterServerUpdate, enabled);
-        }).pipe(Effect.provide(makeServerSettingsLayer())),
-    );
-  }
+        const reloaded = yield* Effect.gen(function* () {
+          return yield* (yield* ServerSettingsModule.ServerSettingsService).getSettings;
+        }).pipe(Effect.provide(Layer.fresh(ServerSettingsModule.layer)));
+        assert.equal(reloaded.continueThreadsAfterServerUpdate, enabled);
+      }).pipe(Effect.provide(makeServerSettingsLayer())),
+  );
 
   it.effect(
     "resetting restart continuation removes the environment value and preserves project opt-outs",
@@ -274,7 +272,7 @@ it.layer(NodeServices.layer)("server settings", (it) => {
     }).pipe(Effect.provide(makeServerSettingsLayer())),
   );
 
-  for (const [label, raw, enabled, agentAccess] of [
+  it.effect.each([
     ["an existing file without device settings", "{}", true, true],
     ["explicit opt-ins", '{"enableDeviceSupport":true,"enableAgentDeviceAccess":true}', true, true],
     [
@@ -286,36 +284,34 @@ it.layer(NodeServices.layer)("server settings", (it) => {
     ["only the hub disabled", '{"enableDeviceSupport":false}', false, true],
     ["only agent access disabled", '{"enableAgentDeviceAccess":false}', true, false],
     ["malformed settings", "{invalid json", true, true],
-  ] as const) {
-    it.effect(`loads and persists device defaults for ${label}`, () =>
-      Effect.gen(function* () {
-        const settings = yield* ServerSettingsModule.ServerSettingsService;
-        const config = yield* ServerConfig.ServerConfig;
-        const fs = yield* FileSystem.FileSystem;
-        yield* fs.writeFileString(config.settingsPath, raw);
-        const loaded = yield* settings.getSettings;
-        assert.equal(loaded.enableDeviceSupport, enabled);
-        assert.equal(loaded.enableAgentDeviceAccess, agentAccess);
-        yield* settings.updateSettings({ deviceOnboardingCompleted: true });
-        const saved = yield* fs.readFileString(config.settingsPath).pipe(
-          Effect.flatMap(
-            Schema.decodeUnknownEffect(
-              Schema.fromJsonString(
-                Schema.Struct({
-                  enableDeviceSupport: Schema.Boolean,
-                  enableAgentDeviceAccess: Schema.Boolean,
-                }),
-              ),
+  ] as const)("loads and persists device defaults for %s", ([_label, raw, enabled, agentAccess]) =>
+    Effect.gen(function* () {
+      const settings = yield* ServerSettingsModule.ServerSettingsService;
+      const config = yield* ServerConfig.ServerConfig;
+      const fs = yield* FileSystem.FileSystem;
+      yield* fs.writeFileString(config.settingsPath, raw);
+      const loaded = yield* settings.getSettings;
+      assert.equal(loaded.enableDeviceSupport, enabled);
+      assert.equal(loaded.enableAgentDeviceAccess, agentAccess);
+      yield* settings.updateSettings({ deviceOnboardingCompleted: true });
+      const saved = yield* fs.readFileString(config.settingsPath).pipe(
+        Effect.flatMap(
+          Schema.decodeUnknownEffect(
+            Schema.fromJsonString(
+              Schema.Struct({
+                enableDeviceSupport: Schema.Boolean,
+                enableAgentDeviceAccess: Schema.Boolean,
+              }),
             ),
           ),
-        );
-        assert.deepEqual(saved, {
-          enableDeviceSupport: enabled,
-          enableAgentDeviceAccess: agentAccess,
-        });
-      }).pipe(Effect.provide(makeServerSettingsLayer())),
-    );
-  }
+        ),
+      );
+      assert.deepEqual(saved, {
+        enableDeviceSupport: enabled,
+        enableAgentDeviceAccess: agentAccess,
+      });
+    }).pipe(Effect.provide(makeServerSettingsLayer())),
+  );
 
   it.effect("identifies provider history query failures", () =>
     Effect.gen(function* () {

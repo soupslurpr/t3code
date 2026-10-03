@@ -23,7 +23,7 @@ layer("061_ComputerMonitorCacheWriteUsage", (it) => {
   it.effect("adds cache-write usage to retained computer monitors", () =>
     Effect.gen(function* () {
       const sql = yield* SqlClient.SqlClient;
-      yield* runMigrations({ toMigrationInclusive: 60 });
+      yield* runMigrations({ toMigrationInclusive: 63 });
       const condition = {
         type: "computer",
         lastUsage: { inputTokens: 20, cachedInputTokens: 16, outputTokens: 5 },
@@ -55,7 +55,7 @@ layer("061_ComputerMonitorCacheWriteUsage", (it) => {
         )
       `;
 
-      yield* runMigrations({ toMigrationInclusive: 61 });
+      yield* runMigrations({ toMigrationInclusive: 64 });
 
       const rows = yield* sql<{ readonly conditionJson: string }>`
         SELECT condition_json AS "conditionJson"

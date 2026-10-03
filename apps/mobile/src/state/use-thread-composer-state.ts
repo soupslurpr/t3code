@@ -1062,6 +1062,8 @@ export function useThreadComposerState() {
     interactionMode,
     activeThreadBusy,
     interruptibleRunId,
+    canStopThread:
+      interruptibleRunId !== null || selectedThreadShell?.backgroundLiveness === "monitoring",
     onChangeDraftMessage,
     onPickDraftMedia,
     onPickDraftFiles,

@@ -2,6 +2,7 @@
 import {
   CommandId,
   EventId,
+  TurnItemId,
   MessageId,
   ThreadMonitorError,
   ThreadMonitorId,
@@ -28,11 +29,13 @@ import * as Option from "effect/Option";
 import * as Queue from "effect/Queue";
 import * as Result from "effect/Result";
 import * as Semaphore from "effect/Semaphore";
+import * as Scope from "effect/Scope";
 import * as Stream from "effect/Stream";
 
-import { OrchestrationEngineService } from "../orchestration/Services/OrchestrationEngine.ts";
-import { ProjectionSnapshotQuery } from "../orchestration/Services/ProjectionSnapshotQuery.ts";
-import { ThreadBackgroundLivenessService } from "../orchestration/ThreadBackgroundLiveness.ts";
+import { ThreadManagementService } from "../orchestration-v2/ThreadManagementService.ts";
+import { EventSinkV2 } from "../orchestration-v2/EventSink.ts";
+import { ProjectionStoreV2 } from "../orchestration-v2/ProjectionStore.ts";
+import { ThreadWorkspaceQuery } from "../orchestration-v2/ThreadWorkspaceQuery.ts";
 import * as ThreadMonitorRepositoryLayer from "../persistence/Layers/ThreadMonitors.ts";
 import { ThreadMonitorRepository } from "../persistence/Services/ThreadMonitors.ts";
 import { forkParked } from "../serverActivation.ts";
@@ -50,11 +53,9 @@ import {
 } from "./ThreadMonitorContinuation.ts";
 
 const DELIVERY_SETTLE_MS = 750;
-const PENDING_TURN_GRACE_MS = 10_000;
 const BLOCKED_DELIVERY_RETRY_MS = 1_000;
 const DELIVERY_RETRY_MAX_MS = 5 * 60 * 1_000;
 const MAX_SCHEDULER_SLEEP_MS = 60 * 60 * 1_000;
-const MONITOR_TASK_TYPE = "monitor_mcp";
 
 const emptyComputerEvidence = {
   baselineImages: [],
@@ -170,11 +171,6 @@ function isOutstanding(monitor: ThreadMonitor): boolean {
   return monitor.status === "active" || monitor.status === "triggered";
 }
 
-/** Builds a stable liveness task identifier. */
-function monitorTaskId(monitorId: ThreadMonitorId): string {
-  return `durable-monitor:${monitorId}`;
-}
-
 /** Bounds internal failure details before persisting or returning them. */
 function boundedDetail(cause: unknown): string {
   const rendered = cause instanceof Error ? cause.message : String(cause);
@@ -279,30 +275,34 @@ function requestControllerReview(
 
 const make = Effect.gen(function* () {
   const crypto = yield* Crypto.Crypto;
-  const engine = yield* OrchestrationEngineService;
-  const snapshots = yield* ProjectionSnapshotQuery;
+  const engine = yield* ThreadManagementService;
+  const eventSink = yield* EventSinkV2;
+  const projections = yield* ProjectionStoreV2;
+  const snapshots = yield* ThreadWorkspaceQuery;
   const repository = yield* ThreadMonitorRepository;
-  const liveness = yield* ThreadBackgroundLivenessService;
   const computer = yield* ThreadMonitorComputerService;
   const mutex = yield* Semaphore.make(1);
   const scope = yield* Effect.scope;
   const checks = new Map<ThreadMonitorId, Fiber.Fiber<void, ThreadMonitorError>>();
   const pendingStarts = new Map<
     ThreadMonitorId,
-    { threadId: ThreadId; stopped: Deferred.Deferred<void> }
+    { threadId: ThreadId; afterSequence: number; stopped: Deferred.Deferred<void> }
   >();
   const releases = new Map<
     ThreadMonitorId,
     { threadId: ThreadId; fiber: Fiber.Fiber<void, ThreadMonitorError> }
   >();
+  const cancellationCleanups = new Set<ThreadMonitorId>();
   const wakeQueue = yield* Queue.sliding<void>(1);
 
   const nowIso = DateTime.now.pipe(Effect.map(DateTime.formatIso));
   const wake = Queue.offer(wakeQueue, undefined).pipe(Effect.asVoid);
 
-  const stopPendingStarts = (threadId: ThreadId) =>
+  const stopPendingStarts = (threadId: ThreadId, beforeSequence = Number.POSITIVE_INFINITY) =>
     Effect.forEach(
-      [...pendingStarts.values()].filter((pending) => pending.threadId === threadId),
+      [...pendingStarts.values()].filter(
+        (pending) => pending.threadId === threadId && pending.afterSequence < beforeSequence,
+      ),
       (pending) => Deferred.succeed(pending.stopped, undefined),
       { discard: true },
     );
@@ -316,28 +316,13 @@ const make = Effect.gen(function* () {
         ...(monitorId === undefined ? {} : { monitorId }),
       });
 
-  const setLiveness = (monitor: ThreadMonitor, live: boolean) =>
-    Effect.sync(() => {
-      liveness.recordTaskLiveness({
-        threadId: monitor.threadId,
-        taskId: monitorTaskId(monitor.id),
-        taskType: MONITOR_TASK_TYPE,
-        status: live ? "running" : "completed",
-        kind: live ? "started" : "completed",
-      });
-    });
-
   const writeMonitor = (monitor: ThreadMonitor) =>
-    repository
-      .upsert(monitor)
-      .pipe(
-        Effect.mapError(mapPersistenceError("write", monitor.id)),
-        Effect.andThen(setLiveness(monitor, isOutstanding(monitor))),
-      );
+    repository.upsert(monitor).pipe(Effect.mapError(mapPersistenceError("write", monitor.id)));
 
   const writeComputerRevision = (
     monitor: ThreadMonitor,
     evidence: {
+      readonly afterSequence?: number;
       readonly baselineImages: ReadonlyArray<ThreadMonitorComputerEvidenceImage>;
       readonly previousImages: ReadonlyArray<ThreadMonitorComputerEvidenceImage>;
       readonly currentImages: ReadonlyArray<ThreadMonitorComputerEvidenceImage>;
@@ -346,21 +331,20 @@ const make = Effect.gen(function* () {
   ) =>
     repository
       .upsertComputerRevision({ monitor, ...evidence })
-      .pipe(
-        Effect.mapError(mapPersistenceError("computer-revision", monitor.id)),
-        Effect.andThen(setLiveness(monitor, isOutstanding(monitor))),
-      );
+      .pipe(Effect.mapError(mapPersistenceError("computer-revision", monitor.id)));
 
   // Called under the state lock. Desktop cleanup can wait on a remote computer,
   // so it has its own fiber and never holds the scheduler's state lock.
   const releaseComputer = Effect.fn("ThreadMonitor.releaseComputer")(function* (
     monitor: ThreadMonitor,
+    captureRelease?: (fiber: Fiber.Fiber<void, ThreadMonitorError>) => void,
   ) {
-    if (
-      monitor.condition.type !== "computer" ||
-      monitor.condition.resourceState === "released" ||
-      releases.has(monitor.id)
-    ) {
+    if (monitor.condition.type !== "computer" || monitor.condition.resourceState === "released") {
+      return monitor;
+    }
+    const releasing = releases.get(monitor.id);
+    if (releasing !== undefined) {
+      captureRelease?.(releasing.fiber);
       return monitor;
     }
     const checking = checks.get(monitor.id);
@@ -381,6 +365,7 @@ const make = Effect.gen(function* () {
       );
     }).pipe(Effect.ensuring(Effect.sync(() => releases.delete(monitor.id))), Effect.forkIn(scope));
     releases.set(monitor.id, { threadId: monitor.threadId, fiber });
+    captureRelease?.(fiber);
     return monitor;
   });
 
@@ -443,34 +428,49 @@ const make = Effect.gen(function* () {
     summary: string,
     identity = phase,
   ) => {
-    const createdAt = monitor.updatedAt;
-    return engine
-      .dispatch({
-        type: "thread.activity.append",
-        commandId: CommandId.make(`thread-monitor:${monitor.id}:activity:${identity}`),
-        threadId: monitor.threadId,
-        activity: {
-          id: EventId.make(`thread-monitor:${monitor.id}:activity:${identity}`),
-          tone: monitor.status === "failed" ? "error" : "info",
-          kind: `thread-monitor.${phase}`,
-          summary,
-          payload: monitor,
-          turnId: null,
-          createdAt,
-        },
-        createdAt,
-      })
-      .pipe(
-        Effect.asVoid,
-        Effect.catchCause((cause) =>
-          Effect.logWarning("failed to append durable monitor activity", {
-            monitorId: monitor.id,
+    const createdAt = DateTime.makeUnsafe(monitor.updatedAt);
+    const identityKey = `thread-monitor:${monitor.id}:activity:${identity}`;
+    return Effect.gen(function* () {
+      const thread = yield* projections.getThreadShell(monitor.threadId);
+      yield* eventSink.write({
+        events: [
+          {
+            type: "turn-item.updated",
+            id: EventId.make(identityKey),
             threadId: monitor.threadId,
-            phase,
-            cause: Cause.pretty(cause),
-          }),
-        ),
-      );
+            occurredAt: createdAt,
+            payload: {
+              type: "system_notice",
+              id: TurnItemId.make(identityKey),
+              threadId: monitor.threadId,
+              runId: thread?.latestRunId ?? null,
+              nodeId: null,
+              providerThreadId: null,
+              providerTurnId: null,
+              nativeItemRef: null,
+              parentItemId: null,
+              ordinal: 0,
+              status: monitor.status === "failed" ? "failed" : "completed",
+              title: null,
+              message: summary,
+              startedAt: createdAt,
+              completedAt: createdAt,
+              updatedAt: createdAt,
+            },
+          },
+        ],
+      });
+    }).pipe(
+      Effect.asVoid,
+      Effect.catchCause((cause) =>
+        Effect.logWarning("failed to append durable monitor activity", {
+          monitorId: monitor.id,
+          threadId: monitor.threadId,
+          phase,
+          cause: Cause.pretty(cause),
+        }),
+      ),
+    );
   };
 
   const appendReviewRequestedActivity = (monitor: ThreadMonitor) => {
@@ -583,19 +583,18 @@ const make = Effect.gen(function* () {
     }
 
     const thread = shell.value;
-    const sessionBusy =
-      thread.session?.status === "starting" || thread.session?.status === "running";
-    const pendingTurnAgeMs =
-      thread.latestTurn?.state === "running"
-        ? nowMs - Date.parse(thread.latestTurn.requestedAt)
-        : Number.POSITIVE_INFINITY;
-    const recentPendingTurn =
-      thread.latestTurn?.state === "running" && pendingTurnAgeMs < PENDING_TURN_GRACE_MS;
+    // Reconcile a previously accepted delivery before checking current work.
+    // The new run may still be active after a crash between dispatch and persist.
+    const prior = yield* projections
+      .getThreadRecords(thread.id, ["messages"], {
+        messageIds: [MessageId.make(`thread-monitor-group:${first.deliveryGroupId}:continuation`)],
+      })
+      .pipe(Effect.mapError(mapPersistenceError("delivery-recovery")));
     if (
-      sessionBusy ||
-      recentPendingTurn ||
-      thread.hasPendingApprovals ||
-      thread.hasPendingUserInput
+      prior.messages.length === 0 &&
+      (thread.activeRunId !== null ||
+        thread.pendingRuntimeRequest !== null ||
+        thread.archivedAt !== null)
     ) {
       return;
     }
@@ -620,19 +619,21 @@ const make = Effect.gen(function* () {
     const systemEvent = makeMonitorContinuationEvent(attempting);
     const dispatched = yield* engine
       .dispatch({
-        type: "thread.turn.start",
+        type: "message.dispatch",
         commandId,
         threadId: first.threadId,
-        message: {
-          messageId,
-          role: "system",
-          text: monitorSystemEventSummary(systemEvent),
-          attachments: [],
+        messageId,
+        text: monitorSystemEventSummary(systemEvent),
+        notification: {
+          source: { kind: "monitor" },
+          outcome: "updated",
+          summary: monitorSystemEventSummary(systemEvent),
           systemEvent,
         },
-        runtimeMode: thread.runtimeMode,
-        interactionMode: thread.interactionMode,
-        createdAt: now,
+        attachments: [],
+        createdBy: "system",
+        creationSource: "server",
+        dispatchMode: { type: "queue_after_active" },
       })
       .pipe(Effect.result);
 
@@ -650,8 +651,9 @@ const make = Effect.gen(function* () {
             // A rejected receipt or conflicting command cannot accept the same
             // id. Ambiguous failures retain it so replay remains idempotent.
             deliveryAttempts:
-              dispatched.failure._tag === "OrchestrationCommandPreviouslyRejectedError" ||
-              dispatched.failure._tag === "OrchestrationCommandIdConflictError"
+              dispatched.failure._tag === "OrchestratorCommandRejectedError" ||
+              dispatched.failure._tag === "OrchestratorCommandPreviouslyRejectedError" ||
+              dispatched.failure._tag === "OrchestratorCommandIdConflictError"
                 ? attempt + 1
                 : attempt,
             lastError: detail,
@@ -703,17 +705,22 @@ const make = Effect.gen(function* () {
       return yield* failMonitor(monitor, "The owning thread is unavailable.", now);
     }
     const thread = shell.value;
-    const sessionBusy =
-      thread.session?.status === "starting" || thread.session?.status === "running";
-    const pendingTurnAgeMs =
-      thread.latestTurn?.state === "running"
-        ? Date.parse(now) - Date.parse(thread.latestTurn.requestedAt)
-        : Number.POSITIVE_INFINITY;
+    // Reconcile a previously accepted delivery before checking current work.
+    // The new run may still be active after a crash between dispatch and persist.
+    const prior = yield* projections
+      .getThreadRecords(thread.id, ["messages"], {
+        messageIds: [
+          MessageId.make(
+            `thread-monitor:${monitor.id}:review:${monitor.condition.revision}:${monitor.condition.review.sequence}`,
+          ),
+        ],
+      })
+      .pipe(Effect.mapError(mapPersistenceError("delivery-recovery")));
     if (
-      sessionBusy ||
-      (thread.latestTurn?.state === "running" && pendingTurnAgeMs < PENDING_TURN_GRACE_MS) ||
-      thread.hasPendingApprovals ||
-      thread.hasPendingUserInput
+      prior.messages.length === 0 &&
+      (thread.activeRunId !== null ||
+        thread.pendingRuntimeRequest !== null ||
+        thread.archivedAt !== null)
     ) {
       return monitor;
     }
@@ -746,19 +753,21 @@ const make = Effect.gen(function* () {
     );
     const dispatched = yield* engine
       .dispatch({
-        type: "thread.turn.start",
+        type: "message.dispatch",
         commandId,
         threadId: monitor.threadId,
-        message: {
-          messageId,
-          role: "system",
-          text: monitorSystemEventSummary(systemEvent),
-          attachments: [],
+        messageId,
+        text: monitorSystemEventSummary(systemEvent),
+        notification: {
+          source: { kind: "monitor" },
+          outcome: "updated",
+          summary: monitorSystemEventSummary(systemEvent),
           systemEvent,
         },
-        runtimeMode: thread.runtimeMode,
-        interactionMode: thread.interactionMode,
-        createdAt: now,
+        attachments: [],
+        createdBy: "system",
+        creationSource: "server",
+        dispatchMode: { type: "queue_after_active" },
       })
       .pipe(Effect.result);
 
@@ -775,8 +784,9 @@ const make = Effect.gen(function* () {
           review: {
             ...attempting.condition.review,
             deliveryAttempts:
-              dispatched.failure._tag === "OrchestrationCommandPreviouslyRejectedError" ||
-              dispatched.failure._tag === "OrchestrationCommandIdConflictError"
+              dispatched.failure._tag === "OrchestratorCommandRejectedError" ||
+              dispatched.failure._tag === "OrchestratorCommandPreviouslyRejectedError" ||
+              dispatched.failure._tag === "OrchestratorCommandIdConflictError"
                 ? attempt + 1
                 : attempt,
             deliveryRetryAt: retryAt,
@@ -1053,11 +1063,16 @@ const make = Effect.gen(function* () {
   });
 
   const reconcile = (threadId?: ThreadId, monitorId?: ThreadMonitorId, startChecks = true) =>
-    mutex.withPermits(1)(reconcileUnlocked(threadId, monitorId, startChecks));
+    processCancellationRequests().pipe(
+      Effect.andThen(mutex.withPermits(1)(reconcileUnlocked(threadId, monitorId, startChecks))),
+    );
 
   const create: ThreadMonitorServiceShape["create"] = ({ threadId, monitor: input }) =>
     mutex.withPermits(1)(
       Effect.gen(function* () {
+        const afterSequence = yield* eventSink
+          .latestSequence()
+          .pipe(Effect.mapError(mapPersistenceError("start")));
         const thread = yield* snapshots
           .getThreadShellById(threadId)
           .pipe(Effect.mapError(mapPersistenceError("start")));
@@ -1092,7 +1107,9 @@ const make = Effect.gen(function* () {
           deliveryRetryAt: null,
           deliveryFailureCount: 0,
         };
-        yield* writeMonitor(monitor);
+        yield* repository
+          .upsert(monitor, { afterSequence })
+          .pipe(Effect.mapError(mapPersistenceError("write", monitor.id)));
         yield* appendActivity(monitor, "started", `Monitoring: ${monitor.label}`);
         yield* wake;
         return monitor;
@@ -1104,17 +1121,6 @@ const make = Effect.gen(function* () {
     monitor: input,
   }) =>
     Effect.gen(function* () {
-      const thread = yield* snapshots
-        .getThreadShellById(threadId)
-        .pipe(Effect.mapError(mapPersistenceError("computer-start")));
-      if (Option.isNone(thread)) {
-        return yield* monitorError({
-          code: "THREAD_UNAVAILABLE",
-          operation: "computer-start",
-          detail: `Thread '${threadId}' is unavailable.`,
-        });
-      }
-
       const createdAt = yield* nowIso;
       const id = ThreadMonitorId.make(yield* crypto.randomUUIDv4.pipe(Effect.orDie));
       const stopped = yield* Deferred.make<void>();
@@ -1125,9 +1131,28 @@ const make = Effect.gen(function* () {
         monitorId: id,
       });
       return yield* Effect.acquireUseRelease(
-        Effect.sync(() => pendingStarts.set(id, { threadId, stopped })),
-        () =>
+        mutex.withPermits(1)(
           Effect.gen(function* () {
+            const afterSequence = yield* eventSink
+              .latestSequence()
+              .pipe(Effect.mapError(mapPersistenceError("computer-start", id)));
+            pendingStarts.set(id, { threadId, stopped, afterSequence });
+            return afterSequence;
+          }),
+        ),
+        (afterSequence) =>
+          Effect.gen(function* () {
+            const thread = yield* snapshots
+              .getThreadShellById(threadId)
+              .pipe(Effect.mapError(mapPersistenceError("computer-start")));
+            if (Option.isNone(thread)) {
+              return yield* monitorError({
+                code: "THREAD_UNAVAILABLE",
+                operation: "computer-start",
+                detail: `Thread '${threadId}' is unavailable.`,
+              });
+            }
+            if (yield* Deferred.isDone(stopped)) return yield* cancelled;
             const prepared = yield* computer
               .prepare({
                 monitorId: id,
@@ -1174,6 +1199,7 @@ const make = Effect.gen(function* () {
                       detail: `Thread '${threadId}' is unavailable.`,
                     });
                   yield* writeComputerRevision(monitor, {
+                    afterSequence,
                     baselineImages: prepared.baselineImages,
                     previousImages: [],
                     currentImages: [],
@@ -1462,54 +1488,128 @@ const make = Effect.gen(function* () {
       }),
     );
 
-  const cancel: ThreadMonitorServiceShape["cancel"] = ({ threadId, cancel: input }) =>
-    mutex
-      .withPermits(1)(
-        Effect.gen(function* () {
-          if (input.monitorId === undefined) yield* stopPendingStarts(threadId);
-          const monitors =
-            input.monitorId === undefined
-              ? (yield* repository
-                  .listOutstanding()
-                  .pipe(Effect.mapError(mapPersistenceError("cancel")))).filter(
-                  (monitor) => monitor.threadId === threadId,
-                )
-              : [yield* readOwnedMonitor(threadId, input.monitorId, "cancel")];
-          if (monitors.length === 0) return { monitors: [] };
-          const cancelledAt = yield* nowIso;
-          const cancelled = yield* Effect.forEach(monitors, (monitor) =>
-            Effect.gen(function* () {
-              if (!isOutstanding(monitor)) return monitor;
-              const result: ThreadMonitor = {
-                ...monitor,
-                status: "cancelled",
-                updatedAt: cancelledAt,
-                cancelledAt,
-                lastError: null,
-                deliveryRetryAt: null,
-              };
-              yield* writeMonitor(result);
-              yield* releaseComputer(result);
-              yield* appendActivity(result, "cancelled", `Monitor cancelled: ${result.label}`);
-              return result;
-            }),
-          );
-          yield* wake;
-          return { monitors: cancelled.slice(0, 100) };
-        }),
-      )
-      .pipe(
-        Effect.flatMap((result) =>
-          awaitReleases(threadId, input.monitorId).pipe(
-            Effect.andThen(
-              Effect.forEach(result.monitors, (monitor) =>
-                readOwnedMonitor(threadId, monitor.id, "cancel"),
-              ),
-            ),
-            Effect.map((monitors) => ({ monitors })),
-          ),
-        ),
+  const cancelState = Effect.fn("ThreadMonitor.cancelState")(function* ({
+    threadId,
+    cancel: input,
+  }: Parameters<ThreadMonitorServiceShape["cancel"]>[0]) {
+    const releasing = new Set<Fiber.Fiber<void, ThreadMonitorError>>();
+    const captureRelease = (fiber: Fiber.Fiber<void, ThreadMonitorError>) => releasing.add(fiber);
+    const monitors = yield* mutex.withPermits(1)(
+      Effect.gen(function* () {
+        for (const [id, entry] of releases) {
+          if (
+            entry.threadId === threadId &&
+            (input.monitorId === undefined || id === input.monitorId)
+          ) {
+            captureRelease(entry.fiber);
+          }
+        }
+        if (input.monitorId === undefined) yield* stopPendingStarts(threadId);
+        const monitors =
+          input.monitorId === undefined
+            ? (yield* repository
+                .listOutstanding()
+                .pipe(Effect.mapError(mapPersistenceError("cancel")))).filter(
+                (monitor) => monitor.threadId === threadId,
+              )
+            : [yield* readOwnedMonitor(threadId, input.monitorId, "cancel")];
+        const cancelledAt = yield* nowIso;
+        const cancelled = yield* Effect.forEach(monitors, (monitor) =>
+          Effect.gen(function* () {
+            if (!isOutstanding(monitor)) {
+              yield* releaseComputer(monitor, captureRelease);
+              if (monitor.status === "cancelled") {
+                yield* appendActivity(monitor, "cancelled", `Monitor cancelled: ${monitor.label}`);
+              }
+              return monitor;
+            }
+            const result: ThreadMonitor = {
+              ...monitor,
+              status: "cancelled",
+              updatedAt: cancelledAt,
+              cancelledAt,
+              lastError: null,
+              deliveryRetryAt: null,
+            };
+            yield* writeMonitor(result);
+            yield* releaseComputer(result, captureRelease);
+            yield* appendActivity(result, "cancelled", `Monitor cancelled: ${result.label}`);
+            return result;
+          }),
+        );
+        yield* wake;
+        return cancelled.slice(0, 100);
+      }),
+    );
+    return { monitors, releasing: [...releasing] };
+  });
+
+  const cancel: ThreadMonitorServiceShape["cancel"] = (input) =>
+    Effect.gen(function* () {
+      const result = yield* cancelState(input);
+      // Keep the actual fibers: a failed release removes itself from the map.
+      yield* Effect.forEach(result.releasing, (fiber) => Fiber.join(fiber), { discard: true });
+      const monitors = yield* Effect.forEach(result.monitors, (monitor) =>
+        readOwnedMonitor(input.threadId, monitor.id, "cancel"),
       );
+      return { monitors };
+    });
+
+  const processCancellationRequests = Effect.fn("ThreadMonitor.processCancellationRequests")(
+    function* () {
+      const requests = yield* repository
+        .listCancellationRequests()
+        .pipe(Effect.mapError(mapPersistenceError("cancel")));
+      for (const request of requests) {
+        if (cancellationCleanups.has(request.monitorId)) continue;
+        cancellationCleanups.add(request.monitorId);
+        const result = yield* cancelState({
+          threadId: request.threadId,
+          cancel: { monitorId: request.monitorId },
+        }).pipe(
+          // Deleting a thread also deletes its watches and pending requests.
+          Effect.catchIf(
+            (error) => error.code === "MONITOR_NOT_FOUND",
+            () => Effect.succeed({ monitors: [], releasing: [] }),
+          ),
+          Effect.onExit((exit) =>
+            exit._tag === "Failure"
+              ? Effect.sync(() => cancellationCleanups.delete(request.monitorId))
+              : Effect.void,
+          ),
+        );
+        const acknowledge = repository
+          .acknowledgeCancellation(request.monitorId)
+          .pipe(Effect.mapError(mapPersistenceError("cancel", request.monitorId)));
+        if (result.releasing.length === 0) {
+          yield* acknowledge.pipe(
+            Effect.ensuring(Effect.sync(() => cancellationCleanups.delete(request.monitorId))),
+          );
+          continue;
+        }
+        // Cancellation is durable now. Remote cleanup must not hold startup or
+        // unrelated monitor delivery; retry failures while retaining the request.
+        yield* Effect.forEach(result.releasing, (fiber) => Fiber.join(fiber), {
+          discard: true,
+        }).pipe(
+          Effect.andThen(acknowledge),
+          Effect.catch((error) =>
+            Effect.logWarning("failed to finish durable monitor cancellation", {
+              monitorId: request.monitorId,
+              code: error.code,
+              detail: error.detail,
+            }).pipe(Effect.andThen(Effect.sleep(Duration.millis(BLOCKED_DELIVERY_RETRY_MS)))),
+          ),
+          Effect.ensuring(
+            Effect.sync(() => cancellationCleanups.delete(request.monitorId)).pipe(
+              Effect.andThen(wake),
+            ),
+          ),
+          Effect.forkIn(scope),
+        );
+      }
+    },
+  );
 
   const checkNow: ThreadMonitorServiceShape["checkNow"] = ({ threadId, check }) =>
     Effect.gen(function* () {
@@ -1542,11 +1642,7 @@ const make = Effect.gen(function* () {
           .pipe(Effect.mapError(mapPersistenceError("delete-thread")))).filter(
           (monitor) => monitor.threadId === threadId,
         );
-        yield* Effect.forEach(
-          monitors,
-          (monitor) => releaseComputer(monitor).pipe(Effect.andThen(setLiveness(monitor, false))),
-          { discard: true },
-        );
+        yield* Effect.forEach(monitors, (monitor) => releaseComputer(monitor), { discard: true });
         yield* repository
           .deleteByThread(threadId)
           .pipe(Effect.mapError(mapPersistenceError("delete-thread")));
@@ -1556,15 +1652,21 @@ const make = Effect.gen(function* () {
 
   const schedulerLoop = Effect.forever(
     Effect.gen(function* () {
-      yield* reconcile().pipe(
-        Effect.catch((error) =>
-          Effect.logWarning("durable monitor reconciliation failed", {
-            code: error.code,
-            operation: error.operation,
-            detail: error.detail,
-          }),
-        ),
-      );
+      const reconciled = yield* reconcile().pipe(Effect.result);
+      if (Result.isFailure(reconciled)) {
+        yield* Effect.logWarning("durable monitor reconciliation failed", {
+          code: reconciled.failure.code,
+          operation: reconciled.failure.operation,
+          detail: reconciled.failure.detail,
+        });
+        // A failed Stop must retry before scheduling any continuation, even if
+        // the stopped watch's deadline is still hours away.
+        yield* Effect.raceFirst(
+          Queue.take(wakeQueue),
+          Effect.sleep(Duration.millis(BLOCKED_DELIVERY_RETRY_MS)),
+        );
+        return;
+      }
       const outstanding = yield* repository
         .listOutstanding()
         .pipe(
@@ -1613,6 +1715,9 @@ const make = Effect.gen(function* () {
   );
 
   const start = Effect.fn("ThreadMonitor.start")(function* () {
+    // Drain accepted Stops before restoring watches or allowing any delivery.
+    const afterSequence = yield* eventSink.latestSequence().pipe(Effect.orDie);
+    yield* processCancellationRequests().pipe(Effect.orDie);
     const outstanding = yield* repository
       .listOutstanding()
       .pipe(
@@ -1622,7 +1727,6 @@ const make = Effect.gen(function* () {
           ),
         ),
       );
-    const restored: Array<ThreadMonitor> = [];
     const retiredThreadIds = new Set<ThreadId>();
     for (const monitor of outstanding) {
       if (retiredThreadIds.has(monitor.threadId)) continue;
@@ -1633,11 +1737,9 @@ const make = Effect.gen(function* () {
           threadId: monitor.threadId,
           cause: boundedDetail(thread.failure),
         });
-        restored.push(monitor);
         continue;
       }
       if (Option.isSome(thread.success)) {
-        restored.push(monitor);
         continue;
       }
       retiredThreadIds.add(monitor.threadId);
@@ -1651,17 +1753,14 @@ const make = Effect.gen(function* () {
         ),
       );
     }
-    yield* Effect.forEach(restored, (monitor) => setLiveness(monitor, true), {
-      discard: true,
-    });
 
     yield* forkParked(
       Effect.gen(function* () {
         yield* Effect.forkScoped(
-          engine.streamDomainEvents.pipe(
-            Stream.runForEach((event) => {
+          eventSink.stream({ afterSequence }).pipe(
+            Stream.runForEach(({ event, sequence }) => {
               if (event.type === "thread.deleted") {
-                return deleteThreadMonitors(event.payload.threadId).pipe(
+                return deleteThreadMonitors(event.threadId).pipe(
                   Effect.catch((error) =>
                     Effect.logWarning("failed to reconcile durable monitor lifecycle", {
                       eventType: event.type,
@@ -1672,26 +1771,25 @@ const make = Effect.gen(function* () {
                   Effect.andThen(wake),
                 );
               }
-              if (event.type === "thread.turn-interrupt-requested") {
-                return cancel({
-                  threadId: event.payload.threadId,
-                  cancel: {},
-                }).pipe(
-                  Effect.catch((error) =>
-                    Effect.logWarning("failed to cancel durable monitors", {
-                      threadId: event.payload.threadId,
-                      code: error.code,
-                      detail: error.detail,
-                    }),
-                  ),
-                  Effect.andThen(wake),
-                );
-              }
               if (
-                event.type === "thread.session-set" ||
-                event.type === "thread.approval-response-requested" ||
-                event.type === "thread.user-input-response-requested"
+                event.type === "turn-item.updated" &&
+                event.payload.type === "run_interrupt_request"
               ) {
+                return mutex
+                  .withPermits(1)(stopPendingStarts(event.threadId, sequence))
+                  .pipe(
+                    Effect.andThen(processCancellationRequests()),
+                    Effect.catch((error) =>
+                      Effect.logWarning("failed to cancel durable monitors", {
+                        threadId: event.threadId,
+                        code: error.code,
+                        detail: error.detail,
+                      }),
+                    ),
+                    Effect.andThen(wake),
+                  );
+              }
+              if (event.type === "run.updated" || event.type === "runtime-request.updated") {
                 return wake;
               }
               return Effect.void;
@@ -1704,8 +1802,9 @@ const make = Effect.gen(function* () {
     );
   });
 
-  yield* start();
+  const startOnce = yield* Effect.cached(start().pipe(Effect.provideService(Scope.Scope, scope)));
   return {
+    start: startOnce,
     capabilities,
     create,
     createComputer,

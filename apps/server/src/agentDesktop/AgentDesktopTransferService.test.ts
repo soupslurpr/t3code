@@ -23,7 +23,7 @@ import * as Option from "effect/Option";
 
 import * as ServerConfig from "../config.ts";
 import * as McpInvocationContext from "../mcp/McpInvocationContext.ts";
-import { ProjectionSnapshotQuery } from "../orchestration/Services/ProjectionSnapshotQuery.ts";
+import { ThreadWorkspaceQuery } from "../orchestration-v2/ThreadWorkspaceQuery.ts";
 import * as AgentDesktopManager from "./AgentDesktopManager.ts";
 import * as AgentDesktopTransfer from "./AgentDesktopTransferService.ts";
 
@@ -46,7 +46,7 @@ const scope: McpInvocationContext.McpInvocationScope = {
 
 /** Provides the two projection rows needed to confine workspace paths. */
 function projectionLayer(workspaceRoot: string) {
-  return Layer.mock(ProjectionSnapshotQuery)({
+  return Layer.mock(ThreadWorkspaceQuery)({
     getThreadShellById: () =>
       Effect.succeed(
         Option.some({
@@ -59,7 +59,8 @@ function projectionLayer(workspaceRoot: string) {
           interactionMode: "default",
           branch: null,
           worktreePath: null,
-          latestTurn: null,
+          activeRunId: null,
+          pendingRuntimeRequest: null,
           createdAt: now,
           updatedAt: now,
           archivedAt: null,

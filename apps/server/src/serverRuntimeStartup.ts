@@ -1,3 +1,4 @@
+import { ThreadMonitorService } from "./threadMonitor/ThreadMonitorService.ts";
 import {
   CommandId,
   DEFAULT_MODEL,
@@ -414,6 +415,7 @@ const make = (options?: StartupOptions) =>
     const legacyV1ThreadImporter = yield* LegacyV1ThreadImporter.LegacyV1ThreadImporter;
     const providerRuntimeRecovery = yield* ProviderRuntimeRecovery.ProviderRuntimeRecoveryService;
     const providerSessions = yield* ProviderSessionManager.ProviderSessionManagerV2;
+    const threadMonitors = yield* ThreadMonitorService;
     const agentAwarenessRelay = yield* AgentAwarenessRelay.AgentAwarenessRelay;
     const lifecycleEvents = yield* ServerLifecycleEvents.ServerLifecycleEvents;
     const serverSettings = yield* ServerSettings.ServerSettingsService;
@@ -526,6 +528,7 @@ const make = (options?: StartupOptions) =>
         ).pipe(Effect.map((targets): AutoBootstrapWelcomeTargets => targets)),
       });
       yield* Effect.logInfo("V2 orchestration recovery completed", recovery);
+      yield* runStartupPhase("thread-monitors.start", threadMonitors.start);
       yield* runStartupPhase(
         "projects.auto-pull",
         Effect.gen(function* () {

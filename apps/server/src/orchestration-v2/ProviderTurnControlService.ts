@@ -1,3 +1,4 @@
+import { ProviderComputerLifecycle } from "./ProviderComputerLifecycle.ts";
 import { projectComposerContextForProvider } from "@t3tools/shared/composerContextReferences";
 import {
   MessageId,
@@ -76,6 +77,7 @@ export const layer: Layer.Layer<
 > = Layer.effect(
   ProviderTurnControlServiceV2,
   Effect.gen(function* () {
+    const computer = yield* ProviderComputerLifecycle;
     const projections = yield* ProjectionStore.ProjectionStoreV2;
     const sessions = yield* ProviderSessionManager.ProviderSessionManagerV2;
 
@@ -172,19 +174,38 @@ export const layer: Layer.Layer<
       interrupt: (input) =>
         Effect.gen(function* () {
           const loaded = yield* load({ ...input, operation: "interrupt" });
+          const current = yield* projections.getRunningTurnContext(input.threadId);
+          if (
+            current.run !== undefined &&
+            current.run.activeAttemptId !== loaded.providerTurn.runAttemptId
+          )
+            return;
           const session = Option.isSome(loaded.session)
             ? loaded.session
             : yield* sessions.get(input.providerSessionId);
-          if (Option.isNone(session)) return;
+          const cleanup = yield* computer.beginInterruption({
+            threadId: input.threadId,
+            providerInstanceId: loaded.providerThread.providerInstanceId,
+          });
+          if (Option.isNone(session)) return yield* cleanup;
           // A settled turn reaches its adapter too: only the adapter knows
           // whether it still runs work for the thread, and each one either
           // stops it or reports there is nothing left to stop. Background work
           // the projection still shows is settled by the orchestrator after.
-          yield* session.value.interruptTurn({
-            providerThread: loaded.providerThread,
-            providerTurnId: loaded.providerTurn.id,
-            requestRuntimeRestart: true,
-          });
+          const [, interruption] = yield* Effect.all(
+            [
+              cleanup,
+              session.value
+                .interruptTurn({
+                  providerThread: loaded.providerThread,
+                  providerTurnId: loaded.providerTurn.id,
+                  requestRuntimeRestart: true,
+                })
+                .pipe(Effect.result),
+            ],
+            { concurrency: "unbounded" },
+          );
+          if (interruption._tag === "Failure") return yield* Effect.fail(interruption.failure);
         }).pipe(
           Effect.mapError((cause) =>
             isProviderTurnControlError(cause)

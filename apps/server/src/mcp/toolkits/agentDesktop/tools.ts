@@ -31,7 +31,7 @@ import { Tool, Toolkit } from "effect/unstable/ai";
 import * as McpInvocationContext from "../../McpInvocationContext.ts";
 import * as AgentDesktopTransferService from "../../../agentDesktop/AgentDesktopTransferService.ts";
 import * as AgentDesktopManager from "../../../agentDesktop/AgentDesktopManager.ts";
-import { ProjectionSnapshotQuery } from "../../../orchestration/Services/ProjectionSnapshotQuery.ts";
+import { ThreadWorkspaceQuery } from "../../../orchestration-v2/ThreadWorkspaceQuery.ts";
 
 const dependencies = [
   McpInvocationContext.McpInvocationContext,
@@ -40,7 +40,7 @@ const dependencies = [
 const transferDependencies = [
   ...dependencies,
   AgentDesktopTransferService.AgentDesktopTransferService,
-  ProjectionSnapshotQuery,
+  ThreadWorkspaceQuery,
 ];
 const AgentDesktopTransferToolError = Schema.Union([
   PreviewAutomationUnavailableError,

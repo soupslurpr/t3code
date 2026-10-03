@@ -38,6 +38,7 @@ const parentInstanceId = ProviderInstanceId.make("codex");
 const makeScope = (): McpInvocationContext.McpInvocationScope => ({
   environmentId,
   threadId: parentThreadId,
+  controllerId: "test-controller",
   providerSessionId: "provider-session-mcp-orchestrator-detail",
   providerInstanceId: parentInstanceId,
   capabilities: new Set(["orchestration"]),

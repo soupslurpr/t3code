@@ -43,6 +43,7 @@ const makeScope = (
 ): McpInvocationContext.McpInvocationScope => ({
   environmentId,
   threadId,
+  controllerId: "test-controller",
   providerSessionId: "provider-session-worktree-test",
   providerInstanceId: ProviderInstanceId.make("claudeAgent"),
   capabilities,

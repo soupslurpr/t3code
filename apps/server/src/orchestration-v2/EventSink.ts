@@ -330,9 +330,27 @@ const baseLayer: Layer.Layer<
 
     const applyStoredEvents = (storedEvents: ReadonlyArray<OrchestrationV2StoredEvent>) =>
       Effect.gen(function* () {
-        yield* Effect.forEach(storedEvents, (stored) => projectionStore.apply(stored.event), {
-          concurrency: 1,
-        });
+        yield* Effect.forEach(
+          storedEvents,
+          (stored) =>
+            Effect.gen(function* () {
+              yield* projectionStore.apply(stored.event);
+              if (
+                stored.event.type === "turn-item.updated" &&
+                stored.event.payload.type === "run_interrupt_request"
+              ) {
+                // Snapshot the targets in the command transaction. A delayed worker
+                // or a restart must not lose Stop or apply it to a newer monitor.
+                yield* sql`
+              UPDATE thread_monitors SET cancellation_requested = 1
+              WHERE thread_id = ${stored.event.threadId} AND status IN ('active', 'triggered')
+            `;
+              }
+            }),
+          {
+            concurrency: 1,
+          },
+        );
         const sequence = storedEvents.at(-1)?.sequence;
         if (sequence !== undefined) {
           const now = DateTime.formatIso(yield* DateTime.now);
@@ -532,6 +550,39 @@ const baseLayer: Layer.Layer<
           if (!reserved) {
             const existing = yield* existingCommandResult(input.commandId);
             return { ...existing, committed: false as const, cancelledEffectIds: [] };
+          }
+
+          if (input.commandType === "message.dispatch") {
+            for (const event of input.events) {
+              if (event.type !== "message.updated") continue;
+              const notification = event.payload.notification;
+              const systemEvent = notification?.systemEvent;
+              if (notification?.source.kind !== "monitor" || systemEvent === undefined) continue;
+              const monitorIds = [
+                ...new Set(
+                  systemEvent.type === "monitor.review"
+                    ? [systemEvent.monitorId]
+                    : systemEvent.monitors.map((monitor) => monitor.monitorId),
+                ),
+              ];
+              // Stop and continuation acceptance share this write transaction.
+              // A scheduler already holding its own lock cannot deliver stale
+              // work after Stop has committed, even before its consumer wakes.
+              const eligible = yield* sql`
+                SELECT monitor_id FROM thread_monitors
+                WHERE thread_id = ${input.threadId}
+                  AND ${sql.in("monitor_id", monitorIds)}
+                  AND cancellation_requested = 0
+                  AND status NOT IN ('cancelled', 'failed')
+              `;
+              if (eligible.length !== monitorIds.length) {
+                return yield* new EventSinkWriteError({
+                  commandId: input.commandId,
+                  eventCount: input.events.length,
+                  cause: "The monitor continuation was cancelled before acceptance.",
+                });
+              }
+            }
           }
 
           const normalized = yield* normalizeEvents(input.events);

@@ -29,7 +29,7 @@ import * as ServerEnvironment from "../environment/ServerEnvironment.ts";
 import * as ComputerObservationStore from "../computer/ComputerObservationStore.ts";
 import * as ComputerAutomationRouter from "../computer/ComputerAutomationRouter.ts";
 import * as McpInvocationContext from "../mcp/McpInvocationContext.ts";
-import { ProjectionSnapshotQuery } from "../orchestration/Services/ProjectionSnapshotQuery.ts";
+import { ThreadWorkspaceQuery } from "../orchestration-v2/ThreadWorkspaceQuery.ts";
 import * as ProviderInstanceRegistry from "../provider/Services/ProviderInstanceRegistry.ts";
 import type { ProviderInstance } from "../provider/ProviderDriver.ts";
 import {
@@ -201,7 +201,7 @@ export const make = Effect.gen(function* () {
   const computer = yield* ComputerAutomationRouter.ComputerAutomationRouter;
   const environment = yield* ServerEnvironment.ServerEnvironment;
   const observations = yield* ComputerObservationStore.ComputerObservationStore;
-  const snapshots = yield* ProjectionSnapshotQuery;
+  const snapshots = yield* ThreadWorkspaceQuery;
   const registry = yield* ProviderInstanceRegistry.ProviderInstanceRegistry;
 
   const monitorScope = Effect.fn("ThreadMonitorComputer.monitorScope")(function* (input: {

@@ -1,3 +1,4 @@
+import { ThreadWorkspaceQuery } from "../orchestration-v2/ThreadWorkspaceQuery.ts";
 import * as Orchestrator from "../orchestration-v2/Orchestrator.ts";
 import * as ProjectionStore from "../orchestration-v2/ProjectionStore.ts";
 import { UserDesktopTransfers } from "../computer/UserDesktopTransfers.ts";
@@ -178,6 +179,7 @@ const watchImage = {
 const MonitorTestLayer = Layer.succeed(
   ThreadMonitorService,
   ThreadMonitorService.of({
+    start: Effect.void,
     capabilities: () =>
       Effect.succeed({
         controllerPromptCache: {
@@ -272,11 +274,15 @@ const AgentDesktopTransferTestLayer = Layer.mock(AgentDesktopTransfer.AgentDeskt
   {},
 );
 
-const TestLayer = McpHttpServer.ToolkitRegistrationLive.pipe(
+const TestLayer = Layer.mergeAll(
+  McpHttpServer.PreviewToolkitRegistrationLive,
+  McpHttpServer.ComputerToolkitRegistrationLive,
+  McpHttpServer.AgentDesktopToolkitRegistrationLive,
+  McpHttpServer.MonitorToolkitRegistrationLive,
+).pipe(
   Layer.provide(Layer.mock(UserDesktopTransfers)({ download: () => null })),
   Layer.provide(Layer.mock(DeviceService.DeviceService)({})),
-  Layer.provide(Layer.mock(OrchestrationEngineService)({})),
-  Layer.provide(Layer.mock(ProjectionSnapshotQuery)({})),
+  Layer.provide(Layer.mock(ThreadWorkspaceQuery)({})),
   Layer.provide(MonitorTestLayer),
   Layer.provide(AgentDesktopTransferTestLayer),
   Layer.provide(AgentDesktopManagerTestLayer),

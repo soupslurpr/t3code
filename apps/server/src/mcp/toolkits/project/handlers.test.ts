@@ -45,6 +45,7 @@ it.effect("attributes a launched thread's first message to the calling thread", 
       Layer.succeed(McpInvocationContext.McpInvocationContext, {
         environmentId: EnvironmentId.make("environment"),
         threadId: sourceThreadId,
+        controllerId: "test-controller",
         providerSessionId: "session",
         providerInstanceId,
         issuedAt: 0,
@@ -107,6 +108,7 @@ it.effect("launches a scratch thread into the Scratch project", () =>
       Layer.succeed(McpInvocationContext.McpInvocationContext, {
         environmentId: EnvironmentId.make("environment"),
         threadId: sourceThreadId,
+        controllerId: "test-controller",
         providerSessionId: "session",
         providerInstanceId,
         issuedAt: 0,
@@ -195,6 +197,7 @@ it.effect("starts a project from just a title when workspaceRoot is omitted", ()
       Layer.succeed(McpInvocationContext.McpInvocationContext, {
         environmentId: EnvironmentId.make("environment"),
         threadId: sourceThreadId,
+        controllerId: "test-controller",
         providerSessionId: "session",
         providerInstanceId,
         issuedAt: 0,

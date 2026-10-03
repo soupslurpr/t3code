@@ -10,15 +10,15 @@ type MigrationHistoryRow = {
   readonly name: string;
 };
 
-const latestUpstreamMigrationId = 54;
+const latestUpstreamMigrationId = 56;
 const firstForkMigrationId = latestUpstreamMigrationId + 1;
 
-for (const throughId of [40, 41, 42, 43, 44, 45, 46, 47, 48, 49, 50, 51, 52, 53] as const) {
-  const displacedBy = latestUpstreamMigrationId - throughId;
-
-  it.effect(`reconciles ${displacedBy} displaced fork migration ids`, () =>
+it.effect.each([40, 41, 42, 43, 44, 45, 46, 47, 48, 49, 50, 51, 52, 53, 54, 55] as const)(
+  "reconciles fork migrations displaced after upstream migration %s",
+  (throughId) =>
     Effect.gen(function* () {
       const sql = yield* SqlClient.SqlClient;
+      const displacedBy = latestUpstreamMigrationId - throughId;
 
       yield* runMigrations({ toMigrationInclusive: throughId });
       for (const [id, name, migration] of migrationEntries) {
@@ -93,8 +93,7 @@ for (const throughId of [40, 41, 42, 43, 44, 45, 46, 47, 48, 49, 50, 51, 52, 53]
       );
       assert.deepStrictEqual(yield* runMigrations(), []);
     }).pipe(Effect.provide(NodeSqliteClient.layer({ filename: ":memory:" }))),
-  );
-}
+);
 
 it.effect("preserves retired feature data while reconciling its migration identities", () =>
   Effect.gen(function* () {
@@ -118,10 +117,10 @@ it.effect("preserves retired feature data while reconciling its migration identi
       { run_id: "saved-run", result_json: '{"passed":true}' },
     ]);
     assert.deepStrictEqual(
-      yield* sql`SELECT migration_id, name FROM effect_sql_migrations WHERE migration_id >= 65 ORDER BY migration_id`,
+      yield* sql`SELECT migration_id, name FROM effect_sql_migrations WHERE migration_id >= 67 ORDER BY migration_id`,
       [
-        { migration_id: 65, name: "PreviewSessions" },
-        { migration_id: 66, name: "ToolRuns" },
+        { migration_id: 67, name: "PreviewSessions" },
+        { migration_id: 68, name: "ToolRuns" },
       ],
     );
   }).pipe(Effect.provide(NodeSqliteClient.layer({ filename: ":memory:" }))),

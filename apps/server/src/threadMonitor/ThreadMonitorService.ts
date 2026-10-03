@@ -26,6 +26,9 @@ import type * as Effect from "effect/Effect";
 
 /** Defines durable monitor lifecycle operations. */
 export interface ThreadMonitorServiceShape {
+  /** Starts reconciliation after legacy thread import and runtime recovery. */
+  readonly start: Effect.Effect<void>;
+
   /** Lists controller capabilities used to plan a durable monitor. */
   readonly capabilities: (threadId: ThreadId) => Effect.Effect<ThreadMonitorCapabilities>;
 

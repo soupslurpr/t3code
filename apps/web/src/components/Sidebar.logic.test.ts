@@ -977,6 +977,20 @@ describe("resolveSidebarThreadStatus", () => {
     ).toBe("waiting");
   });
 
+  it("shows durable monitoring without hiding errors or requests for input", () => {
+    const monitoring = { ...idle, backgroundLiveness: "monitoring" as const };
+    expect(resolveSidebarThreadStatus(monitoring)).toBe("monitoring");
+    expect(resolveSidebarThreadStatus({ ...monitoring, hasPendingApprovals: true })).toBe(
+      "approval",
+    );
+    expect(
+      resolveSidebarThreadStatus({ ...monitoring, runtime: { ...runtime, status: "failed" } }),
+    ).toBe("failed");
+    expect(
+      resolveSidebarV2TopStatus({ status: "monitoring", isUnread: false, isWoke: false }),
+    ).toBe("monitoring");
+  });
+
   it("defaults to ready with no runtime", () => {
     expect(resolveSidebarThreadStatus(idle)).toBe("ready");
   });

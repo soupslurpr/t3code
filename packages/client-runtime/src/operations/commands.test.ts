@@ -502,6 +502,29 @@ describe("V2 environment commands", () => {
     }).pipe(Effect.provide(TEST_CRYPTO_LAYER)),
   );
 
+  it.effect("stops imported monitors without requiring a V2 run", () =>
+    Effect.gen(function* () {
+      const commands: OrchestrationV2Command[] = [];
+      const supervisor = yield* makeSupervisor({
+        commands,
+        projects: [],
+        projection: { ...v2Projection, runs: [], turnItems: [] },
+      });
+      const result = yield* interruptThreadTurn({
+        threadId: v2ThreadId,
+        cancelMonitors: true,
+      }).pipe(Effect.provideService(EnvironmentSupervisor.EnvironmentSupervisor, supervisor));
+      expect(result.sequence).toBe(1);
+      expect(commands).toEqual([
+        {
+          type: "thread.monitors.cancel",
+          commandId: expect.any(String),
+          threadId: v2ThreadId,
+        },
+      ]);
+    }).pipe(Effect.provide(TEST_CRYPTO_LAYER)),
+  );
+
   it.effect.each([
     "waiting",
     "completed",

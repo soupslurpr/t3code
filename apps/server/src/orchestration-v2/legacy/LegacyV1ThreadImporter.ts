@@ -5,6 +5,8 @@ import {
 import {
   ChatAttachment,
   OrchestrationMessageContext,
+  OrchestrationSystemEvent,
+  type OrchestrationV2Notification,
   DEFAULT_MODEL,
   EventId,
   MessageId,
@@ -70,7 +72,8 @@ interface LegacyRepairRow extends LegacyThreadRow {
 interface LegacyMessageRow {
   readonly message_id: string;
   readonly thread_id: string;
-  readonly role: "user" | "assistant";
+  readonly role: "user" | "assistant" | "system";
+  readonly system_event_json: string | null;
   readonly text: string;
   readonly attachments_json: string | null;
   readonly context_json?: string | null;
@@ -248,14 +251,30 @@ function messageEvents(row: LegacyMessageRow): ReadonlyArray<OrchestrationV2Doma
   const createdAt = dateTime(row.created_at);
   const updatedAt = dateTime(row.updated_at);
   const attachments = attachmentsFor(row);
+  const notification: OrchestrationV2Notification | undefined =
+    row.role === "system"
+      ? {
+          source: { kind: "monitor" },
+          outcome: "updated",
+          summary: row.text,
+          ...(row.system_event_json === null
+            ? {}
+            : {
+                systemEvent: Schema.decodeUnknownSync(
+                  Schema.fromJsonString(OrchestrationSystemEvent),
+                )(row.system_event_json),
+              }),
+        }
+      : undefined;
   const message: OrchestrationV2ConversationMessage = {
-    createdBy: row.role === "user" ? "user" : "agent",
+    createdBy: row.role === "system" ? "system" : row.role === "user" ? "user" : "agent",
     creationSource: "server",
     id: messageId,
     threadId,
     runId: null,
     nodeId: null,
-    role: row.role,
+    role: row.role === "system" ? "user" : row.role,
+    ...(notification === undefined ? {} : { notification }),
     text: row.text,
     ...(row.context_json
       ? {
@@ -286,38 +305,40 @@ function messageEvents(row: LegacyMessageRow): ReadonlyArray<OrchestrationV2Doma
     updatedAt,
   };
   const turnItem: OrchestrationV2TurnItem =
-    row.role === "user"
-      ? {
-          ...baseTurnItem,
-          createdBy: "user",
-          creationSource: "server",
-          type: "user_message",
-          messageId,
-          inputIntent: "turn_start",
-          text: row.text,
-          ...(row.context_json
-            ? {
-                context: Schema.decodeUnknownSync(OrchestrationMessageContext)(
-                  parseJson(row.context_json),
-                ),
-              }
-            : {}),
-          attachments,
-        }
-      : {
-          ...baseTurnItem,
-          type: "assistant_message",
-          messageId,
-          text: row.text,
-          ...(row.context_json
-            ? {
-                context: Schema.decodeUnknownSync(OrchestrationMessageContext)(
-                  parseJson(row.context_json),
-                ),
-              }
-            : {}),
-          streaming: false,
-        };
+    notification !== undefined
+      ? { ...baseTurnItem, type: "notification", ...notification }
+      : row.role === "user"
+        ? {
+            ...baseTurnItem,
+            createdBy: "user",
+            creationSource: "server",
+            type: "user_message",
+            messageId,
+            inputIntent: "turn_start",
+            text: row.text,
+            ...(row.context_json
+              ? {
+                  context: Schema.decodeUnknownSync(OrchestrationMessageContext)(
+                    parseJson(row.context_json),
+                  ),
+                }
+              : {}),
+            attachments,
+          }
+        : {
+            ...baseTurnItem,
+            type: "assistant_message",
+            messageId,
+            text: row.text,
+            ...(row.context_json
+              ? {
+                  context: Schema.decodeUnknownSync(OrchestrationMessageContext)(
+                    parseJson(row.context_json),
+                  ),
+                }
+              : {}),
+            streaming: false,
+          };
   return [
     {
       id: EventId.make(`${IMPORT_EVENT_PREFIX}:message:${row.message_id}`),
@@ -358,6 +379,7 @@ const make = Effect.gen(function* () {
         text,
         attachments_json,
         context_json,
+        system_event_json,
         is_streaming,
         created_at,
         updated_at,
@@ -367,7 +389,7 @@ const make = Effect.gen(function* () {
         ) AS ordinal
       FROM projection_thread_messages
       WHERE thread_id = ${threadId}
-        AND role IN ('user', 'assistant')
+        AND role IN ('user', 'assistant', 'system')
       ORDER BY created_at ASC, message_id ASC
     `;
 
@@ -381,6 +403,7 @@ const make = Effect.gen(function* () {
           message.text,
           message.attachments_json,
           message.context_json,
+          message.system_event_json,
           message.is_streaming,
           message.created_at,
           message.updated_at,
@@ -388,7 +411,7 @@ const make = Effect.gen(function* () {
             SELECT COUNT(*)
             FROM projection_thread_messages AS earlier
             WHERE earlier.thread_id = message.thread_id
-              AND earlier.role IN ('user', 'assistant')
+              AND earlier.role IN ('user', 'assistant', 'system')
               AND (
                 earlier.created_at < message.created_at
                 OR (
@@ -399,7 +422,7 @@ const make = Effect.gen(function* () {
           ) AS ordinal
         FROM projection_thread_messages AS message
         WHERE message.thread_id = ${threadId}
-          AND message.role IN ('user', 'assistant')
+          AND message.role IN ('user', 'assistant', 'system')
         ORDER BY message.created_at DESC, message.message_id DESC
         LIMIT 1
       `;
@@ -411,6 +434,7 @@ const make = Effect.gen(function* () {
           message.text,
           message.attachments_json,
           message.context_json,
+          message.system_event_json,
           message.is_streaming,
           message.created_at,
           message.updated_at,
@@ -418,7 +442,7 @@ const make = Effect.gen(function* () {
             SELECT COUNT(*)
             FROM projection_thread_messages AS earlier
             WHERE earlier.thread_id = message.thread_id
-              AND earlier.role IN ('user', 'assistant')
+              AND earlier.role IN ('user', 'assistant', 'system')
               AND (
                 earlier.created_at < message.created_at
                 OR (

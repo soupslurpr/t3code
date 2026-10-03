@@ -182,6 +182,8 @@ export interface StartThreadTurnInput extends ThreadCommandInput {
 
 export interface InterruptThreadTurnInput extends ThreadCommandInput {
   readonly runId?: RunId;
+  /** Include durable waits that can outlive, or predate, a V2 run. */
+  readonly cancelMonitors?: boolean;
   /** Temporary caller compatibility while UI naming moves from turns to runs. */
   readonly turnId?: string;
 }
@@ -795,7 +797,15 @@ export const interruptThreadTurn = Effect.fn("EnvironmentCommands.interruptThrea
       }
     }
   }
-  if (runId === undefined) return { sequence: 0 };
+  if (runId === undefined) {
+    return input.cancelMonitors
+      ? yield* dispatch({
+          type: "thread.monitors.cancel",
+          commandId: yield* allocateCommandId(input),
+          threadId: input.threadId,
+        })
+      : { sequence: 0 };
+  }
   return yield* dispatch({
     type: "run.interrupt",
     commandId: yield* allocateCommandId(input),

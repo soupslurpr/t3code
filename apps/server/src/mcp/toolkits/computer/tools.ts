@@ -1,5 +1,5 @@
 import { UserDesktopTransfers } from "../../../computer/UserDesktopTransfers.ts";
-import { ProjectionSnapshotQuery } from "../../../orchestration/Services/ProjectionSnapshotQuery.ts";
+import { ThreadWorkspaceQuery } from "../../../orchestration-v2/ThreadWorkspaceQuery.ts";
 import {
   UserDesktopCopyInput,
   UserDesktopTransfer,
@@ -226,7 +226,7 @@ export const UserDesktopCopyTool = computerTool(
     parameters: UserDesktopCopyInput,
     success: UserDesktopTransfer,
     failure: Schema.Union([PreviewAutomationError, UserDesktopTransferRequestError]),
-    dependencies: [...transferDependencies, ProjectionSnapshotQuery],
+    dependencies: [...transferDependencies, ThreadWorkspaceQuery],
   }).annotate(Tool.Title, "Copy files to or from user desktop"),
 );
 export const UserDesktopTransferStatusTool = readonlyComputerTool(

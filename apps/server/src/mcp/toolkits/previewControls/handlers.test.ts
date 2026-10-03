@@ -36,6 +36,7 @@ it.effect.each([
       const scope: McpInvocationContext.McpInvocationScope = {
         environmentId: EnvironmentId.make("preview-controls-environment"),
         threadId,
+        controllerId: "test-controller",
         providerSessionId: "preview-controls-provider-session",
         providerInstanceId: ProviderInstanceId.make("codex"),
         capabilities: new Set(effective.enableAgentBrowserAccess ? ["preview"] : []),
