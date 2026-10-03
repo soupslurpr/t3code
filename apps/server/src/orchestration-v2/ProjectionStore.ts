@@ -39,6 +39,7 @@ import {
   OrchestrationV2ContextTransferJson as OrchestrationV2ContextTransferJsonSchema,
   OrchestrationV2ConversationMessageJson as OrchestrationV2ConversationMessageJsonSchema,
   OrchestrationV2ExecutionNodeJson as OrchestrationV2ExecutionNodeJsonSchema,
+  OrchestrationV2PendingBackgroundTask,
   OrchestrationV2PlanArtifact as OrchestrationV2PlanArtifactSchema,
   OrchestrationV2ProviderSessionJson as OrchestrationV2ProviderSessionJsonSchema,
   OrchestrationV2ProviderThreadJson as OrchestrationV2ProviderThreadJsonSchema,
@@ -889,7 +890,7 @@ type PayloadRow = {
 };
 
 type ShellThreadRow = {
-  readonly has_active_monitors: number;
+  readonly active_monitors_json: string;
   readonly thread_id: string;
   readonly payload_json: string;
   readonly forked_from_run_source_thread_id: string | null;
@@ -993,6 +994,9 @@ const encodeContextTransferPayload = Schema.encodeEffect(
 
 const decodeThreadPayload = Schema.decodeUnknownEffect(
   Schema.fromJsonString(OrchestrationV2AppThreadJsonSchema),
+);
+const decodeMonitorTasks = Schema.decodeUnknownEffect(
+  Schema.fromJsonString(Schema.Array(OrchestrationV2PendingBackgroundTask)),
 );
 const decodeRunPayload = Schema.decodeUnknownEffect(
   Schema.fromJsonString(OrchestrationV2RunJsonSchema),
@@ -1620,17 +1624,7 @@ function shellFromState(input: {
     latestVisibleMessage: null,
     latestUserMessageAt: input.state.latestUserMessageAt,
     hasActionableProposedPlan: input.state.hasActionableProposedPlan,
-    pendingBackgroundTasks:
-      input.state.backgroundLiveness === "monitoring" && input.state.activeRunId === null
-        ? [
-            ...(input.state.pendingBackgroundTasks ?? []),
-            {
-              taskId: `thread-monitors:${input.state.thread.id}`,
-              kind: "monitor",
-              description: "Durable monitors",
-            },
-          ]
-        : input.state.pendingBackgroundTasks,
+    pendingBackgroundTasks: input.state.pendingBackgroundTasks,
     backgroundLiveness: input.state.backgroundLiveness ?? null,
     providerInstanceHistory: input.state.providerInstanceHistory,
     itemCount: input.state.itemCount,
@@ -4768,10 +4762,15 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
     ) =>
       sql<ShellThreadRow>`
             SELECT
-              EXISTS (
-                SELECT 1 FROM thread_monitors m
+              (
+                SELECT json_group_array(json_object(
+                  'taskId', 'thread-monitor:' || m.monitor_id,
+                  'kind', 'monitor',
+                  'description', m.label
+                ) ORDER BY m.created_at, m.monitor_id)
+                FROM thread_monitors m
                 WHERE m.thread_id = t.thread_id AND m.status IN ('active', 'triggered')
-              ) AS has_active_monitors,
+              ) AS active_monitors_json,
               t.thread_id,
               t.payload_json,
               CASE
@@ -5250,6 +5249,7 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
                 : DateTime.makeUnsafe(row.blocking_run_completed_at);
           }
         }
+        const monitorTasks = yield* decodeMonitorTasks(row.active_monitors_json);
         const pendingBackgroundTasks = [
           ...derivePendingBackgroundWork({
             latestRun:
@@ -5265,6 +5265,7 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
             activeProviderThreadId: thread.activeProviderThreadId,
             hasActiveRun: row.active_run_id !== null,
           }),
+          ...(row.active_run_id === null ? monitorTasks : []),
         ];
         return {
           thread,
@@ -5295,7 +5296,7 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
               ? null
               : DateTime.makeUnsafe(row.latest_user_message_at),
           hasActionableProposedPlan: row.has_actionable_proposed_plan === 1,
-          backgroundLiveness: row.has_active_monitors === 1 ? "monitoring" : null,
+          backgroundLiveness: monitorTasks.length > 0 ? "monitoring" : null,
           pendingBackgroundTasks,
           providerInstanceHistory: providerInstanceHistoryForShell({
             threadId: thread.id,

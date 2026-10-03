@@ -324,8 +324,10 @@ export function presentPendingBackgroundWork(
   tasks: ReadonlyArray<OrchestrationV2PendingBackgroundTask>,
 ): PendingBackgroundWorkPresentation | null {
   if (tasks.length === 0) return null;
-  const waiting = backgroundWorkHoldsCompletion(tasks);
-  const items = tasks
+  // The shell and live provider projection can report the same background task.
+  const uniqueTasks = [...new Map(tasks.map((task) => [task.taskId, task])).values()];
+  const waiting = backgroundWorkHoldsCompletion(uniqueTasks);
+  const items = uniqueTasks
     .map((task): PendingBackgroundWorkItem => {
       const description = task.description?.trim();
       const label =
@@ -348,6 +350,15 @@ export function presentPendingBackgroundWork(
         BACKGROUND_WORK_KINDS[left.kind].order - BACKGROUND_WORK_KINDS[right.kind].order,
     );
   const [only] = items;
+  if (items.every((item) => item.kind === "monitor")) {
+    const title =
+      items.length === 1 && only !== undefined
+        ? only.label === "monitor"
+          ? "Monitoring"
+          : `Monitoring: ${only.label}`
+        : `Monitoring ${items.length} conditions`;
+    return { title, items, waiting };
+  }
   if (items.length === 1 && only !== undefined) {
     const noun = BACKGROUND_WORK_KINDS[only.kind].singular;
     const named = only.label !== noun;

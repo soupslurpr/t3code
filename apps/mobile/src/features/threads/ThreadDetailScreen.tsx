@@ -476,9 +476,12 @@ export const ThreadDetailScreen = memo(function ThreadDetailScreen(props: Thread
       return {
         kind: "waiting",
         label: pendingBackgroundWork.title,
-        accessibilityLabel: `${pendingBackgroundWork.title}: ${pendingBackgroundWork.items
-          .map((item) => item.label)
-          .join(", ")}`,
+        accessibilityLabel:
+          pendingBackgroundWork.items.length === 1
+            ? pendingBackgroundWork.title
+            : `${pendingBackgroundWork.title}: ${pendingBackgroundWork.items
+                .map((item) => item.label)
+                .join(", ")}`,
       };
     }
     return null;

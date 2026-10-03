@@ -546,9 +546,25 @@ describe("presentPendingBackgroundWork", () => {
       ])?.title,
     ).toBe("Waiting on subagent Review src/math.ts");
     expect(presentPendingBackgroundWork([{ taskId: "a", kind: "monitor" }])?.title).toBe(
-      "Waiting on a monitor",
+      "Monitoring",
     );
     expect(presentPendingBackgroundWork([])).toBeNull();
+  });
+
+  it("names one monitor and counts multiple conditions without losing their labels", () => {
+    const tasks = [
+      { taskId: "build", kind: "monitor" as const, description: "Build finishes" },
+      { taskId: "checks", kind: "monitor" as const, description: "PR checks pass" },
+    ];
+    expect(presentPendingBackgroundWork(tasks.slice(0, 1))?.title).toBe(
+      "Monitoring: Build finishes",
+    );
+    const presentation = presentPendingBackgroundWork([...tasks, ...tasks]);
+    expect(presentation?.title).toBe("Monitoring 2 conditions");
+    expect(presentation?.items.map((item) => item.label)).toEqual([
+      "Build finishes",
+      "PR checks pass",
+    ]);
   });
 
   // A command left running, such as a dev server, does not wake the agent.
