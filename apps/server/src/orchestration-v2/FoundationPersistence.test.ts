@@ -2866,6 +2866,7 @@ it.layer(layerTest)("orchestration V2 foundation persistence", (it) => {
         assert.deepEqual(effects[0]?.request, {
           type: "provider-runtime.continue",
           sourceRunId: runId,
+          lastRunOrdinal: 1,
         });
         // This fixture shares the database; settle its intent before later claim tests.
         yield* outbox.cancelUnsettled({
