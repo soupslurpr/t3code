@@ -15,6 +15,14 @@ import {
 } from "./RpcAuthorization.ts";
 
 describe("RPC authorization scopes", () => {
+  it("allows reading monitor summaries but requires operate scope to cancel", () => {
+    expect(requiredScopeForRpcMethod(WS_METHODS.threadMonitorsSubscribe)).toBe(
+      AuthOrchestrationReadScope,
+    );
+    expect(requiredScopeForRpcMethod(WS_METHODS.threadMonitorsCancel)).toBe(
+      AuthOrchestrationOperateScope,
+    );
+  });
   it("declares exactly one scope for every RPC in the server group", () => {
     expect(new Set(Object.keys(RPC_REQUIRED_SCOPES))).toEqual(new Set(WsRpcGroup.requests.keys()));
   });

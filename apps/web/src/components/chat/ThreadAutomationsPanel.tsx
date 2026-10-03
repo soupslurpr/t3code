@@ -1,8 +1,21 @@
 import { ThreadDetailsControl } from "./ThreadDetailsControl";
 import { useNavigate } from "@tanstack/react-router";
-import { CalendarClockIcon, PencilIcon, PlayIcon, Settings2Icon } from "lucide-react";
+import {
+  CalendarClockIcon,
+  EyeIcon,
+  PencilIcon,
+  PlayIcon,
+  Settings2Icon,
+  XIcon,
+} from "lucide-react";
 import { useState } from "react";
-import type { EnvironmentId, ScheduledTask, ThreadId } from "@t3tools/contracts";
+import type {
+  EnvironmentId,
+  ScheduledTask,
+  ThreadId,
+  ThreadMonitorSummary,
+} from "@t3tools/contracts";
+import { scheduledTaskDispatchStatus } from "@t3tools/client-runtime/automations";
 import {
   isAtomCommandInterrupted,
   squashAtomCommandFailure,
@@ -25,16 +38,13 @@ import {
 
 const STATUS_DOT_CLASS: Record<ScheduledTask["lastRunStatus"], string> = {
   never: "bg-muted-foreground/40",
-  running: "animate-pulse bg-sky-500",
+  running: "bg-sky-500",
   succeeded: "bg-emerald-500",
   failed: "bg-destructive",
 };
 
 /**
- * Thread details panel section listing the automations (scheduled tasks) bound
- * to this thread. Fed by the live scheduled-task subscription, so run status
- * and next-run times update as the scheduler works — no manual refresh.
- * Renders nothing when the thread has no bound automations.
+ * Live schedules and outstanding waits owned by this thread.
  */
 export function ThreadAutomationsPanel(props: {
   readonly environmentId: EnvironmentId;
@@ -43,6 +53,15 @@ export function ThreadAutomationsPanel(props: {
   const tasksQuery = useEnvironmentQuery(
     serverEnvironment.scheduledTasksLive({ environmentId: props.environmentId, input: {} }),
   );
+  const monitorsQuery = useEnvironmentQuery(
+    serverEnvironment.threadMonitorsLive({
+      environmentId: props.environmentId,
+      input: { threadId: props.threadId },
+    }),
+  );
+  const cancelMonitor = useAtomCommand(serverEnvironment.cancelThreadMonitor, {
+    label: "thread monitor cancel",
+  });
   const setTaskEnabled = useAtomCommand(serverEnvironment.setScheduledTaskEnabled, {
     label: "thread automation toggle",
   });
@@ -51,14 +70,22 @@ export function ThreadAutomationsPanel(props: {
   });
   const navigate = useNavigate();
   const [busyTaskId, setBusyTaskId] = useState<string | null>(null);
+  const [busyMonitorId, setBusyMonitorId] = useState<string | null>(null);
 
   const boundTasks = (tasksQuery.data?.tasks ?? []).filter(
     (task) => task.threadId === props.threadId,
   );
+  const monitors = monitorsQuery.data?.monitors ?? [];
   // A load error must not look like "no automations" — this thread may have
   // tasks whose controls would silently vanish. Only hide the section when we
   // positively know there is nothing bound to it.
-  if (tasksQuery.error === null && boundTasks.length === 0) return null;
+  if (
+    tasksQuery.isSuccess &&
+    monitorsQuery.isSuccess &&
+    boundTasks.length === 0 &&
+    monitors.length === 0
+  )
+    return null;
 
   const reportFailure = (title: string, error: unknown) => {
     toastManager.add(
@@ -98,6 +125,19 @@ export function ThreadAutomationsPanel(props: {
     }
   };
 
+  const cancelWait = async (monitor: ThreadMonitorSummary) => {
+    if (busyMonitorId !== null) return;
+    setBusyMonitorId(monitor.id);
+    const result = await cancelMonitor({
+      environmentId: props.environmentId,
+      input: { threadId: props.threadId, monitorId: monitor.id },
+    });
+    setBusyMonitorId(null);
+    if (result._tag === "Failure" && !isAtomCommandInterrupted(result)) {
+      reportFailure("Could not cancel monitor", squashAtomCommandFailure(result));
+    }
+  };
+
   return (
     <ThreadDetailsSection
       headingId="thread-details-automations-heading"
@@ -132,6 +172,14 @@ export function ThreadAutomationsPanel(props: {
           Could not load automations: {tasksQuery.error}
         </p>
       ) : null}
+      {monitorsQuery.error !== null ? (
+        <p className="px-2.5 py-1.5 text-2xs text-destructive">
+          Could not load monitors: {monitorsQuery.error}
+        </p>
+      ) : null}
+      {(!tasksQuery.data && !tasksQuery.error) || (!monitorsQuery.data && !monitorsQuery.error) ? (
+        <p className="px-2.5 py-1.5 text-2xs text-muted-foreground">Loading automations…</p>
+      ) : null}
 
       <ul className="m-0 list-none p-0">
         {boundTasks.map((task) => (
@@ -164,6 +212,16 @@ export function ThreadAutomationsPanel(props: {
                     ? ""
                     : " · paused"}
               </p>
+              {task.lastRunStatus !== "never" ? (
+                <Tooltip>
+                  <TooltipTrigger render={<p className="text-2xs text-muted-foreground" />}>
+                    {scheduledTaskDispatchStatus[task.lastRunStatus].label}
+                  </TooltipTrigger>
+                  <TooltipPopup>
+                    {scheduledTaskDispatchStatus[task.lastRunStatus].description}
+                  </TooltipPopup>
+                </Tooltip>
+              ) : null}
             </div>
             <Tooltip>
               <TooltipTrigger
@@ -209,6 +267,89 @@ export function ThreadAutomationsPanel(props: {
               aria-label={task.enabled ? `Pause ${task.title}` : `Resume ${task.title}`}
               onCheckedChange={(enabled) => void toggleEnabled(task, enabled)}
             />
+          </li>
+        ))}
+        {monitors.map((monitor) => (
+          <li key={monitor.id} className="flex items-start gap-2 py-1.5">
+            <span className="flex size-4 shrink-0 items-center justify-center">
+              <EyeIcon className={THREAD_DETAILS_PANEL_ICON_CLASS} />
+            </span>
+            <div className="min-w-0 flex-1">
+              <span className="block truncate text-sm font-medium text-foreground/80">
+                {monitor.label}
+              </span>
+              {monitor.criterion ? (
+                <Tooltip>
+                  <TooltipTrigger
+                    render={<p className="line-clamp-2 text-2xs text-muted-foreground" />}
+                  >
+                    {monitor.criterion}
+                  </TooltipTrigger>
+                  <TooltipPopup>{monitor.criterion}</TooltipPopup>
+                </Tooltip>
+              ) : (
+                <p className="text-2xs text-muted-foreground">
+                  {monitor.condition === "time"
+                    ? "One-time timer"
+                    : monitor.condition === "signal"
+                      ? "External signal"
+                      : "Screen image changes"}
+                </p>
+              )}
+              <p className="text-2xs text-muted-foreground">
+                {monitor.status === "triggered"
+                  ? monitor.continuation.mode === "resume-thread"
+                    ? "Waiting to resume"
+                    : "Recording result"
+                  : monitor.reviewRequired
+                    ? "Agent review needed"
+                    : monitor.lastError
+                      ? "Retrying"
+                      : "Waiting"}
+                {monitor.continuation.mode === "record-only" ? " · record only" : ""}
+              </p>
+              {monitor.nextCheckAt !== null ? (
+                <p className="text-2xs text-muted-foreground">
+                  {monitor.condition === "time" ? "Due" : "Next check"}{" "}
+                  <time dateTime={monitor.nextCheckAt}>
+                    {new Date(monitor.nextCheckAt).toLocaleString()}
+                  </time>
+                </p>
+              ) : null}
+              {monitor.deadlineAt !== null ? (
+                <p className="text-2xs text-muted-foreground">
+                  Deadline{" "}
+                  <time dateTime={monitor.deadlineAt}>
+                    {new Date(monitor.deadlineAt).toLocaleString()}
+                  </time>
+                </p>
+              ) : null}
+              {monitor.lastError ? (
+                <Tooltip>
+                  <TooltipTrigger render={<p className="line-clamp-2 text-2xs text-destructive" />}>
+                    {monitor.lastError}
+                  </TooltipTrigger>
+                  <TooltipPopup>{monitor.lastError}</TooltipPopup>
+                </Tooltip>
+              ) : null}
+            </div>
+            <Tooltip>
+              <TooltipTrigger
+                render={
+                  <ThreadDetailsControl
+                    size="icon-xs"
+                    variant="ghost"
+                    part="icon"
+                    aria-label={`Cancel ${monitor.label}`}
+                    disabled={busyMonitorId !== null || monitorsQuery.error !== null}
+                    onClick={() => void cancelWait(monitor)}
+                  >
+                    <XIcon className="size-3.5" />
+                  </ThreadDetailsControl>
+                }
+              />
+              <TooltipPopup>Cancel monitor</TooltipPopup>
+            </Tooltip>
           </li>
         ))}
       </ul>

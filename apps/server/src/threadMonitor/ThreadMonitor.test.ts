@@ -11,6 +11,7 @@ import {
   ThreadId,
   ThreadMonitorError,
   ThreadMonitorId,
+  type ThreadMonitorSummaryList,
   EventId,
   ProviderTurnId,
 } from "@t3tools/contracts";
@@ -22,6 +23,7 @@ import * as Fiber from "effect/Fiber";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Ref from "effect/Ref";
+import * as Queue from "effect/Queue";
 import * as Stream from "effect/Stream";
 import * as Result from "effect/Result";
 import * as SqlClient from "effect/unstable/sql/SqlClient";
@@ -677,6 +679,73 @@ const seedThread = Effect.gen(function* () {
 });
 
 describe("ThreadMonitor", () => {
+  it.effect("streams initial state, new waits, and individual cancellation", () =>
+    Effect.gen(function* () {
+      yield* seedThread;
+      const service = yield* ThreadMonitorService;
+      const updates = yield* Queue.unbounded<ThreadMonitorSummaryList>();
+      yield* service.subscribeSummaries(threadId).pipe(
+        Stream.runForEach((snapshot) => Queue.offer(updates, snapshot)),
+        Effect.forkScoped,
+      );
+      assert.deepStrictEqual(yield* Queue.take(updates), { monitors: [] });
+      const monitor = yield* service.create({
+        threadId,
+        monitor: { label: "Wait for upload", schedule: { type: "signal" } },
+      });
+      assert.deepStrictEqual((yield* Queue.take(updates)).monitors, [
+        {
+          id: monitor.id,
+          label: "Wait for upload",
+          status: "active",
+          condition: "signal",
+          criterion: null,
+          nextCheckAt: null,
+          deadlineAt: null,
+          continuation: { mode: "resume-thread" },
+          reviewRequired: false,
+          lastError: null,
+        },
+      ]);
+      yield* service.cancel({ threadId, cancel: { monitorId: monitor.id } });
+      yield* TestClock.adjust("1 second");
+      assert.deepStrictEqual(yield* Queue.take(updates), { monitors: [] });
+      assert.strictEqual(
+        (yield* service.status({ threadId, query: { monitorId: monitor.id } })).monitors[0]?.status,
+        "cancelled",
+      );
+    }).pipe(Effect.provide(Layer.fresh(testRuntime))),
+  );
+
+  it.effect("restores existing timer summaries without exposing another thread's waits", () =>
+    Effect.gen(function* () {
+      yield* seedThread;
+      const service = yield* ThreadMonitorService;
+      const monitor = yield* service.create({
+        threadId,
+        monitor: {
+          label: "One-time reminder",
+          schedule: { type: "after", durationMs: 60_000 },
+          continuation: "record-only",
+        },
+      });
+      const snapshot = Option.getOrThrow(
+        yield* service.subscribeSummaries(threadId).pipe(Stream.runHead),
+      );
+      assert.strictEqual(
+        snapshot.monitors[0]?.nextCheckAt,
+        monitor.condition.type === "time" ? monitor.condition.at : null,
+      );
+      assert.strictEqual(snapshot.monitors[0]?.continuation.mode, "record-only");
+      assert.deepStrictEqual(
+        Option.getOrThrow(
+          yield* service.subscribeSummaries(ThreadId.make("another-thread")).pipe(Stream.runHead),
+        ),
+        { monitors: [] },
+      );
+    }).pipe(Effect.provide(Layer.fresh(testRuntime))),
+  );
+
   it.effect("exposes controller capabilities before starting a monitor", () =>
     Effect.gen(function* () {
       const service = yield* ThreadMonitorService;
@@ -1236,6 +1305,52 @@ describe("ThreadMonitor", () => {
 });
 
 describe("ThreadMonitor concurrent computer work", () => {
+  it.effect("streams revised screen conditions without screen regions or evidence", () =>
+    Effect.gen(function* () {
+      yield* seedThread;
+      const service = yield* ThreadMonitorService;
+      const created = yield* service.createComputer({
+        threadId,
+        monitor: {
+          label: "Wait for export",
+          desktop: { kind: "agent", desktopId: "summary-screen" },
+          match: { type: "image-change" },
+        },
+      });
+      const updates = yield* Queue.unbounded<ThreadMonitorSummaryList>();
+      yield* service.subscribeSummaries(threadId).pipe(
+        Stream.runForEach((snapshot) => Queue.offer(updates, snapshot)),
+        Effect.forkScoped,
+      );
+      const initial = (yield* Queue.take(updates)).monitors[0]!;
+      assert.strictEqual(initial.condition, "image-change");
+      assert.isNotNull(initial.nextCheckAt);
+      assert.notProperty(initial, "observation");
+      assert.notProperty(initial, "images");
+      yield* service.updateComputer({
+        threadId,
+        update: {
+          monitorId: created.monitor.id,
+          expectedRevision: created.revision,
+          match: {
+            type: "model",
+            criterion: "The export completed successfully",
+            modelSelection: {
+              instanceId: ProviderInstanceId.make("test-provider"),
+              model: "test-model",
+            },
+          },
+        },
+      });
+      const revised = (yield* Queue.take(updates)).monitors[0]!;
+      assert.strictEqual(revised.id, initial.id);
+      assert.strictEqual(revised.condition, "model");
+      assert.strictEqual(revised.criterion, "The export completed successfully");
+      assert.notProperty(revised, "observation");
+      assert.notProperty(revised, "images");
+    }).pipe(Effect.provide(makeComputerMonitorRuntime(ThreadMonitorLayerBase))),
+  );
+
   it.effect.each(["time", "signal", "computer"] as const)(
     "retains Stop during initial %s owner validation without cancelling later creates",
     (kind) =>

@@ -9,7 +9,8 @@ import {
 import * as Schema from "effect/Schema";
 import * as Rpc from "effect/unstable/rpc/Rpc";
 import * as RpcGroup from "effect/unstable/rpc/RpcGroup";
-import { NonNegativeInt, TrimmedNonEmptyString } from "./baseSchemas.ts";
+import { NonNegativeInt, ThreadId, ThreadMonitorId, TrimmedNonEmptyString } from "./baseSchemas.ts";
+import { ThreadMonitorError, ThreadMonitorSummaryList } from "./threadMonitor.ts";
 import {
   CodexAuthCallbackInput,
   CodexAuthCallbackState,
@@ -478,6 +479,9 @@ export const WS_METHODS = {
   scheduledTasksSetEnabled: "scheduledTasks.setEnabled",
   scheduledTasksDelete: "scheduledTasks.delete",
   scheduledTasksRunNow: "scheduledTasks.runNow",
+
+  threadMonitorsSubscribe: "threadMonitors.subscribe",
+  threadMonitorsCancel: "threadMonitors.cancel",
 
   // Cloud environment methods
   cloudGetRelayClientStatus: "cloud.getRelayClientStatus",
@@ -1651,6 +1655,19 @@ const WsScheduledTasksListRpc = Rpc.make(WS_METHODS.scheduledTasksList, {
   error: Schema.Union([ScheduledTaskError, EnvironmentAuthorizationError]),
 });
 
+const WsThreadMonitorsSubscribeRpc = Rpc.make(WS_METHODS.threadMonitorsSubscribe, {
+  payload: Schema.Struct({ threadId: ThreadId }),
+  success: ThreadMonitorSummaryList,
+  error: Schema.Union([ThreadMonitorError, EnvironmentAuthorizationError]),
+  stream: true,
+});
+
+const WsThreadMonitorsCancelRpc = Rpc.make(WS_METHODS.threadMonitorsCancel, {
+  payload: Schema.Struct({ threadId: ThreadId, monitorId: ThreadMonitorId }),
+  success: Schema.Void,
+  error: Schema.Union([ThreadMonitorError, EnvironmentAuthorizationError]),
+});
+
 /** Streams the full scheduled-task list: one snapshot on subscribe, then a fresh list after every change. */
 const WsScheduledTasksSubscribeRpc = Rpc.make(WS_METHODS.scheduledTasksSubscribe, {
   payload: ScheduledTaskListInput,
@@ -1758,6 +1775,8 @@ export const WsRpcGroup = RpcGroup.make(
   WsScheduledTasksSetEnabledRpc,
   WsScheduledTasksDeleteRpc,
   WsScheduledTasksRunNowRpc,
+  WsThreadMonitorsSubscribeRpc,
+  WsThreadMonitorsCancelRpc,
   WsServerReportClientActivityRpc,
   WsServerReportHostPowerStateRpc,
   WsServerGetBackgroundPolicyRpc,

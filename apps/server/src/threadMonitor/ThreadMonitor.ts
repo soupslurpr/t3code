@@ -14,6 +14,7 @@ import {
   type ThreadMonitorComputerRevisionResult,
   type ThreadMonitorCondition,
   type ThreadMonitorStartInput,
+  type ThreadMonitorSummary,
   type ThreadMonitorTrigger,
 } from "@t3tools/contracts";
 import * as Cause from "effect/Cause";
@@ -26,6 +27,7 @@ import * as Effect from "effect/Effect";
 import * as Fiber from "effect/Fiber";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
+import * as PubSub from "effect/PubSub";
 import * as Queue from "effect/Queue";
 import * as Result from "effect/Result";
 import * as Semaphore from "effect/Semaphore";
@@ -63,6 +65,33 @@ const emptyComputerEvidence = {
   currentImages: [],
   terminalImages: [],
 } as const;
+
+function monitorSummary(monitor: ThreadMonitor): ThreadMonitorSummary {
+  const condition = monitor.condition;
+  const active = monitor.status === "active";
+  return {
+    id: monitor.id,
+    label: monitor.label,
+    status: monitor.status,
+    condition: condition.type === "computer" ? condition.match.type : condition.type,
+    criterion:
+      condition.type === "computer" && condition.match.type === "model"
+        ? condition.match.criterion
+        : null,
+    nextCheckAt: !active
+      ? null
+      : condition.type === "computer"
+        ? condition.nextCheckAt
+        : condition.type === "time"
+          ? condition.at
+          : null,
+    deadlineAt: condition.type === "time" ? null : condition.deadlineAt,
+    continuation: monitor.continuation,
+    reviewRequired: condition.type === "computer" && condition.review.state !== "idle",
+    lastError:
+      monitor.lastError ?? (condition.type === "computer" ? condition.observationError : null),
+  };
+}
 
 /** Re-tags the latest evaluated images as the bounded previous generation. */
 function previousComputerImages(
@@ -294,6 +323,8 @@ const make = Effect.gen(function* () {
   >();
   const cancellationCleanups = new Set<ThreadMonitorId>();
   const wakeQueue = yield* Queue.sliding<void>(1);
+  const changes = yield* PubSub.sliding<void>(1);
+  const notifyChanged = PubSub.publish(changes, undefined).pipe(Effect.asVoid);
 
   const nowIso = DateTime.now.pipe(Effect.map(DateTime.formatIso));
   const wake = Queue.offer(wakeQueue, undefined).pipe(Effect.asVoid);
@@ -317,7 +348,10 @@ const make = Effect.gen(function* () {
       });
 
   const writeMonitor = (monitor: ThreadMonitor) =>
-    repository.upsert(monitor).pipe(Effect.mapError(mapPersistenceError("write", monitor.id)));
+    repository.upsert(monitor).pipe(
+      Effect.mapError(mapPersistenceError("write", monitor.id)),
+      Effect.tap(() => notifyChanged),
+    );
 
   const writeComputerRevision = (
     monitor: ThreadMonitor,
@@ -329,9 +363,10 @@ const make = Effect.gen(function* () {
       readonly terminalImages: ReadonlyArray<ThreadMonitorComputerEvidenceImage>;
     },
   ) =>
-    repository
-      .upsertComputerRevision({ monitor, ...evidence })
-      .pipe(Effect.mapError(mapPersistenceError("computer-revision", monitor.id)));
+    repository.upsertComputerRevision({ monitor, ...evidence }).pipe(
+      Effect.mapError(mapPersistenceError("computer-revision", monitor.id)),
+      Effect.tap(() => notifyChanged),
+    );
 
   // Called under the state lock. Desktop cleanup can wait on a remote computer,
   // so it has its own fiber and never holds the scheduler's state lock.
@@ -1110,6 +1145,7 @@ const make = Effect.gen(function* () {
         yield* repository
           .upsert(monitor, { afterSequence })
           .pipe(Effect.mapError(mapPersistenceError("write", monitor.id)));
+        yield* notifyChanged;
         yield* appendActivity(monitor, "started", `Monitoring: ${monitor.label}`);
         yield* wake;
         return monitor;
@@ -1460,6 +1496,27 @@ const make = Effect.gen(function* () {
       }),
     );
 
+  const subscribeSummaries: ThreadMonitorServiceShape["subscribeSummaries"] = (threadId) =>
+    Stream.unwrap(
+      Effect.gen(function* () {
+        // Subscribe first so writes during the initial read cannot be lost.
+        const subscription = yield* PubSub.subscribe(changes);
+        const snapshot = status({ threadId, query: {} }).pipe(
+          Effect.map(({ monitors }) => ({ monitors: monitors.map(monitorSummary) })),
+        );
+        return Stream.concat(
+          Stream.fromEffect(snapshot),
+          Stream.fromSubscription(subscription).pipe(
+            // Coalesce screen samples for slow clients without dropping the final update.
+            Stream.throttle({ cost: () => 1, units: 1, duration: "1 second", strategy: "shape" }),
+            Stream.mapEffect(() => snapshot),
+          ),
+        ).pipe(
+          Stream.changesWith((before, after) => JSON.stringify(before) === JSON.stringify(after)),
+        );
+      }),
+    );
+
   const signal: ThreadMonitorServiceShape["signal"] = ({ threadId, signal: input }) =>
     mutex.withPermits(1)(
       Effect.gen(function* () {
@@ -1646,6 +1703,7 @@ const make = Effect.gen(function* () {
         yield* repository
           .deleteByThread(threadId)
           .pipe(Effect.mapError(mapPersistenceError("delete-thread")));
+        yield* notifyChanged;
       }),
     );
   });
@@ -1812,6 +1870,7 @@ const make = Effect.gen(function* () {
     inspectComputer,
     updateComputer,
     status,
+    subscribeSummaries,
     signal,
     cancel,
     checkNow,

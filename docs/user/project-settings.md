@@ -63,6 +63,11 @@ environment's time zone, which may differ from your phone's.
 You can edit, pause, resume, run immediately, or delete a task from the list.
 Leaving an edited form asks before discarding unsaved changes.
 
+**Dispatched** means the thread accepted the scheduled prompt. It does not mean
+the agent finished the task; open the conversation for progress and results.
+Use recurring tasks for prompts you want repeated, and [durable monitors](./durable-monitors.md)
+when ongoing work should resume once a deadline or condition is reached.
+
 ## Defaults and inheritance
 
 General contains the model and workspace for new threads. Integrations controls agent browser

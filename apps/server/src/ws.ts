@@ -121,6 +121,7 @@ import * as ThreadLaunchService from "./orchestration-v2/ThreadLaunchService.ts"
 import * as ThreadMessageIntake from "./orchestration-v2/ThreadMessageIntake.ts";
 import * as IdAllocator from "./orchestration-v2/IdAllocator.ts";
 import * as ScheduledTasks from "./scheduledTasks/ScheduledTaskService.ts";
+import * as ThreadMonitors from "./threadMonitor/ThreadMonitorService.ts";
 import {
   archivedShellStreamItemFromThreadShell,
   buildActiveShellSnapshot,
@@ -1136,6 +1137,7 @@ const makeWsRpcLayer = (
       const threadLaunch = yield* ThreadLaunchService.ThreadLaunchService;
       const providerSessionManager = yield* ProviderSessionManager.ProviderSessionManagerV2;
       const scheduledTasks = yield* ScheduledTasks.ScheduledTaskService;
+      const threadMonitors = yield* ThreadMonitors.ThreadMonitorService;
       const pullRequests = yield* PullRequestService.PullRequestService;
       const pullRequestSync = yield* PullRequestSyncReactor.PullRequestSyncReactor;
       const deviceService = yield* DeviceService.DeviceService;
@@ -2011,6 +2013,20 @@ const makeWsRpcLayer = (
           observeRpcEffect(WS_METHODS.scheduledTasksList, scheduledTasks.list(), {
             "rpc.aggregate": "scheduledTasks",
           }),
+        [WS_METHODS.threadMonitorsSubscribe]: ({ threadId }) =>
+          observeRpcStream(
+            WS_METHODS.threadMonitorsSubscribe,
+            threadMonitors.subscribeSummaries(threadId),
+            {
+              "rpc.aggregate": "threadMonitors",
+            },
+          ),
+        [WS_METHODS.threadMonitorsCancel]: ({ threadId, monitorId }) =>
+          observeRpcEffect(
+            WS_METHODS.threadMonitorsCancel,
+            threadMonitors.cancel({ threadId, cancel: { monitorId } }).pipe(Effect.asVoid),
+            { "rpc.aggregate": "threadMonitors" },
+          ),
         [WS_METHODS.scheduledTasksSubscribe]: (_input) =>
           observeRpcStream(WS_METHODS.scheduledTasksSubscribe, scheduledTasks.subscribeList(), {
             "rpc.aggregate": "scheduledTasks",
