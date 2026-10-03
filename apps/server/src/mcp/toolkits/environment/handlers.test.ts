@@ -31,6 +31,7 @@ const caller: McpInvocationContext.McpInvocationScope = {
   environmentId,
   requestNamespace: "provider:preferences",
   thread: {
+    controllerId: "test-controller",
     threadId,
     providerSessionId: "provider:preferences",
     providerInstanceId: ProviderInstanceId.make("codex"),
@@ -104,6 +105,7 @@ it.effect("refuses a preferences update when the caller's turn ends while it wai
         environmentId,
         requestNamespace: "provider:preferences",
         thread: {
+          controllerId: "controller-test",
           threadId,
           providerSessionId: "provider:preferences",
           providerInstanceId: ProviderInstanceId.make("codex"),

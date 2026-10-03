@@ -1,5 +1,5 @@
 /** Resolves host paths and resources for the environment-owned Agent desktop runtime. */
-import { HostProcessArchitecture, HostProcessPlatform } from "@t3tools/shared/hostProcess";
+import * as HostProcess from "@t3tools/shared/HostProcess";
 import * as Config from "effect/Config";
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
@@ -39,8 +39,8 @@ export class AgentDesktopEnvironment extends Context.Service<
 export const make = Effect.gen(function* () {
   const path = yield* Path.Path;
   const config = yield* ServerConfig.ServerConfig;
-  const platform = yield* HostProcessPlatform;
-  const processArch = yield* HostProcessArchitecture;
+  const platform = yield* HostProcess.Platform;
+  const processArch = yield* HostProcess.Architecture;
   const overrides = yield* Config.all({
     home: optionalTrimmedString("T3CODE_AGENT_DESKTOP_HOME"),
     image: optionalTrimmedString("T3CODE_AGENT_DESKTOP_IMAGE"),

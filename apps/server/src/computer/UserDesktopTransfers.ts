@@ -37,9 +37,9 @@ import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 
 import * as ServerConfig from "../config.ts";
-import type { McpInvocationScope } from "../mcp/McpInvocationContext.ts";
+import type { McpThreadInvocationScope } from "../mcp/McpInvocationContext.ts";
 import { PreviewAutomationBroker } from "../mcp/PreviewAutomationBroker.ts";
-import { ProjectionSnapshotQuery } from "../orchestration/Services/ProjectionSnapshotQuery.ts";
+import { ThreadWorkspaceQuery } from "../orchestration-v2/ThreadWorkspaceQuery.ts";
 
 const isFailureCode = Schema.is(UserDesktopTransferFailure.fields.code);
 const decodeResult = Schema.decodeUnknownEffect(UserDesktopTransferResult);
@@ -47,11 +47,11 @@ const terminal = (state: UserDesktopTransfer["state"]) =>
   ["completed", "failed", "cancelled"].includes(state);
 const requestError = (message: string) =>
   new UserDesktopTransferRequestError({ message: message.slice(0, 1024) });
-const sameOwner = (a: McpInvocationScope, b: McpInvocationScope) =>
-  a.environmentId === b.environmentId && a.threadId === b.threadId;
+const sameOwner = (a: McpThreadInvocationScope, b: McpThreadInvocationScope) =>
+  a.environmentId === b.environmentId && a.thread.threadId === b.thread.threadId;
 
 interface TransferRecord {
-  readonly scope: McpInvocationScope;
+  readonly scope: McpThreadInvocationScope;
   readonly fingerprint: ReadonlyArray<string>;
   readonly archivePath: string;
   readonly token: string;
@@ -165,7 +165,7 @@ export const make = Effect.gen(function* () {
         return new DesktopTransferError(error.code, error.detail);
       },
     });
-  const owned = (owner: McpInvocationScope, id: string) =>
+  const owned = (owner: McpThreadInvocationScope, id: string) =>
     Effect.suspend(() => {
       const record = records.get(id);
       return record !== undefined && sameOwner(owner, record.scope)
@@ -306,7 +306,7 @@ export const make = Effect.gen(function* () {
   });
 
   const start = Effect.fn("UserDesktopTransfers.start")(function* (
-    owner: McpInvocationScope,
+    owner: McpThreadInvocationScope,
     input: UserDesktopCopyInput,
   ) {
     const fingerprint = [
@@ -318,9 +318,9 @@ export const make = Effect.gen(function* () {
       input.compression ?? "auto",
       String(input.timeoutMs ?? 3_600_000),
     ];
-    const projections = yield* ProjectionSnapshotQuery;
+    const projections = yield* ThreadWorkspaceQuery;
     const shell = yield* projections
-      .getThreadShellById(owner.threadId)
+      .getThreadShellById(owner.thread.threadId)
       .pipe(Effect.mapError(() => requestError("Cannot read the transfer thread.")));
     if (Option.isNone(shell)) return yield* Effect.fail(requestError("Transfer thread not found."));
     const project = yield* projections
@@ -400,13 +400,13 @@ export const make = Effect.gen(function* () {
     return yield* wait(record, input.waitMs ?? 15_000);
   });
   const status = Effect.fn("UserDesktopTransfers.status")(function* (
-    owner: McpInvocationScope,
+    owner: McpThreadInvocationScope,
     input: UserDesktopTransferTargetInput,
   ) {
     return yield* wait(yield* owned(owner, input.transferId), input.waitMs ?? 0);
   });
   const cancel = Effect.fn("UserDesktopTransfers.cancel")(function* (
-    owner: McpInvocationScope,
+    owner: McpThreadInvocationScope,
     input: UserDesktopTransferTargetInput,
   ) {
     const record = yield* owned(owner, input.transferId);

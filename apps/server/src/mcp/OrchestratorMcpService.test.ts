@@ -162,6 +162,7 @@ describe("OrchestratorMcpService", () => {
         environmentId: EnvironmentId.make("environment:mcp-ack"),
         requestNamespace: "provider-session:mcp-ack",
         thread: {
+          controllerId: "test-controller",
           threadId: parentThreadId,
           providerSessionId: "provider-session:mcp-ack",
           providerInstanceId: ProviderInstanceId.make("codex"),
@@ -262,6 +263,7 @@ describe("OrchestratorMcpService", () => {
         environmentId: EnvironmentId.make("environment:mcp-restart"),
         requestNamespace: "provider-session:mcp-restart",
         thread: {
+          controllerId: "test-controller",
           threadId: parentThreadId,
           providerSessionId: "provider-session:mcp-restart",
           providerInstanceId: ProviderInstanceId.make("codex"),
@@ -346,6 +348,7 @@ describe("OrchestratorMcpService", () => {
         environmentId: EnvironmentId.make("environment:mcp-cancel"),
         requestNamespace: "provider-session:mcp-cancel",
         thread: {
+          controllerId: "test-controller",
           threadId: parentThreadId,
           providerSessionId: "provider-session:mcp-cancel",
           providerInstanceId: ProviderInstanceId.make("codex"),
@@ -423,6 +426,7 @@ describe("OrchestratorMcpService", () => {
         environmentId: EnvironmentId.make("environment:mcp-cancel-failed"),
         requestNamespace: "provider-session:mcp-cancel-failed",
         thread: {
+          controllerId: "test-controller",
           threadId: parentThreadId,
           providerSessionId: "provider-session:mcp-cancel-failed",
           providerInstanceId: ProviderInstanceId.make("codex"),
@@ -508,6 +512,7 @@ describe("OrchestratorMcpService", () => {
         environmentId: EnvironmentId.make("environment:mcp-cancel-dispose-failed"),
         requestNamespace: "provider-session:mcp-cancel-dispose-failed",
         thread: {
+          controllerId: "test-controller",
           threadId: parentThreadId,
           providerSessionId: "provider-session:mcp-cancel-dispose-failed",
           providerInstanceId: ProviderInstanceId.make("codex"),
@@ -594,6 +599,7 @@ describe("OrchestratorMcpService", () => {
         environmentId: EnvironmentId.make("environment:mcp-cancel-dispose-failed"),
         requestNamespace: "provider-session:mcp-cancel-dispose-failed",
         thread: {
+          controllerId: "controller-test",
           threadId: parentThreadId,
           providerSessionId: "provider-session:mcp-cancel-dispose-failed",
           providerInstanceId: ProviderInstanceId.make("codex"),
@@ -727,6 +733,7 @@ describe("OrchestratorMcpService", () => {
         environmentId: EnvironmentId.make("environment:mcp-cancel-grandchild"),
         requestNamespace: "provider-session:mcp-cancel-grandchild",
         thread: {
+          controllerId: "controller-test",
           threadId: parentThreadId,
           providerSessionId: "provider-session:mcp-cancel-grandchild",
           providerInstanceId: ProviderInstanceId.make("codex"),
@@ -792,6 +799,7 @@ describe("OrchestratorMcpService provider resolution", () => {
     environmentId: EnvironmentId.make("environment:mcp-providers"),
     requestNamespace: "provider-session:mcp-providers",
     thread: {
+      controllerId: "test-controller",
       threadId: parentThreadId,
       providerSessionId: "provider-session:mcp-providers",
       providerInstanceId: codexInstanceId,
@@ -2317,6 +2325,7 @@ describe("OrchestratorMcpService provider resolution", () => {
                 ...supervisedClient,
                 requestNamespace: "provider:scheduled-ended",
                 thread: {
+                  controllerId: "controller-test",
                   threadId: callerId,
                   providerSessionId: "provider:scheduled-ended",
                   providerInstanceId: shell.providerInstanceId,

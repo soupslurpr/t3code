@@ -57,6 +57,7 @@ import * as ProjectionStore from "./ProjectionStore.ts";
 import * as ProviderEventIngestor from "./ProviderEventIngestor.ts";
 import * as McpAppModelContext from "../mcpApps/McpAppModelContext.ts";
 import * as RunExecutionService from "./RunExecutionService.ts";
+import { ProviderComputerLifecycle } from "./ProviderComputerLifecycle.ts";
 import * as RunFinalizationService from "./RunFinalizationService.ts";
 import * as TurnItemPositionStore from "./TurnItemPositionStore.ts";
 
@@ -920,6 +921,7 @@ it.effect("fails the run when its ownership check cannot be read before calling 
   Effect.gen(function* () {
     const guardCalls = yield* Ref.make(0);
     const providerStarts = yield* Ref.make(0);
+    const computerResumes = yield* Ref.make(0);
     const writes = yield* Ref.make<ReadonlyArray<OrchestrationV2DomainEvent>>([]);
     const threadId = ThreadId.make("thread:run-execution-start-guard-read");
     const runId = RunId.make("run:run-execution-start-guard-read");
@@ -942,6 +944,10 @@ it.effect("fails the run when its ownership check cannot be read before calling 
             ingestNormalized: () => Effect.succeed([]),
           }),
           ServerSettings.layerTest(),
+          Layer.succeed(ProviderComputerLifecycle, {
+            resume: () => Ref.update(computerResumes, (count) => count + 1),
+            beginInterruption: () => Effect.succeed(Effect.void),
+          }),
         ),
       ),
     );
@@ -1014,6 +1020,7 @@ it.effect("fails the run when its ownership check cannot be read before calling 
 
     assert.equal(yield* Ref.get(guardCalls), 2);
     assert.equal(yield* Ref.get(providerStarts), 0);
+    assert.equal(yield* Ref.get(computerResumes), 0);
     const runUpdate = (yield* Ref.get(writes)).find((event) => event.type === "run.updated");
     assert.equal(
       runUpdate?.type === "run.updated" ? runUpdate.payload.status : undefined,
@@ -1119,7 +1126,7 @@ const layerMcpSessionRegistryTest = McpSessionRegistry.layer.pipe(
   ),
 );
 
-it.effect("refreshes MCP credential liveness before calling the provider", () =>
+it.effect("refreshes credentials and restores desktop control before calling the provider", () =>
   Effect.gen(function* () {
     const order = yield* Ref.make<ReadonlyArray<string>>([]);
     const key = "run-execution-mcp-liveness";
@@ -1133,10 +1140,17 @@ it.effect("refreshes MCP credential liveness before calling the provider", () =>
       key,
       shouldFinalizeRun: () => Effect.succeed(true),
       startTurn: () => Ref.update(order, (entries) => [...entries, "start-turn"]),
-    }).pipe(Effect.ensuring(Effect.sync(() => touchActiveMcpThread.mockRestore())));
+    }).pipe(
+      Effect.provideService(ProviderComputerLifecycle, {
+        resume: (threadId) => Ref.update(order, (entries) => [...entries, `resume:${threadId}`]),
+        beginInterruption: () => Effect.succeed(Effect.void),
+      }),
+      Effect.ensuring(Effect.sync(() => touchActiveMcpThread.mockRestore())),
+    );
 
     assert.deepEqual(yield* Ref.get(order), [
       `touch:${backgroundScenarioIds(key).threadId}`,
+      `resume:${backgroundScenarioIds(key).threadId}`,
       "start-turn",
     ]);
   }),

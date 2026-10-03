@@ -3,7 +3,7 @@ import * as NodeURL from "node:url";
 
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { assert, it } from "@effect/vitest";
-import { HostProcessPlatform } from "@t3tools/shared/hostProcess";
+import * as HostProcess from "@t3tools/shared/HostProcess";
 import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
@@ -12,14 +12,14 @@ import * as Fiber from "effect/Fiber";
 import * as Option from "effect/Option";
 import * as Scope from "effect/Scope";
 import * as Stream from "effect/Stream";
-import { HttpClient, HttpClientResponse } from "effect/unstable/http";
+import { HttpClient, HttpClientResponse } from "effect/http";
 
 import { runBackendProcess } from "./DesktopBackendManager.ts";
 
 it.effect("lets a backend finish pending child work before terminating its group", () =>
   Effect.scoped(
     Effect.gen(function* () {
-      if ((yield* HostProcessPlatform) === "win32") return;
+      if ((yield* HostProcess.Platform) === "win32") return;
       const fileSystem = yield* FileSystem.FileSystem;
       const directory = yield* fileSystem.makeTempDirectoryScoped();
       const outcomePath = `${directory}/outcome`;

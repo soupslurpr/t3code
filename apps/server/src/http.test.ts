@@ -14,7 +14,7 @@ import * as Path from "effect/Path";
 import * as PlatformError from "effect/PlatformError";
 import * as Queue from "effect/Queue";
 import * as Tracer from "effect/Tracer";
-import { HttpBody, HttpClient, HttpClientRequest, HttpRouter, HttpServerResponse } from "effect/http";
+import { HttpClient, HttpClientRequest, HttpRouter, HttpServerResponse } from "effect/http";
 import { openMediaFile } from "./assets/MediaFile.ts";
 
 import {
@@ -851,7 +851,7 @@ describe("media asset byte ranges", () => {
       );
       expect(unsatisfiable.status).toBe(416);
       expect(unsatisfiable.headers.get("content-range")).toBe("bytes */16");
-    }).pipe(Effect.provide(fileResponseLayer)),
+    }).pipe(Effect.provide(layerFileResponse)),
   );
 
   it.effect("rejects ranges outside the file, including empty files", () =>

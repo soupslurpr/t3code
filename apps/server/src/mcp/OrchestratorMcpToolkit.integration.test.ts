@@ -793,6 +793,7 @@ describe("orchestrator MCP toolkit", () => {
               environmentId: EnvironmentId.make("environment:mcp-orchestrator"),
               requestNamespace: "mcp-provider-session-parent",
               thread: {
+                controllerId: "test-controller",
                 threadId: parentThreadId,
                 providerSessionId: "mcp-provider-session-parent",
                 providerInstanceId: codexInstanceId,
@@ -4470,6 +4471,7 @@ describe("orchestrator MCP toolkit", () => {
             environmentId: EnvironmentId.make("environment:mcp-replay"),
             requestNamespace: "mcp-provider-session-replay-parent",
             thread: {
+              controllerId: "test-controller",
               threadId: parentThreadId,
               providerSessionId: "mcp-provider-session-replay-parent",
               providerInstanceId: codexInstanceId,

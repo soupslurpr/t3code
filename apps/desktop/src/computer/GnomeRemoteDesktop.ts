@@ -9,7 +9,6 @@ import * as Context from "effect/Context";
 import * as Deferred from "effect/Deferred";
 import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
-import * as Encoding from "effect/Encoding";
 import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
@@ -18,9 +17,9 @@ import * as Ref from "effect/Ref";
 import * as Schema from "effect/Schema";
 import * as Semaphore from "effect/Semaphore";
 import * as Stream from "effect/Stream";
-import * as Ndjson from "effect/unstable/encoding/Ndjson";
-import * as ChildProcess from "effect/unstable/process/ChildProcess";
-import * as ChildProcessSpawner from "effect/unstable/process/ChildProcessSpawner";
+import * as Ndjson from "effect/encoding/Ndjson";
+import * as ChildProcess from "effect/process/ChildProcess";
+import * as ChildProcessSpawner from "effect/process/ChildProcessSpawner";
 
 import * as DesktopAssets from "../app/DesktopAssets.ts";
 import * as DesktopEnvironment from "../app/DesktopEnvironment.ts";
@@ -509,6 +508,7 @@ const helperCommandError = (operation: HelperMethod, code: string, cause: unknow
 const decodeHelperResponse = Schema.decodeUnknownEffect(HelperResponse);
 const decodeHelperStatus = Schema.decodeUnknownEffect(HelperStatus);
 const decodeHelperSnapshot = Schema.decodeUnknownEffect(HelperSnapshot);
+const decodeScreenshotData = Schema.decodeEffect(Schema.Uint8ArrayFromBase64);
 const decodeHelperActivateResult = Schema.decodeUnknownEffect(HelperActivateResult);
 const decodeHelperTypeResult = Schema.decodeUnknownEffect(HelperTypeResult);
 const decodeHelperInputCleanup = Schema.decodeUnknownEffect(ComputerAutomationInputCleanup);
@@ -862,7 +862,7 @@ export const make = Effect.gen(function* () {
         ),
       ),
       Effect.flatMap(({ data, source, accessibility }) =>
-        Effect.fromResult(Encoding.decodeBase64(data)).pipe(
+        decodeScreenshotData(data).pipe(
           Effect.mapError(
             (cause) => new GnomeRemoteDesktopProtocolError({ operation: "snapshot", cause }),
           ),

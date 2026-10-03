@@ -9,7 +9,7 @@ import {
   ComputerAutomationFrame,
   ComputerAutomationScreenshot,
 } from "./computerAutomation.ts";
-import { ModelSelection } from "./orchestration.ts";
+import { ModelSelection } from "./modelSelection.ts";
 import { ProviderInstanceId } from "./providerInstance.ts";
 import { UserDesktopId } from "./userDesktop.ts";
 

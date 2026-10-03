@@ -74,17 +74,21 @@ const runtimeLayer = Layer.merge(managerLayer, computerLayer);
 
 const scope = {
   environmentId: EnvironmentId.make("environment-server-smoke"),
-  threadId: ThreadId.make("thread-server-smoke"),
-  controllerId: "controller-server-smoke",
-  providerSessionId: "controller-server-smoke",
-  providerInstanceId: ProviderInstanceId.make("codex"),
+  thread: {
+    threadId: ThreadId.make("thread-server-smoke"),
+    controllerId: "controller-server-smoke",
+    providerSessionId: "controller-server-smoke",
+    providerInstanceId: ProviderInstanceId.make("codex"),
+  },
+  requestNamespace: "agent-desktop-smoke",
+  client: undefined,
   capabilities: new Set(["computer"] as const),
   issuedAt: 0,
 };
 const owner = {
   environmentId: scope.environmentId,
-  threadId: scope.threadId,
-  controllerId: scope.controllerId,
+  threadId: scope.thread.threadId,
+  controllerId: scope.thread.controllerId,
 };
 const message = "environment server transfer: exact Unicode ’ →\n";
 const directWriteMessage = "Agent desktop create mode is exact.\n";

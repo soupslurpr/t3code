@@ -30,39 +30,39 @@ type DesktopOperation = EnvironmentDesktopAutomationError["operation"];
 
 export interface ComputerAutomationRouterShape {
   readonly status: (
-    scope: McpInvocationContext.McpInvocationScope,
+    scope: McpInvocationContext.McpThreadInvocationScope,
     input: ComputerAutomationTargetInput,
   ) => Effect.Effect<ComputerAutomationStatus, PreviewAutomationError>;
   readonly requestView: (
-    scope: McpInvocationContext.McpInvocationScope,
+    scope: McpInvocationContext.McpThreadInvocationScope,
     input: ComputerAutomationAccessInput,
   ) => Effect.Effect<ComputerAutomationObservation, PreviewAutomationError>;
   readonly requestControl: (
-    scope: McpInvocationContext.McpInvocationScope,
+    scope: McpInvocationContext.McpThreadInvocationScope,
     input: ComputerAutomationAccessInput,
   ) => Effect.Effect<ComputerAutomationObservation, PreviewAutomationError>;
   readonly requestAvailability: (
-    scope: McpInvocationContext.McpInvocationScope,
+    scope: McpInvocationContext.McpThreadInvocationScope,
     input: ComputerAutomationAvailabilityInput,
   ) => Effect.Effect<ComputerAutomationStatus, PreviewAutomationError>;
   readonly releaseAvailability: (
-    scope: McpInvocationContext.McpInvocationScope,
+    scope: McpInvocationContext.McpThreadInvocationScope,
     input: ComputerAutomationAvailabilityInput,
   ) => Effect.Effect<ComputerAutomationStatus, PreviewAutomationError>;
   readonly snapshot: (
-    scope: McpInvocationContext.McpInvocationScope,
+    scope: McpInvocationContext.McpThreadInvocationScope,
     input: ComputerAutomationSnapshotInput,
   ) => Effect.Effect<ComputerAutomationSnapshot, PreviewAutomationError>;
   readonly act: (
-    scope: McpInvocationContext.McpInvocationScope,
+    scope: McpInvocationContext.McpThreadInvocationScope,
     input: ComputerAutomationActInput,
   ) => Effect.Effect<ComputerAutomationObservation, PreviewAutomationError>;
   readonly release: (
-    scope: McpInvocationContext.McpInvocationScope,
+    scope: McpInvocationContext.McpThreadInvocationScope,
     input: ComputerAutomationTargetInput,
   ) => Effect.Effect<ComputerAutomationStatus, PreviewAutomationError>;
   readonly forget: (
-    scope: McpInvocationContext.McpInvocationScope,
+    scope: McpInvocationContext.McpThreadInvocationScope,
     input: ComputerAutomationTargetInput,
   ) => Effect.Effect<void, PreviewAutomationError>;
 }
@@ -73,26 +73,26 @@ export class ComputerAutomationRouter extends Context.Service<
 >()("t3/computer/ComputerAutomationRouter") {}
 
 /** Creates the durable Agent desktop owner proven by one authenticated MCP scope. */
-function ownerFromScope(scope: McpInvocationContext.McpInvocationScope): AgentDesktopOwner {
+function ownerFromScope(scope: McpInvocationContext.McpThreadInvocationScope): AgentDesktopOwner {
   return {
     environmentId: scope.environmentId,
-    threadId: scope.threadId,
-    controllerId: scope.controllerId,
+    threadId: scope.thread.threadId,
+    controllerId: scope.thread.controllerId,
   };
 }
 
 /** Wraps one server-local failure in the public desktop automation envelope. */
 export function environmentDesktopFailure(
-  scope: McpInvocationContext.McpInvocationScope,
+  scope: McpInvocationContext.McpThreadInvocationScope,
   operation: DesktopOperation,
   cause: unknown,
 ): EnvironmentDesktopAutomationError {
   return new EnvironmentDesktopAutomationError({
     operation,
     environmentId: scope.environmentId,
-    threadId: scope.threadId,
-    providerSessionId: scope.providerSessionId,
-    providerInstanceId: scope.providerInstanceId,
+    threadId: scope.thread.threadId,
+    providerSessionId: scope.thread.providerSessionId,
+    providerInstanceId: scope.thread.providerInstanceId,
     computerFailure: toComputerAutomationFailure(cause),
   });
 }
@@ -117,17 +117,19 @@ export const make = Effect.gen(function* () {
   const agent = yield* AgentDesktopManager.AgentDesktopManager;
 
   const local = <Value, Error>(
-    scope: McpInvocationContext.McpInvocationScope,
+    scope: McpInvocationContext.McpThreadInvocationScope,
     operation: DesktopOperation,
     effect: Effect.Effect<Value, Error>,
   ): Effect.Effect<Value, PreviewAutomationError> =>
     effect.pipe(Effect.mapError((cause) => environmentDesktopFailure(scope, operation, cause)));
 
-  const agentStatus = (scope: McpInvocationContext.McpInvocationScope, desktopId: AgentDesktopId) =>
-    agent.status(scope.controllerId, desktopId);
+  const agentStatus = (
+    scope: McpInvocationContext.McpThreadInvocationScope,
+    desktopId: AgentDesktopId,
+  ) => agent.status(scope.thread.controllerId, desktopId);
 
   const observeAgent = Effect.fn("ComputerAutomationRouter.observeAgent")(function* (input: {
-    readonly scope: McpInvocationContext.McpInvocationScope;
+    readonly scope: McpInvocationContext.McpThreadInvocationScope;
     readonly desktopId: AgentDesktopId;
     readonly options: ComputerAutomationObservationOptions | false;
     readonly status?: ComputerAutomationStatus | undefined;
@@ -136,7 +138,7 @@ export const make = Effect.gen(function* () {
       return input.status === undefined ? {} : { status: input.status };
     }
     const snapshot = yield* agent
-      .snapshot(input.scope.controllerId, input.options, input.desktopId)
+      .snapshot(input.scope.thread.controllerId, input.options, input.desktopId)
       .pipe(Effect.option);
     if (snapshot._tag === "None") {
       return {
@@ -146,7 +148,7 @@ export const make = Effect.gen(function* () {
     }
     if (input.status === undefined) return { snapshot: snapshot.value };
     const refreshed = yield* agent
-      .status(input.scope.controllerId, input.desktopId)
+      .status(input.scope.thread.controllerId, input.desktopId)
       .pipe(Effect.option);
     const status = statusWithObservedDisplay(
       refreshed._tag === "None"
@@ -168,7 +170,7 @@ export const make = Effect.gen(function* () {
       : local(scope, "computerStatus", agentStatus(scope, input.desktop.desktopId));
 
   const requestAccess = Effect.fn("ComputerAutomationRouter.requestAccess")(function* (
-    scope: McpInvocationContext.McpInvocationScope,
+    scope: McpInvocationContext.McpThreadInvocationScope,
     input: ComputerAutomationAccessInput,
     access: "view" | "control",
   ) {
@@ -232,7 +234,7 @@ export const make = Effect.gen(function* () {
     return local(
       scope,
       "computerSnapshot",
-      agent.snapshot(scope.controllerId, options, desktop.desktopId),
+      agent.snapshot(scope.thread.controllerId, options, desktop.desktopId),
     );
   };
 
@@ -244,7 +246,7 @@ export const make = Effect.gen(function* () {
     return local(
       scope,
       "computerAct",
-      agent.act(scope.controllerId, actions, desktop.desktopId),
+      agent.act(scope.thread.controllerId, actions, desktop.desktopId),
     ).pipe(
       Effect.flatMap((actionResults) =>
         observeAgent({
@@ -259,7 +261,11 @@ export const make = Effect.gen(function* () {
   const release: ComputerAutomationRouterShape["release"] = (scope, input) =>
     input.desktop.kind === "user"
       ? broker.invoke({ scope, operation: "computerRelease", input, timeoutMs: 30_000 })
-      : local(scope, "computerRelease", agent.release(scope.controllerId, input.desktop.desktopId));
+      : local(
+          scope,
+          "computerRelease",
+          agent.release(scope.thread.controllerId, input.desktop.desktopId),
+        );
 
   const forget: ComputerAutomationRouterShape["forget"] = (scope, input) =>
     input.desktop.kind === "user"
@@ -267,7 +273,7 @@ export const make = Effect.gen(function* () {
       : local(
           scope,
           "computerForgetControl",
-          agent.forget(scope.controllerId, input.desktop.desktopId),
+          agent.forget(scope.thread.controllerId, input.desktop.desktopId),
         );
 
   return ComputerAutomationRouter.of({

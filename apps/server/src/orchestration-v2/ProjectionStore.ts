@@ -1050,6 +1050,7 @@ type ShellPendingTurnItemRow = PayloadRow & {
 };
 
 type ShellThreadRow = {
+  readonly has_active_monitors: number;
   readonly thread_id: string;
   readonly payload_json: string;
   readonly forked_from_run_source_thread_id: string | null;
@@ -1691,6 +1692,7 @@ function isActivityRunForShell(
 }
 
 type ShellThreadState = {
+  readonly backgroundLiveness?: "monitoring" | null;
   readonly thread: OrchestrationV2ThreadProjection["thread"];
   readonly latestRunId: RunId | null;
   readonly latestRunStatus: OrchestrationV2ShellThreadStatus;
@@ -1863,7 +1865,18 @@ function shellFromState(input: {
     latestUserMessageAt: input.state.latestUserMessageAt,
     latestUserAuthoredMessageAt: input.state.latestUserAuthoredMessageAt,
     hasActionableProposedPlan: input.state.hasActionableProposedPlan,
-    pendingBackgroundTasks: input.state.pendingBackgroundTasks,
+    pendingBackgroundTasks:
+      input.state.backgroundLiveness === "monitoring" && input.state.activeRunId === null
+        ? [
+            ...(input.state.pendingBackgroundTasks ?? []),
+            {
+              taskId: `thread-monitors:${input.state.thread.id}`,
+              kind: "monitor",
+              description: "Durable monitors",
+            },
+          ]
+        : input.state.pendingBackgroundTasks,
+    backgroundLiveness: input.state.backgroundLiveness ?? null,
     providerInstanceHistory: input.state.providerInstanceHistory,
     goal: input.state.goal,
     itemCount: input.state.itemCount,
@@ -5626,6 +5639,10 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
     ) =>
       sql<ShellThreadRow>`
             SELECT
+              EXISTS (
+                SELECT 1 FROM thread_monitors m
+                WHERE m.thread_id = t.thread_id AND m.status IN ('active', 'triggered')
+              ) AS has_active_monitors,
               t.thread_id,
               t.payload_json,
               CASE
@@ -5987,6 +6004,10 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
               AND json_extract(t.payload_json, '$.pinnedAt') IS NULL
               AND json_extract(t.payload_json, '$.autoSettleDisabledAt') IS NULL
               AND NOT EXISTS (
+                SELECT 1 FROM thread_monitors monitor
+                WHERE monitor.thread_id = t.thread_id AND monitor.status IN ('active', 'triggered')
+              )
+              AND NOT EXISTS (
                 SELECT 1 FROM orchestration_v2_projection_runs active
                 WHERE active.thread_id = t.thread_id
                   AND active.status IN ('preparing', 'starting', 'running', 'waiting')
@@ -6244,6 +6265,7 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
               ? null
               : DateTime.makeUnsafe(row.latest_user_authored_message_at),
           hasActionableProposedPlan: row.has_actionable_proposed_plan === 1,
+          backgroundLiveness: row.has_active_monitors === 1 ? "monitoring" : null,
           pendingBackgroundTasks,
           providerInstanceHistory: providerInstanceHistoryForShell({
             threadId: thread.id,

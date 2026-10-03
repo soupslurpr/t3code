@@ -1,3 +1,4 @@
+import { ThreadMonitorService } from "./threadMonitor/ThreadMonitorService.ts";
 import {
   CommandId,
   DEFAULT_MODEL,
@@ -456,6 +457,7 @@ const make = Effect.fn("serverRuntimeStartup.make")(function* (options?: Startup
   const providerRuntimeRecovery = yield* ProviderRuntimeRecovery.ProviderRuntimeRecoveryService;
   const orchestrator = yield* Orchestrator.OrchestratorV2;
   const providerSessions = yield* ProviderSessionManager.ProviderSessionManagerV2;
+  const threadMonitors = yield* ThreadMonitorService;
   const agentAwarenessRelay = yield* AgentAwarenessRelay.AgentAwarenessRelay;
   const lifecycleEvents = yield* ServerLifecycleEvents.ServerLifecycleEvents;
   const serverSettings = yield* ServerSettings.ServerSettingsService;
@@ -572,6 +574,7 @@ const make = Effect.fn("serverRuntimeStartup.make")(function* (options?: Startup
       ).pipe(Effect.map((targets): AutoBootstrapWelcomeTargets => targets)),
     });
     yield* Effect.logInfo("V2 orchestration recovery completed", recovery);
+    yield* runStartupPhase("thread-monitors.start", threadMonitors.start);
     // Runs after activation: the status check fetches every enabled project's
     // remote, and awaiting it here held command readiness for that long.
     yield* runStartupPhase(

@@ -1,3 +1,4 @@
+import { OrchestrationSystemEvent } from "./orchestrationSystemEvent.ts";
 import { OrchestrationMessageContext } from "./composerContext.ts";
 import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
@@ -1080,6 +1081,7 @@ export const OrchestrationV2NotificationSource = kindUnionWithFallback(
 export type OrchestrationV2NotificationSource = typeof OrchestrationV2NotificationSource.Type;
 
 export const OrchestrationV2Notification = Schema.Struct({
+  systemEvent: Schema.optional(OrchestrationSystemEvent),
   source: OrchestrationV2NotificationSource,
   outcome: Schema.Literals(["completed", "failed", "cancelled", "updated", "unknown"]),
   summary: TrimmedNonEmptyString,
@@ -1804,6 +1806,7 @@ export type OrchestrationV2LatestVisibleMessageSummary =
   typeof OrchestrationV2LatestVisibleMessageSummary.Type;
 
 export const OrchestrationV2ThreadShell = Schema.Struct({
+  backgroundLiveness: Schema.optional(Schema.NullOr(Schema.Literal("monitoring"))),
   ...OrchestrationV2CreationFields,
   id: ThreadId,
   projectId: ProjectId,
@@ -2865,6 +2868,11 @@ export const OrchestrationV2Command = Schema.Union([
     runId: RunId,
     reason: Schema.optional(Schema.String),
     holdQueue: Schema.optional(Schema.Boolean),
+  }),
+  Schema.Struct({
+    type: Schema.Literal("thread.monitors.cancel"),
+    commandId: CommandId,
+    threadId: ThreadId,
   }),
   Schema.Struct({
     type: Schema.Literal("queued-message.promote-to-steer"),

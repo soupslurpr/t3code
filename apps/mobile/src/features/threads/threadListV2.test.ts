@@ -243,16 +243,7 @@ describe("resolveThreadListV2Status", () => {
     expect(
       resolveThreadListV2Status({
         ...monitoring,
-        session: {
-          threadId: monitoring.id,
-          status: "error",
-          providerName: "Codex",
-          providerInstanceId: ProviderInstanceId.make("codex"),
-          runtimeMode: "full-access",
-          activeTurnId: null,
-          lastError: "failed",
-          updatedAt: NOW,
-        },
+        runtime: { ...monitoring.runtime!, status: "failed" },
       }),
     ).toBe("failed");
   });

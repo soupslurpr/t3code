@@ -24,6 +24,7 @@ import * as Clock from "effect/Clock";
 import * as Effect from "effect/Effect";
 
 import * as McpInvocationContext from "../../McpInvocationContext.ts";
+import * as McpToolAccess from "../../McpToolAccess.ts";
 import * as ComputerAutomationRouter from "../../../computer/ComputerAutomationRouter.ts";
 import * as ComputerObservationStore from "../../../computer/ComputerObservationStore.ts";
 import * as PreviewAutomationBroker from "../../PreviewAutomationBroker.ts";
@@ -48,12 +49,12 @@ const publishControllerObservation = Effect.fn("ComputerToolkit.publishControlle
     readonly observation: ComputerAutomationObservation;
   }) {
     if (input.desktopId === undefined) return;
-    const scope = yield* McpInvocationContext.McpInvocationContext;
+    const scope = yield* McpInvocationContext.requireThreadMcpCapability("computer");
     const observations = yield* ComputerObservationStore.ComputerObservationStore;
     yield* observations.publishController({
       environmentId: scope.environmentId,
-      threadId: scope.threadId,
-      instanceId: scope.providerInstanceId,
+      threadId: scope.thread.threadId,
+      instanceId: scope.thread.providerInstanceId,
       desktopId: input.desktopId,
       source: input.source,
       observation: input.observation,
@@ -64,10 +65,10 @@ const publishControllerObservation = Effect.fn("ComputerToolkit.publishControlle
 const withComputer = Effect.fn("ComputerToolkit.withComputer")(function* <Value>(
   run: (
     router: ComputerAutomationRouter.ComputerAutomationRouterShape,
-    scope: McpInvocationContext.McpInvocationScope,
+    scope: McpInvocationContext.McpThreadInvocationScope,
   ) => Effect.Effect<Value, import("@t3tools/contracts").PreviewAutomationError>,
 ) {
-  const scope = yield* McpInvocationContext.requireMcpCapability("computer");
+  const scope = yield* McpInvocationContext.requireThreadMcpCapability("computer");
   const router = yield* ComputerAutomationRouter.ComputerAutomationRouter;
   return yield* run(router, scope);
 });
@@ -164,7 +165,7 @@ const actWithTemporalObservation = Effect.fn("ComputerToolkit.actWithTemporalObs
 const invokeExecution = Effect.fn("ComputerToolkit.invokeExecution")(function* <Value>(
   input: UserDesktopExecutionInput,
 ) {
-  const scope = yield* McpInvocationContext.requireMcpCapability("computer");
+  const scope = yield* McpInvocationContext.requireThreadMcpCapability("computer");
   const broker = yield* PreviewAutomationBroker.PreviewAutomationBroker;
   return yield* broker.invoke<Value>({
     scope,
@@ -175,37 +176,43 @@ const invokeExecution = Effect.fn("ComputerToolkit.invokeExecution")(function* <
 });
 
 const handlers = {
-  user_desktop_copy: (input) =>
+  user_desktop_copy: McpToolAccess.actsAsCaller((input) =>
     Effect.gen(function* () {
-      const scope = yield* McpInvocationContext.requireMcpCapability("computer");
+      const scope = yield* McpInvocationContext.requireThreadMcpCapability("computer");
       const transfers = yield* UserDesktopTransfers;
       return yield* transfers.start(scope, input);
     }),
-  user_desktop_transfer_status: (input) =>
+  ),
+  user_desktop_transfer_status: McpToolAccess.readsAsCaller((input) =>
     Effect.gen(function* () {
-      const scope = yield* McpInvocationContext.requireMcpCapability("computer");
+      const scope = yield* McpInvocationContext.requireThreadMcpCapability("computer");
       const transfers = yield* UserDesktopTransfers;
       return yield* transfers.status(scope, input);
     }),
-  user_desktop_transfer_cancel: (input) =>
+  ),
+  user_desktop_transfer_cancel: McpToolAccess.actsAsCaller((input) =>
     Effect.gen(function* () {
-      const scope = yield* McpInvocationContext.requireMcpCapability("computer");
+      const scope = yield* McpInvocationContext.requireThreadMcpCapability("computer");
       const transfers = yield* UserDesktopTransfers;
       return yield* transfers.cancel(scope, input);
     }),
-  user_desktop_execution: (input) =>
+  ),
+  user_desktop_execution: McpToolAccess.actsAsCaller((input) =>
     invokeExecution<DesktopExecutionAccess>({ operation: "access", desktop: input.desktop, input }),
-  user_desktop_command: (input) =>
+  ),
+  user_desktop_command: McpToolAccess.actsAsCaller((input) =>
     invokeExecution<DesktopProcessResult>({ operation: "command", ...input }),
-  user_desktop_process: (input) =>
+  ),
+  user_desktop_process: McpToolAccess.actsAsCaller((input) =>
     invokeExecution<DesktopProcessResult | DesktopProcessList>({
       operation: "process",
       desktop: input.desktop,
       input,
     }),
-  user_desktop_list: () =>
+  ),
+  user_desktop_list: McpToolAccess.readsAsCaller(() =>
     Effect.gen(function* () {
-      const scope = yield* McpInvocationContext.requireMcpCapability("computer");
+      const scope = yield* McpInvocationContext.requireThreadMcpCapability("computer");
       const broker = yield* PreviewAutomationBroker.PreviewAutomationBroker;
       return yield* broker.listUserDesktops(scope.environmentId, { includeExecution: true }).pipe(
         Effect.mapError(
@@ -217,10 +224,15 @@ const handlers = {
         ),
       );
     }),
-  computer_status: (input) => statusComputer(input),
-  computer_request_availability: (input) => requestComputerAvailability(input),
-  computer_release_availability: (input) => releaseComputerAvailability(input),
-  computer_request_view: (input) =>
+  ),
+  computer_status: McpToolAccess.readsAsCaller((input) => statusComputer(input)),
+  computer_request_availability: McpToolAccess.actsAsCaller((input) =>
+    requestComputerAvailability(input),
+  ),
+  computer_release_availability: McpToolAccess.actsAsCaller((input) =>
+    releaseComputerAvailability(input),
+  ),
+  computer_request_view: McpToolAccess.actsAsCaller((input) =>
     requestComputerAccess(input, "view").pipe(
       Effect.tap((observation) =>
         publishControllerObservation({
@@ -230,7 +242,8 @@ const handlers = {
         }),
       ),
     ),
-  computer_request_control: (input) =>
+  ),
+  computer_request_control: McpToolAccess.actsAsCaller((input) =>
     requestComputerAccess(input, "control").pipe(
       Effect.tap((observation) =>
         publishControllerObservation({
@@ -240,7 +253,8 @@ const handlers = {
         }),
       ),
     ),
-  computer_snapshot: (input) =>
+  ),
+  computer_snapshot: McpToolAccess.readsAsCaller((input) =>
     snapshotComputer(input).pipe(
       Effect.tap((snapshot) =>
         publishControllerObservation({
@@ -250,7 +264,8 @@ const handlers = {
         }),
       ),
     ),
-  computer_observe_sequence: (input) =>
+  ),
+  computer_observe_sequence: McpToolAccess.readsAsCaller((input) =>
     captureComputerTemporalSequence({
       capture: input,
       snapshot: snapshotComputer(temporalSnapshotInput(input)),
@@ -263,7 +278,8 @@ const handlers = {
         }),
       ),
     ),
-  computer_act: (input) =>
+  ),
+  computer_act: McpToolAccess.actsAsCaller((input) =>
     actWithTemporalObservation(input).pipe(
       Effect.tap((observation) =>
         publishControllerObservation({
@@ -273,9 +289,12 @@ const handlers = {
         }),
       ),
     ),
-  computer_release: (input) => releaseComputer(input),
-  computer_forget_control: (input) => forgetComputer(input).pipe(Effect.as(null)),
-} satisfies Parameters<typeof ComputerToolkit.toLayer>[0];
+  ),
+  computer_release: McpToolAccess.actsAsCaller((input) => releaseComputer(input)),
+  computer_forget_control: McpToolAccess.actsAsCaller((input) =>
+    forgetComputer(input).pipe(Effect.as(null)),
+  ),
+} satisfies McpToolAccess.Handlers<typeof ComputerToolkit.tools>;
 
 const {
   computer_request_view,
@@ -294,9 +313,14 @@ const imageHandlers = {
   computer_act,
 };
 
-export const ComputerStandardToolkitHandlersLive =
-  ComputerStandardToolkit.toLayer(standardHandlers);
+export const ComputerStandardToolkitHandlersLive = McpToolAccess.toLayer(
+  ComputerStandardToolkit,
+  standardHandlers,
+);
 
-export const ComputerImageToolkitHandlersLive = ComputerImageToolkit.toLayer(imageHandlers);
+export const ComputerImageToolkitHandlersLive = McpToolAccess.toLayer(
+  ComputerImageToolkit,
+  imageHandlers,
+);
 
-export const ComputerToolkitHandlersLive = ComputerToolkit.toLayer(handlers);
+export const ComputerToolkitHandlersLive = McpToolAccess.toLayer(ComputerToolkit, handlers);

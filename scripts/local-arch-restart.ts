@@ -19,10 +19,9 @@ import {
   INSTALLED_EXECUTABLE,
   parseProcessStat,
   readCommand,
-  verifyActiveTurn,
+  captureRestartContinuation,
   verifyRestartContinuation,
   verifyDesktopOwnership,
-  type RestartContinuation,
   type RestartPlan,
 } from "./local-arch-restart-worker.ts";
 
@@ -71,13 +70,14 @@ async function main(): Promise<void> {
       "backend-pid": { type: "string" },
       "state-db": { type: "string" },
       "thread-id": { type: "string" },
+      "migration-monitor": { type: "string" },
       apply: { type: "boolean", default: false },
       help: { type: "boolean", default: false },
     },
   });
   if (values.help) {
     console.log(
-      "usage: node scripts/local-arch-restart.ts --package PATH --commit FULL_SHA --unit NAME.service|NAME.scope --backend-pid PID --state-db PATH --thread-id ID [--backend-unit NAME.service|NAME.scope] [--apply]",
+      "usage: node scripts/local-arch-restart.ts --package PATH --commit FULL_SHA --unit NAME.service|NAME.scope --backend-pid PID --state-db PATH --thread-id ID [--migration-monitor ID] [--backend-unit NAME.service|NAME.scope] [--apply]",
     );
     return;
   }
@@ -114,28 +114,33 @@ async function main(): Promise<void> {
     appArguments.every((argument) => argument === "--no-sandbox"),
     "app has custom launch arguments; review its relaunch manually",
   );
-  const databasePath = NodeFS.realpathSync(values["state-db"]);
+  const sourceDatabasePath = NodeFS.realpathSync(values["state-db"]);
   const appEnvironment = readAppEnvironment(app.pid);
-  NodeAssert.equal(
-    databasePath,
-    NodeFS.realpathSync(
-      NodePath.join(
-        appEnvironment.T3CODE_HOME?.trim() || NodePath.join(NodeOS.homedir(), ".t3"),
-        "userdata/state.sqlite",
-      ),
+  const stateDirectory = NodeFS.realpathSync(
+    NodePath.join(
+      appEnvironment.T3CODE_HOME?.trim() || NodePath.join(NodeOS.homedir(), ".t3"),
+      "userdata",
     ),
+  );
+  NodeAssert.equal(
+    NodePath.dirname(sourceDatabasePath),
+    stateDirectory,
     "app environment would relaunch against a different state database",
   );
-  const continuation: RestartContinuation = {
-    type: "active-turn",
-    turnId: verifyActiveTurn(databasePath, values["thread-id"]),
-  };
+  const restartDatabasePath = NodePath.join(stateDirectory, "statev2.sqlite");
+  const continuation = captureRestartContinuation(
+    sourceDatabasePath,
+    restartDatabasePath,
+    values["thread-id"],
+    values["migration-monitor"],
+  );
   const handoff = {
     unit: values.unit,
     ...(values["backend-unit"] === undefined ? {} : { backendUnit: values["backend-unit"] }),
     app,
     backend,
-    databasePath,
+    sourceDatabasePath,
+    restartDatabasePath,
     threadId: values["thread-id"],
     continuation,
   };
@@ -225,7 +230,9 @@ async function main(): Promise<void> {
   );
   console.log(`queued ${unit}.timer; recovery plan ${planPath}`);
   console.log(
-    "save this path and unit in your work notes and keep the turn running; T3 will resume it automatically after restart",
+    continuation.type === "migration-monitor"
+      ? "save this path and unit in your work notes and keep the turn running; the imported monitor will resume this thread with a fresh provider session"
+      : "save this path and unit in your work notes and keep the turn running; T3 will continue the V2 run after restart",
   );
 }
 

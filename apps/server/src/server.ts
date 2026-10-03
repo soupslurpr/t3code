@@ -1,4 +1,8 @@
 import * as ProviderEventLoggers from "@t3tools/provider-core/server/ProviderEventLoggers";
+import * as ProviderComputerLifecycle from "./orchestration-v2/ProviderComputerLifecycle.ts";
+import * as ThreadWorkspaceQuery from "./orchestration-v2/ThreadWorkspaceQuery.ts";
+import * as ThreadMonitor from "./threadMonitor/ThreadMonitor.ts";
+import * as ThreadMonitorComputer from "./threadMonitor/ThreadMonitorComputer.ts";
 import type { RelayManagedEndpointRuntimeConfig } from "@t3tools/contracts/relay";
 import * as Random from "effect/Random";
 import * as DatabaseStorage from "./persistence/DatabaseStorage.ts";
@@ -246,7 +250,7 @@ const layerDesktopServices = Layer.mergeAll(
   layerAgentDesktopManager,
   layerComputerAutomationRouter,
   layerAgentDesktopTransfer,
-);
+).pipe(Layer.provide(ThreadWorkspaceQuery.layer));
 const layerResourceAttribution = ResourceAttribution.layer;
 const layerApplicationObservability = EventLoopMonitor.layer.pipe(
   Layer.provideMerge(Observability.layer),
@@ -542,6 +546,7 @@ const layerScheduledTaskWebhookOrigin = Layer.effect(
 
 const layerOrchestrationV2Runtime = RuntimeLayer.layerProduction.pipe(
   Layer.provide(layerScheduledTaskWebhookOrigin),
+  Layer.provide(ProviderComputerLifecycle.layer.pipe(Layer.provide(layerPreviewAutomationBroker))),
   Layer.provide(ProviderEventIngestor.layerAnalytics),
   Layer.provide(layerCheckpointStore),
   Layer.provide(layerGitWorkflow),
@@ -716,8 +721,15 @@ const layerRuntimeCoreDependencies = layerRuntimeCoreProviderDependencies.pipe(
   ),
 );
 
-const layerRuntimeCoreWithAgentPower = AgentPowerReporter.layer.pipe(
+const layerThreadMonitor = ThreadMonitor.layer.pipe(
+  Layer.provide(RuntimeLayer.layerEventSink),
+  Layer.provide(ThreadMonitorComputer.layer),
+  Layer.provideMerge(ThreadWorkspaceQuery.layer),
+  Layer.provideMerge(ProjectionStoreV2.layer),
   Layer.provideMerge(layerRuntimeCoreDependencies),
+);
+const layerRuntimeCoreWithAgentPower = AgentPowerReporter.layer.pipe(
+  Layer.provideMerge(layerThreadMonitor),
   Layer.provideMerge(layerDesktopTelemetryReceiver),
 );
 

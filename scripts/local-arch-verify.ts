@@ -34,11 +34,12 @@ const decodeBuild = Schema.decodeUnknownSync(
     t3codeCommitHash: Schema.String.check(Schema.isPattern(/^[0-9a-f]{12,40}$/)),
   }),
 );
-const decodePlan = Schema.decodeUnknownSync(
+export const decodeRestartPlan = Schema.decodeUnknownSync(
   Schema.Struct({
     app: Identity,
     backend: Identity,
-    databasePath: Schema.String.check(Schema.makeFilter(NodePath.isAbsolute)),
+    sourceDatabasePath: Schema.String.check(Schema.makeFilter(NodePath.isAbsolute)),
+    restartDatabasePath: Schema.String.check(Schema.makeFilter(NodePath.isAbsolute)),
     packageVersion: Schema.NonEmptyString,
     gitCommit: Commit,
     asarSha256: Hash,
@@ -193,7 +194,10 @@ export async function ownsDatabase(pid: number, databasePath: string) {
 
 /** Reports each restart condition, requiring both captured processes to have exited. */
 export function assessRestart(
-  plan: Pick<ReturnType<typeof decodePlan>, "app" | "backend" | "asarSha256" | "executableSha256">,
+  plan: Pick<
+    ReturnType<typeof decodeRestartPlan>,
+    "app" | "backend" | "asarSha256" | "executableSha256"
+  >,
   installation: {
     readonly build: { readonly sourceMatches: boolean | null };
     readonly hashes: { readonly archive: string; readonly executable: string } | null;
@@ -249,7 +253,7 @@ export async function checkRestart(
   signal: AbortSignal,
 ) {
   if (!NodePath.isAbsolute(planPath)) throw new Error("expected an absolute restart plan path");
-  const plan = decodePlan(JSON.parse(await NodeFSP.readFile(planPath, "utf8")));
+  const plan = decodeRestartPlan(JSON.parse(await NodeFSP.readFile(planPath, "utf8")));
   const installation = await checkInstallation(
     appDirectory,
     { port, expectedCommit: plan.gitCommit, includeHashes: true },
@@ -272,7 +276,7 @@ export async function checkRestart(
       processIfPresent(plan.backend.pid),
       processUnit(app.pid),
       processUnit(backend.pid),
-      ownsDatabase(backend.pid, plan.databasePath),
+      ownsDatabase(backend.pid, plan.restartDatabasePath),
       NodeFSP.readFile(`/proc/${backend.pid}/cmdline`, "utf8"),
     ]);
   const units = await Promise.all(
@@ -292,7 +296,8 @@ export async function checkRestart(
       units,
       backendEntryMatches: matchesBackendEntry(appDirectory, argumentsValue),
     }),
-    databasePath: plan.databasePath,
+    sourceDatabasePath: plan.sourceDatabasePath,
+    databasePath: plan.restartDatabasePath,
     units,
     installation,
   };

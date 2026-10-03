@@ -1,3 +1,4 @@
+import { ProviderComputerLifecycle } from "./ProviderComputerLifecycle.ts";
 import { makeAssistantStreamingFilter } from "./assistantStreaming.ts";
 import { resolveProjectSettings } from "@t3tools/shared/projectSettings";
 import {
@@ -603,6 +604,7 @@ export const layer: Layer.Layer<
   RunExecutionServiceV2,
   Effect.gen(function* () {
     const scope = yield* Effect.scope;
+    const computer = yield* ProviderComputerLifecycle;
     const checkpointService = yield* CheckpointService.CheckpointServiceV2;
     const eventSink = yield* EventSink.EventSinkV2;
     const idAllocator = yield* IdAllocator.IdAllocatorV2;
@@ -1571,7 +1573,8 @@ export const layer: Layer.Layer<
               }),
             ))
           : input.session.startTurn(turnInput);
-        yield* Effect.andThen(shouldStart, startTurn).pipe(
+        yield* Effect.andThen(shouldStart, computer.resume(input.run.threadId)).pipe(
+          Effect.andThen(startTurn),
           // Wait for acceptance so abandoned startup cannot leave a refresher
           // on the already-detached ingestion fiber.
           Effect.tap(() =>

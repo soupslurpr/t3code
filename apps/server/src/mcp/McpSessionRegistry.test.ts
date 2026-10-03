@@ -254,7 +254,12 @@ it.effect("issues a computer-only credential without browser access", () =>
 
     expect(issued.config.capabilities).toBeDefined();
     expect(issued.config.capabilities?.has("preview")).toBe(false);
-    expect(Array.from(resolved?.capabilities ?? []).sort()).toEqual(["computer", "orchestration", "pull-requests", "worktree"]);
+    expect(Array.from(resolved?.capabilities ?? []).sort()).toEqual([
+      "computer",
+      "orchestration",
+      "pull-requests",
+      "worktree",
+    ]);
   }),
 );
 
@@ -282,4 +287,3 @@ it.effect("keeps the logical controller stable across provider restarts", () =>
     expect(firstScope?.thread.controllerId).toMatch(/^thread-[0-9a-f]{64}$/);
   }),
 );
-

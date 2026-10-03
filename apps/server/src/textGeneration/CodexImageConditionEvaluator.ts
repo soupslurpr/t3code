@@ -13,7 +13,7 @@ import * as Queue from "effect/Queue";
 import * as Schema from "effect/Schema";
 import * as Scope from "effect/Scope";
 import * as Semaphore from "effect/Semaphore";
-import { ChildProcess, ChildProcessSpawner } from "effect/unstable/process";
+import { ChildProcess, ChildProcessSpawner } from "effect/process";
 import * as CodexClient from "effect-codex-app-server/client";
 import type * as CodexSchema from "effect-codex-app-server/schema";
 
@@ -26,10 +26,14 @@ import { getModelSelectionStringOptionValue } from "@t3tools/shared/model";
 import { resolveSpawnCommand } from "@t3tools/shared/shell";
 
 import { getCodexServiceTierOptionValue } from "../codexModelOptions.ts";
-import { expandHomePath } from "../pathExpansion.ts";
-import { codexAppServerArgs, resolveCodexLaunchArgs } from "../provider/Layers/codexLaunchArgs.ts";
+import * as HostProcess from "@t3tools/shared/HostProcess";
+import { expandHomePath } from "@t3tools/provider-core/server/pathExpansion";
+import { codexAppServerArgs, resolveCodexLaunchArgs } from "../provider/codexLaunchArgs.ts";
 import type * as TextGeneration from "./TextGeneration.ts";
-import { normalizeCliError, toJsonSchemaObject } from "./TextGenerationUtils.ts";
+import {
+  normalizeCliError,
+  toJsonSchemaObject,
+} from "@t3tools/provider-core/server/textGenerationUtils";
 
 const CODEX_EVALUATOR_TIMEOUT_MS = 180_000;
 const CODEX_EVALUATOR_CLEANUP_TIMEOUT_MS = 5_000;
@@ -137,6 +141,7 @@ export const makeCodexImageConditionEvaluator = Effect.fn("makeCodexImageConditi
   function* (codexConfig: CodexSettings, environment?: NodeJS.ProcessEnv) {
     const fileSystem = yield* FileSystem.FileSystem;
     const commandSpawner = yield* ChildProcessSpawner.ChildProcessSpawner;
+    const homeDirectory = yield* HostProcess.HomeDirectory;
     const resolvedEnvironment = environment ?? process.env;
     const laneMutex = yield* Semaphore.make(1);
     const laneState: { lane: EvaluatorLane | null } = { lane: null };
@@ -206,7 +211,7 @@ export const makeCodexImageConditionEvaluator = Effect.fn("makeCodexImageConditi
                       env: {
                         ...resolvedEnvironment,
                         ...(codexConfig.homePath
-                          ? { CODEX_HOME: expandHomePath(codexConfig.homePath) }
+                          ? { CODEX_HOME: expandHomePath(codexConfig.homePath, homeDirectory) }
                           : {}),
                       },
                       forceKillAfter: CODEX_EVALUATOR_FORCE_KILL_AFTER,

@@ -1,96 +1,43 @@
-import type {
-  OrchestrationEvent,
-  OrchestrationSession,
-  OrchestrationThreadShell,
-} from "@t3tools/contracts";
-import { ThreadId as ThreadIdSchema } from "@t3tools/contracts";
 import { assert, describe, it } from "@effect/vitest";
+import { RunId, RuntimeRequestId } from "@t3tools/contracts";
+import * as DateTime from "effect/DateTime";
+import { isAgentWorking } from "./AgentPowerReporter.ts";
 
-import {
-  applyAgentActivityInput,
-  initialAgentActivityState,
-  isActiveAgentSession,
-  isAgentWorking,
-} from "./AgentPowerReporter.ts";
-
-const threadId = ThreadIdSchema.make("thread-1");
-
-/** Creates the session fields relevant to agent power reporting. */
-function session(status: OrchestrationSession["status"]): OrchestrationSession {
-  return { status } as OrchestrationSession;
-}
-
-/** Creates a lifecycle event with the fields consumed by the reporter. */
-function event(value: unknown): OrchestrationEvent {
-  return value as OrchestrationEvent;
-}
+const idle = {
+  activeRunId: null,
+  activityRunStatus: null,
+  pendingRuntimeRequest: null,
+  pendingBackgroundTasks: [],
+  backgroundLiveness: null,
+  deletedAt: null,
+} as const;
 
 describe("AgentPowerReporter", () => {
-  it("classifies only active provider sessions as agent work", () => {
-    assert.isTrue(isActiveAgentSession(session("starting")));
-    assert.isTrue(isActiveAgentSession(session("running")));
-    assert.isFalse(isActiveAgentSession(session("ready")));
-    assert.isFalse(isActiveAgentSession(null));
+  it("holds power for starting runs and background work after the foreground turn ends", () => {
+    assert.isTrue(isAgentWorking({ ...idle, activeRunId: RunId.make("run") }));
+    assert.isTrue(isAgentWorking({ ...idle, activityRunStatus: "waiting" }));
+    assert.isTrue(isAgentWorking({ ...idle, backgroundLiveness: "monitoring" }));
+    assert.isFalse(isAgentWorking(idle));
   });
-
-  it("hydrates provider and background work from the startup shell", () => {
-    const state = initialAgentActivityState([
-      { id: threadId, session: session("running") } as OrchestrationThreadShell,
-      {
-        id: ThreadIdSchema.make("thread-2"),
-        session: session("ready"),
-        backgroundLiveness: "monitoring",
-      } as OrchestrationThreadShell,
-    ]);
-
-    assert.deepEqual(Array.from(state.sessionThreadIds), [threadId]);
-    assert.deepEqual(Array.from(state.backgroundThreadIds), ["thread-2"]);
-    assert.isTrue(isAgentWorking(state));
-  });
-
-  it("keeps working while either a provider or background task is active", () => {
-    const empty = initialAgentActivityState([]);
-    const starting = applyAgentActivityInput(empty, {
-      kind: "domain",
-      event: event({ type: "thread.turn-start-requested", payload: { threadId } }),
-    });
-    assert.isTrue(isAgentWorking(starting));
-
-    const background = applyAgentActivityInput(starting, {
-      kind: "background",
-      change: { threadId, liveness: "working" },
-    });
-    const ready = applyAgentActivityInput(background, {
-      kind: "domain",
-      event: event({
-        type: "thread.session-set",
-        payload: { threadId, session: session("ready") },
+  it("does not hold power solely for human input or deleted threads", () => {
+    assert.isFalse(
+      isAgentWorking({
+        ...idle,
+        activityRunStatus: "waiting",
+        pendingRuntimeRequest: {
+          id: RuntimeRequestId.make("approval"),
+          kind: "permission",
+          createdAt: DateTime.makeUnsafe("2026-10-02T00:00:00Z"),
+        },
       }),
-    });
-    assert.isTrue(isAgentWorking(ready));
-
-    const settled = applyAgentActivityInput(ready, {
-      kind: "background",
-      change: { threadId, liveness: null },
-    });
-    assert.isFalse(isAgentWorking(settled));
-  });
-
-  it("clears every work source when a thread is deleted", () => {
-    const active = initialAgentActivityState([
-      {
-        id: threadId,
-        session: session("running"),
+    );
+    assert.isFalse(
+      isAgentWorking({
+        ...idle,
         backgroundLiveness: "monitoring",
-      } as OrchestrationThreadShell,
-    ]);
-    const deleted = applyAgentActivityInput(active, {
-      kind: "domain",
-      event: event({ type: "thread.deleted", payload: { threadId } }),
-    });
-
-    assert.isFalse(isAgentWorking(deleted));
-    assert.isFalse(deleted.sessionThreadIds.has(threadId));
-    assert.isFalse(deleted.backgroundThreadIds.has(threadId));
+        deletedAt: DateTime.makeUnsafe("2026-10-02T00:00:00Z"),
+      }),
+    );
+    assert.isFalse(isAgentWorking(null));
   });
 });

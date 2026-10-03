@@ -9,9 +9,9 @@ import {
   type ComputerAutomationScreenshotEncoding,
   type ComputerAutomationSnapshot,
   type OrchestrationProjectShell,
-  type OrchestrationThreadShell,
 } from "@t3tools/contracts";
 import { createModelSelection } from "@t3tools/shared/model";
+// @effect-diagnostics-next-line nodeBuiltinImport:off - Bitmap fingerprints are synchronous values shared with native capture boundaries.
 import * as NodeCrypto from "node:crypto";
 import * as Effect from "effect/Effect";
 import * as Deferred from "effect/Deferred";
@@ -26,9 +26,12 @@ import { describe, expect } from "vite-plus/test";
 import * as ComputerObservationStore from "../computer/ComputerObservationStore.ts";
 import * as ComputerAutomationRouter from "../computer/ComputerAutomationRouter.ts";
 import * as ServerEnvironment from "../environment/ServerEnvironment.ts";
-import { ProjectionSnapshotQuery } from "../orchestration/Services/ProjectionSnapshotQuery.ts";
-import type { ProviderInstance } from "../provider/ProviderDriver.ts";
-import * as ProviderInstanceRegistry from "../provider/Services/ProviderInstanceRegistry.ts";
+import {
+  ThreadWorkspaceQuery,
+  type ThreadWorkspace,
+} from "../orchestration-v2/ThreadWorkspaceQuery.ts";
+import type { ProviderInstance } from "@t3tools/provider-core/server/driver";
+import * as ProviderInstanceRegistry from "../provider/ProviderInstanceRegistry.ts";
 import * as TextGeneration from "../textGeneration/TextGeneration.ts";
 import * as ThreadMonitorComputer from "./ThreadMonitorComputer.ts";
 
@@ -123,7 +126,7 @@ function evaluatorInstance(
       refresh: Effect.die("unused"),
       streamChanges: Stream.empty,
     },
-    adapter: {} as ProviderInstance["adapter"],
+    orchestrationAdapter: {} as ProviderInstance["orchestrationAdapter"],
     textGeneration: TextGeneration.TextGeneration.of({
       generateCommitMessage: () => Effect.die("unused"),
       generatePrContent: () => Effect.die("unused"),
@@ -156,7 +159,7 @@ describe("ThreadMonitorComputer", () => {
               getEnvironmentId: Effect.succeed(EnvironmentId.make("environment-computer-test")),
             }),
             Layer.mock(ComputerObservationStore.ComputerObservationStore)({}),
-            Layer.mock(ProjectionSnapshotQuery)({}),
+            Layer.mock(ThreadWorkspaceQuery)({}),
             Layer.mock(ProviderInstanceRegistry.ProviderInstanceRegistry)({}),
           ),
         ),
@@ -245,18 +248,18 @@ describe("ThreadMonitorComputer", () => {
         projectId,
         worktreePath: "/workspace",
         modelSelection,
-      } as OrchestrationThreadShell;
+      } as ThreadWorkspace;
       const project = { workspaceRoot: "/workspace" } as OrchestrationProjectShell;
       const projections = {
         getThreadShellById: () => Effect.succeed(Option.some(thread)),
         getProjectShellById: () => Effect.succeed(Option.some(project)),
-      } as unknown as ProjectionSnapshotQuery["Service"];
+      } as unknown as ThreadWorkspaceQuery["Service"];
       const dependencies = Layer.mergeAll(
         NodeServices.layer,
         ComputerObservationStore.layer,
         computer,
         Layer.succeed(ProviderInstanceRegistry.ProviderInstanceRegistry, registry),
-        Layer.succeed(ProjectionSnapshotQuery, projections),
+        Layer.succeed(ThreadWorkspaceQuery, projections),
         Layer.succeed(
           ServerEnvironment.ServerEnvironment,
           ServerEnvironment.ServerEnvironment.of({

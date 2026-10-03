@@ -6,10 +6,6 @@ import {
   findComputerAutomationFailureKind,
   type PreviewAutomationHost,
   PreviewAutomationOperation,
-  PreviewAutomationRecordingTransferError,
-  PreviewAutomationRecordingDesktopUpdateRequiredError,
-  PreviewAutomationRecordingTooLargeError,
-  PreviewAutomationRecordingDeadlineExpiredError,
   type PreviewAutomationRequest,
   type PreviewAutomationResponse,
   PreviewTabId,
@@ -47,83 +43,6 @@ export interface PreviewAutomationOperationContext {
   readonly tabId: Exclude<PreviewAutomationRequest["tabId"], undefined> | null;
 }
 
-export class PreviewAutomationOverlayTimeoutError extends Schema.TaggedError<PreviewAutomationOverlayTimeoutError>()(
-  "PreviewAutomationOverlayTimeoutError",
-  {
-    requestId: TrimmedNonEmptyString,
-    environmentId: EnvironmentId,
-    threadId: ThreadId,
-    timeoutMs: Schema.Int,
-  },
-) {
-  get responseTag() {
-    return "PreviewAutomationTimeoutError" as const;
-  }
-
-  override get message(): string {
-    return `Preview webview for request ${this.requestId} on environment ${this.environmentId} thread ${this.threadId} did not register within ${this.timeoutMs}ms.`;
-  }
-}
-
-export class PreviewAutomationNavigationTimeoutError extends Schema.TaggedError<PreviewAutomationNavigationTimeoutError>()(
-  "PreviewAutomationNavigationTimeoutError",
-  {
-    requestId: TrimmedNonEmptyString,
-    environmentId: EnvironmentId,
-    threadId: ThreadId,
-    tabId: PreviewTabId,
-    readiness: Schema.Literals(["domContentLoaded", "load"]),
-    timeoutMs: Schema.Int,
-  },
-) {
-  get responseTag() {
-    return "PreviewAutomationTimeoutError" as const;
-  }
-
-  override get message(): string {
-    return `Preview navigation for request ${this.requestId} on environment ${this.environmentId} thread ${this.threadId} tab ${this.tabId} did not reach ${this.readiness} readiness within ${this.timeoutMs}ms.`;
-  }
-}
-
-export class PreviewAutomationViewportTimeoutError extends Schema.TaggedError<PreviewAutomationViewportTimeoutError>()(
-  "PreviewAutomationViewportTimeoutError",
-  {
-    requestId: TrimmedNonEmptyString,
-    environmentId: EnvironmentId,
-    threadId: ThreadId,
-    tabId: PreviewTabId,
-    timeoutMs: Schema.Int,
-  },
-) {
-  get responseTag() {
-    return "PreviewAutomationTimeoutError" as const;
-  }
-
-  override get message(): string {
-    return `Preview viewport for request ${this.requestId} on environment ${this.environmentId} thread ${this.threadId} tab ${this.tabId} was not rendered within ${this.timeoutMs}ms.`;
-  }
-}
-
-export class PreviewAutomationTargetUnavailableError extends Schema.TaggedError<PreviewAutomationTargetUnavailableError>()(
-  "PreviewAutomationTargetUnavailableError",
-  {
-    requestId: TrimmedNonEmptyString,
-    operation: PreviewAutomationOperation,
-    environmentId: EnvironmentId,
-    threadId: ThreadId,
-    tabId: Schema.NullOr(PreviewTabId),
-    bridgeAvailable: Schema.Boolean,
-  },
-) {
-  get responseTag() {
-    return "PreviewAutomationTabNotFoundError" as const;
-  }
-
-  override get message(): string {
-    return `Preview automation target for ${this.operation} request ${this.requestId} is unavailable on environment ${this.environmentId} thread ${this.threadId} (tab ${this.tabId ?? "unassigned"}, bridge ${this.bridgeAvailable ? "available" : "unavailable"}).`;
-  }
-}
-
 export class PreviewAutomationComputerControllerRequiredError extends Schema.TaggedError<PreviewAutomationComputerControllerRequiredError>()(
   "PreviewAutomationComputerControllerRequiredError",
   {
@@ -140,79 +59,6 @@ export class PreviewAutomationComputerControllerRequiredError extends Schema.Tag
     return `Computer request ${this.requestId} has no controller identity. Update the T3 environment server.`;
   }
 }
-
-export class PreviewAutomationRecordingNotActiveError extends Schema.TaggedError<PreviewAutomationRecordingNotActiveError>()(
-  "PreviewAutomationRecordingNotActiveError",
-  {
-    requestId: TrimmedNonEmptyString,
-    environmentId: EnvironmentId,
-    threadId: ThreadId,
-    tabId: Schema.NullOr(PreviewTabId),
-  },
-) {
-  get responseTag() {
-    return "PreviewAutomationExecutionError" as const;
-  }
-
-  override get message(): string {
-    return `Preview automation request ${this.requestId} found no active recording for tab ${this.tabId ?? "unassigned"} on environment ${this.environmentId} thread ${this.threadId}.`;
-  }
-}
-
-export class PreviewAutomationTargetNotEditableHostError extends Schema.TaggedError<PreviewAutomationTargetNotEditableHostError>()(
-  "PreviewAutomationTargetNotEditableHostError",
-  {
-    requestId: TrimmedNonEmptyString,
-    operation: PreviewAutomationOperation,
-    environmentId: EnvironmentId,
-    threadId: ThreadId,
-    tabId: Schema.NullOr(PreviewTabId),
-    selectorKind: Schema.optional(Schema.Literals(["focused-element", "locator", "selector"])),
-    selectorLength: Schema.optional(Schema.Int.check(Schema.isGreaterThanOrEqualTo(0))),
-  },
-) {
-  get responseTag() {
-    return "PreviewAutomationTargetNotEditableError" as const;
-  }
-
-  override get message(): string {
-    return `Preview automation ${this.operation} request ${this.requestId} requires an editable target in tab ${this.tabId ?? "unassigned"}.`;
-  }
-}
-
-const targetNotEditableDiagnostics = (
-  cause: unknown,
-): {
-  readonly selectorKind?: "focused-element" | "locator" | "selector";
-  readonly selectorLength?: number;
-} | null => {
-  if (
-    typeof cause !== "object" ||
-    cause === null ||
-    !("_tag" in cause) ||
-    cause._tag !== "PreviewAutomationTargetNotEditableError"
-  ) {
-    return null;
-  }
-  const selectorKind =
-    "selectorKind" in cause &&
-    (cause.selectorKind === "focused-element" ||
-      cause.selectorKind === "locator" ||
-      cause.selectorKind === "selector")
-      ? cause.selectorKind
-      : undefined;
-  const selectorLength =
-    "selectorLength" in cause &&
-    typeof cause.selectorLength === "number" &&
-    Number.isInteger(cause.selectorLength) &&
-    cause.selectorLength >= 0
-      ? cause.selectorLength
-      : undefined;
-  return {
-    ...(selectorKind === undefined ? {} : { selectorKind }),
-    ...(selectorLength === undefined ? {} : { selectorLength }),
-  };
-};
 
 export class PreviewAutomationOperationError extends Schema.TaggedError<PreviewAutomationOperationError>()(
   "PreviewAutomationOperationError",
@@ -231,17 +77,6 @@ export class PreviewAutomationOperationError extends Schema.TaggedError<PreviewA
     input: PreviewAutomationOperationContext & { readonly cause: unknown },
   ): PreviewAutomationHostError {
     if (isPreviewAutomationHostError(input.cause)) return input.cause;
-    const diagnostics = targetNotEditableDiagnostics(input.cause);
-    if (diagnostics) {
-      return new PreviewAutomationTargetNotEditableHostError({
-        requestId: input.requestId,
-        operation: input.operation,
-        environmentId: input.environmentId,
-        threadId: input.threadId,
-        tabId: input.tabId,
-        ...diagnostics,
-      });
-    }
     const computerFailure =
       input.cause instanceof DesktopComputerAutomationError ? input.cause.failure : undefined;
     const kind =
@@ -270,17 +105,7 @@ export class PreviewAutomationOperationError extends Schema.TaggedError<PreviewA
 }
 
 export const PreviewAutomationHostError = Schema.Union([
-  PreviewAutomationRecordingTransferError,
-  PreviewAutomationRecordingDesktopUpdateRequiredError,
-  PreviewAutomationRecordingTooLargeError,
-  PreviewAutomationRecordingDeadlineExpiredError,
-  PreviewAutomationOverlayTimeoutError,
-  PreviewAutomationNavigationTimeoutError,
-  PreviewAutomationViewportTimeoutError,
-  PreviewAutomationTargetUnavailableError,
   PreviewAutomationComputerControllerRequiredError,
-  PreviewAutomationRecordingNotActiveError,
-  PreviewAutomationTargetNotEditableHostError,
   PreviewAutomationOperationError,
 ]);
 export type PreviewAutomationHostError = typeof PreviewAutomationHostError.Type;
@@ -297,7 +122,7 @@ export function serializePreviewAutomationHostError(
     ),
   );
   return {
-    _tag: "responseTag" in error ? error.responseTag : error._tag,
+    _tag: error.responseTag,
     message: error.message,
     ...(Object.keys(detail).length === 0 ? {} : { detail }),
   };

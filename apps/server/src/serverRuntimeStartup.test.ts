@@ -1,3 +1,4 @@
+import { ThreadMonitorService } from "./threadMonitor/ThreadMonitorService.ts";
 import { assert, it } from "@effect/vitest";
 import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
 import {
@@ -77,6 +78,7 @@ it.effect.each([
       };
       const imports = { importedThreadCount: 0, importedMessageCount: 0 };
       const dependencies = Layer.mergeAll(
+        Layer.mock(ThreadMonitorService)({ start: Effect.void }),
         NodeCrypto.layer,
         Path.layer,
         Layer.mock(ServerConfig.ServerConfig)({

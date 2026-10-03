@@ -1,8 +1,14 @@
-import { T3_CODE_ORCHESTRATION_INSTRUCTIONS, T3_CODE_ORCHESTRATION_SECTIONS } from "@t3tools/provider-core/server/orchestrationInstructions";
+import {
+  T3_CODE_ORCHESTRATION_INSTRUCTIONS,
+  T3_CODE_ORCHESTRATION_SECTIONS,
+} from "@t3tools/provider-core/server/orchestrationInstructions";
 /** Verifies mode-independent T3 guidance and capability gating. */
 import * as NodeAssert from "node:assert/strict";
 import { describe, it } from "vite-plus/test";
-import { buildCodexApplicationContext, CODEX_ADDITIONAL_CONTEXT_VALUE_MAX_BYTES } from "./CodexDeveloperInstructions.ts";
+import {
+  buildCodexApplicationContext,
+  CODEX_ADDITIONAL_CONTEXT_VALUE_MAX_BYTES,
+} from "./CodexDeveloperInstructions.ts";
 
 /** Joins source fragments to assert the guidance independent of transport boundaries. */
 function buildCodexDeveloperInstructions(
@@ -50,10 +56,10 @@ describe("buildCodexApplicationContext", () => {
       model: "gpt-5.3-codex",
       reasoningEffort: "high",
     });
-    const sections = Object.keys(context)
-      .filter((key) => key.startsWith("t3_code_orchestration_"))
-      .sort()
-      .map((key) => context[key]!);
+    const sections = Object.entries(context)
+      .filter(([key]) => key.startsWith("t3_code_orchestration_"))
+      .sort(([left], [right]) => left.localeCompare(right))
+      .map(([, entry]) => entry);
 
     NodeAssert.deepEqual(
       sections,
@@ -72,13 +78,23 @@ describe("buildCodexApplicationContext", () => {
   it("keeps every trusted fragment below the observed Codex 4,000-byte source limit", () => {
     const maxContextSourceBytes = 4_000;
     const context = buildCodexApplicationContext(runtime, { browser: true, device: true });
-    NodeAssert.deepStrictEqual(Object.keys(context).filter((key) => !key.startsWith("t3_code_orchestration")), [
-      "t3_code_browser",
-      "t3_code_devices",
-      "t3_code_desktop",
-      "t3_code_desktop_actions",
-      "t3_code_runtime",
-    ]);
+    NodeAssert.deepStrictEqual(
+      Object.keys(context).filter((key) => !key.startsWith("t3_code_orchestration")),
+      [
+        "t3_code_browser",
+        "t3_code_devices",
+        "t3_code_desktop",
+        "t3_code_desktop_actions",
+        "t3_code_runtime",
+      ],
+    );
+    NodeAssert.equal(
+      Object.entries(context)
+        .filter(([key]) => key.startsWith("t3_code_orchestration"))
+        .map(([, fragment]) => fragment.value)
+        .join("\n\n"),
+      T3_CODE_ORCHESTRATION_INSTRUCTIONS.trim(),
+    );
     for (const [source, fragment] of Object.entries(context)) {
       NodeAssert.equal(fragment.kind, "application");
       NodeAssert.ok(Buffer.byteLength(fragment.value, "utf8") <= maxContextSourceBytes, source);

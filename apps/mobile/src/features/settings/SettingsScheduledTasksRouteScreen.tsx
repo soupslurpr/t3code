@@ -5,6 +5,7 @@ import {
   resolveProjectProviderInstanceEnabled,
 } from "@t3tools/contracts";
 import { readEnvironmentScope } from "../../state/session";
+import { vcsEnvironment } from "../../state/vcs";
 import type {
   EnvironmentId,
   ProjectId,

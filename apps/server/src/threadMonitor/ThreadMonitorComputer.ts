@@ -29,9 +29,9 @@ import * as ServerEnvironment from "../environment/ServerEnvironment.ts";
 import * as ComputerObservationStore from "../computer/ComputerObservationStore.ts";
 import * as ComputerAutomationRouter from "../computer/ComputerAutomationRouter.ts";
 import * as McpInvocationContext from "../mcp/McpInvocationContext.ts";
-import { ProjectionSnapshotQuery } from "../orchestration/Services/ProjectionSnapshotQuery.ts";
-import * as ProviderInstanceRegistry from "../provider/Services/ProviderInstanceRegistry.ts";
-import type { ProviderInstance } from "../provider/ProviderDriver.ts";
+import { ThreadWorkspaceQuery } from "../orchestration-v2/ThreadWorkspaceQuery.ts";
+import * as ProviderInstanceRegistry from "../provider/ProviderInstanceRegistry.ts";
+import type { ProviderInstance } from "@t3tools/provider-core/server/driver";
 import {
   ThreadMonitorComputerService,
   type ThreadMonitorComputerServiceShape,
@@ -201,7 +201,7 @@ export const make = Effect.gen(function* () {
   const computer = yield* ComputerAutomationRouter.ComputerAutomationRouter;
   const environment = yield* ServerEnvironment.ServerEnvironment;
   const observations = yield* ComputerObservationStore.ComputerObservationStore;
-  const snapshots = yield* ProjectionSnapshotQuery;
+  const snapshots = yield* ThreadWorkspaceQuery;
   const registry = yield* ProviderInstanceRegistry.ProviderInstanceRegistry;
 
   const monitorScope = Effect.fn("ThreadMonitorComputer.monitorScope")(function* (input: {
@@ -209,15 +209,19 @@ export const make = Effect.gen(function* () {
     readonly threadId: ThreadId;
     readonly providerInstanceId: ProviderInstanceId;
   }) {
-    return McpInvocationContext.McpInvocationContext.of({
+    return {
       environmentId: yield* environment.getEnvironmentId,
-      threadId: input.threadId,
-      controllerId: `thread-monitor:${input.monitorId}`,
-      providerSessionId: `thread-monitor:${input.monitorId}`,
-      providerInstanceId: input.providerInstanceId,
+      thread: {
+        threadId: input.threadId,
+        controllerId: `thread-monitor:${input.monitorId}`,
+        providerSessionId: `thread-monitor:${input.monitorId}`,
+        providerInstanceId: input.providerInstanceId,
+      },
+      requestNamespace: `thread-monitor:${input.monitorId}`,
+      client: undefined,
       capabilities: new Set(["computer"]),
       issuedAt: yield* Clock.currentTimeMillis,
-    });
+    } satisfies McpInvocationContext.McpThreadInvocationScope;
   });
 
   const readThreadContext = Effect.fn("ThreadMonitorComputer.readThreadContext")(function* (
@@ -238,7 +242,7 @@ export const make = Effect.gen(function* () {
   });
 
   const capture = Effect.fn("ThreadMonitorComputer.capture")(function* (input: {
-    readonly scope: McpInvocationContext.McpInvocationScope;
+    readonly scope: McpInvocationContext.McpThreadInvocationScope;
     readonly desktop: ComputerDesktopTarget;
     readonly displayId?: string | undefined;
     readonly region?: ComputerAutomationScreenshotRegion | undefined;
@@ -265,7 +269,7 @@ export const make = Effect.gen(function* () {
 
   const captureInitialRegion = Effect.fn("ThreadMonitorComputer.captureInitialRegion")(
     function* (input: {
-      readonly scope: McpInvocationContext.McpInvocationScope;
+      readonly scope: McpInvocationContext.McpThreadInvocationScope;
       readonly desktop: ComputerDesktopTarget;
       readonly region: ThreadMonitorComputerObservationRegionInput;
       readonly capturedAt: string;
@@ -330,7 +334,7 @@ export const make = Effect.gen(function* () {
 
   const captureConfiguredRegion = Effect.fn("ThreadMonitorComputer.captureConfiguredRegion")(
     function* (input: {
-      readonly scope: McpInvocationContext.McpInvocationScope;
+      readonly scope: McpInvocationContext.McpThreadInvocationScope;
       readonly desktop: ComputerDesktopTarget;
       readonly region: ThreadMonitorComputerCondition["observation"]["regions"][number];
       readonly capturedAt: string;
@@ -416,7 +420,7 @@ export const make = Effect.gen(function* () {
   /** Resolves omitted bytes from retained evidence or repeats one unconditional capture. */
   const materializeCurrentRegion = Effect.fn("ThreadMonitorComputer.materializeCurrentRegion")(
     function* (input: {
-      readonly scope: McpInvocationContext.McpInvocationScope;
+      readonly scope: McpInvocationContext.McpThreadInvocationScope;
       readonly desktop: ComputerDesktopTarget;
       readonly region: ThreadMonitorComputerCondition["observation"]["regions"][number];
       readonly captured: CapturedRegion;

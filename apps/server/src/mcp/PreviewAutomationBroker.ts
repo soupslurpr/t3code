@@ -152,7 +152,7 @@ interface PendingRequest {
   readonly deferred: Deferred.Deferred<unknown, PreviewAutomationError>;
   readonly context: PreviewAutomationRequestErrorContext;
   readonly controllerId?: string;
-  readonly controllerKind?: McpInvocationContext.McpInvocationScope["controllerKind"];
+  readonly controllerKind?: McpInvocationContext.McpThreadCaller["controllerKind"];
 }
 
 /**
@@ -266,7 +266,7 @@ const isComputerOperation = (
 /** Reports a stopped computer request without claiming native cleanup has completed. */
 function threadInterruptedError(
   scope: Pick<
-    McpInvocationContext.McpInvocationScope,
+    PreviewAutomationRequestErrorContext,
     "environmentId" | "threadId" | "providerSessionId" | "providerInstanceId"
   >,
   operation: (typeof COMPUTER_AUTOMATION_OPERATIONS)[number],
@@ -286,14 +286,8 @@ function threadInterruptedError(
 }
 
 /** Builds one provider-session affinity key without inferring a computer target. */
-function hostAssignmentKey(
-  scope: McpInvocationContext.McpThreadInvocationScope,
-  operation: PreviewAutomationOperation,
-): string {
-  if (!isComputerOperation(operation)) {
-    return `${scope.environmentId}\u0000${scope.thread.providerSessionId}\u0000${scope.thread.threadId}\u0000preview`;
-  }
-  return `${scope.environmentId}\u0000${scope.thread.controllerId}\u0000computer`;
+function hostAssignmentKey(scope: McpInvocationContext.McpThreadInvocationScope): string {
+  return `${scope.environmentId}\u0000${scope.thread.providerSessionId}\u0000${scope.thread.threadId}\u0000preview`;
 }
 
 interface RequestedComputerDesktop {
@@ -1153,8 +1147,13 @@ export const make = Effect.gen(function* PreviewAutomationBrokerMake() {
       if (
         computerOperation &&
         input.operation !== "computerInterrupt" &&
-        (input.scope.controllerKind ?? "agent") === "agent" &&
-        current.interruptedThreads.get(threadKey(input.scope)) === input.scope.controllerId
+        (input.scope.thread.controllerKind ?? "agent") === "agent" &&
+        current.interruptedThreads.get(
+          threadKey({
+            environmentId: input.scope.environmentId,
+            threadId: input.scope.thread.threadId,
+          }),
+        ) === input.scope.thread.controllerId
       ) {
         return [{ _tag: "interrupted" }, current] as const;
       }
@@ -1177,9 +1176,7 @@ export const make = Effect.gen(function* PreviewAutomationBrokerMake() {
       const environmentConnections = Array.from(current.clients.values()).filter(
         (host) => host.environmentId === input.scope.environmentId,
       );
-      const assignmentKey = computerOperation
-        ? undefined
-        : hostAssignmentKey(input.scope, input.operation);
+      const assignmentKey = computerOperation ? undefined : hostAssignmentKey(input.scope);
       const assigned = assignmentKey === undefined ? undefined : assignments.get(assignmentKey);
       const assignedConnection = assigned ? current.clients.get(assigned.clientId) : undefined;
       const hasLiveAssignment = assignedConnection?.environmentId === input.scope.environmentId;
@@ -1271,8 +1268,8 @@ export const make = Effect.gen(function* PreviewAutomationBrokerMake() {
         context,
         ...(computerOperation
           ? {
-              controllerId: input.scope.controllerId,
-              controllerKind: input.scope.controllerKind ?? "agent",
+              controllerId: input.scope.thread.controllerId,
+              controllerKind: input.scope.thread.controllerKind ?? "agent",
             }
           : {}),
       });
@@ -1292,7 +1289,10 @@ export const make = Effect.gen(function* PreviewAutomationBrokerMake() {
     if (route._tag === "interrupted") {
       if (!isComputerOperation(input.operation))
         return yield* Effect.die("interrupted non-computer request");
-      return yield* threadInterruptedError(input.scope, input.operation);
+      return yield* threadInterruptedError(
+        { environmentId: input.scope.environmentId, ...input.scope.thread },
+        input.operation,
+      );
     }
     if (route._tag === "unavailable") {
       const computerFailure = computerOperation
@@ -1389,7 +1389,7 @@ export const make = Effect.gen(function* PreviewAutomationBrokerMake() {
     if (requestedDesktop.desktopId !== undefined && auditTransition !== null) {
       const occurredAt = DateTime.formatIso(yield* DateTime.now);
       const actorKind =
-        input.scope.controllerKind === "human" ? ("human" as const) : ("agent" as const);
+        input.scope.thread.controllerKind === "human" ? ("human" as const) : ("agent" as const);
       yield* userDesktops
         .recordAudit({
           desktopId: requestedDesktop.desktopId,
@@ -1398,8 +1398,8 @@ export const make = Effect.gen(function* PreviewAutomationBrokerMake() {
           action: auditTransition.action,
           ...(actorKind === "agent"
             ? {
-                threadId: input.scope.threadId,
-                actorLabel: input.scope.providerInstanceId,
+                threadId: input.scope.thread.threadId,
+                actorLabel: input.scope.thread.providerInstanceId,
               }
             : {}),
           takeover: auditTransition.takeover,
@@ -1496,10 +1496,16 @@ export const make = Effect.gen(function* PreviewAutomationBrokerMake() {
           }).pipe(Effect.ignore);
         }
       }
-      const scope: McpInvocationContext.McpInvocationScope = {
-        ...input,
-        controllerId,
-        providerSessionId: `thread-stop:${input.threadId}`,
+      const scope: McpInvocationContext.McpThreadInvocationScope = {
+        environmentId: input.environmentId,
+        thread: {
+          threadId: input.threadId,
+          providerInstanceId: input.providerInstanceId,
+          controllerId,
+          providerSessionId: `thread-stop:${input.threadId}`,
+        },
+        client: undefined,
+        requestNamespace: `thread-stop:${input.threadId}`,
         capabilities: new Set(["computer"]),
         issuedAt: DateTime.toEpochMillis(yield* DateTime.now),
       };
