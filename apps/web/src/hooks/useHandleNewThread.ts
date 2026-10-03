@@ -116,8 +116,14 @@ export function useNewThreadHandler() {
       const composerModelSelection = composerActiveProvider
         ? (carrySourceComposer?.modelSelectionByProvider[composerActiveProvider] ?? null)
         : null;
+      // A draft's automatic project default must not replace the remembered
+      // model when opening another project. Carry only explicit model/trait
+      // picks from drafts; existing server threads still carry their model.
       const carryModelSelection =
-        composerModelSelection ?? carrySourceShell?.modelSelection ?? null;
+        currentRouteTarget?.kind === "draft" &&
+        !hasExplicitComposerModelSelection(carrySourceComposer)
+          ? null
+          : (composerModelSelection ?? carrySourceShell?.modelSelection ?? null);
       const carryInteractionMode =
         carrySourceComposer?.interactionMode ??
         carrySourceShell?.interactionMode ??
