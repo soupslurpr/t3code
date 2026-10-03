@@ -3,6 +3,10 @@
   "private": true,
   "type": "module",
   "exports": {
+    "./automations": {
+      "types": "./src/automations.ts",
+      "default": "./src/automations.ts"
+    },
     "./composerThreadItems": {
       "types": "./src/composerThreadItems.ts",
       "default": "./src/composerThreadItems.ts"

@@ -65,6 +65,11 @@ Webhook tasks only run when their URL is called, so they can't be run
 immediately.
 Leaving an edited form asks before discarding unsaved changes.
 
+**Dispatched** means the thread accepted the scheduled prompt. It does not mean
+the agent finished the task; open the conversation for progress and results.
+Use recurring tasks for prompts you want repeated, and [durable monitors](./durable-monitors.md)
+when ongoing work should resume once a deadline or condition is reached.
+
 ## Webhook automations
 
 In **Settings → Scheduled tasks**, choose **On webhook**

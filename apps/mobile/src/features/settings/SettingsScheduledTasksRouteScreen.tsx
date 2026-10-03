@@ -2,6 +2,7 @@ import { useAtomValue } from "@effect/atom-react";
 import { AuthOrchestrationOperateScope } from "@t3tools/contracts";
 import { readEnvironmentScope } from "../../state/session";
 import { vcsEnvironment } from "../../state/vcs";
+import { scheduledTaskDispatchStatus } from "@t3tools/client-runtime/automations";
 import type {
   EnvironmentId,
   ProjectId,
@@ -1220,9 +1221,15 @@ function EnvironmentTasks({
                     ? ` · ${formatNextScheduledTaskRun(task.nextRunAt, now)}`
                     : ""}
               </Text>
+              {task.lastRunStatus !== "never" ? (
+                <Text className="text-sm text-foreground-muted">
+                  {scheduledTaskDispatchStatus[task.lastRunStatus].label}.{" "}
+                  {scheduledTaskDispatchStatus[task.lastRunStatus].description}
+                </Text>
+              ) : null}
               {task.lastRunError ? (
                 <Text className="text-sm text-danger-foreground" numberOfLines={2}>
-                  Last run failed: {task.lastRunError}
+                  Dispatch error: {task.lastRunError}
                 </Text>
               ) : null}
             </Pressable>

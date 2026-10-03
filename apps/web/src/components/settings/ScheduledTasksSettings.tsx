@@ -1,4 +1,5 @@
 import { useAtomValue } from "@effect/atom-react";
+import { scheduledTaskDispatchStatus } from "@t3tools/client-runtime/automations";
 import {
   Clock3Icon,
   CopyIcon,
@@ -78,6 +79,7 @@ import { ToggleGroup, Toggle } from "../ui/toggle-group";
 import { Empty, EmptyHeader, EmptyTitle, EmptyDescription, EmptyMedia } from "../ui/empty";
 import { ProviderModelPicker } from "../chat/ProviderModelPicker";
 import { Badge } from "../ui/badge";
+import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
 import { Button } from "../ui/button";
 import {
   Dialog,
@@ -461,7 +463,16 @@ function ScheduledTaskRow({
                   : "Not scheduled"}
           </span>
           {task.lastRunStatus !== "never" ? (
-            <Badge variant={statusVariant(task.lastRunStatus)}>{task.lastRunStatus}</Badge>
+            <Tooltip>
+              <TooltipTrigger render={<span />}>
+                <Badge variant={statusVariant(task.lastRunStatus)}>
+                  {scheduledTaskDispatchStatus[task.lastRunStatus].label}
+                </Badge>
+              </TooltipTrigger>
+              <TooltipPopup>
+                {scheduledTaskDispatchStatus[task.lastRunStatus].description}
+              </TooltipPopup>
+            </Tooltip>
           ) : null}
           {task.lastRunError ? <span className="text-destructive">{task.lastRunError}</span> : null}
         </div>
