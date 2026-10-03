@@ -241,10 +241,15 @@ function activeRun(
   databasePath: string,
   threadId: string,
 ): RestartContinuation {
-  const state = database
+  // Match latestExecutedRun: ordinals follow submission, not execution. Ignore
+  // queued and never-started cancelled inputs, then rank unfinished runs first.
+  const states = database
     .prepare(`SELECT threads.project_id, threads.archived_at, threads.deleted_at,
         json_extract(threads.payload_json, '$.providerInstanceId') AS thread_instance,
         runs.run_id, runs.status AS run_status,
+        (SELECT COUNT(*) FROM orchestration_v2_projection_runs running
+          WHERE running.thread_id = threads.thread_id AND running.status = 'running')
+          AS running_run_count,
         json_extract(runs.payload_json, '$.providerInstanceId') AS run_instance,
         json_extract(runs.payload_json, '$.activeAttemptId') AS attempt_id,
         provider_threads.provider_thread_id, provider_threads.provider_session_id,
@@ -263,7 +268,11 @@ function activeRun(
       FROM orchestration_v2_projection_threads threads
       LEFT JOIN orchestration_v2_projection_runs runs ON runs.run_id = (
         SELECT latest.run_id FROM orchestration_v2_projection_runs latest
-        WHERE latest.thread_id = threads.thread_id ORDER BY latest.ordinal DESC LIMIT 1
+        WHERE latest.thread_id = threads.thread_id AND latest.status != 'queued'
+          AND NOT (latest.status = 'cancelled'
+            AND json_extract(latest.payload_json, '$.startedAt') IS NULL)
+        ORDER BY (latest.completed_at IS NULL) DESC, latest.completed_at DESC,
+          latest.ordinal DESC LIMIT 1
       )
       LEFT JOIN orchestration_v2_projection_provider_threads provider_threads
         ON provider_threads.provider_thread_id = runs.provider_thread_id
@@ -280,8 +289,14 @@ function activeRun(
         AND turns.provider_thread_id = provider_threads.provider_thread_id
         AND turns.thread_id = threads.thread_id AND turns.status = 'running'
       WHERE threads.thread_id = ?`)
-    .get(threadId);
+    .all(threadId);
+  const state = states[0];
   NodeAssert.ok(state, "thread has no V2 runtime state");
+  NodeAssert.equal(states.length, 1, "run has multiple matching running provider turns");
+  NodeAssert.ok(
+    typeof state.running_run_count === "number" && state.running_run_count <= 1,
+    "thread has multiple running V2 runs",
+  );
   NodeAssert.equal(state.archived_at, null, "thread is archived");
   NodeAssert.equal(state.deleted_at, null, "thread is deleted");
   verifyContinuationPreference(

@@ -3151,86 +3151,141 @@ it.layer(layerTest)("OrchestrationV2LayerLive lifecycle", (it) => {
     }),
   );
 
-  it.effect(
-    "admits restart continuations once and rejects a stale continuation behind newer work",
-    () =>
-      Effect.gen(function* () {
-        const orchestrator = yield* Orchestrator.OrchestratorV2;
-        const eventSink = yield* EventSink.EventSinkV2;
-        const threadId = ThreadId.make("runtime-layer-restart-continuation");
-        yield* orchestrator.dispatch({
-          type: "thread.create",
-          createdBy: "user",
-          creationSource: "web",
-          commandId: CommandId.make("restart-create"),
-          threadId,
-          projectId: ProjectId.make("restart-project"),
-          title: "Restart",
-          modelSelection,
-          runtimeMode: "full-access",
-          interactionMode: "default",
-          branch: null,
-          worktreePath: "/tmp/runtime-layer-restart",
-        });
+  it.effect.each([
+    "none",
+    "captured queue",
+    "captured steer",
+    "captured earlier completion",
+    "new queue",
+  ] as const)("admits restart continuations once with %s and rejects newer work", (inputs) =>
+    Effect.gen(function* () {
+      const orchestrator = yield* Orchestrator.OrchestratorV2;
+      const eventSink = yield* EventSink.EventSinkV2;
+      const threadId = ThreadId.make(`runtime-layer-restart-continuation-${inputs}`);
+      yield* orchestrator.dispatch({
+        type: "thread.create",
+        createdBy: "user",
+        creationSource: "web",
+        commandId: CommandId.make(`restart-create-${inputs}`),
+        threadId,
+        projectId: ProjectId.make("restart-project"),
+        title: "Restart",
+        modelSelection,
+        runtimeMode: "full-access",
+        interactionMode: "default",
+        branch: null,
+        worktreePath: "/tmp/runtime-layer-restart",
+      });
+      yield* orchestrator.dispatch({
+        type: "message.dispatch",
+        createdBy: "user",
+        creationSource: "web",
+        commandId: CommandId.make(`restart-user-message-${inputs}`),
+        threadId,
+        messageId: MessageId.make(`restart-user-message-${inputs}`),
+        text: "Original work",
+        attachments: [],
+        modelSelection,
+        dispatchMode: { type: "start_immediately" },
+      });
+      const original = (yield* orchestrator.getThreadProjection(threadId)).runs[0]!;
+      const now = yield* DateTime.now;
+      if (inputs !== "none") {
         yield* orchestrator.dispatch({
           type: "message.dispatch",
           createdBy: "user",
           creationSource: "web",
-          commandId: CommandId.make("restart-user-message"),
+          commandId: CommandId.make(`restart-queued-message-${inputs}`),
           threadId,
-          messageId: MessageId.make("restart-user-message"),
-          text: "Original work",
+          messageId: MessageId.make(`restart-queued-message-${inputs}`),
+          text: "Follow-up work",
           attachments: [],
-          modelSelection,
-          dispatchMode: { type: "start_immediately" },
+          dispatchMode: { type: "queue_after_active" },
         });
-        const original = (yield* orchestrator.getThreadProjection(threadId)).runs[0]!;
-        const now = yield* DateTime.now;
-        yield* eventSink.commitCommand({
-          commandId: CommandId.make("restart-cancel"),
-          threadId,
-          commandType: "provider-runtime.reconcile",
-          acceptedAt: now,
+        const queued = (yield* orchestrator.getThreadProjection(threadId)).runs[1]!;
+        yield* eventSink.write({
           events: [
             {
-              id: EventId.make("restart-cancel-event"),
+              id: EventId.make(`restart-held-input-${inputs}`),
               type: "run.updated",
               threadId,
-              runId: original.id,
+              runId: queued.id,
               occurredAt: now,
-              payload: { ...original, status: "cancelled", completedAt: now },
+              payload: {
+                ...queued,
+                queueHeld: inputs !== "captured earlier completion",
+                ...(inputs === "captured steer"
+                  ? { status: "cancelled", startedAt: null, completedAt: now }
+                  : {}),
+                ...(inputs === "captured earlier completion"
+                  ? {
+                      status: "completed",
+                      startedAt: DateTime.makeUnsafe(DateTime.toEpochMillis(now) - 2),
+                      completedAt: DateTime.makeUnsafe(DateTime.toEpochMillis(now) - 1),
+                    }
+                  : {}),
+              },
             },
           ],
-          effects: [],
         });
-        const command = {
-          type: "message.dispatch" as const,
-          createdBy: "agent" as const,
-          creationSource: "server" as const,
-          commandId: CommandId.make("restart-automatic-message"),
-          threadId,
-          messageId: MessageId.make("restart-automatic-message"),
-          text: "Continue where you left off.",
-          attachments: [],
-          modelSelection,
-          dispatchMode: { type: "start_immediately" as const },
-          restartContinuationOfRunId: original.id,
-        };
-        yield* orchestrator.dispatch(command);
-        yield* orchestrator.dispatch(command);
-        const admitted = yield* orchestrator.getThreadProjection(threadId);
-        assert.lengthOf(admitted.runs, 2);
-        assert.equal(admitted.runs[1]?.restartContinuationOfRunId, original.id);
-        // A differently identified stale delivery still must not create another run.
-        yield* orchestrator.dispatch({
-          ...command,
-          commandId: CommandId.make("restart-stale-race"),
-          messageId: MessageId.make("restart-stale-race"),
-        });
-        const raced = yield* orchestrator.getThreadProjection(threadId);
-        assert.lengthOf(raced.runs, 2);
-        assert.isFalse(raced.messages.some((message) => message.id === "restart-stale-race"));
-      }),
+      }
+      yield* eventSink.commitCommand({
+        commandId: CommandId.make(`restart-cancel-${inputs}`),
+        threadId,
+        commandType: "provider-runtime.reconcile",
+        acceptedAt: now,
+        events: [
+          {
+            id: EventId.make(`restart-cancel-event-${inputs}`),
+            type: "run.updated",
+            threadId,
+            runId: original.id,
+            occurredAt: now,
+            payload: { ...original, status: "cancelled", startedAt: now, completedAt: now },
+          },
+        ],
+        effects: [],
+      });
+      const command = {
+        type: "message.dispatch" as const,
+        createdBy: "agent" as const,
+        creationSource: "server" as const,
+        commandId: CommandId.make(`restart-automatic-message-${inputs}`),
+        threadId,
+        messageId: MessageId.make(`restart-automatic-message-${inputs}`),
+        text: "Continue where you left off.",
+        attachments: [],
+        modelSelection,
+        dispatchMode: { type: "start_immediately" as const },
+        restartContinuationOfRunId: original.id,
+        restartContinuationLastRunOrdinal: inputs.startsWith("captured")
+          ? original.ordinal + 1
+          : original.ordinal,
+      };
+      yield* orchestrator.dispatch(command);
+      yield* orchestrator.dispatch(command);
+      const admitted = yield* orchestrator.getThreadProjection(threadId);
+      const expectedCount = inputs === "none" || inputs === "new queue" ? 2 : 3;
+      assert.lengthOf(admitted.runs, expectedCount);
+      if (inputs === "new queue") {
+        assert.isFalse(admitted.messages.some((message) => message.id === command.messageId));
+      } else {
+        assert.equal(admitted.runs.at(-1)?.restartContinuationOfRunId, original.id);
+      }
+      if (inputs !== "none")
+        assert.equal(admitted.runs[1]?.queueHeld, inputs !== "captured earlier completion");
+      // A differently identified stale delivery still must not create another run.
+      yield* orchestrator.dispatch({
+        ...command,
+        commandId: CommandId.make(`restart-stale-race-${inputs}`),
+        messageId: MessageId.make(`restart-stale-race-${inputs}`),
+      });
+      const raced = yield* orchestrator.getThreadProjection(threadId);
+      assert.lengthOf(raced.runs, expectedCount);
+      assert.isFalse(
+        raced.messages.some((message) => message.id === `restart-stale-race-${inputs}`),
+      );
+    }),
   );
 
   it.effect.each(["failed", "completed", "waiting", "cancelled"] as const)(

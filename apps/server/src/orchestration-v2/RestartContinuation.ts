@@ -1,4 +1,4 @@
-import { runRanAfter } from "@t3tools/shared/orchestrationV2ThreadError";
+import { latestExecutedRun, runRanAfter } from "@t3tools/shared/orchestrationV2ThreadError";
 import { resolveProjectSettings } from "@t3tools/shared/projectSettings";
 import {
   CommandId,
@@ -32,14 +32,7 @@ export function restartContinuationRun(
   >,
 ): OrchestrationV2Run | undefined {
   if (projection.thread.archivedAt !== null || projection.thread.deletedAt !== null) return;
-  // Queued runs never started; recovery holds them behind the cut run.
-  const run = projection.runs.reduce<OrchestrationV2Run | undefined>(
-    (latest, candidate) =>
-      candidate.status !== "queued" && (!latest || runRanAfter(candidate, latest))
-        ? candidate
-        : latest,
-    undefined,
-  );
+  const run = latestExecutedRun(projection.runs);
   if (!run) return;
   const preparedContinuation =
     run.status === "starting" && run.restartContinuationOfRunId !== undefined;
@@ -88,7 +81,11 @@ export function restartContinuationRun(
 }
 
 export const continueRestartedRun = Effect.fn("RestartContinuation.continueRestartedRun")(
-  function* (input: { readonly threadId: ThreadId; readonly sourceRunId: RunId }) {
+  function* (input: {
+    readonly threadId: ThreadId;
+    readonly sourceRunId: RunId;
+    readonly lastRunOrdinal?: number;
+  }) {
     const settings = yield* ServerSettings.ServerSettingsService;
     const enabled = yield* settings.getSettings.pipe(Effect.orElseSucceed(() => null));
     if (!enabled) return;
@@ -118,10 +115,10 @@ export const continueRestartedRun = Effect.fn("RestartContinuation.continueResta
       return;
     // A user submission after reconciliation takes precedence over an automatic
     // prompt. Queued runs never started and stay held behind this one.
+    const latestRun = latestExecutedRun(projection.runs);
     if (
-      projection.runs.some(
-        (run) => run.id !== source.id && run.status !== "queued" && runRanAfter(run, source),
-      )
+      (latestRun !== null && runRanAfter(latestRun, source)) ||
+      projection.runs.some((run) => run.ordinal > (input.lastRunOrdinal ?? source.ordinal))
     )
       return;
     if (projection.thread.providerInstanceId !== source.providerInstanceId) return;
@@ -170,6 +167,7 @@ export const continueRestartedRun = Effect.fn("RestartContinuation.continueResta
       createdBy: "agent",
       creationSource: "server",
       restartContinuationOfRunId: input.sourceRunId,
+      restartContinuationLastRunOrdinal: input.lastRunOrdinal ?? source.ordinal,
     });
   },
   // A delegated child this declined to continue still owes its parent a

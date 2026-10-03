@@ -126,10 +126,12 @@ location and resumes the existing durable thread; it does not preserve the old p
 1. Record the selected full commit, audited package path, completed checks, and any database backup
    in saved work notes. Keep rollback packages and never restore a database automatically.
 2. For an existing V2 installation, confirm automatic thread continuation is enabled (the default)
-   for this project and keep this turn running. The helper checks the latest V2 run, its root
-   provider thread's native resume identity, session binding, and running provider turn. Copied V1
-   session records do not qualify. For the first V1-to-V2 upgrade, prepare the migration monitor
-   described below instead; native continuation cannot bridge that migration.
+   for this project and keep this turn running. The helper selects the unfinished V2 run using
+   startup recovery's ordering, ignoring queued and never-started cancelled inputs. It checks the
+   root provider thread's native resume identity, session binding, and running provider turn, and
+   rejects multiple running runs or matching turns. Copied V1 session records do not qualify. For
+   the first V1-to-V2 upgrade, prepare the migration monitor described below instead; native
+   continuation cannot bridge that migration.
 3. Resolve the current app's user systemd unit and backend listening-port owner again. The unit may
    be a `.service` or a desktop-launcher `.scope`. Confirm the app executable, backend ASAR path,
    and state database before supplying their identities. If GNOME moved the app after it spawned the

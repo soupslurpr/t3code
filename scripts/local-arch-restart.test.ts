@@ -66,7 +66,7 @@ function activeRunFixture() {
     );
     CREATE TABLE orchestration_v2_projection_runs (
       run_id TEXT PRIMARY KEY, thread_id TEXT, ordinal INTEGER,
-      provider_thread_id TEXT, status TEXT, payload_json TEXT
+      provider_thread_id TEXT, status TEXT, completed_at TEXT, payload_json TEXT
     );
     CREATE TABLE orchestration_v2_projection_provider_threads (
       provider_thread_id TEXT PRIMARY KEY, provider_session_id TEXT, status TEXT, payload_json TEXT
@@ -88,8 +88,8 @@ function activeRunFixture() {
       'same-thread', 'same-project', NULL, NULL, '{"providerInstanceId":"codex"}'
     );
     INSERT INTO orchestration_v2_projection_runs VALUES (
-      'active-run', 'same-thread', 1, 'root-provider-thread', 'running',
-      '{"providerInstanceId":"codex","activeAttemptId":"active-attempt"}'
+      'active-run', 'same-thread', 1, 'root-provider-thread', 'running', NULL,
+      '{"providerInstanceId":"codex","activeAttemptId":"active-attempt","startedAt":"2030-01-01T00:00:00.000Z","completedAt":null}'
     );
     INSERT INTO orchestration_v2_projection_provider_threads VALUES (
       'root-provider-thread', 'provider-session', 'active',
@@ -326,7 +326,7 @@ describe("guarded restart", () => {
     },
   );
 
-  it("uses the latest run and ignores copied V1 sessions", () => {
+  it("uses the latest executed run and ignores copied V1 sessions", () => {
     using fixture = activeRunFixture();
     fixture.database.exec(`
       CREATE TABLE projection_thread_sessions (thread_id TEXT, status TEXT, active_turn_id TEXT);
@@ -337,11 +337,74 @@ describe("guarded restart", () => {
     assert.deepEqual(capture(fixture), nativeContinuation);
     fixture.database.exec(`
       INSERT INTO orchestration_v2_projection_runs VALUES (
-        'newer-run', 'same-thread', 2, 'root-provider-thread', 'completed',
+        'newer-run', 'same-thread', 2, 'root-provider-thread', 'completed', NULL,
         '{"providerInstanceId":"codex","activeAttemptId":"newer-attempt"}'
       );
     `);
     assert.throws(() => capture(fixture), "keep the V2 run running");
+  });
+
+  it.each(["cancelled", "queued"])(
+    "keeps the active run behind newer never-started %s inputs",
+    (status) => {
+      using fixture = activeRunFixture();
+      const plan = handoff(fixture);
+      fixture.database
+        .prepare(`WITH RECURSIVE ordinals(ordinal) AS (
+          SELECT 2 UNION ALL SELECT ordinal + 1 FROM ordinals WHERE ordinal < 6
+        ) INSERT INTO orchestration_v2_projection_runs
+          SELECT 'input-' || ordinal, 'same-thread', ordinal, NULL, ?,
+            CASE WHEN ? = 'cancelled' THEN '2030-01-01T00:01:00.000Z' END,
+            '{"providerInstanceId":"codex","activeAttemptId":null,"startedAt":null}'
+          FROM ordinals`)
+        .run(status, status);
+      assert.deepEqual(capture(fixture), nativeContinuation);
+      verifyRestartContinuation(plan);
+    },
+  );
+
+  it("matches recovery when an unfinished run executes after higher-ordinal completed work", () => {
+    using fixture = activeRunFixture();
+    fixture.database.exec(`
+      INSERT INTO orchestration_v2_projection_runs VALUES (
+        'earlier-executed-run', 'same-thread', 2, 'root-provider-thread', 'completed',
+        '2029-12-31T23:59:59.000Z',
+        '{"providerInstanceId":"codex","activeAttemptId":"earlier-attempt","startedAt":"2029-12-31T23:59:58.000Z","completedAt":"2029-12-31T23:59:59.000Z"}'
+      );
+    `);
+    assert.deepEqual(capture(fixture), nativeContinuation);
+  });
+
+  it("rejects multiple running V2 runs instead of choosing one by ordinal", () => {
+    using fixture = activeRunFixture();
+    const plan = handoff(fixture);
+    fixture.database.exec(`
+      INSERT INTO orchestration_v2_projection_runs VALUES (
+        'second-run', 'same-thread', 2, 'root-provider-thread', 'running', NULL,
+        '{"providerInstanceId":"codex","activeAttemptId":"second-attempt","startedAt":"2030-01-01T00:01:00.000Z","completedAt":null}'
+      );
+      INSERT INTO orchestration_v2_projection_run_attempts VALUES ('second-attempt', 'second-run', 'same-thread');
+      INSERT INTO orchestration_v2_projection_provider_turns VALUES (
+        'second-turn', 'root-provider-thread', 'second-attempt', 'same-thread', 'running'
+      );
+    `);
+    assert.throws(() => capture(fixture), "multiple running V2 runs");
+    assert.throws(() => verifyRestartContinuation(plan), "multiple running V2 runs");
+  });
+
+  it("rejects multiple running provider turns for the captured attempt", () => {
+    using fixture = activeRunFixture();
+    const plan = handoff(fixture);
+    fixture.database.exec(`
+      INSERT INTO orchestration_v2_projection_provider_turns VALUES (
+        'second-turn', 'root-provider-thread', 'active-attempt', 'same-thread', 'running'
+      );
+    `);
+    assert.throws(() => capture(fixture), "multiple matching running provider turns");
+    assert.throws(
+      () => verifyRestartContinuation(plan),
+      "multiple matching running provider turns",
+    );
   });
 
   it.each([

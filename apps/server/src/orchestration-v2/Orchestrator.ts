@@ -4534,6 +4534,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
 
       if (command.restartContinuationOfRunId !== undefined) {
         const source = projection.runs.find((run) => run.id === command.restartContinuationOfRunId);
+        const latestRun = latestExecutedRun(projection.runs);
         if (
           !source ||
           source.status !== "cancelled" ||
@@ -4541,9 +4542,9 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
           projection.thread.archivedAt !== null ||
           projection.thread.deletedAt !== null ||
           projection.thread.providerInstanceId !== source.providerInstanceId ||
-          // Held queued runs never started; they wait behind the continuation.
+          (latestRun !== null && runRanAfter(latestRun, source)) ||
           projection.runs.some(
-            (run) => run.id !== source.id && run.status !== "queued" && runRanAfter(run, source),
+            (run) => run.ordinal > (command.restartContinuationLastRunOrdinal ?? source.ordinal),
           ) ||
           (yield* stopReachedRun(command, command.threadId, source.id))
         ) {

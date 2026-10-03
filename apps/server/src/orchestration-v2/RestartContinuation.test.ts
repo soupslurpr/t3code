@@ -53,6 +53,8 @@ function makeProjection() {
         providerThreadId,
         activeAttemptId: attemptId,
         status: "running",
+        requestedAt: DateTime.makeUnsafe(0),
+        startedAt: DateTime.makeUnsafe(1),
       },
     ],
     providerThreads: [
@@ -138,6 +140,80 @@ it("continues a live turn whose session the adapter never marked running", () =>
   for (const status of ["stopped", "error"])
     assert.isUndefined(restartContinuationRun(withSessionStatus(status)), status);
 });
+
+it("finds running work behind queued and never-started cancelled inputs", () => {
+  const projection = makeProjection();
+  for (const status of ["queued", "cancelled"] as const) {
+    const newer = {
+      ...projection.runs[0]!,
+      id: RunId.make("run:unstarted"),
+      ordinal: 2,
+      status,
+      startedAt: null,
+    };
+    assert.equal(
+      restartContinuationRun({ ...projection, runs: [...projection.runs, newer] })?.id,
+      runId,
+    );
+    // A newer turn that actually started supersedes the earlier work, including Stop.
+    assert.isUndefined(
+      restartContinuationRun({
+        ...projection,
+        runs: [
+          ...projection.runs,
+          { ...newer, status: "cancelled", startedAt: DateTime.makeUnsafe(2) },
+        ],
+      }),
+    );
+  }
+});
+
+it.effect("preserves captured queued inputs but yields to submissions after recovery capture", () =>
+  Effect.gen(function* () {
+    const base = makeProjection();
+    const queued = {
+      ...base.runs[0]!,
+      id: RunId.make("run:queued"),
+      ordinal: 2,
+      status: "queued" as const,
+      startedAt: null,
+      queueHeld: true,
+    };
+    let projection = {
+      ...base,
+      runs: [{ ...base.runs[0]!, status: "cancelled" as const }, queued],
+    };
+    const commands: Parameters<
+      ThreadManagementService.ThreadManagementService["Service"]["dispatch"]
+    >[0][] = [];
+    const layer = Layer.merge(
+      ServerSettings.layerTest({ continueThreadsAfterServerUpdate: true }),
+      Layer.mock(ThreadManagementService.ThreadManagementService)({
+        getThreadRecords: () => Effect.succeed(projection),
+        recoverDelegatedTask: () => Effect.void,
+        dispatch: (command) => {
+          commands.push(command);
+          return Effect.succeed({} as never);
+        },
+      }),
+    );
+    yield* continueRestartedRun({ threadId, sourceRunId: runId, lastRunOrdinal: 2 }).pipe(
+      Effect.provide(layer),
+    );
+    assert.lengthOf(commands, 1);
+    assert.equal(commands[0]?.type, "message.dispatch");
+    assert.equal(projection.runs[1]?.queueHeld, true);
+
+    projection = {
+      ...projection,
+      runs: [...projection.runs, { ...queued, id: RunId.make("run:after-recovery"), ordinal: 3 }],
+    };
+    yield* continueRestartedRun({ threadId, sourceRunId: runId, lastRunOrdinal: 2 }).pipe(
+      Effect.provide(layer),
+    );
+    assert.lengthOf(commands, 1);
+  }),
+);
 
 it("recovers an admitted continuation after another crash before provider start", () => {
   const projection = makeProjection();
@@ -308,6 +384,7 @@ it.effect.each([
         assert.deepEqual(committed!.effects[0]?.request, {
           type: "provider-runtime.continue",
           sourceRunId: runId,
+          lastRunOrdinal: 1,
         });
     }),
 );
@@ -609,7 +686,11 @@ it.effect("does not cancel or resume a run that completes while shutdown intent 
 const continuationTexts = (projection: OrchestrationV2ThreadProjection) =>
   Effect.gen(function* () {
     const texts: Array<string> = [];
-    yield* continueRestartedRun({ threadId, sourceRunId: runId }).pipe(
+    yield* continueRestartedRun({
+      threadId,
+      sourceRunId: runId,
+      lastRunOrdinal: Math.max(...projection.runs.map((run) => run.ordinal)),
+    }).pipe(
       Effect.provide(
         Layer.merge(
           Layer.mock(ThreadManagementService.ThreadManagementService)({
@@ -812,7 +893,7 @@ it.effect("prepares later threads' continuations when one thread fails", () =>
     yield* recovery.prepareForShutdown;
     assert.deepEqual(
       writes.map((write) => write.effects[0]?.request),
-      [{ type: "provider-runtime.continue", sourceRunId: runId }],
+      [{ type: "provider-runtime.continue", sourceRunId: runId, lastRunOrdinal: 1 }],
     );
   }),
 );

@@ -658,7 +658,14 @@ export const make = Effect.gen(function* () {
               id: `effect:restart-continuation:${continuationRun.id}`,
               commandId,
               threadId: projection.thread.id,
-              request: { type: "provider-runtime.continue", sourceRunId: continuationRun.id },
+              request: {
+                type: "provider-runtime.continue",
+                sourceRunId: continuationRun.id,
+                lastRunOrdinal: projection.runs.reduce(
+                  (last, run) => Math.max(last, run.ordinal),
+                  0,
+                ),
+              },
             },
           ]
         : [];
@@ -797,7 +804,14 @@ export const make = Effect.gen(function* () {
               id: `effect:restart-continuation:${run.id}`,
               commandId,
               threadId,
-              request: { type: "provider-runtime.continue", sourceRunId: run.id },
+              request: {
+                type: "provider-runtime.continue",
+                sourceRunId: run.id,
+                lastRunOrdinal: projection.runs.reduce(
+                  (last, entry) => Math.max(last, entry.ordinal),
+                  0,
+                ),
+              },
             },
           ],
         });
