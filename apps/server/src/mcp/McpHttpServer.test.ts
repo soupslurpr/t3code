@@ -200,6 +200,7 @@ const MonitorTestLayer = Layer.succeed(
   ThreadMonitorService,
   ThreadMonitorService.of({
     start: Effect.void,
+    subscribeSummaries: () => Stream.succeed({ monitors: [] }),
     capabilities: () =>
       Effect.succeed({
         controllerPromptCache: {
