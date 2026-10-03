@@ -2854,6 +2854,7 @@ it.layer(layerTest)("orchestration V2 foundation persistence", (it) => {
         assert.deepEqual(effects[0]?.request, {
           type: "provider-runtime.continue",
           sourceRunId: runId,
+          lastRunOrdinal: 1,
         });
         yield* outbox.cancelUnsettled({
           threadId,

@@ -4857,6 +4857,9 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
             !cancelledBeforeStart(run) &&
             runRanAfter(run, source),
         ) ||
+        projection.runs.some(
+          (run) => run.ordinal > (command.restartContinuationLastRunOrdinal ?? source.ordinal),
+        ) ||
         (yield* stopReachedRun(command, command.threadId, source.id))
       ) {
         // Preserve the current row so stale automatic deliveries receive an
@@ -5023,7 +5026,11 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
     if (
       command.notification !== undefined &&
       ((command.createdBy !== "agent" &&
-          !(command.createdBy === "system" && command.creationSource === "server" && command.notification.systemEvent !== undefined)) ||
+        !(
+          command.createdBy === "system" &&
+          command.creationSource === "server" &&
+          command.notification.systemEvent !== undefined
+        )) ||
         (command.creationSource !== "server" && command.creationSource !== "provider") ||
         (dispatchMode.type !== "queue_after_active" &&
           !(
@@ -9515,9 +9522,13 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         activeProviderThreadId: projection.thread.activeProviderThreadId,
         runs: projection.runs,
       }).length > 0 ||
-        (yield* projectionStore.getThreadShell(command.threadId).pipe(
-          Effect.mapError((cause) => new OrchestratorProjectionError({ threadId: command.threadId, cause })),
-        ))?.backgroundLiveness === "monitoring");
+        (yield* projectionStore
+          .getThreadShell(command.threadId)
+          .pipe(
+            Effect.mapError(
+              (cause) => new OrchestratorProjectionError({ threadId: command.threadId, cause }),
+            ),
+          ))?.backgroundLiveness === "monitoring");
     // A failed start has no provider turn. Background work still belongs
     // to the provider thread, so Stop reaches its latest accepted turn.
     const providerTurn =
