@@ -121,14 +121,14 @@ refreshed, is not an expiration deadline, and is omitted when unknown.
 
 ## Continuation delivery
 
-The default continuation dispatches an internal `thread.turn.start` with a
+The default continuation dispatches an internal `message.dispatch` with a
 typed `monitor.continuation` system event. Client commands remain user-only, so
 automation cannot be mistaken for user speech. The event mechanically separates
 trusted harness facts, untrusted trigger observations, and the fact that it
 grants no new authorization. Computer-watch
 checkpoints use the related `monitor.review` event. The projected message stores
 the structured event once and only a compact fallback label as text; the
-provider reactor renders the full provider-neutral input at delivery time.
+provider turn services render the full provider-neutral input at delivery time.
 Codex receives it through native `toolOutput`, which requires Codex 0.151.0 or
 later. Sending it as user input would cause compaction to retain automated
 notifications as user requests. Other providers keep the attributed text input.
@@ -137,13 +137,22 @@ Web and mobile clients show these messages as compact, collapsible event cards
 instead of user bubbles. The delivery reads the thread's current provider
 configuration instead of preserving the model that created the monitor.
 
-Delivery waits for running or starting sessions, pending approvals, pending
-user input, and newly queued turns to settle. Every retry uses the same logical
-message id. An in-flight delivery also reuses its orchestration command id, so
-an accepted command receipt closes the crash window before the monitor is
-marked delivered. Only a confirmed rejected receipt advances to a new attempt.
+Under the thread lock, the orchestrator routes monitors into active turns only
+when native live input is supported and no approval or user-input request is
+pending. Otherwise the result queues behind active work. Monitor messages keep
+their source attribution, and native delivery does not change the saved model
+selection or interrupt a turn. Codex uses `turn/start` with standalone tool output
+for both paths; if completion wins that native request's race, the adapter tracks
+the new native turn in the same app run before releasing its terminal event.
+
+A persisted steering message stays pending until provider acceptance. The monitor
+waits for its outbox effect to finish before attempting recovery; a cancelled
+outbox effect after shutdown can retry the same logical message as a follow-up.
+Provider acceptance and its receipt cannot commit atomically, so delivery is at
+least once across a crash. Stable message ids prevent duplicate timeline entries,
+and command receipts reconcile dispatch before the monitor is marked delivered.
 A `record-only` monitor reaches `delivered` without requesting a provider turn.
 
-The provider command reactor handles the resulting turn through the normal
+The provider turn services handle the resulting turn through the normal
 session-start, permission, error, and runtime-event paths. This deliberately
 avoids a monitor-specific provider adapter or model-selection policy.
