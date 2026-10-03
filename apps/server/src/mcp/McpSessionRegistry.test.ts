@@ -192,8 +192,13 @@ it.effect("issues a computer-only credential without browser access", () =>
     const token = issued.config.authorizationHeader.replace(/^Bearer\s+/, "");
     const resolved = yield* registry.resolve(token);
 
-    expect(issued.config.capabilities.has("preview")).toBe(false);
-    expect(Array.from(resolved?.capabilities ?? []).sort()).toEqual(["computer", "pull-requests"]);
+    expect(issued.config.capabilities?.has("preview")).toBe(false);
+    expect(Array.from(resolved?.capabilities ?? []).sort()).toEqual([
+      "computer",
+      "orchestration",
+      "pull-requests",
+      "worktree",
+    ]);
   }),
 );
 
@@ -216,9 +221,9 @@ it.effect("keeps the logical controller stable across provider restarts", () =>
     const firstScope = yield* registry.resolve(firstToken);
     const secondScope = yield* registry.resolve(secondToken);
 
-    expect(firstScope?.providerSessionId).not.toBe(secondScope?.providerSessionId);
-    expect(firstScope?.controllerId).toBe(secondScope?.controllerId);
-    expect(firstScope?.controllerId).toMatch(/^thread-[0-9a-f]{64}$/);
+    expect(firstScope?.thread.providerSessionId).not.toBe(secondScope?.thread.providerSessionId);
+    expect(firstScope?.thread.controllerId).toBe(secondScope?.thread.controllerId);
+    expect(firstScope?.thread.controllerId).toMatch(/^thread-[0-9a-f]{64}$/);
   }),
 );
 
@@ -227,7 +232,7 @@ it.effect("builds MCP endpoints from the bound server host", () =>
     const cases = [
       ["100.64.0.40", "http://100.64.0.40:43123/mcp"],
       ["0.0.0.0", "http://127.0.0.1:43123/mcp"],
-      ["localhost", "http://localhost:43123/mcp"],
+      ["::1", "http://[::1]:43123/mcp"],
       ["127.0.0.1", "http://127.0.0.1:43123/mcp"],
     ] as const;
 
@@ -277,7 +282,7 @@ it.effect("keeps a credential alive across turns that never touch an MCP tool", 
       yield* registry.touch(threadId);
     }
 
-    expect((yield* registry.resolve(token))?.threadId).toBe(threadId);
+    expect((yield* registry.resolve(token))?.thread.threadId).toBe(threadId);
   }),
 );
 

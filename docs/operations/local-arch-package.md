@@ -125,10 +125,11 @@ location and resumes the existing durable thread; it does not preserve the old p
 
 1. Record the selected full commit, audited package path, completed checks, and any database backup
    in saved work notes. Keep rollback packages and never restore a database automatically.
-2. Confirm automatic thread continuation is enabled (the default) in the environment's settings and keep this
-   turn running. The helper checks that both durable session records identify the same unfinished
-   turn and that the provider has a resume cursor. T3 resumes that turn when the server restarts;
-   no monitor or extra wait is needed.
+2. For an existing V2 installation, confirm automatic thread continuation is enabled (the default)
+   for this project and keep this turn running. The helper checks the latest V2 run, its root
+   provider thread's native resume identity, session binding, and running provider turn. Copied V1
+   session records do not qualify. For the first V1-to-V2 upgrade, prepare the migration monitor
+   described below instead; native continuation cannot bridge that migration.
 3. Resolve the current app's user systemd unit and backend listening-port owner again. The unit may
    be a `.service` or a desktop-launcher `.scope`. Confirm the app executable, backend ASAR path,
    and state database before supplying their identities. If GNOME moved the app after it spawned the
@@ -141,7 +142,7 @@ location and resumes the existing durable thread; it does not preserve the old p
      --package /absolute/path/to/audited.pkg.tar.zst \
      --commit FULL_40_CHARACTER_COMMIT \
      --unit CURRENT_APP.scope --backend-pid BACKEND_PID \
-     --state-db /absolute/path/to/userdata/state.sqlite \
+     --state-db /absolute/path/to/userdata/statev2.sqlite \
      --thread-id CURRENT_THREAD_ID
    ```
 
@@ -162,9 +163,37 @@ location and resumes the existing durable thread; it does not preserve the old p
    plan, and confirm this same thread resumed. A queued timer or successful package installation
    alone is not deployment completion.
 
+#### First V2 upgrade
+
+V2 copies `state.sqlite` into a separate `statev2.sqlite` only when the latter does not exist. It
+imports the conversation and pending fork monitors, but does not import V1 runs or provider
+sessions. An interrupted V1 turn therefore needs an explicit monitor to resume after this upgrade.
+
+Before step 3, use `monitor_start` in the controlling thread to create a time monitor with
+`continuation: "resume-thread"`. Choose a deadline after the planned restart and put the saved
+handoff-notes path in its label. Keep the controlling turn running through shutdown, so the monitor
+cannot be delivered early. Preview the helper with the original database and the returned monitor
+ID:
+
+```bash
+vp run package:desktop:arch:restart \
+  --package /absolute/path/to/audited.pkg.tar.zst \
+  --commit FULL_40_CHARACTER_COMMIT \
+  --unit CURRENT_APP.scope --backend-pid BACKEND_PID \
+  --state-db /absolute/path/to/userdata/state.sqlite \
+  --thread-id CURRENT_THREAD_ID --migration-monitor MONITOR_ID
+```
+
+Continue with steps 4–6. The helper requires a same-thread, undelivered, active or triggered time
+monitor and an absent `statev2.sqlite`, and repeats those checks immediately before shutdown. If
+V2 state already exists, stop and inspect it; never delete it to force another import. The imported
+monitor starts a fresh provider session in the same thread, with the imported conversation as
+handoff context. Read the saved work notes and verify the deployment from that continuation.
+
 The repository verifier prints JSON and returns a failing exit status when installation or restart
 checks fail. It reads process identities, active units, and database file descriptors without opening
-the database. Use the actual listening port:
+the database. The recovery plan records the source and post-restart databases separately; a first
+V2 restart must own `statev2.sqlite`. Use the actual listening port:
 
 ```bash
 vp run package:desktop:arch:verify workspace /absolute/path/to/checkout

@@ -74,7 +74,9 @@ let handlersLayer: <Tools extends Record<string, Tool.Any>, EX, RX>(
  * Parameters choose the target; the caller sets the limits: a thread caller
  * its own runtime and interaction modes, an outside client the ceiling it was
  * approved with. Nothing a caller starts or changes may run with broader
- * modes, and a thread caller changes things only while its own run is live.
+ * modes, and a thread caller starts or changes work only while its run is
+ * live. Reporting the completion of previously authorized durable work may
+ * outlive that run; its service must enforce ownership and cancellation.
  * A refusal is an `OrchestratorMcpFailure`, so the compiler requires it in the
  * tool's failure schema, and `ThreadManagementService` in its dependencies.
  *
@@ -151,6 +153,28 @@ export const actsAsCaller = <P, A, E, R>(handle: (params: P) => Effect.Effect<A,
       Effect.flatMap(() => writingCaller),
       Effect.flatMap(() => handle(params)),
     ),
+  );
+
+/**
+ * Reports completion of existing durable work owned by the calling thread,
+ * such as an external monitor signal. The turn may have ended or changed
+ * providers. The handler must atomically reject work cancelled by Stop; this
+ * declaration never authorizes starting, editing, or cancelling work.
+ */
+export const completesAsCaller = <P, A, E, R>(handle: (params: P) => Effect.Effect<A, E, R>) =>
+  declare((params: P) =>
+    Effect.gen(function* () {
+      yield* requireThreadCaller;
+      yield* refuseReadOnlyClient;
+      const { caller } = yield* loadCaller();
+      if (caller?.archivedAt !== null) {
+        return yield* new OrchestratorMcpFailure({
+          code: "parent_not_active",
+          message: "The calling thread is archived and cannot complete background work.",
+        });
+      }
+      return yield* handle(params);
+    }),
   );
 
 /** Changes something that belongs to no thread, such as a pending upload or a scheduled task. */

@@ -12,6 +12,7 @@ import { createPackage } from "@electron/asar";
 
 import {
   assessRestart,
+  decodeRestartPlan,
   isCapturedProcess,
   matchesBackendEntry,
   ownsDatabase,
@@ -190,6 +191,29 @@ test("proves database ownership through an open descriptor without reading its d
   NodeAssert.equal(await ownsDatabase(process.pid, path), false);
   NodeAssert.equal(await NodeFSP.readFile(path, "utf8"), "unchanged fixture");
 });
+
+test("requires the new database after migration even while the old database is still open", async (context) => {
+  const directory = await NodeFSP.mkdtemp(NodePath.join(NodeOS.tmpdir(), "t3-verify-migration-"));
+  context.onTestFinished(() => NodeFSP.rm(directory, { recursive: true, force: true }));
+  const sourceDatabasePath = NodePath.join(directory, "state.sqlite");
+  const restartDatabasePath = NodePath.join(directory, "statev2.sqlite");
+  const decoded = decodeRestartPlan({
+    ...plan,
+    sourceDatabasePath,
+    restartDatabasePath,
+    packageVersion: "2.0.0-1",
+    gitCommit: "c".repeat(40),
+  });
+  const oldDatabase = await NodeFSP.open(sourceDatabasePath, "wx");
+  context.onTestFinished(() => oldDatabase.close());
+  NodeAssert.equal(await ownsDatabase(process.pid, decoded.sourceDatabasePath), true);
+  NodeAssert.equal(await ownsDatabase(process.pid, decoded.restartDatabasePath), false);
+  const newDatabase = await NodeFSP.open(restartDatabasePath, "wx");
+  context.onTestFinished(() => newDatabase.close());
+  NodeAssert.equal(await ownsDatabase(process.pid, decoded.restartDatabasePath), true);
+  NodeAssert.throws(() => decodeRestartPlan({ ...decoded, restartDatabasePath: undefined }));
+});
+
 test("reads replaced archives with different header sizes and file offsets", async (context) => {
   const directory = await NodeFSP.mkdtemp(NodePath.join(NodeOS.tmpdir(), "t3-verify-archive-"));
   context.onTestFinished(() => NodeFSP.rm(directory, { recursive: true, force: true }));

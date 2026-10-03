@@ -9,10 +9,10 @@ import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
-import * as SqlClient from "effect/unstable/sql/SqlClient";
+import * as SqlClient from "effect/sql/SqlClient";
 
-import { ThreadMonitorRepository } from "../Services/ThreadMonitors.ts";
-import { SqlitePersistenceMemory } from "./Sqlite.ts";
+import { ThreadMonitorRepository } from "./ThreadMonitors.ts";
+import * as SqlitePersistence from "./Sqlite.ts";
 import * as ThreadMonitors from "./ThreadMonitors.ts";
 
 const monitorId = ThreadMonitorId.make("computer-monitor-atomic-test");
@@ -133,9 +133,59 @@ function baseline(revision: number): ThreadMonitorComputerEvidenceImage {
   };
 }
 
-const layer = it.layer(ThreadMonitors.layer.pipe(Layer.provideMerge(SqlitePersistenceMemory)));
+const layer = it.layer(
+  ThreadMonitors.layer.pipe(Layer.provideMerge(SqlitePersistence.layerMemory)),
+);
 
 layer("ThreadMonitorRepository", (it) => {
+  it.effect("signals only active owned signal monitors without a Stop cancellation barrier", () =>
+    Effect.gen(function* () {
+      const repository = yield* ThreadMonitorRepository;
+      const sql = yield* SqlClient.SqlClient;
+      const signalMonitor: ThreadMonitor = {
+        ...monitor(1),
+        id: ThreadMonitorId.make("external-signal-atomic-test"),
+        condition: { type: "signal", deadlineAt: null },
+      };
+      const signal = {
+        monitorId: signalMonitor.id,
+        threadId,
+        triggeredAt: "2026-08-14T00:01:00.000Z",
+        summary: "Build complete",
+        evidence: "exitCode=0",
+      };
+      yield* repository.upsert(signalMonitor);
+      assert.isFalse(
+        yield* repository.trySignal({ ...signal, threadId: ThreadId.make("another-thread") }),
+      );
+      yield* repository.upsert({ ...signalMonitor, condition: { type: "time", at: timestamp } });
+      assert.isFalse(yield* repository.trySignal(signal));
+      yield* repository.upsert(signalMonitor);
+      yield* sql`
+        UPDATE thread_monitors SET cancellation_requested = 1
+        WHERE monitor_id = ${signalMonitor.id}
+      `;
+      assert.isFalse(yield* repository.trySignal(signal));
+      assert.deepEqual(
+        Option.getOrThrow(yield* repository.getById(signalMonitor.id)),
+        signalMonitor,
+      );
+
+      yield* repository.acknowledgeCancellation(signalMonitor.id);
+      assert.isTrue(yield* repository.trySignal(signal));
+      const triggered = Option.getOrThrow(yield* repository.getById(signalMonitor.id));
+      assert.strictEqual(triggered.status, "triggered");
+      assert.deepEqual(triggered.trigger, {
+        reason: "signal",
+        summary: signal.summary,
+        evidence: signal.evidence,
+      });
+      assert.strictEqual(triggered.triggeredAt, signal.triggeredAt);
+      assert.isFalse(yield* repository.trySignal({ ...signal, summary: "Duplicate result" }));
+      assert.deepEqual(Option.getOrThrow(yield* repository.getById(signalMonitor.id)), triggered);
+    }),
+  );
+
   it.effect(
     "loads old prompt-bearing rows and saves prompt-free monitors with existing constraints",
     () =>

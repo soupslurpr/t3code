@@ -1047,7 +1047,7 @@ const EnvironmentDesktopAutomationOperation = Schema.Literals([
 ]);
 
 /** Reports a server-owned desktop operation failure without inventing a remote host. */
-export class EnvironmentDesktopAutomationError extends Schema.TaggedErrorClass<EnvironmentDesktopAutomationError>()(
+export class EnvironmentDesktopAutomationError extends Schema.TaggedError<EnvironmentDesktopAutomationError>()(
   "EnvironmentDesktopAutomationError",
   {
     operation: EnvironmentDesktopAutomationOperation,

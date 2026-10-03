@@ -1,5 +1,6 @@
 /** Defines provider-neutral durable monitor MCP tools. */
 import {
+  OrchestratorMcpFailure,
   ThreadMonitor,
   ThreadMonitorCancelInput,
   ThreadMonitorCapabilities,
@@ -18,13 +19,16 @@ import {
   PreviewAutomationUnavailableError,
 } from "@t3tools/contracts";
 import * as Schema from "effect/Schema";
-import { Tool, Toolkit } from "effect/unstable/ai";
+import { Tool, Toolkit } from "effect/ai";
 
 import * as McpInvocationContext from "../../McpInvocationContext.ts";
 import { ThreadMonitorService } from "../../../threadMonitor/ThreadMonitorService.ts";
 import * as ComputerObservationStore from "../../../computer/ComputerObservationStore.ts";
 
+import * as ThreadManagementService from "../../../orchestration-v2/ThreadManagementService.ts";
+
 const dependencies = [
+  ThreadManagementService.ThreadManagementService,
   McpInvocationContext.McpInvocationContext,
   ThreadMonitorService,
   ComputerObservationStore.ComputerObservationStore,
@@ -32,7 +36,11 @@ const dependencies = [
 // Decode the same JSON representation advertised by Tool.getJsonSchema, including
 // null for optional undefined fields, while preserving explicitly nullable values.
 const EmptyParameters = Schema.Record(Schema.String, Schema.Never);
-const ComputerWatchError = Schema.Union([ThreadMonitorError, PreviewAutomationUnavailableError]);
+const ComputerWatchError = Schema.Union([
+  ThreadMonitorError,
+  PreviewAutomationUnavailableError,
+  OrchestratorMcpFailure,
+]);
 
 const mutatingMonitorTool = <T extends Tool.Any>(tool: T): T =>
   tool.annotate(Tool.OpenWorld, true).annotate(Tool.Destructive, true) as T;
@@ -44,7 +52,7 @@ export const MonitorStartTool = mutatingMonitorTool(
       "Create a durable wait for the current T3 thread without keeping this model turn or process asleep. Use schedule type after/at for long timers. Before choosing a cache-conscious timer, call monitor_capabilities for the current controller model's optional minimum prompt-cache lifetime. Use signal when a background watcher, subagent, automation, or later turn will call monitor_signal; an optional deadlineAt provides a restart-safe fallback. By default the trigger resumes this thread through whatever provider and model the thread is configured to use at delivery time. Set continuation=record-only when a durable result should be recorded without starting a turn. After creating a resume-thread monitor, finish the current turn instead of polling. T3 persists the monitor, survives server restarts, waits for active thread work to settle, and requests at most one logical continuation message.",
     parameters: Schema.toCodecJson(ThreadMonitorStartInput),
     success: ThreadMonitor,
-    failure: ThreadMonitorError,
+    failure: Schema.Union([ThreadMonitorError, OrchestratorMcpFailure]),
     dependencies,
   }).annotate(Tool.Title, "Start durable monitor"),
 );
@@ -55,7 +63,7 @@ export const MonitorCapabilitiesTool = Tool.make("monitor_capabilities", {
     "List optional prompt-cache timing for the current controller model before scheduling a durable timer or signal monitor. controllerPromptCache.minimumLifetimeMs is measured from creation or refresh and is not an expiration deadline or remaining lifetime; its source distinguishes provider-reported data from provider documentation, and absence means unknown.",
   parameters: EmptyParameters,
   success: ThreadMonitorCapabilities,
-  failure: ThreadMonitorError,
+  failure: Schema.Union([ThreadMonitorError, OrchestratorMcpFailure]),
   dependencies,
 })
   .annotate(Tool.Title, "Get durable monitor capabilities")
@@ -69,7 +77,7 @@ export const MonitorStatusTool = Tool.make("monitor_status", {
     "Read one durable monitor or list the current thread's outstanding monitors. Set includeFinished=true to include recent terminal records. Monitor ownership is derived from this MCP session; a monitor from another thread is reported as not found.",
   parameters: Schema.toCodecJson(ThreadMonitorStatusInput),
   success: ThreadMonitorList,
-  failure: ThreadMonitorError,
+  failure: Schema.Union([ThreadMonitorError, OrchestratorMcpFailure]),
   dependencies,
 })
   .annotate(Tool.Title, "Get durable monitor status")
@@ -84,7 +92,7 @@ export const MonitorSignalTool = mutatingMonitorTool(
       "Signal that a signal-scheduled monitor's condition is satisfied. Supply a concise summary and optional bounded evidence string. This call is idempotent after the first trigger. A resume-thread continuation is queued until the original thread is safe to resume; the signalling watcher should then finish rather than waiting for that turn.",
     parameters: Schema.toCodecJson(ThreadMonitorSignalInput),
     success: ThreadMonitor,
-    failure: ThreadMonitorError,
+    failure: Schema.Union([ThreadMonitorError, OrchestratorMcpFailure]),
     dependencies,
   }).annotate(Tool.Title, "Signal durable monitor"),
 );
@@ -95,7 +103,7 @@ export const MonitorCancelTool = Tool.make("monitor_cancel", {
     "Cancel one outstanding durable monitor owned by the current thread, or omit monitorId to cancel every outstanding monitor in the thread. Cancellation is idempotent for an already terminal monitor and prevents a continuation that has not yet been requested.",
   parameters: Schema.toCodecJson(ThreadMonitorCancelInput),
   success: ThreadMonitorList,
-  failure: ThreadMonitorError,
+  failure: Schema.Union([ThreadMonitorError, OrchestratorMcpFailure]),
   dependencies,
 })
   .annotate(Tool.Title, "Cancel durable monitor")
@@ -109,7 +117,7 @@ export const MonitorCheckNowTool = mutatingMonitorTool(
       "Ask T3 to reconcile due deadlines and pending continuation delivery now, then return current state. This does not force an unmet timer or signal condition. Normally the durable scheduler does this automatically; use it for diagnostics or after an external state transition, not for polling.",
     parameters: Schema.toCodecJson(ThreadMonitorCheckInput),
     success: ThreadMonitorList,
-    failure: ThreadMonitorError,
+    failure: Schema.Union([ThreadMonitorError, OrchestratorMcpFailure]),
     dependencies,
   }).annotate(Tool.Title, "Check durable monitors now"),
 );

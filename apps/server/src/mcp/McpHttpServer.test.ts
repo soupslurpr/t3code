@@ -1,4 +1,6 @@
+import { ThreadWorkspaceQuery } from "../orchestration-v2/ThreadWorkspaceQuery.ts";
 import * as Orchestrator from "../orchestration-v2/Orchestrator.ts";
+import * as ThreadManagementService from "../orchestration-v2/ThreadManagementService.ts";
 import * as ProjectionStore from "../orchestration-v2/ProjectionStore.ts";
 import { UserDesktopTransfers } from "../computer/UserDesktopTransfers.ts";
 import { expect, it } from "@effect/vitest";
@@ -53,6 +55,7 @@ import * as UserDesktops from "../persistence/UserDesktops.ts";
 
 const environmentId = EnvironmentId.make("environment-mcp-test");
 const threadId = ThreadId.make("thread-mcp-test");
+const endedThreadId = ThreadId.make("thread-mcp-ended");
 const tabId = PreviewTabId.make("tab-mcp-test");
 const alternateTabId = PreviewTabId.make("tab-mcp-alternate");
 const decodeJsonText = Schema.decodeUnknownSync(Schema.fromJsonString(Schema.Unknown));
@@ -193,6 +196,7 @@ const watchImage = {
 const MonitorTestLayer = Layer.succeed(
   ThreadMonitorService,
   ThreadMonitorService.of({
+    start: Effect.void,
     capabilities: () =>
       Effect.succeed({
         controllerPromptCache: {
@@ -247,7 +251,17 @@ const MonitorTestLayer = Layer.succeed(
     },
     updateComputer: () => Effect.die("unused"),
     status: () => Effect.succeed({ monitors: [] }),
-    signal: () => Effect.die("unused"),
+    signal: ({ threadId, signal }) =>
+      Effect.succeed({
+        ...computerWatchMonitor(threadId, signal.monitorId),
+        condition: { type: "signal", deadlineAt: null },
+        status: "triggered",
+        trigger: {
+          reason: "signal",
+          summary: signal.summary ?? null,
+          evidence: signal.evidence ?? null,
+        },
+      }),
     cancel: () => Effect.succeed({ monitors: [] }),
     checkNow: () => Effect.succeed({ monitors: [] }),
   }),
@@ -287,18 +301,32 @@ const AgentDesktopTransferTestLayer = Layer.mock(AgentDesktopTransfer.AgentDeskt
   {},
 );
 
-const layerTest = McpHttpServer.ToolkitRegistrationLive.pipe(
+const layerTest = Layer.mergeAll(
+  McpHttpServer.layerPreviewToolkit,
+  McpHttpServer.ComputerToolkitRegistrationLive,
+  McpHttpServer.AgentDesktopToolkitRegistrationLive,
+  McpHttpServer.MonitorToolkitRegistrationLive,
+).pipe(
   Layer.provide(Layer.mock(UserDesktopTransfers)({ download: () => null })),
   Layer.provide(Layer.mock(DeviceService.DeviceService)({})),
-  Layer.provide(Layer.mock(OrchestrationEngineService)({})),
-  Layer.provide(Layer.mock(ProjectionSnapshotQuery)({})),
+  Layer.provide(Layer.mock(ThreadWorkspaceQuery)({})),
   Layer.provide(MonitorTestLayer),
   Layer.provide(AgentDesktopTransferTestLayer),
   Layer.provide(AgentDesktopManagerTestLayer),
   Layer.provide(ComputerAutomationRouterTestLayer),
   Layer.provideMerge(ComputerObservationStore.layer),
   Layer.provideMerge(McpServer.McpServer.layer),
-  Layer.provideMerge(McpToolAccessTestkit.liveThreadsLayer),
+  Layer.provideMerge(
+    Layer.mock(ThreadManagementService.ThreadManagementService)({
+      getThreadShell: (id) =>
+        Effect.succeed(
+          McpToolAccessTestkit.liveThreadShell(
+            id,
+            id === endedThreadId ? { activeRunId: null } : {},
+          ),
+        ),
+    }),
+  ),
   Layer.provideMerge(BrokerTestLayer),
   Layer.provideMerge(ServerConfig.layerTest(process.cwd(), { prefix: "t3-mcp-http-server-test-" })),
   Layer.provideMerge(NodeServices.layer),
@@ -344,6 +372,7 @@ const serveSnapshots = (clientId: string, result: unknown) =>
     const events = yield* broker.connect({ clientId, environmentId });
     yield* Stream.runForEach(events, (event) => {
       if (event.type === "connected") return Deferred.succeed(connected, undefined);
+      if (event.type !== "request") return Effect.void;
       inputs.push(event.request.input);
       return broker.respond({
         clientId,
@@ -370,6 +399,8 @@ const callSnapshot = (args: Record<string, unknown>) =>
 /** Returns a valid renderer response for each operation exercised by this suite. */
 function automationResult(operation: string, input?: unknown): unknown {
   switch (operation) {
+    case "evaluate":
+      return ["Connect", "Continue"];
     case "snapshot":
       return {
         url: "http://example.test/",
@@ -801,13 +832,15 @@ it.effect.each([
       yield* Stream.runForEach(events, (event) =>
         event.type === "connected"
           ? Deferred.succeed(connected, undefined)
-          : broker.respond({
-              clientId: "mcp-no-tab-client",
-              connectionId: event.connectionId,
-              requestId: event.request.requestId,
-              ok: false,
-              error: { _tag: "PreviewAutomationTabNotFoundError", message: "no tab" },
-            }),
+          : event.type !== "request"
+            ? Effect.void
+            : broker.respond({
+                clientId: "mcp-no-tab-client",
+                connectionId: event.connectionId,
+                requestId: event.request.requestId,
+                ok: false,
+                error: { _tag: "PreviewAutomationTabNotFoundError", message: "no tab" },
+              }),
       ).pipe(Effect.forkScoped);
       yield* Deferred.await(connected);
 
@@ -874,6 +907,7 @@ it.effect.each([
       const events = yield* broker.connect({ clientId: "mcp-image-option-client", environmentId });
       yield* Stream.runForEach(events, (event) => {
         if (event.type === "connected") return Deferred.succeed(connected, undefined);
+        if (event.type !== "request") return Effect.void;
         requests += 1;
         expect(event.request).toMatchObject({
           operation: "snapshot",
@@ -971,6 +1005,103 @@ it.effect("refuses preview tools to a client outside a thread before they run", 
     expect(click.content).toEqual([
       { type: "text", text: expect.stringContaining("needs an agent running inside T3 Code") },
     ]);
+  }).pipe(Effect.provide(layerTest)),
+);
+
+it.effect("refuses thread-owned computer and monitor tools to an outside client", () =>
+  Effect.gen(function* () {
+    const server = yield* McpServer.McpServer;
+    const outside: McpInvocationContext.McpInvocationScope = {
+      ...invocation,
+      thread: undefined,
+      requestNamespace: "client:outside",
+      client: { sessionId: "outside", label: "Outside agent", access: "full-access" },
+    };
+    const calls = [
+      { name: "user_desktop_list", arguments: {} },
+      { name: "computer_snapshot", arguments: { desktop: { kind: "agent", desktopId: "guest" } } },
+      { name: "computer_request_control", arguments: { desktop: { kind: "agent" } } },
+      { name: "agent_desktop_list", arguments: {} },
+      { name: "agent_desktop_setup", arguments: {} },
+      { name: "monitor_status", arguments: {} },
+      { name: "monitor_cancel", arguments: {} },
+      { name: "monitor_signal", arguments: { monitorId: "background-build" } },
+      { name: "computer_watch_capabilities", arguments: {} },
+      { name: "computer_watch_inspect", arguments: { monitorId: "watch-1" } },
+    ];
+    for (const call of calls) {
+      const result = yield* server
+        .callTool(call)
+        .pipe(
+          Effect.provideService(McpInvocationContext.McpInvocationContext, outside),
+          Effect.provideService(McpSchema.McpServerClient, client),
+        );
+      expect(result.isError, call.name).toBe(true);
+      expect(result.content, call.name).toEqual([
+        { type: "text", text: expect.stringContaining("needs an agent running inside T3 Code") },
+      ]);
+    }
+  }).pipe(Effect.provide(layerTest)),
+);
+
+it.effect(
+  "ended threads can inspect owned resources but cannot act through computer or monitor tools",
+  () =>
+    Effect.gen(function* () {
+      const server = yield* McpServer.McpServer;
+      const ended = { ...invocation, thread: { ...invocation.thread, threadId: endedThreadId } };
+      const calls = [
+        { name: "computer_request_control", arguments: { desktop: { kind: "agent" } } },
+        { name: "agent_desktop_setup", arguments: {} },
+        { name: "monitor_cancel", arguments: {} },
+        { name: "computer_watch_inspect", arguments: { monitorId: "watch-1" } },
+      ];
+      for (const call of calls) {
+        const result = yield* server
+          .callTool(call)
+          .pipe(
+            Effect.provideService(McpInvocationContext.McpInvocationContext, ended),
+            Effect.provideService(McpSchema.McpServerClient, client),
+          );
+        expect(result.isError, call.name).toBe(true);
+        expect(result.content, call.name).toEqual([
+          { type: "text", text: expect.stringContaining("no longer owns an active thread run") },
+        ]);
+      }
+      for (const name of ["agent_desktop_list", "monitor_status"]) {
+        const result = yield* server
+          .callTool({ name, arguments: {} })
+          .pipe(
+            Effect.provideService(McpInvocationContext.McpInvocationContext, ended),
+            Effect.provideService(McpSchema.McpServerClient, client),
+          );
+        expect(result.isError, name).toBe(false);
+      }
+    }).pipe(Effect.provide(layerTest)),
+);
+
+it.effect("accepts a background monitor signal after its owning thread's turn ends", () =>
+  Effect.gen(function* () {
+    const server = yield* McpServer.McpServer;
+    const ended = { ...invocation, thread: { ...invocation.thread, threadId: endedThreadId } };
+    const result = yield* server
+      .callTool({
+        name: "monitor_signal",
+        arguments: { monitorId: "background-build", summary: "The build finished." },
+      })
+      .pipe(
+        Effect.provideService(McpInvocationContext.McpInvocationContext, ended),
+        Effect.provideService(McpSchema.McpServerClient, client),
+      );
+    expect(result).toMatchObject({
+      isError: false,
+      structuredContent: {
+        id: "background-build",
+        threadId: endedThreadId,
+        status: "triggered",
+        trigger: { reason: "signal", summary: "The build finished." },
+      },
+    });
   }).pipe(Effect.provide(layerTest)),
 );
 
@@ -1357,7 +1488,7 @@ it.effect("reports controller prompt-cache timing before starting a durable moni
         source: "provider-documented",
       },
     });
-  }).pipe(Effect.provide(TestLayer)),
+  }).pipe(Effect.provide(layerTest)),
 );
 
 it.effect("denies preview access without removing computer tools", () =>
@@ -1380,7 +1511,10 @@ it.effect("denies preview access without removing computer tools", () =>
 
     expect(preview.isError).toBe(true);
     expect(preview.content).toEqual([
-      { type: "text", text: "MCP credential does not grant the preview capability." },
+      {
+        type: "text",
+        text: expect.stringContaining("MCP credential does not grant the preview capability"),
+      },
     ]);
     expect(computer.isError).toBe(false);
     expect(computer.structuredContent).toEqual({
@@ -1391,7 +1525,7 @@ it.effect("denies preview access without removing computer tools", () =>
       evaluators: [],
       deterministicMatches: ["image-change"],
     });
-  }).pipe(Effect.provide(TestLayer)),
+  }).pipe(Effect.provide(layerTest)),
 );
 
 it.effect("accepts advertised nullable optional monitor arguments over MCP", () =>
@@ -1412,7 +1546,7 @@ it.effect("accepts advertised nullable optional monitor arguments over MCP", () 
         );
       expect(result).toMatchObject({ isError: false, structuredContent: { monitors: [] } });
     }
-  }).pipe(Effect.provide(TestLayer)),
+  }).pipe(Effect.provide(layerTest)),
 );
 
 it.effect("returns structured monitor parameter failures", () =>
@@ -1452,7 +1586,7 @@ it.effect("returns structured monitor parameter failures", () =>
         text: expect.stringContaining('"field":"evidence"'),
       },
     ]);
-  }).pipe(Effect.provide(TestLayer)),
+  }).pipe(Effect.provide(layerTest)),
 );
 
 it.effect("terminates HTTP MCP sessions with DELETE", () =>
@@ -1463,6 +1597,7 @@ it.effect("terminates HTTP MCP sessions with DELETE", () =>
         environmentId,
         requestNamespace: "provider-session",
         thread: {
+          controllerId: "test-controller",
           threadId: ThreadId.make("thread-provider"),
           providerSessionId: "provider-session",
           providerInstanceId: ProviderInstanceId.make("codex"),
@@ -2341,7 +2476,7 @@ it.effect("registers annotated tools and preserves authenticated request context
         true,
       );
     }),
-  ).pipe(Effect.provide(TestLayer)),
+  ).pipe(Effect.provide(layerTest)),
 );
 
 it.effect("returns bounded structural computer snapshot failures", () =>
@@ -2353,7 +2488,13 @@ it.effect("returns bounded structural computer snapshot failures", () =>
         clientId: "mcp-failure-client",
         environmentId,
         supportedOperations: [...DESKTOP_AUTOMATION_OPERATIONS],
-        userDesktop: { protocolVersion: 1, desktopId: "user-desktop-1", defaultLabel: "Test desktop", platform: "linux", capabilities: ["view", "control", "availability"] },
+        userDesktop: {
+          protocolVersion: 1,
+          desktopId: "user-desktop-1",
+          defaultLabel: "Test desktop",
+          platform: "linux",
+          capabilities: ["view", "control", "availability"],
+        },
       });
       yield* Stream.runForEach(events, (event) =>
         event.type !== "request"
@@ -2380,7 +2521,10 @@ it.effect("returns bounded structural computer snapshot failures", () =>
         },
       ] as const) {
         const snapshot = yield* server
-          .callTool({ name: testCase.tool, arguments: { desktop: { kind: "user", desktopId: "user-desktop-1" } } })
+          .callTool({
+            name: testCase.tool,
+            arguments: { desktop: { kind: "user", desktopId: "user-desktop-1" } },
+          })
           .pipe(
             Effect.provideService(McpInvocationContext.McpInvocationContext, invocation),
             Effect.provideService(McpSchema.McpServerClient, client),
@@ -2409,6 +2553,7 @@ it.effect("admits provider and OAuth client credentials and points only clients 
         environmentId,
         requestNamespace: "provider-session",
         thread: {
+          controllerId: "controller-test",
           threadId: ThreadId.make("thread-provider"),
           providerSessionId: "provider-session",
           providerInstanceId: ProviderInstanceId.make("codex"),

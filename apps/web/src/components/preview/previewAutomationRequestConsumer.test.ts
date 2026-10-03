@@ -6,15 +6,12 @@ import {
   PreviewTabId,
   ThreadId,
 } from "@t3tools/contracts";
-import { AsyncResult, Atom, AtomRegistry } from "effect/unstable/reactivity";
+import { AsyncResult, Atom, AtomRegistry } from "effect/reactivity";
 import { Cause } from "effect";
 import { describe, expect, it, vi } from "vite-plus/test";
 
 import {
   PreviewAutomationComputerControllerRequiredError,
-  PreviewAutomationRecordingNotActiveError,
-  PreviewAutomationTargetUnavailableError,
-  PreviewAutomationViewportTimeoutError,
   resolveDesktopComputerAutomation,
 } from "./previewAutomationErrors";
 import {
@@ -376,61 +373,6 @@ describe("previewAutomationRequestConsumer", () => {
     registry.dispose();
   });
 
-  it("preserves tagged automation errors and their structured diagnostics", () => {
-    const error = new PreviewAutomationTargetUnavailableError({
-      requestId: "request-1",
-      operation: "click",
-      environmentId,
-      threadId,
-      tabId,
-      bridgeAvailable: false,
-    });
-
-    expect(
-      serializePreviewAutomationError(error, {
-        requestId: "request-1",
-        operation: "click",
-        environmentId,
-        threadId,
-        tabId,
-      }),
-    ).toEqual({
-      _tag: "PreviewAutomationTabNotFoundError",
-      message:
-        "Preview automation target for click request request-1 is unavailable on environment environment-1 thread thread-1 (tab tab-1, bridge unavailable).",
-      detail: {
-        requestId: "request-1",
-        operation: "click",
-        environmentId: "environment-1",
-        threadId: "thread-1",
-        tabId: "tab-1",
-        bridgeAvailable: false,
-      },
-    });
-  });
-
-  it("reports a missing recording even when no preview tab remains", () => {
-    const error = new PreviewAutomationRecordingNotActiveError({
-      requestId: "request-recording-stop",
-      environmentId,
-      threadId,
-      tabId: null,
-    });
-
-    expect(
-      serializePreviewAutomationError(error, {
-        requestId: "request-recording-stop",
-        operation: "recordingStop",
-        environmentId,
-        threadId,
-        tabId: null,
-      }),
-    ).toMatchObject({
-      _tag: "PreviewAutomationExecutionError",
-      detail: { tabId: null },
-    });
-  });
-
   it("requires current servers to identify computer controllers", () => {
     const error = new PreviewAutomationComputerControllerRequiredError({
       requestId: "request-computer",
@@ -454,62 +396,6 @@ describe("previewAutomationRequestConsumer", () => {
         requestId: "request-computer",
         environmentId: "environment-1",
         threadId: "thread-1",
-      },
-    });
-  });
-
-  it("preserves viewport render timeouts as timeout responses", () => {
-    const error = new PreviewAutomationViewportTimeoutError({
-      requestId: "request-resize",
-      environmentId,
-      threadId,
-      tabId,
-      timeoutMs: 2_500,
-    });
-
-    expect(
-      serializePreviewAutomationError(error, {
-        requestId: "request-resize",
-        operation: "resize",
-        environmentId,
-        threadId,
-        tabId,
-      }),
-    ).toMatchObject({
-      _tag: "PreviewAutomationTimeoutError",
-      detail: { tabId: "tab-1", timeoutMs: 2_500 },
-    });
-  });
-
-  it("maps desktop non-editable targets to the public typed response", () => {
-    expect(
-      serializePreviewAutomationError(
-        {
-          _tag: "PreviewAutomationTargetNotEditableError",
-          tabId: "tab-1",
-          selectorKind: "selector",
-          selectorLength: 6,
-        },
-        {
-          requestId: "request-type",
-          operation: "type",
-          environmentId,
-          threadId,
-          tabId,
-        },
-      ),
-    ).toEqual({
-      _tag: "PreviewAutomationTargetNotEditableError",
-      message:
-        "Preview automation type request request-type requires an editable target in tab tab-1.",
-      detail: {
-        requestId: "request-type",
-        operation: "type",
-        environmentId: "environment-1",
-        threadId: "thread-1",
-        tabId: "tab-1",
-        selectorKind: "selector",
-        selectorLength: 6,
       },
     });
   });

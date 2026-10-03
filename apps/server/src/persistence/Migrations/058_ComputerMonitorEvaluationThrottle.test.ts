@@ -2,10 +2,14 @@ import { assert, it } from "@effect/vitest";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Schema from "effect/Schema";
-import * as SqlClient from "effect/unstable/sql/SqlClient";
+import * as SqlClient from "effect/sql/SqlClient";
 
-import { runMigrations } from "../Migrations.ts";
+import { migrationManifest, runMigrations } from "../Migrations.ts";
 import * as NodeSqliteClient from "@t3tools/shared/nodeSqliteClient";
+
+const migrationId = migrationManifest.find(
+  ([, name]) => name === "ComputerMonitorEvaluationThrottle",
+)![0];
 
 const layer = it.layer(Layer.mergeAll(NodeSqliteClient.layer({ filename: ":memory:" })));
 const encodeLegacyCondition = Schema.encodeUnknownSync(Schema.fromJsonString(Schema.Unknown));
@@ -18,7 +22,7 @@ const decodeMigratedCondition = Schema.decodeUnknownSync(
   ),
 );
 
-layer("057_ComputerMonitorEvaluationThrottle", (it) => {
+layer("058_ComputerMonitorEvaluationThrottle", (it) => {
   it.effect("adds unthrottled defaults to stored computer conditions", () =>
     Effect.gen(function* () {
       const sql = yield* SqlClient.SqlClient;
@@ -63,7 +67,7 @@ layer("057_ComputerMonitorEvaluationThrottle", (it) => {
         resourceState: "viewing",
       });
 
-      yield* runMigrations({ toMigrationInclusive: 56 });
+      yield* runMigrations({ toMigrationInclusive: migrationId - 1 });
       yield* sql`
         INSERT INTO thread_monitors (
           monitor_id,
@@ -90,7 +94,7 @@ layer("057_ComputerMonitorEvaluationThrottle", (it) => {
         )
       `;
 
-      yield* runMigrations({ toMigrationInclusive: 57 });
+      yield* runMigrations({ toMigrationInclusive: migrationId });
 
       const rows = yield* sql<{ readonly conditionJson: string }>`
         SELECT condition_json AS "conditionJson"

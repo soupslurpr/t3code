@@ -54,6 +54,7 @@ it.effect("attributes a launched thread's first message to the calling thread", 
         environmentId: EnvironmentId.make("environment"),
         requestNamespace: "session",
         thread: {
+          controllerId: "test-controller",
           threadId: sourceThreadId,
           providerSessionId: "session",
           providerInstanceId,
@@ -126,6 +127,7 @@ it.effect("launches a scratch thread into the Scratch project", () =>
         environmentId: EnvironmentId.make("environment"),
         requestNamespace: "session",
         thread: {
+          controllerId: "test-controller",
           threadId: sourceThreadId,
           providerSessionId: "session",
           providerInstanceId,
@@ -224,6 +226,7 @@ it.effect("starts a project from just a title when workspaceRoot is omitted", ()
         environmentId: EnvironmentId.make("environment"),
         requestNamespace: "session",
         thread: {
+          controllerId: "test-controller",
           threadId: sourceThreadId,
           providerSessionId: "session",
           providerInstanceId,

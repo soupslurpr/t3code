@@ -24,7 +24,6 @@ import {
   normalizeCliError,
   toJsonSchemaObject,
 } from "@t3tools/provider-core/server/textGenerationUtils";
-import type * as TextGeneration from "./TextGeneration.ts";
 import { codexModelFamily, getModelSelectionStringOptionValue } from "@t3tools/shared/model";
 import { getCodexServiceTierOptionValue } from "../codexModelOptions.ts";
 import * as HostProcess from "@t3tools/shared/HostProcess";
@@ -80,12 +79,6 @@ interface CodexJsonResult<A> {
   readonly output: A;
   readonly usage: CodexExecUsage;
 }
-
-type CodexTextGenerationOperation =
-  | "generateCommitMessage"
-  | "generatePrContent"
-  | "generateBranchName"
-  | "generateThreadTitle";
 
 /** Reads the terminal usage event from Codex exec JSONL output. */
 function codexExecUsage(stdout: string): CodexExecUsage {
@@ -157,7 +150,7 @@ export const makeCodexTextGeneration = Effect.fn("makeCodexTextGeneration")(func
   // directory the moment it is created). Each allocation removes its own
   // directory on failure; success-path cleanup is explicit in runCodexJson.
   const writeTempFile = (
-    operation: CodexTextGenerationOperation,
+    operation: TextGenerationOperations.Operation,
     prefix: string,
     content: string,
   ): Effect.Effect<string, TextGenerationError> =>
@@ -473,5 +466,11 @@ export const makeCodexTextGeneration = Effect.fn("makeCodexTextGeneration")(func
     }).pipe(Effect.ensuring(cleanup));
   });
 
-  return { ...TextGenerationOperations.fromRunner("CodexTextGeneration", (request) => runCodexJson(request).pipe(Effect.map(({ output }) => output))), evaluateImageCondition, imageConditionTokenUsage: "exact" as const };
+  return {
+    ...TextGenerationOperations.fromRunner("CodexTextGeneration", (request) =>
+      runCodexJson(request).pipe(Effect.map(({ output }) => output)),
+    ),
+    evaluateImageCondition,
+    imageConditionTokenUsage: "exact" as const,
+  };
 });

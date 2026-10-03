@@ -172,6 +172,7 @@ function commandThreadIds(command: OrchestrationV2Command): ReadonlyArray<Thread
     case "prepared-run.retry":
     case "subagent.stop":
     case "run.interrupt":
+    case "thread.monitors.cancel":
     case "queued-message.promote-to-steer":
     case "queue.resume":
     case "queued-run.reorder":

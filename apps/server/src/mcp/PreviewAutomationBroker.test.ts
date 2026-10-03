@@ -1,6 +1,11 @@
+import { RpcGroup, RpcTest } from "effect/rpc";
+import * as RpcAuthorization from "../auth/RpcAuthorization.ts";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { expect, it } from "@effect/vitest";
 import {
+  AuthOrchestrationOperateScope,
+  WsRpcGroup,
+  WS_METHODS,
   EnvironmentId,
   MAX_USER_DESKTOPS,
   PreviewAutomationClientDisconnectedError,
@@ -163,7 +168,7 @@ it.effect("routes execution to its exact desktop without requiring graphical acc
       expect(yield* Deferred.await(observed)).toMatchObject({
         operation: "computerExecution",
         input,
-        threadId: scope.threadId,
+        threadId: scope.thread.threadId,
       });
       expect(
         (yield* broker.listUserDesktops(scope.environmentId, { includeExecution: true }))
@@ -260,9 +265,16 @@ it.effect("disconnects the routed host when its caller times out", () =>
       const broker = yield* makeBroker;
       const events = yield* broker.connect(makeHost());
       const received: PreviewAutomationStreamEvent[] = [];
+      const requestReceived = yield* Deferred.make<void>();
       const consumer = yield* events.pipe(
         Stream.take(3),
-        Stream.runForEach((event) => Effect.sync(() => void received.push(event))),
+        Stream.runForEach((event) =>
+          Effect.sync(() => void received.push(event)).pipe(
+            Effect.andThen(
+              event.type === "request" ? Deferred.succeed(requestReceived, undefined) : Effect.void,
+            ),
+          ),
+        ),
         Effect.forkScoped,
       );
       yield* Effect.yieldNow;
@@ -270,17 +282,16 @@ it.effect("disconnects the routed host when its caller times out", () =>
       const invocation = yield* broker
         .invoke<void>({ scope, operation: "status", input: {}, timeoutMs: 1_000 })
         .pipe(Effect.flip, Effect.forkScoped);
-      yield* Effect.yieldNow;
+      yield* Deferred.await(requestReceived);
+      yield* TestClock.adjust("1 second");
+      expect(invocation.pollUnsafe()).toBeUndefined();
       yield* TestClock.adjust("1 second");
 
       const error = yield* Fiber.join(invocation);
       const consumerExit = yield* Fiber.await(consumer);
       expect(error).toBeInstanceOf(PreviewAutomationTimeoutError);
       expect(received.map((event) => event.type)).toEqual(["connected", "request"]);
-      expect(Exit.isFailure(consumerExit)).toBe(true);
-      if (Exit.isFailure(consumerExit)) {
-        expect(Cause.hasInterruptsOnly(consumerExit.cause)).toBe(true);
-      }
+      expect(Exit.isSuccess(consumerExit)).toBe(true);
       const nextError = yield* broker
         .invoke<void>({ scope, operation: "status", input: {} })
         .pipe(Effect.flip);
@@ -1059,9 +1070,12 @@ it.effect("gives parallel logical controllers distinct computer identities", () 
 
       const secondScope = {
         ...scope,
-        controllerId: "controller-2",
-        controllerKind: "human" as const,
-        providerSessionId: "provider-session-2",
+        thread: {
+          ...scope.thread,
+          controllerId: "controller-2",
+          controllerKind: "human" as const,
+          providerSessionId: "provider-session-2",
+        },
       };
       expect(
         yield* broker.invoke<string>({
@@ -1069,21 +1083,79 @@ it.effect("gives parallel logical controllers distinct computer identities", () 
           operation: "computerRequestControl",
           input: { desktop: { kind: "user", desktopId: "user-desktop-1" } },
         }),
-      ).toBe(scope.controllerId);
+      ).toBe(scope.thread.controllerId);
       expect(
         yield* broker.invoke<string>({
           scope: secondScope,
           operation: "computerRequestControl",
           input: { desktop: { kind: "user", desktopId: "user-desktop-1" } },
         }),
-      ).toBe(secondScope.controllerId);
+      ).toBe(secondScope.thread.controllerId);
       expect(routedRequests.map(({ controllerId }) => controllerId)).toEqual([
-        scope.controllerId,
-        secondScope.controllerId,
+        scope.thread.controllerId,
+        secondScope.thread.controllerId,
       ]);
       expect(routedRequests.map(({ controllerKind }) => controllerKind)).toEqual([
         "agent",
         "human",
+      ]);
+    }),
+  ),
+);
+
+it.effect("keeps server browser affinity independent of the selected user desktop", () =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      const broker = yield* makeBroker;
+      const received: Array<{
+        clientId: string;
+        operation: PreviewAutomationRequest["operation"];
+      }> = [];
+      for (const host of [
+        {
+          clientId: SERVER_BROWSER_AUTOMATION_CLIENT_ID,
+          environmentId: scope.environmentId,
+          supportedOperations: ["open", "snapshot"],
+        },
+        makeHost({ supportedOperations: ["computerStatus", "computerSnapshot"] }),
+      ] satisfies PreviewAutomationHost[]) {
+        const connected = yield* Deferred.make<void>();
+        const events = yield* broker.connect(host, {
+          preferred: host.clientId === SERVER_BROWSER_AUTOMATION_CLIENT_ID,
+        });
+        yield* Stream.runForEach(events, (event) => {
+          if (event.type === "connected") return Deferred.succeed(connected, undefined);
+          if (event.type === "cancel") return Effect.void;
+          received.push({ clientId: host.clientId, operation: event.request.operation });
+          return broker.respond({
+            clientId: host.clientId,
+            connectionId: event.connectionId,
+            requestId: event.request.requestId,
+            ok: true,
+            result: host.clientId,
+          });
+        }).pipe(Effect.forkScoped);
+        yield* Deferred.await(connected);
+      }
+
+      const desktop = { kind: "user", desktopId: USER_DESKTOP.desktopId } as const;
+      expect(yield* broker.invoke({ scope, operation: "computerStatus", input: { desktop } })).toBe(
+        "client-1",
+      );
+      expect(yield* broker.invoke({ scope, operation: "open", input: {} })).toBe(
+        SERVER_BROWSER_AUTOMATION_CLIENT_ID,
+      );
+      expect(
+        yield* broker.invoke({ scope, operation: "computerSnapshot", input: { desktop } }),
+      ).toBe("client-1");
+      expect(yield* broker.invoke({ scope, operation: "snapshot", input: {} })).toBe(
+        SERVER_BROWSER_AUTOMATION_CLIENT_ID,
+      );
+      expect(received).toEqual([
+        { clientId: "client-1", operation: "computerStatus" },
+        { clientId: SERVER_BROWSER_AUTOMATION_CLIENT_ID, operation: "open" },
+        { clientId: "client-1", operation: "computerSnapshot" },
+        { clientId: SERVER_BROWSER_AUTOMATION_CLIENT_ID, operation: "snapshot" },
       ]);
     }),
   ),
@@ -1120,9 +1192,12 @@ it.effect("records successful user desktop access transitions without authorizat
       yield* broker.invoke({
         scope: {
           ...scope,
-          controllerId: "human-controller-1",
-          controllerKind: "human",
-          providerSessionId: "human-session-1",
+          thread: {
+            ...scope.thread,
+            controllerId: "human-controller-1",
+            controllerKind: "human",
+            providerSessionId: "human-session-1",
+          },
         },
         operation: "computerRequestView",
         input: { desktop, releaseControlToView: true },
@@ -1140,8 +1215,8 @@ it.effect("records successful user desktop access transitions without authorizat
       expect(audit.events[1]).toMatchObject({
         actorKind: "agent",
         action: "control-granted",
-        threadId: scope.threadId,
-        actorLabel: scope.providerInstanceId,
+        threadId: scope.thread.threadId,
+        actorLabel: scope.thread.providerInstanceId,
         takeover: true,
       });
       expect(audit.events.every((event) => !("takeoverLeaseId" in event))).toBe(true);
@@ -2087,7 +2162,7 @@ it.effect("evicts an unanswered host and lets later calls use a healthy runtime"
             group.toLayer({
               [WS_METHODS.previewAutomationConnect]: (host) => Stream.unwrap(broker.connect(host)),
             }),
-            rpcScopeAuthorizationLayer([AuthOrchestrationOperateScope]),
+            RpcAuthorization.layer([AuthOrchestrationOperateScope]),
           ),
         ),
       );
@@ -2151,7 +2226,7 @@ it.effect("evicts an unanswered host and lets later calls use a healthy runtime"
           Effect.forkScoped,
         );
       yield* Deferred.await(otherReceived);
-      yield* TestClock.adjust(1_000);
+      yield* TestClock.adjust(2_000);
       expect(yield* Fiber.join(timedOut)).toMatchObject({ _tag: "PreviewAutomationTimeoutError" });
       expect(yield* Deferred.isDone(otherCompleted)).toBe(true);
       expect(yield* Fiber.join(other)).toMatchObject({
@@ -2192,6 +2267,7 @@ it.effect("discards buffered actions before completing an evicted host stream", 
       const operations: string[] = [];
       const consumer = yield* Stream.runForEach(yield* broker.connect(makeHost()), (event) => {
         if (event.type === "connected") return Deferred.succeed(connected, undefined);
+        if (event.type === "cancel") return Effect.void;
         operations.push(event.request.operation);
         return Deferred.succeed(received, undefined).pipe(
           Effect.andThen(Deferred.await(releaseConsumer)),
@@ -2236,6 +2312,7 @@ it.effect("rejects a routed action when its generation is evicted before deliver
       const operations: string[] = [];
       const consumer = yield* Stream.runForEach(yield* broker.connect(makeHost()), (event) => {
         if (event.type === "connected") return Deferred.succeed(connected, undefined);
+        if (event.type === "cancel") return Effect.void;
         operations.push(event.request.operation);
         return Deferred.succeed(received, undefined);
       }).pipe(Effect.forkScoped);

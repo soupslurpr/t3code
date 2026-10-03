@@ -44,6 +44,7 @@ export function createPreviewEnvironmentAtoms<R, E>(
 ) {
   const lifecycleScheduler = createAtomCommandScheduler();
   const statusScheduler = createAtomCommandScheduler();
+  const automationScheduler = createAtomCommandScheduler();
   const lifecycleConcurrency = {
     mode: "serial" as const,
     key: ({ environmentId, input }: { environmentId: string; input: { threadId: string } }) =>
@@ -64,6 +65,12 @@ export function createPreviewEnvironmentAtoms<R, E>(
       tag: WS_METHODS.subscribeDiscoveredLocalServers,
       // Configured URLs are part of this atom's key. Dispose immediately so
       // unmounted projects stop contributing probe candidates on the server.
+      idleTtlMs: 0,
+    }),
+    automationRequests: createEnvironmentRpcSubscriptionAtomFamily(runtime, {
+      label: "environment-data:computer:automation-requests",
+      tag: WS_METHODS.previewAutomationConnect,
+      // Closing the host must close its stream and cancel pending desktop work.
       idleTtlMs: 0,
     }),
     open: createEnvironmentRpcCommand(runtime, {

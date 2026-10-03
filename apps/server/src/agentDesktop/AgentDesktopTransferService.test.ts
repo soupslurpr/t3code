@@ -23,7 +23,7 @@ import * as Option from "effect/Option";
 
 import * as ServerConfig from "../config.ts";
 import * as McpInvocationContext from "../mcp/McpInvocationContext.ts";
-import { ProjectionSnapshotQuery } from "../orchestration/Services/ProjectionSnapshotQuery.ts";
+import { ThreadWorkspaceQuery } from "../orchestration-v2/ThreadWorkspaceQuery.ts";
 import * as AgentDesktopManager from "./AgentDesktopManager.ts";
 import * as AgentDesktopTransfer from "./AgentDesktopTransferService.ts";
 
@@ -34,19 +34,23 @@ const providerInstanceId = ProviderInstanceId.make("codex");
 const desktopId = AgentDesktopId.make("agent-transfer-test");
 const now = "2026-08-14T00:00:00.000Z";
 const modelSelection = { instanceId: providerInstanceId, model: "test-model" } as const;
-const scope: McpInvocationContext.McpInvocationScope = {
+const scope: McpInvocationContext.McpThreadInvocationScope = {
   environmentId,
-  threadId,
-  controllerId: "controller-transfer-test",
-  providerSessionId: "session-transfer-test",
-  providerInstanceId,
+  thread: {
+    threadId,
+    controllerId: "controller-transfer-test",
+    providerSessionId: "session-transfer-test",
+    providerInstanceId,
+  },
+  requestNamespace: "computer-test",
+  client: undefined,
   capabilities: new Set(["computer"]),
   issuedAt: 0,
 };
 
 /** Provides the two projection rows needed to confine workspace paths. */
 function projectionLayer(workspaceRoot: string) {
-  return Layer.mock(ProjectionSnapshotQuery)({
+  return Layer.mock(ThreadWorkspaceQuery)({
     getThreadShellById: () =>
       Effect.succeed(
         Option.some({
@@ -59,7 +63,8 @@ function projectionLayer(workspaceRoot: string) {
           interactionMode: "default",
           branch: null,
           worktreePath: null,
-          latestTurn: null,
+          activeRunId: null,
+          pendingRuntimeRequest: null,
           createdAt: now,
           updatedAt: now,
           archivedAt: null,
@@ -149,7 +154,7 @@ describe("AgentDesktopTransferService", () => {
         yield* withTransferService(
           workspaceRoot,
           managerLayer((owner, input) => {
-            assert.equal(owner.controllerId, scope.controllerId);
+            assert.equal(owner.controllerId, scope.thread.controllerId);
             assert.equal(input.operation, "import");
             if (input.operation !== "import") return Effect.die("unexpected export");
             return Effect.gen(function* () {
@@ -232,7 +237,7 @@ describe("AgentDesktopTransferService", () => {
         yield* withTransferService(
           workspaceRoot,
           managerLayer((owner, input) => {
-            assert.equal(owner.controllerId, scope.controllerId);
+            assert.equal(owner.controllerId, scope.thread.controllerId);
             assert.equal(input.operation, "export");
             if (input.operation !== "export") return Effect.die("unexpected import");
             return Effect.gen(function* () {
@@ -289,7 +294,7 @@ describe("AgentDesktopTransferService", () => {
           managerLayer(
             () => Effect.never,
             (owner) => {
-              assert.equal(owner.controllerId, scope.controllerId);
+              assert.equal(owner.controllerId, scope.thread.controllerId);
               return Effect.void;
             },
           ),

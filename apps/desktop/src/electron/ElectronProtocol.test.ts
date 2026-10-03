@@ -162,8 +162,9 @@ describe("ElectronProtocol", () => {
     }).pipe(Effect.provide(layerProtocol)),
   );
 
-  for (const source of ["development", "packaged"] as const) {
-    it.effect(`streams remote signed assets through the ${source} renderer origin`, () =>
+  it.effect.each(["development", "packaged"] as const)(
+    "streams remote signed assets through the %s renderer origin",
+    (source) =>
       Effect.gen(function* () {
         let handler: ((request: Request) => Promise<Response>) | undefined;
         handleMock.mockImplementation((_scheme, nextHandler) => {
@@ -216,10 +217,12 @@ describe("ElectronProtocol", () => {
         assert.equal(forwardedHeaders.get("accept"), "audio/*");
         assert.equal(forwardedHeaders.get("range"), "bytes=0-4");
         assert.isNull(forwardedHeaders.get("authorization"));
-      }).pipe(Effect.provide(protocolLayer)),
-    );
+      }).pipe(Effect.provide(layerProtocol)),
+  );
 
-    it.effect(`rejects non-asset targets on the ${source} remote asset route`, () =>
+  it.effect.each(["development", "packaged"] as const)(
+    "rejects non-asset targets on the %s remote asset route",
+    (source) =>
       Effect.gen(function* () {
         let handler: ((request: Request) => Promise<Response>) | undefined;
         handleMock.mockImplementation((_scheme, nextHandler) => {
@@ -245,9 +248,8 @@ describe("ElectronProtocol", () => {
 
         assert.equal(response.status, 404);
         assert.equal(netFetchMock.mock.calls.length, 0);
-      }).pipe(Effect.provide(protocolLayer)),
-    );
-  }
+      }).pipe(Effect.provide(layerProtocol)),
+  );
 
   it.effect("retries transient renderer target failures", () =>
     Effect.gen(function* () {
