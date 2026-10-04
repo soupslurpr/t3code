@@ -1869,6 +1869,12 @@ it.layer(layerTest)("GitVcsDriver core integration", (it) => {
         }
         yield* git(cwd, ["add", "."]);
         yield* git(cwd, ["update-index", "--chmod=+x", "mode-only.sh"]);
+        if ((yield* HostProcess.Platform) !== "win32") {
+          const fileSystem = yield* FileSystem.FileSystem;
+          const path = yield* Path.Path;
+          // The preview compares the merge base with the working tree, including its mode.
+          yield* fileSystem.chmod(path.join(cwd, "mode-only.sh"), 0o755);
+        }
         yield* git(cwd, ["commit", "-m", "rename and add files"]);
         const preview = yield* driver.getReviewDiffPreview({
           cwd,
@@ -1877,6 +1883,10 @@ it.layer(layerTest)("GitVcsDriver core integration", (it) => {
         const branch = preview.sources.find((source) => source.kind === "branch-range")!;
         for (const path of ["renamed.md", "[literal].txt", " leading.txt", "mode-only.sh"]) {
           const stat = branch.files!.find((file) => file.path === path)!;
+          assert.isDefined(
+            stat,
+            `Missing ${JSON.stringify(path)} in ${JSON.stringify(branch.files)}`,
+          );
           const request = yield* Schema.decodeEffect(ReviewDiffPreviewInput)({
             cwd,
             baseRef: initialBranch,
