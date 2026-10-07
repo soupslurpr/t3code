@@ -865,21 +865,20 @@ const make = Effect.gen(function* () {
       for (const task of subagents) {
         if (task.origin !== "app_owned" || task.childThreadId === null) continue;
         const threadId = task.childThreadId;
+        const recordFailure = (error: Orchestrator.OrchestratorV2Error) =>
+          Effect.logWarning("Unable to stop a delegated task", {
+            parentThreadId: input.threadId,
+            threadId,
+            error,
+          }).pipe(Effect.andThen(Effect.sync(() => failures.push(error))));
         yield* dispatch({
           type: "thread.stop",
           commandId: CommandId.make(`${input.commandId}:stop:${threadId}`),
           threadId,
           ...(input.reason === undefined ? {} : { reason: input.reason }),
-        }).pipe(
-          Effect.andThen(stopDelegatedTasks({ ...input, threadId })),
-          Effect.catch((error) =>
-            Effect.logWarning("Unable to stop a delegated task", {
-              parentThreadId: input.threadId,
-              threadId,
-              error,
-            }).pipe(Effect.andThen(Effect.sync(() => failures.push(error)))),
-          ),
-        );
+        }).pipe(Effect.catch(recordFailure));
+        // A failed child Stop must not leave its descendants running.
+        yield* stopDelegatedTasks({ ...input, threadId }).pipe(Effect.catch(recordFailure));
       }
       if (failures[0] !== undefined) return yield* Effect.fail(failures[0]);
     });

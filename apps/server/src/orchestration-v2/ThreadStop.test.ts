@@ -509,6 +509,49 @@ it.effect("a delegated task that cannot be stopped fails the walk after its sibl
   }).pipe(Effect.provide(layerTest)),
 );
 
+it.effect("a failed child Stop still stops its grandchildren and siblings", () =>
+  Effect.gen(function* () {
+    const orchestrator = yield* Orchestrator.OrchestratorV2;
+    const parentThreadId = ThreadId.make("thread:stop-failed-child");
+    yield* createWatchingThread(parentThreadId, 13);
+    yield* send(parentThreadId, "work", "start_immediately");
+    const childThreadId = yield* delegate(parentThreadId, "failing intermediate task");
+    const grandchildThreadId = yield* delegate(childThreadId, "grandchild below failed Stop");
+    const siblingThreadId = yield* delegate(parentThreadId, "sibling after failed Stop");
+    const failingOrchestrator = Orchestrator.OrchestratorV2.of({
+      ...orchestrator,
+      dispatch: (command) =>
+        command.type === "thread.stop" && command.threadId === childThreadId
+          ? Effect.fail(
+              new Orchestrator.OrchestratorDispatchError({
+                commandId: command.commandId,
+                commandType: command.type,
+                cause: "The child Stop could not be committed.",
+              }),
+            )
+          : orchestrator.dispatch(command),
+    });
+    const threads = yield* ThreadManagementService.ThreadManagementService.pipe(
+      Effect.provide(
+        ThreadManagementService.layer.pipe(
+          Layer.provide(Layer.succeed(Orchestrator.OrchestratorV2, failingOrchestrator)),
+          Layer.fresh,
+        ),
+      ),
+    );
+    const walked = yield* Effect.exit(
+      threads.stopDelegatedTasks({
+        threadId: parentThreadId,
+        commandId: CommandId.make("stop-failed-child"),
+      }),
+    );
+    assert.isTrue(Exit.isFailure(walked));
+    assert.deepEqual((yield* threadState(childThreadId)).runs, ["starting"]);
+    assert.deepEqual((yield* threadState(grandchildThreadId)).runs, ["interrupted"]);
+    assert.deepEqual((yield* threadState(siblingThreadId)).runs, ["interrupted"]);
+  }).pipe(Effect.provide(layerTest)),
+);
+
 it.effect("thread.stop on a finished thread refuses a late agent watch", () =>
   Effect.gen(function* () {
     const orchestrator = yield* Orchestrator.OrchestratorV2;
