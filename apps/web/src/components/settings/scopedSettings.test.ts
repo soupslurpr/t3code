@@ -191,7 +191,7 @@ describe("scoped settings writes", () => {
         worktreeOnDelete: false,
         worktreeOnMerge: false,
         worktreeUnchanged: false,
-        worktreeKeepWhen: "uncommitted-changes",
+        worktreeKeepWhen: "any-local-files",
       },
     ]);
   });
@@ -333,7 +333,7 @@ describe("scoped settings writes", () => {
               worktreeOnDelete: true,
               worktreeOnMerge: false,
               worktreeUnchanged: false,
-              worktreeKeepWhen: "uncommitted-changes",
+              worktreeKeepWhen: "any-local-files",
             },
           },
         },
