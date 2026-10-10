@@ -1,3 +1,4 @@
+import * as ThreadMonitorSignalCallbacks from "../threadMonitor/ThreadMonitorSignalCallbacks.ts";
 import { ThreadWorkspaceQuery } from "../orchestration-v2/ThreadWorkspaceQuery.ts";
 import * as Orchestrator from "../orchestration-v2/Orchestrator.ts";
 import * as ThreadManagementService from "../orchestration-v2/ThreadManagementService.ts";
@@ -311,6 +312,7 @@ const layerTest = Layer.mergeAll(
   Layer.provide(Layer.mock(DeviceService.DeviceService)({})),
   Layer.provide(Layer.mock(ThreadWorkspaceQuery)({})),
   Layer.provide(MonitorTestLayer),
+  Layer.provide(Layer.mock(ThreadMonitorSignalCallbacks.ThreadMonitorSignalCallbacks)({})),
   Layer.provide(AgentDesktopTransferTestLayer),
   Layer.provide(AgentDesktopManagerTestLayer),
   Layer.provide(ComputerAutomationRouterTestLayer),

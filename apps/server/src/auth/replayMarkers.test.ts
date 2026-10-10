@@ -17,6 +17,7 @@ import * as ServerSecretStore from "./ServerSecretStore.ts";
 const REAL_SECRET_NAMES = [
   "server-signing-key",
   "asset-access-signing-key",
+  "monitor-signal-signing-key",
   "cloud-cli-oauth-token",
   "cloud-cli-desired-link",
   "cloud-link-ed25519-key-pair",

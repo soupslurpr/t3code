@@ -319,6 +319,22 @@ export const ThreadMonitor = Schema.Struct({
 });
 export type ThreadMonitor = typeof ThreadMonitor.Type;
 
+/** A narrow credential for a worker to complete one signal monitor. */
+export const ThreadMonitorStartResult = Schema.Struct({
+  ...ThreadMonitor.fields,
+  signalCallback: Schema.optional(
+    Schema.Struct({
+      url: Schema.String,
+      authorizationHeader: Schema.String,
+      command: Schema.String.annotate({
+        description:
+          "POSIX shell command for a worker on this environment. Pipe a JSON object with optional summary and evidence into its stdin. Keep this credential private; it can only signal this monitor. The credential survives restarts, but update the URL if the server's listening address changes.",
+      }),
+    }),
+  ),
+});
+export type ThreadMonitorStartResult = typeof ThreadMonitorStartResult.Type;
+
 /** Lightweight client rows; screen regions, samples, and evidence stay on the server. */
 export const ThreadMonitorSummary = Schema.Struct({
   id: ThreadMonitorId,

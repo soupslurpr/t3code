@@ -1,3 +1,4 @@
+import * as ThreadMonitorSignalCallbacks from "../threadMonitor/ThreadMonitorSignalCallbacks.ts";
 import { UserDesktopTransfers } from "../computer/UserDesktopTransfers.ts";
 import { ThreadWorkspaceQuery } from "../orchestration-v2/ThreadWorkspaceQuery.ts";
 import * as Cause from "effect/Cause";
@@ -1507,6 +1508,7 @@ const registerMonitorStandardTools = Effect.fn("McpHttpServer.registerMonitorSta
     const server = yield* McpServer.McpServer;
     const threads = yield* ThreadManagementService.ThreadManagementService;
     const service = yield* ThreadMonitorService;
+    const callbacks = yield* ThreadMonitorSignalCallbacks.ThreadMonitorSignalCallbacks;
     const observations = yield* ComputerObservationStore.ComputerObservationStore;
     const built = yield* MonitorStandardToolkit;
     for (const tool of Object.values(built.tools)) {
@@ -1539,6 +1541,10 @@ const registerMonitorStandardTools = Effect.fn("McpHttpServer.registerMonitorSta
               Effect.flatMap(Effect.fromOption),
               Effect.provideService(ThreadManagementService.ThreadManagementService, threads),
               Effect.provideService(ThreadMonitorService, service),
+              Effect.provideService(
+                ThreadMonitorSignalCallbacks.ThreadMonitorSignalCallbacks,
+                callbacks,
+              ),
               Effect.provideService(
                 ComputerObservationStore.ComputerObservationStore,
                 observations,

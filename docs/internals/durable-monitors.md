@@ -47,7 +47,14 @@ QEMU session object.
 
 A watcher is ordinary provider work, not a special model type. It can be a
 native subagent, workflow, process integration, or later turn that shares the
-owning thread's MCP scope and calls `monitor_signal`. The durable state never
+owning thread's MCP scope and calls `monitor_signal`. Shell workers instead use
+the completion-only callback returned when creating a signal monitor. Its
+credential is derived from a persistent signing key and the monitor id, so it
+outlives the provider session without granting general MCP access. Callback
+results enter the same signal service and Stop cancellation barrier; the
+credential is not included in monitor status or client summaries. The callback
+address names the current environment listener, so a worker must use the new
+address if that listener moves. The durable state never
 names a provider or model for timer and signal conditions. A computer condition
 names an evaluator only when semantic image evaluation requires one.
 

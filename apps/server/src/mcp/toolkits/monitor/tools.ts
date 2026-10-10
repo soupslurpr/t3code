@@ -2,6 +2,7 @@
 import {
   OrchestratorMcpFailure,
   ThreadMonitor,
+  ThreadMonitorStartResult,
   ThreadMonitorCancelInput,
   ThreadMonitorCapabilities,
   ThreadMonitorCheckInput,
@@ -21,6 +22,7 @@ import {
 import * as Schema from "effect/Schema";
 import { Tool, Toolkit } from "effect/ai";
 
+import * as ThreadMonitorSignalCallbacks from "../../../threadMonitor/ThreadMonitorSignalCallbacks.ts";
 import * as McpInvocationContext from "../../McpInvocationContext.ts";
 import { ThreadMonitorService } from "../../../threadMonitor/ThreadMonitorService.ts";
 import * as ComputerObservationStore from "../../../computer/ComputerObservationStore.ts";
@@ -49,11 +51,11 @@ const mutatingMonitorTool = <T extends Tool.Any>(tool: T): T =>
 export const MonitorStartTool = mutatingMonitorTool(
   Tool.make("monitor_start", {
     description:
-      "Create a one-time durable wait for the current T3 thread without keeping this model turn or process asleep. Use schedule type after/at for long timers. Before choosing a cache-conscious timer, call monitor_capabilities for the current controller model's optional minimum prompt-cache lifetime. Use signal when a background watcher, subagent, automation, or later turn will call monitor_signal; an optional deadlineAt provides a restart-safe fallback. By default the trigger delivers its result into the active turn when the provider supports live input; otherwise it queues a follow-up turn using the thread's configuration. Pending approvals or user-input requests delay delivery. Set continuation=record-only when a durable result should be recorded without starting a turn. T3 persists the monitor across server restarts and retains one logical continuation message across delivery retries.",
+      "Create a one-time durable wait for the current T3 thread without keeping this model turn or process asleep. Use schedule type after/at for long timers. Before choosing a cache-conscious timer, call monitor_capabilities for the current controller model's optional minimum prompt-cache lifetime. Use signal when a background watcher, subagent, automation, or later turn will report completion. A signal monitor returns signalCallback with a completion-only credential and a shell command for a worker on this environment: pipe a JSON object with optional summary and evidence into that command. Keep the callback private. It works after this turn ends and across server restarts at the same listening address; cancellation disables it. Agents in this thread may also call monitor_signal; an optional deadlineAt provides a restart-safe fallback. By default the trigger delivers its result into the active turn when the provider supports live input; otherwise it queues a follow-up turn using the thread's configuration. Pending approvals or user-input requests delay delivery. Set continuation=record-only when a durable result should be recorded without starting a turn. T3 persists the monitor across server restarts and retains one logical continuation message across delivery retries.",
     parameters: Schema.toCodecJson(ThreadMonitorStartInput),
-    success: ThreadMonitor,
+    success: ThreadMonitorStartResult,
     failure: Schema.Union([ThreadMonitorError, OrchestratorMcpFailure]),
-    dependencies,
+    dependencies: [...dependencies, ThreadMonitorSignalCallbacks.ThreadMonitorSignalCallbacks],
   }).annotate(Tool.Title, "Start durable monitor"),
 );
 

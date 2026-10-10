@@ -9,6 +9,7 @@ import * as HttpApiSchema from "effect/http-api/HttpApiSchema";
 import * as HttpServerRespondable from "effect/http/HttpServerRespondable";
 import * as HttpServerResponse from "effect/http/HttpServerResponse";
 
+import { ThreadMonitorStatus } from "./threadMonitor.ts";
 import {
   AuthAccessTokenResult,
   AuthBrowserSessionRequest,
@@ -47,6 +48,7 @@ import {
   DpopFailureReason,
   AuthSessionId,
   ThreadId,
+  ThreadMonitorId,
   TrimmedNonEmptyString,
 } from "./baseSchemas.ts";
 import {
@@ -758,6 +760,13 @@ class EnvironmentWebhooksHttpApi extends HttpApiGroup.make("webhooks")
   .add(HttpApiEndpoint.patch("webhookPatch", WEBHOOK_PATH, webhookEndpoint))
   .add(HttpApiEndpoint.get("webhookGet", WEBHOOK_PATH, webhookEndpoint)) {}
 
+class EnvironmentMonitorSignalsHttpApi extends HttpApiGroup.make("monitorSignals").add(
+  HttpApiEndpoint.post("signal", "/api/monitor-signals/:monitorId", {
+    params: Schema.Struct({ monitorId: ThreadMonitorId }),
+    success: Schema.Struct({ status: ThreadMonitorStatus }),
+  }),
+) {}
+
 export class EnvironmentHttpApi extends HttpApi.make("environment")
   .add(EnvironmentMetadataHttpApi)
   .add(EnvironmentAuthHttpApi)
@@ -766,4 +775,5 @@ export class EnvironmentHttpApi extends HttpApi.make("environment")
   .add(EnvironmentPullRequestsHttpApi)
   .add(EnvironmentProjectsHttpApi)
   .add(EnvironmentConnectHttpApi)
-  .add(EnvironmentWebhooksHttpApi) {}
+  .add(EnvironmentWebhooksHttpApi)
+  .add(EnvironmentMonitorSignalsHttpApi) {}
