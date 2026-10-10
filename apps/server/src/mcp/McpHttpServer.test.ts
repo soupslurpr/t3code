@@ -1,3 +1,4 @@
+import * as ThreadMonitorSignalCallbacks from "../threadMonitor/ThreadMonitorSignalCallbacks.ts";
 import { ThreadWorkspaceQuery } from "../orchestration-v2/ThreadWorkspaceQuery.ts";
 import * as Orchestrator from "../orchestration-v2/Orchestrator.ts";
 import * as ThreadManagementService from "../orchestration-v2/ThreadManagementService.ts";
@@ -312,6 +313,7 @@ const layerTest = Layer.mergeAll(
   Layer.provide(Layer.mock(DeviceService.DeviceService)({})),
   Layer.provide(Layer.mock(ThreadWorkspaceQuery)({})),
   Layer.provide(MonitorTestLayer),
+  Layer.provide(Layer.mock(ThreadMonitorSignalCallbacks.ThreadMonitorSignalCallbacks)({})),
   Layer.provide(AgentDesktopTransferTestLayer),
   Layer.provide(AgentDesktopManagerTestLayer),
   Layer.provide(ComputerAutomationRouterTestLayer),
@@ -1567,9 +1569,18 @@ it.effect("returns structured monitor parameter failures", () =>
       structuredContent: { monitors: [] },
     });
 
-    const invalidSignal = yield* callTool({
+    const structuredSignal = yield* callTool({
       name: "monitor_signal",
       arguments: { monitorId: "monitor-1", evidence: { exitCode: 0 } },
+    });
+    expect(structuredSignal).toMatchObject({
+      isError: false,
+      structuredContent: { trigger: { evidence: '{\n  "exitCode": 0\n}' } },
+    });
+
+    const invalidSignal = yield* callTool({
+      name: "monitor_signal",
+      arguments: { monitorId: "monitor-1", evidence: [] },
     });
     expect(invalidSignal.isError).toBe(true);
     expect(invalidSignal.structuredContent).toMatchObject({
@@ -1587,6 +1598,20 @@ it.effect("returns structured monitor parameter failures", () =>
         text: expect.stringContaining('"field":"evidence"'),
       },
     ]);
+
+    const oversizedSignal = yield* callTool({
+      name: "monitor_signal",
+      arguments: { monitorId: "monitor-1", evidence: { output: "x".repeat(20_000) } },
+    });
+    expect(oversizedSignal).toMatchObject({
+      isError: true,
+      structuredContent: {
+        error: {
+          field: "evidence",
+          expected: ["Evidence exceeds 20,000 characters."],
+        },
+      },
+    });
   }).pipe(Effect.provide(layerTest)),
 );
 

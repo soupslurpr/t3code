@@ -132,6 +132,7 @@ function evaluatorInstance(
       generatePrContent: () => Effect.die("unused"),
       generateBranchName: () => Effect.die("unused"),
       generateThreadTitle: () => Effect.die("unused"),
+      generateReviewGuide: () => Effect.die("unused"),
       evaluateImageCondition,
       imageConditionTokenUsage: "exact",
     }),

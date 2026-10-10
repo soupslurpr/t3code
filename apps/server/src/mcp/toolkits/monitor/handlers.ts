@@ -3,6 +3,7 @@ import * as Effect from "effect/Effect";
 
 import * as ComputerObservationStore from "../../../computer/ComputerObservationStore.ts";
 import { ThreadMonitorService } from "../../../threadMonitor/ThreadMonitorService.ts";
+import * as ThreadMonitorSignalCallbacks from "../../../threadMonitor/ThreadMonitorSignalCallbacks.ts";
 import * as McpInvocationContext from "../../McpInvocationContext.ts";
 import * as McpToolAccess from "../../McpToolAccess.ts";
 import { MonitorImageToolkit, MonitorStandardToolkit, MonitorToolkit } from "./tools.ts";
@@ -26,7 +27,7 @@ const handlers = {
           McpInvocationContext.requireThreadScope(scope, "This monitor tool"),
         ),
       );
-      const service = yield* ThreadMonitorService;
+      const service = yield* ThreadMonitorSignalCallbacks.ThreadMonitorSignalCallbacks;
       return yield* service.create({ threadId: scope.thread.threadId, monitor });
     }),
   ),
