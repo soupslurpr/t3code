@@ -1,3 +1,4 @@
+import * as ThreadMonitorSignalCallbacks from "../../../threadMonitor/ThreadMonitorSignalCallbacks.ts";
 import { AgentDesktopManager } from "../../../agentDesktop/AgentDesktopManager.ts";
 import { AgentDesktopTransferService } from "../../../agentDesktop/AgentDesktopTransferService.ts";
 import { ComputerAutomationRouter } from "../../../computer/ComputerAutomationRouter.ts";
@@ -114,6 +115,7 @@ it.effect("production mcp layer lists worktree tools over http", () =>
         Layer.provide(PreviewAutomationBroker.layer),
         Layer.provide(PreviewBrowser.layer),
         Layer.provide(layerStubServices),
+        Layer.provide(Layer.mock(ThreadMonitorSignalCallbacks.ThreadMonitorSignalCallbacks)({})),
         Layer.build,
       );
 

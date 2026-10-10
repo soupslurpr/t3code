@@ -1,3 +1,5 @@
+import * as NodeHttpServer from "@effect/platform-node/NodeHttpServer";
+import * as ThreadMonitorSignalCallbacks from "./ThreadMonitorSignalCallbacks.ts";
 import { assert, describe, it } from "@effect/vitest";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import {
@@ -11,6 +13,7 @@ import {
   ThreadId,
   ThreadMonitorError,
   ThreadMonitorId,
+  ThreadMonitorSignalInput,
   type ThreadMonitorSummaryList,
   EventId,
   ProviderTurnId,
@@ -28,9 +31,12 @@ import * as Ref from "effect/Ref";
 import * as Queue from "effect/Queue";
 import * as Stream from "effect/Stream";
 import * as Result from "effect/Result";
+import * as Schema from "effect/Schema";
 import * as SqlClient from "effect/sql/SqlClient";
 import * as TestClock from "effect/testing/TestClock";
 
+import * as CommandReceiptStore from "../orchestration-v2/CommandReceiptStore.ts";
+import * as ServerSettings from "../serverSettings.ts";
 import * as EffectOutbox from "../orchestration-v2/EffectOutbox.ts";
 import { makeMonitorContinuationEvent } from "./ThreadMonitorContinuation.ts";
 import { ServerConfig } from "../config.ts";
@@ -62,6 +68,7 @@ const ThreadMonitorLayer = Layer.effectDiscard(
 
 const projectId = ProjectId.make("monitor-project");
 const threadId = ThreadId.make("monitor-thread");
+const decodeSignal = Schema.decodeUnknownEffect(ThreadMonitorSignalInput);
 
 interface ComputerMonitorProbeShape {
   readonly beforeOwnerRead: Ref.Ref<Effect.Effect<void>>;
@@ -537,6 +544,17 @@ const orchestrationLayer = (
 ) =>
   Layer.mergeAll(
     ThreadManagement.layer.pipe(
+      Layer.provide(CommandReceiptStore.layer),
+      Layer.provide(
+        ServerSettings.layerTest({
+          providerInstances: {
+            [ProviderInstanceId.make("test-provider")]: {
+              driver: ProviderDriverKind.make("codex"),
+              enabled: true,
+            },
+          },
+        }).pipe(Layer.orDie),
+      ),
       Layer.provideMerge(
         ProviderReplayHarness.layerWithRegistry(
           { name: "thread-monitor" },
@@ -2892,4 +2910,149 @@ it.effect("replays an accepted Stop before delivery without cancelling newer wat
       ),
     ),
   ),
+);
+
+it.effect(
+  "signal callbacks survive ended turns and service restarts without broad MCP credentials",
+  () =>
+    Effect.gen(function* () {
+      const config = yield* ServerConfig;
+      const callbackRuntime = ThreadMonitorSignalCallbacks.layer.pipe(
+        Layer.provideMerge(ThreadMonitor.layer),
+        Layer.provide(computerLayer),
+        Layer.provideMerge(orchestrationLayer(persistentDatabase(config.dbPath))),
+        Layer.provide(RepositoryIdentityResolver.layer),
+        Layer.provide(Layer.succeed(ServerConfig, config)),
+        Layer.provide(SqlitePersistence.layerFromPath(config.dbPath)),
+        Layer.provide(NodeHttpServer.layerTest),
+        Layer.provide(NodeServices.layer),
+      );
+      const monitor = yield* Effect.scoped(
+        Effect.gen(function* () {
+          yield* seedThread;
+          yield* startTestRun();
+          const callbacks = yield* ThreadMonitorSignalCallbacks.ThreadMonitorSignalCallbacks;
+          const timer = yield* callbacks.create({
+            threadId,
+            monitor: { label: "Timer", schedule: { type: "after", durationMs: 60_000 } },
+          });
+          assert.isUndefined(timer.signalCallback);
+          const monitor = yield* callbacks.create({
+            threadId,
+            monitor: { label: "Build result", schedule: { type: "signal" } },
+          });
+          assert.isDefined(monitor.signalCallback);
+          assert.notInclude(
+            monitor.signalCallback!.url,
+            monitor.signalCallback!.authorizationHeader,
+          );
+          yield* completeTestRun;
+          return monitor;
+        }).pipe(Effect.provide(Layer.fresh(callbackRuntime))),
+      );
+
+      yield* Effect.scoped(
+        Effect.gen(function* () {
+          const callbacks = yield* ThreadMonitorSignalCallbacks.ThreadMonitorSignalCallbacks;
+          const service = yield* ThreadMonitorService;
+          const signal = {
+            monitorId: monitor.id,
+            authorizationHeader: monitor.signalCallback!.authorizationHeader,
+            result: yield* decodeSignal({
+              monitorId: monitor.id,
+              summary: "Build succeeded.",
+              evidence: { exit_code: 0, status_file: "worker-status.json", report: "results.json" },
+            }),
+          };
+          assert.strictEqual(
+            (yield* callbacks
+              .signal({ ...signal, authorizationHeader: undefined })
+              .pipe(Effect.flip)).code,
+            "unauthorized",
+          );
+          assert.strictEqual(
+            (yield* callbacks
+              .signal({ ...signal, monitorId: ThreadMonitorId.make("different-monitor") })
+              .pipe(Effect.flip)).code,
+            "unauthorized",
+          );
+          assert.deepEqual(yield* callbacks.signal(signal), { status: "triggered" });
+          yield* TestClock.adjust("1 second");
+          yield* service.checkNow({ threadId, check: { monitorId: monitor.id } });
+          assert.deepEqual(
+            yield* callbacks.signal({
+              ...signal,
+              result: { summary: "Duplicate must not replace evidence." },
+            }),
+            { status: "delivered" },
+          );
+          const stored = (yield* service.status({ threadId, query: { monitorId: monitor.id } }))
+            .monitors[0]!;
+          assert.deepEqual(stored.trigger, {
+            reason: "signal",
+            summary: "Build succeeded.",
+            evidence:
+              '{\n  "exit_code": 0,\n  "status_file": "worker-status.json",\n  "report": "results.json"\n}',
+          });
+          assert.isFalse("signalCallback" in stored);
+          assert.strictEqual(stored.deliveryAttempts, 1);
+          const projection = yield* (yield* ProjectionStore.ProjectionStoreV2).getThreadProjection(
+            threadId,
+          );
+          assert.strictEqual(
+            projection.messages.filter(
+              (message) => message.notification?.systemEvent?.type === "monitor.continuation",
+            ).length,
+            1,
+          );
+
+          const engine = yield* OrchestratorV2;
+          yield* engine.dispatch({
+            type: "thread.archive",
+            commandId: CommandId.make("callback-archive"),
+            threadId,
+          });
+          assert.strictEqual(
+            (yield* callbacks.signal(signal).pipe(Effect.flip)).code,
+            "unavailable",
+          );
+          yield* engine.dispatch({
+            type: "thread.unarchive",
+            commandId: CommandId.make("callback-unarchive"),
+            threadId,
+          });
+
+          const cancelled = yield* callbacks.create({
+            threadId,
+            monitor: { label: "Cancelled job", schedule: { type: "signal" } },
+          });
+          yield* service.cancel({ threadId, cancel: { monitorId: cancelled.id } });
+          assert.strictEqual(
+            (yield* callbacks
+              .signal({
+                monitorId: cancelled.id,
+                authorizationHeader: cancelled.signalCallback!.authorizationHeader,
+                result: {},
+              })
+              .pipe(Effect.flip)).code,
+            "unavailable",
+          );
+          yield* engine.dispatch({
+            type: "thread.delete",
+            commandId: CommandId.make("callback-delete"),
+            threadId,
+          });
+          assert.strictEqual(
+            (yield* callbacks.signal(signal).pipe(Effect.flip)).code,
+            "unavailable",
+          );
+        }).pipe(Effect.provide(Layer.fresh(callbackRuntime))),
+      );
+    }).pipe(
+      Effect.provide(
+        ServerConfig.layerTest(process.cwd(), { prefix: "t3-monitor-callback-test-" }).pipe(
+          Layer.provideMerge(NodeServices.layer),
+        ),
+      ),
+    ),
 );

@@ -87,5 +87,8 @@ On web and desktop, open the thread details and find **Automations** to inspect
 outstanding monitors and cancel an individual wait. You can also ask the agent
 to list or cancel its waits from any client. Signal-based monitoring
 usually combines a durable wait with background work that reports when its
-condition is satisfied. If that background work can stop independently, use a
+condition is satisfied. The agent can give a background job a private completion
+callback that works after its turn ends. Cancelling the wait disables the
+callback. The wait survives restarting T3 Code, but T3 Code does not restart
+the background job itself. If that background work can stop independently, use a
 fallback deadline when missing the wake-up would matter.
