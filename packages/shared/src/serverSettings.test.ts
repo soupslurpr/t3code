@@ -5,8 +5,10 @@ import {
   ProviderInstanceId,
   UsageLimitSourceId,
   type ServerProvider,
+  ServerSettings,
 } from "@t3tools/contracts";
 import * as Duration from "effect/Duration";
+import * as Schema from "effect/Schema";
 import { describe, expect, it } from "vite-plus/test";
 import { resolveServerBackgroundActivitySettings } from "./backgroundActivitySettings.ts";
 import { createModelSelection } from "./model.ts";
@@ -16,6 +18,7 @@ import {
   fallbackTextGenerationModelSelection,
   modelPreferencesMigrationPatch,
   resolveModelPreferences,
+  supportsServerModelPreferences,
   isModelSelectionProviderEnabled,
   parsePersistedServerObservabilitySettings,
   resolveSourceControlWriterModelSelection,
@@ -25,6 +28,8 @@ import {
 
 /** Settings after the server has folded legacy per-project fields into `projectSettingsOverrides`. */
 const FOLDED_SERVER_SETTINGS = { ...DEFAULT_SERVER_SETTINGS, projectSettingsFolded: true };
+const encodeServerSettings = Schema.encodeSync(ServerSettings);
+const decodeServerSettings = Schema.decodeUnknownSync(ServerSettings);
 
 describe("fallbackTextGenerationModelSelection", () => {
   it("ignores a configured non-default instance at machine scope, matching no fallback", () => {
@@ -990,6 +995,22 @@ describe("synchronized model preferences", () => {
     favorites: [{ provider, model: "sol" }],
     providerModelPreferences: { [provider]: { hiddenModels: ["astra"], modelOrder: ["sol"] } },
   };
+
+  it("uses local preferences for old wire settings but accepts advertised or already migrated servers", () => {
+    const {
+      favorites: _favorites,
+      providerModelPreferences: _preferences,
+      ...oldWireSettings
+    } = encodeServerSettings(DEFAULT_SERVER_SETTINGS);
+    const oldSettings = decodeServerSettings(oldWireSettings);
+    expect(supportsServerModelPreferences(oldSettings, {})).toBe(false);
+    expect(supportsServerModelPreferences(oldSettings, { modelPreferences: true })).toBe(true);
+    expect(supportsServerModelPreferences({ ...oldSettings, favorites: [] }, {})).toBe(true);
+    expect(
+      supportsServerModelPreferences({ ...oldSettings, providerModelPreferences: {} }, {}),
+    ).toBe(true);
+    expect(supportsServerModelPreferences(null, { modelPreferences: true })).toBe(false);
+  });
 
   it("keeps concurrent adds and removes of the same favorite idempotent", () => {
     const add = { setModelFavorites: [{ provider, model: "sol", favorite: true }] };

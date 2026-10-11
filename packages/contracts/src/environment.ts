@@ -149,6 +149,8 @@ export const ExecutionEnvironmentCapabilities = Schema.Struct({
       rejected), so the per-project provider switch would silently do
       nothing; clients hide it instead of sending a patch that goes nowhere. */
   projectProviderInstanceOverrides: Schema.optionalKey(Schema.Boolean),
+  /** Server persists model favorites, visibility, and ordering across clients. */
+  modelPreferences: Schema.optionalKey(Schema.Boolean),
   /** Server understands thread.snooze / thread.unsnooze commands. Same
       version-skew contract as threadSettlement. */
   threadSnooze: Schema.optionalKey(Schema.Boolean),
