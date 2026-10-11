@@ -38,8 +38,10 @@ import {
   themeAllowsSidebarArtwork,
 } from "~/themePalette";
 import {
+  applyServerSettingsPatch,
   modelPreferencesMigrationPatch,
   resolveModelPreferences,
+  supportsServerModelPreferences,
 } from "@t3tools/shared/serverSettings";
 import * as Equal from "effect/Equal";
 import * as Struct from "effect/Struct";
@@ -350,11 +352,14 @@ export function useMigrateModelPreferences(
   const clientSettings = useClientSettings(selectLegacyModelPreferences);
   const hydrated = useClientSettingsHydrated();
   const connectionGeneration = useAtomValue(connectionGenerationAtom(environmentId));
+  const config = useAtomValue(serverEnvironment.configValueAtom(environmentId));
+  const supported = supportsServerModelPreferences(settings, config?.environment.capabilities);
   const migrate = useAtomCommand(serverEnvironment.updateSettings, { reportFailure: false });
   useEffect(() => {
     if (
       !environmentId ||
       !settings ||
+      !supported ||
       !hydrated ||
       connectionGeneration === null ||
       attemptedMigrationGenerations.get(environmentId) === connectionGeneration
@@ -364,7 +369,7 @@ export function useMigrateModelPreferences(
     if (!patch) return;
     attemptedMigrationGenerations.set(environmentId, connectionGeneration);
     void migrate({ environmentId, input: { patch } });
-  }, [clientSettings, connectionGeneration, environmentId, hydrated, migrate, settings]);
+  }, [clientSettings, connectionGeneration, environmentId, hydrated, migrate, settings, supported]);
 }
 
 /** Selecting inside the client store keeps a client write from re-rendering unaffected readers. */
@@ -432,20 +437,35 @@ export async function prepareModelPreferencesPatch(
 }
 
 export function useUpdateEnvironmentModelPreferences(environmentId: EnvironmentId | null) {
-  const settings = useAtomValue(
-    environmentId ? serverEnvironment.settingsValueAtom(environmentId) : noEnvironmentSettingsAtom,
-  );
+  const config = useAtomValue(serverEnvironment.configValueAtom(environmentId));
+  const settings = config?.settings;
   const save = useAtomCommand(serverEnvironment.updateSettings, "model preferences update");
   return async (patch: ServerSettingsPatch) => {
     if (!environmentId || !settings) return;
     let prepared: ServerSettingsPatch;
     try {
+      if (!supportsServerModelPreferences(settings, config?.environment.capabilities)) {
+        await persistClientSettingsUpdate((current) => ({
+          ...current,
+          ...resolveModelPreferences(
+            applyServerSettingsPatch(
+              {
+                ...DEFAULT_SERVER_SETTINGS,
+                favorites: current.favorites,
+                providerModelPreferences: current.providerModelPreferences,
+              },
+              patch,
+            ),
+          ),
+        }));
+        return;
+      }
       prepared = await prepareModelPreferencesPatch(settings, patch);
     } catch {
       toastManager.add({
         type: "error",
         title: "Model preferences not saved",
-        description: "Could not load saved model preferences. Try again.",
+        description: "Could not save model preferences. Try again.",
       });
       return;
     }

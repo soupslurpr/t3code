@@ -6,6 +6,7 @@ import { DEFAULT_SERVER_SETTINGS } from "@t3tools/contracts";
 import {
   modelPreferencesMigrationPatch,
   resolveModelPreferences,
+  supportsServerModelPreferences,
 } from "@t3tools/shared/serverSettings";
 import type {
   EnvironmentId,
@@ -18,7 +19,7 @@ import type {
   ServerSettings,
 } from "@t3tools/contracts";
 import type { LegendListRenderItemProps } from "@legendapp/list/react-native";
-import { RegistryContext, useAtomValue } from "@effect/atom-react";
+import { RegistryContext, useAtomSet, useAtomValue } from "@effect/atom-react";
 import { AnimatedLegendList } from "@legendapp/list/reanimated";
 import {
   getProviderOptionCurrentLabel,
@@ -69,7 +70,7 @@ import { ChatGptSharingStatus } from "./ChatGptSharingStatus";
 import { environmentCatalog } from "../../connection/catalog";
 import { useEnvironmentQuery } from "../../state/query";
 import { environmentServerConfigsAtom, serverEnvironment } from "../../state/server";
-import { mobilePreferencesAtom } from "../../state/preferences";
+import { mobilePreferencesAtom, updateMobilePreferencesAtom } from "../../state/preferences";
 import { useAtomCommand } from "../../state/use-atom-command";
 import { useNewTaskFlow } from "./new-task-flow-provider";
 import { ScreenContent } from "../../components/ui/ScreenContent";
@@ -306,6 +307,7 @@ type ThreadSettingsSessionValue = {
   readonly toggleHidden: (option: ModelOption) => void;
   readonly pendingHiddenKeys: ReadonlySet<string>;
   readonly manageHidden: boolean;
+  readonly canManageHidden: boolean;
   readonly setManageHidden: (value: boolean) => void;
   readonly runtimeMode: RuntimeMode;
   readonly runtimeModeChoices: ReturnType<typeof runtimeModeChoicesForSupportedModes>;
@@ -344,7 +346,13 @@ function ThreadSettingsSessionProvider(
     props.environmentId ? environmentCatalog.stateAtom(props.environmentId) : null,
   ).data;
   const connectionGeneration = connection?.phase === "connected" ? connection.generation : null;
-  const [manageHidden, setManageHidden] = useState(false);
+  const serverModelPreferences = supportsServerModelPreferences(
+    settings,
+    config?.environment.capabilities,
+  );
+  const saveLocalPreferences = useAtomSet(updateMobilePreferencesAtom);
+  const [manageHiddenEnabled, setManageHidden] = useState(false);
+  const manageHidden = serverModelPreferences && manageHiddenEnabled;
   const pendingHidden = useRef(new Set<string>());
   const pendingFavorites = useRef(
     new Map<string, { favorite: boolean; settings: ServerSettings; pending: boolean }>(),
@@ -375,6 +383,7 @@ function ThreadSettingsSessionProvider(
     if (
       !props.environmentId ||
       !settings ||
+      !serverModelPreferences ||
       !AsyncResult.isSuccess(preferences) ||
       connectionGeneration === null ||
       attemptedMigrationGenerations.get(props.environmentId) === connectionGeneration
@@ -391,6 +400,7 @@ function ThreadSettingsSessionProvider(
     props.environmentId,
     saveSettings,
     settings,
+    serverModelPreferences,
   ]);
   const favoriteKeys = new Set(
     modelFavorites.map((favorite) => modelFavoriteKey(favorite.provider, favorite.model)),
@@ -398,8 +408,30 @@ function ThreadSettingsSessionProvider(
   const toggleFavorite = async (option: ModelOption) => {
     const environmentId = props.environmentId;
     if (!favoritesLoaded || !environmentId) return;
-    const currentSettings = registry.get(environmentServerConfigsAtom).get(environmentId)?.settings;
+    const currentConfig = registry.get(environmentServerConfigsAtom).get(environmentId);
+    const currentSettings = currentConfig?.settings;
     if (!currentSettings) return;
+    if (!supportsServerModelPreferences(currentSettings, currentConfig?.environment.capabilities)) {
+      void Haptics.selectionAsync();
+      saveLocalPreferences({
+        transform: (current) => {
+          const favorites = current.modelFavorites ?? [];
+          const provider = option.selection.instanceId;
+          const model = option.selection.model;
+          const exists = favorites.some(
+            (favorite) => favorite.provider === provider && favorite.model === model,
+          );
+          return {
+            modelFavorites: exists
+              ? favorites.filter(
+                  (favorite) => favorite.provider !== provider || favorite.model !== model,
+                )
+              : [...favorites, { provider, model }],
+          };
+        },
+      });
+      return;
+    }
     const favorites = resolveModelPreferences(currentSettings, {
       favorites: legacyFavorites,
     }).favorites;
@@ -458,6 +490,7 @@ function ThreadSettingsSessionProvider(
   const toggleHidden = (option: ModelOption) => {
     if (
       !settings ||
+      !serverModelPreferences ||
       !props.environmentId ||
       !option.canHide ||
       pendingHidden.current.has(option.key)
@@ -579,6 +612,7 @@ function ThreadSettingsSessionProvider(
     providerInstanceId: props.providerInstanceId,
     providerGroups,
     manageHidden,
+    canManageHidden: serverModelPreferences,
     setManageHidden,
     toggleHidden,
     pendingHiddenKeys,
@@ -870,14 +904,18 @@ function ThreadSettingsOptionsItem(props: {
         </Animated.View>
       </Animated.View>
 
-      <Text className="px-5 pb-2 pt-7 text-sm font-t3-medium text-foreground-muted">Catalog</Text>
+      {(session.canManageHidden || (Platform.OS !== "ios" && session.hasLegacyModels)) && (
+        <Text className="px-5 pb-2 pt-7 text-sm font-t3-medium text-foreground-muted">Catalog</Text>
+      )}
       <View className="mx-4 overflow-hidden rounded-2xl bg-grouped-card">
-        <SwitchRow
-          label="Manage hidden models"
-          value={session.manageHidden}
-          onValueChange={session.setManageHidden}
-          isLast={Platform.OS === "ios" || !session.hasLegacyModels}
-        />
+        {session.canManageHidden && (
+          <SwitchRow
+            label="Manage hidden models"
+            value={session.manageHidden}
+            onValueChange={session.setManageHidden}
+            isLast={Platform.OS === "ios" || !session.hasLegacyModels}
+          />
+        )}
         {Platform.OS !== "ios" && session.hasLegacyModels ? (
           <SwitchRow
             isLast
