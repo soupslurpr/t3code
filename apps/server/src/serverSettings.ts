@@ -817,10 +817,10 @@ const make = Effect.gen(function* () {
     const folded = settingsFileTrusted
       ? foldLegacyProjectSettings(loaded, legacyProjectRows)
       : loaded;
-    // Copied, not moved: the old entry is removed only after the new file is written. A token
-    // that cannot be read or copied leaves the retired keys in place, so the migration runs again
-    // on the next load instead of dropping it.
-    const legacySecretsCopied = yield* Effect.forEach(
+    // Copied, not moved: remove the old entry only after the new file is written.
+    // Fail the load if a copy fails so neither another migration nor a later
+    // settings update can erase the retired keys. Failed loads are retried.
+    yield* Effect.forEach(
       settingsFileTrusted
         ? migrateLegacySourceControlSettings(folded, legacySourceControl).secretMoves
         : [],
@@ -829,17 +829,13 @@ const make = Effect.gen(function* () {
           Effect.flatMap((secret) =>
             Option.isNone(secret) ? Effect.void : secretStore.set(move.to, secret.value),
           ),
-          Effect.as(true),
-          Effect.catch(() =>
-            Effect.logWarning("failed to copy a source control secret to its new name", {
-              secretName: move.to,
-            }).pipe(Effect.as(false)),
+          Effect.mapError(
+            (cause) => new ServerSettingsError({ settingsPath, operation: "write-secret", cause }),
           ),
         ),
-    ).pipe(Effect.map((copied) => copied.every(Boolean)));
+    );
     const hasLegacySourceControl =
       settingsFileTrusted &&
-      legacySecretsCopied &&
       (legacySourceControl.bitbucket !== undefined || legacySourceControl.github !== undefined);
     const sourceControlMigration = hasLegacySourceControl
       ? migrateLegacySourceControlSettings(folded, legacySourceControl)

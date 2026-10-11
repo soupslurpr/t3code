@@ -1920,7 +1920,7 @@ it.layer(NodeServices.layer)("server settings", (it) => {
       }).pipe(Effect.provide(layerServerSettingsWithSecrets())),
   );
 
-  it.effect("keeps the retired keys for another load when a token cannot be copied", () => {
+  it.effect("keeps retired secrets when another settings migration would rewrite the file", () => {
     const cause = new ServerSecretStore.SecretStoreReadError({
       resource: "bitbucket-access-token",
       cause: PlatformError.systemError({
@@ -1947,11 +1947,12 @@ it.layer(NodeServices.layer)("server settings", (it) => {
       const fileSystem = yield* FileSystem.FileSystem;
       const serverSettings = yield* ServerSettingsModule.ServerSettingsService;
       const legacy = JSON.stringify({
+        providers: {},
         bitbucket: { email: "me@example.com", accessToken: "\u2022\u2022\u2022\u2022\u2022\u2022" },
       });
       yield* fileSystem.writeFileString(serverConfig.settingsPath, legacy);
 
-      yield* Effect.exit(serverSettings.getSettings);
+      assert.equal((yield* Effect.exit(serverSettings.getSettings))._tag, "Failure");
 
       assert.equal(yield* fileSystem.readFileString(serverConfig.settingsPath), legacy);
     }).pipe(Effect.provide(layerSettings));
