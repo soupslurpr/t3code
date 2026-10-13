@@ -32,6 +32,7 @@ export function GuideTour({
   environmentId,
   reference,
   guide,
+  stale,
   banner,
   active,
   commenting,
@@ -42,6 +43,7 @@ export function GuideTour({
   environmentId: EnvironmentId;
   reference: PullRequestRef;
   guide: PullRequestReviewGuide;
+  stale: boolean;
   /** The stale or failed notice, shown above whichever view is open. */
   banner: ReactNode;
   /** Whether the tour is the tab on screen, which is when J and K step through it. */
@@ -68,6 +70,7 @@ export function GuideTour({
     environmentId,
     reference,
     headSha: guide.headSha,
+    enabled: !stale,
     wantedPaths,
   });
   // The same file reads the Code tab uses, so the bars between hunks load what lies between.
