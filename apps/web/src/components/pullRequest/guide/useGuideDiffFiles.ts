@@ -23,11 +23,13 @@ export function useGuideDiffFiles({
   reference,
   headSha,
   wantedPaths,
+  enabled,
 }: {
   environmentId: EnvironmentId;
   reference: PullRequestRef;
   headSha: string;
   wantedPaths: ReadonlyArray<string>;
+  enabled: boolean;
 }) {
   const key = `${environmentId}:${pullRequestReviewKey(reference)}:${headSha}`;
   const [loaded, setLoaded] = useState<LoadedDiff>({
@@ -40,7 +42,7 @@ export function useGuideDiffFiles({
   const current: LoadedDiff =
     loaded.key === key ? loaded : { key, cursor: null, done: false, files: NO_FILES, folded: null };
   const missing = wantedPaths.some((path) => !current.files.has(path));
-  const loading = missing && !current.done;
+  const loading = enabled && missing && !current.done;
   const query = useEnvironmentQuery(
     loading
       ? pullRequestEnvironment.diff({
@@ -71,7 +73,9 @@ export function useGuideDiffFiles({
   }
 
   return {
-    files: current.files,
+    // The diff endpoint follows the current PR head. Old guide coordinates
+    // must never be paired with its code, including pages already cached here.
+    files: enabled ? current.files : NO_FILES,
     loading: loading && query.error === null,
     error: loading ? query.error : null,
     retry: query.refresh,
