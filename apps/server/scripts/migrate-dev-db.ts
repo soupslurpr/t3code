@@ -250,6 +250,8 @@ const RECOVERY_KINDS: ReadonlyArray<ProjectionStore.ProjectionRecoveryKind> = [
 const CLEARED_TABLES: ReadonlyArray<string> = [
   // Pending work the dev server would otherwise pick up and run.
   "scheduled_tasks",
+  "thread_monitor_computer_evidence",
+  "thread_monitors",
   "orchestration_v2_effect_outbox",
   "orchestration_v2_thread_launch_workflows",
   "orchestration_command_receipts",
