@@ -31,7 +31,7 @@ SOFTWARE.
 ## Device helper dependency manifests
 
 Source: [expo-device-hub 0.15.3](https://registry.npmjs.org/expo-device-hub/0.15.3),
-[agent-device 0.21.24](https://registry.npmjs.org/agent-device/0.21.24).
+[agent-device 0.21.25](https://registry.npmjs.org/agent-device/0.21.25).
 
 - `apps/server/src/device/toolchain/expo-device-hub.lock.json`: adapted; generated npm dependency metadata, with exact registry locations and integrity hashes.
 - `apps/server/src/device/toolchain/agent-device.lock.json`: adapted; generated npm dependency metadata, with exact registry locations and integrity hashes.
@@ -1009,4 +1009,123 @@ Unless required by applicable law or agreed to in writing, software distributed
 under the License is distributed on an "AS IS" BASIS, WITHOUT WARRANTIES OR
 CONDITIONS OF ANY KIND, either express or implied. See the License for the
 specific language governing permissions and limitations under the License.
+```
+
+## enriched-markdown mobile fork
+
+Source: [pingdotgg/enriched-markdown](https://github.com/pingdotgg/enriched-markdown/tree/3824d119a1ed6206f51ba3ec8ddf9ff93b8852f9)
+
+- `apps/mobile/deps/react-native-enriched-markdown-1.2.0-t3.11.tgz`: adapted; upstream mobile fork with T3 native rendering and navigation support. Exact source and upstream base are preserved inside the archive.
+
+```text
+MIT License
+
+Copyright (c) 2025 Software Mansion
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+```
+
+## react-native-screens mobile fork
+
+Source: [juliusmarminge/react-native-screens](https://github.com/juliusmarminge/react-native-screens/tree/176ff64880ddd0a6122a1f18eda826479c8e73c7)
+
+- `apps/mobile/deps/react-native-screens-5.0.0-t3.27.tgz`: adapted; upstream mobile fork with T3 native rendering and navigation support. Exact source and upstream base are preserved inside the archive.
+
+```text
+The MIT License (MIT)
+
+Copyright (c) 2018 Software Mansion <swmansion.com>
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+```
+
+## Selectable native source text
+
+Source: [react-native-uitextview 2.2.0](https://github.com/bluesky-social/react-native-uitextview/tree/addc08fea303608f070fe1eeba4bc075f181c4af)
+
+- `apps/mobile/modules/t3-source-text/` (recursive): adapted; renamed and limited to selectable source-file text. The original license and upstream record remain in the module.
+
+```text
+MIT License
+
+Copyright (c) 2024-25 Bluesky PBC
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+```
+
+## Expo native menu touch gate
+
+Source: [expo-modules-core 58.0.11](https://registry.npmjs.org/expo-modules-core/58.0.11)
+
+- `apps/mobile/modules/t3-native-controls/LICENSE`: copied unchanged; Expo MIT license.
+- `apps/mobile/modules/t3-native-controls/ios/T3MenuDismissTouchGate.swift`: adapted from `ios/Core/Views/SwiftUI/SystemMenuTouchGate.swift`; extend dismissal touch protection to native menus outside SwiftUI windows.
+
+```text
+The MIT License (MIT)
+
+Copyright (c) 2015-present 650 Industries, Inc. (aka Expo)
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
 ```

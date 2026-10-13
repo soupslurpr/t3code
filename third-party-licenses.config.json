@@ -152,7 +152,7 @@
       "generatedNotices": [
         {
           "licenseId": "Apache-2.0",
-          "copyrights": ["Copyright 2009, 2010, 2013 Andr\u00e9 Berg"]
+          "copyrights": ["Copyright 2009, 2010, 2013 André Berg"]
         }
       ]
     },
@@ -214,6 +214,14 @@
           ]
         }
       ]
+    },
+    {
+      "bundles": ["mobile"],
+      "license": "MIT",
+      "name": "Expo native menu touch gate",
+      "noticeFile": "apps/mobile/modules/t3-native-controls/LICENSE",
+      "sourceUrl": "https://registry.npmjs.org/expo-modules-core/58.0.11",
+      "version": "58.0.11"
     }
   ],
   "packageOverrides": [
