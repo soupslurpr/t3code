@@ -1,6 +1,14 @@
 import { AgentDesktopId } from "@t3tools/contracts";
 import { assert, describe, it } from "@effect/vitest";
 import * as Schema from "effect/Schema";
+import * as NodeServices from "@effect/platform-node/NodeServices";
+import * as Effect from "effect/Effect";
+import * as FileSystem from "effect/FileSystem";
+import * as Option from "effect/Option";
+import * as Path from "effect/Path";
+import * as TestClock from "effect/testing/TestClock";
+import * as AgentDesktopEnvironment from "./AgentDesktopEnvironment.ts";
+import { make as makeQemu } from "./QemuAgentDesktop.ts";
 
 import {
   agentDesktopSetupPackages,
@@ -356,3 +364,45 @@ describe("QemuAgentDesktop", () => {
     );
   });
 });
+
+it.effect("caches missing prerequisites until setup or expiry requests a fresh probe", () =>
+  Effect.gen(function* () {
+    const path = yield* Path.Path;
+    let inspected = 0;
+    const service = yield* makeQemu.pipe(
+      Effect.provideService(AgentDesktopEnvironment.AgentDesktopEnvironment, {
+        path,
+        platform: "linux",
+        processArch: "x64",
+        agentDesktopsDir: "/test-agent-desktops",
+        agentDesktopBaseImage: Option.none(),
+        resolveResourcePathCandidates: () => [],
+      }),
+      Effect.provideService(
+        FileSystem.FileSystem,
+        FileSystem.makeNoop({
+          exists: () =>
+            Effect.sync(() => {
+              inspected++;
+              return false;
+            }),
+          readFileString: () => Effect.succeed(""),
+        }),
+      ),
+    );
+    assert.isFalse((yield* service.probe).available);
+    const initial = inspected;
+    assert.isAbove(initial, 0);
+    yield* service.probe;
+    yield* service.probe;
+    assert.equal(inspected, initial);
+    assert.isFalse((yield* service.setup).completed);
+    assert.isAbove(inspected, initial);
+    const afterSetup = inspected;
+    yield* service.probe;
+    assert.equal(inspected, afterSetup);
+    yield* TestClock.adjust("6 minutes");
+    yield* service.probe;
+    assert.isAbove(inspected, afterSetup);
+  }).pipe(Effect.provide(NodeServices.layer)),
+);
