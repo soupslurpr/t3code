@@ -10,7 +10,7 @@ import * as NodeURL from "node:url";
 
 import { assert, describe, expect, it } from "@effect/vitest";
 
-import { verifyInstalledBuild } from "./local-arch-restart.ts";
+import { pacmanUpgradeArguments, verifyInstalledBuild } from "./local-arch-restart.ts";
 import {
   captureProcess,
   isSameProcess,
@@ -586,7 +586,10 @@ describe("guarded restart", () => {
         const identity = { pid: child.pid!, startTicks };
         assert.isTrue(isSameProcess(identity));
         assert.isFalse(isSameProcess({ ...identity, startTicks: String(BigInt(startTicks) + 1n) }));
-        assert.throws(() => captureProcess(identity.pid), "not the installed desktop executable");
+        assert.throws(
+          () => captureProcess(identity.pid),
+          "not a supported installed desktop executable",
+        );
         const exited = childEvent(child, "exit");
         child.stdin!.end();
         await exited;
@@ -735,4 +738,65 @@ describe("guarded restart", () => {
       "unexpected app environment override",
     );
   });
+});
+
+it.skipIf(
+  ["pacman", "fakeroot", "bsdtar"].some(
+    (command) => NodeChildProcess.spawnSync(command, ["--version"]).status !== 0,
+  ),
+)("replaces the legacy package in one unattended pacman transaction", () => {
+  const directory = NodeFS.mkdtempSync(NodePath.join(NodeOS.tmpdir(), "t3-pacman-transition-"));
+  try {
+    for (const name of ["root", "db", "cache", "hooks", "payload"])
+      NodeFS.mkdirSync(NodePath.join(directory, name));
+    const config = NodePath.join(directory, "pacman.conf");
+    NodeFS.writeFileSync(config, `[options]\nSigLevel = Never\nHookDir = ${directory}/hooks\n`);
+    const common = [
+      "--root",
+      `${directory}/root`,
+      "--dbpath",
+      `${directory}/db`,
+      "--config",
+      config,
+      "--cachedir",
+      `${directory}/cache`,
+      "--logfile",
+      `${directory}/pacman.log`,
+      "--hookdir",
+      `${directory}/hooks`,
+    ];
+    const pacman = (args: string[]) =>
+      NodeChildProcess.execFileSync("fakeroot", ["pacman", ...common, ...args], {
+        encoding: "utf8",
+      });
+    const archive = (name: string, conflict?: string) => {
+      NodeFS.writeFileSync(
+        `${directory}/payload/.PKGINFO`,
+        `pkgname = ${name}\npkgver = 1-1\npkgdesc = Disposable transition fixture\nurl = https://example.com\nbuilddate = 0\npackager = Test\nsize = 0\narch = any\nlicense = MIT\n${conflict ? `conflict = ${conflict}\n` : ""}`,
+      );
+      const path = `${directory}/${name}-1-1-any.pkg.tar.gz`;
+      NodeChildProcess.execFileSync("bsdtar", [
+        "-czf",
+        path,
+        "-C",
+        `${directory}/payload`,
+        ".PKGINFO",
+      ]);
+      return path;
+    };
+    pacman(["--dbonly", "--noconfirm", "-U", archive("t3code-bin")]);
+    pacman([
+      "--dbonly",
+      ...pacmanUpgradeArguments(archive("t3code-soupslurpr-bin", "t3code-bin"), true),
+    ]);
+    assert.equal(pacman(["-Qq"]).trim(), "t3code-soupslurpr-bin");
+    // Later fork upgrades need no conflict-answer override.
+    pacman([
+      "--dbonly",
+      ...pacmanUpgradeArguments(archive("t3code-soupslurpr-bin", "t3code-bin"), false),
+    ]);
+    assert.equal(pacman(["-Q"]).trim(), "t3code-soupslurpr-bin 1-1");
+  } finally {
+    NodeFS.rmSync(directory, { recursive: true, force: true });
+  }
 });

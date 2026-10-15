@@ -1562,6 +1562,9 @@ function SavedBackendListRow({
     environmentTransportLabel(environment, connectedTarget),
     resumingServerUpdate ? "Restarting" : status.text,
     enabled && versionMismatch ? serverVersion : null,
+    environment.serverConfig?.environment.forkBuild
+      ? `${environment.serverConfig.environment.forkBuild.channel} · ${environment.serverConfig.environment.forkBuild.revision?.slice(0, 12) ?? "development"}`
+      : null,
   ]
     .filter((value): value is string => value !== null)
     .join(" · ");
@@ -3644,6 +3647,9 @@ export function ConnectionsSettings() {
                   ) : (
                     [
                       primaryServerConfig?.environment.serverVersion ?? null,
+                      primaryServerConfig?.environment.forkBuild
+                        ? `${primaryServerConfig.environment.forkBuild.channel} · ${primaryServerConfig.environment.forkBuild.revision?.slice(0, 12) ?? "development"}`
+                        : null,
                       primaryEnvironment?.displayUrl ?? null,
                     ]
                       .filter((value): value is string => value !== null)

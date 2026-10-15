@@ -19,7 +19,7 @@ const SHA_A = "a".repeat(64);
 const SHA_B = "b".repeat(64);
 
 describe("local Arch package workflow", () => {
-  it("renders a local-source recipe without changing upstream package behavior", () => {
+  it("renders a fork identity with explicit upstream replacement and a matching launcher", () => {
     const rootDir = NodePath.resolve(import.meta.dirname, "..");
     const upstreamPkgbuild = NodeFS.readFileSync(
       NodePath.join(rootDir, "packaging/aur/t3code-bin/PKGBUILD"),
@@ -32,6 +32,9 @@ describe("local Arch package workflow", () => {
       licenseSha256: SHA_B,
     });
 
+    assert.include(rendered, "pkgname=t3code-soupslurpr-bin");
+    assert.include(rendered, 'provides=("t3code=$pkgver" "t3code-bin=$pkgver")');
+    assert.include(rendered, "conflicts=('t3code' 't3code-bin')");
     assert.include(rendered, "pkgver=1.2.3");
     assert.include(rendered, "pkgrel=7");
     assert.include(rendered, "url='https://github.com/soupslurpr/t3code'");
@@ -45,7 +48,9 @@ describe("local Arch package workflow", () => {
     assert.notInclude(rendered, "releases/download");
     assert.equal(
       rendered.slice(rendered.indexOf("prepare()")),
-      upstreamPkgbuild.slice(upstreamPkgbuild.indexOf("prepare()")),
+      upstreamPkgbuild
+        .slice(upstreamPkgbuild.indexOf("prepare()"))
+        .replace("exec /opt/t3code-bin/AppRun", "exec /opt/t3code-soupslurpr-bin/AppRun"),
     );
   });
 
@@ -68,12 +73,12 @@ describe("local Arch package workflow", () => {
       resolveNextPackageRelease({
         version: "0.0.33",
         releaseEntries: [
-          "t3code-bin-0.0.33-35-x86_64.pkg.tar.zst",
-          "t3code-bin-0.0.33-37-x86_64.pkg.tar.zst",
-          "t3code-bin-0.0.34-9-x86_64.pkg.tar.zst",
+          "t3code-soupslurpr-bin-0.0.33-35-x86_64.pkg.tar.zst",
+          "t3code-soupslurpr-bin-0.0.33-37-x86_64.pkg.tar.zst",
+          "t3code-soupslurpr-bin-0.0.34-9-x86_64.pkg.tar.zst",
           "unrelated-file",
         ],
-        installedPackageVersion: "t3code-bin 0.0.33-36",
+        installedPackageVersion: "t3code-soupslurpr-bin 0.0.33-36",
       }),
       38,
     );
@@ -81,7 +86,7 @@ describe("local Arch package workflow", () => {
       resolveNextPackageRelease({
         version: "0.0.34",
         releaseEntries: [],
-        installedPackageVersion: "t3code-bin 0.0.33-37",
+        installedPackageVersion: "t3code-soupslurpr-bin 0.0.33-37",
       }),
       1,
     );
@@ -91,7 +96,7 @@ describe("local Arch package workflow", () => {
     const manifest = parseLocalArchPackageManifest(
       JSON.stringify({
         schemaVersion: 1,
-        packageName: "t3code-bin",
+        packageName: "t3code-soupslurpr-bin",
         packageArch: "x86_64",
         version: "0.0.33",
         packageRelease: 38,
@@ -114,12 +119,12 @@ describe("local Arch package workflow", () => {
   it("rejects a changed publication archive or receipt before installation", async () => {
     const directory = NodeFS.mkdtempSync(NodePath.join(NodeOS.tmpdir(), "t3-package-receipt-"));
     try {
-      const filename = "t3code-bin-1.2.3-4-x86_64.pkg.tar.zst";
+      const filename = "t3code-soupslurpr-bin-1.2.3-4-x86_64.pkg.tar.zst";
       const packagePath = NodePath.join(directory, filename);
       NodeFS.writeFileSync(packagePath, "audited package fixture");
       const receipt = {
         schemaVersion: 1,
-        packageName: "t3code-bin",
+        packageName: "t3code-soupslurpr-bin",
         packageArch: "x86_64",
         version: "1.2.3",
         packageRelease: 4,

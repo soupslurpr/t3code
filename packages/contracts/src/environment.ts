@@ -242,6 +242,9 @@ export const ExecutionEnvironmentDescriptor = Schema.Struct({
   label: TrimmedNonEmptyString,
   platform: ExecutionEnvironmentPlatform,
   serverVersion: TrimmedNonEmptyString,
+  forkBuild: Schema.optionalKey(
+    Schema.Struct({ channel: TrimmedNonEmptyString, revision: Schema.NullOr(Schema.String) }),
+  ),
   /** Absent on hosts from before explicit orchestration protocol negotiation. */
   orchestrationProtocolVersion: Schema.optionalKey(Schema.Int),
   capabilities: ExecutionEnvironmentCapabilities,

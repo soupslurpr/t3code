@@ -328,7 +328,7 @@ async function main() {
     allowPositionals: true,
     options: {
       port: { type: "string", default: String(DEFAULT_PORT) },
-      "app-dir": { type: "string", default: "/opt/t3code-bin" },
+      "app-dir": { type: "string", default: "/opt/t3code-soupslurpr-bin" },
       commit: { type: "string" },
       hashes: { type: "boolean", default: false },
       help: { type: "boolean", default: false },

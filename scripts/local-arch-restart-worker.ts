@@ -10,8 +10,8 @@ import * as NodePath from "node:path";
 import * as NodeSqlite from "node:sqlite";
 import * as NodeTimersPromises from "node:timers/promises";
 
-export const INSTALLED_EXECUTABLE = "/opt/t3code-bin/t3code";
-export const INSTALLED_ASAR = "/opt/t3code-bin/resources/app.asar";
+export const INSTALLED_EXECUTABLE = "/opt/t3code-soupslurpr-bin/t3code";
+export const INSTALLED_ASAR = "/opt/t3code-soupslurpr-bin/resources/app.asar";
 export const SHUTDOWN_TIMEOUT_MS = 180_000;
 const PROCESS_CHECK_INTERVAL_MS = 200;
 const USER_UNIT_NAME = /^[A-Za-z0-9][A-Za-z0-9_.@-]*\.(?:service|scope)$/;
@@ -75,10 +75,9 @@ export function parseProcessStat(stat: string): {
 export function captureProcess(pid: number): ProcessIdentity {
   NodeAssert.ok(Number.isSafeInteger(pid) && pid > 1, "invalid desktop pid");
   const executable = NodeFS.readlinkSync(`/proc/${pid}/exe`).replace(/ \(deleted\)$/, "");
-  NodeAssert.equal(
-    executable,
-    INSTALLED_EXECUTABLE,
-    "process is not the installed desktop executable",
+  NodeAssert.ok(
+    executable === INSTALLED_EXECUTABLE || executable === "/opt/t3code-bin/t3code",
+    "process is not a supported installed desktop executable",
   );
   const stat = parseProcessStat(NodeFS.readFileSync(`/proc/${pid}/stat`, "utf8"));
   NodeAssert.notEqual(stat.state, "Z", "desktop process is a zombie");
@@ -190,11 +189,21 @@ export function verifyDesktopOwnership(
     NodeFS.readFileSync(`/proc/${plan.backend.pid}/stat`, "utf8"),
   );
   NodeAssert.equal(backendStat.parentPid, plan.app.pid, "backend is not a direct child of the app");
+  const appExecutable = NodeFS.readlinkSync(`/proc/${plan.app.pid}/exe`).replace(
+    / \(deleted\)$/,
+    "",
+  );
+  const backendExecutable = NodeFS.readlinkSync(`/proc/${plan.backend.pid}/exe`).replace(
+    / \(deleted\)$/,
+    "",
+  );
+  NodeAssert.equal(backendExecutable, appExecutable, "app and backend installation differ");
+  const sourceAsar = NodePath.join(NodePath.dirname(appExecutable), "resources/app.asar");
   const argumentsList = NodeFS.readFileSync(`/proc/${plan.backend.pid}/cmdline`, "utf8").split(
     "\0",
   );
   NodeAssert.ok(
-    argumentsList.includes(`${INSTALLED_ASAR}/apps/server/dist/bin.mjs`),
+    argumentsList.includes(`${sourceAsar}/apps/server/dist/bin.mjs`),
     "backend is not running the installed ASAR",
   );
   const databasePath = NodeFS.realpathSync(plan.sourceDatabasePath);
@@ -528,8 +537,8 @@ async function main(): Promise<void> {
   NodeAssert.ok(planPath, "restart plan path is required");
   const plan = JSON.parse(NodeFS.readFileSync(planPath, "utf8")) as RestartPlan;
   NodeAssert.equal(
-    readCommand("pacman", ["-Q", "t3code-bin"]),
-    `t3code-bin ${plan.packageVersion}`,
+    readCommand("pacman", ["-Q", "t3code-soupslurpr-bin"]),
+    `t3code-soupslurpr-bin ${plan.packageVersion}`,
     "installed package changed before restart",
   );
   NodeAssert.equal(

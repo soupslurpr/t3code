@@ -87,7 +87,7 @@ Publication fails closed unless all of these hold:
 
 - package name, version, fork URL, architecture, and `devtools` build provenance are exact;
 - the Chromium sandbox is recorded as mode `4755`;
-- the `/opt/t3code-bin` payload is byte-for-byte identical to the verified AppImage;
+- the `/opt/t3code-soupslurpr-bin` payload is byte-for-byte identical to the verified AppImage;
 - launchers, desktop metadata, licenses, icons, and directory permissions are valid;
 - packaged desktop and Agent desktop resources match the committed sources;
 - the ASAR version and commit match the stage manifest; and
@@ -110,12 +110,24 @@ The cleanup command refuses to remove a directory without a valid generated-stag
 Run the command printed by publication, for example:
 
 ```bash
-sudo pacman -U /home/soupslurpr/projects/t3code/release/t3code-bin-0.0.33-38-x86_64.pkg.tar.zst
+sudo pacman -U /home/soupslurpr/projects/t3code/release/t3code-soupslurpr-bin-0.0.45-19-x86_64.pkg.tar.zst
 ```
 
 Fully quit and relaunch T3 Code after installation. Future fork updates repeat this runbook and use a
-new package release. Do not update this installation with `yay -S t3code-bin`: that package follows
-official upstream releases and can replace the fork behavior.
+new package release. The fork is named `t3code-soupslurpr-bin`; it provides `t3code` and
+`t3code-bin` and conflicts with both upstream packages. During the first install, pacman asks to
+remove the old `t3code-bin` package. Approve that replacement after verifying the audited package.
+The launcher remains `t3code`; the payload moves to `/opt/t3code-soupslurpr-bin`. T3 home and user
+data stay in place. Back up the database before the upgrade; do not copy an older database over
+newer live state to roll back a package.
+
+The guarded restart helper accepts the captured old installation during this transition, verifies
+the new fork package, accepts the audited legacy package replacement, and relaunches the new payload.
+Its archive audit rejects additional package conflicts before unattended installation.
+AUR helpers subsequently identify the fork
+as a separate package. Explicitly installing `t3code-bin` would still replace it after a conflict
+prompt. Arch packages already disable the built-in desktop updater; this change addresses package
+identity, not that updater.
 
 ### Restart from the thread doing the update
 
