@@ -1,3 +1,4 @@
+import { Atom } from "effect/reactivity";
 import type { ReactElement } from "react";
 import {
   AgentDesktopControllerId,
@@ -5,7 +6,7 @@ import {
   EnvironmentId,
   ThreadId,
 } from "@t3tools/contracts";
-import { beforeEach, describe, expect, it, vi } from "vite-plus/test";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vite-plus/test";
 
 import { reactHookHarness as hooks } from "../../test/reactHookHarness";
 
@@ -46,8 +47,15 @@ vi.mock("~/state/environments", () => ({
   }),
 }));
 
+vi.mock("@effect/atom-react", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@effect/atom-react")>();
+  const { AtomRegistry } = await import("effect/reactivity");
+  const registry = AtomRegistry.make();
+  return { ...actual, useAtomValue: (atom: Atom.Atom<unknown>) => registry.get(atom) };
+});
+
 vi.mock("~/state/preview", () => ({
-  previewEnvironment: { invokeAgentDesktopHuman: Symbol("invokeAgentDesktopHuman") },
+  previewEnvironment: { invokeAgentDesktopHuman: { permissionAtom: () => Atom.make(true) } },
 }));
 
 vi.mock("~/state/use-atom-command", () => ({
@@ -78,6 +86,11 @@ async function applyEffects(): Promise<void> {
 
 describe("AgentDesktopSettings compatibility", () => {
   beforeEach(() => {
+    vi.stubGlobal("document", {
+      visibilityState: "visible",
+      addEventListener: vi.fn(),
+      removeEventListener: vi.fn(),
+    });
     hooks.reset();
     effects.pending = [];
     commands.invoke.mockReset().mockResolvedValue({
@@ -113,6 +126,8 @@ describe("AgentDesktopSettings compatibility", () => {
       },
     });
   });
+
+  afterEach(() => vi.unstubAllGlobals());
 
   it("renders an older environment response without maintenance fields", async () => {
     const loadingSettings = renderSettings();

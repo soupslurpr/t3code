@@ -1,3 +1,7 @@
+import { useAtomValue } from "@effect/atom-react";
+import { AgentDesktopId, type AgentDesktopOwner, type ThreadId } from "@t3tools/contracts";
+import { createAgentDesktopSupervisionTransport } from "./AgentDesktopSupervisionTransport";
+import { useDesktopSupervisionAccess } from "./useDesktopSupervisionAccess";
 import { squashAtomCommandFailure } from "@t3tools/client-runtime/state/runtime";
 import type {
   ComputerAutomationAction,
@@ -57,6 +61,8 @@ export interface UserDesktopSupervisionRouteParams extends Record<string, unknow
   readonly desktopId: UserDesktopId;
   readonly label: string;
   readonly supportsControl: boolean;
+  readonly threadId?: ThreadId;
+  readonly agentOwner?: AgentDesktopOwner;
 }
 
 interface TouchStart {
@@ -124,6 +130,30 @@ export function UserDesktopSupervisionRouteScreen({
   const invoke = useAtomCommand(previewEnvironment.invokeUserDesktopHuman, {
     reportFailure: false,
   });
+  const invokeAgent = useAtomCommand(previewEnvironment.invokeAgentDesktopHuman, {
+    reportFailure: false,
+  });
+  const allowed = useAtomValue(
+    (params.agentOwner === undefined
+      ? previewEnvironment.invokeUserDesktopHuman
+      : previewEnvironment.invokeAgentDesktopHuman
+    ).permissionAtom(params.environmentId),
+  );
+  const agentTransport = useMemo(
+    () =>
+      params.agentOwner === undefined
+        ? null
+        : createAgentDesktopSupervisionTransport(
+            params.agentOwner,
+            AgentDesktopId.make(params.desktopId),
+            async (input) => {
+              const result = await invokeAgent({ environmentId: params.environmentId, input });
+              if (result._tag === "Success") return result.value;
+              throw squashAtomCommandFailure(result);
+            },
+          ),
+    [invokeAgent, params.agentOwner, params.desktopId, params.environmentId],
+  );
   const [status, setStatus] = useState<ComputerAutomationStatus | null>(null);
   const [liveStarted, setLiveStarted] = useState(false);
   const [mode, setMode] = useState<"live" | "lens">("lens");
@@ -137,7 +167,8 @@ export function UserDesktopSupervisionRouteScreen({
   const [selectedDisplayId, setSelectedDisplayId] = useState<string | null>(null);
   const [surface, setSurface] = useState<MobileDesktopSurface>({ width: 0, height: 0 });
   const [text, setText] = useState("");
-  const [busy, setBusy] = useState(true);
+  const [pending, setBusy] = useState(true);
+  const busy = pending || !allowed;
   const [error, setError] = useState<string | null>(null);
   const snapshotRef = useRef(snapshot);
   const statusRef = useRef(status);
@@ -162,12 +193,38 @@ export function UserDesktopSupervisionRouteScreen({
 
   const run = useCallback(
     async <Value,>(input: UserDesktopHumanInvokeInput) => {
+      if (agentTransport !== null) return (await agentTransport(input)) as Value;
       const result = await invoke({ environmentId: params.environmentId, input });
-      if (result._tag === "Success") return result.value as Value;
+      if (result._tag === "Success") {
+        if (params.threadId !== undefined && input.request.operation === "observation-list") {
+          const list = result.value as ComputerObservationList;
+          return {
+            observations: list.observations.filter((item) => item.threadId === params.threadId),
+          } as Value;
+        }
+        return result.value as Value;
+      }
       throw squashAtomCommandFailure(result);
     },
-    [invoke, params.environmentId],
+    [agentTransport, invoke, params.environmentId, params.threadId],
   );
+
+  const clearAccess = useCallback(() => {
+    setLiveStarted(false);
+    setSnapshot(null);
+    snapshotRef.current = null;
+    statusRef.current = null;
+    setStatus(null);
+    gestureActive.current = false;
+    touchStart.current = null;
+    setBusy(false);
+  }, []);
+  const {
+    currentGeneration,
+    isCurrent,
+    request: requestAccess,
+    close: releaseTransientAccess,
+  } = useDesktopSupervisionAccess(params.desktopId, run, clearAccess);
 
   const readObservation = useCallback(
     async (observationId: ComputerObservationId) => {
@@ -202,6 +259,7 @@ export function UserDesktopSupervisionRouteScreen({
 
   const capture = useCallback(
     async (displayId = selectedDisplayId) => {
+      const generation = currentGeneration();
       const current = snapshotRef.current;
       const contentHash =
         current?.screenshot?.state === "image" ? current.screenshot.contentHash : undefined;
@@ -220,11 +278,13 @@ export function UserDesktopSupervisionRouteScreen({
           },
         },
       });
-      setSnapshot((previous) => retainMobileDesktopImage(previous, next));
-      setSelectedDisplayId(next.display.id);
+      if (isCurrent(generation)) {
+        setSnapshot((previous) => retainMobileDesktopImage(previous, next));
+        setSelectedDisplayId(next.display.id);
+      }
       return next;
     },
-    [params.desktopId, run, selectedDisplayId],
+    [currentGeneration, isCurrent, params.desktopId, run, selectedDisplayId],
   );
 
   useEffect(() => {
@@ -266,13 +326,19 @@ export function UserDesktopSupervisionRouteScreen({
 
   const startLive = useCallback(
     async (displayId?: string) => {
+      const generation = currentGeneration();
+      if (!isCurrent(generation)) return;
       setBusy(true);
       setError(null);
       try {
-        const nextStatus = await run<ComputerAutomationStatus>({
-          request: { operation: "request-view", desktopId: params.desktopId },
-          timeoutMs: ACCESS_REQUEST_TIMEOUT_MS,
-        });
+        const nextStatus = await requestAccess(
+          {
+            request: { operation: "request-view", desktopId: params.desktopId },
+            timeoutMs: ACCESS_REQUEST_TIMEOUT_MS,
+          },
+          generation,
+        );
+        if (nextStatus === null) return;
         const nextDisplayId =
           displayId ??
           selectedDisplayId ??
@@ -286,12 +352,12 @@ export function UserDesktopSupervisionRouteScreen({
         setSnapshot(null);
         await capture(nextDisplayId);
       } catch (cause) {
-        setError(failureMessage(cause));
+        if (isCurrent(generation)) setError(failureMessage(cause));
       } finally {
-        setBusy(false);
+        if (isCurrent(generation)) setBusy(false);
       }
     },
-    [capture, params.desktopId, run, selectedDisplayId],
+    [capture, currentGeneration, isCurrent, params.desktopId, requestAccess, selectedDisplayId],
   );
 
   const selectDisplay = useCallback(
@@ -395,26 +461,30 @@ export function UserDesktopSupervisionRouteScreen({
   }, [params.desktopId, run]);
 
   const takeControlWithLease = useCallback(
-    async (takeoverLeaseId?: ComputerAutomationLeaseId) => {
+    async (takeoverLeaseId?: ComputerAutomationLeaseId, generation = currentGeneration()) => {
+      if (!isCurrent(generation)) return;
       setBusy(true);
       setError(null);
       try {
-        const nextStatus = await run<ComputerAutomationStatus>({
-          request: {
-            operation: "request-control",
-            desktopId: params.desktopId,
-            ...(takeoverLeaseId === undefined ? {} : { takeoverLeaseId }),
+        const nextStatus = await requestAccess(
+          {
+            request: {
+              operation: "request-control",
+              desktopId: params.desktopId,
+              ...(takeoverLeaseId === undefined ? {} : { takeoverLeaseId }),
+            },
+            timeoutMs: ACCESS_REQUEST_TIMEOUT_MS,
           },
-          timeoutMs: ACCESS_REQUEST_TIMEOUT_MS,
-        });
-        setStatus(nextStatus);
+          generation,
+        );
+        if (nextStatus !== null) setStatus(nextStatus);
       } catch (cause) {
-        setError(failureMessage(cause));
+        if (isCurrent(generation)) setError(failureMessage(cause));
       } finally {
-        setBusy(false);
+        if (isCurrent(generation)) setBusy(false);
       }
     },
-    [params.desktopId, run],
+    [currentGeneration, isCurrent, params.desktopId, requestAccess],
   );
 
   const takeControl = useCallback(() => {
@@ -426,6 +496,7 @@ export function UserDesktopSupervisionRouteScreen({
       return;
     }
     const controller = lease.controller;
+    const generation = currentGeneration();
     Alert.alert(
       "Take control of this desktop?",
       `${params.label} is controlled by ${
@@ -440,77 +511,51 @@ export function UserDesktopSupervisionRouteScreen({
         {
           text: "Take control",
           style: "destructive",
-          onPress: () => void takeControlWithLease(takeoverLeaseId),
+          onPress: () => void takeControlWithLease(takeoverLeaseId, generation),
         },
       ],
     );
-  }, [liveStarted, params.label, takeControlWithLease]);
+  }, [currentGeneration, liveStarted, params.label, takeControlWithLease]);
 
   const releaseControl = useCallback(async () => {
+    const generation = currentGeneration();
+    if (!isCurrent(generation)) return;
     setBusy(true);
     setError(null);
     try {
-      setStatus(
-        await run<ComputerAutomationStatus>({
+      const nextStatus = await requestAccess(
+        {
           request: { operation: "release-control", desktopId: params.desktopId },
-        }),
+        },
+        generation,
       );
+      if (nextStatus !== null) setStatus(nextStatus);
     } catch (cause) {
-      setError(failureMessage(cause));
+      if (isCurrent(generation)) setError(failureMessage(cause));
     } finally {
-      setBusy(false);
+      if (isCurrent(generation)) setBusy(false);
     }
-  }, [params.desktopId, run]);
+  }, [currentGeneration, isCurrent, params.desktopId, requestAccess]);
 
   const returnControl = useCallback(async () => {
+    const generation = currentGeneration();
+    if (!isCurrent(generation)) return;
     setBusy(true);
     setError(null);
     try {
-      setStatus(
-        await run<ComputerAutomationStatus>({
+      const nextStatus = await requestAccess(
+        {
           request: { operation: "return-control", desktopId: params.desktopId },
-        }),
+        },
+        generation,
       );
+      if (nextStatus !== null) setStatus(nextStatus);
     } catch (cause) {
-      setError(failureMessage(cause));
+      if (isCurrent(generation)) setError(failureMessage(cause));
     } finally {
-      setBusy(false);
+      if (isCurrent(generation)) setBusy(false);
     }
-  }, [params.desktopId, run]);
-
-  const releaseTransientAccess = useCallback(async () => {
-    setLiveStarted(false);
-    setSnapshot(null);
-    snapshotRef.current = null;
-    try {
-      await run({ request: { operation: "release", desktopId: params.desktopId } });
-      setStatus(
-        await run<ComputerAutomationStatus>({
-          request: { operation: "status", desktopId: params.desktopId },
-        }),
-      );
-    } catch {
-      // Expiry and disconnect remain the backstop when the app backgrounds abruptly.
-    }
-  }, [params.desktopId, run]);
-
-  useEffect(() => {
-    const subscription = AppState.addEventListener("change", (nextState) => {
-      if (nextState !== "active" && (liveStarted || statusRef.current?.lease?.access !== "none")) {
-        void releaseTransientAccess();
-      }
-    });
-    return () => subscription.remove();
-  }, [liveStarted, releaseTransientAccess]);
-
-  useEffect(
-    () => () => {
-      void run({ request: { operation: "release", desktopId: params.desktopId } }).catch(
-        () => undefined,
-      );
-    },
-    [params.desktopId, run],
-  );
+  }, [currentGeneration, isCurrent, params.desktopId, requestAccess]);
 
   const endAllAccess = useCallback(() => {
     Alert.alert(
@@ -666,6 +711,7 @@ export function UserDesktopSupervisionRouteScreen({
         <View className="flex-row rounded-[14px] bg-subtle p-1">
           <SupervisionButton
             label="Live"
+            disabled={busy}
             selected={mode === "live"}
             onPress={() => (liveStarted ? setMode("live") : void startLive())}
           />
@@ -835,7 +881,7 @@ export function UserDesktopSupervisionRouteScreen({
             />
             <SupervisionButton
               label="Type"
-              disabled={text.length === 0}
+              disabled={busy || text.length === 0}
               onPress={() => sendText(false)}
             />
           </View>
@@ -897,12 +943,14 @@ export function UserDesktopSupervisionRouteScreen({
             onPress={() => void releaseTransientAccess()}
           />
         ) : null}
-        <SupervisionButton
-          label="End all access"
-          disabled={busy}
-          destructive
-          onPress={endAllAccess}
-        />
+        {params.threadId === undefined && params.agentOwner === undefined ? (
+          <SupervisionButton
+            label="End all access"
+            disabled={busy}
+            destructive
+            onPress={endAllAccess}
+          />
+        ) : null}
       </ScrollView>
     </View>
   );

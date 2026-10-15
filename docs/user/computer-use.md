@@ -233,6 +233,15 @@ Super reach only the guest. GNOME may show a first-use prompt to allow shortcut 
 emergency Super+Escape chord immediately restores host shortcuts, and leaving full screen releases
 the human control lease.
 
+## Supervision beside the conversation
+
+Open **Desktop** in the thread's side panel on web or desktop, or from the thread header on mobile.
+Select an Agent desktop owned by that conversation or a User desktop in its environment. The
+surface identifies the destination and offers live viewing, Agent lens observations, takeover,
+and return control. It also shows recent command output and live file-transfer progress for the
+conversation. Command history is bounded; the original tool result remains in the conversation.
+Use Settings for remembered access, execution grants, inventory, retention, and maintenance.
+
 ## Supervising User Desktops
 
 **Settings → User desktops** groups every connected route to the same physical desktop under its
@@ -402,6 +411,13 @@ only while stopped or cold-parked; running work, human or agent access, active g
 software desktops with saved memory are not interrupted. Settings shows due, active, failed, and
 completed maintenance and can queue the same safe path manually.
 
+For a persistent debugging environment, choose **Use manual updates** in **Settings → Agent
+desktops**. This disables T3's automatic OS upgrades for that desktop; explicit Update requests
+still use the same verified rollback path. Choose **Enable automatic updates** to restore the
+default. Manual updates does not make the filesystem immutable: agents, applications, and guest
+package commands can still change it. Retention remains independent; choose preserve retention
+when the desktop must also be exempt from automatic retirement.
+
 Stopped or parked desktops using automatic retention enter a seven-day recovery window after 30
 days without activity. The host also maintains a free-space reserve of five percent of the Agent
 desktop filesystem, bounded between 2 GiB and 20 GiB. When storage falls below that reserve,
@@ -422,8 +438,10 @@ disk-consistent checkpoints because their live GPU state cannot be serialized.
 Each desktop has an independent NAT connection and its own byte, packet, drop, rate, address, and
 bounded connection accounting. Outbound networking works by default. Inbound guest services stay
 private until an agent publishes an exact guest port as loopback-only, tailnet-visible, or
-network-visible. Packet contents are not retained during ordinary accounting; a bounded capture is
-created only when an agent explicitly requests one.
+network-visible. Packet contents are not retained during ordinary accounting. An agent can explicitly
+request a capture with `agent_desktop_packet_capture`, specifying a duration and byte limit. It records
+one desktop's virtual network traffic on the host and returns a private capture file, without requiring
+capture software inside the guest.
 
 Guest commands use an exact executable and argument vector over a private guest channel rather than
 an implicit shell. Bounded file reads and writes use that same channel. The default command user is

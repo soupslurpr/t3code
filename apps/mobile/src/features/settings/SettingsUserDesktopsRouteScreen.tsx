@@ -1,3 +1,5 @@
+import { useAtomValue } from "@effect/atom-react";
+import { Atom } from "effect/reactivity";
 import { squashAtomCommandFailure } from "@t3tools/client-runtime/state/runtime";
 import type {
   EnvironmentId,
@@ -152,6 +154,26 @@ export function SettingsUserDesktopsRouteScreen() {
   const navigation = useNavigation();
   const insets = useSafeAreaInsets();
   const { connectedEnvironments } = useRemoteConnectionStatus();
+  const permitted = useAtomValue(
+    useMemo(
+      () =>
+        Atom.make(
+          (get) =>
+            new Set(
+              connectedEnvironments
+                .filter((environment) =>
+                  get(
+                    previewEnvironment.invokeUserDesktopHuman.permissionAtom(
+                      environment.environmentId,
+                    ),
+                  ),
+                )
+                .map((environment) => environment.environmentId),
+            ),
+        ),
+      [connectedEnvironments],
+    ),
+  );
   const invoke = useAtomCommand(previewEnvironment.invokeUserDesktopHuman, {
     reportFailure: false,
   });
@@ -193,7 +215,8 @@ export function SettingsUserDesktopsRouteScreen() {
           }
         }
         const environments = connectedEnvironments.filter(
-          (environment) => environment.connectionState === "connected",
+          (environment) =>
+            environment.connectionState === "connected" && permitted.has(environment.environmentId),
         );
         const results = await Promise.all(
           environments.map(async (environment) => {
@@ -253,7 +276,7 @@ export function SettingsUserDesktopsRouteScreen() {
         if (refreshInFlight.current === next) refreshInFlight.current = null;
       });
     },
-    [connectedEnvironments, run],
+    [connectedEnvironments, permitted, run],
   );
 
   useFocusEffect(
@@ -394,7 +417,11 @@ export function SettingsUserDesktopsRouteScreen() {
                 ) : null}
                 <Pressable
                   accessibilityRole="button"
-                  disabled={!group.supportsView || group.connectionState !== "online"}
+                  disabled={
+                    !permitted.has(group.primary.environmentId) ||
+                    !group.supportsView ||
+                    group.connectionState !== "online"
+                  }
                   className="items-center rounded-[14px] bg-primary px-4 py-3 disabled:opacity-40"
                   onPress={() =>
                     navigation.navigate("UserDesktopSupervision", {

@@ -715,6 +715,7 @@ const PreviewPanel = lazy(() =>
 const DiffPanel = lazy(() => import("./DiffPanel"));
 const selectAutoShowFloatingPreview = (settings: { browserAutoShowFloatingPreview: boolean }) =>
   settings.browserAutoShowFloatingPreview;
+const ThreadDesktopPanel = lazy(() => import("./chat/ThreadDesktopPanel"));
 const DevicePanel = lazy(() =>
   import("./device/DevicePanel").then((module) => ({ default: module.DevicePanel })),
 );
@@ -5412,6 +5413,10 @@ export default function ChatView(props: ChatViewProps) {
     activeThreadRef?.environmentId ?? null,
   );
   const [deviceSetupThread, setDeviceSetupThread] = useState<ScopedThreadRef | null>(null);
+  const addDesktopSurface = () => {
+    if (activeThreadRef) useRightPanelStore.getState().open(activeThreadRef, "desktop");
+  };
+  const addDesktopSurfaceStable = useStableCallback(addDesktopSurface);
   const addDeviceSurface = () => {
     if (!activeThreadRef) return;
     if (deviceState.hostStatus === "disabled") {
@@ -10940,6 +10945,15 @@ export default function ChatView(props: ChatViewProps) {
       />
     ) : renderedRightPanelSurface?.kind === "pull-requests" && activeThreadRef ? (
       <ThreadPullRequestsPanel threadRef={activeThreadRef} />
+    ) : renderedRightPanelSurface?.kind === "desktop" && activeThreadRef ? (
+      <Suspense fallback={null}>
+        {rightPanelOpen ? (
+          <ThreadDesktopPanel
+            key={`${activeThreadRef.environmentId}:${activeThreadRef.threadId}`}
+            thread={activeThreadRef}
+          />
+        ) : null}
+      </Suspense>
     ) : renderedRightPanelSurface?.kind === "device" ? (
       <Suspense fallback={null}>
         <DevicePanel
@@ -11872,6 +11886,7 @@ export default function ChatView(props: ChatViewProps) {
           onAddFiles={addFilesSurfaceStable}
           onAddPullRequest={addPullRequestSurfaceStable}
           onAddPullRequests={addPullRequestsSurfaceStable}
+          onAddDesktop={activeThreadRef ? addDesktopSurfaceStable : undefined}
           onAddDevice={addDeviceSurfaceStable}
           browserAvailable={canOperatePreview && browserAvailable}
           terminalAvailable={activeProject !== null && canOperateTerminal}
@@ -11931,6 +11946,7 @@ export default function ChatView(props: ChatViewProps) {
             onAddFiles={addFilesSurfaceStable}
             onAddPullRequest={addPullRequestSurfaceStable}
             onAddPullRequests={addPullRequestsSurfaceStable}
+            onAddDesktop={activeThreadRef ? addDesktopSurfaceStable : undefined}
             onAddDevice={addDeviceSurfaceStable}
             browserAvailable={canOperatePreview && browserAvailable}
             terminalAvailable={activeProject !== null && canOperateTerminal}

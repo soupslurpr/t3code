@@ -116,6 +116,8 @@ export const AgentDesktopHumanRequest = Schema.Union([
     owner: AgentDesktopOwner,
     input: AgentDesktopInspectInput,
   }),
+  Schema.Struct({ operation: Schema.Literal("status"), ...AgentDesktopHumanTarget }),
+  Schema.Struct({ operation: Schema.Literal("return-control"), ...AgentDesktopHumanTarget }),
   Schema.Struct({ operation: Schema.Literal("request-view"), ...AgentDesktopHumanTarget }),
   Schema.Struct({ operation: Schema.Literal("request-control"), ...AgentDesktopHumanTarget }),
   Schema.Struct({

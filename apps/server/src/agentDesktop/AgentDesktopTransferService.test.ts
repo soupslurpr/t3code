@@ -307,6 +307,20 @@ describe("AgentDesktopTransferService", () => {
                 waitMs: 0,
               })
               .pipe(Effect.provide(projectionLayer(workspaceRoot)));
+            assert.deepEqual(
+              (yield* transfers.listForThread(scope.environmentId, scope.thread.threadId)).map(
+                (item) => item.id,
+              ),
+              [started.id],
+            );
+            assert.deepEqual(
+              yield* transfers.listForThread("another-environment", scope.thread.threadId),
+              [],
+            );
+            assert.deepEqual(
+              yield* transfers.listForThread(scope.environmentId, "another-thread"),
+              [],
+            );
             const cancelled = yield* transfers.cancel(scope, { transferId: started.id });
             const retained = yield* transfers.status(scope, { transferId: started.id });
 

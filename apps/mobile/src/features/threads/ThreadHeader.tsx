@@ -1,3 +1,4 @@
+import { useNavigation } from "@react-navigation/native";
 import { useMemo } from "react";
 import { AppBar } from "../../components/ui/AppBar";
 import { ScreenHeaderButton } from "../../components/ui/ScreenHeaderButton";
@@ -18,12 +19,32 @@ export function ThreadHeader(
     readonly onOpenFilesInspector: () => void;
   },
 ) {
+  const navigation = useNavigation();
   const returnToList = useWorkspaceListNavigation("threads");
   const { layout, panes, toggleAuxiliaryPane } = useAdaptiveWorkspaceLayout();
   const { onOpenTerminal, onMergeBack } = props.gitControls;
   const native = useThreadHeaderOptions(props);
   const androidHeaderActions = useMemo<ReadonlyArray<AppBarAction>>(() => {
-    const actions: AppBarAction[] = [];
+    const actions: AppBarAction[] = [
+      {
+        accessibilityLabel: "Monitors",
+        icon: "clock",
+        onPress: () =>
+          navigation.navigate("ThreadMonitors", {
+            environmentId: props.gitControls.environmentId,
+            threadId: props.gitControls.threadId,
+          }),
+      },
+      {
+        accessibilityLabel: "Desktop",
+        icon: "desktopcomputer",
+        onPress: () =>
+          navigation.navigate("ThreadDesktops", {
+            environmentId: props.gitControls.environmentId,
+            threadId: props.gitControls.threadId,
+          }),
+      },
+    ];
     if (props.onReturnToThread) {
       actions.push({
         accessibilityLabel: "Return to chat",
@@ -61,6 +82,9 @@ export function ThreadHeader(
     }
     return actions;
   }, [
+    navigation,
+    props.gitControls.environmentId,
+    props.gitControls.threadId,
     props.inspectorMode,
     panes.auxiliaryPaneVisible,
     props.onOpenFilesInspector,

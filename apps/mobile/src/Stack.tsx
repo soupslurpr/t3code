@@ -115,6 +115,8 @@ import {
 import { ScheduledTaskEditorProvider } from "./features/settings/scheduled-task-editor";
 import { SettingsKeyboardRouteScreen } from "./features/settings/SettingsKeyboardRouteScreen";
 import { SettingsUserDesktopsRouteScreen } from "./features/settings/SettingsUserDesktopsRouteScreen";
+import { ThreadDesktopsRouteScreen } from "./features/threads/ThreadDesktopsRouteScreen";
+import { ThreadMonitorsRouteScreen } from "./features/threads/ThreadMonitorsRouteScreen";
 import { UserDesktopSupervisionRouteScreen } from "./features/settings/UserDesktopSupervisionRouteScreen";
 import { SettingsLegalRouteScreen } from "./features/settings/SettingsLegalRouteScreen";
 import { SettingsMicrophoneRouteScreen } from "./features/settings/SettingsMicrophoneRouteScreen";
@@ -963,6 +965,14 @@ const RootStackConfig = createWorkspaceStackNavigator({
         gestureEnabled: true,
         headerShown: false,
       },
+    }),
+    ThreadDesktops: createNativeStackScreen({
+      screen: ThreadDesktopsRouteScreen,
+      options: SOLID_HEADER_OPTIONS,
+    }),
+    ThreadMonitors: createNativeStackScreen({
+      screen: ThreadMonitorsRouteScreen,
+      options: { ...SOLID_HEADER_OPTIONS, title: "Monitors" },
     }),
     UserDesktopSupervision: createNativeStackScreen({
       screen: UserDesktopSupervisionRouteScreen,

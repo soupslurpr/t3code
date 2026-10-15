@@ -23,6 +23,10 @@ export function humanRequestOperation(
       return "agentDesktopManage";
     case "inspect":
       return "agentDesktopInspect";
+    case "status":
+      return "computerStatus";
+    case "return-control":
+      return "computerRelease";
     case "request-view":
       return "computerRequestView";
     case "request-control":
@@ -81,6 +85,20 @@ export const runAgentDesktopHumanRequest = Effect.fn("AgentDesktopHuman.run")(fu
     });
   }
   switch (request.operation) {
+    case "status":
+      return yield* manager.humanStatus(
+        request.owner,
+        scope.thread.providerSessionId,
+        request.desktopId,
+      );
+    case "return-control":
+      yield* manager.release(scope.thread.providerSessionId, request.desktopId);
+      yield* manager.requestControl(request.owner, { kind: "agent", desktopId: request.desktopId });
+      return yield* manager.requestHumanView(
+        request.owner,
+        scope.thread.providerSessionId,
+        request.desktopId,
+      );
     case "manage":
       return yield* manager.manage(request.owner, request.input);
     case "inspect":

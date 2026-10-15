@@ -1,3 +1,4 @@
+import { ThreadDesktopActivityService } from "./computer/ThreadDesktopActivity.ts";
 import { OrchestrationDispatchCommandError } from "@t3tools/contracts";
 import * as Clock from "effect/Clock";
 import * as Crypto from "effect/Crypto";
@@ -1257,6 +1258,7 @@ const layerWsRpc = (
       const providerSessionManager = yield* ProviderSessionManager.ProviderSessionManagerV2;
       const scheduledTasks = yield* ScheduledTasks.ScheduledTaskService;
       const secretRequests = yield* SecretRequests.SecretRequests;
+      const threadDesktopActivity = yield* ThreadDesktopActivityService;
       const threadMonitors = yield* ThreadMonitors.ThreadMonitorService;
       const pullRequests = yield* PullRequestService.PullRequestService;
       const reviewGuides = yield* PullRequestReviewGuideService.PullRequestReviewGuideService;
@@ -2093,6 +2095,7 @@ const layerWsRpc = (
           ),
         [WS_METHODS.scheduledTasksList]: (_input) =>
           scheduledTasks.list().pipe(Effect.map(withVisibleWebhookUrls)),
+        [WS_METHODS.threadDesktopActivity]: ({ threadId }) => threadDesktopActivity.read(threadId),
         [WS_METHODS.threadMonitorsSubscribe]: ({ threadId }) =>
           threadMonitors.subscribeSummaries(threadId),
         [WS_METHODS.threadMonitorsCancel]: ({ threadId, monitorId }) =>
