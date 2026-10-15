@@ -135,7 +135,7 @@ export const make = Effect.gen(function* () {
       version: 1,
       grants: next.filter((grant) => grant.remembered),
     });
-    const temporaryPath = `${grantsPath}.${yield* crypto.randomUUIDv4}.tmp`;
+    const temporaryPath = `${grantsPath}.${yield* crypto.randomUUIDv4()}.tmp`;
     yield* fileSystem.makeDirectory(environment.stateDir, { recursive: true });
     yield* fileSystem.writeFileString(temporaryPath, encoded, { mode: 0o600 });
     yield* fileSystem
@@ -191,7 +191,7 @@ export const make = Effect.gen(function* () {
     }
     const scope = input.scope ?? "thread";
     const abort = new AbortController();
-    const promptId = yield* crypto.randomUUIDv4;
+    const promptId = yield* crypto.randomUUIDv4();
     pending.set(promptId, { owner, abort });
     const scopeLabel =
       scope === "desktop"
@@ -225,7 +225,7 @@ export const make = Effect.gen(function* () {
           ),
         );
       const grant: DesktopExecutionGrant = {
-        grantId: yield* crypto.randomUUIDv4,
+        grantId: yield* crypto.randomUUIDv4(),
         scope,
         environmentId:
           scope === "desktop"

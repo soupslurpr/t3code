@@ -396,11 +396,24 @@ export const layerWithOptions = (
       const sessionOpen = yield* KeyedLock.make<ProviderSessionId>();
       interface ReleasedEntry {
         readonly entry: LiveSessionEntry;
+        readonly reason: ProviderSessionReleaseReason;
+        readonly detachedThreadId?: ThreadId;
         requestIds: ReadonlyMap<ThreadId, ReadonlySet<RuntimeRequestId>> | undefined;
+        backgroundTasks: ReadonlyArray<ReleasedBackgroundTasks> | undefined;
       }
-      // A replacement cannot publish requests until the previous entry's exact
-      // request IDs are known. Keep only snapshots still waiting on a read.
+      // A replacement cannot publish requests or background tasks until both
+      // of the previous entry's snapshots are known.
       const pendingReleaseSnapshots = new Map<ProviderSessionId, ReleasedEntry>();
+      const forgetCapturedReleaseSnapshot = (released: ReleasedEntry) => {
+        const providerSessionId = released.entry.runtime.providerSessionId;
+        if (
+          released.requestIds !== undefined &&
+          released.backgroundTasks !== undefined &&
+          pendingReleaseSnapshots.get(providerSessionId) === released
+        ) {
+          pendingReleaseSnapshots.delete(providerSessionId);
+        }
+      };
       const threadAttachment = yield* KeyedLock.make<string>();
       const threadAttachmentKey = (input: {
         readonly providerSessionId: ProviderSessionId;
@@ -663,9 +676,7 @@ export const layerWithOptions = (
             );
           }
           released.requestIds = requestIds;
-          if (pendingReleaseSnapshots.get(providerSessionId) === released) {
-            pendingReleaseSnapshots.delete(providerSessionId);
-          }
+          forgetCapturedReleaseSnapshot(released);
           return requestIds;
         },
       );
@@ -777,7 +788,7 @@ export const layerWithOptions = (
         }
       });
 
-      // Read as soon as the session leaves the live map: after that, a
+      // Capture under sessionOpen as the session leaves the live map: a
       // replacement session with the same id can open and report tasks of its
       // own on the same provider threads. OpenCode's background subagents run
       // on a server shared by its sessions and can outlive this one, so their
@@ -832,6 +843,15 @@ export const layerWithOptions = (
       type ReleasedBackgroundTasks = Effect.Success<
         ReturnType<typeof readReleasedBackgroundTasks>
       >[number];
+
+      const captureReleasedBackgroundTasks = Effect.fn(
+        "ProviderSessionManager.captureReleasedBackgroundTasks",
+      )(function* (released: ReleasedEntry) {
+        if (released.backgroundTasks !== undefined) return released.backgroundTasks;
+        released.backgroundTasks = yield* readReleasedBackgroundTasks(released);
+        forgetCapturedReleaseSnapshot(released);
+        return released.backgroundTasks;
+      });
 
       // Their process is gone, so nothing will report them ending, and a
       // leftover roster keeps the thread Waiting (#15239).
@@ -962,6 +982,8 @@ export const layerWithOptions = (
       const removeLiveEntry = Effect.fn("ProviderSessionManager.removeLiveEntry")(
         function* (input: {
           readonly providerSessionId: ProviderSessionId;
+          readonly reason: ProviderSessionReleaseReason;
+          readonly detachedThreadId?: ThreadId;
           readonly onlyIfIdleGeneration?: number;
         }): Effect.fn.Return<Option.Option<ReleasedEntry>> {
           const key = sessionKey(input.providerSessionId);
@@ -988,7 +1010,15 @@ export const layerWithOptions = (
           // Another entry took this id while the permit was held; release it instead.
           if (removed === "changed") return yield* removeLiveEntry(input);
           if (removed !== "removed") return Option.none<ReleasedEntry>();
-          const released: ReleasedEntry = { entry: candidate, requestIds: undefined };
+          const released: ReleasedEntry = {
+            entry: candidate,
+            reason: input.reason,
+            ...(input.detachedThreadId === undefined
+              ? {}
+              : { detachedThreadId: input.detachedThreadId }),
+            requestIds: undefined,
+            backgroundTasks: undefined,
+          };
           pendingReleaseSnapshots.set(input.providerSessionId, released);
           return Option.some(released);
         },
@@ -1090,13 +1120,9 @@ export const layerWithOptions = (
             onSome: (released) =>
               Effect.gen(function* () {
                 const { entry } = released;
-                const releasedBackgroundTasks = yield* readReleasedBackgroundTasks({
-                  entry,
-                  reason: input.reason,
-                  ...(input.detachedThreadId === undefined
-                    ? {}
-                    : { detachedThreadId: input.detachedThreadId }),
-                });
+                const releasedBackgroundTasks = yield* withOpenLock(
+                  captureReleasedBackgroundTasks(released),
+                );
                 if (input.cancelIdleFiber !== false) {
                   yield* cancelIdleFiber(entry.idleFiber);
                 }
@@ -2232,7 +2258,13 @@ export const layerWithOptions = (
             Effect.gen(function* () {
               const pendingSnapshot = pendingReleaseSnapshots.get(input.providerSessionId);
               if (pendingSnapshot !== undefined) {
-                yield* captureReleasedRequests(pendingSnapshot).pipe(
+                yield* Effect.all(
+                  [
+                    captureReleasedRequests(pendingSnapshot),
+                    captureReleasedBackgroundTasks(pendingSnapshot),
+                  ],
+                  { concurrency: 1, discard: true },
+                ).pipe(
                   Effect.mapError(
                     (cause) =>
                       new ProviderSessionOpenError({

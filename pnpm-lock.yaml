@@ -760,9 +760,6 @@ importers:
       stream-json:
         specifier: 3.6.0
         version: 3.6.0
-      sharp:
-        specifier: 0.34.5
-        version: 0.34.5
       undici:
         specifier: 'catalog:'
         version: 8.11.2

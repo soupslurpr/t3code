@@ -2490,7 +2490,7 @@ export const make = Effect.gen(function* () {
         detail: "the host does not currently have enough free memory for another Agent desktop",
       });
     }
-    const uuid = yield* crypto.randomUUIDv4.pipe(
+    const uuid = yield* crypto.randomUUIDv4().pipe(
       Effect.mapError(
         (cause) =>
           new AgentDesktopManagerError({
@@ -4450,7 +4450,7 @@ export const make = Effect.gen(function* () {
             yield* qemu.checkpoint(desktop.id, graphicsBackend(desktop) !== "virgl");
             return yield* summary(yield* requireDesktop(owner.controllerId, desktop.id));
           case "clone": {
-            const uuid = yield* crypto.randomUUIDv4.pipe(
+            const uuid = yield* crypto.randomUUIDv4().pipe(
               Effect.mapError(
                 (cause) =>
                   new AgentDesktopManagerError({
@@ -5440,7 +5440,7 @@ export const make = Effect.gen(function* () {
         const visibility = input.visibility ?? "local";
         const hostAddress = yield* routeAddress(visibility);
         const hostPort = yield* findAvailablePort(hostAddress);
-        const uuid = yield* crypto.randomUUIDv4.pipe(
+        const uuid = yield* crypto.randomUUIDv4().pipe(
           Effect.mapError(
             (cause) =>
               new AgentDesktopManagerError({
