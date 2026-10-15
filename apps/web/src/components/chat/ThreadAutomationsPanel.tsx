@@ -17,7 +17,10 @@ import {
   type ThreadId,
   type ThreadMonitorSummary,
 } from "@t3tools/contracts";
-import { scheduledTaskDispatchStatus } from "@t3tools/client-runtime/automations";
+import {
+  scheduledTaskDispatchStatus,
+  threadMonitorDetails,
+} from "@t3tools/client-runtime/automations";
 import {
   isAtomCommandInterrupted,
   squashAtomCommandFailure,
@@ -70,6 +73,9 @@ export function ThreadAutomationsPanel(props: {
 }) {
   const canOperate = useAtomValue(
     serverEnvironment.runScheduledTaskNow.permissionAtom(props.environmentId),
+  );
+  const canCancelMonitor = useAtomValue(
+    serverEnvironment.cancelThreadMonitor.permissionAtom(props.environmentId),
   );
   const tasksQuery = useEnvironmentQuery(
     serverEnvironment.scheduledTasksLive({ environmentId: props.environmentId, input: {} }),
@@ -155,7 +161,11 @@ export function ThreadAutomationsPanel(props: {
   };
 
   const cancelWait = async (monitor: ThreadMonitorSummary) => {
-    if (busyMonitorId !== null) return;
+    if (
+      busyMonitorId !== null ||
+      !readEnvironmentScope(props.environmentId, AuthOrchestrationOperateScope)
+    )
+      return;
     setBusyMonitorId(monitor.id);
     const result = await cancelMonitor({
       environmentId: props.environmentId,
@@ -315,60 +325,19 @@ export function ThreadAutomationsPanel(props: {
               <span className="block truncate text-sm font-medium text-foreground/80">
                 {monitor.label}
               </span>
-              {monitor.criterion ? (
-                <Tooltip>
-                  <TooltipTrigger
-                    render={<p className="line-clamp-2 text-2xs text-muted-foreground" />}
-                  >
-                    {monitor.criterion}
-                  </TooltipTrigger>
-                  <TooltipPopup>{monitor.criterion}</TooltipPopup>
-                </Tooltip>
-              ) : (
-                <p className="text-2xs text-muted-foreground">
-                  {monitor.condition === "time"
-                    ? "One-time timer"
-                    : monitor.condition === "signal"
-                      ? "External signal"
-                      : "Screen image changes"}
-                </p>
-              )}
               <p className="text-2xs text-muted-foreground">
                 {monitor.status === "triggered"
-                  ? monitor.continuation.mode === "resume-thread"
-                    ? "Waiting to resume"
-                    : "Recording result"
+                  ? "Waiting to deliver"
                   : monitor.reviewRequired
                     ? "Agent review needed"
-                    : monitor.lastError
-                      ? "Retrying"
-                      : "Waiting"}
+                    : "Waiting"}
                 {monitor.continuation.mode === "record-only" ? " · record only" : ""}
               </p>
-              {monitor.nextCheckAt !== null ? (
-                <p className="text-2xs text-muted-foreground">
-                  {monitor.condition === "time" ? "Due" : "Next check"}{" "}
-                  <time dateTime={monitor.nextCheckAt}>
-                    {new Date(monitor.nextCheckAt).toLocaleString()}
-                  </time>
+              {threadMonitorDetails(monitor).map((detail) => (
+                <p key={detail.label} className="break-words text-2xs text-muted-foreground">
+                  {detail.label}: {detail.value}
                 </p>
-              ) : null}
-              {monitor.deadlineAt !== null ? (
-                <p className="text-2xs text-muted-foreground">
-                  Deadline{" "}
-                  <time dateTime={monitor.deadlineAt}>
-                    {new Date(monitor.deadlineAt).toLocaleString()}
-                  </time>
-                </p>
-              ) : null}
-              {monitor.lastError ? (
-                <Tooltip>
-                  <TooltipTrigger render={<p className="line-clamp-2 text-2xs text-destructive" />}>
-                    {monitor.lastError}
-                  </TooltipTrigger>
-                  <TooltipPopup>{monitor.lastError}</TooltipPopup>
-                </Tooltip>
-              ) : null}
+              ))}
             </div>
             <Tooltip>
               <TooltipTrigger
@@ -378,7 +347,9 @@ export function ThreadAutomationsPanel(props: {
                     variant="ghost"
                     part="icon"
                     aria-label={`Cancel ${monitor.label}`}
-                    disabled={busyMonitorId !== null || monitorsQuery.error !== null}
+                    disabled={
+                      !canCancelMonitor || busyMonitorId !== null || monitorsQuery.error !== null
+                    }
                     onClick={() => void cancelWait(monitor)}
                   >
                     <XIcon className="size-3.5" />

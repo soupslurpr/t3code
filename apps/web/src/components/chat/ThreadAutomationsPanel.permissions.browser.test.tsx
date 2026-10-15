@@ -1,9 +1,16 @@
-import { EnvironmentId, ThreadId, ScheduledTaskId, type ScheduledTask } from "@t3tools/contracts";
+import {
+  EnvironmentId,
+  ThreadId,
+  ScheduledTaskId,
+  type ScheduledTask,
+  ThreadMonitorId,
+  type ThreadMonitorSummary,
+} from "@t3tools/contracts";
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, expect, it, vi } from "vite-plus/test";
 
-const state = vi.hoisted(() => ({ allowed: true, toggle: vi.fn(), run: vi.fn() }));
+const state = vi.hoisted(() => ({ allowed: true, toggle: vi.fn(), run: vi.fn(), cancel: vi.fn() }));
 vi.mock(import("../../state/session"), async (importOriginal) => ({
   ...(await importOriginal()),
   useEnvironmentScope: () => state.allowed,
@@ -23,12 +30,19 @@ vi.mock(import("../../state/use-atom-command"), async (importOriginal) => {
   return {
     ...(await importOriginal()),
     useAtomCommand: ((command: unknown) =>
-      command === serverEnvironment.setScheduledTaskEnabled ? state.toggle : state.run) as never,
+      command === serverEnvironment.setScheduledTaskEnabled
+        ? state.toggle
+        : command === serverEnvironment.cancelThreadMonitor
+          ? state.cancel
+          : state.run) as never,
   };
 });
 vi.mock(import("../../state/query"), async (importOriginal) => ({
   ...(await importOriginal()),
-  useEnvironmentQuery: (() => ({ data: { tasks: [task] }, error: null })) as never,
+  useEnvironmentQuery: (() => ({
+    data: { tasks: [task], monitors: [monitor] },
+    error: null,
+  })) as never,
 }));
 
 import { ThreadAutomationsPanel } from "./ThreadAutomationsPanel";
@@ -42,11 +56,24 @@ const task = {
   schedule: { type: "interval", everyMs: 60000 },
   lastRunStatus: "never",
 } as ScheduledTask;
+const monitor: ThreadMonitorSummary = {
+  id: ThreadMonitorId.make("monitor"),
+  label: "Build completion",
+  status: "active",
+  condition: "signal",
+  criterion: null,
+  nextCheckAt: null,
+  deadlineAt: null,
+  continuation: { mode: "resume-thread" },
+  reviewRequired: false,
+  lastError: null,
+};
 let root: Root;
 let container: HTMLDivElement;
 beforeEach(() => {
   vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
   state.allowed = true;
+  state.cancel.mockReset().mockResolvedValue({ _tag: "Success" });
   state.toggle.mockReset().mockResolvedValue({ _tag: "Success" });
   state.run.mockReset().mockResolvedValue({ _tag: "Success" });
   container = document.createElement("div");
@@ -83,4 +110,23 @@ it("rejects a retained toggle after task permission is revoked", async () => {
   state.allowed = true;
   await act(async () => byLabel("Pause Daily review").click());
   expect(state.toggle).toHaveBeenCalledOnce();
+});
+
+it.each([true, false])(
+  "cancels a monitor only with the destination operate grant (%s)",
+  async (allowed) => {
+    state.allowed = allowed;
+    await renderPanel();
+    const cancel = byLabel("Cancel Build completion") as HTMLButtonElement;
+    expect(cancel.disabled).toBe(!allowed);
+    await act(async () => cancel.click());
+    expect(state.cancel).toHaveBeenCalledTimes(allowed ? 1 : 0);
+  },
+);
+
+it("rejects a retained monitor cancellation after permission is revoked", async () => {
+  await renderPanel();
+  state.allowed = false;
+  await act(async () => byLabel("Cancel Build completion").click());
+  expect(state.cancel).not.toHaveBeenCalled();
 });

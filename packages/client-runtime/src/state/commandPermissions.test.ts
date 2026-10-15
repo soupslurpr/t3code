@@ -380,3 +380,33 @@ it.effect("rejects protected unary and streamed RPCs outside a guarded command",
     expect(writes).toBe(0);
   }),
 );
+
+it.effect("guards monitor and desktop mutations against destination grants and revocation", () =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      const registry = yield* setup;
+      registry.set(sessions(env), AsyncResult.success(grant(true)));
+      registry.set(sessions(other), AsyncResult.success(grant(false)));
+      const commands = [
+        WS_METHODS.threadMonitorsCancel,
+        WS_METHODS.agentDesktopHumanInvoke,
+        WS_METHODS.userDesktopHumanInvoke,
+      ].map((tag) => createCommandPermissions(runtime, tag));
+      for (const command of commands) {
+        expect(registry.get(command.permissionAtom(env))).toBe(true);
+        expect(registry.get(command.permissionAtom(other))).toBe(false);
+        yield* command.authorize(registry, env);
+        expect((yield* command.authorize(registry, other).pipe(Effect.flip)).requiredScope).toBe(
+          AuthOrchestrationOperateScope,
+        );
+      }
+      registry.set(sessions(env), AsyncResult.success(grant(false)));
+      for (const command of commands) {
+        expect(registry.get(command.permissionAtom(env))).toBe(false);
+        expect((yield* command.authorize(registry, env).pipe(Effect.flip)).requiredScope).toBe(
+          AuthOrchestrationOperateScope,
+        );
+      }
+    }),
+  ),
+);

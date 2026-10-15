@@ -11,6 +11,7 @@ import {
   ProviderDriverKind,
   ProviderInstanceId,
   ThreadId,
+  RunId,
   ThreadMonitorError,
   ThreadMonitorId,
   ThreadMonitorSignalInput,
@@ -607,7 +608,7 @@ const completeTestRun = Effect.gen(function* () {
   });
 });
 
-const testRuntime = ThreadMonitorLayer.pipe(
+const schedulerTestRuntime = ThreadMonitorLayer.pipe(
   Layer.provide(computerLayer),
   Layer.provideMerge(OrchestrationLayerLive),
   Layer.provideMerge(ThreadMonitorRepositoryLayer.layer),
@@ -615,8 +616,8 @@ const testRuntime = ThreadMonitorLayer.pipe(
   Layer.provide(ServerConfig.layerTest(process.cwd(), { prefix: "t3-thread-monitor-test-" })),
   Layer.provide(SqlitePersistence.layerMemory),
   Layer.provide(NodeServices.layer),
-  Layer.provide(TestClock.layer()),
 );
+const testRuntime = schedulerTestRuntime.pipe(Layer.provide(TestClock.layer()));
 
 const makeComputerMonitorRuntime = <R>(monitorLayer: Layer.Layer<ThreadMonitorService, never, R>) =>
   monitorLayer.pipe(
@@ -761,6 +762,8 @@ describe("ThreadMonitor", () => {
           deadlineAt: null,
           continuation: { mode: "resume-thread" },
           reviewRequired: false,
+          result: null,
+          blockedReason: null,
           lastError: null,
         },
       ]);
@@ -3055,4 +3058,399 @@ it.effect(
         ),
       ),
     ),
+);
+
+import { PersistenceSqlError } from "../persistence/Errors.ts";
+
+const verifySchedulerRetry = (failAt: number | null) =>
+  Effect.gen(function* () {
+    const reads = yield* Ref.make(0);
+    const repositoryOverride = Layer.effect(
+      ThreadMonitorRepository,
+      Effect.gen(function* () {
+        const repository = yield* ThreadMonitorRepository;
+        return {
+          ...repository,
+          listOutstanding: () =>
+            Effect.gen(function* () {
+              const count = yield* Ref.updateAndGet(reads, (n) => n + 1);
+              if (count === failAt)
+                return yield* Effect.fail(
+                  new PersistenceSqlError({
+                    operation: "review-transient-failure",
+                    detail: "one injected scheduling read failure",
+                  }),
+                );
+              return yield* repository.listOutstanding();
+            }),
+        } satisfies ThreadMonitorRepository["Service"];
+      }),
+    );
+    const runtime = Layer.effect(ThreadMonitorService, ThreadMonitor.make).pipe(
+      Layer.provide(repositoryOverride),
+      Layer.provide(computerLayer),
+      Layer.provideMerge(OrchestrationLayerLive),
+      Layer.provideMerge(ThreadMonitorRepositoryLayer.layer),
+      Layer.provide(RepositoryIdentityResolver.layer),
+      Layer.provide(ServerConfig.layerTest(process.cwd(), { prefix: "t3-scheduler-retry-" })),
+      Layer.provide(SqlitePersistence.layerMemory),
+      Layer.provide(NodeServices.layer),
+    );
+    yield* Effect.gen(function* () {
+      yield* seedThread;
+      const service = yield* ThreadMonitorService;
+      const monitor = yield* service.create({
+        threadId,
+        monitor: {
+          label: "Timer must survive transient scheduling read error",
+          schedule: { type: "after", durationMs: 60_000 },
+          continuation: "record-only",
+        },
+      });
+      yield* service.start;
+      yield* TestClock.adjust("1 second");
+      assert.strictEqual(yield* Ref.get(reads), 5, "startup and both scheduling cycles ran");
+      yield* TestClock.adjust("2 hours");
+      const status = yield* service.status({
+        threadId,
+        query: { monitorId: monitor.id, includeFinished: true },
+      });
+      assert.strictEqual(
+        status.monitors[0]?.status,
+        "delivered",
+        `timer remains overdue after one transient read failure; repository reads=${yield* Ref.get(reads)}`,
+      );
+    }).pipe(Effect.provide(runtime));
+  });
+
+describe("durable scheduler recovery", () => {
+  it.effect("control: scheduler delivers without a read failure", () => verifySchedulerRetry(null));
+  it.effect("retries after one failed deadline scheduling read", () => verifySchedulerRetry(5));
+});
+
+describe("native run monitors", () => {
+  it.effect("persists an exact run wait and delivers the completed outcome from app events", () =>
+    Effect.gen(function* () {
+      yield* seedThread;
+      const run = yield* startTestRun();
+      const service = yield* ThreadMonitorService;
+      const monitor = yield* service.create({
+        threadId,
+        monitor: {
+          label: "Wait for native completion",
+          continuation: "record-only",
+          schedule: { type: "thread-run", threadId, run: { type: "exact", runId: run.id } },
+        },
+      });
+      const stored = yield* (yield* ThreadMonitorRepository).getById(monitor.id);
+      assert.isTrue(Option.isSome(stored));
+      assert.deepStrictEqual(Option.getOrThrow(stored).condition, monitor.condition);
+      yield* completeTestRun;
+      yield* TestClock.adjust("1 second");
+      const result = (yield* service.status({ threadId, query: { monitorId: monitor.id } }))
+        .monitors[0]!;
+      assert.strictEqual(result.status, "delivered");
+      assert.strictEqual(result.trigger?.reason, "condition");
+      assert.include(result.trigger?.evidence, "Outcome: completed");
+    }).pipe(Effect.provide(Layer.fresh(schedulerTestRuntime))),
+  );
+
+  it.effect("next run ignores prior work, retains its anchor, and reports a stopped run", () =>
+    Effect.gen(function* () {
+      yield* seedThread;
+      yield* startTestRun("prior");
+      yield* completeTestRun;
+      const service = yield* ThreadMonitorService;
+      const monitor = yield* service.create({
+        threadId,
+        monitor: {
+          label: "Wait for next run",
+          continuation: "record-only",
+          schedule: { type: "thread-run", threadId, run: { type: "next" } },
+        },
+      });
+      yield* TestClock.adjust("1 second");
+      assert.strictEqual(
+        (yield* service.status({ threadId, query: { monitorId: monitor.id } })).monitors[0]?.status,
+        "active",
+      );
+      const next = yield* startTestRun("next");
+      if (monitor.condition.type !== "thread-run") throw new Error("Wrong condition");
+      const selected = yield* (yield* ThreadMonitorRepository).getTargetRun(monitor.condition);
+      assert.deepStrictEqual(
+        Option.map(selected, (run) => run.id),
+        Option.some(next.id),
+      );
+      const now = yield* DateTime.now;
+      yield* (yield* EventSinkV2).write({
+        events: [
+          {
+            type: "run.updated",
+            id: EventId.make("native-stopped"),
+            threadId,
+            occurredAt: now,
+            payload: { ...next, status: "interrupted", completedAt: now },
+          },
+        ],
+      });
+      yield* TestClock.adjust("1 second");
+      const result = (yield* service.status({ threadId, query: { monitorId: monitor.id } }))
+        .monitors[0]!;
+      assert.strictEqual(result.status, "delivered");
+      assert.include(result.trigger?.evidence, `Run: ${next.id}`);
+      assert.include(result.trigger?.evidence, "Outcome: stopped");
+    }).pipe(Effect.provide(Layer.fresh(schedulerTestRuntime))),
+  );
+
+  it.effect("distinguishes failed runs and rejects unavailable targets", () =>
+    Effect.gen(function* () {
+      yield* seedThread;
+      const run = yield* startTestRun();
+      const service = yield* ThreadMonitorService;
+      const invalid = yield* service
+        .create({
+          threadId,
+          monitor: {
+            label: "Unknown run",
+            schedule: {
+              type: "thread-run",
+              threadId,
+              run: { type: "exact", runId: RunId.make("unknown") },
+            },
+          },
+        })
+        .pipe(Effect.flip);
+      assert.strictEqual(invalid.code, "INVALID_SCHEDULE");
+      const missing = yield* service
+        .create({
+          threadId,
+          monitor: {
+            label: "Foreign environment",
+            schedule: {
+              type: "thread-run",
+              threadId: ThreadId.make("foreign"),
+              run: { type: "next" },
+            },
+          },
+        })
+        .pipe(Effect.flip);
+      assert.strictEqual(missing.code, "THREAD_UNAVAILABLE");
+      const now = yield* DateTime.now;
+      yield* (yield* EventSinkV2).write({
+        events: [
+          {
+            type: "run.updated",
+            id: EventId.make("native-failed"),
+            threadId,
+            occurredAt: now,
+            payload: { ...run, status: "failed", completedAt: now },
+          },
+        ],
+      });
+      const monitor = yield* service.create({
+        threadId,
+        monitor: {
+          label: "Already failed",
+          continuation: "record-only",
+          schedule: {
+            type: "thread-run",
+            threadId,
+            run: { type: "exact", runId: run.id },
+          },
+        },
+      });
+      yield* TestClock.adjust("1 second");
+      assert.include(
+        (yield* service.status({ threadId, query: { monitorId: monitor.id } })).monitors[0]?.trigger
+          ?.evidence,
+        "Outcome: failed",
+      );
+    }).pipe(Effect.provide(Layer.fresh(schedulerTestRuntime))),
+  );
+
+  it.effect("delivers a fallback deadline when no next run arrives", () =>
+    Effect.gen(function* () {
+      yield* seedThread;
+      const service = yield* ThreadMonitorService;
+      const now = yield* DateTime.now;
+      const monitor = yield* service.create({
+        threadId,
+        monitor: {
+          label: "Bounded native wait",
+          continuation: "record-only",
+          schedule: {
+            type: "thread-run",
+            threadId,
+            run: { type: "next" },
+            deadlineAt: DateTime.formatIso(DateTime.add(now, { minutes: 1 })),
+          },
+        },
+      });
+      yield* TestClock.adjust("2 minutes");
+      const result = (yield* service.status({ threadId, query: { monitorId: monitor.id } }))
+        .monitors[0]!;
+      assert.strictEqual(result.status, "delivered");
+      assert.strictEqual(result.trigger?.reason, "deadline");
+    }).pipe(Effect.provide(Layer.fresh(schedulerTestRuntime))),
+  );
+});
+
+it.effect(
+  "scopes monitor reads to subscribers of the changed thread and retains the final cancellation",
+  () =>
+    Effect.gen(function* () {
+      const reads = yield* Ref.make(new Map<ThreadId, number>());
+      const repository = Layer.effect(
+        ThreadMonitorRepository,
+        Effect.gen(function* () {
+          const original = yield* ThreadMonitorRepository;
+          return {
+            ...original,
+            listByThread: (input: Parameters<typeof original.listByThread>[0]) =>
+              Ref.update(reads, (current) =>
+                new Map(current).set(input.threadId, (current.get(input.threadId) ?? 0) + 1),
+              ).pipe(Effect.andThen(original.listByThread(input))),
+          };
+        }),
+      ).pipe(Layer.provide(ThreadMonitorRepositoryLayer.layer));
+      const runtime = Layer.effect(ThreadMonitorService, ThreadMonitor.make).pipe(
+        Layer.provide(repository),
+        Layer.provide(computerLayer),
+        Layer.provideMerge(OrchestrationLayerLive),
+        Layer.provide(RepositoryIdentityResolver.layer),
+        Layer.provide(ServerConfig.layerTest(process.cwd(), { prefix: "monitor-subscribers-" })),
+        Layer.provide(SqlitePersistence.layerMemory),
+        Layer.provide(NodeServices.layer),
+      );
+      yield* Effect.gen(function* () {
+        yield* seedThread;
+        const service = yield* ThreadMonitorService;
+        const other = ThreadId.make("unrelated-subscriber");
+        const ownUpdates = yield* Queue.unbounded<ThreadMonitorSummaryList>();
+        const otherUpdates = yield* Queue.unbounded<ThreadMonitorSummaryList>();
+        yield* service.subscribeSummaries(threadId).pipe(
+          Stream.runForEach((value) => Queue.offer(ownUpdates, value)),
+          Effect.forkScoped,
+        );
+        yield* service.subscribeSummaries(other).pipe(
+          Stream.runForEach((value) => Queue.offer(otherUpdates, value)),
+          Effect.forkScoped,
+        );
+        yield* Queue.take(ownUpdates);
+        yield* Queue.take(otherUpdates);
+        const monitor = yield* service.create({
+          threadId,
+          monitor: { label: "Scoped", schedule: { type: "signal" } },
+        });
+        assert.equal((yield* Queue.take(ownUpdates)).monitors[0]?.id, monitor.id);
+        yield* service.cancel({ threadId, cancel: { monitorId: monitor.id } });
+        yield* TestClock.adjust("1 second");
+        assert.deepEqual(yield* Queue.take(ownUpdates), { monitors: [] });
+        assert.equal((yield* Ref.get(reads)).get(other), 1);
+      }).pipe(Effect.provide(runtime));
+    }),
+);
+
+it.effect.each(["exact", "next"] as const)(
+  "restores a native %s wait and resolves a run completed while the monitor service was stopped",
+  (mode) =>
+    Effect.gen(function* () {
+      const config = yield* ServerConfig;
+      const database = persistentDatabase(config.dbPath);
+      const runtime = (start: boolean) =>
+        (start ? ThreadMonitorLayer : ThreadMonitor.layer).pipe(
+          Layer.provide(computerLayer),
+          Layer.provideMerge(orchestrationLayer(database)),
+          Layer.provideMerge(ThreadMonitorRepositoryLayer.layer),
+          Layer.provide(RepositoryIdentityResolver.layer),
+          Layer.provide(Layer.succeed(ServerConfig, config)),
+          Layer.provide(database),
+          Layer.provide(NodeServices.layer),
+        );
+      const monitor = yield* Effect.gen(function* () {
+        yield* seedThread;
+        const run = mode === "exact" ? yield* startTestRun() : undefined;
+        return yield* (yield* ThreadMonitorService).create({
+          threadId,
+          monitor: {
+            label: "Survive restart",
+            continuation: "record-only",
+            schedule: {
+              type: "thread-run",
+              threadId,
+              run: run === undefined ? { type: "next" } : { type: "exact", runId: run.id },
+            },
+          },
+        });
+      }).pipe(Effect.provide(runtime(false)));
+      yield* Effect.gen(function* () {
+        if (mode === "next") yield* startTestRun();
+        yield* completeTestRun;
+      }).pipe(
+        Effect.provide(
+          orchestrationLayer(database).pipe(
+            Layer.provide(Layer.mergeAll(Layer.succeed(ServerConfig, config), NodeServices.layer)),
+          ),
+        ),
+      );
+      yield* Effect.gen(function* () {
+        const service = yield* ThreadMonitorService;
+        yield* TestClock.adjust("1 second");
+        const restored = (yield* service.status({ threadId, query: { monitorId: monitor.id } }))
+          .monitors[0]!;
+        assert.deepEqual(restored.condition, monitor.condition);
+        assert.equal(restored.status, "delivered");
+        assert.include(restored.trigger?.evidence, "Outcome: completed");
+      }).pipe(Effect.provide(runtime(true)));
+    }).pipe(
+      Effect.provide(
+        ServerConfig.layerTest(process.cwd(), { prefix: "native-wait-restart-" }).pipe(
+          Layer.provideMerge(NodeServices.layer),
+        ),
+      ),
+    ),
+);
+
+it.effect(
+  "updates blocked delivery details and resumes immediately when a thread is unarchived",
+  () =>
+    Effect.gen(function* () {
+      yield* seedThread;
+      const service = yield* ThreadMonitorService;
+      const engine = yield* OrchestratorV2;
+      const monitor = yield* service.create({
+        threadId,
+        monitor: {
+          label: "Blocked delivery",
+          schedule: { type: "signal" },
+        },
+      });
+      yield* engine.dispatch({
+        type: "thread.archive",
+        commandId: CommandId.make("monitor-blocked-archive"),
+        threadId,
+      });
+      yield* service.signal({ threadId, signal: { monitorId: monitor.id, summary: "Ready" } });
+      const updates = yield* Queue.unbounded<ThreadMonitorSummaryList>();
+      yield* service.subscribeSummaries(threadId).pipe(
+        Stream.runForEach((value) => Queue.offer(updates, value)),
+        Effect.forkScoped,
+      );
+      assert.equal(
+        (yield* Queue.take(updates)).monitors[0]?.blockedReason,
+        "The thread is archived.",
+      );
+      yield* engine.dispatch({
+        type: "thread.unarchive",
+        commandId: CommandId.make("monitor-blocked-unarchive"),
+        threadId,
+      });
+      yield* TestClock.adjust("1 second");
+      const unblocked = yield* Queue.take(updates);
+      assert.isFalse(unblocked.monitors.some((m) => m.blockedReason != null));
+      assert.equal(
+        (yield* service.status({ threadId, query: { monitorId: monitor.id } })).monitors[0]?.status,
+        "delivered",
+      );
+    }).pipe(Effect.provide(Layer.fresh(schedulerTestRuntime))),
 );
