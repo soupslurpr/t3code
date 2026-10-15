@@ -1,3 +1,4 @@
+import type { DesktopProcessActivity } from "./desktopProcessActivity.ts";
 /** Defines desktop command execution independently of graphical access. */
 import * as Schema from "effect/Schema";
 
@@ -9,6 +10,12 @@ import {
   TrimmedNonEmptyString,
 } from "./baseSchemas.ts";
 import { UserDesktopTarget } from "./userDesktop.ts";
+import {
+  DesktopCapabilityGrant,
+  DesktopGrantLifetime,
+  DesktopGrantScope,
+  DesktopGrantPolicy,
+} from "./desktopAuthorization.ts";
 
 const MAX_INPUT_BYTES = 1024 * 1024;
 const MAX_READ_BYTES = 1024 * 1024;
@@ -74,6 +81,10 @@ export const UserDesktopProcessInput = Schema.Struct({
   desktop: UserDesktopTarget,
   action: Schema.Literals(["list", "read", "write", "signal", "resize", "forget"]),
   processId: Schema.optional(Identifier),
+  threadId: Schema.optional(ThreadId),
+  grantId: Schema.optional(Identifier),
+  limit: Schema.optional(Schema.Int.check(Schema.isBetween({ minimum: 1, maximum: 100 }))),
+  cursor: Schema.optional(Identifier),
   data: Schema.optional(Schema.String.check(Schema.isMaxLength(MAX_INPUT_BYTES))),
   close: Schema.optional(Schema.Boolean),
   signal: Schema.optional(Identifier),
@@ -93,22 +104,70 @@ export const UserDesktopProcessInput = Schema.Struct({
 export type UserDesktopProcessInput = typeof UserDesktopProcessInput.Type;
 
 /** Describes the scope of a locally approved execution grant. */
-export const DesktopExecutionScope = Schema.Literals(["thread", "environment", "desktop"]);
+export const DesktopExecutionScope = DesktopGrantScope;
 export type DesktopExecutionScope = typeof DesktopExecutionScope.Type;
 
 /** Requests, inspects, or revokes execution permission on the selected desktop. */
 export const UserDesktopExecutionAccessInput = Schema.Struct({
-  action: Schema.Literals(["status", "request", "revoke"]),
+  action: Schema.Literals(["status", "request", "edit", "approve", "deny", "revoke"]),
   desktop: UserDesktopTarget,
   scope: Schema.optional(DesktopExecutionScope),
   durationMs: Schema.optional(DurationMs),
+  lifetime: Schema.optional(DesktopGrantLifetime),
+  deadline: Schema.optional(IsoDateTime),
+  remembered: Schema.optional(Schema.Boolean),
   grantId: Schema.optional(Identifier),
+  revision: Schema.optional(NonNegativeInt),
+  requestId: Schema.optional(Identifier),
   stopProcesses: Schema.optional(Schema.Boolean),
+  localPrompt: Schema.optional(Schema.Boolean).annotate({
+    description:
+      "Always ask the human at the destination desktop; required for all-environments administration.",
+  }),
 });
 export type UserDesktopExecutionAccessInput = typeof UserDesktopExecutionAccessInput.Type;
 
+/** A previously authorized wait can release only this terminal metadata. */
+export const DesktopProcessCompletionReceipt = Schema.Struct({
+  processId: Identifier,
+  runtimeGeneration: Identifier,
+  status: Schema.Literals([
+    "exited",
+    "failed",
+    "lost",
+    "permission-revoked",
+    "deleted",
+    "unavailable",
+  ]),
+  exitCode: Schema.NullOr(Schema.Int),
+  signal: Schema.NullOr(Schema.String),
+  completedAt: IsoDateTime,
+});
+export type DesktopProcessCompletionReceipt = typeof DesktopProcessCompletionReceipt.Type;
+export const UserDesktopCompletionInput = Schema.Struct({
+  desktop: UserDesktopTarget,
+  action: Schema.Literals(["register", "status", "cancel", "acknowledge"]),
+  waitId: Identifier,
+  processId: Identifier,
+  runtimeGeneration: Identifier,
+});
+export type UserDesktopCompletionInput = typeof UserDesktopCompletionInput.Type;
+export const DesktopProcessCompletionResult = Schema.Struct({
+  kind: Schema.Literal("completion"),
+  protocolVersion: Schema.Literal(2),
+  desktop: UserDesktopTarget,
+  waitId: Identifier,
+  receipt: Schema.NullOr(DesktopProcessCompletionReceipt),
+});
+export type DesktopProcessCompletionResult = typeof DesktopProcessCompletionResult.Type;
+
 /** Carries the complete execution operation through a desktop host connection. */
 export const UserDesktopExecutionInput = Schema.Union([
+  Schema.Struct({
+    operation: Schema.Literal("completion"),
+    desktop: UserDesktopTarget,
+    input: UserDesktopCompletionInput,
+  }),
   Schema.Struct({ operation: Schema.Literal("cancel"), desktop: UserDesktopTarget }),
   Schema.Struct({ operation: Schema.Literal("command"), ...UserDesktopCommandInput.fields }),
   Schema.Struct({
@@ -126,7 +185,12 @@ export type UserDesktopExecutionInput = typeof UserDesktopExecutionInput.Type;
 
 /** Describes one process and the exact host files containing its captured output. */
 export const DesktopProcess = Schema.Struct({
+  environmentId: Schema.optional(EnvironmentId),
   threadId: Schema.optional(ThreadId),
+  runtimeGeneration: Schema.optional(Identifier),
+  statusRevision: Schema.optional(NonNegativeInt),
+  grantId: Schema.optional(Identifier),
+  grantRevision: Schema.optional(NonNegativeInt),
   processId: Identifier,
   commandId: Identifier,
   executable: Schema.String,
@@ -135,11 +199,20 @@ export const DesktopProcess = Schema.Struct({
   user: Schema.String,
   terminal: Schema.Boolean,
   pid: Schema.NullOr(NonNegativeInt),
-  status: Schema.Literals(["running", "exited", "failed"]),
+  status: Schema.Literals([
+    "starting",
+    "running",
+    "stopping",
+    "unknown",
+    "exited",
+    "failed",
+    "lost",
+  ]),
   startedAt: IsoDateTime,
   completedAt: Schema.NullOr(IsoDateTime),
   exitCode: Schema.NullOr(Schema.Int),
   signal: Schema.NullOr(Schema.String),
+  timeoutMs: Schema.optional(Schema.NullOr(DurationMs)),
   timedOut: Schema.Boolean,
   stdinClosed: Schema.Boolean,
   stdoutPath: Schema.String,
@@ -147,6 +220,13 @@ export const DesktopProcess = Schema.Struct({
   outputError: Schema.NullOr(Schema.String),
 });
 export type DesktopProcess = typeof DesktopProcess.Type;
+
+/** Uncertain scopes still own resources until their termination is established. */
+export const isDesktopProcessLive = (process: Pick<DesktopProcess, "status">) =>
+  process.status === "starting" ||
+  process.status === "running" ||
+  process.status === "stopping" ||
+  process.status === "unknown";
 
 /** Returns a byte range with an explicit continuation offset and retention limits. */
 export const DesktopProcessOutput = Schema.Struct({
@@ -156,6 +236,8 @@ export const DesktopProcessOutput = Schema.Struct({
   nextOffset: NonNegativeInt,
   totalBytes: NonNegativeInt,
   storedBytes: NonNegativeInt,
+  tailOffset: Schema.optional(NonNegativeInt),
+  retainedEnd: Schema.optional(NonNegativeInt),
   truncated: Schema.Boolean,
   invalidUtf8: Schema.Boolean,
 });
@@ -172,15 +254,18 @@ export const DesktopProcessResult = Schema.Struct({
 export type DesktopProcessResult = typeof DesktopProcessResult.Type;
 
 /** Records execution permission chosen in a local native confirmation. */
-export const DesktopExecutionGrant = Schema.Struct({
-  grantId: Identifier,
-  scope: DesktopExecutionScope,
-  environmentId: Schema.NullOr(EnvironmentId),
-  threadId: Schema.NullOr(ThreadId),
-  remembered: Schema.Boolean,
-  expiresAt: Schema.NullOr(IsoDateTime),
-});
+export const DesktopExecutionGrant = DesktopCapabilityGrant;
 export type DesktopExecutionGrant = typeof DesktopExecutionGrant.Type;
+
+export const DesktopExecutionPendingApproval = Schema.Struct({
+  requestId: Identifier,
+  environmentId: EnvironmentId,
+  threadId: ThreadId,
+  desktop: UserDesktopTarget,
+  expiresAt: IsoDateTime,
+  proposedPolicy: DesktopGrantPolicy,
+});
+export type DesktopExecutionPendingApproval = typeof DesktopExecutionPendingApproval.Type;
 
 /** Reports execution access without capturing or sharing the desktop. */
 export const DesktopExecutionAccess = Schema.Struct({
@@ -190,22 +275,114 @@ export const DesktopExecutionAccess = Schema.Struct({
   homeDirectory: Schema.String,
   platform: Schema.String,
   granted: Schema.Boolean,
+  protocolVersion: Schema.optional(Schema.Literal(2)),
+  selectedGrantId: Schema.optional(Schema.NullOr(Identifier)),
+  pendingRequests: Schema.optional(Schema.Array(DesktopExecutionPendingApproval)),
+  activeTransfers: Schema.optional(
+    Schema.Array(
+      Schema.Struct({
+        transferId: Identifier,
+        grantId: Identifier,
+        environmentId: EnvironmentId,
+        threadId: ThreadId,
+      }),
+    ),
+  ),
+  remoteApprovalAvailable: Schema.optional(Schema.Boolean),
   grants: Schema.Array(DesktopExecutionGrant),
 });
 export type DesktopExecutionAccess = typeof DesktopExecutionAccess.Type;
+
+/** Uses the target's latest unexpired-grant snapshot for input availability.
+ * The destination still rechecks permission when accepting each operation.
+ */
+export const hasDesktopProcessInputGrant = (
+  access: Pick<DesktopExecutionAccess, "grants"> | null,
+  process: Pick<DesktopProcess, "environmentId" | "threadId">,
+) =>
+  process.environmentId !== undefined &&
+  process.threadId !== undefined &&
+  (access?.grants.some(
+    (grant) =>
+      grant.capability === "execution" &&
+      !grant.suspended &&
+      (grant.scope === "desktop" ||
+        (grant.environmentId === process.environmentId &&
+          (grant.scope === "environment" || grant.threadId === process.threadId))),
+  ) ??
+    false);
 
 /** Returns the processes visible to the requesting environment. */
 export const DesktopProcessList = Schema.Struct({
   kind: Schema.Literal("list"),
   desktop: UserDesktopTarget,
   processes: Schema.Array(DesktopProcess),
+  nextCursor: Schema.optional(Schema.NullOr(Identifier)),
 });
 export type DesktopProcessList = typeof DesktopProcessList.Type;
 
 /** Returns the result of a host execution operation. */
+export const DesktopProcessAccepted = Schema.Struct({
+  kind: Schema.Literal("permission-required"),
+  desktop: UserDesktopTarget,
+  processId: Identifier,
+  commandId: Identifier,
+  runtimeGeneration: Identifier,
+  status: DesktopProcess.fields.status,
+});
+export type DesktopProcessAccepted = typeof DesktopProcessAccepted.Type;
+
 export const UserDesktopExecutionResult = Schema.Union([
+  DesktopProcessCompletionResult,
   DesktopProcessResult,
   DesktopProcessList,
   DesktopExecutionAccess,
+  DesktopProcessAccepted,
 ]);
 export type UserDesktopExecutionResult = typeof UserDesktopExecutionResult.Type;
+
+/** A finite start/input or a terminal milestone, never a status-read heartbeat. */
+export function desktopProcessActivity(
+  desktop: DesktopProcessActivity["desktop"],
+  process: DesktopProcess,
+  phase: DesktopProcessActivity["phase"],
+  inputId = "",
+): DesktopProcessActivity | null {
+  if (!process.environmentId || !process.threadId || !process.runtimeGeneration) return null;
+  if (phase === "completed" ? isDesktopProcessLive(process) : process.timeoutMs == null)
+    return null;
+  return {
+    activityId: `${process.runtimeGeneration}:${process.processId}:${phase}:${inputId}`,
+    desktop,
+    environmentId: process.environmentId,
+    threadId: process.threadId,
+    processId: process.processId,
+    commandId: process.commandId,
+    runtimeGeneration: process.runtimeGeneration,
+    phase,
+    status: process.status,
+    exitCode: process.exitCode,
+    signal: process.signal,
+  };
+}
+
+/** Bounded lists retain exact owners. Cursors are process identities, never PIDs. */
+export function desktopProcessPage(
+  processes: readonly DesktopProcess[],
+  input: { readonly cursor?: string | undefined; readonly limit?: number | undefined },
+) {
+  const ordered = [...processes].sort(
+    (a, b) => b.startedAt.localeCompare(a.startedAt) || b.processId.localeCompare(a.processId),
+  );
+  const after =
+    input.cursor === undefined
+      ? 0
+      : ordered.findIndex((process) => process.processId === input.cursor) + 1;
+  // A forgotten cursor is exhausted, rather than silently replaying the first page.
+  if (input.cursor !== undefined && after === 0) return { processes: [], nextCursor: null };
+  const page = ordered.slice(after, after + (input.limit ?? 50));
+  return {
+    processes: page,
+    nextCursor: after + page.length < ordered.length ? page.at(-1)!.processId : null,
+  };
+}

@@ -12,6 +12,8 @@ export * from "./desktopBootstrap.ts";
 export * from "./desktopBrowser.ts";
 export * from "./desktopAppActivation.ts";
 export * from "./desktopExecution.ts";
+export * from "./desktopAuthorization.ts";
+export * from "./desktopExecutionAuthorization.ts";
 export * from "./desktopTransfer.ts";
 export * from "./remoteAccess.ts";
 export * from "./ipc.ts";
@@ -76,3 +78,5 @@ export * from "./clientRpcPermissions.ts";
 export * from "./orchestrationSystemEvent.ts";
 
 export * from "./threadDesktop.ts";
+
+export * from "./desktopProcessActivity.ts";

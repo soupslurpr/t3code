@@ -1,3 +1,5 @@
+import { UserDesktopExecutionPanel, AgentDesktopExecutionPanel } from "./UserDesktopExecutionPanel";
+import { DesktopScreenPermissionsPanel } from "./DesktopScreenPermissionsPanel";
 import { useAtomValue } from "@effect/atom-react";
 import { AgentDesktopId, type AgentDesktopOwner, type ThreadId } from "@t3tools/contracts";
 import { createAgentDesktopSupervisionTransport } from "./AgentDesktopSupervisionTransport";
@@ -943,6 +945,27 @@ export function UserDesktopSupervisionRouteScreen({
             onPress={() => void releaseTransientAccess()}
           />
         ) : null}
+        {params.agentOwner ? (
+          <AgentDesktopExecutionPanel
+            desktopId={params.desktopId}
+            owner={params.agentOwner}
+            label={params.label}
+          />
+        ) : (
+          <>
+            <DesktopScreenPermissionsPanel
+              environmentId={params.environmentId}
+              desktopId={params.desktopId}
+              threadId={params.threadId}
+            />
+            <UserDesktopExecutionPanel
+              environmentId={params.environmentId}
+              environmentLabel={params.environmentLabel}
+              desktop={{ kind: "user", desktopId: params.desktopId }}
+              threadId={params.threadId}
+            />
+          </>
+        )}
         {params.threadId === undefined && params.agentOwner === undefined ? (
           <SupervisionButton
             label="End all access"

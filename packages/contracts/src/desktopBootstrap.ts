@@ -36,6 +36,10 @@ export const DesktopBackendBootstrap = Schema.Struct({
   desktopBrowserFd: Schema.optionalKey(PositiveInt),
   /** Server -> desktop: commands for those tabs. */
   desktopBrowserControlFd: Schema.optionalKey(PositiveInt),
+  /** Native same-account execution authorization replies, never delivered to WSL or renderers. */
+  desktopAuthorizationFd: Schema.optionalKey(PositiveInt),
+  /** Authenticated human decisions from the bound native backend. */
+  desktopAuthorizationControlFd: Schema.optionalKey(PositiveInt),
   resourceMonitorPath: Schema.optionalKey(TrimmedNonEmptyString),
   /** Names the physical User desktop that owns this desktop-managed backend. */
   environmentHost: Schema.optionalKey(UserDesktopHostRegistration),

@@ -59,6 +59,19 @@ export class DesktopTransferManager {
     return result;
   }
 
+  list(environmentId?: string) {
+    return [...this.active.entries()]
+      .filter(
+        ([, entry]) => environmentId === undefined || entry.owner.environmentId === environmentId,
+      )
+      .map(([transferId, entry]) => ({
+        transferId,
+        grantId: entry.grantId,
+        environmentId: entry.owner.environmentId,
+        threadId: entry.owner.threadId,
+      }));
+  }
+
   async cancel(owner: ProcessOwner, transferId: string): Promise<UserDesktopTransferResult> {
     const transfer = this.active.get(transferId);
     if (transfer === undefined) return { transferId, cancelled: false };

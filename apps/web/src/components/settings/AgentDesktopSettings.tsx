@@ -1,3 +1,4 @@
+import { AgentDesktopExecutionPanel } from "./UserDesktopExecutionPanel";
 import { squashAtomCommandFailure } from "@t3tools/client-runtime/state/runtime";
 import type {
   AgentDesktop,
@@ -1752,6 +1753,11 @@ export function AgentDesktopSettings({ thread }: { thread?: DesktopThreadScope }
                         </div>
                       ) : null}
                     </div>
+                    <AgentDesktopExecutionPanel
+                      desktopId={desktop.id}
+                      owner={desktop.owner}
+                      label={desktop.label}
+                    />
                   </CardPanel>
                 </Card>
               );

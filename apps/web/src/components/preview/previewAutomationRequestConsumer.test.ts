@@ -61,6 +61,43 @@ const consumerState = (
 });
 
 describe("previewAutomationRequestConsumer", () => {
+  it("routes lifecycle snapshots separately and discards a replaced connection's late snapshot", () => {
+    const requestsAtom = Atom.make<AsyncResult.AsyncResult<PreviewAutomationStreamEvent, Error>>(
+      AsyncResult.success<PreviewAutomationStreamEvent, Error>({ type: "connected", connectionId }),
+    );
+    const lifecycle = vi.fn(async () => undefined);
+    const handle = vi.fn(async () => undefined);
+    const respond = vi.fn(async () => undefined);
+    const registry = AtomRegistry.make();
+    registry.mount(
+      createPreviewAutomationRequestConsumerAtom({
+        requestsAtom,
+        clientId,
+        environmentId,
+        ...consumerState(handle),
+        respond,
+        lifecycle,
+        label: "test:lifecycle",
+      }),
+    );
+    registry.set(
+      requestsAtom,
+      AsyncResult.success({ type: "lifecycle", connectionId, snapshots: [] }),
+    );
+    expect(lifecycle).toHaveBeenCalledTimes(1);
+    registry.set(
+      requestsAtom,
+      AsyncResult.success({ type: "connected", connectionId: "replacement" }),
+    );
+    registry.set(
+      requestsAtom,
+      AsyncResult.success({ type: "lifecycle", connectionId, snapshots: [] }),
+    );
+    expect(lifecycle).toHaveBeenCalledTimes(1);
+    expect(handle).not.toHaveBeenCalled();
+    expect(respond).not.toHaveBeenCalled();
+    registry.dispose();
+  });
   it("aborts pending desktop access when its host stream disconnects", async () => {
     const requestsAtom = Atom.make<AsyncResult.AsyncResult<PreviewAutomationStreamEvent, Error>>(
       AsyncResult.success<PreviewAutomationStreamEvent, Error>({ type: "connected", connectionId }),

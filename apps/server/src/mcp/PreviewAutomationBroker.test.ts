@@ -33,11 +33,13 @@ import * as Layer from "effect/Layer";
 import * as Result from "effect/Result";
 import * as Scheduler from "effect/Scheduler";
 import * as Stream from "effect/Stream";
+import * as Queue from "effect/Queue";
 import * as TestClock from "effect/testing/TestClock";
 
 import * as PreviewAutomationBroker from "./PreviewAutomationBroker.ts";
 import { PersistenceSqlError } from "../persistence/Errors.ts";
 import * as UserDesktops from "../persistence/UserDesktops.ts";
+import { DesktopThreadLifecycleError } from "../computer/DesktopThreadLifecycle.ts";
 
 const makeBroker = PreviewAutomationBroker.make.pipe(
   Effect.provide(Layer.merge(UserDesktops.layerMemory, NodeServices.layer)),
@@ -72,9 +74,197 @@ const makeHost = (overrides: Partial<PreviewAutomationHost> = {}): PreviewAutoma
   ...overrides,
 });
 
+it.effect(
+  "reconciles only referenced desktop threads and binds operation snapshots to the current connection",
+  () =>
+    Effect.gen(function* () {
+      const changes = yield* Queue.unbounded<ThreadId>();
+      const received =
+        yield* Queue.unbounded<Extract<PreviewAutomationStreamEvent, { type: "lifecycle" }>>();
+      const connected = yield* Deferred.make<string>();
+      const reads: ThreadId[] = [];
+      const broker = yield* makeBroker.pipe(
+        Effect.provideService(PreviewAutomationBroker.DesktopLifecycleSource, {
+          read: (environmentId, threadId) =>
+            Effect.sync(() => {
+              reads.push(threadId);
+              return {
+                version: 2 as const,
+                environmentId,
+                threadId,
+                revision: 20,
+                activityRevision: 10,
+                state: "active" as const,
+                activityAt: "2026-10-15T00:00:00.000Z",
+                serverNow: "2026-10-15T00:00:00.000Z",
+                settledAt: null,
+              };
+            }),
+          changes: Stream.fromQueue(changes),
+        }),
+      );
+      yield* Stream.runForEach(
+        yield* broker.connect(
+          makeHost({ authorizationVersion: 2, supportedOperations: ["computerSnapshot"] }),
+        ),
+        (event) => {
+          if (event.type === "connected") return Deferred.succeed(connected, event.connectionId);
+          if (event.type === "lifecycle") return Queue.offer(received, event);
+          if (event.type === "cancel") return Effect.void;
+          return broker.respond({
+            clientId: "client-1",
+            connectionId: event.connectionId,
+            requestId: event.request.requestId,
+            ok: true,
+            result: event.request,
+          });
+        },
+      ).pipe(Effect.forkScoped);
+      const generation = yield* Deferred.await(connected);
+      yield* broker.focusHost({
+        clientId: "client-1",
+        environmentId: scope.environmentId,
+        connectionId: generation,
+        focused: false,
+        authorizationThreads: [scope.thread.threadId],
+      });
+      expect((yield* Queue.take(received)).snapshots[0]?.threadId).toBe(scope.thread.threadId);
+      yield* Queue.offer(changes, ThreadId.make("unreferenced"));
+      yield* Queue.offer(changes, scope.thread.threadId);
+      expect((yield* Queue.take(received)).connectionId).toBe(generation);
+      expect(reads).toEqual([scope.thread.threadId, scope.thread.threadId]);
+      const request = yield* broker.invoke<PreviewAutomationRequest>({
+        scope,
+        operation: "computerSnapshot",
+        input: { desktop: { kind: "user", desktopId: USER_DESKTOP.desktopId } },
+      });
+      expect(request.connectionGeneration).toBe(generation);
+      expect(request.lifecycle).toMatchObject({
+        revision: 20,
+        environmentId: scope.environmentId,
+        threadId: scope.thread.threadId,
+      });
+    }).pipe(Effect.scoped),
+);
+
 type RoutedRequest = PreviewAutomationRequest & {
   readonly connectionId: PreviewAutomationStreamEvent["connectionId"];
 };
+
+it.effect(
+  "supplies committed lifecycle for human permission requests without blocking recovery",
+  () =>
+    Effect.gen(function* () {
+      let reads = 0;
+      let unavailable = false;
+      const broker = yield* makeBroker.pipe(
+        Effect.provideService(PreviewAutomationBroker.DesktopLifecycleSource, {
+          read: (environmentId, threadId) =>
+            Effect.suspend(() => {
+              reads++;
+              return unavailable
+                ? Effect.fail(new DesktopThreadLifecycleError({ threadId, message: "Unavailable" }))
+                : Effect.succeed({
+                    version: 2 as const,
+                    environmentId,
+                    threadId,
+                    revision: 20,
+                    activityRevision: 10,
+                    state: "active" as const,
+                    activityAt: "2026-10-15T00:00:00.000Z",
+                    serverNow: "2026-10-15T00:00:00.000Z",
+                    settledAt: null,
+                  });
+            }),
+          changes: Stream.never,
+        }),
+      );
+      const operations = [
+        "computerRequestView",
+        "computerRequestControl",
+        "computerRememberView",
+        "computerRememberControl",
+        "computerExecution",
+      ] as const;
+      const connected = yield* Deferred.make<void>();
+      yield* Stream.runForEach(
+        yield* broker.connect(
+          makeHost({
+            authorizationVersion: 2,
+            supportedOperations: operations,
+            userDesktop: {
+              ...USER_DESKTOP,
+              capabilities: [...USER_DESKTOP.capabilities, "execution"],
+            },
+          }),
+        ),
+        (event) => {
+          if (event.type === "connected") return Deferred.succeed(connected, undefined);
+          if (event.type !== "request") return Effect.void;
+          return broker.respond({
+            clientId: "client-1",
+            connectionId: event.connectionId,
+            requestId: event.request.requestId,
+            ok: true,
+            result: event.request,
+          });
+        },
+      ).pipe(Effect.forkScoped);
+      yield* Deferred.await(connected);
+      const human = { ...scope, thread: { ...scope.thread, controllerKind: "human" as const } };
+      const desktop = { kind: "user" as const, desktopId: USER_DESKTOP.desktopId };
+      const permission = {
+        operation: "access",
+        desktop,
+        input: { action: "edit", desktop, scope: "thread", lifetime: "automatic" },
+      };
+      for (const operation of operations) {
+        const delivered = yield* broker.invoke<PreviewAutomationRequest>({
+          scope: human,
+          operation,
+          input: operation === "computerExecution" ? permission : { desktop },
+        });
+        expect(delivered.lifecycle).toMatchObject({
+          revision: 20,
+          environmentId: scope.environmentId,
+          threadId: scope.thread.threadId,
+        });
+      }
+      expect(reads).toBe(operations.length);
+      unavailable = true;
+      for (const action of ["list", "read", "signal", "forget"] as const) {
+        const delivered = yield* broker.invoke<PreviewAutomationRequest>({
+          scope: human,
+          operation: "computerExecution",
+          input: {
+            operation: "process",
+            desktop,
+            input: { action, desktop, processId: "owned-job" },
+          },
+        });
+        expect(delivered.lifecycle).toBeUndefined();
+      }
+      expect(reads).toBe(operations.length);
+      const settings = yield* broker.invoke<PreviewAutomationRequest>({
+        scope: {
+          ...human,
+          thread: { ...human.thread, threadId: ThreadId.make("synthetic-settings") },
+        },
+        operation: "computerExecution",
+        input: permission,
+      });
+      expect(settings.lifecycle).toBeUndefined();
+      expect(reads).toBe(operations.length + 1);
+      const agent = yield* broker
+        .invoke<PreviewAutomationRequest>({
+          scope,
+          operation: "computerExecution",
+          input: permission,
+        })
+        .pipe(Effect.flip);
+      expect(agent._tag).toBe("PreviewAutomationExecutionError");
+    }).pipe(Effect.scoped),
+);
 
 const requestsFrom = (
   events: Stream.Stream<PreviewAutomationStreamEvent>,
@@ -86,7 +276,7 @@ const requestsFrom = (
         onConnected(event.connectionId);
         return Result.failVoid;
       }
-      if (event.type === "cancel") return Result.failVoid;
+      if (event.type === "cancel" || event.type === "lifecycle") return Result.failVoid;
       return Result.succeed({ ...event.request, connectionId: event.connectionId });
     }),
   );
@@ -1125,7 +1315,7 @@ it.effect("keeps server browser affinity independent of the selected user deskto
         });
         yield* Stream.runForEach(events, (event) => {
           if (event.type === "connected") return Deferred.succeed(connected, undefined);
-          if (event.type === "cancel") return Effect.void;
+          if (event.type === "cancel" || event.type === "lifecycle") return Effect.void;
           received.push({ clientId: host.clientId, operation: event.request.operation });
           return broker.respond({
             clientId: host.clientId,
@@ -2267,7 +2457,7 @@ it.effect("discards buffered actions before completing an evicted host stream", 
       const operations: string[] = [];
       const consumer = yield* Stream.runForEach(yield* broker.connect(makeHost()), (event) => {
         if (event.type === "connected") return Deferred.succeed(connected, undefined);
-        if (event.type === "cancel") return Effect.void;
+        if (event.type === "cancel" || event.type === "lifecycle") return Effect.void;
         operations.push(event.request.operation);
         return Deferred.succeed(received, undefined).pipe(
           Effect.andThen(Deferred.await(releaseConsumer)),
@@ -2312,7 +2502,7 @@ it.effect("rejects a routed action when its generation is evicted before deliver
       const operations: string[] = [];
       const consumer = yield* Stream.runForEach(yield* broker.connect(makeHost()), (event) => {
         if (event.type === "connected") return Deferred.succeed(connected, undefined);
-        if (event.type === "cancel") return Effect.void;
+        if (event.type === "cancel" || event.type === "lifecycle") return Effect.void;
         operations.push(event.request.operation);
         return Deferred.succeed(received, undefined);
       }).pipe(Effect.forkScoped);
@@ -2443,4 +2633,78 @@ it.effect("keeps the host connected when a background status read times out", ()
       });
     }),
   ),
+);
+
+it.effect(
+  "invalidates desktop authority on lifecycle feed failure and reconciles referenced threads after recovery",
+  () =>
+    Effect.gen(function* () {
+      const fail = yield* Deferred.make<void>();
+      let subscriptions = 0;
+      const received =
+        yield* Queue.unbounded<Extract<PreviewAutomationStreamEvent, { type: "lifecycle" }>>();
+      const connected = yield* Deferred.make<string>();
+      const changes = Stream.unwrap(
+        Effect.sync(() =>
+          ++subscriptions === 1
+            ? Stream.fromEffect(
+                Deferred.await(fail).pipe(
+                  Effect.andThen(
+                    Effect.fail(
+                      new PersistenceSqlError({
+                        operation: "test.lifecycle",
+                        cause: new Error("feed disconnected"),
+                      }),
+                    ),
+                  ),
+                ),
+              )
+            : Stream.concat(Stream.make(null), Stream.never),
+        ),
+      );
+      const broker = yield* makeBroker.pipe(
+        Effect.provideService(PreviewAutomationBroker.DesktopLifecycleSource, {
+          read: (environmentId, threadId) =>
+            Effect.succeed({
+              version: 2,
+              environmentId,
+              threadId,
+              revision: subscriptions,
+              activityRevision: 1,
+              state: "active",
+              serverNow: "1970-01-01T00:00:00.000Z",
+              activityAt: "1970-01-01T00:00:00.000Z",
+              settledAt: null,
+            }),
+          changes,
+        }),
+      );
+      yield* (yield* broker.connect(
+        makeHost({ authorizationVersion: 2, supportedOperations: ["computerSnapshot"] }),
+      )).pipe(
+        Stream.runForEach((event) => {
+          if (event.type === "connected") return Deferred.succeed(connected, event.connectionId);
+          if (event.type === "lifecycle") return Queue.offer(received, event);
+          return Effect.void;
+        }),
+        Effect.forkScoped,
+      );
+      const generation = yield* Deferred.await(connected);
+      yield* broker.focusHost({
+        clientId: "client-1",
+        environmentId: scope.environmentId,
+        connectionId: generation,
+        focused: false,
+        authorizationThreads: [scope.thread.threadId],
+      });
+      expect((yield* Queue.take(received)).snapshots[0]?.revision).toBe(1);
+      yield* Deferred.succeed(fail, undefined);
+      expect((yield* Queue.take(received)).unavailable).toBe(true);
+      yield* TestClock.adjust("1 second");
+      const reconciled = yield* Queue.take(received);
+      expect(reconciled.snapshots.map((snapshot) => snapshot.threadId)).toEqual([
+        scope.thread.threadId,
+      ]);
+      expect(reconciled.snapshots[0]?.revision).toBe(2);
+    }).pipe(Effect.scoped),
 );

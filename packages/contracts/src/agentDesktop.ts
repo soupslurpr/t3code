@@ -2,6 +2,12 @@ import * as Schema from "effect/Schema";
 
 import { EnvironmentId, ThreadId, TrimmedNonEmptyString } from "./baseSchemas.ts";
 import { UserDesktopId, UserDesktopTarget } from "./userDesktop.ts";
+import {
+  DesktopProcess,
+  DesktopProcessOutput,
+  UserDesktopCommandInput,
+  UserDesktopProcessInput,
+} from "./desktopExecution.ts";
 
 const MAX_AGENT_DESKTOP_CONNECTIONS = 256;
 const MAX_AGENT_DESKTOP_PORT_ROUTES = 64;
@@ -20,6 +26,7 @@ export const AGENT_DESKTOP_OPERATIONS = [
   "agentDesktopAcquire",
   "agentDesktopManage",
   "agentDesktopCommand",
+  "agentDesktopProcess",
   "agentDesktopReadFile",
   "agentDesktopWriteFile",
   "agentDesktopInspect",
@@ -457,6 +464,10 @@ const AgentDesktopEnvironment = Schema.Union([
 /** Executes one exact process inside an Agent desktop over its private guest channel. */
 export const AgentDesktopCommandInput = Schema.Struct({
   desktopId: Schema.optional(AgentDesktopId),
+  commandId: Schema.optional(UserDesktopCommandInput.fields.commandId).annotate({
+    description:
+      "Stable retry identity. Required for managed commands; omit only for the bounded legacy one-shot adapter.",
+  }),
   executable: TrimmedNonEmptyString.check(Schema.isMaxLength(4_096)),
   arguments: Schema.optional(
     Schema.Array(Schema.String.check(Schema.isMaxLength(32_768))).check(
@@ -468,10 +479,18 @@ export const AgentDesktopCommandInput = Schema.Struct({
     description: "Guest environment as a name/value object or an array of {name, value} entries.",
   }),
   user: Schema.optional(TrimmedNonEmptyString.check(Schema.isMaxLength(256))),
-  stdin: Schema.optional(Schema.String.check(Schema.isMaxLength(MAX_AGENT_DESKTOP_FILE_BYTES))),
-  timeoutMs: Schema.optional(
-    Schema.Int.check(Schema.isBetween({ minimum: 100, maximum: 3_600_000 })),
-  ),
+  stdin: Schema.optional(Schema.String.check(Schema.isMaxLength(1024 * 1024))),
+  timeoutMs: UserDesktopCommandInput.fields.timeoutMs,
+  waitMs: UserDesktopCommandInput.fields.waitMs,
+  terminal: UserDesktopCommandInput.fields.terminal,
+  keepStdinOpen: UserDesktopCommandInput.fields.keepStdinOpen,
+  stdinEncoding: UserDesktopCommandInput.fields.stdinEncoding,
+  inheritEnvironment: UserDesktopCommandInput.fields.inheritEnvironment,
+  maxStoredOutputBytes: UserDesktopCommandInput.fields.maxStoredOutputBytes,
+  stdoutOffset: UserDesktopCommandInput.fields.stdoutOffset,
+  stderrOffset: UserDesktopCommandInput.fields.stderrOffset,
+  maxBytes: UserDesktopCommandInput.fields.maxBytes,
+  encoding: UserDesktopCommandInput.fields.encoding,
   maxOutputBytes: Schema.optional(
     Schema.Int.check(Schema.isBetween({ minimum: 1, maximum: MAX_AGENT_DESKTOP_FILE_BYTES })),
   ),
@@ -479,7 +498,7 @@ export const AgentDesktopCommandInput = Schema.Struct({
 export type AgentDesktopCommandInput = typeof AgentDesktopCommandInput.Type;
 
 /** Reports the bounded result of one guest process. */
-export const AgentDesktopCommandResult = Schema.Struct({
+export const AgentDesktopOneShotResult = Schema.Struct({
   desktopId: AgentDesktopId,
   exitCode: Schema.Int,
   stdout: Schema.String,
@@ -490,7 +509,47 @@ export const AgentDesktopCommandResult = Schema.Struct({
   completedAt: Schema.String,
   durationMs: Schema.Number.check(Schema.isGreaterThanOrEqualTo(0)),
 });
+export const AgentDesktopProcessResult = Schema.Struct({
+  kind: Schema.Literal("process"),
+  protocolVersion: Schema.Literal(2),
+  desktopId: AgentDesktopId,
+  process: DesktopProcess,
+  stdout: DesktopProcessOutput,
+  stderr: DesktopProcessOutput,
+});
+export type AgentDesktopProcessResult = typeof AgentDesktopProcessResult.Type;
+export const AgentDesktopCommandResult = Schema.Union([
+  AgentDesktopOneShotResult,
+  AgentDesktopProcessResult,
+]);
 export type AgentDesktopCommandResult = typeof AgentDesktopCommandResult.Type;
+
+export const AgentDesktopProcessInput = Schema.Struct({
+  ...UserDesktopProcessInput.fields,
+  desktop: Schema.optional(Schema.Never),
+  desktopId: AgentDesktopId,
+}).check(
+  Schema.makeFilter((input) =>
+    input.action !== "list" && input.processId === undefined
+      ? "processId is required"
+      : input.action === "resize" && (input.rows === undefined || input.columns === undefined)
+        ? "rows and columns are required"
+        : true,
+  ),
+);
+export type AgentDesktopProcessInput = typeof AgentDesktopProcessInput.Type;
+export const AgentDesktopProcessList = Schema.Struct({
+  kind: Schema.Literal("list"),
+  protocolVersion: Schema.Literal(2),
+  desktopId: AgentDesktopId,
+  processes: Schema.Array(DesktopProcess),
+  nextCursor: Schema.optional(Schema.NullOr(TrimmedNonEmptyString)),
+});
+export const AgentDesktopProcessResponse = Schema.Union([
+  AgentDesktopProcessResult,
+  AgentDesktopProcessList,
+]);
+export type AgentDesktopProcessResponse = typeof AgentDesktopProcessResponse.Type;
 
 /** Reads a bounded byte range from the Agent desktop guest. */
 export const AgentDesktopReadFileInput = Schema.Struct({

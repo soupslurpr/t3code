@@ -228,6 +228,7 @@ import * as DirectEndpoints from "./environment/DirectEndpoints.ts";
 import * as RemoteOpenTargets from "./environment/RemoteOpenTargets.ts";
 import * as DefectReporter from "./observability/DefectReporter.ts";
 import * as BackgroundPolicy from "./background/BackgroundPolicy.ts";
+import * as DesktopExecutionAuthorizationChannel from "./computer/DesktopExecutionAuthorizationChannel.ts";
 import * as EnvironmentAuth from "./auth/EnvironmentAuth.ts";
 import { requiredScopeForDeviceList, rpcAuthorizationError } from "./auth/RpcAuthorization.ts";
 import * as RpcAuthorization from "./auth/RpcAuthorization.ts";
@@ -1219,6 +1220,7 @@ const layerWsRpc = (
   clientAnalyticsProps: Readonly<Record<string, unknown>>,
   previewAutomationBroker: PreviewAutomationBroker.PreviewAutomationBroker["Service"],
   serverBrowser: ServerBrowser.ServerBrowser["Service"],
+  desktopAuthorization: DesktopExecutionAuthorizationChannel.DesktopExecutionAuthorizationChannel["Service"],
 ) =>
   ServerWsRpcGroup.toLayer(
     Effect.gen(function* () {
@@ -3080,7 +3082,7 @@ const layerWsRpc = (
               thread: {
                 controllerKind: "human" as const,
                 controllerId: `human:${currentSessionId}`,
-                threadId: USER_DESKTOP_SETTINGS_THREAD_ID,
+                threadId: input.threadId ?? USER_DESKTOP_SETTINGS_THREAD_ID,
                 providerSessionId: `human:${currentSessionId}`,
                 providerInstanceId: USER_DESKTOP_HUMAN_PROVIDER_INSTANCE_ID,
               },
@@ -3095,11 +3097,34 @@ const layerWsRpc = (
                 ...(input.timeoutMs === undefined ? {} : { timeoutMs: input.timeoutMs }),
               });
             switch (input.request.operation) {
-              case "execution":
+              case "screen-permission":
+                return yield* invokeComputer(
+                  input.request.action === "remove"
+                    ? "computerForgetControl"
+                    : input.request.capability === "control"
+                      ? "computerRequestControl"
+                      : "computerRequestView",
+                  {
+                    desktop,
+                    permission: input.request.permission,
+                    ...(input.request.policy === undefined
+                      ? {}
+                      : { permissionPolicy: input.request.policy }),
+                    observation: false,
+                  },
+                );
+              case "execution": {
+                const nativeResult = yield* desktopAuthorization.invoke(
+                  currentSessionId,
+                  scope.thread.threadId,
+                  { ...input.request.input, desktop },
+                );
+                if (Option.isSome(nativeResult)) return nativeResult.value;
                 return yield* invokeComputer("computerExecution", {
                   ...input.request.input,
                   desktop,
                 });
+              }
               case "status":
                 return yield* invokeComputer("computerStatus", { desktop });
               case "request-view":
@@ -3381,6 +3406,8 @@ export const layer = Layer.unwrap(
   Effect.gen(function* () {
     const previewAutomationBroker = yield* PreviewAutomationBroker.PreviewAutomationBroker;
     const serverBrowser = yield* ServerBrowser.ServerBrowser;
+    const desktopAuthorization =
+      yield* DesktopExecutionAuthorizationChannel.DesktopExecutionAuthorizationChannel;
     const serverSelfUpdate = yield* ServerSelfUpdate.ServerSelfUpdate;
     const pullRequests = yield* PullRequestService.PullRequestService;
     const reviewGuides = yield* PullRequestReviewGuideService.PullRequestReviewGuideService;
@@ -3438,6 +3465,7 @@ export const layer = Layer.unwrap(
               clientAnalyticsProps,
               previewAutomationBroker,
               serverBrowser,
+              desktopAuthorization,
             ).pipe(
               Layer.provideMerge(RpcSerialization.layerJson),
               // Request fibers run in the handlers' context, so this reporter sees

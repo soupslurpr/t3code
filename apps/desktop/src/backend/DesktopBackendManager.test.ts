@@ -28,6 +28,7 @@ import * as DesktopApp from "../app/DesktopApp.ts";
 import * as DesktopBackendPool from "./DesktopBackendPool.ts";
 import * as DesktopObservability from "../app/DesktopObservability.ts";
 import * as DesktopTelemetryPublisher from "../telemetry/DesktopTelemetryPublisher.ts";
+import * as DesktopExecutionAuthorizationHost from "../process/DesktopExecutionAuthorizationHost.ts";
 import * as DesktopBrowserHost from "../preview/DesktopBrowserHost.ts";
 import * as DesktopWslEnvironment from "../wsl/DesktopWslEnvironment.ts";
 
@@ -179,6 +180,9 @@ function makeTestInstance(input: MakeInstanceInput) {
       ...input.desktopTelemetryPublisher,
     }),
     DesktopBrowserHost.layer,
+    Layer.succeed(DesktopExecutionAuthorizationHost.DesktopExecutionAuthorizationHost, {
+      open: Effect.succeed({ events: Stream.empty, handleCommandLine: () => Effect.void }),
+    }),
     DesktopWslEnvironment.layerTest(
       input.pruneRuntimes === undefined ? {} : { pruneRuntimes: input.pruneRuntimes },
     ),

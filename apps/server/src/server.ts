@@ -1,3 +1,4 @@
+import * as DesktopProcessActivityRecorder from "./computer/DesktopProcessActivityRecorder.ts";
 import * as ThreadDesktopActivity from "./computer/ThreadDesktopActivity.ts";
 import * as ThreadMonitorSignalCallbacks from "./threadMonitor/ThreadMonitorSignalCallbacks.ts";
 import * as MonitorSignalRoute from "./threadMonitor/signalRoute.ts";
@@ -5,6 +6,7 @@ import * as ProviderEventLoggers from "@t3tools/provider-core/server/ProviderEve
 import * as ProviderComputerLifecycle from "./orchestration-v2/ProviderComputerLifecycle.ts";
 import * as ThreadWorkspaceQuery from "./orchestration-v2/ThreadWorkspaceQuery.ts";
 import * as ThreadMonitor from "./threadMonitor/ThreadMonitor.ts";
+import * as ThreadMonitorProcess from "./threadMonitor/ThreadMonitorProcess.ts";
 import * as ThreadMonitorComputer from "./threadMonitor/ThreadMonitorComputer.ts";
 import type { RelayManagedEndpointRuntimeConfig } from "@t3tools/contracts/relay";
 import * as Clock from "effect/Clock";
@@ -192,6 +194,8 @@ import * as RunFinalizationService from "./orchestration-v2/RunFinalizationServi
 import * as EventStoreV2 from "./orchestration-v2/EventStore.ts";
 import * as ProjectionMaintenance from "./orchestration-v2/ProjectionMaintenance.ts";
 import * as ProjectionStoreV2 from "./orchestration-v2/ProjectionStore.ts";
+import * as DesktopExecutionAuthorizationChannel from "./computer/DesktopExecutionAuthorizationChannel.ts";
+import * as DesktopThreadLifecycle from "./computer/DesktopThreadLifecycle.ts";
 import { makePersistedServerRuntimeState } from "./serverRuntimeState.ts";
 import * as OrchestrationHttp from "./orchestration-v2/http.ts";
 import * as ProjectHttp from "./project/http.ts";
@@ -212,7 +216,18 @@ const HTTP_ROUTER_CONFIG = {
 // those finalizers get a chance to run.
 const HTTP_PREEMPTIVE_SHUTDOWN_GRACE_MS = 0;
 const layerPersistence = Layer.empty.pipe(Layer.provideMerge(SqlitePersistence.layerConfig));
+const layerDesktopProcessActivity = DesktopProcessActivityRecorder.layer.pipe(
+  Layer.provide(RuntimeLayer.layerEventSink),
+  Layer.provide(layerPersistence),
+);
 const layerPreviewAutomationBroker = PreviewAutomationBroker.layer.pipe(
+  Layer.provide(layerDesktopProcessActivity),
+  Layer.provide(
+    Layer.effect(
+      PreviewAutomationBroker.DesktopLifecycleSource,
+      DesktopThreadLifecycle.DesktopThreadLifecycleService,
+    ).pipe(Layer.provide(DesktopThreadLifecycle.layer)),
+  ),
   Layer.provide(
     Layer.effect(
       PreviewAutomationBroker.EnvironmentUserDesktopHost,
@@ -228,6 +243,7 @@ const layerQemuAgentDesktop = QemuAgentDesktop.layer.pipe(
   Layer.provide(layerAgentDesktopEnvironment),
 );
 const layerAgentDesktopManager = AgentDesktopManager.layer.pipe(
+  Layer.provide(layerDesktopProcessActivity),
   Layer.provideMerge(layerQemuAgentDesktop),
   Layer.provide(layerAgentDesktopEnvironment),
 );
@@ -743,6 +759,12 @@ const layerRuntimeCoreDependencies = layerRuntimeCoreProviderDependencies.pipe(
 );
 
 const layerThreadMonitor = ThreadMonitor.layer.pipe(
+  Layer.provide(
+    ThreadMonitorProcess.layer.pipe(
+      Layer.provide(layerAgentDesktopManager),
+      Layer.provide(layerPreviewAutomationBroker),
+    ),
+  ),
   Layer.provide(RuntimeLayer.layerEventSink),
   Layer.provide(ThreadMonitorComputer.layer),
   Layer.provideMerge(ThreadWorkspaceQuery.layer),
@@ -826,6 +848,14 @@ const layerMakeRoutes = Layer.mergeAll(
   // Server browser tabs and HTML render previews install and run the same headless browser.
   Layer.provide(PreviewBrowser.layer),
   Layer.provide(layerPreviewAutomationBroker),
+  Layer.provide(
+    DesktopExecutionAuthorizationChannel.layer.pipe(
+      Layer.provide(DesktopThreadLifecycle.layer),
+      Layer.provide(layerPersistence),
+      Layer.provide(layerAuth),
+      Layer.provide(layerServerEnvironment),
+    ),
+  ),
   Layer.provide(ServerSelfUpdate.layer.pipe(Layer.provide(layerDesktopAppUpdate))),
   Layer.provide(layerCommandReadiness),
   Layer.provide(ServerHttp.layerBrowserApiCors),

@@ -1,5 +1,13 @@
 /** Pages captured desktop output without retaining earlier log text. */
-import type { DesktopProcessOutput, DesktopProcessResult } from "@t3tools/contracts";
+import type {
+  DesktopProcessOutput,
+  DesktopProcessResult,
+  AgentDesktopProcessResult,
+} from "@t3tools/contracts";
+
+type CapturedProcess = DesktopProcessResult | AgentDesktopProcessResult;
+const targetId = (result: CapturedProcess) =>
+  "desktop" in result ? `user:${result.desktop.desktopId}` : `agent:${result.desktopId}`;
 
 interface OutputOffsets {
   readonly stdoutOffset: number;
@@ -7,17 +15,17 @@ interface OutputOffsets {
 }
 
 export interface DesktopProcessOutputPage {
-  readonly result: DesktopProcessResult;
+  readonly result: CapturedProcess;
   readonly history: ReadonlyArray<OutputOffsets>;
 }
 
 export type DesktopProcessOutputNavigation = "first" | "previous" | "next";
 
 /** Reports whether either captured stream has unread stored bytes. */
-export function hasMoreDesktopProcessOutput(result: DesktopProcessResult): boolean {
+export function hasMoreDesktopProcessOutput(result: CapturedProcess): boolean {
   return (
-    result.stdout.nextOffset < result.stdout.storedBytes ||
-    result.stderr.nextOffset < result.stderr.storedBytes
+    result.stdout.nextOffset < (result.stdout.retainedEnd ?? result.stdout.storedBytes) ||
+    result.stderr.nextOffset < (result.stderr.retainedEnd ?? result.stderr.storedBytes)
   );
 }
 
@@ -39,12 +47,12 @@ function retainOutputPage(
 /** Retains byte cursors for backward navigation and preserves text when no new output arrives. */
 export function updateDesktopProcessOutputPage(
   current: DesktopProcessOutputPage | null,
-  result: DesktopProcessResult,
+  result: CapturedProcess,
   navigation: DesktopProcessOutputNavigation,
 ): DesktopProcessOutputPage {
   if (
     current === null ||
-    current.result.desktop.desktopId !== result.desktop.desktopId ||
+    targetId(current.result) !== targetId(result) ||
     current.result.process.processId !== result.process.processId ||
     navigation === "first"
   ) {

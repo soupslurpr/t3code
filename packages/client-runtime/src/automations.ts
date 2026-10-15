@@ -31,10 +31,19 @@ export function threadMonitorDetails(monitor: import("@t3tools/contracts").Threa
       "image-change": "Screen image changes",
       model: "Screen condition",
       "thread-run": "T3 run outcome",
+      process: "Desktop process completion",
     }[monitor.condition];
   const details: Array<{ label: string; value: string }> = [
     { label: "Condition", value: condition },
   ];
+  if (monitor.targetProcess) {
+    const target = monitor.targetProcess;
+    details.push(
+      { label: "Desktop", value: `${target.desktop.kind}: ${target.desktop.desktopId}` },
+      { label: "Process", value: target.processId },
+      { label: "Runtime", value: target.runtimeGeneration },
+    );
+  }
   if (monitor.targetRun) {
     details.push(
       { label: "Thread", value: monitor.targetRun.threadId },

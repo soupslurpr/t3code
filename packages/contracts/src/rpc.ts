@@ -297,6 +297,7 @@ import {
   PreviewAutomationStreamEvent,
   UserDesktopHumanInvokeInput,
 } from "./previewAutomation.ts";
+import { DesktopAuthorizationError } from "./desktopExecutionAuthorization.ts";
 import { UserDesktopInventoryError, UserDesktopManagementError } from "./userDesktop.ts";
 import {
   ServerConfigStreamEvent,
@@ -1592,7 +1593,7 @@ const WsPreviewAutomationRespondRpc = Rpc.make(WS_METHODS.previewAutomationRespo
 
 const WsPreviewAutomationFocusHostRpc = Rpc.make(WS_METHODS.previewAutomationFocusHost, {
   payload: PreviewAutomationHostFocus,
-  error: EnvironmentAuthorizationError,
+  error: Schema.Union([ThreadDesktopActivityError, EnvironmentAuthorizationError]),
 });
 
 const WsAgentDesktopHumanInvokeRpc = Rpc.make(WS_METHODS.agentDesktopHumanInvoke, {
@@ -1607,6 +1608,7 @@ const WsUserDesktopHumanInvokeRpc = Rpc.make(WS_METHODS.userDesktopHumanInvoke, 
   error: Schema.Union([
     PreviewAutomationError,
     UserDesktopInventoryError,
+    DesktopAuthorizationError,
     UserDesktopManagementError,
     EnvironmentAuthorizationError,
   ]),

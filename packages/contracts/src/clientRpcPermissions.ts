@@ -4,10 +4,12 @@ import {
   AuthOrchestrationOperateScope,
   AuthSettingsWriteScope,
   AuthSourceControlWriteScope,
+  AuthTerminalOperateScope,
   type AuthEnvironmentScope,
 } from "./auth.ts";
 import { ORCHESTRATION_V2_WS_METHODS } from "./orchestrationV2.ts";
 import { WS_METHODS } from "./rpc.ts";
+import { UserDesktopHumanInvokeInput, AgentDesktopHumanInvokeInput } from "./previewAutomation.ts";
 
 /** Incremental client enforcement; the server still authorizes every request. */
 export const CLIENT_GUARDED_RPC_SCOPES = {
@@ -54,11 +56,25 @@ export const CLIENT_GUARDED_RPC_SCOPES = {
 export type ClientGuardedRpcTag = keyof typeof CLIENT_GUARDED_RPC_SCOPES;
 
 const decodePrepareThread = Schema.decodeUnknownSync(GitPreparePullRequestThreadInput);
+const decodeUserDesktop = Schema.decodeUnknownSync(UserDesktopHumanInvokeInput);
+const decodeAgentDesktop = Schema.decodeUnknownSync(AgentDesktopHumanInvokeInput);
 
 export function clientRpcRequiredScopes(
   method: string,
   input: unknown,
 ): readonly AuthEnvironmentScope[] {
+  if (
+    method === WS_METHODS.agentDesktopHumanInvoke &&
+    input !== undefined &&
+    decodeAgentDesktop(input).request.operation === "process"
+  )
+    return [AuthOrchestrationOperateScope, AuthTerminalOperateScope];
+  if (
+    method === WS_METHODS.userDesktopHumanInvoke &&
+    input !== undefined &&
+    decodeUserDesktop(input).request.operation === "execution"
+  )
+    return [AuthOrchestrationOperateScope, AuthTerminalOperateScope];
   if (method === WS_METHODS.gitPreparePullRequestThread && input !== undefined) {
     const payload = decodePrepareThread(input);
     if (payload.mode === "worktree" && payload.threadId !== undefined)

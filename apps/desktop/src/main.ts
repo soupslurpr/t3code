@@ -76,6 +76,9 @@ import * as ComputerUse from "./computer/ComputerUse.ts";
 import * as ComputerUseCoordinator from "./computer/ComputerUseCoordinator.ts";
 import * as ComputerUseRouter from "./computer/ComputerUseRouter.ts";
 import * as DesktopExecution from "./process/DesktopExecution.ts";
+import * as DesktopExecutionAuthorizationHost from "./process/DesktopExecutionAuthorizationHost.ts";
+import * as DesktopScreenPermissions from "./computer/DesktopScreenPermissions.ts";
+import * as DesktopGrants from "./computer/DesktopGrants.ts";
 import * as GnomeRemoteDesktop from "./computer/GnomeRemoteDesktop.ts";
 import * as UserDesktopIdentity from "./computer/UserDesktopIdentity.ts";
 import * as DesktopWindow from "./window/DesktopWindow.ts";
@@ -185,7 +188,10 @@ const layerDesktopComputerUse = ComputerUse.layer.pipe(
   Layer.provideMerge(GnomeRemoteDesktop.layer.pipe(Layer.provideMerge(layerDesktopFoundation))),
 );
 
+const layerDesktopGrants = DesktopGrants.layer.pipe(Layer.provideMerge(layerDesktopFoundation));
+
 const layerDesktopComputerUseCoordinator = ComputerUseCoordinator.layer.pipe(
+  Layer.provideMerge(DesktopScreenPermissions.layer.pipe(Layer.provideMerge(layerDesktopGrants))),
   Layer.provideMerge(layerDesktopComputerUse),
   Layer.provideMerge(layerDesktopFoundation),
 );
@@ -196,7 +202,7 @@ const layerDesktopComputerUseRouter = ComputerUseRouter.layer.pipe(
 );
 
 const layerDesktopWindow = DesktopWindow.layer.pipe(
-  Layer.provideMerge(DesktopExecution.layer.pipe(Layer.provideMerge(layerDesktopFoundation))),
+  Layer.provideMerge(DesktopExecution.layer.pipe(Layer.provideMerge(layerDesktopGrants))),
   Layer.provideMerge(layerDesktopServerExposure),
   Layer.provideMerge(layerDesktopPreview),
   Layer.provideMerge(layerDesktopComputerUseRouter),
@@ -216,6 +222,7 @@ const layerDesktopAppActivation = DesktopAppActivation.layer.pipe(
 // WSL second instance gets registered later in the migration. See
 // DesktopBackendPool.ts header for the full rollout plan.
 const layerDesktopBackend = DesktopBackendPool.layer.pipe(
+  Layer.provideMerge(DesktopExecutionAuthorizationHost.layer),
   Layer.provideMerge(DesktopAppIdentity.layer),
   Layer.provideMerge(DesktopBackendConfiguration.layer),
   Layer.provideMerge(DesktopShellEnvironment.layer),

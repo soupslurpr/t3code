@@ -1,3 +1,4 @@
+import { DesktopProcessActivity } from "./desktopProcessActivity.ts";
 import { OrchestrationSystemEvent } from "./orchestrationSystemEvent.ts";
 import { OrchestrationMessageContext } from "./composerContext.ts";
 import * as Effect from "effect/Effect";
@@ -1582,6 +1583,7 @@ export const OrchestrationV2TurnItem = Schema.Union([
   Schema.Struct({
     ...OrchestrationV2TurnItemBaseFields,
     type: Schema.Literal("system_notice"),
+    desktopProcess: Schema.optional(DesktopProcessActivity),
     message: Schema.String,
   }),
   Schema.Struct({
@@ -2375,6 +2377,7 @@ export const OrchestrationV2TurnItemJson = Schema.Union([
   Schema.Struct({
     ...OrchestrationV2TurnItemJsonBaseFields,
     type: Schema.Literal("system_notice"),
+    desktopProcess: Schema.optional(DesktopProcessActivity),
     message: Schema.String,
   }),
   Schema.Struct({

@@ -118,7 +118,7 @@ const ThreadMonitorRow = Schema.Struct({
   monitorId: ThreadMonitorId,
   threadId: ThreadId,
   label: Schema.String,
-  conditionType: Schema.Literals(["time", "signal", "computer", "thread-run"]),
+  conditionType: Schema.Literals(["time", "signal", "computer", "thread-run", "process"]),
   conditionJson: Schema.NullOr(Schema.String),
   wakeAt: Schema.NullOr(IsoDateTime),
   continuationMode: Schema.Literals(["resume-thread", "record-only"]),
@@ -158,7 +158,9 @@ const toRow = (monitor: ThreadMonitor): ThreadMonitorRow => ({
   label: monitor.label,
   conditionType: monitor.condition.type,
   conditionJson:
-    monitor.condition.type === "computer" || monitor.condition.type === "thread-run"
+    monitor.condition.type === "computer" ||
+    monitor.condition.type === "thread-run" ||
+    monitor.condition.type === "process"
       ? JSON.stringify(monitor.condition)
       : null,
   wakeAt:
@@ -401,6 +403,7 @@ const make = Effect.gen(function* () {
         delivery_failure_count AS "deliveryFailureCount"
       FROM thread_monitors
       WHERE status IN ('active', 'triggered')
+        OR (condition_type = 'process' AND json_extract(condition_json, '$.released') = 0)
       ORDER BY COALESCE(wake_at, '9999-12-31T23:59:59.999Z') ASC, monitor_id ASC
     `,
   });

@@ -406,6 +406,9 @@ export class SessionStore extends Context.Service<
       ReadonlyArray<AuthClientSession>,
       SessionCredentialInternalError
     >;
+    readonly current: (
+      sessionId: AuthSessionId,
+    ) => Effect.Effect<Option.Option<AuthClientSession>, SessionCredentialVerificationError>;
     readonly streamChanges: Stream.Stream<SessionCredentialChange>;
     readonly awaitInvalidation: (
       sessionId: AuthSessionId,
@@ -1087,6 +1090,10 @@ export const make = Effect.gen(function* () {
     issueWebSocketToken,
     verifyWebSocketToken,
     listActive,
+    current: (sessionId) =>
+      loadActiveSession(sessionId).pipe(
+        Effect.mapError((cause) => new SessionCredentialVerificationError({ sessionId, cause })),
+      ),
     awaitInvalidation,
     get streamChanges() {
       return Stream.fromPubSub(changesPubSub);

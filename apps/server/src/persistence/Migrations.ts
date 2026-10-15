@@ -91,6 +91,8 @@ import Migration0066 from "./Migrations/066_ToolRuns.ts";
 import Migration0069 from "./Migrations/069_ThreadMonitorCancellation.ts";
 
 import Migration0070 from "./Migrations/070_ThreadRunMonitors.ts";
+import Migration0071 from "./Migrations/071_DesktopAuthorizationActivity.ts";
+import Migration0072 from "./Migrations/072_ProcessMonitors.ts";
 
 const migrationHistoryOffset = 1_000;
 const preRebaseForkMigrationNames = [
@@ -230,6 +232,8 @@ export const forkMigrationEntries = [
   [12, "ToolRuns", Migration0066],
   [13, "ThreadMonitorCancellation", Migration0069],
   [14, "ThreadRunMonitors", Migration0070],
+  [15, "DesktopAuthorizationActivity", Migration0071],
+  [16, "ProcessMonitors", Migration0072],
 ] as const;
 
 export const migrationManifest = migrationEntries.map(([id, name]) => [id, name] as const);

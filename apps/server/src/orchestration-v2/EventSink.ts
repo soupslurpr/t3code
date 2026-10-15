@@ -73,11 +73,15 @@ export type EventSinkV2Error = typeof EventSinkV2Error.Type;
  */
 export interface EventSinkV2Shape {
   readonly write: (input: {
+    /** Deduplicate desktop milestones and reject updates after thread deletion in this transaction. */
+    readonly guardDesktopMilestones?: boolean;
     readonly guardPendingUserInputCancellations?: boolean;
     readonly commandId?: CommandId;
     readonly events: ReadonlyArray<OrchestrationV2DomainEvent>;
   }) => Effect.Effect<ReadonlyArray<OrchestrationV2StoredEvent>, EventSinkV2Error>;
   readonly writeWithEffects: (input: {
+    /** Deduplicate desktop milestones and reject updates after thread deletion in this transaction. */
+    readonly guardDesktopMilestones?: boolean;
     readonly guardPendingUserInputCancellations?: boolean;
     readonly commandId?: CommandId;
     readonly events: ReadonlyArray<OrchestrationV2DomainEvent>;
@@ -405,10 +409,27 @@ const layerBase: Layer.Layer<
 
       return yield* commitThenPublish(
         Effect.gen(function* () {
+          let events = input.events;
+          if (input.guardDesktopMilestones === true) {
+            events = yield* Effect.filter(events, (event) =>
+              Effect.gen(function* () {
+                if (
+                  event.type !== "turn-item.updated" ||
+                  event.payload.type !== "system_notice" ||
+                  event.payload.desktopProcess === undefined
+                )
+                  return false;
+                const live = yield* sql`SELECT 1 FROM orchestration_v2_projection_threads
+                WHERE thread_id = ${event.threadId} AND deleted_at IS NULL
+                  AND NOT EXISTS (SELECT 1 FROM orchestration_events WHERE event_id = ${event.id})`;
+                return live.length !== 0;
+              }),
+            );
+          }
           const normalized = yield* normalizeEvents(
             input.guardPendingUserInputCancellations === true
-              ? yield* guardUserInputCancellations(input.events)
-              : input.events,
+              ? yield* guardUserInputCancellations(events)
+              : events,
           );
           const committed = yield* eventStore.append({
             ...(input.commandId === undefined ? {} : { commandId: input.commandId }),
