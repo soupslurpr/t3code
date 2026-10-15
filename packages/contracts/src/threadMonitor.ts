@@ -5,6 +5,7 @@ import {
   IsoDateTime,
   NonNegativeInt,
   PositiveInt,
+  RunId,
   ThreadId,
   ThreadMonitorId,
   TrimmedNonEmptyString,
@@ -244,8 +245,34 @@ export const ThreadMonitorComputerCondition = Schema.Struct({
 );
 export type ThreadMonitorComputerCondition = typeof ThreadMonitorComputerCondition.Type;
 
+/** Identifies one run in this monitor's environment; next is anchored at creation. */
+export const ThreadMonitorRunCondition = Schema.Struct({
+  type: Schema.Literal("thread-run"),
+  threadId: ThreadId,
+  run: Schema.Union([
+    Schema.Struct({ type: Schema.Literal("exact"), runId: RunId }),
+    Schema.Struct({ type: Schema.Literal("next"), afterSequence: NonNegativeInt }),
+  ]),
+  deadlineAt: Schema.NullOr(IsoDateTime),
+});
+export type ThreadMonitorRunCondition = typeof ThreadMonitorRunCondition.Type;
+
 /** Selects when a durable monitor becomes eligible to trigger. */
 export const ThreadMonitorScheduleInput = Schema.Union([
+  Schema.Struct({
+    type: Schema.Literal("thread-run"),
+    threadId: ThreadId.annotate({
+      description: "Target thread in this environment. Cross-environment waits are not supported.",
+    }),
+    run: Schema.Union([
+      Schema.Struct({ type: Schema.Literal("exact"), runId: RunId }),
+      Schema.Struct({ type: Schema.Literal("next") }),
+    ]).annotate({
+      description:
+        "Wait for an existing exact run, or the first run created after this monitor. Returns completed, failed, or stopped; it does not certify the broader task.",
+    }),
+    deadlineAt: Schema.optional(IsoDateTime),
+  }),
   Schema.Struct({
     type: Schema.Literal("after"),
     durationMs: PositiveInt.annotate({
@@ -271,6 +298,7 @@ export type ThreadMonitorScheduleInput = typeof ThreadMonitorScheduleInput.Type;
 
 /** Stores a normalized durable trigger condition. */
 export const ThreadMonitorCondition = Schema.Union([
+  ThreadMonitorRunCondition,
   Schema.Struct({
     type: Schema.Literal("time"),
     at: IsoDateTime,
@@ -352,12 +380,18 @@ export const ThreadMonitorSummary = Schema.Struct({
   id: ThreadMonitorId,
   label: MonitorLabel,
   status: ThreadMonitorStatus,
-  condition: Schema.Literals(["time", "signal", "image-change", "model"]),
+  condition: Schema.Literals(["time", "signal", "image-change", "model", "thread-run"]),
   criterion: Schema.NullOr(ComputerWatchCriterion),
   nextCheckAt: Schema.NullOr(IsoDateTime),
   deadlineAt: Schema.NullOr(IsoDateTime),
   continuation: ThreadMonitorContinuation,
   reviewRequired: Schema.Boolean,
+  targetRun: Schema.optional(ThreadMonitorRunCondition),
+  blockedReason: Schema.optional(Schema.NullOr(Schema.String)),
+  review: Schema.optional(ThreadMonitorComputerReview),
+  usage: Schema.optional(ThreadMonitorComputerUsage),
+  evaluationCount: Schema.optional(NonNegativeInt),
+  result: Schema.optional(Schema.NullOr(MonitorResultSummary)),
   lastError: Schema.NullOr(Schema.String),
 });
 export type ThreadMonitorSummary = typeof ThreadMonitorSummary.Type;

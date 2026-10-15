@@ -12,6 +12,8 @@ Durable waits support:
 - a specific future time;
 - a signal from background work or automation, optionally with a fallback
   deadline;
+- the completion, failure, or stopping of an exact run or the next run of a
+  selected thread in this environment, optionally with a fallback deadline;
 - a durable area of the user desktop or a specific Agent desktop, checked for
   an exact image change or a visible condition described in plain language.
 
@@ -34,6 +36,11 @@ shows its trigger, observation, and evidence. The agent resumes using the
 existing conversation, without a separate handoff prompt.
 T3 Code marks observational content as untrusted and records that the event
 does not grant fresh authorization.
+
+A native thread wait uses the app's run events, without a model polling the conversation.
+Ask the agent to wait for a specific run, or explicitly for the next run. The result identifies
+whether that run completed, failed, or stopped. A completed run does not prove that a broader goal,
+such as deploying both machines, was achieved; the controller still verifies that requirement.
 
 Waits survive a T3 server restart. T3 Code does not run timers in a hosted
 service while the environment is offline; an overdue wait is reconciled the
@@ -84,8 +91,10 @@ agent can disable this safeguard while retaining other review checkpoints, or
 disable reviews entirely when silence is intentional.
 
 On web and desktop, open the thread details and find **Automations** to inspect
-outstanding monitors and cancel an individual wait. You can also ask the agent
-to list or cancel its waits from any client. Signal-based monitoring
+outstanding monitors and cancel an individual wait. On mobile, open **Monitors** from the thread
+header. These controls work without an active provider. Details include the condition, deadline or
+next check, delivery blockers, errors, review checkpoints, and evaluator usage when available.
+You can also ask the agent to list or cancel its waits from any client. Signal-based monitoring
 usually combines a durable wait with background work that reports when its
 condition is satisfied. The agent can give a background job a private completion
 callback that works after its turn ends. Cancelling the wait disables the
