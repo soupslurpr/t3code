@@ -50,8 +50,6 @@ it("cancels an answer's pending auto-submit on revocation and resumes after a ne
   };
   const panel = (disabled: boolean) => (
     <ComposerPendingUserInputPanel
-      threadRef={{ environmentId: EnvironmentId.make("test"), threadId: ThreadId.make("test") }}
-      cwd="/workspace"
       pendingUserInputs={[prompt]}
       cwd="/repo"
       threadRef={threadRef}

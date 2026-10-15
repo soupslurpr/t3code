@@ -433,11 +433,24 @@ export const layerWithOptions = (
       const sessionOpen = yield* KeyedLock.make<ProviderSessionId>();
       interface ReleasedEntry {
         readonly entry: LiveSessionEntry;
+        readonly reason: ProviderSessionReleaseReason;
+        readonly detachedThreadId?: ThreadId;
         requestIds: ReadonlyMap<ThreadId, ReadonlySet<RuntimeRequestId>> | undefined;
+        backgroundTasks: ReadonlyArray<ReleasedBackgroundTasks> | undefined;
       }
-      // A replacement cannot publish requests until the previous entry's exact
-      // request IDs are known. Keep only snapshots still waiting on a read.
+      // A replacement cannot publish requests or background tasks until both
+      // of the previous entry's snapshots are known.
       const pendingReleaseSnapshots = new Map<ProviderSessionId, ReleasedEntry>();
+      const forgetCapturedReleaseSnapshot = (released: ReleasedEntry) => {
+        const providerSessionId = released.entry.runtime.providerSessionId;
+        if (
+          released.requestIds !== undefined &&
+          released.backgroundTasks !== undefined &&
+          pendingReleaseSnapshots.get(providerSessionId) === released
+        ) {
+          pendingReleaseSnapshots.delete(providerSessionId);
+        }
+      };
       // Orders a thread's attach against a detach unloading it on the same session.
       const threadAttachment = yield* KeyedLock.make<string>();
       const threadAttachmentKey = (input: {
@@ -712,9 +725,7 @@ export const layerWithOptions = (
           );
         }
         released.requestIds = requestIds;
-        if (pendingReleaseSnapshots.get(providerSessionId) === released) {
-          pendingReleaseSnapshots.delete(providerSessionId);
-        }
+        forgetCapturedReleaseSnapshot(released);
         return requestIds;
       });
 
@@ -825,9 +836,8 @@ export const layerWithOptions = (
         });
 
       // Reads the background tasks a released session's process left on its
-      // provider threads. Read as soon as the session leaves the live map:
-      // after that, a replacement session with the same id can open and report
-      // tasks of its own on the same provider threads. Server shutdown keeps
+      // provider threads. Capture under sessionOpen before a replacement with
+      // the same id can report tasks on those provider threads. Server shutdown keeps
       // rosters, since startup recovery clears them and records the cancelled
       // work. Only runtimes whose tasks end with their process opt in (Claude,
       // Muse). OpenCode's background subagents run on a server shared by its
@@ -879,6 +889,13 @@ export const layerWithOptions = (
       type ReleasedBackgroundTasks = Effect.Success<
         ReturnType<typeof readReleasedBackgroundTasks>
       >[number];
+
+      const captureReleasedBackgroundTasks = Effect.fnUntraced(function* (released: ReleasedEntry) {
+        if (released.backgroundTasks !== undefined) return released.backgroundTasks;
+        released.backgroundTasks = yield* readReleasedBackgroundTasks(released);
+        forgetCapturedReleaseSnapshot(released);
+        return released.backgroundTasks;
+      });
 
       // Removes the tasks `readReleasedBackgroundTasks` found from their
       // rosters. Their process is gone, so nothing will report them ending,
@@ -1018,6 +1035,8 @@ export const layerWithOptions = (
       // later writers cannot publish a new live request from the old runtime.
       const removeLiveEntry = (input: {
         readonly providerSessionId: ProviderSessionId;
+        readonly reason: ProviderSessionReleaseReason;
+        readonly detachedThreadId?: ThreadId;
         readonly onlyIfIdleGeneration?: number;
       }): Effect.Effect<Option.Option<ReleasedEntry>> =>
         Effect.gen(function* () {
@@ -1033,7 +1052,8 @@ export const layerWithOptions = (
             }
             if (
               input.onlyIfIdleGeneration !== undefined &&
-              (existing.busyTurns.size > 0 || existing.idleGeneration !== input.onlyIfIdleGeneration)
+              (existing.busyTurns.size > 0 ||
+                existing.idleGeneration !== input.onlyIfIdleGeneration)
             ) {
               return ["kept", current] as const;
             }
@@ -1044,7 +1064,15 @@ export const layerWithOptions = (
           // Another entry took this id while the permit was held; release it instead.
           if (removed === "changed") return yield* removeLiveEntry(input);
           if (removed !== "removed") return Option.none<ReleasedEntry>();
-          const released: ReleasedEntry = { entry: candidate, requestIds: undefined };
+          const released: ReleasedEntry = {
+            entry: candidate,
+            reason: input.reason,
+            ...(input.detachedThreadId === undefined
+              ? {}
+              : { detachedThreadId: input.detachedThreadId }),
+            requestIds: undefined,
+            backgroundTasks: undefined,
+          };
           pendingReleaseSnapshots.set(input.providerSessionId, released);
           return Option.some(released);
         });
@@ -1149,13 +1177,9 @@ export const layerWithOptions = (
             onSome: (released) =>
               Effect.gen(function* () {
                 const { entry } = released;
-                const releasedBackgroundTasks = yield* readReleasedBackgroundTasks({
-                  entry,
-                  reason: input.reason,
-                  ...(input.detachedThreadId === undefined
-                    ? {}
-                    : { detachedThreadId: input.detachedThreadId }),
-                });
+                const releasedBackgroundTasks = yield* withOpenLock(
+                  captureReleasedBackgroundTasks(released),
+                );
                 if (input.cancelIdleFiber !== false) {
                   yield* cancelIdleFiber(entry.idleFiber);
                 }
@@ -1862,54 +1886,56 @@ export const layerWithOptions = (
             ),
           );
           const events = Stream.fromQueue(queue).pipe(
-            Stream.flatMap((signal): ProviderAdapter.ProviderAdapterV2EventSubscription["events"] => {
-              if (signal.type === "failure") return Stream.failCause(signal.cause);
-              const event = signal.event;
-              const requestArtifact =
-                event.type === "runtime_request.updated" ||
-                (event.type === "node.updated" && event.node.runtimeRequestId !== null) ||
-                (event.type === "turn_item.updated" &&
-                  (event.turnItem.type === "approval_request" ||
-                    event.turnItem.type === "user_input_request"));
-              if (!requestArtifact) return Stream.make(event);
-              const status =
-                event.type === "node.updated"
-                  ? event.node.status
-                  : event.type === "turn_item.updated"
-                    ? event.turnItem.status
-                    : undefined;
-              const canOutliveSession =
-                status === "completed" ||
-                status === "failed" ||
-                status === "cancelled" ||
-                status === "interrupted" ||
-                status === "rolled_back" ||
-                (event.type === "runtime_request.updated" &&
-                  (event.runtimeRequest.status !== "pending" ||
-                    event.runtimeRequest.responseCapability.type !== "live")) ||
-                (event.type === "turn_item.updated" &&
-                  event.turnItem.type === "user_input_request" &&
-                  event.turnItem.responseMode === "message");
-              // The inner stream's scope holds the permit through downstream
-              // persistence. Removal waits for an in-flight request; queued
-              // live requests are dropped afterwards. Terminal updates and
-              // message-mode questions remain valid after the provider exits.
-              return Stream.unwrap(
-                Effect.gen(function* () {
-                  yield* Effect.acquireRelease(
-                    requestEventPermit.take(1),
-                    () => requestEventPermit.release(1),
-                    { interruptible: true },
-                  );
-                  const current = (yield* Ref.get(sessions)).get(
-                    sessionKey(runtime.providerSessionId),
-                  );
-                  return current?.runtime === runtime || canOutliveSession
-                    ? Stream.make(event)
-                    : Stream.empty;
-                }),
-              );
-            }),
+            Stream.flatMap(
+              (signal): ProviderAdapter.ProviderAdapterV2EventSubscription["events"] => {
+                if (signal.type === "failure") return Stream.failCause(signal.cause);
+                const event = signal.event;
+                const requestArtifact =
+                  event.type === "runtime_request.updated" ||
+                  (event.type === "node.updated" && event.node.runtimeRequestId !== null) ||
+                  (event.type === "turn_item.updated" &&
+                    (event.turnItem.type === "approval_request" ||
+                      event.turnItem.type === "user_input_request"));
+                if (!requestArtifact) return Stream.make(event);
+                const status =
+                  event.type === "node.updated"
+                    ? event.node.status
+                    : event.type === "turn_item.updated"
+                      ? event.turnItem.status
+                      : undefined;
+                const canOutliveSession =
+                  status === "completed" ||
+                  status === "failed" ||
+                  status === "cancelled" ||
+                  status === "interrupted" ||
+                  status === "rolled_back" ||
+                  (event.type === "runtime_request.updated" &&
+                    (event.runtimeRequest.status !== "pending" ||
+                      event.runtimeRequest.responseCapability.type !== "live")) ||
+                  (event.type === "turn_item.updated" &&
+                    event.turnItem.type === "user_input_request" &&
+                    event.turnItem.responseMode === "message");
+                // The inner stream's scope holds the permit through downstream
+                // persistence. Removal waits for an in-flight request; queued
+                // live requests are dropped afterwards. Terminal updates and
+                // message-mode questions remain valid after the provider exits.
+                return Stream.unwrap(
+                  Effect.gen(function* () {
+                    yield* Effect.acquireRelease(
+                      requestEventPermit.take(1),
+                      () => requestEventPermit.release(1),
+                      { interruptible: true },
+                    );
+                    const current = (yield* Ref.get(sessions)).get(
+                      sessionKey(runtime.providerSessionId),
+                    );
+                    return current?.runtime === runtime || canOutliveSession
+                      ? Stream.make(event)
+                      : Stream.empty;
+                  }),
+                );
+              },
+            ),
             Stream.ensuring(close),
           );
           return { events, close } satisfies ProviderAdapter.ProviderAdapterV2EventSubscription;
@@ -1923,7 +1949,11 @@ export const layerWithOptions = (
         requestEventPermit: Semaphore.Semaphore,
       ): ProviderAdapter.ProviderAdapterV2SessionRuntime => {
         const providerSessionId = runtime.providerSessionId;
-        const subscribeEvents = makeEventSubscription(runtime, eventSubscribers, requestEventPermit);
+        const subscribeEvents = makeEventSubscription(
+          runtime,
+          eventSubscribers,
+          requestEventPermit,
+        );
         // Every provider's turn operations pass through here, so this is where they are
         // counted. Only turn starts are timed: until the provider accepts the turn.
         const turnMetrics = (operation: string, model?: string) =>
@@ -2295,7 +2325,13 @@ export const layerWithOptions = (
             Effect.gen(function* () {
               const pendingSnapshot = pendingReleaseSnapshots.get(input.providerSessionId);
               if (pendingSnapshot !== undefined) {
-                yield* captureReleasedRequests(pendingSnapshot).pipe(
+                yield* Effect.all(
+                  [
+                    captureReleasedRequests(pendingSnapshot),
+                    captureReleasedBackgroundTasks(pendingSnapshot),
+                  ],
+                  { concurrency: 1, discard: true },
+                ).pipe(
                   Effect.mapError(
                     (cause) =>
                       new ProviderSessionOpenError({

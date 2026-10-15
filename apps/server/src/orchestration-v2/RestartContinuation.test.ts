@@ -633,6 +633,7 @@ it.effect("prepares no continuation for background work another provider thread 
     assert.deepEqual(writes[0]!.effects[0]?.request, {
       type: "provider-runtime.continue",
       sourceRunId: runId,
+      lastRunOrdinal: 1,
     });
   }),
 );
@@ -740,7 +741,9 @@ it.effect.each([
         const recorded = [...writes.flatMap((write) => write.effects), ...commits[0]!.effects];
         assert.deepEqual(
           recorded.map((effect) => effect.request),
-          wakes ? [{ type: "provider-runtime.continue", sourceRunId: runId }] : [],
+          wakes
+            ? [{ type: "provider-runtime.continue", sourceRunId: runId, lastRunOrdinal: 1 }]
+            : [],
         );
         assert.lengthOf(commits, 1);
         const events = commits[0]!.events;

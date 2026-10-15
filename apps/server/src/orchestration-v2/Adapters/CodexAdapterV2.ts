@@ -1898,7 +1898,9 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
             context.nativeTurnId,
           ).hasSubagents = true;
         };
-        const pendingRootTurns = yield* Ref.make(new Map<string, ProviderAdapter.ProviderAdapterV2TurnInput>());
+        const pendingRootTurns = yield* Ref.make(
+          new Map<string, ProviderAdapter.ProviderAdapterV2TurnInput>(),
+        );
         // turn/start is Codex's only harness-output API. It can start a new native
         // turn if completion wins the race; keep that turn in the same app run.
         const pendingHarnessInputs = yield* Ref.make(
@@ -3341,7 +3343,10 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
                     text: codexSkillMentionText(turnInput.message.text),
                     attachments: turnInput.message.attachments,
                     resolveAttachmentPath: (attachment) =>
-                      resolveAttachmentPath({ attachmentsDir: serverConfig.attachmentsDir, attachment }),
+                      resolveAttachmentPath({
+                        attachmentsDir: serverConfig.attachmentsDir,
+                        attachment,
+                      }),
                   });
             if (text.length > 0) {
               inputItems.push({

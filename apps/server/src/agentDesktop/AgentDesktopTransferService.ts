@@ -769,7 +769,7 @@ export const make = Effect.gen(function* () {
     Effect.gen(function* () {
       yield* prune();
       const owner = ownerFromScope(scope);
-      const uuid = yield* crypto.randomUUIDv4.pipe(Effect.orDie);
+      const uuid = yield* crypto.randomUUIDv4().pipe(Effect.orDie);
       const transferId = `transfer-${uuid.replaceAll("-", "")}` as AgentDesktopTransferId;
       const now = isoTime(yield* Clock.currentTimeMillis);
       const completion = yield* Deferred.make<AgentDesktopTransfer>();

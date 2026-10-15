@@ -3213,6 +3213,16 @@ describe("CodexAdapterV2 post-settle continuation", () => {
                 input: [{ type: "text", text: turnText(index) }],
                 cwd: "/workspace",
                 model: "gpt-5.4",
+                effort: null,
+                serviceTier: null,
+                collaborationMode: {
+                  mode: "default",
+                  settings: {
+                    model: "gpt-5.4",
+                    reasoning_effort: null,
+                    developer_instructions: null,
+                  },
+                },
                 ...turnPolicies[turnModes[index]!],
                 summary: "detailed",
               },

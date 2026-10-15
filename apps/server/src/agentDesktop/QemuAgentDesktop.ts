@@ -2242,9 +2242,9 @@ export const make = Effect.gen(function* () {
       separatorIndex < 0 ? "." : separatorIndex === 0 ? "/" : path.slice(0, separatorIndex);
     const separator = directory === "/" ? "" : "/";
     return Effect.gen(function* () {
-      const nonce = yield* crypto.randomUUIDv4.pipe(
-        Effect.mapError(mapFailure("guest-file-create", "internal-error")),
-      );
+      const nonce = yield* crypto
+        .randomUUIDv4()
+        .pipe(Effect.mapError(mapFailure("guest-file-create", "internal-error")));
       const temporaryPath = `${directory}${separator}.t3-create-${nonce}`;
       return yield* Effect.gen(function* () {
         const bytesWritten = yield* writeGuestFileContents(id, temporaryPath, data, guestMode);

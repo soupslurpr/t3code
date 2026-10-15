@@ -192,7 +192,11 @@ export function threadHasUnseenCompletion(
 export function resolveThreadListV2Status(
   thread: Pick<
     EnvironmentThreadShell,
-    "hasPendingApprovals" | "hasPendingUserInput" | "pendingSubagentRequest" | "runtime" | "backgroundLiveness"
+    | "hasPendingApprovals"
+    | "hasPendingUserInput"
+    | "pendingSubagentRequest"
+    | "runtime"
+    | "backgroundLiveness"
   >,
 ): ThreadListV2Status {
   if (thread.hasPendingApprovals || thread.pendingSubagentRequest === "approval") {

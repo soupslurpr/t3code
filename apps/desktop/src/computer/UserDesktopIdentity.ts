@@ -164,7 +164,7 @@ export const makeWithHostname = Effect.fn("userDesktopIdentity.makeWithHostname"
         Effect.map((document) => document.desktopId),
       )
     : yield* Effect.gen(function* () {
-        const uuid = yield* crypto.randomUUIDv4;
+        const uuid = yield* crypto.randomUUIDv4();
         const created = UserDesktopId.make(`user-${uuid}`);
         yield* writeIdentity({
           fileSystem,

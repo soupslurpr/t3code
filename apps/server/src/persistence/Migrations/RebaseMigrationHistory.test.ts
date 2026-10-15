@@ -10,11 +10,11 @@ type MigrationHistoryRow = {
   readonly name: string;
 };
 
-const latestUpstreamMigrationId = 61;
+const latestUpstreamMigrationId = 62;
 const firstForkMigrationId = latestUpstreamMigrationId + 1;
 
 it.effect.each([
-  40, 41, 42, 43, 44, 45, 46, 47, 48, 49, 50, 51, 52, 53, 54, 55, 56, 57, 58, 59, 60,
+  40, 41, 42, 43, 44, 45, 46, 47, 48, 49, 50, 51, 52, 53, 54, 55, 56, 57, 58, 59, 60, 61,
 ] as const)("reconciles fork migrations displaced after upstream migration %s", (throughId) =>
   Effect.gen(function* () {
     const sql = yield* SqlClient.SqlClient;
@@ -46,11 +46,13 @@ it.effect.each([
           'mcp_app_model_context',
           'pull_request_review_guides',
           'orchestration_v2_projection_turn_items_user_message_idx',
-          'orchestration_v2_projection_nodes_live_idx'
+          'orchestration_v2_projection_nodes_live_idx',
+          'orchestration_v2_projection_turn_items_failed_error_idx'
         ) ORDER BY name`,
       [
         { name: "mcp_app_model_context" },
         { name: "orchestration_v2_projection_nodes_live_idx" },
+        { name: "orchestration_v2_projection_turn_items_failed_error_idx" },
         { name: "orchestration_v2_projection_turn_items_user_message_idx" },
         { name: "pull_request_review_guides" },
       ],
@@ -141,8 +143,8 @@ it.effect("preserves retired feature data while reconciling its migration identi
     assert.deepStrictEqual(
       yield* sql`SELECT migration_id, name FROM effect_sql_migrations WHERE name IN ('PreviewSessions', 'ToolRuns') ORDER BY migration_id`,
       [
-        { migration_id: 72, name: "PreviewSessions" },
-        { migration_id: 73, name: "ToolRuns" },
+        { migration_id: 73, name: "PreviewSessions" },
+        { migration_id: 74, name: "ToolRuns" },
       ],
     );
   }).pipe(Effect.provide(NodeSqliteClient.layer({ filename: ":memory:" }))),

@@ -2844,6 +2844,7 @@ it.effect.each(
           environmentId: EnvironmentId.make("delegated-worktree-test"),
           requestNamespace: "parent-session",
           thread: {
+            controllerId: "parent-controller",
             threadId: parentThreadId,
             providerSessionId: "parent-session",
             providerInstanceId: modelSelection.instanceId,

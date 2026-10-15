@@ -1108,7 +1108,7 @@ export const make = Effect.gen(function* () {
     }
 
     for (const monitors of ungroupedByThread.values()) {
-      const groupId = yield* crypto.randomUUIDv4.pipe(Effect.orDie);
+      const groupId = yield* crypto.randomUUIDv4().pipe(Effect.orDie);
       const grouped = monitors.map((monitor): ThreadMonitor => ({
         ...monitor,
         deliveryGroupId: groupId,
@@ -1160,7 +1160,7 @@ export const make = Effect.gen(function* () {
         const createdAt = yield* nowIso;
         const condition = normalizeCondition(input.schedule, createdAt);
         if (Result.isFailure(condition)) return yield* condition.failure;
-        const id = ThreadMonitorId.make(yield* crypto.randomUUIDv4.pipe(Effect.orDie));
+        const id = ThreadMonitorId.make(yield* crypto.randomUUIDv4().pipe(Effect.orDie));
         const monitor: ThreadMonitor = {
           id,
           threadId,
@@ -1196,7 +1196,7 @@ export const make = Effect.gen(function* () {
   }) =>
     Effect.gen(function* () {
       const createdAt = yield* nowIso;
-      const id = ThreadMonitorId.make(yield* crypto.randomUUIDv4.pipe(Effect.orDie));
+      const id = ThreadMonitorId.make(yield* crypto.randomUUIDv4().pipe(Effect.orDie));
       const stopped = yield* Deferred.make<void>();
       const cancelled = monitorError({
         code: "MONITOR_NOT_ACTIVE",

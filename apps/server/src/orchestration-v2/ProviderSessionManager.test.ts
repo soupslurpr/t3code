@@ -338,6 +338,7 @@ const makeProviderAdapter = Effect.fnUntraced(function* (
     /** False models a runtime whose background tasks can outlive its process. */
     readonly backgroundTasksEndWithProcess?: boolean;
     readonly hangSessionScopeClose?: boolean;
+    readonly beforeScopeClose?: Effect.Effect<void>;
     readonly startTurn?: Effect.Effect<void>;
     readonly beforeUnload?: Effect.Effect<void>;
     /** Registers the process's closeCount finalizer before `beforeOpen` runs. */
@@ -348,10 +349,14 @@ const makeProviderAdapter = Effect.fnUntraced(function* (
 ) {
   const mcpSessions = yield* McpProviderSessions.McpProviderSessions;
   const countClose = Effect.addFinalizer(() =>
-    Ref.update(state, (current) => ({
-      ...current,
-      closeCount: current.closeCount + 1,
-    })),
+    (options.beforeScopeClose ?? Effect.void).pipe(
+      Effect.andThen(
+        Ref.update(state, (current) => ({
+          ...current,
+          closeCount: current.closeCount + 1,
+        })),
+      ),
+    ),
   );
   // Registered after countClose so it runs first on scope close, wedging the
   // close before the closeCount finalizer, like a provider process that never
@@ -488,10 +493,13 @@ function layerTest(input: {
     readonly paused: Deferred.Deferred<void>;
   };
   readonly failReleaseRequestReads?: Ref.Ref<boolean>;
+  /** Runs once before the next provider-thread roster read. */
+  readonly beforeRosterRead?: Ref.Ref<Effect.Effect<void>>;
   readonly hasPendingBackgroundWork?: Effect.Effect<boolean>;
   readonly hasPendingBackgroundWorkForThread?: Effect.Effect<boolean>;
   readonly backgroundTasksEndWithProcess?: boolean;
   readonly hangSessionScopeClose?: boolean;
+  readonly beforeScopeClose?: Effect.Effect<void>;
   readonly startTurn?: Effect.Effect<void>;
   readonly beforeUnload?: Effect.Effect<void>;
   readonly spawnBeforeOpen?: boolean;
@@ -528,6 +536,7 @@ function layerTest(input: {
       ...(input.hangSessionScopeClose === undefined
         ? {}
         : { hangSessionScopeClose: input.hangSessionScopeClose }),
+      ...(input.beforeScopeClose === undefined ? {} : { beforeScopeClose: input.beforeScopeClose }),
       ...(input.startTurn === undefined ? {} : { startTurn: input.startTurn }),
       ...(input.beforeUnload === undefined ? {} : { beforeUnload: input.beforeUnload }),
       ...(input.spawnBeforeOpen === undefined ? {} : { spawnBeforeOpen: input.spawnBeforeOpen }),
@@ -558,6 +567,12 @@ function layerTest(input: {
         ...delegate,
         getThreadRecords: (threadId, fields, options) =>
           Effect.gen(function* () {
+            if (
+              input.beforeRosterRead !== undefined &&
+              fields.some((field) => field === "providerThreads")
+            ) {
+              yield* Ref.getAndSet(input.beforeRosterRead, Effect.void).pipe(Effect.flatten);
+            }
             if (
               input.failReleaseRequestReads !== undefined &&
               fields.some((field) => field === "runtimeRequests") &&
@@ -3105,6 +3120,68 @@ it.effect(
             idleTimeoutMs: 60_000,
             hangSessionScopeClose: true,
             scopeCloseReached,
+          }),
+        ),
+      );
+    }),
+);
+
+it.effect.each(["close", "detach"] as const)(
+  "ProviderSessionManagerV2 snapshots background tasks before admitting a replacement during %s",
+  (operation) =>
+    Effect.gen(function* () {
+      const state = yield* Ref.make(emptyState);
+      const beforeRosterRead = yield* Ref.make<Effect.Effect<void>>(Effect.void);
+      const snapshotReached = yield* Deferred.make<void>();
+      const resumeSnapshot = yield* Deferred.make<void>();
+      const replacementOpened = yield* Deferred.make<void>();
+      const resumeClose = yield* Deferred.make<void>();
+      const effect = Effect.gen(function* () {
+        const manager = yield* ProviderSessionManager.ProviderSessionManagerV2;
+        const { threadId, providerSessionId, providerThreads, writeProviderThread, rosters } =
+          yield* openSessionWithBackgroundCommand(`replacement-before-${operation}-snapshot`);
+        yield* Ref.set(
+          beforeRosterRead,
+          Deferred.succeed(snapshotReached, undefined).pipe(
+            Effect.andThen(Deferred.await(resumeSnapshot)),
+          ),
+        );
+        const release = yield* (
+          operation === "close"
+            ? manager.close(providerSessionId)
+            : manager.detach({ threadId, providerSessionId })
+        ).pipe(Effect.forkChild);
+        yield* Deferred.await(snapshotReached);
+        const replacement = yield* Effect.gen(function* () {
+          yield* manager.open({ threadId, providerSessionId, modelSelection, runtimePolicy });
+          yield* Deferred.succeed(replacementOpened, undefined);
+          yield* writeProviderThread({
+            ...providerThreads[0]!,
+            pendingBackgroundTasks: [
+              ...providerThreads[0]!.pendingBackgroundTasks,
+              { taskId: "replacement-task", kind: "command" },
+            ],
+          });
+        }).pipe(Effect.forkChild({ startImmediately: true }));
+        // Drain runnable fibers without advancing time. The replacement must
+        // suspend at admission until the old session's snapshot is captured.
+        yield* TestClock.adjust(0);
+        const replacementWasBlocked = !(yield* Deferred.isDone(replacementOpened));
+        yield* Deferred.succeed(resumeSnapshot, undefined);
+        yield* Fiber.join(replacement);
+        yield* Deferred.succeed(resumeClose, undefined);
+        yield* Fiber.join(release);
+        assert.isTrue(replacementWasBlocked);
+        assert.deepStrictEqual(yield* rosters, [["replacement-task"], ["dev-server"]]);
+      });
+      yield* effect.pipe(
+        Effect.provide(
+          layerTest({
+            state,
+            idleTimeoutMs: 60_000,
+            capabilities: ExclusiveCapabilities,
+            beforeRosterRead,
+            beforeScopeClose: Deferred.await(resumeClose),
           }),
         ),
       );
