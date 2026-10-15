@@ -3,8 +3,7 @@ import { UserDesktopExecutionInput, type UserDesktopExecutionResult } from "./de
 import * as Schema from "effect/Schema";
 import type { PreviewCaptureFailureEncoded } from "./previewCapture.ts";
 
-import {
-} from "./previewAutomation.ts";
+import {} from "./previewAutomation.ts";
 import {
   ComputerAutomationAccessInput,
   ComputerAutomationAvailabilityInput,
@@ -1331,7 +1330,15 @@ export interface DesktopComputerAutomationContext {
 /** Renderer callback invoked by Electron with a fresh user gesture before display-media capture. */
 export const DESKTOP_PREVIEW_RECORDING_CAPTURE_TRIGGER = "__t3DesktopPreviewRecordingCapture";
 
+export interface DesktopPreviewCaptureRequest {
+  readonly requestId: string;
+  readonly webContentsId: number;
+  readonly active: boolean;
+}
+
 export interface DesktopPreviewBridge {
+  onCaptureRequest?: (listener: (event: DesktopPreviewCaptureRequest) => void) => () => void;
+  acknowledgeCapture?: (requestId: string) => Promise<void>;
   setForwardedShortcuts?: (shortcuts: ReadonlyArray<PreviewForwardedShortcut>) => Promise<void>;
   createTab: (tabId: string, defaults?: DesktopPreviewTabDefaults) => Promise<void>;
   closeTab: (tabId: string) => Promise<void>;
