@@ -1,3 +1,8 @@
+import { AgentDesktopManager } from "./agentDesktop/AgentDesktopManager.ts";
+import { ComputerObservationStore } from "./computer/ComputerObservationStore.ts";
+import { ThreadDesktopActivityService } from "./computer/ThreadDesktopActivity.ts";
+import { ThreadMonitorService } from "./threadMonitor/ThreadMonitorService.ts";
+import { DesktopExecutionAuthorizationChannel } from "./computer/DesktopExecutionAuthorizationChannel.ts";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { assert, it } from "@effect/vitest";
 import {
@@ -447,6 +452,10 @@ it.live.each(["thread", "shell"] as const)(
 
 // Build the production RPC layer; unrelated capabilities fail if this test calls them.
 const layerUnusedConfigRpcServices = Layer.mergeAll(
+  Layer.mock(AgentDesktopManager)({}),
+  Layer.mock(ComputerObservationStore)({}),
+  Layer.mock(ThreadDesktopActivityService)({}),
+  Layer.mock(ThreadMonitorService)({}),
   Layer.mock(ServerSecretStore.ServerSecretStore)({}),
   Layer.mock(WorkspacePaths.WorkspacePaths)({}),
   Layer.mock(TraceDiagnostics.TraceDiagnostics)({}),
@@ -623,6 +632,7 @@ it.effect(
             {},
             yield* PreviewAutomationBroker.PreviewAutomationBroker,
             yield* ServerBrowser.ServerBrowser,
+            yield* DesktopExecutionAuthorizationChannel,
           ).pipe(Layer.provide(configRpcServices)),
         ),
       );
@@ -685,6 +695,7 @@ it.effect(
           Layer.fresh(layerConfigSources),
           Layer.mock(PreviewAutomationBroker.PreviewAutomationBroker)({}),
           Layer.mock(ServerBrowser.ServerBrowser)({}),
+          Layer.mock(DesktopExecutionAuthorizationChannel)({}),
         ),
       ),
       Effect.scoped,

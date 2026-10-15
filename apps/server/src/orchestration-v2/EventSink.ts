@@ -72,6 +72,8 @@ export interface EventSinkV2Shape {
       OrchestrationV2ProviderThread,
       "driver" | "providerInstanceId" | "appThreadId" | "nativeThreadRef"
     >;
+    /** Deduplicate desktop milestones and reject updates after thread deletion in this transaction. */
+    readonly guardDesktopMilestones?: boolean;
     readonly guardPendingUserInputCancellations?: boolean;
     readonly commandId?: CommandId;
     readonly events: ReadonlyArray<OrchestrationV2DomainEvent>;
@@ -86,6 +88,8 @@ export interface EventSinkV2Shape {
       OrchestrationV2ProviderThread,
       "driver" | "providerInstanceId" | "appThreadId" | "nativeThreadRef"
     >;
+    /** Deduplicate desktop milestones and reject updates after thread deletion in this transaction. */
+    readonly guardDesktopMilestones?: boolean;
     readonly guardPendingUserInputCancellations?: boolean;
     readonly commandId?: CommandId;
     readonly events: ReadonlyArray<OrchestrationV2DomainEvent>;
@@ -420,7 +424,7 @@ const layerBase: Layer.Layer<
           }
           // Checkpoint capture can finish after a cohort writer reads its parent run.
           // Merge in this transaction so the event log and projection keep that completion.
-          const events = input.updateDelegatedCompletionOnly
+          let events = input.updateDelegatedCompletionOnly
             ? yield* Effect.forEach(input.events, (event) =>
                 Effect.gen(function* () {
                   if (event.type !== "run.updated") return event;
@@ -442,6 +446,22 @@ const layerBase: Layer.Layer<
                 }),
               )
             : input.events;
+          if (input.guardDesktopMilestones === true) {
+            events = yield* Effect.filter(events, (event) =>
+              Effect.gen(function* () {
+                if (
+                  event.type !== "turn-item.updated" ||
+                  event.payload.type !== "system_notice" ||
+                  event.payload.desktopProcess === undefined
+                )
+                  return false;
+                const live = yield* sql`SELECT 1 FROM orchestration_v2_projection_threads
+                WHERE thread_id = ${event.threadId} AND deleted_at IS NULL
+                  AND NOT EXISTS (SELECT 1 FROM orchestration_events WHERE event_id = ${event.id})`;
+                return live.length !== 0;
+              }),
+            );
+          }
           const normalized = yield* normalizeEvents(
             input.guardPendingUserInputCancellations === true
               ? yield* guardUserInputCancellations(events)

@@ -13,6 +13,8 @@ export function humanRequestOperation(
   request: AgentDesktopHumanRequest,
 ): EnvironmentDesktopAutomationError["operation"] {
   switch (request.operation) {
+    case "process":
+      return "agentDesktopProcess";
     case "list":
       return "agentDesktopList";
     case "setup":
@@ -85,6 +87,8 @@ export const runAgentDesktopHumanRequest = Effect.fn("AgentDesktopHuman.run")(fu
     });
   }
   switch (request.operation) {
+    case "process":
+      return yield* manager.process(request.owner, request.input);
     case "status":
       return yield* manager.humanStatus(
         request.owner,

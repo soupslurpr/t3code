@@ -1,5 +1,7 @@
 /** Exposes desktop process execution through validated Electron IPC. */
 import {
+  DesktopAuthorizationSyncInput,
+  DesktopAuthorizationReferences,
   DesktopExecutionRequestSchema,
   DesktopTransferRequestSchema,
   UserDesktopTransferResult,
@@ -12,6 +14,19 @@ import * as Effect from "effect/Effect";
 import * as DesktopExecution from "../../process/DesktopExecution.ts";
 import * as DesktopIpc from "../DesktopIpc.ts";
 import * as IpcChannels from "../channels.ts";
+
+export const authorization = DesktopIpc.makeIpcMethod({
+  channel: IpcChannels.DESKTOP_AUTHORIZATION_CHANNEL,
+  payload: DesktopAuthorizationSyncInput,
+  result: makeDesktopComputerAutomationResultSchema(DesktopAuthorizationReferences),
+  handler: Effect.fn("desktop.ipc.authorization")(function* (request) {
+    const service = yield* DesktopExecution.DesktopExecution;
+    return yield* service.authorization(request).pipe(
+      Effect.map((value) => ({ ok: true as const, value })),
+      Effect.catch((cause) => Effect.succeed({ ok: false as const, error: failure(cause) })),
+    );
+  }),
+});
 
 /** Maps native execution failures into the existing desktop transport envelope. */
 function failure(

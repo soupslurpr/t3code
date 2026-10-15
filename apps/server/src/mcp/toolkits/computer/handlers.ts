@@ -2,6 +2,7 @@ import { UserDesktopTransfers } from "../../../computer/UserDesktopTransfers.ts"
 import type {
   DesktopExecutionAccess,
   DesktopProcessResult,
+  DesktopProcessAccepted,
   DesktopProcessList,
   UserDesktopExecutionInput,
   ComputerAutomationActInput,
@@ -201,7 +202,10 @@ const handlers = {
     invokeExecution<DesktopExecutionAccess>({ operation: "access", desktop: input.desktop, input }),
   ),
   user_desktop_command: McpToolAccess.actsAsCaller((input) =>
-    invokeExecution<DesktopProcessResult>({ operation: "command", ...input }),
+    invokeExecution<DesktopProcessResult | DesktopProcessAccepted>({
+      operation: "command",
+      ...input,
+    }),
   ),
   user_desktop_process: McpToolAccess.actsAsCaller((input) =>
     invokeExecution<DesktopProcessResult | DesktopProcessList>({

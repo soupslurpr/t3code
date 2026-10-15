@@ -1,398 +1,519 @@
-/** Supervises commands and execution grants without opening screen sharing. */
+/** Supervises exact desktop processes independently of graphical access. */
+import { useAtomValue } from "@effect/atom-react";
 import {
   hasMoreDesktopProcessOutput,
   updateDesktopProcessOutputPage,
   type DesktopProcessOutputNavigation,
   type DesktopProcessOutputPage,
 } from "@t3tools/client-runtime/desktop-process-output";
-import { useAtomValue } from "@effect/atom-react";
 import { squashAtomCommandFailure } from "@t3tools/client-runtime/state/runtime";
 import {
+  AgentDesktopProcessResponse,
   UserDesktopExecutionResult,
+  isDesktopProcessLive,
+  hasDesktopProcessInputGrant,
+  EnvironmentId,
+  ThreadId,
+  type AgentDesktopOwner,
   type DesktopExecutionAccess,
   type DesktopProcess,
-  type EnvironmentId,
-  type ThreadId,
+  type DesktopExecutionGrant,
   type UserDesktopExecutionInput,
+  type UserDesktopProcessInput,
+  type UserDesktopExecutionAccessInput,
   type UserDesktopTarget,
 } from "@t3tools/contracts";
 import * as Schema from "effect/Schema";
 import { useCallback, useEffect, useRef, useState } from "react";
-
 import { previewEnvironment } from "~/state/preview";
 import { useAtomCommand } from "~/state/use-atom-command";
 import { Button } from "../ui/button";
 import { Alert, AlertDescription } from "../ui/alert";
+import { DesktopExecutionPermissions } from "./DesktopExecutionPermissions";
+import { resolveDesktopComputerAutomation } from "../preview/previewAutomationErrors";
 
-const REFRESH_INTERVAL_MS = 3000;
-const OUTPUT_PAGE_BYTES = 64 * 1024;
-const decodeResult = Schema.decodeUnknownSync(UserDesktopExecutionResult);
+const decodeUser = Schema.decodeUnknownSync(UserDesktopExecutionResult);
+const decodeAgent = Schema.decodeUnknownSync(AgentDesktopProcessResponse);
+type ProcessInput = Omit<UserDesktopProcessInput, "desktop">;
+type Target =
+  | UserDesktopTarget
+  | { readonly kind: "agent"; readonly desktopId: string; readonly owner: AgentDesktopOwner };
 
-/** Shows access controls, running processes, and paginated captured output for one route. */
-export function UserDesktopExecutionPanel({
+/** Only the native renderer can reach local recovery; source RPCs keep their own scope. */
+async function invokeLocalExecution(
+  input: UserDesktopExecutionInput,
+  environmentId: EnvironmentId,
+  threadId: ThreadId,
+) {
+  const bridge = window.desktopBridge;
+  if (!bridge?.execution || bridge.getUserDesktopHost?.().desktopId !== input.desktop.desktopId)
+    throw new Error("Local command management requires this desktop’s native app.");
+  return resolveDesktopComputerAutomation(
+    bridge.execution(input, {
+      controllerKind: "local",
+      controllerId: "local-desktop-settings",
+      environmentId,
+      threadId,
+    }),
+  );
+}
+
+export function LocalDesktopExecutionPanel({ desktop }: { desktop: UserDesktopTarget }) {
+  return (
+    <DesktopProcessPanel
+      local
+      desktop={desktop}
+      environmentId={EnvironmentId.make(`local-desktop:${desktop.desktopId}`)}
+      environmentLabel="This desktop · All environments"
+    />
+  );
+}
+
+export function UserDesktopExecutionPanel(props: {
+  environmentId: EnvironmentId;
+  environmentLabel: string;
+  desktop: UserDesktopTarget;
+  threadId?: ThreadId | undefined;
+  initialProcessId?: string | undefined;
+}) {
+  return <DesktopProcessPanel {...props} />;
+}
+export function AgentDesktopExecutionPanel({
+  desktopId,
+  owner,
+  label,
+  initialProcessId,
+}: {
+  desktopId: string;
+  owner: AgentDesktopOwner;
+  label: string;
+  initialProcessId?: string | undefined;
+}) {
+  return (
+    <DesktopProcessPanel
+      environmentId={owner.environmentId}
+      environmentLabel={label}
+      desktop={{ kind: "agent", desktopId, owner }}
+      threadId={owner.threadId}
+      initialProcessId={initialProcessId}
+    />
+  );
+}
+
+function DesktopProcessPanel({
   environmentId,
   environmentLabel,
   desktop,
   threadId,
+  initialProcessId,
+  local = false,
 }: {
-  readonly environmentId: EnvironmentId;
-  readonly environmentLabel: string;
-  readonly desktop: UserDesktopTarget;
-  readonly threadId?: ThreadId | undefined;
+  environmentId: EnvironmentId;
+  environmentLabel: string;
+  desktop: Target;
+  threadId?: ThreadId | undefined;
+  initialProcessId?: string | undefined;
+  local?: boolean;
 }) {
-  const invoke = useAtomCommand(previewEnvironment.invokeUserDesktopHuman, {
+  const user = useAtomCommand(previewEnvironment.invokeUserDesktopHuman, { reportFailure: false });
+  const agent = useAtomCommand(previewEnvironment.invokeAgentDesktopHuman, {
     reportFailure: false,
   });
   const allowed = useAtomValue(
-    previewEnvironment.invokeUserDesktopHuman.permissionAtom(environmentId),
+    desktop.kind === "user"
+      ? previewEnvironment.invokeUserDesktopHuman.permissionAtom(environmentId, {
+          request: {
+            operation: "execution",
+            desktopId: desktop.desktopId,
+            input: { operation: "access", desktop, input: { action: "status", desktop } },
+          },
+        })
+      : previewEnvironment.invokeAgentDesktopHuman.permissionAtom(environmentId, {
+          request: {
+            operation: "process",
+            owner: desktop.owner,
+            input: { action: "list", desktopId: desktop.desktopId },
+          },
+        }),
   );
-  const [expanded, setExpanded] = useState(false);
+  const [expanded, setExpanded] = useState(initialProcessId !== undefined);
   const [access, setAccess] = useState<DesktopExecutionAccess | null>(null);
-  const [processes, setProcesses] = useState<ReadonlyArray<DesktopProcess>>([]);
-  const [outputPage, setOutputPage] = useState<DesktopProcessOutputPage | null>(null);
-  const output = outputPage?.result ?? null;
-  const previousOutputOffsets = outputPage?.history.at(-1);
-  const hasMoreOutput = output !== null && hasMoreDesktopProcessOutput(output);
-  // Read once more after process exit to collect output written since the last page.
-  const canReadMoreOutput = hasMoreOutput || output?.process.status === "running";
-  const [actionError, setError] = useState<string | null>(null);
-  const [refreshError, setRefreshError] = useState<string | null>(null);
-  const error = actionError ?? refreshError;
-  const [pendingCount, setPendingCount] = useState(0);
-  const busy = !allowed || pendingCount > 0;
-  const [scope, setScope] = useState<"environment" | "desktop">("environment");
+  const [processes, setProcesses] = useState<readonly DesktopProcess[]>([]);
+  const [cursor, setCursor] = useState<string | null>(null);
+  const [page, setPage] = useState<DesktopProcessOutputPage | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [pending, setPending] = useState(0);
   const refreshing = useRef(false);
+  const [listCursor, setListCursor] = useState<string | undefined>(undefined);
+  const busy = (!local && !allowed) || pending > 0;
   const desktopId = desktop.desktopId;
-
-  const run = useCallback(
-    async (input: UserDesktopExecutionInput) => {
-      const result = await invoke({
-        environmentId,
-        input: { request: { operation: "execution", desktopId, input }, timeoutMs: 120_000 },
-      });
-      if (result._tag !== "Success") throw squashAtomCommandFailure(result);
-      return decodeResult(result.value);
-    },
-    [desktopId, environmentId, invoke],
-  );
-
-  const refresh = useCallback(async () => {
-    if (refreshing.current) return;
-    refreshing.current = true;
-    const target = { kind: "user", desktopId } as const;
-    try {
-      const [permission, list] = await Promise.all([
-        run({ operation: "access", desktop: target, input: { action: "status", desktop: target } }),
-        run({ operation: "process", desktop: target, input: { action: "list", desktop: target } }),
-      ]);
-      if (permission.kind === "access") setAccess(permission);
-      if (list.kind === "list")
-        setProcesses(
-          list.processes.filter(
-            (process) => threadId === undefined || process.threadId === threadId,
+  const kind = desktop.kind;
+  const owner = desktop.kind === "agent" ? desktop.owner : undefined;
+  const process = useCallback(
+    async (input: ProcessInput) => {
+      if (local) {
+        const value = decodeUser(
+          await invokeLocalExecution(
+            {
+              operation: "process",
+              desktop: { kind: "user", desktopId },
+              input: { ...input, desktop: { kind: "user", desktopId } },
+            },
+            environmentId,
+            ThreadId.make("local-desktop-settings"),
           ),
         );
-      setRefreshError(null);
-    } catch (cause) {
-      setRefreshError(
-        cause instanceof Error ? cause.message : "Could not read desktop execution status.",
-      );
-    } finally {
-      refreshing.current = false;
-    }
-  }, [desktopId, run, threadId]);
-
+        if (value.kind !== "list" && value.kind !== "process")
+          throw new Error("Process supervision requires a compatible desktop.");
+        return value;
+      }
+      const result =
+        kind === "user"
+          ? await user({
+              environmentId,
+              input: {
+                ...(threadId ? { threadId } : {}),
+                request: {
+                  operation: "execution",
+                  desktopId,
+                  input: {
+                    operation: "process",
+                    desktop: { kind: "user", desktopId },
+                    input: { ...input, desktop: { kind: "user", desktopId } },
+                  },
+                },
+              },
+            })
+          : await agent({
+              environmentId,
+              input: {
+                threadId: owner!.threadId,
+                request: { operation: "process", owner: owner!, input: { ...input, desktopId } },
+              },
+            });
+      if (result._tag !== "Success") throw squashAtomCommandFailure(result);
+      const value = kind === "user" ? decodeUser(result.value) : decodeAgent(result.value);
+      if (value.kind !== "list" && value.kind !== "process")
+        throw new Error("Process supervision requires a compatible desktop.");
+      return value;
+    },
+    [agent, user, kind, environmentId, desktopId, threadId, owner, local],
+  );
+  const permission = useCallback(
+    async (
+      input: UserDesktopExecutionAccessInput,
+      sourceThreadId = threadId,
+      sourceEnvironmentId = environmentId,
+    ) => {
+      if (local) {
+        const value = decodeUser(
+          await invokeLocalExecution(
+            { operation: "access", desktop: { kind: "user", desktopId }, input },
+            sourceEnvironmentId,
+            sourceThreadId ?? ThreadId.make("local-desktop-settings"),
+          ),
+        );
+        if (value.kind === "access") setAccess(value);
+        return;
+      }
+      const result = await user({
+        environmentId,
+        input: {
+          ...(sourceThreadId ? { threadId: sourceThreadId } : {}),
+          request: {
+            operation: "execution",
+            desktopId,
+            input: { operation: "access", desktop: { kind: "user", desktopId }, input },
+          },
+          timeoutMs: 120_000,
+        },
+      });
+      if (result._tag !== "Success") throw squashAtomCommandFailure(result);
+      const value = decodeUser(result.value);
+      if (value.kind === "access") setAccess(value);
+    },
+    [user, environmentId, desktopId, threadId, local],
+  );
+  const refresh = useCallback(
+    async (next = listCursor) => {
+      if (refreshing.current) return;
+      refreshing.current = true;
+      try {
+        const list = await process({
+          action: "list",
+          limit: 50,
+          ...(threadId ? { threadId } : {}),
+          ...(next ? { cursor: next } : {}),
+        });
+        if (list.kind === "list") {
+          setListCursor(next);
+          setProcesses(list.processes);
+          setCursor(list.nextCursor ?? null);
+        }
+        if (kind === "user")
+          await permission({ action: "status", desktop: { kind: "user", desktopId } });
+        setError(null);
+      } catch (cause) {
+        setError(cause instanceof Error ? cause.message : "Could not refresh commands.");
+      } finally {
+        refreshing.current = false;
+      }
+    },
+    [process, threadId, kind, permission, desktopId, listCursor],
+  );
   useEffect(() => {
     if (!expanded) return;
+    void refresh();
     const timer = setInterval(() => {
       if (document.visibilityState === "visible") void refresh();
-    }, REFRESH_INTERVAL_MS);
+    }, 3_000);
     return () => clearInterval(timer);
   }, [expanded, refresh]);
-
   const perform = async (
-    input: UserDesktopExecutionInput,
+    input: ProcessInput,
     navigation: DesktopProcessOutputNavigation = "first",
   ) => {
-    setPendingCount((count) => count + 1);
+    setPending((value) => value + 1);
     try {
-      setError(null);
-      const result = await run(input);
-      if (
-        result.kind === "process" &&
-        input.operation === "process" &&
-        input.input.action === "read"
-      )
-        setOutputPage((current) => updateDesktopProcessOutputPage(current, result, navigation));
-      if (input.operation === "process" && input.input.action === "forget")
-        setOutputPage((current) =>
-          current?.result.process.processId === input.input.processId ? null : current,
+      const result = await process(input);
+      if (input.action === "read" && result.kind === "process")
+        setPage((current) => updateDesktopProcessOutputPage(current, result, navigation));
+      if (input.action === "forget")
+        setPage((current) =>
+          current?.result.process.processId === input.processId ? null : current,
         );
-      setError(null);
       await refresh();
+      return true;
     } catch (cause) {
-      setError(cause instanceof Error ? cause.message : "Desktop execution request failed.");
+      setError(cause instanceof Error ? cause.message : "Command operation failed.");
+      return false;
     } finally {
-      setPendingCount((count) => count - 1);
+      setPending((value) => value - 1);
     }
   };
-
+  const affectedWork = async (grant: DesktopExecutionGrant) => {
+    const jobs: DesktopProcess[] = [];
+    let next: string | undefined;
+    do {
+      const result = await process({
+        action: "list",
+        grantId: grant.grantId,
+        limit: 100,
+        ...(next ? { cursor: next } : {}),
+      });
+      if (result.kind !== "list") throw new Error("Could not read affected commands.");
+      jobs.push(...result.processes.filter(isDesktopProcessLive));
+      next = result.nextCursor ?? undefined;
+    } while (next);
+    return jobs;
+  };
+  useEffect(() => {
+    if (initialProcessId === undefined) return;
+    let active = true;
+    void process({ action: "read", processId: initialProcessId, maxBytes: 32 * 1024 })
+      .then((result) => {
+        if (active && result.kind === "process")
+          setPage(updateDesktopProcessOutputPage(null, result, "first"));
+      })
+      .catch((cause: unknown) => {
+        if (active)
+          setError(cause instanceof Error ? cause.message : "Could not read this process.");
+      });
+    return () => {
+      active = false;
+    };
+  }, [initialProcessId, process]);
+  const output = page?.result;
   return (
     <details
+      open={expanded}
       className="rounded-lg border p-3"
-      onToggle={(event) => {
-        setExpanded(event.currentTarget.open);
-        if (event.currentTarget.open) void refresh();
-      }}
+      onToggle={(event) => setExpanded(event.currentTarget.open)}
     >
       <summary className="cursor-pointer text-sm font-medium">
-        Command execution via {environmentLabel}
+        Command execution · {environmentLabel}
       </summary>
       {expanded ? (
         <div className="mt-3 grid gap-3">
-          <p className="text-xs text-muted-foreground">
-            Manage commands on this desktop independently of screen sharing. Permission requests
-            appear on this desktop.
+          <p className="break-all text-xs text-muted-foreground">
+            {kind === "user" ? "User desktop" : "Agent desktop"} {desktopId} ·{" "}
+            {local
+              ? "Inspect and stop commands from every source, including disconnected environments."
+              : threadId
+                ? `Thread ${threadId}`
+                : `Environment ${environmentId}`}
           </p>
           {error ? (
             <Alert variant="error">
               <AlertDescription>{error}</AlertDescription>
             </Alert>
           ) : null}
-          {threadId === undefined ? (
-            <>
-              <div className="flex flex-wrap items-center gap-2">
-                <select
-                  aria-label="Execution permission scope"
-                  className="h-8 rounded-md border bg-background px-2 text-xs"
-                  value={scope}
-                  onChange={(event) =>
-                    setScope(event.target.value === "desktop" ? "desktop" : "environment")
-                  }
-                >
-                  <option value="environment">This environment</option>
-                  <option value="desktop">All environments</option>
-                </select>
-                <Button
-                  size="sm"
-                  variant="outline"
-                  disabled={busy}
-                  onClick={() =>
-                    void perform({
-                      operation: "access",
-                      desktop,
-                      input: { action: "request", desktop, scope },
-                    })
-                  }
-                >
-                  Allow commands
-                </Button>
-                <Button
-                  size="sm"
-                  variant="outline"
-                  disabled={busy}
-                  onClick={() =>
-                    void perform({
-                      operation: "access",
-                      desktop,
-                      input: { action: "revoke", desktop },
-                    })
-                  }
-                >
-                  Revoke and stop
-                </Button>
-                <Button size="sm" variant="ghost" disabled={busy} onClick={() => void refresh()}>
-                  Refresh
-                </Button>
-              </div>
-              {access ? (
-                <p className="text-xs text-muted-foreground">
-                  Runs as {access.user} · {access.grants.length} permission{" "}
-                  {access.grants.length === 1 ? "grant" : "grants"}
-                </p>
-              ) : null}
-              {access?.grants.map((grant) => (
-                <div
-                  key={grant.grantId}
-                  className="flex flex-wrap items-center justify-between gap-2 text-xs"
-                >
-                  <span>
-                    {grant.scope === "desktop"
-                      ? "All environments"
-                      : grant.scope === "environment"
-                        ? "This environment"
-                        : `Thread ${grant.threadId}`}{" "}
-                    · {grant.remembered ? "Remembered" : "Until T3 Code quits"}
-                    {grant.expiresAt
-                      ? ` · Expires ${new Date(grant.expiresAt).toLocaleString()}`
-                      : ""}
-                  </span>
-                  <Button
-                    size="xs"
-                    variant="ghost"
-                    disabled={busy}
-                    onClick={() =>
-                      void perform({
-                        operation: "access",
-                        desktop,
-                        input: { action: "revoke", desktop, grantId: grant.grantId },
-                      })
-                    }
-                  >
-                    Revoke and stop
-                  </Button>
-                </div>
-              ))}
-            </>
-          ) : (
-            <Button size="sm" variant="ghost" disabled={busy} onClick={() => void refresh()}>
-              Refresh commands
-            </Button>
-          )}
+          {access && desktop.kind === "user" ? (
+            <DesktopExecutionPermissions
+              access={access}
+              desktop={desktop}
+              threadId={threadId}
+              local={local}
+              affectedWork={affectedWork}
+              busy={busy}
+              submit={(input, source, sourceEnvironment) => {
+                setPending((value) => value + 1);
+                void permission(input, source, sourceEnvironment)
+                  .then(() => refresh())
+                  .catch((cause: unknown) =>
+                    setError(cause instanceof Error ? cause.message : "Permission change failed."),
+                  )
+                  .finally(() => setPending((value) => value - 1));
+              }}
+            />
+          ) : null}
+          <Button size="sm" variant="ghost" disabled={busy} onClick={() => void refresh()}>
+            Refresh commands
+          </Button>
           {processes.length === 0 ? (
-            <p className="text-xs text-muted-foreground">No commands in this environment.</p>
-          ) : (
-            processes.map((process) => (
-              <div key={process.processId} className="grid gap-2 rounded-md bg-muted/30 p-2">
-                <div className="flex items-center justify-between gap-2 text-xs">
-                  <code className="min-w-0 break-all">
-                    {[process.executable, ...process.arguments].join(" ")}
-                  </code>
-                  <span className="shrink-0">
-                    {process.status === "running"
-                      ? "Running"
-                      : process.timedOut
-                        ? "Timed out"
-                        : process.signal
-                          ? `Signal ${process.signal}`
-                          : `Exit ${process.exitCode}`}
-                  </span>
-                </div>
-                <div className="flex flex-wrap gap-2">
-                  <Button
-                    size="xs"
-                    variant="outline"
-                    disabled={busy}
-                    onClick={() =>
-                      void perform({
-                        operation: "process",
-                        desktop,
-                        input: {
-                          action: "read",
-                          desktop,
-                          processId: process.processId,
-                          maxBytes: OUTPUT_PAGE_BYTES,
-                        },
-                      })
-                    }
-                  >
-                    Output
-                  </Button>
-                  {process.status === "running" ? (
-                    <>
-                      <Button
-                        size="xs"
-                        variant="outline"
-                        disabled={busy}
-                        onClick={() =>
-                          void perform({
-                            operation: "process",
-                            desktop,
-                            input: { action: "signal", desktop, processId: process.processId },
-                          })
-                        }
-                      >
-                        Stop
-                      </Button>
-                      <Button
-                        size="xs"
-                        variant="ghost"
-                        disabled={busy}
-                        onClick={() =>
-                          void perform({
-                            operation: "process",
-                            desktop,
-                            input: {
-                              action: "signal",
-                              desktop,
-                              processId: process.processId,
-                              signal: "SIGKILL",
-                            },
-                          })
-                        }
-                      >
-                        Force stop
-                      </Button>
-                    </>
-                  ) : (
+            <p className="text-xs text-muted-foreground">
+              {local ? "No commands on this desktop." : "No commands for this source."}
+            </p>
+          ) : null}
+          {processes.map((job) => (
+            <div
+              id={`desktop-process-${job.processId}`}
+              key={job.processId}
+              className="grid gap-2 rounded-md bg-muted/30 p-2 text-xs"
+            >
+              <code className="break-all">{[job.executable, ...job.arguments].join(" ")}</code>
+              <p>
+                {job.status}
+                {job.timedOut ? " · Timed out" : ""}
+                {job.exitCode !== null ? ` · Exit ${job.exitCode}` : ""}
+                {job.signal ? ` · ${job.signal}` : ""}
+              </p>
+              <p className="break-all text-muted-foreground">
+                {local ? `Environment ${job.environmentId} · ` : ""}
+                Process {job.processId} · Thread {job.threadId} · Runtime {job.runtimeGeneration}
+              </p>
+              <div className="flex flex-wrap gap-2">
+                <Button
+                  size="xs"
+                  variant="outline"
+                  disabled={busy}
+                  onClick={() =>
+                    void perform({ action: "read", processId: job.processId, maxBytes: 64 * 1024 })
+                  }
+                >
+                  Output
+                </Button>
+                {isDesktopProcessLive(job) ? (
+                  <>
+                    <Button
+                      size="xs"
+                      variant="outline"
+                      disabled={busy}
+                      onClick={() =>
+                        void perform({
+                          action: "signal",
+                          processId: job.processId,
+                          signal: "SIGTERM",
+                        })
+                      }
+                    >
+                      Stop
+                    </Button>
                     <Button
                       size="xs"
                       variant="ghost"
                       disabled={busy}
                       onClick={() =>
                         void perform({
-                          operation: "process",
-                          desktop,
-                          input: { action: "forget", desktop, processId: process.processId },
+                          action: "signal",
+                          processId: job.processId,
+                          signal: "SIGKILL",
                         })
                       }
                     >
-                      Forget output
+                      Force stop
                     </Button>
-                  )}
-                </div>
+                  </>
+                ) : (
+                  <Button
+                    size="xs"
+                    variant="ghost"
+                    disabled={busy}
+                    onClick={() => void perform({ action: "forget", processId: job.processId })}
+                  >
+                    Forget output
+                  </Button>
+                )}
               </div>
-            ))
-          )}
+              {isDesktopProcessLive(job) && !job.stdinClosed ? (
+                <ProcessInputControls
+                  process={job}
+                  busy={busy}
+                  inputAllowed={kind === "agent" || hasDesktopProcessInputGrant(access, job)}
+                  send={(input) => perform({ ...input, processId: job.processId })}
+                />
+              ) : null}
+            </div>
+          ))}
+          {listCursor ? (
+            <Button size="xs" variant="ghost" disabled={busy} onClick={() => void refresh("")}>
+              Newest commands
+            </Button>
+          ) : null}
+          {cursor ? (
+            <Button
+              size="sm"
+              variant="outline"
+              disabled={busy}
+              onClick={() => void refresh(cursor)}
+            >
+              Older commands
+            </Button>
+          ) : null}
           {output ? (
             <div className="grid gap-2 text-xs">
               <div className="flex justify-between gap-2">
                 <span>Captured output · {output.process.commandId}</span>
-                <Button size="xs" variant="ghost" onClick={() => setOutputPage(null)}>
+                <Button size="xs" variant="ghost" onClick={() => setPage(null)}>
                   Close
                 </Button>
               </div>
-              <pre
-                key={`stdout:${output.process.processId}:${output.stdout.offset}`}
-                className="max-h-72 overflow-auto whitespace-pre-wrap break-all rounded-md bg-muted/40 p-3"
-              >
+              <pre className="max-h-72 overflow-auto whitespace-pre-wrap break-all rounded-md bg-muted/40 p-3">
                 {output.stdout.data || "No stdout in this page."}
               </pre>
               {output.stderr.data ? (
-                <pre
-                  key={`stderr:${output.process.processId}:${output.stderr.offset}`}
-                  className="max-h-48 overflow-auto whitespace-pre-wrap break-all rounded-md bg-muted/40 p-3"
-                >
+                <pre className="max-h-48 overflow-auto whitespace-pre-wrap break-all rounded-md bg-muted/40 p-3">
                   {output.stderr.data}
                 </pre>
               ) : null}
+              <p>
+                Stdout bytes {output.stdout.offset}–{output.stdout.nextOffset} /{" "}
+                {output.stdout.totalBytes}; stderr {output.stderr.offset}–{output.stderr.nextOffset}{" "}
+                / {output.stderr.totalBytes}.
+              </p>
               {output.stdout.truncated || output.stderr.truncated ? (
-                <p>Some output exceeded the configured storage limit.</p>
-              ) : null}
-              {output.stdout.invalidUtf8 || output.stderr.invalidUtf8 ? (
                 <p>
-                  This output contains binary data. Agents can read the exact bytes using base64.
+                  The storage limit retains the beginning and most recent tail. Paging skips
+                  discarded bytes.
                 </p>
               ) : null}
-              {output.process.outputError ? <p>{output.process.outputError}</p> : null}
-              <div className="flex flex-wrap items-center gap-2">
+              {output.stdout.invalidUtf8 || output.stderr.invalidUtf8 ? (
+                <p>Binary output can be read exactly as base64.</p>
+              ) : null}
+              {output.process.outputError ? <p role="alert">{output.process.outputError}</p> : null}
+              <div className="flex flex-wrap gap-2">
                 <Button
                   size="sm"
                   variant="outline"
-                  disabled={busy || !previousOutputOffsets}
+                  disabled={busy || !page?.history.length}
                   onClick={() =>
-                    previousOutputOffsets &&
                     void perform(
                       {
-                        operation: "process",
-                        desktop,
-                        input: {
-                          action: "read",
-                          desktop,
-                          processId: output.process.processId,
-                          ...previousOutputOffsets,
-                          maxBytes: OUTPUT_PAGE_BYTES,
-                        },
+                        action: "read",
+                        processId: output.process.processId,
+                        ...page!.history.at(-1)!,
+                        maxBytes: 64 * 1024,
+                        encoding: output.stdout.encoding,
                       },
                       "previous",
                     )
@@ -400,42 +521,165 @@ export function UserDesktopExecutionPanel({
                 >
                   Previous page
                 </Button>
-                <span className="text-muted-foreground">
-                  Page {(outputPage?.history.length ?? 0) + 1}
-                </span>
                 <Button
                   size="sm"
                   variant="outline"
-                  disabled={busy || !canReadMoreOutput}
+                  disabled={
+                    busy ||
+                    !(hasMoreDesktopProcessOutput(output) || isDesktopProcessLive(output.process))
+                  }
                   onClick={() =>
                     void perform(
                       {
-                        operation: "process",
-                        desktop,
-                        input: {
-                          action: "read",
-                          desktop,
-                          processId: output.process.processId,
-                          stdoutOffset: output.stdout.nextOffset,
-                          stderrOffset: output.stderr.nextOffset,
-                          maxBytes: OUTPUT_PAGE_BYTES,
-                        },
+                        action: "read",
+                        processId: output.process.processId,
+                        stdoutOffset: output.stdout.nextOffset,
+                        stderrOffset: output.stderr.nextOffset,
+                        maxBytes: 64 * 1024,
+                        encoding: output.stdout.encoding,
                       },
                       "next",
                     )
                   }
                 >
-                  {hasMoreOutput
-                    ? "Next page"
-                    : canReadMoreOutput
-                      ? "Check for new output"
-                      : "End of output"}
+                  Next / refresh
+                </Button>
+                <Button
+                  size="sm"
+                  variant="ghost"
+                  disabled={busy}
+                  onClick={() =>
+                    void perform({
+                      action: "read",
+                      processId: output.process.processId,
+                      stdoutOffset: output.stdout.offset,
+                      stderrOffset: output.stderr.offset,
+                      maxBytes: 64 * 1024,
+                      encoding: output.stdout.encoding === "base64" ? "utf8" : "base64",
+                    })
+                  }
+                >
+                  {output.stdout.encoding === "base64" ? "Read as text" : "Read exact base64"}
                 </Button>
               </div>
             </div>
           ) : null}
         </div>
       ) : null}
+    </details>
+  );
+}
+
+function ProcessInputControls({
+  process,
+  busy,
+  inputAllowed,
+  send,
+}: {
+  process: DesktopProcess;
+  busy: boolean;
+  inputAllowed: boolean;
+  send: (input: ProcessInput) => Promise<boolean>;
+}) {
+  const disabled = busy || !inputAllowed;
+  const [text, setText] = useState("");
+  const [columns, setColumns] = useState("80");
+  const [rows, setRows] = useState("24");
+  return (
+    <details>
+      <summary>Input{process.terminal ? " and terminal size" : ""}</summary>
+      <div className="mt-2 grid gap-2">
+        {!inputAllowed ? (
+          <p>
+            Allow commands for this thread before sending input. Output and stop remain available.
+          </p>
+        ) : null}
+        <textarea
+          aria-label={`Input for ${process.processId}`}
+          value={text}
+          onChange={(event) => setText(event.target.value)}
+          disabled={disabled}
+        />
+        <div className="flex flex-wrap gap-2">
+          <Button
+            size="xs"
+            variant="outline"
+            disabled={disabled || !text}
+            onClick={() => {
+              const sent = text;
+              void send({ action: "write", data: sent }).then((accepted) => {
+                if (accepted) setText((current) => (current === sent ? "" : current));
+              });
+            }}
+          >
+            Send input
+          </Button>
+          <Button
+            size="xs"
+            variant="outline"
+            disabled={disabled}
+            onClick={() => send({ action: "write", data: "\n" })}
+          >
+            Send Enter
+          </Button>
+          <Button
+            size="xs"
+            variant="ghost"
+            disabled={disabled}
+            onClick={() =>
+              send(
+                process.terminal
+                  ? { action: "write", data: "\u0004" }
+                  : { action: "write", close: true },
+              )
+            }
+          >
+            {process.terminal ? "Send EOF" : "Close stdin"}
+          </Button>
+        </div>
+        {process.terminal ? (
+          <div className="flex flex-wrap gap-2">
+            <label>
+              Columns{" "}
+              <input
+                disabled={disabled}
+                type="number"
+                min={1}
+                max={1000}
+                value={columns}
+                onChange={(event) => setColumns(event.target.value)}
+              />
+            </label>
+            <label>
+              Rows{" "}
+              <input
+                disabled={disabled}
+                type="number"
+                min={1}
+                max={1000}
+                value={rows}
+                onChange={(event) => setRows(event.target.value)}
+              />
+            </label>
+            <Button
+              size="xs"
+              variant="outline"
+              disabled={
+                disabled ||
+                ![columns, rows].every(
+                  (value) =>
+                    Number.isInteger(Number(value)) && Number(value) >= 1 && Number(value) <= 1000,
+                )
+              }
+              onClick={() =>
+                send({ action: "resize", columns: Number(columns), rows: Number(rows) })
+              }
+            >
+              Resize terminal
+            </Button>
+          </div>
+        ) : null}
+      </div>
     </details>
   );
 }

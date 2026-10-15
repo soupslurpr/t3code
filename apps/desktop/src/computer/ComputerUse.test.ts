@@ -1078,6 +1078,54 @@ describe("ComputerUse", () => {
     }),
   );
 
+  it.effect("stops the remaining queued input and releases held keys when authority is lost", () =>
+    Effect.gen(function* () {
+      const records: Array<InputRecord> = [];
+      const controller = makeController(records);
+      let authorized = true;
+      const computer = yield* ComputerUse.makeWithOptions(makePlatform(), {
+        ...controller,
+        keyDown: (input) =>
+          controller.keyDown(input).pipe(
+            Effect.tap(() =>
+              Effect.sync(() => {
+                authorized = false;
+              }),
+            ),
+          ),
+      });
+      const failure = yield* computer
+        .act(
+          {
+            actions: [
+              { type: "key_down", key: "Shift" },
+              { type: "press", key: "A" },
+            ],
+          },
+          Effect.suspend(() =>
+            authorized
+              ? Effect.void
+              : Effect.fail(
+                  new ComputerUse.ComputerUseLeaseError({
+                    code: "permission-denied",
+                    cause: "Permission expired",
+                  }),
+                ),
+          ),
+        )
+        .pipe(Effect.flip);
+      assert.deepEqual(
+        records.map((record) => record.operation),
+        ["start", "keyDown", "releaseInputs"],
+      );
+      assert.deepInclude(ComputerUse.toComputerAutomationFailure(failure), {
+        completedActionCount: 1,
+        actionIndex: 1,
+        code: "permission-denied",
+      });
+    }),
+  );
+
   it.effect("identifies a drag failure while moving to its start point", () =>
     Effect.gen(function* () {
       const records: Array<InputRecord> = [];

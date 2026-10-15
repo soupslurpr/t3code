@@ -1,3 +1,4 @@
+import { DesktopScreenPermissionsPanel } from "./DesktopScreenPermissionsPanel";
 import { squashAtomCommandFailure } from "@t3tools/client-runtime/state/runtime";
 import type {
   ComputerAutomationAction,
@@ -54,7 +55,7 @@ import { Input } from "../ui/input";
 import { Dialog } from "../ui/dialog";
 import { Select, SelectItem, SelectPopup, SelectTrigger, SelectValue } from "../ui/select";
 import { ComputerDesktopViewer } from "./AgentDesktopSettings";
-import { UserDesktopExecutionPanel } from "./UserDesktopExecutionPanel";
+import { LocalDesktopExecutionPanel, UserDesktopExecutionPanel } from "./UserDesktopExecutionPanel";
 import { SettingsPageContainer, SettingsSection } from "./settingsLayout";
 
 const INVENTORY_REFRESH_INTERVAL_MS = 5_000;
@@ -1034,6 +1035,11 @@ export function UserDesktopSettings({ thread }: { thread?: DesktopThreadScope } 
   const Container = thread === undefined ? SettingsPageContainer : "div";
   return (
     <Container>
+      {thread === undefined && localDesktopId !== null && window.desktopBridge?.execution ? (
+        <SettingsSection id="local-desktop-commands" title="Commands on this desktop">
+          <LocalDesktopExecutionPanel desktop={{ kind: "user", desktopId: localDesktopId }} />
+        </SettingsSection>
+      ) : null}
       <SettingsSection
         id="user-desktops"
         title="User desktops"
@@ -1349,6 +1355,20 @@ export function UserDesktopSettings({ thread }: { thread?: DesktopThreadScope } 
                           </div>
                         </>
                       ) : null}
+                      {group.routes
+                        .filter(
+                          (entry) =>
+                            entry.desktop.connectionState === "online" &&
+                            entry.desktop.capabilities.includes("view"),
+                        )
+                        .map((entry) => (
+                          <DesktopScreenPermissionsPanel
+                            key={`screen:${entry.environmentId}`}
+                            environmentId={entry.environmentId}
+                            desktopId={entry.desktop.desktop.desktopId}
+                            threadId={thread?.threadId}
+                          />
+                        ))}
                       {group.routes
                         .filter(
                           (entry) =>

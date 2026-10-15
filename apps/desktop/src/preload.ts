@@ -332,6 +332,15 @@ contextBridge.exposeInMainWorld("desktopBridge", {
     ipcRenderer.invoke(IpcChannels.DESKTOP_TRANSFER_CHANNEL, { input, context }),
   execution: (input, context) =>
     ipcRenderer.invoke(IpcChannels.DESKTOP_EXECUTION_CHANNEL, { input, context }),
+  onDesktopAuthorizationChanged: (listener) => {
+    const wrapped = (_event: Electron.IpcRendererEvent, environmentId: unknown) => {
+      if (typeof environmentId === "string") listener(environmentId);
+    };
+    ipcRenderer.on(IpcChannels.DESKTOP_AUTHORIZATION_CHANGED_CHANNEL, wrapped);
+    return () =>
+      ipcRenderer.removeListener(IpcChannels.DESKTOP_AUTHORIZATION_CHANGED_CHANNEL, wrapped);
+  },
+  authorization: (input) => ipcRenderer.invoke(IpcChannels.DESKTOP_AUTHORIZATION_CHANNEL, input),
   computer: {
     status: (input, context) =>
       ipcRenderer.invoke(IpcChannels.COMPUTER_AUTOMATION_STATUS_CHANNEL, { input, context }),

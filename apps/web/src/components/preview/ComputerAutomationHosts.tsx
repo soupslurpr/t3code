@@ -1,5 +1,7 @@
 "use client";
 
+import { squashAtomCommandFailure } from "@t3tools/client-runtime/state/runtime";
+
 import { useAtomSet, useAtomValue } from "@effect/atom-react";
 import type {
   ComputerAutomationAccessInput,
@@ -64,6 +66,9 @@ function ComputerAutomationHost({ environmentId }: { readonly environmentId: Env
     () => ({
       clientId: automationClientId,
       environmentId,
+      ...(window.desktopBridge?.authorization === undefined
+        ? {}
+        : { authorizationVersion: 2 as const }),
       ...previewAutomationHostCapabilities({
         computerAvailable: window.desktopBridge?.computer !== undefined,
         executionAvailable,
@@ -89,8 +94,63 @@ function ComputerAutomationHost({ environmentId }: { readonly environmentId: Env
   );
   const [automationConnectionAtom] = useState(() => Atom.make<string | null>(null));
   const automationConnectionId = useAtomValue(automationConnectionAtom);
+  const reportedAuthorization = useRef<string | null>(null);
+  const authorizationReports = useRef<Promise<boolean | undefined>>(Promise.resolve(undefined));
+  const refreshAuthorizationReferences = useCallback(
+    async (generation: string, operation: "connected" | "references" = "references") => {
+      const report = authorizationReports.current
+        .catch(() => undefined)
+        .then(async () => {
+          const authorization = window.desktopBridge?.authorization;
+          if (authorization === undefined) return;
+          const references = await resolveDesktopComputerAutomation(
+            authorization({ operation, environmentId, connectionGeneration: generation }),
+          );
+          if (references === undefined) return;
+          const signature = JSON.stringify([
+            generation,
+            [...references.threadIds].sort(),
+            references.activities?.map((entry) => entry.activityId),
+          ]);
+          if (reportedAuthorization.current === signature) return;
+          const result = await focusAutomationHost({
+            environmentId,
+            input: {
+              clientId: automationClientId,
+              environmentId,
+              connectionId: generation,
+              focused: document.hasFocus() && document.visibilityState === "visible",
+              authorizationThreads: references.threadIds,
+              processActivities: references.activities ?? [],
+            },
+          });
+          if (result._tag !== "Success") {
+            reportedAuthorization.current = null;
+            throw squashAtomCommandFailure(result);
+          }
+          if (references.activities?.length) {
+            await resolveDesktopComputerAutomation(
+              authorization({
+                operation: "acknowledge",
+                environmentId,
+                connectionGeneration: generation,
+                activityIds: references.activities.map((entry) => entry.activityId),
+              }),
+            );
+            reportedAuthorization.current = null;
+          } else {
+            reportedAuthorization.current = signature;
+          }
+          return (references.activities?.length ?? 0) === 256;
+        });
+      authorizationReports.current = report;
+      return report;
+    },
+    [automationClientId, environmentId, focusAutomationHost],
+  );
   const handleRequest = useCallback(
-    async (request: PreviewAutomationRequest, _signal: AbortSignal): Promise<unknown> => {
+    async (request: PreviewAutomationRequest, signal: AbortSignal): Promise<unknown> => {
+      signal.throwIfAborted();
       const computer = window.desktopBridge?.computer;
       const computerContext =
         request.controllerId === undefined
@@ -100,6 +160,10 @@ function ComputerAutomationHost({ environmentId }: { readonly environmentId: Env
               controllerKind: request.controllerKind ?? ("agent" as const),
               environmentId,
               threadId: request.threadId,
+              ...(request.lifecycle === undefined ? {} : { lifecycle: request.lifecycle }),
+              ...(request.connectionGeneration === undefined
+                ? {}
+                : { connectionGeneration: request.connectionGeneration }),
             };
       const requireComputerContext = () => {
         if (computerContext !== null) return computerContext;
@@ -109,126 +173,159 @@ function ComputerAutomationHost({ environmentId }: { readonly environmentId: Env
           threadId: request.threadId,
         });
       };
-      switch (request.operation) {
-        case "computerTransfer": {
-          const input = request.input as UserDesktopTransferRequest;
-          const connection = readPreparedConnection(environmentId);
-          if (connection === null) throw new Error("The transfer environment is disconnected.");
-          return await resolveDesktopComputerAutomation(
-            window.desktopBridge?.transfer?.(
-              input.operation === "run"
-                ? { ...input, url: new URL(input.url, connection.httpBaseUrl).toString() }
-                : input,
-              requireComputerContext(),
-            ),
-          );
+      if (
+        request.connectionGeneration !== undefined &&
+        window.desktopBridge?.authorization !== undefined
+      )
+        await resolveDesktopComputerAutomation(
+          window.desktopBridge.authorization({
+            operation: "connected",
+            environmentId,
+            connectionGeneration: request.connectionGeneration,
+          }),
+        );
+      signal.throwIfAborted();
+      try {
+        switch (request.operation) {
+          case "computerTransfer": {
+            const input = request.input as UserDesktopTransferRequest;
+            const connection = readPreparedConnection(environmentId);
+            if (connection === null) throw new Error("The transfer environment is disconnected.");
+            return await resolveDesktopComputerAutomation(
+              window.desktopBridge?.transfer?.(
+                input.operation === "run"
+                  ? { ...input, url: new URL(input.url, connection.httpBaseUrl).toString() }
+                  : input,
+                requireComputerContext(),
+              ),
+            );
+          }
+          case "computerExecution": {
+            const running = resolveDesktopComputerAutomation(
+              window.desktopBridge?.execution?.(
+                request.input as UserDesktopExecutionInput,
+                requireComputerContext(),
+              ),
+            );
+            // Include pending consent and accepted jobs before waiting for a long command.
+            if (request.connectionGeneration !== undefined)
+              void refreshAuthorizationReferences(request.connectionGeneration).catch(() => {
+                reportedAuthorization.current = null;
+              });
+            try {
+              return await running;
+            } finally {
+              if (request.connectionGeneration !== undefined)
+                void refreshAuthorizationReferences(request.connectionGeneration).catch(() => {
+                  reportedAuthorization.current = null;
+                });
+            }
+          }
+          case "computerStatus":
+            return await resolveDesktopComputerAutomation(
+              computer?.status(
+                request.input as ComputerAutomationTargetInput,
+                requireComputerContext(),
+              ),
+            );
+          case "computerRequestAvailability":
+            return await resolveDesktopComputerAutomation(
+              computer?.requestAvailability(
+                request.input as ComputerAutomationAvailabilityInput,
+                requireComputerContext(),
+              ),
+            );
+          case "computerReleaseAvailability":
+            return await resolveDesktopComputerAutomation(
+              computer?.releaseAvailability(
+                request.input as ComputerAutomationAvailabilityInput,
+                requireComputerContext(),
+              ),
+            );
+          case "computerRequestView":
+            return await resolveDesktopComputerAutomation(
+              computer?.requestView(
+                request.input as ComputerAutomationAccessInput,
+                requireComputerContext(),
+              ),
+            );
+          case "computerRequestControl":
+            return await resolveDesktopComputerAutomation(
+              computer?.requestControl(
+                request.input as ComputerAutomationAccessInput,
+                requireComputerContext(),
+              ),
+            );
+          case "computerRememberView":
+            return await resolveDesktopComputerAutomation(
+              computer?.rememberView(
+                request.input as ComputerAutomationAccessInput,
+                requireComputerContext(),
+              ),
+            );
+          case "computerRememberControl":
+            return await resolveDesktopComputerAutomation(
+              computer?.rememberControl(
+                request.input as ComputerAutomationAccessInput,
+                requireComputerContext(),
+              ),
+            );
+          case "computerInterrupt":
+            return await resolveDesktopComputerAutomation(
+              computer?.interrupt?.(
+                request.input as ComputerAutomationTargetInput,
+                requireComputerContext(),
+              ),
+            );
+          case "computerForceRelease":
+            return await resolveDesktopComputerAutomation(
+              computer?.forceRelease(
+                request.input as ComputerAutomationTargetInput,
+                requireComputerContext(),
+              ),
+            );
+          case "computerForceForgetControl":
+            return await resolveDesktopComputerAutomation(
+              computer?.forceForgetControl(
+                request.input as ComputerAutomationTargetInput,
+                requireComputerContext(),
+              ),
+            );
+          case "computerSnapshot":
+            return await resolveDesktopComputerAutomation(
+              computer?.snapshot(
+                request.input as ComputerAutomationSnapshotInput,
+                requireComputerContext(),
+              ),
+            );
+          case "computerAct":
+            return await resolveDesktopComputerAutomation(
+              computer?.act(request.input as ComputerAutomationActInput, requireComputerContext()),
+            );
+          case "computerRelease":
+            return await resolveDesktopComputerAutomation(
+              computer?.release(
+                request.input as ComputerAutomationTargetInput,
+                requireComputerContext(),
+              ),
+            );
+          case "computerForgetControl":
+            return await resolveDesktopComputerAutomation(
+              computer?.forgetControl(
+                request.input as ComputerAutomationTargetInput,
+                requireComputerContext(),
+              ),
+            );
         }
-        case "computerExecution":
-          return await resolveDesktopComputerAutomation(
-            window.desktopBridge?.execution?.(
-              request.input as UserDesktopExecutionInput,
-              requireComputerContext(),
-            ),
-          );
-        case "computerStatus":
-          return await resolveDesktopComputerAutomation(
-            computer?.status(
-              request.input as ComputerAutomationTargetInput,
-              requireComputerContext(),
-            ),
-          );
-        case "computerRequestAvailability":
-          return await resolveDesktopComputerAutomation(
-            computer?.requestAvailability(
-              request.input as ComputerAutomationAvailabilityInput,
-              requireComputerContext(),
-            ),
-          );
-        case "computerReleaseAvailability":
-          return await resolveDesktopComputerAutomation(
-            computer?.releaseAvailability(
-              request.input as ComputerAutomationAvailabilityInput,
-              requireComputerContext(),
-            ),
-          );
-        case "computerRequestView":
-          return await resolveDesktopComputerAutomation(
-            computer?.requestView(
-              request.input as ComputerAutomationAccessInput,
-              requireComputerContext(),
-            ),
-          );
-        case "computerRequestControl":
-          return await resolveDesktopComputerAutomation(
-            computer?.requestControl(
-              request.input as ComputerAutomationAccessInput,
-              requireComputerContext(),
-            ),
-          );
-        case "computerRememberView":
-          return await resolveDesktopComputerAutomation(
-            computer?.rememberView(
-              request.input as ComputerAutomationAccessInput,
-              requireComputerContext(),
-            ),
-          );
-        case "computerRememberControl":
-          return await resolveDesktopComputerAutomation(
-            computer?.rememberControl(
-              request.input as ComputerAutomationAccessInput,
-              requireComputerContext(),
-            ),
-          );
-        case "computerInterrupt":
-          return await resolveDesktopComputerAutomation(
-            computer?.interrupt?.(
-              request.input as ComputerAutomationTargetInput,
-              requireComputerContext(),
-            ),
-          );
-        case "computerForceRelease":
-          return await resolveDesktopComputerAutomation(
-            computer?.forceRelease(
-              request.input as ComputerAutomationTargetInput,
-              requireComputerContext(),
-            ),
-          );
-        case "computerForceForgetControl":
-          return await resolveDesktopComputerAutomation(
-            computer?.forceForgetControl(
-              request.input as ComputerAutomationTargetInput,
-              requireComputerContext(),
-            ),
-          );
-        case "computerSnapshot":
-          return await resolveDesktopComputerAutomation(
-            computer?.snapshot(
-              request.input as ComputerAutomationSnapshotInput,
-              requireComputerContext(),
-            ),
-          );
-        case "computerAct":
-          return await resolveDesktopComputerAutomation(
-            computer?.act(request.input as ComputerAutomationActInput, requireComputerContext()),
-          );
-        case "computerRelease":
-          return await resolveDesktopComputerAutomation(
-            computer?.release(
-              request.input as ComputerAutomationTargetInput,
-              requireComputerContext(),
-            ),
-          );
-        case "computerForgetControl":
-          return await resolveDesktopComputerAutomation(
-            computer?.forgetControl(
-              request.input as ComputerAutomationTargetInput,
-              requireComputerContext(),
-            ),
-          );
+        throw new Error("This desktop host only supports computer automation.");
+      } finally {
+        if (request.connectionGeneration !== undefined)
+          void refreshAuthorizationReferences(request.connectionGeneration).catch(() => {
+            reportedAuthorization.current = null;
+          });
       }
-      throw new Error("This desktop host only supports computer automation.");
     },
-    [environmentId],
+    [environmentId, refreshAuthorizationReferences],
   );
   const cancelRequest = useCallback(
     async (request: PreviewAutomationRequest): Promise<void> => {
@@ -247,7 +344,10 @@ function ComputerAutomationHost({ environmentId }: { readonly environmentId: Env
       }
       if (request.operation === "computerExecution" && request.controllerId !== undefined) {
         const input = request.input as UserDesktopExecutionInput;
-        if (input.operation === "access" && input.input.action === "request") {
+        if (
+          input.operation === "access" &&
+          (input.input.action === "request" || input.input.action === "edit")
+        ) {
           await window.desktopBridge?.execution?.(
             { operation: "cancel", desktop: input.desktop },
             {
@@ -308,6 +408,28 @@ function ComputerAutomationHost({ environmentId }: { readonly environmentId: Env
             environmentId,
             input: response,
           }),
+        lifecycle: async (event) => {
+          const authorization = window.desktopBridge?.authorization;
+          if (authorization === undefined) return;
+          if (event.unavailable === true || (event.unavailableThreadIds?.length ?? 0) > 0)
+            await resolveDesktopComputerAutomation(
+              authorization({
+                operation: "unavailable",
+                environmentId,
+                connectionGeneration: event.connectionId,
+                ...(event.unavailable === true ? {} : { threadIds: event.unavailableThreadIds }),
+              }),
+            );
+          await resolveDesktopComputerAutomation(
+            authorization({
+              operation: "reconcile",
+              environmentId,
+              connectionGeneration: event.connectionId,
+              snapshots: event.snapshots,
+            }),
+          );
+          await refreshAuthorizationReferences(event.connectionId);
+        },
         label: `preview:automation-host:${environmentId}:${automationClientId}`,
       }),
     [
@@ -315,11 +437,59 @@ function ComputerAutomationHost({ environmentId }: { readonly environmentId: Env
       automationConnectionAtom,
       automationRequestsAtom,
       requestHandlerAtom,
+      refreshAuthorizationReferences,
       respondToAutomation,
       environmentId,
     ],
   );
   useAtomValue(automationRequestConsumerAtom);
+
+  useEffect(() => {
+    if (automationConnectionId === null) return;
+    void refreshAuthorizationReferences(automationConnectionId, "connected").catch(() => {
+      reportedAuthorization.current = null;
+    });
+    return () => {
+      void window.desktopBridge?.authorization?.({
+        operation: "disconnected",
+        environmentId,
+        connectionGeneration: automationConnectionId,
+      });
+    };
+  }, [automationConnectionId, environmentId, refreshAuthorizationReferences]);
+
+  useEffect(() => {
+    if (automationConnectionId === null) return;
+    let stopped = false;
+    let retry: ReturnType<typeof setTimeout> | undefined;
+    let running = false;
+    let changed = false;
+    const flush = async () => {
+      changed = true;
+      if (stopped || running) return;
+      running = true;
+      try {
+        while (changed && !stopped) {
+          changed = false;
+          const more = await refreshAuthorizationReferences(automationConnectionId);
+          changed ||= more === true;
+        }
+      } catch {
+        if (!stopped) retry = setTimeout(() => void flush(), 1_000);
+      } finally {
+        running = false;
+      }
+    };
+    const unsubscribe = window.desktopBridge?.onDesktopAuthorizationChanged?.((source) => {
+      if (source === environmentId) void flush();
+    });
+    void flush();
+    return () => {
+      stopped = true;
+      clearTimeout(retry);
+      unsubscribe?.();
+    };
+  }, [automationConnectionId, environmentId, refreshAuthorizationReferences]);
 
   useEffect(() => {
     const report = () => {
