@@ -475,7 +475,19 @@ export const make = Effect.gen(function* () {
     record.uploaded = true;
     return true;
   });
-  return { start, status, cancel, download, upload };
+  const listForThread = (environmentId: string, threadId: string) =>
+    Effect.sync(() =>
+      Array.from(records.values())
+        .filter(
+          (record) =>
+            record.scope.environmentId === environmentId &&
+            record.scope.thread.threadId === threadId,
+        )
+        .map((record) => record.snapshot)
+        .sort((a, b) => b.startedAt.localeCompare(a.startedAt))
+        .slice(0, 50),
+    );
+  return { start, status, cancel, download, upload, listForThread };
 });
 
 export class UserDesktopTransfers extends Context.Service<

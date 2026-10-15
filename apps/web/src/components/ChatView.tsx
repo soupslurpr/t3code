@@ -3816,6 +3816,10 @@ export default function ChatView(props: ChatViewProps) {
   const { state: deviceState, loaded: deviceStateLoaded } = useDeviceState(
     activeThreadRef?.environmentId ?? null,
   );
+  const addDesktopSurface = () => {
+    if (activeThreadRef) useRightPanelStore.getState().open(activeThreadRef, "desktop");
+  };
+  const addDesktopSurfaceStable = useStableCallback(addDesktopSurface);
   const addDeviceSurface = () => {
     if (!activeThreadRef) return;
     if (deviceState.hostStatus === "disabled") {
@@ -8840,6 +8844,7 @@ export default function ChatView(props: ChatViewProps) {
           onAddFiles={addFilesSurfaceStable}
           onAddPullRequest={addPullRequestSurfaceStable}
           onAddPullRequests={addPullRequestsSurfaceStable}
+          onAddDesktop={activeThreadRef ? addDesktopSurfaceStable : undefined}
           onAddDevice={addDeviceSurfaceStable}
           browserAvailable={canOperatePreview && browserAvailable}
           terminalAvailable={activeProject !== null && canOperateTerminal}
@@ -8895,6 +8900,7 @@ export default function ChatView(props: ChatViewProps) {
             onAddFiles={addFilesSurfaceStable}
             onAddPullRequest={addPullRequestSurfaceStable}
             onAddPullRequests={addPullRequestsSurfaceStable}
+            onAddDesktop={activeThreadRef ? addDesktopSurfaceStable : undefined}
             onAddDevice={addDeviceSurfaceStable}
             browserAvailable={canOperatePreview && browserAvailable}
             terminalAvailable={activeProject !== null && canOperateTerminal}

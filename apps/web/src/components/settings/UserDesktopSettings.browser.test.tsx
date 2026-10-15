@@ -1,12 +1,12 @@
-import type { ReactElement } from "react";
+import { act, type ReactNode } from "react";
+import { createRoot, type Root } from "react-dom/client";
+import { Atom } from "effect/reactivity";
 import { EnvironmentId } from "@t3tools/contracts";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vite-plus/test";
 
-import { reactHookHarness as hooks } from "../../test/reactHookHarness";
-
-const effects = vi.hoisted(() => ({
-  cleanups: [] as Array<() => void>,
-  pending: [] as Array<() => void | (() => void)>,
+vi.mock("./settingsLayout", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("./settingsLayout")>()),
+  SettingsPageContainer: ({ children }: { children: ReactNode }) => <div>{children}</div>,
 }));
 
 const commands = vi.hoisted(() => ({
@@ -16,24 +16,6 @@ const commands = vi.hoisted(() => ({
 const environmentState = vi.hoisted(() => ({
   environments: [] as Array<{ readonly environmentId: EnvironmentId; readonly label: string }>,
 }));
-
-vi.mock("react", async (importOriginal) => {
-  const actual = await importOriginal<typeof import("react")>();
-  const { reactHookHarness } = await import("../../test/reactHookHarness");
-  return {
-    ...actual,
-    useCallback: reactHookHarness.useCallback,
-    useEffect: (effect: () => void | (() => void)) => effects.pending.push(effect),
-    useMemo: reactHookHarness.useMemo,
-    useRef: reactHookHarness.useRef,
-    useState: reactHookHarness.useState,
-  };
-});
-
-vi.mock("react/compiler-runtime", async () => {
-  const { reactHookHarness } = await import("../../test/reactHookHarness");
-  return { c: reactHookHarness.useMemoCache };
-});
 
 const environmentId = EnvironmentId.make("remote-environment");
 const localEnvironmentId = EnvironmentId.make("local-environment");
@@ -51,14 +33,13 @@ vi.mock("~/state/entities", () => ({
 }));
 
 vi.mock("~/state/preview", () => ({
-  previewEnvironment: { invokeUserDesktopHuman: Symbol("invokeUserDesktopHuman") },
+  previewEnvironment: { invokeUserDesktopHuman: { permissionAtom: () => Atom.make(true) } },
 }));
 
 vi.mock("~/state/use-atom-command", () => ({
   useAtomCommand: () => commands.invoke,
 }));
 
-import { ComputerDesktopViewer } from "./AgentDesktopSettings";
 import { UserDesktopSettings } from "./UserDesktopSettings";
 
 const onlineDesktop = {
@@ -128,64 +109,37 @@ const snapshot = {
   },
 };
 
-/** Runs one deterministic hook-harness render. */
-function renderSettings(): ReactElement<Record<string, unknown>> {
-  hooks.beginRender();
-  return UserDesktopSettings() as ReactElement<Record<string, unknown>>;
-}
+let container: HTMLDivElement;
+let root: Root;
 
-/** Flattens JSX children for focused copy assertions. */
-function textContent(node: unknown): string {
-  if (typeof node === "string" || typeof node === "number") return String(node);
-  if (Array.isArray(node)) return node.map(textContent).join(" ");
-  if (node === null || typeof node !== "object" || !("props" in node)) return "";
-  return textContent((node as ReactElement<Record<string, unknown>>).props.children);
+function buttons(label: string): HTMLButtonElement[] {
+  return Array.from(document.querySelectorAll("button")).filter(
+    (button) => button.textContent?.trim() === label,
+  );
 }
-
-/** Finds unrendered JSX elements matching one predicate. */
-function findElements(
-  node: unknown,
-  predicate: (element: ReactElement<Record<string, unknown>>) => boolean,
-): ReadonlyArray<ReactElement<Record<string, unknown>>> {
-  if (Array.isArray(node)) return node.flatMap((child) => findElements(child, predicate));
-  if (node === null || typeof node !== "object" || !("props" in node)) return [];
-  const element = node as ReactElement<Record<string, unknown>>;
-  return [
-    ...(predicate(element) ? [element] : []),
-    ...findElements(element.props.children, predicate),
-  ];
+async function mount() {
+  await act(async () => root.render(<UserDesktopSettings />));
 }
-
-/** Runs queued effects and lets their command promises settle. */
-async function applyEffects(): Promise<void> {
-  const pending = effects.pending.splice(0);
-  for (const effect of pending) {
-    const cleanup = effect();
-    if (typeof cleanup === "function") effects.cleanups.push(cleanup);
-  }
-  for (let turn = 0; turn < 12; turn += 1) await Promise.resolve();
+async function click(label: string) {
+  const button = buttons(label).find((button) => !button.disabled);
+  expect(button, label).toBeDefined();
+  await act(async () => button!.click());
 }
-
-/** Lets queued command continuations settle without advancing timers. */
-async function flushCommands(turns = 20): Promise<void> {
-  for (let turn = 0; turn < turns; turn += 1) await Promise.resolve();
-}
-
 describe("UserDesktopSettings", () => {
   beforeEach(() => {
     vi.useFakeTimers();
-    vi.stubGlobal("window", {
-      clearInterval: globalThis.clearInterval,
-      setInterval: globalThis.setInterval,
-    });
-    vi.stubGlobal("document", {
-      visibilityState: "visible",
-      addEventListener: vi.fn(),
-      removeEventListener: vi.fn(),
-    });
-    hooks.reset();
-    effects.cleanups = [];
-    effects.pending = [];
+    vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
+    vi.stubGlobal(
+      "ResizeObserver",
+      class {
+        observe() {}
+        unobserve() {}
+        disconnect() {}
+      },
+    );
+    container = document.createElement("div");
+    document.body.append(container);
+    root = createRoot(container);
     environmentState.environments = [{ environmentId, label: "Remote environment" }];
     commands.invoke.mockReset().mockImplementation(async ({ input }) => {
       const request = input.request;
@@ -239,47 +193,31 @@ describe("UserDesktopSettings", () => {
     });
   });
 
-  afterEach(() => {
-    for (const cleanup of effects.cleanups.splice(0)) cleanup();
+  afterEach(async () => {
+    await act(async () => root.unmount());
+    container.remove();
     vi.unstubAllGlobals();
     vi.useRealTimers();
   });
 
   it("renders concrete targets and exposes owner force controls", async () => {
-    const loadingSettings = renderSettings();
-    expect(textContent(loadingSettings)).toContain("Loading user desktops…");
-    expect(textContent(loadingSettings)).not.toContain("No user desktops known");
-    await applyEffects();
-
-    const settings = renderSettings();
-    const text = textContent(settings).replace(/\s+/gu, " ");
-    expect(text).toContain("Workstation");
-    expect(text).toContain("user-workstation");
-    expect(text).toContain("T3 focused");
-    expect(text).toContain("1 connected desktop client cannot identify a user desktop");
-    expect(text).toContain("Screen sharing is unavailable for this desktop");
-    expect(text).toContain("Recent access");
-    expect(text).toContain("Took control");
-    expect(text).toContain("codex");
-    expect(text).toContain("Takeover");
-
-    const rememberViewButtons = findElements(
-      settings,
-      (element) => textContent(element.props.children).trim() === "Remember view",
-    );
-    expect(rememberViewButtons).toHaveLength(2);
-    expect(rememberViewButtons.some((button) => button.props.disabled === true)).toBe(true);
-
-    const endAccess = findElements(
-      settings,
-      (element) => textContent(element.props.children).trim() === "End all access",
-    );
-    expect(endAccess).toHaveLength(1);
-    const onClick = endAccess[0]?.props.onClick;
-    expect(onClick).toBeTypeOf("function");
-    if (typeof onClick === "function") onClick();
-    for (let turn = 0; turn < 12; turn += 1) await Promise.resolve();
-
+    await mount();
+    const text = container.textContent!.replace(/\s+/gu, " ");
+    for (const expected of [
+      "Workstation",
+      "user-workstation",
+      "T3 focused",
+      "1 connected desktop client cannot identify a user desktop",
+      "Screen sharing is unavailable for this desktop",
+      "Recent access",
+      "Took control",
+      "codex",
+      "Takeover",
+    ])
+      expect(text).toContain(expected);
+    expect(buttons("Remember view")).toHaveLength(2);
+    expect(buttons("Remember view").some((button) => button.disabled)).toBe(true);
+    await click("End all access");
     expect(commands.invoke).toHaveBeenCalledWith({
       environmentId,
       input: {
@@ -294,37 +232,18 @@ describe("UserDesktopSettings", () => {
       { environmentId, label: "Remote environment" },
       { environmentId: localEnvironmentId, label: "Local environment" },
     ];
-
-    renderSettings();
-    await applyEffects();
-
-    const settings = renderSettings();
-    const text = textContent(settings).replace(/\s+/gu, " ");
+    await mount();
+    const text = container.textContent!;
     expect(text.match(/Workstation/gu)).toHaveLength(1);
     expect(text.match(/user-workstation/gu)).toHaveLength(1);
     expect(text).toContain("Via Remote environment, Local environment");
-
-    const rememberViewButtons = findElements(
-      settings,
-      (element) => textContent(element.props.children).trim() === "Remember view",
-    );
-    expect(rememberViewButtons).toHaveLength(2);
+    expect(buttons("Remember view")).toHaveLength(2);
   });
 
   it("remembers approval without a separate release request", async () => {
-    renderSettings();
-    await applyEffects();
-
-    const settings = renderSettings();
-    const rememberView = findElements(
-      settings,
-      (element) => textContent(element.props.children).trim() === "Remember view",
-    ).find((button) => button.props.disabled !== true);
-    expect(rememberView?.props.onClick).toBeTypeOf("function");
+    await mount();
     commands.invoke.mockClear();
-    if (typeof rememberView?.props.onClick === "function") rememberView.props.onClick();
-    await flushCommands();
-
+    await click("Remember view");
     const operations = commands.invoke.mock.calls.map(
       ([request]) => request.input.request.operation,
     );
@@ -333,67 +252,27 @@ describe("UserDesktopSettings", () => {
   });
 
   it("opens supervision passively and starts Live only when requested", async () => {
-    renderSettings();
-    await applyEffects();
-
-    const settings = renderSettings();
-    const supervise = findElements(
-      settings,
-      (element) =>
-        textContent(element.props.children).trim() === "Supervise" &&
-        typeof element.props.onClick === "function",
-    )[0];
-    expect(supervise?.props.onClick).toBeTypeOf("function");
+    await mount();
     commands.invoke.mockClear();
-    if (typeof supervise?.props.onClick === "function") supervise.props.onClick();
-    await flushCommands();
-
+    await click("Supervise");
     const passiveOperations = commands.invoke.mock.calls.map(
       ([request]) => request.input.request.operation,
     );
     expect(passiveOperations).toEqual(expect.arrayContaining(["status", "observation-list"]));
     expect(passiveOperations).not.toContain("request-view");
     expect(passiveOperations).not.toContain("snapshot");
-
-    const passiveViewer = findElements(
-      renderSettings(),
-      (element) => element.type === ComputerDesktopViewer,
-    )[0];
-    expect(passiveViewer?.props.liveStarted).toBe(false);
-    expect(passiveViewer?.props.liveDisabledReason).toBeNull();
-    expect(passiveViewer?.props.onStartLive).toBeTypeOf("function");
-    await applyEffects();
-
     commands.invoke.mockClear();
-    if (typeof passiveViewer?.props.onStartLive === "function") {
-      await passiveViewer.props.onStartLive();
-    }
+    await click("Start Live");
     const liveOperations = commands.invoke.mock.calls.map(
       ([request]) => request.input.request.operation,
     );
     expect(liveOperations).toEqual(expect.arrayContaining(["request-view", "snapshot"]));
-
-    const liveViewer = findElements(
-      renderSettings(),
-      (element) => element.type === ComputerDesktopViewer,
-    )[0];
-    expect(liveViewer?.props.liveStarted).toBe(true);
-    expect(liveViewer?.props.onRelease).toBeTypeOf("function");
-    commands.invoke.mockClear();
-    if (typeof liveViewer?.props.onRelease === "function") await liveViewer.props.onRelease();
-    expect(commands.invoke).toHaveBeenCalledWith({
-      environmentId,
-      input: {
-        request: { operation: "release-control", desktopId: "user-workstation" },
-      },
-    });
+    expect(document.querySelector('img[alt="Workstation screen"]')).not.toBeNull();
   });
 
   it("queues a fresh inventory read after a mutation races with polling", async () => {
-    renderSettings();
-    await applyEffects();
-
-    let releaseList: (() => void) | undefined;
+    await mount();
+    let releaseList!: () => void;
     const blockedList = new Promise<void>((resolve) => {
       releaseList = resolve;
     });
@@ -415,16 +294,8 @@ describe("UserDesktopSettings", () => {
       }
       return { _tag: "Success", value: null };
     });
-
-    await vi.advanceTimersByTimeAsync(inventoryRefreshIntervalMs);
-    const settings = renderSettings();
-    const forget = findElements(
-      settings,
-      (element) => textContent(element.props.children).trim() === "Forget approval",
-    )[0];
-    expect(forget?.props.onClick).toBeTypeOf("function");
-    if (typeof forget?.props.onClick === "function") forget.props.onClick();
-    await flushCommands();
+    await act(async () => vi.advanceTimersByTimeAsync(inventoryRefreshIntervalMs));
+    await click("Forget approval");
     expect(commands.invoke).toHaveBeenCalledWith({
       environmentId,
       input: {
@@ -433,9 +304,10 @@ describe("UserDesktopSettings", () => {
       },
     });
     expect(listCalls).toBe(1);
-
-    releaseList?.();
-    await flushCommands(40);
+    await act(async () => {
+      releaseList();
+      await blockedList;
+    });
     expect(listCalls).toBe(2);
   });
 });

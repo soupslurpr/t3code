@@ -1087,6 +1087,12 @@ export function createServerEnvironmentAtoms<R, E>(
       label: "environment-data:server:scheduled-tasks:live",
       tag: WS_METHODS.scheduledTasksSubscribe,
     }),
+    threadDesktopActivity: createEnvironmentRpcQueryAtomFamily(runtime, {
+      label: "environment-data:server:thread-desktop:activity",
+      tag: WS_METHODS.threadDesktopActivity,
+      idleTtlMs: 0,
+      staleTimeMs: 3_000,
+    }),
     threadMonitorsLive: createEnvironmentRpcSubscriptionAtomFamily(runtime, {
       label: "environment-data:server:thread-monitors:live",
       tag: WS_METHODS.threadMonitorsSubscribe,

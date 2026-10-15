@@ -33,7 +33,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import { formatRelativeTimeLabel } from "~/timestampFormat";
 import { useThreadShells } from "~/state/entities";
-import { useEnvironments } from "~/state/environments";
+import { useDesktopEnvironments, type DesktopThreadScope } from "./useDesktopEnvironments";
 import { previewEnvironment } from "~/state/preview";
 import { useAtomCommand } from "~/state/use-atom-command";
 
@@ -234,8 +234,12 @@ function retainUnchangedImage(
 }
 
 /** Lists and manages the concrete user desktops exposed to one environment. */
-export function UserDesktopSettings() {
-  const { environments, isReady: environmentsReady } = useEnvironments();
+export function UserDesktopSettings({ thread }: { thread?: DesktopThreadScope } = {}) {
+  const {
+    environments,
+    isReady: environmentsReady,
+    permissionDenied,
+  } = useDesktopEnvironments("user", thread);
   const threads = useThreadShells();
   const invoke = useAtomCommand(previewEnvironment.invokeUserDesktopHuman, {
     reportFailure: false,
@@ -285,10 +289,21 @@ export function UserDesktopSettings() {
   const run = useCallback(
     async <Value,>(environmentId: EnvironmentId, input: UserDesktopHumanInvokeInput) => {
       const result = await invoke({ environmentId, input });
-      if (result._tag === "Success") return result.value as Value;
+      if (result._tag === "Success") {
+        if (thread !== undefined && input.request.operation === "observation-list") {
+          const list = result.value as ComputerObservationList;
+          return {
+            ...list,
+            observations: list.observations.filter(
+              (observation) => observation.threadId === thread.threadId,
+            ),
+          } as Value;
+        }
+        return result.value as Value;
+      }
       throw squashAtomCommandFailure(result);
     },
-    [invoke],
+    [invoke, thread?.threadId],
   );
 
   const refresh = useCallback(
@@ -1016,8 +1031,9 @@ export function UserDesktopSettings() {
         route.desktop.capabilities.includes("control"),
     ) ?? false;
 
+  const Container = thread === undefined ? SettingsPageContainer : "div";
   return (
-    <SettingsPageContainer>
+    <Container>
       <SettingsSection
         id="user-desktops"
         title="User desktops"
@@ -1032,6 +1048,11 @@ export function UserDesktopSettings() {
           Computers exposed by T3 desktop clients. Each has a stable identity, and agents must
           target one explicitly; T3 never redirects an operation to another machine.
         </p>
+        {permissionDenied ? (
+          <p className="text-sm text-muted-foreground">
+            Desktop supervision requires operate access to this environment.
+          </p>
+        ) : null}
         {pending !== null ? (
           <Alert>
             <AlertDescription>
@@ -1102,31 +1123,34 @@ export function UserDesktopSettings() {
               return (
                 <Card key={group.desktopId}>
                   <CardHeader>
-                    <CardTitle className="flex flex-wrap items-center gap-2 text-base">
-                      {desktop.label}
-                      <Badge
-                        variant={
-                          group.connectionState === "online"
-                            ? "default"
-                            : group.connectionState === "identity-conflict"
-                              ? "error"
-                              : "secondary"
-                        }
-                      >
-                        {connectionLabel(group.connectionState)}
-                      </Badge>
-                      {group.t3Focused ? <Badge variant="secondary">T3 focused</Badge> : null}
-                      {activeLease?.controller !== null && activeLease?.controller !== undefined ? (
-                        <Badge variant="secondary">
-                          {activeLease.controller.kind === "human"
-                            ? "Human control"
-                            : activeLease.controller.kind === "agent"
-                              ? "Agent control"
-                              : "Local control"}
+                    <CardTitle>
+                      <span className="flex flex-wrap items-center gap-2">
+                        {desktop.label}
+                        <Badge
+                          variant={
+                            group.connectionState === "online"
+                              ? "default"
+                              : group.connectionState === "identity-conflict"
+                                ? "error"
+                                : "secondary"
+                          }
+                        >
+                          {connectionLabel(group.connectionState)}
                         </Badge>
-                      ) : activeLease?.access === "view" ? (
-                        <Badge variant="secondary">Live view</Badge>
-                      ) : null}
+                        {group.t3Focused ? <Badge variant="secondary">T3 focused</Badge> : null}
+                        {activeLease?.controller !== null &&
+                        activeLease?.controller !== undefined ? (
+                          <Badge variant="secondary">
+                            {activeLease.controller.kind === "human"
+                              ? "Human control"
+                              : activeLease.controller.kind === "agent"
+                                ? "Agent control"
+                                : "Local control"}
+                          </Badge>
+                        ) : activeLease?.access === "view" ? (
+                          <Badge variant="secondary">Live view</Badge>
+                        ) : null}
+                      </span>
                     </CardTitle>
                     <CardDescription>
                       Via {environmentLabels.join(", ")} · {platformLabel(desktop.platform)}
@@ -1154,174 +1178,196 @@ export function UserDesktopSettings() {
                           <EyeIcon />
                           Supervise
                         </Button>
-                        <Button
-                          variant="ghost"
-                          size="icon-sm"
-                          aria-label={`Rename ${desktop.label}`}
-                          onClick={() => {
-                            setEditingKey(group.desktopId);
-                            setEditingLabel(desktop.label);
-                          }}
-                        >
-                          <PencilIcon />
-                        </Button>
+                        {thread === undefined ? (
+                          <Button
+                            variant="ghost"
+                            size="icon-sm"
+                            aria-label={`Rename ${desktop.label}`}
+                            onClick={() => {
+                              setEditingKey(group.desktopId);
+                              setEditingLabel(desktop.label);
+                            }}
+                          >
+                            <PencilIcon />
+                          </Button>
+                        ) : null}
                       </div>
                     </CardAction>
                   </CardHeader>
-                  <CardPanel className="grid gap-3">
-                    {editingKey === group.desktopId ? (
-                      <div className="flex gap-2">
-                        <Input
-                          value={editingLabel}
-                          maxLength={256}
-                          aria-label="User desktop name"
-                          onChange={(event) => setEditingLabel(event.target.value)}
-                          onKeyDown={(event) => {
-                            if (event.key === "Enter") void saveRename(group);
-                            if (event.key === "Escape") setEditingKey(null);
-                          }}
-                        />
-                        <Button onClick={() => void saveRename(group)}>Save</Button>
-                        <Button variant="ghost" onClick={() => setEditingKey(null)}>
-                          Cancel
-                        </Button>
-                      </div>
-                    ) : null}
-                    <div className="flex flex-wrap gap-2 text-xs text-muted-foreground">
-                      <span>
-                        View:{" "}
-                        {group.rememberedAccess.includes("view") ? "remembered" : "ask each time"}
-                      </span>
-                      <span>
-                        Control:{" "}
-                        {group.rememberedAccess.includes("control")
-                          ? "remembered"
-                          : "ask each time"}
-                      </span>
-                      <span className="font-mono">{group.desktopId}</span>
-                    </div>
-                    {recentAudit.length > 0 ? (
-                      <div
-                        aria-label={`Recent access for ${desktop.label}`}
-                        className="grid gap-2 rounded-lg border bg-muted/20 p-3"
-                      >
-                        <div className="flex items-center gap-2 text-xs font-medium">
-                          <HistoryIcon className="size-4 text-muted-foreground" />
-                          Recent access
-                        </div>
-                        {recentAudit.map(({ environmentId, event }) => {
-                          const actorLabel =
-                            event.actorLabel ?? (event.actorKind === "human" ? "Human" : "Agent");
-                          const threadLabel =
-                            event.threadId === undefined
-                              ? null
-                              : (threadById.get(event.threadId)?.title ?? event.threadId);
-                          const environmentLabel =
-                            environmentById.get(environmentId)?.label ?? "Unknown environment";
-                          return (
-                            <div
-                              key={`${environmentId}:${event.sequence}`}
-                              className="flex flex-wrap items-baseline gap-x-2 gap-y-0.5 text-xs"
-                            >
-                              <span className="font-medium">{auditActionLabel(event.action)}</span>
-                              {event.takeover ? <Badge variant="secondary">Takeover</Badge> : null}
-                              <span className="text-muted-foreground">
-                                {[actorLabel, threadLabel, environmentLabel]
-                                  .filter((label) => label !== null)
-                                  .join(" · ")}{" "}
-                                · {formatRelativeTimeLabel(event.occurredAt)}
-                              </span>
+                  <CardPanel>
+                    <div className="grid gap-3">
+                      {thread === undefined ? (
+                        <>
+                          {editingKey === group.desktopId ? (
+                            <div className="flex gap-2">
+                              <Input
+                                value={editingLabel}
+                                maxLength={256}
+                                aria-label="User desktop name"
+                                onChange={(event) => setEditingLabel(event.target.value)}
+                                onKeyDown={(event) => {
+                                  if (event.key === "Enter") void saveRename(group);
+                                  if (event.key === "Escape") setEditingKey(null);
+                                }}
+                              />
+                              <Button onClick={() => void saveRename(group)}>Save</Button>
+                              <Button variant="ghost" onClick={() => setEditingKey(null)}>
+                                Cancel
+                              </Button>
                             </div>
-                          );
-                        })}
-                      </div>
-                    ) : null}
-                    {group.hasIdentityConflict ? (
-                      <Alert variant="error">
-                        <AlertDescription>
-                          At least one environment reports multiple clients claiming this identity.
-                          Actions use a healthy route when one is available.
-                        </AlertDescription>
-                      </Alert>
-                    ) : null}
-                    {group.connectionState === "online" && !supportsView ? (
-                      <Alert>
-                        <AlertDescription>
-                          Screen sharing is unavailable for this desktop on its current platform.
-                        </AlertDescription>
-                      </Alert>
-                    ) : null}
-                    <div className="flex flex-wrap gap-2">
-                      <Button
-                        size="sm"
-                        variant="outline"
-                        disabled={busy || group.connectionState !== "online" || !supportsView}
-                        onClick={() => void performAccessAction(group, "remember-view")}
-                      >
-                        <EyeIcon />
-                        Remember view
-                      </Button>
-                      <Button
-                        size="sm"
-                        variant="outline"
-                        disabled={busy || group.connectionState !== "online" || !supportsControl}
-                        onClick={() => void performAccessAction(group, "remember-control")}
-                      >
-                        <KeyboardIcon />
-                        Remember control
-                      </Button>
-                      {group.connectionState === "online" && supportsView ? (
-                        <Button
-                          size="sm"
-                          variant="outline"
-                          disabled={busy}
-                          onClick={() => void performAccessAction(group, "end-all-access")}
-                        >
-                          {pending?.desktopId === group.desktopId &&
-                          pending.operation === "end-all-access"
-                            ? "Ending access…"
-                            : "End all access"}
-                        </Button>
+                          ) : null}
+                          <div className="flex flex-wrap gap-2 text-xs text-muted-foreground">
+                            <span>
+                              View:{" "}
+                              {group.rememberedAccess.includes("view")
+                                ? "remembered"
+                                : "ask each time"}
+                            </span>
+                            <span>
+                              Control:{" "}
+                              {group.rememberedAccess.includes("control")
+                                ? "remembered"
+                                : "ask each time"}
+                            </span>
+                            <span className="font-mono">{group.desktopId}</span>
+                          </div>
+                          {recentAudit.length > 0 ? (
+                            <div
+                              aria-label={`Recent access for ${desktop.label}`}
+                              className="grid gap-2 rounded-lg border bg-muted/20 p-3"
+                            >
+                              <div className="flex items-center gap-2 text-xs font-medium">
+                                <HistoryIcon className="size-4 text-muted-foreground" />
+                                Recent access
+                              </div>
+                              {recentAudit.map(({ environmentId, event }) => {
+                                const actorLabel =
+                                  event.actorLabel ??
+                                  (event.actorKind === "human" ? "Human" : "Agent");
+                                const threadLabel =
+                                  event.threadId === undefined
+                                    ? null
+                                    : (threadById.get(event.threadId)?.title ?? event.threadId);
+                                const environmentLabel =
+                                  environmentById.get(environmentId)?.label ??
+                                  "Unknown environment";
+                                return (
+                                  <div
+                                    key={`${environmentId}:${event.sequence}`}
+                                    className="flex flex-wrap items-baseline gap-x-2 gap-y-0.5 text-xs"
+                                  >
+                                    <span className="font-medium">
+                                      {auditActionLabel(event.action)}
+                                    </span>
+                                    {event.takeover ? (
+                                      <Badge variant="secondary">Takeover</Badge>
+                                    ) : null}
+                                    <span className="text-muted-foreground">
+                                      {[actorLabel, threadLabel, environmentLabel]
+                                        .filter((label) => label !== null)
+                                        .join(" · ")}{" "}
+                                      · {formatRelativeTimeLabel(event.occurredAt)}
+                                    </span>
+                                  </div>
+                                );
+                              })}
+                            </div>
+                          ) : null}
+                          {group.hasIdentityConflict ? (
+                            <Alert variant="error">
+                              <AlertDescription>
+                                At least one environment reports multiple clients claiming this
+                                identity. Actions use a healthy route when one is available.
+                              </AlertDescription>
+                            </Alert>
+                          ) : null}
+                          {group.connectionState === "online" && !supportsView ? (
+                            <Alert>
+                              <AlertDescription>
+                                Screen sharing is unavailable for this desktop on its current
+                                platform.
+                              </AlertDescription>
+                            </Alert>
+                          ) : null}
+                          <div className="flex flex-wrap gap-2">
+                            <Button
+                              size="sm"
+                              variant="outline"
+                              disabled={busy || group.connectionState !== "online" || !supportsView}
+                              onClick={() => void performAccessAction(group, "remember-view")}
+                            >
+                              <EyeIcon />
+                              Remember view
+                            </Button>
+                            <Button
+                              size="sm"
+                              variant="outline"
+                              disabled={
+                                busy || group.connectionState !== "online" || !supportsControl
+                              }
+                              onClick={() => void performAccessAction(group, "remember-control")}
+                            >
+                              <KeyboardIcon />
+                              Remember control
+                            </Button>
+                            {group.connectionState === "online" && supportsView ? (
+                              <Button
+                                size="sm"
+                                variant="outline"
+                                disabled={busy}
+                                onClick={() => void performAccessAction(group, "end-all-access")}
+                              >
+                                {pending?.desktopId === group.desktopId &&
+                                pending.operation === "end-all-access"
+                                  ? "Ending access…"
+                                  : "End all access"}
+                              </Button>
+                            ) : null}
+                            {group.rememberedAccess.length > 0 ? (
+                              <Button
+                                size="sm"
+                                variant="outline"
+                                disabled={busy}
+                                onClick={() => void performAccessAction(group, "forget")}
+                              >
+                                <ShieldOffIcon />
+                                {pending?.desktopId === group.desktopId &&
+                                pending.operation === "forget"
+                                  ? "Forgetting…"
+                                  : "Forget approval"}
+                              </Button>
+                            ) : null}
+                            <Button
+                              size="sm"
+                              variant="ghost"
+                              disabled={group.connectionState !== "offline"}
+                              onClick={() => setRemoveGroup(group)}
+                            >
+                              <Trash2Icon />
+                              Remove
+                            </Button>
+                          </div>
+                        </>
                       ) : null}
-                      {group.rememberedAccess.length > 0 ? (
-                        <Button
-                          size="sm"
-                          variant="outline"
-                          disabled={busy}
-                          onClick={() => void performAccessAction(group, "forget")}
-                        >
-                          <ShieldOffIcon />
-                          {pending?.desktopId === group.desktopId && pending.operation === "forget"
-                            ? "Forgetting…"
-                            : "Forget approval"}
-                        </Button>
-                      ) : null}
-                      <Button
-                        size="sm"
-                        variant="ghost"
-                        disabled={group.connectionState !== "offline"}
-                        onClick={() => setRemoveGroup(group)}
-                      >
-                        <Trash2Icon />
-                        Remove
-                      </Button>
+                      {group.routes
+                        .filter(
+                          (entry) =>
+                            entry.desktop.connectionState === "online" &&
+                            entry.desktop.capabilities.includes("execution"),
+                        )
+                        .map((entry) => (
+                          <UserDesktopExecutionPanel
+                            key={entry.environmentId}
+                            environmentId={entry.environmentId}
+                            environmentLabel={
+                              environmentById.get(entry.environmentId)?.label ??
+                              "Unknown environment"
+                            }
+                            desktop={entry.desktop.desktop}
+                            threadId={thread?.threadId}
+                          />
+                        ))}
                     </div>
-                    {group.routes
-                      .filter(
-                        (entry) =>
-                          entry.desktop.connectionState === "online" &&
-                          entry.desktop.capabilities.includes("execution"),
-                      )
-                      .map((entry) => (
-                        <UserDesktopExecutionPanel
-                          key={entry.environmentId}
-                          environmentId={entry.environmentId}
-                          environmentLabel={
-                            environmentById.get(entry.environmentId)?.label ?? "Unknown environment"
-                          }
-                          desktop={entry.desktop.desktop}
-                        />
-                      ))}
                   </CardPanel>
                 </Card>
               );
@@ -1333,6 +1379,7 @@ export function UserDesktopSettings() {
       <Dialog open={viewer !== null} onOpenChange={(open) => !open && void closeViewer()}>
         {viewer ? (
           <ComputerDesktopViewer
+            embedded={thread !== undefined}
             label={viewer.entry.desktop.label}
             description={
               <>
@@ -1345,7 +1392,12 @@ export function UserDesktopSettings() {
             observation={viewer.observation}
             agentObservation={viewer.agentObservation}
             controlling={viewer.status.lease?.access === "control"}
-            busy={viewerBusy}
+            busy={
+              viewerBusy ||
+              !environments.some(
+                (environment) => environment.environmentId === viewer.entry.environmentId,
+              )
+            }
             error={viewerError}
             liveStarted={viewer.liveStarted}
             liveDisabledReason={viewerLiveDisabledReason}
@@ -1403,6 +1455,11 @@ export function UserDesktopSettings() {
             }
             secondaryActions={
               <>
+                {thread !== undefined ? (
+                  <Button variant="outline" size="sm" onClick={() => void closeViewer()}>
+                    Close viewer
+                  </Button>
+                ) : null}
                 {viewer.status.lease?.canReturnControl === true ? (
                   <Button variant="outline" disabled={viewerBusy} onClick={returnViewerControl}>
                     <Undo2Icon />
@@ -1484,6 +1541,6 @@ export function UserDesktopSettings() {
           </AlertDialogFooter>
         </AlertDialogPopup>
       </AlertDialog>
-    </SettingsPageContainer>
+    </Container>
   );
 }

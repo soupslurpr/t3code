@@ -30,6 +30,7 @@ const DiffPanel = lazy(() => import("../DiffPanel"));
 const DevicePanel = lazy(() =>
   import("../device/DevicePanel").then((module) => ({ default: module.DevicePanel })),
 );
+const ThreadDesktopPanel = lazy(() => import("./ThreadDesktopPanel"));
 const FilePreviewPanel = lazy(() => import("../files/FilePreviewPanel"));
 
 export type RightPanelTerminalProps = Omit<
@@ -167,6 +168,14 @@ export function RightPanelSurfaceContent(props: {
     }
     case "pull-requests":
       return <ThreadPullRequestsPanel threadRef={threadRef} />;
+    case "desktop":
+      return (
+        <Suspense fallback={null}>
+          {visible ? (
+            <ThreadDesktopPanel key={scopedThreadKey(threadRef)} thread={threadRef} />
+          ) : null}
+        </Suspense>
+      );
     case "device":
       return (
         <Suspense fallback={null}>

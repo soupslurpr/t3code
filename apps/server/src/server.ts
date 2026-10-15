@@ -1,3 +1,4 @@
+import * as ThreadDesktopActivity from "./computer/ThreadDesktopActivity.ts";
 import * as ThreadMonitorSignalCallbacks from "./threadMonitor/ThreadMonitorSignalCallbacks.ts";
 import * as MonitorSignalRoute from "./threadMonitor/signalRoute.ts";
 import * as ProviderEventLoggers from "@t3tools/provider-core/server/ProviderEventLoggers";
@@ -248,6 +249,10 @@ const layerUserDesktopTransfers = UserDesktopTransfers.layer.pipe(
   Layer.provide(layerPreviewAutomationBroker),
 );
 const layerDesktopServices = Layer.mergeAll(
+  ThreadDesktopActivity.layer.pipe(
+    Layer.provide(layerUserDesktopTransfers),
+    Layer.provide(layerAgentDesktopTransfer),
+  ),
   layerUserDesktopTransfers,
   layerAgentDesktopManager,
   layerComputerAutomationRouter,

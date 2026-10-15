@@ -75,3 +75,5 @@ export * from "./secretRequest.ts";
 export * from "./clientRpcPermissions.ts";
 
 export * from "./orchestrationSystemEvent.ts";
+
+export * from "./threadDesktop.ts";

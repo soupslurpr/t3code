@@ -1,3 +1,4 @@
+import { useAtomValue } from "@effect/atom-react";
 /** Supervises desktop commands from a paired mobile client. */
 import {
   hasMoreDesktopProcessOutput,
@@ -40,6 +41,9 @@ export function UserDesktopExecutionPanel({
   const invoke = useAtomCommand(previewEnvironment.invokeUserDesktopHuman, {
     reportFailure: false,
   });
+  const allowed = useAtomValue(
+    previewEnvironment.invokeUserDesktopHuman.permissionAtom(environmentId),
+  );
   const [expanded, setExpanded] = useState(false);
   const [access, setAccess] = useState<DesktopExecutionAccess | null>(null);
   const [processes, setProcesses] = useState<ReadonlyArray<DesktopProcess>>([]);
@@ -53,7 +57,7 @@ export function UserDesktopExecutionPanel({
   const [refreshError, setRefreshError] = useState<string | null>(null);
   const error = actionError ?? refreshError;
   const [pendingCount, setPendingCount] = useState(0);
-  const busy = pendingCount > 0;
+  const busy = !allowed || pendingCount > 0;
   const refreshing = useRef(false);
   const desktopId = desktop.desktopId;
   const run = useCallback(
