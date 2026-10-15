@@ -4,11 +4,13 @@ import * as NodeChildProcess from "node:child_process";
 import * as NodeCrypto from "node:crypto";
 import * as NodeFSP from "node:fs/promises";
 import * as NodeOS from "node:os";
+import * as NodeNet from "node:net";
 import * as NodePath from "node:path";
 import * as NodeStream from "node:stream";
 import type { IPty } from "node-pty";
 import * as DateTime from "effect/DateTime";
 
+import { ThreadId } from "@t3tools/contracts";
 import type {
   DesktopProcess,
   DesktopProcessOutput,
@@ -32,6 +34,7 @@ export interface ProcessOwner {
 
 interface ManagerOptions {
   readonly directory: string;
+  readonly supervisorPath: string;
   readonly environment: NodeJS.ProcessEnv;
   readonly platform: NodeJS.Platform;
   readonly user: string;
@@ -47,6 +50,9 @@ interface ProcessEntry {
   readonly stderr: ProcessLog;
   readonly changed: Set<() => void>;
   snapshot: DesktopProcess;
+  control?: NodeNet.Socket;
+  containmentClosed?: Promise<void>;
+  commandExit?: { code: number | null; signal: string | null };
   child?: NodeChildProcess.ChildProcess;
   terminal?: IPty;
   timer?: ReturnType<typeof setTimeout>;
@@ -216,6 +222,25 @@ function waitFor(
     if (signal?.aborted) aborted();
     else changed();
   });
+}
+
+/** Applies the target host's environment-key semantics before native spawning. */
+export function desktopCommandEnvironment(
+  inherited: NodeJS.ProcessEnv,
+  platform: NodeJS.Platform,
+  input: Pick<UserDesktopCommandInput, "inheritEnvironment" | "environment">,
+): NodeJS.ProcessEnv {
+  const environment = { ...(input.inheritEnvironment === false ? {} : inherited) };
+  for (const [name, value] of Object.entries(input.environment ?? {})) {
+    if (platform === "win32") {
+      for (const inheritedName of Object.keys(environment)) {
+        if (inheritedName.toLowerCase() === name.toLowerCase()) delete environment[inheritedName];
+      }
+    }
+    if (value === null) delete environment[name];
+    else environment[name] = value;
+  }
+  return environment;
 }
 
 /** Manages commands until explicit forgetting or desktop shutdown. */
@@ -439,7 +464,11 @@ export class DesktopProcessManager {
   }
 
   private snapshot(entry: ProcessEntry): DesktopProcess {
-    return { ...entry.snapshot, outputError: entry.stdout.error ?? entry.stderr.error };
+    return {
+      ...entry.snapshot,
+      threadId: ThreadId.make(entry.owner.threadId),
+      outputError: entry.stdout.error ?? entry.stderr.error,
+    };
   }
 
   private async read(
@@ -471,37 +500,22 @@ export class DesktopProcessManager {
   }
 
   private async signal(entry: ProcessEntry, signal: string): Promise<void> {
-    if (entry.snapshot.status !== "running") return;
     if (!Object.hasOwn(NodeOS.constants.signals, signal))
       throw new DesktopExecutionError("invalid-signal", "unknown process signal");
-    try {
-      if (this.options.platform === "win32") {
-        if (signal !== "SIGTERM" && signal !== "SIGKILL")
-          throw new DesktopExecutionError(
-            "unsupported-operation",
-            "Windows process signalling supports SIGTERM and SIGKILL; send terminal control characters for interactive signals",
-          );
-        await new Promise<void>((resolveKill, reject) => {
-          const killer = NodeChildProcess.spawn(
-            "taskkill.exe",
-            ["/pid", String(entry.snapshot.pid), "/t", "/f"],
-            {
-              windowsHide: true,
-              stdio: "ignore",
-            },
-          );
-          killer.once("error", reject);
-          killer.once("exit", (code) =>
-            code === 0 || entry.snapshot.status !== "running"
-              ? resolveKill()
-              : reject(new DesktopExecutionError("signal-failed", "failed to stop process tree")),
-          );
-        });
-      } else if (entry.snapshot.pid !== null) {
-        process.kill(-entry.snapshot.pid, signal as NodeJS.Signals);
-      }
-    } catch (cause) {
-      if (!(cause instanceof Error && "code" in cause && cause.code === "ESRCH")) throw cause;
+    if (signal === "SIGSTOP" || signal === "SIGTSTP")
+      throw new DesktopExecutionError(
+        "unsupported-operation",
+        "Suspending the command supervisor would prevent revocation; use terminal input to suspend foreground work",
+      );
+    if (this.options.platform === "win32" && signal !== "SIGTERM" && signal !== "SIGKILL")
+      throw new DesktopExecutionError(
+        "unsupported-operation",
+        "Windows supports SIGTERM and SIGKILL; use terminal input for interactive signals",
+      );
+    // Never signal a saved PID. Only its still-connected owner may signal the group/job.
+    if (entry.control !== undefined && !entry.control.destroyed) {
+      entry.control.write(`${signal}\n`);
+      if (signal === "SIGKILL") await entry.containmentClosed;
     }
   }
 
@@ -517,18 +531,11 @@ export class DesktopProcessManager {
     if (!(await NodeFSP.stat(workingDirectory)).isDirectory())
       throw new DesktopExecutionError("invalid-directory", "working directory is not a directory");
     const bytes = inputBytes(input.stdin ?? "", input.stdinEncoding);
-    const environment: NodeJS.ProcessEnv = {
-      ...(input.inheritEnvironment === false ? {} : this.options.environment),
-    };
-    for (const [name, value] of Object.entries(input.environment ?? {})) {
-      if (this.options.platform === "win32") {
-        for (const inheritedName of Object.keys(environment)) {
-          if (inheritedName.toLowerCase() === name.toLowerCase()) delete environment[inheritedName];
-        }
-      }
-      if (value === null) delete environment[name];
-      else environment[name] = value;
-    }
+    const environment = desktopCommandEnvironment(
+      this.options.environment,
+      this.options.platform,
+      input,
+    );
     const terminal = input.terminal !== undefined && input.terminal !== false;
     const ptyModule = terminal ? await import("node-pty") : undefined;
     if (this.closed || this.revokedGrants.has(grantId))
@@ -594,6 +601,10 @@ export class DesktopProcessManager {
       },
     };
     const finish = async (exitCode: number | null, signal: string | null) => {
+      if (entry.commandExit !== undefined) {
+        exitCode = entry.commandExit.code;
+        signal = entry.commandExit.signal;
+      }
       clearTimeout(entry.timer);
       await Promise.all([stdout.close(), stderr.close()]).catch((cause: unknown) => {
         stderr.error = cause instanceof Error ? cause.message : "output close failed";
@@ -608,20 +619,81 @@ export class DesktopProcessManager {
       };
       notify();
     };
+    let rejectSupervisor: ((error: Error) => void) | undefined;
     try {
       if (this.closed || this.revokedGrants.has(grantId))
         throw new DesktopExecutionError(
           "permission-denied",
           "execution was revoked before the process started",
         );
+      const socketDirectory =
+        this.options.platform === "win32" ? null : await NodeFSP.mkdtemp("/tmp/t3-command-");
+      const socketPath =
+        socketDirectory === null
+          ? `\\\\.\\pipe\\t3-command-${NodeCrypto.randomUUID()}`
+          : NodePath.join(socketDirectory, "control");
+      const server = NodeNet.createServer();
+      const ready = new Promise<void>((resolve, reject) => {
+        rejectSupervisor = reject;
+        server.once("connection", (socket) => {
+          entry.control = socket;
+          server.close();
+          entry.containmentClosed = new Promise((done) => socket.once("close", done));
+          let pending = "";
+          socket.on("error", () => socket.destroy());
+          socket.on("data", (data) => {
+            pending += data.toString();
+            let end: number;
+            while ((end = pending.indexOf("\n")) !== -1) {
+              const message = pending.slice(0, end);
+              pending = pending.slice(end + 1);
+              if (message === "ready") resolve();
+              else if (message.startsWith("error:"))
+                reject(new DesktopExecutionError("spawn-failed", message.slice(6)));
+              else if (message.startsWith("exit:"))
+                entry.commandExit = JSON.parse(message.slice(5));
+            }
+          });
+          socket.once("close", () =>
+            reject(new DesktopExecutionError("spawn-failed", "Command supervisor closed")),
+          );
+        });
+        server.once("error", reject);
+      });
+      // Attach a handler while the native spawn is in progress.
+      void ready.catch(() => {});
+      await new Promise<void>((resolve, reject) => {
+        server.once("error", reject);
+        server.listen(socketPath, resolve);
+      });
+      const configurationPath = NodePath.join(directory, "command.json");
+      await NodeFSP.writeFile(
+        configurationPath,
+        JSON.stringify({
+          socket: socketPath,
+          platform: this.options.platform,
+          executable: input.executable,
+          arguments: input.arguments ?? [],
+          environment,
+        }),
+        { mode: 0o600 },
+      );
+      const supervisorArguments = [this.options.supervisorPath, configurationPath];
+      const supervisorEnvironment = { ...this.options.environment, ELECTRON_RUN_AS_NODE: "1" };
+      const cleanupSocket = () => {
+        server.close();
+        if (socketDirectory !== null)
+          void NodeFSP.rm(socketDirectory, { recursive: true, force: true });
+      };
+      ready.finally(cleanupSocket).catch(() => {});
       if (ptyModule !== undefined) {
         const size =
           typeof input.terminal === "object"
             ? input.terminal
             : { columns: DEFAULT_TERMINAL_COLUMNS, rows: DEFAULT_TERMINAL_ROWS };
-        const pty = ptyModule.spawn(input.executable, [...(input.arguments ?? [])], {
+        const pty = ptyModule.spawn(process.execPath, supervisorArguments, {
           cwd: workingDirectory,
-          env: environment,
+          env: supervisorEnvironment,
           cols: size.columns,
           rows: size.rows,
           name: environment.TERM ?? "xterm-256color",
@@ -636,6 +708,9 @@ export class DesktopProcessManager {
             .finally(() => pty.resume());
         });
         const exitSubscription = pty.onExit((event) => {
+          rejectSupervisor?.(
+            new DesktopExecutionError("spawn-failed", "Command supervisor exited"),
+          );
           entry.outputPending = entry.outputPending.then(() => {
             dataSubscription.dispose();
             exitSubscription.dispose();
@@ -644,9 +719,9 @@ export class DesktopProcessManager {
         });
         if (bytes.length > 0) pty.write(bytes);
       } else {
-        const child = NodeChildProcess.spawn(input.executable, [...(input.arguments ?? [])], {
+        const child = NodeChildProcess.spawn(process.execPath, supervisorArguments, {
           cwd: workingDirectory,
-          env: environment,
+          env: supervisorEnvironment,
           detached: this.options.platform !== "win32",
           windowsHide: true,
           stdio: "pipe",
@@ -666,6 +741,9 @@ export class DesktopProcessManager {
         child.stdout.pipe(stdoutSink);
         child.stderr.pipe(stderrSink);
         child.once("close", (code, signal) => {
+          rejectSupervisor?.(
+            new DesktopExecutionError("spawn-failed", "Command supervisor exited"),
+          );
           entry.outputPending = drains.then(() => finish(code, signal));
         });
         await new Promise<void>((resolveSpawn, reject) => {
@@ -680,6 +758,7 @@ export class DesktopProcessManager {
           entry.snapshot = { ...entry.snapshot, stdinClosed: true };
         }
       }
+      await ready;
       this.entries.set(entry.snapshot.processId, entry);
       if (this.closed || this.revokedGrants.has(grantId)) await this.signal(entry, "SIGKILL");
       if (input.timeoutMs != null && entry.snapshot.status === "running") {
@@ -695,6 +774,7 @@ export class DesktopProcessManager {
       }
       return entry;
     } catch (cause) {
+      rejectSupervisor?.(cause instanceof Error ? cause : new Error(String(cause)));
       if (entry.snapshot.pid !== null) {
         this.entries.set(entry.snapshot.processId, entry);
         stderr.error = cause instanceof Error ? cause.message : "process setup failed";

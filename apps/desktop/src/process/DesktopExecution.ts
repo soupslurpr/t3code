@@ -110,6 +110,11 @@ export const make = Effect.gen(function* () {
   const pending = new Map<string, { owner: ProcessOwner; abort: AbortController }>();
   const manager = new DesktopProcessManager({
     directory: environment.path.join(environment.stateDir, "desktop-processes"),
+    supervisorPath: environment.path.join(
+      environment.dirname,
+      "process",
+      "DesktopProcessSupervisor.cjs",
+    ),
     environment: hostEnvironment,
     platform: environment.platform,
     user,

@@ -74,6 +74,7 @@ export default defineConfig({
       define: publicConfigDefine,
       entry: [
         "src/electron/WindowsForegroundFocusWorker.ts",
+        "src/process/DesktopProcessSupervisor.ts",
         "src/snapShot/GlobalShiftShortcutWorker.ts",
         "src/snapShot/RegionSnapShotWorker.ts",
         "src/snapShot/SnapShotAccessibilityWorker.ts",
