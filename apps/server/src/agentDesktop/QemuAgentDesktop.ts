@@ -2320,6 +2320,58 @@ export const make = Effect.gen(function* () {
       });
     }).pipe(Effect.mapError(mapFailure("resource-usage")));
 
+  const finishPacketCapture = Effect.fn("QemuAgentDesktop.finishPacketCapture")(function* (
+    capturePath: string,
+    maxBytes: number,
+  ) {
+    const file = yield* fileSystem.open(capturePath, { flag: "r+" });
+    const sizeBytes = Number((yield* file.stat).size);
+    if (sizeBytes <= maxBytes) return { sizeBytes, truncated: false };
+
+    // Size polling can overshoot, including QEMU's final buffered writes. Trim
+    // only after the writer stops, at a complete PCAP record boundary. Cache a
+    // bounded window so a large capture needs neither a full read nor one I/O
+    // operation per packet.
+    const buffer = new Uint8Array(Math.min(maxBytes, 64 * 1024));
+    let bufferedOffset = 0;
+    let bufferedLength = 0;
+    const invalidCapture = new QemuAgentDesktopError({
+      code: "internal-error",
+      operation: "packet-capture",
+      detail: "QEMU returned an invalid packet capture file",
+    });
+    const readHeader = Effect.fnUntraced(function* (offset: number, length: number) {
+      if (offset < bufferedOffset || offset + length > bufferedOffset + bufferedLength) {
+        bufferedOffset = offset;
+        bufferedLength = 0;
+        const requestedBytes = Math.min(buffer.length, maxBytes - offset);
+        while (bufferedLength < requestedBytes) {
+          const read = yield* file.read(buffer.subarray(bufferedLength, requestedBytes), {
+            position: BigInt(offset + bufferedLength),
+          });
+          if (read === 0) break;
+          bufferedLength += read;
+        }
+      }
+      if (offset + length > bufferedOffset + bufferedLength) return yield* invalidCapture;
+      return new DataView(buffer.buffer, buffer.byteOffset + offset - bufferedOffset, length);
+    });
+    const magic = (yield* readHeader(0, 24)).getUint32(0);
+    const littleEndian = magic === 0xd4c3b2a1 || magic === 0x4d3cb2a1;
+    if (!littleEndian && magic !== 0xa1b2c3d4 && magic !== 0xa1b23c4d) {
+      return yield* invalidCapture;
+    }
+    let retainedBytes = 24;
+    while (retainedBytes + 16 <= maxBytes) {
+      const header = yield* readHeader(retainedBytes, 16);
+      const nextRecord = retainedBytes + 16 + header.getUint32(8, littleEndian);
+      if (nextRecord > maxBytes) break;
+      retainedBytes = nextRecord;
+    }
+    yield* file.truncate(retainedBytes);
+    return { sizeBytes: retainedBytes, truncated: true };
+  }, Effect.scoped);
+
   const capturePackets: QemuAgentDesktopShape["capturePackets"] = (id, durationMs, maxBytes) =>
     Effect.gen(function* () {
       const machine = paths(id);
@@ -2347,6 +2399,7 @@ export const make = Effect.gen(function* () {
       );
       const startedAt = yield* Clock.currentTimeMillis;
       let truncated = false;
+      let stopFailure: QemuAgentDesktopError | undefined;
       yield* Effect.gen(function* () {
         while ((yield* Clock.currentTimeMillis) - startedAt < durationMs) {
           const size = yield* fileSystem.stat(capturePath).pipe(
@@ -2357,14 +2410,30 @@ export const make = Effect.gen(function* () {
             truncated = true;
             break;
           }
-          yield* Effect.sleep(PACKET_CAPTURE_POLL_INTERVAL);
+          const remainingMs = durationMs - ((yield* Clock.currentTimeMillis) - startedAt);
+          if (remainingMs <= 0) break;
+          yield* Effect.sleep(
+            Duration.millis(Math.min(remainingMs, Duration.toMillis(PACKET_CAPTURE_POLL_INTERVAL))),
+          );
         }
-      }).pipe(Effect.ensuring(qmp(id, "object-del", { id: objectId }).pipe(Effect.ignore)));
-      const sizeBytes = yield* fileSystem.stat(capturePath).pipe(
-        Effect.map((stat) => Number(stat.size)),
-        Effect.orElseSucceed(() => 0),
+      }).pipe(
+        Effect.ensuring(
+          qmp(id, "object-del", { id: objectId }).pipe(
+            Effect.catch((cause) =>
+              Effect.sync(() => {
+                stopFailure = cause;
+              }),
+            ),
+          ),
+        ),
       );
-      return { path: capturePath, sizeBytes, truncated };
+      if (stopFailure !== undefined) return yield* stopFailure;
+      const finished = yield* finishPacketCapture(capturePath, maxBytes);
+      return {
+        path: capturePath,
+        sizeBytes: finished.sizeBytes,
+        truncated: truncated || finished.truncated,
+      };
     }).pipe(Effect.mapError(mapFailure("packet-capture")));
 
   return QemuAgentDesktop.of({
