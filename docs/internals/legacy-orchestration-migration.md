@@ -50,8 +50,14 @@ never receives this build's migration at that id. After repairing supported V2 p
 [`runMigrations`](../../apps/server/src/persistence/Migrations.ts) rejects history that would skip a
 requested migration at id 55 or later without its expected name. Earlier name clashes remain
 warnings for compatibility with site-local migrations. There is no safe id range for a fork inside
-this ledger: any id at or below a future upstream id masks it forever, so fork schema changes belong
-in a separate migration table or outside the migrator entirely.
+this ledger: a future upstream id can mask a fork change, or be masked by it. Fork migrations now
+use the separate `effect_sql_fork_migrations` table with stable ids. Keep new fork changes there
+when rebasing. Startup transactionally adopts recognized pre-rebase and released fork histories,
+retaining their timestamps without replaying schema changes. Unknown or conflicting histories
+fail validation before adoption commits. Creation of the fork ledger marks adoption complete;
+subsequent starts never interpret upstream entries as fork migrations, even when names overlap.
+The legacy remapping is frozen compatibility code;
+never expand its id range to accommodate new fork changes.
 
 ## Recovery
 

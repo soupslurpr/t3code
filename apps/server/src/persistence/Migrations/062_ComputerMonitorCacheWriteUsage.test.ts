@@ -5,10 +5,10 @@ import * as Layer from "effect/Layer";
 import * as Schema from "effect/Schema";
 import * as SqlClient from "effect/sql/SqlClient";
 
-import { migrationManifest, runMigrations } from "../Migrations.ts";
+import { forkMigrationManifest, runMigrations } from "../Migrations.ts";
 import * as NodeSqliteClient from "@t3tools/shared/nodeSqliteClient";
 
-const migrationId = migrationManifest.find(
+const migrationId = forkMigrationManifest.find(
   ([, name]) => name === "ComputerMonitorCacheWriteUsage",
 )![0];
 
@@ -27,7 +27,7 @@ layer("062_ComputerMonitorCacheWriteUsage", (it) => {
   it.effect("adds cache-write usage to retained computer monitors", () =>
     Effect.gen(function* () {
       const sql = yield* SqlClient.SqlClient;
-      yield* runMigrations({ toMigrationInclusive: migrationId - 1 });
+      yield* runMigrations({ toForkMigrationInclusive: migrationId - 1 });
       const condition = {
         type: "computer",
         lastUsage: { inputTokens: 20, cachedInputTokens: 16, outputTokens: 5 },
@@ -59,7 +59,7 @@ layer("062_ComputerMonitorCacheWriteUsage", (it) => {
         )
       `;
 
-      yield* runMigrations({ toMigrationInclusive: migrationId });
+      yield* runMigrations({ toForkMigrationInclusive: migrationId });
 
       const rows = yield* sql<{ readonly conditionJson: string }>`
         SELECT condition_json AS "conditionJson"

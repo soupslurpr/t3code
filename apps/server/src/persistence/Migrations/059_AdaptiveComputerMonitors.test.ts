@@ -4,10 +4,12 @@ import * as Layer from "effect/Layer";
 import * as Schema from "effect/Schema";
 import * as SqlClient from "effect/sql/SqlClient";
 
-import { migrationManifest, runMigrations } from "../Migrations.ts";
+import { forkMigrationManifest, runMigrations } from "../Migrations.ts";
 import * as NodeSqliteClient from "@t3tools/shared/nodeSqliteClient";
 
-const migrationId = migrationManifest.find(([, name]) => name === "AdaptiveComputerMonitors")![0];
+const migrationId = forkMigrationManifest.find(
+  ([, name]) => name === "AdaptiveComputerMonitors",
+)![0];
 
 const layer = it.layer(Layer.mergeAll(NodeSqliteClient.layer({ filename: ":memory:" })));
 const encodeJson = Schema.encodeSync(Schema.fromJsonString(Schema.Unknown));
@@ -81,7 +83,7 @@ layer("059_AdaptiveComputerMonitors", (it) => {
         resourceState: "viewing",
       };
 
-      yield* runMigrations({ toMigrationInclusive: migrationId - 1 });
+      yield* runMigrations({ toForkMigrationInclusive: migrationId - 1 });
       yield* sql`
         INSERT INTO thread_monitors (
           monitor_id,
@@ -115,7 +117,7 @@ layer("059_AdaptiveComputerMonitors", (it) => {
         ) VALUES ('computer-monitor', 'YmFzZWxpbmU=', 'dGVybWluYWw=')
       `;
 
-      yield* runMigrations({ toMigrationInclusive: migrationId });
+      yield* runMigrations({ toForkMigrationInclusive: migrationId });
 
       const monitorRows = yield* sql<{ readonly conditionJson: string }>`
         SELECT condition_json AS "conditionJson"

@@ -3,10 +3,10 @@ import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as SqlClient from "effect/sql/SqlClient";
 
-import { migrationManifest, runMigrations } from "../Migrations.ts";
+import { forkMigrationManifest, runMigrations } from "../Migrations.ts";
 import * as NodeSqliteClient from "@t3tools/shared/nodeSqliteClient";
 
-const migrationId = migrationManifest.find(
+const migrationId = forkMigrationManifest.find(
   ([, name]) => name === "ProjectionThreadMessageSystemEvents",
 )![0];
 
@@ -17,8 +17,8 @@ layer("061_ProjectionThreadMessageSystemEvents", (it) => {
     Effect.gen(function* () {
       const sql = yield* SqlClient.SqlClient;
 
-      yield* runMigrations({ toMigrationInclusive: migrationId - 1 });
-      yield* runMigrations({ toMigrationInclusive: migrationId });
+      yield* runMigrations({ toForkMigrationInclusive: migrationId - 1 });
+      yield* runMigrations({ toForkMigrationInclusive: migrationId });
 
       const columns = yield* sql<{ readonly name: string; readonly notnull: number }>`
         PRAGMA table_info(projection_thread_messages)

@@ -5,10 +5,10 @@ import * as Layer from "effect/Layer";
 import * as Schema from "effect/Schema";
 import * as SqlClient from "effect/sql/SqlClient";
 
-import { migrationManifest, runMigrations } from "../Migrations.ts";
+import { forkMigrationManifest, runMigrations } from "../Migrations.ts";
 import * as NodeSqliteClient from "@t3tools/shared/nodeSqliteClient";
 
-const migrationId = migrationManifest.find(
+const migrationId = forkMigrationManifest.find(
   ([, name]) => name === "ComputerMonitorImageEncoding",
 )![0];
 
@@ -35,7 +35,7 @@ layer("060_ComputerMonitorImageEncoding", (it) => {
   it.effect("adds explicit PNG metadata to retained monitor evidence", () =>
     Effect.gen(function* () {
       const sql = yield* SqlClient.SqlClient;
-      yield* runMigrations({ toMigrationInclusive: migrationId - 1 });
+      yield* runMigrations({ toForkMigrationInclusive: migrationId - 1 });
       const condition = {
         type: "computer",
         observation: {
@@ -102,7 +102,7 @@ layer("060_ComputerMonitorImageEncoding", (it) => {
         )
       `;
 
-      yield* runMigrations({ toMigrationInclusive: migrationId });
+      yield* runMigrations({ toForkMigrationInclusive: migrationId });
 
       const rows = yield* sql<{
         readonly baselineImagesJson: string;

@@ -4,10 +4,10 @@ import * as Layer from "effect/Layer";
 import * as Schema from "effect/Schema";
 import * as SqlClient from "effect/sql/SqlClient";
 
-import { migrationManifest, runMigrations } from "../Migrations.ts";
+import { forkMigrationManifest, runMigrations } from "../Migrations.ts";
 import * as NodeSqliteClient from "@t3tools/shared/nodeSqliteClient";
 
-const migrationId = migrationManifest.find(
+const migrationId = forkMigrationManifest.find(
   ([, name]) => name === "ComputerMonitorEvaluationThrottle",
 )![0];
 
@@ -67,7 +67,7 @@ layer("058_ComputerMonitorEvaluationThrottle", (it) => {
         resourceState: "viewing",
       });
 
-      yield* runMigrations({ toMigrationInclusive: migrationId - 1 });
+      yield* runMigrations({ toForkMigrationInclusive: migrationId - 1 });
       yield* sql`
         INSERT INTO thread_monitors (
           monitor_id,
@@ -94,7 +94,7 @@ layer("058_ComputerMonitorEvaluationThrottle", (it) => {
         )
       `;
 
-      yield* runMigrations({ toMigrationInclusive: migrationId });
+      yield* runMigrations({ toForkMigrationInclusive: migrationId });
 
       const rows = yield* sql<{ readonly conditionJson: string }>`
         SELECT condition_json AS "conditionJson"

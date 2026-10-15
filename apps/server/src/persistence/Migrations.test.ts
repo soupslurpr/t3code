@@ -4,7 +4,7 @@ import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
 import * as SqlClient from "effect/sql/SqlClient";
 
-import { migrationManifest, runMigrations } from "./Migrations.ts";
+import { forkMigrationManifest, migrationManifest, runMigrations } from "./Migrations.ts";
 
 const v2Migrations = migrationManifest.filter(([id]) => id >= 55);
 const newerMigrationId = Math.max(...migrationManifest.map(([id]) => id)) + 1;
@@ -77,7 +77,7 @@ describe("runMigrations", () => {
   it.effect("upgrades a database at exactly 54", () =>
     Effect.gen(function* () {
       yield* runMigrations({ toMigrationInclusive: 54 });
-      assert.deepStrictEqual(yield* runMigrations(), v2Migrations);
+      assert.deepStrictEqual(yield* runMigrations(), [...v2Migrations, ...forkMigrationManifest]);
       assert.deepStrictEqual(yield* history, migrationManifest);
       assert.isAbove(yield* v2TableCount, 0);
     }).pipe(Effect.provide(NodeSqliteClient.layer({ filename: ":memory:" }))),
@@ -91,7 +91,7 @@ describe("runMigrations", () => {
         UPDATE effect_sql_migrations SET name = 'SiteLocalMigration' WHERE migration_id = ${id}
       `;
 
-      assert.deepStrictEqual(yield* runMigrations(), v2Migrations);
+      assert.deepStrictEqual(yield* runMigrations(), [...v2Migrations, ...forkMigrationManifest]);
       assert.isAbove(yield* v2TableCount, 0);
     }).pipe(Effect.provide(NodeSqliteClient.layer({ filename: ":memory:" }))),
   );
@@ -131,3 +131,66 @@ describe("runMigrations", () => {
     }).pipe(Effect.provide(NodeSqliteClient.layer({ filename: ":memory:" }))),
   );
 });
+
+it.effect.each(["FutureUpstreamMigration", "ThreadMonitors", "ThreadMonitorDelivery"])(
+  "keeps fork identities independent of later upstream %s",
+  (name) =>
+    Effect.gen(function* () {
+      const sql = yield* SqlClient.SqlClient;
+      yield* runMigrations({ toForkMigrationInclusive: 13 });
+      yield* sql`INSERT INTO effect_sql_migrations (migration_id, name) VALUES (63, ${name})`;
+      assert.deepStrictEqual(yield* runMigrations(), forkMigrationManifest.slice(13));
+      assert.deepStrictEqual(
+        (yield* sql<{
+          migration_id: number;
+          name: string;
+        }>`SELECT migration_id, name FROM effect_sql_fork_migrations ORDER BY migration_id`).map(
+          (row) => [row.migration_id, row.name] as const,
+        ),
+        forkMigrationManifest,
+      );
+      assert.deepStrictEqual(
+        yield* sql`SELECT name FROM effect_sql_migrations WHERE migration_id = 63`,
+        [{ name }],
+      );
+    }).pipe(Effect.provide(NodeSqliteClient.layer({ filename: ":memory:" }))),
+);
+
+it.effect("rolls back an adoption conflict without partially removing legacy history", () =>
+  Effect.gen(function* () {
+    const sql = yield* SqlClient.SqlClient;
+    yield* runMigrations({ toForkMigrationInclusive: 13 });
+    yield* sql`INSERT INTO effect_sql_migrations (migration_id, name, created_at) SELECT migration_id + 62, name, created_at FROM effect_sql_fork_migrations`;
+    yield* sql`DELETE FROM effect_sql_fork_migrations`;
+    yield* sql`INSERT INTO effect_sql_fork_migrations (migration_id, name) VALUES (2, 'ConflictingMigration')`;
+    const upstream = yield* sql`SELECT * FROM effect_sql_migrations ORDER BY migration_id`;
+    const fork = yield* sql`SELECT * FROM effect_sql_fork_migrations ORDER BY migration_id`;
+    assert.isTrue(Exit.isFailure(yield* Effect.exit(runMigrations())));
+    assert.deepStrictEqual(
+      yield* sql`SELECT * FROM effect_sql_migrations ORDER BY migration_id`,
+      upstream,
+    );
+    assert.deepStrictEqual(
+      yield* sql`SELECT * FROM effect_sql_fork_migrations ORDER BY migration_id`,
+      fork,
+    );
+  }).pipe(Effect.provide(NodeSqliteClient.layer({ filename: ":memory:" }))),
+);
+
+it.effect("preserves cancellation and computer evidence while allowing run conditions", () =>
+  Effect.gen(function* () {
+    const sql = yield* SqlClient.SqlClient;
+    yield* runMigrations({ toForkMigrationInclusive: 13 });
+    yield* sql`INSERT INTO thread_monitors (monitor_id, thread_id, label, condition_type, condition_json, continuation_mode, status, created_at, updated_at, cancellation_requested)
+    VALUES ('retained', 'thread', 'Evidence', 'computer', '{}', 'record-only', 'active', '2026-10-14T00:00:00Z', '2026-10-14T00:00:00Z', 1)`;
+    yield* sql`INSERT INTO thread_monitor_computer_evidence (monitor_id, baseline_images_json, terminal_images_json) VALUES ('retained', '[{"original":true}]', '[{"terminal":true}]')`;
+    const monitors = yield* sql`SELECT * FROM thread_monitors`;
+    const evidence = yield* sql`SELECT * FROM thread_monitor_computer_evidence`;
+    yield* runMigrations();
+    assert.deepStrictEqual(yield* sql`SELECT * FROM thread_monitors`, monitors);
+    assert.deepStrictEqual(yield* sql`SELECT * FROM thread_monitor_computer_evidence`, evidence);
+    yield* sql`INSERT INTO thread_monitors (monitor_id, thread_id, label, condition_type, condition_json, continuation_mode, status, created_at, updated_at)
+    VALUES ('run', 'thread', 'Run', 'thread-run', '{}', 'record-only', 'active', '2026-10-14T00:00:00Z', '2026-10-14T00:00:00Z')`;
+    assert.deepStrictEqual(yield* sql`PRAGMA foreign_key_check`, []);
+  }).pipe(Effect.provide(NodeSqliteClient.layer({ filename: ":memory:" }))),
+);

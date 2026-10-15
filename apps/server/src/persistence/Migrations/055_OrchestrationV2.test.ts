@@ -3,7 +3,12 @@ import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as SqlClient from "effect/sql/SqlClient";
 
-import { migrationEntries, migrationManifest, runMigrations } from "../Migrations.ts";
+import {
+  forkMigrationManifest,
+  migrationEntries,
+  migrationManifest,
+  runMigrations,
+} from "../Migrations.ts";
 import * as NodeSqliteClient from "@t3tools/shared/nodeSqliteClient";
 
 const layer = it.layer(Layer.mergeAll(NodeSqliteClient.layer({ filename: ":memory:" })));
@@ -29,6 +34,7 @@ layer("055_OrchestrationV2", (it) => {
         [55, "OrchestrationV2"],
         [56, "RemoveRedundantProjectionIndexes"],
         ...migrationManifest.filter(([id]) => id > 56),
+        ...forkMigrationManifest,
       ]);
       assert.deepStrictEqual(yield* runMigrations(), []);
 
