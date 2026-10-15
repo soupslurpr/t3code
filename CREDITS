@@ -636,13 +636,12 @@ or adapted into the Alchemy repository; it does not replace the license
 documentation within those submodules.
 ```
 
-## Effect 4.0.1
+## Effect 4.0.4
 
-Source: [Effect](https://github.com/Effect-TS/effect/tree/460272d30457f4697d8b8c52cad41caccbcace08)
+Source: [Effect](https://github.com/Effect-TS/effect/tree/e17ecdbe902aa7108f775c8ab9c0ddf9f38801ab)
 
 - `.repos/effect-smol/` (recursive): copied unchanged; the complete reference tree, retaining the root and component licenses.
-- `patches/effect@4.0.1.patch`: adapted; support MCP session termination, React Native response headers, and RPC heartbeat recovery.
-- `patches/@effect__vitest@4.0.1.patch`: adapted; use Vite+ test APIs in the Effect test helpers.
+- `patches/@effect__vitest@4.0.4.patch`: adapted; use Vite+ test APIs in the Effect test helpers.
 
 The reference tree contains these distinct MIT notices; each original
 component `LICENSE` remains in place. The dependency patches use the root
@@ -758,41 +757,6 @@ From `.repos/effect-smol/packages/tools/docgen/LICENSE`:
 MIT License
 
 Copyright (c) 2020-present The Contributors
-
-Permission is hereby granted, free of charge, to any person obtaining a copy
-of this software and associated documentation files (the "Software"), to deal
-in the Software without restriction, including without limitation the rights
-to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
-copies of the Software, and to permit persons to whom the Software is
-furnished to do so, subject to the following conditions:
-
-The above copyright notice and this permission notice shall be included in all
-copies or substantial portions of the Software.
-
-THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
-IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
-FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
-AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
-LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
-OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
-SOFTWARE.
-```
-
-## OpenCode 2.0.23 dependency patches
-
-Source: [OpenCode](https://github.com/anomalyco/opencode/tree/0fd7e2829449b052abf0078666669302923d77af),
-[@opencode/client 2.0.23](https://registry.npmjs.org/@opencode/client/2.0.23),
-[@opencode/protocol 2.0.23](https://registry.npmjs.org/@opencode/protocol/2.0.23),
-[@opencode/schema 2.0.23](https://registry.npmjs.org/@opencode/schema/2.0.23).
-
-- `patches/@opencode__client@2.0.23.patch`: adapted; migrate generated client imports to stable Effect 4 module paths.
-- `patches/@opencode__protocol@2.0.23.patch`: adapted; migrate protocol imports to stable Effect 4 module paths.
-- `patches/@opencode__schema@2.0.23.patch`: adapted; migrate schema imports to stable Effect 4 module paths.
-
-```text
-MIT License
-
-Copyright (c) 2025 opencode
 
 Permission is hereby granted, free of charge, to any person obtaining a copy
 of this software and associated documentation files (the "Software"), to deal
@@ -1170,3 +1134,13 @@ LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ```
+
+## Meta symbol for Muse Code
+
+Source: [Meta Platforms logo](https://commons.wikimedia.org/w/index.php?title=File:Meta_Platforms_Inc._logo_(cropped).svg&oldid=1283014579),
+file revision 2023-07-31 18:42 UTC, SHA-1 `fb40c58a5019c97ac199683fbf855ed7afb7ad38`.
+
+- `packages/provider-muse/src/client.ts`: adapted; express the SVG paths and gradients as provider icon data.
+
+Wikimedia Commons identifies the symbol as public domain under
+`PD-textlogo`. Meta Platforms retains its trademark rights.
