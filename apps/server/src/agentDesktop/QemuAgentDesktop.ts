@@ -933,7 +933,7 @@ export const make = Effect.gen(function* () {
   );
 
   const refreshBaseImage: QemuAgentDesktopShape["refreshBaseImage"] = setupSemaphore.withPermits(1)(
-    refreshBaseImageUnlocked(),
+    refreshBaseImageUnlocked().pipe(Effect.tap(() => invalidateProbe)),
   );
 
   const pruneBaseImages: QemuAgentDesktopShape["pruneBaseImages"] = (referencedGenerations) =>
@@ -1004,7 +1004,7 @@ export const make = Effect.gen(function* () {
       Effect.orElseSucceed(() => false),
     );
 
-  const probe: QemuAgentDesktopShape["probe"] = Effect.gen(function* () {
+  const probeUncached: QemuAgentDesktopShape["probe"] = Effect.gen(function* () {
     const selectedBaseImage = yield* currentBaseImage;
     if (environment.platform !== "linux" || environment.processArch !== "x64") {
       const detail = "Agent desktops currently require Linux x86-64";
@@ -1497,8 +1497,16 @@ export const make = Effect.gen(function* () {
     ),
   );
 
+  // Host packages and graphics prerequisites change rarely. Setup and actual starts
+  // refresh explicitly; idle inventory reads share a bounded prerequisite snapshot.
+  const [probe, invalidateProbe] = yield* Effect.cachedInvalidateWithTTL(
+    probeUncached,
+    "5 minutes",
+  );
+  const freshProbe = invalidateProbe.pipe(Effect.andThen(probe));
+
   const setupUnlocked: QemuAgentDesktopShape["setup"] = Effect.gen(function* () {
-    const initial = yield* probe;
+    const initial = yield* freshProbe;
     const packages = agentDesktopSetupPackages(initial.requirements);
     let attempted = false;
     let imageProvisioned = false;
@@ -1520,7 +1528,7 @@ export const make = Effect.gen(function* () {
         ),
       );
       if (installation.exitCode !== 0) detail = installation.detail;
-      updated = yield* probe;
+      updated = yield* freshProbe;
     }
 
     const baseRequirement = updated.requirements.find(
@@ -1542,7 +1550,7 @@ export const make = Effect.gen(function* () {
           Effect.succeed({ exitCode: -1, detail: String(cause).slice(0, 512) }),
         ),
       );
-      updated = yield* probe;
+      updated = yield* freshProbe;
       imageProvisioned =
         build.exitCode === 0 &&
         updated.requirements.find((requirement) => requirement.id === "base-image")?.status ===
@@ -1575,7 +1583,7 @@ export const make = Effect.gen(function* () {
   const setup: QemuAgentDesktopShape["setup"] = setupSemaphore.withPermits(1)(setupUnlocked);
 
   const requireAvailable = Effect.fn("QemuAgentDesktop.requireAvailable")(function* () {
-    const result = yield* probe;
+    const result = yield* freshProbe;
     if (result.available) return result;
     return yield* new QemuAgentDesktopError({
       code: "agent-desktop-unavailable",

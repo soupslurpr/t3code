@@ -1065,6 +1065,10 @@ it.effect("refuses thread-owned computer and monitor tools to an outside client"
       { name: "computer_request_control", arguments: { desktop: { kind: "agent" } } },
       { name: "agent_desktop_list", arguments: {} },
       { name: "agent_desktop_setup", arguments: {} },
+      {
+        name: "agent_desktop_packet_capture",
+        arguments: { durationMs: 1_000, maxBytes: 1_024 },
+      },
       { name: "monitor_status", arguments: {} },
       { name: "monitor_cancel", arguments: {} },
       { name: "monitor_signal", arguments: { monitorId: "background-build" } },
@@ -1095,6 +1099,10 @@ it.effect(
       const calls = [
         { name: "computer_request_control", arguments: { desktop: { kind: "agent" } } },
         { name: "agent_desktop_setup", arguments: {} },
+        {
+          name: "agent_desktop_packet_capture",
+          arguments: { durationMs: 1_000, maxBytes: 1_024 },
+        },
         { name: "monitor_cancel", arguments: {} },
         { name: "computer_watch_inspect", arguments: { monitorId: "watch-1" } },
       ];

@@ -254,6 +254,7 @@ const PersistedDesktop = Schema.Struct({
       latency: Schema.optional(Schema.Literals(["interactive", "background"])),
       preventParking: Schema.optional(Schema.Boolean),
       retention: Schema.optional(Schema.Literals(["automatic", "preserve"])),
+      updatePolicy: Schema.optional(Schema.Literals(["automatic", "manual"])),
       expectedTemporaryDiskBytes: Schema.optional(Schema.Number),
       audio: Schema.optional(Schema.Boolean),
     }),
@@ -717,6 +718,11 @@ export interface AgentDesktopManagerShape {
     owner: AgentDesktopOwner,
     selector: Extract<ComputerDesktopSelector, { readonly kind: "agent" }>,
   ) => Effect.Effect<ComputerAutomationStatus, AgentDesktopManagerOperationError>;
+  readonly humanStatus: (
+    owner: AgentDesktopOwner,
+    controllerId: string,
+    desktopId: AgentDesktopId,
+  ) => Effect.Effect<ComputerAutomationStatus, AgentDesktopManagerError>;
   readonly requestHumanView: (
     owner: AgentDesktopOwner,
     controllerId: string,
@@ -1295,6 +1301,20 @@ export const make = Effect.gen(function* () {
       return [baseMaintenance, { ...current, baseMaintenance }] as const;
     });
 
+  // Older setup versions provisioned a base without writing manager state. Discover that
+  // once from its small manifest; an empty installation never starts recurring host probes.
+  if (loaded.baseMaintenance === undefined && loaded.loadDetail === undefined) {
+    const base = yield* qemu.currentBaseImage;
+    const generation = base.generation;
+    if (base.managed && generation !== null) {
+      yield* updateBaseMaintenance(() => ({
+        ...(base.profileVersion === null ? {} : { appliedProfileVersion: base.profileVersion }),
+        ...(base.builtAt === null ? {} : { lastUpdatedAt: base.builtAt }),
+        baseGeneration: generation,
+      }));
+    }
+  }
+
   const updateDesktopMaintenance = (
     id: AgentDesktopId,
     update: (maintenance: PersistedMaintenanceState | undefined) => PersistedMaintenanceState,
@@ -1450,6 +1470,7 @@ export const make = Effect.gen(function* () {
       owner: desktop.owner,
       state: desktop.state,
       automaticParking: desktop.requirements?.preventParking !== true,
+      updatePolicy: desktop.requirements?.updatePolicy ?? "automatic",
       capabilities: [
         ...CAPABILITIES,
         ...(hardwareAccelerated ? (["graphics-acceleration"] as const) : []),
@@ -1511,6 +1532,20 @@ export const make = Effect.gen(function* () {
         },
       ],
       captureHealth: [captureHealth],
+      lease: {
+        access: hasControl ? "control" : hasView ? "view" : "none",
+        controller:
+          lease?.controllerId == null
+            ? null
+            : {
+                kind: lease.humanLeaseExpiresAt.has(lease.controllerId) ? "human" : "agent",
+                sameEnvironment: true,
+                ...(!lease.humanLeaseExpiresAt.has(lease.controllerId)
+                  ? { threadId: desktop.owner.threadId }
+                  : {}),
+              },
+        canReturnControl: hasControl && lease?.humanLeaseExpiresAt.has(controllerId) === true,
+      },
       cursor: null,
       ...(!running ? { detail: `Agent desktop is ${desktop.state}.` } : {}),
     } satisfies ComputerAutomationStatus;
@@ -2857,6 +2892,19 @@ export const make = Effect.gen(function* () {
       }),
     );
   });
+
+  const humanStatus: AgentDesktopManagerShape["humanStatus"] = (owner, controllerId, desktopId) =>
+    Effect.gen(function* () {
+      const desktop = yield* requireDesktopById(desktopId);
+      if (!ownersMatch(desktop.owner, owner))
+        return yield* new AgentDesktopManagerError({
+          code: "desktop-target-mismatch",
+          operation: "status",
+          detail: "the Agent desktop belongs to a different owner",
+        });
+      yield* refreshHumanLease(desktopId, controllerId);
+      return yield* presentStatus(controllerId, desktop);
+    });
 
   const requestHumanView: AgentDesktopManagerShape["requestHumanView"] = (
     owner,
@@ -4431,6 +4479,16 @@ export const make = Effect.gen(function* () {
         }
         const runtime = (yield* Ref.get(state)).runtimes.get(desktop.id)!;
         switch (input.operation) {
+          case "set-update-policy": {
+            const updated = yield* updateDesktop(desktop.id, (current) => ({
+              ...current,
+              requirements: {
+                ...current.requirements,
+                updatePolicy: input.updatePolicy ?? "automatic",
+              },
+            }));
+            return yield* summary(updated!);
+          }
           case "resume": {
             const resumed = yield* ensureStarted(desktop);
             return yield* summary(resumed);
@@ -5527,6 +5585,8 @@ export const make = Effect.gen(function* () {
 
   const maintain = lifecycleSemaphore.withPermits(1)(
     Effect.gen(function* () {
+      const configured = yield* Ref.get(state);
+      if (configured.desktops.size === 0 && configured.baseMaintenance === undefined) return;
       yield* leaseSemaphore.withPermits(1)(expireHumanLeases());
       const now = yield* Clock.currentTimeMillis;
       const expired = Array.from((yield* Ref.get(state)).desktops.values()).filter(
@@ -5713,6 +5773,7 @@ export const make = Effect.gen(function* () {
         .filter(
           (desktop) =>
             guestMaintenanceSource !== null &&
+            desktop.requirements?.updatePolicy !== "manual" &&
             (desktop.state === "stopped" ||
               (desktop.state === "parked" && graphicsBackend(desktop) === "virgl")) &&
             !isActiveMaintenanceStatus(desktop.maintenance?.status) &&
@@ -5853,6 +5914,18 @@ export const make = Effect.gen(function* () {
 
   const setup: AgentDesktopManagerShape["setup"] = Effect.gen(function* () {
     const result = yield* qemu.setup;
+    if (result.completed && result.probe.baseImage.managed) {
+      const base = result.probe.baseImage;
+      // Explicit setup opts a provisioned base into maintenance, even before its first desktop.
+      yield* updateBaseMaintenance(
+        (current) =>
+          current ?? {
+            ...(base.profileVersion === null ? {} : { appliedProfileVersion: base.profileVersion }),
+            ...(base.builtAt === null ? {} : { lastUpdatedAt: base.builtAt }),
+            ...(base.generation === null ? {} : { baseGeneration: base.generation }),
+          },
+      );
+    }
     return {
       attempted: result.attempted,
       completed: result.completed,
@@ -5881,6 +5954,7 @@ export const make = Effect.gen(function* () {
     capturePackets,
     requestView,
     requestControl,
+    humanStatus,
     requestHumanView,
     requestHumanControl,
     status,

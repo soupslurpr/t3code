@@ -233,6 +233,7 @@ export const AgentDesktop = Schema.Struct({
   owner: AgentDesktopOwner,
   state: AgentDesktopLifecycleState,
   automaticParking: Schema.Boolean,
+  updatePolicy: Schema.optional(Schema.Literals(["automatic", "manual"])),
   capabilities: Schema.Array(AgentDesktopCapability).check(
     Schema.isMaxLength(MAX_AGENT_DESKTOP_CAPABILITIES),
   ),
@@ -357,6 +358,12 @@ export const AgentDesktopRequirements = Schema.Struct({
         "Keep this desktop running without a lease. This persists until a later acquisition of the same desktop explicitly sets false.",
     }),
   ),
+  updatePolicy: Schema.optional(
+    Schema.Literals(["automatic", "manual"]).annotate({
+      description:
+        "Automatic OS updates (default) or manual updates. Manual blocks background upgrades only; explicit updates and guest writes remain available. Independent of retention.",
+    }),
+  ),
   retention: Schema.optional(
     Schema.Literals(["automatic", "preserve"]).annotate({
       description:
@@ -399,11 +406,18 @@ export const AgentDesktopManageInput = Schema.Struct({
     "restore",
     "handoff",
     "delete-permanently",
+    "set-update-policy",
   ]),
   desktopId: AgentDesktopId,
+  updatePolicy: Schema.optional(Schema.Literals(["automatic", "manual"])),
   label: Schema.optional(TrimmedNonEmptyString.check(Schema.isMaxLength(256))),
   owner: Schema.optional(AgentDesktopOwner),
 }).check(
+  Schema.makeFilter(
+    (input) =>
+      (input.operation === "set-update-policy") === (input.updatePolicy !== undefined) ||
+      "updatePolicy is required only for set-update-policy.",
+  ),
   Schema.makeFilter(
     (input) =>
       (input.operation === "handoff" && input.owner !== undefined) ||
