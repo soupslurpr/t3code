@@ -43,7 +43,7 @@ const runtime = {
 };
 
 test("recognizes the installed backend with and without the compile-cache preload", () => {
-  const appDirectory = "/opt/t3code-bin";
+  const appDirectory = "/opt/t3code-soupslurpr-bin";
   const executable = `${appDirectory}/t3code`;
   const entry = `${appDirectory}/resources/app.asar/apps/server/dist/bin.mjs`;
   const preload = `${appDirectory}/resources/app.asar/apps/desktop/dist-electron/compileCache.cjs`;
@@ -66,7 +66,7 @@ test("recognizes the installed backend with and without the compile-cache preloa
 });
 
 test("rejects unrelated preloads and server paths passed as arguments to another program", () => {
-  const appDirectory = "/opt/t3code-bin";
+  const appDirectory = "/opt/t3code-soupslurpr-bin";
   const executable = `${appDirectory}/t3code`;
   const entry = `${appDirectory}/resources/app.asar/apps/server/dist/bin.mjs`;
   const preload = `${appDirectory}/resources/app.asar/apps/desktop/dist-electron/compileCache.cjs`;

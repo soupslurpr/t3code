@@ -27,6 +27,12 @@ import {
 
 const RESTART_DELAY_SECONDS = 60;
 
+/** The audited archive conflicts only with the two upstream package identities. */
+export function pacmanUpgradeArguments(packagePath: string, replaceLegacy: boolean): string[] {
+  // ALPM_QUESTION_CONFLICT_PKG (1 << 2): --noconfirm alone declines this removal.
+  return ["--noconfirm", ...(replaceLegacy ? ["--ask=4"] : []), "-U", packagePath];
+}
+
 /** Checks installed metadata against the exact selected source pin. */
 export function verifyInstalledBuild(raw: string, version: string, commit: string): void {
   const build = JSON.parse(raw) as {
@@ -180,19 +186,40 @@ async function main(): Promise<void> {
     receipt.packageSha256,
     "package changed during handoff preparation",
   );
-  if (readCommand("pacman", ["-Q", "t3code-bin"]) !== `t3code-bin ${packageVersion}`) {
-    NodeChildProcess.execFileSync("sudo", ["-n", "pacman", "--noconfirm", "-U", packagePath], {
-      stdio: "inherit",
+  const installed = NodeChildProcess.spawnSync("pacman", ["-Q", "t3code-soupslurpr-bin"], {
+    encoding: "utf8",
+  });
+  NodeAssert.ok(
+    !installed.error && (installed.status === 0 || installed.status === 1),
+    "could not query installed fork package",
+  );
+  if (
+    installed.status !== 0 ||
+    installed.stdout.trim() !== `t3code-soupslurpr-bin ${packageVersion}`
+  ) {
+    const legacy = NodeChildProcess.spawnSync("pacman", ["-Qq", "t3code-bin"], {
+      encoding: "utf8",
     });
+    NodeAssert.ok(
+      !legacy.error && (legacy.status === 0 || legacy.status === 1),
+      "could not query legacy package",
+    );
+    NodeChildProcess.execFileSync(
+      "sudo",
+      ["-n", "pacman", ...pacmanUpgradeArguments(packagePath, legacy.status === 0)],
+      {
+        stdio: "inherit",
+      },
+    );
   }
   NodeAssert.equal(
-    readCommand("pacman", ["-Q", "t3code-bin"]),
-    `t3code-bin ${packageVersion}`,
+    readCommand("pacman", ["-Q", "t3code-soupslurpr-bin"]),
+    `t3code-soupslurpr-bin ${packageVersion}`,
     "installed package version mismatch",
   );
   NodeAssert.match(
-    readCommand("pacman", ["-Qkk", "t3code-bin"]),
-    /^t3code-bin: \d+ total files, 0 altered files$/m,
+    readCommand("pacman", ["-Qkk", "t3code-soupslurpr-bin"]),
+    /^t3code-soupslurpr-bin: \d+ total files, 0 altered files$/m,
     "installed package has altered files",
   );
   verifyInstalledBuild(

@@ -13,7 +13,7 @@ import * as NodeZlib from "node:zlib";
 
 import { extractFile } from "@electron/asar";
 
-const PACKAGE_NAME = "t3code-bin";
+const PACKAGE_NAME = "t3code-soupslurpr-bin";
 const PACKAGE_ARCH = "x86_64";
 const STAGE_MANIFEST_NAME = ".t3code-local-arch-package.json";
 const STAGE_DIR_NAME = "arch-package";
@@ -21,7 +21,7 @@ const MANIFEST_SCHEMA_VERSION = 1;
 const FORK_URL = "https://github.com/soupslurpr/t3code";
 const SHA256_PATTERN = /^[0-9a-f]{64}$/;
 const VERSION_PATTERN = /^[0-9A-Za-z][0-9A-Za-z.+_-]*$/;
-const PACKAGE_FILE_PATTERN = /^t3code-bin-(.+)-(\d+)-x86_64\.pkg\.tar\.zst$/;
+const PACKAGE_FILE_PATTERN = /^t3code-(?:soupslurpr-)?bin-(.+)-(\d+)-x86_64\.pkg\.tar\.zst$/;
 const DEFAULT_ICON_SIZES = [
   "16x16",
   "22x22",
@@ -164,6 +164,30 @@ export function renderLocalArchPkgbuild(
     "source and checksum blocks",
   );
 
+  rendered = replaceExactlyOnce(
+    rendered,
+    /^pkgname=.*$/m,
+    `pkgname=${PACKAGE_NAME}`,
+    "pkgname line",
+  );
+  rendered = replaceExactlyOnce(
+    rendered,
+    /^provides=.*$/m,
+    'provides=("t3code=$pkgver" "t3code-bin=$pkgver")',
+    "provides line",
+  );
+  rendered = replaceExactlyOnce(
+    rendered,
+    /^conflicts=.*$/m,
+    "conflicts=('t3code' 't3code-bin')",
+    "conflicts line",
+  );
+  rendered = replaceExactlyOnce(
+    rendered,
+    /exec \/opt\/t3code-bin\/AppRun/,
+    `exec /opt/${PACKAGE_NAME}/AppRun`,
+    "launcher path",
+  );
   return rendered;
 }
 
@@ -185,7 +209,7 @@ function packageReleaseFromInstalledVersion(
   if (!installedPackageVersion) {
     return undefined;
   }
-  const prefix = `${PACKAGE_NAME} ${version}-`;
+  const prefix = `${installedPackageVersion.startsWith("t3code-bin ") ? "t3code-bin" : PACKAGE_NAME} ${version}-`;
   if (!installedPackageVersion.startsWith(prefix)) {
     return undefined;
   }
@@ -316,7 +340,13 @@ function readInstalledPackageVersion(rootDir: string): string | undefined {
     quiet: true,
     allowFailure: true,
   });
-  return result.status === 0 ? result.stdout.trim() : undefined;
+  if (result.status === 0) return result.stdout.trim();
+  const legacy = runCommand("pacman", ["-Q", "t3code-bin"], {
+    cwd: rootDir,
+    quiet: true,
+    allowFailure: true,
+  });
+  return legacy.status === 0 ? legacy.stdout.trim() : undefined;
 }
 
 /** Reads build provenance from the desktop ASAR embedded in an AppImage extraction. */
@@ -791,6 +821,18 @@ export async function auditLocalArchPackage(
       NodeFS.readFileSync(NodePath.join(packageExtractRoot, ".PKGINFO"), "utf8"),
     );
     requireMetadataValue(packageInfo, "pkgname", PACKAGE_NAME);
+    assertInvariant(
+      JSON.stringify(packageInfo.get("conflict")?.toSorted()) ===
+        JSON.stringify(["t3code", "t3code-bin"]),
+      "unexpected package conflicts; unattended replacement only permits the upstream identities",
+    );
+    for (const value of ["t3code", "t3code-bin"]) {
+      assertInvariant(packageInfo.get("conflict")?.includes(value), `missing conflict ${value}`);
+      assertInvariant(
+        packageInfo.get("provides")?.includes(`${value}=${manifest.version}`),
+        `missing provision ${value}`,
+      );
+    }
     requireMetadataValue(packageInfo, "pkgver", `${manifest.version}-${manifest.packageRelease}`);
     requireMetadataValue(packageInfo, "url", FORK_URL);
     requireMetadataValue(packageInfo, "arch", PACKAGE_ARCH);
@@ -803,7 +845,7 @@ export async function auditLocalArchPackage(
       NodeFS.readFileSync(NodePath.join(packageExtractRoot, ".MTREE")),
     ).toString("utf8");
     assertInvariant(
-      /^\.\/opt\/t3code-bin\/chrome-sandbox .*\bmode=4755\b/m.test(archiveMetadata),
+      /^\.\/opt\/t3code-soupslurpr-bin\/chrome-sandbox .*\bmode=4755\b/m.test(archiveMetadata),
       "package archive does not record chrome-sandbox mode 4755",
     );
 
@@ -1056,7 +1098,7 @@ export function parsePublishedPackage(raw: string): PublishedPackage {
   const receipt = JSON.parse(raw) as Partial<PublishedPackage>;
   NodeAssert.equal(
     receipt.packageFilename,
-    `t3code-bin-${manifest.version}-${manifest.packageRelease}${"-x86_64.pkg.tar.zst"}`,
+    `t3code-soupslurpr-bin-${manifest.version}-${manifest.packageRelease}${"-x86_64.pkg.tar.zst"}`,
     "unexpected published package filename",
   );
   NodeAssert.match(receipt.packageSha256 ?? "", /^[0-9a-f]{64}$/, "invalid package SHA-256");
