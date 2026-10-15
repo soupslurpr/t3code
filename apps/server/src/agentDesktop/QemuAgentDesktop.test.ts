@@ -3,11 +3,15 @@ import { assert, describe, it } from "@effect/vitest";
 import * as Schema from "effect/Schema";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import * as Effect from "effect/Effect";
+import * as Deferred from "effect/Deferred";
 import * as FileSystem from "effect/FileSystem";
+import * as Fiber from "effect/Fiber";
 import * as Option from "effect/Option";
 import * as Path from "effect/Path";
 import * as TestClock from "effect/testing/TestClock";
+import { vi } from "vite-plus/test";
 import * as AgentDesktopEnvironment from "./AgentDesktopEnvironment.ts";
+import * as QemuProtocol from "./QemuProtocol.ts";
 import { make as makeQemu } from "./QemuAgentDesktop.ts";
 
 import {
@@ -405,4 +409,162 @@ it.effect("caches missing prerequisites until setup or expiry requests a fresh p
     yield* service.probe;
     assert.isAbove(inspected, afterSetup);
   }).pipe(Effect.provide(NodeServices.layer)),
+);
+
+function packetCaptureBytes(packetSizes: ReadonlyArray<number>, littleEndian: boolean) {
+  const bytes = Buffer.alloc(24 + packetSizes.reduce((total, size) => total + 16 + size, 0));
+  const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+  view.setUint32(0, 0xa1b2c3d4, littleEndian);
+  view.setUint16(4, 2, littleEndian);
+  view.setUint16(6, 4, littleEndian);
+  view.setUint32(16, 65_536, littleEndian);
+  view.setUint32(20, 1, littleEndian);
+  let offset = 24;
+  for (const size of packetSizes) {
+    view.setUint32(offset + 8, size, littleEndian);
+    view.setUint32(offset + 12, size, littleEndian);
+    bytes.fill(0xab, offset + 16, offset + 16 + size);
+    offset += 16 + size;
+  }
+  return bytes;
+}
+
+it.effect.each([
+  {
+    name: "trims a capture that exceeds its byte limit between size checks",
+    packetSizes: [400, 400, 400],
+    maxBytes: 1_024,
+    retainedBytes: 856,
+    truncated: true,
+  },
+  {
+    name: "respects big-endian PCAP record lengths when trimming",
+    bigEndian: true,
+    packetSizes: [400, 400, 400],
+    maxBytes: 1_024,
+    retainedBytes: 856,
+    truncated: true,
+  },
+  {
+    name: "preserves records whose headers cross the read window",
+    packetSizes: [65_490, 700, 1_000],
+    maxBytes: 66_400,
+    retainedBytes: 66_246,
+    truncated: true,
+  },
+  {
+    name: "keeps a valid PCAP header when the first packet exceeds the budget",
+    packetSizes: [1_500],
+    maxBytes: 1_024,
+    retainedBytes: 24,
+    truncated: true,
+  },
+  {
+    name: "bounds final buffered writes and reports their truncation",
+    finalFlush: true,
+    packetSizes: [400, 400, 400],
+    maxBytes: 1_024,
+    retainedBytes: 856,
+    truncated: true,
+  },
+  {
+    name: "leaves a capture below its byte limit unchanged",
+    packetSizes: [400],
+    maxBytes: 1_024,
+    retainedBytes: 440,
+    truncated: false,
+  },
+  {
+    name: "fails instead of returning or trimming a capture whose writer did not stop",
+    stopFails: true,
+    packetSizes: [400, 400, 400],
+    maxBytes: 1_024,
+    retainedBytes: 0,
+    truncated: false,
+  },
+])("$name", (scenario) =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      const fileSystem = yield* FileSystem.FileSystem;
+      const path = yield* Path.Path;
+      const directory = yield* fileSystem.makeTempDirectoryScoped({ prefix: "t3-pcap-test-" });
+      const sizeChecked = yield* Deferred.make<void>();
+      const service = yield* makeQemu.pipe(
+        Effect.provideService(AgentDesktopEnvironment.AgentDesktopEnvironment, {
+          path,
+          platform: "linux",
+          processArch: "x64",
+          agentDesktopsDir: directory,
+          agentDesktopBaseImage: Option.none(),
+          resolveResourcePathCandidates: () => [],
+        }),
+        Effect.provideService(FileSystem.FileSystem, {
+          ...fileSystem,
+          stat: (target) =>
+            fileSystem
+              .stat(target)
+              .pipe(
+                Effect.tap(() =>
+                  target.endsWith(".pcap") ? Deferred.succeed(sizeChecked, undefined) : Effect.void,
+                ),
+              ),
+        }),
+      );
+      const captureDirectory = service.paths(id).captureDirectory;
+      yield* fileSystem.makeDirectory(captureDirectory, { recursive: true });
+      const littleEndian = !("bigEndian" in scenario);
+      const expected = packetCaptureBytes(scenario.packetSizes, littleEndian);
+      const initial = "finalFlush" in scenario ? packetCaptureBytes([400], littleEndian) : expected;
+      let capturePath = "";
+      let removed = false;
+      const monitor = vi
+        .spyOn(QemuProtocol, "invokeQmp")
+        .mockImplementation((_socket, command, args) =>
+          Effect.gen(function* () {
+            if (command === "object-add") {
+              assert.isString(args?.file);
+              capturePath = String(args?.file);
+              yield* fileSystem.writeFile(capturePath, initial).pipe(Effect.orDie);
+            } else if (command === "object-del") {
+              if ("stopFails" in scenario) {
+                return yield* new QemuProtocol.QemuProtocolError({
+                  channel: "qmp",
+                  code: "CommandNotFound",
+                  detail: "capture writer could not be stopped",
+                });
+              }
+              if ("finalFlush" in scenario) {
+                yield* fileSystem.writeFile(capturePath, expected).pipe(Effect.orDie);
+              }
+              removed = true;
+            } else {
+              return yield* Effect.die(`Unexpected QMP command: ${command}`);
+            }
+            return {};
+          }),
+        );
+      yield* Effect.addFinalizer(() => Effect.sync(() => monitor.mockRestore()));
+      const capture = yield* service
+        .capturePackets(id, 1_000, scenario.maxBytes)
+        .pipe(Effect.forkChild);
+      yield* Deferred.await(sizeChecked);
+      yield* TestClock.adjust("1 second");
+      if ("stopFails" in scenario) {
+        const failure = yield* Fiber.join(capture).pipe(Effect.flip);
+        assert.equal(failure.operation, "object-del");
+        assert.isFalse(removed);
+        assert.deepEqual(Buffer.from(yield* fileSystem.readFile(capturePath)), expected);
+        return;
+      }
+      const result = yield* Fiber.join(capture);
+      assert.isTrue(removed);
+      assert.equal(result.sizeBytes, scenario.retainedBytes);
+      assert.isAtMost(result.sizeBytes, scenario.maxBytes);
+      assert.equal(result.truncated, scenario.truncated);
+      assert.deepEqual(
+        Buffer.from(yield* fileSystem.readFile(result.path)),
+        expected.subarray(0, scenario.retainedBytes),
+      );
+    }),
+  ).pipe(Effect.provide(NodeServices.layer)),
 );
