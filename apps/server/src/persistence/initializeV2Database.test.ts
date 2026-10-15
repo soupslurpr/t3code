@@ -15,7 +15,7 @@ import * as SqlClient from "effect/sql/SqlClient";
 
 import * as ServerConfig from "../config.ts";
 import * as SqlitePersistence from "./Sqlite.ts";
-import { migrationEntries, runMigrations } from "./Migrations.ts";
+import { forkMigrationEntries, runMigrations } from "./Migrations.ts";
 import { initializeV2Database } from "./initializeV2Database.ts";
 import * as EventStore from "../orchestration-v2/EventStore.ts";
 import * as ProjectionStore from "../orchestration-v2/ProjectionStore.ts";
@@ -36,10 +36,9 @@ it.effect.each([false, true])(
       yield* runMigrations({ toMigrationInclusive: fork ? 54 : 52 });
       if (fork) {
         // Reproduce the pre-rebase fork ledger, before upstream claimed migrations 55 through 58.
-        for (const [id, name, migration] of migrationEntries) {
-          if (id < 59) continue;
+        for (const [id, name, migration] of forkMigrationEntries.slice(0, 13)) {
           yield* migration;
-          yield* sql`INSERT INTO effect_sql_migrations (migration_id, name) VALUES (${id - 4}, ${name})`;
+          yield* sql`INSERT INTO effect_sql_migrations (migration_id, name) VALUES (${id + 54}, ${name})`;
         }
       }
       yield* sql`INSERT INTO projection_projects (project_id, title, workspace_root, scripts_json, created_at, updated_at)
@@ -142,7 +141,7 @@ it.effect.each([false, true])(
       try {
         assert.equal(
           v1.prepare("SELECT MAX(migration_id) AS id FROM effect_sql_migrations").get()?.id,
-          fork ? migrationEntries.length - 4 : 52,
+          fork ? 54 + 13 : 52,
         );
         assert.equal(
           v1

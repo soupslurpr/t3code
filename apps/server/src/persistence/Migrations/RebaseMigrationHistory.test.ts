@@ -2,7 +2,12 @@ import { assert, it } from "@effect/vitest";
 import * as Effect from "effect/Effect";
 import * as SqlClient from "effect/sql/SqlClient";
 
-import { migrationEntries, migrationManifest, runMigrations } from "../Migrations.ts";
+import {
+  forkMigrationEntries,
+  forkMigrationManifest,
+  migrationManifest,
+  runMigrations,
+} from "../Migrations.ts";
 import * as NodeSqliteClient from "@t3tools/shared/nodeSqliteClient";
 
 type MigrationHistoryRow = {
@@ -11,24 +16,21 @@ type MigrationHistoryRow = {
 };
 
 const latestUpstreamMigrationId = 62;
-const firstForkMigrationId = latestUpstreamMigrationId + 1;
 
 it.effect.each([
-  40, 41, 42, 43, 44, 45, 46, 47, 48, 49, 50, 51, 52, 53, 54, 55, 56, 57, 58, 59, 60, 61,
+  40, 41, 42, 43, 44, 45, 46, 47, 48, 49, 50, 51, 52, 53, 54, 55, 56, 57, 58, 59, 60, 61, 62,
 ] as const)("reconciles fork migrations displaced after upstream migration %s", (throughId) =>
   Effect.gen(function* () {
     const sql = yield* SqlClient.SqlClient;
     const displacedBy = latestUpstreamMigrationId - throughId;
 
     yield* runMigrations({ toMigrationInclusive: throughId });
-    for (const [id, name, migration] of migrationEntries) {
-      if (id < firstForkMigrationId) {
-        continue;
-      }
+    yield* sql`DROP TABLE effect_sql_fork_migrations`; // Released builds had only the upstream ledger.
+    for (const [id, name, migration] of forkMigrationEntries.slice(0, 13)) {
       yield* migration;
       yield* sql`
           INSERT INTO effect_sql_migrations (migration_id, name)
-          VALUES (${id - displacedBy}, ${name})
+          VALUES (${id + latestUpstreamMigrationId - displacedBy}, ${name})
         `;
     }
 
@@ -38,7 +40,10 @@ it.effect.each([
         VALUES ('retained-monitor', 'thread-1', 'Saved wait', 'signal', 'record-only', 'active', '2026-10-01T00:00:00Z', '2026-10-01T00:00:00Z')`;
     const retainedDesktops = yield* sql`SELECT * FROM user_desktops`;
     const retainedMonitors = yield* sql`SELECT * FROM thread_monitors`;
-    const executed = yield* runMigrations();
+    const executed = yield* runMigrations({
+      toMigrationInclusive: 62,
+      toForkMigrationInclusive: 14,
+    });
     assert.deepStrictEqual(yield* sql`SELECT * FROM user_desktops`, retainedDesktops);
     assert.deepStrictEqual(yield* sql`SELECT * FROM thread_monitors`, retainedMonitors);
     assert.deepStrictEqual(
@@ -57,7 +62,10 @@ it.effect.each([
         { name: "pull_request_review_guides" },
       ],
     );
-    assert.deepStrictEqual(executed, []);
+    assert.deepStrictEqual(
+      executed,
+      forkMigrationManifest.filter(([id]) => id > 13 && id <= 14),
+    );
 
     const history = yield* sql<MigrationHistoryRow>`
         SELECT migration_id AS "migrationId", name
@@ -67,7 +75,9 @@ it.effect.each([
       `;
     assert.deepStrictEqual(
       history,
-      migrationManifest.slice(40).map(([migrationId, name]) => ({ migrationId, name })),
+      migrationManifest
+        .filter(([id]) => id >= 41 && id <= 62)
+        .map(([migrationId, name]) => ({ migrationId, name })),
     );
 
     const authColumns = yield* sql<{ readonly name: string }>`
@@ -115,6 +125,12 @@ it.effect.each([
         "user_desktops",
       ],
     );
+    assert.deepStrictEqual(yield* runMigrations(), [
+      ...migrationManifest.filter(([id]) => id > 62),
+      ...forkMigrationManifest.filter(([id]) => id > 14),
+    ]);
+    assert.deepStrictEqual(yield* sql`SELECT * FROM user_desktops`, retainedDesktops);
+    assert.deepStrictEqual(yield* sql`SELECT * FROM thread_monitors`, retainedMonitors);
     assert.deepStrictEqual(yield* runMigrations(), []);
   }).pipe(Effect.provide(NodeSqliteClient.layer({ filename: ":memory:" }))),
 );
@@ -123,17 +139,20 @@ it.effect("preserves retired feature data while reconciling its migration identi
   Effect.gen(function* () {
     const sql = yield* SqlClient.SqlClient;
     yield* runMigrations({ toMigrationInclusive: 47 });
-    for (const [id, name, migration] of migrationEntries) {
-      if (id < firstForkMigrationId) continue;
+    yield* sql`DROP TABLE effect_sql_fork_migrations`;
+    for (const [id, name, migration] of forkMigrationEntries.slice(0, 13)) {
       yield* migration;
-      yield* sql`INSERT INTO effect_sql_migrations (migration_id, name) VALUES (${id - (latestUpstreamMigrationId - 47)}, ${name})`;
+      yield* sql`INSERT INTO effect_sql_migrations (migration_id, name) VALUES (${id + 47}, ${name})`;
     }
     yield* sql`CREATE TABLE preview_sessions (session_id TEXT PRIMARY KEY, state_json TEXT NOT NULL)`;
     yield* sql`INSERT INTO preview_sessions VALUES ('saved-preview', '{"url":"https://example.com"}')`;
     yield* sql`CREATE TABLE tool_runs (run_id TEXT PRIMARY KEY, result_json TEXT NOT NULL)`;
     yield* sql`INSERT INTO tool_runs VALUES ('saved-run', '{"passed":true}')`;
 
-    assert.deepStrictEqual(yield* runMigrations(), []);
+    assert.deepStrictEqual(yield* runMigrations(), [
+      ...migrationManifest.filter(([id]) => id > 62),
+      ...forkMigrationManifest.slice(13),
+    ]);
     assert.deepStrictEqual(yield* sql`SELECT * FROM preview_sessions`, [
       { session_id: "saved-preview", state_json: '{"url":"https://example.com"}' },
     ]);
@@ -141,10 +160,10 @@ it.effect("preserves retired feature data while reconciling its migration identi
       { run_id: "saved-run", result_json: '{"passed":true}' },
     ]);
     assert.deepStrictEqual(
-      yield* sql`SELECT migration_id, name FROM effect_sql_migrations WHERE name IN ('PreviewSessions', 'ToolRuns') ORDER BY migration_id`,
+      yield* sql`SELECT migration_id, name FROM effect_sql_fork_migrations WHERE name IN ('PreviewSessions', 'ToolRuns') ORDER BY migration_id`,
       [
-        { migration_id: 73, name: "PreviewSessions" },
-        { migration_id: 74, name: "ToolRuns" },
+        { migration_id: 11, name: "PreviewSessions" },
+        { migration_id: 12, name: "ToolRuns" },
       ],
     );
   }).pipe(Effect.provide(NodeSqliteClient.layer({ filename: ":memory:" }))),
@@ -168,6 +187,7 @@ it.effect("leaves unknown migration history and schema untouched", () =>
   Effect.gen(function* () {
     const sql = yield* SqlClient.SqlClient;
     yield* runMigrations({ toMigrationInclusive: 47 });
+    yield* sql`DROP TABLE effect_sql_fork_migrations`;
     yield* sql`INSERT INTO effect_sql_migrations (migration_id, name) VALUES (48, 'ThreadMonitors'), (49, 'UnknownForkMigration')`;
     const before = yield* sql`SELECT * FROM effect_sql_migrations ORDER BY migration_id`;
 

@@ -83,6 +83,8 @@ import Migration0065 from "./Migrations/065_PreviewSessions.ts";
 import Migration0066 from "./Migrations/066_ToolRuns.ts";
 import Migration0069 from "./Migrations/069_ThreadMonitorCancellation.ts";
 
+import Migration0070 from "./Migrations/070_ThreadRunMonitors.ts";
+
 const migrationHistoryOffset = 1_000;
 const preRebaseForkMigrationNames = [
   "ThreadMonitors",
@@ -197,27 +199,36 @@ export const migrationEntries = [
   [64, "CanonicalizeThreadPullRequestLinks", UpstreamMigration0064],
   [65, "CodexUsageNativeTurnIndex", UpstreamMigration0065],
   [66, "RepairClientSettlementTimestamps", UpstreamMigration0066],
-  [67, "ThreadMonitors", Migration0055],
-  [68, "ThreadMonitorDelivery", Migration0056],
-  [69, "ComputerThreadMonitors", Migration0057],
-  [70, "ComputerMonitorEvaluationThrottle", Migration0058],
-  [71, "AdaptiveComputerMonitors", Migration0059],
-  [72, "ComputerMonitorImageEncoding", Migration0060],
-  [73, "ProjectionThreadMessageSystemEvents", Migration0061],
-  [74, "ComputerMonitorCacheWriteUsage", Migration0062],
-  [75, "UserDesktops", Migration0063],
-  [76, "UserDesktopAccessAudit", Migration0064],
-  [77, "PreviewSessions", Migration0065],
-  [78, "ToolRuns", Migration0066],
-  [79, "ThreadMonitorCancellation", Migration0069],
+] as const;
+
+// Stable fork identities. Source filenames retain their released provenance.
+export const forkMigrationEntries = [
+  [1, "ThreadMonitors", Migration0055],
+  [2, "ThreadMonitorDelivery", Migration0056],
+  [3, "ComputerThreadMonitors", Migration0057],
+  [4, "ComputerMonitorEvaluationThrottle", Migration0058],
+  [5, "AdaptiveComputerMonitors", Migration0059],
+  [6, "ComputerMonitorImageEncoding", Migration0060],
+  [7, "ProjectionThreadMessageSystemEvents", Migration0061],
+  [8, "ComputerMonitorCacheWriteUsage", Migration0062],
+  [9, "UserDesktops", Migration0063],
+  [10, "UserDesktopAccessAudit", Migration0064],
+  [11, "PreviewSessions", Migration0065],
+  [12, "ToolRuns", Migration0066],
+  [13, "ThreadMonitorCancellation", Migration0069],
+  [14, "ThreadRunMonitors", Migration0070],
 ] as const;
 
 export const migrationManifest = migrationEntries.map(([id, name]) => [id, name] as const);
+export const forkMigrationManifest = forkMigrationEntries.map(([id, name]) => [id, name] as const);
 
-const makeMigrationLoader = (throughId?: number) =>
+const makeMigrationLoader = (
+  entries: ReadonlyArray<(typeof migrationEntries)[number] | (typeof forkMigrationEntries)[number]>,
+  throughId?: number,
+) =>
   Migrator.fromRecord(
     Object.fromEntries(
-      migrationEntries
+      entries
         .filter(([id]) => throughId === undefined || id <= throughId)
         .map(([id, name, migration]) => [`${id}_${name}`, migration]),
     ),
@@ -265,7 +276,7 @@ const assertV2MigrationsCanRun = Effect.fn("assertV2MigrationsCanRun")(function*
 
 const run = Migrator.make({});
 
-/** Reassigns fork migration ids claimed by later upstream migrations. */
+/** Frozen compatibility for released histories through upstream 62, before ledger adoption. */
 const reconcilePreRebaseForkMigrationHistory = Effect.fn("reconcilePreRebaseForkMigrationHistory")(
   function* () {
     const sql = yield* SqlClient.SqlClient;
@@ -292,15 +303,12 @@ const reconcilePreRebaseForkMigrationHistory = Effect.fn("reconcilePreRebaseFork
           if (firstHistoryRow === undefined) {
             continue;
           }
-          if (firstHistoryRow.migrationId !== claimedId) {
-            return yield* new Migrator.MigrationError({
-              kind: "BadState",
-              message: "cannot reconcile pre-rebase fork migration history",
-            });
-          }
-          if (firstHistoryRow.name === claimedName) {
+          if (firstHistoryRow.migrationId !== claimedId) continue;
+          if (
+            firstHistoryRow.name === claimedName ||
+            firstHistoryRow.name !== preRebaseForkMigrationNames[0]
+          )
             continue;
-          }
 
           for (const [index, row] of history.entries()) {
             if (
@@ -356,30 +364,101 @@ const reconcilePreRebaseForkMigrationHistory = Effect.fn("reconcilePreRebaseFork
   },
 );
 
+/** Moves released fork identities to their own ledger without executing their SQL again. */
+const adoptForkMigrationHistory = Effect.fn("adoptForkMigrationHistory")(function* () {
+  const sql = yield* SqlClient.SqlClient;
+  const adopted =
+    yield* sql`SELECT name FROM sqlite_master WHERE name = 'effect_sql_fork_migrations'`;
+  if (adopted.length === 0) yield* reconcilePreRebaseForkMigrationHistory();
+  yield* sql`CREATE TABLE IF NOT EXISTS effect_sql_fork_migrations (
+    migration_id integer PRIMARY KEY NOT NULL,
+    created_at datetime NOT NULL DEFAULT current_timestamp,
+    name VARCHAR(255) NOT NULL
+  )`;
+  // Creating this table and adopting the released history commit together. Once it exists,
+  // upstream owns its entire namespace, including names that also appear in the fork ledger.
+  const hasLegacy =
+    adopted.length > 0
+      ? []
+      : yield* sql`SELECT name FROM sqlite_master WHERE name = 'effect_sql_migrations'`;
+  const legacy =
+    hasLegacy.length === 0
+      ? []
+      : yield* sql<MigrationHistoryRow>`
+    SELECT migration_id AS "migrationId", name FROM effect_sql_migrations ORDER BY migration_id
+  `;
+  const recorded =
+    yield* sql<MigrationHistoryRow>`SELECT migration_id AS "migrationId", name FROM effect_sql_fork_migrations ORDER BY migration_id`;
+  const names = new Map(recorded.map((row) => [row.migrationId, row.name]));
+  let legacyCount = 0;
+  for (const row of legacy) {
+    const stableId = preRebaseForkMigrationNames.findIndex((name) => name === row.name) + 1;
+    if (stableId === 0) continue;
+    if (
+      row.migrationId !== stableId + 62 ||
+      stableId !== legacyCount + 1 ||
+      (names.has(stableId) && names.get(stableId) !== row.name)
+    ) {
+      return yield* new Migrator.MigrationError({
+        kind: "BadState",
+        message: "cannot adopt conflicting fork migration history",
+      });
+    }
+    legacyCount++;
+    if (!names.has(stableId)) {
+      yield* sql`INSERT INTO effect_sql_fork_migrations (migration_id, name, created_at)
+        SELECT ${stableId}, name, created_at FROM effect_sql_migrations WHERE migration_id = ${row.migrationId}`;
+      names.set(stableId, row.name);
+    }
+    yield* sql`DELETE FROM effect_sql_migrations WHERE migration_id = ${row.migrationId}`;
+  }
+  // Like upstream V2, a gap or name mismatch would otherwise silently skip required SQL.
+  const latest = Math.max(0, ...names.keys());
+  for (const [id, name] of forkMigrationManifest) {
+    if (id <= latest && names.get(id) !== name) {
+      return yield* new Migrator.MigrationError({
+        kind: "BadState",
+        message: `fork migration history would skip ${id}_${name}`,
+      });
+    }
+  }
+});
+
 export interface RunMigrationsOptions {
   readonly toMigrationInclusive?: number | undefined;
+  readonly toForkMigrationInclusive?: number | undefined;
 }
 
 export const runMigrations = Effect.fn("runMigrations")(function* ({
   toMigrationInclusive,
+  toForkMigrationInclusive,
 }: RunMigrationsOptions = {}) {
   const includesV2 =
     toMigrationInclusive === undefined || toMigrationInclusive >= FIRST_V2_MIGRATION_ID;
-  const previewMigrations = includesV2 ? yield* reconcileV2PreviewMigration() : [];
-  yield* reconcilePreRebaseForkMigrationHistory();
-  if (includesV2) {
-    yield* assertV2MigrationsCanRun(toMigrationInclusive);
-  }
+  const sql = yield* SqlClient.SqlClient;
+  const previewMigrations = yield* sql.withTransaction(
+    Effect.gen(function* () {
+      const preview = includesV2 ? yield* reconcileV2PreviewMigration() : [];
+      yield* adoptForkMigrationHistory();
+      if (includesV2) yield* assertV2MigrationsCanRun(toMigrationInclusive);
+      return preview;
+    }),
+  );
   const executedMigrations = [
     ...previewMigrations,
-    ...(yield* run({ loader: makeMigrationLoader(toMigrationInclusive) })),
+    ...(yield* run({ loader: makeMigrationLoader(migrationEntries, toMigrationInclusive) })),
+    ...(toMigrationInclusive === undefined || toForkMigrationInclusive !== undefined
+      ? yield* run({
+          table: "effect_sql_fork_migrations",
+          loader: makeMigrationLoader(forkMigrationEntries, toForkMigrationInclusive),
+        })
+      : []),
   ];
   const migrations = executedMigrations.map(([id, name]) => `${id}_${name}`);
   yield* migrations.length === 0
     ? Effect.logDebug("Database schema is current")
     : Effect.log("Migrations ran successfully").pipe(Effect.annotateLogs({ migrations }));
 
-  const sql = yield* SqlClient.SqlClient;
   const recorded = yield* sql<{
     readonly migration_id: number;
     readonly name: string;
