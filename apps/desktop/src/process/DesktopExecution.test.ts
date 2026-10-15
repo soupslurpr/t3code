@@ -1,4 +1,5 @@
 /** Verifies local execution consent, scope, persistence, revocation, and target identity. */
+import * as NodeURL from "node:url";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { assert, describe, it } from "@effect/vitest";
 import {
@@ -7,12 +8,14 @@ import {
   type DesktopComputerAutomationContext,
   type DesktopExecutionGrant,
 } from "@t3tools/contracts";
+import * as HostProcess from "@t3tools/shared/HostProcess";
 import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
 import * as Fiber from "effect/Fiber";
 import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
+import * as Path from "effect/Path";
 
 import * as DesktopConfig from "../app/DesktopConfig.ts";
 import * as DesktopEnvironment from "../app/DesktopEnvironment.ts";
@@ -36,12 +39,22 @@ function withExecution<A, E, R>(
 ) {
   return Effect.gen(function* () {
     const fs = yield* FileSystem.FileSystem;
+    const path = yield* Path.Path;
+    const platform = yield* HostProcess.Platform;
+    const processArch = yield* HostProcess.Architecture;
     const directory = yield* fs.makeTempDirectoryScoped({ prefix: "t3-desktop-execution-test-" });
+    // Model the emitted worker layout while executing the real supervisor source.
+    const bundle = path.join(directory, "dist-electron");
+    yield* fs.makeDirectory(path.join(bundle, "process"), { recursive: true });
+    yield* fs.writeFileString(
+      path.join(bundle, "process", "DesktopProcessSupervisor.cjs"),
+      `import(${JSON.stringify(NodeURL.pathToFileURL(path.join(import.meta.dirname, "DesktopProcessSupervisor.ts")).href)});`,
+    );
     const environment = DesktopEnvironment.layer({
-      dirname: "/repo/apps/desktop/src",
+      dirname: bundle,
       homeDirectory: directory,
-      platform: "linux",
-      processArch: "x64",
+      platform,
+      processArch,
       appVersion: "1.0.0",
       appPath: "/repo",
       isPackaged: true,

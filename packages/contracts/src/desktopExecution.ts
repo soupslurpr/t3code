@@ -126,6 +126,7 @@ export type UserDesktopExecutionInput = typeof UserDesktopExecutionInput.Type;
 
 /** Describes one process and the exact host files containing its captured output. */
 export const DesktopProcess = Schema.Struct({
+  threadId: Schema.optional(ThreadId),
   processId: Identifier,
   commandId: Identifier,
   executable: Schema.String,

@@ -1,14 +1,16 @@
 // @effect-diagnostics nodeBuiltinImport:off - Integration tests exercise native processes and positioned output files.
 /** Exercises actual process I/O, terminal sessions, isolation, and lifecycle behavior. */
 import * as NodeFSP from "node:fs/promises";
+import * as NodeChildProcess from "node:child_process";
 import * as NodeOS from "node:os";
+import * as NodeNet from "node:net";
 import * as NodePath from "node:path";
 
 import { UserDesktopCommandInput, type DesktopProcessResult } from "@t3tools/contracts";
 import * as Schema from "effect/Schema";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vite-plus/test";
 
-import { DesktopProcessManager } from "./DesktopProcessManager.ts";
+import { DesktopProcessManager, desktopCommandEnvironment } from "./DesktopProcessManager.ts";
 
 const decodeCommand = Schema.decodeUnknownSync(UserDesktopCommandInput);
 const desktop = { kind: "user", desktopId: "test-desktop" } as const;
@@ -20,6 +22,7 @@ beforeEach(async () => {
   directory = await NodeFSP.mkdtemp(NodePath.join(NodeOS.tmpdir(), "t3-desktop-process-test-"));
   manager = new DesktopProcessManager({
     directory,
+    supervisorPath: NodePath.join(import.meta.dirname, "DesktopProcessSupervisor.ts"),
     environment: { ...process.env, T3_PROCESS_TEST: "inherited" },
     // oxlint-disable-next-line t3code/no-global-process-runtime -- This native adapter test has no Effect runtime.
     platform: NodeOS.platform(),
@@ -122,25 +125,13 @@ describe("desktop process execution", () => {
     expect(result.stdout.data).toBe(NodePath.join(directory, "workspace"));
   });
 
-  it("normalizes Windows environment overrides and removal regardless of casing", async () => {
-    manager = new DesktopProcessManager({
-      directory,
-      environment: { MixedCase: "inherited", RemoveMe: "remove" },
-      platform: "win32",
-      user: "test-user",
-      homeDirectory: directory,
-      now: Date.now,
-    });
-    const result = await command(
-      "windows-environment",
-      "process.stdout.write(JSON.stringify(process.env))",
+  it("normalizes Windows environment overrides and removal regardless of casing", () => {
+    const environment = desktopCommandEnvironment(
+      { MixedCase: "inherited", RemoveMe: "remove" },
+      "win32",
       { environment: { MIXEDCASE: "replaced", REMOVEME: null } },
     );
-    const environment = JSON.parse(result.stdout.data);
-    expect(environment).toMatchObject({ MIXEDCASE: "replaced" });
-    expect(environment).not.toHaveProperty("MixedCase");
-    expect(environment).not.toHaveProperty("RemoveMe");
-    expect(environment).not.toHaveProperty("REMOVEME");
+    expect(environment).toEqual({ MIXEDCASE: "replaced" });
   });
 
   it("accepts later binary stdin and EOF without holding the initiating call", async () => {
@@ -379,6 +370,44 @@ describe("desktop process execution", () => {
     expect((await complete(initial)).process).toMatchObject({ timedOut: true, status: "exited" });
   });
 
+  // oxlint-disable-next-line t3code/no-global-process-runtime -- Native integration test; no Effect runtime.
+  it.skipIf(NodeOS.platform() === "win32")(
+    "retains revocation after a command handles a group signal",
+    async () => {
+      const initial = await command(
+        "soft-signal",
+        "process.on('SIGABRT',()=>process.stdout.write('handled'));process.stdout.write('ready');process.stdin.resume()",
+        {
+          keepStdinOpen: true,
+          waitMs: 0,
+        },
+      );
+      const ready = await manager.operate(owner, false, {
+        action: "read",
+        desktop,
+        processId: initial.process.processId,
+        waitMs: 30_000,
+      });
+      expect(ready?.stdout.data).toBe("ready");
+      await manager.operate(owner, false, {
+        action: "signal",
+        desktop,
+        processId: initial.process.processId,
+        signal: "SIGABRT",
+      });
+      const handled = await manager.operate(owner, false, {
+        action: "read",
+        desktop,
+        processId: initial.process.processId,
+        stdoutOffset: 5,
+        waitMs: 30_000,
+      });
+      expect(handled?.stdout.data).toBe("handled");
+      await manager.revoke(new Set(["grant"]));
+      expect((await complete(initial)).process.status).toBe("exited");
+    },
+  );
+
   it("releases retained output when the desktop shuts down", async () => {
     const result = await command("shutdown", "process.stdout.write('temporary')");
     await manager.close();
@@ -418,4 +447,122 @@ describe("desktop process execution", () => {
     expect(result.stdout.data).toContain("96");
     expect(result.process.exitCode).toBe(0);
   });
+});
+
+it.each(["revoke", "close"] as const)(
+  "%s stops descendants after their launcher exits",
+  async (action) => {
+    const server = NodeNet.createServer();
+    const orphaned = new Promise<NodeNet.Socket>((resolve) =>
+      server.once("connection", (socket) => {
+        socket.once("data", () => resolve(socket));
+      }),
+    );
+    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+    const address = server.address();
+    if (address === null || typeof address === "string") throw new Error("Missing test listener");
+    const descendant = `const socket = require('node:net').connect(${address.port}, '127.0.0.1');
+    socket.once('connect', () => process.send('ready'));
+    process.once('disconnect', () => socket.write('launcher exited'));`;
+    try {
+      const initial = await command(
+        `orphan-${action}`,
+        `
+      const child = require('node:child_process').spawn(process.execPath, ['-e', ${JSON.stringify(descendant)}],
+        { stdio: ['ignore', 'ignore', 'ignore', 'ipc'] });
+      child.once('message', () => process.exit(0));`,
+        { waitMs: 0 },
+      );
+      const socket = await orphaned;
+      const stopped = new Promise<void>((resolve) => socket.once("close", resolve));
+      // The launcher is gone, but its remaining owned work is still visible and stoppable.
+      expect(manager.list(owner.environmentId)[0]?.status).toBe("running");
+      if (action === "revoke") {
+        await manager.revoke(new Set(["grant"]));
+        await complete(initial);
+      } else await manager.close();
+      await stopped;
+    } finally {
+      await manager.close();
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+    }
+  },
+);
+
+// oxlint-disable-next-line t3code/no-global-process-runtime -- Real POSIX job-control integration.
+describe.skipIf(NodeOS.platform() === "win32")("interactive shell job containment", () => {
+  it.each(["revoke", "close"] as const)(
+    "%s stops foreground and background jobs",
+    async (action) => {
+      const server = NodeNet.createServer();
+      const sockets: NodeNet.Socket[] = [];
+      const jobs = new Promise<number[]>((resolve) => {
+        const pids: number[] = [];
+        server.on("connection", (socket) => {
+          sockets.push(socket);
+          socket.once("data", (data) => {
+            pids.push(Number(data.toString()));
+            if (pids.length === 2) resolve(pids);
+          });
+        });
+      });
+      await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+      const address = server.address();
+      if (address === null || typeof address === "string") throw new Error("Missing listener");
+      const fixture = NodePath.join(directory, "job.cjs");
+      await NodeFSP.writeFile(
+        fixture,
+        `
+      process.on('SIGHUP', () => {});
+      const socket = require('node:net').connect(${address.port}, '127.0.0.1');
+      socket.once('connect', () => socket.write(String(process.pid)));
+      socket.once('data', () => process.exit(0));
+    `,
+      );
+      try {
+        const initial = await manager.start(
+          owner,
+          "grant",
+          decodeCommand({
+            desktop,
+            commandId: `shell-jobs-${action}`,
+            executable: "/bin/bash",
+            arguments: ["--noprofile", "--norc", "-i"],
+            terminal: true,
+            waitMs: 0,
+          }),
+        );
+        const quote = (value: string) => `'${value.replaceAll("'", "'\\''")}'`;
+        const job = `${quote(process.execPath)} ${quote(fixture)}`;
+        await manager.operate(owner, false, {
+          action: "write",
+          desktop,
+          processId: initial.process.processId,
+          data: `${job} &\n${job}\n`,
+        });
+        const pids = await jobs;
+        for (const pid of pids) {
+          const group = Number(
+            NodeChildProcess.execFileSync("/bin/ps", ["-p", String(pid), "-o", "pgid="], {
+              encoding: "utf8",
+            }).trim(),
+          );
+          expect(group).not.toBe(initial.process.pid);
+        }
+        const closed = Promise.all(
+          sockets.map((socket) => new Promise<void>((resolve) => socket.once("close", resolve))),
+        );
+        if (action === "revoke") {
+          await manager.revoke(new Set(["grant"]));
+          await complete(initial);
+        } else await manager.close();
+        await closed;
+      } finally {
+        // The fixture has its own cleanup channel even when a containment assertion fails.
+        for (const socket of sockets) if (!socket.destroyed) socket.end("cleanup");
+        await manager.close();
+        await new Promise<void>((resolve) => server.close(() => resolve()));
+      }
+    },
+  );
 });
