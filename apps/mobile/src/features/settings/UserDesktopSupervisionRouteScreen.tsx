@@ -36,9 +36,9 @@ import {
 } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 
-import { AndroidScreenHeader } from "../../components/AndroidScreenHeader";
-import { AppText as Text, AppTextInput as TextInput } from "../../components/AppText";
-import { ErrorBanner } from "../../components/ErrorBanner";
+import { AndroidScreenHeader } from "../../components/ui/AndroidScreenHeader";
+import { AppText as Text, AppTextInput as TextInput } from "../../components/ui/AppText";
+import { ErrorBanner } from "../../components/ui/ErrorBanner";
 import { NativeStackScreenOptions } from "../../native/StackHeader";
 import { useThreadShells } from "../../state/entities";
 import { previewEnvironment } from "../../state/preview";

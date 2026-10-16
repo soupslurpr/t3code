@@ -28,7 +28,7 @@ import { previewEnvironment } from "../../state/preview";
 import { useAtomCommand } from "../../state/use-atom-command";
 import { AppState, Pressable, ScrollView, TextInput, View } from "react-native";
 import { useFocusEffect } from "@react-navigation/native";
-import { AppText as Text } from "../../components/AppText";
+import { AppText as Text } from "../../components/ui/AppText";
 import { DesktopExecutionPermissions } from "./DesktopExecutionPermissions";
 
 const decodeUser = Schema.decodeUnknownSync(UserDesktopExecutionResult);

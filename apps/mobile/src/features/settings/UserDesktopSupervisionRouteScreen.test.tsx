@@ -10,7 +10,13 @@ const state = vi.hoisted(() => ({
   listeners: new Set<(state: string) => void>(),
 }));
 vi.mock("@effect/atom-react", () => ({ useAtomValue: () => true }));
-vi.mock("@react-navigation/native", () => ({ useNavigation: () => ({ goBack: vi.fn() }) }));
+vi.mock("@react-navigation/native", async () => {
+  const { useEffect } = await import("react");
+  return {
+    useNavigation: () => ({ goBack: vi.fn() }),
+    useFocusEffect: (effect: () => void | (() => void)) => useEffect(effect, [effect]),
+  };
+});
 vi.mock("react-native-safe-area-context", () => ({
   useSafeAreaInsets: () => ({ top: 0, right: 0, bottom: 0, left: 0 }),
 }));
@@ -46,9 +52,9 @@ vi.mock("react-native", async () => {
     }) => createElement("button", { onClick: onPress, disabled }, children),
   };
 });
-vi.mock("../../components/AppText", () => ({ AppText: "span", AppTextInput: () => null }));
-vi.mock("../../components/AndroidScreenHeader", () => ({ AndroidScreenHeader: () => null }));
-vi.mock("../../components/ErrorBanner", () => ({ ErrorBanner: () => null }));
+vi.mock("../../components/ui/AppText", () => ({ AppText: "span", AppTextInput: () => null }));
+vi.mock("../../components/ui/AndroidScreenHeader", () => ({ AndroidScreenHeader: () => null }));
+vi.mock("../../components/ui/ErrorBanner", () => ({ ErrorBanner: () => null }));
 vi.mock("../../native/StackHeader", () => ({ NativeStackScreenOptions: () => null }));
 vi.mock("../../state/entities", () => ({ useThreadShells: () => [] }));
 vi.mock("../../state/preview", () => ({

@@ -10,7 +10,7 @@ import type {
 } from "@t3tools/contracts";
 import { useState } from "react";
 import { Pressable, Switch, TextInput, View } from "react-native";
-import { AppText as Text } from "../../components/AppText";
+import { AppText as Text } from "../../components/ui/AppText";
 
 const tomorrow = () => new Date(Date.now() + 86_400_000).toISOString();
 

@@ -1419,7 +1419,7 @@ describe("storage cleanup reports and local file policies", () => {
   it.live("keeps ignored local configuration when cleanup has no explicit file policy", () =>
     runCleanupTest(
       Effect.gen(function* () {
-        const { service, fs, worktree } = yield* cleanupFixture;
+        const { service, fs, worktree } = yield* cleanupFixture();
         yield* fs.writeFileString(`${worktree}/.env`, "LOCAL_CONFIG=keep\n");
         const report = yield* service.runNow;
         expect(report.entries[0]).toMatchObject({ outcome: "kept" });
