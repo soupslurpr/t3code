@@ -25,7 +25,18 @@ Effect.gen(function* () {
   const base = yield* ServerConfig.ServerConfig.pipe(
     Effect.provide(ServerConfig.layerTest(process.cwd(), { prefix: "t3-command-channel-" })),
   );
-  const config = { ...base, desktopAuthorizationFd: 3, desktopAuthorizationControlFd: 4 };
+  const config = {
+    ...base,
+    desktopAuthorizationFd: 3,
+    desktopAuthorizationControlFd: 4,
+    environmentHost: {
+      protocolVersion: 1,
+      desktopId: String(desktop.desktopId),
+      defaultLabel: "Test host",
+      platform: "linux",
+      capabilities: ["execution"],
+    } as const,
+  };
   const services = yield* Layer.build(
     SessionStore.layer.pipe(
       Layer.provideMerge(ServerSecretStore.layer),
@@ -99,6 +110,24 @@ Effect.gen(function* () {
   const revoked = yield* channel.invoke(current.sessionId, threadId, input).pipe(Effect.flip);
   if (revoked.code !== "permission-denied")
     return yield* Effect.die("Revoked session authorized a decision");
+  for (const outcome of ["success", "failure", "interrupt"] as const) {
+    yield* Effect.scoped(
+      Effect.gen(function* () {
+        if (!(yield* channel.reserveWorktreeCleanup))
+          return yield* Effect.die("Idle native host rejected cleanup");
+        if (outcome === "failure") return yield* Effect.fail("cleanup failed");
+        if (outcome === "interrupt") return yield* Effect.interrupt;
+      }),
+    ).pipe(Effect.exit);
+  }
+  if (yield* Effect.scoped(channel.reserveWorktreeCleanup))
+    return yield* Effect.die("Busy native host admitted cleanup");
+  config.environmentHost = { ...config.environmentHost, desktopId: "different-native-host" };
+  if (yield* Effect.scoped(channel.reserveWorktreeCleanup))
+    return yield* Effect.die("Mismatched native host admitted cleanup");
+  config.environmentHost = { ...config.environmentHost, desktopId: desktop.desktopId };
+  if (yield* Effect.scoped(channel.reserveWorktreeCleanup))
+    return yield* Effect.die("Disconnected native host admitted cleanup");
   const standaloneContext = yield* Layer.build(
     DesktopExecutionAuthorizationChannel.layer.pipe(
       Layer.provide(source),
@@ -116,5 +145,7 @@ Effect.gen(function* () {
   });
   if (Option.isSome(yield* standalone.invoke(replacement.sessionId, threadId, input)))
     return yield* Effect.die("Standalone backend claimed native approval authority");
+  if (yield* Effect.scoped(standalone.reserveWorktreeCleanup))
+    return yield* Effect.die("Unidentified standalone host admitted cleanup");
   yield* Console.log("verified");
 }).pipe(Effect.scoped, Effect.provide(NodeServices.layer), NodeRuntime.runMain);

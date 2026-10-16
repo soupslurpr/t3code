@@ -25,7 +25,9 @@ import {
 } from "@t3tools/shared/desktopTransfer";
 import { assert, describe, it } from "@effect/vitest";
 import * as Deferred from "effect/Deferred";
+import { withIdleWorkspaceTransfers } from "../workspace/workspaceTransferLease.ts";
 import * as Effect from "effect/Effect";
+import * as Fiber from "effect/Fiber";
 import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
@@ -148,6 +150,21 @@ const withFixture = <A, E>(
   }).pipe(Effect.provide(NodeServices.layer), Effect.scoped);
 
 describe("user desktop transfers", () => {
+  it.effect(
+    "holds the source checkout through an active transfer and releases it after cancellation",
+    () =>
+      withFixture(({ requests }) =>
+        Effect.gen(function* () {
+          const transfers = yield* Transfers.UserDesktopTransfers;
+          const started = yield* transfers.start(owner, input);
+          yield* Queue.take(requests);
+          assert.isFalse(yield* withIdleWorkspaceTransfers(Effect.void));
+          yield* transfers.cancel(owner, { transferId: started.id });
+          assert.isTrue(yield* withIdleWorkspaceTransfers(Effect.void));
+        }),
+      ),
+  );
+
   it.effect("serves archives only through the exact one-use HTTP capability", () =>
     withFixture(({ requests }) =>
       Effect.gen(function* () {
@@ -377,3 +394,60 @@ describe("user desktop transfers", () => {
     ),
   );
 });
+
+it.effect("cancelling transfer queued behind cleanup is terminal", () =>
+  withFixture(() =>
+    Effect.gen(function* () {
+      const transfers = yield* Transfers.UserDesktopTransfers;
+      const deleting = yield* Deferred.make<void>();
+      const release = yield* Deferred.make<void>();
+      const cleanup = yield* withIdleWorkspaceTransfers(
+        Deferred.succeed(deleting, undefined).pipe(Effect.andThen(Deferred.await(release))),
+      ).pipe(Effect.forkChild);
+      yield* Deferred.await(deleting);
+      const started = yield* transfers.start(owner, input);
+      yield* Effect.yieldNow;
+      assert.equal((yield* transfers.status(owner, { transferId: started.id })).state, "queued");
+      const cancelled = yield* transfers.cancel(owner, { transferId: started.id });
+      yield* Deferred.succeed(release, undefined);
+      assert.isTrue(yield* Fiber.join(cleanup));
+      assert.equal(cancelled.state, "cancelled");
+      assert.isNotNull(cancelled.completedAt);
+    }),
+  ),
+);
+
+it.effect("transfer timeout includes waiting for cleanup admission", () =>
+  withFixture(() =>
+    Effect.gen(function* () {
+      const transfers = yield* Transfers.UserDesktopTransfers;
+      const deleting = yield* Deferred.make<void>();
+      const release = yield* Deferred.make<void>();
+      const cleanup = yield* withIdleWorkspaceTransfers(
+        Deferred.succeed(deleting, undefined).pipe(Effect.andThen(Deferred.await(release))),
+      ).pipe(Effect.forkChild);
+      yield* Deferred.await(deleting);
+      const started = yield* transfers.start(owner, { ...input, timeoutMs: 1_000 });
+      yield* Effect.yieldNow;
+      yield* TestClock.adjust(1_000);
+      const timedOut = yield* transfers.status(owner, { transferId: started.id });
+      yield* transfers.cancel(owner, { transferId: started.id });
+      yield* Deferred.succeed(release, undefined);
+      assert.isTrue(yield* Fiber.join(cleanup));
+      assert.equal(timedOut.state, "failed");
+      assert.equal(timedOut.error?.code, "timed-out");
+    }),
+  ),
+);
+
+it.effect("cancels a worker before it reaches its first asynchronous boundary", () =>
+  withFixture(() =>
+    Effect.gen(function* () {
+      const transfers = yield* Transfers.UserDesktopTransfers;
+      const started = yield* transfers.start(owner, input);
+      const cancelled = yield* transfers.cancel(owner, { transferId: started.id });
+      assert.equal(cancelled.state, "cancelled");
+      assert.isNotNull(cancelled.completedAt);
+    }),
+  ),
+);

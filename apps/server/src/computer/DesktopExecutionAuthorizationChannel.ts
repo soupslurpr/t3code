@@ -17,6 +17,7 @@ import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 import * as Semaphore from "effect/Semaphore";
+import type * as Scope from "effect/Scope";
 import * as Stream from "effect/Stream";
 import * as Ndjson from "effect/encoding/Ndjson";
 import * as NodeNet from "node:net";
@@ -29,6 +30,8 @@ import { writeAllToFileDescriptor } from "../resourceTelemetry/DesktopTelemetryR
 export class DesktopExecutionAuthorizationChannel extends Context.Service<
   DesktopExecutionAuthorizationChannel,
   {
+    /** Holds native command/transfer admission until this scope closes. Uncertainty keeps the worktree. */
+    readonly reserveWorktreeCleanup: Effect.Effect<boolean, never, Scope.Scope>;
     /** None means this target has no proven native same-account relationship. */
     readonly invoke: (
       sessionId: AuthSessionId,
@@ -62,6 +65,7 @@ const make = Effect.gen(function* () {
     string,
     Deferred.Deferred<UserDesktopExecutionResult, DesktopAuthorizationError>
   >();
+  const cleanupReplies = new Map<string, Deferred.Deferred<boolean, DesktopAuthorizationError>>();
   const writeLock = yield* Semaphore.make(1);
   let connected = inputFd !== undefined && controlFd !== undefined;
   const send = (command: DesktopExecutionAuthorizationCommand) =>
@@ -89,6 +93,19 @@ const make = Effect.gen(function* () {
       Stream.mapEffect((value) => decode(value)),
       Stream.runForEach((event) => {
         if (event.type === "ready") return Deferred.succeed(ready, event).pipe(Effect.asVoid);
+        if (event.type === "cleanup-result") {
+          const reply = cleanupReplies.get(event.invocationId);
+          return reply === undefined
+            ? Effect.void
+            : Deferred.succeed(reply, event.acquired).pipe(Effect.asVoid);
+        }
+        if (event.type === "error") {
+          const cleanupReply = cleanupReplies.get(event.invocationId);
+          if (cleanupReply !== undefined)
+            return Deferred.fail(cleanupReply, new DesktopAuthorizationError(event)).pipe(
+              Effect.asVoid,
+            );
+        }
         const reply = pending.get(event.invocationId);
         if (reply === undefined) return Effect.void;
         return (
@@ -108,6 +125,7 @@ const make = Effect.gen(function* () {
           connected = false;
           yield* Deferred.fail(ready, unavailable());
           for (const reply of pending.values()) yield* Deferred.fail(reply, unavailable());
+          for (const reply of cleanupReplies.values()) yield* Deferred.fail(reply, unavailable());
         }),
       ),
       Effect.forkScoped,
@@ -180,6 +198,44 @@ const make = Effect.gen(function* () {
         Effect.ensuring(Effect.sync(() => pending.delete(invocationId))),
       );
   });
-  return DesktopExecutionAuthorizationChannel.of({ invoke });
+  const reserveWorktreeCleanup = Effect.gen(function* () {
+    if (!connected || config.environmentHost === undefined) return false;
+    const target = yield* Deferred.await(ready).pipe(
+      Effect.timeoutOrElse({ duration: "5 seconds", orElse: () => Effect.fail(unavailable()) }),
+    );
+    if (target.desktop.desktopId !== config.environmentHost.desktopId) return false;
+    const invocationId = yield* crypto.randomUUIDv4().pipe(Effect.orDie);
+    const reply = yield* Deferred.make<boolean, DesktopAuthorizationError>();
+    cleanupReplies.set(invocationId, reply);
+    // Register before sending: cancellation or a lost acknowledgement must still release.
+    yield* Effect.addFinalizer(() =>
+      writeLock
+        .withPermits(1)(
+          send({
+            type: "cleanup-release",
+            generation: target.generation,
+            invocationId,
+          }),
+        )
+        .pipe(
+          Effect.catch(() =>
+            Effect.logWarning("Native worktree cleanup reservation could not be released"),
+          ),
+          Effect.ensuring(Effect.sync(() => cleanupReplies.delete(invocationId))),
+        ),
+    );
+    return yield* writeLock
+      .withPermits(1)(
+        Effect.gen(function* () {
+          if (!connected) return yield* Effect.fail(unavailable());
+          yield* send({ type: "cleanup-acquire", generation: target.generation, invocationId });
+        }),
+      )
+      .pipe(
+        Effect.andThen(Deferred.await(reply)),
+        Effect.timeoutOrElse({ duration: "5 seconds", orElse: () => Effect.fail(unavailable()) }),
+      );
+  }).pipe(Effect.catch(() => Effect.succeed(false)));
+  return DesktopExecutionAuthorizationChannel.of({ invoke, reserveWorktreeCleanup });
 });
 export const layer = Layer.effect(DesktopExecutionAuthorizationChannel, make);

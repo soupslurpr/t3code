@@ -535,6 +535,14 @@ const layerAuth = EnvironmentAuth.layer.pipe(
   Layer.provide(ServerSecretStore.layer),
 );
 
+// Reuse one descriptor reader across cleanup and the HTTP/WebSocket transports.
+const layerDesktopExecutionAuthorization = DesktopExecutionAuthorizationChannel.layer.pipe(
+  Layer.provide(DesktopThreadLifecycle.layer),
+  Layer.provide(layerPersistence),
+  Layer.provide(layerAuth),
+  Layer.provide(layerServerEnvironment),
+);
+
 const layerCloudManagedEndpointRuntime = Layer.mergeAll(
   layerRelayClient,
   CloudManagedEndpointRuntime.layer.pipe(
@@ -635,7 +643,10 @@ const layerRuntimeCoreDependenciesBase = Layer.mergeAll(
   HeldHooksWaker.layer,
   layerThreadSettlementWorker,
   layerIdleCompactionWorker,
-  StorageCleanup.layer.pipe(Layer.provide(ProjectionStoreV2.layer)),
+  StorageCleanup.layer.pipe(
+    Layer.provide(ProjectionStoreV2.layer),
+    Layer.provide(layerDesktopExecutionAuthorization),
+  ),
   DatabaseStorage.layer.pipe(
     Layer.provide(ProjectionMaintenance.layer),
     Layer.provide(
@@ -821,14 +832,7 @@ const layerMakeRoutes = Layer.mergeAll(
   Layer.provide(ServerBrowser.layer.pipe(Layer.provide(DesktopBrowserChannel.layer))),
   Layer.provide(PreviewBrowser.layer),
   Layer.provide(layerPreviewAutomationBroker),
-  Layer.provide(
-    DesktopExecutionAuthorizationChannel.layer.pipe(
-      Layer.provide(DesktopThreadLifecycle.layer),
-      Layer.provide(layerPersistence),
-      Layer.provide(layerAuth),
-      Layer.provide(layerServerEnvironment),
-    ),
-  ),
+  Layer.provide(layerDesktopExecutionAuthorization),
   Layer.provide(ServerSelfUpdate.layer.pipe(Layer.provide(layerDesktopAppUpdate))),
   Layer.provide(layerCommandReadiness),
   Layer.provide(ServerHttp.layerBrowserApiCors),
