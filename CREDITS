@@ -636,12 +636,12 @@ or adapted into the Alchemy repository; it does not replace the license
 documentation within those submodules.
 ```
 
-## Effect 4.0.4
+## Effect 4.0.5
 
-Source: [Effect](https://github.com/Effect-TS/effect/tree/e17ecdbe902aa7108f775c8ab9c0ddf9f38801ab)
+Source: [Effect](https://github.com/Effect-TS/effect/tree/7f524e25cfb49a71ac39b0f44278d08d40dda5de)
 
 - `.repos/effect-smol/` (recursive): copied unchanged; the complete reference tree, retaining the root and component licenses.
-- `patches/@effect__vitest@4.0.4.patch`: adapted; use Vite+ test APIs in the Effect test helpers.
+- `patches/@effect__vitest@4.0.5.patch`: adapted; use Vite+ test APIs in the Effect test helpers.
 
 The reference tree contains these distinct MIT notices; each original
 component `LICENSE` remains in place. The dependency patches use the root
