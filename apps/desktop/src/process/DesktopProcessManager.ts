@@ -299,6 +299,7 @@ export class DesktopProcessManager {
     { owner: ProcessOwner; grantId: string; fingerprint: string; promise: Promise<ProcessEntry> }
   >();
   private closed = false;
+  private pendingStarts = 0;
 
   private readonly options: ManagerOptions;
   constructor(options: ManagerOptions) {
@@ -350,7 +351,14 @@ export class DesktopProcessManager {
         "commandId already identifies a different command",
       );
     }
-    const promise = prior?.promise ?? this.spawn(owner, grantId, input, grantRevision);
+    const promise =
+      prior?.promise ??
+      (() => {
+        this.pendingStarts++;
+        return this.spawn(owner, grantId, input, grantRevision).finally(() => {
+          this.pendingStarts--;
+        });
+      })();
     if (prior === undefined) {
       this.starts.set(key, { owner, grantId, fingerprint, promise });
       // A failed acknowledgement is not permission to execute a non-idempotent command again.
@@ -366,6 +374,14 @@ export class DesktopProcessManager {
       signal,
     );
     return this.read(entry, input.desktop, input);
+  }
+
+  /** Includes admission before registration and descendants draining after root exit. */
+  hasLiveProcesses(): boolean {
+    return (
+      this.pendingStarts > 0 ||
+      [...this.entries.values()].some((entry) => isDesktopProcessLive(entry.snapshot))
+    );
   }
 
   /** Lists the processes owned by an environment, optionally narrowing to one thread. */

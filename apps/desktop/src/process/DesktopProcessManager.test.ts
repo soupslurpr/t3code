@@ -83,6 +83,15 @@ async function complete(initial: DesktopProcessResult): Promise<DesktopProcessRe
 }
 
 describe("desktop process execution", () => {
+  it("holds cleanup admission before registration and releases a failed start", async () => {
+    expect(manager.hasLiveProcesses()).toBe(false);
+    const starting = command("missing-cwd", "", {
+      workingDirectory: NodePath.join(directory, "missing"),
+    });
+    expect(manager.hasLiveProcesses()).toBe(true);
+    await expect(starting).rejects.toBeDefined();
+    expect(manager.hasLiveProcesses()).toBe(false);
+  });
   it("preserves argv, cwd, separate output, and nonzero exit status", async () => {
     const argumentsValue = ["a b", "$HOME", "`literal`", "line\nbreak", "", "🦀"];
     const result = await command(
@@ -564,6 +573,7 @@ it.each(["revoke", "close"] as const)(
       );
       const socket = await orphaned;
       const stopped = new Promise<void>((resolve) => socket.once("close", resolve));
+      expect(manager.hasLiveProcesses()).toBe(true);
       // The launcher is gone, but its remaining owned work is still visible and stoppable.
       expect(manager.list(owner.environmentId)[0]?.status).toBe("running");
       if (action === "revoke") {
@@ -571,6 +581,8 @@ it.each(["revoke", "close"] as const)(
         await complete(initial);
       } else await manager.close();
       await stopped;
+      await manager.close();
+      expect(manager.hasLiveProcesses()).toBe(false);
     } finally {
       await manager.close();
       await new Promise<void>((resolve) => server.close(() => resolve()));

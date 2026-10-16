@@ -1,5 +1,7 @@
 /** Verifies local execution consent, scope, persistence, revocation, and target identity. */
 import * as NodeURL from "node:url";
+// @effect-diagnostics-next-line nodeBuiltinImport:off -- Holds a real native upload at a deterministic HTTP boundary.
+import * as NodeHttp from "node:http";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { assert, describe, it } from "@effect/vitest";
 import {
@@ -113,6 +115,149 @@ function withExecution<A, E, R>(
 }
 
 describe("desktop execution permission", () => {
+  it.live("keeps native cleanup blocked until a transfer drains after cancellation", () =>
+    withExecution(
+      Effect.gen(function* () {
+        const execution = yield* DesktopExecution.DesktopExecution;
+        const identity = yield* UserDesktopIdentity.UserDesktopIdentity;
+        const environment = yield* DesktopEnvironment.DesktopEnvironment;
+        const fs = yield* FileSystem.FileSystem;
+        const desktop = { kind: "user", desktopId: identity.registration.desktopId } as const;
+        yield* fs.writeFileString(
+          environment.path.join(environment.homeDirectory, "source"),
+          "transfer bytes",
+        );
+        yield* execution.invoke(context, {
+          operation: "access",
+          desktop,
+          input: { action: "request", desktop },
+        });
+        let received!: () => void;
+        const requestReceived = new Promise<void>((resolve) => {
+          received = resolve;
+        });
+        const server = yield* Effect.acquireRelease(
+          Effect.promise(
+            () =>
+              new Promise<NodeHttp.Server>((resolve) => {
+                const server = NodeHttp.createServer((request) => {
+                  request.resume();
+                  received();
+                });
+                server.listen(0, "127.0.0.1", () => resolve(server));
+              }),
+          ),
+          (server) =>
+            Effect.promise(
+              () =>
+                new Promise<void>((resolve) => {
+                  server.closeAllConnections();
+                  server.close(() => resolve());
+                }),
+            ),
+        );
+        const address = server.address();
+        if (address === null || typeof address === "string") return assert.fail("missing listener");
+        const transfer = {
+          operation: "run" as const,
+          desktop,
+          transferId: "active-copy",
+          direction: "from-desktop" as const,
+          desktopPath: "source",
+          collision: "create" as const,
+          compression: "auto" as const,
+          timeoutMs: 60_000,
+          url: `http://127.0.0.1:${address.port}/api/user-desktop-transfers/active-copy`,
+          token: "0".repeat(64),
+        };
+        yield* Effect.gen(function* () {
+          const worker = yield* execution
+            .transfer(context, transfer)
+            .pipe(Effect.exit, Effect.forkChild);
+          yield* Effect.promise(() => requestReceived);
+          assert.isFalse(yield* execution.reserveWorktreeCleanup("active-transfer"));
+          yield* execution.transfer(context, {
+            operation: "cancel",
+            desktop,
+            transferId: transfer.transferId,
+          });
+          yield* Fiber.join(worker);
+          assert.isTrue(yield* execution.reserveWorktreeCleanup("drained-transfer"));
+          yield* execution.releaseWorktreeCleanup("drained-transfer");
+        }).pipe(
+          Effect.ensuring(
+            execution
+              .transfer(context, { operation: "cancel", desktop, transferId: transfer.transferId })
+              .pipe(Effect.ignore),
+          ),
+        );
+      }),
+    ),
+  );
+  it.effect(
+    "coordinates host cleanup with command and transfer admission across source threads",
+    () =>
+      withExecution(
+        Effect.gen(function* () {
+          const execution = yield* DesktopExecution.DesktopExecution;
+          const identity = yield* UserDesktopIdentity.UserDesktopIdentity;
+          const desktop = { kind: "user", desktopId: identity.registration.desktopId } as const;
+          yield* execution.invoke(context, {
+            operation: "access",
+            desktop,
+            input: { action: "request", desktop },
+          });
+          assert.isTrue(yield* execution.reserveWorktreeCleanup("lease"));
+          assert.isTrue(yield* execution.reserveWorktreeCleanup("lease"));
+          assert.isFalse(yield* execution.reserveWorktreeCleanup("other-lease"));
+          const command = {
+            operation: "command" as const,
+            desktop,
+            commandId: "after-cleanup",
+            executable: process.execPath,
+            arguments: ["-e", "process.stdin.resume()"],
+            keepStdinOpen: true,
+            waitMs: 0,
+          };
+          assert.equal(
+            (yield* execution.invoke(context, command).pipe(Effect.flip)).code,
+            "worktree-cleanup",
+          );
+          const transfer = {
+            operation: "run" as const,
+            desktop,
+            transferId: "during-cleanup",
+            direction: "from-desktop" as const,
+            desktopPath: "source",
+            collision: "create" as const,
+            compression: "auto" as const,
+            timeoutMs: 60_000,
+            url: "http://127.0.0.1/unused",
+            token: "0".repeat(64),
+          };
+          assert.equal(
+            (yield* execution.transfer(context, transfer).pipe(Effect.flip)).code,
+            "worktree-cleanup",
+          );
+          yield* execution.releaseWorktreeCleanup("wrong-lease");
+          assert.equal(
+            (yield* execution.invoke(context, command).pipe(Effect.flip)).code,
+            "worktree-cleanup",
+          );
+          yield* execution.releaseWorktreeCleanup("lease");
+          const started = yield* execution.invoke(context, command);
+          if (started.kind !== "process") return assert.fail("missing process");
+          assert.isFalse(yield* execution.reserveWorktreeCleanup("foreign-cleanup"));
+          // Permission retirement never makes an accepted process safe to delete underneath.
+          yield* execution.authorization({
+            operation: "disconnected",
+            environmentId: context.environmentId!,
+            connectionGeneration: context.connectionGeneration!,
+          });
+          assert.isFalse(yield* execution.reserveWorktreeCleanup("foreign-cleanup"));
+        }),
+      ),
+  );
   it.effect(
     "lets native Settings edit and remove source permissions while preserving remote boundaries",
     () =>

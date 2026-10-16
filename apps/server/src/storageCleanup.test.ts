@@ -5,10 +5,16 @@ import * as Deferred from "effect/Deferred";
 import * as Fiber from "effect/Fiber";
 import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
-import type * as Path from "effect/Path";
+import * as Path from "effect/Path";
 import type * as Scope from "effect/Scope";
 import * as Stream from "effect/Stream";
 import * as Schema from "effect/Schema";
+import * as Option from "effect/Option";
+import { EnvironmentId } from "@t3tools/contracts";
+import * as Transfers from "./computer/UserDesktopTransfers.ts";
+import { PreviewAutomationBroker } from "./mcp/PreviewAutomationBroker.ts";
+import { ThreadWorkspaceQuery } from "./orchestration-v2/ThreadWorkspaceQuery.ts";
+import type { McpThreadInvocationScope } from "./mcp/McpInvocationContext.ts";
 import { SCAN_CACHE_FILE_NAME } from "./usage/usageScanCache.ts";
 import { TestClock } from "effect/testing";
 import * as SqlClient from "effect/sql/SqlClient";
@@ -21,6 +27,10 @@ import {
 import * as HostProcess from "@t3tools/shared/HostProcess";
 import * as ServerConfig from "./config.ts";
 import * as StorageCleanup from "./storageCleanup.ts";
+import { withWorkspaceTransfer } from "./workspace/workspaceTransferLease.ts";
+import * as NativeAuthorization from "./computer/DesktopExecutionAuthorizationChannel.ts";
+import { DesktopProcessManager } from "../../desktop/src/process/DesktopProcessManager.ts";
+import { UserDesktopCommandInput } from "@t3tools/contracts";
 import * as GitVcsDriver from "./vcs/GitVcsDriver.ts";
 import * as GitManager from "./git/GitManager.ts";
 import * as Settings from "./serverSettings.ts";
@@ -55,6 +65,7 @@ import {
 const NOW_MS = Date.parse("2026-06-10T12:00:00.000Z");
 const DAY_MS = 24 * 60 * 60 * 1_000;
 const decodeCleanupReport = Schema.decodeSync(StorageCleanupReport);
+const decodeNativeCommand = Schema.decodeUnknownEffect(UserDesktopCommandInput);
 
 function at(offsetMs: number): DateTime.Utc {
   return DateTime.makeUnsafe(NOW_MS + offsetMs);
@@ -242,6 +253,7 @@ const cleanupFixture = (
     worktreeAfterDays: 8,
     worktreeOnDelete: true,
   },
+  reserveWorktreeCleanup: Effect.Effect<boolean, never, Scope.Scope> = Effect.succeed(true),
 ) =>
   Effect.gen(function* () {
     const fs = yield* FileSystem.FileSystem;
@@ -276,6 +288,10 @@ const cleanupFixture = (
     let events: Stream.Stream<OrchestrationV2DomainEvent> = Stream.empty;
     const activated = yield* Deferred.make<void>();
     const context = yield* Layer.build(StorageCleanup.layer).pipe(
+      Effect.provideService(NativeAuthorization.DesktopExecutionAuthorizationChannel, {
+        reserveWorktreeCleanup,
+        invoke: () => Effect.die("Unused authorization invocation"),
+      }),
       Effect.provideService(GitVcsDriver.GitVcsDriver, {
         ...git,
         execute: (input) =>
@@ -424,13 +440,16 @@ const cleanupFixture = (
     };
   });
 /** The fixture, with the size walk of its worktree held until `resume` succeeds. */
-const pausedMeasurementFixture = (storageCleanup?: StorageCleanupSettings) =>
+const pausedMeasurementFixture = (
+  storageCleanup?: StorageCleanupSettings,
+  reserveWorktreeCleanup?: Effect.Effect<boolean, never, Scope.Scope>,
+) =>
   Effect.gen(function* () {
     const fs = yield* FileSystem.FileSystem;
     const measuring = yield* Deferred.make<void>();
     const resume = yield* Deferred.make<void>();
     let measuredPath: string | undefined;
-    const fixture = yield* cleanupFixture(storageCleanup).pipe(
+    const fixture = yield* cleanupFixture(storageCleanup, reserveWorktreeCleanup).pipe(
       Effect.provideService(FileSystem.FileSystem, {
         ...fs,
         readDirectory: (directory, options) =>
@@ -1846,4 +1865,222 @@ it.live.each(["thread.settled", "stopped", "ready"] as const)(
         expect(fixture.snapshotReads()).toBe(1);
       }),
     ),
+);
+
+it.live("keeps a settled checkout when a native command starts during measurement", () =>
+  runCleanupTest(
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      const path = yield* Path.Path;
+      const platform = yield* HostProcess.Platform;
+      const directory = yield* fs.makeTempDirectoryScoped({ prefix: "cleanup-native-command-" });
+      const manager = yield* Effect.acquireRelease(
+        Effect.sync(
+          () =>
+            new DesktopProcessManager({
+              directory,
+              supervisorPath: path.resolve(
+                import.meta.dirname,
+                "../../desktop/src/process/DesktopProcessSupervisor.ts",
+              ),
+              environment: process.env,
+              platform,
+              user: "test",
+              homeDirectory: directory,
+              now: Date.now,
+            }),
+        ),
+        (manager) => Effect.promise(() => manager.close()),
+      );
+      const fixture = yield* pausedMeasurementFixture(
+        {
+          ...DEFAULT_SERVER_SETTINGS.storageCleanup,
+          worktreeSettledAfterDays: 0,
+        },
+        Effect.sync(() => !manager.hasLiveProcesses()),
+      );
+      fixture.setThreads([
+        shell({
+          branch: "feature",
+          worktreePath: fixture.worktree,
+          settledAt: at(-120_000),
+          updatedAt: at(-120_000),
+        }),
+      ]);
+      const cleanup = yield* fixture.service.runNow.pipe(Effect.forkChild);
+      yield* Deferred.await(fixture.measuring);
+      const command = yield* decodeNativeCommand({
+        desktop: { kind: "user", desktopId: "native" },
+        commandId: "live-cwd",
+        executable: process.execPath,
+        arguments: ["-e", "process.stdin.resume()"],
+        keepStdinOpen: true,
+        workingDirectory: fixture.worktree,
+        waitMs: 0,
+      });
+      const started = yield* Effect.promise(() =>
+        manager.start(
+          { environmentId: "another-environment", threadId: "another-thread" },
+          "grant",
+          command,
+        ),
+      );
+      expect(started.process.status).toBe("running");
+      yield* Deferred.succeed(fixture.resume, undefined);
+      expect((yield* Fiber.join(cleanup)).entries[0]).toMatchObject({
+        outcome: "kept",
+        reason: "Native desktop is busy or cannot confirm it is idle",
+      });
+      expect(yield* fs.exists(fixture.worktree)).toBe(true);
+      yield* Effect.promise(() => manager.close());
+      expect((yield* fixture.service.runNow).entries[0]?.outcome).toBe("removed");
+    }),
+  ),
+);
+
+it.live("keeps untracked files when native cleanup admission is uncertain", () =>
+  runCleanupTest(
+    Effect.gen(function* () {
+      const fixture = yield* cleanupFixture(undefined, Effect.succeed(false));
+      fixture.setPolicy("tracked-changes");
+      yield* fixture.fs.writeFileString(`${fixture.worktree}/notes.txt`, "keep me");
+      expect((yield* fixture.service.runNow).entries[0]?.outcome).toBe("kept");
+      expect(yield* fixture.fs.readFileString(`${fixture.worktree}/notes.txt`)).toBe("keep me");
+    }),
+  ),
+);
+
+it.live.each([false, true])(
+  "releases native cleanup admission after removal (Git failure: %s)",
+  (fail) =>
+    runCleanupTest(
+      Effect.gen(function* () {
+        let reserved = false;
+        const fixture = yield* cleanupFixture(
+          undefined,
+          Effect.acquireRelease(
+            Effect.sync(() => {
+              reserved = true;
+              return true;
+            }),
+            () =>
+              Effect.sync(() => {
+                reserved = false;
+              }),
+          ),
+        );
+        if (fail) fixture.editBeforeRemoval();
+        expect((yield* fixture.service.runNow).entries[0]?.outcome).toBe(
+          fail ? "failed" : "removed",
+        );
+        expect(reserved).toBe(false);
+      }),
+    ),
+);
+
+it.live("keeps a checkout until concurrent workspace transfers drain", () =>
+  runCleanupTest(
+    Effect.gen(function* () {
+      const fixture = yield* cleanupFixture();
+      const entered = yield* Deferred.make<void>();
+      const release = yield* Deferred.make<void>();
+      const transfer = yield* withWorkspaceTransfer(
+        Deferred.succeed(entered, undefined).pipe(Effect.andThen(Deferred.await(release))),
+      ).pipe(Effect.forkChild);
+      yield* Deferred.await(entered);
+      expect((yield* fixture.service.runNow).entries[0]).toMatchObject({
+        outcome: "kept",
+        reason: "A workspace transfer is still active",
+      });
+      yield* Deferred.succeed(release, undefined);
+      yield* Fiber.join(transfer);
+      expect((yield* fixture.service.runNow).entries[0]?.outcome).toBe("removed");
+    }),
+  ),
+);
+
+it.live("keeps a real transfer workspace through a linked-parent alias", () =>
+  runCleanupTest(
+    Effect.gen(function* () {
+      const fixture = yield* cleanupFixture({
+        ...DEFAULT_SERVER_SETTINGS.storageCleanup,
+        worktreeSettledAfterDays: 0,
+      });
+      const aliases = yield* fixture.fs.makeTempDirectoryScoped({ prefix: "cleanup-alias-" });
+      const aliasRoot = `${aliases}/linked-worktrees`;
+      yield* fixture.fs.symlink(fixture.config.worktreesDir, aliasRoot);
+      const aliasWorktree = `${aliasRoot}/feature`;
+      const original = shell({
+        branch: "feature",
+        worktreePath: fixture.worktree,
+        settledAt: at(-120000),
+        updatedAt: at(-120000),
+      });
+      const aliasThread = shell({
+        id: ThreadId.make("thread-2"),
+        lineage: {
+          rootThreadId: ThreadId.make("thread-2"),
+          parentThreadId: null,
+          relationshipToParent: null,
+        },
+        branch: "feature",
+        worktreePath: aliasWorktree,
+        settledAt: null,
+      });
+      fixture.setThreads([original, aliasThread]);
+      const reachedRemote = yield* Deferred.make<void>();
+      const remote = Layer.mock(PreviewAutomationBroker)({
+        invoke: () => Deferred.succeed(reachedRemote, undefined).pipe(Effect.andThen(Effect.never)),
+      });
+      const projections = Layer.mock(ThreadWorkspaceQuery)({
+        getThreadShellById: () => Effect.succeed(Option.some(aliasThread)),
+        getProjectShellById: () =>
+          Effect.succeed(
+            Option.some({
+              id: original.projectId,
+              title: "Alias transfer",
+              workspaceRoot: fixture.repo,
+              defaultModelSelection: original.modelSelection,
+              scripts: [],
+              createdAt: DateTime.formatIso(at(0)),
+              updatedAt: DateTime.formatIso(at(0)),
+              deletedAt: null,
+            }),
+          ),
+      });
+      const context = yield* Layer.build(Transfers.layer.pipe(Layer.provide(remote)));
+      const transfers = Context.get(context, Transfers.UserDesktopTransfers);
+      const owner: McpThreadInvocationScope = {
+        environmentId: EnvironmentId.make("environment-transfer-test"),
+        thread: {
+          threadId: aliasThread.id,
+          controllerId: "controller",
+          providerSessionId: "session",
+          providerInstanceId: ProviderInstanceId.make("codex"),
+        },
+        requestNamespace: "computer-test",
+        client: undefined,
+        capabilities: new Set(["computer"]),
+        issuedAt: 0,
+      };
+      const started = yield* transfers
+        .start(owner, {
+          desktop: { kind: "user", desktopId: "remote-desktop" },
+          copyId: "alias-copy",
+          direction: "from-desktop",
+          workspacePath: "incoming",
+          desktopPath: "source",
+          waitMs: 0,
+        })
+        .pipe(Effect.provide(projections));
+      yield* Deferred.await(reachedRemote);
+      const report = yield* fixture.service.runNow;
+      expect(report.entries.find((entry) => entry.path === fixture.worktree)).toMatchObject({
+        outcome: "kept",
+        reason: "A workspace transfer is still active",
+      });
+      yield* transfers.cancel(owner, { transferId: started.id });
+      expect(yield* fixture.fs.exists(fixture.worktree)).toBe(true);
+    }),
+  ),
 );

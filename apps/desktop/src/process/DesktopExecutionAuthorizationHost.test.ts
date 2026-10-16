@@ -25,6 +25,7 @@ const desktop = { kind: "user", desktopId: "native-target" } as const;
 it.effect("binds decisions to one native child generation, source and invocation payload", () =>
   Effect.gen(function* () {
     const contexts: DesktopComputerAutomationContext[] = [];
+    let cleanupLease: string | null = null;
     const environmentId = EnvironmentId.make("native-environment");
     const test = Effect.gen(function* () {
       const host = yield* Host.DesktopExecutionAuthorizationHost;
@@ -45,6 +46,25 @@ it.effect("binds decisions to one native child generation, source and invocation
       yield* channel.handleCommandLine(
         encode({ type: "hello", environmentId: EnvironmentId.make("imposter") }),
       );
+      const cleanup = {
+        type: "cleanup-acquire" as const,
+        generation: ready.generation,
+        invocationId: "cleanup",
+      };
+      yield* channel.handleCommandLine(encode(cleanup));
+      assert.deepEqual(yield* Queue.take(events), {
+        type: "cleanup-result",
+        invocationId: "cleanup",
+        acquired: true,
+      });
+      assert.equal(cleanupLease, `${ready.generation}:cleanup`);
+      yield* channel.handleCommandLine(
+        encode({ ...cleanup, type: "cleanup-release", generation: "stale" }),
+      );
+      assert.equal((yield* Queue.take(events)).type, "error");
+      assert.isNotNull(cleanupLease);
+      yield* channel.handleCommandLine(encode({ ...cleanup, type: "cleanup-release" }));
+      assert.isNull(cleanupLease);
       const command = {
         type: "invoke" as const,
         invocationId: "decision",
@@ -109,6 +129,16 @@ it.effect("binds decisions to one native child generation, source and invocation
           ),
           Layer.provide(
             Layer.mock(DesktopExecution.DesktopExecution)({
+              reserveWorktreeCleanup: (leaseId) =>
+                Effect.sync(() => {
+                  if (cleanupLease !== null) return false;
+                  cleanupLease = leaseId;
+                  return true;
+                }),
+              releaseWorktreeCleanup: (leaseId) =>
+                Effect.sync(() => {
+                  if (cleanupLease === leaseId) cleanupLease = null;
+                }),
               invokeFromNativeBackend: (context) =>
                 Effect.sync(() => {
                   contexts.push(context);

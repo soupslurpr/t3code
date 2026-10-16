@@ -522,6 +522,14 @@ const layerAuth = EnvironmentAuth.layer.pipe(
   Layer.provide(ServerSecretStore.layer),
 );
 
+// Reuse one descriptor reader across cleanup and the HTTP/WebSocket transports.
+const layerDesktopExecutionAuthorization = DesktopExecutionAuthorizationChannel.layer.pipe(
+  Layer.provide(DesktopThreadLifecycle.layer),
+  Layer.provide(layerPersistence),
+  Layer.provide(layerAuth),
+  Layer.provide(layerServerEnvironment),
+);
+
 const layerCloudManagedEndpointRuntime = Layer.mergeAll(
   layerRelayClient,
   CloudManagedEndpointRuntime.layer.pipe(
@@ -625,7 +633,10 @@ const layerRuntimeCoreDependenciesBase = Layer.mergeAll(
   // Asks T3 Connect to deliver webhooks it held while this environment was offline.
   HeldHooksWaker.layer,
   layerThreadSettlementWorker,
-  StorageCleanup.layer.pipe(Layer.provide(ProjectionStoreV2.layer)),
+  StorageCleanup.layer.pipe(
+    Layer.provide(ProjectionStoreV2.layer),
+    Layer.provide(layerDesktopExecutionAuthorization),
+  ),
   DatabaseStorage.layer.pipe(
     Layer.provide(ProjectionMaintenance.layer),
     Layer.provide(
@@ -848,14 +859,7 @@ const layerMakeRoutes = Layer.mergeAll(
   // Server browser tabs and HTML render previews install and run the same headless browser.
   Layer.provide(PreviewBrowser.layer),
   Layer.provide(layerPreviewAutomationBroker),
-  Layer.provide(
-    DesktopExecutionAuthorizationChannel.layer.pipe(
-      Layer.provide(DesktopThreadLifecycle.layer),
-      Layer.provide(layerPersistence),
-      Layer.provide(layerAuth),
-      Layer.provide(layerServerEnvironment),
-    ),
-  ),
+  Layer.provide(layerDesktopExecutionAuthorization),
   Layer.provide(ServerSelfUpdate.layer.pipe(Layer.provide(layerDesktopAppUpdate))),
   Layer.provide(layerCommandReadiness),
   Layer.provide(ServerHttp.layerBrowserApiCors),
