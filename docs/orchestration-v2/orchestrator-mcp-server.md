@@ -252,12 +252,13 @@ provider session. The request becomes the V2 command
 `mode: "async"` returns the current durable state immediately.
 `mode: "wait"` waits for the task result, including nested work and completion follow-ups, or until
 the timeout expires. A wait timeout does not cancel the child; the result sets
-`waitTimedOut: true`, and the caller can continue with `task_status`. A pending blocking
-question also ends the wait with `hasPendingQuestion: true` and `waitTimedOut: false`.
+`waitTimedOut: true`, and the caller can continue with `task_status`. Any pending answerable
+question, whether live or async, also ends the wait with `hasPendingQuestion: true` and
+`waitTimedOut: false`.
 If `hasPendingQuestion`, pass `threadId=childThreadId` to `t3_pending_request_list`,
 `t3_pending_request_read` (with `requestId`) and `t3_pending_request_respond`, or ask
-the user; the task's completion still wakes this thread. Async questions and approvals
-do not end the wait.
+the user; the task's completion still wakes this thread. Approvals and questions with
+`not_resumable` response capability do not end the wait.
 
 ```ts
 type DelegateTaskResult = {
@@ -458,9 +459,9 @@ ask the user. The message says whether the child is blocked or, for a Codex
 async question, still working. If the question is answered or dismissed before
 the notification starts a turn, that queued turn is cancelled. Approvals are not
 routed, because those tools cannot answer them.
-A parent still blocked in a `delegate_task` wait gets the blocking question
-through that wait instead.
-If the provider cuts that wait short, a still-pending live question wakes the
+A parent still blocked in a `delegate_task` wait gets any answerable question
+through that wait instead, including async questions.
+If the provider cuts that wait short, a still-pending answerable question wakes the
 parent when its launching run completes, fails, or waits for post-turn work.
 Stopping or interrupting the parent prevents this catch-up.
 

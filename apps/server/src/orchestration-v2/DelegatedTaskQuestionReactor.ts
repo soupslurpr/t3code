@@ -18,10 +18,9 @@ import * as Orchestrator from "./Orchestrator.ts";
 import * as ProjectionStore from "./ProjectionStore.ts";
 
 /**
- * Wakes the parent of an app-owned delegated task when the task asks a question. The question
- * blocks the task until someone answers it, and the user rarely watches child threads, so the
- * parent agent is told to answer it or to ask the user. Only questions are routed: approvals
- * cannot be answered through the pending request tools.
+ * Wakes the parent of an app-owned delegated task when the task asks a question. The user
+ * rarely watches child threads, so the parent agent is told to answer it or to ask the user.
+ * Only questions are routed: approvals cannot be answered through the pending request tools.
  */
 export class DelegatedTaskQuestionReactor extends Context.Service<
   DelegatedTaskQuestionReactor,
@@ -88,7 +87,8 @@ const make = Effect.gen(function* () {
             if (
               request.kind !== "user_input" ||
               request.status !== "pending" ||
-              request.responseCapability.type !== "live"
+              (request.responseCapability.type !== "live" &&
+                request.responseCapability.type !== "message")
             ) {
               continue;
             }
@@ -148,10 +148,11 @@ const make = Effect.gen(function* () {
       ) {
         return;
       }
-      // A blocking delegate_task wait delivers the question itself.
+      // A delegate_task wait delivers any answerable question itself.
       if (
         task.completionWake === "settled_only" &&
-        event.payload.responseCapability.type === "live" &&
+        (event.payload.responseCapability.type === "live" ||
+          event.payload.responseCapability.type === "message") &&
         parent.runs.some(
           (run) =>
             run.id === task.runId &&
