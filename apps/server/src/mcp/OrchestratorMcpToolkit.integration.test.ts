@@ -50,6 +50,7 @@ import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as PubSub from "effect/PubSub";
 import * as Ref from "effect/Ref";
+import * as Result from "effect/Result";
 import * as Schema from "effect/Schema";
 import * as Fiber from "effect/Fiber";
 import * as Stream from "effect/Stream";
@@ -2923,101 +2924,175 @@ describe("orchestrator MCP toolkit", () => {
             ).toMatchObject({ state: "disposed" });
             yield* expectOffersToStay(0);
 
-            const questionWait = yield* invoke("delegate_task", {
-              task: cancellationPrompt,
-              title: "Wait question",
-              target: { providerInstanceId: codexInstanceId, model: codexModel },
-              mode: "wait",
-              timeoutMs: 30_000,
-              clientRequestId: "delegate-wait-question-1",
-            }).pipe(Effect.forkChild);
-            const question = (yield* waitForProjection(orchestrator, parentThreadId, (p) =>
-              p.subagents.some(
-                (task) => task.title === "Wait question" && task.childThreadId !== null,
-              ),
-            )).subagents.find((task) => task.title === "Wait question")!;
-            const asking = yield* waitForProjection(orchestrator, question.childThreadId!, (p) =>
-              p.providerTurns.some((turn) => turn.status === "running"),
-            );
-            const askedAt = yield* DateTime.now;
-            yield* (yield* EventSink.EventSinkV2).write({
-              events: [
-                {
-                  id: EventId.make("event:wait-question:live"),
-                  type: "runtime-request.updated",
+            // Answerable questions end the wait and leave completion delivery armed.
+            for (const capability of ["live", "message"] as const) {
+              const afterSequence = yield* orchestrator.getThreadEventSequence(parentThreadId);
+              const title = `Wait question (${capability})`;
+              const questionWait = yield* invoke("delegate_task", {
+                task: cancellationPrompt,
+                title,
+                target: { providerInstanceId: codexInstanceId, model: codexModel },
+                mode: "wait",
+                timeoutMs: 30_000,
+                clientRequestId: `delegate-wait-question-${capability}`,
+              }).pipe(Effect.forkChild);
+              const question = yield* orchestrator
+                .streamStoredEventsFrom({
+                  threadId: parentThreadId,
+                  afterSequence,
+                  eventType: "subagent.updated",
+                })
+                .pipe(
+                  Stream.filterMap((stored) =>
+                    stored.event.type === "subagent.updated" &&
+                    stored.event.payload.title === title &&
+                    stored.event.payload.childThreadId !== null
+                      ? Result.succeed(stored.event.payload)
+                      : Result.fail(undefined),
+                  ),
+                  Stream.runHead,
+                  Effect.map(Option.getOrThrow),
+                );
+              yield* orchestrator
+                .streamStoredEventsFrom({
                   threadId: question.childThreadId!,
-                  occurredAt: askedAt,
-                  payload: {
-                    id: RuntimeRequestId.make("request:wait-question"),
-                    nodeId: question.id,
-                    providerTurnId: null,
-                    nativeRequestRef: null,
-                    kind: "user_input",
-                    status: "pending",
-                    responseCapability: {
-                      type: "live",
-                      providerSessionId: asking.providerSessions[0]!.id,
+                  afterSequence,
+                  eventType: "provider-turn.updated",
+                })
+                .pipe(
+                  Stream.filter(
+                    (stored) =>
+                      stored.event.type === "provider-turn.updated" &&
+                      stored.event.payload.status === "running",
+                  ),
+                  Stream.runHead,
+                  Effect.map(Option.getOrThrow),
+                );
+              const asking = yield* orchestrator.getThreadProjection(question.childThreadId!);
+              const childRun = asking.runs[0]!;
+              const askedAt = yield* DateTime.now;
+              const request = {
+                id: RuntimeRequestId.make(`request:wait-question-${capability}`),
+                nodeId: childRun.rootNodeId!,
+                providerTurnId: null,
+                nativeRequestRef: null,
+                kind: "user_input" as const,
+                status: "pending" as const,
+                createdAt: askedAt,
+                resolvedAt: null,
+              };
+              const eventSink = yield* EventSink.EventSinkV2;
+              yield* eventSink.write({
+                events: [
+                  {
+                    id: EventId.make(`event:wait-question:${capability}:not-resumable`),
+                    type: "runtime-request.updated",
+                    threadId: question.childThreadId!,
+                    runId: childRun.id,
+                    occurredAt: askedAt,
+                    payload: {
+                      ...request,
+                      responseCapability: { type: "not_resumable", reason: "Session ended." },
                     },
-                    createdAt: askedAt,
-                    resolvedAt: null,
                   },
-                },
-              ],
-            });
-            expect((yield* Fiber.join(questionWait)).structuredContent).toMatchObject({
-              status: "running",
-              hasPendingQuestion: true,
-              waitTimedOut: false,
-            });
-            expect(
-              (yield* orchestrator.getThreadProjection(parentThreadId)).subagents.find(
-                (task) => task.id === question.id,
-              )?.completionWake,
-            ).toBe("always");
-            yield* invoke("task_cancel", {
-              taskId: question.id,
-              clientRequestId: "cancel-wait-question-1",
-            });
-            yield* waitForProjection(orchestrator, parentThreadId, (p) =>
-              p.subagents.some((task) => task.id === question.id && task.status === "interrupted"),
-            );
-
-            // Stop disposes delivery even if a live approval record survives it.
-            yield* (yield* EventSink.EventSinkV2).write({
-              events: [
-                {
-                  id: EventId.make("event:approval-after-stop"),
-                  type: "runtime-request.updated",
-                  threadId: question.childThreadId!,
-                  occurredAt: askedAt,
-                  payload: {
-                    id: RuntimeRequestId.make("request:approval-after-stop"),
-                    nodeId: asking.nodes.find((node) => node.runId === asking.runs[0]!.id)!.id,
-                    providerTurnId: null,
-                    nativeRequestRef: null,
-                    kind: "command",
-                    status: "pending",
-                    responseCapability: {
-                      type: "live",
-                      providerSessionId: asking.providerSessions[0]!.id,
+                ],
+              });
+              expect(
+                (yield* invoke("task_status", { taskId: question.id })).structuredContent,
+              ).toMatchObject({ status: "running", hasPendingQuestion: false });
+              yield* eventSink.write({
+                events: [
+                  {
+                    id: EventId.make(`event:wait-question:${capability}`),
+                    type: "runtime-request.updated",
+                    threadId: question.childThreadId!,
+                    runId: childRun.id,
+                    occurredAt: askedAt,
+                    payload: {
+                      ...request,
+                      responseCapability:
+                        capability === "live"
+                          ? { type: "live", providerSessionId: asking.providerSessions[0]!.id }
+                          : { type: "message" },
                     },
-                    createdAt: askedAt,
-                    resolvedAt: null,
                   },
-                },
-              ],
-            });
-            expect(
-              (yield* invoke("task_status", { taskId: question.id })).structuredContent,
-            ).toMatchObject({
-              status: "interrupted",
-              pendingApproval: null,
-            });
-            expect(
-              (yield* orchestrator.getThreadProjection(parentThreadId)).subagents.find(
-                (task) => task.id === question.id,
-              )?.completionDelivery,
-            ).toMatchObject({ state: "disposed" });
+                ],
+              });
+              expect((yield* Fiber.join(questionWait)).structuredContent).toMatchObject({
+                status: "running",
+                hasPendingQuestion: true,
+                waitTimedOut: false,
+              });
+              expect(
+                (yield* invoke("task_status", { taskId: question.id })).structuredContent,
+              ).toMatchObject({ status: "running", hasPendingQuestion: true });
+              expect(
+                (yield* orchestrator.getThreadProjection(parentThreadId)).subagents.find(
+                  (task) => task.id === question.id,
+                )?.completionWake,
+              ).toBe("always");
+              expect(
+                (yield* orchestrator.getThreadProjection(question.childThreadId!)).runs.find(
+                  (run) => run.id === childRun.id,
+                )?.status,
+              ).toBe("running");
+              yield* invoke("task_cancel", {
+                taskId: question.id,
+                clientRequestId: `cancel-wait-question-${capability}`,
+              });
+              yield* orchestrator
+                .streamStoredEventsFrom({
+                  threadId: parentThreadId,
+                  afterSequence,
+                  eventType: "subagent.updated",
+                })
+                .pipe(
+                  Stream.filter(
+                    (stored) =>
+                      stored.event.type === "subagent.updated" &&
+                      stored.event.payload.id === question.id &&
+                      stored.event.payload.status === "interrupted",
+                  ),
+                  Stream.runHead,
+                  Effect.map(Option.getOrThrow),
+                );
+              // Stop disposes delivery even if a live approval record survives it.
+              yield* (yield* EventSink.EventSinkV2).write({
+                events: [
+                  {
+                    id: EventId.make(`event:approval-after-stop:${capability}`),
+                    type: "runtime-request.updated",
+                    threadId: question.childThreadId!,
+                    occurredAt: askedAt,
+                    payload: {
+                      id: RuntimeRequestId.make(`request:approval-after-stop:${capability}`),
+                      nodeId: asking.nodes.find((node) => node.runId === asking.runs[0]!.id)!.id,
+                      providerTurnId: null,
+                      nativeRequestRef: null,
+                      kind: "command",
+                      status: "pending",
+                      responseCapability: {
+                        type: "live",
+                        providerSessionId: asking.providerSessions[0]!.id,
+                      },
+                      createdAt: askedAt,
+                      resolvedAt: null,
+                    },
+                  },
+                ],
+              });
+              expect(
+                (yield* invoke("task_status", { taskId: question.id })).structuredContent,
+              ).toMatchObject({
+                status: "interrupted",
+                pendingApproval: null,
+              });
+              expect(
+                (yield* orchestrator.getThreadProjection(parentThreadId)).subagents.find(
+                  (task) => task.id === question.id,
+                )?.completionDelivery,
+              ).toMatchObject({ state: "disposed" });
+            }
 
             const terminalUpgrade = yield* orchestrator.dispatch({
               type: "delegated_task.wake-policy",
@@ -4197,7 +4272,7 @@ describe("orchestrator MCP toolkit", () => {
               }),
               approvalRequest("question", {
                 kind: "user_input",
-                responseCapability: { type: "message" },
+                responseCapability: { type: "not_resumable", reason: "Session ended." },
               }),
               approvalRequest("auth", { kind: "auth_refresh" }),
               approvalRequest("tool", { kind: "dynamic_tool_call" }),

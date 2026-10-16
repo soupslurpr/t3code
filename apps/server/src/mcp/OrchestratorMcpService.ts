@@ -1556,7 +1556,8 @@ const make = Effect.gen(function* () {
           (request) =>
             request.kind === "user_input" &&
             request.status === "pending" &&
-            request.responseCapability.type === "live",
+            (request.responseCapability.type === "live" ||
+              request.responseCapability.type === "message"),
         ),
       pendingApproval:
         isTerminalTaskStatus(status) || task.completionDelivery?.state === "disposed"
