@@ -7,9 +7,9 @@ import * as Schema from "effect/Schema";
 import { squashAtomCommandFailure } from "@t3tools/client-runtime/state/runtime";
 import { useCallback, useEffect, useState } from "react";
 import { AppState, Platform, Pressable, ScrollView, View } from "react-native";
-import { AppText as Text } from "../../components/AppText";
-import { AndroidScreenHeader } from "../../components/AndroidScreenHeader";
-import { ErrorBanner } from "../../components/ErrorBanner";
+import { AppText as Text } from "../../components/ui/AppText";
+import { AndroidScreenHeader } from "../../components/ui/AndroidScreenHeader";
+import { ErrorBanner } from "../../components/ui/ErrorBanner";
 import {
   UserDesktopExecutionPanel,
   AgentDesktopExecutionPanel,

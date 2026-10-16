@@ -1203,7 +1203,9 @@ export const layerWsRpc = (
   serverBrowser: ServerBrowser.ServerBrowser["Service"],
   desktopAuthorization: DesktopExecutionAuthorizationChannel.DesktopExecutionAuthorizationChannel["Service"],
 ) =>
-  ServerWsRpcGroup.toLayer(
+  // Instrumentation supplies no handler services. Keep it on RpcServer.make;
+  // including it here expands every handler's type beyond the compiler budget.
+  WsRpcGroup.toLayer(
     Effect.gen(function* () {
       const currentSessionId = currentSession.sessionId;
       const sql = yield* SqlClient.SqlClient;
@@ -1822,7 +1824,7 @@ export const layerWsRpc = (
         return result;
       });
 
-      const handlers = ServerWsRpcGroup.of({
+      const handlers = WsRpcGroup.of({
         [ORCHESTRATION_V2_WS_METHODS.dispatchCommand]: (command) =>
           Effect.annotateCurrentSpan({
             "orchestration_v2.command_id": command.commandId,

@@ -977,9 +977,9 @@ specific language governing permissions and limitations under the License.
 
 ## enriched-markdown mobile fork
 
-Source: [pingdotgg/enriched-markdown](https://github.com/pingdotgg/enriched-markdown/tree/3824d119a1ed6206f51ba3ec8ddf9ff93b8852f9)
+Source: [pingdotgg/enriched-markdown](https://github.com/pingdotgg/enriched-markdown/tree/f6d879f10290e704977d436bf4b2698255e7b571)
 
-- `apps/mobile/deps/react-native-enriched-markdown-1.2.0-t3.11.tgz`: adapted; upstream mobile fork with T3 native rendering and navigation support. Exact source and upstream base are preserved inside the archive.
+- `apps/mobile/deps/react-native-enriched-markdown-1.2.0-t3.13.tgz`: adapted; upstream mobile fork with T3 native rendering and navigation support. Exact source and upstream base are preserved inside the archive.
 
 ```text
 MIT License
@@ -1144,3 +1144,101 @@ file revision 2023-07-31 18:42 UTC, SHA-1 `fb40c58a5019c97ac199683fbf855ed7afb7a
 
 Wikimedia Commons identifies the symbol as public domain under
 `PD-textlogo`. Meta Platforms retains its trademark rights.
+
+## Expo UI native controls
+
+Source: [@expo/ui 58.0.11](https://github.com/expo/expo/tree/%40expo%2Fui%4058.0.11/packages/expo-ui)
+
+- `patches/@expo__ui@58.0.11.patch`: adapted; add native Android app bars and theme overrides, and expose iOS control configuration used by the mobile app.
+
+```text
+The MIT License (MIT)
+
+Copyright (c) 2015-present 650 Industries, Inc. (aka Expo)
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+```
+
+## FFF Node 0.11.0
+
+Source: [FFF](https://github.com/dmtrKovalenko/fff/tree/v0.11.0/packages/fff-node)
+
+- `patches/@ff-labs__fff-node@0.11.0.patch`: adapted; correct the ESM entry point, resolve packaged native libraries, and avoid per-item score FFI calls for large search pages.
+
+```text
+MIT License
+
+Copyright (c) 2025 Dmitriy Kovalenko
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+```
+
+## GitHub GraphQL schema
+
+Source: [GitHub Docs](https://github.com/github/docs/blob/bd52de7384c1d3267e5c365efd94b69e6bdc8cc3/src/graphql/data/fpt/schema.docs.graphql)
+
+- `packages/source-control-github/schema/github.graphql`: copied unchanged.
+- `packages/source-control-github/schema/github.graphql.ts`: adapted; generated Effect schema types.
+- `packages/source-control-github/src/server/pullRequestBatches.graphql.ts`: adapted; generated operation types from the schema and local queries.
+- `packages/source-control-github/src/server/pullRequestListings.graphql.ts`: adapted; generated operation types from the schema and local queries.
+- `packages/source-control-github/src/server/pullRequestMutations.graphql.ts`: adapted; generated operation types from the schema and local queries.
+- `packages/source-control-github/src/server/pullRequestReads.graphql.ts`: adapted; generated operation types from the schema and local queries.
+- `packages/source-control-github/src/server/pullRequestReviews.graphql.ts`: adapted; generated operation types from the schema and local queries.
+- `packages/source-control-github/src/server/sourceControlProvider.graphql.ts`: adapted; generated operation types from the schema and local queries.
+- `packages/source-control-github/src/server/stackActions.graphql.ts`: adapted; generated operation types from the schema and local queries.
+
+```text
+MIT License
+
+Copyright 2026 GitHub
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+```

@@ -12,7 +12,7 @@ import { useState } from "react";
 import { previewEnvironment } from "../../state/preview";
 import { useAtomCommand } from "../../state/use-atom-command";
 import { Pressable, TextInput, View } from "react-native";
-import { AppText as Text } from "../../components/AppText";
+import { AppText as Text } from "../../components/ui/AppText";
 
 const decode = Schema.decodeUnknownSync(ComputerAutomationStatus);
 /** Graphical policy decisions always go to the selected desktop's local prompt. */

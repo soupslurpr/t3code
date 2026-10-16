@@ -41,9 +41,9 @@ vi.mock("react-native", async () => {
     },
   };
 });
-vi.mock("../../components/AppText", () => ({ AppText: "span" }));
-vi.mock("../../components/AndroidScreenHeader", () => ({ AndroidScreenHeader: "Header" }));
-vi.mock("../../components/ErrorBanner", () => ({ ErrorBanner: "Error" }));
+vi.mock("../../components/ui/AppText", () => ({ AppText: "span" }));
+vi.mock("../../components/ui/AndroidScreenHeader", () => ({ AndroidScreenHeader: "Header" }));
+vi.mock("../../components/ui/ErrorBanner", () => ({ ErrorBanner: "Error" }));
 vi.mock("../../native/StackHeader", () => ({ NativeStackScreenOptions: () => null }));
 vi.mock("../../state/server", () => ({
   serverEnvironment: {
