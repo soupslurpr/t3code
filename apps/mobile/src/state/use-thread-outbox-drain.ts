@@ -16,6 +16,7 @@ import {
   type MessageId,
 } from "@t3tools/contracts";
 import { buildTemporaryWorktreeBranchName } from "@t3tools/shared/git";
+import { stripLeadInstruction } from "@t3tools/shared/lead";
 import * as Cause from "effect/Cause";
 import { AsyncResult } from "effect/reactivity";
 import { useCallback, useEffect, useRef, useState } from "react";
@@ -23,6 +24,11 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { createDebugLogger } from "../lib/debugLog";
 import { scopedThreadKey } from "../lib/scopedEntities";
 import { buildProjectThreadStartTurnInput } from "../lib/projectThreadStartTurn";
+import {
+  prepareThreadMessageText,
+  preparePendingTaskText,
+  reconcileQueuedMessageLead,
+} from "../lib/lead";
 import { serializeComposerMessageForServer, uploadedComposerContext } from "../lib/composerContext";
 import { prepareTurnAttachments, type PreparedTurnAttachments } from "../lib/attachmentUpload";
 import { randomHex } from "../lib/uuid";
@@ -36,6 +42,13 @@ import {
 } from "./acknowledged-thread-messages";
 import { appAtomRegistry } from "./atom-registry";
 import { restoredNewTaskDraftKey } from "./new-task-draft-key";
+import {
+  applyPendingTaskLeadCancellation,
+  cancelPendingTaskLead,
+  consumeDeliveredPendingTaskLead,
+  revisionAfterPendingTaskLeadConsumption,
+  writePendingTaskLeadCancellation,
+} from "./pending-task-editor-writes";
 import { useProjects, useServerConfigs, useThreadShells } from "./entities";
 import {
   clearPendingThreadCreationOutcome,
@@ -70,7 +83,10 @@ import {
   appendComposerDraftAttachments,
   composerDraftsAtom,
   flushComposerDrafts,
+  forgetComposerDraftTransferredLeadArming,
   type ComposerDraft,
+  type ComposerDraftRollbackSnapshot,
+  getComposerDraftRollbackSnapshot,
   getComposerDraftSnapshot,
   mergeComposerDraftContent,
   replaceComposerDraftAttachments,
@@ -296,12 +312,17 @@ export async function completeQueuedMessageDelivery(
     queuedMessage.messageId,
   );
   try {
-    await removeDeliveredCloudQueuedMessage(queuedMessage).catch((error) => {
-      console.warn("[thread-outbox] could not update sign-out snapshot after delivery", {
-        messageId: queuedMessage.messageId,
-        error,
+    try {
+      await consumeDeliveredPendingTaskLead(queuedMessage);
+    } finally {
+      // Sign-out owns a separate durable copy, including when the live write fails.
+      await removeDeliveredCloudQueuedMessage(queuedMessage).catch((error) => {
+        console.warn("[thread-outbox] could not update sign-out snapshot after delivery", {
+          messageId: queuedMessage.messageId,
+          error,
+        });
       });
-    });
+    }
     // The editor may have taken the entry while startTurn was in flight; its
     // unsaved edits have not bumped the revision yet, so the CAS alone would
     // let removal win and the editor would lose them once it saves.
@@ -312,7 +333,7 @@ export async function completeQueuedMessageDelivery(
     // Removal also releases the message's local attachment files.
     const removed = await removeThreadOutboxMessage(
       queuedMessage,
-      deliveryRevision,
+      revisionAfterPendingTaskLeadConsumption(queuedMessage.messageId, deliveryRevision),
       () => !appAtomRegistry.get(editingQueuedMessageIdsAtom)[queuedMessage.messageId],
     );
     if (!removed) {
@@ -395,11 +416,16 @@ export async function recoverEditedCreationAfterDelivery(
     // from deleting the attachment files. allowOverflow mirrors the
     // send-failure restore; the send path refuses over-cap drafts, so the
     // state stays recoverable.
-    await mergeComposerDraftContent(draftKey, {
-      text: kept.text,
-      context: kept.context,
-      attachments: [],
-    });
+    const merge = { draft: getComposerDraftSnapshot(draftKey) };
+    await mergeComposerDraftContent(
+      draftKey,
+      { text: kept.text, context: kept.context, attachments: [] },
+      {
+        onMerge: (snapshot) => {
+          merge.draft = snapshot.draft;
+        },
+      },
+    );
     if (appAtomRegistry.get(editingQueuedMessageIdsAtom)[kept.messageId]) {
       return true;
     }
@@ -416,10 +442,37 @@ export async function recoverEditedCreationAfterDelivery(
     );
     // Only settings the queued message actually carries: spreading explicit
     // undefined would clear choices the user already made on the draft.
+    const current = getComposerDraftSnapshot(draftKey);
+    const leadAlreadyTransferred =
+      (current.transferredLeadArmings?.[kept.messageId] ?? -1) >= (kept.leadArmingRevision ?? 0);
+    // A retry must also leave the model alone: replaying it could cancel the user's Lead.
+    const selectionUnchanged =
+      !leadAlreadyTransferred &&
+      current.leadRevision === merge.draft.leadRevision &&
+      current.modelSelection === merge.draft.modelSelection;
     updateComposerDraftSettings(draftKey, {
-      ...(kept.modelSelection !== undefined ? { modelSelection: kept.modelSelection } : {}),
-      ...(kept.runtimeMode !== undefined ? { runtimeMode: kept.runtimeMode } : {}),
-      ...(kept.interactionMode !== undefined ? { interactionMode: kept.interactionMode } : {}),
+      ...(selectionUnchanged && kept.modelSelection !== undefined
+        ? { modelSelection: kept.modelSelection }
+        : {}),
+      ...(current.runtimeMode === merge.draft.runtimeMode && kept.runtimeMode !== undefined
+        ? { runtimeMode: kept.runtimeMode }
+        : {}),
+      ...(current.interactionMode === merge.draft.interactionMode &&
+      kept.interactionMode !== undefined
+        ? { interactionMode: kept.interactionMode }
+        : {}),
+      ...(selectionUnchanged && kept.lead !== undefined
+        ? {
+            lead: applyPendingTaskLeadCancellation(kept).lead,
+          }
+        : {}),
+      transferredLeadArmings: {
+        ...current.transferredLeadArmings,
+        [kept.messageId]: Math.max(
+          current.transferredLeadArmings?.[kept.messageId] ?? -1,
+          kept.leadArmingRevision ?? 0,
+        ),
+      },
     });
     // The append only schedules a debounced write; the queue entry is the
     // only durable copy until the draft lands, so flush before removing.
@@ -434,11 +487,13 @@ export async function recoverEditedCreationAfterDelivery(
     return true;
   }
   try {
-    return await removeThreadOutboxMessage(
+    const removed = await removeThreadOutboxMessage(
       kept,
       keptRevision,
       () => !appAtomRegistry.get(editingQueuedMessageIdsAtom)[kept.messageId],
     );
+    if (removed) forgetComposerDraftTransferredLeadArming(draftKey, kept.messageId);
+    return removed;
   } catch (error) {
     console.warn("[thread-outbox] could not remove recovered pending task", error);
     return false;
@@ -449,17 +504,24 @@ export async function recoverEditedCreationAfterDelivery(
 export async function restoreRejectedQueuedMessage(
   queuedMessage: QueuedThreadMessage,
   message: string,
+  options?: { readonly cancelLead?: boolean },
 ): Promise<"restored" | "deferred" | "blocked" | "retry"> {
+  if (options?.cancelLead && queuedMessage.lead) cancelPendingTaskLead(queuedMessage.messageId);
+  const confirmedRevision = threadOutboxRevision(queuedMessage.messageId);
   const draftKey = recoveryDraftKey(queuedMessage);
   const threadKey = scopedThreadKey(queuedMessage.environmentId, queuedMessage.threadId);
   // Set once the merge publishes, cleared once the queued message is removed.
   // The catch below uses it to take the merged content back out, so a retry
   // after a mid-recovery failure cannot append the recovered text again.
-  let rollback: { readonly snapshot: ComposerDraft; readonly merged: ComposerDraft } | null = null;
+  let rollback: {
+    readonly snapshot: ComposerDraftRollbackSnapshot;
+    readonly merged: ComposerDraft;
+  } | null = null;
   try {
     if (
       appAtomRegistry.get(editingQueuedMessageIdsAtom)[queuedMessage.messageId] ||
       !(await confirmThreadOutboxMessageQueued(queuedMessage)) ||
+      !isQueuedMessagePayloadCurrent(queuedMessage, confirmedRevision) ||
       appAtomRegistry.get(editingQueuedMessageIdsAtom)[queuedMessage.messageId]
     ) {
       return "deferred";
@@ -467,13 +529,26 @@ export async function restoreRejectedQueuedMessage(
     // The confirmation above checked this exact payload is what is queued, so
     // the current revision guards the removal at the end against an edit
     // accepted while this recovery ran.
-    const revision = threadOutboxRevision(queuedMessage.messageId);
+    let revision = confirmedRevision;
+    const directMessage = applyPendingTaskLeadCancellation(queuedMessage);
+    if (directMessage !== queuedMessage) {
+      // An unavailable-model dispatch cancels the arming even if recovery
+      // is blocked or fails and the outbox row survives for a later retry.
+      const updated = await writePendingTaskLeadCancellation(directMessage, revision);
+      if (!updated) return "deferred";
+      queuedMessage = directMessage;
+      revision += 1;
+    }
 
     await waitForComposerDraftsLoaded();
-    if (appAtomRegistry.get(editingQueuedMessageIdsAtom)[queuedMessage.messageId]) {
+    if (
+      !isQueuedMessagePayloadCurrent(queuedMessage, revision) ||
+      appAtomRegistry.get(editingQueuedMessageIdsAtom)[queuedMessage.messageId]
+    ) {
       return "deferred";
     }
-    const originalDraft = getComposerDraftSnapshot(draftKey);
+    const originalSnapshot = getComposerDraftRollbackSnapshot(draftKey);
+    const originalDraft = originalSnapshot.draft;
     const existingAttachmentIds = new Set(
       originalDraft.attachments.map((attachment) => attachment.id),
     );
@@ -496,34 +571,61 @@ export async function restoreRejectedQueuedMessage(
     if (!queuedMessage.creation) {
       setThreadComposerError(threadKey, message, queuedMessage.messageId);
     }
-    let mergedDraft: ComposerDraft;
-    try {
-      stampRecoveryDraftProject(queuedMessage, draftKey);
-      await mergeComposerDraftContent(draftKey, {
+    // Capture only what this recovery inserts, before publication/persistence.
+    // Text and intent authored during that await belong to the user.
+    const merge = { snapshot: originalSnapshot, merged: originalDraft };
+    stampRecoveryDraftProject(queuedMessage, draftKey);
+    await mergeComposerDraftContent(
+      draftKey,
+      {
         text: queuedMessage.text,
         context: queuedMessage.context,
         attachments: queuedMessage.attachments,
-      });
-    } finally {
-      // Snapshots for the rollbacks below: undoComposerDraftMerge restores
-      // the original draft only while it is untouched, and otherwise takes
-      // out just what this recovery inserted so edits typed during the awaits
-      // survive. Captured in a finally because mergeComposerDraftContent
-      // publishes before its persistence await: even its failure leaves the
-      // merged content in the draft.
-      mergedDraft = getComposerDraftSnapshot(draftKey);
-      rollback = { snapshot: originalDraft, merged: mergedDraft };
-    }
+      },
+      {
+        onMerge: (snapshot, merged) => {
+          merge.snapshot = snapshot;
+          merge.merged = merged;
+          rollback = merge;
+        },
+      },
+    );
     if (appAtomRegistry.get(editingQueuedMessageIdsAtom)[queuedMessage.messageId]) {
       withdrawError();
-      await undoComposerDraftMerge(draftKey, originalDraft, mergedDraft);
+      await undoComposerDraftMerge(draftKey, merge.snapshot, merge.merged);
       return "deferred";
     }
-    updateComposerDraftSettings(draftKey, {
-      ...(queuedMessage.modelSelection ? { modelSelection: queuedMessage.modelSelection } : {}),
-      ...(queuedMessage.runtimeMode ? { runtimeMode: queuedMessage.runtimeMode } : {}),
-      ...(queuedMessage.interactionMode ? { interactionMode: queuedMessage.interactionMode } : {}),
-      ...(queuedMessage.creation
+    const current = getComposerDraftSnapshot(draftKey);
+    const leadAlreadyTransferred =
+      (current.transferredLeadArmings?.[queuedMessage.messageId] ?? -1) >=
+      (queuedMessage.leadArmingRevision ?? 0);
+    const selectionUnchanged =
+      !leadAlreadyTransferred &&
+      current.leadRevision === merge.merged.leadRevision &&
+      current.modelSelection === merge.merged.modelSelection;
+    const settings = {
+      ...(selectionUnchanged && queuedMessage.modelSelection
+        ? { modelSelection: queuedMessage.modelSelection }
+        : {}),
+      ...(current.runtimeMode === merge.merged.runtimeMode && queuedMessage.runtimeMode
+        ? { runtimeMode: queuedMessage.runtimeMode }
+        : {}),
+      ...(current.interactionMode === merge.merged.interactionMode && queuedMessage.interactionMode
+        ? { interactionMode: queuedMessage.interactionMode }
+        : {}),
+      ...(selectionUnchanged && (queuedMessage.lead !== undefined || queuedMessage.creation)
+        ? {
+            lead: applyPendingTaskLeadCancellation(queuedMessage).lead ?? false,
+          }
+        : {}),
+      transferredLeadArmings: {
+        ...current.transferredLeadArmings,
+        [queuedMessage.messageId]: Math.max(
+          current.transferredLeadArmings?.[queuedMessage.messageId] ?? -1,
+          queuedMessage.leadArmingRevision ?? 0,
+        ),
+      },
+      ...(current.workspaceSelection === merge.merged.workspaceSelection && queuedMessage.creation
         ? {
             workspaceSelection: {
               mode: queuedMessage.creation.workspaceMode,
@@ -536,9 +638,17 @@ export async function restoreRejectedQueuedMessage(
             },
           }
         : {}),
-    });
-    const restoredDraft = getComposerDraftSnapshot(draftKey);
-    rollback = { snapshot: originalDraft, merged: restoredDraft };
+    };
+    updateComposerDraftSettings(draftKey, settings);
+    const transferred = getComposerDraftSnapshot(draftKey);
+    const restoredDraft = {
+      ...merge.merged,
+      ...settings,
+      ...(selectionUnchanged
+        ? { lead: transferred.lead, leadRevision: transferred.leadRevision }
+        : {}),
+    };
+    rollback = { snapshot: merge.snapshot, merged: restoredDraft };
     await flushComposerDrafts();
     if (
       appAtomRegistry.get(editingQueuedMessageIdsAtom)[queuedMessage.messageId] ||
@@ -546,7 +656,7 @@ export async function restoreRejectedQueuedMessage(
       appAtomRegistry.get(editingQueuedMessageIdsAtom)[queuedMessage.messageId]
     ) {
       withdrawError();
-      await undoComposerDraftMerge(draftKey, originalDraft, restoredDraft);
+      await undoComposerDraftMerge(draftKey, merge.snapshot, restoredDraft);
       return "deferred";
     }
     // Revision-checked: an edit that landed after the confirmation above
@@ -559,12 +669,13 @@ export async function restoreRejectedQueuedMessage(
       ))
     ) {
       withdrawError();
-      await undoComposerDraftMerge(draftKey, originalDraft, restoredDraft);
+      await undoComposerDraftMerge(draftKey, merge.snapshot, restoredDraft);
       return "deferred";
     }
     // The queued message is gone; from here the draft owns the content and
     // must never be rolled back.
     rollback = null;
+    forgetComposerDraftTransferredLeadArming(draftKey, queuedMessage.messageId);
     if (queuedMessage.creation) {
       // The failure card shows the reason, so an error left by an earlier
       // failed attempt at this recovery no longer applies.
@@ -714,8 +825,12 @@ export function useThreadOutboxDrain(): void {
   }, []);
 
   const restoreQueuedMessage = useCallback(
-    async (queuedMessage: QueuedThreadMessage, message: string): Promise<boolean> => {
-      const result = await restoreRejectedQueuedMessage(queuedMessage, message);
+    async (
+      queuedMessage: QueuedThreadMessage,
+      message: string,
+      options?: { readonly cancelLead?: boolean },
+    ): Promise<boolean> => {
+      const result = await restoreRejectedQueuedMessage(queuedMessage, message, options);
       if (result !== "blocked") {
         return result !== "retry";
       }
@@ -825,7 +940,7 @@ export function useThreadOutboxDrain(): void {
           settings.modelSelection,
           thread.projectId,
         );
-        return restoreQueuedMessage(queuedMessage, `${title}. ${detail}`);
+        return restoreQueuedMessage(queuedMessage, `${title}. ${detail}`, { cancelLead: true });
       }
       const { reportFailure } = makeDeliveryHelpers(queuedMessage);
 
@@ -899,7 +1014,7 @@ export function useThreadOutboxDrain(): void {
       if (!isQueuedMessagePayloadCurrent(persistedMessage, deliveryRevision)) {
         return true;
       }
-      const currentConfig = appAtomRegistry.get(
+      let currentConfig = appAtomRegistry.get(
         serverEnvironment.configValueAtom(queuedMessage.environmentId),
       );
       if (!currentConfig) return false;
@@ -909,7 +1024,7 @@ export function useThreadOutboxDrain(): void {
           settings.modelSelection,
           thread.projectId,
         );
-        return restoreQueuedMessage(persistedMessage, `${title}. ${detail}`);
+        return restoreQueuedMessage(persistedMessage, `${title}. ${detail}`, { cancelLead: true });
       }
       const sendSettings = resolveQueuedThreadSettings(
         queuedMessage,
@@ -917,6 +1032,30 @@ export function useThreadOutboxDrain(): void {
         currentConfig.providers,
       );
       if (!hasAccess()) return true;
+      const reconciledMessage = applyPendingTaskLeadCancellation(
+        reconcileQueuedMessageLead(
+          persistedMessage,
+          currentConfig,
+          thread.projectId,
+          sendSettings.modelSelection,
+        ),
+      );
+      if (reconciledMessage !== persistedMessage) {
+        if (!(await writePendingTaskLeadCancellation(reconciledMessage, deliveryRevision)))
+          return true;
+        persistedMessage = reconciledMessage;
+        deliveryRevision += 1;
+        if (
+          !hasAccess() ||
+          !isQueuedMessagePayloadCurrent(persistedMessage, deliveryRevision) ||
+          appAtomRegistry.get(editingQueuedMessageIdsAtom)[queuedMessage.messageId]
+        )
+          return true;
+        currentConfig = appAtomRegistry.get(
+          serverEnvironment.configValueAtom(queuedMessage.environmentId),
+        );
+        if (!currentConfig) return false;
+      }
       const deliveryResult = await startTurn({
         environmentId: queuedMessage.environmentId,
         input: {
@@ -927,7 +1066,12 @@ export function useThreadOutboxDrain(): void {
             messageId: queuedMessage.messageId,
             role: "user",
             ...serializeComposerMessageForServer(
-              queuedMessage.text,
+              prepareThreadMessageText(
+                persistedMessage,
+                currentConfig,
+                thread.projectId,
+                sendSettings.modelSelection,
+              ),
               uploadedComposerContext(
                 queuedMessage.context,
                 queuedMessage.attachments,
@@ -939,7 +1083,7 @@ export function useThreadOutboxDrain(): void {
           },
           modelSelection: sendSettings.modelSelection,
           titleSeed: deriveThreadTitleSeed({
-            text: queuedMessage.text,
+            text: stripLeadInstruction(queuedMessage.text),
             attachments: queuedMessage.attachments,
           }),
           runtimeMode: sendSettings.runtimeMode,
@@ -1008,7 +1152,7 @@ export function useThreadOutboxDrain(): void {
           settings.modelSelection,
           creation.projectId,
         );
-        return restoreQueuedMessage(queuedMessage, `${title}. ${detail}`);
+        return restoreQueuedMessage(queuedMessage, `${title}. ${detail}`, { cancelLead: true });
       }
       let prepared: PreparedTurnAttachments;
       let persistedMessage: QueuedThreadMessage;
@@ -1055,7 +1199,7 @@ export function useThreadOutboxDrain(): void {
           settings.modelSelection,
           creation.projectId,
         );
-        return restoreQueuedMessage(persistedMessage, `${title}. ${detail}`);
+        return restoreQueuedMessage(persistedMessage, `${title}. ${detail}`, { cancelLead: true });
       }
       const sendSettings = resolveQueuedThreadSettings(
         queuedMessage,
@@ -1092,6 +1236,50 @@ export function useThreadOutboxDrain(): void {
           startFromOrigin: false,
         };
       }
+      // PR checkout and uploads can outlive a catalog update. Read at dispatch,
+      // leaving the durable queue's raw text intact for retries and editing.
+      if (appAtomRegistry.get(editingQueuedMessageIdsAtom)[queuedMessage.messageId]) return true;
+      let dispatchConfig = appAtomRegistry.get(
+        serverEnvironment.configValueAtom(queuedMessage.environmentId),
+      );
+      if (!dispatchConfig) return false;
+      const reconciledMessage = applyPendingTaskLeadCancellation(
+        reconcileQueuedMessageLead(
+          persistedMessage,
+          dispatchConfig,
+          creation.projectId,
+          sendSettings.modelSelection,
+        ),
+      );
+      if (reconciledMessage !== persistedMessage) {
+        if (!(await writePendingTaskLeadCancellation(reconciledMessage, deliveryRevision)))
+          return true;
+        persistedMessage = reconciledMessage;
+        deliveryRevision += 1;
+        if (
+          !hasAccess() ||
+          !isQueuedMessagePayloadCurrent(persistedMessage, deliveryRevision) ||
+          appAtomRegistry.get(editingQueuedMessageIdsAtom)[queuedMessage.messageId]
+        )
+          return true;
+        dispatchConfig = appAtomRegistry.get(
+          serverEnvironment.configValueAtom(queuedMessage.environmentId),
+        );
+        if (!dispatchConfig) return false;
+      }
+      const serializedMessage = serializeComposerMessageForServer(
+        preparePendingTaskText(
+          { ...persistedMessage, text: persistedMessage.text.trim() },
+          dispatchConfig,
+          sendSettings.modelSelection,
+        ),
+        uploadedComposerContext(
+          persistedMessage.context,
+          persistedMessage.attachments,
+          prepared.attachments,
+        ),
+        dispatchConfig.environment.capabilities.inlineMessageContext === true,
+      );
       const deliveryResult = await startTurn({
         environmentId: queuedMessage.environmentId,
         input: buildProjectThreadStartTurnInput({
@@ -1101,15 +1289,7 @@ export function useThreadOutboxDrain(): void {
           commandId: queuedMessage.commandId,
           messageId: queuedMessage.messageId,
           createdAt: queuedMessage.createdAt,
-          ...serializeComposerMessageForServer(
-            queuedMessage.text.trim(),
-            uploadedComposerContext(
-              queuedMessage.context,
-              queuedMessage.attachments,
-              prepared.attachments,
-            ),
-            currentConfig.environment.capabilities.inlineMessageContext === true,
-          ),
+          ...serializedMessage,
           uploadedAttachments: prepared.attachments,
           modelSelection: sendSettings.modelSelection,
           runtimeMode: sendSettings.runtimeMode,

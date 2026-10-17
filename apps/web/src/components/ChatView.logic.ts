@@ -34,6 +34,7 @@ import {
   type AtomCommandResult,
 } from "@t3tools/client-runtime/state/runtime";
 import { videoMimeType } from "@t3tools/shared/video";
+import type { LeadAvailability } from "@t3tools/shared/lead";
 import {
   appendCodexArtifactTemplateUsePrompt,
   codexArtifactTemplateUsePrompt,
@@ -1089,6 +1090,49 @@ export function getStartedThreadModelChangeBlockReason(input: {
     title: "Start a new chat to change models",
     description: "This provider does not allow switching models after a conversation has started.",
   };
+}
+
+/** The picker and Add Lead must respect the same continuation and session restrictions. */
+export function getThreadModelSelectionBlockReason(
+  input: Omit<Parameters<typeof getStartedThreadModelChangeBlockReason>[0], "providers"> & {
+    providers: ReadonlyArray<ServerProvider>;
+    lockedProvider: ProviderDriverKind | null;
+  },
+) {
+  if (!input.supportsProviderSwitchingViaHandoff && input.lockedProvider !== null) {
+    const next = input.providers.find(
+      (entry) => entry.instanceId === input.nextModelSelection.instanceId,
+    );
+    const current = input.providers.find(
+      (entry) =>
+        entry.instanceId ===
+        (input.currentProviderInstanceId ?? input.currentModelSelection.instanceId),
+    );
+    if (
+      next?.driver !== input.lockedProvider ||
+      (current?.continuation?.groupKey &&
+        next?.continuation?.groupKey !== current.continuation.groupKey)
+    ) {
+      return {
+        title: "Start a new chat to switch providers",
+        description: "This thread does not support switching providers after it has started.",
+      };
+    }
+  }
+  return getStartedThreadModelChangeBlockReason(input);
+}
+
+export function resolveThreadLeadSelection(
+  availability: LeadAvailability,
+  input: Omit<Parameters<typeof getThreadModelSelectionBlockReason>[0], "nextModelSelection">,
+): ModelSelection | null {
+  if (!availability.selection) return null;
+  return (
+    availability.wonderSelections.find(
+      (nextModelSelection) =>
+        getThreadModelSelectionBlockReason({ ...input, nextModelSelection }) === null,
+    ) ?? null
+  );
 }
 
 export async function waitForStartedServerThread(

@@ -1,6 +1,10 @@
 import type { EnvironmentId } from "@t3tools/contracts";
 
 import { appAtomRegistry } from "./atom-registry";
+import {
+  clearPendingTaskLeadCancellation,
+  clearPendingTaskLeadDelivery,
+} from "./pending-task-editor-writes";
 import { threadOutboxManager } from "./thread-outbox";
 import type { QueuedThreadMessage } from "./thread-outbox-model";
 import {
@@ -14,6 +18,10 @@ import {
 async function cleanUpRemovedMessages(
   removedMessages: ReadonlyArray<QueuedThreadMessage>,
 ): Promise<void> {
+  for (const message of removedMessages) {
+    clearPendingTaskLeadCancellation(message.messageId);
+    clearPendingTaskLeadDelivery(message.messageId);
+  }
   const attachments = removedMessages.flatMap((message) => message.attachments);
   const removedCreations = removedMessages.filter((message) => message.creation !== undefined);
   if (removedCreations.length === 0) {

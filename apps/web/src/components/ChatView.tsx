@@ -347,13 +347,20 @@ import {
   useClientSettings,
   useClientSettingsHydrated,
   useEnvironmentSettings,
+  mergeEnvironmentSettings,
 } from "../hooks/useSettings";
 import { useNowMinute } from "../hooks/useNowMinute";
 import { usePanelAnimationSettings, usePanelPresence } from "../panelAnimations";
 import { useNewThreadHandler } from "../hooks/useHandleNewThread";
 import { useRemoveClonedProject } from "../hooks/useRemoveClonedProject";
 import { useOpenPanelPullRequestUrl } from "../hooks/useOpenPanelPullRequestUrl";
-import { resolveAppModelSelectionForInstance } from "../modelSelection";
+import {
+  prepareLeadDraftMessage,
+  resolveAppModelSelectionForInstance,
+  resolveLeadAvailability,
+} from "../modelSelection";
+import { stripLeadInstruction } from "@t3tools/shared/lead";
+import { LeadContextControl, LeadDraftControl } from "./chat/LeadDraftControl";
 import {
   getComposerPromptInjectionState,
   getComposerProviderState,
@@ -386,6 +393,7 @@ import {
   type ComposerImageAttachment,
   type DraftThreadEnvMode,
   useComposerDraftStore,
+  prepareTransferredLeadMessage,
   DraftId,
 } from "../composerDraftStore";
 import {
@@ -542,6 +550,8 @@ import {
   shouldReleaseTimelineAnchorForToolActivity,
   shouldRenderPreviewMiniPlayer,
   getStartedThreadModelChangeBlockReason,
+  getThreadModelSelectionBlockReason,
+  resolveThreadLeadSelection,
   LAST_INVOKED_SCRIPT_BY_PROJECT_KEY,
   LastInvokedScriptByProjectSchema,
   type LocalDispatchSnapshot,
@@ -1939,6 +1949,10 @@ export default function ChatView(props: ChatViewProps) {
   const setComposerDraftReviewComments = useComposerDraftStore((store) => store.setReviewComments);
   const setComposerDraftThreadContexts = useComposerDraftStore((store) => store.setThreadContexts);
   const setComposerDraftModelSelection = useComposerDraftStore((store) => store.setModelSelection);
+  const composerLead = useComposerDraftStore(
+    (store) => store.getComposerDraft(composerDraftTarget)?.lead === true,
+  );
+  const setComposerLead = useComposerDraftStore((store) => store.setLead);
   const setComposerDraftRuntimeMode = useComposerDraftStore((store) => store.setRuntimeMode);
   const setComposerDraftInteractionMode = useComposerDraftStore(
     (store) => store.setInteractionMode,
@@ -2111,10 +2125,10 @@ export default function ChatView(props: ChatViewProps) {
   const setMultipleModelSelections = (
     selections: SetStateAction<ReadonlyArray<ModelSelection> | null>,
   ) => {
-    appAtomRegistry.update(fanoutStateAtom, (current) => ({
-      ...current,
-      selections: typeof selections === "function" ? selections(current.selections) : selections,
-    }));
+    const current = appAtomRegistry.get(fanoutStateAtom);
+    const next = typeof selections === "function" ? selections(current.selections) : selections;
+    if (next !== null) setComposerLead(composerDraftTarget, null);
+    appAtomRegistry.update(fanoutStateAtom, (current) => ({ ...current, selections: next }));
   };
   const setMultipleModelSelectionsStable = useStableCallback(setMultipleModelSelections);
   const multipleModelSelectionsRef = useRef(multipleModelSelections);
@@ -3003,6 +3017,19 @@ export default function ChatView(props: ChatViewProps) {
       interactionMode: DEFAULT_INTERACTION_MODE,
       ...input,
     });
+    const destinationConfig = appAtomRegistry
+      .get(environmentServerConfigsAtom)
+      .get(activeProject.environmentId);
+    useComposerDraftStore
+      .getState()
+      .initializeLeadDraft(
+        nextDraftId,
+        resolveLeadAvailability(
+          mergeEnvironmentSettings(destinationConfig?.settings ?? settings, settings),
+          destinationConfig?.providers ?? [],
+          activeProject.id,
+        ).selection,
+      );
     await navigate({
       to: "/draft/$draftId",
       params: buildDraftThreadRouteParams(nextDraftId),
@@ -3345,6 +3372,62 @@ export default function ChatView(props: ChatViewProps) {
       ),
     [providerStatuses, settings, activeProject?.id],
   );
+  const leadAvailability = useMemo(
+    () => resolveLeadAvailability(settings, providerStatuses, activeProject?.id ?? null),
+    [settings, providerStatuses, activeProject?.id],
+  );
+  const leadSwitchContext = {
+    providers: providerStatuses,
+    hasStartedSession: activeRuntime !== null,
+    supportsProviderSwitchingViaHandoff,
+    lockedProvider: modelPickerLockedProvider,
+    currentModelSelection: activeThread?.modelSelection ?? NO_PROVIDER_MODEL_SELECTION,
+    currentProviderInstanceId: activeRuntime?.providerInstanceId ?? null,
+  };
+  const threadLeadSelection = resolveThreadLeadSelection(leadAvailability, leadSwitchContext);
+  const previousLeadCatalogRef = useRef<{
+    threadKey: string;
+    environmentId: EnvironmentId;
+    loaded: boolean;
+  } | null>(null);
+  useEffect(() => {
+    const previous = previousLeadCatalogRef.current;
+    // Hydration may precede the first catalog. Preserve saved intent then,
+    // but losing a catalog or changing destinations must detach Lead.
+    const lostCatalog =
+      previous?.threadKey === routeThreadKey &&
+      (previous.loaded || previous.environmentId !== environmentId);
+    if (
+      composerLead &&
+      leadAvailability !== null &&
+      (serverConfig !== null ||
+        lostCatalog ||
+        appAtomRegistry.get(fanoutStateAtom).selections !== null)
+    ) {
+      useComposerDraftStore
+        .getState()
+        .reconcileLead(
+          composerDraftTarget,
+          leadAvailability,
+          appAtomRegistry.get(fanoutStateAtom).selections,
+        );
+    }
+    previousLeadCatalogRef.current = {
+      threadKey: routeThreadKey,
+      environmentId,
+      loaded: serverConfig !== null,
+    };
+  }, [
+    composerLead,
+    serverConfig,
+    leadAvailability,
+    fanoutStateAtom,
+    composerDraftTarget,
+    routeThreadKey,
+    environmentId,
+  ]);
+  const removeLead = () => setComposerLead(composerDraftTarget, null);
+  const removeLeadStable = useStableCallback(removeLead);
   const { selectedProviderEntry, requestedDriverKind } = useMemo(
     () =>
       resolveComposerProviderSelection({
@@ -3361,7 +3444,7 @@ export default function ChatView(props: ChatViewProps) {
       }),
     [
       activeProjectDefaultModelSelection?.instanceId,
-      activeThread?.modelSelection.instanceId,
+      activeThread?.modelSelection,
       activeRuntime?.providerInstanceId,
       lockedProvider,
       providerInstanceEntries,
@@ -4380,25 +4463,30 @@ export default function ChatView(props: ChatViewProps) {
           providerSubagentModels,
           reportedModelSelection,
         );
-  const mountComposerContextStrip = shouldShowComposerContextStrip({
-    isDraftHeroState,
-    persistInActiveThreads: settings.persistComposerContextStrip,
-    hasActiveProject: activeProject !== null && !showProviderSubagentBar,
-    isGitRepo,
-    showEnvironmentIndicator: showComposerEnvironmentIndicator,
-    hostsRestingComposerControls: routeKind === "server",
-  });
-  const showComposerContextStrip = shouldShowComposerContextStrip({
-    isDraftHeroState,
-    persistInActiveThreads: settings.persistComposerContextStrip,
-    hasActiveProject: activeProject !== null && !showProviderSubagentBar,
-    isGitRepo,
-    showEnvironmentIndicator: showComposerEnvironmentIndicator,
-    hostsRestingComposerControls: routeKind === "server" && restingComposerControlsVisible,
-  });
+  const mountComposerContextStrip =
+    isLocalDraftThread ||
+    shouldShowComposerContextStrip({
+      isDraftHeroState,
+      persistInActiveThreads: settings.persistComposerContextStrip,
+      hasActiveProject: activeProject !== null && !showProviderSubagentBar,
+      isGitRepo,
+      showEnvironmentIndicator: showComposerEnvironmentIndicator,
+      hostsRestingComposerControls: routeKind === "server",
+    });
+  const showComposerContextStrip =
+    isLocalDraftThread ||
+    (isServerThread && mountComposerContextStrip) ||
+    shouldShowComposerContextStrip({
+      isDraftHeroState,
+      persistInActiveThreads: settings.persistComposerContextStrip,
+      hasActiveProject: activeProject !== null && !showProviderSubagentBar,
+      isGitRepo,
+      showEnvironmentIndicator: showComposerEnvironmentIndicator,
+      hostsRestingComposerControls: routeKind === "server" && restingComposerControlsVisible,
+    });
   const mountComposerModelStrip =
     routeKind === "server" && !mountComposerContextStrip && !showProviderSubagentBar;
-  const showComposerModelStrip = mountComposerModelStrip && restingComposerControlsVisible;
+  const showComposerModelStrip = mountComposerModelStrip;
   const terminalShortcutLabelOptions = useMemo(
     () => ({
       context: {
@@ -9132,7 +9220,7 @@ export default function ChatView(props: ChatViewProps) {
     const composerReviewCommentsSnapshot: ReviewCommentContext[] = [...composerReviewComments];
     const composerThreadContextsSnapshot = [...composerThreadContexts];
     // Expired terminal excerpts are not sent; their chips leave the text with them.
-    const messageTextForSend = composerTerminalContexts
+    let messageTextForSend = composerTerminalContexts
       .filter((context) => !composerTerminalContextsSnapshot.includes(context))
       .reduce(
         (text, context) =>
@@ -9171,7 +9259,7 @@ export default function ChatView(props: ChatViewProps) {
       compactBeforeSend ||
       sendQueuesBehindSetup ||
       (phase === "running" && dispatchMode === "queue");
-    const outgoingMessageText = formatOutgoingPrompt({
+    let outgoingMessageText = formatOutgoingPrompt({
       provider: ctxSelectedProvider,
       model: ctxSelectedModel,
       models: ctxSelectedProviderModels,
@@ -9243,6 +9331,8 @@ export default function ChatView(props: ChatViewProps) {
       });
     }
 
+    const leadForSend =
+      useComposerDraftStore.getState().getComposerDraft(composerDraftTarget)?.lead === true;
     sendInFlightRef.current = true;
     const sendGeneration = ++composerSendGenerationRef.current;
     const attachmentCapabilitiesBeforeUpload = readLiveAttachmentCapabilities();
@@ -9319,6 +9409,52 @@ export default function ChatView(props: ChatViewProps) {
       );
       return;
     }
+    const leadTaskText = messageTextForSend || ATTACHMENT_ONLY_BOOTSTRAP_PROMPT;
+    let leadAttachedForSend = false;
+    let leadRevisionForSend: number | undefined;
+    if (
+      ((isLocalDraftThread && isFirstMessage) || (isServerThread && leadForSend)) &&
+      multipleModelSelections === null
+    ) {
+      const config = appAtomRegistry.get(environmentServerConfigsAtom).get(environmentId);
+      const taskText = leadTaskText;
+      const preparedText = prepareLeadDraftMessage({
+        text: taskText,
+        lead:
+          leadForSend &&
+          useComposerDraftStore.getState().getComposerDraft(composerDraftTarget)?.lead === true,
+        selections: [ctxSelectedModelSelection],
+        availability: resolveLeadAvailability(
+          mergeEnvironmentSettings(config?.settings ?? settings, settings),
+          config?.providers ?? [],
+          activeProject.id,
+        ),
+      });
+      const preparedOutgoing = formatOutgoingPrompt({
+        provider: ctxSelectedProvider,
+        model: ctxSelectedModel,
+        models: ctxSelectedProviderModels,
+        effort: ctxSelectedPromptEffort,
+        text: preparedText,
+      });
+      if (composerRef.current?.validateProviderInput(preparedOutgoing) === false) {
+        sendInFlightRef.current = false;
+        setDockedDraftHeroThreadKey((currentThreadKey) =>
+          currentThreadKey === activeThreadKey ? null : currentThreadKey,
+        );
+        return;
+      }
+      // Transfer intent to this send before any further await. Failure restores
+      // the raw prompt and intent so the next attempt rechecks its own catalog.
+      setComposerLead(composerDraftTarget, null);
+      leadRevisionForSend = useComposerDraftStore
+        .getState()
+        .getComposerDraft(composerDraftTarget)?.leadRevision;
+      leadAttachedForSend = preparedText !== taskText;
+      if (leadAttachedForSend) messageTextForSend = preparedText;
+      outgoingMessageText = preparedOutgoing;
+    }
+
     // A send queued behind setup leaves the first send's dispatch and setup card alone.
     if (sendQueuesBehindSetup) {
       setSetupQueueSendThreadKey(activeThreadKey);
@@ -9383,7 +9519,9 @@ export default function ChatView(props: ChatViewProps) {
           ),
         );
         const title = truncate(
-          assistantCitationsToPlainText(stripInlineContextReferences(trimmed)).trim() ||
+          assistantCitationsToPlainText(
+            stripInlineContextReferences(stripLeadInstruction(trimmed)),
+          ).trim() ||
             composerAttachmentsSnapshot[0]?.name ||
             "New thread",
         );
@@ -9708,7 +9846,9 @@ export default function ChatView(props: ChatViewProps) {
         firstComposerImageName = firstComposerImage.name;
       }
     }
-    let titleSeed = assistantCitationsToPlainText(stripInlineContextReferences(trimmed)).trim();
+    let titleSeed = assistantCitationsToPlainText(
+      stripInlineContextReferences(stripLeadInstruction(trimmed)),
+    ).trim();
     if (!titleSeed) {
       if (firstComposerImageName) {
         titleSeed = `Image: ${firstComposerImageName}`;
@@ -9813,6 +9953,41 @@ export default function ChatView(props: ChatViewProps) {
           ? scopeThreadRef(environmentId, threadIdForSend)
           : null;
       if (backgroundThreadRef) beginBackgroundDraftSubmissionByRef(backgroundThreadRef);
+      if (leadAttachedForSend) {
+        const config = appAtomRegistry.get(environmentServerConfigsAtom).get(environmentId);
+        messageTextForSend = prepareTransferredLeadMessage(
+          composerDraftTarget,
+          leadRevisionForSend,
+          {
+            text: leadTaskText,
+            selection: ctxSelectedModelSelection,
+            availability: resolveLeadAvailability(
+              mergeEnvironmentSettings(config?.settings ?? settings, settings),
+              config?.providers ?? [],
+              activeProject.id,
+            ),
+          },
+        );
+      }
+      const dispatchMessageText = leadAttachedForSend
+        ? formatOutgoingPrompt({
+            provider: ctxSelectedProvider,
+            model: ctxSelectedModel,
+            models: ctxSelectedProviderModels,
+            effort: ctxSelectedPromptEffort,
+            text: messageTextForSend,
+          })
+        : outgoingMessageText;
+      // A final downgrade cancels this arming even if the catalog recovers
+      // before a failed RPC restores the raw prompt.
+      leadAttachedForSend = leadAttachedForSend && messageTextForSend !== leadTaskText;
+      if (dispatchMessageText !== outgoingMessageText) {
+        setOptimisticUserMessages((messages) =>
+          messages.map((message) =>
+            message.id === messageIdForSend ? { ...message, text: dispatchMessageText } : message,
+          ),
+        );
+      }
       const startPromise = startThreadTurn({
         environmentId,
         input: {
@@ -9820,7 +9995,7 @@ export default function ChatView(props: ChatViewProps) {
           message: {
             messageId: messageIdForSend,
             role: "user",
-            text: outgoingMessageText,
+            text: dispatchMessageText,
             attachments: turnAttachmentsResult.value,
             ...(() => {
               const context = buildOutgoingMessageContext(
@@ -9841,7 +10016,7 @@ export default function ChatView(props: ChatViewProps) {
               if (!supportsInlineMessageContext) {
                 return {
                   text: serializeLegacyContextMessage({
-                    text: outgoingMessageText,
+                    text: dispatchMessageText,
                     records: context.records,
                   }),
                 };
@@ -9965,12 +10140,19 @@ export default function ChatView(props: ChatViewProps) {
           const next = existing.filter((message) => message.id !== messageIdForSend);
           return next.length === existing.length ? existing : next;
         });
-        promptRef.current = messageTextForSend;
+        promptRef.current = promptForSend;
         const retryComposerImages = composerImagesSnapshot.map(cloneComposerImageForRetry);
         composerImagesRef.current = retryComposerImages;
         composerFilesRef.current = composerFilesSnapshot;
         composerTerminalContextsRef.current = composerTerminalContextsSnapshot;
-        setComposerDraftPrompt(composerDraftTarget, messageTextForSend);
+        useComposerDraftStore
+          .getState()
+          .restorePromptAfterFailedSend(
+            composerDraftTarget,
+            promptForSend,
+            leadAttachedForSend,
+            leadRevisionForSend,
+          );
         addComposerDraftImages(composerDraftTarget, retryComposerImages);
         addComposerDraftFiles(composerDraftTarget, composerFilesSnapshot);
         setComposerDraftTerminalContexts(composerDraftTarget, composerTerminalContextsSnapshot);
@@ -9978,8 +10160,8 @@ export default function ChatView(props: ChatViewProps) {
         setComposerDraftReviewComments(composerDraftTarget, composerReviewCommentsSnapshot);
         setComposerDraftThreadContexts(composerDraftTarget, composerThreadContextsSnapshot);
         composerRef.current?.resetCursorState({
-          cursor: collapseExpandedComposerCursor(messageTextForSend, messageTextForSend.length),
-          prompt: messageTextForSend,
+          cursor: collapseExpandedComposerCursor(promptForSend, promptForSend.length),
+          prompt: promptForSend,
           detectTrigger: true,
         });
       }
@@ -10559,40 +10741,9 @@ export default function ChatView(props: ChatViewProps) {
   const onProviderModelSelect = (
     instanceId: ProviderInstanceId,
     model: string,
-    options?: { focusComposer?: boolean },
+    options?: { focusComposer?: boolean; modelOptions?: ModelSelection["options"] },
   ) => {
-    if (!activeThread) return;
-    // Look up the configured instance so model normalization and custom
-    // model lookup stay scoped to that exact instance. Unknown instance ids
-    // are rejected by returning early; the server remains authoritative too.
-    const entry = providerStatuses.find((snapshot) => snapshot.instanceId === instanceId);
-    const resolvedDriverKind = entry?.driver ?? null;
-    if (
-      !supportsProviderSwitchingViaHandoff &&
-      lockedProvider !== null &&
-      resolvedDriverKind !== null &&
-      resolvedDriverKind !== lockedProvider
-    ) {
-      if (options?.focusComposer !== false) scheduleComposerFocus();
-      return;
-    }
-    if (
-      !supportsProviderSwitchingViaHandoff &&
-      lockedProvider !== null &&
-      activeRuntime?.providerInstanceId
-    ) {
-      const currentEntry = providerStatuses.find(
-        (snapshot) => snapshot.instanceId === activeRuntime.providerInstanceId,
-      );
-      if (
-        currentEntry?.continuation?.groupKey &&
-        entry?.continuation?.groupKey &&
-        currentEntry.continuation.groupKey !== entry.continuation.groupKey
-      ) {
-        if (options?.focusComposer !== false) scheduleComposerFocus();
-        return;
-      }
-    }
+    if (!activeThread) return false;
     const resolvedModel = resolveAppModelSelectionForInstance(
       instanceId,
       settings,
@@ -10601,17 +10752,19 @@ export default function ChatView(props: ChatViewProps) {
     );
     if (!resolvedModel) {
       if (options?.focusComposer !== false) scheduleComposerFocus();
-      return;
+      return false;
     }
     // Restore this model's own remembered options; without any, start it
     // from its default rather than carrying the previous model's over.
     const rememberedOptions =
+      options?.modelOptions ??
       useComposerDraftStore.getState().stickyOptionsByModelByProvider[instanceId]?.[resolvedModel];
     const nextModelSelection: ModelSelection =
       rememberedOptions !== undefined && rememberedOptions.length > 0
         ? { instanceId, model: resolvedModel, options: [...rememberedOptions] }
         : { instanceId, model: resolvedModel };
-    const modelChangeBlockReason = getStartedThreadModelChangeBlockReason({
+    const modelChangeBlockReason = getThreadModelSelectionBlockReason({
+      lockedProvider: modelPickerLockedProvider,
       providers: providerStatuses,
       hasStartedSession: activeRuntime !== null,
       supportsProviderSwitchingViaHandoff,
@@ -10626,7 +10779,7 @@ export default function ChatView(props: ChatViewProps) {
         description: modelChangeBlockReason.description,
       });
       if (options?.focusComposer !== false) scheduleComposerFocus();
-      return;
+      return false;
     }
     setComposerDraftModelSelection(
       scopeThreadRef(activeThread.environmentId, activeThread.id),
@@ -10637,8 +10790,59 @@ export default function ChatView(props: ChatViewProps) {
     );
     setStickyComposerModelSelection(nextModelSelection);
     if (options?.focusComposer !== false) scheduleComposerFocus();
+    return true;
   };
   const onProviderModelSelectStable = useStableCallback(onProviderModelSelect);
+  const restoreLead = () => {
+    const config = appAtomRegistry.get(environmentServerConfigsAtom).get(environmentId);
+    const availability = resolveLeadAvailability(
+      mergeEnvironmentSettings(config?.settings ?? settings, settings),
+      config?.providers ?? [],
+      activeProject?.id ?? null,
+    );
+    if (isLocalDraftThread) {
+      if (!availability.selection) return;
+      setMultipleModelSelections(null);
+      setComposerLead(composerDraftTarget, availability.selection);
+      return;
+    }
+    const selection = resolveThreadLeadSelection(availability, {
+      ...leadSwitchContext,
+      providers: config?.providers ?? [],
+    });
+    if (
+      !selection ||
+      !onProviderModelSelect(selection.instanceId, selection.model, {
+        modelOptions: selection.options,
+      })
+    )
+      return;
+    setMultipleModelSelections(null);
+    setComposerLead(composerDraftTarget, selection);
+  };
+  const restoreLeadStable = useStableCallback(restoreLead);
+  const leadInstruction = useMemo(
+    () =>
+      isLocalDraftThread || composerLead ? (
+        <LeadDraftControl
+          key={draftId ?? activeThreadKey}
+          lead={composerLead}
+          availability={leadAvailability}
+          existingThread={!isLocalDraftThread}
+          onRemove={removeLeadStable}
+          onRestore={restoreLeadStable}
+        />
+      ) : null,
+    [
+      isLocalDraftThread,
+      composerLead,
+      draftId,
+      activeThreadKey,
+      leadAvailability,
+      removeLeadStable,
+      restoreLeadStable,
+    ],
+  );
   const onEnvModeChange = (mode: DraftThreadEnvMode) => {
     if (multipleModelSelections !== null) return;
     if (canOverrideServerThreadEnvMode) {
@@ -11517,6 +11721,7 @@ export default function ChatView(props: ChatViewProps) {
                           ) : null}
                           {!composerMounted ? null : (
                             <ChatComposer
+                              instruction={leadInstruction}
                               canOperateThread={canOperateThread}
                               reportedModelSelection={reportedModelSelection}
                               multipleModelSelections={multipleModelSelections}
@@ -11703,6 +11908,12 @@ export default function ChatView(props: ChatViewProps) {
                                   "pointer-events-none invisible absolute inset-x-0 top-full",
                               )}
                             >
+                              <LeadContextControl
+                                lead={composerLead}
+                                availability={leadAvailability}
+                                switchSupported={threadLeadSelection !== null}
+                                onRestore={restoreLeadStable}
+                              />
                               <div
                                 ref={setRestingComposerControlsHost}
                                 className="min-w-0 flex-1"
@@ -11712,6 +11923,14 @@ export default function ChatView(props: ChatViewProps) {
                           {mountComposerContextStrip && (
                             <div className="pointer-events-auto">
                               <BranchToolbar
+                                leadControl={{
+                                  lead: composerLead,
+                                  availability: leadAvailability,
+                                  existingThread: !isLocalDraftThread,
+                                  switchSupported: threadLeadSelection !== null,
+                                  onRemove: removeLeadStable,
+                                  onRestore: restoreLeadStable,
+                                }}
                                 forceNewWorktree={multipleModelSelections !== null}
                                 ref={branchToolbarRef}
                                 environmentId={activeThread.environmentId}

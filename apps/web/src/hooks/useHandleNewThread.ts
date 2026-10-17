@@ -40,7 +40,9 @@ import { readT3ProjectFile } from "../lib/t3ProjectFileDefaults";
 import { environmentServerConfigsAtom } from "../state/server";
 import { resolveThreadRouteTarget } from "../threadRoutes";
 import { legacyProjectCwdPreferenceKey, useUiStateStore } from "../uiStateStore";
-import { useClientSettings } from "./useSettings";
+import { mergeEnvironmentSettings, useClientSettings } from "./useSettings";
+import { resolveLeadAvailability } from "../modelSelection";
+import { appAtomRegistry } from "../rpc/atomRegistry";
 
 interface NewThreadWorkspaceOptions {
   branch?: string | null;
@@ -63,6 +65,7 @@ function pickExplicitWorkspaceOptions(options: NewThreadWorkspaceOptions | undef
 
 export function useNewThreadHandler() {
   const environmentServerConfigs = useAtomValue(environmentServerConfigsAtom);
+  const clientSettings = useClientSettings();
   const projectGroupingSettings = useClientSettings(selectProjectGroupingSettings);
   const router = useRouter();
   const getCurrentRouteTarget = useCallback(() => {
@@ -301,7 +304,7 @@ export function useNewThreadHandler() {
           // flag protects.
           const storedDraft = getComposerDraft(emptyStoredDraftThread.draftId);
           const storedDraftHasExplicitModelPick = hasExplicitComposerModelSelection(storedDraft);
-          if (!storedDraftHasExplicitModelPick) {
+          if (!storedDraftHasExplicitModelPick && storedDraft?.lead === undefined) {
             applyStickyState(emptyStoredDraftThread.draftId);
             const modelSelectionOverride = resolveModelSelectionOverride(
               emptyStoredDraftThread.draftId,
@@ -448,6 +451,22 @@ export function useNewThreadHandler() {
           // state. The project default wins when both are present.
           setModelSelection(draftId, modelSelectionOverride, { replaceOptions: true });
         }
+        const destinationConfig = appAtomRegistry
+          .get(environmentServerConfigsAtom)
+          .get(projectRef.environmentId);
+        useComposerDraftStore
+          .getState()
+          .initializeLeadDraft(
+            draftId,
+            resolveLeadAvailability(
+              mergeEnvironmentSettings(
+                destinationConfig?.settings ?? targetServerSettings,
+                clientSettings,
+              ),
+              destinationConfig?.providers ?? [],
+              projectRef.projectId,
+            ).selection,
+          );
         await router.navigate({
           to: "/draft/$draftId",
           params: { draftId },
@@ -456,7 +475,13 @@ export function useNewThreadHandler() {
         return { draftId, threadId };
       })();
     },
-    [environmentServerConfigs, getCurrentRouteTarget, projectGroupingSettings, router],
+    [
+      clientSettings,
+      environmentServerConfigs,
+      getCurrentRouteTarget,
+      projectGroupingSettings,
+      router,
+    ],
   );
 }
 

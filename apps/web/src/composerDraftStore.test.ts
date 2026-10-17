@@ -19,6 +19,9 @@ import {
   type ProviderOptionSelection,
 } from "@t3tools/contracts";
 import { createModelSelection } from "@t3tools/shared/model";
+import { LEAD_INSTRUCTION } from "@t3tools/shared/lead";
+import { ATTACHMENT_ONLY_BOOTSTRAP_PROMPT } from "@t3tools/shared/composerContextReferences";
+import { prepareLeadDraftMessage } from "./modelSelection";
 import {
   collectAssistantCitations,
   serializeAssistantCitation,
@@ -198,6 +201,400 @@ function draftFor(threadId: ThreadId, environmentId: EnvironmentId = LEGACY_TEST
 function draftByKey(key: string) {
   return useComposerDraftStore.getState().draftsByThreadKey[key] ?? undefined;
 }
+
+describe("Lead draft intent", () => {
+  beforeEach(resetComposerDraftStore);
+  afterEach(resetComposerDraftStore);
+  const draftId = DraftId.make("lead-draft");
+  const selection = createModelSelection(
+    ProviderInstanceId.make("muse_custom"),
+    "muse-wonder-full-1.0",
+    [{ id: "catalog-effort", value: "max" }],
+  );
+  const availability = { selection, missing: [], wonderSelections: [selection] };
+  const createDraft = () => {
+    const store = useComposerDraftStore.getState();
+    store.setProjectDraftThreadId(
+      scopeProjectRef(TEST_ENVIRONMENT_ID, ProjectId.make("lead-project")),
+      draftId,
+      { interactionMode: "plan", runtimeMode: "full-access" },
+    );
+    return store;
+  };
+
+  it("seeds fresh drafts once, preserves modes, and does not change sticky defaults", () => {
+    const store = createDraft();
+    store.setModelSelection(draftId, createModelSelection(CODEX_INSTANCE, "gpt-6-astra"));
+    store.initializeLeadDraft(draftId, selection);
+    expect(store.getComposerDraft(draftId)).toMatchObject({
+      lead: true,
+      activeProvider: selection.instanceId,
+      modelSelectionByProvider: { [selection.instanceId]: selection },
+    });
+    expect(store.getDraftSession(draftId)).toMatchObject({
+      interactionMode: "plan",
+      runtimeMode: "full-access",
+    });
+    expect(useComposerDraftStore.getState().stickyActiveProvider).toBeNull();
+    store.setLead(draftId, null);
+    store.initializeLeadDraft(draftId, selection);
+    expect(store.getComposerDraft(draftId)?.lead).toBe(false);
+    store.setLead(draftId, selection);
+    expect(store.getComposerDraft(draftId)?.lead).toBe(true);
+  });
+
+  it("does not override an explicit choice made before initialization or attach after catalog recovery", () => {
+    const store = createDraft();
+    const explicit = createModelSelection(CODEX_INSTANCE, "gpt-6-astra");
+    store.setModelSelection(draftId, explicit, { explicit: true });
+    store.initializeLeadDraft(draftId, selection);
+    expect(store.getComposerDraft(draftId)).toMatchObject({
+      lead: false,
+      activeProvider: CODEX_INSTANCE,
+    });
+    store.initializeLeadDraft(draftId, selection);
+    store.reconcileLead(draftId, availability, null);
+    expect(store.getComposerDraft(draftId)?.lead).toBe(false);
+    resetComposerDraftStore();
+    createDraft().initializeLeadDraft(draftId, null);
+    store.initializeLeadDraft(draftId, selection);
+    expect(store.getComposerDraft(draftId)?.lead).toBe(false);
+  });
+
+  it("clears on non-Wonder, fan-out, effort changes and catalog loss, and restores explicitly", () => {
+    const store = createDraft();
+    store.initializeLeadDraft(draftId, selection);
+    store.setModelSelection(draftId, createModelSelection(CODEX_INSTANCE, "gpt-6-astra"), {
+      explicit: true,
+    });
+    expect(store.getComposerDraft(draftId)?.lead).toBe(false);
+    store.setModelSelection(draftId, selection, { explicit: true });
+    expect(store.getComposerDraft(draftId)?.lead).toBe(false);
+    store.setLead(draftId, selection);
+    store.reconcileLead(draftId, availability, [selection]);
+    expect(store.getComposerDraft(draftId)?.lead).toBe(false);
+    store.setLead(draftId, selection);
+    store.setProviderModelOptions(
+      draftId,
+      ProviderDriverKind.make("muse"),
+      [{ id: "catalog-effort", value: "high" }],
+      { instanceId: selection.instanceId, model: selection.model },
+    );
+    expect(store.getComposerDraft(draftId)?.lead).toBe(false);
+    store.setProviderModelOptions(draftId, ProviderDriverKind.make("muse"), selection.options, {
+      instanceId: selection.instanceId,
+      model: selection.model,
+    });
+    expect(store.getComposerDraft(draftId)?.lead).toBe(false);
+    store.setLead(draftId, selection);
+    store.reconcileLead(
+      draftId,
+      { ...availability, selection: null, missing: ["Sol xhigh"] },
+      null,
+    );
+    store.reconcileLead(draftId, availability, null);
+    expect(store.getComposerDraft(draftId)?.lead).toBe(false);
+    store.setLead(draftId, selection);
+    expect(store.getComposerDraft(draftId)?.modelSelectionByProvider[selection.instanceId]).toEqual(
+      selection,
+    );
+  });
+
+  it.each([true, false])("persists lead=%s without reseeding on reload", async (lead) => {
+    await useComposerDraftStore.persist.clearStorage();
+    vi.useFakeTimers();
+    try {
+      const store = createDraft();
+      store.initializeLeadDraft(draftId, selection);
+      if (!lead) store.setLead(draftId, null);
+      await vi.advanceTimersByTimeAsync(300);
+      resetComposerDraftStore();
+      await useComposerDraftStore.persist.rehydrate();
+      store.initializeLeadDraft(draftId, selection);
+      store.applyStickyState(draftId);
+      expect(store.getComposerDraft(draftId)).toMatchObject({
+        lead,
+        activeProvider: selection.instanceId,
+        modelSelectionByProvider: { [selection.instanceId]: selection },
+      });
+    } finally {
+      vi.useRealTimers();
+      await useComposerDraftStore.persist.clearStorage();
+    }
+  });
+
+  it("persists active catalog cancellation immediately, before the session observer runs", async () => {
+    await useComposerDraftStore.persist.clearStorage();
+    try {
+      const store = createDraft();
+      store.initializeLeadDraft(draftId, selection);
+      store.reconcileLead(draftId, { ...availability, selection: null, missing: ["Sol"] }, null);
+      // Reload without advancing the persistence debounce or observing background drafts.
+      resetComposerDraftStore();
+      await useComposerDraftStore.persist.rehydrate();
+      expect(store.getComposerDraft(draftId)?.lead).toBe(false);
+      store.reconcileLead(draftId, availability, null);
+      expect(store.getComposerDraft(draftId)?.lead).toBe(false);
+    } finally {
+      await useComposerDraftStore.persist.clearStorage();
+    }
+  });
+
+  it("keeps a restored draft that predates Lead on its saved model", async () => {
+    await useComposerDraftStore.persist.clearStorage();
+    vi.useFakeTimers();
+    try {
+      const store = createDraft();
+      const saved = createModelSelection(CODEX_INSTANCE, "gpt-6-astra");
+      store.setModelSelection(draftId, saved);
+      await vi.advanceTimersByTimeAsync(300);
+      resetComposerDraftStore();
+      await useComposerDraftStore.persist.rehydrate();
+      store.initializeLeadDraft(draftId, selection);
+      expect(store.getComposerDraft(draftId)).toMatchObject({
+        lead: false,
+        activeProvider: CODEX_INSTANCE,
+        modelSelectionByProvider: { [CODEX_INSTANCE]: saved },
+      });
+    } finally {
+      vi.useRealTimers();
+      await useComposerDraftStore.persist.clearStorage();
+    }
+  });
+
+  describe.each(["fresh", "existing", "background"] as const)("%s failure recovery", (surface) => {
+    function prepareTarget() {
+      const store = createDraft();
+      const target =
+        surface === "existing"
+          ? scopeThreadRef(TEST_ENVIRONMENT_ID, ThreadId.make("existing-retry"))
+          : draftId;
+      store.setLead(target, selection);
+      return { store, target };
+    }
+
+    it.each(["  Fix login  ", "", `Fix login\n\n${LEAD_INSTRUCTION}`])(
+      "restores the raw prompt and only re-arms generated Lead: %j",
+      (rawPrompt) => {
+        const { store, target } = prepareTarget();
+        const taskText = rawPrompt.trim() || ATTACHMENT_ONLY_BOOTSTRAP_PROMPT;
+        const prepared = prepareLeadDraftMessage({
+          text: taskText,
+          lead: true,
+          selections: [selection],
+          availability,
+        });
+        const leadAttached = prepared !== taskText;
+        const draftThread = store.getDraftSession(draftId)!;
+        store.setLead(target, null);
+        const leadRevision = store.getComposerDraft(target)?.leadRevision;
+        store.clearComposerContent(target);
+        if (surface === "background") {
+          markPromotedDraftThreadByRef(scopeThreadRef(TEST_ENVIRONMENT_ID, draftThread.threadId));
+          restoreFailedBackgroundDraftThread(draftId, draftThread, draftThread.threadId);
+        }
+        store.restorePromptAfterFailedSend(target, rawPrompt, leadAttached, leadRevision);
+        expect(store.getComposerDraft(target)).toMatchObject({
+          prompt: rawPrompt,
+          lead: leadAttached,
+        });
+        const retry = prepareLeadDraftMessage({
+          text: store.getComposerDraft(target)!.prompt.trim() || ATTACHMENT_ONLY_BOOTSTRAP_PROMPT,
+          lead: store.getComposerDraft(target)?.lead === true,
+          selections: [selection],
+          availability,
+        });
+        expect(retry).toBe(prepared);
+        expect(retry.split(LEAD_INSTRUCTION)).toHaveLength(2);
+      },
+    );
+
+    it("revalidates recovered intent against catalog loss instead of resending a baked sentence", () => {
+      const { store, target } = prepareTarget();
+      const raw = "Fix login";
+      const prepared = prepareLeadDraftMessage({
+        text: raw,
+        lead: true,
+        selections: [selection],
+        availability,
+      });
+      store.setLead(target, null);
+      const leadRevision = store.getComposerDraft(target)?.leadRevision;
+      store.clearComposerContent(target);
+      store.restorePromptAfterFailedSend(target, raw, prepared !== raw, leadRevision);
+      const missing = { ...availability, selection: null, missing: ["Sol xhigh"] };
+      store.reconcileLead(target, missing, null);
+      const draft = store.getComposerDraft(target)!;
+      expect(
+        prepareLeadDraftMessage({
+          text: draft.prompt,
+          lead: draft.lead === true,
+          selections: [selection],
+          availability: missing,
+        }),
+      ).toBe(raw);
+      store.reconcileLead(target, availability, null);
+      expect(store.getComposerDraft(target)?.lead).toBe(false);
+    });
+
+    it.each([true, false])(
+      "restores failed final revalidation without reviving canceled Lead (downgrade: %s)",
+      (downgrade) => {
+        const { store, target } = prepareTarget();
+        const raw = "  Fix login  ";
+        const taskText = raw.trim();
+        const prepared = prepareLeadDraftMessage({
+          text: taskText,
+          lead: true,
+          selections: [selection],
+          availability,
+        });
+        expect(prepared).toContain(LEAD_INSTRUCTION);
+        store.setLead(target, null);
+        const leadRevision = store.getComposerDraft(target)?.leadRevision;
+        store.clearComposerContent(target);
+        const dispatchText = prepareLeadDraftMessage({
+          text: taskText,
+          lead: true,
+          selections: [selection],
+          availability: downgrade
+            ? { ...availability, selection: null, missing: ["Sol xhigh"] }
+            : availability,
+        });
+        expect(dispatchText).toBe(downgrade ? taskText : prepared);
+        // The catalog can recover both before and after failure restoration.
+        store.reconcileLead(target, availability, null);
+        store.restorePromptAfterFailedSend(target, raw, dispatchText !== taskText, leadRevision);
+        store.reconcileLead(target, availability, null);
+        expect(store.getComposerDraft(target)).toMatchObject({ prompt: raw, lead: !downgrade });
+      },
+    );
+
+    it("keeps a newer model selection Direct when restoring the raw prompt", () => {
+      const { store, target } = prepareTarget();
+      const newer = createModelSelection(CODEX_INSTANCE, "gpt-6-astra");
+      store.setLead(target, null);
+      const leadRevision = store.getComposerDraft(target)?.leadRevision;
+      store.setModelSelection(target, newer, { explicit: true });
+      store.restorePromptAfterFailedSend(target, "Fix login", true, leadRevision);
+      expect(store.getComposerDraft(target)).toMatchObject({
+        prompt: "Fix login",
+        lead: false,
+        activeProvider: CODEX_INSTANCE,
+        modelSelectionByProvider: { [CODEX_INSTANCE]: newer },
+      });
+      store.reconcileLead(target, availability, null);
+      expect(store.getComposerDraft(target)?.lead).toBe(false);
+    });
+
+    it.each(["effort", "model", "remove", "fan-out"] as const)(
+      "does not restore Lead after a newer %s cancellation, even when the selection returns",
+      (change) => {
+        const { store, target } = prepareTarget();
+        store.setLead(target, null);
+        const leadRevision = store.getComposerDraft(target)?.leadRevision;
+        store.clearComposerContent(target);
+        if (change === "effort") {
+          for (const value of ["low", "max"]) {
+            store.setProviderModelOptions(
+              target,
+              ProviderDriverKind.make("muse"),
+              [{ id: "catalog-effort", value }],
+              { instanceId: selection.instanceId, model: selection.model },
+            );
+          }
+        } else if (change === "model") {
+          store.setModelSelection(target, createModelSelection(CODEX_INSTANCE, "gpt-6-astra"));
+          store.setModelSelection(target, selection, { explicit: true });
+        } else {
+          // Both explicit removal and entering fan-out call setLead(null),
+          // including while the send has already consumed the visible chip.
+          store.setLead(target, null);
+        }
+        store.restorePromptAfterFailedSend(target, "  Fix login  ", true, leadRevision);
+        store.reconcileLead(target, availability, null);
+        expect(store.getComposerDraft(target)).toMatchObject({
+          prompt: "  Fix login  ",
+          lead: false,
+          activeProvider: selection.instanceId,
+          modelSelectionByProvider: { [selection.instanceId]: selection },
+        });
+      },
+    );
+  });
+});
+
+describe("existing-thread Lead draft", () => {
+  beforeEach(resetComposerDraftStore);
+  afterEach(resetComposerDraftStore);
+  const thread = scopeThreadRef(TEST_ENVIRONMENT_ID, ThreadId.make("existing-lead"));
+  const selection = createModelSelection(
+    ProviderInstanceId.make("muse_custom"),
+    "muse-wonder-full-1.0",
+    [{ id: "catalog-effort", value: "max" }],
+  );
+  const availability = { selection, missing: [], wonderSelections: [selection] };
+
+  it("arms a thread draft and persists cancellation without changing its model", async () => {
+    await useComposerDraftStore.persist.clearStorage();
+    vi.useFakeTimers();
+    try {
+      const store = useComposerDraftStore.getState();
+      store.setModelSelection(thread, selection, { explicit: true });
+      expect(store.getComposerDraft(thread)?.lead).not.toBe(true);
+      store.setLead(thread, selection);
+      await vi.advanceTimersByTimeAsync(300);
+      resetComposerDraftStore();
+      await useComposerDraftStore.persist.rehydrate();
+      expect(store.getComposerDraft(thread)?.lead).toBe(true);
+      store.setLead(thread, null);
+      expect(store.getComposerDraft(thread)).toMatchObject({
+        lead: false,
+        modelSelectionByProvider: { [selection.instanceId]: selection },
+      });
+    } finally {
+      vi.useRealTimers();
+      await useComposerDraftStore.persist.clearStorage();
+    }
+  });
+
+  it("disarms on model, effort, fan-out or catalog change and never re-arms from a manual pick", () => {
+    const store = useComposerDraftStore.getState();
+    store.setLead(thread, selection);
+    store.setModelSelection(thread, createModelSelection(CODEX_INSTANCE, "gpt-6-astra"), {
+      explicit: true,
+    });
+    expect(store.getComposerDraft(thread)?.lead).toBe(false);
+    store.setModelSelection(thread, selection, { explicit: true });
+    expect(store.getComposerDraft(thread)?.lead).toBe(false);
+    store.setLead(thread, selection);
+    store.setProviderModelOptions(
+      thread,
+      ProviderDriverKind.make("muse"),
+      [{ id: "catalog-effort", value: "low" }],
+      { instanceId: selection.instanceId, model: selection.model },
+    );
+    expect(store.getComposerDraft(thread)?.lead).toBe(false);
+    store.setLead(thread, selection);
+    store.reconcileLead(thread, availability, [selection]);
+    expect(store.getComposerDraft(thread)?.lead).toBe(false);
+    store.setLead(thread, selection);
+    store.reconcileLead(thread, { ...availability, selection: null, missing: ["Sol"] }, null);
+    store.reconcileLead(thread, availability, null);
+    expect(store.getComposerDraft(thread)?.lead).toBe(false);
+  });
+
+  it("does not invent or clear Lead intent when restoring a user-authored sentence", () => {
+    const store = useComposerDraftStore.getState();
+    const text = `Next task\n\n${LEAD_INSTRUCTION}`;
+    store.setLead(thread, null);
+    store.restorePromptAfterFailedSend(thread, text, false, undefined);
+    expect(store.getComposerDraft(thread)).toMatchObject({ prompt: text, lead: false });
+    store.setLead(thread, selection);
+    store.restorePromptAfterFailedSend(thread, text, false, undefined);
+    expect(store.getComposerDraft(thread)).toMatchObject({ prompt: text, lead: true });
+  });
+});
 
 describe("composerDraftStore assistant citations", () => {
   beforeEach(resetComposerDraftStore);

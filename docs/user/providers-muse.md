@@ -43,6 +43,18 @@ Muse can list models that your account cannot use. If a message fails with
 "does not exist or you lack access", pick another model, or add one your account
 can use under **Custom models** in the instance settings.
 
+## Lead and Direct messages
+
+Fresh threads default to Lead when the environment offers Wonder Full at Max,
+Astra (`gpt-6-astra`) at Max, and Sol (`gpt-6.1-sol`) at Extra High. Wonder Full
+leads design and decisions, Astra implements, tests, and pushes back on the plan,
+and Sol reviews. The Lead instruction row above your message shows when it will
+be added and expands to show the exact instruction. Remove it before sending to
+make that message Direct, or add it again to restore Wonder Full at Max. In an
+existing thread, the composer context menu can add the instruction to the next
+message when the thread supports that provider switch. The row disappears after
+sending. Without the three required models and efforts, threads simply run Direct.
+
 ## Permissions and limitations
 
 Muse offers two [permission modes](./permission-modes.md): **Supervised** asks

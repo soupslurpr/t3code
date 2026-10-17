@@ -11,6 +11,13 @@ import {
 import { afterEach, beforeEach, describe, expect, it, vi } from "vite-plus/test";
 
 import type { PreparedTurnAttachments } from "../lib/attachmentUpload";
+import { leadServerConfig, wonderMax } from "../features/threads/lead-test-fixtures";
+import {
+  prepareThreadMessageText,
+  resolveMobileLeadAvailability,
+  restoreNewTaskLead,
+} from "../lib/lead";
+import { LEAD_INSTRUCTION } from "@t3tools/shared/lead";
 
 const harness = vi.hoisted(() => ({
   canOperate: true,
@@ -643,6 +650,103 @@ describe("thread outbox delivered creation recovery", () => {
 });
 
 describe("thread outbox recovery rollback", () => {
+  it.each(
+    (["existing", "creation"] as const).flatMap((kind) =>
+      [false, true].map((removalFails) => ({ kind, removalFails })),
+    ),
+  )(
+    "restores unavailable $kind content Direct even after removal failure ($removalFails)",
+    async ({ kind, removalFails }) => {
+      const message: QueuedThreadMessage = {
+        ...queuedMessage({
+          messageId: "unavailable-lead",
+          text: "Recover this task",
+          fileUri: "file:///documents/recover.pdf",
+        }),
+        modelSelection: wonderMax,
+        lead: true,
+        runtimeMode: "approval-required",
+        interactionMode: "plan",
+        ...(kind === "creation"
+          ? {
+              creation: {
+                projectId: ProjectId.make("project-1"),
+                workspaceMode: "local" as const,
+                branch: "feature/recover",
+                worktreePath: null,
+              },
+            }
+          : {}),
+      };
+      const threadKey = `${message.environmentId}:${message.threadId}`;
+      const draftKey = message.creation ? `new-task:restored-${message.messageId}` : threadKey;
+      await harness.manager.enqueue(message);
+      const warning = vi.spyOn(console, "warn").mockImplementation(() => {});
+      try {
+        if (removalFails) {
+          harness.removeOutboxMessage.mockRejectedValueOnce(new Error("removal failed"));
+          await expect(
+            restoreRejectedQueuedMessage(message, "model unavailable", { cancelLead: true }),
+          ).resolves.toBe("retry");
+          expect(remainingMessages()).toEqual([{ ...message, lead: false }]);
+        }
+        const retry = remainingMessages()[0]!;
+        await expect(
+          restoreRejectedQueuedMessage(retry, "model unavailable", { cancelLead: true }),
+        ).resolves.toBe("restored");
+        const draft = composerDrafts.getComposerDraftSnapshot(draftKey);
+        expect(draft).toMatchObject({
+          text: message.text,
+          attachments: message.attachments,
+          modelSelection: wonderMax,
+          lead: false,
+          runtimeMode: message.runtimeMode,
+          interactionMode: message.interactionMode,
+          ...(message.creation
+            ? {
+                workspaceSelection: {
+                  mode: "local",
+                  branch: "feature/recover",
+                  worktreePath: null,
+                },
+              }
+            : {}),
+        });
+        expect(remainingMessages()).toEqual([]);
+        if (message.creation) {
+          expect(appAtomRegistry.get(pendingThreadCreationOutcomesAtom)[threadKey]).toEqual({
+            kind: "failed",
+            message: { ...message, lead: false },
+            reason: "model unavailable",
+          });
+        } else {
+          expect(appAtomRegistry.get(threadComposerErrorsAtom)[threadKey]?.message).toBe(
+            "model unavailable",
+          );
+        }
+        const projectId = ProjectId.make("project-1");
+        const config = leadServerConfig();
+        expect(
+          prepareThreadMessageText({ ...message, lead: draft.lead }, config, projectId, wonderMax),
+        ).toBe(message.text);
+        composerDrafts.updateComposerDraftSettings(
+          draftKey,
+          restoreNewTaskLead(resolveMobileLeadAvailability(config, projectId))!,
+        );
+        expect(
+          prepareThreadMessageText(
+            { ...message, lead: composerDrafts.getComposerDraftSnapshot(draftKey).lead },
+            config,
+            projectId,
+            wonderMax,
+          ),
+        ).toBe(`${message.text}\n\n${LEAD_INSTRUCTION}`);
+      } finally {
+        warning.mockRestore();
+      }
+    },
+  );
+
   it("preserves inline context from setup edits when reopening a failed task", async () => {
     const message = queuedMessage({ messageId: "failed-context", text: "Original prompt" });
     const sourceKey = `${message.environmentId}:${message.threadId}`;
@@ -717,46 +821,109 @@ describe("thread outbox recovery rollback", () => {
     );
   });
 
-  it("restores a rejected new task as its own draft for the project", async () => {
-    const message: QueuedThreadMessage = {
-      ...queuedMessage({ messageId: "message-creation-restore", text: "new task text" }),
-      modelSelection: { instanceId: ProviderInstanceId.make("codex"), model: "gpt-5.6-sol" },
-      creation: {
-        projectId: ProjectId.make("project-1"),
-        workspaceMode: "local",
-        branch: null,
-        worktreePath: null,
-      },
+  it.each([true, false, undefined])(
+    "restores a rejected new task with its saved Lead state (%s)",
+    async (lead) => {
+      const message: QueuedThreadMessage = {
+        ...queuedMessage({ messageId: "message-creation-restore", text: "new task text" }),
+        modelSelection: wonderMax,
+        lead,
+        creation: {
+          projectId: ProjectId.make("project-1"),
+          workspaceMode: "local",
+          branch: null,
+          worktreePath: null,
+        },
+      };
+      await harness.manager.enqueue(message);
+
+      await expect(restoreRejectedQueuedMessage(message, "rejected by server")).resolves.toBe(
+        "restored",
+      );
+
+      // The draft is keyed by the message so a retry lands on the same one, and
+      // stamped with the project so it shows up as a Draft row for that project.
+      expect(
+        composerDrafts.getComposerDraftSnapshot(`new-task:restored-${message.messageId}`),
+      ).toMatchObject({
+        text: message.text,
+        attachments: message.attachments,
+        modelSelection: message.modelSelection,
+        lead: lead ?? false,
+        project: {
+          environmentId: message.environmentId,
+          projectId: message.creation!.projectId,
+          createdAt: message.createdAt,
+        },
+      });
+      expect(remainingMessages()).toEqual([]);
+      // The creation's failure card shows the reason; the composer is hidden.
+      expect(appAtomRegistry.get(threadComposerErrorsAtom)).toEqual({});
+      // The thread screen opened for this creation reads the failure from here.
+      expect(
+        appAtomRegistry.get(pendingThreadCreationOutcomesAtom)[
+          `${message.environmentId}:${message.threadId}`
+        ],
+      ).toEqual({ kind: "failed", message, reason: "rejected by server" });
+    },
+  );
+
+  it.each([true, false, undefined])(
+    "restores an existing-thread message with its unconsumed Lead intent (%s)",
+    async (lead) => {
+      const message = {
+        ...queuedMessage({ messageId: "existing-lead-restore", text: "Lead this task" }),
+        modelSelection: wonderMax,
+        lead,
+      };
+      const draftKey = `${message.environmentId}:${message.threadId}`;
+      appAtomRegistry.set(composerDrafts.composerDraftsAtom, {
+        [draftKey]: { text: "Newer text", attachments: [] },
+      });
+      await harness.manager.enqueue(message);
+      await expect(restoreRejectedQueuedMessage(message, "rejected")).resolves.toBe("restored");
+      expect(composerDrafts.getComposerDraftSnapshot(draftKey)).toMatchObject({
+        text: "Newer text\n\nLead this task",
+        modelSelection: wonderMax,
+      });
+      expect(composerDrafts.getComposerDraftSnapshot(draftKey).lead).toBe(lead);
+      expect(remainingMessages()).toEqual([]);
+    },
+  );
+
+  it("rolls restored Lead intent back with its model while preserving later edits", async () => {
+    const message = {
+      ...queuedMessage({ messageId: "existing-lead-rollback", text: "Lead this task" }),
+      modelSelection: wonderMax,
+      lead: true,
     };
-    await harness.manager.enqueue(message);
-
-    await expect(restoreRejectedQueuedMessage(message, "rejected by server")).resolves.toBe(
-      "restored",
-    );
-
-    // The draft is keyed by the message so a retry lands on the same one, and
-    // stamped with the project so it shows up as a Draft row for that project.
-    expect(
-      composerDrafts.getComposerDraftSnapshot(`new-task:restored-${message.messageId}`),
-    ).toMatchObject({
-      text: message.text,
-      attachments: message.attachments,
-      modelSelection: message.modelSelection,
-      project: {
-        environmentId: message.environmentId,
-        projectId: message.creation!.projectId,
-        createdAt: message.createdAt,
+    const draftKey = `${message.environmentId}:${message.threadId}`;
+    const newerSelection = {
+      instanceId: ProviderInstanceId.make("codex_astra"),
+      model: "gpt-6-astra",
+    };
+    appAtomRegistry.set(composerDrafts.composerDraftsAtom, {
+      [draftKey]: {
+        text: "Original draft",
+        attachments: [],
+        modelSelection: wonderMax,
+        lead: false,
       },
     });
-    expect(remainingMessages()).toEqual([]);
-    // The creation's failure card shows the reason; the composer is hidden.
-    expect(appAtomRegistry.get(threadComposerErrorsAtom)).toEqual({});
-    // The thread screen opened for this creation reads the failure from here.
-    expect(
-      appAtomRegistry.get(pendingThreadCreationOutcomesAtom)[
-        `${message.environmentId}:${message.threadId}`
-      ],
-    ).toEqual({ kind: "failed", message, reason: "rejected by server" });
+    await harness.manager.enqueue(message);
+    harness.removeOutboxMessage.mockImplementationOnce(async () => {
+      expect(composerDrafts.getComposerDraftSnapshot(draftKey).lead).toBe(true);
+      composerDrafts.updateComposerDraftSettings(draftKey, { modelSelection: newerSelection });
+      composerDrafts.setComposerDraftText(draftKey, "Newer edit");
+      throw new Error("removal failed");
+    });
+    await expect(restoreRejectedQueuedMessage(message, "rejected")).resolves.toBe("retry");
+    expect(composerDrafts.getComposerDraftSnapshot(draftKey)).toMatchObject({
+      text: "Newer edit",
+      modelSelection: newerSelection,
+      lead: false,
+    });
+    expect(remainingMessages()).toEqual([message]);
   });
 
   it("drops an earlier recovery error once a rejected new task is restored", async () => {

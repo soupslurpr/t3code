@@ -77,6 +77,7 @@ import {
   ensureComposerDraftsLoaded,
   getComposerDraftSnapshot,
   mergeComposerDraftContent,
+  restoreComposerDraftAfterEnqueueFailure,
   removeComposerDraftAttachment,
   scheduleUnusedComposerAttachmentCleanup,
   setComposerDraftText,
@@ -723,6 +724,7 @@ export function useThreadComposerState() {
         attachments,
         context: draft.context,
         modelSelection,
+        ...(draft.lead === true ? { lead: true } : {}),
         runtimeMode: draft.runtimeMode ?? thread.runtimeMode,
         interactionMode: resolveProviderInteractionMode(
           provider,
@@ -735,16 +737,13 @@ export function useThreadComposerState() {
       enqueuePromise.then(
         () => scheduleUnusedComposerAttachmentCleanup(attachments),
         (error: unknown) => {
-          // Restore text via merge (idempotent) but attachments via the uncapped
-          // append: the merge path slots existing attachments first and truncates
-          // at the send limit, which would silently drop this message's images if
-          // the user attached new ones while the write was in flight.
-          void mergeComposerDraftContent(threadKey, {
+          void restoreComposerDraftAfterEnqueueFailure(threadKey, {
             text,
             context: draft.context,
-            attachments: [],
+            attachments,
+            lead: draft.lead,
+            leadRevision: draft.leadRevision,
           });
-          appendComposerDraftAttachments(threadKey, attachments, { allowOverflow: true });
           setThreadComposerError(
             threadKey,
             error instanceof Error ? error.message : "Failed to save the queued message.",

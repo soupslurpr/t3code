@@ -35,6 +35,7 @@ const testState = vi.hoisted(() => {
     setDraftThreadContext: vi.fn(),
     setLogicalProjectDraftThreadId: vi.fn(),
     setModelSelection: vi.fn(),
+    initializeLeadDraft: vi.fn(),
   };
 
   return {
@@ -188,12 +189,17 @@ vi.mock("../state/server", () => ({
   environmentServerConfigsAtom: {},
   primaryServerSettingsAtom: "primary-settings",
 }));
+vi.mock("../rpc/atomRegistry", () => ({ appAtomRegistry: { get: () => new Map() } }));
+vi.mock("../modelSelection", () => ({ resolveLeadAvailability: () => ({ selection: null }) }));
 vi.mock("../threadRoutes", () => ({ resolveThreadRouteTarget: () => null }));
 vi.mock("../uiStateStore", () => ({
   legacyProjectCwdPreferenceKey: () => "remote-project",
   useUiStateStore: () => [],
 }));
-vi.mock("./useSettings", () => ({ useClientSettings: () => ({}) }));
+vi.mock("./useSettings", () => ({
+  useClientSettings: () => ({}),
+  mergeEnvironmentSettings: (settings: unknown) => settings,
+}));
 
 import { useNewThreadHandler } from "./useHandleNewThread";
 

@@ -4,6 +4,7 @@ import {
   DEFAULT_TEXT_GENERATION_MODEL_BY_PROVIDER,
   defaultInstanceIdForDriver,
   type ModelSelection,
+  type ProjectId,
   ProviderDriverKind,
   ProviderInstanceId,
   type ServerProvider,
@@ -27,10 +28,46 @@ import {
 import { ModelEsque } from "./components/chat/providerIconUtils";
 import {
   type ProviderInstanceEntry,
+  applyProviderInstanceSettings,
   deriveProviderInstanceEntries,
+  isProviderInstancePickerReady,
   NO_PROVIDER_MODEL_SELECTION,
+  sortProviderInstanceEntries,
 } from "./providerInstances";
 import { sortModelsForProviderInstance } from "./modelOrdering";
+import { resolveLeadAvailabilityFromModels, type LeadAvailability } from "@t3tools/shared/lead";
+
+export {
+  matchesLeadSelection,
+  retainsDraftLead,
+  prepareLeadDraftMessage,
+} from "@t3tools/shared/lead";
+export type { LeadAvailability } from "@t3tools/shared/lead";
+
+/** Resolve only advertised, picker-ready choices on the destination environment. */
+export function resolveLeadAvailability(
+  settings: UnifiedSettings,
+  providers: ReadonlyArray<ServerProvider>,
+  projectId: ProjectId | null,
+): LeadAvailability {
+  const entries = sortProviderInstanceEntries(
+    applyProviderInstanceSettings(deriveProviderInstanceEntries(providers), settings, projectId),
+  ).filter(isProviderInstancePickerReady);
+  return resolveLeadAvailabilityFromModels(
+    entries.flatMap((entry) => {
+      const options = getAppModelOptionsForInstance(settings, entry);
+      return entry.models
+        .filter((model) =>
+          options.some((option) => option.slug === model.slug && !option.isUnavailable),
+        )
+        .map((model) => ({
+          driver: entry.driverKind,
+          selection: { instanceId: entry.instanceId, model: model.slug },
+          capabilities: model.capabilities,
+        }));
+    }),
+  );
+}
 
 const MAX_CUSTOM_MODEL_COUNT = 32;
 export const MAX_CUSTOM_MODEL_LENGTH = 256;

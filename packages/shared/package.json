@@ -3,6 +3,10 @@
   "private": true,
   "type": "module",
   "exports": {
+    "./lead": {
+      "types": "./src/lead.ts",
+      "import": "./src/lead.ts"
+    },
     "./githubMarkdownLinks": {
       "types": "./src/githubMarkdownLinks.ts",
       "import": "./src/githubMarkdownLinks.ts"

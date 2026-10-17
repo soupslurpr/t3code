@@ -157,6 +157,7 @@ import {
   countComposerDraftAttachmentsAfterSelection,
   getComposerDraftAfterSelection,
   archiveCloudComposerDrafts,
+  clearComposerDraft,
   clearComposerDraftContent,
   clearComposerDraftContentState,
   clearComposerDraftsEnvironment,
@@ -172,7 +173,10 @@ import {
   findNewTaskDraftKeys,
   findLocalComposerClipboardAttachment,
   flushComposerDrafts,
+  forgetComposerDraftTransferredLeadArming,
   getComposerDraftSnapshot,
+  isComposerDraftEmpty,
+  markComposerDraftLeadSubmitted,
   mergeComposerDraftContentState,
   migrateLegacyNewTaskDraft,
   modelOptionMemoryAtom,
@@ -181,6 +185,7 @@ import {
   replaceComposerDraftAttachments,
   resetComposerDraftsLoadState,
   restoreComposerDraftSnapshotState,
+  restoreComposerDraftAfterEnqueueFailure,
   restoreCloudComposerDrafts,
   retargetNewTaskDraft,
   setComposerDraftText,
@@ -193,8 +198,19 @@ import {
   stickyComposerModelSelectionAtom,
   undoComposerDraftMerge,
   undoComposerDraftMergeState,
+  updateComposerDraftSettings,
 } from "./use-composer-drafts";
 import { retainComposerAttachmentFileForPreview } from "../lib/composerAttachmentPreviewRetention";
+import {
+  createMobileLeadCatalogHistory,
+  isMobileLeadArmed,
+  reconcileNewTaskLead,
+  resolveMobileLeadAvailability,
+  restoreNewTaskLead,
+  seedNewTaskLead,
+} from "../lib/lead";
+import { leadServerConfig, wonderMax } from "../features/threads/lead-test-fixtures";
+import { buildPendingNewTasks, composerDraftHasUserContent } from "./pending-new-tasks-model";
 
 const DRAFT: ComposerDraft = {
   text: "hello",
@@ -240,6 +256,601 @@ function contextDraft(start: number, count: number): ComposerDraft {
 }
 
 describe("mobile composer drafts", () => {
+  describe("transferred Lead provenance", () => {
+    const draftKey = "environment-1:thread-1";
+    const receipts = { "older-message": 0, "newer-message": 3 };
+
+    it("persists multiple source generations in live drafts and signed-out archives", async () => {
+      const draft: ComposerDraft = {
+        ...DRAFT,
+        lead: false,
+        transferredLeadArmings: receipts,
+      };
+      await waitForComposerDraftsLoaded();
+      appAtomRegistry.set(composerDraftsAtom, { [draftKey]: draft });
+      appAtomRegistry.set(composerCloudDraftsAtom, {
+        accountId: null,
+        signedOut: { account: { drafts: { [draftKey]: draft }, queuedMessages: [] } },
+      });
+      setComposerDraftText(draftKey, draft.text);
+      await flushComposerDrafts();
+      const restored = decodePersistedComposerState(
+        JSON.parse(composerDraftFileMocks.getDocument()),
+      );
+      expect(restored.drafts[draftKey]).toEqual(draft);
+      expect(restored.cloudDrafts.signedOut.account?.drafts[draftKey]).toEqual(draft);
+      expect(
+        decodePersistedComposerState({ schemaVersion: 1, drafts: { [draftKey]: DRAFT } }).drafts[
+          draftKey
+        ]?.transferredLeadArmings,
+      ).toBeUndefined();
+    });
+
+    it("keeps transfer receipts after sending even without content or settings", () => {
+      const draft: ComposerDraft = {
+        ...DRAFT,
+        modelSelection: wonderMax,
+        lead: true,
+        leadArmingRevision: 3,
+        transferredLeadArmings: receipts,
+      };
+      const cleared = clearComposerDraftContentState({ [draftKey]: draft }, draftKey)[draftKey];
+      expect(cleared).toMatchObject({ text: "", transferredLeadArmings: receipts });
+      expect(cleared?.lead).toBeUndefined();
+      expect(cleared?.leadArmingRevision).toBeUndefined();
+      expect(
+        clearComposerDraftContentState({ [draftKey]: draft }, draftKey, {
+          clearModelSelection: true,
+        }),
+      ).toEqual({
+        [draftKey]: {
+          text: "",
+          attachments: [],
+          leadRevision: 0,
+          transferredLeadArmings: receipts,
+        },
+      });
+    });
+
+    it.each(
+      [undefined, false, true].flatMap((lead) =>
+        [undefined, 7].map((leadRevision) => ({ lead, leadRevision })),
+      ),
+    )(
+      "stamping alone preserves selection and generations ($lead/$leadRevision)",
+      async ({ lead, leadRevision }) => {
+        const key = "pending-task:stamp-only";
+        await waitForComposerDraftsLoaded();
+        const previous: ComposerDraft = {
+          ...DRAFT,
+          modelSelection: wonderMax,
+          ...(lead !== undefined ? { lead } : {}),
+          ...(leadRevision !== undefined ? { leadRevision } : {}),
+          leadArmingRevision: 3,
+        };
+        appAtomRegistry.set(composerDraftsAtom, { [key]: previous });
+        updateComposerDraftSettings(key, { transferredLeadArmings: receipts });
+        expect(getComposerDraftSnapshot(key)).toEqual({
+          ...previous,
+          transferredLeadArmings: receipts,
+        });
+        expect(getComposerDraftSnapshot(key).modelSelection).toBe(previous.modelSelection);
+        await flushComposerDrafts();
+        expect(
+          decodePersistedComposerState(JSON.parse(composerDraftFileMocks.getDocument())).drafts[
+            key
+          ],
+        ).toMatchObject({
+          modelSelection: wonderMax,
+          leadArmingRevision: 3,
+          transferredLeadArmings: receipts,
+        });
+      },
+    );
+
+    it.each<{ name: string; draft: ComposerDraft | undefined }>([
+      { name: "missing", draft: undefined },
+      { name: "implicit Direct", draft: DRAFT },
+      { name: "Direct", draft: { ...DRAFT, lead: false, leadRevision: 7 } },
+      { name: "armed without revision", draft: { ...DRAFT, lead: true } },
+      {
+        name: "armed with revision",
+        draft: {
+          ...DRAFT,
+          lead: true,
+          leadRevision: 7,
+          leadArmingRevision: 3,
+          transferredLeadArmings: receipts,
+        },
+      },
+    ])("marks submission only for an armed draft ($name)", async ({ draft }) => {
+      await waitForComposerDraftsLoaded();
+      const before: Record<string, ComposerDraft> = draft ? { [draftKey]: draft } : {};
+      appAtomRegistry.set(composerDraftsAtom, before);
+      markComposerDraftLeadSubmitted(draftKey);
+      if (draft?.lead === true) {
+        expect(getComposerDraftSnapshot(draftKey)).toEqual({
+          ...draft,
+          leadRevision: (draft.leadRevision ?? 0) + 1,
+          leadSubmittedRevision: (draft.leadRevision ?? 0) + 1,
+        });
+        await flushComposerDrafts();
+        expect(
+          decodePersistedComposerState(JSON.parse(composerDraftFileMocks.getDocument())).drafts[
+            draftKey
+          ]?.lead,
+        ).toBe(true);
+      } else {
+        expect(appAtomRegistry.get(composerDraftsAtom)).toBe(before);
+      }
+    });
+
+    it("preserves a model-only decision through rollback without requiring a Lead revision", () => {
+      const snapshot: ComposerDraft = { ...DRAFT, modelSelection: wonderMax };
+      const merged: ComposerDraft = {
+        ...snapshot,
+        text: `${snapshot.text}\n\nRecovered`,
+        transferredLeadArmings: receipts,
+      };
+      const modelSelection = { ...wonderMax, instanceId: ProviderInstanceId.make("muse_other") };
+      const existing = { ...merged, modelSelection };
+      const result = undoComposerDraftMergeState(
+        { [draftKey]: existing },
+        draftKey,
+        snapshot,
+        merged,
+      )[draftKey]!;
+      expect(result).toMatchObject({
+        text: snapshot.text,
+        modelSelection,
+        transferredLeadArmings: receipts,
+      });
+      expect(result.lead).toBeUndefined();
+      expect(result.leadRevision).toBeUndefined();
+    });
+
+    it("retains a receipt-only snapshot through merge rollback", () => {
+      const snapshot: ComposerDraft = {
+        text: "",
+        attachments: [],
+        transferredLeadArmings: receipts,
+      };
+      const merged = { ...snapshot, text: "Recovered" };
+      expect(
+        undoComposerDraftMergeState({ [draftKey]: merged }, draftKey, snapshot, merged)[draftKey],
+      ).toBe(snapshot);
+      expect(isComposerDraftEmpty(snapshot)).toBe(false);
+    });
+
+    it.each([undefined, {}])(
+      "deletes drafts without receipts (%s)",
+      async (transferredLeadArmings) => {
+        await waitForComposerDraftsLoaded();
+        appAtomRegistry.set(composerDraftsAtom, {
+          [draftKey]: { ...DRAFT, transferredLeadArmings },
+        });
+        clearComposerDraft(draftKey);
+        expect(appAtomRegistry.get(composerDraftsAtom)[draftKey]).toBeUndefined();
+        expect(isComposerDraftEmpty({ text: "", attachments: [], transferredLeadArmings })).toBe(
+          true,
+        );
+      },
+    );
+
+    it.each(["environment-1:thread-1", "new-task:receipt-stub"])(
+      "preserves and then prunes a cleared, persisted stub (%s)",
+      async (key) => {
+        await waitForComposerDraftsLoaded();
+        const project = {
+          environmentId: EnvironmentId.make("environment-1"),
+          projectId: ProjectId.make("project-1"),
+          createdAt: "2026-10-16T00:00:00.000Z",
+        };
+        appAtomRegistry.set(composerDraftsAtom, {
+          [key]: {
+            ...DRAFT,
+            project,
+            lead: true,
+            leadRevision: 4,
+            leadArmingRevision: 3,
+            modelSelection: wonderMax,
+            transferredLeadArmings: receipts,
+          },
+        });
+        clearComposerDraftContent(key, {
+          clearModelSelection: true,
+          clearWorkspaceSelection: true,
+        });
+        expect(getComposerDraftSnapshot(key)).toEqual({
+          text: "",
+          attachments: [],
+          leadRevision: 4,
+          transferredLeadArmings: receipts,
+        });
+        await flushComposerDrafts();
+        const restored = decodePersistedComposerState(
+          JSON.parse(composerDraftFileMocks.getDocument()),
+        ).drafts;
+        expect(restored[key]).toEqual({
+          text: "",
+          attachments: [],
+          transferredLeadArmings: receipts,
+        });
+        expect(findNewTaskDraftKeys(restored, project)).toEqual([]);
+        expect(buildPendingNewTasks({ queuedMessages: [], drafts: restored })).toEqual([]);
+        expect(composerDraftHasUserContent(restored[key]!)).toBe(false);
+        appAtomRegistry.set(composerDraftsAtom, restored);
+        forgetComposerDraftTransferredLeadArming(key, "older-message");
+        expect(getComposerDraftSnapshot(key).transferredLeadArmings).toEqual({
+          "newer-message": 3,
+        });
+        forgetComposerDraftTransferredLeadArming(key, "newer-message");
+        expect(appAtomRegistry.get(composerDraftsAtom)[key]).toBeUndefined();
+        await flushComposerDrafts();
+        expect(
+          decodePersistedComposerState(JSON.parse(composerDraftFileMocks.getDocument())).drafts[
+            key
+          ],
+        ).toBeUndefined();
+      },
+    );
+
+    it("deletes content, settings and project while preserving only transfer receipts", async () => {
+      await waitForComposerDraftsLoaded();
+      const key = "new-task:deleted-receipt";
+      appAtomRegistry.set(composerDraftsAtom, {
+        [key]: {
+          ...DRAFT,
+          attachments: [
+            {
+              id: "file",
+              type: "file",
+              name: "notes.txt",
+              mimeType: "text/plain",
+              sizeBytes: 1,
+              fileUri: "file:///notes.txt",
+            },
+          ],
+          importedShareIds: ["share"],
+          lead: true,
+          leadRevision: 4,
+          leadArmingRevision: 3,
+          modelSelection: wonderMax,
+          runtimeMode: "full-access",
+          interactionMode: "plan",
+          workspaceSelection: { mode: "local", branch: "main", worktreePath: null },
+          project: {
+            environmentId: EnvironmentId.make("environment-1"),
+            projectId: ProjectId.make("project-1"),
+            createdAt: "2026-10-16T00:00:00.000Z",
+          },
+          transferredLeadArmings: receipts,
+        },
+      });
+      clearComposerDraft(key, { deferAttachmentCleanup: true });
+      const stub = { text: "", attachments: [], transferredLeadArmings: receipts };
+      expect(getComposerDraftSnapshot(key)).toEqual(stub);
+      await flushComposerDrafts();
+      expect(
+        decodePersistedComposerState(JSON.parse(composerDraftFileMocks.getDocument())).drafts[key],
+      ).toEqual(stub);
+    });
+
+    it("transfers into a pending editor without authoring a new Add generation", async () => {
+      const pendingKey = "pending-task:destination";
+      await waitForComposerDraftsLoaded();
+      appAtomRegistry.set(composerDraftsAtom, {
+        [pendingKey]: { ...DRAFT, lead: false, leadArmingRevision: 3 },
+      });
+      updateComposerDraftSettings(pendingKey, { lead: true, transferredLeadArmings: receipts });
+      expect(getComposerDraftSnapshot(pendingKey).leadArmingRevision).toBe(3);
+      await flushComposerDrafts();
+      expect(
+        decodePersistedComposerState(JSON.parse(composerDraftFileMocks.getDocument())).drafts[
+          pendingKey
+        ],
+      ).toMatchObject({ lead: true, leadArmingRevision: 3, transferredLeadArmings: receipts });
+      updateComposerDraftSettings(pendingKey, { lead: false });
+      updateComposerDraftSettings(pendingKey, { lead: true });
+      expect(getComposerDraftSnapshot(pendingKey)).toMatchObject({
+        lead: true,
+        leadArmingRevision: 4,
+        transferredLeadArmings: receipts,
+      });
+    });
+
+    it.each(["untouched", "text", "remove", "send", "later-add"] as const)(
+      "undoes transfer receipts only before the user handles Lead (%s)",
+      (action) => {
+        const snapshot: ComposerDraft = {
+          ...DRAFT,
+          modelSelection: wonderMax,
+          lead: false,
+          leadRevision: 1,
+          transferredLeadArmings: { "older-message": 0 },
+        };
+        const merged: ComposerDraft = {
+          ...snapshot,
+          text: `${snapshot.text}\n\nrecovered text`,
+          lead: true,
+          leadRevision: 2,
+          transferredLeadArmings: receipts,
+        };
+        const existing =
+          action === "send"
+            ? clearComposerDraftContentState({ [draftKey]: merged }, draftKey)[draftKey]!
+            : action === "untouched"
+              ? merged
+              : {
+                  ...merged,
+                  text: `${merged.text}\n\nnew text`,
+                  ...(action === "remove" ? { lead: false, leadRevision: 3 } : {}),
+                  ...(action === "later-add" ? { lead: true, leadRevision: 4 } : {}),
+                };
+        const result = undoComposerDraftMergeState(
+          { [draftKey]: existing },
+          draftKey,
+          snapshot,
+          merged,
+        )[draftKey];
+        const userHandledLead = action === "remove" || action === "send" || action === "later-add";
+        expect(result?.transferredLeadArmings).toEqual(
+          userHandledLead ? receipts : snapshot.transferredLeadArmings,
+        );
+        expect(result?.lead).toBe(userHandledLead ? existing.lead : snapshot.lead);
+        if (action === "untouched") expect(result).toBe(snapshot);
+      },
+    );
+
+    it("retains a consumed transfer when rollback also cancels the older snapshot's Lead", async () => {
+      await waitForComposerDraftsLoaded();
+      const snapshot: ComposerDraft = { ...DRAFT, lead: true, leadRevision: 1 };
+      const merged: ComposerDraft = {
+        ...snapshot,
+        text: `${snapshot.text}\n\nrecovered text`,
+        leadRevision: 2,
+        transferredLeadArmings: receipts,
+      };
+      appAtomRegistry.set(composerDraftsAtom, {
+        [draftKey]: { ...merged, lead: false, leadRevision: 3 },
+      });
+      await undoComposerDraftMerge(draftKey, { draft: snapshot, leadCatalog: undefined }, merged);
+      const restored = decodePersistedComposerState(
+        JSON.parse(composerDraftFileMocks.getDocument()),
+      );
+      expect(restored.drafts[draftKey]).toMatchObject({
+        text: snapshot.text,
+        lead: false,
+        transferredLeadArmings: receipts,
+      });
+    });
+  });
+
+  it.each([true, false])(
+    "recovers failed enqueue intent without replacing a newer model (changed: %s)",
+    async (changed) => {
+      const key = "environment:failed-enqueue";
+      await waitForComposerDraftsLoaded();
+      const draft = {
+        text: "Lead this task",
+        attachments: [],
+        lead: true,
+        modelSelection: wonderMax,
+      };
+      appAtomRegistry.set(composerDraftsAtom, { [key]: draft });
+      clearComposerDraftContent(key);
+      const selection = changed
+        ? { instanceId: ProviderInstanceId.make("codex_astra"), model: "gpt-6-astra" }
+        : wonderMax;
+      updateComposerDraftSettings(key, { modelSelection: selection });
+      setComposerDraftText(key, "Newer text");
+
+      await restoreComposerDraftAfterEnqueueFailure(key, draft);
+      const restored = getComposerDraftSnapshot(key);
+      expect(restored).toMatchObject({
+        text: "Newer text\n\nLead this task",
+        lead: !changed,
+        modelSelection: selection,
+      });
+      expect(
+        isMobileLeadArmed(
+          restored.lead,
+          restored.modelSelection,
+          resolveMobileLeadAvailability(leadServerConfig(), null),
+        ),
+      ).toBe(!changed);
+      await flushComposerDrafts();
+      expect(
+        decodePersistedComposerState(JSON.parse(composerDraftFileMocks.getDocument())).drafts[key],
+      ).toMatchObject({ lead: !changed, modelSelection: selection });
+    },
+  );
+
+  it.each(["effort", "model", "remove"] as const)(
+    "keeps a newer %s cancellation after failed enqueue even when Wonder Max returns",
+    async (change) => {
+      const key = `environment:failed-enqueue-${change}`;
+      await waitForComposerDraftsLoaded();
+      updateComposerDraftSettings(key, { lead: true, modelSelection: wonderMax });
+      setComposerDraftText(key, "Lead this task");
+      const draft = getComposerDraftSnapshot(key);
+      clearComposerDraftContent(key);
+      if (change === "remove") {
+        updateComposerDraftSettings(key, { lead: false });
+      } else {
+        updateComposerDraftSettings(key, {
+          modelSelection:
+            change === "effort"
+              ? { ...wonderMax, options: [{ id: "catalog-effort", value: "low" }] }
+              : { instanceId: ProviderInstanceId.make("codex_astra"), model: "gpt-6-astra" },
+        });
+        updateComposerDraftSettings(key, { modelSelection: wonderMax });
+      }
+      await restoreComposerDraftAfterEnqueueFailure(key, draft);
+      expect(getComposerDraftSnapshot(key)).toMatchObject({
+        text: "Lead this task",
+        lead: false,
+        modelSelection: wonderMax,
+      });
+      await flushComposerDrafts();
+      expect(
+        decodePersistedComposerState(JSON.parse(composerDraftFileMocks.getDocument())).drafts[key],
+      ).toMatchObject({ lead: false, modelSelection: wonderMax });
+    },
+  );
+
+  it("does not clear newer Lead intent while recovering a Direct enqueue failure", async () => {
+    const key = "environment:failed-direct-enqueue";
+    await waitForComposerDraftsLoaded();
+    updateComposerDraftSettings(key, { lead: true, modelSelection: wonderMax });
+    await restoreComposerDraftAfterEnqueueFailure(key, {
+      text: "Direct task",
+      attachments: [],
+      lead: false,
+    });
+    expect(getComposerDraftSnapshot(key)).toMatchObject({
+      text: "Direct task",
+      lead: true,
+      modelSelection: wonderMax,
+    });
+  });
+
+  it("persists new-task catalog loss so a returning catalog cannot reattach Lead", async () => {
+    const environmentId = EnvironmentId.make("environment");
+    const projectId = ProjectId.make("project");
+    const key = createNewTaskDraft({ environmentId, projectId });
+    const loaded = { draftKey: key, environmentId, projectId, loaded: true };
+    const missing = { ...loaded, loaded: false };
+    const history = createMobileLeadCatalogHistory();
+    updateComposerDraftSettings(key, { lead: true, modelSelection: wonderMax });
+    reconcileNewTaskLead({
+      draft: getComposerDraftSnapshot(key),
+      availability: resolveMobileLeadAvailability(leadServerConfig(), null),
+      catalog: loaded,
+      history,
+      editingPendingTask: false,
+    });
+    const direct = reconcileNewTaskLead({
+      draft: getComposerDraftSnapshot(key),
+      availability: resolveMobileLeadAvailability(null, null),
+      catalog: missing,
+      history,
+      editingPendingTask: false,
+    });
+    updateComposerDraftSettings(key, { lead: direct.lead });
+    await flushComposerDrafts();
+    const saved = decodePersistedComposerState(JSON.parse(composerDraftFileMocks.getDocument()))
+      .drafts[key]!;
+    expect(saved.lead).toBe(false);
+    expect(
+      reconcileNewTaskLead({
+        draft: saved,
+        availability: resolveMobileLeadAvailability(leadServerConfig(), null),
+        catalog: loaded,
+        history,
+        editingPendingTask: false,
+      }),
+    ).toBe(saved);
+  });
+
+  it("arms, cancels, persists and consumes Lead in an existing thread draft", async () => {
+    const key = "environment:existing-lead";
+    updateComposerDraftSettings(key, { modelSelection: wonderMax });
+    expect(getComposerDraftSnapshot(key).lead).not.toBe(true);
+    updateComposerDraftSettings(key, { lead: true });
+    await flushComposerDrafts();
+    const saved = decodePersistedComposerState(JSON.parse(composerDraftFileMocks.getDocument()))
+      .drafts[key]!;
+    expect(saved).toMatchObject({ lead: true, modelSelection: wonderMax });
+    appAtomRegistry.set(composerDraftsAtom, { [key]: saved });
+    updateComposerDraftSettings(key, { lead: false });
+    expect(getComposerDraftSnapshot(key)).toMatchObject({ lead: false, modelSelection: wonderMax });
+    updateComposerDraftSettings(key, { lead: true });
+    clearComposerDraftContent(key);
+    expect(getComposerDraftSnapshot(key).lead).not.toBe(true);
+    expect(getComposerDraftSnapshot(key).modelSelection).toEqual(wonderMax);
+  });
+
+  it("persists Lead removal and restoration without reseeding a saved draft", async () => {
+    const availability = resolveMobileLeadAvailability(leadServerConfig(), null);
+    const key = createNewTaskDraft({
+      environmentId: EnvironmentId.make("environment"),
+      projectId: ProjectId.make("project"),
+    });
+    const seeded = seedNewTaskLead(getComposerDraftSnapshot(key), availability);
+    updateComposerDraftSettings(key, { lead: seeded.lead, modelSelection: seeded.modelSelection });
+    updateComposerDraftSettings(key, { lead: false });
+    await flushComposerDrafts();
+    const removed = decodePersistedComposerState(JSON.parse(composerDraftFileMocks.getDocument()))
+      .drafts[key]!;
+    expect(removed).toMatchObject({ lead: false, modelSelection: wonderMax });
+    expect(seedNewTaskLead(removed, availability)).toBe(removed);
+    appAtomRegistry.set(composerDraftsAtom, { [key]: removed });
+    updateComposerDraftSettings(key, restoreNewTaskLead(availability)!);
+    await flushComposerDrafts();
+    const restored = decodePersistedComposerState(JSON.parse(composerDraftFileMocks.getDocument()))
+      .drafts[key]!;
+    expect(restored).toMatchObject({ lead: true, modelSelection: wonderMax });
+    expect(seedNewTaskLead(restored, availability)).toBe(restored);
+  });
+
+  it.each([
+    {
+      selection: { instanceId: ProviderInstanceId.make("codex_astra"), model: "gpt-6-astra" },
+      retained: false,
+    },
+    {
+      selection: { ...wonderMax, options: [{ id: "catalog-effort", value: "low" }] },
+      retained: false,
+    },
+    { selection: { ...wonderMax, options: [] }, retained: false },
+    { selection: wonderMax, retained: true },
+  ])(
+    "settings save retains Lead only for Wonder Max: $selection.model $retained",
+    ({ selection, retained }) => {
+      for (const key of ["new-task:lead-settings", "environment:existing-lead-settings"]) {
+        appAtomRegistry.set(composerDraftsAtom, {
+          [key]: { text: "Task", attachments: [], lead: true, modelSelection: wonderMax },
+        });
+        updateComposerDraftSettings(key, { modelSelection: selection });
+        expect(getComposerDraftSnapshot(key).lead).toBe(retained);
+        updateComposerDraftSettings(key, { lead: false });
+        updateComposerDraftSettings(key, { modelSelection: wonderMax });
+        expect(getComposerDraftSnapshot(key).lead).toBe(false);
+      }
+    },
+  );
+
+  it("keeps pending-task settings edits Direct and preserves Lead across mode-only writes", () => {
+    const key = "pending-task:lead-settings";
+    appAtomRegistry.set(composerDraftsAtom, {
+      [key]: { text: "Task", attachments: [], lead: true, modelSelection: wonderMax },
+    });
+    updateComposerDraftSettings(key, {
+      runtimeMode: "approval-required",
+      interactionMode: "default",
+    });
+    expect(getComposerDraftSnapshot(key).lead).toBe(true);
+    updateComposerDraftSettings(key, {
+      modelSelection: { ...wonderMax, options: [{ id: "catalog-effort", value: "low" }] },
+    });
+    expect(getComposerDraftSnapshot(key).lead).toBe(false);
+    updateComposerDraftSettings(key, { modelSelection: wonderMax });
+    expect(getComposerDraftSnapshot(key).lead).toBe(false);
+  });
+
+  it("restores legacy new-task drafts as Direct and does not reseed them", () => {
+    const key = "new-task:old-draft";
+    const draft = decodePersistedComposerState({
+      schemaVersion: 1,
+      drafts: { [key]: { text: "Task", attachments: [] } },
+    }).drafts[key]!;
+    expect(draft.lead).toBe(false);
+    expect(seedNewTaskLead(draft, resolveMobileLeadAvailability(leadServerConfig(), null))).toBe(
+      draft,
+    );
+  });
+
   it("restores a PR checkout source after restarting the composer", () => {
     const draft: ComposerDraft = {
       text: "Address feedback",
@@ -1708,6 +2319,7 @@ describe("mobile composer drafts", () => {
     // Legacy project keys are rewritten to id keys on load.
     expect(key).toMatch(/^new-task:[0-9a-z-]+$/);
     expect(draft).toEqual({
+      lead: false,
       text: "",
       attachments: [],
       modelSelection: {
@@ -2461,7 +3073,7 @@ describe("mobile composer drafts", () => {
       },
     });
 
-    await undoComposerDraftMerge(draftKey, snapshot, merged);
+    await undoComposerDraftMerge(draftKey, { draft: snapshot, leadCatalog: undefined }, merged);
 
     expect(JSON.parse(composerDraftFileMocks.getDocument())).toEqual({
       schemaVersion: 1,
@@ -2739,5 +3351,259 @@ describe("mobile composer drafts", () => {
       },
     });
     expect(composerAttachmentCleanupMocks.remove).not.toHaveBeenCalled();
+  });
+});
+
+describe("R13 environment receipt cleanup", () => {
+  const environmentId = EnvironmentId.make("environment-r13");
+  const otherEnvironmentId = EnvironmentId.make("other-environment-r13");
+  const project = {
+    environmentId,
+    projectId: ProjectId.make("project-r13"),
+    createdAt: "2026-10-16T00:00:00.000Z",
+  };
+  const receipts = { source: 0, newer: 4 };
+
+  it.each(
+    ["scoped", "project-stamped"].flatMap((kind) =>
+      [undefined, {}, receipts].map((transferredLeadArmings) => ({ kind, transferredLeadArmings })),
+    ),
+  )(
+    "clears $kind content while retaining nonempty receipts ($transferredLeadArmings)",
+    ({ kind, transferredLeadArmings }) => {
+      const key = kind === "scoped" ? `${environmentId}:thread` : "new-task:r13-environment";
+      const owned: ComposerDraft = {
+        ...DRAFT,
+        modelSelection: wonderMax,
+        lead: true,
+        runtimeMode: "full-access",
+        interactionMode: "plan",
+        workspaceSelection: { mode: "local", branch: "main", worktreePath: null },
+        transferredLeadArmings,
+        ...(kind === "project-stamped" ? { project } : {}),
+      };
+      const otherDraft: ComposerDraft = {
+        ...owned,
+        project: { ...project, environmentId: otherEnvironmentId },
+      };
+      const unrelated = {
+        [`${otherEnvironmentId}:thread`]: otherDraft,
+        "new-task:r13-other-environment": otherDraft,
+      };
+      const before = { ...unrelated, [key]: owned };
+      const after = removeComposerDraftsForEnvironment(before, environmentId);
+      expect(after).toEqual({
+        ...unrelated,
+        ...(transferredLeadArmings === receipts
+          ? { [key]: { text: "", attachments: [], transferredLeadArmings: receipts } }
+          : {}),
+      });
+      expect(before[key]).toBe(owned);
+      expect(after[`${otherEnvironmentId}:thread`]).toBe(otherDraft);
+      expect(after["new-task:r13-other-environment"]).toBe(otherDraft);
+      expect(findNewTaskDraftKeys(after, project)).toEqual([]);
+    },
+  );
+
+  it.each(["scoped", "project-stamped"] as const)(
+    "releases a %s stub's attachments except those still queued, and reloads its receipt",
+    async (kind) => {
+      const load = vi.spyOn(threadOutboxManager, "load").mockResolvedValue(true);
+      onTestFinished(() => load.mockRestore());
+      await waitForComposerDraftsLoaded();
+      const key = kind === "scoped" ? `${environmentId}:thread` : "new-task:r13-environment";
+      const unreferenced: DraftComposerAttachment = {
+        id: "unreferenced",
+        type: "file",
+        name: "unreferenced.txt",
+        mimeType: "text/plain",
+        sizeBytes: 1,
+        fileUri: "file:///documents/t3-composer-attachments/unreferenced.txt",
+      };
+      const queued = {
+        ...unreferenced,
+        id: "queued",
+        fileUri: "file:///documents/t3-composer-attachments/queued.txt",
+      };
+      appAtomRegistry.set(composerDraftsAtom, {
+        [key]: {
+          ...DRAFT,
+          project,
+          attachments: [unreferenced, queued],
+          lead: true,
+          modelSelection: wonderMax,
+          transferredLeadArmings: receipts,
+        },
+      });
+      // A failed environment outbox removal deliberately leaves this source.
+      appAtomRegistry.set(threadOutboxManager.queuedMessagesByThreadKeyAtom, {
+        [`${environmentId}:source-thread`]: [
+          {
+            environmentId,
+            threadId: ThreadId.make("source-thread"),
+            messageId: MessageId.make("source"),
+            commandId: CommandId.make("source-command"),
+            createdAt: project.createdAt,
+            text: "Still queued",
+            attachments: [queued],
+          },
+        ],
+      });
+      await clearComposerDraftsEnvironment(environmentId);
+      const stub = { text: "", attachments: [], transferredLeadArmings: receipts };
+      expect(getComposerDraftSnapshot(key)).toEqual(stub);
+      expect(composerAttachmentCleanupMocks.remove.mock.calls).toEqual([[unreferenced.fileUri]]);
+      expect(
+        decodePersistedComposerState(JSON.parse(composerDraftFileMocks.getDocument())).drafts[key],
+      ).toEqual(stub);
+      appAtomRegistry.set(composerDraftsAtom, {});
+      resetComposerDraftsLoadState();
+      await waitForComposerDraftsLoaded();
+      expect(getComposerDraftSnapshot(key)).toEqual(stub);
+      expect(findNewTaskDraftKeys(appAtomRegistry.get(composerDraftsAtom), project)).toEqual([]);
+      expect(
+        buildPendingNewTasks({
+          queuedMessages: [],
+          drafts: appAtomRegistry.get(composerDraftsAtom),
+        }),
+      ).toEqual([]);
+    },
+  );
+});
+
+describe("R13 provisional submission ownership", () => {
+  const key = "new-task:r13-submission";
+  const snapshot: ComposerDraft = { text: "", attachments: [] };
+  const merged: ComposerDraft = {
+    text: "Recovered text",
+    attachments: [
+      {
+        id: "recovered",
+        type: "file",
+        name: "recovered.txt",
+        mimeType: "text/plain",
+        sizeBytes: 1,
+        fileUri: "file:///recovered.txt",
+      },
+    ],
+    modelSelection: wonderMax,
+    lead: true,
+    leadRevision: 1,
+    transferredLeadArmings: { source: 0 },
+    runtimeMode: "full-access",
+    interactionMode: "plan",
+    workspaceSelection: { mode: "worktree", branch: "main", worktreePath: null },
+  };
+
+  it("updates the submission marker on every mark and drops both session revisions on codec reload", async () => {
+    await waitForComposerDraftsLoaded();
+    appAtomRegistry.set(composerDraftsAtom, { [key]: merged });
+    markComposerDraftLeadSubmitted(key);
+    expect(getComposerDraftSnapshot(key)).toMatchObject({
+      leadRevision: 2,
+      leadSubmittedRevision: 2,
+    });
+    markComposerDraftLeadSubmitted(key);
+    const marked = getComposerDraftSnapshot(key);
+    expect(marked).toEqual({ ...merged, leadRevision: 3, leadSubmittedRevision: 3 });
+    appAtomRegistry.set(composerCloudDraftsAtom, {
+      accountId: null,
+      signedOut: { account: { drafts: { [key]: marked }, queuedMessages: [] } },
+    });
+    await flushComposerDrafts();
+    const reloaded = decodePersistedComposerState(JSON.parse(composerDraftFileMocks.getDocument()));
+    for (const restored of [
+      reloaded.drafts[key],
+      reloaded.cloudDrafts.signedOut.account?.drafts[key],
+    ]) {
+      expect(restored).toMatchObject({
+        lead: true,
+        modelSelection: wonderMax,
+        transferredLeadArmings: merged.transferredLeadArmings,
+      });
+      expect(restored).not.toHaveProperty("leadRevision");
+      expect(restored).not.toHaveProperty("leadSubmittedRevision");
+    }
+    const cleared = clearComposerDraftContentState({ [key]: marked }, key)[key]!;
+    expect(cleared).not.toHaveProperty("leadSubmittedRevision");
+    expect(cleared.lead).toBeUndefined();
+    expect(cleared.transferredLeadArmings).toEqual(merged.transferredLeadArmings);
+  });
+
+  it("preserves all four transferred settings and the provisional mark while undoing only inserted content", async () => {
+    await waitForComposerDraftsLoaded();
+    appAtomRegistry.set(composerDraftsAtom, { [key]: merged });
+    markComposerDraftLeadSubmitted(key);
+    setComposerDraftText(key, `${merged.text}\n\nUser text`);
+    const marked = getComposerDraftSnapshot(key);
+    const restored = undoComposerDraftMergeState({ [key]: marked }, key, snapshot, merged)[key]!;
+    expect(restored).toMatchObject({
+      text: "\n\nUser text",
+      attachments: [],
+      lead: true,
+      leadRevision: 2,
+      leadSubmittedRevision: 2,
+      modelSelection: merged.modelSelection,
+      runtimeMode: merged.runtimeMode,
+      interactionMode: merged.interactionMode,
+      workspaceSelection: merged.workspaceSelection,
+      transferredLeadArmings: merged.transferredLeadArmings,
+    });
+    await flushComposerDrafts();
+  });
+
+  it.each(["remove", "add", "model"] as const)(
+    "keeps ordinary partial rollback after a user %s supersedes the mark",
+    async (action) => {
+      await waitForComposerDraftsLoaded();
+      appAtomRegistry.set(composerDraftsAtom, { [key]: merged });
+      markComposerDraftLeadSubmitted(key);
+      const nextModel = {
+        instanceId: ProviderInstanceId.make("codex_astra"),
+        model: "gpt-6-astra",
+      };
+      updateComposerDraftSettings(
+        key,
+        action === "model" ? { modelSelection: nextModel } : { lead: action === "add" },
+      );
+      const edited = getComposerDraftSnapshot(key);
+      expect(edited.leadRevision).not.toBe(edited.leadSubmittedRevision);
+      const restored = undoComposerDraftMergeState({ [key]: edited }, key, snapshot, merged)[key]!;
+      expect(restored).toMatchObject({
+        text: "",
+        attachments: [],
+        transferredLeadArmings: merged.transferredLeadArmings,
+        leadSubmittedRevision: 2,
+      });
+      expect(restored.lead).toBe(action === "add");
+      expect(restored.modelSelection).toEqual(action === "model" ? nextModel : undefined);
+      expect(restored.runtimeMode).toBeUndefined();
+      expect(restored.interactionMode).toBeUndefined();
+      expect(restored.workspaceSelection).toBeUndefined();
+      await flushComposerDrafts();
+    },
+  );
+
+  it("does not let an earlier submission marker protect a later merge's settings", () => {
+    const before: ComposerDraft = {
+      ...snapshot,
+      lead: true,
+      leadRevision: 2,
+      leadSubmittedRevision: 2,
+    };
+    const laterMerge = { ...merged, leadRevision: 2, leadSubmittedRevision: 2 };
+    const edited = { ...laterMerge, text: `${laterMerge.text}\n\nUser text` };
+    const restored = undoComposerDraftMergeState({ [key]: edited }, key, before, laterMerge)[key]!;
+    expect(restored).toMatchObject({
+      text: "\n\nUser text",
+      lead: true,
+      leadRevision: 2,
+      leadSubmittedRevision: 2,
+    });
+    expect(restored.modelSelection).toBeUndefined();
+    expect(restored.runtimeMode).toBeUndefined();
+    expect(restored.interactionMode).toBeUndefined();
+    expect(restored.workspaceSelection).toBeUndefined();
+    expect(restored.transferredLeadArmings).toBeUndefined();
   });
 });

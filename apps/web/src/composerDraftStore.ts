@@ -41,7 +41,14 @@ import { createModelSelection, normalizeModelSlug } from "@t3tools/shared/model"
 import { useMemo } from "react";
 import { getLocalStorageItem } from "./hooks/useLocalStorage";
 import { readThreadPreviewState } from "./previewStateStore";
-import { resolveAppModelSelection, resolveAppModelSelectionForInstance } from "./modelSelection";
+import {
+  type LeadAvailability,
+  matchesLeadSelection,
+  prepareLeadDraftMessage,
+  resolveAppModelSelection,
+  resolveAppModelSelectionForInstance,
+  retainsDraftLead,
+} from "./modelSelection";
 import {
   DEFAULT_INTERACTION_MODE,
   DEFAULT_RUNTIME_MODE,
@@ -259,6 +266,7 @@ const PersistedComposerThreadDraftState = Schema.Struct({
   // selections (project default / sticky) leave it unset so later seeds can
   // replace them; legacy entries predate the flag and read as seeded too.
   modelSelectionExplicit: Schema.optionalKey(Schema.Boolean),
+  lead: Schema.optionalKey(Schema.Boolean),
   runtimeMode: Schema.optionalKey(RuntimeMode),
   interactionMode: Schema.optionalKey(ProviderInteractionMode),
 });
@@ -414,6 +422,10 @@ export interface ComposerThreadDraftState {
    * may replace it. Legacy entries predate the flag and read as seeded.
    */
   modelSelectionExplicit?: boolean;
+  /** First-send intent for a human-created web draft; false also records removal. */
+  lead?: boolean;
+  /** Session-only guard against restoring intent canceled during an in-flight send. */
+  leadRevision?: number;
   runtimeMode: RuntimeMode | null;
   interactionMode: ProviderInteractionMode | null;
 }
@@ -592,7 +604,20 @@ interface ComposerDraftStoreState {
   finalizePromotedDraftThread: (threadRef: ComposerThreadTarget) => void;
   clearDraftThread: (threadRef: ComposerThreadTarget) => void;
   setStickyModelSelection: (modelSelection: ModelSelection | null | undefined) => void;
+  initializeLeadDraft: (draftId: DraftId, selection: ModelSelection | null) => void;
+  setLead: (threadRef: ComposerThreadTarget, selection: ModelSelection | null) => void;
+  reconcileLead: (
+    threadRef: ComposerThreadTarget,
+    availability: LeadAvailability,
+    multipleSelections: ReadonlyArray<ModelSelection> | null,
+  ) => void;
   setPrompt: (threadRef: ComposerThreadTarget, prompt: string) => void;
+  restorePromptAfterFailedSend: (
+    threadRef: ComposerThreadTarget,
+    prompt: string,
+    leadAttached: boolean,
+    leadRevision: number | undefined,
+  ) => void;
   setTerminalContexts: (threadRef: ComposerThreadTarget, contexts: TerminalContextDraft[]) => void;
   setModelSelection: (
     threadRef: ComposerThreadTarget,
@@ -984,6 +1009,7 @@ function shouldRemoveDraft(draft: ComposerThreadDraftState): boolean {
     draft.threadContexts.length === 0 &&
     Object.keys(draft.modelSelectionByProvider).length === 0 &&
     draft.activeProvider === null &&
+    draft.lead === undefined &&
     draft.runtimeMode === null &&
     draft.interactionMode === null
   );
@@ -2092,6 +2118,7 @@ function normalizePersistedDraftsByThreadId(
       reviewComments.length === 0 &&
       threadContexts.length === 0 &&
       !hasModelData &&
+      typeof draftCandidate.lead !== "boolean" &&
       !runtimeMode &&
       !interactionMode
     ) {
@@ -2111,6 +2138,7 @@ function normalizePersistedDraftsByThreadId(
             })();
     nextDraftsByThreadKey[normalizedThreadKey] = {
       prompt,
+      ...(typeof draftCandidate.lead === "boolean" ? { lead: draftCandidate.lead } : {}),
       attachments,
       ...(files.length > 0 ? { files } : {}),
       ...(terminalContexts.length > 0 ? { terminalContexts } : {}),
@@ -2152,6 +2180,7 @@ function stripLegacyModelSeedsFromEmptyDraftSessions(
     Object.entries(draftsByThreadKey).flatMap(([threadKey, draft]) => {
       if (
         draftThreadsByThreadKey[threadKey] === undefined ||
+        draft.lead !== undefined ||
         draft.modelSelectionExplicit === true ||
         persistedComposerDraftHasUserContent(draft)
       ) {
@@ -2228,6 +2257,7 @@ export function partializeComposerDraftStoreState(
       draft.reviewComments.length === 0 &&
       draft.threadContexts.length === 0 &&
       !hasModelData &&
+      draft.lead === undefined &&
       draft.runtimeMode === null &&
       draft.interactionMode === null
     ) {
@@ -2235,6 +2265,7 @@ export function partializeComposerDraftStoreState(
     }
     const persistedDraft: DeepMutable<PersistedComposerThreadDraftState> = {
       prompt: draft.prompt,
+      ...(draft.lead !== undefined ? { lead: draft.lead } : {}),
       attachments: draft.persistedAttachments,
       ...(draft.files.length > 0
         ? {
@@ -2569,6 +2600,7 @@ function toHydratedThreadDraft(
     modelSelectionByProvider,
     activeProvider,
     ...(persistedDraft.modelSelectionExplicit ? { modelSelectionExplicit: true } : {}),
+    lead: persistedDraft.lead ?? false,
     runtimeMode: persistedDraft.runtimeMode ?? null,
     interactionMode: persistedDraft.interactionMode ?? null,
   };
@@ -3058,6 +3090,58 @@ const composerDraftStore = create<ComposerDraftStoreState>()(
             };
           });
         },
+        reconcileLead: (threadRef, availability, multipleSelections) => {
+          const draft = get().getComposerDraft(threadRef);
+          if (!draft?.lead) return;
+          const selection = draft.activeProvider
+            ? draft.modelSelectionByProvider[draft.activeProvider]
+            : null;
+          if (
+            multipleSelections !== null ||
+            !availability.selection ||
+            !availability.wonderSelections.some((expected) =>
+              matchesLeadSelection(selection, expected),
+            )
+          ) {
+            get().setLead(threadRef, null);
+            // An active composer can observe loss before the session owner.
+            // Land its cancellation now even if no background draft changes.
+            composerDebouncedStorage.flush();
+          }
+        },
+        initializeLeadDraft: (draftId, selection) => {
+          const state = get();
+          const draft = state.getComposerDraft(draftId);
+          // Called only by fresh human-draft creation, never by hydration.
+          if (!state.getDraftSession(draftId) || draft?.lead !== undefined) return;
+          get().setLead(draftId, draft?.modelSelectionExplicit ? null : selection);
+        },
+        setLead: (threadRef, selection) => {
+          const key = resolveComposerDraftKey(get(), threadRef);
+          if (!key) return;
+          set((state) => {
+            const base = state.draftsByThreadKey[key] ?? createEmptyThreadDraft();
+            return {
+              draftsByThreadKey: {
+                ...state.draftsByThreadKey,
+                [key]: {
+                  ...base,
+                  lead: selection !== null,
+                  leadRevision: (base.leadRevision ?? 0) + 1,
+                  ...(selection
+                    ? {
+                        activeProvider: selection.instanceId,
+                        modelSelectionByProvider: {
+                          ...base.modelSelectionByProvider,
+                          [selection.instanceId]: selection,
+                        },
+                      }
+                    : {}),
+                },
+              },
+            };
+          });
+        },
         applyStickyState: (threadRef) => {
           const threadKey = resolveComposerDraftKey(get(), threadRef) ?? "";
           if (threadKey.length === 0) {
@@ -3068,6 +3152,7 @@ const composerDraftStore = create<ComposerDraftStoreState>()(
             const stickyActiveProvider = state.stickyActiveProvider;
             const existing = state.draftsByThreadKey[threadKey];
             const base = existing ?? createEmptyThreadDraft();
+            if (base.lead !== undefined) return state;
             const nextMap = compactModelSelectionByProvider(stickyMap);
             if (
               Equal.equals(base.modelSelectionByProvider, nextMap) &&
@@ -3109,6 +3194,21 @@ const composerDraftStore = create<ComposerDraftStoreState>()(
               nextDraftsByThreadKey[threadKey] = nextDraft;
             }
             return { draftsByThreadKey: nextDraftsByThreadKey };
+          });
+        },
+        restorePromptAfterFailedSend: (threadRef, prompt, leadAttached, leadRevision) => {
+          get().setPrompt(threadRef, prompt);
+          const threadKey = resolveComposerDraftKey(get(), threadRef);
+          if (!threadKey || !leadAttached) return;
+          set((state) => {
+            const draft = state.draftsByThreadKey[threadKey];
+            if (!draft || draft.leadRevision !== leadRevision) return state;
+            return {
+              draftsByThreadKey: {
+                ...state.draftsByThreadKey,
+                [threadKey]: { ...draft, lead: true },
+              },
+            };
           });
         },
         setTerminalContexts: (threadRef, contexts) => {
@@ -3176,10 +3276,16 @@ const composerDraftStore = create<ComposerDraftStoreState>()(
               }
             }
             const nextActiveProvider = normalized?.instanceId ?? base.activeProvider;
+            const retainsLead = retainsDraftLead(
+              base.activeProvider ? base.modelSelectionByProvider[base.activeProvider] : null,
+              normalized ? nextMap[normalized.instanceId] : null,
+            );
+            const lead = base.lead === true && retainsLead;
             if (
               Equal.equals(base.modelSelectionByProvider, nextMap) &&
               base.activeProvider === nextActiveProvider &&
-              (base.modelSelectionExplicit ?? false) === (opts?.explicit === true)
+              (base.modelSelectionExplicit ?? false) === (opts?.explicit === true) &&
+              (base.lead === true) === lead
             ) {
               return state;
             }
@@ -3189,6 +3295,9 @@ const composerDraftStore = create<ComposerDraftStoreState>()(
             const { modelSelectionExplicit: _previousExplicit, ...restBase } = base;
             const nextDraft: ComposerThreadDraftState = {
               ...restBase,
+              ...(base.lead !== undefined
+                ? { lead, leadRevision: (base.leadRevision ?? 0) + (retainsLead ? 0 : 1) }
+                : {}),
               modelSelectionByProvider: nextMap,
               activeProvider: nextActiveProvider,
               ...(opts?.explicit === true ? { modelSelectionExplicit: true as const } : {}),
@@ -3234,9 +3343,19 @@ const composerDraftStore = create<ComposerDraftStoreState>()(
             if (Equal.equals(base.modelSelectionByProvider, nextMap)) {
               return state;
             }
+            const retainsLead = retainsDraftLead(
+              base.activeProvider ? base.modelSelectionByProvider[base.activeProvider] : null,
+              base.activeProvider ? nextMap[base.activeProvider] : null,
+            );
             const nextDraft: ComposerThreadDraftState = {
               ...base,
               modelSelectionByProvider: nextMap,
+              ...(base.lead !== undefined
+                ? {
+                    lead: base.lead && retainsLead,
+                    leadRevision: (base.leadRevision ?? 0) + (retainsLead ? 0 : 1),
+                  }
+                : {}),
             };
             const nextDraftsByThreadKey = { ...state.draftsByThreadKey };
             if (shouldRemoveDraft(nextDraft)) {
@@ -3341,11 +3460,21 @@ const composerDraftStore = create<ComposerDraftStoreState>()(
             // Trait edits are user-driven intent: mark the selection explicit
             // so later seeds cannot silently replace the chosen options.
             const { modelSelectionExplicit: _previousExplicit, ...restBase } = base;
+            const retainsLead = retainsDraftLead(
+              base.activeProvider ? base.modelSelectionByProvider[base.activeProvider] : null,
+              nextMap[options?.instanceId ?? base.activeProvider ?? instanceKey],
+            );
             const nextDraft: ComposerThreadDraftState = {
               ...restBase,
               ...(options?.instanceId ? { activeProvider: instanceKey } : {}),
               modelSelectionByProvider: nextMap,
               modelSelectionExplicit: true,
+              ...(base.lead !== undefined
+                ? {
+                    leadRevision: (base.leadRevision ?? 0) + (retainsLead ? 0 : 1),
+                    lead: base.lead && retainsLead,
+                  }
+                : {}),
             };
             const nextDraftsByThreadKey = { ...state.draftsByThreadKey };
             if (shouldRemoveDraft(nextDraft)) {
@@ -4404,6 +4533,52 @@ const composerDraftStore = create<ComposerDraftStoreState>()(
 );
 
 export const useComposerDraftStore = composerDraftStore;
+
+/** The send owns a captured revision after clearing its visible composer intent. */
+export function prepareTransferredLeadMessage(
+  target: ComposerThreadTarget,
+  leadRevision: number | undefined,
+  input: { text: string; selection: ModelSelection; availability: LeadAvailability },
+): string {
+  return prepareLeadDraftMessage({
+    text: input.text,
+    lead:
+      leadRevision !== undefined &&
+      composerDraftStore.getState().getComposerDraft(target)?.leadRevision === leadRevision,
+    selections: [input.selection],
+    availability: input.availability,
+  });
+}
+
+/** Persist every observed catalog loss, including composers with no mounted view. */
+export function reconcileComposerDraftLeadCatalogs(
+  availabilityChange: (
+    key: string,
+    session: DraftSessionState | undefined,
+    draft: ComposerThreadDraftState,
+  ) => { current: LeadAvailability; lost: boolean } | null,
+): void {
+  const state = composerDraftStore.getState();
+  let next: typeof state.draftsByThreadKey | undefined;
+  for (const [key, draft] of Object.entries(state.draftsByThreadKey)) {
+    if (!draft.lead && draft.leadRevision === undefined) continue;
+    const change = availabilityChange(key, state.draftThreadsByThreadKey[key], draft);
+    if (!change) continue;
+    const selection = draft.activeProvider
+      ? draft.modelSelectionByProvider[draft.activeProvider]
+      : null;
+    const qualified = (availability: LeadAvailability | null) =>
+      availability?.selection &&
+      availability.wonderSelections.some((expected) => matchesLeadSelection(selection, expected));
+    if (!change.lost && (!draft.lead || qualified(change.current))) continue;
+    next ??= { ...state.draftsByThreadKey };
+    next[key] = { ...draft, lead: false, leadRevision: (draft.leadRevision ?? 0) + 1 };
+  }
+  if (next) {
+    composerDraftStore.setState({ draftsByThreadKey: next });
+    composerDebouncedStorage.flush();
+  }
+}
 
 export function beginBackgroundDraftSubmissionByRef(threadRef: ScopedThreadRef): void {
   const threadKey = scopedThreadKey(threadRef);

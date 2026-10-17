@@ -36,6 +36,7 @@ import {
   resolveEnvironmentMachineKind,
 } from "@t3tools/contracts";
 import { deriveThreadTitleSeed } from "@t3tools/client-runtime/operations";
+import { stripLeadInstruction } from "@t3tools/shared/lead";
 
 import {
   ComposerEditor,
@@ -71,6 +72,7 @@ import { AppText as Text } from "../../components/ui/AppText";
 import { hasProviderUsageLimits, isUsageLimitsCommand } from "@t3tools/shared/usageLimits";
 import { COMPOSER_LAYOUT_TRANSITION, ComposerSurface } from "./ThreadComposer";
 import { ComposerCommandPopover } from "./ComposerCommandPopover";
+import { LeadDraftControl } from "./LeadDraftControl";
 import { useComposerCommandMenu } from "./use-composer-command-menu";
 import {
   ComposerDictationCancelAction,
@@ -99,12 +101,14 @@ import {
   captureComposerDraftInsertion,
   countComposerDraftAttachmentsAfterSelection,
   getComposerDraftSnapshot,
+  getComposerDraftRollbackSnapshot,
   composerDraftsAtom,
+  markComposerDraftLeadSubmitted,
   mergeComposerDraftContent,
   restoreComposerDraftSnapshot,
   updateComposerDraftSettings,
   scheduleUnusedComposerAttachmentCleanup,
-  type ComposerDraft,
+  type ComposerDraftRollbackSnapshot,
   waitForComposerDraftsLoaded,
 } from "../../state/use-composer-drafts";
 import { useEnvironmentServerConfig, useProjects, useThreadShells } from "../../state/entities";
@@ -419,7 +423,7 @@ export function NewTaskDraftScreen(props: {
   const [shareImportAttempt, setShareImportAttempt] = useState(0);
   const startedShareImportKeyRef = useRef<string | null>(null);
   const cancellingShareImportKeyRef = useRef<string | null>(null);
-  const shareImportDraftBackupRef = useRef(new Map<string, ComposerDraft>());
+  const shareImportDraftBackupRef = useRef(new Map<string, ComposerDraftRollbackSnapshot>());
   const activeShareImportTokenRef = useRef<symbol | null>(null);
   const shareImportMountedRef = useRef(true);
   const pendingPastedTextAttachmentCountRef = useRef(0);
@@ -838,7 +842,8 @@ export function NewTaskDraftScreen(props: {
     }
     startedShareImportKeyRef.current = importKey;
     const draftBackup =
-      shareImportDraftBackupRef.current.get(importKey) ?? getComposerDraftSnapshot(draftKey);
+      shareImportDraftBackupRef.current.get(importKey) ??
+      getComposerDraftRollbackSnapshot(draftKey);
     shareImportDraftBackupRef.current.set(importKey, draftBackup);
     const importToken = Symbol(importKey);
     let didReserveShare = false;
@@ -1350,7 +1355,7 @@ export function NewTaskDraftScreen(props: {
       armAgentAwarenessLiveActivityForLocalWork({
         environmentId: selectedProject.environmentId,
         threadTitle: deriveThreadTitleSeed({
-          text: initialMessageText,
+          text: stripLeadInstruction(initialMessageText),
           attachments: draft.attachments,
         }),
         projectTitle: selectedProject.title,
@@ -1360,6 +1365,7 @@ export function NewTaskDraftScreen(props: {
     // for the local outbox write; server and worktree setup run on the thread.
     flow.setSubmitting(true);
     try {
+      if (!editingPendingTask) markComposerDraftLeadSubmitted(draftKey);
       await enqueueThreadOutboxMessage(message);
     } catch (error) {
       Dialog.alert(
@@ -1621,33 +1627,39 @@ export function NewTaskDraftScreen(props: {
   );
 
   const workspaceControls = (
-    <View className="flex-row items-center gap-1 px-2">
-      <ComposerInlineControl
-        accessibilityHint={`Switches to ${flow.workspaceMode === "local" ? "a new worktree" : "the current checkout"}`}
-        accessibilityLabel={workspaceLabel}
-        disabled={isComposerInteractionLocked || voiceInput.isBusy}
-        renderIcon={(size) => (
-          <NewTaskWorkspaceIcon
-            workspaceMode={flow.workspaceMode}
-            worktreePath={flow.selectedWorktreePath}
-            size={size}
+    <View className="flex-row flex-wrap items-center gap-1 px-2">
+      {flow.canChooseWorkspace ? (
+        <>
+          <ComposerInlineControl
+            accessibilityHint={`Switches to ${flow.workspaceMode === "local" ? "a new worktree" : "the current checkout"}`}
+            accessibilityLabel={workspaceLabel}
+            disabled={isComposerInteractionLocked || voiceInput.isBusy}
+            renderIcon={(size) => (
+              <NewTaskWorkspaceIcon
+                workspaceMode={flow.workspaceMode}
+                worktreePath={flow.selectedWorktreePath}
+                size={size}
+              />
+            )}
+            label={workspaceLabel}
+            maxWidth={flow.workspaceMode === "local" ? 220 : 148}
+            onPress={() =>
+              flow.setWorkspaceMode(flow.workspaceMode === "local" ? "worktree" : "local")
+            }
+            showChevron={false}
           />
-        )}
-        label={workspaceLabel}
-        maxWidth={flow.workspaceMode === "local" ? 220 : 148}
-        onPress={() => flow.setWorkspaceMode(flow.workspaceMode === "local" ? "worktree" : "local")}
-        showChevron={false}
-      />
 
-      <ComposerInlineControl
-        accessibilityLabel={`${flow.workspaceMode === "worktree" ? "Base branch" : "Branch"}: ${selectedBranchLabel}`}
-        chevronDirection="right"
-        disabled={isComposerInteractionLocked}
-        icon="arrow.triangle.branch"
-        label={showBranchLoading ? "Loading branches…" : selectedBranchLabel}
-        maxWidth={190}
-        onPress={() => openContextPicker("NewTaskBranch")}
-      />
+          <ComposerInlineControl
+            accessibilityLabel={`${flow.workspaceMode === "worktree" ? "Base branch" : "Branch"}: ${selectedBranchLabel}`}
+            chevronDirection="right"
+            disabled={isComposerInteractionLocked}
+            icon="arrow.triangle.branch"
+            label={showBranchLoading ? "Loading branches…" : selectedBranchLabel}
+            maxWidth={190}
+            onPress={() => openContextPicker("NewTaskBranch")}
+          />
+        </>
+      ) : null}
     </View>
   );
 
@@ -1697,7 +1709,7 @@ export function NewTaskDraftScreen(props: {
           />
         </View>
       ) : null}
-      {flow.canChooseWorkspace ? <View className="pb-1">{workspaceControls}</View> : null}
+      <View className="pb-1">{workspaceControls}</View>
 
       {taskPermissionReason ? (
         <Text className="px-3 py-2 text-xs text-muted-foreground">{taskPermissionReason}</Text>
@@ -1756,6 +1768,15 @@ export function NewTaskDraftScreen(props: {
           </View>
         ) : null}
 
+        <View className="px-[14px] pb-2.5">
+          <LeadDraftControl
+            lead={flow.lead}
+            availability={flow.leadAvailability}
+            disabled={isComposerInteractionLocked || voiceInput.isBusy}
+            onRemove={flow.removeLead}
+            onRestore={flow.restoreLead}
+          />
+        </View>
         <View className="px-[14px]">{promptEditor}</View>
         <View className="h-1" />
 
@@ -1802,7 +1823,11 @@ export function NewTaskDraftScreen(props: {
                             size={size}
                           />
                         )}
-                        label={flow.selectedModelOption?.label ?? "Choose model"}
+                        label={
+                          flow.lead
+                            ? "Wonder Full · Max"
+                            : (flow.selectedModelOption?.label ?? "Choose model")
+                        }
                         maxWidth="100%"
                         onPress={settingsSheetPresentation.open}
                       />

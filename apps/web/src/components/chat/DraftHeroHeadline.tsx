@@ -232,7 +232,7 @@ export function DraftHeroHeadline({
       scopeProjectRef(project.environmentId, project.id),
       draftId,
     );
-    if (!hasExplicitComposerModelSelection(currentDraft)) {
+    if (!hasExplicitComposerModelSelection(currentDraft) && currentDraft?.lead === undefined) {
       applyStickyState(draftId);
       const environmentSettings = environments.find(
         (environment) => environment.environmentId === project.environmentId,

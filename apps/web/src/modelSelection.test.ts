@@ -3,11 +3,17 @@ import {
   DEFAULT_TEXT_GENERATION_MODEL,
   ProviderDriverKind,
   ProviderInstanceId,
+  ProjectId,
   type ServerProvider,
 } from "@t3tools/contracts";
 import { DEFAULT_UNIFIED_SETTINGS, type UnifiedSettings } from "@t3tools/contracts/settings";
 import { describe, expect, it } from "vite-plus/test";
 import { createModelSelection } from "@t3tools/shared/model";
+import { LEAD_INSTRUCTION } from "@t3tools/shared/lead";
+import {
+  getThreadModelSelectionBlockReason,
+  resolveThreadLeadSelection,
+} from "./components/ChatView.logic";
 import { deriveEffectiveComposerModelState } from "./composerDraftStore";
 import { getComposerProviderState } from "./components/chat/composerProviderState";
 import { deriveProviderInstanceEntries, NO_PROVIDER_MODEL_SELECTION } from "./providerInstances";
@@ -16,7 +22,273 @@ import {
   getAppModelOptionsForInstance,
   resolveAppModelSelectionForInstance,
   resolveAppModelSelectionState,
+  resolveLeadAvailability,
+  prepareLeadDraftMessage,
 } from "./modelSelection";
+
+function leadCatalog() {
+  const providers = [
+    { driver: "muse", instanceId: "muse_personal", model: "muse-wonder-full-1.0", effort: "max" },
+    { driver: "codex", instanceId: "codex_astra", model: "gpt-6-astra", effort: "max" },
+    { driver: "codex", instanceId: "codex_sol", model: "gpt-6.1-sol", effort: "xhigh" },
+  ].map((row) => ({
+    ...provider({ provider: ProviderDriverKind.make(row.driver), instanceId: row.instanceId }),
+    models: [
+      {
+        slug: row.model,
+        name: row.model,
+        isCustom: false,
+        capabilities: {
+          optionDescriptors: [
+            {
+              id: "catalog-effort",
+              label: "Reasoning",
+              type: "select" as const,
+              currentValue: "low",
+              options: [
+                { id: "low", label: "Low" },
+                { id: row.effort, label: row.effort },
+              ],
+            },
+          ],
+        },
+      },
+    ],
+  }));
+  const settings: UnifiedSettings = {
+    ...DEFAULT_UNIFIED_SETTINGS,
+    providerInstances: Object.fromEntries(
+      providers.map((entry) => [
+        entry.instanceId,
+        { driver: entry.driver, enabled: true, config: {} },
+      ]),
+    ),
+  };
+  return { providers, settings };
+}
+
+describe("existing-thread Lead provider switch", () => {
+  const { providers, settings } = leadCatalog();
+  const availability = resolveLeadAvailability(settings, providers, null);
+  const wonder = availability.selection!;
+  const context = {
+    providers,
+    hasStartedSession: true,
+    lockedProvider: ProviderDriverKind.make("codex"),
+    supportsProviderSwitchingViaHandoff: false,
+    currentModelSelection: createModelSelection(
+      ProviderInstanceId.make("codex_astra"),
+      "gpt-6-astra",
+    ),
+  };
+
+  it("uses the manual picker's provider-switch guard, allowing a handoff or an unchanged Muse instance", () => {
+    expect(resolveThreadLeadSelection(availability, context)).toBeNull();
+    expect(
+      getThreadModelSelectionBlockReason({ ...context, nextModelSelection: wonder }),
+    ).not.toBeNull();
+    expect(
+      resolveThreadLeadSelection(availability, {
+        ...context,
+        supportsProviderSwitchingViaHandoff: true,
+      }),
+    ).toEqual(wonder);
+    expect(
+      resolveThreadLeadSelection(availability, {
+        ...context,
+        lockedProvider: ProviderDriverKind.make("muse"),
+        currentModelSelection: wonder,
+      }),
+    ).toEqual(wonder);
+    expect(
+      resolveThreadLeadSelection(availability, {
+        ...context,
+        hasStartedSession: false,
+        lockedProvider: null,
+      }),
+    ).toEqual(wonder);
+  });
+
+  it("does not switch when the destination catalog lacks any requirement", () => {
+    expect(
+      resolveThreadLeadSelection(resolveLeadAvailability(settings, providers.slice(0, 2), null), {
+        ...context,
+        supportsProviderSwitchingViaHandoff: true,
+      }),
+    ).toBeNull();
+  });
+
+  it("respects continuation groups and providers that forbid model changes", () => {
+    const groupedProviders = providers.map((provider) => ({
+      ...provider,
+      continuation: { groupKey: provider.instanceId === wonder.instanceId ? "wonder" : "other" },
+    }));
+    expect(
+      resolveThreadLeadSelection(availability, {
+        ...context,
+        providers: groupedProviders,
+        hasStartedSession: false,
+        lockedProvider: ProviderDriverKind.make("muse"),
+      }),
+    ).toBeNull();
+    expect(
+      resolveThreadLeadSelection(availability, {
+        ...context,
+        providers: providers.map((provider) => ({
+          ...provider,
+          requiresNewThreadForModelChange: true,
+        })),
+        lockedProvider: ProviderDriverKind.make("muse"),
+        currentModelSelection: { ...wonder, model: "another-muse-model" },
+      }),
+    ).toBeNull();
+  });
+});
+
+describe("Lead catalog and first-send preparation", () => {
+  it("resolves instance and effort option ids from the live destination catalog", () => {
+    const { providers, settings } = leadCatalog();
+    const availability = resolveLeadAvailability(settings, providers, null);
+    expect(availability.missing).toEqual([]);
+    expect(availability.selection).toEqual({
+      instanceId: "muse_personal",
+      model: "muse-wonder-full-1.0",
+      options: [{ id: "catalog-effort", value: "max" }],
+    });
+  });
+
+  it.each([0, 1, 2])("requires model %s and its advertised effort", (index) => {
+    const { providers, settings } = leadCatalog();
+    const missingModel = providers.filter((_, i) => i !== index);
+    expect(resolveLeadAvailability(settings, missingModel, null).selection).toBeNull();
+    const missingEffort = providers.map((entry, i) =>
+      i !== index
+        ? entry
+        : { ...entry, models: entry.models.map((model) => ({ ...model, capabilities: {} })) },
+    );
+    const availability = resolveLeadAvailability(settings, missingEffort, null);
+    expect(availability.selection).toBeNull();
+    expect(availability.missing).toEqual([
+      expect.stringContaining(providers[index]!.models[0]!.slug),
+    ]);
+  });
+
+  it("respects disabled instances, project overrides, hidden models and unavailable providers", () => {
+    const { providers, settings } = leadCatalog();
+    const instanceId = providers[0]!.instanceId;
+    const projectId = ProjectId.make("lead-project");
+    expect(
+      resolveLeadAvailability(
+        {
+          ...settings,
+          providerInstances: {
+            ...settings.providerInstances,
+            [instanceId]: { ...settings.providerInstances[instanceId]!, enabled: false },
+          },
+        },
+        providers,
+        null,
+      ).selection,
+    ).toBeNull();
+    expect(
+      resolveLeadAvailability(
+        {
+          ...settings,
+          projectSettingsOverrides: {
+            [projectId]: { providerInstances: { [instanceId]: { enabled: false } } },
+          },
+        },
+        providers,
+        projectId,
+      ).selection,
+    ).toBeNull();
+    expect(
+      resolveLeadAvailability(
+        {
+          ...settings,
+          providerModelPreferences: {
+            [instanceId]: { hiddenModels: [providers[0]!.models[0]!.slug], modelOrder: [] },
+          },
+        },
+        providers,
+        null,
+      ).selection,
+    ).toBeNull();
+    expect(
+      resolveLeadAvailability(
+        settings,
+        providers.map((entry) => ({ ...entry, availability: "unavailable" as const })),
+        null,
+      ).selection,
+    ).toBeNull();
+    expect(
+      resolveLeadAvailability(
+        settings,
+        providers.map((entry) => ({ ...entry, status: "error" as const })),
+        null,
+      ).selection,
+    ).toBeNull();
+    expect(resolveLeadAvailability(settings, [], null).selection).toBeNull();
+  });
+
+  it("prepares each attempt from raw text and preserves user-authored instructions", () => {
+    const { providers, settings } = leadCatalog();
+    const availability = resolveLeadAvailability(settings, providers, null);
+    const input = {
+      text: "Fix login",
+      lead: true,
+      selections: [availability.selection!],
+      availability,
+    };
+    const prepared = prepareLeadDraftMessage(input);
+    expect(prepared).toBe(`Fix login\n\n${LEAD_INSTRUCTION}`);
+    expect(prepareLeadDraftMessage(input)).toBe(prepared);
+    expect(prepareLeadDraftMessage({ ...input, text: prepared })).toBe(prepared);
+    expect(prepareLeadDraftMessage({ ...input, text: prepared, lead: false })).toBe(prepared);
+    const alreadyPresent = `${LEAD_INSTRUCTION}\n\nFix login`;
+    expect(prepareLeadDraftMessage({ ...input, text: alreadyPresent })).toBe(alreadyPresent);
+  });
+
+  it("revalidates a prepared send from raw task text against the latest catalog", () => {
+    const { providers, settings } = leadCatalog();
+    const availability = resolveLeadAvailability(settings, providers, null);
+    const raw = "Fix login";
+    const input = { text: raw, lead: true, selections: [availability.selection!] };
+    expect(prepareLeadDraftMessage({ ...input, availability })).toBe(
+      `${raw}\n\n${LEAD_INSTRUCTION}`,
+    );
+    expect(
+      prepareLeadDraftMessage({
+        ...input,
+        availability: resolveLeadAvailability(settings, providers.slice(0, 2), null),
+      }),
+    ).toBe(raw);
+    expect(prepareLeadDraftMessage({ ...input, availability })).toBe(
+      `${raw}\n\n${LEAD_INSTRUCTION}`,
+    );
+  });
+
+  it("leaves later turns, Direct, fan-out, lower effort and catalog loss untransformed", () => {
+    const { providers, settings } = leadCatalog();
+    const availability = resolveLeadAvailability(settings, providers, null);
+    const selection = availability.selection!;
+    const input = {
+      text: "Fix login",
+      lead: true,
+      selections: [selection],
+      availability,
+    };
+    for (const changed of [
+      { lead: false },
+      { selections: [] },
+      { selections: [selection, selection] },
+      { selections: [{ ...selection, model: "gpt-6-astra" }] },
+      { selections: [{ ...selection, options: [{ id: "catalog-effort", value: "low" }] }] },
+      { availability: resolveLeadAvailability(settings, providers.slice(0, 1), null) },
+    ])
+      expect(prepareLeadDraftMessage({ ...input, ...changed })).toBe(input.text);
+  });
+});
 
 function provider(input: {
   provider?: ProviderDriverKind;

@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 
-import { EnvironmentId, ProjectId, ThreadId } from "@t3tools/contracts";
+import { EnvironmentId, ProjectId, ProviderInstanceId, ThreadId } from "@t3tools/contracts";
 import { act } from "react";
 import { createRoot } from "react-dom/client";
 import { expect, it, vi } from "vite-plus/test";
@@ -136,3 +136,57 @@ it.each([
     }
   },
 );
+
+it("keeps the existing-thread context entry in the toolbar when Lead is armed", async () => {
+  vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
+  const fonts = Object.getOwnPropertyDescriptor(document, "fonts");
+  Object.defineProperty(document, "fonts", { configurable: true, value: new EventTarget() });
+  const container = document.createElement("div");
+  document.body.append(container);
+  const root = createRoot(container);
+  const selection = {
+    instanceId: ProviderInstanceId.make("muse"),
+    model: "muse-wonder-full-1.0",
+    options: [{ id: "reasoning", value: "max" }],
+  };
+  const show = (lead: boolean) =>
+    root.render(
+      <BranchToolbar
+        environmentId={EnvironmentId.make("local")}
+        threadId={ThreadId.make("thread")}
+        showGitControls={false}
+        envMode="local"
+        envLocked={false}
+        startFromOrigin={false}
+        onStartFromOriginChange={vi.fn()}
+        onEnvModeChange={vi.fn()}
+        leadControl={{
+          existingThread: true,
+          lead,
+          availability: { selection, wonderSelections: [selection], missing: [] },
+          onRemove: vi.fn(),
+          onRestore: vi.fn(),
+        }}
+      />,
+    );
+  try {
+    await act(async () => show(false));
+    const context = container.querySelector<HTMLButtonElement>('[aria-label="Composer context"]');
+    expect(context).not.toBeNull();
+    await act(async () => show(true));
+    expect(container.querySelector('[aria-label="Composer context"]')).toBe(context);
+    expect(container.querySelector('[aria-label="Remove Lead instruction"]')).toBeNull();
+    await act(async () => context!.click());
+    expect(document.body.textContent).toContain("Lead instruction already attached.");
+    await act(async () => show(false));
+    expect(container.querySelector('[aria-label="Composer context"]')).toBe(context);
+    expect(document.body.textContent).toContain("Add Lead instruction");
+    expect(document.body.textContent).toContain("Next message · switches to Wonder Full at Max");
+  } finally {
+    await act(async () => root.unmount());
+    container.remove();
+    if (fonts) Object.defineProperty(document, "fonts", fonts);
+    else Reflect.deleteProperty(document, "fonts");
+    vi.unstubAllGlobals();
+  }
+});

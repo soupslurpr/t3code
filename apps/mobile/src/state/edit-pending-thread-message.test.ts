@@ -1,6 +1,8 @@
 import { beforeEach, describe, expect, it, vi } from "vite-plus/test";
 import { CommandId, EnvironmentId, MessageId, ThreadId } from "@t3tools/contracts";
 import type { QueuedThreadMessage } from "./thread-outbox-model";
+import type { ComposerDraftSettingsUpdate } from "./use-composer-drafts";
+import { wonderMax } from "../features/threads/lead-test-fixtures";
 
 const state = vi.hoisted(() => ({
   dispatching: null as string | null,
@@ -9,6 +11,9 @@ const state = vi.hoisted(() => ({
   confirm: vi.fn(async () => true),
   remove: vi.fn(async () => true),
   flush: vi.fn(async () => {}),
+  updateSettings: vi.fn((_key: string, settings: Partial<ComposerDraftSettingsUpdate>) => {
+    state.draft = { ...state.draft, ...settings };
+  }),
 }));
 vi.mock("./atom-registry", () => ({
   appAtomRegistry: {
@@ -33,16 +38,29 @@ vi.mock("./thread-outbox-removal", () => ({ removeThreadOutboxMessage: state.rem
 vi.mock("./use-composer-drafts", () => ({
   waitForComposerDraftsLoaded: async () => {},
   getComposerDraftSnapshot: () => state.draft,
-  mergeComposerDraftContent: async (_key: string, message: QueuedThreadMessage) => {
+  getComposerDraftRollbackSnapshot: () => ({ draft: state.draft, leadCatalog: undefined }),
+  mergeComposerDraftContent: async (
+    _key: string,
+    message: QueuedThreadMessage,
+    options?: {
+      onMerge: (
+        snapshot: { draft: typeof state.draft; leadCatalog: undefined },
+        merged: typeof state.draft,
+      ) => void;
+    },
+  ) => {
+    const snapshot = { draft: state.draft, leadCatalog: undefined };
     state.draft = {
       text: `${state.draft.text}\n\n${message.text}`,
       attachments: [...state.draft.attachments, ...message.attachments],
     };
+    options?.onMerge(snapshot, state.draft);
   },
-  updateComposerDraftSettings: () => {},
+  updateComposerDraftSettings: state.updateSettings,
   flushComposerDrafts: state.flush,
-  undoComposerDraftMerge: async (_key: string, snapshot: typeof state.draft) => {
-    state.draft = snapshot;
+  forgetComposerDraftTransferredLeadArming: vi.fn(),
+  undoComposerDraftMerge: async (_key: string, snapshot: { draft: typeof state.draft }) => {
+    state.draft = snapshot.draft;
   },
 }));
 import { editPendingThreadMessage } from "./edit-pending-thread-message";
@@ -53,6 +71,8 @@ const message: QueuedThreadMessage = {
   messageId: MessageId.make("message"),
   commandId: CommandId.make("command"),
   text: "Queued task",
+  lead: true,
+  modelSelection: wonderMax,
   createdAt: "2026-09-06T10:00:00.000Z",
   attachments: [
     {
@@ -84,6 +104,12 @@ describe("editing a pending message", () => {
       expect(state.flush).toHaveBeenCalled();
       expect(state.draft.text).toBe("Existing draft\n\nQueued task");
       expect(state.draft.attachments).toEqual(message.attachments);
+      expect(state.draft).toMatchObject({ lead: true, modelSelection: wonderMax });
+      expect(state.updateSettings).toHaveBeenCalledWith("env:thread", {
+        lead: true,
+        modelSelection: wonderMax,
+        transferredLeadArmings: { [message.messageId]: 0 },
+      });
       return true;
     });
     expect(await editPendingThreadMessage(message)).toBe(true);

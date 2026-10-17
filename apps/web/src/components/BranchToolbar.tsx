@@ -51,6 +51,7 @@ import {
   THREAD_DETAILS_PANEL_LOCKED_ROW_CLASS,
 } from "./chat/threadDetailsPanelStyles";
 import { ComposerControl } from "./chat/ComposerControl";
+import { LeadContextControl, type LeadDraftControlProps } from "./chat/LeadDraftControl";
 import {
   Menu,
   MenuGroup,
@@ -101,6 +102,7 @@ interface BranchToolbarProps {
   onEnvironmentChange?: (environmentId: EnvironmentId) => void;
   composerControlsHostRef?: (element: HTMLDivElement | null) => void;
   contextStripVisible?: boolean;
+  leadControl?: LeadDraftControlProps;
 }
 
 function showWorkspaceContextMenu(event: ReactMouseEvent, workspacePath: string) {
@@ -616,6 +618,7 @@ export const BranchToolbar = memo(function BranchToolbar({
   onEnvironmentChange,
   composerControlsHostRef,
   contextStripVisible = true,
+  leadControl,
 }: BranchToolbarProps) {
   const branchSelectorRef = useRef<BranchToolbarBranchSelectorHandle>(null);
   const threadRef = useMemo(
@@ -829,6 +832,8 @@ export const BranchToolbar = memo(function BranchToolbar({
           ) : null}
         </div>
       ) : null}
+
+      {leadControl?.existingThread ? <LeadContextControl {...leadControl} /> : null}
 
       {composerControlsHostRef ? (
         // The host takes whatever the workspace and branch controls leave

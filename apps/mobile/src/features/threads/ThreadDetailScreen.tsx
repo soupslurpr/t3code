@@ -139,6 +139,7 @@ import {
 } from "./pendingUserInputLayout";
 import {
   COMPOSER_COLLAPSED_CHROME,
+  COMPOSER_CONTEXT_ROW_HEIGHT,
   COMPOSER_EXPANDED_CHROME,
   COMPOSER_LAYOUT_TRANSITION,
   COMPOSER_TRANSITION_DURATION_MS,
@@ -587,7 +588,10 @@ export const ThreadDetailScreen = memo(function ThreadDetailScreen(props: Thread
     (props.historyControls?.hasMoreHistory === true &&
       props.selectedThread.latestUserMessageAt !== null);
   const composerChrome = composerExpanded ? COMPOSER_EXPANDED_CHROME : COMPOSER_COLLAPSED_CHROME;
-  const composerOverlapHeight = composerChrome + composerBottomInset;
+  const composerOverlapHeight =
+    composerChrome +
+    composerBottomInset +
+    (props.queuedRunEdit === null && !isProviderSubagent ? COMPOSER_CONTEXT_ROW_HEIGHT : 0);
   // While a user-input request is pending, the questionnaire owns the
   // composer slot outright: expanded it is the full card, collapsed it is a
   // composer-style bar in the same place (with its own stop control). The

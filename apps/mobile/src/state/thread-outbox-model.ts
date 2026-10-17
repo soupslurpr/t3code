@@ -56,6 +56,8 @@ export const QueuedThreadMessageSchema = Schema.Struct({
   context: Schema.optional(OrchestrationMessageContext),
   attachments: Schema.Array(DraftComposerAttachmentSchema),
   modelSelection: Schema.optional(ModelSelection),
+  lead: Schema.optional(Schema.Boolean),
+  leadArmingRevision: Schema.optional(Schema.Number),
   dispatchMode: Schema.optional(Schema.Literals(["auto", "queue", "steer", "restart"])),
   runtimeMode: Schema.optional(RuntimeMode),
   interactionMode: Schema.optional(ProviderInteractionMode),
@@ -88,6 +90,10 @@ export interface QueuedThreadMessage {
   readonly context?: OrchestrationMessageContext;
   readonly attachments: ReadonlyArray<DraftComposerAttachment>;
   readonly modelSelection?: ModelSelectionType;
+  /** Instruction armed for this message, revalidated against the catalog at dispatch. */
+  readonly lead?: boolean;
+  /** Identifies one arming across queued rows and their retained pending editors. */
+  readonly leadArmingRevision?: number;
   readonly runtimeMode?: RuntimeModeType;
   readonly interactionMode?: ProviderInteractionModeType;
   /**

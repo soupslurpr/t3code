@@ -15,6 +15,7 @@ import * as Fiber from "effect/Fiber";
 import * as TestClock from "effect/testing/TestClock";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
+import { LEAD_INSTRUCTION } from "@t3tools/shared/lead";
 
 import * as SqlitePersistence from "../persistence/Sqlite.ts";
 import * as ProjectStore from "./ProjectStore.ts";
@@ -317,7 +318,7 @@ describe("ThreadTitleRegenerationService", () => {
         yield* dispatchUserMessage({
           command: "command:title:landing:message",
           threadId,
-          text: "Investigate the flaky login test",
+          text: `Investigate the flaky login test\n\n${LEAD_INSTRUCTION}`,
         });
         const requestId = yield* armRegeneration({ command: "command:title:landing:1", threadId });
 
@@ -327,9 +328,32 @@ describe("ThreadTitleRegenerationService", () => {
         assert.equal(call?.previousTitle, "Seed title");
         assert.equal(call?.cwd, "/repo");
         assert.include(call?.message, "USER:\nInvestigate the flaky login test");
+        assert.notInclude(call?.message, LEAD_INSTRUCTION);
         const projection = yield* threads.getThreadProjection(threadId);
         assert.equal(projection.thread.title, "Fresh title");
         assert.isNotOk(projection.thread.titleRegeneration);
+      }).pipe(Effect.provide(harness.layer));
+    }),
+  );
+
+  it.effect("strips Lead from the initial title request", () =>
+    Effect.gen(function* () {
+      const harness = makeHarness();
+      yield* Effect.gen(function* () {
+        const titleRegeneration = yield* ThreadTitleRegeneration.ThreadTitleRegenerationService;
+        const threadId = yield* createThread({ command: "lead:create", thread: "lead:thread" });
+        yield* dispatchUserMessage({
+          command: "lead:message",
+          threadId,
+          text: `Fix login\n\n${LEAD_INSTRUCTION}`,
+        });
+        const requestId = yield* armRegeneration({ command: "lead:title", threadId });
+        yield* titleRegeneration.execute({
+          threadId,
+          requestId,
+          kind: { type: "initial", messageId: MessageId.make("lead:message:message") },
+        });
+        assert.equal(harness.generateThreadTitle.mock.calls[0]?.[0]?.message, "Fix login");
       }).pipe(Effect.provide(harness.layer));
     }),
   );

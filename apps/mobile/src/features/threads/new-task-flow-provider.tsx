@@ -24,6 +24,7 @@ import {
   ThreadId,
 } from "@t3tools/contracts";
 import { sanitizeNewRefName } from "@t3tools/shared/git";
+import type { LeadAvailability } from "@t3tools/shared/lead";
 import { resolveNewThreadEnvMode, resolveProjectSettings } from "@t3tools/shared/projectSettings";
 import { parseT3ProjectFile } from "@t3tools/shared/t3ProjectFile";
 import * as Arr from "effect/Array";
@@ -38,6 +39,14 @@ import {
 import type { TurnCommandMetadata } from "../../lib/commandMetadata";
 import type { DraftComposerAttachment } from "../../lib/composerImages";
 import type { ModelOption, ProviderGroup } from "../../lib/modelOptions";
+import {
+  isMobileLeadArmed,
+  reconcileNewTaskLead,
+  resolveMobileLeadAvailability,
+  restoreNewTaskLead,
+  seedNewTaskLead,
+  mobileLeadCatalogHistory,
+} from "../../lib/lead";
 import {
   buildModelOptions,
   groupByProvider,
@@ -72,6 +81,7 @@ import {
 } from "../../state/use-composer-drafts";
 import {
   capturePendingTaskEditorWriteBaseline,
+  clearPendingTaskLeadCancellation,
   flushPendingTaskEditorWrite,
 } from "../../state/pending-task-editor-writes";
 import {
@@ -200,6 +210,10 @@ type NewTaskFlowContextValue = {
   readonly isScratchDraft: boolean;
   readonly modelOptions: ReadonlyArray<ModelOption>;
   readonly selectedModel: ModelSelection | null;
+  readonly lead: boolean;
+  readonly leadAvailability: LeadAvailability;
+  readonly removeLead: () => void;
+  readonly restoreLead: () => void;
   readonly selectedModelOption: ModelOption | null;
   readonly selectedProviderStatus: ServerProvider | null;
   readonly providerGroups: ReadonlyArray<ProviderGroup>;
@@ -485,6 +499,11 @@ export function NewTaskFlowProvider(props: React.PropsWithChildren) {
     );
   }, [activeDraftKey, editingPendingTask, selectedProject]);
   const selectedProjectDraft = useComposerDraft(selectedProjectDraftKey);
+  const leadAvailability = useMemo(
+    () =>
+      resolveMobileLeadAvailability(selectedEnvironmentServerConfig, selectedProject?.id ?? null),
+    [selectedEnvironmentServerConfig, selectedProject?.id],
+  );
   const prompt = selectedProjectDraft.text;
   const attachments = selectedProjectDraft.attachments;
   // Default mode until the user picks one explicitly — same resolution web
@@ -624,6 +643,49 @@ export function NewTaskFlowProvider(props: React.PropsWithChildren) {
   const selectedModelKey = selectedModel
     ? `${selectedModel.instanceId}:${selectedModel.model}`
     : null;
+  const lead = isMobileLeadArmed(selectedProjectDraft.lead, selectedModel, leadAvailability);
+  useEffect(() => {
+    const catalog = {
+      draftKey: selectedProjectDraftKey,
+      environmentId: selectedProject?.environmentId ?? null,
+      projectId: selectedProject?.id ?? null,
+      loaded: selectedEnvironmentServerConfig !== null,
+    };
+    if (!selectedProjectDraftKey) return;
+    const draft = getComposerDraftSnapshot(selectedProjectDraftKey);
+    const reconciled = reconcileNewTaskLead({
+      draft,
+      availability: leadAvailability,
+      catalog,
+      history: mobileLeadCatalogHistory,
+      editingPendingTask: editingPendingTask !== null,
+    });
+    if (reconciled !== draft) {
+      updateComposerDraftSettings(selectedProjectDraftKey, {
+        lead: reconciled.lead,
+        ...(reconciled.modelSelection ? { modelSelection: reconciled.modelSelection } : {}),
+      });
+    }
+  }, [
+    editingPendingTask,
+    leadAvailability,
+    selectedEnvironmentServerConfig,
+    selectedProjectDraftKey,
+    selectedProject?.environmentId,
+    selectedProject?.id,
+  ]);
+  const removeLead = useCallback(() => {
+    if (selectedProjectDraftKey)
+      updateComposerDraftSettings(selectedProjectDraftKey, { lead: false });
+  }, [selectedProjectDraftKey]);
+  const restoreLead = useCallback(() => {
+    const settings = restoreNewTaskLead(leadAvailability);
+    if (settings && selectedProjectDraftKey) {
+      const editing = editingPendingTaskRef.current;
+      if (editing) clearPendingTaskLeadCancellation(editing.messageId);
+      updateComposerDraftSettings(selectedProjectDraftKey, settings);
+    }
+  }, [leadAvailability, selectedProjectDraftKey]);
 
   const selectedModelOption =
     modelOptions.find(
@@ -1090,6 +1152,7 @@ export function NewTaskFlowProvider(props: React.PropsWithChildren) {
       replaceComposerDraftAttachments(draftKey, message.attachments);
       updateComposerDraftSettings(draftKey, {
         modelSelection: message.modelSelection,
+        lead: message.lead ?? false,
         runtimeMode: message.runtimeMode,
         interactionMode: message.interactionMode,
         workspaceSelection: {
@@ -1105,7 +1168,7 @@ export function NewTaskFlowProvider(props: React.PropsWithChildren) {
     setSelectedProjectKey(scopedProjectKey(message.environmentId, message.creation.projectId));
     activeEditingMessageId = message.messageId;
     editingPendingTaskRef.current = message;
-    editingRevisionRef.current = capturePendingTaskEditorWriteBaseline(message.messageId);
+    editingRevisionRef.current = capturePendingTaskEditorWriteBaseline(message.messageId, draftKey);
     setEditingPendingTask(message);
     // Hold the outbox drain off this task while it is open in the editor.
     holdEditingQueuedMessage(message.messageId);
@@ -1120,7 +1183,11 @@ export function NewTaskFlowProvider(props: React.PropsWithChildren) {
       if (!selectedProject || !selectedProjectDraftKey) {
         return null;
       }
-      const draft = getComposerDraftSnapshot(selectedProjectDraftKey);
+      const snapshot = getComposerDraftSnapshot(selectedProjectDraftKey);
+      const draft =
+        !editingPendingTask && selectedEnvironmentServerConfig
+          ? seedNewTaskLead(snapshot, leadAvailability)
+          : snapshot;
       const text = draft.text.trim();
       // Use the displayed selection rules without substituting an unavailable
       // Antigravity model while the task is queued.
@@ -1160,6 +1227,7 @@ export function NewTaskFlowProvider(props: React.PropsWithChildren) {
         attachments: draft.attachments,
         context: draft.context,
         modelSelection: draftModelSelection,
+        lead: draft.lead ?? false,
         runtimeMode: draft.runtimeMode ?? defaultRuntimeMode,
         interactionMode: resolvePendingTaskInteractionMode({
           preferenceLoaded: planModePreferenceLoaded,
@@ -1203,6 +1271,7 @@ export function NewTaskFlowProvider(props: React.PropsWithChildren) {
       defaultRuntimeMode,
       editingPendingProject,
       editingPendingTask,
+      leadAvailability,
       selectedEnvironmentServerConfig,
       selectedModel,
       selectedProject,
@@ -1351,6 +1420,10 @@ export function NewTaskFlowProvider(props: React.PropsWithChildren) {
       modelOptions,
       selectedModel,
       selectedModelOption,
+      lead,
+      leadAvailability,
+      removeLead,
+      restoreLead,
       selectedProviderStatus,
       providerGroups,
       filteredBranches,
@@ -1417,6 +1490,10 @@ export function NewTaskFlowProvider(props: React.PropsWithChildren) {
       selectedModel,
       selectedModelKey,
       selectedModelOption,
+      lead,
+      leadAvailability,
+      removeLead,
+      restoreLead,
       selectedProjectDraftKey,
       selectedProviderStatus,
       setSelectedModelOptions,

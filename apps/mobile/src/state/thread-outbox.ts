@@ -1,3 +1,4 @@
+import { resolvePendingTaskLeadOwnership } from "./pending-task-editor-writes";
 import { appAtomRegistry } from "./atom-registry";
 import { createThreadOutboxManager } from "./thread-outbox-manager";
 import type { QueuedThreadMessage } from "./thread-outbox-model";
@@ -22,7 +23,9 @@ export async function flushThreadOutbox(): Promise<void> {
 }
 
 export function enqueueThreadOutboxMessage(message: QueuedThreadMessage): Promise<void> {
-  return threadOutboxManager.enqueue(message);
+  return threadOutboxManager.enqueue(
+    message.creation ? resolvePendingTaskLeadOwnership(message) : message,
+  );
 }
 
 /** Waits for pending writes to settle; false if the message was rolled back. */
@@ -49,4 +52,4 @@ export function threadOutboxRevision(messageId: QueuedThreadMessage["messageId"]
 
 // Removal lives in `thread-outbox-removal.ts`: taking a message out of the
 // outbox must also release its local attachment files, and that owner needs
-// the composer draft state this module must not depend on.
+// composer attachment cleanup, separate from the editor ownership resolved above.

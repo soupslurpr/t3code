@@ -11,6 +11,7 @@ import {
 } from "@t3tools/contracts";
 import { deriveThreadTitleSeed } from "@t3tools/client-runtime/operations";
 import { assistantCitationsToPlainText } from "@t3tools/shared/assistantCitations";
+import { stripLeadInstruction } from "@t3tools/shared/lead";
 
 import type { UploadedMobileAttachment } from "./attachmentUpload";
 
@@ -42,7 +43,10 @@ export interface ProjectThreadStartTurnSpec {
  * offline outbox drain so both deliver identical commands.
  */
 export function buildProjectThreadStartTurnInput(spec: ProjectThreadStartTurnSpec) {
-  const title = deriveThreadTitleSeed({ text: spec.text, attachments: spec.uploadedAttachments });
+  const title = deriveThreadTitleSeed({
+    text: stripLeadInstruction(spec.text),
+    attachments: spec.uploadedAttachments,
+  });
   const isWorktree = spec.workspaceMode === "worktree";
   return {
     commandId: CommandId.make(spec.commandId),
@@ -87,7 +91,7 @@ export function buildProjectThreadStartTurnInput(spec: ProjectThreadStartTurnSpe
 }
 
 export function deriveThreadTitleFromPrompt(value: string): string {
-  const trimmed = assistantCitationsToPlainText(value).trim();
+  const trimmed = assistantCitationsToPlainText(stripLeadInstruction(value)).trim();
   if (trimmed.length === 0) {
     return "New thread";
   }

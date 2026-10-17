@@ -58,6 +58,8 @@ import { armAgentAwarenessLiveActivityForLocalWork } from "../agent-awareness/re
 import { scopedThreadKey } from "../../lib/scopedEntities";
 import {
   getComposerDraftSnapshot,
+  useComposerDraftLead,
+  updateComposerDraftSettings,
   composerDraftsAtom,
   setComposerDraftText,
   composerContextImportsAtom,
@@ -84,6 +86,13 @@ import {
   ComposerToolbarRow,
 } from "../../components/ComposerToolbar";
 import { ProviderIcon } from "../../components/ProviderIcon";
+import { LeadContextControl, LeadDraftControl } from "./LeadDraftControl";
+import {
+  isMobileLeadArmed,
+  resolveMobileLeadAvailability,
+  resolveMobileThreadLeadSelection,
+} from "../../lib/lead";
+import { serverEnvironment } from "../../state/server";
 import {
   composerStripAttachments,
   type DraftComposerAttachment,
@@ -136,6 +145,7 @@ import {
  * Exported so the parent can compute feed overlap / content insets.
  */
 export const COMPOSER_COLLAPSED_CHROME = 60;
+export const COMPOSER_CONTEXT_ROW_HEIGHT = 44;
 
 /**
  * Height of the expanded composer (card + toolbar + vertical padding, excluding safe-area inset).
@@ -455,6 +465,49 @@ export const ThreadComposer = memo(function ThreadComposer(props: ThreadComposer
   // Content lives under the edit's own draft while a queued message is open;
   // the owner key still identifies this composer for settings and dictation.
   const composerDraftKey = props.draftKey ?? composerOwnerKey;
+  const draftLead = useComposerDraftLead(composerOwnerKey);
+  const leadAvailability = useMemo(
+    () => resolveMobileLeadAvailability(props.serverConfig, props.selectedThread.projectId),
+    [props.serverConfig, props.selectedThread.projectId],
+  );
+  const lead = isMobileLeadArmed(draftLead, currentModelSelection, leadAvailability);
+  const threadLeadSelection = resolveMobileThreadLeadSelection(
+    leadAvailability,
+    currentModelSelection,
+    props.canSwitchProvider,
+  );
+  const previousLeadCatalogRef = useRef<{ key: string; loaded: boolean } | null>(null);
+  useEffect(() => {
+    const previous = previousLeadCatalogRef.current;
+    if (
+      draftLead &&
+      !lead &&
+      (props.serverConfig || (previous?.key === composerOwnerKey && previous.loaded))
+    ) {
+      updateComposerDraftSettings(composerOwnerKey, { lead: false });
+    }
+    previousLeadCatalogRef.current = { key: composerOwnerKey, loaded: props.serverConfig != null };
+  }, [draftLead, lead, props.serverConfig, composerOwnerKey]);
+  const addLead = () => {
+    const config = appAtomRegistry.get(serverEnvironment.configValueAtom(props.environmentId));
+    const availability = resolveMobileLeadAvailability(config, props.selectedThread.projectId);
+    const selection = resolveMobileThreadLeadSelection(
+      availability,
+      currentModelSelection,
+      props.canSwitchProvider,
+    );
+    if (!selection) return;
+    props.onUpdateModelSelection(selection);
+    if (
+      isMobileLeadArmed(
+        true,
+        getComposerDraftSnapshot(composerOwnerKey).modelSelection,
+        availability,
+      )
+    ) {
+      updateComposerDraftSettings(composerOwnerKey, { lead: true });
+    }
+  };
   const openDraftDocument = (attachment: ComposerDocumentAttachment) => {
     Keyboard.dismiss();
     navigation.navigate("ThreadAttachment", {
@@ -841,6 +894,17 @@ export const ThreadComposer = memo(function ThreadComposer(props: ThreadComposer
           </Pressable>
         ) : null}
 
+        {queuedEdit === null ? (
+          <View className="flex-row flex-wrap items-center gap-1 px-2">
+            <LeadContextControl
+              lead={lead}
+              availability={leadAvailability}
+              switchSupported={threadLeadSelection !== null}
+              disabled={voiceInput.isBusy || props.sendBlockedReason != null}
+              onRestore={addLead}
+            />
+          </View>
+        ) : null}
         <ComposerSurface
           style={
             isExpanded
@@ -860,6 +924,18 @@ export const ThreadComposer = memo(function ThreadComposer(props: ThreadComposer
                 }
           }
         >
+          {queuedEdit === null && lead ? (
+            <View className="px-[14px] pt-2 pb-2.5">
+              <LeadDraftControl
+                existingThread
+                lead={lead}
+                availability={leadAvailability}
+                disabled={voiceInput.isBusy || props.sendBlockedReason != null}
+                onRemove={() => updateComposerDraftSettings(composerOwnerKey, { lead: false })}
+                onRestore={addLead}
+              />
+            </View>
+          ) : null}
           <ComposerDictationDraftContent
             className={isExpanded ? undefined : "flex-row items-center"}
             compact={!isExpanded}
@@ -1162,7 +1238,11 @@ export const ThreadComposer = memo(function ThreadComposer(props: ThreadComposer
                             size={size}
                           />
                         )}
-                        label={currentModelOption?.label ?? currentModelSelection.model}
+                        label={
+                          lead
+                            ? "Wonder Full · Max"
+                            : (currentModelOption?.label ?? currentModelSelection.model)
+                        }
                         maxWidth="100%"
                         onPress={openSettings}
                       />

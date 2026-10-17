@@ -12,6 +12,7 @@ import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Schedule from "effect/Schedule";
+import { stripLeadInstruction } from "@t3tools/shared/lead";
 
 import * as ServerSettings from "../serverSettings.ts";
 import * as TextGeneration from "../textGeneration/TextGeneration.ts";
@@ -98,10 +99,12 @@ const make = Effect.gen(function* () {
         context =
           message === undefined
             ? { message: "", attachments: [] }
-            : { message: message.text, attachments: message.attachments };
+            : { message: stripLeadInstruction(message.text), attachments: message.attachments };
       } else {
         context = formatThreadTitleContext(
-          projection.messages.filter((message) => !message.streaming),
+          projection.messages
+            .filter((message) => !message.streaming)
+            .map((message) => ({ ...message, text: stripLeadInstruction(message.text) })),
         );
       }
       if (context.message.length === 0 && context.attachments.length === 0) {

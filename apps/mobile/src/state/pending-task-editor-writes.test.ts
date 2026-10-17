@@ -2,6 +2,7 @@ import { CommandId, EnvironmentId, MessageId, ThreadId } from "@t3tools/contract
 import { beforeEach, describe, expect, it, vi } from "vite-plus/test";
 
 import type { QueuedThreadMessage } from "./thread-outbox-model";
+import { leadQueuedTask } from "../features/threads/lead-test-fixtures";
 
 const harness = vi.hoisted(() => ({
   manager: null as unknown as ReturnType<
@@ -45,10 +46,16 @@ import { appAtomRegistry } from "./atom-registry";
 import {
   capturePendingTaskEditorWriteBaseline,
   flushPendingTaskEditorWrite,
+  cancelPendingTaskLead,
+  clearPendingTaskLeadCancellation,
+  persistObservedTaskLeadCancellation,
+  applyPendingTaskLeadCancellation,
+  writePendingTaskLeadCancellation,
 } from "./pending-task-editor-writes";
 import {
   composerDraftsAtom,
   getComposerDraftSnapshot,
+  updateComposerDraftSettings,
   type ComposerDraft,
 } from "./use-composer-drafts";
 
@@ -109,6 +116,106 @@ beforeEach(() => {
 });
 
 describe("pending task editor writes", () => {
+  it("disarms an already open editor and captures Direct before its predecessor clears cancellation", async () => {
+    const original = leadQueuedTask({ messageId: MessageId.make("message-already-editing") });
+    const draftKey = `pending-task:${original.messageId}`;
+    await harness.manager.enqueue(original);
+    setDraft(draftKey, {
+      ...draft(original.text),
+      lead: true,
+      modelSelection: original.modelSelection,
+    });
+    cancelPendingTaskLead(original.messageId);
+    expect(getComposerDraftSnapshot(draftKey).lead).toBe(false);
+    const gate = blockNextWrite();
+    const disarm = writePendingTaskLeadCancellation(
+      { ...original, lead: false },
+      harness.manager.revisionOf(original.messageId),
+    );
+    await gate.started;
+    const baseline = capturePendingTaskEditorWriteBaseline(original.messageId, draftKey);
+    // A stale editor payload must not rearm after the predecessor lands Direct.
+    const save = flushPendingTaskEditorWrite({ message: original, baseline, draftKey });
+    gate.resolve();
+    await expect(disarm).resolves.toBe(true);
+    await expect(save).resolves.toBe(true);
+    expect(
+      Object.values(appAtomRegistry.get(harness.manager.queuedMessagesByThreadKeyAtom)).flat(),
+    ).toEqual([{ ...original, lead: false }]);
+  });
+
+  it.each([true, false])(
+    "cancels captured intent once across reopening during a disarm (explicit restore: %s)",
+    async (explicitlyRearm) => {
+      const original = leadQueuedTask({ messageId: MessageId.make("message-disarm-reopen") });
+      const draftKey = `pending-task:${original.messageId}`;
+      await harness.manager.enqueue(original);
+      const gate = blockNextWrite();
+      const disarm = writePendingTaskLeadCancellation(
+        { ...original, lead: false },
+        harness.manager.revisionOf(original.messageId),
+      );
+      await gate.started;
+      setDraft(draftKey, {
+        ...draft(original.text),
+        lead: true,
+        modelSelection: original.modelSelection,
+      });
+      capturePendingTaskEditorWriteBaseline(original.messageId, draftKey);
+      expect(getComposerDraftSnapshot(draftKey).lead).toBe(false);
+      if (explicitlyRearm) updateComposerDraftSettings(draftKey, { lead: true });
+      const reopenedBaseline = capturePendingTaskEditorWriteBaseline(original.messageId, draftKey);
+      expect(getComposerDraftSnapshot(draftKey).lead).toBe(explicitlyRearm);
+      gate.resolve();
+      await expect(disarm).resolves.toBe(true);
+      await expect(
+        flushPendingTaskEditorWrite({
+          message: { ...original, lead: getComposerDraftSnapshot(draftKey).lead },
+          baseline: reopenedBaseline,
+          draftKey,
+        }),
+      ).resolves.toBe(true);
+      expect(
+        Object.values(appAtomRegistry.get(harness.manager.queuedMessagesByThreadKeyAtom)).flat(),
+      ).toEqual([
+        {
+          ...original,
+          lead: explicitlyRearm,
+          ...(explicitlyRearm ? { leadArmingRevision: 1 } : {}),
+        },
+      ]);
+    },
+  );
+
+  it("lets a racing editor persist cancellation when the drain's disarm write fails", async () => {
+    const original = leadQueuedTask({ messageId: MessageId.make("message-disarm-failure") });
+    const draftKey = `pending-task:${original.messageId}`;
+    await harness.manager.enqueue(original);
+    const gate = blockNextWrite();
+    const disarm = writePendingTaskLeadCancellation(
+      { ...original, lead: false },
+      harness.manager.revisionOf(original.messageId),
+    );
+    await gate.started;
+    setDraft(draftKey, {
+      ...draft(original.text),
+      lead: true,
+      modelSelection: original.modelSelection,
+    });
+    const baseline = capturePendingTaskEditorWriteBaseline(original.messageId, draftKey);
+    const saved = flushPendingTaskEditorWrite({
+      message: { ...original, lead: getComposerDraftSnapshot(draftKey).lead },
+      baseline,
+      draftKey,
+    });
+    gate.reject(new Error("disk full"));
+    await expect(disarm).rejects.toMatchObject({ _tag: "ThreadOutboxManagerError" });
+    await expect(saved).resolves.toBe(true);
+    expect(
+      Object.values(appAtomRegistry.get(harness.manager.queuedMessagesByThreadKeyAtom)).flat(),
+    ).toEqual([{ ...original, lead: false }]);
+  });
+
   it("chains a reopened editor that closes before the previous save finishes", async () => {
     const original = queuedMessage("message-close-before-save", "original");
     const firstEdit = queuedMessage("message-close-before-save", "first edit");
@@ -117,7 +224,7 @@ describe("pending task editor writes", () => {
     await harness.manager.enqueue(original);
 
     setDraft(draftKey, draft(firstEdit.text));
-    const firstBaseline = capturePendingTaskEditorWriteBaseline(original.messageId);
+    const firstBaseline = capturePendingTaskEditorWriteBaseline(original.messageId, draftKey);
     const firstWriteGate = blockNextWrite();
     const firstSave = flushPendingTaskEditorWrite({
       message: firstEdit,
@@ -126,7 +233,7 @@ describe("pending task editor writes", () => {
     });
     await firstWriteGate.started;
 
-    const secondBaseline = capturePendingTaskEditorWriteBaseline(original.messageId);
+    const secondBaseline = capturePendingTaskEditorWriteBaseline(original.messageId, draftKey);
     setDraft(draftKey, draft(secondEdit.text));
     const secondWriteGate = blockNextWrite();
     const secondSave = flushPendingTaskEditorWrite({
@@ -155,11 +262,11 @@ describe("pending task editor writes", () => {
     const firstWriteGate = blockNextWrite();
     const firstSave = flushPendingTaskEditorWrite({
       message: firstEdit,
-      baseline: capturePendingTaskEditorWriteBaseline(original.messageId),
+      baseline: capturePendingTaskEditorWriteBaseline(original.messageId, draftKey),
       draftKey,
     });
     await firstWriteGate.started;
-    const secondBaseline = capturePendingTaskEditorWriteBaseline(original.messageId);
+    const secondBaseline = capturePendingTaskEditorWriteBaseline(original.messageId, draftKey);
 
     firstWriteGate.resolve();
     await expect(firstSave).resolves.toBe(true);
@@ -190,12 +297,12 @@ describe("pending task editor writes", () => {
     const firstWriteGate = blockNextWrite();
     const firstSave = flushPendingTaskEditorWrite({
       message: firstEdit,
-      baseline: capturePendingTaskEditorWriteBaseline(original.messageId),
+      baseline: capturePendingTaskEditorWriteBaseline(original.messageId, draftKey),
       draftKey,
     });
     await firstWriteGate.started;
 
-    const secondBaseline = capturePendingTaskEditorWriteBaseline(original.messageId);
+    const secondBaseline = capturePendingTaskEditorWriteBaseline(original.messageId, draftKey);
     setDraft(draftKey, draft(secondEdit.text));
     const secondWriteGate = blockNextWrite();
     const secondSave = flushPendingTaskEditorWrite({
@@ -204,7 +311,7 @@ describe("pending task editor writes", () => {
       draftKey,
     });
 
-    const thirdBaseline = capturePendingTaskEditorWriteBaseline(original.messageId);
+    const thirdBaseline = capturePendingTaskEditorWriteBaseline(original.messageId, draftKey);
     setDraft(draftKey, draft(thirdEdit.text));
     const thirdWriteGate = blockNextWrite();
     const thirdSave = flushPendingTaskEditorWrite({
@@ -237,12 +344,12 @@ describe("pending task editor writes", () => {
     const firstWriteGate = blockNextWrite();
     const firstSave = flushPendingTaskEditorWrite({
       message: firstEdit,
-      baseline: capturePendingTaskEditorWriteBaseline(original.messageId),
+      baseline: capturePendingTaskEditorWriteBaseline(original.messageId, draftKey),
       draftKey,
     });
     await firstWriteGate.started;
 
-    const failedBaseline = capturePendingTaskEditorWriteBaseline(original.messageId);
+    const failedBaseline = capturePendingTaskEditorWriteBaseline(original.messageId, draftKey);
     setDraft(draftKey, draft(failedEdit.text));
     const failedWriteGate = blockNextWrite();
     const failedSave = flushPendingTaskEditorWrite({
@@ -251,7 +358,7 @@ describe("pending task editor writes", () => {
       draftKey,
     });
 
-    const finalBaseline = capturePendingTaskEditorWriteBaseline(original.messageId);
+    const finalBaseline = capturePendingTaskEditorWriteBaseline(original.messageId, draftKey);
     setDraft(draftKey, draft(finalEdit.text));
     const finalWriteGate = blockNextWrite();
     const finalSave = flushPendingTaskEditorWrite({
@@ -279,7 +386,7 @@ describe("pending task editor writes", () => {
     const draftKey = "pending-task:message-unrelated-update";
     await harness.manager.enqueue(original);
 
-    const editorBaseline = capturePendingTaskEditorWriteBaseline(original.messageId);
+    const editorBaseline = capturePendingTaskEditorWriteBaseline(original.messageId, draftKey);
     const revision = harness.manager.revisionOf(original.messageId);
     await expect(harness.manager.update(unrelatedEdit, revision)).resolves.toBe(true);
     setDraft(draftKey, draft(editorEdit.text));
@@ -305,12 +412,12 @@ describe("pending task editor writes", () => {
     const failedWriteGate = blockNextWrite();
     const failedSave = flushPendingTaskEditorWrite({
       message: failedEdit,
-      baseline: capturePendingTaskEditorWriteBaseline(original.messageId),
+      baseline: capturePendingTaskEditorWriteBaseline(original.messageId, draftKey),
       draftKey,
     });
     await failedWriteGate.started;
 
-    const retryBaseline = capturePendingTaskEditorWriteBaseline(original.messageId);
+    const retryBaseline = capturePendingTaskEditorWriteBaseline(original.messageId, draftKey);
     setDraft(draftKey, draft(retryEdit.text));
     const retryWriteGate = blockNextWrite();
     const retrySave = flushPendingTaskEditorWrite({
@@ -338,7 +445,7 @@ describe("pending task editor writes", () => {
     const writeGate = blockNextWrite();
     const save = flushPendingTaskEditorWrite({
       message: editorEdit,
-      baseline: capturePendingTaskEditorWriteBaseline(original.messageId),
+      baseline: capturePendingTaskEditorWriteBaseline(original.messageId, draftKey),
       draftKey,
     });
     await writeGate.started;
@@ -349,5 +456,84 @@ describe("pending task editor writes", () => {
     await expect(save).resolves.toBe(false);
     expect(getComposerDraftSnapshot(draftKey).text).toBe("");
     expect(queuedMessageText(original.messageId)).toBe(editorEdit.text);
+  });
+});
+
+describe("catalog cancellation persistence", () => {
+  it.each([false, true])(
+    "follows an in-flight editor save (explicit Restore: %s)",
+    async (restore) => {
+      const original = leadQueuedTask({ messageId: MessageId.make(`catalog-editor-${restore}`) });
+      await harness.manager.enqueue(original);
+      const draftKey = `pending-task:${original.messageId}`;
+      setDraft(draftKey, {
+        ...draft("Edited before loss"),
+        modelSelection: original.modelSelection,
+        lead: true,
+      });
+      const gate = blockNextWrite();
+      const save = flushPendingTaskEditorWrite({
+        message: { ...original, text: "Edited before loss" },
+        baseline: capturePendingTaskEditorWriteBaseline(original.messageId, draftKey),
+        draftKey,
+      });
+      await gate.started;
+      const cancellation = persistObservedTaskLeadCancellation(original);
+      expect(getComposerDraftSnapshot(draftKey).lead).toBe(false);
+      let restoredSave: Promise<boolean> | undefined;
+      if (restore) {
+        updateComposerDraftSettings(draftKey, { lead: true });
+        clearPendingTaskLeadCancellation(original.messageId);
+        restoredSave = flushPendingTaskEditorWrite({
+          message: { ...original, text: "Explicitly restored after recovery" },
+          baseline: capturePendingTaskEditorWriteBaseline(original.messageId, draftKey),
+          draftKey,
+        });
+      }
+      gate.resolve();
+      await save;
+      await cancellation;
+      if (restoredSave) expect(await restoredSave).toBe(true);
+      const current = Object.values(
+        appAtomRegistry.get(harness.manager.queuedMessagesByThreadKeyAtom),
+      ).flat()[0]!;
+      expect(current).toMatchObject({
+        lead: restore,
+        text: restore ? "Explicitly restored after recovery" : "Edited before loss",
+      });
+    },
+  );
+
+  it("retries a lost revision with the winning payload", async () => {
+    const original = leadQueuedTask({ messageId: MessageId.make("catalog-cas") });
+    await harness.manager.enqueue(original);
+    const gate = blockNextWrite();
+    const newer = { ...original, text: "Winning edit" };
+    const update = harness.manager.update(newer, harness.manager.revisionOf(original.messageId));
+    await gate.started;
+    const cancellation = persistObservedTaskLeadCancellation(original);
+    gate.resolve();
+    expect(await update).toBe(true);
+    await cancellation;
+    const current = Object.values(
+      appAtomRegistry.get(harness.manager.queuedMessagesByThreadKeyAtom),
+    ).flat()[0]!;
+    expect(current).toEqual({ ...newer, lead: false });
+  });
+
+  it("retains cancellation through an I/O failure and persists it on retry", async () => {
+    const original = leadQueuedTask({ messageId: MessageId.make("catalog-write-retry") });
+    await harness.manager.enqueue(original);
+    const gate = blockNextWrite();
+    const cancellation = persistObservedTaskLeadCancellation(original);
+    await gate.started;
+    gate.reject(new Error("disk full"));
+    await expect(cancellation).rejects.toMatchObject({ _tag: "ThreadOutboxManagerError" });
+    expect(applyPendingTaskLeadCancellation(original).lead).toBe(false);
+    await persistObservedTaskLeadCancellation(original);
+    const current = Object.values(
+      appAtomRegistry.get(harness.manager.queuedMessagesByThreadKeyAtom),
+    ).flat()[0]!;
+    expect(current.lead).toBe(false);
   });
 });

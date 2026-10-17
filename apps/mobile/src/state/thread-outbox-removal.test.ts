@@ -42,6 +42,10 @@ import { appAtomRegistry } from "./atom-registry";
 import { clearThreadOutboxEnvironment, removeThreadOutboxMessage } from "./thread-outbox-removal";
 import type { QueuedThreadMessage } from "./thread-outbox-model";
 import { composerDraftsAtom } from "./use-composer-drafts";
+import {
+  applyPendingTaskLeadCancellation,
+  cancelPendingTaskLead,
+} from "./pending-task-editor-writes";
 
 function queuedMessage(input: {
   readonly environmentId: string;
@@ -91,6 +95,27 @@ afterEach(() => {
 });
 
 describe("thread outbox removal", () => {
+  it.each(["message", "environment"] as const)(
+    "retains cancellation after a rejected removal and clears it after durable %s removal",
+    async (scope) => {
+      const message = {
+        ...queuedMessage({
+          environmentId: "environment-cancel",
+          messageId: "message-cancel",
+          fileUri: "file:///report.pdf",
+        }),
+        lead: true,
+      };
+      await harness.manager.enqueue(message);
+      cancelPendingTaskLead(message.messageId);
+      await expect(removeThreadOutboxMessage(message, -1)).resolves.toBe(false);
+      expect(applyPendingTaskLeadCancellation(message).lead).toBe(false);
+      if (scope === "message") await removeThreadOutboxMessage(message);
+      else await clearThreadOutboxEnvironment(message.environmentId);
+      expect(applyPendingTaskLeadCancellation(message)).toBe(message);
+    },
+  );
+
   it("releases a removed message's attachment files with the removal itself", async () => {
     const message = queuedMessage({
       environmentId: "environment-1",
