@@ -79,6 +79,8 @@ import {
   ComposerToolbarRow,
 } from "../../components/ComposerToolbar";
 import { ProviderIcon } from "../../components/ProviderIcon";
+import { resolveMobileLeadAvailability } from "../../lib/lead";
+import { useMobileLeadRole } from "./use-lead-role";
 import {
   composerStripAttachments,
   type DraftComposerFileAttachment,
@@ -127,6 +129,7 @@ import {
 } from "./use-thread-settings-sheet-presentation";
 
 export const COMPOSER_COLLAPSED_CHROME = 60;
+export const COMPOSER_CONTEXT_ROW_HEIGHT = 44;
 
 const COLLAPSED_EDITOR_DEFAULT_INSET = 6;
 // iOS puts line-height slack above glyphs. DM Sans's lowercase midline is
@@ -151,7 +154,6 @@ export interface ThreadComposerProps {
   readonly bottomInset?: number;
   readonly connectionState: RemoteClientConnectionState;
   readonly environmentLabel: string | null;
-  readonly threadSyncPhase?: "loading" | "syncing" | null;
   readonly selectedThread: EnvironmentThreadShell;
   readonly reportedModelSelection?: ModelSelection | null;
   readonly hasCompactableConversation: boolean;
@@ -422,6 +424,20 @@ export const ThreadComposer = function ThreadComposer(props: ThreadComposerProps
       ) ?? null
     );
   })();
+  const leadAvailability = resolveMobileLeadAvailability(
+    props.serverConfig,
+    props.selectedThread.projectId,
+  );
+  const {
+    lead,
+    eligible: leadEligible,
+    setLead,
+  } = useMobileLeadRole({
+    draftKey: composerOwnerKey,
+    selection: currentModelSelection,
+    availability: leadAvailability,
+    enabled: props.serverConfig != null && queuedEdit === null,
+  });
   const openDraftDocument = (attachment: ComposerDocumentAttachment) => {
     Keyboard.dismiss();
     navigation.navigate("ThreadAttachment", {
@@ -634,6 +650,7 @@ export const ThreadComposer = function ThreadComposer(props: ThreadComposerProps
     },
     runtimeMode: currentRuntimeMode,
     onUpdateRuntimeMode: props.onUpdateRuntimeMode,
+    ...(leadEligible && queuedEdit === null ? { leadRole: { lead, onChange: setLead } } : {}),
   } satisfies ExistingThreadSettingsRouteSession;
   const openSettings = () => {
     settingsRoutePresentation.present(settingsRouteSession);

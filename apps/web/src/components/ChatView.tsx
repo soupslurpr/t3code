@@ -1,3 +1,4 @@
+import { useMemo } from "react";
 import { formatFilePathForClipboard } from "@t3tools/client-runtime/media-actions";
 import { resolvePathLinkTarget } from "@t3tools/shared/fileLinks";
 import { ThreadFind, ThreadFindCanvas, type ThreadFindControls } from "./chat/ThreadFindProvider";
@@ -127,10 +128,9 @@ import {
   scopeThreadRef,
 } from "@t3tools/client-runtime/environment";
 import {
-  applyClaudePromptEffortPrefix,
   createModelSelection,
+  getModelSelectionStringOptionValue,
   formatModelSlugName,
-  resolvePromptInjectedEffort,
   resolveSelectableModel,
 } from "@t3tools/shared/model";
 import {
@@ -289,7 +289,6 @@ import { stackedThreadToast, toastManager } from "./ui/toast";
 import { projectScriptIdFromCommand } from "~/projectScripts";
 import { newDraftId, newMessageId, newThreadId } from "~/lib/utils";
 import { registerFaviconProjectForThread } from "~/browserFaviconStore";
-import { getProviderModelCapabilities } from "../providerModels";
 import {
   applyProviderInstanceSettings,
   deriveProviderInstanceEntries,
@@ -301,13 +300,21 @@ import {
   useClientSettings,
   useClientSettingsHydrated,
   useEnvironmentSettings,
+  mergeEnvironmentSettings,
 } from "../hooks/useSettings";
 import { useNowMinute } from "../hooks/useNowMinute";
 import { usePanelAnimationSettings, usePanelPresence } from "../panelAnimations";
 import { useNewThreadHandler } from "../hooks/useHandleNewThread";
 import { useRemoveClonedProject } from "../hooks/useRemoveClonedProject";
 import { useOpenPanelPullRequestUrl } from "../hooks/useOpenPanelPullRequestUrl";
-import { resolveAppModelSelectionForInstance } from "../modelSelection";
+import {
+  resolveAppModelSelectionForInstance,
+  resolveLeadAvailability,
+  resolveLeadSelectionForDispatch,
+} from "../modelSelection";
+import { LEAD_ROLE_OPTION_ID } from "@t3tools/shared/lead";
+import { LeadRoleControl } from "./chat/LeadRoleControl";
+import { useLeadRole } from "../hooks/useLeadRole";
 import {
   getComposerPromptInjectionState,
   getComposerProviderState,
@@ -338,6 +345,7 @@ import {
   type DraftThreadEnvMode,
   useComposerDraftStore,
   DraftId,
+  resolveComposerLeadSelectionForDispatch,
 } from "../composerDraftStore";
 import {
   formatTerminalContextLabel,
@@ -505,6 +513,9 @@ import {
   shouldReleaseTimelineAnchorForToolActivity,
   shouldRenderPreviewMiniPlayer,
   getStartedThreadModelChangeBlockReason,
+  getThreadModelSelectionBlockReason,
+  formatOutgoingPrompt,
+  resolveComposerLeadSelection,
   LAST_INVOKED_SCRIPT_BY_PROJECT_KEY,
   LastInvokedScriptByProjectSchema,
   type LocalDispatchSnapshot,
@@ -862,17 +873,6 @@ async function rewindToMessage(input: {
   }
 }
 
-function formatOutgoingPrompt(params: {
-  provider: ProviderDriverKind;
-  model: string | null;
-  models: ReadonlyArray<ServerProvider["models"][number]>;
-  effort: string | null;
-  text: string;
-}): string {
-  const caps = getProviderModelCapabilities(params.models, params.model, params.provider);
-  const promptEffort = resolvePromptInjectedEffort(caps, params.effort);
-  return applyClaudePromptEffortPrefix(params.text, promptEffort);
-}
 const SCRIPT_TERMINAL_COLS = 120;
 const SCRIPT_TERMINAL_ROWS = 30;
 
@@ -1091,7 +1091,7 @@ export default function ChatView(props: ChatViewProps) {
   const setThreadInteractionMode = useOrchestrationCommand(threadEnvironment.setInteractionMode, {
     reportFailure: false,
   });
-  const startThreadTurn = useOrchestrationCommand(threadEnvironment.startTurn, {
+  const startThreadTurnCommand = useOrchestrationCommand(threadEnvironment.startTurn, {
     reportFailure: false,
   });
   const resumeThreadQueue = useOrchestrationCommand(threadEnvironment.resumeThreadQueue, {
@@ -1454,9 +1454,9 @@ export default function ChatView(props: ChatViewProps) {
   const setMultipleModelSelections = (
     selections: SetStateAction<ReadonlyArray<ModelSelection> | null>,
   ) => {
-    appAtomRegistry.update(fanoutSelectionsAtom, (current) =>
-      typeof selections === "function" ? selections(current) : selections,
-    );
+    const current = appAtomRegistry.get(fanoutSelectionsAtom);
+    const next = typeof selections === "function" ? selections(current) : selections;
+    appAtomRegistry.set(fanoutSelectionsAtom, next);
   };
   const setMultipleModelSelectionsStable = useStableCallback(setMultipleModelSelections);
   const readMultipleModelSelections = () => appAtomRegistry.get(fanoutSelectionsAtom);
@@ -2211,6 +2211,17 @@ export default function ChatView(props: ChatViewProps) {
       interactionMode: DEFAULT_INTERACTION_MODE,
       ...input,
     });
+    const destinationConfig = appAtomRegistry
+      .get(environmentServerConfigsAtom)
+      .get(activeProject.environmentId);
+    const defaultSelection = resolveLeadAvailability(
+      mergeEnvironmentSettings(destinationConfig?.settings ?? settings, settings),
+      destinationConfig?.providers ?? [],
+      activeProject.id,
+    ).selection;
+    if (defaultSelection) {
+      setComposerDraftModelSelection(nextDraftId, defaultSelection, { replaceOptions: true });
+    }
     await navigate({
       to: "/draft/$draftId",
       params: buildDraftThreadRouteParams(nextDraftId),
@@ -2469,6 +2480,67 @@ export default function ChatView(props: ChatViewProps) {
       settings,
       activeProject?.id ?? null,
     ),
+  );
+  const leadAvailability = resolveLeadAvailability(
+    settings,
+    providerStatuses,
+    activeProject?.id ?? null,
+  );
+  const startThreadTurn = (request: Parameters<typeof startThreadTurnCommand>[0]) => {
+    const shell = readThreadShell(scopeThreadRef(request.environmentId, request.input.threadId));
+    const selection = request.input.modelSelection ?? shell?.modelSelection;
+    if (
+      !selection ||
+      getModelSelectionStringOptionValue(selection, LEAD_ROLE_OPTION_ID) !== "lead"
+    ) {
+      return startThreadTurnCommand(request);
+    }
+    // Uploads and other awaits can outlive a catalog. Resolve the effective role
+    // at dispatch without changing the saved preference or the user's message.
+    const config = appAtomRegistry.get(environmentServerConfigsAtom).get(request.environmentId);
+    const projectId =
+      request.input.bootstrap?.createThread?.projectId ??
+      shell?.projectId ??
+      activeProject?.id ??
+      null;
+    const availability = resolveLeadAvailability(
+      mergeEnvironmentSettings(config?.settings ?? settings, settings),
+      config?.providers ?? [],
+      projectId,
+    );
+    return startThreadTurnCommand({
+      ...request,
+      input: {
+        ...request.input,
+        modelSelection: resolveComposerLeadSelectionForDispatch(
+          scopeThreadRef(request.environmentId, request.input.threadId),
+          selection,
+          availability,
+        ),
+        ...(request.input.bootstrap?.createThread
+          ? {
+              bootstrap: {
+                ...request.input.bootstrap,
+                createThread: {
+                  ...request.input.bootstrap.createThread,
+                  modelSelection: resolveLeadSelectionForDispatch(
+                    request.input.bootstrap.createThread.modelSelection,
+                    availability,
+                  ),
+                },
+              },
+            }
+          : {}),
+      },
+    });
+  };
+  const eligibleLeadSelection = useComposerDraftStore((store) =>
+    resolveComposerLeadSelection({
+      draft: store.getComposerDraft(composerDraftTarget),
+      fallbackSelection: isLocalDraftThread ? null : (activeThread?.modelSelection ?? null),
+      multipleSelections: multipleModelSelections,
+      availability: leadAvailability,
+    }),
   );
   const activeThreadModelInstanceId = activeThread?.modelSelection.instanceId;
   const { selectedProviderEntry, requestedDriverKind } = resolveComposerProviderSelection({
@@ -6708,10 +6780,13 @@ export default function ChatView(props: ChatViewProps) {
       });
       if (composerRef.current?.validateProviderInput(text) === false) return;
       multipleTargets.push({
-        selection: createModelSelection(
-          selection.instanceId,
-          selection.model,
-          providerState.modelOptionsForDispatch,
+        selection: resolveLeadSelectionForDispatch(
+          createModelSelection(
+            selection.instanceId,
+            selection.model,
+            providerState.modelOptionsForDispatch,
+          ),
+          null,
         ),
         text,
         interactionMode: resolveComposerInteractionMode({
@@ -7361,7 +7436,7 @@ export default function ChatView(props: ChatViewProps) {
           return next.length === existing.length ? existing : next;
         });
         const retryComposerImages = composerImagesSnapshot.map(cloneComposerImageForRetry);
-        setComposerDraftPrompt(composerDraftTarget, messageTextForSend);
+        setComposerDraftPrompt(composerDraftTarget, promptForSend);
         addComposerDraftImages(composerDraftTarget, retryComposerImages);
         addComposerDraftFiles(composerDraftTarget, composerFilesSnapshot);
         setComposerDraftTerminalContexts(composerDraftTarget, composerTerminalContextsSnapshot);
@@ -7369,13 +7444,13 @@ export default function ChatView(props: ChatViewProps) {
         setComposerDraftReviewComments(composerDraftTarget, composerReviewCommentsSnapshot);
         setComposerDraftThreadContexts(composerDraftTarget, composerThreadContextsSnapshot);
         if (currentRouteThreadKeyRef.current === routeThreadKey) {
-          promptRef.current = messageTextForSend;
+          promptRef.current = promptForSend;
           composerImagesRef.current = retryComposerImages;
           composerFilesRef.current = composerFilesSnapshot;
           composerTerminalContextsRef.current = composerTerminalContextsSnapshot;
           composerRef.current?.resetCursorState({
-            cursor: collapseExpandedComposerCursor(messageTextForSend, messageTextForSend.length),
-            prompt: messageTextForSend,
+            cursor: collapseExpandedComposerCursor(promptForSend, promptForSend.length),
+            prompt: promptForSend,
             detectTrigger: true,
           });
         }
@@ -7722,12 +7797,49 @@ export default function ChatView(props: ChatViewProps) {
       : null,
   );
 
+  const applyComposerModelSelection = (
+    nextModelSelection: ModelSelection,
+    focusComposer = true,
+  ) => {
+    if (!activeThread) return false;
+    const modelChangeBlockReason = getThreadModelSelectionBlockReason({
+      lockedProvider: modelPickerLockedProvider,
+      providers: providerStatuses,
+      hasStartedSession: activeRuntime !== null,
+      supportsProviderSwitchingViaHandoff,
+      currentModelSelection: activeThread.modelSelection,
+      currentProviderInstanceId: activeRuntime?.providerInstanceId ?? null,
+      nextModelSelection,
+    });
+    if (modelChangeBlockReason) {
+      toastManager.add({
+        type: "warning",
+        title: modelChangeBlockReason.title,
+        description: modelChangeBlockReason.description,
+      });
+      if (focusComposer) scheduleComposerFocus();
+      return false;
+    }
+    setComposerDraftModelSelection(
+      scopeThreadRef(activeThread.environmentId, activeThread.id),
+      nextModelSelection,
+      // A complete snapshot: an absent options field means "start from the
+      // model default", not "keep the previous model's options".
+      { explicit: true, replaceOptions: true, fallbackSelection: activeThread.modelSelection },
+    );
+    setStickyComposerModelSelection(nextModelSelection);
+    if (focusComposer) scheduleComposerFocus();
+    return true;
+  };
+  const applyLeadRoleSelection = useStableCallback((selection: ModelSelection) => {
+    applyComposerModelSelection(selection, false);
+  });
   const onProviderModelSelect = (
     instanceId: ProviderInstanceId,
     model: string,
-    options?: { focusComposer?: boolean },
+    options?: { focusComposer?: boolean; modelOptions?: ModelSelection["options"] },
   ) => {
-    if (!activeThread) return;
+    if (!activeThread) return false;
     const entry = providerStatuses.find((snapshot) => snapshot.instanceId === instanceId);
     const resolvedDriverKind = entry?.driver ?? null;
     if (
@@ -7737,7 +7849,7 @@ export default function ChatView(props: ChatViewProps) {
       resolvedDriverKind !== lockedProvider
     ) {
       if (options?.focusComposer !== false) scheduleComposerFocus();
-      return;
+      return false;
     }
     if (
       !supportsProviderSwitchingViaHandoff &&
@@ -7753,7 +7865,7 @@ export default function ChatView(props: ChatViewProps) {
         currentEntry.continuation.groupKey !== entry.continuation.groupKey
       ) {
         if (options?.focusComposer !== false) scheduleComposerFocus();
-        return;
+        return false;
       }
     }
     const resolvedModel = resolveAppModelSelectionForInstance(
@@ -7764,40 +7876,31 @@ export default function ChatView(props: ChatViewProps) {
     );
     if (!resolvedModel) {
       if (options?.focusComposer !== false) scheduleComposerFocus();
-      return;
+      return false;
     }
     const rememberedOptions =
+      options?.modelOptions ??
       useComposerDraftStore.getState().stickyOptionsByModelByProvider[instanceId]?.[resolvedModel];
     const nextModelSelection: ModelSelection =
       rememberedOptions !== undefined && rememberedOptions.length > 0
         ? { instanceId, model: resolvedModel, options: [...rememberedOptions] }
         : { instanceId, model: resolvedModel };
-    const modelChangeBlockReason = getStartedThreadModelChangeBlockReason({
-      providers: providerStatuses,
-      hasStartedSession: activeRuntime !== null,
-      supportsProviderSwitchingViaHandoff,
-      currentModelSelection: activeThread.modelSelection,
-      currentProviderInstanceId: activeRuntime?.providerInstanceId ?? null,
-      nextModelSelection,
-    });
-    if (modelChangeBlockReason) {
-      toastManager.add({
-        type: "warning",
-        title: modelChangeBlockReason.title,
-        description: modelChangeBlockReason.description,
-      });
-      if (options?.focusComposer !== false) scheduleComposerFocus();
-      return;
-    }
-    setComposerDraftModelSelection(
-      scopeThreadRef(activeThread.environmentId, activeThread.id),
-      nextModelSelection,
-      { explicit: true, replaceOptions: true },
-    );
-    setStickyComposerModelSelection(nextModelSelection);
-    if (options?.focusComposer !== false) scheduleComposerFocus();
+    return applyComposerModelSelection(nextModelSelection, options?.focusComposer !== false);
   };
   const onProviderModelSelectStable = useStableCallback(onProviderModelSelect);
+  const { role: leadRole, onRoleChange } = useLeadRole({
+    selection: eligibleLeadSelection,
+    enabled: activeThread !== undefined && serverConfig !== null && !queuedRunEdit.isEditing,
+    onSelectionChange: applyLeadRoleSelection,
+  });
+  const onRoleChangeStable = useStableCallback(onRoleChange);
+  const leadRoleControl = useMemo(
+    () =>
+      eligibleLeadSelection !== null && !queuedRunEdit.isEditing ? (
+        <LeadRoleControl role={leadRole} onRoleChange={onRoleChangeStable} />
+      ) : undefined,
+    [eligibleLeadSelection, queuedRunEdit.isEditing, leadRole, onRoleChangeStable],
+  );
   const onEnvModeChange = (mode: DraftThreadEnvMode) => {
     if (multipleModelSelections !== null) return;
     if (canOverrideServerThreadEnvMode) {
@@ -8444,6 +8547,7 @@ export default function ChatView(props: ChatViewProps) {
                           ) : null}
                           {!composerMounted ? null : (
                             <ChatComposer
+                              leadRoleControl={leadRoleControl}
                               canOperateThread={canOperateThread}
                               reportedModelSelection={reportedModelSelection}
                               multipleModelSelections={multipleModelSelections}

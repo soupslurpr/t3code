@@ -5,10 +5,14 @@ import {
   EnvironmentId,
   ProjectId,
   ProviderInstanceId,
+  ProviderDriverKind,
   ThreadId,
   type ModelSelection,
   type ServerSettings,
+  type ServerProvider,
 } from "@t3tools/contracts";
+import { DEFAULT_CLIENT_SETTINGS } from "@t3tools/contracts/settings";
+import { resolveModelPreferences } from "@t3tools/shared/serverSettings";
 import { beforeEach, describe, expect, it, vi } from "vite-plus/test";
 
 import { DraftId, useComposerDraftStore } from "../composerDraftStore";
@@ -35,7 +39,10 @@ const context = vi.hoisted(() => {
   };
   return {
     router,
-    configs: new Map<string, { settings: ServerSettings }>(),
+    configs: new Map<
+      string,
+      { settings: ServerSettings; providers?: ReadonlyArray<ServerProvider> }
+    >(),
     readProjects: vi.fn<() => ReadonlyArray<EnvironmentProject>>(),
     readThreadShell:
       vi.fn<() => { modelSelection: ModelSelection; interactionMode: "default" } | null>(),
@@ -50,12 +57,27 @@ vi.mock("@effect/atom-react", () => ({ useAtomValue: () => context.configs }));
 vi.mock("@tanstack/react-router", () => ({ useRouter: () => context.router }));
 vi.mock("../state/entities", () => ({
   readProjects: context.readProjects,
+  readProject: (ref: { projectId: ProjectId; environmentId: EnvironmentId }) =>
+    context
+      .readProjects()
+      .find(
+        (project) => project.id === ref.projectId && project.environmentId === ref.environmentId,
+      ) ?? null,
   readThreadShell: context.readThreadShell,
+  readThreadShells: () => [],
 }));
 vi.mock("../state/server", () => ({ environmentServerConfigsAtom: {} }));
+vi.mock("../rpc/atomRegistry", () => ({ appAtomRegistry: { get: () => context.configs } }));
 vi.mock("../components/Sidebar.logic", () => ({ orderItemsByPreferredIds: vi.fn() }));
 vi.mock("../lib/t3ProjectFileDefaults", () => ({ readT3ProjectFile: async () => null }));
-vi.mock("./useSettings", () => ({ useClientSettings: () => ({}) }));
+vi.mock("./useSettings", () => ({
+  mergeEnvironmentSettings: (settings: ServerSettings) => ({
+    ...DEFAULT_CLIENT_SETTINGS,
+    ...settings,
+    ...resolveModelPreferences(settings, DEFAULT_CLIENT_SETTINGS),
+  }),
+  useClientSettings: () => DEFAULT_CLIENT_SETTINGS,
+}));
 
 const environmentId = EnvironmentId.make("environment-1");
 const sourceProjectId = ProjectId.make("source-project");
@@ -128,15 +150,16 @@ describe("new-thread model selection", () => {
     expect(selectedModel(source)).toEqual(projectSelection);
   });
 
-  it("refreshes a reused empty draft without carrying another project's model seed", async () => {
+  it("preserves a reused empty draft's explicit model selection", async () => {
     const target = await openDraft(targetProjectId);
     useComposerDraftStore.getState().setModelSelection(target, projectSelection, {
+      explicit: true,
       replaceOptions: true,
     });
     await openDraft(sourceProjectId);
 
     expect(await openDraft(targetProjectId)).toBe(target);
-    expect(selectedModel(target)).toEqual(rememberedSelection);
+    expect(selectedModel(target)).toEqual(projectSelection);
   });
 
   it("carries an explicit model choice and its reasoning effort from another draft", async () => {
@@ -185,5 +208,65 @@ describe("new-thread model selection", () => {
     });
 
     expect(selectedModel(await openDraft(targetProjectId))).toEqual(projectSelection);
+  });
+
+  it("seeds Wonder above project and carried defaults only for a brand-new human draft", async () => {
+    const config = context.configs.get(environmentId)!;
+    const providers: ServerProvider[] = [
+      { driver: "muse", models: ["muse-wonder-full-1.0"] },
+      { driver: "codex", models: ["gpt-6-astra", "gpt-6.1-sol"] },
+    ].map((row) => ({
+      instanceId: ProviderInstanceId.make(row.driver),
+      driver: ProviderDriverKind.make(row.driver),
+      enabled: true,
+      installed: true,
+      version: null,
+      status: "ready",
+      auth: { status: "authenticated" },
+      checkedAt: "2026-10-16T00:00:00.000Z",
+      slashCommands: [],
+      skills: [],
+      models: row.models.map((model) => ({
+        slug: model,
+        name: model,
+        isCustom: false,
+        capabilities: {
+          optionDescriptors: [
+            {
+              type: "select",
+              id: "reasoningEffort",
+              label: "Reasoning",
+              options: [
+                { id: "max", label: "Max" },
+                { id: "xhigh", label: "Extra High" },
+              ],
+            },
+          ],
+        },
+      })),
+    }));
+    context.configs.set(environmentId, {
+      ...config,
+      providers,
+      settings: {
+        ...config.settings,
+        providerInstances: Object.fromEntries(
+          providers.map((provider) => [
+            provider.instanceId,
+            { driver: provider.driver, enabled: true, config: {} },
+          ]),
+        ),
+      },
+    });
+    const draftId = await openDraft(sourceProjectId);
+    expect(selectedModel(draftId)).toEqual({
+      instanceId: "muse",
+      model: "muse-wonder-full-1.0",
+      options: [{ id: "reasoningEffort", value: "max" }],
+    });
+    const store = useComposerDraftStore.getState();
+    store.setModelSelection(draftId, rememberedSelection, { explicit: true });
+    expect(await openDraft(sourceProjectId)).toBe(draftId);
+    expect(selectedModel(draftId)).toEqual(rememberedSelection);
   });
 });

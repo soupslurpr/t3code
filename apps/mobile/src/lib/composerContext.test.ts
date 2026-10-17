@@ -343,6 +343,7 @@ describe("host context compatibility", () => {
       path === "existing-thread"
         ? wire
         : buildProjectThreadStartTurnInput({
+            serverConfig: null,
             ...wire,
             projectId: ProjectId.make("project"),
             projectCwd: "/workspace",

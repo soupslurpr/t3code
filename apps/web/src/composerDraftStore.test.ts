@@ -81,6 +81,7 @@ import {
   COMPOSER_DRAFT_STORAGE_KEY,
   subscribeComposerDraftModelReconciliation,
   deriveEffectiveComposerModelState,
+  resolveComposerLeadSelectionForDispatch,
   clearComposerDraftsEnvironment,
   composerDraftHasUserContent,
   beginBackgroundDraftSubmissionByRef,
@@ -3838,6 +3839,189 @@ describe("composerDraftStore attachment references", () => {
     );
     expect(merged.draftsByThreadKey[threadKeyFor(threadId, TEST_ENVIRONMENT_ID)]?.prompt).toBe(
       prompt,
+    );
+  });
+});
+
+describe("Lead role option persistence", () => {
+  const target = scopeThreadRef(TEST_ENVIRONMENT_ID, ThreadId.make("role-selection"));
+  const selection = createModelSelection(
+    ProviderInstanceId.make("muse_work"),
+    "muse-wonder-full-1.0",
+    [
+      { id: "reasoningEffort", value: "max" },
+      { id: "leadRole", value: "direct" },
+    ],
+  );
+  beforeEach(resetComposerDraftStore);
+  afterEach(resetComposerDraftStore);
+
+  it("ignores obsolete draft Lead fields on hydration without changing the prompt or model", () => {
+    const store = useComposerDraftStore.getState();
+    store.setModelSelection(target, selection, { explicit: true, replaceOptions: true });
+    store.setPrompt(target, "Keep this task");
+    const persisted = partializeComposerDraftStoreState(useComposerDraftStore.getState());
+    const key = scopedThreadKey(target);
+    const merged = useComposerDraftStore.persist.getOptions().merge!(
+      {
+        ...persisted,
+        draftsByThreadKey: {
+          [key]: {
+            ...persisted.draftsByThreadKey[key],
+            lead: true,
+            leadDirect: false,
+            leadRevision: 17,
+          },
+          "obsolete-intent-only": { prompt: "", attachments: [], lead: true, leadDirect: true },
+        },
+      },
+      useComposerDraftStore.getState(),
+    );
+    expect(merged.draftsByThreadKey[key]).toEqual(store.getComposerDraft(target));
+    expect(merged.draftsByThreadKey["obsolete-intent-only"]).toBeUndefined();
+    expect(merged.draftsByThreadKey[key]).not.toHaveProperty("lead");
+    expect(merged.draftsByThreadKey[key]).not.toHaveProperty("leadDirect");
+    expect(merged.draftsByThreadKey[key]).not.toHaveProperty("leadRevision");
+  });
+
+  it("persists thread Direct through reload and clearing, excluding Role from global memory", async () => {
+    await useComposerDraftStore.persist.clearStorage();
+    vi.useFakeTimers();
+    try {
+      const store = useComposerDraftStore.getState();
+      store.setModelSelection(target, selection, { explicit: true, replaceOptions: true });
+      store.setStickyModelSelection(selection);
+      store.setPrompt(target, "Send this task");
+      store.clearComposerContent(target);
+      await vi.advanceTimersByTimeAsync(300);
+      resetComposerDraftStore();
+      await useComposerDraftStore.persist.rehydrate();
+      expect(store.getComposerDraft(target)).toMatchObject({
+        prompt: "",
+        modelSelectionExplicit: true,
+        leadRole: "direct",
+        activeProvider: selection.instanceId,
+        modelSelectionByProvider: { [selection.instanceId]: selection },
+      });
+      expect(
+        useComposerDraftStore.getState().stickyOptionsByModelByProvider[selection.instanceId]?.[
+          selection.model
+        ],
+      ).toEqual([{ id: "reasoningEffort", value: "max" }]);
+    } finally {
+      vi.useRealTimers();
+      await useComposerDraftStore.persist.clearStorage();
+    }
+  });
+
+  it("retains an inherited Lead before fallback and restores it after catalog recovery", () => {
+    const inherited = {
+      ...selection,
+      options: [
+        { id: "reasoningEffort", value: "max" },
+        { id: "leadRole", value: "lead" },
+      ],
+    };
+    const ready = {
+      selection,
+      wonderSelections: [{ ...selection, options: [{ id: "reasoningEffort", value: "max" }] }],
+      wonderDefaultSelections: [],
+      missing: [],
+    };
+    const unavailable = { ...ready, selection: null, missing: ["Sol"] };
+    const dispatched = resolveComposerLeadSelectionForDispatch(target, inherited, unavailable);
+    expect(dispatched).toEqual(selection);
+    const store = useComposerDraftStore.getState();
+    store.clearComposerContent(target);
+    const local = store.getComposerDraft(target)?.modelSelectionByProvider[inherited.instanceId];
+    expect(local).toEqual(inherited);
+    expect(resolveComposerLeadSelectionForDispatch(target, local!, ready)).toEqual(inherited);
+  });
+
+  it("does not manufacture Lead for Direct or replace a newer local choice during fallback", () => {
+    const unavailable = {
+      selection: null,
+      wonderSelections: [],
+      wonderDefaultSelections: [],
+      missing: ["Sol"],
+    };
+    expect(resolveComposerLeadSelectionForDispatch(target, selection, unavailable)).toBe(selection);
+    const store = useComposerDraftStore.getState();
+    expect(store.getComposerDraft(target)).toBeNull();
+    store.setModelSelection(target, selection);
+    const inherited = {
+      ...selection,
+      options: [
+        { id: "reasoningEffort", value: "max" },
+        { id: "leadRole", value: "lead" },
+      ],
+    };
+    resolveComposerLeadSelectionForDispatch(target, inherited, unavailable);
+    expect(store.getComposerDraft(target)?.leadRole).toBe("direct");
+  });
+
+  it("keeps inherited Direct across switching away, reload, and another thread's Lead", () => {
+    const store = useComposerDraftStore.getState();
+    store.setModelSelection(
+      target,
+      { ...selection, model: "other-model", options: [] },
+      { replaceOptions: true, fallbackSelection: selection },
+    );
+    const persisted = partializeComposerDraftStoreState(useComposerDraftStore.getState());
+    resetComposerDraftStore();
+    const merged = useComposerDraftStore.persist.getOptions().merge!(
+      persisted,
+      useComposerDraftStore.getState(),
+    );
+    useComposerDraftStore.setState(merged);
+    store.setStickyModelSelection({
+      ...selection,
+      options: [
+        { id: "reasoningEffort", value: "max" },
+        { id: "leadRole", value: "lead" },
+      ],
+    });
+    store.setModelSelection(
+      target,
+      {
+        ...selection,
+        options:
+          useComposerDraftStore.getState().stickyOptionsByModelByProvider[selection.instanceId]![
+            selection.model
+          ]!,
+      },
+      { explicit: true, replaceOptions: true },
+    );
+    expect(store.getComposerDraft(target)?.modelSelectionByProvider[selection.instanceId]).toEqual(
+      selection,
+    );
+  });
+
+  it("keeps thread Direct when editing generic traits and reapplying sticky options", () => {
+    const store = useComposerDraftStore.getState();
+    store.setModelSelection(target, selection);
+    store.setProviderModelOptions(
+      target,
+      ProviderDriverKind.make("muse"),
+      [{ id: "reasoningEffort", value: "high" }],
+      { instanceId: selection.instanceId, model: selection.model, persistSticky: true },
+    );
+    expect(
+      store.getComposerDraft(target)?.modelSelectionByProvider[selection.instanceId]?.options,
+    ).toEqual([
+      { id: "reasoningEffort", value: "high" },
+      { id: "leadRole", value: "direct" },
+    ]);
+    store.setStickyModelSelection({
+      ...selection,
+      options: [
+        { id: "reasoningEffort", value: "max" },
+        { id: "leadRole", value: "lead" },
+      ],
+    });
+    store.applyStickyState(target);
+    expect(store.getComposerDraft(target)?.modelSelectionByProvider[selection.instanceId]).toEqual(
+      selection,
     );
   });
 });

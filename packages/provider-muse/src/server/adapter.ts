@@ -25,6 +25,7 @@ import {
 } from "@t3tools/contracts";
 import type { MuseSettings } from "../settings.ts";
 import { AgentScope } from "@t3tools/shared/AgentScope";
+import { LEAD_INSTRUCTION, LEAD_MODEL_ID, LEAD_ROLE_OPTION_ID } from "@t3tools/shared/lead";
 import { getModelSelectionStringOptionValue } from "@t3tools/shared/model";
 import * as Cause from "effect/Cause";
 import * as DateTime from "effect/DateTime";
@@ -1953,6 +1954,11 @@ export const makeMuseAdapterV2 = Effect.fn("makeMuseAdapterV2")(function* (
         const targetModel = continuation
           ? undefined
           : yield* resolveModel(turnInput.modelSelection);
+        const lead =
+          targetModel === LEAD_MODEL_ID &&
+          effort === "max" &&
+          getModelSelectionStringOptionValue(turnInput.modelSelection, LEAD_ROLE_OPTION_ID) ===
+            "lead";
         if (targetModel && session.model !== targetModel) {
           yield* request("session/setModel", {
             model: { modelId: targetModel, providerId: "meta" },
@@ -2042,6 +2048,7 @@ export const makeMuseAdapterV2 = Effect.fn("makeMuseAdapterV2")(function* (
                       reasoningEffort: effort,
                     }),
                   },
+                  ...(lead ? [{ type: "text", text: LEAD_INSTRUCTION }] : []),
                   ...parts,
                 ],
                 displayText: turnInput.message.text || "Image attachment",

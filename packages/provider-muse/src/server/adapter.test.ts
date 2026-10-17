@@ -19,6 +19,7 @@ import {
   type OrchestrationV2ProviderThread,
 } from "@t3tools/contracts";
 import * as HostProcess from "@t3tools/shared/HostProcess";
+import { LEAD_INSTRUCTION, LEAD_MODEL_ID, LEAD_ROLE_OPTION_ID } from "@t3tools/shared/lead";
 import { MuseSettings } from "../settings.ts";
 import * as DateTime from "effect/DateTime";
 import * as Deferred from "effect/Deferred";
@@ -34,11 +35,13 @@ import * as Stream from "effect/Stream";
 import * as TestProviderHost from "@t3tools/provider-testing/TestProviderHost";
 import * as McpProviderSessions from "@t3tools/provider-core/server/McpProviderSessions";
 import type { MuseItem, MuseSubscriptionUsage } from "./protocol.ts";
+import { buildRuntimeInstructions } from "@t3tools/provider-core/server/runtimeInstructions";
 import type { MuseSdkHost } from "./sdk.ts";
 import * as IdAllocator from "@t3tools/provider-core/server/IdAllocator";
 import * as ProviderAdapter from "@t3tools/provider-core/server/ProviderAdapter";
 import type * as ProviderContinuationRequests from "@t3tools/provider-core/server/ProviderContinuationRequests";
 import { makeMuseAdapterV2, type MuseAdapterV2Options } from "./adapter.ts";
+import { museModelCapabilities } from "./modelCatalog.ts";
 
 const testLayer = Layer.mergeAll(
   NodeServices.layer,
@@ -578,6 +581,74 @@ describe("MuseAdapterV2", () => {
       Effect.scoped,
       Effect.provide(testLayer),
     ),
+  );
+
+  it.effect.each([
+    [LEAD_MODEL_ID, "max", "lead", true],
+    [LEAD_MODEL_ID, "max", "direct", false],
+    [LEAD_MODEL_ID, "high", "lead", false],
+    [MODEL, "max", "lead", false],
+    [LEAD_MODEL_ID, "max", undefined, false],
+    [LEAD_MODEL_ID, undefined, undefined, false],
+    [LEAD_MODEL_ID, undefined, "lead", true],
+    [MUSE_DEFAULT_MODEL, undefined, "lead", true],
+  ] as const)("sends %s at %s with leadRole=%s and hidden Lead=%s", ([model, effort, role, lead]) =>
+    Effect.gen(function* () {
+      const fake = yield* makeFakeMuse();
+      const harness = yield* makeHarness(
+        fake,
+        INSTANCE_ID,
+        undefined,
+        undefined,
+        undefined,
+        runtimePolicy,
+        {
+          modelCatalog: Effect.succeed(
+            [LEAD_MODEL_ID, MODEL].map((slug) => ({
+              slug,
+              name: slug,
+              isCustom: false,
+              isDefault: slug === LEAD_MODEL_ID,
+              capabilities: museModelCapabilities({
+                modelId: slug,
+                variants: ["high", "max"],
+                defaultReasoningEffort: "high",
+              }),
+            })),
+          ),
+        },
+      );
+      const input = yield* turnInput(harness.providerThread);
+      const selection = {
+        instanceId: INSTANCE_ID,
+        model,
+        options: [
+          ...(effort ? [{ id: "reasoningEffort", value: effort }] : []),
+          ...(role ? [{ id: LEAD_ROLE_OPTION_ID, value: role }] : []),
+        ],
+      };
+      yield* harness.runtime.startTurn({
+        ...input,
+        modelSelection: selection,
+        appThread: { ...input.appThread, modelSelection: selection },
+      });
+      const call = yield* fake.takeCall("turn/start");
+      assert.strictEqual(call.params.reasoningEffort, effort ?? "max");
+      assert.deepStrictEqual(call.params.input, [
+        {
+          type: "text",
+          text: buildRuntimeInstructions({
+            harness: "Muse Code",
+            model: model === MUSE_DEFAULT_MODEL ? LEAD_MODEL_ID : model,
+            reasoningEffort: effort ?? "max",
+          }),
+        },
+        ...(lead ? [{ type: "text", text: LEAD_INSTRUCTION }] : []),
+        { type: "text", text: "Hello Muse" },
+      ]);
+      assert.strictEqual(call.params.displayText, "Hello Muse");
+      assert.strictEqual(input.message.text, "Hello Muse");
+    }).pipe(Effect.scoped, Effect.provide(testLayer)),
   );
 
   it.effect("skips an unreadable usage notification without ending the turn", () =>

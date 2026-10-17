@@ -3,6 +3,8 @@ import {
   DEFAULT_TEXT_GENERATION_MODEL,
   ProviderDriverKind,
   ProviderInstanceId,
+  ProjectId,
+  type ModelSelection,
   type ServerProvider,
 } from "@t3tools/contracts";
 import { DEFAULT_UNIFIED_SETTINGS, type UnifiedSettings } from "@t3tools/contracts/settings";
@@ -17,7 +19,137 @@ import {
   resolveAppModelSelectionForInstance,
   resolveAppModelSelectionState,
   resolveEffectiveDefaultModelSelection,
+  resolveLeadAvailability,
+  resolveLeadSelectionForDispatch,
 } from "./modelSelection";
+
+function leadCatalog() {
+  const providers = [
+    { driver: "muse", instanceId: "muse_personal", model: "muse-wonder-full-1.0", effort: "max" },
+    { driver: "codex", instanceId: "codex_astra", model: "gpt-6-astra", effort: "max" },
+    { driver: "codex", instanceId: "codex_sol", model: "gpt-6.1-sol", effort: "xhigh" },
+  ].map((row) => ({
+    ...provider({ provider: ProviderDriverKind.make(row.driver), instanceId: row.instanceId }),
+    models: [
+      {
+        slug: row.model,
+        name: row.model,
+        isCustom: false,
+        capabilities: {
+          optionDescriptors: [
+            {
+              id: "catalog-effort",
+              label: "Reasoning",
+              type: "select" as const,
+              currentValue: "low",
+              options: [
+                { id: "low", label: "Low" },
+                { id: row.effort, label: row.effort },
+              ],
+            },
+          ],
+        },
+      },
+    ],
+  }));
+  const settings: UnifiedSettings = {
+    ...DEFAULT_UNIFIED_SETTINGS,
+    providerInstances: Object.fromEntries(
+      providers.map((entry) => [
+        entry.instanceId,
+        { driver: entry.driver, enabled: true, config: {} },
+      ]),
+    ),
+  };
+  return { providers, settings };
+}
+
+describe("Lead catalog eligibility", () => {
+  it("resolves instance and effort option ids from the live destination catalog", () => {
+    const { providers, settings } = leadCatalog();
+    const availability = resolveLeadAvailability(settings, providers, null);
+    expect(availability.missing).toEqual([]);
+    expect(availability.selection).toEqual({
+      instanceId: "muse_personal",
+      model: "muse-wonder-full-1.0",
+      options: [{ id: "catalog-effort", value: "max" }],
+    });
+  });
+
+  it.each([0, 1, 2])("requires model %s and its advertised effort", (index) => {
+    const { providers, settings } = leadCatalog();
+    const missingModel = providers.filter((_, i) => i !== index);
+    expect(resolveLeadAvailability(settings, missingModel, null).selection).toBeNull();
+    const missingEffort = providers.map((entry, i) =>
+      i !== index
+        ? entry
+        : { ...entry, models: entry.models.map((model) => ({ ...model, capabilities: {} })) },
+    );
+    const availability = resolveLeadAvailability(settings, missingEffort, null);
+    expect(availability.selection).toBeNull();
+    expect(availability.missing).toEqual([
+      expect.stringContaining(providers[index]!.models[0]!.slug),
+    ]);
+  });
+
+  it("respects disabled instances, project overrides, hidden models and unavailable providers", () => {
+    const { providers, settings } = leadCatalog();
+    const instanceId = providers[0]!.instanceId;
+    const projectId = ProjectId.make("lead-project");
+    expect(
+      resolveLeadAvailability(
+        {
+          ...settings,
+          providerInstances: {
+            ...settings.providerInstances,
+            [instanceId]: { ...settings.providerInstances[instanceId]!, enabled: false },
+          },
+        },
+        providers,
+        null,
+      ).selection,
+    ).toBeNull();
+    expect(
+      resolveLeadAvailability(
+        {
+          ...settings,
+          projectSettingsOverrides: {
+            [projectId]: { providerInstances: { [instanceId]: { enabled: false } } },
+          },
+        },
+        providers,
+        projectId,
+      ).selection,
+    ).toBeNull();
+    expect(
+      resolveLeadAvailability(
+        {
+          ...settings,
+          providerModelPreferences: {
+            [instanceId]: { hiddenModels: [providers[0]!.models[0]!.slug], modelOrder: [] },
+          },
+        },
+        providers,
+        null,
+      ).selection,
+    ).toBeNull();
+    expect(
+      resolveLeadAvailability(
+        settings,
+        providers.map((entry) => ({ ...entry, availability: "unavailable" as const })),
+        null,
+      ).selection,
+    ).toBeNull();
+    expect(
+      resolveLeadAvailability(
+        settings,
+        providers.map((entry) => ({ ...entry, status: "error" as const })),
+        null,
+      ).selection,
+    ).toBeNull();
+    expect(resolveLeadAvailability(settings, [], null).selection).toBeNull();
+  });
+});
 
 function provider(input: {
   provider?: ProviderDriverKind;
@@ -1020,4 +1152,100 @@ describe("default model settings and new-thread composer parity", () => {
       expect(composerTraits.promptEffort).toBe(effort);
     },
   );
+});
+
+describe("Lead role effective dispatch", () => {
+  function fixture() {
+    const { providers, settings } = leadCatalog();
+    const availability = resolveLeadAvailability(settings, providers, null);
+    const selection: ModelSelection = {
+      ...availability.selection!,
+      options: [
+        ...availability.selection!.options!,
+        { id: "custom-option", value: true },
+        { id: "leadRole", value: "lead" },
+      ],
+    };
+    return { providers, settings, availability, selection };
+  }
+
+  it("keeps an eligible Lead selection verbatim", () => {
+    const { availability, selection } = fixture();
+    expect(resolveLeadSelectionForDispatch(selection, availability)).toBe(selection);
+  });
+
+  it("keeps saved Lead with implicit Max when the catalog defaults to Max", () => {
+    const { providers, settings } = leadCatalog();
+    const available = resolveLeadAvailability(
+      settings,
+      providers.map((provider) => ({
+        ...provider,
+        models: provider.models.map((model) => ({
+          ...model,
+          capabilities: {
+            optionDescriptors: model.capabilities.optionDescriptors.map((descriptor) => ({
+              ...descriptor,
+              currentValue: provider.driver === "muse" ? "max" : descriptor.currentValue,
+            })),
+          },
+        })),
+      })),
+      null,
+    );
+    const selection = createModelSelection(
+      available.selection!.instanceId,
+      available.selection!.model,
+      [{ id: "leadRole", value: "lead" }],
+    );
+    expect(resolveLeadSelectionForDispatch(selection, available)).toBe(selection);
+    expect(selection.options).toEqual([{ id: "leadRole", value: "lead" }]);
+  });
+
+  it.each(["catalog-loss", "fan-out", "lower-effort", "other-model"] as const)(
+    "dispatches Direct for %s without changing the saved option or any other selection value",
+    (reason) => {
+      const fixtureData = fixture();
+      const selection =
+        reason === "lower-effort"
+          ? {
+              ...fixtureData.selection,
+              options: fixtureData.selection.options!.map((option) =>
+                option.id === "catalog-effort" ? { ...option, value: "low" } : option,
+              ),
+            }
+          : reason === "other-model"
+            ? { ...fixtureData.selection, model: "another-model" }
+            : fixtureData.selection;
+      const availability =
+        reason === "catalog-loss"
+          ? resolveLeadAvailability(fixtureData.settings, fixtureData.providers.slice(0, 2), null)
+          : reason === "fan-out"
+            ? null
+            : fixtureData.availability;
+      const saved = structuredClone(selection);
+      const effective = resolveLeadSelectionForDispatch(selection, availability);
+      expect(effective).toEqual({
+        ...selection,
+        options: selection.options!.map((option) =>
+          option.id === "leadRole" ? { ...option, value: "direct" } : option,
+        ),
+      });
+      expect(selection).toEqual(saved);
+      // Revalidating an already captured Direct send cannot turn fan-out back into Lead.
+      expect(resolveLeadSelectionForDispatch(effective, fixtureData.availability)).toBe(effective);
+    },
+  );
+
+  it.each([undefined, "direct"])("does not add or change an explicit role %s", (role) => {
+    const { availability, selection } = fixture();
+    const next = {
+      ...selection,
+      options: [
+        ...selection.options!.filter((option) => option.id !== "leadRole"),
+        ...(role ? [{ id: "leadRole", value: role }] : []),
+      ],
+    };
+    expect(resolveLeadSelectionForDispatch(next, availability)).toBe(next);
+    expect(resolveLeadSelectionForDispatch(next, null)).toBe(next);
+  });
 });

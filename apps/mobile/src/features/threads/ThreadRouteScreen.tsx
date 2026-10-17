@@ -2,6 +2,7 @@ import * as Dialog from "../../components/ui/Dialog";
 import { useOpenPullRequest } from "../../native/useOpenPullRequest";
 import { makeTurnCommandMetadata } from "../../lib/commandMetadata";
 import { buildProjectThreadStartTurnInput } from "../../lib/projectThreadStartTurn";
+import { restoreMobileLeadPreference } from "../../lib/lead";
 import { useWorktreeSetup } from "./use-worktree-setup";
 import { worktreeSetupAgentStarted } from "@t3tools/client-runtime/worktree-setup";
 import { AppBar } from "../../components/ui/AppBar";
@@ -75,6 +76,13 @@ import { useThreadComposerState } from "../../state/use-thread-composer-state";
 import { resolveMergeBackTargetThreadId } from "@t3tools/client-runtime/state/thread-relationships";
 import { resolveLatestMergeBackRun } from "@t3tools/client-runtime/state/thread-workflows";
 import { threadEnvironment } from "../../state/threads";
+import { appAtomRegistry } from "../../state/atom-registry";
+import { serverEnvironment } from "../../state/server";
+import {
+  getComposerDraftSnapshot,
+  updateComposerDraftSettings,
+  waitForComposerDraftsLoaded,
+} from "../../state/use-composer-drafts";
 import { projectThreadContentPresentation } from "./threadContentPresentation";
 import { useAppearancePreferences } from "../settings/appearance/AppearancePreferencesProvider";
 import {
@@ -809,6 +817,12 @@ function ThreadRouteContent(
     }
     // V2 accepts the launch before setup runs, so cancellation never rejects
     // the original outbox delivery. Reuse the server-owned prompt and uploads.
+    await waitForComposerDraftsLoaded();
+    const modelSelection = restoreMobileLeadPreference(
+      selectedThread.modelSelection,
+      getComposerDraftSnapshot(scopedThreadKey(selectedThread.environmentId, selectedThread.id))
+        .modelSelection,
+    );
     const metadata = makeTurnCommandMetadata();
     const launched = await startLocalThread({
       environmentId: selectedThread.environmentId,
@@ -820,7 +834,10 @@ function ThreadRouteContent(
         titleText: selectedThread.title,
         ...(setupMessage.context ? { context: setupMessage.context } : {}),
         uploadedAttachments: setupMessage.attachments,
-        modelSelection: selectedThread.modelSelection,
+        modelSelection,
+        serverConfig: appAtomRegistry.get(
+          serverEnvironment.configValueAtom(selectedThread.environmentId),
+        ),
         runtimeMode: selectedThread.runtimeMode,
         interactionMode: selectedThread.interactionMode,
         workspaceMode: "local",
@@ -832,6 +849,10 @@ function ThreadRouteContent(
     });
     localResendBusy.current = false;
     if (launched._tag !== "Success") return;
+    updateComposerDraftSettings(
+      scopedThreadKey(selectedThread.environmentId, ThreadId.make(metadata.threadId)),
+      { modelSelection },
+    );
     navigation.dispatch(
       StackActions.replace("Thread", {
         environmentId: String(selectedThread.environmentId),

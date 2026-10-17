@@ -1,6 +1,7 @@
 import type { SendUserTurnOptions } from "@muse-code/sdk";
 import { ModelCapabilities, ServerProviderModel } from "@t3tools/contracts";
 import { MuseSettings } from "../settings.ts";
+import { LEAD_MODEL_ID, LEAD_ROLE_OPTION_ID } from "@t3tools/shared/lead";
 import { createModelCapabilities, getProviderOptionDescriptors } from "@t3tools/shared/model";
 import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
@@ -43,14 +44,21 @@ const decodeModelList = Schema.decodeUnknownEffect(
 );
 
 export function museModelCapabilities(
-  model?: Pick<
-    typeof ModelCatalogEntry.Type,
-    "variants" | "defaultReasoningEffort" | "reasoningEffortVariants"
+  model?: Partial<
+    Pick<
+      typeof ModelCatalogEntry.Type,
+      "modelId" | "variants" | "defaultReasoningEffort" | "reasoningEffortVariants"
+    >
   >,
 ): ModelCapabilities {
   const reported = model?.variants !== undefined && model.variants !== "unknown";
   const efforts = (reported ? model.variants : FALLBACK_EFFORTS).filter(isMuseReasoningEffort);
-  const preferredDefault = reported ? model?.defaultReasoningEffort : FALLBACK_DEFAULT_EFFORT;
+  const preferredDefault =
+    model?.modelId === LEAD_MODEL_ID && efforts.includes("max")
+      ? "max"
+      : reported
+        ? model?.defaultReasoningEffort
+        : FALLBACK_DEFAULT_EFFORT;
   const defaultValue = efforts.find((tier) => tier === preferredDefault) ?? efforts[0];
   if (!defaultValue) return createModelCapabilities({ optionDescriptors: [] });
   return createModelCapabilities({
@@ -72,6 +80,20 @@ export function museModelCapabilities(
           };
         }),
       },
+      ...(model?.modelId === LEAD_MODEL_ID
+        ? [
+            {
+              id: LEAD_ROLE_OPTION_ID,
+              label: "Role",
+              type: "select" as const,
+              options: [
+                { id: "direct", label: "Direct", isDefault: true },
+                { id: "lead", label: "Lead" },
+              ],
+              currentValue: "direct",
+            },
+          ]
+        : []),
     ],
   });
 }

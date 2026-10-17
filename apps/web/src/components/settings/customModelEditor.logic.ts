@@ -3,6 +3,7 @@ import {
   ProviderDriverKind,
   type ProviderOptionDescriptor,
 } from "@t3tools/contracts";
+import { LEAD_ROLE_OPTION_ID } from "@t3tools/shared/lead";
 import { type CustomModelDefinition, createModelCapabilities } from "@t3tools/shared/model";
 
 export interface EditorChoice {
@@ -183,7 +184,9 @@ export function draftFromDefinition(entry: CustomModelDefinition): CustomModelDr
   return {
     slug: entry.slug,
     name: entry.name === entry.slug ? "" : entry.name,
-    descriptors: (entry.capabilities?.optionDescriptors ?? []).map(descriptorToEditor),
+    descriptors: (entry.capabilities?.optionDescriptors ?? [])
+      .filter((descriptor) => descriptor.id !== LEAD_ROLE_OPTION_ID)
+      .map(descriptorToEditor),
   };
 }
 
@@ -193,6 +196,7 @@ export function descriptorsFromCapabilities(
   driverKind: ProviderDriverKind | null,
 ): EditorDescriptor[] {
   return (capabilities?.optionDescriptors ?? [])
+    .filter((descriptor) => descriptor.id !== LEAD_ROLE_OPTION_ID)
     .filter((descriptor) => driverKind !== "claudeAgent" || descriptor.id !== "contextWindow")
     .map(descriptorToEditor);
 }

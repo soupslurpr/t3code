@@ -1,4 +1,5 @@
 import type { ProviderOptionSelection } from "@t3tools/contracts";
+import { LEAD_ROLE_OPTION_ID, withoutLeadRoleOptions } from "@t3tools/shared/lead";
 import { appAtomRegistry } from "./atom-registry";
 import {
   modelOptionMemoryAtom,
@@ -19,7 +20,7 @@ function recordModelOptionsInState(
     ...state,
     [instanceId]: {
       ...(state[instanceId] ?? {}),
-      [model]: options,
+      [model]: withoutLeadRoleOptions(options)!,
     },
   };
 }
@@ -29,7 +30,7 @@ function lookupModelOptionsInState(
   instanceId: string,
   model: string,
 ): ReadonlyArray<ProviderOptionSelection> | undefined {
-  return state[instanceId]?.[model];
+  return withoutLeadRoleOptions(state[instanceId]?.[model]);
 }
 
 export function rememberModelOptions(
@@ -67,11 +68,13 @@ export function withRememberedModelOptions<
   },
 >(selection: T): T {
   const remembered = rememberedModelOptions(selection.instanceId, selection.model);
+  const role = selection.options?.find((option) => option.id === LEAD_ROLE_OPTION_ID);
+  const options = remembered === undefined ? undefined : role ? [...remembered, role] : remembered;
   if (
-    remembered === undefined ||
-    JSON.stringify(remembered) === JSON.stringify(selection.options ?? [])
+    options === undefined ||
+    JSON.stringify(options) === JSON.stringify(selection.options ?? [])
   ) {
     return selection;
   }
-  return { ...selection, options: remembered };
+  return { ...selection, options };
 }

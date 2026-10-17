@@ -1,3 +1,4 @@
+import { LEAD_ROLE_OPTION_ID } from "@t3tools/shared/lead";
 import {
   CommandId,
   type RunId,
@@ -2075,6 +2076,17 @@ const make = Effect.gen(function* () {
         providers,
         skipProjectEnablementFilter: isRetryOfAcceptedDelegation,
       });
+      // Delegated children inherit the model and effort, but not the parent's Lead role.
+      const modelSelection =
+        input.target?.options === undefined &&
+        target.modelSelection.options?.some((option) => option.id === LEAD_ROLE_OPTION_ID)
+          ? {
+              ...target.modelSelection,
+              options: target.modelSelection.options.filter(
+                (option) => option.id !== LEAD_ROLE_OPTION_ID,
+              ),
+            }
+          : target.modelSelection;
       const runtimeMode = yield* resolveRuntimeMode(
         parent.thread.runtimeMode,
         input.runtimeMode,
@@ -2128,7 +2140,7 @@ const make = Effect.gen(function* () {
           parentNodeId: parentRun.rootNodeId,
           task: taskPrompt(input),
           ...(input.title === undefined ? {} : { title: input.title }),
-          modelSelection: target.modelSelection,
+          modelSelection,
           runtimeMode,
           interactionMode,
           ...(workspaceStrategy === undefined ? {} : { workspaceStrategy }),

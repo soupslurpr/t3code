@@ -1,6 +1,35 @@
 import type { QueuedThreadMessage } from "./thread-outbox";
+import type { ModelSelection } from "@t3tools/contracts";
+import { scopedThreadKey } from "../lib/scopedEntities";
+import { restoreMobileLeadPreference } from "../lib/lead";
 import { threadOutboxRevision, updateThreadOutboxMessage } from "./thread-outbox";
-import { getComposerDraftSnapshot, sameComposerDraftState } from "./use-composer-drafts";
+import {
+  getComposerDraftSnapshot,
+  sameComposerDraftState,
+  updateComposerDraftSettings,
+} from "./use-composer-drafts";
+
+/** Explicit picker edits also replace the preference kept for the eventual thread. */
+export function updatePendingTaskModelPreference(
+  message: QueuedThreadMessage,
+  modelSelection: ModelSelection,
+): void {
+  updateComposerDraftSettings(scopedThreadKey(message.environmentId, message.threadId), {
+    modelSelection,
+  });
+}
+
+/** Sending an edited task must not save its quiet fallback as a Role choice. */
+export function rememberQueuedTaskModelPreference(message: QueuedThreadMessage): void {
+  if (!message.modelSelection) return;
+  const draftKey = scopedThreadKey(message.environmentId, message.threadId);
+  updateComposerDraftSettings(draftKey, {
+    modelSelection: restoreMobileLeadPreference(
+      message.modelSelection,
+      getComposerDraftSnapshot(draftKey).modelSelection,
+    ),
+  });
+}
 
 type PendingTaskEditorWriteResult =
   | {

@@ -1,3 +1,5 @@
+import { LEAD_ROLE_OPTION_ID } from "@t3tools/shared/lead";
+import { resolveMobileLeadSelectionForDispatch } from "../lib/lead";
 import * as Dialog from "../components/ui/Dialog";
 import { AuthOrchestrationOperateScope } from "@t3tools/contracts";
 import { readEnvironmentScope } from "./session";
@@ -76,6 +78,7 @@ import {
   ensureComposerDraftsLoaded,
   getComposerDraftSnapshot,
   mergeComposerDraftContent,
+  restoreComposerDraftAfterEnqueueFailure,
   removeComposerDraftAttachment,
   scheduleUnusedComposerAttachmentCleanup,
   setComposerDraftText,
@@ -661,6 +664,15 @@ export function useThreadComposerState() {
     const metadata = makeQueuedMessageMetadata();
     const messageId = MessageId.make(metadata.messageId);
     clearThreadComposerError(threadKey);
+    // Keep an inherited preference when dispatch falls back to Direct.
+    if (
+      !draft.modelSelection &&
+      modelSelection.options?.some(
+        (option) => option.id === LEAD_ROLE_OPTION_ID && option.value === "lead",
+      )
+    ) {
+      updateComposerDraftSettings(threadKey, { modelSelection });
+    }
     const enqueuePromise = enqueueThreadOutboxMessage({
       environmentId: selectedThreadShell.environmentId,
       threadId: selectedThreadShell.id,
@@ -669,7 +681,11 @@ export function useThreadComposerState() {
       text,
       attachments,
       context: draft.context,
-      modelSelection,
+      modelSelection: resolveMobileLeadSelectionForDispatch(
+        modelSelection,
+        serverConfig,
+        thread.projectId,
+      ),
       runtimeMode: draft.runtimeMode ?? thread.runtimeMode,
       interactionMode: resolveProviderInteractionMode(
         provider,
@@ -682,16 +698,11 @@ export function useThreadComposerState() {
     enqueuePromise.then(
       () => scheduleUnusedComposerAttachmentCleanup(attachments),
       (error: unknown) => {
-        // Restore text via merge (idempotent) but attachments via the uncapped
-        // append: the merge path slots existing attachments first and truncates
-        // at the send limit, which would silently drop this message's images if
-        // the user attached new ones while the write was in flight.
-        void mergeComposerDraftContent(threadKey, {
+        void restoreComposerDraftAfterEnqueueFailure(threadKey, {
           text,
           context: draft.context,
-          attachments: [],
+          attachments,
         });
-        appendComposerDraftAttachments(threadKey, attachments, { allowOverflow: true });
         setThreadComposerError(
           threadKey,
           error instanceof Error ? error.message : "Failed to save the queued message.",
@@ -941,12 +952,16 @@ export function useThreadComposerState() {
     const provider = selectedEnvironmentRuntime?.serverConfig?.providers.find(
       (candidate) => candidate.instanceId === value.instanceId,
     );
-    updateComposerDraftSettings(selectedThreadKey, {
-      modelSelection: value,
-      ...(provider?.showInteractionModeToggle === false
-        ? { interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE }
-        : {}),
-    });
+    updateComposerDraftSettings(
+      selectedThreadKey,
+      {
+        modelSelection: value,
+        ...(provider?.showInteractionModeToggle === false
+          ? { interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE }
+          : {}),
+      },
+      selectedThread?.modelSelection,
+    );
   };
 
   const onUpdateRuntimeMode = (value: RuntimeMode) => {

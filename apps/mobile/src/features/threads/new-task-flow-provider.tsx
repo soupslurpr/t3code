@@ -1,3 +1,4 @@
+import { useCallback, useMemo } from "react";
 import * as Dialog from "../../components/ui/Dialog";
 import { resolveFilesystemReadAccess } from "@t3tools/client-runtime/state/filesystem";
 import { useEnvironmentPresentation } from "../../state/presentation";
@@ -25,6 +26,7 @@ import {
 } from "@t3tools/contracts";
 import { sanitizeNewRefName } from "@t3tools/shared/git";
 import { threadContextsOutsideEnvironment } from "@t3tools/shared/composerContextReferences";
+import type { LeadAvailability } from "@t3tools/shared/lead";
 import { resolveNewThreadEnvMode, resolveProjectSettings } from "@t3tools/shared/projectSettings";
 import { parseT3ProjectFile } from "@t3tools/shared/t3ProjectFile";
 import * as Arr from "effect/Array";
@@ -39,6 +41,8 @@ import {
 import type { TurnCommandMetadata } from "../../lib/commandMetadata";
 import type { DraftComposerAttachment } from "../../lib/composerImages";
 import type { ModelOption, ProviderGroup } from "../../lib/modelOptions";
+import { defaultMobileLeadRole, resolveMobileLeadAvailability } from "../../lib/lead";
+import { useMobileLeadRole } from "./use-lead-role";
 import {
   buildModelOptions,
   groupByProvider,
@@ -74,6 +78,7 @@ import {
 import {
   capturePendingTaskEditorWriteBaseline,
   flushPendingTaskEditorWrite,
+  updatePendingTaskModelPreference,
 } from "../../state/pending-task-editor-writes";
 import {
   rememberModelOptions,
@@ -198,6 +203,10 @@ type NewTaskFlowContextValue = {
   readonly isScratchDraft: boolean;
   readonly modelOptions: ReadonlyArray<ModelOption>;
   readonly selectedModel: ModelSelection | null;
+  readonly lead: boolean;
+  readonly leadAvailability: LeadAvailability;
+  readonly removeLead: () => void;
+  readonly restoreLead: () => void;
   readonly selectedModelOption: ModelOption | null;
   readonly selectedProviderStatus: ServerProvider | null;
   readonly providerGroups: ReadonlyArray<ProviderGroup>;
@@ -433,6 +442,11 @@ export function NewTaskFlowProvider(props: React.PropsWithChildren) {
     );
   }, [activeDraftKey, editingPendingTask, selectedProject]);
   const selectedProjectDraft = useComposerDraft(selectedProjectDraftKey);
+  const leadAvailability = useMemo(
+    () =>
+      resolveMobileLeadAvailability(selectedEnvironmentServerConfig, selectedProject?.id ?? null),
+    [selectedEnvironmentServerConfig, selectedProject?.id],
+  );
   const prompt = selectedProjectDraft.text;
   const attachments = selectedProjectDraft.attachments;
   const fileAccessSession = useEnvironmentQuery(
@@ -547,6 +561,22 @@ export function NewTaskFlowProvider(props: React.PropsWithChildren) {
   const selectedModelKey = selectedModel
     ? `${selectedModel.instanceId}:${selectedModel.model}`
     : null;
+  const rememberPendingModelPreference = useCallback(
+    (selection: ModelSelection) => {
+      if (editingPendingTask) updatePendingTaskModelPreference(editingPendingTask, selection);
+    },
+    [editingPendingTask],
+  );
+  const { lead, setLead } = useMobileLeadRole({
+    draftKey: selectedProjectDraftKey,
+    selection: selectedModel,
+    availability: leadAvailability,
+    enabled: selectedEnvironmentServerConfig != null,
+    defaultEnabled: selectedEnvironmentServerConfig != null && editingPendingTask === null,
+    onSelectionChange: rememberPendingModelPreference,
+  });
+  const removeLead = useCallback(() => setLead(false), [setLead]);
+  const restoreLead = useCallback(() => setLead(true), [setLead]);
 
   const selectedModelOption =
     modelOptions.find(
@@ -581,13 +611,20 @@ export function NewTaskFlowProvider(props: React.PropsWithChildren) {
     const provider = selectedEnvironmentServerConfig?.providers.find(
       (candidate) => candidate.instanceId === selection.instanceId,
     );
-    updateComposerDraftSettings(selectedProjectDraftKey, {
-      modelSelection: selection,
-      ...(provider?.showInteractionModeToggle === false
-        ? { interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE }
-        : {}),
-    });
-    setStickyComposerModelSelection(selection);
+    updateComposerDraftSettings(
+      selectedProjectDraftKey,
+      {
+        modelSelection: selection,
+        ...(provider?.showInteractionModeToggle === false
+          ? { interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE }
+          : {}),
+      },
+      selectedModel,
+    );
+    const appliedSelection =
+      getComposerDraftSnapshot(selectedProjectDraftKey).modelSelection ?? selection;
+    setStickyComposerModelSelection(appliedSelection);
+    rememberPendingModelPreference(appliedSelection);
   };
   const setSelectedModelOptions = (options: ReadonlyArray<ProviderOptionSelection> | undefined) => {
     if (!selectedModel || !selectedProjectDraftKey) {
@@ -604,6 +641,7 @@ export function NewTaskFlowProvider(props: React.PropsWithChildren) {
       modelSelection: nextSelection,
     });
     setStickyComposerModelSelection(nextSelection);
+    rememberPendingModelPreference(nextSelection);
   };
 
   const providerGroups = groupByProvider(modelOptions);
@@ -953,12 +991,16 @@ export function NewTaskFlowProvider(props: React.PropsWithChildren) {
     }
     const draft = getComposerDraftSnapshot(selectedProjectDraftKey);
     const text = draft.text.trim();
-    const draftModelSelection =
+    const resolvedModelSelection =
       resolveSelectableModelSelection(
         selectedEnvironmentServerConfig,
         draft.modelSelection ?? null,
         selectedProject.id,
       ) ?? selectedModel;
+    const draftModelSelection =
+      resolvedModelSelection && !editingPendingTask
+        ? defaultMobileLeadRole(resolvedModelSelection, leadAvailability)
+        : resolvedModelSelection;
     if ((text.length === 0 && draft.attachments.length === 0) || !draftModelSelection) {
       return null;
     }
@@ -1158,6 +1200,10 @@ export function NewTaskFlowProvider(props: React.PropsWithChildren) {
     modelOptions,
     selectedModel,
     selectedModelOption,
+    lead,
+    leadAvailability,
+    removeLead,
+    restoreLead,
     selectedProviderStatus,
     providerGroups,
     filteredBranches,

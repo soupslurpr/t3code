@@ -1495,6 +1495,7 @@ export interface ChatComposerHandle {
 }
 
 export interface ChatComposerProps {
+  leadRoleControl?: ReactNode;
   composerDraftTarget: ScopedThreadRef | DraftId;
   environmentId: EnvironmentId;
   canOperateThread: boolean;
@@ -5169,6 +5170,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
       ) : null}
       <ProviderModelPicker
         environmentId={environmentId}
+        leadRoleControl={props.leadRoleControl}
         compact={false}
         isComposerOwned
         disabled={providerCatalogPending || isSendBusy}

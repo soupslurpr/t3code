@@ -39,7 +39,8 @@ import { appAtomRegistry } from "../rpc/atomRegistry";
 import { environmentServerConfigsAtom } from "../state/server";
 import { resolveThreadRouteTarget } from "../threadRoutes";
 import { legacyProjectCwdPreferenceKey, useUiStateStore } from "../uiStateStore";
-import { useClientSettings } from "./useSettings";
+import { getClientSettings, mergeEnvironmentSettings, useClientSettings } from "./useSettings";
+import { resolveLeadAvailability } from "../modelSelection";
 import { useThreadRouteTarget } from "./useThreadRouteTarget";
 
 interface NewThreadWorkspaceOptions {
@@ -112,7 +113,8 @@ export function useNewThreadHandler() {
       : null;
     // Automatically seeded project defaults must not override remembered choices elsewhere.
     const carryModelSelection =
-      currentRouteTarget?.kind === "draft" && !hasExplicitComposerModelSelection(carrySourceComposer)
+      currentRouteTarget?.kind === "draft" &&
+      !hasExplicitComposerModelSelection(carrySourceComposer)
         ? null
         : (composerModelSelection ?? carrySourceShell?.modelSelection ?? null);
     const carryInteractionMode =
@@ -376,6 +378,20 @@ export function useNewThreadHandler() {
       const modelSelectionOverride = resolveModelSelectionOverride(draftId);
       if (modelSelectionOverride) {
         setModelSelection(draftId, modelSelectionOverride, { replaceOptions: true });
+      }
+      const destinationConfig = appAtomRegistry
+        .get(environmentServerConfigsAtom)
+        .get(projectRef.environmentId);
+      const defaultSelection = resolveLeadAvailability(
+        mergeEnvironmentSettings(
+          destinationConfig?.settings ?? targetServerSettings,
+          getClientSettings(),
+        ),
+        destinationConfig?.providers ?? [],
+        projectRef.projectId,
+      ).selection;
+      if (defaultSelection) {
+        setModelSelection(draftId, defaultSelection, { replaceOptions: true });
       }
       await router.navigate({
         to: "/draft/$draftId",

@@ -61,3 +61,44 @@ describe("mobile provider options", () => {
     ]);
   });
 });
+
+describe("mobile reserved Role option", () => {
+  it.each([undefined, "direct", "lead"] as const)(
+    "hides Role and preserves explicit %s while changing effort",
+    (role) => {
+      const selections = role ? [{ id: "leadRole", value: role }] : [];
+      const descriptors = resolveProviderOptionDescriptors({
+        capabilities: {
+          optionDescriptors: [
+            {
+              id: "leadRole",
+              label: "Role",
+              type: "select",
+              currentValue: "direct",
+              options: [
+                { id: "direct", label: "Direct", isDefault: true },
+                { id: "lead", label: "Lead" },
+              ],
+            },
+            ...CODEX_CAPABILITIES.optionDescriptors!,
+          ],
+        },
+        selections,
+      });
+      expect(descriptors.map((descriptor) => descriptor.id)).toEqual([
+        "reasoningEffort",
+        "serviceTier",
+      ]);
+      const options = applyProviderOptionSelection(
+        descriptors,
+        { id: "reasoningEffort", value: "high" },
+        selections,
+      );
+      expect(options).toEqual([
+        { id: "reasoningEffort", value: "high" },
+        { id: "serviceTier", value: "default" },
+        ...selections,
+      ]);
+    },
+  );
+});

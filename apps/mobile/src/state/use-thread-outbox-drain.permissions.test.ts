@@ -6,14 +6,22 @@ import {
   ProjectId,
   ProviderInstanceId,
   ThreadId,
+  type ServerConfig,
 } from "@t3tools/contracts";
+import { LEAD_INSTRUCTION } from "@t3tools/shared/lead";
+import {
+  leadQueuedTask,
+  leadServerConfig,
+  wonderMax,
+} from "../features/threads/lead-test-fixtures";
 import * as Cause from "effect/Cause";
 import { AsyncResult, type Atom } from "effect/reactivity";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vite-plus/test";
-import type { QueuedThreadMessage } from "./thread-outbox-model";
+import { type QueuedThreadMessage } from "./thread-outbox-model";
 
 const state = vi.hoisted(() => ({
   grantedEnvironments: new Set<string>(),
+  realAvailability: false,
   draftText: "Keep this draft separate",
   cleanups: [] as Array<() => void>,
   start: vi.fn(),
@@ -21,11 +29,13 @@ const state = vi.hoisted(() => ({
   runtime: vi.fn(),
   interaction: vi.fn(),
   prepare: vi.fn(),
+  persist: vi.fn(),
   checkout: vi.fn(),
   manager: null as unknown as ReturnType<
     typeof import("./thread-outbox-manager").createThreadOutboxManager
   >,
   thread: {
+    projectId: "project",
     environmentId: "secondary",
     id: "thread",
     modelSelection: { instanceId: "codex", model: "gpt-5.4" },
@@ -36,7 +46,7 @@ const state = vi.hoisted(() => ({
   config: {
     providers: [{ instanceId: "codex", driver: "codex" }],
     environment: { capabilities: {} },
-  },
+  } as unknown as ServerConfig,
 }));
 vi.mock("react", () => ({
   useCallback: <A>(callback: A) => callback,
@@ -82,7 +92,15 @@ vi.mock("./threads", async () => {
 });
 vi.mock("./use-atom-command", () => ({ useAtomCommand: <A>(command: A) => command }));
 vi.mock("./git", () => ({ gitEnvironment: { preparePullRequestThread: state.checkout } }));
-vi.mock("../lib/modelOptions", () => ({ isModelSelectionUnavailable: () => false }));
+vi.mock("../lib/modelOptions", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../lib/modelOptions")>();
+  return {
+    ...actual,
+    isModelSelectionUnavailable: (
+      ...args: Parameters<typeof actual.isModelSelectionUnavailable>
+    ) => (state.realAvailability ? actual.isModelSelectionUnavailable(...args) : false),
+  };
+});
 vi.mock("../lib/uuid", () => ({ uuidv4: () => "uuid", randomHex: () => "abcd" }));
 vi.mock("../lib/attachmentUpload", () => ({ prepareTurnAttachments: state.prepare }));
 vi.mock("./use-remote-environment-registry", () => ({
@@ -98,12 +116,15 @@ vi.mock("./thread-outbox", async () => {
     registry: appAtomRegistry,
     storage: {
       load: async () => ({ messages: [], errors: [] }),
-      write: async () => {},
+      write: async (message) => {
+        await state.persist(message);
+      },
       remove: async () => {},
     },
   });
   return {
     threadOutboxManager: state.manager,
+    flushThreadOutbox: async () => {},
     threadOutboxRevision: (id: MessageId) => state.manager.revisionOf(id),
     confirmThreadOutboxMessageQueued: (message: QueuedThreadMessage) =>
       state.manager.confirmQueued(message),
@@ -126,27 +147,36 @@ vi.mock("./use-thread-outbox", async () => {
     useThreadOutboxShellStatuses: () => new Map([["secondary", "live"]]),
   };
 });
-vi.mock("./use-composer-drafts", async () => {
-  const { Atom } = await import("effect/reactivity");
+vi.mock("./use-composer-drafts", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("./use-composer-drafts")>();
   return {
-    composerDraftsAtom: Atom.make({}),
+    ...actual,
     removeDeliveredCloudQueuedMessage: async () => {},
     appendComposerDraftAttachments: vi.fn(),
     flushComposerDrafts: vi.fn(),
-    getComposerDraftSnapshot: vi.fn(() => ({ text: state.draftText, attachments: [] })),
+    getComposerDraftSnapshot: vi.fn((key: string) =>
+      key.startsWith("pending-task:")
+        ? actual.getComposerDraftSnapshot(key)
+        : { text: state.draftText, attachments: [] },
+    ),
     mergeComposerDraftContent: vi.fn(async (_key: string, input: { text: string }) => {
       state.draftText += `\n${input.text}`;
     }),
     replaceComposerDraftAttachments: vi.fn(),
-    undoComposerDraftMerge: vi.fn(),
-    updateComposerDraftSettings: vi.fn(),
+    undoComposerDraftMerge: vi.fn(async () => {}),
+    updateComposerDraftSettings: vi.fn<typeof actual.updateComposerDraftSettings>(
+      (key, settings) => {
+        if (key.startsWith("pending-task:")) actual.updateComposerDraftSettings(key, settings);
+      },
+    ),
     waitForComposerDraftsLoaded: vi.fn(),
   };
 });
 
 import { appAtomRegistry } from "./atom-registry";
-import { dispatchingQueuedMessageIdAtom } from "./use-thread-outbox";
+import { dispatchingQueuedMessageIdAtom, editingQueuedMessageIdsAtom } from "./use-thread-outbox";
 import { useThreadOutboxDrain } from "./use-thread-outbox-drain";
+import { composerDraftsAtom, flushComposerDrafts } from "./use-composer-drafts";
 
 const message = (overrides: Partial<QueuedThreadMessage> = {}): QueuedThreadMessage => ({
   environmentId: EnvironmentId.make("secondary"),
@@ -172,9 +202,19 @@ function runDrain() {
 
 beforeEach(() => {
   state.grantedEnvironments = new Set(["primary"]);
+  state.realAvailability = false;
+  vi.mocked(flushComposerDrafts).mockReset();
+  Object.assign(state.config, {
+    providers: [{ instanceId: "codex", driver: "codex" }],
+    settings: undefined,
+    environment: { capabilities: {} },
+  });
   state.draftText = "Keep this draft separate";
+  state.persist.mockReset().mockResolvedValue(undefined);
   appAtomRegistry.set(state.manager.queuedMessagesByThreadKeyAtom, {});
   appAtomRegistry.set(dispatchingQueuedMessageIdAtom, null);
+  appAtomRegistry.set(editingQueuedMessageIdsAtom, {});
+  appAtomRegistry.set(composerDraftsAtom, {});
   for (const command of [
     state.start,
     state.metadata,
@@ -432,4 +472,87 @@ describe("queued task operation access", () => {
       expect(remaining()).toEqual([queued]);
     },
   );
+});
+
+describe("queued Role dispatch", () => {
+  it.each(["existing", "creation"] as const)(
+    "sends %s text unchanged and uses Direct only for the snapshot after catalog loss during uploads",
+    async (kind) => {
+      Object.assign(state.config, leadServerConfig(), {
+        environment: { capabilities: { inlineMessageContext: true } },
+      });
+      state.grantedEnvironments.add("secondary");
+      const text = `  Please fix this.\n\n${LEAD_INSTRUCTION}  `;
+      const queued = leadQueuedTask({
+        text,
+        ...(kind === "existing" ? { threadId: ThreadId.make("thread"), creation: undefined } : {}),
+      });
+      await state.manager.enqueue(queued);
+      state.prepare.mockImplementationOnce(async ({ attachments }) => {
+        Object.assign(state.config, { providers: state.config.providers.slice(0, 2) });
+        return {
+          status: "ready",
+          attachments: [],
+          draftAttachments: attachments,
+          pendingAttachmentIds: [],
+        };
+      });
+      await runDrain();
+      expect(state.start).toHaveBeenCalledTimes(1);
+      const sent = state.start.mock.calls[0]![0].input;
+      expect(sent.message.text).toBe(text);
+      expect(sent.modelSelection).toEqual({
+        ...wonderMax,
+        options: [...wonderMax.options, { id: "leadRole", value: "direct" }],
+      });
+      if (kind === "creation")
+        expect(sent.bootstrap.createThread.modelSelection).toEqual(sent.modelSelection);
+      expect(queued.modelSelection?.options?.at(-1)?.value).toBe("lead");
+      expect(queued.text).toBe(text);
+    },
+  );
+
+  it.each(["direct", "lead"] as const)(
+    "carries explicit %s into the created thread and turn",
+    async (role) => {
+      Object.assign(state.config, leadServerConfig(), {
+        environment: { capabilities: { inlineMessageContext: true } },
+      });
+      state.grantedEnvironments.add("secondary");
+      const queued = leadQueuedTask({
+        modelSelection: {
+          ...wonderMax,
+          options: [...wonderMax.options, { id: "leadRole", value: role }],
+        },
+      });
+      await state.manager.enqueue(queued);
+      await runDrain();
+      const sent = state.start.mock.calls[0]![0].input;
+      expect(sent.message.text).toBe(queued.text);
+      expect(sent.modelSelection).toEqual(queued.modelSelection);
+      expect(sent.bootstrap.createThread.modelSelection).toEqual(queued.modelSelection);
+    },
+  );
+
+  it("rechecks Role after a PR checkout without rewriting the queued preference", async () => {
+    Object.assign(state.config, leadServerConfig(), {
+      environment: { capabilities: { inlineMessageContext: true } },
+    });
+    state.grantedEnvironments.add("secondary");
+    const queued = leadQueuedTask();
+    const message = { ...queued, creation: { ...queued.creation!, pullRequestReference: "42" } };
+    await state.manager.enqueue(message);
+    state.checkout.mockImplementationOnce(async () => {
+      Object.assign(state.config, { providers: state.config.providers.slice(0, 2) });
+      return AsyncResult.success({
+        worktreePath: "/repo-pr",
+        branch: "pr",
+        isOnPullRequestHead: true,
+      });
+    });
+    await runDrain();
+    const sent = state.start.mock.calls[0]![0].input;
+    expect(sent.modelSelection.options.at(-1)).toEqual({ id: "leadRole", value: "direct" });
+    expect(message.modelSelection?.options?.at(-1)?.value).toBe("lead");
+  });
 });

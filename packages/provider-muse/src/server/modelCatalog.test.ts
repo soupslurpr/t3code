@@ -76,7 +76,7 @@ describe("Muse model catalog", () => {
             row("restful-walrus", {
               displayLabel: " Restful Walrus ",
               isDefault: true,
-              variants: ["minimal", "low", "high", "future-tier"],
+              variants: ["minimal", "low", "high", "max", "future-tier"],
               reasoningEffortVariants: [{ tier: "low", description: "Quick" }],
               defaultReasoningEffort: "high",
             }),
@@ -101,6 +101,7 @@ describe("Muse model catalog", () => {
             { id: "minimal", label: "Minimal" },
             { id: "low", label: "Low", description: "Quick" },
             { id: "high", label: "High", isDefault: true },
+            { id: "max", label: "Max" },
           ],
         },
       ]);
@@ -108,6 +109,142 @@ describe("Muse model catalog", () => {
       expect(models[2]?.capabilities).toEqual(museModelCapabilities());
     }),
   );
+
+  it.effect("defaults Wonder Full to max and Direct while preserving its reported efforts", () =>
+    Effect.gen(function* () {
+      const models = yield* discoverMuseModels(settings, {}, undefined, async () =>
+        host({
+          providerId: "meta",
+          models: [
+            row("muse-wonder-full-1.0", {
+              variants: ["minimal", "low", "high", "max", "future-tier"],
+              reasoningEffortVariants: [{ tier: "low", description: "Quick" }],
+              defaultReasoningEffort: "high",
+            }),
+          ],
+        }),
+      ).pipe(Effect.scoped);
+      expect(models[0]?.capabilities?.optionDescriptors).toEqual([
+        {
+          id: "reasoningEffort",
+          label: "Reasoning",
+          type: "select",
+          currentValue: "max",
+          options: [
+            { id: "minimal", label: "Minimal" },
+            { id: "low", label: "Low", description: "Quick" },
+            { id: "high", label: "High" },
+            { id: "max", label: "Max", isDefault: true },
+          ],
+        },
+        {
+          id: "leadRole",
+          label: "Role",
+          type: "select",
+          options: [
+            { id: "direct", label: "Direct", isDefault: true },
+            { id: "lead", label: "Lead" },
+          ],
+          currentValue: "direct",
+        },
+      ]);
+    }),
+  );
+
+  it.each(["unknown", undefined] as const)(
+    "defaults Wonder Full to max with %s variants",
+    (variants) => {
+      const capabilities = museModelCapabilities({
+        modelId: "muse-wonder-full-1.0",
+        variants,
+        defaultReasoningEffort: "high",
+      });
+      expect(capabilities.optionDescriptors).toEqual([
+        {
+          id: "reasoningEffort",
+          label: "Reasoning",
+          type: "select",
+          currentValue: "max",
+          options: [
+            { id: "low", label: "Low" },
+            { id: "medium", label: "Medium" },
+            { id: "high", label: "High" },
+            { id: "xhigh", label: "Extra High" },
+            { id: "max", label: "Max", isDefault: true },
+          ],
+        },
+        {
+          id: "leadRole",
+          label: "Role",
+          type: "select",
+          options: [
+            { id: "direct", label: "Direct", isDefault: true },
+            { id: "lead", label: "Lead" },
+          ],
+          currentValue: "direct",
+        },
+      ]);
+    },
+  );
+
+  it("keeps Wonder Full's reported default when max is unavailable", () => {
+    const capabilities = museModelCapabilities({
+      modelId: "muse-wonder-full-1.0",
+      variants: ["low", "high"],
+      defaultReasoningEffort: "high",
+    });
+    expect(capabilities.optionDescriptors).toEqual([
+      {
+        id: "reasoningEffort",
+        label: "Reasoning",
+        type: "select",
+        currentValue: "high",
+        options: [
+          { id: "low", label: "Low" },
+          { id: "high", label: "High", isDefault: true },
+        ],
+      },
+      {
+        id: "leadRole",
+        label: "Role",
+        type: "select",
+        options: [
+          { id: "direct", label: "Direct", isDefault: true },
+          { id: "lead", label: "Lead" },
+        ],
+        currentValue: "direct",
+      },
+    ]);
+  });
+
+  it("keeps fallback capabilities limited to reasoning with a high default", () => {
+    expect(museModelCapabilities().optionDescriptors).toEqual([
+      {
+        id: "reasoningEffort",
+        label: "Reasoning",
+        type: "select",
+        currentValue: "high",
+        options: [
+          { id: "low", label: "Low" },
+          { id: "medium", label: "Medium" },
+          { id: "high", label: "High", isDefault: true },
+          { id: "xhigh", label: "Extra High" },
+          { id: "max", label: "Max" },
+        ],
+      },
+    ]);
+  });
+
+  it("defaults implicit Wonder Full effort to max and preserves explicit choices", () => {
+    const capabilities = museModelCapabilities({
+      modelId: "muse-wonder-full-1.0",
+      variants: ["low", "high", "max"],
+      defaultReasoningEffort: "high",
+    });
+    expect(resolveMuseReasoningEffort(capabilities, undefined)).toBe("max");
+    expect(resolveMuseReasoningEffort(capabilities, "high")).toBe("high");
+    expect(resolveMuseReasoningEffort(capabilities, "low")).toBe("low");
+  });
 
   it("normalizes saved and implicit efforts against the selected model before dispatch", () => {
     const fallback = museModelCapabilities();

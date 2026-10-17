@@ -8,6 +8,7 @@ import {
   type ProjectId,
   type ProviderInteractionMode,
   type RuntimeMode,
+  type ServerConfig,
 } from "@t3tools/contracts";
 import {
   deriveThreadTitleSeed,
@@ -15,6 +16,7 @@ import {
 } from "@t3tools/client-runtime/operations";
 
 import type { UploadedMobileAttachment } from "./attachmentUpload";
+import { resolveMobileLeadSelectionForDispatch } from "./lead";
 
 export interface ProjectThreadStartTurnSpec {
   readonly projectId: ProjectId;
@@ -28,6 +30,8 @@ export interface ProjectThreadStartTurnSpec {
   readonly context?: OrchestrationMessageContext;
   readonly uploadedAttachments: ReadonlyArray<UploadedMobileAttachment | ChatAttachment>;
   readonly modelSelection: ModelSelection;
+  /** Read from the destination immediately before dispatch, after setup awaits. */
+  readonly serverConfig: ServerConfig | null | undefined;
   readonly runtimeMode: RuntimeMode;
   readonly interactionMode: ProviderInteractionMode;
   readonly workspaceMode: "local" | "worktree";
@@ -43,6 +47,11 @@ export function buildProjectThreadStartTurnInput(spec: ProjectThreadStartTurnSpe
     attachments: spec.uploadedAttachments,
   });
   const isWorktree = spec.workspaceMode === "worktree";
+  const modelSelection = resolveMobileLeadSelectionForDispatch(
+    spec.modelSelection,
+    spec.serverConfig,
+    spec.projectId,
+  );
   return {
     commandId: CommandId.make(spec.commandId),
     creationSource: "mobile" as const,
@@ -54,7 +63,7 @@ export function buildProjectThreadStartTurnInput(spec: ProjectThreadStartTurnSpe
       ...(spec.context ? { context: spec.context } : {}),
       attachments: spec.uploadedAttachments,
     },
-    modelSelection: spec.modelSelection,
+    modelSelection,
     titleSeed: title,
     runtimeMode: spec.runtimeMode,
     interactionMode: spec.interactionMode,
@@ -62,7 +71,7 @@ export function buildProjectThreadStartTurnInput(spec: ProjectThreadStartTurnSpe
       createThread: {
         projectId: spec.projectId,
         title,
-        modelSelection: spec.modelSelection,
+        modelSelection,
         runtimeMode: spec.runtimeMode,
         interactionMode: spec.interactionMode,
         branch: spec.branch,

@@ -107,7 +107,7 @@ import { useEnvironmentQuery } from "../../state/query";
 import { threadDevicePreviews } from "../devices/threadDevicePreviews";
 import { ThreadBrowserFloat } from "../browser/ThreadBrowserFloat";
 import { useThreadServerBrowserTabs } from "../../state/preview";
-import type { QueuedThreadMessage } from "../../state/thread-outbox-model";
+import { type QueuedThreadMessage } from "../../state/thread-outbox-model";
 import { scopedThreadKey } from "../../lib/scopedEntities";
 import { parentThreadIsBelow } from "../../lib/android-workspace-navigation";
 import {
@@ -143,6 +143,7 @@ import {
 } from "./pendingUserInputLayout";
 import {
   COMPOSER_COLLAPSED_CHROME,
+  COMPOSER_CONTEXT_ROW_HEIGHT,
   COMPOSER_EXPANDED_CHROME,
   COMPOSER_LAYOUT_TRANSITION,
   COMPOSER_TRANSITION_DURATION_MS,
@@ -615,7 +616,10 @@ export const ThreadDetailScreen = function ThreadDetailScreen(props: ThreadDetai
     (props.historyControls?.hasMoreHistory === true &&
       props.selectedThread.latestUserMessageAt !== null);
   const composerChrome = composerExpanded ? COMPOSER_EXPANDED_CHROME : COMPOSER_COLLAPSED_CHROME;
-  const composerOverlapHeight = composerChrome + composerBottomInset;
+  const composerOverlapHeight =
+    composerChrome +
+    composerBottomInset +
+    (props.queuedRunEdit === null && !isProviderSubagent ? COMPOSER_CONTEXT_ROW_HEIGHT : 0);
   const [collapsedUserInputRequestId, setCollapsedUserInputRequestId] =
     useState<RuntimeRequestId | null>(null);
   const activeUserInputRequestId = props.activePendingUserInput?.requestId ?? null;

@@ -1,3 +1,5 @@
+import { applyClaudePromptEffortPrefix, resolvePromptInjectedEffort } from "@t3tools/shared/model";
+import { getProviderModelCapabilities } from "../providerModels";
 import * as Option from "effect/Option";
 import type { EnvironmentThreadShell } from "@t3tools/client-runtime/state/shell";
 import {
@@ -35,6 +37,7 @@ import {
   type AtomCommandResult,
 } from "@t3tools/client-runtime/state/runtime";
 import { videoMimeType } from "@t3tools/shared/video";
+import { leadEligibleSelection, type LeadAvailability } from "@t3tools/shared/lead";
 import {
   appendCodexArtifactTemplateUsePrompt,
   codexArtifactTemplateUsePrompt,
@@ -48,7 +51,11 @@ import {
   type Thread,
   type TurnDiffSummary,
 } from "../types";
-import { type ComposerImageAttachment, type DraftThreadState } from "../composerDraftStore";
+import {
+  type ComposerImageAttachment,
+  type ComposerThreadDraftState,
+  type DraftThreadState,
+} from "../composerDraftStore";
 import * as Schema from "effect/Schema";
 import { appAtomRegistry } from "../rpc/atomRegistry";
 import { environmentThreadShells, environmentThreadDetails } from "../state/threads";
@@ -67,6 +74,20 @@ import {
   resolveSelectableProviderInstanceEntry,
   type ProviderInstanceEntry,
 } from "../providerInstances";
+
+export function formatOutgoingPrompt(params: {
+  provider: ProviderDriverKind;
+  model: string | null;
+  models: ReadonlyArray<ServerProvider["models"][number]>;
+  effort: string | null;
+  text: string;
+}): string {
+  const caps = getProviderModelCapabilities(params.models, params.model, params.provider);
+  const promptEffort = resolvePromptInjectedEffort(caps, params.effort);
+  return promptEffort === null
+    ? params.text
+    : applyClaudePromptEffortPrefix(params.text, promptEffort);
+}
 
 export const LAST_INVOKED_SCRIPT_BY_PROJECT_KEY = "t3code:last-invoked-script-by-project";
 export const MAX_HIDDEN_MOUNTED_TERMINAL_THREADS = 10;
@@ -1052,6 +1073,53 @@ export function getStartedThreadModelChangeBlockReason(input: {
     title: "Start a new chat to change models",
     description: "This provider does not allow switching models after a conversation has started.",
   };
+}
+
+/** Manual model picks respect continuation and session restrictions. */
+export function getThreadModelSelectionBlockReason(
+  input: Omit<Parameters<typeof getStartedThreadModelChangeBlockReason>[0], "providers"> & {
+    providers: ReadonlyArray<ServerProvider>;
+    lockedProvider: ProviderDriverKind | null;
+  },
+) {
+  if (!input.supportsProviderSwitchingViaHandoff && input.lockedProvider !== null) {
+    const next = input.providers.find(
+      (entry) => entry.instanceId === input.nextModelSelection.instanceId,
+    );
+    const current = input.providers.find(
+      (entry) =>
+        entry.instanceId ===
+        (input.currentProviderInstanceId ?? input.currentModelSelection.instanceId),
+    );
+    if (
+      next?.driver !== input.lockedProvider ||
+      (current?.continuation?.groupKey &&
+        next?.continuation?.groupKey !== current.continuation.groupKey)
+    ) {
+      return {
+        title: "Start a new chat to switch providers",
+        description: "This thread does not support switching providers after it has started.",
+      };
+    }
+  }
+  return getStartedThreadModelChangeBlockReason(input);
+}
+
+/** Resolve the applied selection for the composer's Lead role. */
+export function resolveComposerLeadSelection(input: {
+  draft:
+    | Pick<ComposerThreadDraftState, "activeProvider" | "modelSelectionByProvider">
+    | null
+    | undefined;
+  fallbackSelection: ModelSelection | null;
+  multipleSelections: ReadonlyArray<ModelSelection> | null;
+  availability: LeadAvailability;
+}): ModelSelection | null {
+  if (input.multipleSelections !== null) return null;
+  const selection = input.draft?.activeProvider
+    ? input.draft.modelSelectionByProvider[input.draft.activeProvider]
+    : null;
+  return leadEligibleSelection(selection ?? input.fallbackSelection, input.availability);
 }
 
 export async function waitForStartedServerThread(

@@ -1,3 +1,4 @@
+import { LEAD_ROLE_OPTION_ID } from "@t3tools/shared/lead";
 import type {
   ModelCapabilities,
   ProviderOptionDescriptor,
@@ -18,12 +19,13 @@ export function resolveProviderOptionDescriptors(input: {
   return getProviderOptionDescriptors({
     caps: input.capabilities,
     selections: input.selections,
-  });
+  }).filter((descriptor) => descriptor.id !== LEAD_ROLE_OPTION_ID);
 }
 
 export function applyProviderOptionSelection(
   descriptors: ReadonlyArray<ProviderOptionDescriptor>,
   change: ProviderOptionSelection,
+  currentSelections?: ReadonlyArray<ProviderOptionSelection>,
 ): ReadonlyArray<ProviderOptionSelection> | null {
   const descriptor = descriptors.find((candidate) => candidate.id === change.id);
   if (!descriptor) {
@@ -47,5 +49,12 @@ export function applyProviderOptionSelection(
       : candidate,
   ) as ReadonlyArray<ProviderOptionDescriptor>;
 
-  return buildProviderOptionSelectionsFromDescriptors(nextDescriptors) ?? [];
+  const options =
+    buildProviderOptionSelectionsFromDescriptors(
+      nextDescriptors.filter((candidate) => candidate.id !== LEAD_ROLE_OPTION_ID),
+    ) ?? [];
+  return [
+    ...options,
+    ...(currentSelections?.filter((option) => option.id === LEAD_ROLE_OPTION_ID) ?? []),
+  ];
 }

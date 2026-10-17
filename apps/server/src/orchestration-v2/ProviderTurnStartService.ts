@@ -1,5 +1,6 @@
 import { formatMonitorSystemEventForProvider } from "../threadMonitor/ThreadMonitorContinuation.ts";
 import { modelSelectionsEqual } from "@t3tools/shared/model";
+import { getLeadRole } from "@t3tools/shared/lead";
 import { projectComposerContextForProvider } from "@t3tools/shared/composerContextReferences";
 import {
   CommandId,
@@ -32,6 +33,8 @@ import * as ProjectService from "../project/ProjectService.ts";
 import * as ProviderAuthService from "../provider/ProviderAuthService.ts";
 import * as ServerSettings from "../serverSettings.ts";
 import { makeIsManagedWorktreePath } from "../worktreesDirectory.ts";
+import * as ProviderRegistry from "../provider/ProviderRegistry.ts";
+import { resolveLeadSelectionForTurn } from "../provider/lead.ts";
 import * as EventSink from "./EventSink.ts";
 import * as ContextHandoffService from "./ContextHandoffService.ts";
 import {
@@ -110,6 +113,8 @@ export const layer: Layer.Layer<
   | GitWorkflowService.GitWorkflowService
   | ProjectService.ProjectService
   | ProviderAuthService.ProviderAuthService
+  | ProviderRegistry.ProviderRegistry
+  | ServerSettings.ServerSettingsService
   | ProjectionStore.ProjectionStoreV2
   | ProviderSessionManager.ProviderSessionManagerV2
   | RunExecutionService.RunExecutionServiceV2
@@ -123,10 +128,11 @@ export const layer: Layer.Layer<
     const fileSystem = yield* FileSystem.FileSystem;
     const path = yield* Path.Path;
     const serverConfig = yield* ServerConfig.ServerConfig;
-    const serverSettings = yield* ServerSettings.ServerSettingsService;
     const gitWorkflow = yield* GitWorkflowService.GitWorkflowService;
     const projects = yield* ProjectService.ProjectService;
     const providerAuth = yield* ProviderAuthService.ProviderAuthService;
+    const providerRegistry = yield* ProviderRegistry.ProviderRegistry;
+    const serverSettings = yield* ServerSettings.ServerSettingsService;
     const projectionStore = yield* ProjectionStore.ProjectionStoreV2;
     const providerSessions = yield* ProviderSessionManager.ProviderSessionManagerV2;
     const runExecution = yield* RunExecutionService.RunExecutionServiceV2;
@@ -534,9 +540,20 @@ export const layer: Layer.Layer<
       });
       const { isCurrentAttemptInStatus } = runControls;
 
+      // Eligibility is per dispatch, including scheduled and MCP turns. Keep
+      // the persisted Lead preference so a later turn can recover automatically.
+      const modelSelection =
+        getLeadRole(run.modelSelection) === "lead"
+          ? resolveLeadSelectionForTurn(
+              run.modelSelection,
+              yield* providerRegistry.getProviders,
+              yield* serverSettings.getSettings,
+              projection.thread.projectId,
+            )
+          : run.modelSelection;
       const resolvedRuntimePolicy = yield* runtimePolicy.resolve({
         thread: projection.thread,
-        modelSelection: run.modelSelection,
+        modelSelection,
       });
       if (!(yield* isCurrentAttemptInStatus("starting"))) return;
       const existingSessionProjection = projection.providerSessions.find(
@@ -546,7 +563,7 @@ export const layer: Layer.Layer<
         providerSessions.open({
           threadId: projection.thread.id,
           providerSessionId,
-          modelSelection: run.modelSelection,
+          modelSelection,
           runtimePolicy: resolvedRuntimePolicy,
           ...(existingSessionProjection === undefined
             ? {}
@@ -649,7 +666,7 @@ export const layer: Layer.Layer<
               sourceProviderThread,
               sourceProviderTurns: sourceProjection.providerTurns,
               targetThreadId: projection.thread.id,
-              modelSelection: run.modelSelection,
+              modelSelection,
               runtimePolicy: resolvedRuntimePolicy,
               ...(sourceProviderTurn === undefined
                 ? {}
@@ -666,7 +683,7 @@ export const layer: Layer.Layer<
             session.ensureThread({
               threadId: projection.thread.id,
               title: projection.thread.title,
-              modelSelection: run.modelSelection,
+              modelSelection,
               runtimePolicy: resolvedRuntimePolicy,
               providerSessionId,
               existingProviderThread: providerThread,
@@ -693,7 +710,7 @@ export const layer: Layer.Layer<
             : session.resumeThread({
                 providerThread,
                 threadId: projection.thread.id,
-                modelSelection: run.modelSelection,
+                modelSelection,
                 runtimePolicy: resolvedRuntimePolicy,
               }),
         );
@@ -712,7 +729,7 @@ export const layer: Layer.Layer<
           session.ensureThread({
             threadId: projection.thread.id,
             title: projection.thread.title,
-            modelSelection: run.modelSelection,
+            modelSelection,
             runtimePolicy: resolvedRuntimePolicy,
             providerSessionId,
             // The native ref is dropped so the adapter binds a fresh native
@@ -816,9 +833,9 @@ export const layer: Layer.Layer<
       const reuseTelemetry =
         sameSelection ||
         (previousSelection !== undefined &&
-          session.canReuseContextUsage?.(previousSelection, run.modelSelection) === true);
+          session.canReuseContextUsage?.(previousSelection, modelSelection) === true);
       const knownModelWindow = session.getModelContextWindow?.(
-        run.modelSelection,
+        modelSelection,
         resolvedRuntimePolicy.cwd,
       );
       const handoffUsage = contextUsageForHandoff({
@@ -1274,7 +1291,7 @@ export const layer: Layer.Layer<
             ? {}
             : { senderThreadId: message.senderThreadId }),
         },
-        modelSelection: run.modelSelection,
+        modelSelection,
         runtimePolicy: resolvedRuntimePolicy,
       });
     });

@@ -18,6 +18,7 @@ import {
 } from "@t3tools/shared/model";
 import { REASONING_EFFORT_OPTION_IDS } from "@t3tools/client-runtime/state/thread-execution";
 import { memo } from "react";
+import { LEAD_ROLE_OPTION_ID } from "@t3tools/shared/lead";
 import { BrainIcon } from "lucide-react";
 import {
   Menu,
@@ -61,22 +62,24 @@ function savedOptionLabel(id: string): string {
 export function buildUnavailableModelOptionDescriptors(
   selections: ProviderOptions | null | undefined,
 ): ReadonlyArray<ProviderOptionDescriptor> {
-  return (selections ?? []).map((selection) =>
-    typeof selection.value === "boolean"
-      ? {
-          id: selection.id,
-          label: savedOptionLabel(selection.id),
-          type: "boolean" as const,
-          currentValue: selection.value,
-        }
-      : {
-          id: selection.id,
-          label: savedOptionLabel(selection.id),
-          type: "select" as const,
-          options: [{ id: selection.value, label: selection.value }],
-          currentValue: selection.value,
-        },
-  );
+  return (selections ?? [])
+    .filter((selection) => selection.id !== LEAD_ROLE_OPTION_ID)
+    .map((selection) =>
+      typeof selection.value === "boolean"
+        ? {
+            id: selection.id,
+            label: savedOptionLabel(selection.id),
+            type: "boolean" as const,
+            currentValue: selection.value,
+          }
+        : {
+            id: selection.id,
+            label: savedOptionLabel(selection.id),
+            type: "select" as const,
+            options: [{ id: selection.value, label: selection.value }],
+            currentValue: selection.value,
+          },
+    );
 }
 
 type TraitsPersistence =
@@ -150,16 +153,18 @@ function getSelectedTraits(
   const modelIsUnavailable =
     provider === "opencode" &&
     !models.some((candidate) => candidate.slug === normalizeModelSlug(model, provider));
-  const descriptors = modelIsUnavailable
-    ? buildUnavailableModelOptionDescriptors(
-        planModeEnabled
-          ? modelOptions
-          : modelOptions?.filter((option) => option.id !== "agent" || option.value !== "plan"),
-      )
-    : getProviderOptionDescriptors({
-        caps,
-        selections: modelOptions,
-      });
+  const descriptors = (
+    modelIsUnavailable
+      ? buildUnavailableModelOptionDescriptors(
+          planModeEnabled
+            ? modelOptions
+            : modelOptions?.filter((option) => option.id !== "agent" || option.value !== "plan"),
+        )
+      : getProviderOptionDescriptors({
+          caps,
+          selections: modelOptions,
+        })
+  ).filter((descriptor) => descriptor.id !== LEAD_ROLE_OPTION_ID);
   const selectDescriptors = descriptors.filter(
     (descriptor): descriptor is Extract<ProviderOptionDescriptor, { type: "select" }> =>
       descriptor.type === "select",
@@ -428,7 +433,11 @@ export const TraitsMenuContent = memo(function TraitsMenuContentImpl({
     modelIsUnavailable,
   } = selected;
   const updateDescriptors = (nextDescriptors: ReadonlyArray<ProviderOptionDescriptor>) => {
-    updateModelOptions(buildProviderOptionSelectionsFromDescriptors(nextDescriptors));
+    const nextOptions = buildProviderOptionSelectionsFromDescriptors(nextDescriptors) ?? [];
+    // Role is edited in the model picker; changing a trait must keep its explicit value.
+    const role = modelOptions?.find((option) => option.id === LEAD_ROLE_OPTION_ID);
+    if (role) nextOptions.push(role);
+    updateModelOptions(nextOptions.length > 0 ? nextOptions : undefined);
   };
 
   const handleSelectChange = (
@@ -571,6 +580,7 @@ export function buildTraitsTriggerDisplay(input: {
   let reasoningLabelIndex = -1;
   const labels: Array<string> = [];
   for (const descriptor of input.descriptors) {
+    if (descriptor.id === LEAD_ROLE_OPTION_ID) continue;
     if (descriptor.id === "fastMode" && descriptor.type === "boolean") {
       speedLabel = descriptor.currentValue === true ? "Fast" : null;
       fastModeFallbackLabel = speedLabel ?? "Normal";

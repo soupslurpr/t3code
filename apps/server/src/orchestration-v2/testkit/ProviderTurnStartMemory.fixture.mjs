@@ -29,6 +29,7 @@ const [
   Project,
   Auth,
   Config,
+  Registry,
   Settings,
 ] = await Promise.all([
   app("orchestration-v2/ProviderTurnStartService"),
@@ -43,6 +44,7 @@ const [
   app("project/ProjectService"),
   app("provider/ProviderAuthService"),
   app("config"),
+  app("provider/ProviderRegistry"),
   app("serverSettings"),
 ]);
 let current;
@@ -71,6 +73,7 @@ const dependencies = Layer.mergeAll(
   Layer.mock(Auth.ProviderAuthService)({}),
   Layer.mock(Config.ServerConfig)({ worktreesDir: "/synthetic-worktrees" }),
   Settings.layerTest(),
+  Layer.mock(Registry.ProviderRegistry)({}),
   Layer.mock(Projection.ProjectionStoreV2)({
     getThreadProjection: () =>
       Effect.sync(() => {

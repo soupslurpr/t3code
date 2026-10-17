@@ -7,6 +7,12 @@ import {
 } from "@t3tools/contracts";
 import { serializeAssistantCitation } from "@t3tools/shared/assistantCitations";
 import { describe, expect, it } from "vite-plus/test";
+import {
+  leadQueuedTask,
+  leadServerConfig,
+  wonderMax,
+} from "../features/threads/lead-test-fixtures";
+import { withMobileLeadRole } from "./lead";
 
 import { serializeComposerMessageForServer } from "./composerContext";
 
@@ -56,6 +62,7 @@ describe("project thread title", () => {
     const uploadedAttachments = [{ ...attachment, id: "prepared-attachment", sizeBytes: 3 }];
     const wire = serializeComposerMessageForServer(text, undefined, true);
     const spec = {
+      serverConfig: null,
       projectId: ProjectId.make("project"),
       projectCwd: "/workspace",
       threadId: "image-thread",
@@ -115,6 +122,7 @@ describe("project thread title", () => {
       suffix: "",
     });
     const input = buildProjectThreadStartTurnInput({
+      serverConfig: null,
       projectId: ProjectId.make("project"),
       projectCwd: "/workspace",
       threadId: "new-thread",
@@ -144,6 +152,7 @@ describe("new thread on an existing branch", () => {
     "reuses the selected workspace %s without preparing a new worktree",
     (worktreePath) => {
       const input = buildProjectThreadStartTurnInput({
+        serverConfig: null,
         projectId: ProjectId.make("project"),
         projectCwd: "/workspace",
         threadId: "new-thread",
@@ -170,6 +179,33 @@ describe("new thread on an existing branch", () => {
       expect(input.bootstrap).not.toHaveProperty("prepareWorktree");
       expect(input.bootstrap).not.toHaveProperty("runSetupScript");
       expect(input.threadId).toBe("new-thread");
+    },
+  );
+});
+
+describe("new thread Lead dispatch", () => {
+  it.each([true, false])(
+    "uses the current destination catalog (available=%s) for the turn and bootstrap",
+    (available) => {
+      const task = leadQueuedTask();
+      const saved = task.modelSelection!;
+      const input = buildProjectThreadStartTurnInput({
+        ...task,
+        ...task.creation!,
+        modelSelection: saved,
+        serverConfig: available ? leadServerConfig() : null,
+        projectCwd: "/repo",
+        uploadedAttachments: [],
+        runtimeMode: "approval-required",
+        interactionMode: "default",
+        startFromOrigin: false,
+        worktreeBranchName: "unused",
+      });
+      const expected = withMobileLeadRole(wonderMax, available ? "lead" : "direct");
+      expect(input.modelSelection).toEqual(expected);
+      expect(input.bootstrap.createThread.modelSelection).toEqual(expected);
+      expect(input.message.text).toBe(task.text);
+      expect(saved).toEqual(withMobileLeadRole(wonderMax, "lead"));
     },
   );
 });

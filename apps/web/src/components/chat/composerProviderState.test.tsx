@@ -672,3 +672,35 @@ describe("getComposerReasoningStep", () => {
     }
   });
 });
+
+describe("Lead role dispatch", () => {
+  it.each([undefined, "direct", "lead"])(
+    "keeps reasoning primary while dispatching only explicit role %s",
+    (role) => {
+      const state = getComposerProviderState({
+        provider: ProviderDriverKind.make("muse"),
+        model: MODEL,
+        models: modelWith([
+          selectDescriptor("leadRole", [
+            { id: "direct", label: "Direct", isDefault: true },
+            { id: "lead", label: "Lead" },
+          ]),
+          selectDescriptor("reasoningEffort", [{ id: "max", label: "Max", isDefault: true }]),
+        ]),
+        modelOptions: selections(
+          ["reasoningEffort", "max"],
+          ...(role ? [["leadRole", role] as [string, string]] : []),
+        ),
+        promptInjectionState: "ultrathink",
+        planModeEnabled: true,
+      });
+      expect(state.promptEffort).toBe("max");
+      expect(state.composerFrameClassName).toBeUndefined();
+      expect(state.modelOptionsForDispatch).toEqual(
+        role
+          ? selections(["leadRole", role], ["reasoningEffort", "max"])
+          : selections(["reasoningEffort", "max"]),
+      );
+    },
+  );
+});

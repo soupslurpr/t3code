@@ -315,3 +315,30 @@ it("shows Unknown until a matching provider report provides Default", () => {
     }).label,
   ).toBe("Default");
 });
+
+describe("Lead role exclusion", () => {
+  it.each(["direct", "lead"])(
+    "omits %s from generic trait labels even when Role is first",
+    (role) => {
+      const descriptor = selectDescriptor(
+        "leadRole",
+        [
+          { id: "direct", label: "Direct" },
+          { id: "lead", label: "Lead" },
+        ],
+        role,
+      );
+      expect(display([descriptor, EFFORT])).toEqual({ label: "High" });
+      expect(display([descriptor])).toEqual({ label: "" });
+    },
+  );
+
+  it("omits saved Role from an unavailable model's generic options", () => {
+    expect(
+      buildUnavailableModelOptionDescriptors([
+        { id: "leadRole", value: "lead" },
+        { id: "reasoningEffort", value: "max" },
+      ]).map(({ id }) => id),
+    ).toEqual(["reasoningEffort"]);
+  });
+});

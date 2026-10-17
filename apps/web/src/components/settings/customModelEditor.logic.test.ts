@@ -257,3 +257,32 @@ describe("customModelEditor.logic", () => {
     expect(validateDraft(draft({ descriptors: [select("effort", [{ id: "a" }])] }))).toBeNull();
   });
 });
+
+it("excludes the built-in Lead role from custom-model option editing and copying", () => {
+  const capabilities = {
+    optionDescriptors: [
+      {
+        id: "leadRole",
+        label: "Role",
+        type: "select" as const,
+        options: [{ id: "direct", label: "Direct" }],
+        currentValue: "direct",
+      },
+      {
+        id: "reasoningEffort",
+        label: "Reasoning",
+        type: "select" as const,
+        options: [{ id: "max", label: "Max" }],
+        currentValue: "max",
+      },
+    ],
+  };
+  expect(
+    descriptorsFromCapabilities(capabilities, ProviderDriverKind.make("muse")).map(({ id }) => id),
+  ).toEqual(["reasoningEffort"]);
+  expect(
+    draftFromDefinition({ slug: "custom", name: "Custom", capabilities }).descriptors.map(
+      ({ id }) => id,
+    ),
+  ).toEqual(["reasoningEffort"]);
+});

@@ -1,5 +1,6 @@
 import { PROVIDER_SEND_TURN_MAX_ATTACHMENTS } from "@t3tools/contracts";
 import { scopedThreadKey } from "../lib/scopedEntities";
+import { restoreMobileLeadPreference } from "../lib/lead";
 import { appAtomRegistry } from "./atom-registry";
 import {
   confirmThreadOutboxMessageQueued,
@@ -10,6 +11,7 @@ import { removeThreadOutboxMessage } from "./thread-outbox-removal";
 import {
   flushComposerDrafts,
   getComposerDraftSnapshot,
+  getComposerDraftRollbackSnapshot,
   mergeComposerDraftContent,
   undoComposerDraftMerge,
   updateComposerDraftSettings,
@@ -34,30 +36,56 @@ export async function editPendingThreadMessage(message: QueuedThreadMessage): Pr
   holdEditingQueuedMessage(message.messageId);
   const draftKey = scopedThreadKey(message.environmentId, message.threadId);
   let rollback: {
-    snapshot: ReturnType<typeof getComposerDraftSnapshot>;
+    snapshot: ReturnType<typeof getComposerDraftRollbackSnapshot>;
     merged: ReturnType<typeof getComposerDraftSnapshot>;
   } | null = null;
   try {
     if (!(await confirmThreadOutboxMessageQueued(message))) return false;
     const revision = threadOutboxRevision(message.messageId);
     await waitForComposerDraftsLoaded();
-    const snapshot = getComposerDraftSnapshot(draftKey);
-    const attachmentIds = new Set(snapshot.attachments.map((attachment) => attachment.id));
+    const snapshot = getComposerDraftRollbackSnapshot(draftKey);
+    const attachmentIds = new Set(snapshot.draft.attachments.map((attachment) => attachment.id));
     for (const attachment of message.attachments) attachmentIds.add(attachment.id);
     if (attachmentIds.size > PROVIDER_SEND_TURN_MAX_ATTACHMENTS) {
       throw new Error("Remove attachments from the composer before editing this message.");
     }
-    try {
-      await mergeComposerDraftContent(draftKey, message);
-    } finally {
-      rollback = { snapshot, merged: getComposerDraftSnapshot(draftKey) };
-    }
-    updateComposerDraftSettings(draftKey, {
-      ...(message.modelSelection ? { modelSelection: message.modelSelection } : {}),
-      ...(message.runtimeMode ? { runtimeMode: message.runtimeMode } : {}),
-      ...(message.interactionMode ? { interactionMode: message.interactionMode } : {}),
+    // The callback runs before persistence. Capturing after the await would
+    // mistake text typed during that write for content inserted by this edit.
+    const merge = { snapshot, merged: snapshot.draft };
+    await mergeComposerDraftContent(draftKey, message, {
+      onMerge: (snapshot, merged) => {
+        merge.snapshot = snapshot;
+        merge.merged = merged;
+        rollback = merge;
+      },
     });
-    rollback = { snapshot, merged: getComposerDraftSnapshot(draftKey) };
+    if (!(await confirmThreadOutboxMessageQueued(message))) return false;
+    const current = getComposerDraftSnapshot(draftKey);
+    const selectionUnchanged = current.modelSelection === merge.merged.modelSelection;
+    const settings = {
+      ...(selectionUnchanged && message.modelSelection
+        ? {
+            modelSelection: restoreMobileLeadPreference(
+              message.modelSelection,
+              current.modelSelection,
+            ),
+          }
+        : {}),
+      ...(current.runtimeMode === merge.merged.runtimeMode && message.runtimeMode
+        ? { runtimeMode: message.runtimeMode }
+        : {}),
+      ...(current.interactionMode === merge.merged.interactionMode && message.interactionMode
+        ? { interactionMode: message.interactionMode }
+        : {}),
+    };
+    updateComposerDraftSettings(draftKey, settings);
+    rollback = {
+      snapshot: merge.snapshot,
+      merged: {
+        ...merge.merged,
+        ...settings,
+      },
+    };
     await flushComposerDrafts();
     if (!(await removeThreadOutboxMessage(message, revision))) return false;
     rollback = null;

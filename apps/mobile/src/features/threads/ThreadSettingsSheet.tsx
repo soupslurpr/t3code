@@ -1,8 +1,10 @@
 import { SheetHeader } from "../../components/ui/SheetHeader";
+import { LeadRoleControl, type MobileLeadRoleControl } from "./LeadRoleControl";
 import { Toolbar } from "../../components/ui/Toolbar";
 import * as Dialog from "../../components/ui/Dialog";
 import { createV5StackNavigator as createNativeStackNavigator } from "../../native/createV5StackNavigator";
 import { DEFAULT_SERVER_SETTINGS } from "@t3tools/contracts";
+import { leadEligibleSelection } from "@t3tools/shared/lead";
 import {
   modelPreferencesMigrationPatch,
   resolveModelPreferences,
@@ -24,7 +26,6 @@ import { AnimatedLegendList } from "@legendapp/list/reanimated";
 import {
   getProviderOptionCurrentLabel,
   getProviderOptionCurrentValue,
-  getProviderOptionDescriptors,
 } from "@t3tools/shared/model";
 import { useNavigation, useRoute, type RouteProp } from "@react-navigation/native";
 import { type NativeStackNavigationProp } from "@react-navigation/native-stack";
@@ -255,6 +256,7 @@ type ThreadSettingsSessionProps = {
   readonly onUpdateOptionSelections: (selections: ReadonlyArray<ProviderOptionSelection>) => void;
   readonly runtimeMode: RuntimeMode;
   readonly onUpdateRuntimeMode: (mode: RuntimeMode) => void;
+  readonly leadRole?: MobileLeadRoleControl;
 };
 
 export type ExistingThreadSettingsRouteSession = ThreadSettingsSessionProps & {
@@ -298,6 +300,7 @@ export function useExistingThreadSettingsRoutePresentation() {
 }
 
 type ThreadSettingsSessionValue = {
+  readonly leadRole: ThreadSettingsSessionProps["leadRole"];
   readonly environmentId: EnvironmentId | null;
   readonly providerInstanceId?: ProviderInstanceId;
   readonly providerGroups: ReadonlyArray<ProviderGroup>;
@@ -533,8 +536,8 @@ function ThreadSettingsSessionProvider(
 
   const displayedDescriptors = pendingModel
     ? pendingModel.capabilities
-      ? getProviderOptionDescriptors({
-          caps: pendingModel.capabilities,
+      ? resolveProviderOptionDescriptors({
+          capabilities: pendingModel.capabilities,
           selections: pendingModel.selection.options,
         })
       : []
@@ -570,7 +573,11 @@ function ThreadSettingsSessionProvider(
   };
 
   const applyOptionChange = (id: string, value: string | boolean) => {
-    const next = applyProviderOptionSelection(displayedDescriptors, { id, value });
+    const next = applyProviderOptionSelection(
+      displayedDescriptors,
+      { id, value },
+      (pendingModel?.selection ?? props.selectedModel)?.options,
+    );
     if (!next) {
       return;
     }
@@ -609,6 +616,7 @@ function ThreadSettingsSessionProvider(
 
   const value = {
     environmentId: props.environmentId,
+    leadRole: props.leadRole,
     providerInstanceId: props.providerInstanceId,
     providerGroups,
     manageHidden,
@@ -903,6 +911,8 @@ function ThreadSettingsOptionsItem(props: {
           />
         </Animated.View>
       </Animated.View>
+
+      <LeadRoleControl role={session.leadRole} pendingModel={session.pendingModel !== null} />
 
       {(session.canManageHidden || (Platform.OS !== "ios" && session.hasLegacyModels)) && (
         <Text className="px-5 pb-2 pt-7 text-sm font-t3-medium text-foreground-muted">Catalog</Text>
@@ -1526,6 +1536,14 @@ export function NewTaskThreadSettingsRouteScreen() {
       onUpdateOptionSelections={flow.setSelectedModelOptions}
       runtimeMode={flow.runtimeMode}
       onUpdateRuntimeMode={flow.setRuntimeMode}
+      leadRole={
+        leadEligibleSelection(flow.selectedModel, flow.leadAvailability)
+          ? {
+              lead: flow.lead,
+              onChange: (lead) => (lead ? flow.restoreLead() : flow.removeLead()),
+            }
+          : undefined
+      }
       onClose={() => navigation.goBack()}
     />
   );
