@@ -7,6 +7,7 @@ import { ThreadMonitorService } from "../../../threadMonitor/ThreadMonitorServic
 import { ThreadWorkspaceQuery } from "../../../orchestration-v2/ThreadWorkspaceQuery.ts";
 import { UserDesktopRepository } from "../../../persistence/UserDesktops.ts";
 import { UserDesktopTransfers } from "../../../computer/UserDesktopTransfers.ts";
+import * as UserDesktopCommands from "../../../computer/UserDesktopCommands.ts";
 import * as Orchestrator from "../../../orchestration-v2/Orchestrator.ts";
 import * as ProjectionStore from "../../../orchestration-v2/ProjectionStore.ts";
 import * as DeviceService from "../../../device/DeviceService.ts";
@@ -57,6 +58,7 @@ const layerStubServices = Layer.mergeAll(
   Layer.mock(ThreadWorkspaceQuery)({}),
   Layer.mock(UserDesktopRepository)({}),
   Layer.mock(UserDesktopTransfers)({ download: () => null }),
+  Layer.mock(UserDesktopCommands.UserDesktopCommands)({}),
   Layer.mock(ThreadManagementService.ThreadManagementService)({}),
   Layer.mock(ProviderRegistry.ProviderRegistry)({}),
   Layer.mock(ProviderAdapterRegistry.ProviderAdapterRegistryV2)({}),

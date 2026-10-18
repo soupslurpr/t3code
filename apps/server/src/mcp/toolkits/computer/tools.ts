@@ -19,12 +19,12 @@ import {
   PreviewAutomationError,
   UserDesktopInventoryError,
   UserDesktopList,
-  UserDesktopCommandInput,
-  UserDesktopProcessInput,
+  UserDesktopCommandToolInput,
+  UserDesktopProcessToolInput,
   UserDesktopExecutionAccessInput,
-  DesktopProcessResult,
-  DesktopProcessAccepted,
-  DesktopProcessList,
+  UserDesktopToolProcessResult,
+  UserDesktopToolProcessAccepted,
+  UserDesktopToolProcessList,
   DesktopExecutionAccess,
 } from "@t3tools/contracts";
 import * as Schema from "effect/Schema";
@@ -34,6 +34,7 @@ import * as McpInvocationContext from "../../McpInvocationContext.ts";
 import * as ComputerAutomationRouter from "../../../computer/ComputerAutomationRouter.ts";
 import * as ComputerObservationStore from "../../../computer/ComputerObservationStore.ts";
 import * as PreviewAutomationBroker from "../../PreviewAutomationBroker.ts";
+import * as UserDesktopCommands from "../../../computer/UserDesktopCommands.ts";
 
 import * as ThreadManagementService from "../../../orchestration-v2/ThreadManagementService.ts";
 
@@ -209,22 +210,22 @@ export const UserDesktopExecutionTool = computerTool(
 export const UserDesktopCommandTool = computerTool(
   Tool.make("user_desktop_command", {
     description:
-      "Start an exact executable and argv on the selected user desktop after user_desktop_execution grants access. Use a unique commandId; retrying the same id and command in this environment returns the original process, while different input is rejected. Retry IDs survive output forgetting and last for this T3 Desktop runtime. Retrying forgotten output reports that it was removed and never starts the command again. Invoke a shell explicitly for shell syntax, or a platform elevation command such as pkexec for local authentication. Set terminal:true or {columns,rows} for an interactive PTY; PTYs combine stdout and stderr. Environment inherits the desktop host account's environment unless inheritEnvironment:false; null entries remove variables. stdin supports UTF-8 or canonical base64; keepStdinOpen permits later pipe input. waitMs only bounds this call, while timeoutMs optionally limits process lifetime. Processes otherwise continue across turns, cancelled waits, and reconnects until stopped or T3 Desktop quits. Read, write, signal, resize, and forget through user_desktop_process. Output is stored on the selected host, 64 MiB per stream by default; maxStoredOutputBytes:null removes that storage limit. Returned byte offsets page output; use base64 for exact binary data. Never rerun an uncertain command under a new id before checking its original id or the process list.",
-    parameters: UserDesktopCommandInput,
-    success: Schema.Union([DesktopProcessResult, DesktopProcessAccepted]),
+      "Start an exact executable and argv on the selected user desktop after user_desktop_execution grants access. Use a unique commandId; retrying the same id and command in this environment returns the original process, while different input is rejected. Retry IDs survive output forgetting and last for this T3 Desktop runtime. Retrying forgotten output reports that it was removed and never starts the command again. Invoke a shell explicitly for shell syntax, or a platform elevation command such as pkexec for local authentication. Set terminal:true or {columns,rows} for an interactive PTY; PTYs combine stdout and stderr. Environment inherits the desktop host account's environment unless inheritEnvironment:false; null entries remove variables. stdin supports UTF-8 or canonical base64; keepStdinOpen permits later pipe input. waitMs only bounds this call, while timeoutMs optionally limits process lifetime. Processes otherwise continue across turns, cancelled waits, and reconnects until stopped or T3 Desktop quits. Read, write, signal, resize, and forget through user_desktop_process. Complete output is stored on the selected host by default (maxStoredOutputBytes omitted/null); a numeric cap retains a beginning and latest tail per stream. A disk-space guard aims to leave 512 MiB free. Capture failures appear in outputError and mark the log incomplete without stopping the command; that stream stays stopped even after space recovers. Responses omit echoed command metadata. maxOutputTokens defaults to an approximate 10000-token combined output budget. Large UTF-8 output shows its beginning and end with an omission notice. Each stream cursor gives offset/nextOffset for the first displayed range, tailOffset/tailEnd for the displayed tail, and totalBytes for the observed byte count. Pass both streams' nextOffset values to continue through any omitted middle. Explicit stdoutOffset/stderrOffset or maxBytes selects sequential pages; base64 always pages exact binary data. Omitted output includes stdoutPath/stderrPath for searching retained logs on this desktop; read returns both paths even for small logs. truncated marks incomplete stored output; retainedEnd ends recoverable data and retainedTailOffset locates any retained tail. An explicitly capped file joins retained beginning and tail, so file offsets and line numbers can differ from the original stream. tailUnavailable means a follow-up tail read failed; the command acknowledgement still stands. Never rerun an uncertain command under a new id before checking its original id or the process list.",
+    parameters: UserDesktopCommandToolInput,
+    success: Schema.Union([UserDesktopToolProcessResult, UserDesktopToolProcessAccepted]),
     failure: Schema.Union([PreviewAutomationError, OrchestratorMcpFailure]),
-    dependencies: userDesktopDependencies,
+    dependencies: [...userDesktopDependencies, UserDesktopCommands.UserDesktopCommands],
   }).annotate(Tool.Title, "Run user desktop command"),
 );
 
 export const UserDesktopProcessTool = computerTool(
   Tool.make("user_desktop_process", {
     description:
-      "List or control continuing processes on one explicit user desktop. Read returns bounded stdout and stderr with byte continuation offsets; waitMs waits for new output or exit without stopping the process. Write supports exact UTF-8 or base64 input and closes pipe stdin when close:true; send a terminal's control character for terminal EOF. Resize changes an active PTY. Signal defaults to SIGTERM; use SIGKILL for forced process-tree termination. Windows supports SIGTERM/SIGKILL; send terminal control characters for interactive signals. Forget removes an exited process and its captured files. Output files belong to the selected desktop, which can differ from this environment's filesystem. Processes and their supervision remain independent of graphical view/control leases.",
-    parameters: UserDesktopProcessInput,
-    success: Schema.Union([DesktopProcessResult, DesktopProcessList]),
+      "List or control continuing processes on one explicit user desktop. Read returns compact status and separate stdout/stderr with the same maxOutputTokens budget and beginning/end preview as user_desktop_command. Explicit offsets, maxBytes, or base64 select sequential pages; pass both cursor.stdout.nextOffset and cursor.stderr.nextOffset to continue. cursor.offset gives the actual start, which may skip a discarded gap. Read always returns stdoutPath/stderrPath: search with rg/grep through user_desktop_command on that same desktop, or transfer with user_desktop_copy. Explicitly capped files join retained beginning and tail; use cursor paging for original byte ranges and coherent reads of changing logs. outputError reports stopped capture; retainedEnd ends recoverable data. List includes command, working directory, grant and timing for discovery; live processes include pid and terminal/input state. waitMs waits for new output or exit without stopping the process. Write supports exact UTF-8 or base64 input and closes pipe stdin when close:true; send a terminal's control character for terminal EOF. Resize changes an active PTY. Signal defaults to SIGTERM; use SIGKILL for forced process-tree termination. Windows supports SIGTERM/SIGKILL; send terminal control characters for interactive signals. Forget removes an exited process and its captured files. Output files belong to the selected desktop, which can differ from this environment's filesystem. Processes and their supervision remain independent of graphical view/control leases.",
+    parameters: UserDesktopProcessToolInput,
+    success: Schema.Union([UserDesktopToolProcessResult, UserDesktopToolProcessList]),
     failure: Schema.Union([PreviewAutomationError, OrchestratorMcpFailure]),
-    dependencies: userDesktopDependencies,
+    dependencies: [...userDesktopDependencies, UserDesktopCommands.UserDesktopCommands],
   }).annotate(Tool.Title, "Manage user desktop process"),
 );
 

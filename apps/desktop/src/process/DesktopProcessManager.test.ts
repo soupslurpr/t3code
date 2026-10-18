@@ -17,9 +17,14 @@ const desktop = { kind: "user", desktopId: "test-desktop" } as const;
 const owner = { environmentId: "environment", threadId: "thread" };
 let directory: string;
 let manager: DesktopProcessManager;
+let availableOutputBytes: () => Promise<number>;
 
 beforeEach(async () => {
   directory = await NodeFSP.mkdtemp(NodePath.join(NodeOS.tmpdir(), "t3-desktop-process-test-"));
+  availableOutputBytes = async () => {
+    const stat = await NodeFSP.statfs(directory);
+    return stat.bavail * stat.bsize;
+  };
   manager = new DesktopProcessManager({
     directory,
     supervisorPath: NodePath.join(import.meta.dirname, "DesktopProcessSupervisor.ts"),
@@ -29,6 +34,7 @@ beforeEach(async () => {
     user: "test-user",
     homeDirectory: directory,
     now: Date.now,
+    availableOutputBytes: () => availableOutputBytes(),
   });
 });
 
@@ -201,6 +207,113 @@ describe("desktop process execution", () => {
     expect(next?.stdout.nextOffset).toBe(7);
     expect(next?.stdout.invalidUtf8).toBe(false);
   });
+
+  it("keeps complete output beyond 64 MiB by default and treats null as the same policy", async () => {
+    const markerOffset = 65 * 1024 * 1024;
+    const marker = "MIDDLE-PAST-OLD-LIMIT\n";
+    const totalBytes = markerOffset + marker.length + 2 * 1024 * 1024;
+    const script = `
+      const { once } = require('node:events');
+      (async () => {
+        const chunk = Buffer.alloc(65536, 'x');
+        for (let i = 0; i < 1040; i++) {
+          if (!process.stdout.write(chunk)) await once(process.stdout, 'drain');
+        }
+        process.stdout.write(${JSON.stringify(marker)});
+        for (let i = 0; i < 32; i++) {
+          if (!process.stdout.write(chunk)) await once(process.stdout, 'drain');
+        }
+      })();
+    `;
+    const result = await command("full-log", script);
+    expect(result.process.outputError).toBeNull();
+    expect(result.stdout).toMatchObject({ totalBytes, storedBytes: totalBytes, truncated: false });
+    expect((await NodeFSP.stat(result.process.stdoutPath)).size).toBe(totalBytes);
+    const middle = await command("full-log", script, {
+      maxStoredOutputBytes: null,
+      stdoutOffset: markerOffset,
+      maxBytes: marker.length,
+    });
+    expect(middle.process.processId).toBe(result.process.processId);
+    expect(middle.stdout.data).toBe(marker);
+    expect(middle.stdout.offset).toBe(markerOffset);
+  });
+
+  it.each(["stdout", "stderr"] as const)(
+    "stops %s capture on low disk without stopping the process or changing saved bytes",
+    async (stream) => {
+      const saved = "saved\n";
+      const dropped = "dropped\n";
+      const later = "later\n";
+      let available = 512 * 1024 * 1024 + saved.length;
+      availableOutputBytes = async () => available;
+      const script = `
+        process.${stream}.write(${JSON.stringify(saved)});
+        process.stdin.on('data', (data) => {
+          if (String(data).includes('finish')) {
+            process.${stream}.write(${JSON.stringify(later)});
+            process.stdin.pause();
+          } else {
+            process.${stream}.write(${JSON.stringify(dropped)});
+          }
+        });
+      `;
+      const commandId = `low-disk-${stream}`;
+      const initial = await command(commandId, script, { keepStdinOpen: true, waitMs: 0 });
+      const ready = await manager.operate(owner, false, {
+        desktop,
+        action: "read",
+        processId: initial.process.processId,
+        waitMs: 30_000,
+      });
+      expect(ready?.[stream].data).toBe(saved);
+      available = 512 * 1024 * 1024 - 1;
+      await manager.operate(owner, false, {
+        desktop,
+        action: "write",
+        processId: initial.process.processId,
+        data: "more\n",
+      });
+      const stopped = await manager.operate(owner, false, {
+        desktop,
+        action: "read",
+        processId: initial.process.processId,
+        stdoutOffset: ready!.stdout.nextOffset,
+        stderrOffset: ready!.stderr.nextOffset,
+        waitMs: 30_000,
+      });
+      expect(stopped?.process.status).toBe("running");
+      expect(stopped?.process.outputError).toContain("512 MiB");
+      expect(stopped?.process.outputError).toContain("incomplete");
+      expect(stopped?.[stream]).toMatchObject({
+        storedBytes: saved.length,
+        totalBytes: saved.length + dropped.length,
+        retainedEnd: saved.length,
+        truncated: true,
+      });
+      const path = initial.process[`${stream}Path`];
+      expect(await NodeFSP.readFile(path, "utf8")).toBe(saved);
+
+      // A stopped capture stays stopped: resuming it would splice a gap into the file.
+      available = 1024 * 1024 * 1024;
+      await manager.operate(owner, false, {
+        desktop,
+        action: "write",
+        processId: initial.process.processId,
+        data: "finish\n",
+        close: true,
+      });
+      const completed = await command(commandId, script, { keepStdinOpen: true });
+      expect(completed.process).toMatchObject({ status: "exited", exitCode: 0 });
+      expect(completed[stream]).toMatchObject({
+        data: saved,
+        totalBytes: saved.length + dropped.length + later.length,
+        storedBytes: saved.length,
+        truncated: true,
+      });
+      expect(await NodeFSP.readFile(path, "utf8")).toBe(saved);
+    },
+  );
 
   it.each(["stdout", "stderr"] as const)(
     "keeps a drained read cancellable after %s reaches its storage limit",

@@ -1,5 +1,6 @@
 import * as ThreadMonitorSignalCallbacks from "../threadMonitor/ThreadMonitorSignalCallbacks.ts";
 import { UserDesktopTransfers } from "../computer/UserDesktopTransfers.ts";
+import * as UserDesktopCommands from "../computer/UserDesktopCommands.ts";
 import { ThreadWorkspaceQuery } from "../orchestration-v2/ThreadWorkspaceQuery.ts";
 import * as Cause from "effect/Cause";
 import * as Clock from "effect/Clock";
@@ -1456,6 +1457,7 @@ const registerComputerTools = Effect.fn("McpHttpServer.registerComputerTools")(f
   const observations = yield* ComputerObservationStore.ComputerObservationStore;
   const broker = yield* PreviewAutomationBroker.PreviewAutomationBroker;
   const transfers = yield* UserDesktopTransfers;
+  const commands = yield* UserDesktopCommands.UserDesktopCommands;
   const projections = yield* ThreadWorkspaceQuery;
   const built = yield* ComputerToolkit;
   for (const tool of Object.values(built.tools)) {
@@ -1488,6 +1490,7 @@ const registerComputerTools = Effect.fn("McpHttpServer.registerComputerTools")(f
             Effect.flatMap(Effect.fromOption),
             Effect.provideService(ThreadManagementService.ThreadManagementService, threads),
             Effect.provideService(UserDesktopTransfers, transfers),
+            Effect.provideService(UserDesktopCommands.UserDesktopCommands, commands),
             Effect.provideService(ThreadWorkspaceQuery, projections),
             Effect.provideService(ComputerAutomationRouter.ComputerAutomationRouter, computer),
             Effect.provideService(ComputerObservationStore.ComputerObservationStore, observations),

@@ -4,6 +4,7 @@ import * as Orchestrator from "../orchestration-v2/Orchestrator.ts";
 import * as ThreadManagementService from "../orchestration-v2/ThreadManagementService.ts";
 import * as ProjectionStore from "../orchestration-v2/ProjectionStore.ts";
 import { UserDesktopTransfers } from "../computer/UserDesktopTransfers.ts";
+import * as UserDesktopCommands from "../computer/UserDesktopCommands.ts";
 import { expect, it } from "@effect/vitest";
 import { NodeHttpServer } from "@effect/platform-node";
 import * as NodeServices from "@effect/platform-node/NodeServices";
@@ -313,6 +314,7 @@ const layerTest = Layer.mergeAll(
   McpHttpServer.MonitorToolkitRegistrationLive,
 ).pipe(
   Layer.provide(Layer.mock(UserDesktopTransfers)({ download: () => null })),
+  Layer.provide(UserDesktopCommands.layer.pipe(Layer.provide(BrokerTestLayer))),
   Layer.provide(Layer.mock(DeviceService.DeviceService)({})),
   Layer.provide(Layer.mock(ThreadWorkspaceQuery)({})),
   Layer.provide(MonitorTestLayer),

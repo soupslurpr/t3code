@@ -1,9 +1,6 @@
 import { UserDesktopTransfers } from "../../../computer/UserDesktopTransfers.ts";
 import type {
   DesktopExecutionAccess,
-  DesktopProcessResult,
-  DesktopProcessAccepted,
-  DesktopProcessList,
   UserDesktopExecutionInput,
   ComputerAutomationActInput,
   ComputerAutomationAccessInput,
@@ -29,6 +26,7 @@ import * as McpToolAccess from "../../McpToolAccess.ts";
 import * as ComputerAutomationRouter from "../../../computer/ComputerAutomationRouter.ts";
 import * as ComputerObservationStore from "../../../computer/ComputerObservationStore.ts";
 import * as PreviewAutomationBroker from "../../PreviewAutomationBroker.ts";
+import * as UserDesktopCommands from "../../../computer/UserDesktopCommands.ts";
 import { ComputerImageToolkit, ComputerStandardToolkit, ComputerToolkit } from "./tools.ts";
 
 /** Resolves the concrete desktop selected by an access request. */
@@ -202,16 +200,17 @@ const handlers = {
     invokeExecution<DesktopExecutionAccess>({ operation: "access", desktop: input.desktop, input }),
   ),
   user_desktop_command: McpToolAccess.actsAsCaller((input) =>
-    invokeExecution<DesktopProcessResult | DesktopProcessAccepted>({
-      operation: "command",
-      ...input,
+    Effect.gen(function* () {
+      const scope = yield* McpInvocationContext.requireThreadMcpCapability("computer");
+      const commands = yield* UserDesktopCommands.UserDesktopCommands;
+      return yield* commands.command(scope, input);
     }),
   ),
   user_desktop_process: McpToolAccess.actsAsCaller((input) =>
-    invokeExecution<DesktopProcessResult | DesktopProcessList>({
-      operation: "process",
-      desktop: input.desktop,
-      input,
+    Effect.gen(function* () {
+      const scope = yield* McpInvocationContext.requireThreadMcpCapability("computer");
+      const commands = yield* UserDesktopCommands.UserDesktopCommands;
+      return yield* commands.process(scope, input);
     }),
   ),
   user_desktop_list: McpToolAccess.readsAsCaller(() =>

@@ -42,6 +42,7 @@ import * as AgentDesktopManager from "./agentDesktop/AgentDesktopManager.ts";
 import * as QemuAgentDesktop from "./agentDesktop/QemuAgentDesktop.ts";
 import * as ComputerAutomationRouter from "./computer/ComputerAutomationRouter.ts";
 import * as UserDesktopTransfers from "./computer/UserDesktopTransfers.ts";
+import * as UserDesktopCommands from "./computer/UserDesktopCommands.ts";
 import { userDesktopTransferRouteLayer } from "./computer/userDesktopTransferHttp.ts";
 import { withUntracedRequests } from "./http.ts";
 import * as ServerHttp from "./http.ts";
@@ -270,6 +271,7 @@ const layerDesktopServices = Layer.mergeAll(
     Layer.provide(layerAgentDesktopTransfer),
   ),
   layerUserDesktopTransfers,
+  UserDesktopCommands.layer.pipe(Layer.provide(layerPreviewAutomationBroker)),
   layerAgentDesktopManager,
   layerComputerAutomationRouter,
   layerAgentDesktopTransfer,
