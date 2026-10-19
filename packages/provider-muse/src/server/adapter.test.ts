@@ -468,9 +468,13 @@ describe("MuseAdapterV2", () => {
       }).pipe(Effect.scoped, Effect.provide(testLayer)),
   );
 
-  it.effect("retries a missing native session with a cleared ref on the same healthy host", () =>
+  it.effect("retries a rejected native resume with a cleared ref on the same healthy host", () =>
     Effect.gen(function* () {
-      for (const kind of ["sessionNotFound", "notFound"] as const) {
+      for (const [kind, message] of [
+        ["sessionNotFound", "Saved session is absent"],
+        ["notFound", "Saved session is absent"],
+        ["internal", "internal error: session MCP base configuration is unavailable"],
+      ] as const) {
         const fake = yield* makeFakeMuse();
         const allocated = yield* preallocatedProviderThread();
         const adapter = yield* makeMuseAdapterV2({
@@ -481,14 +485,14 @@ describe("MuseAdapterV2", () => {
         });
         const runtime = yield* adapter.openSession({
           threadId: THREAD_ID,
-          providerSessionId: ProviderSessionId.make(`missing-${kind}`),
+          providerSessionId: ProviderSessionId.make(`rejected-${kind}`),
           modelSelection: modelSelection(),
           runtimePolicy,
-          initialNativeThreadId: "missing-session",
+          initialNativeThreadId: "saved-session",
         });
         fake.queueResponse(
           "session/resume",
-          new MspError({ code: -32000, message: "Saved session is absent", data: { kind } }),
+          new MspError({ code: -32000, message, data: { kind } }),
         );
         const failed = yield* runtime
           .ensureThread({
@@ -499,7 +503,7 @@ describe("MuseAdapterV2", () => {
               ...allocated,
               nativeThreadRef: {
                 driver: MUSE_PROVIDER,
-                nativeId: "missing-session",
+                nativeId: "saved-session",
                 strength: "strong",
               },
             },
@@ -514,7 +518,9 @@ describe("MuseAdapterV2", () => {
           existingProviderThread: allocated,
         });
         assert.strictEqual(fresh.id, allocated.id);
-        assert.notStrictEqual(fresh.nativeThreadRef?.nativeId, "missing-session");
+        assert.notStrictEqual(fresh.nativeThreadRef?.nativeId, "saved-session");
+        const started = yield* fake.takeCall("session/start");
+        assert.strictEqual(started.params.sessionId, fresh.nativeThreadRef?.nativeId);
         assert.strictEqual(fake.closeCount(), 0);
         yield* runtime.startTurn(yield* turnInput(fresh));
         const admitted = yield* fake.takeCall("turn/start");
