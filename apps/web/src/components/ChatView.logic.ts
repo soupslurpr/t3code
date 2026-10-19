@@ -37,7 +37,11 @@ import {
   type AtomCommandResult,
 } from "@t3tools/client-runtime/state/runtime";
 import { videoMimeType } from "@t3tools/shared/video";
-import { leadEligibleSelection, type LeadAvailability } from "@t3tools/shared/lead";
+import {
+  leadEligibleSelection,
+  leadUnavailableHint,
+  type LeadAvailability,
+} from "@t3tools/shared/lead";
 import {
   appendCodexArtifactTemplateUsePrompt,
   codexArtifactTemplateUsePrompt,
@@ -1120,6 +1124,22 @@ export function resolveComposerLeadSelection(input: {
     ? input.draft.modelSelectionByProvider[input.draft.activeProvider]
     : null;
   return leadEligibleSelection(selection ?? input.fallbackSelection, input.availability);
+}
+
+export function resolveComposerLeadUnavailableHint(input: {
+  draft:
+    | Pick<ComposerThreadDraftState, "activeProvider" | "modelSelectionByProvider">
+    | null
+    | undefined;
+  fallbackSelection: ModelSelection | null;
+  multipleSelections: ReadonlyArray<ModelSelection> | null;
+  availability: LeadAvailability;
+}): string | null {
+  if (input.multipleSelections !== null) return null;
+  const selection = input.draft?.activeProvider
+    ? input.draft.modelSelectionByProvider[input.draft.activeProvider]
+    : null;
+  return leadUnavailableHint(selection ?? input.fallbackSelection, input.availability);
 }
 
 export async function waitForStartedServerThread(

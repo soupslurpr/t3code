@@ -41,9 +41,9 @@ export function withoutLeadRoleOptions(
 }
 
 export const LEAD_MODEL_REQUIREMENTS = [
-  { driver: "muse", model: LEAD_MODEL_ID, effort: "max" },
-  { driver: "codex", model: "gpt-6-astra", effort: "max" },
-  { driver: "codex", model: "gpt-6.1-sol", effort: "xhigh" },
+  { driver: "muse", model: LEAD_MODEL_ID, effort: "max", label: "Muse Wonder Full (Max)" },
+  { driver: "codex", model: "gpt-6-astra", effort: "max", label: "Astra (Max)" },
+  { driver: "codex", model: "gpt-6.1-sol", effort: "xhigh", label: "Sol (Extra High)" },
 ] as const;
 
 export interface LeadAvailability {
@@ -120,6 +120,22 @@ export function matchesLeadSelection(
   );
 }
 
+function matchesWonderSelection(
+  selection: ModelSelection,
+  availability: LeadAvailability,
+): boolean {
+  return availability.wonderSelections.some((expected) =>
+    matchesLeadSelection(
+      selection,
+      expected,
+      availability.wonderDefaultSelections.find(
+        (defaults) =>
+          defaults.instanceId === expected.instanceId && defaults.model === expected.model,
+      ),
+    ),
+  );
+}
+
 /** Return the eligible applied selection without replacing its options or instance. */
 export function leadEligibleSelection(
   selection: ModelSelection | null | undefined,
@@ -127,16 +143,28 @@ export function leadEligibleSelection(
 ): ModelSelection | null {
   return selection &&
     availability.selection !== null &&
-    availability.wonderSelections.some((expected) =>
-      matchesLeadSelection(
-        selection,
-        expected,
-        availability.wonderDefaultSelections.find(
-          (defaults) =>
-            defaults.instanceId === expected.instanceId && defaults.model === expected.model,
-        ),
-      ),
-    )
+    matchesWonderSelection(selection, availability)
     ? selection
     : null;
+}
+
+export function leadUnavailableHint(
+  selection: ModelSelection | null | undefined,
+  availability: LeadAvailability,
+): string | null {
+  if (
+    !selection ||
+    availability.selection !== null ||
+    !matchesWonderSelection(selection, availability)
+  ) {
+    return null;
+  }
+  const labels = LEAD_MODEL_REQUIREMENTS.filter(
+    (requirement) =>
+      requirement.driver !== "muse" &&
+      availability.missing.includes(
+        `${requirement.driver} · ${requirement.model} · ${requirement.effort}`,
+      ),
+  ).map((requirement) => requirement.label);
+  return labels.length === 0 ? null : `Lead unavailable · needs ${labels.join(" + ")}`;
 }

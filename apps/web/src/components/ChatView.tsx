@@ -1,4 +1,3 @@
-import { useMemo } from "react";
 import { formatFilePathForClipboard } from "@t3tools/client-runtime/media-actions";
 import { resolvePathLinkTarget } from "@t3tools/shared/fileLinks";
 import { ThreadFind, ThreadFindCanvas, type ThreadFindControls } from "./chat/ThreadFindProvider";
@@ -79,7 +78,6 @@ import {
   type RuntimeRequestId,
   PROVIDER_SEND_TURN_MAX_ATTACHMENTS,
   ProviderInteractionMode,
-  ProviderDriverKind,
   resolveProjectProviderInstanceEnabled,
   RuntimeMode,
 } from "@t3tools/contracts";
@@ -313,7 +311,7 @@ import {
   resolveLeadSelectionForDispatch,
 } from "../modelSelection";
 import { LEAD_ROLE_OPTION_ID } from "@t3tools/shared/lead";
-import { LeadRoleControl } from "./chat/LeadRoleControl";
+import { LeadRoleControl, LeadUnavailableHint } from "./chat/LeadRoleControl";
 import { useLeadRole } from "../hooks/useLeadRole";
 import {
   getComposerPromptInjectionState,
@@ -516,6 +514,7 @@ import {
   getThreadModelSelectionBlockReason,
   formatOutgoingPrompt,
   resolveComposerLeadSelection,
+  resolveComposerLeadUnavailableHint,
   LAST_INVOKED_SCRIPT_BY_PROJECT_KEY,
   LastInvokedScriptByProjectSchema,
   type LocalDispatchSnapshot,
@@ -2536,6 +2535,14 @@ export default function ChatView(props: ChatViewProps) {
   };
   const eligibleLeadSelection = useComposerDraftStore((store) =>
     resolveComposerLeadSelection({
+      draft: store.getComposerDraft(composerDraftTarget),
+      fallbackSelection: isLocalDraftThread ? null : (activeThread?.modelSelection ?? null),
+      multipleSelections: multipleModelSelections,
+      availability: leadAvailability,
+    }),
+  );
+  const leadUnavailableHint = useComposerDraftStore((store) =>
+    resolveComposerLeadUnavailableHint({
       draft: store.getComposerDraft(composerDraftTarget),
       fallbackSelection: isLocalDraftThread ? null : (activeThread?.modelSelection ?? null),
       multipleSelections: multipleModelSelections,
@@ -7894,13 +7901,11 @@ export default function ChatView(props: ChatViewProps) {
     onSelectionChange: applyLeadRoleSelection,
   });
   const onRoleChangeStable = useStableCallback(onRoleChange);
-  const leadRoleControl = useMemo(
-    () =>
-      eligibleLeadSelection !== null && !queuedRunEdit.isEditing ? (
-        <LeadRoleControl role={leadRole} onRoleChange={onRoleChangeStable} />
-      ) : undefined,
-    [eligibleLeadSelection, queuedRunEdit.isEditing, leadRole, onRoleChangeStable],
-  );
+  const leadRoleControl = queuedRunEdit.isEditing ? undefined : eligibleLeadSelection !== null ? (
+    <LeadRoleControl role={leadRole} onRoleChange={onRoleChangeStable} />
+  ) : leadUnavailableHint !== null ? (
+    <LeadUnavailableHint text={leadUnavailableHint} />
+  ) : undefined;
   const onEnvModeChange = (mode: DraftThreadEnvMode) => {
     if (multipleModelSelections !== null) return;
     if (canOverrideServerThreadEnvMode) {

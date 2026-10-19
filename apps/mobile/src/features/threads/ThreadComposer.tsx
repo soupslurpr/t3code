@@ -80,6 +80,7 @@ import {
 } from "../../components/ComposerToolbar";
 import { ProviderIcon } from "../../components/ProviderIcon";
 import { resolveMobileLeadAvailability } from "../../lib/lead";
+import { leadUnavailableHint } from "@t3tools/shared/lead";
 import { useMobileLeadRole } from "./use-lead-role";
 import {
   composerStripAttachments,
@@ -428,6 +429,7 @@ export const ThreadComposer = function ThreadComposer(props: ThreadComposerProps
     props.serverConfig,
     props.selectedThread.projectId,
   );
+  const unavailableLeadHint = leadUnavailableHint(currentModelSelection, leadAvailability);
   const {
     lead,
     eligible: leadEligible,
@@ -650,7 +652,11 @@ export const ThreadComposer = function ThreadComposer(props: ThreadComposerProps
     },
     runtimeMode: currentRuntimeMode,
     onUpdateRuntimeMode: props.onUpdateRuntimeMode,
-    ...(leadEligible && queuedEdit === null ? { leadRole: { lead, onChange: setLead } } : {}),
+    ...(leadEligible && queuedEdit === null
+      ? { leadRole: { lead, onChange: setLead } }
+      : queuedEdit === null && !leadEligible && unavailableLeadHint !== null
+        ? { leadUnavailableHint: unavailableLeadHint }
+        : {}),
   } satisfies ExistingThreadSettingsRouteSession;
   const openSettings = () => {
     settingsRoutePresentation.present(settingsRouteSession);

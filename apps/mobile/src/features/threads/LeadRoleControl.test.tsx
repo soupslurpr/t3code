@@ -36,6 +36,7 @@ it("hides Role for ineligible selections and staged models, then restores the ap
   container = document.createElement("div");
   root = createRoot(container);
   await act(async () => root.render(<LeadRoleControl role={undefined} pendingModel={false} />));
+  expect(container.childNodes).toHaveLength(0);
   expect(container.querySelectorAll("button")).toHaveLength(0);
   const role = { lead: true, onChange };
   await act(async () => root.render(<LeadRoleControl role={role} pendingModel />));
@@ -46,4 +47,24 @@ it("hides Role for ineligible selections and staged models, then restores the ap
   expect(choices.map((choice) => choice.getAttribute("aria-pressed"))).toEqual(["false", "true"]);
   await act(async () => choices[0]!.click());
   expect(onChange).toHaveBeenCalledExactlyOnceWith(false);
+});
+
+it("shows the unavailable Lead hint without buttons and hides it for staged models", async () => {
+  vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
+  container = document.createElement("div");
+  root = createRoot(container);
+  const unavailableHint = "Lead unavailable · needs Astra (Max)";
+  await act(async () =>
+    root.render(
+      <LeadRoleControl role={undefined} pendingModel={false} unavailableHint={unavailableHint} />,
+    ),
+  );
+  expect(container.textContent).toContain(unavailableHint);
+  expect(container.querySelectorAll("button")).toHaveLength(0);
+  await act(async () =>
+    root.render(
+      <LeadRoleControl role={undefined} pendingModel unavailableHint={unavailableHint} />,
+    ),
+  );
+  expect(container.childNodes).toHaveLength(0);
 });

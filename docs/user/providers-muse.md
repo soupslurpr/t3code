@@ -61,6 +61,8 @@ messages. Choosing Direct sticks for that thread until you choose Lead again.
 Role is available only for Wonder Full at Max with the required models. If
 those requirements become unavailable, the turn runs Direct while your saved
 Lead preference stays in place.
+If Astra or Sol is unavailable, the picker shows **Lead unavailable**, naming what
+is needed, and turns run Direct until it is back.
 
 ## Permissions and limitations
 

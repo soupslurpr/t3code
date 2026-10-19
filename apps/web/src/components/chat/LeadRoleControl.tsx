@@ -1,6 +1,14 @@
 import { useId } from "react";
 import { Toggle, ToggleGroup } from "../ui/toggle-group";
 
+export function LeadUnavailableHint({ text }: { text: string }) {
+  return (
+    <div className="space-y-1 border-t px-3 py-2">
+      <p className="text-xs text-muted-foreground">{text}</p>
+    </div>
+  );
+}
+
 export function LeadRoleControl({
   role,
   onRoleChange,

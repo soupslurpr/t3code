@@ -4,7 +4,10 @@ import { Toolbar } from "../../components/ui/Toolbar";
 import * as Dialog from "../../components/ui/Dialog";
 import { createV5StackNavigator as createNativeStackNavigator } from "../../native/createV5StackNavigator";
 import { DEFAULT_SERVER_SETTINGS } from "@t3tools/contracts";
-import { leadEligibleSelection } from "@t3tools/shared/lead";
+import {
+  leadEligibleSelection,
+  leadUnavailableHint as resolveLeadUnavailableHint,
+} from "@t3tools/shared/lead";
 import {
   modelPreferencesMigrationPatch,
   resolveModelPreferences,
@@ -257,6 +260,7 @@ type ThreadSettingsSessionProps = {
   readonly runtimeMode: RuntimeMode;
   readonly onUpdateRuntimeMode: (mode: RuntimeMode) => void;
   readonly leadRole?: MobileLeadRoleControl;
+  readonly leadUnavailableHint?: string | null;
 };
 
 export type ExistingThreadSettingsRouteSession = ThreadSettingsSessionProps & {
@@ -301,6 +305,7 @@ export function useExistingThreadSettingsRoutePresentation() {
 
 type ThreadSettingsSessionValue = {
   readonly leadRole: ThreadSettingsSessionProps["leadRole"];
+  readonly leadUnavailableHint: ThreadSettingsSessionProps["leadUnavailableHint"];
   readonly environmentId: EnvironmentId | null;
   readonly providerInstanceId?: ProviderInstanceId;
   readonly providerGroups: ReadonlyArray<ProviderGroup>;
@@ -617,6 +622,7 @@ function ThreadSettingsSessionProvider(
   const value = {
     environmentId: props.environmentId,
     leadRole: props.leadRole,
+    leadUnavailableHint: props.leadUnavailableHint,
     providerInstanceId: props.providerInstanceId,
     providerGroups,
     manageHidden,
@@ -912,7 +918,11 @@ function ThreadSettingsOptionsItem(props: {
         </Animated.View>
       </Animated.View>
 
-      <LeadRoleControl role={session.leadRole} pendingModel={session.pendingModel !== null} />
+      <LeadRoleControl
+        role={session.leadRole}
+        pendingModel={session.pendingModel !== null}
+        unavailableHint={session.leadUnavailableHint}
+      />
 
       {(session.canManageHidden || (Platform.OS !== "ios" && session.hasLegacyModels)) && (
         <Text className="px-5 pb-2 pt-7 text-sm font-t3-medium text-foreground-muted">Catalog</Text>
@@ -1543,6 +1553,11 @@ export function NewTaskThreadSettingsRouteScreen() {
               onChange: (lead) => (lead ? flow.restoreLead() : flow.removeLead()),
             }
           : undefined
+      }
+      leadUnavailableHint={
+        flow.editingPendingTask === null
+          ? resolveLeadUnavailableHint(flow.selectedModel, flow.leadAvailability)
+          : null
       }
       onClose={() => navigation.goBack()}
     />

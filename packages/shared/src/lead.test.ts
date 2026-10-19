@@ -5,6 +5,7 @@ import {
   LEAD_MODEL_ID,
   LEAD_MODEL_REQUIREMENTS,
   leadEligibleSelection,
+  leadUnavailableHint,
   resolveLeadAvailabilityFromModels,
 } from "./lead.ts";
 
@@ -14,6 +15,71 @@ it("uses the Lead model ID for the Wonder Full availability requirement", () => 
     driver: "muse",
     model: LEAD_MODEL_ID,
     effort: "max",
+    label: "Muse Wonder Full (Max)",
+  });
+});
+
+describe("leadUnavailableHint", () => {
+  const wonder = createModelSelection(ProviderInstanceId.make("muse"), LEAD_MODEL_ID, [
+    { id: "catalog-effort", value: "max" },
+  ]);
+  const availability = {
+    selection: null,
+    missing: ["codex · gpt-6-astra · max", "codex · gpt-6.1-sol · xhigh"],
+    wonderSelections: [wonder],
+    wonderDefaultSelections: [],
+  };
+
+  it("hides the hint when Lead is available", () => {
+    expect(
+      leadUnavailableHint(wonder, { ...availability, selection: wonder, missing: [] }),
+    ).toBeNull();
+  });
+
+  it.each([
+    [["codex · gpt-6.1-sol · xhigh"], "Lead unavailable · needs Sol (Extra High)"],
+    [["codex · gpt-6-astra · max"], "Lead unavailable · needs Astra (Max)"],
+    [
+      ["codex · gpt-6.1-sol · xhigh", "codex · gpt-6-astra · max"],
+      "Lead unavailable · needs Astra (Max) + Sol (Extra High)",
+    ],
+  ] as const)("names the missing requirements in order: %j", (missing, expected) => {
+    expect(leadUnavailableHint(wonder, { ...availability, missing })).toBe(expected);
+  });
+
+  it.each([
+    ["wrong effort", { ...wonder, options: [{ id: "catalog-effort", value: "high" }] }],
+    ["wrong model", { ...wonder, model: "muse-other" }],
+    ["wrong instance", { ...wonder, instanceId: ProviderInstanceId.make("muse_missing") }],
+    ["no selection", null],
+    ["unset selection", undefined],
+  ] as const)("hides the hint for %s", (_reason, selection) => {
+    expect(leadUnavailableHint(selection, availability)).toBeNull();
+  });
+
+  it("hides the hint when Wonder itself is unavailable", () => {
+    expect(leadUnavailableHint(wonder, { ...availability, wonderSelections: [] })).toBeNull();
+  });
+
+  it.each(["max", "high"])("resolves an omitted effort from the %s default", (effort) => {
+    const selection = createModelSelection(wonder.instanceId, wonder.model);
+    expect(
+      leadUnavailableHint(selection, {
+        ...availability,
+        wonderDefaultSelections: [
+          { ...wonder, options: [{ id: "catalog-effort", value: effort }] },
+        ],
+      }),
+    ).toBe(effort === "max" ? "Lead unavailable · needs Astra (Max) + Sol (Extra High)" : null);
+    expect(selection.options).toBeUndefined();
+  });
+
+  it.each([
+    { missing: [] },
+    { missing: ["muse · muse-wonder-full-1.0 · max"] },
+    { missing: ["codex · another-model · max"] },
+  ])("hides the hint without a known missing helper requirement: %j", ({ missing }) => {
+    expect(leadUnavailableHint(wonder, { ...availability, missing })).toBeNull();
   });
 });
 

@@ -12,10 +12,20 @@ export interface MobileLeadRoleControl {
 export function LeadRoleControl({
   role,
   pendingModel,
+  unavailableHint,
 }: {
   readonly role: MobileLeadRoleControl | undefined;
   readonly pendingModel: boolean;
+  readonly unavailableHint?: string | null;
 }) {
+  if (role === undefined && !pendingModel && unavailableHint != null) {
+    return (
+      <>
+        <Text className="px-5 pb-2 pt-7 text-sm font-t3-medium text-foreground-muted">Role</Text>
+        <Text className="px-5 pt-2 text-xs text-foreground-muted">{unavailableHint}</Text>
+      </>
+    );
+  }
   return (
     <>
       {role && !pendingModel ? (
