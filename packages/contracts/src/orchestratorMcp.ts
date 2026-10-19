@@ -182,7 +182,7 @@ export const OrchestratorMcpDelegateTaskInput = Schema.Struct({
   ),
   timeoutMs: Schema.optional(Schema.Finite).annotate({
     description:
-      "Wait budget for mode=wait only. Default 10 minutes. Elapsing it returns waitTimedOut=true on that call and does not cancel the child.",
+      "Requested wait budget for mode=wait only, default 10 minutes. A shorter calling harness MCP budget can return waitTimedOut=true before this budget elapses. The child continues; use task_status to check it later.",
   }),
   clientRequestId: Schema.optional(OrchestratorMcpClientRequestId),
   runtimeMode: Schema.optional(
@@ -229,7 +229,7 @@ export const OrchestratorMcpDelegateTaskResult = Schema.Struct({
   }),
   waitTimedOut: Schema.Boolean.annotate({
     description:
-      "True only on that mode=wait call when timeoutMs elapsed. The timeout does not cancel the child. Later task_status reads return false and use status for liveness.",
+      "True only on that mode=wait call when its effective wait budget elapsed, which may be shorter than timeoutMs for the calling harness. The timeout does not cancel the child. Later task_status reads return false and use status for liveness.",
   }),
 });
 export type OrchestratorMcpDelegateTaskResult = typeof OrchestratorMcpDelegateTaskResult.Type;
@@ -476,7 +476,10 @@ export type OrchestratorMcpThreadSendResult = typeof OrchestratorMcpThreadSendRe
 export const OrchestratorMcpThreadWaitInput = Schema.Struct({
   threadId: ThreadId,
   runId: Schema.optional(RunId),
-  timeoutMs: Schema.optional(Schema.Finite),
+  timeoutMs: Schema.optional(Schema.Finite).annotate({
+    description:
+      "Requested wait budget, default 10 minutes. A shorter calling harness MCP budget can return timedOut=true before this budget elapses. Work continues; call t3_thread_wait again to keep waiting.",
+  }),
 });
 export type OrchestratorMcpThreadWaitInput = typeof OrchestratorMcpThreadWaitInput.Type;
 
@@ -630,7 +633,10 @@ export const OrchestratorMcpRequestSecretInput = Schema.Struct({
   }),
   timeoutMs: Schema.optional(
     Schema.Int.check(Schema.isBetween({ minimum: 1_000, maximum: 60 * 60 * 1_000 })),
-  ).annotate({ description: "How long to wait for the user. Default 10 minutes." }),
+  ).annotate({
+    description:
+      "Requested wait budget for the user, default 10 minutes. A shorter calling harness MCP budget can return timed_out before this budget elapses and close the card. Ask again with a new clientRequestId if still needed.",
+  }),
   clientRequestId: Schema.optional(OrchestratorMcpClientRequestId).annotate({
     description:
       "Reuse when retrying a call that lost its result, so the user sees one card and its answer is returned again. Use a new id to ask again after timed_out or cancelled.",
