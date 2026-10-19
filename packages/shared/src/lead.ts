@@ -6,7 +6,7 @@ import type {
 import { createModelSelection, getProviderOptionDescriptors } from "./model.ts";
 
 export const LEAD_INSTRUCTION =
-  "Act as lead here, owning design and decisions, and use subagents as you see fit; develop your own concrete design before asking subagents to implement it, critique it, or develop their own; by default, have Astra (`gpt-6-astra`) at Max implement, test, and push back on your plans, and Sol (`gpt-6.1-sol`) at Extra High review, and verify their work yourself.";
+  "Act as lead here, owning design and decisions, and use subagents as you see fit; develop your own concrete design before asking subagents to implement it, critique it, or develop their own; by default, have Astra (`gpt-6-astra`) at Max implement, test, and push back on your plans, and Sol (`gpt-6.1-sol`) at Extra High review, and verify their work yourself. Use `delegate_task` for subagents.";
 
 export const LEAD_MODEL_ID = "muse-wonder-full-1.0";
 export const LEAD_ROLE_OPTION_ID = "leadRole";

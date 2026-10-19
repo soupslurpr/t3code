@@ -2,12 +2,17 @@ import { describe, expect, it } from "vite-plus/test";
 import { ProviderInstanceId } from "@t3tools/contracts";
 import { createModelSelection } from "./model.ts";
 import {
+  LEAD_INSTRUCTION,
   LEAD_MODEL_ID,
   LEAD_MODEL_REQUIREMENTS,
   leadEligibleSelection,
   leadUnavailableHint,
   resolveLeadAvailabilityFromModels,
 } from "./lead.ts";
+
+it("directs Lead to use delegate_task for subagents", () => {
+  expect(LEAD_INSTRUCTION).toContain("delegate_task");
+});
 
 it("uses the Lead model ID for the Wonder Full availability requirement", () => {
   expect(LEAD_MODEL_ID).toBe("muse-wonder-full-1.0");
