@@ -1,10 +1,11 @@
 #!/usr/bin/env node
-// @effect-diagnostics nodeBuiltinImport:off globalConsole:off globalDate:off globalFetch:off - This host CLI inspects explicit local installations and workspaces.
+// @effect-diagnostics nodeBuiltinImport:off globalConsole:off globalDate:off globalFetch:off - This host CLI inspects local installations and workspaces, with opt-in restart recovery cleanup.
 
-/** Verifies local builds, workspaces, and completed restarts without changing runtime state. */
+/** Verifies local builds, workspaces, and restarts, with opt-in cleanup after restart verification passes. */
 import * as NodeAssert from "node:assert/strict";
 import * as NodeChildProcess from "node:child_process";
 import * as NodeFSP from "node:fs/promises";
+import * as NodeOS from "node:os";
 import * as NodePath from "node:path";
 import * as NodeUtil from "node:util";
 
@@ -303,6 +304,77 @@ export async function checkRestart(
   };
 }
 
+/** Removes only an exact recovery directory; callers must first verify the restart passed. */
+export async function cleanupRestartRecovery(planPath: string, stateRoot: string) {
+  const removedFiles: string[] = [];
+  let restartDirectoryRemoved = false;
+  let maintenanceDirectoryRemoved = false;
+  try {
+    if (!NodePath.isAbsolute(planPath) || !NodePath.isAbsolute(stateRoot))
+      throw new Error("cleanup requires absolute restart plan and maintenance state-root paths");
+    if (NodePath.basename(planPath) !== "plan.json")
+      throw new Error("cleanup requires a plan named plan.json");
+    const [canonicalPlan, canonicalStateRoot, planEntry] = await Promise.all([
+      NodeFSP.realpath(planPath),
+      NodeFSP.realpath(stateRoot),
+      NodeFSP.lstat(planPath),
+    ]);
+    if (!planEntry.isFile() || planEntry.isSymbolicLink())
+      throw new Error("cleanup requires plan.json to be a regular file, not a symlink");
+    const directory = NodePath.dirname(canonicalPlan);
+    const name = NodePath.basename(directory);
+    if (
+      NodePath.basename(canonicalPlan) !== "plan.json" ||
+      !name.startsWith("restart-") ||
+      name.length === "restart-".length ||
+      NodePath.dirname(directory) !== canonicalStateRoot
+    ) {
+      throw new Error(
+        "cleanup requires plan.json directly inside a restart-* maintenance directory",
+      );
+    }
+    const entries = await NodeFSP.readdir(directory, { withFileTypes: true });
+    if (
+      entries.length !== 2 ||
+      !entries.some((entry) => entry.name === "plan.json") ||
+      !entries.some((entry) => entry.name === "worker.mts") ||
+      entries.some((entry) => !entry.isFile() || entry.isSymbolicLink())
+    ) {
+      throw new Error(
+        "cleanup requires exactly two regular files: plan.json and worker.mts (no symlinks)",
+      );
+    }
+    for (const path of [NodePath.join(directory, "worker.mts"), canonicalPlan]) {
+      await NodeFSP.unlink(path);
+      removedFiles.push(path);
+    }
+    await NodeFSP.rmdir(directory);
+    restartDirectoryRemoved = true;
+    try {
+      await NodeFSP.rmdir(canonicalStateRoot);
+      maintenanceDirectoryRemoved = true;
+    } catch (cause) {
+      const code = cause instanceof Error && "code" in cause ? cause.code : undefined;
+      if (code === "ENOENT") maintenanceDirectoryRemoved = true;
+      else if (code !== "ENOTEMPTY" && code !== "EEXIST") throw cause;
+    }
+    return {
+      status: "removed" as const,
+      removedFiles,
+      restartDirectoryRemoved,
+      maintenanceDirectoryRemoved,
+    };
+  } catch (cause) {
+    return {
+      status: "error" as const,
+      error: cause instanceof Error ? cause.message : String(cause),
+      removedFiles,
+      restartDirectoryRemoved,
+      maintenanceDirectoryRemoved,
+    };
+  }
+}
+
 /** Reports the exact Git source and uncommitted paths of an explicit workspace. */
 export async function checkWorkspace(directory: string, signal: AbortSignal) {
   const git = async (...args: string[]) =>
@@ -322,7 +394,7 @@ export async function checkWorkspace(directory: string, signal: AbortSignal) {
   };
 }
 
-/** Prints a bounded JSON report and exits unsuccessfully when a verification condition fails. */
+/** Prints verification and optional restart cleanup in one JSON report, failing on either error. */
 async function main() {
   const { positionals, values } = NodeUtil.parseArgs({
     allowPositionals: true,
@@ -331,16 +403,19 @@ async function main() {
       "app-dir": { type: "string", default: "/opt/t3code-soupslurpr-bin" },
       commit: { type: "string" },
       hashes: { type: "boolean", default: false },
+      cleanup: { type: "boolean", default: false },
       help: { type: "boolean", default: false },
     },
   });
   if (values.help) {
     console.log(
-      "usage: node scripts/local-arch-verify.ts installation [--commit FULL_SHA] [--hashes] [--port PORT] [--app-dir PATH]\n       node scripts/local-arch-verify.ts restart /absolute/plan.json [--port PORT] [--app-dir PATH]\n       node scripts/local-arch-verify.ts workspace DIRECTORY",
+      "usage: node scripts/local-arch-verify.ts installation [--commit FULL_SHA] [--hashes] [--port PORT] [--app-dir PATH]\n       node scripts/local-arch-verify.ts restart /absolute/plan.json [--port PORT] [--app-dir PATH] [--cleanup]\n       node scripts/local-arch-verify.ts workspace DIRECTORY\n\nRead-only by default. --cleanup removes the restart recovery directory only after restart verification passes, then removes the maintenance parent if empty.",
     );
     return;
   }
   const [command, target] = positionals;
+  if (values.cleanup && (command !== "restart" || !target))
+    throw new Error("--cleanup is only supported for restart PLAN with an explicit plan path");
   if (positionals.length > 2 || (command === "installation" && target !== undefined))
     throw new Error("unexpected positional arguments");
   const controller = new AbortController();
@@ -369,9 +444,30 @@ async function main() {
         target,
         Number(values.port),
         signal,
+      ).catch((cause: unknown) => {
+        if (!values.cleanup) throw cause;
+        console.error(
+          JSON.stringify({
+            error: cause instanceof Error ? cause.message : String(cause),
+            cleanup: { status: "skipped", reason: "restart verification did not complete" },
+          }),
+        );
+        process.exitCode = 1;
+        return null;
+      });
+      if (report === null) return;
+      const cleanup = values.cleanup
+        ? report.passed
+          ? await cleanupRestartRecovery(
+              target,
+              NodePath.join(NodeOS.homedir(), ".local/state/t3code-maintenance"),
+            )
+          : { status: "skipped" as const, reason: "restart verification failed" }
+        : undefined;
+      console.log(
+        JSON.stringify({ ...report, ...(cleanup === undefined ? {} : { cleanup }) }, null, 2),
       );
-      console.log(JSON.stringify(report, null, 2));
-      if (!report.passed) process.exitCode = 1;
+      if (!report.passed || cleanup?.status === "error") process.exitCode = 1;
     } else {
       throw new Error("expected installation, restart PLAN, or workspace DIRECTORY; use --help");
     }

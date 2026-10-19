@@ -212,10 +212,13 @@ V2 restart must own `statev2.sqlite`. Use the actual listening port:
 ```bash
 vp run package:desktop:arch:verify workspace /absolute/path/to/checkout
 vp run package:desktop:arch:verify installation --commit FULL_40_CHARACTER_COMMIT --hashes --port PORT
-vp run package:desktop:arch:verify restart /absolute/path/to/plan.json --port PORT
+vp run package:desktop:arch:verify restart /absolute/path/to/plan.json --port PORT --cleanup
 ```
 
 Each command has a five-second deadline. `--app-dir` selects another installed desktop directory.
+Complete the restart with `--cleanup`: after all restart checks pass, it removes that recovery
+directory and the maintenance parent if empty. Failed checks preserve the recovery directory.
+Omit `--cleanup` to verify without removing it.
 
 If a guard fails, inspect the exact error and recovery plan before retrying; the helper does not
 silently bypass a failed check. Cancel an abandoned restart timer explicitly. Installations
