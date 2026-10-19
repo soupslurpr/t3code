@@ -208,6 +208,8 @@ interface ActiveTurn {
   providerTurn: OrchestrationV2ProviderTurn;
   readonly nativeId: string;
   readonly joined: Set<string>;
+  /** Joined turns not yet observed terminal. */
+  readonly liveJoined: Set<string>;
   readonly items: Map<string, MuseItem>;
   readonly ordinals: Map<string, number>;
   readonly started: Map<string, DateTime.Utc>;
@@ -218,6 +220,8 @@ interface ActiveTurn {
   nextOrdinal: number;
   flushScheduled: boolean;
   interruptRequested: boolean;
+  /** This run's queued native turn was reclaimed; finish waits for live joined turns. */
+  unqueued: boolean;
   compact: boolean;
 }
 
@@ -330,6 +334,11 @@ export const makeMuseAdapterV2 = Effect.fn("makeMuseAdapterV2")(function* (
       let nativeSessionId: string | undefined;
       let thread: OrchestrationV2ProviderThread | undefined;
       let active: ActiveTurn | undefined;
+      let runningNativeTurnId: string | undefined;
+      // Keep delayed acknowledgements from overwriting newer lifecycle observations.
+      const terminalNativeTurnIds = new Set<string>();
+      const nativeTurnStartedRevisions = new Map<string, number>();
+      let nativeLifecycleRevision = 0;
       let lastProviderTurn: OrchestrationV2ProviderTurn | undefined;
       // Meta's newest subscription windows, for when a turn stopped at a usage limit can resume.
       let latestSubscriptionUsage: MuseSubscriptionUsage | undefined;
@@ -1063,6 +1072,13 @@ export const makeMuseAdapterV2 = Effect.fn("makeMuseAdapterV2")(function* (
       });
       const owns = (turn: ActiveTurn, turnId: string) =>
         turnId === turn.nativeId || turn.joined.has(turnId);
+      const isNativeTurnTargetRejection = (error: unknown) =>
+        isProtocolError(error) &&
+        error.payload instanceof MspError &&
+        error.payload.kind === "commandRejected" &&
+        (error.payload.data?.reason === "invalid_target" ||
+          error.payload.data?.reason === "already_terminal" ||
+          error.payload.data?.reason === "missing_run");
       const decideApproval = Effect.fnUntraced(function* (
         entry: PendingRequest,
         decision: ProviderApprovalDecision | undefined,
@@ -1345,13 +1361,48 @@ export const makeMuseAdapterV2 = Effect.fn("makeMuseAdapterV2")(function* (
         if (params.subagentOrigin !== undefined && method.startsWith("approval/"))
           return yield* handleRequestEvent(method, params, undefined);
         if (
+          typeof params.turnId === "string" &&
+          (method === "turn/started" || method === "turn/completed" || method === "turn/unqueued")
+        ) {
+          nativeLifecycleRevision++;
+          if (method === "turn/started") {
+            if (!terminalNativeTurnIds.has(params.turnId)) {
+              nativeTurnStartedRevisions.set(params.turnId, nativeLifecycleRevision);
+              runningNativeTurnId = params.turnId;
+            }
+          } else if (method === "turn/completed") {
+            terminalNativeTurnIds.add(params.turnId);
+            if (params.turnId === runningNativeTurnId) runningNativeTurnId = undefined;
+            active?.liveJoined.delete(params.turnId);
+          } else if (method === "turn/unqueued") {
+            terminalNativeTurnIds.add(params.turnId);
+            if (params.turnId === runningNativeTurnId) runningNativeTurnId = undefined;
+            const turn = active;
+            if (turn) {
+              if (params.turnId === turn.nativeId) {
+                if (turn.liveJoined.size === 0)
+                  yield* finish(turn, turn.interruptRequested ? "interrupted" : "cancelled");
+                else turn.unqueued = true;
+              } else {
+                turn.liveJoined.delete(params.turnId);
+                if (turn.unqueued && turn.liveJoined.size === 0)
+                  yield* finish(turn, turn.interruptRequested ? "interrupted" : "cancelled");
+              }
+            }
+            return;
+          }
+        }
+        if (
           method === "turn/started" &&
           typeof params.turnId === "string" &&
+          !terminalNativeTurnIds.has(params.turnId) &&
           params.turnId !== active?.nativeId &&
           params.turnId !== wake?.nativeId
         ) {
-          if (active && !active.compact) active.joined.add(params.turnId);
-          else if (!active && !wake) {
+          if (active && !active.compact) {
+            active.joined.add(params.turnId);
+            active.liveJoined.add(params.turnId);
+          } else if (!active && !wake) {
             const held = { nativeId: params.turnId, events: [] };
             wake = held;
             const notification = backgroundWorkNotification(finishedBackground.splice(0));
@@ -1443,8 +1494,13 @@ export const makeMuseAdapterV2 = Effect.fn("makeMuseAdapterV2")(function* (
           case "turn/completed": {
             if (turn.compact) return;
             const result = yield* decode(MuseTurnCompleted, params);
-            // A joined Muse turn ending does not end this run; its own turn does.
-            if (result.turnId !== turn.nativeId) break;
+            // A joined turn ending only ends this run if its own queued turn was
+            // already reclaimed and no joined turn remains live.
+            if (result.turnId !== turn.nativeId) {
+              if (turn.unqueued && turn.liveJoined.size === 0)
+                yield* finish(turn, turn.interruptRequested ? "interrupted" : "cancelled");
+              break;
+            }
             if (result.usage) {
               const usage = result.usage;
               turn.providerTurn = {
@@ -1986,6 +2042,7 @@ export const makeMuseAdapterV2 = Effect.fn("makeMuseAdapterV2")(function* (
           providerTurn,
           nativeId,
           joined: new Set(),
+          liveJoined: new Set(),
           items: new Map(),
           ordinals: new Map(),
           started: new Map(),
@@ -1995,6 +2052,7 @@ export const makeMuseAdapterV2 = Effect.fn("makeMuseAdapterV2")(function* (
           nextOrdinal: turnInput.providerTurnOrdinal * 100 + 1,
           flushScheduled: false,
           interruptRequested: false,
+          unqueued: false,
           compact,
         };
         yield* Effect.gen(function* () {
@@ -2015,7 +2073,10 @@ export const makeMuseAdapterV2 = Effect.fn("makeMuseAdapterV2")(function* (
           const held = wake;
           wake = undefined;
           if (continuation && !held) return yield* finish(turn, "completed");
-          if (held && !continuation) turn.joined.add(held.nativeId);
+          if (held && !continuation) {
+            turn.joined.add(held.nativeId);
+            if (!terminalNativeTurnIds.has(held.nativeId)) turn.liveJoined.add(held.nativeId);
+          }
           for (const [method, data] of held?.events ?? [])
             yield* handleNotification(method, data).pipe(Effect.catch(failHost));
         }).pipe(eventPermit.withPermits(1));
@@ -2034,6 +2095,7 @@ export const makeMuseAdapterV2 = Effect.fn("makeMuseAdapterV2")(function* (
                 `Muse returned an unsupported compaction status: ${result.status}`,
               );
           } else {
+            const lifecycleRevision = nativeLifecycleRevision;
             const result = yield* request(
               "turn/start",
               {
@@ -2065,6 +2127,14 @@ export const makeMuseAdapterV2 = Effect.fn("makeMuseAdapterV2")(function* (
               );
               return yield* protocolError("Muse admitted the turn under an unexpected identity");
             }
+            if (
+              active === turn &&
+              lifecycleRevision === nativeLifecycleRevision &&
+              !terminalNativeTurnIds.has(nativeId) &&
+              (result.disposition === "started" ||
+                (result.disposition === undefined && runningNativeTurnId === undefined))
+            )
+              runningNativeTurnId = nativeId;
           }
         }).pipe(
           Effect.onError((cause) => {
@@ -2190,12 +2260,64 @@ export const makeMuseAdapterV2 = Effect.fn("makeMuseAdapterV2")(function* (
             )
               return yield* protocolError("This Muse turn cannot be steered");
             const parts = yield* prompt(args.message);
-            const result = yield* request("turn/steer", {
-              expectedTurnId: turn.nativeId,
-              input: parts,
-            }).pipe(Effect.flatMap((value) => decode(MuseTurnStartResult, value)));
-            if (result.turnId !== turn.nativeId)
-              return yield* protocolError("Muse steering targeted a different turn");
+            const attempted = new Map<string, { running: boolean; revision: number }>();
+            let lastTargetRejection: ProviderAdapter.ProviderAdapterProtocolError | undefined;
+            while (true) {
+              // Muse may start another joined turn while rejecting the previous target.
+              const candidates = [
+                ...new Set([
+                  ...(runningNativeTurnId && owns(turn, runningNativeTurnId)
+                    ? [runningNativeTurnId]
+                    : []),
+                  turn.nativeId,
+                  ...[...turn.joined].toReversed(),
+                ]),
+              ].filter((id) => !terminalNativeTurnIds.has(id));
+              const candidate = candidates.find((id) => {
+                const previous = attempted.get(id);
+                return (
+                  previous === undefined ||
+                  (id === runningNativeTurnId &&
+                    (!previous.running ||
+                      (nativeTurnStartedRevisions.get(id) ?? 0) > previous.revision))
+                );
+              });
+              if (candidate === undefined)
+                return yield* (
+                  lastTargetRejection ?? protocolError("This Muse turn cannot be steered")
+                );
+              const wasRunning = candidate === runningNativeTurnId;
+              const lifecycleRevision = nativeLifecycleRevision;
+              attempted.set(candidate, { running: wasRunning, revision: lifecycleRevision });
+              const result = yield* request("turn/steer", {
+                expectedTurnId: candidate,
+                input: parts,
+              }).pipe(
+                Effect.flatMap((value) => decode(MuseTurnStartResult, value)),
+                Effect.result,
+              );
+              if (result._tag === "Failure") {
+                const error = result.failure;
+                if (!isNativeTurnTargetRejection(error)) return yield* error;
+                lastTargetRejection = error;
+                if (
+                  wasRunning &&
+                  candidate === runningNativeTurnId &&
+                  lifecycleRevision === nativeLifecycleRevision
+                )
+                  runningNativeTurnId = undefined;
+                continue;
+              }
+              if (result.success.turnId !== candidate)
+                return yield* protocolError("Muse steering targeted a different turn");
+              if (
+                active === turn &&
+                lifecycleRevision === nativeLifecycleRevision &&
+                !terminalNativeTurnIds.has(candidate)
+              )
+                runningNativeTurnId = result.success.turnId;
+              return;
+            }
           },
           (effect, args) =>
             effect.pipe(
@@ -2239,10 +2361,42 @@ export const makeMuseAdapterV2 = Effect.fn("makeMuseAdapterV2")(function* (
               );
               return;
             }
+            // Remove queued work before stopping the joined turn can launch it.
+            let unqueued = turn.unqueued;
+            if (!unqueued && runningNativeTurnId !== turn.nativeId) {
+              unqueued = yield* request("turn/unqueue", { turnId: turn.nativeId }).pipe(
+                Effect.as(true),
+                Effect.orElseSucceed(() => false),
+              );
+              if (unqueued) turn.unqueued = true;
+            }
             // Muse runs a joined turn first, so Stop must end it too.
-            for (const joined of turn.joined)
-              yield* request("turn/interrupt", { turnId: joined }).pipe(Effect.ignore);
-            yield* request("turn/interrupt", { turnId: turn.nativeId });
+            const attemptedJoined = new Set<string>();
+            while (true) {
+              for (const joined of turn.liveJoined)
+                if (terminalNativeTurnIds.has(joined)) turn.liveJoined.delete(joined);
+              if (
+                runningNativeTurnId &&
+                runningNativeTurnId !== turn.nativeId &&
+                turn.joined.has(runningNativeTurnId) &&
+                !terminalNativeTurnIds.has(runningNativeTurnId)
+              )
+                turn.liveJoined.add(runningNativeTurnId);
+              const joinedToInterrupt = [...turn.liveJoined].filter(
+                (joined) => !attemptedJoined.has(joined),
+              );
+              if (joinedToInterrupt.length === 0) break;
+              for (const joined of joinedToInterrupt) {
+                attemptedJoined.add(joined);
+                const result = yield* request("turn/interrupt", { turnId: joined }).pipe(
+                  Effect.result,
+                );
+                if (result._tag === "Failure" && !isNativeTurnTargetRejection(result.failure))
+                  return yield* result.failure;
+              }
+            }
+            unqueued = unqueued || turn.unqueued;
+            if (!unqueued) yield* request("turn/interrupt", { turnId: turn.nativeId });
             yield* Deferred.await(turn.done).pipe(
               Effect.timeout(options.requestTimeoutMs ?? 30_000),
               Effect.mapError((cause) => protocolError("Muse did not confirm interruption", cause)),

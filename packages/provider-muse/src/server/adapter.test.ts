@@ -82,7 +82,7 @@ function pendingPromise<A>() {
 }
 
 /** SDK-shaped transport fake: registration deliberately returns void, as the SDK does. */
-const makeFakeMuse = Effect.fnUntraced(function* (idPrefix = "native") {
+const makeFakeMuse = Effect.fnUntraced(function* (idPrefix = "native", disposition?: string) {
   const requests = yield* Queue.unbounded<NativeCall>();
   const calls: NativeCall[] = [];
   const closed = pendingPromise<void>();
@@ -116,7 +116,7 @@ const makeFakeMuse = Effect.fnUntraced(function* (idPrefix = "native") {
           history: { items: history },
         };
       case "turn/start":
-        return { turnId: call.commandId };
+        return { turnId: call.commandId, ...(disposition ? { disposition } : {}) };
       case "turn/steer":
         return { turnId: call.params.expectedTurnId };
       case "session/compact":
@@ -1112,6 +1112,50 @@ describe("MuseAdapterV2", () => {
     }).pipe(Effect.scoped, Effect.provide(testLayer)),
   );
 
+  it.effect("does not offer a continuation for a redelivered start of a terminal report", () =>
+    Effect.gen(function* () {
+      const fake = yield* makeFakeMuse();
+      const offers =
+        yield* Queue.unbounded<ProviderContinuationRequests.ProviderContinuationRequest>();
+      const harness = yield* makeHarness(
+        fake,
+        INSTANCE_ID,
+        undefined,
+        undefined,
+        undefined,
+        runtimePolicy,
+        {
+          continuationRequests: {
+            offer: (request) => Queue.offer(offers, request).pipe(Effect.asVoid),
+          },
+        },
+      );
+      yield* fake.emit("turn/started", { turnId: "report-1" });
+      yield* Queue.take(offers);
+      yield* fake.emit("turn/completed", { turnId: "report-1", terminal: "completed" });
+      yield* fake.emit("session/contextUsage", { usedTokens: 10 });
+      yield* harness.takeEvent(
+        "provider_thread.updated",
+        (event) => event.providerThread.contextUsage?.usedTokens === 10,
+      );
+      const input = yield* turnInput(harness.providerThread);
+      yield* harness.runtime.startTurn({
+        ...input,
+        message: { ...input.message, createdBy: "agent", creationSource: "provider" },
+      });
+      assert.strictEqual((yield* harness.takeEvent("turn.terminal")).status, "completed");
+      yield* fake.emit("turn/started", { turnId: "report-1" });
+      yield* fake.emit("session/contextUsage", { usedTokens: 11 });
+      yield* harness.takeEvent(
+        "provider_thread.updated",
+        (event) => event.providerThread.contextUsage?.usedTokens === 11,
+      );
+      assert.strictEqual(yield* Queue.size(offers), 0);
+      yield* fake.emit("turn/started", { turnId: "report-2" });
+      assert.strictEqual((yield* Queue.take(offers)).providerThreadId, harness.providerThread.id);
+    }).pipe(Effect.scoped, Effect.provide(testLayer)),
+  );
+
   it.effect.each([
     { when: "after its turn ended", turnEnded: true },
     { when: "while its turn runs", turnEnded: false },
@@ -1420,6 +1464,852 @@ describe("MuseAdapterV2", () => {
       yield* Fiber.join(interrupt);
       assert.strictEqual((yield* harness.takeEvent("turn.terminal")).status, "interrupted");
     }).pipe(Effect.scoped, Effect.provide(testLayer)),
+  );
+
+  it.effect.each([undefined, "queued"])(
+    "steers the running report before the queued user turn with disposition %s",
+    (disposition) =>
+      Effect.gen(function* () {
+        const fake = yield* makeFakeMuse("native", disposition);
+        const offers =
+          yield* Queue.unbounded<ProviderContinuationRequests.ProviderContinuationRequest>();
+        const harness = yield* makeHarness(
+          fake,
+          INSTANCE_ID,
+          undefined,
+          undefined,
+          undefined,
+          runtimePolicy,
+          {
+            continuationRequests: {
+              offer: (request) => Queue.offer(offers, request).pipe(Effect.asVoid),
+            },
+          },
+        );
+        yield* fake.emit("turn/started", { turnId: "report-1" });
+        yield* Queue.take(offers);
+        const { nativeId, providerTurn } = yield* startConversation(harness, fake);
+        const input = yield* turnInput(harness.providerThread);
+        const steer = {
+          threadId: THREAD_ID,
+          runId: input.runId,
+          providerThread: harness.providerThread,
+          providerTurnId: providerTurn.id,
+          message: { ...input.message, text: "Focus on the parser" },
+        };
+        yield* harness.runtime.steerTurn!(steer);
+        assert.strictEqual((yield* fake.takeCall("turn/steer")).params.expectedTurnId, "report-1");
+        yield* fake.emit("turn/completed", { turnId: "report-1", terminal: "completed" });
+        yield* fake.emit("turn/started", { turnId: nativeId });
+        yield* fake.emit("item/started", {
+          item: {
+            itemId: "user-turn-response",
+            turnId: nativeId,
+            kind: "agentMessage",
+            status: "inProgress",
+            revision: 1,
+            text: "Checking the parser",
+          },
+        });
+        yield* harness.takeEvent("turn_item.updated");
+        yield* harness.runtime.steerTurn!(steer);
+        assert.strictEqual((yield* fake.takeCall("turn/steer")).params.expectedTurnId, nativeId);
+        yield* fake.emit("turn/completed", { turnId: nativeId, terminal: "completed" });
+        assert.strictEqual((yield* harness.takeEvent("turn.terminal")).status, "completed");
+      }).pipe(Effect.scoped, Effect.provide(testLayer)),
+  );
+
+  it.effect("keeps joined workflow updates after the report completes", () =>
+    Effect.gen(function* () {
+      const fake = yield* makeFakeMuse("native", "queued");
+      const offers =
+        yield* Queue.unbounded<ProviderContinuationRequests.ProviderContinuationRequest>();
+      const harness = yield* makeHarness(
+        fake,
+        INSTANCE_ID,
+        undefined,
+        undefined,
+        undefined,
+        runtimePolicy,
+        {
+          continuationRequests: {
+            offer: (request) => Queue.offer(offers, request).pipe(Effect.asVoid),
+          },
+        },
+      );
+      yield* fake.emit("turn/started", { turnId: "report-1" });
+      yield* Queue.take(offers);
+      const { nativeId } = yield* startConversation(harness, fake);
+      const workflow = {
+        itemId: "joined-workflow",
+        turnId: "report-1",
+        kind: "workflow",
+        status: "inProgress",
+        revision: 1,
+        children: [],
+      };
+      yield* fake.emit("item/started", { turnId: "report-1", item: workflow });
+      yield* harness.takeEvent(
+        "turn_item.updated",
+        (event) => event.turnItem.nativeItemRef?.nativeId === "joined-workflow",
+      );
+      yield* fake.emit("turn/completed", { turnId: "report-1", terminal: "completed" });
+      yield* fake.emit("turn/started", { turnId: nativeId });
+      yield* fake.emit("item/completed", {
+        turnId: "report-1",
+        item: { ...workflow, status: "completed", revision: 2 },
+      });
+      yield* fake.emit("item/started", {
+        turnId: nativeId,
+        item: {
+          itemId: "user-turn-barrier",
+          turnId: nativeId,
+          kind: "agentMessage",
+          status: "inProgress",
+          revision: 1,
+          text: "Continuing the user turn",
+        },
+      });
+      yield* harness.takeEvent(
+        "turn_item.updated",
+        (event) => event.turnItem.nativeItemRef?.nativeId === "user-turn-barrier",
+      );
+      const latest = harness.allEvents
+        .filter((event) => event.type === "turn_item.updated")
+        .findLast((event) => event.turnItem.nativeItemRef?.nativeId === "joined-workflow");
+      assert.strictEqual(latest?.turnItem.status, "completed");
+    }).pipe(Effect.scoped, Effect.provide(testLayer)),
+  );
+
+  it.effect.each(["invalid_target", "already_terminal", "missing_run"])(
+    "retargets steering after a stale target is rejected with %s",
+    (reason) =>
+      Effect.gen(function* () {
+        const fake = yield* makeFakeMuse();
+        const harness = yield* makeHarness(fake);
+        const { nativeId, providerTurn } = yield* startConversation(harness, fake);
+        const input = yield* turnInput(harness.providerThread);
+        yield* fake.emit("turn/started", { turnId: "joined-1" });
+        yield* fake.emit("item/started", {
+          item: {
+            itemId: "joined-response",
+            turnId: "joined-1",
+            kind: "agentMessage",
+            status: "inProgress",
+            revision: 1,
+            text: "Reporting the workflow result",
+          },
+        });
+        yield* harness.takeEvent("turn_item.updated");
+        fake.queueResponse(
+          "turn/steer",
+          new MspError({
+            code: -32030,
+            message: `turn/steer rejected: ${reason}`,
+            data: { kind: "commandRejected", reason },
+          }),
+        );
+        yield* harness.runtime.steerTurn!({
+          threadId: THREAD_ID,
+          runId: input.runId,
+          providerThread: harness.providerThread,
+          providerTurnId: providerTurn.id,
+          message: input.message,
+        });
+        assert.deepStrictEqual(
+          fake.calls
+            .filter((call) => call.method === "turn/steer")
+            .map((call) => call.params.expectedTurnId),
+          ["joined-1", nativeId],
+        );
+      }).pipe(Effect.scoped, Effect.provide(testLayer)),
+  );
+
+  it.effect("retargets to a new report observed while a stale steer is in flight", () =>
+    Effect.gen(function* () {
+      const fake = yield* makeFakeMuse("native", "queued");
+      const offers =
+        yield* Queue.unbounded<ProviderContinuationRequests.ProviderContinuationRequest>();
+      const harness = yield* makeHarness(
+        fake,
+        INSTANCE_ID,
+        undefined,
+        undefined,
+        undefined,
+        runtimePolicy,
+        {
+          continuationRequests: {
+            offer: (request) => Queue.offer(offers, request).pipe(Effect.asVoid),
+          },
+        },
+      );
+      yield* fake.emit("turn/started", { turnId: "report-1" });
+      yield* Queue.take(offers);
+      const { providerTurn } = yield* startConversation(harness, fake);
+      const input = yield* turnInput(harness.providerThread);
+      const response = pendingPromise<Record<string, unknown>>();
+      fake.queueResponse("turn/steer", response.promise);
+      const steering = yield* harness.runtime.steerTurn!({
+        threadId: THREAD_ID,
+        runId: input.runId,
+        providerThread: harness.providerThread,
+        providerTurnId: providerTurn.id,
+        message: input.message,
+      }).pipe(Effect.exit, Effect.forkScoped);
+      assert.strictEqual((yield* fake.takeCall("turn/steer")).params.expectedTurnId, "report-1");
+      yield* fake.emit("turn/completed", { turnId: "report-1", terminal: "completed" });
+      yield* fake.emit("turn/started", { turnId: "report-2" });
+      yield* fake.emit("item/started", {
+        turnId: "report-2",
+        item: {
+          itemId: "report-2-barrier",
+          turnId: "report-2",
+          kind: "agentMessage",
+          status: "inProgress",
+          revision: 1,
+          text: "Reporting another workflow result",
+        },
+      });
+      yield* harness.takeEvent(
+        "turn_item.updated",
+        (event) => event.turnItem.nativeItemRef?.nativeId === "report-2-barrier",
+      );
+      response.reject(
+        new MspError({
+          code: -32030,
+          message: "turn/steer rejected: already_terminal",
+          data: { kind: "commandRejected", reason: "already_terminal" },
+        }),
+      );
+      const exit = yield* Fiber.join(steering);
+      assert.strictEqual(exit._tag, "Success");
+      assert.deepStrictEqual(
+        fake.calls
+          .filter((call) => call.method === "turn/steer")
+          .map((call) => call.params.expectedTurnId),
+        ["report-1", "report-2"],
+      );
+    }).pipe(Effect.scoped, Effect.provide(testLayer)),
+  );
+
+  it.effect("retries a previously queued candidate once it is observed running", () =>
+    Effect.gen(function* () {
+      const fake = yield* makeFakeMuse("native", "queued");
+      const offers =
+        yield* Queue.unbounded<ProviderContinuationRequests.ProviderContinuationRequest>();
+      const harness = yield* makeHarness(
+        fake,
+        INSTANCE_ID,
+        undefined,
+        undefined,
+        undefined,
+        runtimePolicy,
+        {
+          continuationRequests: {
+            offer: (request) => Queue.offer(offers, request).pipe(Effect.asVoid),
+          },
+        },
+      );
+      yield* fake.emit("turn/started", { turnId: "report-1" });
+      yield* Queue.take(offers);
+      const { nativeId, providerTurn } = yield* startConversation(harness, fake);
+      const input = yield* turnInput(harness.providerThread);
+      fake.queueResponse(
+        "turn/steer",
+        new MspError({
+          code: -32030,
+          message: "turn/steer rejected: already_terminal",
+          data: { kind: "commandRejected", reason: "already_terminal" },
+        }),
+      );
+      const response = pendingPromise<Record<string, unknown>>();
+      fake.queueResponse("turn/steer", response.promise);
+      const steering = yield* harness.runtime.steerTurn!({
+        threadId: THREAD_ID,
+        runId: input.runId,
+        providerThread: harness.providerThread,
+        providerTurnId: providerTurn.id,
+        message: input.message,
+      }).pipe(Effect.forkScoped);
+      assert.strictEqual((yield* fake.takeCall("turn/steer")).params.expectedTurnId, "report-1");
+      assert.strictEqual((yield* fake.takeCall("turn/steer")).params.expectedTurnId, nativeId);
+      yield* fake.emit("turn/completed", { turnId: "report-1", terminal: "completed" });
+      yield* fake.emit("turn/started", { turnId: nativeId });
+      yield* fake.emit("item/started", {
+        turnId: nativeId,
+        item: {
+          itemId: "queued-target-barrier",
+          turnId: nativeId,
+          kind: "agentMessage",
+          status: "inProgress",
+          revision: 1,
+          text: "Continuing the queued user turn",
+        },
+      });
+      yield* harness.takeEvent(
+        "turn_item.updated",
+        (event) => event.turnItem.nativeItemRef?.nativeId === "queued-target-barrier",
+      );
+      response.reject(
+        new MspError({
+          code: -32030,
+          message: "turn/steer rejected: invalid_target",
+          data: { kind: "commandRejected", reason: "invalid_target" },
+        }),
+      );
+      yield* Fiber.join(steering);
+      assert.strictEqual((yield* fake.takeCall("turn/steer")).params.expectedTurnId, nativeId);
+      assert.strictEqual(fake.calls.filter((call) => call.method === "turn/steer").length, 3);
+    }).pipe(Effect.scoped, Effect.provide(testLayer)),
+  );
+
+  it.effect(
+    "retries an old-host inferred-running queued turn after the real started observation",
+    () =>
+      Effect.gen(function* () {
+        const fake = yield* makeFakeMuse();
+        const harness = yield* makeHarness(fake);
+        // Older hosts omit disposition, so the start ack initially implies a running turn.
+        const { nativeId, providerTurn } = yield* startConversation(harness, fake);
+        const input = yield* turnInput(harness.providerThread);
+        const response = pendingPromise<Record<string, unknown>>();
+        fake.queueResponse("turn/steer", response.promise);
+        const steering = yield* harness.runtime.steerTurn!({
+          threadId: THREAD_ID,
+          runId: input.runId,
+          providerThread: harness.providerThread,
+          providerTurnId: providerTurn.id,
+          message: input.message,
+        }).pipe(Effect.exit, Effect.forkScoped);
+        assert.strictEqual((yield* fake.takeCall("turn/steer")).params.expectedTurnId, nativeId);
+        yield* fake.emit("turn/started", { turnId: "report-1" });
+        yield* fake.emit("turn/completed", { turnId: "report-1", terminal: "completed" });
+        yield* fake.emit("turn/started", { turnId: nativeId });
+        yield* fake.emit("item/started", {
+          turnId: nativeId,
+          item: {
+            itemId: "real-own-start-barrier",
+            turnId: nativeId,
+            kind: "agentMessage",
+            status: "inProgress",
+            revision: 1,
+            text: "Starting the user turn",
+          },
+        });
+        yield* harness.takeEvent(
+          "turn_item.updated",
+          (event) => event.turnItem.nativeItemRef?.nativeId === "real-own-start-barrier",
+        );
+        response.reject(
+          new MspError({
+            code: -32030,
+            message: "turn/steer rejected: invalid_target",
+            data: { kind: "commandRejected", reason: "invalid_target" },
+          }),
+        );
+        const exit = yield* Fiber.join(steering);
+        assert.strictEqual(exit._tag, "Success");
+        assert.deepStrictEqual(
+          fake.calls
+            .filter((call) => call.method === "turn/steer")
+            .map((call) => call.params.expectedTurnId),
+          [nativeId, nativeId],
+        );
+      }).pipe(Effect.scoped, Effect.provide(testLayer)),
+  );
+
+  it.effect("does not resurrect a terminal joined turn after a delayed successful steer ack", () =>
+    Effect.gen(function* () {
+      const fake = yield* makeFakeMuse("native", "queued");
+      const offers =
+        yield* Queue.unbounded<ProviderContinuationRequests.ProviderContinuationRequest>();
+      const harness = yield* makeHarness(
+        fake,
+        INSTANCE_ID,
+        undefined,
+        undefined,
+        undefined,
+        runtimePolicy,
+        {
+          continuationRequests: {
+            offer: (request) => Queue.offer(offers, request).pipe(Effect.asVoid),
+          },
+        },
+      );
+      yield* fake.emit("turn/started", { turnId: "report-1" });
+      yield* Queue.take(offers);
+      const { nativeId, providerTurn } = yield* startConversation(harness, fake);
+      const input = yield* turnInput(harness.providerThread);
+      const response = pendingPromise<Record<string, unknown>>();
+      fake.queueResponse("turn/steer", response.promise);
+      const steering = yield* harness.runtime.steerTurn!({
+        threadId: THREAD_ID,
+        runId: input.runId,
+        providerThread: harness.providerThread,
+        providerTurnId: providerTurn.id,
+        message: input.message,
+      }).pipe(Effect.forkScoped);
+      assert.strictEqual((yield* fake.takeCall("turn/steer")).params.expectedTurnId, "report-1");
+      yield* fake.emit("turn/completed", { turnId: "report-1", terminal: "completed" });
+      yield* fake.emit("turn/started", { turnId: "report-2" });
+      yield* fake.emit("item/started", {
+        turnId: "report-2",
+        item: {
+          itemId: "new-report-before-ack",
+          turnId: "report-2",
+          kind: "agentMessage",
+          status: "inProgress",
+          revision: 1,
+          text: "Reporting another workflow result",
+        },
+      });
+      yield* harness.takeEvent(
+        "turn_item.updated",
+        (event) => event.turnItem.nativeItemRef?.nativeId === "new-report-before-ack",
+      );
+      response.resolve({ turnId: "report-1" });
+      yield* Fiber.join(steering);
+      const interrupt = yield* harness.runtime
+        .interruptTurn({
+          providerThread: harness.providerThread,
+          providerTurnId: providerTurn.id,
+        })
+        .pipe(Effect.exit, Effect.forkScoped);
+      assert.strictEqual((yield* fake.takeCall("turn/unqueue")).params.turnId, nativeId);
+      yield* fake.emit("turn/unqueued", { turnId: nativeId });
+      assert.strictEqual((yield* fake.takeCall("turn/interrupt")).params.turnId, "report-2");
+      yield* fake.emit("turn/completed", { turnId: "report-2", terminal: "cancelled" });
+      const exit = yield* Fiber.join(interrupt);
+      assert.strictEqual(exit._tag, "Success");
+      assert.strictEqual((yield* harness.takeEvent("turn.terminal")).status, "interrupted");
+      assert.deepStrictEqual(
+        fake.calls
+          .filter((call) => call.method === "turn/interrupt")
+          .map((call) => call.params.turnId),
+        ["report-2"],
+      );
+    }).pipe(Effect.scoped, Effect.provide(testLayer)),
+  );
+
+  it.effect("does not retry steering after a transport failure", () =>
+    Effect.gen(function* () {
+      const fake = yield* makeFakeMuse();
+      const harness = yield* makeHarness(fake);
+      const { providerTurn } = yield* startConversation(harness, fake);
+      const input = yield* turnInput(harness.providerThread);
+      yield* fake.emit("turn/started", { turnId: "joined-1" });
+      yield* fake.emit("item/started", {
+        item: {
+          itemId: "joined-response",
+          turnId: "joined-1",
+          kind: "agentMessage",
+          status: "inProgress",
+          revision: 1,
+          text: "Reporting the workflow result",
+        },
+      });
+      yield* harness.takeEvent("turn_item.updated");
+      fake.queueResponse("turn/steer", new Error("transport boom"));
+      const exit = yield* harness.runtime.steerTurn!({
+        threadId: THREAD_ID,
+        runId: input.runId,
+        providerThread: harness.providerThread,
+        providerTurnId: providerTurn.id,
+        message: input.message,
+      }).pipe(Effect.exit);
+      assert.strictEqual(exit._tag, "Failure");
+      assert.deepStrictEqual(
+        fake.calls
+          .filter((call) => call.method === "turn/steer")
+          .map((call) => call.params.expectedTurnId),
+        ["joined-1"],
+      );
+    }).pipe(Effect.scoped, Effect.provide(testLayer)),
+  );
+
+  it.effect("replays an already-completed wake without retaining a phantom live joined turn", () =>
+    Effect.gen(function* () {
+      const fake = yield* makeFakeMuse();
+      const offers =
+        yield* Queue.unbounded<ProviderContinuationRequests.ProviderContinuationRequest>();
+      const harness = yield* makeHarness(
+        fake,
+        INSTANCE_ID,
+        undefined,
+        undefined,
+        undefined,
+        runtimePolicy,
+        {
+          continuationRequests: {
+            offer: (request) => Queue.offer(offers, request).pipe(Effect.asVoid),
+          },
+        },
+      );
+      yield* fake.emit("turn/started", { turnId: "report-1" });
+      yield* Queue.take(offers);
+      yield* fake.emit("item/completed", {
+        turnId: "report-1",
+        item: {
+          itemId: "held-report-message",
+          turnId: "report-1",
+          kind: "agentMessage",
+          status: "completed",
+          revision: 1,
+          text: "The workflow finished",
+        },
+      });
+      yield* fake.emit("turn/completed", { turnId: "report-1", terminal: "completed" });
+      yield* fake.emit("session/contextUsage", { usedTokens: 10 });
+      yield* harness.takeEvent(
+        "provider_thread.updated",
+        (event) => event.providerThread.contextUsage?.usedTokens === 10,
+      );
+      const { nativeId, providerTurn } = yield* startConversation(harness, fake);
+      const replayed = yield* harness.takeEvent(
+        "turn_item.updated",
+        (event) => event.turnItem.nativeItemRef?.nativeId === "held-report-message",
+      );
+      assert.strictEqual(replayed.turnItem.providerTurnId, providerTurn.id);
+      const interrupt = yield* harness.runtime
+        .interruptTurn({
+          providerThread: harness.providerThread,
+          providerTurnId: providerTurn.id,
+        })
+        .pipe(Effect.forkScoped);
+      assert.strictEqual((yield* fake.takeCall("turn/interrupt")).params.turnId, nativeId);
+      yield* fake.emit("turn/completed", { turnId: nativeId, terminal: "cancelled" });
+      yield* Fiber.join(interrupt);
+      assert.strictEqual((yield* harness.takeEvent("turn.terminal")).status, "interrupted");
+      assert.deepStrictEqual(
+        fake.calls
+          .filter((call) => call.method === "turn/interrupt")
+          .map((call) => call.params.turnId),
+        [nativeId],
+      );
+      assert.isFalse(fake.calls.some((call) => call.method === "turn/unqueue"));
+    }).pipe(Effect.scoped, Effect.provide(testLayer)),
+  );
+
+  it.effect(
+    "does not revive terminal reports in liveJoined on replayed turn/started while Stop waits",
+    () =>
+      Effect.gen(function* () {
+        const fake = yield* makeFakeMuse("native", "queued");
+        const offers =
+          yield* Queue.unbounded<ProviderContinuationRequests.ProviderContinuationRequest>();
+        const harness = yield* makeHarness(
+          fake,
+          INSTANCE_ID,
+          undefined,
+          undefined,
+          undefined,
+          runtimePolicy,
+          {
+            continuationRequests: {
+              offer: (request) => Queue.offer(offers, request).pipe(Effect.asVoid),
+            },
+          },
+        );
+        yield* fake.emit("turn/started", { turnId: "report-1" });
+        yield* Queue.take(offers);
+        const { nativeId, providerTurn } = yield* startConversation(harness, fake);
+        yield* fake.emit("turn/completed", { turnId: "report-1", terminal: "completed" });
+        yield* fake.emit("turn/started", { turnId: "report-2" });
+        yield* fake.emit("item/started", {
+          turnId: "report-2",
+          item: {
+            itemId: "report-2-running-barrier",
+            turnId: "report-2",
+            kind: "agentMessage",
+            status: "inProgress",
+            revision: 1,
+            text: "Reporting another workflow result",
+          },
+        });
+        yield* harness.takeEvent(
+          "turn_item.updated",
+          (event) => event.turnItem.nativeItemRef?.nativeId === "report-2-running-barrier",
+        );
+        const stopping = yield* harness.runtime
+          .interruptTurn({
+            providerThread: harness.providerThread,
+            providerTurnId: providerTurn.id,
+          })
+          .pipe(Effect.exit, Effect.forkScoped);
+        assert.strictEqual((yield* fake.takeCall("turn/unqueue")).params.turnId, nativeId);
+        assert.strictEqual((yield* fake.takeCall("turn/interrupt")).params.turnId, "report-2");
+        yield* fake.emit("turn/unqueued", { turnId: nativeId });
+        yield* fake.emit("item/started", {
+          turnId: "report-2",
+          item: {
+            itemId: "before-replayed-start-barrier",
+            turnId: "report-2",
+            kind: "agentMessage",
+            status: "inProgress",
+            revision: 1,
+            text: "Stopping the report",
+          },
+        });
+        yield* harness.takeEvent(
+          "turn_item.updated",
+          (event) => event.turnItem.nativeItemRef?.nativeId === "before-replayed-start-barrier",
+        );
+        yield* fake.emit("turn/started", { turnId: "report-1" });
+        yield* fake.emit("turn/completed", { turnId: "report-2", terminal: "cancelled" });
+        yield* fake.emit("session/contextUsage", { usedTokens: 701 });
+        yield* harness.takeEvent(
+          "provider_thread.updated",
+          (event) => event.providerThread.contextUsage?.usedTokens === 701,
+        );
+        assert.isTrue(
+          harness.allEvents.some(
+            (event) => event.type === "turn.terminal" && event.status === "interrupted",
+          ),
+        );
+        assert.strictEqual((yield* Fiber.join(stopping))._tag, "Success");
+      }).pipe(Effect.scoped, Effect.provide(testLayer)),
+  );
+
+  it.effect("unqueues the user's turn before interrupting its running report", () =>
+    Effect.gen(function* () {
+      const fake = yield* makeFakeMuse("native", "queued");
+      const offers =
+        yield* Queue.unbounded<ProviderContinuationRequests.ProviderContinuationRequest>();
+      const harness = yield* makeHarness(
+        fake,
+        INSTANCE_ID,
+        undefined,
+        undefined,
+        undefined,
+        runtimePolicy,
+        {
+          continuationRequests: {
+            offer: (request) => Queue.offer(offers, request).pipe(Effect.asVoid),
+          },
+        },
+      );
+      yield* fake.emit("turn/started", { turnId: "report-1" });
+      yield* Queue.take(offers);
+      const { nativeId, providerTurn } = yield* startConversation(harness, fake);
+      const interrupt = yield* harness.runtime
+        .interruptTurn({
+          providerThread: harness.providerThread,
+          providerTurnId: providerTurn.id,
+        })
+        .pipe(Effect.forkScoped);
+      assert.strictEqual((yield* fake.takeCall("turn/unqueue")).params.turnId, nativeId);
+      assert.strictEqual((yield* fake.takeCall("turn/interrupt")).params.turnId, "report-1");
+      yield* fake.emit("turn/unqueued", { turnId: nativeId });
+      yield* fake.emit("item/started", {
+        turnId: "report-1",
+        item: {
+          itemId: "report-interrupt-barrier",
+          turnId: "report-1",
+          kind: "agentMessage",
+          status: "inProgress",
+          revision: 1,
+          text: "Stopping the report",
+        },
+      });
+      yield* harness.takeEvent(
+        "turn_item.updated",
+        (event) => event.turnItem.nativeItemRef?.nativeId === "report-interrupt-barrier",
+      );
+      assert.isFalse(harness.allEvents.some((event) => event.type === "turn.terminal"));
+      yield* fake.emit("turn/completed", { turnId: "report-1", terminal: "cancelled" });
+      yield* Fiber.join(interrupt);
+      assert.strictEqual((yield* harness.takeEvent("turn.terminal")).status, "interrupted");
+      assert.deepStrictEqual(
+        fake.calls
+          .filter((call) => ["turn/unqueue", "turn/interrupt"].includes(call.method))
+          .map((call) => ({ method: call.method, turnId: call.params.turnId })),
+        [
+          { method: "turn/unqueue", turnId: nativeId },
+          { method: "turn/interrupt", turnId: "report-1" },
+        ],
+      );
+    }).pipe(Effect.scoped, Effect.provide(testLayer)),
+  );
+
+  it.effect("reports failure when the running report cannot be interrupted after unqueue", () =>
+    Effect.gen(function* () {
+      const fake = yield* makeFakeMuse("native", "queued");
+      const offers =
+        yield* Queue.unbounded<ProviderContinuationRequests.ProviderContinuationRequest>();
+      const harness = yield* makeHarness(
+        fake,
+        INSTANCE_ID,
+        undefined,
+        undefined,
+        undefined,
+        runtimePolicy,
+        {
+          continuationRequests: {
+            offer: (request) => Queue.offer(offers, request).pipe(Effect.asVoid),
+          },
+        },
+      );
+      yield* fake.emit("turn/started", { turnId: "report-1" });
+      yield* Queue.take(offers);
+      const { nativeId, providerTurn } = yield* startConversation(harness, fake);
+      fake.queueResponse(
+        "turn/interrupt",
+        new MspError({
+          code: -32603,
+          message: "interrupt failed",
+          data: { kind: "internal" },
+        }),
+      );
+      const interrupt = yield* harness.runtime
+        .interruptTurn({
+          providerThread: harness.providerThread,
+          providerTurnId: providerTurn.id,
+        })
+        .pipe(Effect.exit, Effect.forkScoped);
+      assert.strictEqual((yield* fake.takeCall("turn/unqueue")).params.turnId, nativeId);
+      yield* fake.emit("turn/unqueued", { turnId: nativeId });
+      assert.strictEqual((yield* fake.takeCall("turn/interrupt")).params.turnId, "report-1");
+      const exit = yield* Fiber.join(interrupt);
+      assert.strictEqual(exit._tag, "Failure");
+    }).pipe(Effect.scoped, Effect.provide(testLayer)),
+  );
+
+  it.effect("interrupts a new joined report that starts while unqueue admission is pending", () =>
+    Effect.gen(function* () {
+      const fake = yield* makeFakeMuse("native", "queued");
+      const offers =
+        yield* Queue.unbounded<ProviderContinuationRequests.ProviderContinuationRequest>();
+      const harness = yield* makeHarness(
+        fake,
+        INSTANCE_ID,
+        undefined,
+        undefined,
+        undefined,
+        runtimePolicy,
+        {
+          continuationRequests: {
+            offer: (request) => Queue.offer(offers, request).pipe(Effect.asVoid),
+          },
+        },
+      );
+      yield* fake.emit("turn/started", { turnId: "report-1" });
+      yield* Queue.take(offers);
+      const { nativeId, providerTurn } = yield* startConversation(harness, fake);
+      const response = pendingPromise<Record<string, unknown>>();
+      fake.queueResponse("turn/unqueue", response.promise);
+      const interrupt = yield* harness.runtime
+        .interruptTurn({
+          providerThread: harness.providerThread,
+          providerTurnId: providerTurn.id,
+        })
+        .pipe(Effect.exit, Effect.forkScoped);
+      assert.strictEqual((yield* fake.takeCall("turn/unqueue")).params.turnId, nativeId);
+      yield* fake.emit("turn/completed", { turnId: "report-1", terminal: "completed" });
+      yield* fake.emit("turn/started", { turnId: "report-2" });
+      yield* fake.emit("turn/unqueued", { turnId: nativeId });
+      yield* fake.emit("item/started", {
+        turnId: "report-2",
+        item: {
+          itemId: "new-report-during-unqueue-barrier",
+          turnId: "report-2",
+          kind: "agentMessage",
+          status: "inProgress",
+          revision: 1,
+          text: "Reporting another workflow result",
+        },
+      });
+      yield* harness.takeEvent(
+        "turn_item.updated",
+        (event) => event.turnItem.nativeItemRef?.nativeId === "new-report-during-unqueue-barrier",
+      );
+      response.resolve({ turnId: nativeId });
+      assert.strictEqual((yield* fake.takeCall("turn/interrupt")).params.turnId, "report-2");
+      yield* fake.emit("turn/completed", { turnId: "report-2", terminal: "cancelled" });
+      const exit = yield* Fiber.join(interrupt);
+      assert.strictEqual(exit._tag, "Success");
+      assert.deepStrictEqual(
+        fake.calls
+          .filter((call) => call.method === "turn/interrupt")
+          .map((call) => call.params.turnId),
+        ["report-2"],
+      );
+    }).pipe(Effect.scoped, Effect.provide(testLayer)),
+  );
+
+  it.effect(
+    "allows Stop to recover after a substantive interrupt failure with own already unqueued",
+    () =>
+      Effect.gen(function* () {
+        const fake = yield* makeFakeMuse("native", "queued");
+        const offers =
+          yield* Queue.unbounded<ProviderContinuationRequests.ProviderContinuationRequest>();
+        const harness = yield* makeHarness(
+          fake,
+          INSTANCE_ID,
+          undefined,
+          undefined,
+          undefined,
+          runtimePolicy,
+          {
+            continuationRequests: {
+              offer: (request) => Queue.offer(offers, request).pipe(Effect.asVoid),
+            },
+          },
+        );
+        yield* fake.emit("turn/started", { turnId: "report-1" });
+        yield* Queue.take(offers);
+        const { nativeId, providerTurn } = yield* startConversation(harness, fake);
+        const response = pendingPromise<Record<string, unknown>>();
+        fake.queueResponse("turn/interrupt", response.promise);
+        const args = {
+          providerThread: harness.providerThread,
+          providerTurnId: providerTurn.id,
+        };
+        const first = yield* harness.runtime
+          .interruptTurn(args)
+          .pipe(Effect.exit, Effect.forkScoped);
+        assert.strictEqual((yield* fake.takeCall("turn/unqueue")).params.turnId, nativeId);
+        assert.strictEqual((yield* fake.takeCall("turn/interrupt")).params.turnId, "report-1");
+        yield* fake.emit("turn/unqueued", { turnId: nativeId });
+        yield* fake.emit("item/started", {
+          turnId: "report-1",
+          item: {
+            itemId: "unqueued-before-interrupt-failure-barrier",
+            turnId: "report-1",
+            kind: "agentMessage",
+            status: "inProgress",
+            revision: 1,
+            text: "Stopping the report",
+          },
+        });
+        yield* harness.takeEvent(
+          "turn_item.updated",
+          (event) =>
+            event.turnItem.nativeItemRef?.nativeId === "unqueued-before-interrupt-failure-barrier",
+        );
+        response.reject(
+          new MspError({
+            code: -32603,
+            message: "internal interrupt failure",
+            data: { kind: "internal" },
+          }),
+        );
+        assert.strictEqual((yield* Fiber.join(first))._tag, "Failure");
+        const second = yield* harness.runtime
+          .interruptTurn(args)
+          .pipe(Effect.exit, Effect.forkScoped);
+        assert.strictEqual((yield* fake.takeCall("turn/interrupt")).params.turnId, "report-1");
+        yield* fake.emit("turn/completed", { turnId: "report-1", terminal: "cancelled" });
+        assert.strictEqual((yield* Fiber.join(second))._tag, "Success");
+        assert.strictEqual((yield* harness.takeEvent("turn.terminal")).status, "interrupted");
+        assert.strictEqual(fake.calls.filter((call) => call.method === "turn/unqueue").length, 1);
+        assert.deepStrictEqual(
+          fake.calls
+            .filter((call) => call.method === "turn/interrupt")
+            .map((call) => call.params.turnId),
+          ["report-1", "report-1"],
+        );
+      }).pipe(Effect.scoped, Effect.provide(testLayer)),
   );
 
   it.effect("resumes the requested native session and reads the same session snapshot", () =>
