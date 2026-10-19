@@ -1,3 +1,10 @@
+import {
+  ThreadWorktreeRemoveInput,
+  ThreadWorktreeDetachInput,
+  ThreadWorktreeRemoveResult,
+  ThreadWorktreeDetachResult,
+  ThreadWorktreeError,
+} from "./threadWorktree.ts";
 import { ThreadDesktopActivity, ThreadDesktopActivityError } from "./threadDesktop.ts";
 import {
   OrchestrationV2SearchThreadError,
@@ -590,6 +597,8 @@ export const WS_METHODS = {
   subscribeVcsStatus: "subscribeVcsStatus",
   subscribeWorktreeSetup: "subscribeWorktreeSetup",
   worktreeSetupCancel: "worktreeSetup.cancel",
+  threadWorktreeRemove: "threadWorktree.remove",
+  threadWorktreeDetach: "threadWorktree.detach",
   subscribeTerminalEvents: "subscribeTerminalEvents",
   subscribeTerminalMetadata: "subscribeTerminalMetadata",
   subscribePreviewEvents: "subscribePreviewEvents",
@@ -1391,6 +1400,17 @@ const WsSubscribeWorktreeSetupRpc = Rpc.make(WS_METHODS.subscribeWorktreeSetup, 
   stream: true,
 });
 
+const WsThreadWorktreeRemoveRpc = Rpc.make(WS_METHODS.threadWorktreeRemove, {
+  payload: ThreadWorktreeRemoveInput,
+  success: ThreadWorktreeRemoveResult,
+  error: Schema.Union([ThreadWorktreeError, EnvironmentAuthorizationError]),
+});
+const WsThreadWorktreeDetachRpc = Rpc.make(WS_METHODS.threadWorktreeDetach, {
+  payload: ThreadWorktreeDetachInput,
+  success: ThreadWorktreeDetachResult,
+  error: Schema.Union([ThreadWorktreeError, EnvironmentAuthorizationError]),
+});
+
 const WsWorktreeSetupCancelRpc = Rpc.make(WS_METHODS.worktreeSetupCancel, {
   payload: WorktreeSetupCancelInput,
   success: WorktreeSetupCancelResult,
@@ -2089,6 +2109,8 @@ export const WsRpcGroup = RpcGroup.make(
   WsProviderUploadFeedbackRpc,
   WsSubscribeVcsStatusRpc,
   WsSubscribeWorktreeSetupRpc,
+  WsThreadWorktreeRemoveRpc,
+  WsThreadWorktreeDetachRpc,
   WsWorktreeSetupCancelRpc,
   WsVcsPullRpc,
   WsVcsRefreshStatusRpc,

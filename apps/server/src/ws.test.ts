@@ -1,3 +1,4 @@
+import { ThreadWorktreeService } from "./orchestration-v2/ThreadWorktreeService.ts";
 import { AgentDesktopManager } from "./agentDesktop/AgentDesktopManager.ts";
 import { ComputerObservationStore } from "./computer/ComputerObservationStore.ts";
 import { ThreadDesktopActivityService } from "./computer/ThreadDesktopActivity.ts";
@@ -452,6 +453,7 @@ it.live.each(["thread", "shell"] as const)(
 
 // Build the production RPC layer; unrelated capabilities fail if this test calls them.
 const layerUnusedConfigRpcServices = Layer.mergeAll(
+  Layer.mock(ThreadWorktreeService)({}),
   Layer.mock(AgentDesktopManager)({}),
   Layer.mock(ComputerObservationStore)({}),
   Layer.mock(ThreadDesktopActivityService)({}),

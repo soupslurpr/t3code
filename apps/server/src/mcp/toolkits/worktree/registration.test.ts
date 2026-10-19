@@ -26,6 +26,7 @@ import * as ServerEnvironment from "../../../environment/ServerEnvironment.ts";
 import * as GitWorkflowService from "../../../git/GitWorkflowService.ts";
 import * as ProviderAdapterRegistry from "../../../orchestration-v2/ProviderAdapterRegistry.ts";
 import * as ThreadManagementService from "../../../orchestration-v2/ThreadManagementService.ts";
+import * as ThreadWorktreeService from "../../../orchestration-v2/ThreadWorktreeService.ts";
 import * as ProjectService from "../../../project/ProjectService.ts";
 import * as PullRequestReviewGuideService from "../../../pullRequest/PullRequestReviewGuideService.ts";
 import * as ProjectSetupScriptRunner from "../../../project/ProjectSetupScriptRunner.ts";
@@ -60,6 +61,7 @@ const layerStubServices = Layer.mergeAll(
   Layer.mock(UserDesktopTransfers)({ download: () => null }),
   Layer.mock(UserDesktopCommands.UserDesktopCommands)({}),
   Layer.mock(ThreadManagementService.ThreadManagementService)({}),
+  Layer.mock(ThreadWorktreeService.ThreadWorktreeService)({}),
   Layer.mock(ProviderRegistry.ProviderRegistry)({}),
   Layer.mock(ProviderAdapterRegistry.ProviderAdapterRegistryV2)({}),
   Layer.mock(ScheduledTaskService.ScheduledTaskService)({}),
@@ -161,6 +163,7 @@ it.effect("production mcp layer lists worktree tools over http", () =>
       const toolNames = tools.map((tool) => tool.name);
       expect(toolNames).toContain("t3_worktree_handoff");
       expect(toolNames).toContain("t3_worktree_status");
+      expect(toolNames).toContain("t3_worktree_detach");
       expect(toolNames).toContain("preview_status");
       expect(toolNames).toContain("delegate_task");
 
@@ -169,6 +172,9 @@ it.effect("production mcp layer lists worktree tools over http", () =>
       expect(handoff?.annotations?.destructiveHint).toBe(true);
       expect(handoff?.annotations?.openWorldHint).toBe(true);
       const status = tools.find((tool) => tool.name === "t3_worktree_status");
+      const detach = tools.find((tool) => tool.name === "t3_worktree_detach");
+      expect(detach?.annotations?.readOnlyHint).toBe(false);
+      expect(detach?.annotations?.destructiveHint).toBe(true);
       expect(status?.annotations?.readOnlyHint).toBe(true);
       expect(status?.annotations?.destructiveHint).toBe(false);
 

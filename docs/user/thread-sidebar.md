@@ -238,3 +238,37 @@ several selected threads together. Choose **Wake thread** to bring a thread back
 A snoozed thread keeps working and stays hidden until its wake time, even while
 its agent wakes itself for background work. It comes back early only when it needs
 an approval or answer from you, when a run fails, or when you send it a message.
+
+## Clean up a worktree
+
+On web and desktop, choose **Remove worktree…** from a thread's menu to reclaim
+space while keeping its branch, conversation, and checkpoints. Stop the agent
+and close terminals first. Sending another message recreates the checkout from
+its saved branch when it is in a managed worktree folder and the branch still
+exists. Restore missing checkouts outside those folders yourself, or move the
+thread to the main checkout. Dependencies and local setup may need to be
+installed again.
+
+**Move to main checkout…** continues the conversation in the project folder,
+including when the worktree or its branch is gone. Choose whether to keep or
+remove the old directory. File restoration from old checkpoints may be
+unavailable after moving to a shared main checkout. Both actions keep the branch.
+Subagents sharing the thread's worktree move together. If independent threads
+share the checkout, only the selected thread moves and the directory stays.
+If directory cleanup fails after a move, T3 reports that the move succeeded and
+the directory was kept.
+
+You can also ask your agent to clean up after a merge. It uses
+`t3_worktree_detach` to move its thread and shared subagent group to the main
+checkout before removing the directory. The current turn ends; a continuation
+prompt resumes remaining work there, such as deleting a merged local branch or
+settling the thread. Without a continuation, send another message to resume.
+Deleting the checkout and branch with raw Git commands alone leaves T3's thread
+binding pointing at the old path.
+
+Removal discards ignored files, including dependencies and local configuration.
+T3 asks again before discarding tracked or untracked changes. Commit or copy
+anything you want to keep first. Deleting a thread also offers to remove its
+worktree when no other thread uses it. These actions also apply to linked worktrees
+you selected yourself. For automatic cleanup, see
+[Storage settings](./project-settings.md#storage-cleanup).

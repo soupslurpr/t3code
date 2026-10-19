@@ -1,3 +1,4 @@
+import * as ThreadWorktreeService from "./ThreadWorktreeService.ts";
 import * as UsageLimitRecoveryWorker from "./UsageLimitRecoveryWorker.ts";
 import * as Scheduler from "../scheduling/Scheduler.ts";
 import * as Layer from "effect/Layer";
@@ -264,6 +265,18 @@ export const layerProjectSetupScriptRunner = ProjectSetupScriptRunner.layer.pipe
 const layerManagedProjectFoldersProvided = ManagedProjectFolders.layer.pipe(
   Layer.provide(layerProjectService),
 );
+const layerThreadWorktreeProvided = ThreadWorktreeService.layer.pipe(
+  Layer.provide(
+    Layer.mergeAll(
+      ProjectStore.layer,
+      ProjectionStore.layer,
+      layerThreadManagementProvided,
+      layerProviderSessionManagerProvided,
+      ThreadCommandExecutor.layer,
+      layerManagedProjectFoldersProvided,
+    ),
+  ),
+);
 const layerThreadLaunchProvided = ThreadLaunchService.layer.pipe(
   Layer.provide(
     Layer.mergeAll(
@@ -381,6 +394,7 @@ export const layerProduction = Layer.mergeAll(
   EffectOutbox.layerPruneWorker.pipe(Layer.provide(EffectOutbox.layer)),
 ).pipe(
   Layer.provide(ResourceCleanupService.layer.pipe(Layer.provide(layerScheduledTaskProvided))),
+  Layer.provideMerge(layerThreadWorktreeProvided),
   Layer.provide(Scheduler.layer),
   Layer.provideMerge(layerEventInfrastructure),
 );

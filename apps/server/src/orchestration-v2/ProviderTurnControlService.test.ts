@@ -279,6 +279,8 @@ it.effect(
               providerSessionId === oldSessionId ? Option.some(runtime) : Option.none(),
             ),
           isLive: (providerSessionId) => Effect.succeed(providerSessionId === oldSessionId),
+          isMcpCaller: () => Effect.succeed(false),
+          listWorkspaceSessions: () => Effect.succeed([]),
           close: () => Effect.void,
           closeInstance: () => Effect.void,
           release: () => Effect.void,

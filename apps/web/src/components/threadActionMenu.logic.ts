@@ -23,6 +23,8 @@ export type ThreadActionMenuId =
   | "copy-branch"
   | "copy-thread-id"
   | "archive"
+  | "remove-worktree"
+  | "detach-worktree"
   | "delete";
 
 export type DraftActionMenuId =
@@ -65,6 +67,7 @@ export function buildDraftActionMenuItems(options: {
 
 export interface ThreadActionMenuState {
   readonly canOperate: boolean;
+  readonly worktree?: { readonly allowed: boolean } | undefined;
   readonly branch: string | null;
   readonly projectFilter: {
     readonly label: string;
@@ -98,6 +101,8 @@ export function threadActionRequiresOperate(action: ThreadActionMenuId): boolean
     "copy-path",
     "copy-branch",
     "copy-thread-id",
+    "remove-worktree",
+    "detach-worktree",
   ].includes(action);
 }
 
@@ -205,6 +210,30 @@ export function buildThreadActionMenuItems(
       ],
     },
     { id: "project-settings", label: "Project settings", icon: "settings" },
+    ...(state.worktree !== undefined
+      ? [
+          {
+            id: "remove-worktree" as const,
+            label: state.worktree.allowed
+              ? "Remove worktree…"
+              : "Remove worktree… (source control permission required)",
+            icon: "folder",
+            disabled: !state.worktree.allowed,
+          },
+        ]
+      : []),
+    ...(state.worktree !== undefined
+      ? [
+          {
+            id: "detach-worktree" as const,
+            label: state.worktree.allowed
+              ? "Move to main checkout…"
+              : "Move to main checkout… (source control permission required)",
+            icon: "folder",
+            disabled: !state.worktree.allowed,
+          },
+        ]
+      : []),
     {
       id: "archive",
       label: "Archive thread",

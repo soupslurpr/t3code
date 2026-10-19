@@ -178,7 +178,8 @@ standalone server or disconnected desktop keeps worktrees when it cannot confirm
 to **Uncommitted changes**, which protects tracked edits and untracked files but deletes ignored
 files such as `.env` and build output. **Any local files** also protects ignored files other than
 `node_modules`. **Edited tracked files** protects only tracked edits and allows untracked and
-ignored files to be deleted. Branches and thread history stay; starting another turn recreates the checkout.
+ignored files to be deleted. Branches and thread history stay; starting another turn recreates the checkout, provided the branch still exists. Dependencies and local setup may need to be installed again.
+For manual cleanup and recovery, use the [per-thread worktree actions](./thread-sidebar.md#clean-up-a-worktree).
 Merge cleanup requires a merged pull request whose commits are included in the remote default
 branch. A squash or rebase merge on GitHub also counts when the pull request targeted the default
 branch and the worktree is still at the pull request's last commit.

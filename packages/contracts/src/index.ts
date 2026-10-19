@@ -81,3 +81,5 @@ export * from "./orchestrationSystemEvent.ts";
 export * from "./threadDesktop.ts";
 
 export * from "./desktopProcessActivity.ts";
+
+export * from "./threadWorktree.ts";

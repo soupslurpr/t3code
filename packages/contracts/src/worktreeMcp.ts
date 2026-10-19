@@ -1,6 +1,7 @@
 import * as Schema from "effect/Schema";
 
 import { TrimmedNonEmptyString } from "./baseSchemas.ts";
+import { ThreadWorktreeDetachResult } from "./threadWorktree.ts";
 
 /**
  * The server picks the location in its managed worktrees folder.
@@ -83,6 +84,35 @@ export const WorktreeMcpHandoffResult = Schema.Struct({
   note: Schema.String,
 });
 export type WorktreeMcpHandoffResult = typeof WorktreeMcpHandoffResult.Type;
+
+export const WorktreeMcpDetachInput = Schema.Struct({
+  removeWorktree: Schema.optional(
+    Schema.Boolean.annotate({
+      description:
+        "Remove the old worktree directory after moving the bindings. Defaults to true. Independent threads sharing it always keep the directory.",
+    }),
+  ),
+  force: Schema.optional(
+    Schema.Boolean.annotate({
+      description:
+        "Discard tracked and untracked local changes when removing the directory. Ignored files are also lost. Defaults to false; never bypasses active-work, session, terminal, or sharing guards.",
+    }),
+  ),
+  continuationPrompt: Schema.optional(
+    TrimmedNonEmptyString.check(Schema.isMaxLength(120_000)).annotate({
+      description:
+        "Remaining work to queue before the current session ends, such as deleting a merged local branch or settling this thread. Runs next in the main checkout. Omit to wait for the next message.",
+    }),
+  ),
+});
+export type WorktreeMcpDetachInput = typeof WorktreeMcpDetachInput.Type;
+
+export const WorktreeMcpDetachResult = Schema.Struct({
+  ...ThreadWorktreeDetachResult.fields,
+  continuation: WorktreeMcpContinuationStatus,
+  note: Schema.String,
+});
+export type WorktreeMcpDetachResult = typeof WorktreeMcpDetachResult.Type;
 
 export const WorktreeMcpStatusResult = Schema.Struct({
   attached: Schema.Boolean.annotate({

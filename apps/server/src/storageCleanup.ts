@@ -1,8 +1,4 @@
-import {
-  GitCommandError,
-  OrchestrationV2AppThreadJson,
-  OrchestrationV2ProviderSessionJson,
-} from "@t3tools/contracts";
+import { GitCommandError, OrchestrationV2AppThreadJson } from "@t3tools/contracts";
 import * as Schema from "effect/Schema";
 import * as SqlClient from "effect/sql/SqlClient";
 import type {
@@ -40,7 +36,7 @@ import * as ProjectStore from "./orchestration-v2/ProjectStore.ts";
 import * as Orchestrator from "./orchestration-v2/Orchestrator.ts";
 import * as ProjectionStore from "./orchestration-v2/ProjectionStore.ts";
 import * as ProviderSessionManager from "./orchestration-v2/ProviderSessionManager.ts";
-import { threadHasQueuedTurnStart } from "./orchestration-v2/ThreadSettlementService.ts";
+import { storageCleanupThreadIdle, worktreeOwner } from "./workspace/worktreeOwnership.ts";
 import { forkParked } from "./serverActivation.ts";
 import * as Settings from "./serverSettings.ts";
 import * as TerminalManager from "./terminal/Manager.ts";
@@ -53,9 +49,6 @@ import * as NodeSqliteClient from "@t3tools/shared/nodeSqliteClient";
 
 const decodeCleanupThread = Schema.decodeUnknownEffect(
   Schema.fromJsonString(OrchestrationV2AppThreadJson),
-);
-const decodeCleanupSession = Schema.decodeUnknownEffect(
-  Schema.fromJsonString(OrchestrationV2ProviderSessionJson),
 );
 
 const DAY_MS = 86_400_000;
@@ -108,22 +101,6 @@ function sameProjectWorktreePolicies(left: ServerSettings, right: ServerSettings
   );
 }
 
-export function storageCleanupThreadIdle(thread: OrchestrationV2ThreadShell, now: number): boolean {
-  return (
-    thread.worktreePath !== null &&
-    thread.activeRunId === null &&
-    (thread.status === "idle" ||
-      thread.status === "completed" ||
-      thread.status === "interrupted" ||
-      thread.status === "failed" ||
-      thread.status === "cancelled" ||
-      thread.status === "rolled_back") &&
-    (thread.pendingBackgroundTasks?.length ?? 0) === 0 &&
-    thread.pendingRuntimeRequest === null &&
-    !threadHasQueuedTurnStart(thread, now)
-  );
-}
-
 /** PR metadata refreshes must not reset the inactivity clock. */
 export function storageCleanupActivityAt(thread: OrchestrationV2ThreadShell): number {
   return Math.max(
@@ -135,32 +112,6 @@ export function storageCleanupActivityAt(thread: OrchestrationV2ThreadShell): nu
       thread.latestRunCompletedAt,
     ].flatMap((value) => (value == null ? [] : [DateTime.toEpochMillis(value)])),
   );
-}
-
-/** Only a complete subagent chain within this worktree shares ownership. */
-function worktreeOwner(threads: ReadonlyArray<OrchestrationV2ThreadShell>) {
-  if (threads.length === 1) return threads[0];
-  const byId = new Map(threads.map((thread) => [thread.id, thread]));
-  const tops = threads.filter((thread) => !byId.has(thread.lineage.parentThreadId!));
-  if (tops.length !== 1) return undefined;
-  const owner = tops[0]!;
-  for (const thread of threads) {
-    let current = thread;
-    const seen = new Set<string>();
-    while (current.id !== owner.id) {
-      if (
-        seen.has(current.id) ||
-        current.lineage.relationshipToParent !== "subagent" ||
-        current.lineage.rootThreadId !== owner.lineage.rootThreadId
-      )
-        return undefined;
-      seen.add(current.id);
-      const parent = byId.get(current.lineage.parentThreadId!);
-      if (parent === undefined) return undefined;
-      current = parent;
-    }
-  }
-  return owner;
 }
 
 /**
@@ -935,23 +886,22 @@ const make = Effect.gen(function* () {
             )
               return "thread activity or shared worktree changed since check";
           }
-          // Sessions can outlive their run and can be shared across app threads.
-          const sessionRows = yield* sql<{ payload_json: string }>`
-            SELECT payload_json FROM orchestration_v2_projection_provider_sessions
-            WHERE status != 'stopped'
-          `;
-          const sessions = yield* Effect.forEach(sessionRows, (row) =>
-            decodeCleanupSession(row.payload_json),
-          );
-          // A stored session can stay ready after its runtime was released,
-          // for example once every thread detached; only a live one holds it.
-          for (const session of sessions) {
-            const cwd = path.resolve(session.cwd);
-            if (
-              (cwd === worktreePath || inside(worktreePath, cwd)) &&
-              (yield* providerSessions.isLive(session.id))
-            )
-              return "provider session is still open";
+          // Stored ready sessions can outlive a confirmed release. Only the
+          // inventory owns workspaces, including opening/closing generations
+          // and native threads whose cwd differs from their shared process.
+          for (const session of yield* providerSessions.listWorkspaceSessions()) {
+            for (const workspace of [
+              session.cwd,
+              ...session.threadWorkspaces.map((thread) => thread.cwd),
+            ]) {
+              if (workspace === null) continue;
+              const cwd = path.resolve(workspace);
+              if (pathKey(cwd) === pathKey(worktreePath) || inside(worktreePath, cwd))
+                return "provider session is still open";
+              const realCwd = yield* fs.realPath(cwd).pipe(Effect.orElseSucceed(() => cwd));
+              if (pathKey(realCwd) === pathKey(realPath) || inside(realPath, realCwd))
+                return "provider session is still open";
+            }
           }
           return null;
         });

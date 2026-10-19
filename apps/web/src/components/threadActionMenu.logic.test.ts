@@ -243,3 +243,39 @@ describe("buildDraftActionMenuItems", () => {
     expect(items.at(-1)).toMatchObject({ label: "Discard draft", destructive: true });
   });
 });
+
+describe("worktree cleanup actions", () => {
+  it("offers both actions on a bound thread even when its branch is gone", () => {
+    const items = buildThreadActionMenuItems({
+      ...baseState,
+      branch: null,
+      worktree: { allowed: true },
+    });
+    expect(items.find((item) => item.id === "remove-worktree")).toMatchObject({
+      label: "Remove worktree…",
+      disabled: false,
+    });
+    expect(items.find((item) => item.id === "detach-worktree")).toMatchObject({
+      label: "Move to main checkout…",
+      disabled: false,
+    });
+    expect(ids(baseState)).not.toContain("remove-worktree");
+  });
+  it("keeps denied actions visible with a reason and uses source control grants independently", () => {
+    const denied = buildThreadActionMenuItems({
+      ...baseState,
+      worktree: { allowed: false },
+    }).filter((item) => item.id.endsWith("-worktree"));
+    expect(denied).toHaveLength(2);
+    for (const item of denied) {
+      expect(item.disabled).toBe(true);
+      expect(item.label).toContain("permission required");
+    }
+    const allowed = buildThreadActionMenuItems({
+      ...baseState,
+      canOperate: false,
+      worktree: { allowed: true },
+    });
+    expect(allowed.find((item) => item.id === "detach-worktree")?.disabled).toBe(false);
+  });
+});

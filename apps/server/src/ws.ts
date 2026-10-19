@@ -1,3 +1,4 @@
+import * as ThreadWorktreeService from "./orchestration-v2/ThreadWorktreeService.ts";
 import { ThreadDesktopActivityService } from "./computer/ThreadDesktopActivity.ts";
 import { OrchestrationDispatchCommandError } from "@t3tools/contracts";
 import * as Clock from "effect/Clock";
@@ -1267,6 +1268,7 @@ export const layerWsRpc = (
             );
       const usage = yield* UsageService.UsageService;
       const usageLimitSources = yield* UsageLimitSources.UsageLimitSources;
+      const threadWorktrees = yield* ThreadWorktreeService.ThreadWorktreeService;
       const worktreeSetupTracker = yield* WorktreeSetupTracker.WorktreeSetupTracker;
       const projectCloneTracker = yield* ProjectCloneTracker.ProjectCloneTracker;
       const repositoryIdentityResolver =
@@ -2820,6 +2822,8 @@ export const layerWsRpc = (
         [WS_METHODS.assetsPersistChatAttachments]: (input) =>
           persistChatAttachments(input).pipe(Effect.map((attachments) => ({ attachments }))),
         [WS_METHODS.subscribeVcsStatus]: (input) => vcsStatusBroadcaster.streamStatus(input),
+        [WS_METHODS.threadWorktreeRemove]: (input) => threadWorktrees.remove(input.threadId, input),
+        [WS_METHODS.threadWorktreeDetach]: (input) => threadWorktrees.detach(input.threadId, input),
         [WS_METHODS.subscribeWorktreeSetup]: (input) => worktreeSetupTracker.stream(input.threadId),
         [WS_METHODS.worktreeSetupCancel]: (input) =>
           worktreeSetupTracker

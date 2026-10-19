@@ -641,3 +641,45 @@ it.effect("denies manual cleanup before the handler without settings permission"
     expect(handled).toBe(false);
   }).pipe(Effect.scoped),
 );
+
+it.effect(
+  "denies thread worktree mutations before the handlers without source control permission",
+  () =>
+    Effect.gen(function* () {
+      const group = WsRpcGroup.omit(
+        ...[...WsRpcGroup.requests.keys()].filter(
+          (
+            tag,
+          ): tag is Exclude<
+            keyof typeof RPC_REQUIRED_SCOPES,
+            typeof WS_METHODS.threadWorktreeRemove | typeof WS_METHODS.threadWorktreeDetach
+          > => tag !== WS_METHODS.threadWorktreeRemove && tag !== WS_METHODS.threadWorktreeDetach,
+        ),
+      );
+      let handled = false;
+      const handler = () =>
+        Effect.sync(() => {
+          handled = true;
+          return { removed: true, detachedThreadIds: [] };
+        });
+      const client = yield* RpcTest.makeClient(group).pipe(
+        Effect.provide(
+          Layer.mergeAll(
+            group.toLayerHandler(WS_METHODS.threadWorktreeRemove, handler),
+            group.toLayerHandler(WS_METHODS.threadWorktreeDetach, handler),
+            RpcAuthorization.layer([AuthOrchestrationOperateScope]),
+          ),
+        ),
+      );
+      const threadId = ThreadId.make("worktree-permission");
+      expect(
+        yield* client[WS_METHODS.threadWorktreeRemove]({ threadId }).pipe(Effect.flip),
+      ).toMatchObject({ requiredPermission: AuthSourceControlWriteScope });
+      expect(
+        yield* client[WS_METHODS.threadWorktreeDetach]({ threadId, removeWorktree: false }).pipe(
+          Effect.flip,
+        ),
+      ).toMatchObject({ requiredPermission: AuthSourceControlWriteScope });
+      expect(handled).toBe(false);
+    }).pipe(Effect.scoped),
+);

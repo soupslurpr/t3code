@@ -5,6 +5,9 @@ import {
   VcsListRefsResult,
   WorktreeMcpHandoffInput,
   WorktreeMcpHandoffResult,
+  WorktreeMcpDetachInput,
+  WorktreeMcpDetachResult,
+  ThreadWorktreeError,
   WorktreeMcpStatusResult,
   ThreadId,
 } from "@t3tools/contracts";
@@ -23,7 +26,11 @@ const dependencies = [
   WorktreeMcpService.WorktreeMcpService,
 ];
 
-const WorktreeToolFailure = Schema.Union([WorktreeMcpFailure, OrchestratorMcpFailure]);
+const WorktreeToolFailure = Schema.Union([
+  WorktreeMcpFailure,
+  OrchestratorMcpFailure,
+  ThreadWorktreeError,
+]);
 
 const WorktreeHandoffTool = Tool.make("t3_worktree_handoff", {
   description:
@@ -40,9 +47,24 @@ const WorktreeHandoffTool = Tool.make("t3_worktree_handoff", {
   .annotate(Tool.Idempotent, false)
   .annotate(Tool.OpenWorld, true);
 
+const WorktreeDetachTool = Tool.make("t3_worktree_detach", {
+  description:
+    "Needs an agent running inside a T3 thread. Move the calling thread back to its project's main checkout, retaining the branch and conversation. Use this for post-merge cleanup before deleting the branch with git; raw git cleanup alone leaves T3's binding pointing to a missing checkout. A complete subagent lineage sharing this worktree moves together; independent sharers keep their bindings and the directory. By default remove the directory once all group bindings clear and sessions stop. Local changes require force; ignored files are discarded. Other active runs, queued work, and background tasks in the group block the move. Open terminals block directory removal. A provider process still shared outside the group also keeps the directory. Only this caller's active run is allowed: the continuation is queued atomically with the binding changes before its session stops. Call this as the last action of the turn, and pass continuationPrompt for remaining work in the main checkout. Without it, wait for the next message. Session shutdown can interrupt the tool response; inspect the directory and branch from the continuation before further Git cleanup. A late removal failure is reported in removalError: the bindings have moved and the directory remains. Never deletes branches. Cannot target another thread.",
+  parameters: WorktreeMcpDetachInput,
+  success: WorktreeMcpDetachResult,
+  failure: WorktreeToolFailure,
+  failureMode: "return",
+  dependencies,
+})
+  .annotate(Tool.Title, "Move thread to the main checkout")
+  .annotate(Tool.Readonly, false)
+  .annotate(Tool.Destructive, true)
+  .annotate(Tool.Idempotent, false)
+  .annotate(Tool.OpenWorld, true);
+
 const WorktreeStatusTool = Tool.make("t3_worktree_status", {
   description:
-    "Needs an agent running inside a T3 thread. Report this agent thread's worktree binding: whether it is attached to a git worktree, the worktree path and branch, the project's main workspace root, and the server default for t3_worktree_handoff's startFromOrigin. Call this before t3_worktree_handoff to check whether a handoff is possible or has already happened.",
+    "Needs an agent running inside a T3 thread. Report this agent thread's worktree binding: whether it is attached to a git worktree, the worktree path and branch, the project's main workspace root, and the server default for t3_worktree_handoff's startFromOrigin. Call this before t3_worktree_handoff to check whether a handoff is possible or has already happened. For cleanup, use t3_worktree_detach before removing the checkout or deleting its branch with git so the thread and its subagents are not left bound to a missing path.",
   // No `parameters`: Tool.make defaults to Tool.EmptyParams, which serializes
   // to a top-level `type: "object"` JSON Schema. An explicit empty
   // Schema.Struct({}) serializes to `anyOf: [object, array]`, which is not a
@@ -83,6 +105,7 @@ const WorktreeListTool = Tool.make("t3_worktree_list", {
   .annotate(Tool.Destructive, false);
 export const WorktreeToolkit = Toolkit.make(
   WorktreeHandoffTool,
+  WorktreeDetachTool,
   WorktreeStatusTool,
   WorktreeListTool,
 );

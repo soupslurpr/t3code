@@ -1,3 +1,5 @@
+import * as ThreadWorktrees from "./ThreadWorktreeService.ts";
+import { DispatchModeLimit } from "./DispatchModeLimit.ts";
 import { SourceControlProviderKind } from "@t3tools/contracts";
 import { limitRecoveryCommand } from "./UsageLimitRecoveryWorker.ts";
 import * as McpProviderSessions from "@t3tools/provider-core/server/McpProviderSessions";
@@ -290,6 +292,11 @@ const layerTest = Layer.mergeAll(
   Layer.provide(ServerSettings.layerTest()),
   Layer.provide(layerTestProviderInstanceRegistry),
   Layer.provide(layerGitWorkflowTest),
+  Layer.provide(
+    Layer.mock(ThreadWorktrees.ThreadWorktreeService)({
+      ensure: () => Effect.succeed({ status: "local" }),
+    }),
+  ),
   Layer.provide(layerProjectServiceTest),
   Layer.provide(layerPlatformTest),
 );
@@ -303,6 +310,11 @@ const layerLegacyImportTest = RuntimeLayer.layer.pipe(
   Layer.provide(ServerSettings.layerTest()),
   Layer.provide(layerTestProviderInstanceRegistry),
   Layer.provide(layerGitWorkflowTest),
+  Layer.provide(
+    Layer.mock(ThreadWorktrees.ThreadWorktreeService)({
+      ensure: () => Effect.succeed({ status: "local" }),
+    }),
+  ),
   Layer.provide(layerProjectServiceTest),
   Layer.provide(layerPlatformTest),
 );
@@ -368,6 +380,11 @@ const layerProjectDeletionTest = Layer.mergeAll(
   Layer.provide(ServerSettings.layerTest()),
   Layer.provide(layerTestProviderInstanceRegistry),
   Layer.provide(layerGitWorkflowTest),
+  Layer.provide(
+    Layer.mock(ThreadWorktrees.ThreadWorktreeService)({
+      ensure: () => Effect.succeed({ status: "local" }),
+    }),
+  ),
   Layer.provide(layerPlatformTest),
 );
 
@@ -636,6 +653,11 @@ const layerSharedApplicationDataPlaneTest = Layer.mergeAll(
   Layer.provide(ServerSettings.layerTest()),
   Layer.provide(layerTestProviderInstanceRegistry),
   Layer.provide(layerGitWorkflowTest),
+  Layer.provide(
+    Layer.mock(ThreadWorktrees.ThreadWorktreeService)({
+      ensure: () => Effect.succeed({ status: "local" }),
+    }),
+  ),
   Layer.provide(layerPlatformTest),
 );
 
@@ -7173,6 +7195,11 @@ const layerQueueResumeDisabledInstanceTest = Layer.mergeAll(
   ),
   Layer.provide(layerTestProviderInstanceRegistry),
   Layer.provide(layerGitWorkflowTest),
+  Layer.provide(
+    Layer.mock(ThreadWorktrees.ThreadWorktreeService)({
+      ensure: () => Effect.succeed({ status: "local" }),
+    }),
+  ),
   Layer.provide(layerProjectServiceTest),
   Layer.provide(layerPlatformTest),
 );
@@ -7268,3 +7295,603 @@ it.layer(layerQueueResumeDisabledInstanceTest)(
     );
   },
 );
+
+it.layer(layerTest)("atomic worktree group detach", (it) => {
+  const createGroup = (name: string, attached = true) =>
+    Effect.gen(function* () {
+      const orchestrator = yield* Orchestrator.OrchestratorV2;
+      const projectId = ProjectId.make(`${name}-project`);
+      yield* seedProject({
+        projectId,
+        title: "Worktree detach",
+        workspaceRoot: process.cwd(),
+        defaultModelSelection: null,
+        createdAt: "2026-09-07T00:00:00.000Z",
+      });
+      const ids = [ThreadId.make(`${name}-parent`), ThreadId.make(`${name}-child`)];
+      for (const threadId of ids) {
+        if (threadId === ids[1]) {
+          const parent = (yield* orchestrator.getThreadProjection(ids[0]!)).thread;
+          const sink = yield* EventSink.EventSinkV2;
+          yield* sink.write({
+            events: [
+              {
+                id: EventId.make(`${threadId}-created`),
+                type: "thread.created",
+                threadId,
+                occurredAt: yield* DateTime.now,
+                payload: {
+                  ...parent,
+                  id: threadId,
+                  activeProviderThreadId: null,
+                  createdBy: "agent",
+                  creationSource: "mcp",
+                  lineage: {
+                    rootThreadId: ids[0]!,
+                    parentThreadId: ids[0]!,
+                    relationshipToParent: "subagent",
+                  },
+                },
+              },
+            ],
+          });
+          continue;
+        }
+        yield* orchestrator.dispatch({
+          type: "thread.create",
+          commandId: CommandId.make(`${threadId}-create`),
+          threadId,
+          projectId,
+          title: "Worktree member",
+          modelSelection,
+          runtimeMode: "full-access",
+          interactionMode: "default",
+          branch: attached ? "feature" : null,
+          worktreePath: attached ? "/tmp/group-worktree" : null,
+          createdBy: "user",
+          creationSource: "web",
+        });
+      }
+      return {
+        orchestrator,
+        ids,
+        members: ids.map((threadId) => ({ threadId, expectedWorktreePath: "/tmp/group-worktree" })),
+      };
+    });
+
+  it.effect("rejects the entire group on any stale binding and commits all members on retry", () =>
+    Effect.gen(function* () {
+      const f = yield* createGroup("atomic-group");
+      const failed = yield* f.orchestrator
+        .dispatch({
+          type: "thread.worktree.detach",
+          commandId: CommandId.make("atomic-group-conflict"),
+          threadId: f.ids[0]!,
+          members: [f.members[0]!, { ...f.members[1]!, expectedWorktreePath: "/stale" }],
+        })
+        .pipe(Effect.flip);
+      assert.instanceOf(failed, Orchestrator.OrchestratorDispatchError);
+      for (const id of f.ids)
+        assert.equal(
+          (yield* f.orchestrator.getThreadProjection(id)).thread.worktreePath,
+          "/tmp/group-worktree",
+        );
+      const command = {
+        type: "thread.worktree.detach" as const,
+        commandId: CommandId.make("atomic-group-success"),
+        threadId: f.ids[0]!,
+        members: f.members,
+      };
+      const first = yield* f.orchestrator.dispatch(command);
+      assert.lengthOf(
+        first.storedEvents.filter((e) => e.event.type === "thread.metadata-updated"),
+        2,
+      );
+      assert.equal((yield* f.orchestrator.dispatch(command)).sequence, first.sequence);
+      for (const id of f.ids)
+        assert.isNull((yield* f.orchestrator.getThreadProjection(id)).thread.worktreePath);
+    }),
+  );
+
+  it.effect.each(["runtime", "interaction", "same"] as const)(
+    "atomic worktree group checks every member against the caller's mode (%s)",
+    (mode) =>
+      Effect.gen(function* () {
+        const f = yield* createGroup(`group-mode-${mode}`);
+        const parent = f.ids[0]!;
+        const child = f.ids[1]!;
+        const limit = {
+          runtimeMode: "approval-required" as const,
+          interactionMode: "plan" as const,
+        };
+        for (const id of [parent, child]) {
+          if (id === child || mode !== "runtime")
+            yield* f.orchestrator.dispatch({
+              type: "thread.runtime-mode.set",
+              commandId: CommandId.make(`${id}-runtime`),
+              threadId: id,
+              runtimeMode: "approval-required",
+            });
+          if (id === child || mode !== "interaction")
+            yield* f.orchestrator.dispatch({
+              type: "thread.interaction-mode.set",
+              commandId: CommandId.make(`${id}-interaction`),
+              threadId: id,
+              interactionMode: "plan",
+            });
+        }
+        if (mode !== "same") {
+          const direct = yield* f.orchestrator
+            .dispatch({
+              type: "thread.metadata.update",
+              commandId: CommandId.make(`${parent}-direct`),
+              threadId: parent,
+              worktreePath: null,
+              branch: null,
+            })
+            .pipe(Effect.provideService(DispatchModeLimit, limit), Effect.flip);
+          assert.instanceOf(direct, Orchestrator.OrchestratorThreadAboveModeLimitError);
+        }
+        const outcome = yield* f.orchestrator
+          .dispatch({
+            type: "thread.worktree.detach",
+            commandId: CommandId.make(`${child}-group-detach`),
+            threadId: child,
+            members: f.members,
+          })
+          .pipe(Effect.provideService(DispatchModeLimit, limit), Effect.exit);
+        assert.equal(outcome._tag, mode === "same" ? "Success" : "Failure");
+        for (const id of f.ids)
+          assert.equal(
+            (yield* f.orchestrator.getThreadProjection(id)).thread.worktreePath,
+            mode === "same" ? null : "/tmp/group-worktree",
+          );
+      }),
+  );
+
+  it.effect.each([
+    { operation: "handoff", inactiveCommand: "thread.archive" },
+    { operation: "handoff", inactiveCommand: "thread.delete" },
+    { operation: "detach", inactiveCommand: "thread.archive" },
+    { operation: "detach", inactiveCommand: "thread.delete" },
+  ] as const)(
+    "atomic worktree $operation rejects an inactive caller ($inactiveCommand)",
+    ({ operation, inactiveCommand }) =>
+      Effect.gen(function* () {
+        const name = `atomic-${operation}-${inactiveCommand}`;
+        const f = yield* createGroup(name, operation === "detach");
+        const threadId = f.ids[0]!;
+        yield* f.orchestrator.dispatch({
+          type: inactiveCommand,
+          commandId: CommandId.make(`${name}-inactive`),
+          threadId,
+        });
+        const before = yield* Effect.forEach(f.ids, (id) => f.orchestrator.getThreadProjection(id));
+        const continuation = {
+          messageId: MessageId.make(`${name}-continuation`),
+          text: "Continue after moving.",
+        };
+        const command = {
+          commandId: CommandId.make(`${name}-move`),
+          threadId,
+          continuation,
+          ...(operation === "handoff"
+            ? {
+                type: "thread.worktree.handoff" as const,
+                branch: "feature/handoff",
+                worktreePath: "/tmp/handoff-worktree",
+              }
+            : { type: "thread.worktree.detach" as const, members: f.members }),
+        };
+        const refused = yield* f.orchestrator.dispatch(command).pipe(Effect.flip);
+        assert.instanceOf(refused, Orchestrator.OrchestratorDispatchError);
+        assert.equal(refused.commandType, command.type);
+        for (const [index, id] of f.ids.entries()) {
+          const after = yield* f.orchestrator.getThreadProjection(id);
+          assert.deepEqual(after, before[index]);
+          assert.equal(
+            after.thread.worktreePath,
+            operation === "handoff" ? null : "/tmp/group-worktree",
+          );
+          assert.isFalse(after.messages.some((message) => message.id === continuation.messageId));
+          assert.lengthOf(after.runs, 0);
+        }
+      }),
+  );
+
+  it.effect.each(["thread.archive", "thread.delete"] as const)(
+    "manual worktree detach preserves archived cleanup and rejects deleted threads (%s)",
+    (inactiveCommand) =>
+      Effect.gen(function* () {
+        const name = `manual-detach-${inactiveCommand}`;
+        const f = yield* createGroup(name);
+        const threadId = f.ids[0]!;
+        yield* f.orchestrator.dispatch({
+          type: inactiveCommand,
+          commandId: CommandId.make(`${name}-inactive`),
+          threadId,
+        });
+        const before = yield* Effect.forEach(f.ids, (id) => f.orchestrator.getThreadProjection(id));
+        const command = {
+          type: "thread.worktree.detach" as const,
+          commandId: CommandId.make(`${name}-move`),
+          threadId,
+          members: f.members,
+        };
+        if (inactiveCommand === "thread.delete") {
+          const refused = yield* f.orchestrator.dispatch(command).pipe(Effect.flip);
+          assert.instanceOf(refused, Orchestrator.OrchestratorDispatchError);
+          assert.equal(refused.commandType, command.type);
+        } else {
+          yield* f.orchestrator.dispatch(command);
+        }
+        for (const [index, id] of f.ids.entries()) {
+          const after = yield* f.orchestrator.getThreadProjection(id);
+          if (inactiveCommand === "thread.delete") {
+            assert.deepEqual(after, before[index]);
+          } else {
+            assert.isNull(after.thread.worktreePath);
+            assert.isNull(after.thread.branch);
+            assert.deepEqual(after.thread.archivedAt, before[index]!.thread.archivedAt);
+          }
+          assert.lengthOf(after.messages, 0);
+          assert.lengthOf(after.runs, 0);
+        }
+      }),
+  );
+
+  it.effect.each(["running", "delegated", "stopped", "settled-stop", "turn-ended"] as const)(
+    "atomic worktree handoff settles the caller or rejects the entire move (%s)",
+    (state) =>
+      Effect.gen(function* () {
+        const name = `atomic-handoff-${state}`;
+        const f = yield* createGroup(name, false);
+        const threadId = f.ids[0]!;
+        const sink = yield* EventSink.EventSinkV2;
+        yield* f.orchestrator.dispatch({
+          type: "message.dispatch",
+          commandId: CommandId.make(`${name}-start`),
+          threadId,
+          messageId: MessageId.make(`${name}-source`),
+          text: "Move to a worktree",
+          attachments: [],
+          dispatchMode: { type: "start_immediately" },
+          createdBy: "user",
+          creationSource: "web",
+        });
+        const projection = yield* f.orchestrator.getThreadProjection(threadId);
+        const run = projection.runs[0]!;
+        const attempt = projection.attempts[0]!;
+        const providerThread = projection.providerThreads[0]!;
+        const now = yield* DateTime.now;
+        const turnId = ProviderTurnId.make(`${name}-turn`);
+        const runStatus = state === "settled-stop" ? "interrupted" : "running";
+        const completedAt = state === "settled-stop" ? now : null;
+        const delegatedTaskId = state === "delegated" ? NodeId.make(`${name}-task`) : undefined;
+        yield* sink.write({
+          events: [
+            {
+              id: EventId.make(`${name}-running-run`),
+              type: "run.updated",
+              threadId,
+              runId: run.id,
+              occurredAt: now,
+              payload: {
+                ...run,
+                status: runStatus,
+                startedAt: now,
+                completedAt,
+                ...(delegatedTaskId === undefined ? {} : { delegatedTaskId }),
+              },
+            },
+            {
+              id: EventId.make(`${name}-running-attempt`),
+              type: "run-attempt.updated",
+              threadId,
+              runId: run.id,
+              occurredAt: now,
+              payload: { ...attempt, status: runStatus, startedAt: now, completedAt },
+            },
+            {
+              id: EventId.make(`${name}-running-turn`),
+              type: "provider-turn.updated",
+              threadId,
+              runId: run.id,
+              occurredAt: now,
+              payload: {
+                id: turnId,
+                providerThreadId: providerThread.id,
+                nodeId: run.rootNodeId!,
+                runAttemptId: run.activeAttemptId,
+                nativeTurnRef: null,
+                ordinal: 1,
+                status: state === "turn-ended" ? "completed" : runStatus,
+                startedAt: now,
+                completedAt: state === "turn-ended" ? now : completedAt,
+              },
+            },
+          ],
+        });
+        if (state === "stopped" || state === "settled-stop") {
+          yield* sink.write({
+            events: [
+              {
+                id: EventId.make(`${name}-stop-request`),
+                type: "turn-item.updated",
+                threadId,
+                runId: run.id,
+                occurredAt: now,
+                payload: {
+                  id: TurnItemId.make(`${name}-stop-request`),
+                  threadId,
+                  runId: run.id,
+                  nodeId: run.rootNodeId!,
+                  providerThreadId: providerThread.id,
+                  providerTurnId: null,
+                  nativeItemRef: null,
+                  parentItemId: null,
+                  ordinal: 2,
+                  status: "completed",
+                  title: "Interrupt requested",
+                  startedAt: now,
+                  completedAt: now,
+                  updatedAt: now,
+                  type: "run_interrupt_request",
+                  message: "Stop",
+                },
+              },
+            ],
+          });
+        }
+        if (state === "settled-stop")
+          assert.isNull((yield* f.orchestrator.getThreadShell(threadId))?.activeRunId);
+        const continuation = {
+          messageId: MessageId.make(`${name}-continuation`),
+          text: "Continue in the worktree.",
+        };
+        const command = {
+          type: "thread.worktree.handoff" as const,
+          commandId: CommandId.make(`${name}-command`),
+          threadId,
+          branch: "feature/handoff",
+          worktreePath: "/tmp/handoff-worktree",
+          callerRunId: run.id,
+          continuation,
+        };
+        if (state !== "running" && state !== "delegated") {
+          const before = yield* f.orchestrator.getThreadProjection(threadId);
+          const refused = yield* f.orchestrator.dispatch(command).pipe(Effect.flip);
+          assert.instanceOf(refused, Orchestrator.OrchestratorDispatchError);
+          const after = yield* f.orchestrator.getThreadProjection(threadId);
+          assert.deepEqual(after, before);
+          assert.isNull(after.thread.worktreePath);
+          assert.isNull(after.thread.branch);
+          assert.lengthOf(after.runs, 1);
+          assert.isFalse(after.messages.some((message) => message.id === continuation.messageId));
+          return;
+        }
+        const receipt = yield* f.orchestrator.dispatch(command);
+        assert.isTrue(
+          receipt.storedEvents.some(
+            ({ event }) =>
+              event.type === "run.updated" &&
+              event.payload.id === run.id &&
+              event.payload.status === "interrupted",
+          ),
+        );
+        // Await the persisted promotion so the assertion also covers the
+        // terminal-run listener, without manually resuming the queue.
+        yield* sink
+          .stream({ threadId, afterSequence: receipt.sequence, eventType: "run.updated" })
+          .pipe(
+            Stream.filter(
+              ({ event }) =>
+                event.type === "run.updated" &&
+                event.payload.userMessageId === continuation.messageId &&
+                event.payload.status === "starting",
+            ),
+            Stream.runHead,
+          );
+        const after = yield* f.orchestrator.getThreadProjection(threadId);
+        assert.equal(after.thread.worktreePath, command.worktreePath);
+        assert.equal(after.thread.branch, command.branch);
+        assert.equal(after.runs.find((item) => item.id === run.id)?.status, "interrupted");
+        assert.equal(after.attempts.find((item) => item.id === attempt.id)?.status, "interrupted");
+        assert.equal(after.providerTurns.find((turn) => turn.id === turnId)?.status, "interrupted");
+        assert.isTrue(after.messages.some((message) => message.id === continuation.messageId));
+        const next = after.runs.find((item) => item.userMessageId === continuation.messageId)!;
+        assert.equal(next.status, "starting");
+        assert.equal(next.delegatedTaskId, delegatedTaskId);
+        assert.isFalse(next.queueHeld === true);
+        const scopeId = after.nodes.find((node) => node.runId === next.id)!.checkpointScopeId;
+        assert.equal(
+          after.checkpointScopes.find((scope) => scope.id === scopeId)!.cwd,
+          command.worktreePath,
+        );
+        const outbox = yield* EffectOutbox.EffectOutboxV2;
+        assert.isTrue(Option.isNone(yield* outbox.get(`effect:checkpoint.capture:${run.id}`)));
+      }),
+  );
+
+  it.effect.each(["running", "delegated", "stopped"] as const)(
+    "atomic worktree continuation respects a persisted Stop (state=%s)",
+    (state) =>
+      Effect.gen(function* () {
+        const f = yield* createGroup(`atomic-continuation-${state}`);
+        const threadId = f.ids[0]!;
+        const sink = yield* EventSink.EventSinkV2;
+        yield* f.orchestrator.dispatch({
+          type: "message.dispatch",
+          commandId: CommandId.make(`atomic-continuation-start-${state}`),
+          threadId,
+          messageId: MessageId.make(`atomic-continuation-source-${state}`),
+          text: "Clean up after merge",
+          attachments: [],
+          dispatchMode: { type: "start_immediately" },
+          createdBy: "user",
+          creationSource: "web",
+        });
+        const initial = yield* f.orchestrator.getThreadProjection(threadId);
+        const run = initial.runs[0]!;
+        const attempt = initial.attempts[0]!;
+        const providerThread = initial.providerThreads[0]!;
+        const now = yield* DateTime.now;
+        const delegatedTaskId =
+          state === "delegated" ? NodeId.make(`atomic-continuation-${state}-task`) : undefined;
+        yield* sink.write({
+          events: [
+            {
+              id: EventId.make(`cleanup-run-${state}`),
+              type: "run.updated",
+              threadId,
+              runId: run.id,
+              occurredAt: now,
+              payload: {
+                ...run,
+                status: "running",
+                startedAt: now,
+                ...(delegatedTaskId === undefined ? {} : { delegatedTaskId }),
+              },
+            },
+            {
+              id: EventId.make(`cleanup-attempt-${state}`),
+              type: "run-attempt.updated",
+              threadId,
+              runId: run.id,
+              occurredAt: now,
+              payload: { ...attempt, status: "running", startedAt: now },
+            },
+            {
+              id: EventId.make(`cleanup-turn-${state}`),
+              type: "provider-turn.updated",
+              threadId,
+              runId: run.id,
+              occurredAt: now,
+              payload: {
+                id: ProviderTurnId.make(`cleanup-turn-${state}`),
+                providerThreadId: providerThread.id,
+                nodeId: run.rootNodeId!,
+                runAttemptId: run.activeAttemptId,
+                nativeTurnRef: null,
+                ordinal: 1,
+                status: "running",
+                startedAt: now,
+                completedAt: null,
+              },
+            },
+          ],
+        });
+        const continuation = {
+          messageId: MessageId.make(`cleanup-continuation-${state}`),
+          text: "Delete the merged branch and settle.",
+        };
+        if (state === "stopped") {
+          yield* sink.write({
+            events: [
+              {
+                id: EventId.make(`cleanup-stop-request-${state}`),
+                type: "turn-item.updated",
+                threadId,
+                runId: run.id,
+                occurredAt: now,
+                payload: {
+                  id: TurnItemId.make(`cleanup-stop-request-${state}`),
+                  threadId,
+                  runId: run.id,
+                  nodeId: run.rootNodeId!,
+                  providerThreadId: providerThread.id,
+                  providerTurnId: null,
+                  nativeItemRef: null,
+                  parentItemId: null,
+                  ordinal: 2,
+                  status: "completed",
+                  title: "Interrupt requested",
+                  startedAt: now,
+                  completedAt: now,
+                  updatedAt: now,
+                  type: "run_interrupt_request",
+                  message: "Stop",
+                },
+              },
+            ],
+          });
+          const refused = yield* f.orchestrator
+            .dispatch({
+              type: "thread.worktree.detach",
+              commandId: CommandId.make(`cleanup-stopped-${state}`),
+              threadId,
+              callerRunId: run.id,
+              continuation,
+              members: f.members,
+            })
+            .pipe(Effect.exit);
+          assert.equal(refused._tag, "Failure");
+          for (const id of f.ids)
+            assert.equal(
+              (yield* f.orchestrator.getThreadProjection(id)).thread.worktreePath,
+              "/tmp/group-worktree",
+            );
+          const after = yield* f.orchestrator.getThreadProjection(threadId);
+          assert.lengthOf(after.runs, 1);
+          assert.equal(after.runs[0]!.status, "running");
+          assert.isFalse(after.messages.some((m) => m.id === continuation.messageId));
+          return;
+        }
+
+        yield* f.orchestrator
+          .dispatch({
+            type: "thread.worktree.detach",
+            commandId: CommandId.make(`cleanup-failed-${state}`),
+            threadId,
+            callerRunId: run.id,
+            continuation,
+            members: [f.members[0]!, { ...f.members[1]!, expectedWorktreePath: "/stale" }],
+          })
+          .pipe(Effect.flip);
+        const unchanged = yield* f.orchestrator.getThreadProjection(threadId);
+        assert.lengthOf(unchanged.runs, 1);
+        assert.equal(unchanged.runs[0]!.status, "running");
+        const receipt = yield* f.orchestrator.dispatch({
+          type: "thread.worktree.detach",
+          commandId: CommandId.make(`cleanup-success-${state}`),
+          threadId,
+          callerRunId: run.id,
+          continuation,
+          members: f.members,
+        });
+        assert.isTrue(
+          receipt.storedEvents.some(
+            ({ event }) =>
+              event.type === "run.updated" &&
+              event.payload.id === run.id &&
+              event.payload.status === "interrupted",
+          ),
+        );
+        yield* sink
+          .stream({ threadId, afterSequence: receipt.sequence, eventType: "run.updated" })
+          .pipe(
+            Stream.filter(
+              ({ event }) =>
+                event.type === "run.updated" &&
+                event.payload.userMessageId === continuation.messageId &&
+                event.payload.status === "starting",
+            ),
+            Stream.runHead,
+          );
+        const after = yield* f.orchestrator.getThreadProjection(threadId);
+        assert.isNull(after.thread.worktreePath);
+        assert.isTrue(after.messages.some((m) => m.id === continuation.messageId));
+        const next = after.runs.find((r) => r.userMessageId === continuation.messageId)!;
+        assert.equal(next.status, "starting");
+        assert.equal(next.delegatedTaskId, delegatedTaskId);
+        assert.isFalse(next.queueHeld === true);
+        const scopeId = after.nodes.find((n) => n.runId === next.id)!.checkpointScopeId;
+        assert.equal(
+          after.checkpointScopes.find((scope) => scope.id === scopeId)!.cwd,
+          process.cwd(),
+        );
+        const outbox = yield* EffectOutbox.EffectOutboxV2;
+        assert.isTrue(Option.isNone(yield* outbox.get(`effect:checkpoint.capture:${run.id}`)));
+      }),
+  );
+});

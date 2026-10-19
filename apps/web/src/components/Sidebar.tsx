@@ -2729,6 +2729,8 @@ export default function Sidebar() {
   const timestampFormat = useClientSettings((s) => s.timestampFormat);
   const projectGroupingSettings = useClientSettings(selectProjectGroupingSettings);
   const {
+    changeThreadWorktree,
+    worktreeMenuState,
     settleThread,
     unsettleThread,
     snoozeThread,
@@ -4238,9 +4240,11 @@ export default function Sidebar() {
                 projectRef.projectId === thread.projectId,
             ),
           ) ?? null;
+        const worktree = worktreeMenuState(threadRef);
         const clicked = await settlePromise(() =>
           api.contextMenu.show(
             buildThreadActionMenuItems({
+              worktree,
               canOperate: readEnvironmentScope(
                 threadRef.environmentId,
                 AuthOrchestrationOperateScope,
@@ -4282,6 +4286,13 @@ export default function Sidebar() {
           return;
         }
         switch (clicked.value) {
+          case "remove-worktree":
+          case "detach-worktree":
+            await changeThreadWorktree(
+              threadRef,
+              clicked.value === "remove-worktree" ? "remove" : "detach",
+            );
+            return;
           case "filter-by-project":
             if (threadProjectGroup) {
               setProjectScopeKey(
