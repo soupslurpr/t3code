@@ -62,6 +62,10 @@ export type ServerProviderUsageLimits = typeof ServerProviderUsageLimits.Type;
  * the instance's published snapshot; omitted windows are unchanged.
  */
 export const ProviderUsageLimitsUpdate = Schema.Struct({
+  complete: Schema.optional(Schema.Boolean).annotate({
+    description:
+      "A complete report replaces the provider's windows and clears a failed-probe notice. Omitted for partial updates.",
+  }),
   windows: Schema.Array(ServerProviderUsageWindow),
 });
 export type ProviderUsageLimitsUpdate = typeof ProviderUsageLimitsUpdate.Type;

@@ -1,6 +1,8 @@
 import { ProviderDriverKind } from "@t3tools/contracts";
 import { MuseSettings } from "../settings.ts";
 import * as HostProcess from "@t3tools/shared/HostProcess";
+import * as Crypto from "effect/Crypto";
+import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
 import * as Path from "effect/Path";
@@ -22,6 +24,7 @@ import * as ProviderEventLoggers from "@t3tools/provider-core/server/ProviderEve
 import { makeManagedServerProvider } from "@t3tools/provider-core/server/managedProvider";
 import { enrichMuseSnapshot, latestMuseVersion, museMaintenance } from "./maintenance.ts";
 import { makeMuseEnvironment } from "./sdk.ts";
+import { museUsageReader } from "./usage.ts";
 import {
   defaultProviderContinuationIdentity,
   type ProviderDriver,
@@ -49,15 +52,17 @@ export type MuseDriverEnv =
   | ChildProcessSpawner.ChildProcessSpawner
   | FileSystem.FileSystem
   | HttpClient.HttpClient
+  | Crypto.Crypto
   | ProviderLatestVersions.ProviderLatestVersions
   | Path.Path
   | ProviderEventLoggers.ProviderEventLoggers;
 
-export const MuseDriver: ProviderDriver<MuseSettings, MuseDriverEnv> = {
+export const MuseDriver: ProviderDriver<MuseSettings, MuseDriverEnv, Path.Path> = {
   driverKind: DRIVER_KIND,
   metadata: { displayName: "Muse Code", supportsMultipleInstances: true },
   configSchema: MuseSettings,
   defaultConfig: () => decodeMuseSettings({}),
+  usage: museUsageReader,
   create: Effect.fn("MuseDriver.create")(function* ({
     instanceId,
     displayName,
@@ -70,6 +75,7 @@ export const MuseDriver: ProviderDriver<MuseSettings, MuseDriverEnv> = {
     const fileSystem = yield* FileSystem.FileSystem;
     const path = yield* Path.Path;
     const httpClient = yield* HttpClient.HttpClient;
+    const crypto = yield* Crypto.Crypto;
     const latestVersions = yield* ProviderLatestVersions.ProviderLatestVersions;
     const host = yield* ProviderHost.ProviderHost;
     const eventLoggers = yield* ProviderEventLoggers.ProviderEventLoggers;
@@ -140,6 +146,7 @@ export const MuseDriver: ProviderDriver<MuseSettings, MuseDriverEnv> = {
         makePendingMuseProvider(settings.provider).pipe(Effect.map(stampIdentity)),
       checkProvider: checkMuseProviderStatus(effectiveConfig, processEnvironment, cwd).pipe(
         Effect.map(stampIdentity),
+        Effect.provideService(Crypto.Crypto, crypto),
         Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, spawner),
         Effect.provideService(FileSystem.FileSystem, fileSystem),
         Effect.provideService(Path.Path, path),
@@ -177,6 +184,12 @@ export const MuseDriver: ProviderDriver<MuseSettings, MuseDriverEnv> = {
       modelCatalog,
       ...(eventLoggers.native ? { nativeEventLogger: eventLoggers.native } : {}),
       continuationRequests,
+      onUsageLimits: Effect.fn("MuseDriver.onUsageLimits")(function* (update) {
+        yield* snapshot.applyUsageLimits({
+          ...update,
+          checkedAt: DateTime.formatIso(yield* DateTime.now),
+        });
+      }),
     });
     const textGeneration = yield* makeMuseTextGeneration(effectiveConfig, {
       environment: processEnvironment,

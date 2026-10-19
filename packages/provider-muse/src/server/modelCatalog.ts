@@ -4,8 +4,10 @@ import { MuseSettings } from "../settings.ts";
 import { LEAD_MODEL_ID, LEAD_ROLE_OPTION_ID } from "@t3tools/shared/lead";
 import { createModelCapabilities, getProviderOptionDescriptors } from "@t3tools/shared/model";
 import * as Effect from "effect/Effect";
+import * as Result from "effect/Result";
 import * as Schema from "effect/Schema";
 import { createMuseSdkHost, createMuseSdkHostEffect, type MuseSdkHost } from "./sdk.ts";
+import { MuseUsageReadResult } from "./protocol.ts";
 
 type MuseReasoningEffort = NonNullable<SendUserTurnOptions<never>["reasoningEffort"]>;
 
@@ -42,6 +44,7 @@ const ModelCatalogEntry = Schema.Struct({
 const decodeModelList = Schema.decodeUnknownEffect(
   Schema.Struct({ providerId: Schema.String, models: Schema.Array(ModelCatalogEntry) }),
 );
+const decodeUsageReadResult = Schema.decodeUnknownEffect(MuseUsageReadResult);
 
 export function museModelCapabilities(
   model?: Partial<
@@ -115,33 +118,38 @@ class MuseCatalogError extends Schema.TaggedError<MuseCatalogError>()("MuseCatal
   detail: Schema.String,
 }) {}
 
-export const discoverMuseModels = Effect.fn("discoverMuseModels")(function* (
+export const discoverMuseModelsAndUsage = Effect.fn("discoverMuseModelsAndUsage")(function* (
   settings: MuseSettings,
   environment: NodeJS.ProcessEnv | undefined,
   cwd?: string,
   createHost: typeof createMuseSdkHost = createMuseSdkHost,
 ) {
-  const host = yield* Effect.acquireRelease(
-    createMuseSdkHostEffect(
-      {
-        binaryPath: settings.binaryPath,
-        ...(environment ? { environment } : {}),
-        ...(cwd ? { cwd } : {}),
-        readOnly: true,
-        startupTimeoutMs: 8_000,
-      },
-      createHost,
-    ),
-    (host: MuseSdkHost) => Effect.promise(() => host.close()),
-    { interruptible: true },
-  );
-  const result = yield* Effect.tryPromise(() => host.connection.request("model/list", {}));
-  const catalog = yield* decodeModelList(result);
-  if (catalog.providerId !== "meta") {
-    return yield* new MuseCatalogError({ detail: "Muse returned a catalog for another provider." });
-  }
+  const { host, catalog } = yield* Effect.gen(function* () {
+    const host = yield* Effect.acquireRelease(
+      createMuseSdkHostEffect(
+        {
+          binaryPath: settings.binaryPath,
+          ...(environment ? { environment } : {}),
+          ...(cwd ? { cwd } : {}),
+          readOnly: true,
+          startupTimeoutMs: 8_000,
+        },
+        createHost,
+      ),
+      (host: MuseSdkHost) => Effect.promise(() => host.close()),
+      { interruptible: true },
+    );
+    const result = yield* Effect.tryPromise(() => host.connection.request("model/list", {}));
+    const catalog = yield* decodeModelList(result);
+    if (catalog.providerId !== "meta") {
+      return yield* new MuseCatalogError({
+        detail: "Muse returned a catalog for another provider.",
+      });
+    }
+    return { host, catalog };
+  }).pipe(Effect.timeout(12_000));
   const seen = new Set<string>();
-  return catalog.models.flatMap((model): ServerProviderModel[] => {
+  const models = catalog.models.flatMap((model): ServerProviderModel[] => {
     if (model.providerId !== "meta" || seen.has(model.modelId)) return [];
     seen.add(model.modelId);
     const label = model.displayLabel.trim() || model.modelId;
@@ -159,4 +167,21 @@ export const discoverMuseModels = Effect.fn("discoverMuseModels")(function* (
       },
     ];
   });
+  // Usage is best-effort and gets its own deadline after the catalog succeeds.
+  const usage = yield* Effect.tryPromise(() => host.connection.request("usage/read", {})).pipe(
+    Effect.flatMap(decodeUsageReadResult),
+    Effect.timeout(3_000),
+    Effect.result,
+  );
+  return {
+    models,
+    ...(Result.isSuccess(usage) && usage.success.usage ? { usage: usage.success.usage } : {}),
+    usageFailed: Result.isFailure(usage),
+    ...(host.initializeResult.museHome ? { museHome: host.initializeResult.museHome } : {}),
+  };
 });
+
+export const discoverMuseModels = Effect.fn("discoverMuseModels")(
+  (...args: Parameters<typeof discoverMuseModelsAndUsage>) =>
+    discoverMuseModelsAndUsage(...args).pipe(Effect.map((result) => result.models)),
+);

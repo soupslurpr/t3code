@@ -17,6 +17,7 @@ import {
   ThreadId,
   type OrchestrationV2AppThread,
   type OrchestrationV2ProviderThread,
+  type ProviderUsageLimitsUpdate,
 } from "@t3tools/contracts";
 import * as HostProcess from "@t3tools/shared/HostProcess";
 import { LEAD_INSTRUCTION, LEAD_MODEL_ID, LEAD_ROLE_OPTION_ID } from "@t3tools/shared/lead";
@@ -142,7 +143,7 @@ const makeFakeMuse = Effect.fnUntraced(function* (idPrefix = "native", dispositi
       onServerRequest: () => {},
       closed: closed.promise,
     },
-    initializeResult: { grantedCapabilities: [] },
+    initializeResult: { grantedCapabilities: [], museHome: "/test/muse" },
     exited: exited.promise,
     close: async () => {
       closeCount += 1;
@@ -199,7 +200,7 @@ const makeHarness = Effect.fnUntraced(function* (
   policy = runtimePolicy,
   overrides: Pick<
     MuseAdapterV2Options,
-    "createHost" | "nativeEventLogger" | "modelCatalog" | "continuationRequests"
+    "createHost" | "nativeEventLogger" | "modelCatalog" | "continuationRequests" | "onUsageLimits"
   > = {},
 ) {
   let hostCount = 0;
@@ -791,6 +792,71 @@ describe("MuseAdapterV2", () => {
       assert.isUndefined(terminal.failure?.resetAt);
       assert.strictEqual(fake.closeCount(), 0);
     }).pipe(Effect.scoped, Effect.provide(testLayer)),
+  );
+
+  it.effect(
+    "publishes host-global subscription usage and skips malformed updates without ending the turn",
+    () =>
+      Effect.gen(function* () {
+        const fake = yield* makeFakeMuse();
+        const updates: ProviderUsageLimitsUpdate[] = [];
+        const harness = yield* makeHarness(
+          fake,
+          INSTANCE_ID,
+          undefined,
+          undefined,
+          undefined,
+          runtimePolicy,
+          {
+            onUsageLimits: (update) =>
+              Effect.sync(() => {
+                updates.push(update);
+              }),
+          },
+        );
+        const { nativeId } = yield* startConversation(harness, fake);
+        const usage = {
+          // Override the fake's default: host-global notifications have no session id.
+          sessionId: undefined,
+          observedAtMs: Date.parse("2026-10-12T12:00:00Z"),
+          tier: "pro",
+          window: {
+            usedPercent: 120,
+            resetsAtMs: Date.parse("2026-10-12T16:00:00Z"),
+            windowDurationMins: 300,
+          },
+          weekly: { usedPercent: 40, resetsAtMs: Date.parse("2026-10-19T12:00:00Z") },
+        };
+        yield* fake.emit("usage/changed", { ...usage, weekly: "malformed" });
+        yield* fake.emit("usage/changed", usage);
+        yield* fake.emit("turn/completed", { turnId: nativeId, terminal: "completed" });
+        const terminal = yield* harness.takeEvent("turn.terminal");
+        assert.strictEqual(terminal.status, "completed");
+        assert.strictEqual(fake.closeCount(), 0);
+        assert.deepStrictEqual(updates, [
+          {
+            complete: true,
+            windows: [
+              {
+                id: "window",
+                kind: "session",
+                label: "Session",
+                usedPercent: 100,
+                windowDurationMins: 300,
+                resetsAt: "2026-10-12T16:00:00.000Z",
+              },
+              {
+                id: "weekly",
+                kind: "weekly",
+                label: "Weekly",
+                usedPercent: 40,
+                windowDurationMins: 10080,
+                resetsAt: "2026-10-19T12:00:00.000Z",
+              },
+            ],
+          },
+        ]);
+      }).pipe(Effect.scoped, Effect.provide(testLayer)),
   );
 
   it.effect("moves a resumed session on another model back to the catalog default", () =>

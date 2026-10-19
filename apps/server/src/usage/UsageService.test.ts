@@ -175,6 +175,7 @@ const layerService = (input: {
         OPENCODE_DATA_DIR: NodePath.join(input.home, "opencode"),
         ANTIGRAVITY_DATA_DIR: NodePath.join(input.home, "antigravity"),
         XDG_CONFIG_HOME: NodePath.join(input.home, "config"),
+        XDG_DATA_HOME: NodePath.join(input.home, "data"),
         APPDATA: NodePath.join(input.home, "config"),
         ...input.environment,
       }),
@@ -457,6 +458,162 @@ describe("Codex usage history", () => {
 });
 
 describe("UsageService", () => {
+  it.live(
+    "rescans unchanged Muse transcripts from v7 without losing deleted history or counting copies twice",
+    () =>
+      Effect.gen(function* () {
+        const { home, settings } = yield* setup;
+        const sessions = NodePath.join(home, "data", "muse", "sessions");
+        const live = NodePath.join(sessions, "live", "session.jsonl");
+        const deleted = NodePath.join(sessions, "deleted", "session.jsonl");
+        const fork = NodePath.join(sessions, "fork", "session.jsonl");
+        const line = (id: string, event: unknown) =>
+          encodeUnknownJsonString({
+            id,
+            recorded_at: Date.parse("2026-08-01T10:00:00Z") * 1000,
+            stream: { kind: "session", id: "parent" },
+            payload: { event },
+          }) + "\n";
+        const ordinary = line("model-record", {
+          kind: "model_completed",
+          model: "muse-model",
+          usage: { input_tokens: 10, output_tokens: 2 },
+        });
+        const summaryLine = line("summary-record", {
+          kind: "context_compaction_candidate",
+          diagnostics: [
+            {
+              reason: "summary_call_metrics",
+              message: '{"input_tokens":100,"output_tokens":20,"reasoning_tokens":5}',
+            },
+          ],
+        });
+        yield* Effect.promise(async () => {
+          for (const [path, content] of [
+            [live, ordinary + summaryLine + summaryLine],
+            [fork, ordinary + summaryLine],
+            [
+              deleted,
+              line("deleted-record", {
+                kind: "model_completed",
+                model: "muse-model",
+                usage: { output_tokens: 3 },
+              }),
+            ],
+          ] as const) {
+            await NodeFSP.mkdir(NodePath.dirname(path), { recursive: true });
+            await NodeFSP.writeFile(path, content);
+          }
+        });
+        yield* Effect.gen(function* () {
+          const { stateDir } = yield* ServerConfig.ServerConfig;
+          const cachePath = NodePath.join(stateDir, SCAN_CACHE_FILE_NAME);
+          const legacyPath = NodePath.join(stateDir, "usage-scan-cache-v7.json");
+          const first = yield* UsageService.make;
+          yield* first.readSummary(WINDOW);
+          yield* first.awaitPersisted;
+          const legacy = yield* Effect.promise(async () => {
+            const document = decodeUnknownJsonString(await NodeFSP.readFile(cachePath, "utf8")) as {
+              models: string[];
+              files: Record<string, { r: unknown[][] }>;
+            };
+            for (const file of Object.values(document.files)) {
+              file.r = file.r.filter((row) => row[1] !== document.models.indexOf("unknown"));
+            }
+            const text = encodeUnknownJsonString({ ...document, version: 7 });
+            await NodeFSP.writeFile(legacyPath, text);
+            await NodeFSP.rm(cachePath);
+            await NodeFSP.rm(deleted);
+            return text;
+          });
+          const upgraded = yield* UsageService.make;
+          const summary = yield* upgraded.readSummary(WINDOW);
+          assert.strictEqual(totalOutputTokens(summary), 25);
+          const unknown = summary.buckets.find(
+            (bucket) => bucket.provider === "muse" && bucket.model === "unknown",
+          );
+          assert.strictEqual(unknown?.records, 1);
+          assert.strictEqual(unknown?.costSource, "unpriced");
+          assert.deepStrictEqual(unknown?.totals, {
+            uncachedInputTokens: 100,
+            cachedInputTokens: 0,
+            cacheCreationTokens: 0,
+            outputTokens: 20,
+            reasoningTokens: 5,
+          });
+          yield* upgraded.awaitPersisted;
+          const restarted = yield* UsageService.make;
+          assert.deepStrictEqual((yield* restarted.readSummary(WINDOW)).buckets, summary.buckets);
+          assert.strictEqual(
+            yield* Effect.promise(() => NodeFSP.readFile(legacyPath, "utf8")),
+            legacy,
+          );
+        }).pipe(Effect.provide(layerService({ prefix: "usage-muse-upgrade", home, settings })));
+      }).pipe(Effect.scoped),
+  );
+
+  it.live("reads Muse parent and subagent sessions once across copied records", () =>
+    Effect.gen(function* () {
+      const { home, settings } = yield* setup;
+      const dir = NodePath.join(home, "data", "muse", "sessions", "2026", "08", "01");
+      const line = (id: string, sessionId: string) =>
+        encodeUnknownJsonString({
+          id,
+          recorded_at: Date.parse("2026-08-01T10:00:00Z") * 1000,
+          stream: { kind: "session", id: sessionId },
+          payload: {
+            event: {
+              kind: "model_completed",
+              model: "muse-model",
+              usage: {
+                input_tokens: 100,
+                cache_read_tokens: 40,
+                cache_write_tokens: 10,
+                output_tokens: 20,
+                reasoning_tokens: 10,
+              },
+            },
+          },
+        }) + "\n";
+      yield* Effect.promise(async () => {
+        for (const [folder, content] of [
+          ["parent", line("parent-record", "parent")],
+          ["parent/subagent/child", line("child-record", "child")],
+          ["fork", line("parent-record", "parent")],
+        ]) {
+          const path = NodePath.join(dir, folder!);
+          await NodeFSP.mkdir(path, { recursive: true });
+          await NodeFSP.writeFile(NodePath.join(path, "session.jsonl"), content!);
+        }
+        await NodeFSP.writeFile(NodePath.join(dir, "ignored.jsonl"), line("ignored", "ignored"));
+      });
+      yield* Effect.gen(function* () {
+        const service = yield* UsageService.make;
+        const summary = yield* service.readSummary(WINDOW);
+        const muse = summary.buckets.filter((bucket) => bucket.provider === "muse");
+        assert.strictEqual(muse.length, 1);
+        assert.deepStrictEqual(muse[0]?.totals, {
+          uncachedInputTokens: 100,
+          cachedInputTokens: 80,
+          cacheCreationTokens: 20,
+          outputTokens: 40,
+          reasoningTokens: 20,
+        });
+        assert.strictEqual(muse[0]?.records, 2);
+        assert.strictEqual(muse[0]?.sessions, 2);
+        assert.strictEqual(muse[0]?.costSource, "unpriced");
+        assert.strictEqual(muse[0]?.unpricedRecords, 2);
+        assert.strictEqual(
+          summary.sources.find((source) => source.fingerprint.provider === "muse")?.scannedFiles,
+          3,
+        );
+      }).pipe(
+        Effect.scoped,
+        Effect.provide(layerService({ prefix: "usage-muse", home, settings })),
+      );
+    }).pipe(Effect.scoped),
+  );
+
   it.live(
     "repairs initial Codex prices after unchanged-file retries, persists evidence and corrections, and honors later native tiers",
     () =>
@@ -2142,7 +2299,7 @@ describe("UsageService", () => {
             60 + 20 * (version === 4 ? 1 : 2),
           );
           yield* upgraded.awaitPersisted;
-          assert.strictEqual(SCAN_CACHE_FILE_NAME, "usage-scan-cache-v7.json");
+          assert.strictEqual(SCAN_CACHE_FILE_NAME, "usage-scan-cache-v8.json");
           assert.strictEqual(
             yield* Effect.promise(() => NodeFSP.readFile(legacyPath, "utf8")),
             legacy,

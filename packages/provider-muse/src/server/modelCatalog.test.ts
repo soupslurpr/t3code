@@ -1,11 +1,14 @@
 import { describe, expect, it } from "@effect/vitest";
 import { MuseSettings } from "../settings.ts";
 import * as Effect from "effect/Effect";
+import * as Fiber from "effect/Fiber";
 import * as Schema from "effect/Schema";
+import * as TestClock from "effect/testing/TestClock";
 
 import type { MuseSdkHost } from "./sdk.ts";
 import {
   discoverMuseModels,
+  discoverMuseModelsAndUsage,
   museModelCapabilities,
   resolveMuseReasoningEffort,
 } from "./modelCatalog.ts";
@@ -21,7 +24,7 @@ const host = (catalog: Record<string, unknown>): MuseSdkHost => ({
     onProtocolError: () => {},
     closed: new Promise<void>(() => {}),
   },
-  initializeResult: { grantedCapabilities: [] },
+  initializeResult: { grantedCapabilities: [], museHome: "/test/muse" },
   exited: new Promise(() => {}),
   close: async () => {},
 });
@@ -63,6 +66,51 @@ describe("Muse model catalog", () => {
         ["muse-wonder-preview", "Muse Research Preview", false],
       ]);
     }),
+  );
+
+  it.effect(
+    "keeps the catalog when usage times out after a slow model read and closes the shared host",
+    () =>
+      Effect.gen(function* () {
+        const modelRequested = Promise.withResolvers<void>();
+        const usageRequested = Promise.withResolvers<void>();
+        const catalog = Promise.withResolvers<Record<string, unknown>>();
+        let closeCount = 0;
+        let hostCount = 0;
+        const fake = host({});
+        const discovery = yield* discoverMuseModelsAndUsage(settings, {}, undefined, async () => {
+          hostCount += 1;
+          return {
+            ...fake,
+            connection: {
+              ...fake.connection,
+              request: async (method) => {
+                if (method === "model/list") {
+                  modelRequested.resolve();
+                  return catalog.promise;
+                }
+                usageRequested.resolve();
+                return new Promise<Record<string, unknown>>(() => {});
+              },
+            },
+            close: async () => {
+              closeCount += 1;
+            },
+          };
+        }).pipe(Effect.scoped, Effect.forkChild);
+        yield* Effect.promise(() => modelRequested.promise);
+        yield* TestClock.adjust(11_000);
+        catalog.resolve({ providerId: "meta", models: [row("muse-model")] });
+        yield* Effect.promise(() => usageRequested.promise);
+        yield* TestClock.adjust(3_000);
+        const result = yield* Fiber.join(discovery);
+        expect(result.models.map((model) => model.slug)).toEqual(["muse-model"]);
+        expect(result.usageFailed).toBe(true);
+        expect(result.usage).toBeUndefined();
+        expect(result.museHome).toBe("/test/muse");
+        expect(hostCount).toBe(1);
+        expect(closeCount).toBe(1);
+      }),
   );
 
   it.effect("uses the labels, efforts and defaults that model/list sends", () =>

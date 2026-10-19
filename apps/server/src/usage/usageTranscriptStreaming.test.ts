@@ -108,6 +108,55 @@ async function scan(
 }
 
 describe("large usage records", () => {
+  it("reads Muse summary metrics after large replacement text in both parser paths", async () => {
+    const entry = {
+      id: "summary-record",
+      recorded_at: Date.parse(timestamp) * 1000,
+      stream: { kind: "session", id: "session-1" },
+      payload: {
+        event: {
+          kind: "context_compaction_candidate",
+          replacement: { kind: "summary_text", text: content },
+          diagnostics: [
+            {
+              reason: "summary_call_metrics",
+              message: JSON.stringify({
+                input_tokens: 100,
+                cache_read_tokens: 20,
+                output_tokens: 10,
+                reasoning_tokens: 5,
+              }),
+            },
+          ],
+        },
+      },
+    };
+    const streamed = await scan([entry], "muse");
+    const buffered = await readWithDefaultThreshold(
+      NodePath.join(dir, "history.jsonl"),
+      TEST_FORMATS.muse,
+    );
+    expect(streamed.records).toEqual(buffered?.records);
+    expect(streamed.records).toEqual([
+      {
+        provider: "muse",
+        model: "unknown",
+        sessionId: "session-1",
+        timestampMs: Date.parse(timestamp),
+        totals: {
+          uncachedInputTokens: 80,
+          cachedInputTokens: 20,
+          cacheCreationTokens: 0,
+          outputTokens: 10,
+          reasoningTokens: 5,
+        },
+        reportedCostUsd: null,
+        speed: "standard",
+        dedupeKey: "summary-record",
+      },
+    ]);
+  });
+
   it("keeps Pi model, cost, and fork identity after large assistant content", async () => {
     const entry = {
       type: "message",

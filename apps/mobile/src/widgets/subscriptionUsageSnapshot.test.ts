@@ -105,6 +105,7 @@ describe("subscription widget snapshots", () => {
   it.each([
     { name: "Codex", driver: "codex" },
     { name: "Claude", driver: "claudeAgent" },
+    { name: "Muse Code", driver: "muse" },
   ])("only shows $name when $name and OpenCode are configured", ({ name, driver }) => {
     const snapshot = buildSubscriptionUsageSnapshot(
       presentations([
@@ -139,6 +140,40 @@ describe("subscription widget snapshots", () => {
     expect(snapshot.providers).toEqual([
       { name: "Codex", detail: "No limits available", windows: [], expiresAt: 0, totalWindows: 0 },
     ]);
+  });
+  it("pools Muse instances sharing a home once and expires its observed windows", () => {
+    const muse = provider({
+      instanceId: ProviderInstanceId.make("muse-one"),
+      driver: ProviderDriverKind.make("muse"),
+      auth: { status: "unknown" },
+      usageLimits: {
+        checkedAt,
+        credentialFingerprint: "shared-muse-home",
+        windows: [
+          { ...window, id: "window", label: "Session" },
+          { ...window, id: "weekly", kind: "weekly", label: "Weekly", usedPercent: 20 },
+        ],
+      },
+    });
+    const snapshot = buildSubscriptionUsageSnapshot(
+      presentations([muse, { ...muse, instanceId: ProviderInstanceId.make("muse-two") }]),
+      deepLink,
+    );
+    expect(snapshot.checkedAt).toBe(now);
+    expect(snapshot.providers).toEqual([
+      expect.objectContaining({
+        name: "Muse Code",
+        detail: "Subscription remaining",
+        totalWindows: 2,
+        windows: [
+          expect.objectContaining({ label: "Session", remaining: 60 }),
+          expect.objectContaining({ label: "Weekly", remaining: 80 }),
+        ],
+      }),
+    ]);
+    expect(
+      subscriptionUsageTimeline(snapshot, now + 10 * 60_000)[0]?.props.providers[0]?.windows,
+    ).toEqual([]);
   });
   it("uses upstream deduplication for a native account also present in a proxy hub", () => {
     const input = new Map([

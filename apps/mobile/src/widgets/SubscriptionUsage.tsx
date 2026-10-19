@@ -62,9 +62,11 @@ function SubscriptionUsage(
   const columns = providers.map((provider) => {
     const stale = provider.windows.length > 0 && now >= provider.expiresAt;
     const period =
-      widgetEnvironment.configuration?.[
-        provider.name === "Claude" ? "claudePeriod" : "codexPeriod"
-      ] ?? "auto";
+      (provider.name === "Claude"
+        ? widgetEnvironment.configuration?.claudePeriod
+        : provider.name === "Codex"
+          ? widgetEnvironment.configuration?.codexPeriod
+          : undefined) ?? "auto";
     const windows = stale
       ? []
       : provider.windows.filter((window) => period === "auto" || window.kind === period);
@@ -97,7 +99,17 @@ function SubscriptionUsage(
     const barModifiers = [
       progressViewStyle("linear"),
       frame({ height: 4 }),
-      ...(monochrome ? [] : [tint(provider.name === "Claude" ? "#d97757" : "#8e8e93")]),
+      ...(monochrome
+        ? []
+        : [
+            tint(
+              provider.name === "Claude"
+                ? "#d97757"
+                : provider.name === "Muse Code"
+                  ? "#0082fb"
+                  : "#8e8e93",
+            ),
+          ]),
     ];
     if (accessory) {
       return (
