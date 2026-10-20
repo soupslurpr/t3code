@@ -1,7 +1,7 @@
 import type { SendUserTurnOptions } from "@muse-code/sdk";
 import { ModelCapabilities, ServerProviderModel } from "@t3tools/contracts";
 import { MuseSettings } from "../settings.ts";
-import { LEAD_MODEL_ID, LEAD_ROLE_OPTION_ID } from "@t3tools/shared/lead";
+import { isLeadModel, LEAD_ROLE_OPTION_ID } from "@t3tools/shared/lead";
 import { createModelCapabilities, getProviderOptionDescriptors } from "@t3tools/shared/model";
 import * as Effect from "effect/Effect";
 import * as Result from "effect/Result";
@@ -57,7 +57,7 @@ export function museModelCapabilities(
   const reported = model?.variants !== undefined && model.variants !== "unknown";
   const efforts = (reported ? model.variants : FALLBACK_EFFORTS).filter(isMuseReasoningEffort);
   const preferredDefault =
-    model?.modelId === LEAD_MODEL_ID && efforts.includes("max")
+    isLeadModel(model?.modelId) && efforts.includes("max")
       ? "max"
       : reported
         ? model?.defaultReasoningEffort
@@ -83,7 +83,7 @@ export function museModelCapabilities(
           };
         }),
       },
-      ...(model?.modelId === LEAD_MODEL_ID
+      ...(isLeadModel(model?.modelId)
         ? [
             {
               id: LEAD_ROLE_OPTION_ID,

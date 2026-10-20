@@ -32,7 +32,7 @@ import type {
 import { draftModelPickMatchesThread } from "@t3tools/shared/model";
 import {
   getLeadRole,
-  LEAD_MODEL_ID,
+  isLeadModel,
   withLeadRole,
   withoutLeadRoleOptions,
   type LeadRole,
@@ -1520,7 +1520,7 @@ export function updateComposerDraftSettings(
       ...existing,
       ...settings,
       ...(leadRole ? { leadRole } : {}),
-      ...(modelSelection?.model === LEAD_MODEL_ID && leadRole
+      ...(modelSelection && isLeadModel(modelSelection.model) && leadRole
         ? { modelSelection: withLeadRole(modelSelection, leadRole) }
         : {}),
     });

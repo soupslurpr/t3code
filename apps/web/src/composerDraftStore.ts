@@ -50,7 +50,7 @@ import type {
 } from "@t3tools/client-runtime/state/shell";
 import {
   getLeadRole,
-  LEAD_MODEL_ID,
+  isLeadModel,
   withLeadRole,
   withoutLeadRoleOptions,
   type LeadAvailability,
@@ -2933,7 +2933,7 @@ const composerDraftStore = create<ComposerDraftStoreState>()(
             const nextMap = compactModelSelectionByProvider(stickyMap);
             if (base.leadRole) {
               for (const [instanceId, selection] of Object.entries(nextMap)) {
-                if (selection.model === LEAD_MODEL_ID) {
+                if (isLeadModel(selection.model)) {
                   nextMap[instanceId as ProviderInstanceId] = cloneModelSelection(
                     withLeadRole(selection, base.leadRole),
                   );
@@ -3049,7 +3049,7 @@ const composerDraftStore = create<ComposerDraftStoreState>()(
                   current?.options,
                 );
               }
-              if (normalized.model === LEAD_MODEL_ID && leadRole) {
+              if (isLeadModel(normalized.model) && leadRole) {
                 nextMap[normalized.instanceId] = withLeadRole(
                   nextMap[normalized.instanceId]!,
                   leadRole,
@@ -3162,7 +3162,7 @@ const composerDraftStore = create<ComposerDraftStoreState>()(
             }
             const leadRole = base.leadRole ?? getLeadRole(currentForProvider);
             const nextSelection = nextMap[instanceKey];
-            if (nextSelection?.model === LEAD_MODEL_ID && leadRole) {
+            if (nextSelection && isLeadModel(nextSelection.model) && leadRole) {
               nextMap[instanceKey] = withLeadRole(nextSelection, leadRole);
             }
 

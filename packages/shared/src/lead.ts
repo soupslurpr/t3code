@@ -9,11 +9,16 @@ export const LEAD_INSTRUCTION =
   "Act as lead here, owning design and decisions, and use subagents as you see fit; develop your own concrete design before asking subagents to implement it, critique it, or develop their own; by default, have Astra (`gpt-6-astra`) at Max implement, test, and push back on your plans, and Sol (`gpt-6.1-sol`) at Extra High review, and verify their work yourself. Use `delegate_task` for subagents.";
 
 export const LEAD_MODEL_ID = "muse-wonder-full-1.0";
+export const LEAD_MODEL_IDS = [LEAD_MODEL_ID, "muse-wonder-1.0"] as const;
 export const LEAD_ROLE_OPTION_ID = "leadRole";
 export type LeadRole = "direct" | "lead";
 
+export function isLeadModel(model: string | undefined): boolean {
+  return LEAD_MODEL_IDS.some((id) => id === model);
+}
+
 export function getLeadRole(selection: ModelSelection | null | undefined): LeadRole | undefined {
-  if (selection?.model !== LEAD_MODEL_ID) return undefined;
+  if (!selection || !isLeadModel(selection.model)) return undefined;
   const role = selection.options?.find((option) => option.id === LEAD_ROLE_OPTION_ID)?.value;
   return role === "direct" || role === "lead" ? role : undefined;
 }
@@ -41,9 +46,14 @@ export function withoutLeadRoleOptions(
 }
 
 export const LEAD_MODEL_REQUIREMENTS = [
-  { driver: "muse", model: LEAD_MODEL_ID, effort: "max", label: "Muse Wonder Full (Max)" },
-  { driver: "codex", model: "gpt-6-astra", effort: "max", label: "Astra (Max)" },
-  { driver: "codex", model: "gpt-6.1-sol", effort: "xhigh", label: "Sol (Extra High)" },
+  {
+    driver: "muse",
+    models: LEAD_MODEL_IDS,
+    effort: "max",
+    label: "Muse Wonder or Wonder Full (Max)",
+  },
+  { driver: "codex", models: ["gpt-6-astra"], effort: "max", label: "Astra (Max)" },
+  { driver: "codex", models: ["gpt-6.1-sol"], effort: "xhigh", label: "Sol (Extra High)" },
 ] as const;
 
 export interface LeadAvailability {
@@ -67,7 +77,10 @@ export function resolveLeadAvailabilityFromModels(
   for (const requirement of LEAD_MODEL_REQUIREMENTS) {
     const selections: ModelSelection[] = [];
     for (const model of models) {
-      if (model.driver !== requirement.driver || model.selection.model !== requirement.model)
+      if (
+        model.driver !== requirement.driver ||
+        !requirement.models.some((id) => id === model.selection.model)
+      )
         continue;
       // The composer's primary select is the effort control. Its id stays catalog-owned.
       const effort = getProviderOptionDescriptors({ caps: model.capabilities ?? {} }).find(
@@ -90,12 +103,19 @@ export function resolveLeadAvailabilityFromModels(
       );
     }
     if (selections.length === 0) {
-      missing.push(`${requirement.driver} · ${requirement.model} · ${requirement.effort}`);
+      missing.push(
+        `${requirement.driver} · ${requirement.models.join(" or ")} · ${requirement.effort}`,
+      );
     }
     if (requirement.driver === "muse") wonderSelections = selections;
   }
   return {
-    selection: missing.length === 0 ? (wonderSelections[0] ?? null) : null,
+    selection:
+      missing.length === 0
+        ? (wonderSelections.find((selection) => selection.model === LEAD_MODEL_ID) ??
+          wonderSelections[0] ??
+          null)
+        : null,
     missing,
     wonderSelections,
     wonderDefaultSelections,
@@ -163,7 +183,7 @@ export function leadUnavailableHint(
     (requirement) =>
       requirement.driver !== "muse" &&
       availability.missing.includes(
-        `${requirement.driver} · ${requirement.model} · ${requirement.effort}`,
+        `${requirement.driver} · ${requirement.models.join(" or ")} · ${requirement.effort}`,
       ),
   ).map((requirement) => requirement.label);
   return labels.length === 0 ? null : `Lead unavailable · needs ${labels.join(" + ")}`;

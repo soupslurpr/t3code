@@ -21,6 +21,29 @@ it("keeps eligible Lead, including an implicit Max default, without rewriting op
   }
 });
 
+it("dispatches ordinary Wonder as Lead without Full and falls back when a helper is missing", () => {
+  const selection = { ...leadSelection, model: "muse-wonder-1.0" };
+  const ordinaryProviders = providers.map((provider) =>
+    provider.driver === "muse"
+      ? {
+          ...provider,
+          models: provider.models.map((model) => ({
+            ...model,
+            slug: selection.model,
+            name: selection.model,
+          })),
+        }
+      : provider,
+  );
+  expect(resolveLeadSelectionForTurn(selection, ordinaryProviders, settings, projectId)).toBe(
+    selection,
+  );
+  expect(
+    resolveLeadSelectionForTurn(selection, ordinaryProviders.slice(0, 2), settings, projectId),
+  ).toEqual(withLeadRole(selection, "direct"));
+  expect(selection.options).toEqual(leadSelection.options);
+});
+
 it.each([astraInstanceId, solInstanceId])(
   "falls back when %s loses advertised effort and recovers without changing the preference",
   (instanceId) => {

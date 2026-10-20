@@ -12,9 +12,9 @@ import {
 } from "@t3tools/contracts";
 import type { QueuedThreadMessage } from "../../state/thread-outbox-model";
 
-export function leadServerConfig(): ServerConfig {
+export function leadServerConfig(museModel = "muse-wonder-full-1.0"): ServerConfig {
   const providers: ServerProvider[] = [
-    { driver: "muse", instanceId: "muse_personal", model: "muse-wonder-full-1.0", effort: "max" },
+    { driver: "muse", instanceId: "muse_personal", model: museModel, effort: "max" },
     { driver: "codex", instanceId: "codex_astra", model: "gpt-6-astra", effort: "max" },
     { driver: "codex", instanceId: "codex_sol", model: "gpt-6.1-sol", effort: "xhigh" },
   ].map((row) => ({

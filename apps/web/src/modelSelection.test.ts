@@ -23,9 +23,9 @@ import {
   resolveLeadSelectionForDispatch,
 } from "./modelSelection";
 
-function leadCatalog() {
+function leadCatalog(museModel = "muse-wonder-full-1.0") {
   const providers = [
-    { driver: "muse", instanceId: "muse_personal", model: "muse-wonder-full-1.0", effort: "max" },
+    { driver: "muse", instanceId: "muse_personal", model: museModel, effort: "max" },
     { driver: "codex", instanceId: "codex_astra", model: "gpt-6-astra", effort: "max" },
     { driver: "codex", instanceId: "codex_sol", model: "gpt-6.1-sol", effort: "xhigh" },
   ].map((row) => ({
@@ -65,6 +65,28 @@ function leadCatalog() {
 }
 
 describe("Lead catalog eligibility", () => {
+  it("selects and dispatches ordinary Wonder without requiring Full", () => {
+    const { providers, settings } = leadCatalog("muse-wonder-1.0");
+    const availability = resolveLeadAvailability(settings, providers, null);
+    expect(availability.selection).toEqual({
+      instanceId: "muse_personal",
+      model: "muse-wonder-1.0",
+      options: [{ id: "catalog-effort", value: "max" }],
+    });
+    const selection = {
+      ...availability.selection!,
+      options: [...availability.selection!.options!, { id: "leadRole", value: "lead" }],
+    };
+    expect(resolveLeadSelectionForDispatch(selection, availability)).toBe(selection);
+    expect(
+      resolveLeadSelectionForDispatch(
+        selection,
+        resolveLeadAvailability(settings, providers.slice(0, 2), null),
+      ).options,
+    ).toContainEqual({ id: "leadRole", value: "direct" });
+    expect(selection.options).toContainEqual({ id: "leadRole", value: "lead" });
+  });
+
   it("resolves instance and effort option ids from the live destination catalog", () => {
     const { providers, settings } = leadCatalog();
     const availability = resolveLeadAvailability(settings, providers, null);

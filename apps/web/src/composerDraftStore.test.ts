@@ -35,6 +35,7 @@ import {
   type ProviderOptionSelection,
 } from "@t3tools/contracts";
 import { createModelSelection } from "@t3tools/shared/model";
+import { LEAD_MODEL_IDS } from "@t3tools/shared/lead";
 import {
   collectAssistantCitations,
   serializeAssistantCitation,
@@ -3843,18 +3844,35 @@ describe("composerDraftStore attachment references", () => {
   });
 });
 
-describe("Lead role option persistence", () => {
+describe.each(LEAD_MODEL_IDS)("Lead role option persistence (%s)", (model) => {
   const target = scopeThreadRef(TEST_ENVIRONMENT_ID, ThreadId.make("role-selection"));
-  const selection = createModelSelection(
-    ProviderInstanceId.make("muse_work"),
-    "muse-wonder-full-1.0",
-    [
-      { id: "reasoningEffort", value: "max" },
-      { id: "leadRole", value: "direct" },
-    ],
-  );
+  const selection = createModelSelection(ProviderInstanceId.make("muse_work"), model, [
+    { id: "reasoningEffort", value: "max" },
+    { id: "leadRole", value: "direct" },
+  ]);
   beforeEach(resetComposerDraftStore);
   afterEach(resetComposerDraftStore);
+
+  it.each(["direct", "lead"])("keeps %s when switching between Wonder models", (role) => {
+    const store = useComposerDraftStore.getState();
+    store.setModelSelection(target, {
+      ...selection,
+      options: [
+        { id: "reasoningEffort", value: "max" },
+        { id: "leadRole", value: role },
+      ],
+    });
+    const other = {
+      ...selection,
+      model: model === "muse-wonder-full-1.0" ? "muse-wonder-1.0" : "muse-wonder-full-1.0",
+      options: [{ id: "reasoningEffort", value: "max" }],
+    };
+    store.setModelSelection(target, other, { explicit: true, replaceOptions: true });
+    expect(store.getComposerDraft(target)?.modelSelectionByProvider[selection.instanceId]).toEqual({
+      ...other,
+      options: [...other.options, { id: "leadRole", value: role }],
+    });
+  });
 
   it("ignores obsolete draft Lead fields on hydration without changing the prompt or model", () => {
     const store = useComposerDraftStore.getState();

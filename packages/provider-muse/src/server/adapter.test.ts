@@ -599,6 +599,12 @@ describe("MuseAdapterV2", () => {
     [LEAD_MODEL_ID, undefined, undefined, false],
     [LEAD_MODEL_ID, undefined, "lead", true],
     [MUSE_DEFAULT_MODEL, undefined, "lead", true],
+    ["muse-wonder-1.0", "max", "lead", true],
+    ["muse-wonder-1.0", "max", "direct", false],
+    ["muse-wonder-1.0", "high", "lead", false],
+    ["muse-wonder-1.0", "max", undefined, false],
+    ["muse-wonder-1.0", undefined, "lead", true],
+    ["muse-wonder-1.0", undefined, undefined, false],
   ] as const)("sends %s at %s with leadRole=%s and hidden Lead=%s", ([model, effort, role, lead]) =>
     Effect.gen(function* () {
       const fake = yield* makeFakeMuse();
@@ -611,7 +617,7 @@ describe("MuseAdapterV2", () => {
         runtimePolicy,
         {
           modelCatalog: Effect.succeed(
-            [LEAD_MODEL_ID, MODEL].map((slug) => ({
+            [LEAD_MODEL_ID, "muse-wonder-1.0", MODEL].map((slug) => ({
               slug,
               name: slug,
               isCustom: false,
@@ -626,6 +632,7 @@ describe("MuseAdapterV2", () => {
         },
       );
       const input = yield* turnInput(harness.providerThread);
+      const expectedEffort = effort ?? "max";
       const selection = {
         instanceId: INSTANCE_ID,
         model,
@@ -640,14 +647,14 @@ describe("MuseAdapterV2", () => {
         appThread: { ...input.appThread, modelSelection: selection },
       });
       const call = yield* fake.takeCall("turn/start");
-      assert.strictEqual(call.params.reasoningEffort, effort ?? "max");
+      assert.strictEqual(call.params.reasoningEffort, expectedEffort);
       assert.deepStrictEqual(call.params.input, [
         {
           type: "text",
           text: buildRuntimeInstructions({
             harness: "Muse Code",
             model: model === MUSE_DEFAULT_MODEL ? LEAD_MODEL_ID : model,
-            reasoningEffort: effort ?? "max",
+            reasoningEffort: expectedEffort,
           }),
         },
         ...(lead ? [{ type: "text", text: LEAD_INSTRUCTION }] : []),

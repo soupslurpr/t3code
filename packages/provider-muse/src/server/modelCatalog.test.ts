@@ -1,4 +1,5 @@
 import { describe, expect, it } from "@effect/vitest";
+import { LEAD_MODEL_IDS } from "@t3tools/shared/lead";
 import { MuseSettings } from "../settings.ts";
 import * as Effect from "effect/Effect";
 import * as Fiber from "effect/Fiber";
@@ -199,45 +200,72 @@ describe("Muse model catalog", () => {
     }),
   );
 
-  it.each(["unknown", undefined] as const)(
-    "defaults Wonder Full to max with %s variants",
-    (variants) => {
-      const capabilities = museModelCapabilities({
-        modelId: "muse-wonder-full-1.0",
-        variants,
-        defaultReasoningEffort: "high",
-      });
-      expect(capabilities.optionDescriptors).toEqual([
-        {
-          id: "reasoningEffort",
-          label: "Reasoning",
-          type: "select",
-          currentValue: "max",
-          options: [
-            { id: "low", label: "Low" },
-            { id: "medium", label: "Medium" },
-            { id: "high", label: "High" },
-            { id: "xhigh", label: "Extra High" },
-            { id: "max", label: "Max", isDefault: true },
-          ],
-        },
-        {
-          id: "leadRole",
-          label: "Role",
-          type: "select",
-          options: [
-            { id: "direct", label: "Direct", isDefault: true },
-            { id: "lead", label: "Lead" },
-          ],
-          currentValue: "direct",
-        },
-      ]);
-    },
-  );
-
-  it("keeps Wonder Full's reported default when max is unavailable", () => {
+  it("defaults ordinary Wonder to Max and offers its Lead role", () => {
     const capabilities = museModelCapabilities({
-      modelId: "muse-wonder-full-1.0",
+      modelId: "muse-wonder-1.0",
+      variants: ["high", "max"],
+      defaultReasoningEffort: "high",
+    });
+    expect(resolveMuseReasoningEffort(capabilities, undefined)).toBe("max");
+    expect(resolveMuseReasoningEffort(capabilities, "max")).toBe("max");
+    expect(resolveMuseReasoningEffort(capabilities, "high")).toBe("high");
+    expect(capabilities.optionDescriptors?.find((option) => option.id === "leadRole")).toEqual({
+      id: "leadRole",
+      label: "Role",
+      type: "select",
+      options: [
+        { id: "direct", label: "Direct", isDefault: true },
+        { id: "lead", label: "Lead" },
+      ],
+      currentValue: "direct",
+    });
+    expect(
+      museModelCapabilities({ modelId: "muse-spark-1.3" }).optionDescriptors?.some(
+        (option) => option.id === "leadRole",
+      ),
+    ).toBe(false);
+  });
+
+  it.each(
+    LEAD_MODEL_IDS.flatMap((modelId) =>
+      (["unknown", undefined] as const).map((variants) => ({ modelId, variants })),
+    ),
+  )("defaults $modelId to max with $variants variants", ({ modelId, variants }) => {
+    const capabilities = museModelCapabilities({
+      modelId,
+      variants,
+      defaultReasoningEffort: "high",
+    });
+    expect(capabilities.optionDescriptors).toEqual([
+      {
+        id: "reasoningEffort",
+        label: "Reasoning",
+        type: "select",
+        currentValue: "max",
+        options: [
+          { id: "low", label: "Low" },
+          { id: "medium", label: "Medium" },
+          { id: "high", label: "High" },
+          { id: "xhigh", label: "Extra High" },
+          { id: "max", label: "Max", isDefault: true },
+        ],
+      },
+      {
+        id: "leadRole",
+        label: "Role",
+        type: "select",
+        options: [
+          { id: "direct", label: "Direct", isDefault: true },
+          { id: "lead", label: "Lead" },
+        ],
+        currentValue: "direct",
+      },
+    ]);
+  });
+
+  it.each(LEAD_MODEL_IDS)("keeps %s's reported default when max is unavailable", (modelId) => {
+    const capabilities = museModelCapabilities({
+      modelId,
       variants: ["low", "high"],
       defaultReasoningEffort: "high",
     });
@@ -283,16 +311,19 @@ describe("Muse model catalog", () => {
     ]);
   });
 
-  it("defaults implicit Wonder Full effort to max and preserves explicit choices", () => {
-    const capabilities = museModelCapabilities({
-      modelId: "muse-wonder-full-1.0",
-      variants: ["low", "high", "max"],
-      defaultReasoningEffort: "high",
-    });
-    expect(resolveMuseReasoningEffort(capabilities, undefined)).toBe("max");
-    expect(resolveMuseReasoningEffort(capabilities, "high")).toBe("high");
-    expect(resolveMuseReasoningEffort(capabilities, "low")).toBe("low");
-  });
+  it.each(LEAD_MODEL_IDS)(
+    "defaults implicit %s effort to max and preserves explicit choices",
+    (modelId) => {
+      const capabilities = museModelCapabilities({
+        modelId,
+        variants: ["low", "high", "max"],
+        defaultReasoningEffort: "high",
+      });
+      expect(resolveMuseReasoningEffort(capabilities, undefined)).toBe("max");
+      expect(resolveMuseReasoningEffort(capabilities, "high")).toBe("high");
+      expect(resolveMuseReasoningEffort(capabilities, "low")).toBe("low");
+    },
+  );
 
   it("normalizes saved and implicit efforts against the selected model before dispatch", () => {
     const fallback = museModelCapabilities();

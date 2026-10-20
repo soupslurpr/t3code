@@ -16,16 +16,20 @@ import {
 import { leadQueuedTask, leadServerConfig, wonderMax } from "./lead-test-fixtures";
 
 describe("mobile Lead availability", () => {
-  it("routes by configured instance and uses the catalog's effort id", () => {
-    expect(resolveMobileLeadAvailability(leadServerConfig(), null)).toEqual({
-      selection: wonderMax,
-      wonderSelections: [wonderMax],
-      wonderDefaultSelections: [
-        { ...wonderMax, options: [{ id: "catalog-effort", value: "low" }] },
-      ],
-      missing: [],
-    });
-  });
+  it.each(["muse-wonder-full-1.0", "muse-wonder-1.0"])(
+    "routes %s by configured instance and uses the catalog's effort id",
+    (model) => {
+      const selection = { ...wonderMax, model };
+      expect(resolveMobileLeadAvailability(leadServerConfig(model), null)).toEqual({
+        selection,
+        wonderSelections: [selection],
+        wonderDefaultSelections: [
+          { ...selection, options: [{ id: "catalog-effort", value: "low" }] },
+        ],
+        missing: [],
+      });
+    },
+  );
 
   it("requires all three models on the destination environment", () => {
     const config = leadServerConfig();
@@ -79,7 +83,7 @@ describe("mobile Lead availability", () => {
       wonderSelections: [],
       wonderDefaultSelections: [],
       missing: [
-        "muse · muse-wonder-full-1.0 · max",
+        "muse · muse-wonder-full-1.0 or muse-wonder-1.0 · max",
         "codex · gpt-6-astra · max",
         "codex · gpt-6.1-sol · xhigh",
       ],
@@ -142,6 +146,22 @@ describe("mobile Lead availability", () => {
 
 describe("mobile Role selections", () => {
   const availability = resolveMobileLeadAvailability(leadServerConfig(), null);
+  it("defaults ordinary Wonder at Max to Lead and checks helpers at dispatch", () => {
+    const config = leadServerConfig("muse-wonder-1.0");
+    const selection = { ...wonderMax, model: "muse-wonder-1.0" };
+    const lead = defaultMobileLeadRole(selection, resolveMobileLeadAvailability(config, null));
+    expect(lead.options).toContainEqual({ id: "leadRole", value: "lead" });
+    expect(resolveMobileLeadSelectionForDispatch(lead, config, null)).toBe(lead);
+    expect(
+      resolveMobileLeadSelectionForDispatch(
+        lead,
+        { ...config, providers: config.providers.slice(0, 2) },
+        null,
+      ),
+    ).toEqual(withMobileLeadRole(selection, "direct"));
+    expect(lead.options).toContainEqual({ id: "leadRole", value: "lead" });
+  });
+
   it("defaults an eligible absent option once, preserving the applied selection", () => {
     const selection = {
       ...wonderMax,
