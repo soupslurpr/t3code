@@ -1,5 +1,7 @@
 import { assert, describe, it } from "@effect/vitest";
+import { ProviderInstanceId } from "@t3tools/contracts";
 import { Tool } from "effect/ai";
+import * as Schema from "effect/Schema";
 
 import {
   CreateThreadsTool,
@@ -9,7 +11,50 @@ import {
   ThreadUpdateTool,
 } from "./tools.ts";
 
+const decodeDelegateParameters = Schema.decodeUnknownSync(DelegateTaskTool.parametersSchema);
+
 describe("orchestrator MCP tool guidance", () => {
+  it("decodes optional JSON nulls without losing the requested model or effort", () => {
+    const target = {
+      providerInstanceId: ProviderInstanceId.make("custom-codex"),
+      model: "custom-model",
+      options: [{ id: "reasoningEffort", value: "max" }],
+    };
+    assert.deepEqual(
+      decodeDelegateParameters({
+        task: "Review the change.",
+        target: { ...target, driverKind: null },
+        runtimeMode: null,
+        timeoutMs: null,
+      }),
+      {
+        task: "Review the change.",
+        target: { ...target, driverKind: undefined },
+        runtimeMode: undefined,
+        timeoutMs: undefined,
+      },
+    );
+  });
+
+  it("still rejects malformed string nulls and invalid model option values", () => {
+    assert.throws(
+      () => decodeDelegateParameters({ task: "Review.", runtimeMode: "null" }),
+      /runtimeMode/,
+    );
+    assert.throws(
+      () => decodeDelegateParameters({ task: "Review.", timeoutMs: "null" }),
+      /timeoutMs/,
+    );
+    assert.throws(
+      () =>
+        decodeDelegateParameters({
+          task: "Review.",
+          target: { options: { reasoningEffort: null } },
+        }),
+      /reasoningEffort/,
+    );
+  });
+
   it("directs subagent requests to delegation instead of ordinary threads", () => {
     assert.include(DelegateTaskTool.description ?? "", "child agent/subagent");
     assert.include(DelegateTaskTool.description ?? "", "cross-provider");

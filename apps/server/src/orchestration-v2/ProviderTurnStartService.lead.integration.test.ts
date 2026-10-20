@@ -248,7 +248,7 @@ const finishTurn = Effect.gen(function* () {
 });
 
 it.live(
-  "scheduled Lead falls back for one turn and recovers without changing its saved selections",
+  "scheduled Lead records its effective role and recovers without changing saved preferences",
   () =>
     Effect.scoped(
       Effect.gen(function* () {
@@ -271,7 +271,7 @@ it.live(
           expect(h.turns[0]?.modelSelection).toEqual(withLeadRole(leadSelection, "direct"));
           expect(h.turns[0]?.message.scheduledTaskId).toBe(task.id);
           expect(first.thread.modelSelection).toEqual(leadSelection);
-          expect(first.runs[0]?.modelSelection).toEqual(leadSelection);
+          expect(first.runs[0]?.modelSelection).toEqual(withLeadRole(leadSelection, "direct"));
           expect((yield* scheduled.list()).tasks[0]?.modelSelection).toEqual(leadSelection);
           expect(h.selections.map(({ stage }) => stage)).toEqual(["open", "ensure", "turn"]);
           for (const { selection } of h.selections) {
@@ -286,7 +286,7 @@ it.live(
           }
           expect(second.thread.modelSelection).toEqual(leadSelection);
           expect(second.runs.map((run) => run.modelSelection)).toEqual([
-            leadSelection,
+            withLeadRole(leadSelection, "direct"),
             leadSelection,
           ]);
           expect((yield* scheduled.list()).tasks[0]?.modelSelection).toEqual(leadSelection);
@@ -320,7 +320,7 @@ it.live.each([astraInstanceId, solInstanceId])(
           expect(h.turns[0]?.modelSelection).toEqual(withLeadRole(leadSelection, "direct"));
           expect(h.turns[0]?.message.creationSource).toBe("mcp");
           expect(projection.thread.modelSelection).toEqual(leadSelection);
-          expect(projection.runs[0]?.modelSelection).toEqual(leadSelection);
+          expect(projection.runs[0]?.modelSelection).toEqual(withLeadRole(leadSelection, "direct"));
         }).pipe(Effect.provide(h.layer));
       }),
     ),

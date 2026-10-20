@@ -1693,9 +1693,12 @@ describe("orchestrator MCP toolkit", () => {
               task: delegatedPrompt,
               target: {
                 providerInstanceId: claudeInstanceId,
+                driverKind: null,
                 model: claudeModel,
                 options: { effort: "max", fastMode: true },
               },
+              title: null,
+              runtimeMode: null,
               mode: "wait",
               timeoutMs: 10_000,
               clientRequestId: "delegate-claude-1",

@@ -165,7 +165,12 @@ export const OrchestratorMcpDelegateTaskInput = Schema.Struct({
   task: OrchestratorMcpPrompt.annotate({
     description: "Self-contained task for one delegated child agent/subagent.",
   }),
-  target: Schema.optional(OrchestratorMcpTarget),
+  target: Schema.optional(
+    OrchestratorMcpTarget.annotate({
+      description:
+        "Omitting target inherits the parent provider and model. Lead delegations must explicitly set providerInstanceId (or driverKind) and model. Preserve this target when retrying a failed call.",
+    }),
+  ),
   title: Schema.optional(OrchestratorMcpTitle),
   role: Schema.optional(OrchestratorMcpTaskRole),
   isolation: Schema.optional(
@@ -182,7 +187,7 @@ export const OrchestratorMcpDelegateTaskInput = Schema.Struct({
   ),
   timeoutMs: Schema.optional(Schema.Finite).annotate({
     description:
-      "Requested wait budget for mode=wait only, default 10 minutes. A shorter calling harness MCP budget can return waitTimedOut=true before this budget elapses. The child continues; use task_status to check it later.",
+      "Requested wait budget for mode=wait only, default 10 minutes. A shorter calling harness MCP budget can return waitTimedOut=true before this budget elapses. The timeout does not cancel the child; use task_status to check it later.",
   }),
   clientRequestId: Schema.optional(OrchestratorMcpClientRequestId),
   runtimeMode: Schema.optional(

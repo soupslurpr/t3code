@@ -833,6 +833,7 @@ export const layer: Layer.Layer<
       };
       const runningRun: OrchestrationV2Run = {
         ...run,
+        modelSelection,
         status: "running",
         startedAt: now,
       };

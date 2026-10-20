@@ -865,6 +865,7 @@ describe("OrchestratorMcpService provider resolution", () => {
       readonly model: string;
       readonly options?: ReadonlyArray<{ readonly id: string; readonly value: unknown }>;
     } = { instanceId: codexInstanceId, model: "gpt-5.4" },
+    runModelSelection = modelSelection,
   ): OrchestrationV2ThreadProjection =>
     ({
       thread: {
@@ -883,8 +884,8 @@ describe("OrchestratorMcpService provider resolution", () => {
           ordinal: 1,
           status: "running",
           rootNodeId: parentNodeId,
-          providerInstanceId: codexInstanceId,
-          modelSelection,
+          providerInstanceId: runModelSelection.instanceId,
+          modelSelection: runModelSelection,
         },
       ],
       contextTransfers: [],
@@ -901,6 +902,151 @@ describe("OrchestratorMcpService provider resolution", () => {
     runtimeRequests: [],
     turnItems: [],
   } as unknown as OrchestrationV2ThreadProjection;
+
+  it.effect(
+    "requires explicit Lead targets while preserving direct-mode inheritance and retries",
+    () =>
+      Effect.gen(function* () {
+        const museInstanceId = ProviderInstanceId.make("muse-configured");
+        const museDriver = ProviderDriverKind.make("muse");
+        for (const model of ["muse-wonder-1.0", "muse-wonder-full-1.0"]) {
+          const cases = [
+            { name: "missing target", target: undefined, rejected: true },
+            { name: "empty target", target: {}, rejected: true },
+            { name: "only model", target: { model }, rejected: true },
+            {
+              name: "only provider",
+              target: { providerInstanceId: museInstanceId },
+              rejected: true,
+            },
+            { name: "only driver", target: { driverKind: museDriver }, rejected: true },
+            {
+              name: "explicit same provider",
+              target: { providerInstanceId: museInstanceId, model },
+              rejected: false,
+            },
+            {
+              name: "explicit driver",
+              target: { driverKind: museDriver, model },
+              rejected: false,
+            },
+            {
+              name: "explicit other provider",
+              target: { providerInstanceId: codexInstanceId, model: "gpt-5.4" },
+              rejected: false,
+            },
+            {
+              name: "direct mode",
+              target: undefined,
+              rejected: false,
+              savedRole: "direct",
+              activeRole: "direct",
+            },
+            {
+              name: "saved Direct while Lead is running",
+              target: undefined,
+              rejected: true,
+              savedRole: "direct",
+              activeRole: "lead",
+            },
+            {
+              name: "saved Lead while Direct is running",
+              target: undefined,
+              rejected: false,
+              savedRole: "lead",
+              activeRole: "direct",
+            },
+            { name: "accepted retry", target: undefined, rejected: false },
+          ];
+          for (const testCase of cases) {
+            const selection = {
+              instanceId: museInstanceId,
+              model,
+              options: [{ id: "leadRole", value: testCase.savedRole ?? "lead" }],
+            };
+            const runSelection = {
+              ...selection,
+              options: [{ id: "leadRole", value: testCase.activeRole ?? "lead" }],
+            };
+            const calls = yield* Ref.make<ReadonlyArray<unknown>>([]);
+            const task = {
+              id: taskId,
+              threadId: parentThreadId,
+              origin: "app_owned",
+              childThreadId,
+              providerInstanceId: testCase.target?.providerInstanceId ?? museInstanceId,
+              driver: museDriver,
+              model: testCase.target?.model ?? model,
+              status: "running",
+              result: null,
+            };
+            const dependencies = Layer.mergeAll(
+              NodeServices.layer,
+              Layer.mock(ThreadManagementService.ThreadManagementService)({
+                hasReceipt: () => Effect.succeed(testCase.name === "accepted retry"),
+                isProviderInstanceEnabledForProject: () => Effect.succeed(true),
+                getThreadRecords: (threadId) =>
+                  Effect.succeed(
+                    threadId === parentThreadId
+                      ? parentProjection([task], selection, runSelection)
+                      : childProjection,
+                  ),
+                dispatch: (command) =>
+                  Ref.update(calls, (commands) => [...commands, command]).pipe(
+                    Effect.as({
+                      storedEvents: [{ event: { type: "subagent.updated", payload: task } }],
+                    } as never),
+                  ),
+              }),
+              ServerSettings.layerTest(),
+              providerRegistryLayer([
+                providerSnapshot({ instanceId: museInstanceId, driver: museDriver, model }),
+                providerSnapshot({
+                  instanceId: codexInstanceId,
+                  driver: ProviderDriverKind.make("codex"),
+                  model: "gpt-5.4",
+                }),
+              ]),
+              adapterRegistryLayer([museInstanceId, codexInstanceId]),
+              Layer.mock(ProjectService.ProjectService)({}),
+              Layer.mock(SecretRequests.SecretRequests)({}),
+              Layer.mock(ScheduledTaskService.ScheduledTaskService)({}),
+            );
+            yield* Effect.gen(function* () {
+              const service = yield* OrchestratorMcpService.OrchestratorMcpService;
+              const request = service.delegateTask(
+                { ...scope, thread: { ...scope.thread!, providerInstanceId: museInstanceId } },
+                {
+                  task: "Inspect the change.",
+                  target: testCase.target,
+                  isolation: testCase.rejected ? "worktree" : "shared",
+                  mode: "async",
+                  clientRequestId: `${model}-${testCase.name}`,
+                },
+              );
+              if (testCase.rejected) {
+                const error = yield* request.pipe(Effect.flip);
+                assert.equal(error.code, "invalid_request", testCase.name);
+                assert.include(error.message, "orchestrator_capabilities", testCase.name);
+                assert.deepEqual(yield* Ref.get(calls), [], testCase.name);
+                return;
+              }
+              const result = yield* request;
+              assert.equal(result.model, task.model, testCase.name);
+              const commands = yield* Ref.get(calls);
+              assert.equal(commands.length, 1, testCase.name);
+              assert.containSubset(commands[0], {
+                type: "delegated_task.request",
+                modelSelection: {
+                  instanceId: task.providerInstanceId,
+                  model: task.model,
+                },
+              });
+            }).pipe(Effect.provide(layerOrchestratorService.pipe(Layer.provide(dependencies))));
+          }
+        }
+      }),
+  );
 
   it.effect.each([
     { caller: "muse", timeoutMs: 3_600_000, expected: 240_000 },

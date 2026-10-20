@@ -1,4 +1,4 @@
-import { LEAD_ROLE_OPTION_ID } from "@t3tools/shared/lead";
+import { getLeadRole, LEAD_ROLE_OPTION_ID } from "@t3tools/shared/lead";
 import {
   CommandId,
   type RunId,
@@ -2086,6 +2086,17 @@ const make = Effect.gen(function* () {
         operation: "delegate-task",
       });
       const isRetryOfAcceptedDelegation = yield* threadManagement.hasReceipt(commandId);
+      if (
+        !isRetryOfAcceptedDelegation &&
+        getLeadRole(parentRun.modelSelection) === "lead" &&
+        (input.target?.model === undefined ||
+          (input.target.providerInstanceId === undefined && input.target.driverKind === undefined))
+      ) {
+        return yield* failure(
+          "invalid_request",
+          "Lead delegations require an explicit provider and model. Use orchestrator_capabilities, then set target.providerInstanceId (or target.driverKind) and target.model. Preserve the target when correcting a failed call.",
+        );
+      }
       const target = yield* resolveTargetRechecking({
         parent,
         target: input.target,
