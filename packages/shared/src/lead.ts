@@ -9,7 +9,7 @@ export const LEAD_INSTRUCTION =
   "Act as lead here, owning design and decisions, and use subagents as you see fit; develop your own concrete design before asking subagents to implement it, critique it, or develop their own; by default, have Astra (`gpt-6-astra`) at Max implement, test, and push back on your plans, and Sol (`gpt-6.1-sol`) at Extra High review, and verify their work yourself. Use `delegate_task` for subagents.";
 
 export const LEAD_MODEL_ID = "muse-wonder-full-1.0";
-export const LEAD_MODEL_IDS = [LEAD_MODEL_ID, "muse-wonder-1.0"] as const;
+export const LEAD_MODEL_IDS = [LEAD_MODEL_ID] as const;
 export const LEAD_ROLE_OPTION_ID = "leadRole";
 export type LeadRole = "direct" | "lead";
 
@@ -50,7 +50,7 @@ export const LEAD_MODEL_REQUIREMENTS = [
     driver: "muse",
     models: LEAD_MODEL_IDS,
     effort: "max",
-    label: "Muse Wonder or Wonder Full (Max)",
+    label: "Muse Wonder Full (Max)",
   },
   { driver: "codex", models: ["gpt-6-astra"], effort: "max", label: "Astra (Max)" },
   { driver: "codex", models: ["gpt-6.1-sol"], effort: "xhigh", label: "Sol (Extra High)" },

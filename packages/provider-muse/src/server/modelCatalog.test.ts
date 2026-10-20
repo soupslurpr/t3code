@@ -200,7 +200,7 @@ describe("Muse model catalog", () => {
     }),
   );
 
-  it("defaults ordinary Wonder to Max and offers its Lead role", () => {
+  it("defaults ordinary Wonder to Max without offering Lead", () => {
     const capabilities = museModelCapabilities({
       modelId: "muse-wonder-1.0",
       variants: ["high", "max"],
@@ -209,16 +209,9 @@ describe("Muse model catalog", () => {
     expect(resolveMuseReasoningEffort(capabilities, undefined)).toBe("max");
     expect(resolveMuseReasoningEffort(capabilities, "max")).toBe("max");
     expect(resolveMuseReasoningEffort(capabilities, "high")).toBe("high");
-    expect(capabilities.optionDescriptors?.find((option) => option.id === "leadRole")).toEqual({
-      id: "leadRole",
-      label: "Role",
-      type: "select",
-      options: [
-        { id: "direct", label: "Direct", isDefault: true },
-        { id: "lead", label: "Lead" },
-      ],
-      currentValue: "direct",
-    });
+    expect(
+      capabilities.optionDescriptors?.find((option) => option.id === "leadRole"),
+    ).toBeUndefined();
     expect(
       museModelCapabilities({ modelId: "muse-spark-1.3" }).optionDescriptors?.some(
         (option) => option.id === "leadRole",
@@ -311,7 +304,7 @@ describe("Muse model catalog", () => {
     ]);
   });
 
-  it.each(LEAD_MODEL_IDS)(
+  it.each(["muse-wonder-full-1.0", "muse-wonder-1.0"])(
     "defaults implicit %s effort to max and preserves explicit choices",
     (modelId) => {
       const capabilities = museModelCapabilities({

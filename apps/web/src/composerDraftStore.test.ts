@@ -3853,26 +3853,39 @@ describe.each(LEAD_MODEL_IDS)("Lead role option persistence (%s)", (model) => {
   beforeEach(resetComposerDraftStore);
   afterEach(resetComposerDraftStore);
 
-  it.each(["direct", "lead"])("keeps %s when switching between Wonder models", (role) => {
-    const store = useComposerDraftStore.getState();
-    store.setModelSelection(target, {
-      ...selection,
-      options: [
-        { id: "reasoningEffort", value: "max" },
-        { id: "leadRole", value: role },
-      ],
-    });
-    const other = {
-      ...selection,
-      model: model === "muse-wonder-full-1.0" ? "muse-wonder-1.0" : "muse-wonder-full-1.0",
-      options: [{ id: "reasoningEffort", value: "max" }],
-    };
-    store.setModelSelection(target, other, { explicit: true, replaceOptions: true });
-    expect(store.getComposerDraft(target)?.modelSelectionByProvider[selection.instanceId]).toEqual({
-      ...other,
-      options: [...other.options, { id: "leadRole", value: role }],
-    });
-  });
+  it.each(["direct", "lead"])(
+    "restores Full's %s preference after switching through ordinary Wonder",
+    (role) => {
+      const store = useComposerDraftStore.getState();
+      store.setModelSelection(target, {
+        ...selection,
+        options: [
+          { id: "reasoningEffort", value: "max" },
+          { id: "leadRole", value: role },
+        ],
+      });
+      const other = {
+        ...selection,
+        model: "muse-wonder-1.0",
+        options: [{ id: "reasoningEffort", value: "max" }],
+      };
+      store.setModelSelection(target, other, { explicit: true, replaceOptions: true });
+      expect(
+        store.getComposerDraft(target)?.modelSelectionByProvider[selection.instanceId],
+      ).toEqual(other);
+      store.setModelSelection(
+        target,
+        { ...other, model },
+        { explicit: true, replaceOptions: true },
+      );
+      expect(
+        store.getComposerDraft(target)?.modelSelectionByProvider[selection.instanceId],
+      ).toEqual({
+        ...selection,
+        options: [...other.options, { id: "leadRole", value: role }],
+      });
+    },
+  );
 
   it("ignores obsolete draft Lead fields on hydration without changing the prompt or model", () => {
     const store = useComposerDraftStore.getState();

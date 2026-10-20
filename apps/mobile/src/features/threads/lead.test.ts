@@ -16,7 +16,7 @@ import {
 import { leadQueuedTask, leadServerConfig, wonderMax } from "./lead-test-fixtures";
 
 describe("mobile Lead availability", () => {
-  it.each(["muse-wonder-full-1.0", "muse-wonder-1.0"])(
+  it.each(["muse-wonder-full-1.0"])(
     "routes %s by configured instance and uses the catalog's effort id",
     (model) => {
       const selection = { ...wonderMax, model };
@@ -30,6 +30,25 @@ describe("mobile Lead availability", () => {
       });
     },
   );
+
+  it("selects only Wonder Full as Lead when both models are available", () => {
+    const config = leadServerConfig();
+    const providers = config.providers.map((provider) =>
+      provider.driver === "muse"
+        ? {
+            ...provider,
+            models: [
+              ...provider.models,
+              ...leadServerConfig("muse-wonder-1.0").providers[0]!.models,
+            ],
+          }
+        : provider,
+    );
+    const both = { ...config, providers };
+    expect(resolveMobileLeadAvailability(both, null).selection).toEqual(wonderMax);
+    const selected = withMobileLeadRole(wonderMax, "lead");
+    expect(resolveMobileLeadSelectionForDispatch(selected, both, null)).toBe(selected);
+  });
 
   it("requires all three models on the destination environment", () => {
     const config = leadServerConfig();
@@ -83,7 +102,7 @@ describe("mobile Lead availability", () => {
       wonderSelections: [],
       wonderDefaultSelections: [],
       missing: [
-        "muse · muse-wonder-full-1.0 or muse-wonder-1.0 · max",
+        "muse · muse-wonder-full-1.0 · max",
         "codex · gpt-6-astra · max",
         "codex · gpt-6.1-sol · xhigh",
       ],
@@ -146,12 +165,16 @@ describe("mobile Lead availability", () => {
 
 describe("mobile Role selections", () => {
   const availability = resolveMobileLeadAvailability(leadServerConfig(), null);
-  it("defaults ordinary Wonder at Max to Lead and checks helpers at dispatch", () => {
+  it("keeps ordinary Wonder Direct and dispatches its old Lead preference as Direct", () => {
     const config = leadServerConfig("muse-wonder-1.0");
     const selection = { ...wonderMax, model: "muse-wonder-1.0" };
-    const lead = defaultMobileLeadRole(selection, resolveMobileLeadAvailability(config, null));
-    expect(lead.options).toContainEqual({ id: "leadRole", value: "lead" });
-    expect(resolveMobileLeadSelectionForDispatch(lead, config, null)).toBe(lead);
+    const ordinaryAvailability = resolveMobileLeadAvailability(config, null);
+    expect(ordinaryAvailability.selection).toBeNull();
+    expect(defaultMobileLeadRole(selection, ordinaryAvailability)).toBe(selection);
+    const lead = withMobileLeadRole(selection, "lead");
+    expect(resolveMobileLeadSelectionForDispatch(lead, config, null)).toEqual(
+      withMobileLeadRole(selection, "direct"),
+    );
     expect(
       resolveMobileLeadSelectionForDispatch(
         lead,

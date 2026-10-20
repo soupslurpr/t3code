@@ -65,19 +65,22 @@ function leadCatalog(museModel = "muse-wonder-full-1.0") {
 }
 
 describe("Lead catalog eligibility", () => {
-  it("selects and dispatches ordinary Wonder without requiring Full", () => {
+  it("does not select ordinary Wonder as Lead and dispatches its old Lead preference as Direct", () => {
     const { providers, settings } = leadCatalog("muse-wonder-1.0");
     const availability = resolveLeadAvailability(settings, providers, null);
-    expect(availability.selection).toEqual({
-      instanceId: "muse_personal",
-      model: "muse-wonder-1.0",
-      options: [{ id: "catalog-effort", value: "max" }],
-    });
+    expect(availability.selection).toBeNull();
     const selection = {
-      ...availability.selection!,
-      options: [...availability.selection!.options!, { id: "leadRole", value: "lead" }],
+      instanceId: ProviderInstanceId.make("muse_personal"),
+      model: "muse-wonder-1.0",
+      options: [
+        { id: "catalog-effort", value: "max" },
+        { id: "leadRole", value: "lead" },
+      ],
     };
-    expect(resolveLeadSelectionForDispatch(selection, availability)).toBe(selection);
+    expect(resolveLeadSelectionForDispatch(selection, availability).options).toContainEqual({
+      id: "leadRole",
+      value: "direct",
+    });
     expect(
       resolveLeadSelectionForDispatch(
         selection,

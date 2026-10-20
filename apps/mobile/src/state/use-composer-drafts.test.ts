@@ -233,16 +233,14 @@ const DRAFT: ComposerDraft = {
 
 describe("thread Role preference", () => {
   it.each(["direct", "lead"] as const)(
-    "keeps %s when switching between Full and ordinary Wonder across reload",
+    "restores Full's %s preference after switching through ordinary Wonder and reloading",
     async (role) => {
       await ensureComposerDraftsLoaded();
       const full = withMobileLeadRole(wonderMax, role);
       const ordinary = { ...wonderMax, model: "muse-wonder-1.0" };
       updateComposerDraftSettings("thread", { modelSelection: full });
       updateComposerDraftSettings("thread", { modelSelection: ordinary });
-      expect(getComposerDraftSnapshot("thread").modelSelection).toEqual(
-        withMobileLeadRole(ordinary, role),
-      );
+      expect(getComposerDraftSnapshot("thread").modelSelection).toEqual(ordinary);
       await flushComposerDrafts();
       const loaded = decodePersistedComposerState(JSON.parse(composerDraftFileMocks.getDocument()));
       appAtomRegistry.set(composerDraftsAtom, loaded.drafts);

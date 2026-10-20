@@ -21,9 +21,9 @@ it("keeps eligible Lead, including an implicit Max default, without rewriting op
   }
 });
 
-it("dispatches ordinary Wonder as Lead without Full and falls back when a helper is missing", () => {
-  const selection = { ...leadSelection, model: "muse-wonder-1.0" };
-  const ordinaryProviders = providers.map((provider) =>
+it("dispatches Full as Lead without ordinary Wonder and falls back when a helper is missing", () => {
+  const selection = { ...leadSelection, model: "muse-wonder-full-1.0" };
+  const fullProviders = providers.map((provider) =>
     provider.driver === "muse"
       ? {
           ...provider,
@@ -35,11 +35,11 @@ it("dispatches ordinary Wonder as Lead without Full and falls back when a helper
         }
       : provider,
   );
-  expect(resolveLeadSelectionForTurn(selection, ordinaryProviders, settings, projectId)).toBe(
+  expect(resolveLeadSelectionForTurn(selection, fullProviders, settings, projectId)).toBe(
     selection,
   );
   expect(
-    resolveLeadSelectionForTurn(selection, ordinaryProviders.slice(0, 2), settings, projectId),
+    resolveLeadSelectionForTurn(selection, fullProviders.slice(0, 2), settings, projectId),
   ).toEqual(withLeadRole(selection, "direct"));
   expect(selection.options).toEqual(leadSelection.options);
 });

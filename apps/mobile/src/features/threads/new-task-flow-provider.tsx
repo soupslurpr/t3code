@@ -554,6 +554,7 @@ export function NewTaskFlowProvider(props: React.PropsWithChildren) {
 
   const selectedModel = resolveNewTaskModelSelection({
     draftSelection: draftModelSelection,
+    leadDefaultSelection: editingPendingTask === null ? leadAvailability.selection : null,
     projectDefaultSelection: projectDefaultModelSelection,
     stickySelection: stickyModelSelection,
     modelOptions,

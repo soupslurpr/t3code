@@ -904,7 +904,7 @@ describe("OrchestratorMcpService provider resolution", () => {
   } as unknown as OrchestrationV2ThreadProjection;
 
   it.effect(
-    "requires explicit Lead targets while preserving direct-mode inheritance and retries",
+    "requires explicit Full Lead targets while preserving ordinary Wonder and Direct inheritance",
     () =>
       Effect.gen(function* () {
         const museInstanceId = ProviderInstanceId.make("muse-configured");
@@ -959,6 +959,7 @@ describe("OrchestratorMcpService provider resolution", () => {
             { name: "accepted retry", target: undefined, rejected: false },
           ];
           for (const testCase of cases) {
+            const rejected = model === "muse-wonder-full-1.0" && testCase.rejected;
             const selection = {
               instanceId: museInstanceId,
               model,
@@ -1019,12 +1020,12 @@ describe("OrchestratorMcpService provider resolution", () => {
                 {
                   task: "Inspect the change.",
                   target: testCase.target,
-                  isolation: testCase.rejected ? "worktree" : "shared",
+                  isolation: rejected ? "worktree" : "shared",
                   mode: "async",
                   clientRequestId: `${model}-${testCase.name}`,
                 },
               );
-              if (testCase.rejected) {
+              if (rejected) {
                 const error = yield* request.pipe(Effect.flip);
                 assert.equal(error.code, "invalid_request", testCase.name);
                 assert.include(error.message, "orchestrator_capabilities", testCase.name);

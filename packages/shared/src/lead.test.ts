@@ -6,6 +6,7 @@ import {
   LEAD_MODEL_ID,
   LEAD_MODEL_IDS,
   LEAD_MODEL_REQUIREMENTS,
+  getLeadRole,
   leadEligibleSelection,
   leadUnavailableHint,
   resolveLeadAvailabilityFromModels,
@@ -33,13 +34,13 @@ function catalogModel(driver: string, model: string, defaultEffort = "max") {
   };
 }
 
-describe("Lead model alternatives", () => {
+describe("Lead model eligibility", () => {
   const helpers = [
     catalogModel("codex", "gpt-6-astra"),
     catalogModel("codex", "gpt-6.1-sol", "xhigh"),
   ];
 
-  it.each(LEAD_MODEL_IDS)("allows %s without requiring the other Wonder model", (model) => {
+  it.each(LEAD_MODEL_IDS)("allows %s without requiring ordinary Wonder", (model) => {
     const availability = resolveLeadAvailabilityFromModels([
       catalogModel("muse", model),
       ...helpers,
@@ -55,35 +56,48 @@ describe("Lead model alternatives", () => {
     );
   });
 
-  it.each([{ models: LEAD_MODEL_IDS }, { models: LEAD_MODEL_IDS.toReversed() }])(
-    "prefers Full for new Lead selections and keeps each model's own default: $models",
-    ({ models }) => {
-      const availability = resolveLeadAvailabilityFromModels([
-        ...models.map((model) =>
-          catalogModel("muse", model, model === LEAD_MODEL_ID ? "max" : "high"),
-        ),
-        ...helpers,
+  it.each([
+    { models: ["muse-wonder-1.0", "muse-wonder-full-1.0"] },
+    { models: ["muse-wonder-full-1.0", "muse-wonder-1.0"] },
+  ])("selects only Wonder Full for Lead regardless of catalog order: $models", ({ models }) => {
+    const availability = resolveLeadAvailabilityFromModels([
+      ...models.map((model) =>
+        catalogModel("muse", model, model === LEAD_MODEL_ID ? "max" : "high"),
+      ),
+      ...helpers,
+    ]);
+    expect(availability.selection?.model).toBe("muse-wonder-full-1.0");
+    expect(availability.wonderSelections).toHaveLength(1);
+    for (const model of models) {
+      const implicit = createModelSelection(ProviderInstanceId.make("muse"), model);
+      expect(leadEligibleSelection(implicit, availability)).toBe(
+        model === LEAD_MODEL_ID ? implicit : null,
+      );
+      const explicit = createModelSelection(implicit.instanceId, model, [
+        { id: "catalog-effort", value: "max" },
       ]);
-      expect(availability.selection?.model).toBe(LEAD_MODEL_ID);
-      expect(availability.wonderSelections).toHaveLength(2);
-      for (const model of models) {
-        const implicit = createModelSelection(ProviderInstanceId.make("muse"), model);
-        expect(leadEligibleSelection(implicit, availability)).toBe(
-          model === LEAD_MODEL_ID ? implicit : null,
-        );
-        const explicit = createModelSelection(implicit.instanceId, model, [
-          { id: "catalog-effort", value: "max" },
-        ]);
-        expect(leadEligibleSelection(explicit, availability)).toBe(explicit);
-      }
-    },
-  );
+      expect(leadEligibleSelection(explicit, availability)).toBe(
+        model === LEAD_MODEL_ID ? explicit : null,
+      );
+    }
+  });
+
+  it("does not offer Lead for ordinary Wonder or recognize its saved Lead option", () => {
+    const ordinary = catalogModel("muse", "muse-wonder-1.0");
+    const availability = resolveLeadAvailabilityFromModels([ordinary, ...helpers]);
+    expect(availability.selection).toBeNull();
+    expect(availability.missing).toEqual(["muse · muse-wonder-full-1.0 · max"]);
+    expect(
+      getLeadRole({ ...ordinary.selection, options: [{ id: "leadRole", value: "lead" }] }),
+    ).toBeUndefined();
+  });
 
   it.each(["gpt-6-astra", "gpt-6.1-sol"])(
     "still requires %s when both Wonder models are available",
     (missing) => {
       const availability = resolveLeadAvailabilityFromModels([
-        ...LEAD_MODEL_IDS.map((model) => catalogModel("muse", model)),
+        catalogModel("muse", "muse-wonder-1.0"),
+        catalogModel("muse", "muse-wonder-full-1.0"),
         ...helpers.filter((helper) => helper.selection.model !== missing),
       ]);
       expect(availability.selection).toBeNull();
@@ -94,7 +108,7 @@ describe("Lead model alternatives", () => {
   it("does not treat a Wonder slug from another provider as a Lead model", () => {
     expect(
       resolveLeadAvailabilityFromModels([
-        catalogModel("another-provider", "muse-wonder-1.0"),
+        catalogModel("another-provider", "muse-wonder-full-1.0"),
         ...helpers,
       ]).selection,
     ).toBeNull();

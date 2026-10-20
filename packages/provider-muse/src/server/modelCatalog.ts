@@ -57,7 +57,7 @@ export function museModelCapabilities(
   const reported = model?.variants !== undefined && model.variants !== "unknown";
   const efforts = (reported ? model.variants : FALLBACK_EFFORTS).filter(isMuseReasoningEffort);
   const preferredDefault =
-    isLeadModel(model?.modelId) && efforts.includes("max")
+    (model?.modelId === "muse-wonder-1.0" || isLeadModel(model?.modelId)) && efforts.includes("max")
       ? "max"
       : reported
         ? model?.defaultReasoningEffort

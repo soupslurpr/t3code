@@ -76,6 +76,7 @@ vi.mock("./useSettings", () => ({
     ...settings,
     ...resolveModelPreferences(settings, DEFAULT_CLIENT_SETTINGS),
   }),
+  getClientSettings: () => DEFAULT_CLIENT_SETTINGS,
   useClientSettings: () => DEFAULT_CLIENT_SETTINGS,
 }));
 
@@ -210,10 +211,10 @@ describe("new-thread model selection", () => {
     expect(selectedModel(await openDraft(targetProjectId))).toEqual(projectSelection);
   });
 
-  it("seeds Wonder above project and carried defaults only for a brand-new human draft", async () => {
+  it("seeds Wonder Full above project and carried defaults only for a brand-new human draft", async () => {
     const config = context.configs.get(environmentId)!;
     const providers: ServerProvider[] = [
-      { driver: "muse", models: ["muse-wonder-full-1.0"] },
+      { driver: "muse", models: ["muse-wonder-full-1.0", "muse-wonder-1.0"] },
       { driver: "codex", models: ["gpt-6-astra", "gpt-6.1-sol"] },
     ].map((row) => ({
       instanceId: ProviderInstanceId.make(row.driver),
@@ -265,8 +266,13 @@ describe("new-thread model selection", () => {
       options: [{ id: "reasoningEffort", value: "max" }],
     });
     const store = useComposerDraftStore.getState();
-    store.setModelSelection(draftId, rememberedSelection, { explicit: true });
+    const ordinarySelection = {
+      instanceId: ProviderInstanceId.make("muse"),
+      model: "muse-wonder-1.0",
+      options: [{ id: "reasoningEffort", value: "max" }],
+    };
+    store.setModelSelection(draftId, ordinarySelection, { explicit: true });
     expect(await openDraft(sourceProjectId)).toBe(draftId);
-    expect(selectedModel(draftId)).toEqual(rememberedSelection);
+    expect(selectedModel(draftId)).toEqual(ordinarySelection);
   });
 });

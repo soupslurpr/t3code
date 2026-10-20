@@ -49,17 +49,18 @@ can use under **Custom models** in the instance settings.
 
 ## Lead and Direct roles
 
-In this fork, Muse Wonder and Wonder Full default to Max reasoning. With either
-model at Max, choose **Direct** or **Lead** under **Role** in the model picker
-(thread settings on mobile).
+In this fork, Muse Wonder and Wonder Full default to Max reasoning. With Wonder
+Full at Max, choose **Direct** or **Lead** under **Role** in the model picker
+(thread settings on mobile). Ordinary Wonder runs in Direct mode.
 Lead is the default at Max when the environment also offers Astra (`gpt-6-astra`)
 at Max and Sol (`gpt-6.1-sol`) at Extra High.
+New threads prefer Wonder Full at Max when Lead is available.
 The selected Muse model owns design and decisions. Astra implements, tests,
 and pushes back on the plan, and Sol reviews.
 
 Lead is applied behind the scenes on each turn; it is not added to your
 messages. Choosing Direct sticks for that thread until you choose Lead again.
-Role is available only for Wonder or Wonder Full at Max with the required models.
+Role is available only for Wonder Full at Max with the required models.
 If those requirements become unavailable, the turn runs Direct while your saved
 Lead preference stays in place.
 If Astra or Sol is unavailable, the picker shows **Lead unavailable**, naming what

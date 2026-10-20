@@ -599,11 +599,11 @@ describe("MuseAdapterV2", () => {
     [LEAD_MODEL_ID, undefined, undefined, false],
     [LEAD_MODEL_ID, undefined, "lead", true],
     [MUSE_DEFAULT_MODEL, undefined, "lead", true],
-    ["muse-wonder-1.0", "max", "lead", true],
+    ["muse-wonder-1.0", "max", "lead", false],
     ["muse-wonder-1.0", "max", "direct", false],
     ["muse-wonder-1.0", "high", "lead", false],
     ["muse-wonder-1.0", "max", undefined, false],
-    ["muse-wonder-1.0", undefined, "lead", true],
+    ["muse-wonder-1.0", undefined, "lead", false],
     ["muse-wonder-1.0", undefined, undefined, false],
   ] as const)("sends %s at %s with leadRole=%s and hidden Lead=%s", ([model, effort, role, lead]) =>
     Effect.gen(function* () {
