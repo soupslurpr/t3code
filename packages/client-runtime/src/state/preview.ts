@@ -1,13 +1,19 @@
-import { WS_METHODS, type UserDesktopHumanInvokeInput } from "@t3tools/contracts";
+import {
+  WS_METHODS,
+  type PreviewAutomationHost,
+  type UserDesktopHumanInvokeInput,
+} from "@t3tools/contracts";
 import * as Stream from "effect/Stream";
 import { Atom } from "effect/reactivity";
 
 import type { EnvironmentRegistry } from "../connection/registry.ts";
+import { subscribe } from "../rpc/client.ts";
 import {
   createAtomCommandScheduler,
   createEnvironmentRpcCommand,
   createEnvironmentRpcQueryAtomFamily,
   createEnvironmentRpcSubscriptionAtomFamily,
+  createEnvironmentSubscriptionAtomFamily,
 } from "./runtime.ts";
 
 export const previewAutomationHostFocusConcurrencyKey = (value: {
@@ -70,9 +76,13 @@ export function createPreviewEnvironmentAtoms<R, E>(
       // unmounted projects stop contributing probe candidates on the server.
       idleTtlMs: 0,
     }),
-    automationRequests: createEnvironmentRpcSubscriptionAtomFamily(runtime, {
+    automationRequests: createEnvironmentSubscriptionAtomFamily(runtime, {
       label: "environment-data:computer:automation-requests",
-      tag: WS_METHODS.previewAutomationConnect,
+      // Timeout eviction ends this registration, not the underlying WebSocket.
+      subscribe: (input: PreviewAutomationHost) =>
+        subscribe(WS_METHODS.previewAutomationConnect, input, {
+          resubscribeOnCompletionAfter: "1 second",
+        }),
       // Closing the host must close its stream and cancel pending desktop work.
       idleTtlMs: 0,
     }),
