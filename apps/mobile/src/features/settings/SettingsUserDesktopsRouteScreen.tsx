@@ -379,6 +379,7 @@ export function SettingsUserDesktopsRouteScreen() {
                       key={`screen:${route.environmentId}`}
                       environmentId={route.environmentId}
                       desktopId={route.desktop.desktop.desktopId}
+                      desktopLabel={route.desktop.label}
                     />
                   ))}
                 {group.routes

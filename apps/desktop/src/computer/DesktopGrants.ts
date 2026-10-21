@@ -113,15 +113,20 @@ const make = Effect.gen(function* () {
       });
       const temporary = `${file}.${yield* crypto.randomUUIDv4()}.tmp`;
       yield* fs.makeDirectory(environment.stateDir, { recursive: true });
-      yield* fs.writeFileString(temporary, encoded, { mode: 0o600 });
-      yield* fs
-        .rename(temporary, file)
-        .pipe(Effect.ensuring(fs.remove(temporary).pipe(Effect.ignore)));
-      grants = next;
-      const previous = changed;
-      changed = yield* Deferred.make<void>();
-      yield* Deferred.succeed(previous, undefined);
-      yield* PubSub.publish(changes, undefined);
+      yield* fs.writeFileString(temporary, encoded, { mode: 0o600 }).pipe(
+        Effect.andThen(
+          Effect.gen(function* () {
+            yield* fs.rename(temporary, file);
+            grants = next;
+            const previous = changed;
+            changed = yield* Deferred.make<void>();
+            yield* Deferred.succeed(previous, undefined);
+            yield* PubSub.publish(changes, undefined);
+          }).pipe(Effect.uninterruptible),
+        ),
+        // Once renamed, disk and memory must agree even if the caller is interrupted.
+        Effect.ensuring(fs.remove(temporary).pipe(Effect.ignore)),
+      );
     },
     Effect.mapError((cause) => new DesktopGrantError("grant-storage-failed", String(cause))),
   );

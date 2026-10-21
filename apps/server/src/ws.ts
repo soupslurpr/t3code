@@ -1,6 +1,7 @@
 import * as ThreadWorktreeService from "./orchestration-v2/ThreadWorktreeService.ts";
 import { ThreadDesktopActivityService } from "./computer/ThreadDesktopActivity.ts";
 import { OrchestrationDispatchCommandError } from "@t3tools/contracts";
+import { DesktopAuthorizationError, type ComputerAutomationStatus } from "@t3tools/contracts";
 import * as Clock from "effect/Clock";
 import * as Crypto from "effect/Crypto";
 import * as Orchestrator from "./orchestration-v2/Orchestrator.ts";
@@ -3054,15 +3055,37 @@ export const layerWsRpc = (
               capabilities: new Set(["computer" as const]),
               issuedAt: yield* Clock.currentTimeMillis,
             };
-            const invokeComputer = (operation: PreviewAutomationOperation, request: unknown) =>
-              previewAutomationBroker.invoke({
+            const invokeComputer = <A = unknown>(
+              operation: PreviewAutomationOperation,
+              request: unknown,
+            ) =>
+              previewAutomationBroker.invoke<A>({
                 scope,
                 operation,
                 input: request,
                 ...(input.timeoutMs === undefined ? {} : { timeoutMs: input.timeoutMs }),
               });
             switch (input.request.operation) {
-              case "screen-permission":
+              case "screen-permission": {
+                const nativeResult = yield* desktopAuthorization.invokeScreen(
+                  currentSessionId,
+                  scope.thread.threadId,
+                  { ...input.request, desktop },
+                );
+                if (Option.isSome(nativeResult)) return nativeResult.value;
+                if (input.request.action === "status") {
+                  const status = yield* invokeComputer<ComputerAutomationStatus>("computerStatus", {
+                    desktop,
+                  });
+                  return status.authorization === undefined
+                    ? null
+                    : { ...status.authorization, remoteApprovalAvailable: false };
+                }
+                if (input.request.action === "approve" || input.request.action === "deny")
+                  return yield* new DesktopAuthorizationError({
+                    code: "permission-denied",
+                    message: "Approve screen access on the selected desktop.",
+                  });
                 return yield* invokeComputer(
                   input.request.action === "remove"
                     ? "computerForgetControl"
@@ -3078,6 +3101,7 @@ export const layerWsRpc = (
                     observation: false,
                   },
                 );
+              }
               case "execution": {
                 const nativeResult = yield* desktopAuthorization.invoke(
                   currentSessionId,
@@ -3090,8 +3114,27 @@ export const layerWsRpc = (
                   desktop,
                 });
               }
-              case "status":
-                return yield* invokeComputer("computerStatus", { desktop });
+              case "status": {
+                const status = yield* invokeComputer<ComputerAutomationStatus>("computerStatus", {
+                  desktop,
+                });
+                const authorization = yield* desktopAuthorization
+                  .invokeScreen(currentSessionId, scope.thread.threadId, {
+                    action: "status",
+                    desktop,
+                  })
+                  .pipe(
+                    Effect.catchTags({
+                      DesktopAuthorizationError: (error) =>
+                        error.code === "permission-denied"
+                          ? Effect.succeedNone
+                          : Effect.fail(error),
+                    }),
+                  );
+                return Option.isSome(authorization)
+                  ? { ...status, authorization: authorization.value }
+                  : status;
+              }
               case "request-view":
                 return yield* invokeComputer("computerRequestView", {
                   desktop,

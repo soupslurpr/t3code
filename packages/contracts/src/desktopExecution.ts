@@ -15,6 +15,7 @@ import {
   DesktopGrantLifetime,
   DesktopGrantScope,
   DesktopGrantPolicy,
+  DesktopPermissionSource,
 } from "./desktopAuthorization.ts";
 
 const MAX_INPUT_BYTES = 1024 * 1024;
@@ -258,6 +259,7 @@ export const DesktopExecutionGrant = DesktopCapabilityGrant;
 export type DesktopExecutionGrant = typeof DesktopExecutionGrant.Type;
 
 export const DesktopExecutionPendingApproval = Schema.Struct({
+  source: Schema.optional(DesktopPermissionSource),
   requestId: Identifier,
   environmentId: EnvironmentId,
   threadId: ThreadId,

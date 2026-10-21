@@ -523,7 +523,7 @@ export const make = Effect.gen(function* () {
     return {
       ...status,
       desktop: userDesktop,
-      authorization: { protocolVersion: 2, grants: permissions.grants(context) },
+      authorization: permissions.authorization(context),
       permission,
       rememberedAccess,
       lease: {

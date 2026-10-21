@@ -1,5 +1,7 @@
-import { DesktopScreenPermissionRevision } from "./computerAutomation.ts";
-import { DesktopGrantPolicy } from "./desktopAuthorization.ts";
+import {
+  DesktopScreenPermissionRequest,
+  isDesktopScreenPermissionRequest,
+} from "./desktopAuthorization.ts";
 import { DesktopProcessActivity } from "./desktopProcessActivity.ts";
 import { Schema } from "effect";
 import { UserDesktopExecutionInput } from "./desktopExecution.ts";
@@ -164,18 +166,8 @@ export const UserDesktopHumanRequest = Schema.Union([
   Schema.Struct({
     operation: Schema.Literal("screen-permission"),
     ...UserDesktopHumanTarget,
-    action: Schema.Literals(["request", "edit", "remove"]),
-    capability: Schema.Literals(["view", "control"]),
-    permission: Schema.optional(DesktopScreenPermissionRevision),
-    policy: Schema.optional(DesktopGrantPolicy),
-  }).check(
-    Schema.makeFilter(
-      (input) =>
-        input.action === "request" ||
-        input.permission !== undefined ||
-        "Select the current permission revision.",
-    ),
-  ),
+    ...DesktopScreenPermissionRequest.fields,
+  }).check(Schema.makeFilter(isDesktopScreenPermissionRequest)),
   Schema.Struct({
     operation: Schema.Literal("execution"),
     ...UserDesktopHumanTarget,

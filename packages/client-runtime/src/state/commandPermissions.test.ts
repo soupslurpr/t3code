@@ -61,20 +61,23 @@ const setup = Effect.gen(function* () {
   return registry;
 });
 
-it.effect(
-  "requires both current destination grants for desktop execution, including after stale UI permission",
-  () =>
+it.effect.each(["execution", "screen-permission"] as const)(
+  "requires both current destination grants for desktop %s, including after stale UI permission",
+  (operation) =>
     Effect.scoped(
       Effect.gen(function* () {
         const registry = yield* setup;
         const permission = createCommandPermissions(runtime, WS_METHODS.userDesktopHumanInvoke);
         const desktop = { kind: "user", desktopId: "desktop" } as const;
         const input = {
-          request: {
-            operation: "execution",
-            desktopId: desktop.desktopId,
-            input: { operation: "access", desktop, input: { action: "request", desktop } },
-          },
+          request:
+            operation === "screen-permission"
+              ? { operation, desktopId: desktop.desktopId, action: "status" }
+              : {
+                  operation,
+                  desktopId: desktop.desktopId,
+                  input: { operation: "access", desktop, input: { action: "request", desktop } },
+                },
         };
         registry.set(sessions(env), AsyncResult.success(grant(true)));
         expect(registry.get(permission.permissionAtom(env, input))).toBe(false);

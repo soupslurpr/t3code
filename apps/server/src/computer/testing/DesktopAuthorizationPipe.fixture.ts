@@ -86,6 +86,7 @@ Effect.gen(function* () {
     DesktopExecutionAuthorizationChannel.DesktopExecutionAuthorizationChannel,
   );
   const input = { operation: "access", desktop, input: { action: "status", desktop } } as const;
+  const screenInput = { action: "status", desktop } as const;
   for (const scopes of [
     [],
     ["orchestration:operate"],
@@ -94,6 +95,11 @@ Effect.gen(function* () {
   ] satisfies AuthEnvironmentScope[][]) {
     const session = yield* sessions.issue({ scopes });
     const rejected = yield* channel.invoke(session.sessionId, threadId, input).pipe(Effect.flip);
+    const screenRejected = yield* channel
+      .invokeScreen(session.sessionId, threadId, screenInput)
+      .pipe(Effect.flip);
+    if (screenRejected.code !== "permission-denied")
+      return yield* Effect.die("Screen approval accepted insufficient scopes");
     if (rejected.code !== "permission-denied")
       return yield* Effect.die("Insufficient session scopes were accepted");
   }
@@ -106,10 +112,36 @@ Effect.gen(function* () {
   const accepted = yield* channel.invoke(current.sessionId, threadId, input);
   if (Option.isNone(accepted) || accepted.value.kind !== "access")
     return yield* Effect.die("Bound target was not reached");
+  if (
+    Option.isSome(
+      yield* channel.invokeScreen(current.sessionId, threadId, {
+        ...screenInput,
+        desktop: { kind: "user", desktopId: "roamingcrab-desktop" },
+      }),
+    )
+  )
+    return yield* Effect.die("Screen approval crossed native host boundary");
+  if (
+    Option.isSome(
+      yield* channel.invokeScreen(current.sessionId, threadId, {
+        ...screenInput,
+        localPrompt: true,
+      }),
+    )
+  )
+    return yield* Effect.die("Local screen confirmation was bypassed");
+  const screen = yield* channel.invokeScreen(current.sessionId, threadId, screenInput);
+  if (Option.isNone(screen) || screen.value.remoteApprovalAvailable !== true)
+    return yield* Effect.die("Native screen channel was not reached");
   revokeBeforeAcceptance = true;
   const revoked = yield* channel.invoke(current.sessionId, threadId, input).pipe(Effect.flip);
   if (revoked.code !== "permission-denied")
     return yield* Effect.die("Revoked session authorized a decision");
+  const revokedScreen = yield* channel
+    .invokeScreen(current.sessionId, threadId, screenInput)
+    .pipe(Effect.flip);
+  if (revokedScreen.code !== "permission-denied")
+    return yield* Effect.die("Revoked session approved screen access");
   for (const outcome of ["success", "failure", "interrupt"] as const) {
     yield* Effect.scoped(
       Effect.gen(function* () {
@@ -145,6 +177,8 @@ Effect.gen(function* () {
   });
   if (Option.isSome(yield* standalone.invoke(replacement.sessionId, threadId, input)))
     return yield* Effect.die("Standalone backend claimed native approval authority");
+  if (Option.isSome(yield* standalone.invokeScreen(replacement.sessionId, threadId, screenInput)))
+    return yield* Effect.die("Standalone backend claimed screen approval authority");
   if (yield* Effect.scoped(standalone.reserveWorktreeCleanup))
     return yield* Effect.die("Unidentified standalone host admitted cleanup");
   yield* Console.log("verified");

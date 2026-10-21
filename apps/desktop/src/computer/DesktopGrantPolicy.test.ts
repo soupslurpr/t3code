@@ -42,6 +42,29 @@ const grant = (policy: Partial<DesktopGrantPolicy> = {}) =>
   });
 
 describe("desktop grant policy", () => {
+  it("refreshes existing thread labels without renewing permission or writing unchanged labels", () => {
+    const original = grant();
+    const metadata = {
+      environmentLabel: "coolcrab",
+      projectName: "T3 Code",
+      threadTitle: "Restore Wonder Full",
+    };
+    const snapshot = source({ source: metadata, serverNow: iso(now + 1_000) });
+    const named = reconcileGrant(original, snapshot, now + 1_000)!;
+    expect(named).toEqual({ ...original, source: metadata });
+    expect(reconcileGrant(named, { ...snapshot, source: { ...metadata } }, now + 2_000)).toBe(
+      named,
+    );
+    expect(reconcileGrant(named, source({ threadId: ThreadId.make("other") }), now)).toBe(named);
+    expect(
+      reconcileGrant(
+        named,
+        source({ source: { ...metadata, threadTitle: "Renamed thread" } }),
+        now,
+      ),
+    ).toEqual({ ...original, source: { ...metadata, threadTitle: "Renamed thread" } });
+  });
+
   it("expires idle/stuck work, with no renewal from repeated reads or snapshots", () => {
     const original = grant();
     expect(original.expiresAt).toBe(iso(now + GRANT_IDLE_MS));

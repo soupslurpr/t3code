@@ -123,6 +123,7 @@ export function approveGrant(input: {
       : null;
   return {
     grantId: input.grantId,
+    ...(source?.source === undefined ? {} : { source: source.source }),
     revision: input.revision ?? 1,
     capability: input.capability,
     ...policy,
@@ -158,8 +159,15 @@ export function reconcileGrant(
   if (source.state === "deleted") return null;
   if (grant.sourceRevision !== null && source.revision < grant.sourceRevision)
     return reconnect && grant.expiresAt !== null ? { ...grant, suspended: true } : grant;
-  if (grant.sourceRevision === source.revision || grant.suspended) return grant;
-  if (grant.lifetime !== "automatic") return { ...grant, sourceRevision: source.revision };
+  const namedGrant =
+    source.source !== undefined &&
+    (grant.source?.environmentLabel !== source.source.environmentLabel ||
+      grant.source?.threadTitle !== source.source.threadTitle ||
+      grant.source?.projectName !== source.source.projectName)
+      ? { ...grant, source: source.source }
+      : grant;
+  if (grant.sourceRevision === source.revision || grant.suspended) return namedGrant;
+  if (grant.lifetime !== "automatic") return { ...namedGrant, sourceRevision: source.revision };
   const age = (time: string) => Math.max(0, Date.parse(source.serverNow) - Date.parse(time));
   const idleExpiresAt =
     source.activityAt !== null && source.activityRevision > (grant.activityRevision ?? -1)
@@ -176,7 +184,7 @@ export function reconcileGrant(
             now + GRANT_SETTLED_GRACE_MS - (source.settledAt === null ? 0 : age(source.settledAt)),
           );
   const next = {
-    ...grant,
+    ...namedGrant,
     sourceRevision: source.revision,
     activityRevision: source.activityRevision,
     sourceState: source.state,

@@ -96,7 +96,11 @@ export function DesktopExecutionPermissions({
         ?.filter((item) => threadId === undefined || item.threadId === threadId)
         .map((item) => (
           <View key={item.requestId} className="gap-1">
-            <Text>Permission requested by thread {item.threadId}</Text>
+            <Text>
+              Permission requested by {item.source?.threadTitle || item.threadId} ·{" "}
+              {item.source?.environmentLabel || item.environmentId}
+              {item.source?.projectName ? ` · ${item.source.projectName}` : ""}
+            </Text>
             {canManage ? (
               <View className="flex-row gap-3">
                 {action("Review request", () => {
@@ -236,7 +240,7 @@ export function DesktopExecutionPermissions({
               ? "All environments"
               : grant.scope === "environment"
                 ? "This environment"
-                : `Thread ${grant.threadId}`}{" "}
+                : `Thread ${grant.source?.threadTitle || grant.threadId}`}{" "}
             ·{" "}
             {grant.expiresAt !== null
               ? `Expires ${new Date(grant.expiresAt).toLocaleString()}`

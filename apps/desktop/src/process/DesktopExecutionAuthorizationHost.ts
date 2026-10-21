@@ -16,6 +16,7 @@ import * as Scope from "effect/Scope";
 import * as Stream from "effect/Stream";
 import * as DesktopExecution from "./DesktopExecution.ts";
 import * as UserDesktopIdentity from "../computer/UserDesktopIdentity.ts";
+import * as DesktopScreenPermissions from "../computer/DesktopScreenPermissions.ts";
 
 const decode = Schema.decodeUnknownOption(
   Schema.fromJsonString(DesktopExecutionAuthorizationCommand),
@@ -39,6 +40,7 @@ export class DesktopExecutionAuthorizationHost extends Context.Service<
 
 const make = Effect.gen(function* () {
   const execution = yield* DesktopExecution.DesktopExecution;
+  const screen = yield* DesktopScreenPermissions.DesktopScreenPermissions;
   const identity = yield* UserDesktopIdentity.UserDesktopIdentity;
   const crypto = yield* Crypto.Crypto;
   return DesktopExecutionAuthorizationHost.of({
@@ -65,7 +67,8 @@ const make = Effect.gen(function* () {
           if (
             environmentId === undefined ||
             command.generation !== generation ||
-            (command.type === "invoke" && command.input.desktop.desktopId !== desktop.desktopId)
+            ((command.type === "invoke" || command.type === "screen") &&
+              command.input.desktop.desktopId !== desktop.desktopId)
           ) {
             yield* Queue.offer(events, {
               type: "error",
@@ -75,7 +78,7 @@ const make = Effect.gen(function* () {
             });
             return;
           }
-          if (command.type !== "invoke") {
+          if (command.type !== "invoke" && command.type !== "screen") {
             const leaseId = `${generation}:${command.invocationId}`;
             if (command.type === "cleanup-release") {
               yield* execution.releaseWorktreeCleanup(leaseId);
@@ -109,49 +112,56 @@ const make = Effect.gen(function* () {
           }
           identities.set(command.invocationId, key);
           accepted.set(command.invocationId, null);
-          yield* execution
-            .invokeFromNativeBackend(
-              {
-                controllerKind: "human",
-                controllerId: `human:${command.sessionId}`,
-                environmentId,
-                threadId: command.threadId,
-                connectionGeneration: generation,
-                ...(command.lifecycle === undefined ? {} : { lifecycle: command.lifecycle }),
-              },
-              command.input,
-            )
-            .pipe(
-              Effect.matchEffect({
-                onSuccess: (value) =>
-                  Effect.succeed<AuthorizationEvent>({
+          const context = {
+            controllerKind: "human",
+            controllerId: `human:${command.sessionId}`,
+            environmentId,
+            threadId: command.threadId,
+            connectionGeneration: generation,
+            ...(command.lifecycle === undefined ? {} : { lifecycle: command.lifecycle }),
+          } as const;
+          const invoke =
+            command.type === "screen"
+              ? screen.invokeFromNativeBackend(context, command.input).pipe(
+                  Effect.map((value): AuthorizationEvent => ({
+                    type: "screen-result",
+                    invocationId: command.invocationId,
+                    value,
+                  })),
+                )
+              : execution.invokeFromNativeBackend(context, command.input).pipe(
+                  Effect.map((value): AuthorizationEvent => ({
                     type: "result",
                     invocationId: command.invocationId,
                     value,
-                  }),
-                onFailure: (error) =>
-                  Effect.succeed<AuthorizationEvent>({
-                    type: "error",
-                    invocationId: command.invocationId,
-                    code: error.code,
-                    message: error.message,
-                  }),
-              }),
-              Effect.flatMap((event) => {
-                accepted.set(command.invocationId, event);
-                // Completed reply receipts are bounded; pending work keeps its identity.
-                if (accepted.size > 256)
-                  for (const [id, value] of accepted) {
-                    if (value !== null && id !== command.invocationId) {
-                      accepted.delete(id);
-                      identities.delete(id);
-                    }
-                    if (accepted.size <= 256) break;
+                  })),
+                );
+          yield* invoke.pipe(
+            Effect.matchEffect({
+              onSuccess: Effect.succeed,
+              onFailure: (error) =>
+                Effect.succeed<AuthorizationEvent>({
+                  type: "error",
+                  invocationId: command.invocationId,
+                  code: error.code,
+                  message: error.message,
+                }),
+            }),
+            Effect.flatMap((event) => {
+              accepted.set(command.invocationId, event);
+              // Completed reply receipts are bounded; pending work keeps its identity.
+              if (accepted.size > 256)
+                for (const [id, value] of accepted) {
+                  if (value !== null && id !== command.invocationId) {
+                    accepted.delete(id);
+                    identities.delete(id);
                   }
-                return Queue.offer(events, event);
-              }),
-              Effect.forkIn(scope),
-            );
+                  if (accepted.size <= 256) break;
+                }
+              return Queue.offer(events, event);
+            }),
+            Effect.forkIn(scope),
+          );
         },
       );
       return {

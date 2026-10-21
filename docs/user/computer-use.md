@@ -82,8 +82,12 @@ version that supports transfers; you can direct the work from web, desktop, or m
 
 ## Permission And Safety
 
-T3 screen permissions use the same scope, lifetime, and independent remember choices as execution,
-but always require confirmation on the selected desktop. Manage them under **Screen permissions**
+T3 screen permissions use the same scope, lifetime, and independent remember choices as execution.
+When the selected desktop hosts this environment’s native backend, clients with orchestration and
+terminal permissions can approve pending requests under **Screen permissions**. Requests show the
+thread title, project, and source computer; approvals default to temporary access for that thread.
+Other desktops and all-environments changes require confirmation on the selected desktop. Any
+required operating-system screen-sharing consent still appears there. Manage grants under **Screen permissions**
 in Settings or the thread's Desktops panel. Operating-system consent is a separate requirement:
 a remembered GNOME token never grants a new thread T3 permission. Expiry ends only the affected
 source's access, preserving other authorized viewers and independent permissions.
@@ -408,8 +412,8 @@ An agent can ask for a clean Agent desktop, reuse a suitable prior Agent desktop
 desktop explicitly. Each user desktop also has a durable opaque identifier and an editable label in
 **Settings → User desktops**. An agent lists those user desktops before selection and passes the exact
 selected target to every later status, access, snapshot, action, release, or forget operation. The
-approval prompt appears on that selected desktop, even when the thread is being viewed from another
-client. A disconnected target fails as offline; T3 Code never redirects the operation to a different
+approval prompt appears on that selected desktop. T3 permission can also be approved from another
+client when that desktop hosts the requesting environment’s native backend. A disconnected target fails as offline; T3 Code never redirects the operation to a different
 user desktop. A missing target is rejected rather than inferred. This stateless routing lets parallel
 agents in one thread hold independent desktops without silently redirecting or releasing each other's
 sessions.

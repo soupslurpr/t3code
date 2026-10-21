@@ -77,7 +77,7 @@ export function clientRpcRequiredScopes(
   if (
     method === WS_METHODS.userDesktopHumanInvoke &&
     input !== undefined &&
-    decodeUserDesktop(input).request.operation === "execution"
+    ["execution", "screen-permission"].includes(decodeUserDesktop(input).request.operation)
   )
     return [AuthOrchestrationOperateScope, AuthTerminalOperateScope];
   if (method === WS_METHODS.gitPreparePullRequestThread && input !== undefined) {
