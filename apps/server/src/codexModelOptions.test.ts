@@ -24,6 +24,7 @@ it.each(["gpt-6-astra", "openai.gpt-6-astra"])(
       model: "gpt-6-astra",
       effort: "max",
       serviceTier: null,
+      cyberAccessProgram: null,
     });
     assert.equal(resolveCodexModelSettings(createModelSelection(instanceId, model)).model, model);
     assert.equal(

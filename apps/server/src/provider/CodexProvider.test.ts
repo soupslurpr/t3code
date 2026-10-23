@@ -82,6 +82,45 @@ it("maps current Codex model capability fields", () => {
   assert.equal(capabilities.promptCache, undefined);
 });
 
+it.each([
+  { programs: undefined, expected: [] },
+  { programs: null, expected: [] },
+  { programs: { cyber: [] }, expected: [] },
+  { programs: { cyber: ["standard"] }, expected: [] },
+  {
+    programs: { cyber: ["standard", "daybreakBlue"] },
+    expected: ["automatic", "standard", "daybreakBlue"],
+  },
+  { programs: { cyber: ["daybreakBlue"] }, expected: ["automatic", "daybreakBlue"] },
+  {
+    programs: { cyber: ["standard", "daybreakRed"] },
+    expected: ["automatic", "standard", "daybreakRed"],
+  },
+] as const)(
+  "exposes only the account's advertised cyber access programs: $expected",
+  ({ programs, expected }) => {
+    const capabilities = mapCodexModelCapabilities({
+      id: "model-with-access-programs",
+      model: "model-with-access-programs",
+      displayName: "Model with access programs",
+      description: "Test model",
+      hidden: false,
+      isDefault: false,
+      defaultReasoningEffort: "medium",
+      supportedReasoningEfforts: [],
+      ...(programs === undefined ? {} : { availableAccessPrograms: programs }),
+    });
+    const descriptor = capabilities.optionDescriptors?.find(
+      (option) => option.id === "cyberAccessProgram",
+    );
+    assert.deepEqual(
+      descriptor?.type === "select" ? descriptor.options.map((option) => option.id) : [],
+      [...expected],
+    );
+    if (expected.length > 0) assert.equal(descriptor?.currentValue, "automatic");
+  },
+);
+
 it.each(["gpt-6-astra", "openai.gpt-6-astra"])(
   "defaults %s to max reasoning when supported",
   (model) => {
@@ -374,12 +413,15 @@ const startProbe = Effect.fn("startProbe")(function* (hang: ReadonlyArray<string
                         isDefault: true,
                         defaultReasoningEffort: "high",
                         supportedReasoningEfforts: [],
+                        availableAccessPrograms: { cyber: ["standard", "daybreakBlue"] },
                       },
                     ],
                     nextCursor: null,
                   });
                 } else if (method === "skills/list") {
                   yield* reply(id, { data: [] });
+                } else if (method === "config/read") {
+                  yield* reply(id, { config: {}, origins: {} });
                 } else if (method === "account/rateLimits/read") {
                   yield* reply(id, {
                     rateLimits: { primary: null, secondary: null, credits: null, planType: "pro" },
@@ -409,6 +451,23 @@ const startProbe = Effect.fn("startProbe")(function* (hang: ReadonlyArray<string
 });
 
 it.layer(NodeServices.layer)("Codex probe budget", (it) => {
+  it.effect("does not infer access programs for unadvertised custom models", () =>
+    Effect.gen(function* () {
+      const probe = yield* startProbe([]);
+      yield* probe.authenticate;
+      const provider = yield* Fiber.join(probe.fiber);
+      const nativeOptions = provider.models.find((model) => model.slug === "gpt-test")?.capabilities
+        ?.optionDescriptors;
+      const customOptions = provider.models.find((model) => model.slug === "custom-model")
+        ?.capabilities?.optionDescriptors;
+      assert.ok(nativeOptions?.some((option) => option.id === "cyberAccessProgram"));
+      assert.deepStrictEqual(
+        customOptions,
+        nativeOptions?.filter((option) => option.id !== "cyberAccessProgram"),
+      );
+    }).pipe(Effect.scoped),
+  );
+
   it.effect("keeps the first complete catalog when its refresh never answers", () =>
     Effect.gen(function* () {
       const probe = yield* startProbe(["model/list/2"]);

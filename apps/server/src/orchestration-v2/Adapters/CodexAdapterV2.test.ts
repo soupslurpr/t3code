@@ -398,6 +398,48 @@ describe("CodexAdapterV2 assistant message streaming", () => {
 });
 
 describe("CodexAdapterV2 runtime policy", () => {
+  it.effect.each(["default", "plan"] as const)(
+    "requests explicit cyber access programs and restores automatic behavior in %s mode",
+    (interactionMode) =>
+      Effect.gen(function* () {
+        for (const program of ["daybreakBlue", "standard", "daybreakRed", "automatic", undefined]) {
+          const params = yield* CodexAdapterV2.buildCodexTurnStartParams({
+            nativeThreadId: "cyber-access-thread",
+            codexInput: [{ type: "text", text: "Review this patch" }],
+            runtimePolicy: { runtimeMode: "auto", interactionMode, cwd: null },
+            modelSelection: {
+              instanceId: ProviderInstanceId.make("codex"),
+              model: "gpt-6-sol",
+              options: program === undefined ? [] : [{ id: "cyberAccessProgram", value: program }],
+            },
+            omitServiceTier: true,
+          });
+          assert.equal(params.model, "gpt-6-sol");
+          if (program === "automatic" || program === undefined)
+            assert.notProperty(params, "cyberAccessProgram");
+          else assert.equal(params.cyberAccessProgram, program);
+        }
+      }),
+  );
+
+  it.effect("rejects an invalid cyber access program instead of silently using automatic", () =>
+    Effect.gen(function* () {
+      const error = yield* Effect.flip(
+        CodexAdapterV2.buildCodexTurnStartParams({
+          nativeThreadId: "cyber-access-thread",
+          codexInput: [],
+          runtimePolicy: { runtimeMode: "auto", interactionMode: "default", cwd: null },
+          modelSelection: {
+            instanceId: ProviderInstanceId.make("codex"),
+            model: "gpt-6-sol",
+            options: [{ id: "cyberAccessProgram", value: "invalid-program" }],
+          },
+        }),
+      );
+      assert.equal(error._tag, "SchemaError");
+    }),
+  );
+
   it.effect("sends Max for Astra by default and preserves an explicit effort", () =>
     Effect.gen(function* () {
       for (const selectedEffort of [undefined, "low"]) {
@@ -3559,16 +3601,21 @@ describe("CodexAdapterV2 post-settle continuation", () => {
     ),
   );
 
-  it.effect("restores app context after compaction without retaining monitor output", () =>
+  it.effect("restores app context and preserves Daybreak access during monitor delivery", () =>
     Effect.scoped(
       Effect.gen(function* () {
         const nativeThreadId = "context-thread";
         const nativeTurnId = "context-turn";
+        const cyberAccessProgram = "daybreakBlue";
+        const modelSelection = {
+          ...CODEX_TEST_MODEL_SELECTION,
+          options: [{ id: "cyberAccessProgram", value: cyberAccessProgram }],
+        };
         const params = yield* CodexAdapterV2.buildCodexTurnStartParams({
           nativeThreadId,
           codexInput: [{ type: "text", text: "work" }],
           runtimePolicy: CODEX_TEST_RUNTIME_POLICY,
-          modelSelection: CODEX_TEST_MODEL_SELECTION,
+          modelSelection,
           hasT3Mcp: true,
         });
         assert.include(
@@ -3599,6 +3646,7 @@ describe("CodexAdapterV2 post-settle continuation", () => {
                   threadId: nativeThreadId,
                   input: [],
                   additionalContext: params.additionalContext,
+                  cyberAccessProgram,
                   toolOutput: {
                     namespace: "t3_code",
                     name: "monitor",
@@ -3667,15 +3715,16 @@ describe("CodexAdapterV2 post-settle continuation", () => {
           authorizationHeader: "Bearer test",
           browserToolsAvailable: true,
         });
-        yield* harness.runtime.startTurn(
-          makeCodexTestTurnInput({
+        yield* harness.runtime.startTurn({
+          ...makeCodexTestTurnInput({
             threadId: harness.threadId,
             providerThread: harness.providerThread,
             now: yield* DateTime.now,
             attemptId: RunAttemptId.make("context-attempt"),
             text: "work",
           }),
-        );
+          modelSelection,
+        });
         yield* harness.runtime.steerTurn({
           threadId: harness.threadId,
           runId: RunId.make("run-unused"),

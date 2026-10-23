@@ -28,6 +28,13 @@ covers installation and custom configuration.
 New threads default to GPT-6-Astra with Max reasoning when Astra is available. Explicit project,
 thread, or saved composer selections take precedence. Other models keep their provider defaults.
 
+## Use Daybreak access
+
+Select the underlying model, such as GPT-6 Sol, then choose **Daybreak Blue** in
+its **Access program** options. This option appears when your account advertises
+Daybreak access for that model. **Automatic** lets Codex choose the program;
+**Standard**, when available, explicitly requests standard safeguards.
+
 ## Use multiple accounts
 
 Add another ChatGPT account in **Settings → Providers**, then select the account

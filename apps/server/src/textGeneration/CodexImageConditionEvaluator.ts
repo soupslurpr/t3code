@@ -25,7 +25,11 @@ import {
 import { getModelSelectionStringOptionValue } from "@t3tools/shared/model";
 import { resolveSpawnCommand } from "@t3tools/shared/shell";
 
-import { getCodexServiceTierOptionValue } from "../codexModelOptions.ts";
+import {
+  decodeCodexCyberAccessProgram,
+  getCodexServiceTierOptionValue,
+  resolveCodexModelSettings,
+} from "../codexModelOptions.ts";
 import * as HostProcess from "@t3tools/shared/HostProcess";
 import { expandHomePath } from "@t3tools/provider-core/server/pathExpansion";
 import { codexAppServerArgs, resolveCodexLaunchArgs } from "../provider/codexLaunchArgs.ts";
@@ -74,6 +78,7 @@ interface EvaluatorSelection {
   readonly model: string;
   readonly reasoningEffort: string;
   readonly serviceTier: string | undefined;
+  readonly cyberAccessProgram: CodexSchema.V2TurnStartParams__CyberAccessProgram | null;
 }
 
 type EvaluatorEvent =
@@ -132,7 +137,8 @@ function sameEvaluatorSelection(left: EvaluatorSelection, right: EvaluatorSelect
   return (
     left.model === right.model &&
     left.reasoningEffort === right.reasoningEffort &&
-    left.serviceTier === right.serviceTier
+    left.serviceTier === right.serviceTier &&
+    left.cyberAccessProgram === right.cyberAccessProgram
   );
 }
 
@@ -370,6 +376,9 @@ export const makeCodexImageConditionEvaluator = Effect.fn("makeCodexImageConditi
             model: input.selection.model,
             outputSchema: toJsonSchemaObject(ImageConditionOutput),
             ...(input.selection.serviceTier ? { serviceTier: input.selection.serviceTier } : {}),
+            ...(input.selection.cyberAccessProgram
+              ? { cyberAccessProgram: input.selection.cyberAccessProgram }
+              : {}),
             threadId: lane.threadId,
           }),
           "Codex evaluator turn creation timed out.",
@@ -492,6 +501,9 @@ export const makeCodexImageConditionEvaluator = Effect.fn("makeCodexImageConditi
               getModelSelectionStringOptionValue(input.modelSelection, "reasoningEffort") ??
               DEFAULT_TEXT_GENERATION_REASONING_EFFORT,
             serviceTier: getCodexServiceTierOptionValue(input.modelSelection),
+            cyberAccessProgram: yield* decodeCodexCyberAccessProgram(
+              resolveCodexModelSettings(input.modelSelection).cyberAccessProgram,
+            ).pipe(Effect.mapError(mapEvaluatorError("Invalid Codex access program."))),
           } satisfies EvaluatorSelection;
           const { output, usage } = yield* runEvaluation({ imagePaths, prompt, selection });
           const imageIds = new Set(input.images.map((image) => image.id));

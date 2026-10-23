@@ -238,6 +238,55 @@ function imageConditionInput(): TextGeneration.ImageConditionEvaluationInput {
 }
 
 it.layer(NodeServices.layer)("CodexImageConditionEvaluator", (it) => {
+  it.effect("honors access programs and resets the evaluator when the program changes", () =>
+    Effect.gen(function* () {
+      const fileSystem = yield* FileSystem.FileSystem;
+      const directory = yield* fileSystem.makeTempDirectoryScoped({
+        prefix: "t3code-codex-evaluator-access-test-",
+      });
+      const fixture = yield* makeFakeEvaluatorAppServer(directory);
+      const evaluatorScope = yield* Scope.make();
+      const evaluate = yield* makeCodexImageConditionEvaluator(
+        decodeCodexSettings({ binaryPath: fixture.binaryPath }),
+        { ...process.env, [EVALUATOR_LOG_PATH_ENV]: fixture.logPath },
+      ).pipe(Effect.provideService(Scope.Scope, evaluatorScope));
+
+      for (const program of [
+        "daybreakBlue",
+        "daybreakBlue",
+        "standard",
+        "daybreakRed",
+        "automatic",
+        undefined,
+      ]) {
+        yield* evaluate({
+          ...imageConditionInput(),
+          modelSelection: createModelSelection(
+            ProviderInstanceId.make("codex"),
+            "gpt-6-sol",
+            program ? [{ id: "cyberAccessProgram", value: program }] : [],
+          ),
+        });
+      }
+      yield* Scope.close(evaluatorScope, Exit.void);
+
+      const messages = (yield* readEvaluatorLog(fixture.logPath)).filter(
+        (entry) => entry.kind === "message",
+      );
+      const turns = messages.filter((entry) => entry.method === "turn/start");
+      expect(turns.slice(0, 4).map((entry) => entry.params)).toEqual([
+        expect.objectContaining({ cyberAccessProgram: "daybreakBlue" }),
+        expect.objectContaining({ cyberAccessProgram: "daybreakBlue" }),
+        expect.objectContaining({ cyberAccessProgram: "standard" }),
+        expect.objectContaining({ cyberAccessProgram: "daybreakRed" }),
+      ]);
+      expect(turns).toHaveLength(6);
+      expect(turns[4]?.params).not.toHaveProperty("cyberAccessProgram");
+      expect(turns[5]?.params).not.toHaveProperty("cyberAccessProgram");
+      expect(messages.filter((entry) => entry.method === "thread/start")).toHaveLength(4);
+    }).pipe(Effect.scoped),
+  );
+
   it.effect("reuses one cache-stable thread and reverts every evaluation", () =>
     Effect.gen(function* () {
       const fileSystem = yield* FileSystem.FileSystem;

@@ -94,7 +94,10 @@ import * as Stream from "effect/Stream";
 import { ChildProcess, ChildProcessSpawner } from "effect/process";
 
 import { resolveAttachmentPath, resolveAttachmentPathById } from "../../attachmentStore.ts";
-import { resolveCodexModelSettings } from "../../codexModelOptions.ts";
+import {
+  decodeCodexCyberAccessProgram,
+  resolveCodexModelSettings,
+} from "../../codexModelOptions.ts";
 import { ServerConfig } from "../../config.ts";
 import { expandHomePath } from "@t3tools/provider-core/server/pathExpansion";
 import { buildCodexApplicationContext } from "../../provider/CodexDeveloperInstructions.ts";
@@ -659,6 +662,7 @@ const decodeTurnReasoningEffort = Schema.decodeUnknownEffect(
 const CodexTurnStartParamsWithCollaborationMode = CodexSchema.V2TurnStartParams.pipe(
   Schema.fieldsAssign({
     collaborationMode: Schema.optionalKey(CodexSchema.ClientRequest__CollaborationMode),
+    cyberAccessProgram: Schema.optionalKey(CodexSchema.V2TurnStartParams__CyberAccessProgram),
     additionalContext: Schema.optionalKey(
       Schema.Record(Schema.String, CodexSchema.V2TurnStartParams__AdditionalContextEntry),
     ),
@@ -769,6 +773,9 @@ export const buildCodexTurnStartParams = Effect.fn("CodexAdapterV2.buildCodexTur
     const effort =
       selectedEffort === undefined ? undefined : yield* decodeTurnReasoningEffort(selectedEffort);
     const serviceTier = input.omitServiceTier === true ? undefined : modelSettings.serviceTier;
+    const cyberAccessProgram = yield* decodeCodexCyberAccessProgram(
+      modelSettings.cyberAccessProgram,
+    );
     // An app's context is text an MCP server wrote, so it goes in as untrusted
     // context: Codex renders it as quoted user-side input, never as developer
     // instructions.
@@ -818,6 +825,7 @@ export const buildCodexTurnStartParams = Effect.fn("CodexAdapterV2.buildCodexTur
       ...(sandboxPolicy === undefined ? {} : { sandboxPolicy }),
       effort: effort ?? null,
       ...(serviceTier === undefined ? {} : { serviceTier }),
+      ...(cyberAccessProgram === null ? {} : { cyberAccessProgram }),
       ...(collaborationMode === undefined ? {} : { collaborationMode }),
     });
   },
@@ -7027,12 +7035,16 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
                   const additionalContext = (yield* Ref.get(additionalContextByThread)).get(
                     threadId,
                   );
+                  const cyberAccessProgram = yield* decodeCodexCyberAccessProgram(
+                    resolveCodexModelSettings(activeTurn.input.modelSelection).cyberAccessProgram,
+                  );
                   const started = yield* client
                     .request("turn/start", {
                       threadId,
                       input: [],
                       toolOutput: codexMonitorToolOutput(codexInput),
                       ...(additionalContext === undefined ? {} : { additionalContext }),
+                      ...(cyberAccessProgram === null ? {} : { cyberAccessProgram }),
                     })
                     .pipe(
                       Effect.map((response) => ({
