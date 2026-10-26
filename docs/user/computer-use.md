@@ -173,6 +173,11 @@ explicitly. Access returns the concrete desktop identifier, and every later stat
 release, or forget operation names that identifier. Omitting a target always means your desktop; it
 never means the most recently used Agent desktop. This stateless routing lets parallel agents in one
 thread hold independent desktops without silently redirecting or releasing each other's sessions.
+A provider or harness restart does not strand prior desktops: they remain listed for the same thread,
+and acquiring one explicitly reclaims it when no other controller is actively using it. Automatic
+acquisition prefers the current controller's suitable desktop, then the most recent suitable idle
+desktop from the thread. It never steals an active control lease; agents use a fresh desktop for
+intentional parallel work.
 A human can temporarily view or take control of an Agent desktop; agent input is revoked during that
 takeover and can resume after the human lease ends.
 
@@ -182,6 +187,16 @@ desktop must stay running; they do not select arbitrary host resource values. Id
 park to disk after ten minutes, while active operations, viewers, controllers, and explicit
 prevent-parking requests keep them running. An agent can also stop, park, checkpoint, clone, reset,
 recover, hand off, or delete a desktop explicitly.
+
+Stopped or parked desktops using automatic retention enter a seven-day recovery window after 30
+days without activity. The host also maintains a free-space reserve of five percent of the Agent
+desktop filesystem, bounded between 2 GiB and 20 GiB. When storage falls below that reserve,
+desktops idle for at least one day can enter the same recovery window, oldest first and only until
+enough pending space has been identified. This never skips recovery: disk space is reclaimed when
+the window expires, or when a user explicitly confirms permanent deletion in Settings. Agents can
+mark state that must be kept with the preserve retention policy, which exempts it from automatic
+retirement. Settings shows the recovery deadline and provides both Restore and confirmed Delete
+permanently actions.
 
 New desktops use host GPU acceleration automatically when the complete QEMU, graphics-driver, and
 device-access path is available. An agent can prefer acceleration while accepting a software

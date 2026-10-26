@@ -23,6 +23,7 @@ const desktop: AgentDesktop = {
   label: "Agent desktop",
   owner,
   state: "ready",
+  automaticParking: true,
   capabilities: ["command"],
   graphics: {
     backend: "virtio-gpu-2d",
@@ -52,6 +53,16 @@ const managerLayer = (commandOwner?: (value: AgentDesktopOwner) => void) => {
             ...desktop,
             id: "desktop-2",
             owner: { ...owner, controllerId: "controller-2" },
+          },
+          {
+            ...desktop,
+            id: "desktop-3",
+            owner: { ...owner, threadId: ThreadId.make("thread-2") },
+          },
+          {
+            ...desktop,
+            id: "desktop-4",
+            owner: { ...owner, environmentId: EnvironmentId.make("environment-2") },
           },
         ],
       }),
@@ -98,14 +109,25 @@ const managerLayer = (commandOwner?: (value: AgentDesktopOwner) => void) => {
 };
 
 describe("Agent desktop IPC methods", () => {
-  it.effect("filters an agent list to the broker owner", () =>
+  it.effect("lists every controller's desktops within the broker thread", () =>
     list.handler(owner).pipe(
       Effect.provide(managerLayer()),
       Effect.tap((result) =>
         Effect.sync(() => {
           assert.deepEqual(result, {
             ok: true,
-            value: { available: true, desktops: [desktop], requirements: [] },
+            value: {
+              available: true,
+              desktops: [
+                desktop,
+                {
+                  ...desktop,
+                  id: "desktop-2",
+                  owner: { ...owner, controllerId: "controller-2" },
+                },
+              ],
+              requirements: [],
+            },
           });
         }),
       ),
@@ -197,7 +219,7 @@ describe("Agent desktop IPC methods", () => {
             if (envelope.ok) {
               assert.deepEqual(
                 envelope.value.desktops.map((value) => value.id),
-                ["desktop-1", "desktop-2"],
+                ["desktop-1", "desktop-2", "desktop-3"],
               );
             }
           }),

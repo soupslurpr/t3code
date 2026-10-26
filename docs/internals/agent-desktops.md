@@ -8,12 +8,15 @@ observation and action contract; only desktop selection and lifecycle ownership 
 
 The MCP toolkit sends Agent desktop operations through the existing preview-automation broker to the
 desktop client attached to that environment. The desktop process owns the hypervisor and persists a
-versioned inventory below its Agent desktop state directory. A desktop owner is the tuple of
-environment, thread, and controller identifiers. Every lifecycle, guest, and computer-use request
-checks that tuple before acting.
+versioned inventory below its Agent desktop state directory. Environment and thread identifiers form
+the durable authorization boundary. The persisted owner also records the controller currently
+claiming each desktop. A replacement controller in the same thread can atomically reclaim an idle
+desktop after a provider or harness restart, while active operations and control leases prevent a
+takeover. Cross-thread access still requires an explicit handoff.
 
 Computer requests select either the user desktop or an Agent desktop. Omitting an Agent desktop id
-lets the manager reuse the controller's suitable assignment or acquire a new machine. The computer
+lets the manager prefer the controller's suitable assignment, reclaim the most recent suitable idle
+desktop from the same thread, or acquire a new machine. The computer
 router keeps the two backends behind one current request shape; there is no legacy host-only IPC
 request path.
 
@@ -56,7 +59,10 @@ graphics. The selected backend, acceleration status, and checkpoint mode are par
 summary. The systemd unit applies memory high and maximum bounds in addition to the guest's
 configured memory.
 
-Unleased desktops park after ten idle minutes unless their task requests `preventParking`. Parking
+Unleased desktops park after ten idle minutes unless their task requests `preventParking`. That
+request persists across releases and restarts until the owning agent explicitly acquires the same
+desktop with `preventParking: false`; summaries and Settings surface whether automatic parking is
+enabled. Parking
 saves complete machine state for software graphics, stops QEMU, and frees CPU and memory. Virgl GPU
 state is not migratable, so accelerated desktops instead perform a clean guest shutdown and cold
 boot on resume. Their checkpoints atomically snapshot the system and firmware disks while the guest

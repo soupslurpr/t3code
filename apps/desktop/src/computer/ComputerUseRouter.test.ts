@@ -76,6 +76,7 @@ const routerHarness = Effect.gen(function* () {
     label: "Agent desktop",
     owner: { environmentId, threadId, controllerId: context.controllerId },
     state: "ready",
+    automaticParking: true,
     capabilities: ["computer"],
     graphics: {
       backend: "virtio-gpu-2d",

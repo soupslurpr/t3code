@@ -72,6 +72,12 @@ const TRANSIENT_KEY_ID = "t3:transient-key-chord";
 const MAX_STORED_FRAMES = 32;
 const RECOVERY_RETENTION = Duration.days(7);
 const IDLE_PARK_AFTER = Duration.minutes(10);
+const AUTOMATIC_RECOVERY_AFTER = Duration.days(30);
+const STORAGE_PRESSURE_MIN_IDLE = Duration.days(1);
+const MIN_STORAGE_RESERVE_BYTES = 2 * GIB;
+const MAX_STORAGE_RESERVE_BYTES = 20 * GIB;
+const STORAGE_RESERVE_RATIO = 0.05;
+const STORAGE_CHECK_INTERVAL = Duration.minutes(5);
 const MAINTENANCE_INTERVAL = Duration.minutes(1);
 const HUMAN_LEASE_TTL = Duration.seconds(30);
 const STATE_FILE_NAME = "desktops.json";
@@ -141,6 +147,7 @@ const PersistedDesktop = Schema.Struct({
       graphics: Schema.optional(Schema.Literals(["none", "preferred", "required"])),
       latency: Schema.optional(Schema.Literals(["interactive", "background"])),
       preventParking: Schema.optional(Schema.Boolean),
+      retention: Schema.optional(Schema.Literals(["automatic", "preserve"])),
       expectedTemporaryDiskBytes: Schema.optional(Schema.Number),
       audio: Schema.optional(Schema.Boolean),
     }),
@@ -479,6 +486,9 @@ export function chooseAgentDesktopResources(
 const isoTime = (milliseconds: number): string =>
   DateTime.formatIso(DateTime.makeUnsafe(milliseconds));
 
+const ownersShareThread = (left: AgentDesktopOwner, right: AgentDesktopOwner): boolean =>
+  left.environmentId === right.environmentId && left.threadId === right.threadId;
+
 const ownersMatch = (left: AgentDesktopOwner, right: AgentDesktopOwner): boolean =>
   left.environmentId === right.environmentId &&
   left.threadId === right.threadId &&
@@ -591,6 +601,87 @@ export function shouldAutomaticallyParkAgentDesktop(input: {
   );
 }
 
+/** Returns the free-space reserve maintained for the Agent desktop filesystem. */
+function agentDesktopStorageReserveBytes(totalBytes: number): number {
+  if (!Number.isFinite(totalBytes) || totalBytes <= 0) return 0;
+  return Math.min(
+    totalBytes,
+    Math.max(
+      MIN_STORAGE_RESERVE_BYTES,
+      Math.min(MAX_STORAGE_RESERVE_BYTES, totalBytes * STORAGE_RESERVE_RATIO),
+    ),
+  );
+}
+
+/** Selects inactive desktops that should enter the recoverable deletion window. */
+export function selectAutomaticRecoveryCandidates(input: {
+  readonly now: number;
+  readonly desktops: ReadonlyArray<{
+    readonly id: AgentDesktopId;
+    readonly state: AgentDesktopLifecycleState;
+    readonly lastActiveAt: string;
+    readonly retention: "automatic" | "preserve";
+    readonly allocatedBytes: number;
+  }>;
+  readonly storage?: {
+    readonly totalBytes: number;
+    readonly availableBytes: number;
+  };
+}): ReadonlyArray<{
+  readonly id: AgentDesktopId;
+  readonly reason: "inactive" | "storage-pressure";
+}> {
+  const parsedLastActiveAt = (desktop: (typeof input.desktops)[number]) =>
+    Date.parse(desktop.lastActiveAt);
+  const automaticCandidates = input.desktops
+    .filter(
+      (desktop) =>
+        (desktop.state === "parked" || desktop.state === "stopped") &&
+        desktop.retention === "automatic" &&
+        Number.isFinite(parsedLastActiveAt(desktop)),
+    )
+    .sort((left, right) => parsedLastActiveAt(left) - parsedLastActiveAt(right));
+  const selected: Array<{
+    readonly id: AgentDesktopId;
+    readonly reason: "inactive" | "storage-pressure";
+  }> = [];
+  const selectedIds = new Set<AgentDesktopId>();
+  const inactiveBefore = input.now - Duration.toMillis(AUTOMATIC_RECOVERY_AFTER);
+  for (const desktop of automaticCandidates) {
+    if (parsedLastActiveAt(desktop) > inactiveBefore) continue;
+    selected.push({ id: desktop.id, reason: "inactive" });
+    selectedIds.add(desktop.id);
+  }
+
+  const storage = input.storage;
+  if (storage === undefined) return selected;
+  const reserveBytes = agentDesktopStorageReserveBytes(storage.totalBytes);
+  if (reserveBytes === 0 || storage.availableBytes >= reserveBytes) return selected;
+  const allocatedBytes = (desktop: (typeof input.desktops)[number]) =>
+    Number.isFinite(desktop.allocatedBytes) ? Math.max(0, desktop.allocatedBytes) : 0;
+  let projectedAvailableBytes = Math.max(0, storage.availableBytes);
+  for (const desktop of input.desktops) {
+    if (desktop.state === "recoverable" || selectedIds.has(desktop.id)) {
+      projectedAvailableBytes += allocatedBytes(desktop);
+    }
+  }
+  if (projectedAvailableBytes >= reserveBytes) return selected;
+
+  const storagePressureIdleBefore = input.now - Duration.toMillis(STORAGE_PRESSURE_MIN_IDLE);
+  for (const desktop of automaticCandidates) {
+    if (selectedIds.has(desktop.id) || parsedLastActiveAt(desktop) > storagePressureIdleBefore) {
+      continue;
+    }
+    const reclaimableBytes = allocatedBytes(desktop);
+    if (reclaimableBytes === 0) continue;
+    selected.push({ id: desktop.id, reason: "storage-pressure" });
+    selectedIds.add(desktop.id);
+    projectedAvailableBytes += reclaimableBytes;
+    if (projectedAvailableBytes >= reserveBytes) break;
+  }
+  return selected;
+}
+
 /** Reserves one currently unused host port long enough to choose its number. */
 const findAvailablePort = (host: string) =>
   Effect.tryPromise({
@@ -629,6 +720,7 @@ export const make = Effect.gen(function* () {
   const stateSemaphore = yield* Semaphore.make(1);
   const lifecycleSemaphore = yield* Semaphore.make(1);
   const leaseSemaphore = yield* Semaphore.make(1);
+  const nextStorageCheckAt = yield* Ref.make(0);
   const guestAccessibilitySource = yield* Effect.gen(function* () {
     for (const candidate of environment.resolveResourcePathCandidates(
       GUEST_ACCESSIBILITY_RESOURCE,
@@ -842,6 +934,7 @@ export const make = Effect.gen(function* () {
       label: desktop.label,
       owner: desktop.owner,
       state: desktop.state,
+      automaticParking: desktop.requirements?.preventParking !== true,
       capabilities: [
         ...CAPABILITIES,
         ...(hardwareAccelerated ? (["graphics-acceleration"] as const) : []),
@@ -862,6 +955,7 @@ export const make = Effect.gen(function* () {
       createdAt: desktop.createdAt,
       lastActiveAt: desktop.lastActiveAt,
       recoverableUntil: desktop.recoverableUntil,
+      retention: desktop.requirements?.retention ?? "automatic",
       ...(desktop.detail === undefined ? {} : { detail: desktop.detail }),
     } satisfies AgentDesktop;
   });
@@ -1409,6 +1503,33 @@ export const make = Effect.gen(function* () {
     return yield* setLifecycle(desktop.id, "parked", detail);
   });
 
+  const retireDesktop = Effect.fn("AgentDesktopManager.retireDesktop")(function* (
+    desktop: PersistedDesktop,
+    detail?: string,
+  ) {
+    const runtime = (yield* Ref.get(state)).runtimes.get(desktop.id);
+    if (runtime !== undefined) yield* revokeDesktopLease(desktop, runtime, "ignore");
+    yield* qemu.stop(desktop.id);
+    const recoverableUntil = isoTime(
+      (yield* Clock.currentTimeMillis) + Duration.toMillis(RECOVERY_RETENTION),
+    );
+    const recoverable = (yield* updateDesktop(desktop.id, (current) => ({
+      ...current,
+      state: "recoverable",
+      recoverableUntil,
+      detail,
+    })))!;
+    yield* modifyState((current) => {
+      if (current.assignments.get(desktop.owner.controllerId) !== desktop.id) {
+        return [undefined, current] as const;
+      }
+      const assignments = new Map(current.assignments);
+      assignments.delete(desktop.owner.controllerId);
+      return [undefined, { ...current, assignments }] as const;
+    });
+    return recoverable;
+  });
+
   const reclaimOneDesktop = Effect.fn("AgentDesktopManager.reclaimOneDesktop")(function* () {
     const current = yield* Ref.get(state);
     const candidates = yield* Effect.filter(
@@ -1548,9 +1669,89 @@ export const make = Effect.gen(function* () {
     return (yield* setLifecycle(id, "ready"))!;
   });
 
+  const claimReusableDesktop = Effect.fn("AgentDesktopManager.claimReusableDesktop")(function* (
+    owner: AgentDesktopOwner,
+    input: AgentDesktopAcquireInput,
+    desktopId: AgentDesktopId,
+    busyBehavior: "fail" | "skip",
+  ) {
+    return yield* leaseSemaphore.withPermits(1)(
+      Effect.gen(function* () {
+        const current = yield* Ref.get(state);
+        const desktop = current.desktops.get(desktopId);
+        if (desktop === undefined) {
+          return yield* new AgentDesktopManagerError({
+            code: "desktop-target-mismatch",
+            operation: "acquire",
+            detail: "the requested Agent desktop does not exist",
+          });
+        }
+        if (!ownersShareThread(desktop.owner, owner)) {
+          return yield* new AgentDesktopManagerError({
+            code: "desktop-target-mismatch",
+            operation: "acquire",
+            detail: "the requested Agent desktop belongs to a different thread",
+          });
+        }
+        if (!ownersMatch(desktop.owner, owner)) {
+          const runtime = current.runtimes.get(desktop.id);
+          if (runtime === undefined) {
+            return yield* new AgentDesktopManagerError({
+              code: "internal-error",
+              operation: "acquire",
+              detail: "the Agent desktop has no runtime state",
+            });
+          }
+          const lease = current.leases.get(desktop.id);
+          const controlledByAnother =
+            lease?.controllerId !== null &&
+            lease?.controllerId !== undefined &&
+            lease.controllerId !== owner.controllerId;
+          const activeOperationCount = yield* Ref.get(runtime.activeOperationCount);
+          if (controlledByAnother || activeOperationCount > 0) {
+            if (busyBehavior === "skip") return undefined;
+            return yield* new AgentDesktopManagerError({
+              code: "desktop-busy",
+              operation: "acquire",
+              detail: "another controller is actively using the requested Agent desktop",
+            });
+          }
+        }
+        return yield* modifyState((latest) => {
+          const selected = latest.desktops.get(desktop.id);
+          if (selected === undefined) return [undefined, latest] as const;
+          const claimed = {
+            ...selected,
+            owner,
+            ...(input.label === undefined ? {} : { label: input.label }),
+            ...(input.requirements === undefined
+              ? {}
+              : {
+                  requirements: {
+                    ...selected.requirements,
+                    ...input.requirements,
+                  },
+                }),
+          };
+          const desktops = new Map(latest.desktops).set(desktop.id, claimed);
+          const assignments = new Map(latest.assignments);
+          if (
+            selected.owner.controllerId !== owner.controllerId &&
+            assignments.get(selected.owner.controllerId) === desktop.id
+          ) {
+            assignments.delete(selected.owner.controllerId);
+          }
+          assignments.set(owner.controllerId, desktop.id);
+          return [claimed, { ...latest, desktops, assignments }] as const;
+        });
+      }),
+    );
+  });
+
   const acquire: AgentDesktopManagerShape["acquire"] = (owner, input) =>
     lifecycleSemaphore.withPermits(1)(
       Effect.gen(function* () {
+        yield* leaseSemaphore.withPermits(1)(expireHumanLeases());
         const current = yield* Ref.get(state);
         const explicit =
           input.desktopId === undefined ? undefined : current.desktops.get(input.desktopId);
@@ -1561,11 +1762,11 @@ export const make = Effect.gen(function* () {
             detail: "the requested Agent desktop does not exist",
           });
         }
-        if (explicit !== undefined && !ownersMatch(explicit.owner, owner)) {
+        if (explicit !== undefined && !ownersShareThread(explicit.owner, owner)) {
           return yield* new AgentDesktopManagerError({
             code: "desktop-target-mismatch",
             operation: "acquire",
-            detail: "the requested Agent desktop belongs to a different controller",
+            detail: "the requested Agent desktop belongs to a different thread",
           });
         }
         if (explicit !== undefined && !satisfiesRequirements(explicit, input.requirements)) {
@@ -1575,35 +1776,38 @@ export const make = Effect.gen(function* () {
             detail: "the requested Agent desktop does not satisfy the task requirements",
           });
         }
-        const reusable =
+        const candidates =
           input.fresh === true
-            ? undefined
-            : (explicit ??
-              Array.from(current.desktops.values())
-                .filter(
-                  (desktop) =>
-                    ownersMatch(desktop.owner, owner) &&
-                    desktop.state !== "recoverable" &&
-                    desktop.state !== "deleting" &&
-                    desktop.state !== "failed" &&
-                    satisfiesRequirements(desktop, input.requirements),
-                )
-                .sort((left, right) => right.lastActiveAt.localeCompare(left.lastActiveAt))[0]);
-        const prepared =
-          reusable === undefined || (input.label === undefined && input.requirements === undefined)
-            ? reusable
-            : yield* updateDesktop(reusable.id, (desktop) => ({
-                ...desktop,
-                ...(input.label === undefined ? {} : { label: input.label }),
-                ...(input.requirements === undefined
-                  ? {}
-                  : {
-                      requirements: {
-                        ...desktop.requirements,
-                        ...input.requirements,
-                      },
-                    }),
-              }));
+            ? []
+            : explicit === undefined
+              ? Array.from(current.desktops.values())
+                  .filter(
+                    (desktop) =>
+                      ownersShareThread(desktop.owner, owner) &&
+                      desktop.state !== "recoverable" &&
+                      desktop.state !== "deleting" &&
+                      desktop.state !== "failed" &&
+                      satisfiesRequirements(desktop, input.requirements),
+                  )
+                  .sort((left, right) => {
+                    const ownershipOrder =
+                      Number(ownersMatch(right.owner, owner)) -
+                      Number(ownersMatch(left.owner, owner));
+                    return ownershipOrder !== 0
+                      ? ownershipOrder
+                      : right.lastActiveAt.localeCompare(left.lastActiveAt);
+                  })
+              : [explicit];
+        let prepared: PersistedDesktop | undefined;
+        for (const candidate of candidates) {
+          prepared = yield* claimReusableDesktop(
+            owner,
+            input,
+            candidate.id,
+            explicit === undefined ? "skip" : "fail",
+          );
+          if (prepared !== undefined) break;
+        }
         const desktop =
           prepared === undefined
             ? yield* createDesktop(owner, input)
@@ -1624,7 +1828,7 @@ export const make = Effect.gen(function* () {
       ...(selector.desktopId === undefined ? {} : { desktopId: selector.desktopId }),
       ...(selector.fresh === undefined ? {} : { fresh: selector.fresh }),
     });
-    return yield* requireDesktop(owner.controllerId, acquired.id);
+    return yield* requireDesktopById(acquired.id);
   });
 
   const requestView: AgentDesktopManagerShape["requestView"] = Effect.fn(
@@ -1656,7 +1860,16 @@ export const make = Effect.gen(function* () {
     yield* leaseSemaphore.withPermits(1)(
       Effect.gen(function* () {
         yield* expireHumanLeases();
-        const existingLease = (yield* Ref.get(state)).leases.get(desktop.id);
+        const current = yield* Ref.get(state);
+        const selected = current.desktops.get(desktop.id);
+        if (selected === undefined || !ownersMatch(selected.owner, owner)) {
+          return yield* new AgentDesktopManagerError({
+            code: "desktop-busy",
+            operation: "requestControl",
+            detail: "another controller claimed the Agent desktop before control was acquired",
+          });
+        }
+        const existingLease = current.leases.get(desktop.id);
         if (
           existingLease?.controllerId !== null &&
           existingLease?.controllerId !== undefined &&
@@ -2510,36 +2723,11 @@ export const make = Effect.gen(function* () {
               label: desktop.label,
               ...(desktop.requirements === undefined ? {} : { requirements: desktop.requirements }),
             });
-            const recoverableUntil = isoTime(
-              (yield* Clock.currentTimeMillis) + Duration.toMillis(RECOVERY_RETENTION),
-            );
-            yield* revokeDesktopLease(desktop, runtime, "ignore");
-            yield* qemu.stop(desktop.id);
-            yield* updateDesktop(desktop.id, (current) => ({
-              ...current,
-              state: "recoverable",
-              recoverableUntil,
-              detail: `reset replaced this desktop with ${replacement.id}`,
-            }));
+            yield* retireDesktop(desktop, `Reset replaced this desktop with ${replacement.id}.`);
             return yield* summary(replacement);
           }
           case "delete": {
-            yield* revokeDesktopLease(desktop, runtime, "ignore");
-            yield* qemu.stop(desktop.id);
-            const recoverableUntil = isoTime(
-              (yield* Clock.currentTimeMillis) + Duration.toMillis(RECOVERY_RETENTION),
-            );
-            const recoverable = (yield* updateDesktop(desktop.id, (current) => ({
-              ...current,
-              state: "recoverable",
-              recoverableUntil,
-            })))!;
-            yield* modifyState((current) => {
-              const assignments = new Map(current.assignments);
-              assignments.delete(owner.controllerId);
-              return [undefined, { ...current, assignments }] as const;
-            });
-            return yield* summary(recoverable);
+            return yield* summary(yield* retireDesktop(desktop));
           }
           case "restore": {
             if (desktop.state !== "recoverable") {
@@ -3037,6 +3225,65 @@ export const make = Effect.gen(function* () {
           ),
         );
         if (removed) yield* removeDesktopState(desktop.id);
+      }
+
+      const afterCleanup = yield* Ref.get(state);
+      const retirementPool = Array.from(afterCleanup.desktops.values()).filter(
+        (desktop) =>
+          desktop.state === "parked" ||
+          desktop.state === "stopped" ||
+          desktop.state === "recoverable",
+      );
+      const storageCheckAt = yield* Ref.get(nextStorageCheckAt);
+      const shouldCheckStorage = retirementPool.length > 0 && now >= storageCheckAt;
+      const storage = !shouldCheckStorage
+        ? undefined
+        : yield* qemu.storageCapacity.pipe(Effect.option, Effect.map(Option.getOrUndefined));
+      if (shouldCheckStorage) {
+        yield* Ref.set(nextStorageCheckAt, now + Duration.toMillis(STORAGE_CHECK_INTERVAL));
+      }
+      const underStoragePressure =
+        storage !== undefined &&
+        storage.availableBytes < agentDesktopStorageReserveBytes(storage.totalBytes);
+      const diskAllocations: ReadonlyMap<AgentDesktopId, number> = underStoragePressure
+        ? new Map(
+            yield* Effect.forEach(
+              retirementPool,
+              (desktop) =>
+                qemu.diskUsage(desktop.id).pipe(
+                  Effect.map((usage) => [desktop.id, usage.allocatedBytes] as const),
+                  Effect.orElseSucceed(() => [desktop.id, 0] as const),
+                ),
+              { concurrency: 4 },
+            ),
+          )
+        : new Map();
+      const automaticRecoveries = selectAutomaticRecoveryCandidates({
+        now,
+        desktops: Array.from(afterCleanup.desktops.values(), (desktop) => ({
+          id: desktop.id,
+          state: desktop.state,
+          lastActiveAt: desktop.lastActiveAt,
+          retention: desktop.requirements?.retention ?? "automatic",
+          allocatedBytes: diskAllocations.get(desktop.id) ?? 0,
+        })),
+        ...(storage === undefined ? {} : { storage }),
+      });
+      for (const selection of automaticRecoveries) {
+        const desktop = afterCleanup.desktops.get(selection.id);
+        if (desktop === undefined) continue;
+        const detail =
+          selection.reason === "inactive"
+            ? "Retired automatically after 30 days of inactivity."
+            : "Retired automatically because Agent desktop storage was low.";
+        yield* retireDesktop(desktop, detail).pipe(
+          Effect.catch((cause) =>
+            Effect.logWarning("agent desktop automatic retirement failed", {
+              desktopId: desktop.id,
+              detail: cause.message,
+            }),
+          ),
+        );
       }
 
       const current = yield* Ref.get(state);
