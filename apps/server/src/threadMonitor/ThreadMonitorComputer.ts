@@ -207,7 +207,7 @@ export const make = Effect.gen(function* () {
       },
       requestNamespace: `thread-monitor:${input.monitorId}`,
       client: undefined,
-      capabilities: new Set(["preview"]),
+      capabilities: new Set(["computer"]),
       issuedAt: yield* Clock.currentTimeMillis,
     } satisfies McpInvocationContext.McpThreadInvocationScope;
   });

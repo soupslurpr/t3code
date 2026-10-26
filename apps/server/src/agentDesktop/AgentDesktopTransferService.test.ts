@@ -41,7 +41,7 @@ const scope: McpInvocationContext.McpThreadInvocationScope = {
   thread: { threadId, providerSessionId: "session-transfer-test", providerInstanceId },
   requestNamespace: "transfer-test",
   client: undefined,
-  capabilities: new Set(["preview"]),
+  capabilities: new Set(["computer"]),
   issuedAt: 0,
 };
 

@@ -33,7 +33,7 @@ const invoke = Effect.fn("AgentDesktopToolkit.invoke")(function* <A>(
   import("@t3tools/contracts").PreviewAutomationError,
   McpInvocationContext.McpInvocationContext | PreviewAutomationBroker.PreviewAutomationBroker
 > {
-  const scope = yield* McpInvocationContext.requireThreadMcpCapability("preview");
+  const scope = yield* McpInvocationContext.requireThreadMcpCapability("computer");
   const broker = yield* PreviewAutomationBroker.PreviewAutomationBroker;
   return yield* broker.invoke<A>({ scope, operation, input, timeoutMs });
 });
@@ -66,7 +66,7 @@ const handlers = {
   ),
   agent_desktop_copy: McpToolAccess.actsAsCaller((input: AgentDesktopCopyInput) =>
     Effect.gen(function* () {
-      const scope = yield* McpInvocationContext.requireThreadMcpCapability("preview");
+      const scope = yield* McpInvocationContext.requireThreadMcpCapability("computer");
       const transfers = yield* AgentDesktopTransferService.AgentDesktopTransferService;
       return yield* transfers.start(scope, input);
     }),
@@ -74,7 +74,7 @@ const handlers = {
   agent_desktop_transfer_status: McpToolAccess.readsAsCaller(
     (input: AgentDesktopTransferTargetInput) =>
       Effect.gen(function* () {
-        const scope = yield* McpInvocationContext.requireThreadMcpCapability("preview");
+        const scope = yield* McpInvocationContext.requireThreadMcpCapability("computer");
         const transfers = yield* AgentDesktopTransferService.AgentDesktopTransferService;
         return yield* transfers.status(scope, input);
       }),
@@ -82,7 +82,7 @@ const handlers = {
   agent_desktop_transfer_cancel: McpToolAccess.actsAsCaller(
     (input: AgentDesktopTransferTargetInput) =>
       Effect.gen(function* () {
-        const scope = yield* McpInvocationContext.requireThreadMcpCapability("preview");
+        const scope = yield* McpInvocationContext.requireThreadMcpCapability("computer");
         const transfers = yield* AgentDesktopTransferService.AgentDesktopTransferService;
         return yield* transfers.cancel(scope, input);
       }),

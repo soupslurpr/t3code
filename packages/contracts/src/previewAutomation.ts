@@ -690,11 +690,13 @@ const McpCapabilityErrorFields = {
 export class PreviewAutomationUnavailableError extends Schema.TaggedError<PreviewAutomationUnavailableError>()(
   "PreviewAutomationUnavailableError",
   {
-    capability: Schema.Literal("preview"),
+    capability: Schema.Literals(["preview", "computer"]),
     ...McpCapabilityErrorFields,
   },
 ) {
   override get message(): string {
+    if (this.capability === "computer")
+      return "MCP credential does not grant the computer capability.";
     return `MCP credential does not grant the ${this.capability} capability: browser preview tools are off for this thread. Do not retry them. To check a page, use a headless browser from the shell, such as Playwright, or curl. The user can turn on "Agent browser access" in Settings; it applies when the agent session next starts.`;
   }
 }

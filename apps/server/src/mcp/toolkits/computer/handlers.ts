@@ -33,7 +33,7 @@ const invoke = Effect.fn("ComputerToolkit.invoke")(function* <A>(
   import("@t3tools/contracts").PreviewAutomationError,
   McpInvocationContext.McpInvocationContext | PreviewAutomationBroker.PreviewAutomationBroker
 > {
-  const scope = yield* McpInvocationContext.requireThreadMcpCapability("preview");
+  const scope = yield* McpInvocationContext.requireThreadMcpCapability("computer");
   const broker = yield* PreviewAutomationBroker.PreviewAutomationBroker;
   return yield* broker.invoke<A>({ scope, operation, input, timeoutMs });
 });

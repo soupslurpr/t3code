@@ -31,7 +31,7 @@ const invocation: McpInvocationContext.McpInvocationScope = {
     providerInstanceId: ProviderInstanceId.make("codex"),
   },
   client: undefined,
-  capabilities: new Set(["preview"]),
+  capabilities: new Set(["computer"]),
   issuedAt: 1,
 };
 const client = McpSchema.McpServerClient.of({
@@ -144,7 +144,7 @@ it.effect("denies Agent tools when the calling thread lacks the current capabili
         { ...invocation, capabilities: new Set() },
       );
       expect(result.isError).toBe(true);
-      expect(JSON.stringify(result)).toContain("does not grant the preview capability");
+      expect(JSON.stringify(result)).toContain("does not grant the computer capability");
     }),
   ).pipe(Effect.provide(layer)),
 );
@@ -160,7 +160,7 @@ it.effect.each([
   Effect.gen(function* () {
     const result = yield* call(name, input, { ...invocation, capabilities: new Set() });
     expect(result.isError).toBe(true);
-    expect(JSON.stringify(result)).toContain("does not grant the preview capability");
+    expect(JSON.stringify(result)).toContain("does not grant the computer capability");
   }).pipe(Effect.provide(layer)),
 );
 

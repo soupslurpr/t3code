@@ -14,6 +14,7 @@ import * as Fiber from "effect/Fiber";
 
 const ALL_MCP_CAPABILITIES = [
   "preview",
+  "computer",
   "orchestration",
   "worktree",
   "device",
@@ -64,7 +65,7 @@ export const hiddenFromSubagents = (): boolean => {
   return scope?.thread?.subagent !== true;
 };
 
-export type McpCapabilityError<C extends McpCapability> = C extends "preview"
+export type McpCapabilityError<C extends McpCapability> = C extends "preview" | "computer"
   ? PreviewAutomationUnavailableError
   : McpCapabilityUnavailableError;
 
@@ -82,7 +83,7 @@ const missingCapability = (
           providerInstanceId: invocation.thread.providerInstanceId,
         }),
   };
-  return capability === "preview"
+  return capability === "preview" || capability === "computer"
     ? new PreviewAutomationUnavailableError({ capability, ...fields })
     : new McpCapabilityUnavailableError({ capability, ...fields });
 };
@@ -98,7 +99,7 @@ export const requireMcpCapability = <const C extends McpCapability>(
     Effect.withSpan("mcp.requireCapability"),
   );
 
-export const requireThreadMcpCapability = <const C extends "preview" | "device">(
+export const requireThreadMcpCapability = <const C extends "preview" | "device" | "computer">(
   capability: C,
 ): Effect.Effect<McpThreadInvocationScope, McpCapabilityError<C>, McpInvocationContext> =>
   McpInvocationContext.pipe(

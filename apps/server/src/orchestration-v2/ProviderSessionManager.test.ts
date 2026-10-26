@@ -1540,7 +1540,7 @@ it.effect(
         assert.equal(resolved?.thread.threadId, threadId);
         assert.deepEqual(
           resolved?.capabilities,
-          new Set(["preview", "orchestration", "worktree", "pull-requests"]),
+          new Set(["preview", "computer", "orchestration", "worktree", "pull-requests"]),
         );
 
         yield* manager.close(providerSessionId);
@@ -1646,11 +1646,12 @@ it.effect(
         const captured = (yield* Ref.get(mcpConfigs))[0];
         assert.isDefined(captured);
         assert.equal(captured?.browserToolsAvailable, false);
+        assert.isTrue(captured?.capabilities?.has("computer"));
         const token = captured?.authorizationHeader.replace(/^Bearer\s+/, "");
         const resolved = yield* registry.resolve(token!);
         assert.deepEqual(
           resolved?.capabilities,
-          new Set(["orchestration", "worktree", "pull-requests"]),
+          new Set(["orchestration", "worktree", "pull-requests", "computer"]),
         );
 
         yield* manager.close(providerSessionId);
@@ -1679,6 +1680,7 @@ it.effect("ProviderSessionManagerV2 honors a project browser-access opt-out", ()
     });
     assert.isDefined(captured);
     assert.equal(captured?.browserToolsAvailable, false);
+    assert.isTrue(captured?.capabilities?.has("computer"));
   }),
 );
 
@@ -1691,6 +1693,7 @@ it.effect("ProviderSessionManagerV2 fails browser access closed for a missing pr
     });
     assert.isDefined(captured);
     assert.equal(captured?.browserToolsAvailable, false);
+    assert.isTrue(captured?.capabilities?.has("computer"));
   }),
 );
 

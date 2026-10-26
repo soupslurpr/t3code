@@ -83,11 +83,12 @@ function runtimeInstructions(runtime: Parameters<typeof buildCodexAdditionalCont
 it("advertises availability and control only when the native tool capability is present", () => {
   const available = buildCodexAdditionalContext(
     { model: "gpt-6-astra" },
-    { browser: true, device: false },
+    { browser: false, device: false },
   );
   const unavailable = buildCodexAdditionalContext(
     { model: "gpt-6-astra" },
-    { browser: false, device: true },
+    { browser: true, device: true },
+    false,
   );
   NodeAssert.match(available.t3_code_desktop!.value, /computer_request_availability/);
   NodeAssert.match(available.t3_code_desktop!.value, /computer_release_availability/);

@@ -1,4 +1,3 @@
-import { ThreadMonitorError } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
 
 import { ThreadMonitorService } from "../../../threadMonitor/ThreadMonitorService.ts";
@@ -11,22 +10,14 @@ const handlers = {
     Effect.gen(function* () {
       const {
         thread: { threadId },
-      } = yield* McpInvocationContext.requireThreadMcpCapability("preview").pipe(
-        Effect.mapError(
-          () =>
-            new ThreadMonitorError({
-              code: "COMPUTER_WATCH_UNAVAILABLE",
-              operation: "computer-start",
-              detail: "Computer automation is not available to this caller.",
-            }),
-        ),
-      );
+      } = yield* McpInvocationContext.requireThreadMcpCapability("computer");
       const service = yield* ThreadMonitorService;
       return yield* service.createComputer({ threadId, monitor });
     }),
   ),
   computer_watch_capabilities: McpToolAccess.reads(() =>
     Effect.gen(function* () {
+      yield* McpInvocationContext.requireMcpCapability("computer");
       const service = yield* ThreadMonitorService;
       return yield* service.computerCapabilities;
     }),
@@ -35,16 +26,7 @@ const handlers = {
     Effect.gen(function* () {
       const {
         thread: { threadId },
-      } = yield* McpInvocationContext.requireThreadMcpCapability("preview").pipe(
-        Effect.mapError(
-          () =>
-            new ThreadMonitorError({
-              code: "COMPUTER_WATCH_UNAVAILABLE",
-              operation: "computer-inspect",
-              detail: "Computer automation is not available to this caller.",
-            }),
-        ),
-      );
+      } = yield* McpInvocationContext.requireThreadMcpCapability("computer");
       const service = yield* ThreadMonitorService;
       return yield* service.inspectComputer({ threadId, inspect });
     }),
@@ -53,16 +35,7 @@ const handlers = {
     Effect.gen(function* () {
       const {
         thread: { threadId },
-      } = yield* McpInvocationContext.requireThreadMcpCapability("preview").pipe(
-        Effect.mapError(
-          () =>
-            new ThreadMonitorError({
-              code: "COMPUTER_WATCH_UNAVAILABLE",
-              operation: "computer-update",
-              detail: "Computer automation is not available to this caller.",
-            }),
-        ),
-      );
+      } = yield* McpInvocationContext.requireThreadMcpCapability("computer");
       const service = yield* ThreadMonitorService;
       return yield* service.updateComputer({ threadId, update });
     }),

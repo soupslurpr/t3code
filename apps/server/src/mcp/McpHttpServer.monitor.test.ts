@@ -84,6 +84,7 @@ it.effect("enforces live, writable thread callers and hides foreign monitor stat
       (yield* call("monitor_start", input, { ...invocation, thread: undefined })).isError,
     );
     const watch = {
+      desktop: { kind: "user" },
       label: "Visible completion",
       match: { type: "image-change" },
       continuation: "record-only",
@@ -92,14 +93,14 @@ it.effect("enforces live, writable thread callers and hides foreign monitor stat
     assert.isTrue(
       (yield* call("computer_watch_start", watch, {
         ...invocation,
-        capabilities: new Set(["preview"]),
+        capabilities: new Set(["computer"]),
         client: { sessionId: "reader", label: "Read only", access: "read-only" },
       })).isError,
     );
     assert.isTrue(
       (yield* call("computer_watch_start", watch, {
         ...invocation,
-        capabilities: new Set(["preview"]),
+        capabilities: new Set(["computer"]),
         thread: undefined,
       })).isError,
     );
@@ -109,6 +110,7 @@ it.effect("enforces live, writable thread callers and hides foreign monitor stat
         {},
         {
           ...invocation,
+          capabilities: new Set(["computer"]),
           thread: undefined,
           client: { sessionId: "reader", label: "Read only", access: "read-only" },
         },
@@ -275,7 +277,7 @@ it.effect(
         Layer.provideMerge(McpServer.McpServer.layer),
       );
       yield* Effect.gen(function* () {
-        const scope = { ...invocation, capabilities: new Set(["preview" as const]) };
+        const scope = { ...invocation, capabilities: new Set(["computer" as const]) };
         const input = { monitorId: monitor.id };
         for (const invalid of [
           invocation,
@@ -326,4 +328,21 @@ it.effect(
         assert.include(JSON.stringify(failure), "is not a computer watch");
       }).pipe(Effect.provide(imageRegistration));
     }).pipe(Effect.provide(MonitorTestkit.layer)),
+);
+
+it.effect("keeps watch capabilities independent of browser permission and honors revocation", () =>
+  Effect.gen(function* () {
+    const allowed = { ...invocation, capabilities: new Set(["computer"] as const) };
+    assert.isFalse((yield* call("computer_watch_capabilities", {}, allowed)).isError);
+    for (const capabilities of [new Set<"preview">(["preview"]), new Set<never>()]) {
+      const denied = yield* call(
+        "computer_watch_capabilities",
+        {},
+        { ...invocation, capabilities },
+      );
+      assert.isTrue(denied.isError);
+      assert.include(JSON.stringify(denied), "computer capability");
+    }
+    assert.isFalse((yield* call("computer_watch_capabilities", {}, allowed)).isError);
+  }).pipe(Effect.provide(layer)),
 );

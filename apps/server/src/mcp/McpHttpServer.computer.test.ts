@@ -35,7 +35,7 @@ const invocation: McpInvocationContext.McpInvocationScope = {
     providerInstanceId: ProviderInstanceId.make("codex"),
   },
   client: undefined,
-  capabilities: new Set(["preview"]),
+  capabilities: new Set(["computer"]),
   issuedAt: 1,
 };
 const client = McpSchema.McpServerClient.of({
@@ -211,7 +211,7 @@ it.effect.each([
   ).pipe(Effect.provide(layer)),
 );
 
-it.effect("does not treat a browser capability omission as native access", () =>
+it.effect("rejects native access without the independent computer capability", () =>
   Effect.scoped(
     Effect.gen(function* () {
       const result = yield* call(
@@ -711,6 +711,37 @@ it.effect("preserves null results when forgetting an explicitly selected desktop
       expect(result.content).toEqual([{ type: "text", text: "null" }]);
       expect(requests).toMatchObject([
         { operation: "computerForgetControl", input: { desktop: { kind: "user" } } },
+      ]);
+    }),
+  ).pipe(Effect.provide(layer)),
+);
+
+it.effect("routes computer access with browser access disabled", () =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      const requests: PreviewAutomationRequest[] = [];
+      yield* serve((request) =>
+        Effect.sync(() => {
+          requests.push(request);
+          return {
+            ok: true,
+            result: {
+              available: false,
+              backend: null,
+              permission: "unavailable",
+              rememberedAccess: [],
+              displayState: "unknown",
+              keepAwake: false,
+              displays: [],
+              cursor: null,
+            },
+          };
+        }),
+      );
+      const result = yield* call("computer_status", { desktop: { kind: "user" } });
+      expect(result.isError).toBe(false);
+      expect(requests).toMatchObject([
+        { operation: "computerStatus", input: { desktop: { kind: "user" } } },
       ]);
     }),
   ).pipe(Effect.provide(layer)),
