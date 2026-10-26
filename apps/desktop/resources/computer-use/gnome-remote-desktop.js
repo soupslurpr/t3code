@@ -2986,7 +2986,7 @@ async function handleCommand(message) {
               ? "key-events"
               : "none";
       return {
-        requestedCodePoints: Array.from(message.params.text).length,
+        requestedCodePoints: Array.from(normalizedText).length,
         injectedCodePoints,
         ...(usedAccessibility ? { confirmedCodePoints } : {}),
         delivery,
