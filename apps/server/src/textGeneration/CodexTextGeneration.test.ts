@@ -37,6 +37,7 @@ interface FakeCodexInput {
   exitCode?: number;
   stderr?: string;
   requireImage?: boolean;
+  requireImageCount?: number;
   requireServiceTier?: string;
   requireReasoningEffort?: string;
   forbidReasoningEffort?: boolean;
@@ -53,6 +54,7 @@ interface FakeCodexInput {
 function makeFakeCodexBinary(dir: string, input: FakeCodexInput) {
   const check = JSON.stringify({
     requireImage: input.requireImage ?? false,
+    requireImageCount: input.requireImageCount ?? null,
     requireServiceTier: input.requireServiceTier ?? null,
     requireReasoningEffort: input.requireReasoningEffort ?? null,
     forbidReasoningEffort: input.forbidReasoningEffort ?? false,
@@ -101,13 +103,13 @@ function makeFakeCodexBinary(dir: string, input: FakeCodexInput) {
         'const originalArgs = ` ${args.join(" ")} `;',
         "let outputPath = null;",
         "let outputSchemaPath = null;",
-        "let seenImage = false;",
+        "let seenImageCount = 0;",
         'let seenServiceTier = "";',
         'let seenReasoningEffort = "";',
         "for (let index = 0; index < args.length; index += 1) {",
         '  if (args[index] === "--image") {',
         "    index += 1;",
-        "    if (args[index]) seenImage = true;",
+        "    if (args[index]) seenImageCount += 1;",
         '  } else if (args[index] === "--config") {',
         "    index += 1;",
         '    const value = args[index] ?? "";',
@@ -134,7 +136,10 @@ function makeFakeCodexBinary(dir: string, input: FakeCodexInput) {
         "if (check.forbidArg !== null && originalArgs.includes(` ${check.forbidArg} `)) {",
         '  fail("forbidden arg: " + check.forbidArg, 9);',
         "}",
-        'if (check.requireImage && !seenImage) fail("missing --image input", 2);',
+        'if (check.requireImage && seenImageCount === 0) fail("missing --image input", 2);',
+        "if (check.requireImageCount !== null && seenImageCount !== check.requireImageCount) {",
+        '  fail("unexpected image count: " + seenImageCount, 12);',
+        "}",
         "if (",
         "  check.requireServiceTier !== null &&",
         '  seenServiceTier !== `service_tier="${check.requireServiceTier}"`',
@@ -413,9 +418,10 @@ it.layer(layerCodexTextGenerationTest)("CodexTextGeneration", (it) => {
         output: JSON.stringify({
           verdict: "matched",
           summary: "The completion dialog is visible.",
-          evidence: "A dialog visibly says Complete.",
+          visibleFacts: ["A completion dialog is visible."],
+          evidence: [{ imageId: "dialog", description: "A dialog visibly says Complete." }],
         }),
-        requireImage: true,
+        requireImageCount: 2,
         imageContents: [
           Buffer.from("baseline-image").toString("base64"),
           Buffer.from("current-image").toString("base64"),
@@ -431,14 +437,23 @@ it.layer(layerCodexTextGenerationTest)("CodexTextGeneration", (it) => {
           const result = yield* evaluate({
             cwd: process.cwd(),
             criterion: "The completion dialog is visible.",
-            currentPngBase64: Buffer.from("current-image").toString("base64"),
-            baselinePngBase64: Buffer.from("baseline-image").toString("base64"),
+            images: [
+              {
+                id: "dialog",
+                purpose: "Completion state",
+                currentPngBase64: Buffer.from("current-image").toString("base64"),
+                baselinePngBase64: Buffer.from("baseline-image").toString("base64"),
+              },
+            ],
             modelSelection: DEFAULT_TEST_MODEL_SELECTION,
           });
 
           expect(result.verdict).toBe("matched");
           expect(result.summary).toBe("The completion dialog is visible.");
-          expect(result.evidence).toBe("A dialog visibly says Complete.");
+          expect(result.visibleFacts).toEqual(["A completion dialog is visible."]);
+          expect(result.evidence).toEqual([
+            { imageId: "dialog", description: "A dialog visibly says Complete." },
+          ]);
           expect(result.usage).toEqual({
             inputTokens: null,
             cachedInputTokens: null,
@@ -510,7 +525,14 @@ it.layer(layerCodexTextGenerationTest)("CodexTextGeneration", (it) => {
             output: JSON.stringify({
               verdict: "uncertain",
               summary: " " + "s".repeat(2_500),
-              evidence: " " + "e".repeat(5_000),
+              visibleFacts: ["  ", ...Array.from({ length: 40 }, () => " " + "f".repeat(5_000))],
+              evidence: [
+                { imageId: "unprovided", description: "Not grounded" },
+                ...Array.from({ length: 40 }, () => ({
+                  imageId: "main",
+                  description: " " + "e".repeat(5_000),
+                })),
+              ],
             }),
             exitCode: fail ? 1 : 0,
             ...(fail ? { stderr: "exact model unavailable" } : {}),
@@ -523,7 +545,9 @@ it.layer(layerCodexTextGenerationTest)("CodexTextGeneration", (it) => {
               const result = yield* textGeneration.evaluateImageCondition!({
                 cwd: process.cwd(),
                 criterion: "A condition",
-                currentPngBase64: Buffer.from("exact current").toString("base64"),
+                images: [
+                  { id: "main", currentPngBase64: Buffer.from("exact current").toString("base64") },
+                ],
                 modelSelection: DEFAULT_TEST_MODEL_SELECTION,
               }).pipe(Effect.exit);
               if (fail) {
@@ -535,7 +559,15 @@ it.layer(layerCodexTextGenerationTest)("CodexTextGeneration", (it) => {
                 if (Exit.isSuccess(result)) {
                   expect(result.value.verdict).toBe("uncertain");
                   expect(result.value.summary).toBe("s".repeat(2_000));
-                  expect(result.value.evidence).toBe("e".repeat(4_000));
+                  expect(result.value.visibleFacts).toEqual(
+                    Array.from({ length: 31 }, () => "f".repeat(4_000)),
+                  );
+                  expect(result.value.evidence).toEqual(
+                    Array.from({ length: 32 }, () => ({
+                      imageId: "main",
+                      description: "e".repeat(4_000),
+                    })),
+                  );
                 }
               }
               const paths = yield* decodeImagePaths(yield* fs.readFileString(recordImagesFile));
@@ -544,6 +576,22 @@ it.layer(layerCodexTextGenerationTest)("CodexTextGeneration", (it) => {
             }),
         );
       }),
+  );
+
+  it.effect("rejects image evaluation without any supplied image", () =>
+    withFakeCodexEnv({ output: "must not launch" }, (textGeneration) =>
+      Effect.gen(function* () {
+        const result = yield* textGeneration.evaluateImageCondition!({
+          cwd: process.cwd(),
+          criterion: "Ready",
+          images: [],
+          modelSelection: DEFAULT_TEST_MODEL_SELECTION,
+        }).pipe(Effect.exit);
+        expect(Exit.isFailure(result)).toBe(true);
+        if (Exit.isFailure(result))
+          expect(Cause.pretty(result.cause)).toContain("requires at least one image");
+      }),
+    ),
   );
 
   it.effect("cleans image inputs when a running evaluation is interrupted", () =>
@@ -560,7 +608,7 @@ it.layer(layerCodexTextGenerationTest)("CodexTextGeneration", (it) => {
             const fiber = yield* textGeneration.evaluateImageCondition!({
               cwd: process.cwd(),
               criterion: "Wait",
-              currentPngBase64: Buffer.from("current").toString("base64"),
+              images: [{ id: "main", currentPngBase64: Buffer.from("current").toString("base64") }],
               modelSelection: DEFAULT_TEST_MODEL_SELECTION,
             }).pipe(Effect.forkScoped);
             yield* probe.started;

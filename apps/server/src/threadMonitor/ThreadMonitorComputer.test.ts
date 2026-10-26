@@ -167,7 +167,8 @@ const harness = Effect.fn("ComputerWatchTest.harness")(function* (
             : Effect.succeed({
                 verdict: state.verdict,
                 summary: " Result ",
-                evidence: " Visible evidence ",
+                visibleFacts: ["Visible evidence"],
+                evidence: [{ imageId: "screen", description: "Visible evidence" }],
                 usage: { inputTokens: null, cachedInputTokens: null, outputTokens: null },
               });
         }),
@@ -287,8 +288,9 @@ describe("durable computer adapter", () => {
             cwd: "/exact/worktree",
             criterion: "The task is complete.",
             modelSelection,
-            currentPngBase64: png("changed"),
-            baselinePngBase64: png("initial"),
+            images: [
+              { id: "screen", currentPngBase64: png("changed"), baselinePngBase64: png("initial") },
+            ],
           },
         ]);
         assert.deepEqual(
@@ -657,7 +659,7 @@ it.effect(
           check: { monitorId: pending.id },
         })).monitors[0]!;
         assert.equal(h.evaluations.length, 2);
-        assert.equal(h.evaluations[1]?.currentPngBase64, png("latest change"));
+        assert.equal(h.evaluations[1]?.images[0]?.currentPngBase64, png("latest change"));
         assert.equal(
           result.condition.type === "computer" && result.condition.evaluationPending,
           false,
