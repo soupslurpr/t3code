@@ -3,6 +3,7 @@ import type {
   ComputerAutomationAccessInput,
   ComputerAutomationAvailabilityInput,
   ComputerAutomationActInput,
+  ComputerAutomationActionResult,
   ComputerAutomationSnapshot,
   ComputerAutomationSnapshotInput,
   ComputerAutomationStatus,
@@ -50,7 +51,7 @@ export interface ComputerUseRouterShape {
   readonly act: (
     context: DesktopComputerAutomationContext,
     input: ComputerAutomationActInput,
-  ) => Effect.Effect<void, ComputerUseRouterError>;
+  ) => Effect.Effect<ReadonlyArray<ComputerAutomationActionResult>, ComputerUseRouterError>;
   readonly release: (
     context: DesktopComputerAutomationContext,
     input: ComputerAutomationTargetInput,

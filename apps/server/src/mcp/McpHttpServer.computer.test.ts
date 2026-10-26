@@ -215,3 +215,42 @@ it.effect("does not treat a browser capability omission as native access", () =>
     }),
   ).pipe(Effect.provide(layer)),
 );
+
+it.effect("returns bounded action validation details in visible tool content", () =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      const result = yield* call("computer_act", {
+        actions: [{ type: "wait", durationMs: 12_000 }],
+      });
+      expect(result.isError).toBe(true);
+      expect(result.structuredContent).toMatchObject({
+        error: {
+          code: "invalid-action",
+          actionIndex: 0,
+          completedActionCount: 0,
+          field: "actions[0].durationMs",
+          phase: "validation",
+        },
+      });
+      expect(result.content).toEqual([
+        { type: "text", text: expect.stringContaining('"field":"actions[0].durationMs"') },
+      ]);
+    }),
+  ).pipe(Effect.provide(layer)),
+);
+
+it.effect("keeps action receipts when the native observation is omitted", () =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      const actionResults = [{ index: 0, type: "activate_window" }];
+      yield* serve({ ok: true, result: { actionResults } });
+      const result = yield* call("computer_act", {
+        actions: [{ type: "activate_window", windowId: "window-1" }],
+        observation: false,
+      });
+      expect(result.isError).toBe(false);
+      expect(result.structuredContent).toEqual({ actionResults });
+      expect(result.content.filter((content) => content.type === "image")).toEqual([]);
+    }),
+  ).pipe(Effect.provide(layer)),
+);

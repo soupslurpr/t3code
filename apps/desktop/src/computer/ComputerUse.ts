@@ -1,6 +1,7 @@
 import type {
   ComputerAutomationAccessibilitySnapshot,
   ComputerAutomationAction,
+  ComputerAutomationActionResult,
   ComputerAutomationActInput,
   ComputerAutomationDisplay,
   ComputerAutomationFailure,
@@ -10,6 +11,7 @@ import type {
   ComputerAutomationSnapshotInput,
   ComputerAutomationStatus,
 } from "@t3tools/contracts";
+import * as Clock from "effect/Clock";
 import * as Context from "effect/Context";
 import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
@@ -283,6 +285,7 @@ export function toComputerAutomationFailure(cause: unknown): ComputerAutomationF
     actionContext === undefined || cleanup !== undefined
       ? {}
       : { cleanup: { keys: "not-needed" as const, buttons: "not-needed" as const } };
+  const semanticField = actionContext?.actionType === "activate_window" ? "windowId" : "targetId";
 
   if (tag === "ComputerUseFrameNotFoundError") {
     return {
@@ -417,6 +420,15 @@ export function toComputerAutomationFailure(cause: unknown): ComputerAutomationF
       ...common,
     };
   }
+  if (internalCode === "unsupported-text" || internalCode === "exact-text-unavailable") {
+    return {
+      code: "exact-text-unavailable",
+      category: "unsupported-operation",
+      message:
+        "Exact text is unavailable in the focused control; focus an accessible editable field or use ASCII text.",
+      ...common,
+    };
+  }
   if (
     internalCode === "invalid-action" ||
     internalCode === "invalid-wheel" ||
@@ -435,18 +447,18 @@ export function toComputerAutomationFailure(cause: unknown): ComputerAutomationF
     return {
       code: "stale-semantic-target",
       category: "stale-target",
-      message: "The semantic target is stale; capture a new observation.",
+      message: "The semantic target or window is stale; capture a new observation.",
       ...common,
-      field: actionContext === undefined ? "targetId" : actionField("targetId"),
+      field: actionContext === undefined ? semanticField : actionField(semanticField),
     };
   }
   if (internalCode === "accessibility-activation-failed") {
     return {
       code: "semantic-activation-failed",
       category: "input-injection",
-      message: "The application rejected semantic activation of the selected target.",
+      message: "The application rejected semantic activation of the selected target or window.",
       ...common,
-      field: actionContext === undefined ? "targetId" : actionField("targetId"),
+      field: actionContext === undefined ? semanticField : actionField(semanticField),
     };
   }
   if (internalCode === "accessibility-insertion-failed") {
@@ -532,7 +544,9 @@ export interface ComputerUseShape {
   readonly snapshot: (
     input: ComputerAutomationSnapshotInput,
   ) => Effect.Effect<ComputerAutomationSnapshot, ComputerUseError>;
-  readonly act: (input: ComputerAutomationActInput) => Effect.Effect<void, ComputerUseError>;
+  readonly act: (
+    input: ComputerAutomationActInput,
+  ) => Effect.Effect<ReadonlyArray<ComputerAutomationActionResult>, ComputerUseError>;
   readonly releaseInputs: Effect.Effect<void, ComputerUseError>;
   readonly release: Effect.Effect<void, ComputerUseError>;
   readonly forget: Effect.Effect<void, ComputerUseError>;
@@ -575,11 +589,15 @@ const POINTER_MARKER_INNER_RADIUS = 7;
 const POINTER_MARKER_CENTER_RADIUS = 2;
 const POINTER_MARKER_PIXEL_SIZE = 4;
 const DEFAULT_HOVER_SETTLE_MS = 250;
+const DEFAULT_TYPE_SETTLE_MS = 250;
 const DEFAULT_SUBMIT_SETTLE_MS = 250;
 const MAX_SCREENSHOT_WIDTH = 1_600;
 const MAX_SCREENSHOT_HEIGHT = 900;
 const MAX_SCREENSHOT_DIMENSION = 4_096;
 const MAX_STORED_FRAMES = 32;
+const CHANGE_DETECTION_MAX_WIDTH = 480;
+const CHANGE_DETECTION_MAX_HEIGHT = 270;
+const DEFAULT_CHANGE_POLL_INTERVAL_MS = 250;
 
 /** Fits an image inside bounded dimensions without upscaling it. */
 function fittedImageSize(
@@ -698,6 +716,11 @@ interface DesktopLogicalRegion {
   readonly height: number;
 }
 
+interface ResolvedChangeRegion {
+  readonly display: Display;
+  readonly desktopRegion: DesktopLogicalRegion;
+}
+
 interface LastCommandedPointer {
   readonly x: number;
   readonly y: number;
@@ -706,6 +729,15 @@ interface LastCommandedPointer {
 type ResolvedActionPoint =
   | ResolvedDisplayPoint
   | readonly [ResolvedDisplayPoint, ResolvedDisplayPoint];
+
+/** Compares two deterministic desktop bitmaps without allocating copies. */
+function equalBitmaps(first: Uint8Array, second: Uint8Array): boolean {
+  if (first.length !== second.length) return false;
+  for (let offset = 0; offset < first.length; offset += 1) {
+    if (first[offset] !== second[offset]) return false;
+  }
+  return true;
+}
 
 /** Returns a prevalidated single pointer target. */
 function resolvedPoint(points: ReadonlyMap<number, ResolvedActionPoint>, index: number) {
@@ -797,6 +829,68 @@ const resolveFramePoint = (
         global: {
           x: input.x * frame.toDesktopLogical.scaleX + frame.toDesktopLogical.offsetX,
           y: input.y * frame.toDesktopLogical.scaleY + frame.toDesktopLogical.offsetY,
+        },
+      });
+    }),
+  );
+
+/** Maps one validated frame region into desktop-logical coordinates. */
+const resolveFrameRegion = (
+  frames: ReadonlyMap<string, StoredFrame>,
+  displays: ReadonlyArray<Display>,
+  input: {
+    readonly frameId: string;
+    readonly x: number;
+    readonly y: number;
+    readonly width: number;
+    readonly height: number;
+  },
+): Effect.Effect<ResolvedChangeRegion, ComputerUseError> =>
+  resolveStoredFrame(frames, displays, input.frameId).pipe(
+    Effect.flatMap(([stored, display]) => {
+      const frame = stored.frame;
+      if (input.x + input.width > frame.width || input.y + input.height > frame.height) {
+        const invalidHorizontal = input.x + input.width > frame.width;
+        const invalidOrigin = invalidHorizontal ? input.x >= frame.width : input.y >= frame.height;
+        const field = invalidHorizontal
+          ? invalidOrigin
+            ? "x"
+            : "width"
+          : invalidOrigin
+            ? "y"
+            : "height";
+        const received = invalidHorizontal
+          ? invalidOrigin
+            ? input.x
+            : input.width
+          : invalidOrigin
+            ? input.y
+            : input.height;
+        const max = invalidHorizontal
+          ? invalidOrigin
+            ? frame.width - 1
+            : frame.width - input.x
+          : invalidOrigin
+            ? frame.height - 1
+            : frame.height - input.y;
+        return Effect.fail(
+          new ComputerUseRegionOutOfBoundsError({
+            ...input,
+            frameWidth: frame.width,
+            frameHeight: frame.height,
+            field,
+            received: String(received),
+            expected: [`integer from ${invalidOrigin ? 0 : 1} through ${max}`],
+          }),
+        );
+      }
+      return Effect.succeed({
+        display,
+        desktopRegion: {
+          x: frame.toDesktopLogical.offsetX + input.x * frame.toDesktopLogical.scaleX,
+          y: frame.toDesktopLogical.offsetY + input.y * frame.toDesktopLogical.scaleY,
+          width: input.width * frame.toDesktopLogical.scaleX,
+          height: input.height * frame.toDesktopLogical.scaleY,
         },
       });
     }),
@@ -1011,7 +1105,8 @@ export const makeWithOptions = Effect.fn("ComputerUse.makeWithOptions")(function
       const includeAccessibility = input.includeAccessibility ?? true;
       const accessibilitySupported = displays.length === 1;
       const capture = yield* controller.snapshot({
-        includeAccessibility: includeAccessibility && accessibilitySupported,
+        includeAccessibility,
+        ...(accessibilitySupported ? {} : { includeAccessibilityTargets: false }),
         displayBounds: display.bounds,
       });
       const accessibility: ComputerAutomationAccessibilitySnapshot | undefined =
@@ -1019,12 +1114,17 @@ export const makeWithOptions = Effect.fn("ComputerUse.makeWithOptions")(function
           ? undefined
           : !accessibilitySupported
             ? {
-                available: false,
+                available: capture.accessibility?.available ?? false,
                 coordinateSpace: "focused-window",
                 window: null,
+                windows: capture.accessibility?.windows ?? [],
                 targets: [],
-                truncated: false,
-                detail: "semantic targets currently require a single-display desktop",
+                truncated: capture.accessibility?.truncated ?? false,
+                detail:
+                  capture.accessibility?.available === true
+                    ? "semantic control targets currently require a single-display desktop; top-level windows remain available"
+                    : (capture.accessibility?.detail ??
+                      "semantic targets currently require a single-display desktop"),
               }
             : capture.accessibility;
       const commandedPointer = yield* Ref.get(lastPointer);
@@ -1172,6 +1272,88 @@ export const makeWithOptions = Effect.fn("ComputerUse.makeWithOptions")(function
     Effect.mapError(mapOperationError("snapshot")),
   );
 
+  const captureChangeBitmap = Effect.fn("ComputerUse.captureChangeBitmap")(function* (
+    resolved: ResolvedChangeRegion,
+  ) {
+    const capture = yield* controller.snapshot({
+      includeAccessibility: false,
+      displayBounds: resolved.display.bounds,
+    });
+    return yield* Effect.try({
+      try: () => {
+        const sourceImage = platform.decodePng(capture.data);
+        if (sourceImage.isEmpty()) throw new Error("desktop capture returned an empty image");
+        const sourceSize = sourceImage.getSize();
+        const sourceScaleX = sourceSize.width / resolved.display.bounds.width;
+        const sourceScaleY = sourceSize.height / resolved.display.bounds.height;
+        const cropX = Math.max(
+          0,
+          Math.floor((resolved.desktopRegion.x - resolved.display.bounds.x) * sourceScaleX),
+        );
+        const cropY = Math.max(
+          0,
+          Math.floor((resolved.desktopRegion.y - resolved.display.bounds.y) * sourceScaleY),
+        );
+        const cropRight = Math.min(
+          sourceSize.width,
+          Math.ceil(
+            (resolved.desktopRegion.x + resolved.desktopRegion.width - resolved.display.bounds.x) *
+              sourceScaleX,
+          ),
+        );
+        const cropBottom = Math.min(
+          sourceSize.height,
+          Math.ceil(
+            (resolved.desktopRegion.y + resolved.desktopRegion.height - resolved.display.bounds.y) *
+              sourceScaleY,
+          ),
+        );
+        const width = cropRight - cropX;
+        const height = cropBottom - cropY;
+        if (width <= 0 || height <= 0) {
+          throw new Error("desktop change region resolved to an empty image");
+        }
+        const cropped = sourceImage.crop({ x: cropX, y: cropY, width, height });
+        if (cropped.isEmpty()) throw new Error("desktop change-region crop was empty");
+        const fitted = fittedImageSize(
+          width,
+          height,
+          CHANGE_DETECTION_MAX_WIDTH,
+          CHANGE_DETECTION_MAX_HEIGHT,
+        );
+        const image =
+          fitted.width === width && fitted.height === height
+            ? cropped
+            : cropped.resize({ ...fitted, quality: "best" });
+        return image.toBitmap();
+      },
+      catch: (cause) => new ComputerUseOperationError({ operation: "act", cause }),
+    });
+  });
+
+  const waitForVisualChange = Effect.fn("ComputerUse.waitForVisualChange")(function* (
+    resolved: ResolvedChangeRegion,
+    timeoutMs: number,
+    pollIntervalMs: number,
+  ) {
+    const startedAt = yield* Clock.currentTimeMillis;
+    const baseline = yield* captureChangeBitmap(resolved);
+    let samples = 1;
+    while (true) {
+      const beforeWait = yield* Clock.currentTimeMillis;
+      const elapsedBeforeWait = beforeWait - startedAt;
+      if (elapsedBeforeWait >= timeoutMs) {
+        return { changed: false, elapsedMs: timeoutMs, samples };
+      }
+      yield* Effect.sleep(Duration.millis(Math.min(pollIntervalMs, timeoutMs - elapsedBeforeWait)));
+      const current = yield* captureChangeBitmap(resolved);
+      samples += 1;
+      const elapsedMs = Math.min(timeoutMs, (yield* Clock.currentTimeMillis) - startedAt);
+      if (!equalBitmaps(baseline, current)) return { changed: true, elapsedMs, samples };
+      if (elapsedMs >= timeoutMs) return { changed: false, elapsedMs, samples };
+    }
+  });
+
   const act: ComputerUseShape["act"] = (input) =>
     inputSemaphore.withPermits(1)(
       Effect.gen(function* () {
@@ -1182,6 +1364,7 @@ export const makeWithOptions = Effect.fn("ComputerUse.makeWithOptions")(function
           throw new Error("validated desktop action batch is empty");
         }
         const resolvedPoints = new Map<number, ResolvedActionPoint>();
+        const resolvedChangeRegions = new Map<number, ResolvedChangeRegion>();
         for (const [index, action] of input.actions.entries()) {
           yield* Effect.gen(function* () {
             switch (action.type) {
@@ -1229,6 +1412,12 @@ export const makeWithOptions = Effect.fn("ComputerUse.makeWithOptions")(function
                   );
                 }
                 break;
+              case "wait_for_change":
+                resolvedChangeRegions.set(
+                  index,
+                  yield* resolveFrameRegion(frames, displays, action),
+                );
+                break;
             }
           }).pipe(
             Effect.mapError(
@@ -1253,8 +1442,9 @@ export const makeWithOptions = Effect.fn("ComputerUse.makeWithOptions")(function
               }),
           ),
         );
+        const actionResults: ComputerAutomationActionResult[] = [];
         for (const [index, action] of input.actions.entries()) {
-          yield* Effect.gen(function* () {
+          const actionResult = yield* Effect.gen(function* () {
             switch (action.type) {
               case "click": {
                 const target = resolvedPoint(resolvedPoints, index);
@@ -1275,6 +1465,9 @@ export const makeWithOptions = Effect.fn("ComputerUse.makeWithOptions")(function
               }
               case "activate":
                 yield* controller.activate({ targetId: action.targetId });
+                break;
+              case "activate_window":
+                yield* controller.activateWindow({ windowId: action.windowId });
                 break;
               case "drag": {
                 const [start, end] = resolvedDragPoints(resolvedPoints, index);
@@ -1307,16 +1500,20 @@ export const makeWithOptions = Effect.fn("ComputerUse.makeWithOptions")(function
                   deltaY: action.deltaY ?? 0,
                 });
                 break;
-              case "type":
-                yield* controller.type({
+              case "type": {
+                const result = yield* controller.type({
                   text: action.text,
                   intervalMs: action.intervalMs ?? 0,
                 });
-                if (action.submit === true) {
-                  yield* Effect.sleep(Duration.millis(DEFAULT_SUBMIT_SETTLE_MS));
-                  yield* controller.press({ key: "Enter", modifiers: [] });
+                if (result.injectedCodePoints > 0) {
+                  yield* Effect.sleep(Duration.millis(DEFAULT_TYPE_SETTLE_MS));
                 }
-                break;
+                if (action.submit === true) {
+                  yield* controller.press({ key: "Enter", modifiers: [] });
+                  yield* Effect.sleep(Duration.millis(DEFAULT_SUBMIT_SETTLE_MS));
+                }
+                return { index, type: action.type, ...result };
+              }
               case "press":
                 yield* controller.press({ key: action.key, modifiers: action.modifiers ?? [] });
                 break;
@@ -1332,7 +1529,20 @@ export const makeWithOptions = Effect.fn("ComputerUse.makeWithOptions")(function
               case "wait":
                 yield* Effect.sleep(Duration.millis(action.durationMs));
                 break;
+              case "wait_for_change": {
+                const resolved = resolvedChangeRegions.get(index);
+                if (resolved === undefined) {
+                  throw new Error("validated change wait is missing its image region");
+                }
+                const result = yield* waitForVisualChange(
+                  resolved,
+                  action.timeoutMs,
+                  action.pollIntervalMs ?? DEFAULT_CHANGE_POLL_INTERVAL_MS,
+                );
+                return { index, type: action.type, ...result };
+              }
             }
+            return { index, type: action.type } as ComputerAutomationActionResult;
           }).pipe(
             Effect.mapError(
               (cause) =>
@@ -1344,7 +1554,9 @@ export const makeWithOptions = Effect.fn("ComputerUse.makeWithOptions")(function
                 }),
             ),
           );
+          actionResults.push(actionResult);
         }
+        return actionResults;
       }).pipe(Effect.mapError(mapOperationError("act"))),
     );
 

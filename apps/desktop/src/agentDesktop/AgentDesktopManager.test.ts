@@ -11,6 +11,20 @@ import * as Path from "effect/Path";
 import * as Ref from "effect/Ref";
 import * as Schema from "effect/Schema";
 import * as TestClock from "effect/testing/TestClock";
+import { vi } from "vite-plus/test";
+
+const { nativeImage } = vi.hoisted(() => {
+  const image = {
+    isEmpty: () => false,
+    getSize: () => ({ width: 100, height: 100 }),
+    crop: () => image,
+    resize: () => image,
+    toPNG: () => Buffer.from([1]),
+  };
+  return { nativeImage: { createFromBitmap: vi.fn(() => image) } };
+});
+
+vi.mock("electron", () => ({ nativeImage }));
 
 import * as DesktopEnvironment from "../app/DesktopEnvironment.ts";
 import * as ComputerUse from "../computer/ComputerUse.ts";
@@ -27,6 +41,17 @@ const decodeAgentDesktopId = Schema.decodeSync(AgentDesktopId);
 const decodeAgentDesktopOwner = Schema.decodeEffect(AgentDesktopOwner);
 const encodeUnknownJson = Schema.encodeSync(Schema.fromJsonString(Schema.Unknown));
 
+const decodeRecordedAccessibilityLocator = Schema.decodeSync(
+  Schema.fromJsonString(
+    Schema.Struct({
+      application: Schema.String,
+      processId: Schema.Int,
+      objectPath: Schema.String,
+      window: Schema.optional(Schema.String),
+    }),
+  ),
+);
+
 /** Creates a deterministic in-memory hypervisor and its recorded calls. */
 const makeQemu = (
   accessibility: boolean,
@@ -35,6 +60,8 @@ const makeQemu = (
   failSendKeyOnce: boolean,
   textInsertionResponse: string,
   activationResponse: string,
+  captureAvailable: boolean,
+  windowActivationRequiresSwitch: boolean,
 ) =>
   Effect.gen(function* () {
     const calls = yield* Ref.make<ReadonlyArray<string>>([]);
@@ -47,6 +74,7 @@ const makeQemu = (
     const desktopParked = yield* Deferred.make<void>();
     const inputReleaseFailed = yield* Ref.make(false);
     const sendKeyFailed = yield* Ref.make(false);
+    let windowActivationAttemptCount = 0;
     const record = (call: string) => Ref.update(calls, (current) => [...current, call]);
     const service = QemuAgentDesktop.QemuAgentDesktop.of({
       probe: Effect.succeed({
@@ -97,7 +125,16 @@ const makeQemu = (
       checkpoint: (id, saveMemoryState) =>
         record(`checkpoint:${id}:${saveMemoryState ? "memory" : "disk"}`),
       remove: (id) => record(`remove:${id}`),
-      capture: () => Effect.die("capture is not expected"),
+      capture: () =>
+        captureAvailable
+          ? Effect.succeed({
+              kind: "bitmap" as const,
+              path: "/capture.raw",
+              data: new Uint8Array(100 * 100 * 4).fill(255),
+              width: 100,
+              height: 100,
+            })
+          : Effect.die("capture is not expected"),
       sendInput: (id, events) =>
         Effect.gen(function* () {
           yield* record(`input:${id}:${events.length}`);
@@ -154,15 +191,39 @@ const makeQemu = (
           : Effect.die("unexpected guest command"),
       executeGuestProcess: (id, input) => {
         const argumentsValue = input.arguments ?? [];
+        const encodedTextInput = argumentsValue.at(-1);
+        const successfulTextInsertion = () => {
+          if (typeof encodedTextInput !== "string") {
+            throw new Error("the guest text insertion argument is missing");
+          }
+          const insertion = JSON.parse(
+            Buffer.from(encodedTextInput, "base64").toString("utf8"),
+          ) as {
+            readonly text: string;
+          };
+          const codePointCount = Array.from(insertion.text).length;
+          return JSON.stringify({
+            ok: true,
+            result: {
+              status: "inserted",
+              injectedCodePoints: codePointCount,
+              confirmedCodePoints: codePointCount,
+            },
+          });
+        };
         const accessibilityOutput = argumentsValue.includes("probe")
           ? '{"ok":true,"result":{"available":true}}'
           : argumentsValue.includes("insert-text")
-            ? textInsertionResponse
+            ? textInsertionResponse || successfulTextInsertion()
             : argumentsValue.includes("snapshot")
-              ? '{"ok":true,"result":{"available":true,"coordinateSpace":"focused-window","window":{"application":"Calculator","name":"Calculator","size":{"width":400,"height":500}},"targets":[{"target":{"application":"Calculator","role":"button","name":"7","bounds":{"x":10,"y":20,"width":30,"height":40},"activation":"action","enabled":true,"focused":false,"selected":false,"checked":false,"expanded":false},"locator":{"application":"Calculator","window":"Calculator","path":[1,2],"role":"button","name":"7","activation":"action","actionName":"click"}}],"truncated":false}}'
-              : argumentsValue.includes("activate")
-                ? activationResponse
-                : undefined;
+              ? '{"ok":true,"result":{"available":true,"coordinateSpace":"focused-window","window":{"application":"Calculator","name":"Calculator","size":{"width":400,"height":500}},"windows":[{"window":{"application":"Calculator","name":"Calculator","focused":true},"locator":{"application":"Calculator","processId":42,"objectPath":"/org/example/Calculator/window/1"}}],"targets":[{"target":{"application":"Calculator","role":"button","name":"7","bounds":{"x":10,"y":20,"width":30,"height":40},"activation":"action","enabled":true,"focused":false,"selected":false,"checked":false,"expanded":false},"locator":{"application":"Calculator","processId":42,"objectPath":"/org/example/Calculator/window/1","path":[1,2],"role":"button","name":"7","activation":"action","actionName":"click"}}],"truncated":false}}'
+              : argumentsValue.includes("activate-window")
+                ? windowActivationRequiresSwitch && windowActivationAttemptCount++ === 0
+                  ? '{"ok":true,"result":{"activated":false}}'
+                  : '{"ok":true,"result":{"activated":true}}'
+                : argumentsValue.includes("activate")
+                  ? activationResponse
+                  : undefined;
         const result = {
           exitCode: 0,
           stdout:
@@ -223,6 +284,8 @@ const managerHarness = (
     readonly textInsertionResponse?: string;
     readonly activationResponse?: string;
     readonly initialDocument?: string;
+    readonly captureAvailable?: boolean;
+    readonly windowActivationRequiresSwitch?: boolean;
   },
 ) =>
   Effect.gen(function* () {
@@ -232,8 +295,10 @@ const managerHarness = (
       options?.acceleratedGraphics === true,
       options?.failInputReleaseOnce === true,
       options?.failSendKeyOnce === true,
-      options?.textInsertionResponse ?? '{"ok":true,"result":{"status":"inserted"}}',
+      options?.textInsertionResponse ?? "",
       options?.activationResponse ?? '{"ok":true,"result":{"keyboard":false}}',
+      options?.captureAvailable === true,
+      options?.windowActivationRequiresSwitch === true,
     );
     const fileSystem = yield* FileSystem.FileSystem;
     const agentDesktopsDir = yield* fileSystem.makeTempDirectoryScoped({
@@ -719,7 +784,10 @@ describe("AgentDesktopManager", () => {
 
   it.effect("captures and activates guest accessibility targets", () =>
     Effect.gen(function* () {
-      const harness = yield* managerHarness("accessibility", { accessibility: true });
+      const harness = yield* managerHarness("accessibility", {
+        accessibility: true,
+        activationResponse: '{"ok":true,"result":{"keyboard":true}}',
+      });
       yield* Effect.gen(function* () {
         const manager = yield* AgentDesktopManager.AgentDesktopManager;
         const desktop = yield* manager.acquire(owner, { label: "Accessible" });
@@ -732,6 +800,7 @@ describe("AgentDesktopManager", () => {
         );
         assert.isTrue(snapshot.accessibility?.available);
         assert.equal(snapshot.accessibility?.window?.application, "Calculator");
+        assert.equal(snapshot.accessibility?.windows[0]?.name, "Calculator");
         assert.equal(snapshot.accessibility?.targets[0]?.name, "7");
 
         const targetId = snapshot.accessibility?.targets[0]?.id;
@@ -740,6 +809,21 @@ describe("AgentDesktopManager", () => {
           owner.controllerId,
           { actions: [{ type: "activate", targetId }] },
           desktop.id,
+        );
+        const windowSnapshot = yield* manager.snapshot(
+          owner.controllerId,
+          { screenshot: false },
+          desktop.id,
+        );
+        const windowId = windowSnapshot.accessibility?.windows[0]?.id;
+        assert.isDefined(windowId);
+        assert.deepEqual(
+          yield* manager.act(
+            owner.controllerId,
+            { actions: [{ type: "activate_window", windowId }] },
+            desktop.id,
+          ),
+          [{ index: 0, type: "activate_window" }],
         );
 
         const calls = yield* Ref.get(harness.calls);
@@ -752,6 +836,95 @@ describe("AgentDesktopManager", () => {
         assert.isTrue(
           calls.some((call) => call.includes("/usr/bin/gjs") && call.includes("activate")),
         );
+        assert.isTrue(calls.some((call) => call.startsWith("key:") && call.endsWith(":ret")));
+        assert.isTrue(calls.some((call) => call.includes("activate-window")));
+        const activationCall = calls.find((call) => call.includes(" activate "));
+        const windowActivationCall = calls.find((call) => call.includes(" activate-window "));
+        assert.isDefined(activationCall);
+        assert.isDefined(windowActivationCall);
+        for (const call of [activationCall, windowActivationCall]) {
+          const encodedLocator = call.split(" ").at(-1);
+          assert.isDefined(encodedLocator);
+          const locator = decodeRecordedAccessibilityLocator(
+            Buffer.from(encodedLocator, "base64").toString("utf8"),
+          );
+          assert.deepInclude(locator, {
+            application: "Calculator",
+            processId: 42,
+            objectPath: "/org/example/Calculator/window/1",
+          });
+          assert.notProperty(locator, "window");
+        }
+      }).pipe(Effect.provide(harness.layer));
+    }),
+  );
+
+  it.effect("preserves semantic targets across visual-only viewer snapshots", () =>
+    Effect.gen(function* () {
+      const harness = yield* managerHarness("accessibility-viewer", {
+        accessibility: true,
+        captureAvailable: true,
+      });
+      yield* Effect.gen(function* () {
+        const manager = yield* AgentDesktopManager.AgentDesktopManager;
+        const desktop = yield* manager.acquire(owner, { label: "Accessible viewer" });
+        yield* manager.requestControl(owner, { kind: "agent", desktopId: desktop.id });
+
+        const semanticSnapshot = yield* manager.snapshot(
+          owner.controllerId,
+          { screenshot: false },
+          desktop.id,
+        );
+        const targetId = semanticSnapshot.accessibility?.targets[0]?.id;
+        assert.isDefined(targetId);
+
+        const viewerControllerId = "human:viewer";
+        yield* manager.requestHumanView(owner, viewerControllerId, desktop.id);
+        yield* manager.snapshot(
+          viewerControllerId,
+          { includeAccessibility: false, screenshot: {} },
+          desktop.id,
+        );
+
+        assert.deepEqual(
+          yield* manager.act(
+            owner.controllerId,
+            { actions: [{ type: "activate", targetId }] },
+            desktop.id,
+          ),
+          [{ index: 0, type: "activate" }],
+        );
+      }).pipe(Effect.provide(harness.layer));
+    }),
+  );
+
+  it.effect("switches to Agent desktop windows that reject top-level accessibility focus", () =>
+    Effect.gen(function* () {
+      const harness = yield* managerHarness("window-switch-fallback", {
+        accessibility: true,
+        windowActivationRequiresSwitch: true,
+      });
+      yield* Effect.gen(function* () {
+        const manager = yield* AgentDesktopManager.AgentDesktopManager;
+        const desktop = yield* manager.acquire(owner, { label: "Window switch" });
+        yield* manager.requestControl(owner, { kind: "agent", desktopId: desktop.id });
+        const snapshot = yield* manager.snapshot(
+          owner.controllerId,
+          { screenshot: false },
+          desktop.id,
+        );
+        const windowId = snapshot.accessibility?.windows[0]?.id;
+        assert.isDefined(windowId);
+
+        const activation = yield* manager
+          .act(owner.controllerId, { actions: [{ type: "activate_window", windowId }] }, desktop.id)
+          .pipe(Effect.forkChild);
+        yield* TestClock.adjust(Duration.millis(100));
+        assert.deepEqual(yield* Fiber.join(activation), [{ index: 0, type: "activate_window" }]);
+
+        const calls = yield* Ref.get(harness.calls);
+        assert.isTrue(calls.some((call) => call.startsWith("key:") && call.endsWith(":alt+esc")));
+        assert.equal(calls.filter((call) => call.includes(" activate-window ")).length, 2);
       }).pipe(Effect.provide(harness.layer));
     }),
   );
@@ -799,16 +972,30 @@ describe("AgentDesktopManager", () => {
         const manager = yield* AgentDesktopManager.AgentDesktopManager;
         const desktop = yield* manager.acquire(owner, { label: "Exact text" });
         yield* manager.requestControl(owner, { kind: "agent", desktopId: desktop.id });
-        yield* manager.act(
-          owner.controllerId,
-          {
-            actions: [
-              { type: "type", text: "ASCII is exact\nacross lines" },
-              { type: "type", text: "That’s exact → 😀" },
-            ],
-          },
-          desktop.id,
-        );
+        const resultsFiber = yield* manager
+          .act(
+            owner.controllerId,
+            {
+              actions: [
+                { type: "type", text: "ASCII is exact\nacross lines" },
+                { type: "type", text: "That’s exact → 😀" },
+              ],
+            },
+            desktop.id,
+          )
+          .pipe(Effect.forkChild);
+        yield* TestClock.adjust(Duration.millis(500));
+        const results = yield* Fiber.join(resultsFiber);
+        assert.deepInclude(results[0], {
+          type: "type",
+          delivery: "accessibility",
+          focusedEditable: true,
+        });
+        const unicodeResult = results[1];
+        assert.equal(unicodeResult?.type, "type");
+        if (unicodeResult?.type === "type") {
+          assert.equal(unicodeResult.confirmedCodePoints, Array.from("That’s exact → 😀").length);
+        }
 
         const calls = yield* Ref.get(accessibleHarness.calls);
         assert.equal(
@@ -825,15 +1012,91 @@ describe("AgentDesktopManager", () => {
         const manager = yield* AgentDesktopManager.AgentDesktopManager;
         const desktop = yield* manager.acquire(owner, { label: "Keyboard text" });
         yield* manager.requestControl(owner, { kind: "agent", desktopId: desktop.id });
-        yield* manager.act(
-          owner.controllerId,
-          { actions: [{ type: "type", text: "That’s exact → 😀" }] },
-          desktop.id,
-        );
+        const typing = yield* manager
+          .act(
+            owner.controllerId,
+            { actions: [{ type: "type", text: "ASCII fallback ->" }] },
+            desktop.id,
+          )
+          .pipe(Effect.forkChild);
+        yield* TestClock.adjust(Duration.millis(250));
+        yield* Fiber.join(typing);
 
         const calls = yield* Ref.get(fallbackHarness.calls);
         assert.isTrue(calls.some((call) => call.startsWith("key:")));
       }).pipe(Effect.provide(fallbackHarness.layer));
+
+      const unsafeFallbackHarness = yield* managerHarness("unsafe-unicode-fallback");
+      yield* Effect.gen(function* () {
+        const manager = yield* AgentDesktopManager.AgentDesktopManager;
+        const desktop = yield* manager.acquire(owner, { label: "No exact text target" });
+        yield* manager.requestControl(owner, { kind: "agent", desktopId: desktop.id });
+        const error = yield* manager
+          .act(
+            owner.controllerId,
+            { actions: [{ type: "type", text: "That’s exact → 😀" }] },
+            desktop.id,
+          )
+          .pipe(Effect.flip);
+        assert.deepInclude(ComputerUse.toComputerAutomationFailure(error), {
+          code: "exact-text-unavailable",
+          category: "unsupported-operation",
+          actionIndex: 0,
+          completedActionCount: 0,
+          field: "actions[0].text",
+        });
+        assert.isFalse(
+          (yield* Ref.get(unsafeFallbackHarness.calls)).some((call) => call.startsWith("key:")),
+        );
+      }).pipe(Effect.provide(unsafeFallbackHarness.layer));
+    }),
+  );
+
+  it.effect("dwells between Agent desktop pointer button transitions", () =>
+    Effect.gen(function* () {
+      const harness = yield* managerHarness("pointer-dwell", { captureAvailable: true });
+      yield* Effect.gen(function* () {
+        const manager = yield* AgentDesktopManager.AgentDesktopManager;
+        const desktop = yield* manager.acquire(owner, { label: "Pointer dwell" });
+        yield* manager.requestControl(owner, { kind: "agent", desktopId: desktop.id });
+        const snapshot = yield* manager.snapshot(
+          owner.controllerId,
+          {
+            screenshot: { maxWidth: 100, maxHeight: 100 },
+            includeAccessibility: false,
+          },
+          desktop.id,
+        );
+        assert.isDefined(snapshot.frame);
+
+        const clicking = yield* manager
+          .act(
+            owner.controllerId,
+            {
+              actions: [
+                {
+                  type: "click",
+                  frameId: snapshot.frame.id,
+                  x: 50,
+                  y: 50,
+                  count: 2,
+                },
+              ],
+            },
+            desktop.id,
+          )
+          .pipe(Effect.forkChild);
+        yield* TestClock.adjust(Duration.millis(40));
+        yield* Fiber.join(clicking);
+
+        const buttonEvents = (yield* Ref.get(harness.inputEvents))
+          .flat()
+          .filter((event) => event.type === "btn");
+        assert.deepEqual(
+          buttonEvents.map((event) => event.data.down),
+          [true, false, true, false],
+        );
+      }).pipe(Effect.provide(harness.layer));
     }),
   );
 
@@ -938,22 +1201,55 @@ describe("AgentDesktopManager", () => {
     }),
   );
 
-  it.effect("bounds accessibility helpers for tab-heavy text", () =>
+  it.effect("inserts literal tabs through one editable target", () =>
     Effect.gen(function* () {
       const harness = yield* managerHarness("tab-heavy-text", { accessibility: true });
       yield* Effect.gen(function* () {
         const manager = yield* AgentDesktopManager.AgentDesktopManager;
         const desktop = yield* manager.acquire(owner, { label: "Tab-heavy text" });
         yield* manager.requestControl(owner, { kind: "agent", desktopId: desktop.id });
-        yield* manager.act(
-          owner.controllerId,
-          { actions: [{ type: "type", text: Array.from({ length: 40 }, () => "x").join("\t") }] },
-          desktop.id,
-        );
+        const typing = yield* manager
+          .act(
+            owner.controllerId,
+            {
+              actions: [{ type: "type", text: Array.from({ length: 40 }, () => "x").join("\t") }],
+            },
+            desktop.id,
+          )
+          .pipe(Effect.forkChild);
+        yield* TestClock.adjust(Duration.millis(250));
+        yield* Fiber.join(typing);
 
         const calls = yield* Ref.get(harness.calls);
-        assert.isFalse(calls.some((call) => call.includes("insert-text")));
-        assert.isTrue(calls.some((call) => call.startsWith("key:")));
+        assert.equal(calls.filter((call) => call.includes("insert-text")).length, 1);
+        assert.isFalse(calls.some((call) => call.startsWith("key:")));
+      }).pipe(Effect.provide(harness.layer));
+    }),
+  );
+
+  it.effect("rejects literal Newline and Tab without sending fallback input", () =>
+    Effect.gen(function* () {
+      const harness = yield* managerHarness("literal-control-text");
+      yield* Effect.gen(function* () {
+        const manager = yield* AgentDesktopManager.AgentDesktopManager;
+        const desktop = yield* manager.acquire(owner, {});
+        yield* manager.requestControl(owner, { kind: "agent", desktopId: desktop.id });
+        for (const text of ["prefix\nnext line", "prefix\tfield"]) {
+          const error = yield* manager
+            .act(
+              owner.controllerId,
+              {
+                actions: [{ type: "type", text }],
+              },
+              desktop.id,
+            )
+            .pipe(Effect.flip);
+          assert.equal(
+            ComputerUse.toComputerAutomationFailure(error).code,
+            "exact-text-unavailable",
+          );
+        }
+        assert.isFalse((yield* Ref.get(harness.calls)).some((call) => call.startsWith("key:")));
       }).pipe(Effect.provide(harness.layer));
     }),
   );
