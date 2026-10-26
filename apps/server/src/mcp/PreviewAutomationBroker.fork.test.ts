@@ -66,86 +66,6 @@ const serve = Effect.fn("ForkBrokerTest.serve")(function* (
   return received;
 });
 
-it.effect("keeps browser affinity independent when explicit desktop targets change", () =>
-  Effect.scoped(
-    Effect.gen(function* () {
-      const broker = yield* PreviewAutomationBroker.PreviewAutomationBroker;
-      const user = yield* serve({
-        clientId: "user",
-        environmentId,
-        supportedOperations: ["status", "computerRequestControl", "computerAct"],
-        computerDesktopKinds: ["user"],
-      });
-      const agent = yield* serve({
-        clientId: "agent",
-        environmentId,
-        supportedOperations: ["agentDesktopList", "computerRequestControl", "computerAct"],
-        computerDesktopKinds: ["agent"],
-      });
-      expect(yield* broker.invoke({ scope, operation: "status", input: {} })).toBe("user");
-      expect(yield* broker.invoke({ scope, operation: "agentDesktopList", input: {} })).toBe(
-        "agent",
-      );
-      expect(
-        yield* broker.invoke({
-          scope,
-          operation: "computerRequestControl",
-          input: { desktop: { kind: "agent", fresh: true } },
-        }),
-      ).toBe("agent");
-      expect(
-        yield* broker.invoke({
-          scope,
-          operation: "computerAct",
-          input: { desktop: { kind: "agent", desktopId: "agent-one" }, actions: [] },
-        }),
-      ).toBe("agent");
-      expect(
-        yield* broker.invoke({
-          scope,
-          operation: "computerRequestControl",
-          input: { desktop: { kind: "user" } },
-        }),
-      ).toBe("user");
-      expect(yield* broker.invoke({ scope, operation: "status", input: {} })).toBe("user");
-      expect(user).toHaveLength(3);
-      expect(agent).toHaveLength(3);
-      expect(agent.map((request) => request.controllerId)).toEqual(
-        Array(3).fill(scope.thread.providerSessionId),
-      );
-    }),
-  ).pipe(Effect.provide(layer)),
-);
-
-it.effect("sends human supervision only to an Agent host and retains the controller identity", () =>
-  Effect.scoped(
-    Effect.gen(function* () {
-      const broker = yield* PreviewAutomationBroker.PreviewAutomationBroker;
-      const agent = yield* serve({
-        clientId: "agent",
-        environmentId,
-        supportedOperations: ["agentDesktopHumanInvoke"],
-        computerDesktopKinds: ["agent"],
-      });
-      const user = yield* serve({
-        clientId: "user",
-        environmentId,
-        supportedOperations: ["agentDesktopHumanInvoke"],
-        computerDesktopKinds: ["user"],
-      });
-      expect(
-        yield* broker.invoke({
-          scope: { ...scope, thread: { ...scope.thread, providerSessionId: "human:one" } },
-          operation: "agentDesktopHumanInvoke",
-          input: { operation: "list" },
-        }),
-      ).toBe("agent");
-      expect(agent[0]?.controllerId).toBe("human:one");
-      expect(user).toEqual([]);
-    }),
-  ).pipe(Effect.provide(layer)),
-);
-
 it.effect("retains distinct controllers for parallel provider sessions", () =>
   Effect.scoped(
     Effect.gen(function* () {
@@ -154,13 +74,12 @@ it.effect("retains distinct controllers for parallel provider sessions", () =>
         clientId: "agent",
         environmentId,
         supportedOperations: ["computerRequestControl"],
-        computerDesktopKinds: ["agent"],
       });
       for (const providerSessionId of ["provider-one", "provider-two"]) {
         yield* broker.invoke({
           scope: { ...scope, thread: { ...scope.thread, providerSessionId } },
           operation: "computerRequestControl",
-          input: { desktop: { kind: "agent", fresh: true } },
+          input: { desktop: { kind: "user" } },
         });
       }
       expect(agent.map((request) => request.controllerId)).toEqual([
@@ -171,7 +90,7 @@ it.effect("retains distinct controllers for parallel provider sessions", () =>
   ).pipe(Effect.provide(layer)),
 );
 
-it.effect("retains structured Agent desktop timeout diagnostics at the broker boundary", () =>
+it.effect("retains structured native desktop timeout diagnostics at the broker boundary", () =>
   Effect.gen(function* () {
     const failure = {
       code: "timed-out",
@@ -184,8 +103,7 @@ it.effect("retains structured Agent desktop timeout diagnostics at the broker bo
       {
         clientId: "agent",
         environmentId,
-        supportedOperations: ["agentDesktopCommand"],
-        computerDesktopKinds: ["agent"],
+        supportedOperations: ["computerAct"],
       },
       {
         ok: false,
@@ -199,85 +117,13 @@ it.effect("retains structured Agent desktop timeout diagnostics at the broker bo
     const error = yield* (yield* PreviewAutomationBroker.PreviewAutomationBroker)
       .invoke<void>({
         scope,
-        operation: "agentDesktopCommand",
-        input: { executable: "/usr/bin/env" },
+        operation: "computerAct",
+        input: { desktop: { kind: "user" }, actions: [] },
       })
       .pipe(Effect.flip);
     expect(error).toMatchObject({ computerFailure: failure });
     expect(error.message).toBe(failure.message);
   }).pipe(Effect.provide(layer)),
-);
-
-it.effect("keeps focused user, primary Agent and server browser hosts independent", () =>
-  Effect.scoped(
-    Effect.gen(function* () {
-      const broker = yield* PreviewAutomationBroker.PreviewAutomationBroker;
-      const browser = yield* serve(
-        {
-          clientId: SERVER_BROWSER_AUTOMATION_CLIENT_ID,
-          environmentId,
-          supportedOperations: ["open", "snapshot"],
-        },
-        undefined,
-        { preferred: true },
-      );
-      const user = yield* serve(
-        {
-          clientId: "focused-user",
-          environmentId,
-          supportedOperations: ["computerRequestControl", "computerAct"],
-          computerDesktopKinds: ["user"],
-        },
-        undefined,
-        { focused: true },
-      );
-      const agent = yield* serve({
-        clientId: "primary-agent",
-        environmentId,
-        supportedOperations: ["agentDesktopList", "computerRequestControl", "computerAct"],
-        computerDesktopKinds: ["user", "agent"],
-      });
-      expect(
-        yield* broker.invoke({
-          scope,
-          operation: "computerRequestControl",
-          input: { desktop: { kind: "user" } },
-        }),
-      ).toBe("focused-user");
-      expect(yield* broker.invoke({ scope, operation: "agentDesktopList", input: {} })).toBe(
-        "primary-agent",
-      );
-      expect(yield* broker.invoke({ scope, operation: "open", input: {} })).toBe(
-        SERVER_BROWSER_AUTOMATION_CLIENT_ID,
-      );
-      expect(
-        yield* broker.invoke({
-          scope,
-          operation: "computerAct",
-          input: { desktop: { kind: "agent", desktopId: "agent-one" }, actions: [] },
-        }),
-      ).toBe("primary-agent");
-      expect(
-        yield* broker.invoke({
-          scope,
-          operation: "computerAct",
-          input: { desktop: { kind: "user" }, actions: [] },
-        }),
-      ).toBe("focused-user");
-      expect(yield* broker.invoke({ scope, operation: "snapshot", input: {} })).toBe(
-        SERVER_BROWSER_AUTOMATION_CLIENT_ID,
-      );
-      expect(user.map((request) => request.operation)).toEqual([
-        "computerRequestControl",
-        "computerAct",
-      ]);
-      expect(agent.map((request) => request.operation)).toEqual([
-        "agentDesktopList",
-        "computerAct",
-      ]);
-      expect(browser.map((request) => request.operation)).toEqual(["open", "snapshot"]);
-    }),
-  ).pipe(Effect.provide(layer)),
 );
 
 it.effect("rejects every missing computer target before routing a request", () =>
@@ -288,7 +134,6 @@ it.effect("rejects every missing computer target before routing a request", () =
         clientId: "user",
         environmentId,
         supportedOperations: COMPUTER_AUTOMATION_OPERATIONS,
-        computerDesktopKinds: ["user"],
       });
       for (const operation of COMPUTER_AUTOMATION_OPERATIONS) {
         const error = yield* broker.invoke<void>({ scope, operation, input: {} }).pipe(Effect.flip);
@@ -306,94 +151,6 @@ it.effect("rejects every missing computer target before routing a request", () =
   ).pipe(Effect.provide(layer)),
 );
 
-it.effect("explains missing environment hosts without exposing other environments", () =>
-  Effect.gen(function* () {
-    yield* serve({
-      clientId: "private-foreign-host",
-      environmentId: EnvironmentId.make("foreign"),
-      supportedOperations: ["agentDesktopList"],
-      computerDesktopKinds: ["agent"],
-    });
-    const broker = yield* PreviewAutomationBroker.PreviewAutomationBroker;
-    const error = yield* broker
-      .invoke<void>({ scope, operation: "agentDesktopList", input: {} })
-      .pipe(Effect.flip);
-    expect(error).toMatchObject({
-      _tag: "PreviewAutomationNoAvailableHostError",
-      computerFailure: {
-        code: "agent-desktop-unavailable",
-        category: "resource",
-        backendCode: "no-connected-automation-host",
-        detail:
-          "Connected hosts: 0; hosts supporting agentDesktopList: 0; advertised desktop kinds: none.",
-      },
-    });
-    expect(error.message).toContain("Agent desktops are owned by the environment");
-    expect(JSON.stringify(error)).not.toContain("private-foreign-host");
-  }).pipe(Effect.provide(layer), Effect.scoped),
-);
-
-it.effect("distinguishes desktop-kind, operation and assigned-host incompatibility", () =>
-  Effect.gen(function* () {
-    const broker = yield* PreviewAutomationBroker.PreviewAutomationBroker;
-    yield* serve({
-      clientId: "user",
-      environmentId,
-      supportedOperations: ["computerRequestControl"],
-      computerDesktopKinds: ["user"],
-    });
-    const missingKind = yield* broker
-      .invoke<void>({
-        scope,
-        operation: "computerRequestControl",
-        input: { desktop: { kind: "agent" } },
-      })
-      .pipe(Effect.flip);
-    expect(missingKind).toMatchObject({
-      computerFailure: {
-        backendCode: "environment-agent-desktop-host-required",
-        field: "desktop.kind",
-        received: "agent",
-        expected: ["user"],
-      },
-    });
-    yield* serve({
-      clientId: "agent",
-      environmentId,
-      supportedOperations: ["computerRequestControl"],
-      computerDesktopKinds: ["agent"],
-    });
-    const missingOperation = yield* broker
-      .invoke<void>({ scope, operation: "agentDesktopList", input: {} })
-      .pipe(Effect.flip);
-    expect(missingOperation).toMatchObject({
-      computerFailure: {
-        backendCode: "automation-operation-unsupported",
-        field: "operation",
-        received: "agentDesktopList",
-      },
-    });
-    yield* broker.invoke({
-      scope,
-      operation: "computerRequestControl",
-      input: { desktop: { kind: "agent" } },
-    });
-    const alternative = yield* serve({
-      clientId: "another-agent",
-      environmentId,
-      supportedOperations: ["agentDesktopList"],
-      computerDesktopKinds: ["agent"],
-    });
-    const assigned = yield* broker
-      .invoke<void>({ scope, operation: "agentDesktopList", input: {} })
-      .pipe(Effect.flip);
-    expect(assigned).toMatchObject({
-      computerFailure: { backendCode: "assigned-automation-host-incompatible" },
-    });
-    expect(alternative).toEqual([]);
-  }).pipe(Effect.provide(layer), Effect.scoped),
-);
-
 it.effect("retains a tagged remote missing-host failure", () =>
   Effect.gen(function* () {
     const failure = {
@@ -406,8 +163,7 @@ it.effect("retains a tagged remote missing-host failure", () =>
       {
         clientId: "agent",
         environmentId,
-        supportedOperations: ["agentDesktopList"],
-        computerDesktopKinds: ["agent"],
+        supportedOperations: ["computerStatus"],
       },
       {
         ok: false,
@@ -420,12 +176,114 @@ it.effect("retains a tagged remote missing-host failure", () =>
     );
     const broker = yield* PreviewAutomationBroker.PreviewAutomationBroker;
     const error = yield* broker
-      .invoke<void>({ scope, operation: "agentDesktopList", input: {} })
+      .invoke<void>({ scope, operation: "computerStatus", input: { desktop: { kind: "user" } } })
       .pipe(Effect.flip);
     expect(error).toMatchObject({
       _tag: "PreviewAutomationNoAvailableHostError",
       computerFailure: failure,
     });
     expect(error.message).toBe(failure.message);
+  }).pipe(Effect.provide(layer), Effect.scoped),
+);
+
+it.effect("keeps focused user and preferred server-browser hosts independent", () =>
+  Effect.gen(function* () {
+    const broker = yield* PreviewAutomationBroker.PreviewAutomationBroker;
+    const browser = yield* serve(
+      {
+        clientId: SERVER_BROWSER_AUTOMATION_CLIENT_ID,
+        environmentId,
+        supportedOperations: ["open", "snapshot"],
+      },
+      undefined,
+      { preferred: true },
+    );
+    const user = yield* serve(
+      {
+        clientId: "focused-user",
+        environmentId,
+        supportedOperations: ["computerRequestControl", "computerAct"],
+      },
+      undefined,
+      { focused: true },
+    );
+    expect(
+      yield* broker.invoke({
+        scope,
+        operation: "computerRequestControl",
+        input: { desktop: { kind: "user" } },
+      }),
+    ).toBe("focused-user");
+    expect(yield* broker.invoke({ scope, operation: "open", input: {} })).toBe(
+      SERVER_BROWSER_AUTOMATION_CLIENT_ID,
+    );
+    expect(
+      yield* broker.invoke({
+        scope,
+        operation: "computerAct",
+        input: { desktop: { kind: "user" }, actions: [] },
+      }),
+    ).toBe("focused-user");
+    expect(yield* broker.invoke({ scope, operation: "snapshot", input: {} })).toBe(
+      SERVER_BROWSER_AUTOMATION_CLIENT_ID,
+    );
+    expect(user.map((request) => request.operation)).toEqual([
+      "computerRequestControl",
+      "computerAct",
+    ]);
+    expect(browser.map((request) => request.operation)).toEqual(["open", "snapshot"]);
+  }).pipe(Effect.provide(layer), Effect.scoped),
+);
+
+it.effect("explains missing native hosts without exposing other environments", () =>
+  Effect.gen(function* () {
+    yield* serve({
+      clientId: "private-foreign-host",
+      environmentId: EnvironmentId.make("foreign"),
+      supportedOperations: ["computerStatus"],
+    });
+    const error = yield* (yield* PreviewAutomationBroker.PreviewAutomationBroker)
+      .invoke<void>({ scope, operation: "computerStatus", input: { desktop: { kind: "user" } } })
+      .pipe(Effect.flip);
+    expect(error).toMatchObject({
+      _tag: "PreviewAutomationNoAvailableHostError",
+      computerFailure: { backendCode: "no-connected-automation-host" },
+    });
+    expect(JSON.stringify(error)).not.toContain("private-foreign-host");
+  }).pipe(Effect.provide(layer), Effect.scoped),
+);
+
+it.effect("distinguishes unsupported operations and never substitutes an assigned host", () =>
+  Effect.gen(function* () {
+    const broker = yield* PreviewAutomationBroker.PreviewAutomationBroker;
+    yield* serve({
+      clientId: "user",
+      environmentId,
+      supportedOperations: ["computerRequestControl"],
+    });
+    const input = { desktop: { kind: "user" } };
+    const unsupported = yield* broker
+      .invoke<void>({ scope, operation: "computerStatus", input })
+      .pipe(Effect.flip);
+    expect(unsupported).toMatchObject({
+      computerFailure: {
+        backendCode: "automation-operation-unsupported",
+        field: "operation",
+        received: "computerStatus",
+      },
+    });
+    yield* broker.invoke({ scope, operation: "computerRequestControl", input });
+    const alternative = yield* serve({
+      clientId: "another-user",
+      environmentId,
+      supportedOperations: ["computerStatus"],
+    });
+    const assigned = yield* broker
+      .invoke<void>({ scope, operation: "computerStatus", input })
+      .pipe(Effect.flip);
+    expect(assigned).toMatchObject({
+      computerFailure: { backendCode: "assigned-automation-host-incompatible" },
+    });
+    expect(alternative).toEqual([]);
   }).pipe(Effect.provide(layer), Effect.scoped),
 );

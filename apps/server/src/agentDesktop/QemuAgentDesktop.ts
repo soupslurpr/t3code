@@ -19,7 +19,7 @@ import { ChildProcess, ChildProcessSpawner } from "effect/process";
 import * as Crypto from "effect/Crypto";
 import * as NodeOS from "node:os";
 
-import * as DesktopEnvironment from "../app/DesktopEnvironment.ts";
+import * as AgentDesktopEnvironment from "./AgentDesktopEnvironment.ts";
 import * as QemuProtocol from "./QemuProtocol.ts";
 import * as QemuVnc from "./QemuVnc.ts";
 
@@ -171,19 +171,13 @@ export interface QemuAgentDesktopPaths {
 export type QemuDisplayDevice = "virtio-vga" | "VGA";
 export type QemuGraphicsBackend = "compatibility-vga" | "virtio-gpu-2d" | "virgl";
 
-export type QemuAgentDesktopCapture =
-  | {
-      readonly kind: "png";
-      readonly path: string;
-      readonly data: Uint8Array;
-    }
-  | {
-      readonly kind: "bitmap";
-      readonly path: string;
-      readonly data: Uint8Array;
-      readonly width: number;
-      readonly height: number;
-    };
+export interface QemuAgentDesktopCapture {
+  readonly kind: "bitmap";
+  readonly path: string;
+  readonly data: Uint8Array;
+  readonly width: number;
+  readonly height: number;
+}
 
 export interface QemuAgentDesktopDiskUsage {
   readonly allocatedBytes: number;
@@ -333,7 +327,7 @@ export interface QemuAgentDesktopShape {
 }
 
 export class QemuAgentDesktop extends Context.Service<QemuAgentDesktop, QemuAgentDesktopShape>()(
-  "@t3tools/desktop/agentDesktop/QemuAgentDesktop",
+  "t3/agentDesktop/QemuAgentDesktop",
 ) {}
 
 interface ProcessResult {
@@ -574,6 +568,8 @@ export function buildQemuCommand(input: {
       : [
           "-display",
           "none",
+          "-vnc",
+          `unix:${input.paths.vncSocket},share=force-shared`,
           "-device",
           input.graphicsBackend === "compatibility-vga" ? "VGA,vgamem_mb=64" : "virtio-vga",
         ];
@@ -677,7 +673,7 @@ const mapFailure =
 
 /** Creates the Linux QEMU/KVM implementation used by Agent desktop management. */
 export const make = Effect.gen(function* () {
-  const environment = yield* DesktopEnvironment.DesktopEnvironment;
+  const environment = yield* AgentDesktopEnvironment.AgentDesktopEnvironment;
   const fileSystem = yield* FileSystem.FileSystem;
   const crypto = yield* Crypto.Crypto;
   const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
@@ -809,7 +805,7 @@ export const make = Effect.gen(function* () {
             status: "unusable",
             required: true,
             detail,
-            remedy: manualRemedy("Use a Linux x86-64 desktop host."),
+            remedy: manualRemedy("Use a Linux x86-64 environment host."),
           },
         ],
         detail,
@@ -1274,7 +1270,7 @@ export const make = Effect.gen(function* () {
             required: true,
             detail: String(cause).slice(0, 512),
             remedy: manualRemedy(
-              "Inspect the desktop host logs and repair the prerequisite probe.",
+              "Inspect the environment server logs and repair the prerequisite probe.",
             ),
           },
         ],
@@ -1354,7 +1350,7 @@ export const make = Effect.gen(function* () {
           requirement.status !== "ready" && requirement.remedy?.kind === "install-packages",
       );
       if (pendingPackageRemedy) {
-        detail = "automatic package installation is unavailable on this desktop host";
+        detail = "automatic package installation is unavailable on this environment host";
       }
     }
     return {
@@ -1580,7 +1576,7 @@ export const make = Effect.gen(function* () {
         return yield* new QemuAgentDesktopError({
           code: "agent-desktop-unavailable",
           operation: "resolve-display",
-          detail: "hardware graphics acceleration is unavailable on this desktop host",
+          detail: "hardware graphics acceleration is unavailable on this environment host",
         });
       }
       if (graphicsBackend !== "virgl" && !softwareGraphicsAvailable) {
@@ -1736,22 +1732,14 @@ export const make = Effect.gen(function* () {
   const capture: QemuAgentDesktopShape["capture"] = Effect.fn("QemuAgentDesktop.capture")(
     function* (...[id]: Parameters<QemuAgentDesktopShape["capture"]>) {
       const machine = paths(id);
-      if (yield* fileSystem.exists(machine.vncSocket)) {
-        const frame = yield* QemuVnc.captureFrame(machine.vncSocket);
-        return {
-          kind: "bitmap",
-          path: machine.vncSocket,
-          data: frame.data,
-          width: frame.width,
-          height: frame.height,
-        } as const;
-      }
-      const captureId = yield* Ref.getAndUpdate(nextCaptureId, (value) => value + 1);
-      const capturePath = environment.path.join(machine.captureDirectory, `frame-${captureId}.png`);
-      yield* qmp(id, "screendump", { filename: capturePath, format: "png" });
-      const data = yield* fileSystem.readFile(capturePath);
-      yield* fileSystem.remove(capturePath, { force: true }).pipe(Effect.ignore);
-      return { kind: "png", path: capturePath, data } as const;
+      const frame = yield* QemuVnc.captureFrame(machine.vncSocket);
+      return {
+        kind: "bitmap",
+        path: machine.vncSocket,
+        data: frame.data,
+        width: frame.width,
+        height: frame.height,
+      } as const;
     },
     Effect.mapError(mapFailure("capture", "guest-disconnected")),
   );

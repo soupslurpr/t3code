@@ -17,7 +17,7 @@
   "scripts": {
     "dev": "node --watch --watch-path=src --watch-path=../../packages --watch-path=package.json src/bin.ts",
     "dev:built": "vp run dev",
-    "build:bundle": "vp pack",
+    "build:bundle": "vp pack && node scripts/copy-agent-desktop-resources.mjs",
     "build:exe": "node scripts/cli.ts build-exe",
     "start": "node dist/bin.mjs",
     "typecheck": "tsc --noEmit",
@@ -29,7 +29,9 @@
     "record:grok-replay": "node scripts/record-grok-acp-replay-fixture.ts",
     "record:muse-replay": "node scripts/record-muse-msp-replay-fixture.ts",
     "generate": "graphqlgen",
-    "generate:expo-schema": "node scripts/fetch-expo-schema.ts"
+    "generate:expo-schema": "node scripts/fetch-expo-schema.ts",
+    "prepare:agent-desktop-image": "node scripts/agent-desktop-image.mjs",
+    "test:agent-desktop": "node scripts/agent-desktop-smoke.ts"
   },
   "dependencies": {
     "@anthropic-ai/claude-agent-sdk": "^0.3.276",
@@ -63,6 +65,7 @@
     "playwright-core": "1.60.0",
     "proper-lockfile": "4.1.2",
     "saxes": "6.0.0",
+    "sharp": "0.35.4",
     "stream-chain": "^4.2.5",
     "stream-json": "3.6.0",
     "undici": "catalog:",

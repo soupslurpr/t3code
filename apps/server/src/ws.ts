@@ -1,4 +1,10 @@
-import { AGENT_DESKTOP_HUMAN_AUTOMATION_OPERATION, ProviderInstanceId } from "@t3tools/contracts";
+import * as AgentDesktopManager from "./agentDesktop/AgentDesktopManager.ts";
+import {
+  humanRequestOperation,
+  runAgentDesktopHumanRequest,
+} from "./agentDesktop/AgentDesktopHuman.ts";
+import { environmentDesktopFailure } from "./computer/ComputerAutomationRouter.ts";
+import { ProviderInstanceId } from "@t3tools/contracts";
 import * as Clock from "effect/Clock";
 import { OrchestrationDispatchCommandError } from "@t3tools/contracts";
 import * as Context from "effect/Context";
@@ -1352,6 +1358,7 @@ export const layerWsRpc = (
       const workspaceFileSystem = yield* WorkspaceFileSystem.WorkspaceFileSystem;
       const serverEnvironment = yield* ServerEnvironment.ServerEnvironment;
       const computerObservations = yield* ComputerObservationStore.ComputerObservationStore;
+      const agentDesktopManager = yield* AgentDesktopManager.AgentDesktopManager;
       const backgroundPolicy = yield* BackgroundPolicy.BackgroundPolicy;
       const rpcClientIds = yield* Ref.make(new Set<RpcClientId>());
       yield* Effect.addFinalizer(() =>
@@ -3090,23 +3097,27 @@ export const layerWsRpc = (
                 ...(input.request.afterId === undefined ? {} : { afterId: input.request.afterId }),
               });
             }
-            return yield* previewAutomationBroker.invoke({
-              scope: {
-                environmentId,
-                requestNamespace: `human:${currentSessionId}`,
-                client: undefined,
-                thread: {
-                  threadId: input.threadId,
-                  providerSessionId: `human:${currentSessionId}`,
-                  providerInstanceId: AGENT_DESKTOP_HUMAN_PROVIDER_INSTANCE_ID,
-                },
-                capabilities: new Set(["computer"]),
-                issuedAt: yield* Clock.currentTimeMillis,
+            const scope = {
+              environmentId,
+              requestNamespace: `human:${currentSessionId}`,
+              client: undefined,
+              thread: {
+                threadId: input.threadId,
+                providerSessionId: `human:${currentSessionId}`,
+                providerInstanceId: AGENT_DESKTOP_HUMAN_PROVIDER_INSTANCE_ID,
               },
-              operation: AGENT_DESKTOP_HUMAN_AUTOMATION_OPERATION,
-              input: input.request,
-              timeoutMs: input.timeoutMs ?? 30_000,
-            });
+              capabilities: new Set(["computer" as const]),
+              issuedAt: yield* Clock.currentTimeMillis,
+            };
+            return yield* runAgentDesktopHumanRequest(
+              agentDesktopManager,
+              scope,
+              input.request,
+            ).pipe(
+              Effect.mapError((cause) =>
+                environmentDesktopFailure(scope, humanRequestOperation(input.request), cause),
+              ),
+            );
           },
         ),
         [WS_METHODS.subscribePreviewEvents]: (_input) => previewManager.events,

@@ -1,3 +1,8 @@
+import * as Context from "effect/Context";
+import * as Ref from "effect/Ref";
+import * as AgentDesktopManager from "../agentDesktop/AgentDesktopManager.ts";
+import * as ComputerAutomationRouter from "../computer/ComputerAutomationRouter.ts";
+import type { ComputerAutomationActionResult } from "@t3tools/contracts";
 import * as ComputerObservationStore from "../computer/ComputerObservationStore.ts";
 import { expect, it } from "@effect/vitest";
 import * as NodeServices from "@effect/platform-node/NodeServices";
@@ -51,10 +56,59 @@ const client = McpSchema.McpServerClient.of({
   },
   getClient: Effect.die("unused"),
 });
+type FixtureResponse = Pick<PreviewAutomationResponse, "ok" | "result" | "error">;
+type FixtureHandler = (request: PreviewAutomationRequest) => Effect.Effect<FixtureResponse>;
+class AgentResponse extends Context.Service<AgentResponse, Ref.Ref<FixtureHandler>>()(
+  "t3/mcp/McpHttpServer.computer.test/AgentResponse",
+) {}
+const responseLayer = Layer.effect(
+  AgentResponse,
+  Ref.make<FixtureHandler>(() => Effect.die("unexpected Agent operation")),
+);
+const managerLayer = Layer.effect(
+  AgentDesktopManager.AgentDesktopManager,
+  Effect.gen(function* () {
+    const response = yield* AgentResponse;
+    const invoke = (operation: PreviewAutomationRequest["operation"], input: unknown) =>
+      Ref.get(response).pipe(
+        Effect.flatMap((handle) =>
+          handle({ requestId: "local-agent", timeoutMs: 30000, threadId, operation, input }),
+        ),
+        Effect.map((result) => result.result),
+      );
+    return AgentDesktopManager.AgentDesktopManager.of({
+      ...(yield* AgentDesktopManager.AgentDesktopManager.pipe(
+        Effect.provide(Layer.mock(AgentDesktopManager.AgentDesktopManager)({})),
+      )),
+      snapshot: (_controller, input, desktopId) =>
+        invoke("computerSnapshot", { ...input, desktop: { kind: "agent", desktopId } }).pipe(
+          Effect.map((result) => result as ComputerAutomationSnapshot),
+        ),
+      act: (_controller, input, desktopId) =>
+        invoke("computerAct", { ...input, desktop: { kind: "agent", desktopId } }).pipe(
+          Effect.map(
+            (result) =>
+              (result as { actionResults: readonly ComputerAutomationActionResult[] })
+                .actionResults,
+          ),
+        ),
+      requestControl: () =>
+        Effect.fail(
+          new AgentDesktopManager.AgentDesktopManagerError({
+            code: "agent-desktop-unavailable",
+            operation: "acquire",
+            detail: "The environment's Agent desktop runtime is unavailable.",
+          }),
+        ),
+    });
+  }),
+);
 const layer = McpHttpServer.ComputerToolkitRegistrationLive.pipe(
   Layer.provideMerge(ComputerObservationStore.layer),
   Layer.provideMerge(McpServer.McpServer.layer),
   Layer.provideMerge(McpToolAccessTestkit.liveThreadsLayer),
+  Layer.provideMerge(ComputerAutomationRouter.layer.pipe(Layer.provide(managerLayer))),
+  Layer.provideMerge(responseLayer),
   Layer.provideMerge(PreviewAutomationBroker.layer),
   Layer.provideMerge(NodeServices.layer),
 );
@@ -74,13 +128,17 @@ const serve = Effect.fn("ComputerHttpTest.serve")(function* (
         request: PreviewAutomationRequest,
       ) => Effect.Effect<Pick<PreviewAutomationResponse, "ok" | "result" | "error">>),
 ) {
+  const responseRef = yield* AgentResponse;
+  yield* Ref.set(
+    responseRef,
+    typeof response === "function" ? response : () => Effect.succeed(response),
+  );
   const broker = yield* PreviewAutomationBroker.PreviewAutomationBroker;
   const connected = yield* Deferred.make<void>();
   const events = yield* broker.connect({
     clientId: "native-host",
     environmentId,
     supportedOperations: [...COMPUTER_AUTOMATION_OPERATIONS],
-    computerDesktopKinds: ["user", "agent"],
   });
   yield* Stream.runForEach(events, (event) =>
     event.type === "connected"
@@ -802,23 +860,22 @@ it.effect("retains the exact Agent screenshot delivered through MCP for its owne
   }).pipe(Effect.provide(layer), Effect.scoped),
 );
 
-it.effect("surfaces missing Agent hosting as a structured computer failure", () =>
+it.effect("surfaces an unavailable local Agent runtime as a structured computer failure", () =>
   Effect.gen(function* () {
     const result = yield* call("computer_request_control", { desktop: { kind: "agent" } });
     expect(result.isError).toBe(true);
     expect(result.structuredContent).toMatchObject({
       error: {
-        _tag: "PreviewAutomationNoAvailableHostError",
+        _tag: "EnvironmentDesktopAutomationError",
         operation: "computerRequestControl",
         code: "agent-desktop-unavailable",
         category: "resource",
-        backendCode: "no-connected-automation-host",
       },
     });
     expect(result.content).toEqual([
       {
         type: "text",
-        text: expect.stringContaining('"backendCode":"no-connected-automation-host"'),
+        text: expect.stringContaining('"code":"agent-desktop-unavailable"'),
       },
     ]);
   }).pipe(Effect.provide(layer)),

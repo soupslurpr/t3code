@@ -1,24 +1,17 @@
+import * as QemuAgentDesktop from "../agentDesktop/QemuAgentDesktop.ts";
+import * as AgentDesktopManager from "../agentDesktop/AgentDesktopManager.ts";
 import { ThreadWorkspaceQuery } from "../orchestration-v2/ThreadWorkspaceQuery.ts";
 import { AgentDesktopTransferService } from "../agentDesktop/AgentDesktopTransferService.ts";
 import { expect, it } from "@effect/vitest";
 import * as NodeServices from "@effect/platform-node/NodeServices";
-import {
-  AGENT_DESKTOP_AUTOMATION_OPERATIONS,
-  EnvironmentId,
-  ProviderInstanceId,
-  ThreadId,
-  type PreviewAutomationResponse,
-} from "@t3tools/contracts";
-import * as Deferred from "effect/Deferred";
+import { type AgentDesktop, EnvironmentId, ProviderInstanceId, ThreadId } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
-import * as Stream from "effect/Stream";
 import { McpSchema, McpServer } from "effect/ai";
 
 import * as McpHttpServer from "./McpHttpServer.ts";
 import * as McpInvocationContext from "./McpInvocationContext.ts";
 import * as McpToolAccessTestkit from "./McpToolAccess.testkit.ts";
-import * as PreviewAutomationBroker from "./PreviewAutomationBroker.ts";
 
 const environmentId = EnvironmentId.make("computer-http-environment");
 const threadId = ThreadId.make("computer-http-thread");
@@ -46,11 +39,69 @@ const client = McpSchema.McpServerClient.of({
   },
   getClient: Effect.die("unused"),
 });
+const desktop = (
+  id: string,
+  environment = environmentId,
+  thread = threadId,
+  controllerId = "previous-controller",
+): AgentDesktop => ({
+  id,
+  label: id,
+  owner: { environmentId: environment, threadId: thread, controllerId },
+  state: "ready",
+  automaticParking: true,
+  capabilities: ["command"],
+  graphics: {
+    backend: "virtio-gpu-2d",
+    hardwareAccelerated: false,
+    renderer: "virtio-gpu 2D",
+    checkpointMode: "full-state",
+  },
+  controllerId: null,
+  viewerCount: 0,
+  createdAt: "2026-01-01T00:00:00.000Z",
+  lastActiveAt: "2026-01-01T00:00:00.000Z",
+  recoverableUntil: null,
+});
 const layer = McpHttpServer.AgentDesktopToolkitRegistrationLive.pipe(
   Layer.provideMerge(McpServer.McpServer.layer),
   Layer.provideMerge(McpToolAccessTestkit.liveThreadsLayer),
-  Layer.provideMerge(PreviewAutomationBroker.layer),
   Layer.provideMerge(NodeServices.layer),
+  Layer.provide(
+    Layer.mock(AgentDesktopManager.AgentDesktopManager)({
+      list: Effect.succeed({
+        available: true,
+        desktops: [
+          desktop("first"),
+          desktop("second", environmentId, threadId, "second-controller"),
+          desktop("foreign-thread", environmentId, ThreadId.make("other")),
+          desktop("foreign-environment", EnvironmentId.make("other")),
+        ],
+        requirements: [],
+      }),
+      setup: Effect.succeed({
+        attempted: true,
+        completed: true,
+        packages: ["passt"],
+        imageProvisioned: false,
+        status: { available: true, desktops: [], requirements: [] },
+      }),
+      command: (owner) =>
+        Effect.sync(() =>
+          expect(owner).toEqual({ environmentId, threadId, controllerId: "computer-http-session" }),
+        ).pipe(
+          Effect.andThen(
+            Effect.fail(
+              new QemuAgentDesktop.QemuAgentDesktopError({
+                code: "timed-out",
+                operation: "command",
+                detail: "guest process 42 exceeded its timeout",
+              }),
+            ),
+          ),
+        ),
+    }),
+  ),
   Layer.provide(Layer.mock(ThreadWorkspaceQuery)({})),
   Layer.provide(Layer.mock(AgentDesktopTransferService)({})),
 );
@@ -63,37 +114,15 @@ const call = Effect.fn("AgentDesktopHttpTest.call")(
     ),
 );
 
-const serve = Effect.fn("AgentDesktopHttpTest.serve")(function* (
-  response: Pick<PreviewAutomationResponse, "ok" | "result" | "error">,
-) {
-  const broker = yield* PreviewAutomationBroker.PreviewAutomationBroker;
-  const connected = yield* Deferred.make<void>();
-  const events = yield* broker.connect({
-    clientId: "native-host",
-    environmentId,
-    supportedOperations: [...AGENT_DESKTOP_AUTOMATION_OPERATIONS],
-    computerDesktopKinds: ["agent"],
-  });
-  yield* Stream.runForEach(events, (event) =>
-    event.type === "connected"
-      ? Deferred.succeed(connected, undefined)
-      : broker.respond({
-          clientId: "native-host",
-          connectionId: event.connectionId,
-          requestId: event.request.requestId,
-          ...response,
-        }),
-  ).pipe(Effect.forkScoped);
-  yield* Deferred.await(connected);
-});
-
-it.effect("routes an Agent desktop list through an Agent-capable host", () =>
+it.effect("routes an Agent desktop list directly to the environment service", () =>
   Effect.scoped(
     Effect.gen(function* () {
-      yield* serve({ ok: true, result: { available: true, desktops: [], requirements: [] } });
       const result = yield* call("agent_desktop_list", {});
       expect(result.isError).toBe(false);
-      expect(result.structuredContent).toMatchObject({ available: true, desktops: [] });
+      expect(result.structuredContent).toMatchObject({
+        available: true,
+        desktops: [{ id: "first" }, { id: "second" }],
+      });
     }),
   ).pipe(Effect.provide(layer)),
 );
@@ -181,29 +210,25 @@ it.effect.each([
   }).pipe(Effect.provide(layer)),
 );
 
-it.effect("preserves structured guest timeouts through the broker and MCP boundary", () =>
+it.effect("reports normalized guest timeouts through the environment and MCP boundary", () =>
   Effect.gen(function* () {
-    const failure = {
-      code: "timed-out",
-      category: "timeout",
-      message: "The Agent desktop command timed out.",
-      backendCode: "timed-out",
-      detail: "guest process 42 exceeded its timeout",
-    };
-    yield* serve({
-      ok: false,
-      error: {
-        _tag: "PreviewAutomationExecutionError",
-        message: "private host log",
-        detail: { computerFailure: failure },
-      },
-    });
     const result = yield* call("agent_desktop_command", {
       executable: "/usr/bin/env",
       environment: { LANG: "C.UTF-8" },
     });
     expect(result.isError).toBe(true);
-    expect(JSON.stringify(result)).toContain(failure.message);
+    expect(JSON.stringify(result)).toContain("The desktop operation timed out.");
     expect(JSON.stringify(result)).not.toContain("private host log");
+  }).pipe(Effect.provide(layer)),
+);
+
+it.effect("returns environment setup readiness through the guarded Agent tool", () =>
+  Effect.gen(function* () {
+    const result = yield* call("agent_desktop_setup", {});
+    expect(result.isError).toBe(false);
+    expect(result.structuredContent).toMatchObject({
+      completed: true,
+      status: { available: true },
+    });
   }).pipe(Effect.provide(layer)),
 );

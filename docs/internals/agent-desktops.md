@@ -6,14 +6,12 @@ observation and action contract; only desktop selection and lifecycle ownership 
 
 ## Routing And Ownership
 
-The MCP toolkit sends Agent desktop operations through the existing preview-automation broker to the
-desktop client whose primary environment is that environment. A desktop client connected to another
-saved environment can supervise its Agent desktops remotely, but does not advertise its own local
-hypervisor or inventory there. This keeps the physical host stable when several desktop clients are
-connected to one environment.
+The environment server owns Agent desktop operations, the hypervisor, and the versioned inventory
+below its state directory. MCP calls and human supervision RPCs therefore reach the same machines
+from a local desktop app, a remote browser, or mobile. No connected client advertises a hypervisor,
+and disconnecting or replacing a client cannot strand the inventory.
 
-The hosting desktop process owns the hypervisor and persists a versioned inventory below its Agent
-desktop state directory. Environment and thread identifiers form the durable authorization boundary.
+Environment and thread identifiers form the durable authorization boundary.
 The persisted owner also records the controller currently claiming each desktop. A replacement
 controller in the same thread can atomically reclaim an idle desktop after a provider or harness
 restart, while active operations and control leases prevent a takeover. Cross-thread access still
@@ -22,10 +20,10 @@ requires an explicit handoff.
 Computer requests select either the user desktop or an Agent desktop. Omitting an Agent desktop id
 lets the manager prefer the controller's suitable assignment, reclaim the most recent suitable idle
 desktop from the same thread, or acquire a new machine. The computer
-router keeps the two backends behind one current request shape; there is no legacy host-only IPC
-request path. The preview broker retains separate physical-host affinity for user and Agent desktops.
-Every computer operation names the user desktop or a concrete Agent desktop explicitly; no target is
-inherited or inferred.
+router keeps the two backends behind one current request shape: user-desktop requests use the
+preview-automation broker, while Agent-desktop requests execute directly on the environment server.
+There is no Agent-desktop Electron IPC or automation-host routing path. Every computer operation
+names the user desktop or a concrete Agent desktop explicitly; no target is inherited or inferred.
 
 ## Machine Boundary
 
@@ -33,7 +31,7 @@ Each machine runs as one transient systemd user service with KVM acceleration, U
 private QMP and guest-agent Unix sockets, emulated keyboard and tablet devices, virtio networking, and
 a bounded cgroup memory policy. Runtime socket directories and persistent machine directories are
 owner-only. The manager invokes guest commands and file operations through QEMU Guest Agent, captures
-software-display frames through QMP, and injects input through QEMU's input events. Accelerated
+display frames through a private VNC socket, and injects input through QEMU's input events. Accelerated
 desktops render OpenGL with virgl through EGL headless. They expose a raw framebuffer over a
 private Unix-domain VNC socket so observation does not require a visible host window or another
 runtime dependency. QEMU events provide hardware-like pointer input and deliberate key holds. Timed
@@ -101,18 +99,14 @@ port. Visibility determines whether the host bind is loopback, the active Tailsc
 interfaces. Routes persist with the desktop and are restored on start. Packet capture is a separate,
 bounded operation that returns a private artifact only after an explicit request.
 
-## Verification
+## Transfers
 
-Focused unit tests cover contracts, admission, routing, input conversion, private framebuffer
-decoding, prerequisite remedies, pinned download validation, and image generation. The retained
-AppImage smoke test can require fresh image provisioning and then exercises prerequisite reporting,
-guest commands, exact Unicode files, network access, screenshots, semantic targets, graphical input,
-human takeover, checkpoint, live clone, park/resume, and cleanup against a real KVM guest.
+Transfer control and bytes remain inside the environment server. Workspace paths
+resolve through that environment's V2 thread worktree; a remote renderer cannot
+substitute its own workspace. Server-owned transfer fibers outlive an MCP request
+but end with the service scope. Cancellation removes temporary archives.
 
-Transfer control uses MCP and typed Electron IPC; bundle bytes use short-lived, direction-specific
-HTTP capabilities scoped to one transfer. Resolve relative capability paths against the requesting
-environment, and workspace paths through its V2 thread worktree. Never use a renderer's default
-environment or accept an arbitrary capability URL. Server-owned transfer fibers survive an MCP
-request but end with the service scope. Cancellation removes tickets and temporary archives.
-Node and the packaged Python helper share a versioned bundle format; both validate paths and link
-targets before installation, and upload retries must match already stored bytes.
+Node and the packaged Python helper share a versioned bundle format. Both validate
+paths and link targets before installation. The manager streams bounded chunks
+between a private local archive and the guest channel, and verifies the completed
+archive before installation.

@@ -1,3 +1,7 @@
+import * as AgentDesktopEnvironment from "./agentDesktop/AgentDesktopEnvironment.ts";
+import * as AgentDesktopManager from "./agentDesktop/AgentDesktopManager.ts";
+import * as QemuAgentDesktop from "./agentDesktop/QemuAgentDesktop.ts";
+import * as ComputerAutomationRouter from "./computer/ComputerAutomationRouter.ts";
 import * as ThreadMonitorComputer from "./threadMonitor/ThreadMonitorComputer.ts";
 import * as ThreadMonitor from "./threadMonitor/ThreadMonitor.ts";
 import * as ThreadWorkspaceQuery from "./orchestration-v2/ThreadWorkspaceQuery.ts";
@@ -211,6 +215,20 @@ const HTTP_ROUTER_CONFIG = {
 // Skip Effect's default 20 s grace; WebSocket scope finalizers already close connections gracefully.
 const HTTP_PREEMPTIVE_SHUTDOWN_GRACE_MS = 0;
 const layerComputerObservationStore = ComputerObservationStore.layer;
+const layerPreviewAutomationBroker = PreviewAutomationBroker.layer;
+const layerAgentDesktopEnvironment = AgentDesktopEnvironment.layer;
+const layerQemuAgentDesktop = QemuAgentDesktop.layer.pipe(
+  Layer.provide(layerAgentDesktopEnvironment),
+);
+const layerAgentDesktopManager = AgentDesktopManager.layer.pipe(
+  Layer.provideMerge(layerQemuAgentDesktop),
+  Layer.provide(layerAgentDesktopEnvironment),
+);
+const layerComputerAutomationRouter = ComputerAutomationRouter.layer.pipe(
+  Layer.provideMerge(layerPreviewAutomationBroker),
+  Layer.provide(layerAgentDesktopManager),
+);
+
 const layerResourceAttribution = ResourceAttribution.layer;
 const layerApplicationObservability = EventLoopMonitor.layer.pipe(
   Layer.provideMerge(Observability.layer),
@@ -687,13 +705,21 @@ const layerRuntimeCoreDependencies = layerRuntimeCoreDependenciesBase.pipe(
   ),
 );
 
-const layerPreviewAutomationBroker = PreviewAutomationBroker.layer;
+const layerAgentDesktopServices = Layer.mergeAll(
+  layerAgentDesktopManager,
+  layerComputerAutomationRouter,
+  AgentDesktopTransfer.layer.pipe(
+    Layer.provide(layerAgentDesktopManager),
+    Layer.provide(layerServerEnvironment),
+  ),
+);
 
 const layerThreadMonitor = ThreadMonitor.layer.pipe(
-  Layer.provide(ThreadMonitorComputer.layer.pipe(Layer.provide(layerPreviewAutomationBroker))),
+  Layer.provide(ThreadMonitorComputer.layer.pipe(Layer.provide(layerComputerAutomationRouter))),
   Layer.provide(RuntimeLayer.layerEventSink),
   Layer.provideMerge(ThreadWorkspaceQuery.layer),
   Layer.provideMerge(ProjectionStoreV2.layer),
+  Layer.provideMerge(layerAgentDesktopServices),
   Layer.provideMerge(layerRuntimeCoreDependencies),
 );
 
@@ -704,7 +730,6 @@ const layerRuntimeCoreWithAgentPower = AgentPowerReporter.layer.pipe(
 
 const layerRuntimeDependencies = layerRuntimeCoreWithAgentPower.pipe(
   Layer.provideMerge(layerUsage),
-  Layer.provideMerge(AgentDesktopTransfer.layer.pipe(Layer.provide(layerServerEnvironment))),
   Layer.provideMerge(layerBackground),
   Layer.provideMerge(layerResourceDiagnostics),
   Layer.provideMerge(TraceDiagnostics.layer),
@@ -745,8 +770,6 @@ const layerMakeRoutes = Layer.mergeAll(
     ServerBrowserStream.routeLayer,
     ServerHttp.layerStaticAndDevRoute,
     Ws.layer,
-    ServerHttp.agentDesktopTransferDownloadRouteLayer,
-    ServerHttp.agentDesktopTransferUploadRouteLayer,
   ),
   McpHttpServer.layer.pipe(
     Layer.provide(ProviderAdapterRegistry.layerFromProviderInstanceRegistry),

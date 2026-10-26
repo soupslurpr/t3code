@@ -1,22 +1,9 @@
-import * as Schema from "effect/Schema";
 import { useAtomValue } from "@effect/atom-react";
 import { runAtomCommand } from "@t3tools/client-runtime/state/runtime";
 import {
   AuthPreviewOperateScope,
-  AgentDesktopHumanRequest,
   ComputerAutomationTargetInput,
   ComputerAutomationAvailabilityInput,
-  AgentDesktopAcquireInput,
-  type AgentDesktopHostTransferInput,
-  type AgentDesktopHostTransferCancelInput,
-  AgentDesktopCommandInput,
-  AgentDesktopCreatePortRouteInput,
-  AgentDesktopInspectInput,
-  AgentDesktopManageInput,
-  AgentDesktopPacketCaptureInput,
-  AgentDesktopReadFileInput,
-  AgentDesktopRemovePortRouteInput,
-  AgentDesktopWriteFileInput,
   type ComputerAutomationAccessInput,
   type ComputerAutomationActInput,
   type ComputerAutomationSnapshotInput,
@@ -28,11 +15,7 @@ import { AsyncResult, Atom } from "effect/reactivity";
 
 import { isElectron } from "~/env";
 import { randomUUID } from "~/lib/utils";
-import { environmentSession } from "~/state/session";
-import * as Option from "effect/Option";
-import { resolveAgentDesktopTransferUrl } from "./agentDesktopTransferUrl";
 import { useEnvironments } from "~/state/environments";
-import { primaryEnvironmentIdAtom } from "~/state/primaryEnvironment";
 import { previewEnvironment } from "~/state/preview";
 import { useEnvironmentsWithScope } from "~/state/session";
 
@@ -42,17 +25,13 @@ import {
 } from "./previewAutomationErrors";
 import { previewAutomationHostCapabilities } from "./previewAutomationHostCapabilities";
 
-const decodeAgentDesktopHumanRequest = Schema.decodeUnknownSync(AgentDesktopHumanRequest);
-
 async function handleComputerRequest(
   environmentId: EnvironmentId,
   request: PreviewAutomationRequest,
-  environmentHttpBaseUrl: string | null,
 ): Promise<unknown> {
   const computer = window.desktopBridge?.computer;
   if (computer === undefined)
     throw new Error("Computer automation is unavailable on this desktop.");
-  const agentDesktop = window.desktopBridge?.agentDesktop;
   const computerContext = {
     controllerId: request.controllerId ?? `legacy:${request.threadId}`,
     environmentId,
@@ -101,83 +80,8 @@ async function handleComputerRequest(
       return await resolveDesktopComputerAutomation(
         computer?.forgetControl(request.input as ComputerAutomationTargetInput, computerContext),
       );
-    case "agentDesktopList":
-      return await resolveDesktopComputerAutomation(agentDesktop?.list(computerContext));
-    case "agentDesktopSetup":
-      return await resolveDesktopComputerAutomation(agentDesktop?.setup(computerContext));
-    case "agentDesktopAcquire":
-      return await resolveDesktopComputerAutomation(
-        agentDesktop?.acquire(request.input as AgentDesktopAcquireInput, computerContext),
-      );
-    case "agentDesktopManage":
-      return await resolveDesktopComputerAutomation(
-        agentDesktop?.manage(request.input as AgentDesktopManageInput, computerContext),
-      );
-    case "agentDesktopCommand":
-      return await resolveDesktopComputerAutomation(
-        agentDesktop?.command(request.input as AgentDesktopCommandInput, computerContext),
-      );
-    case "agentDesktopReadFile":
-      return await resolveDesktopComputerAutomation(
-        agentDesktop?.readFile(request.input as AgentDesktopReadFileInput, computerContext),
-      );
-    case "agentDesktopWriteFile":
-      return await resolveDesktopComputerAutomation(
-        agentDesktop?.writeFile(request.input as AgentDesktopWriteFileInput, computerContext),
-      );
-    case "agentDesktopTransfer": {
-      const input = request.input as AgentDesktopHostTransferInput;
-      if (environmentHttpBaseUrl === null) {
-        throw new Error("the environment HTTP endpoint is unavailable for file transfer");
-      }
-      return await resolveDesktopComputerAutomation(
-        agentDesktop?.transfer(
-          {
-            ...input,
-            url: resolveAgentDesktopTransferUrl(input.url, environmentHttpBaseUrl),
-          },
-          computerContext,
-        ),
-      );
-    }
-    case "agentDesktopTransferCancel":
-      return await resolveDesktopComputerAutomation(
-        agentDesktop?.cancelTransfer(
-          request.input as AgentDesktopHostTransferCancelInput,
-          computerContext,
-        ),
-      );
-    case "agentDesktopInspect":
-      return await resolveDesktopComputerAutomation(
-        agentDesktop?.inspect(request.input as AgentDesktopInspectInput, computerContext),
-      );
-    case "agentDesktopCreatePortRoute":
-      return await resolveDesktopComputerAutomation(
-        agentDesktop?.createPortRoute(
-          request.input as AgentDesktopCreatePortRouteInput,
-          computerContext,
-        ),
-      );
-    case "agentDesktopRemovePortRoute":
-      return await resolveDesktopComputerAutomation(
-        agentDesktop?.removePortRoute(
-          request.input as AgentDesktopRemovePortRouteInput,
-          computerContext,
-        ),
-      );
-    case "agentDesktopPacketCapture":
-      return await resolveDesktopComputerAutomation(
-        agentDesktop?.capturePackets(
-          request.input as AgentDesktopPacketCaptureInput,
-          computerContext,
-        ),
-      );
-    case "agentDesktopHumanInvoke":
-      return await resolveDesktopComputerAutomation(
-        agentDesktop?.humanInvoke(decodeAgentDesktopHumanRequest(request.input), computerContext),
-      );
   }
-  throw new Error("This desktop host only supports computer and Agent desktop automation.");
+  throw new Error("This desktop host only supports user desktop automation.");
 }
 
 const computerHostAtom = Atom.family((environmentId: EnvironmentId) =>
@@ -190,8 +94,6 @@ const computerHostAtom = Atom.family((environmentId: EnvironmentId) =>
         environmentId,
         ...previewAutomationHostCapabilities({
           computerAvailable: true,
-          primaryEnvironment: environmentId === get(primaryEnvironmentIdAtom),
-          agentDesktopAvailable: window.desktopBridge?.agentDesktop !== undefined,
         }),
       },
     });
@@ -263,14 +165,7 @@ const computerHostAtom = Atom.family((environmentId: EnvironmentId) =>
           { reportFailure: false },
         );
       };
-      const prepared = get.registry.get(
-        environmentSession.preparedConnectionValueAtom(environmentId),
-      );
-      void handleComputerRequest(
-        environmentId,
-        event.request,
-        Option.isSome(prepared) ? prepared.value.httpBaseUrl : null,
-      ).then(
+      void handleComputerRequest(environmentId, event.request).then(
         (value) => answer({ ok: true, result: value }),
         (error: unknown) => answer({ ok: false, error: serializeComputerAutomationError(error) }),
       );

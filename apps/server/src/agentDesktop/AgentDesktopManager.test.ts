@@ -7,43 +7,13 @@ import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
 import * as Fiber from "effect/Fiber";
 import * as Layer from "effect/Layer";
+import * as Option from "effect/Option";
 import * as Path from "effect/Path";
 import * as Ref from "effect/Ref";
 import * as Schema from "effect/Schema";
 import * as TestClock from "effect/testing/TestClock";
-import { vi } from "vite-plus/test";
-
-const { nativeImage } = vi.hoisted(() => {
-  class Image {
-    readonly width: number;
-    readonly height: number;
-    constructor(width = 100, height = 100) {
-      this.width = width;
-      this.height = height;
-    }
-    isEmpty() {
-      return false;
-    }
-    getSize() {
-      return { width: this.width, height: this.height };
-    }
-    crop(region: { width: number; height: number }) {
-      return new Image(region.width, region.height);
-    }
-    resize(size: { width: number; height: number }) {
-      return new Image(size.width, size.height);
-    }
-    toBitmap() {
-      return Buffer.alloc(this.width * this.height * 4);
-    }
-  }
-  return { nativeImage: { createFromBitmap: vi.fn(() => new Image()) } };
-});
-
-vi.mock("electron", () => ({ nativeImage }));
-
-import * as DesktopEnvironment from "../app/DesktopEnvironment.ts";
-import * as ComputerUse from "../computer/ComputerUse.ts";
+import * as AgentDesktopEnvironment from "./AgentDesktopEnvironment.ts";
+import * as ComputerUse from "../computer/ComputerAutomationFailure.ts";
 import * as AgentDesktopManager from "./AgentDesktopManager.ts";
 import * as QemuAgentDesktop from "./QemuAgentDesktop.ts";
 
@@ -405,24 +375,24 @@ const managerHarness = (
       yield* fileSystem.writeFileString(inputHelperResource, "test input helper");
     }
     const environmentLayer = Layer.effect(
-      DesktopEnvironment.DesktopEnvironment,
+      AgentDesktopEnvironment.AgentDesktopEnvironment,
       Effect.gen(function* () {
         const path = yield* Path.Path;
-        return DesktopEnvironment.DesktopEnvironment.of({
+        return AgentDesktopEnvironment.AgentDesktopEnvironment.of({
           path,
           platform: "linux",
           processArch: "x64",
           agentDesktopsDir,
-          agentDesktopBaseImage: { _tag: "None" },
+          agentDesktopBaseImage: Option.none(),
           resolveResourcePathCandidates: (resource: string) =>
-            resource === "computer-use/agent-desktop-accessibility.js" && accessibility
+            resource === "agent-desktop/accessibility.js" && accessibility
               ? [accessibilityResource]
               : resource === "agent-desktop/input-helper.py" && options?.inputHelper === true
                 ? [inputHelperResource]
                 : resource === "agent-desktop/transfer-helper.py"
                   ? [transferResource]
                   : [],
-        } as unknown as DesktopEnvironment.DesktopEnvironment["Service"]);
+        });
       }),
     ).pipe(Layer.provide(NodeServices.layer));
     const dependencies = Layer.mergeAll(
@@ -431,6 +401,8 @@ const managerHarness = (
       Layer.succeed(QemuAgentDesktop.QemuAgentDesktop, qemu.service),
     );
     return {
+      files: fileSystem,
+      directory: agentDesktopsDir,
       calls: qemu.calls,
       wheelAcknowledgementLost: qemu.wheelAcknowledgementLost,
       captureEnabled: qemu.captureEnabled,
@@ -2194,30 +2166,24 @@ describe("shared Agent observation lifecycle", () => {
 it.effect("transfers exact chunks in both directions and enforces cancellation ownership", () =>
   Effect.gen(function* () {
     const h = yield* managerHarness("transfer", { accessibility: true });
-    const requests: Array<{ url: string; method: string | undefined }> = [];
-    const fetch = vi.spyOn(globalThis, "fetch").mockImplementation(async (url, init) => {
-      requests.push({ url: String(url), method: init?.method });
-      if (init?.method === "GET")
-        return new Response("hello", { status: 206, headers: { "Content-Range": "bytes 0-4/5" } });
-      assert.deepEqual(
-        new Uint8Array(init?.body as ArrayBuffer),
-        new TextEncoder().encode("hello"),
-      );
-      return new Response(null, { status: 201, headers: { "Upload-Offset": "5" } });
-    });
-    yield* Effect.addFinalizer(() => Effect.sync(() => fetch.mockRestore()));
+    const archivePath = `${h.directory}/archive.bundle`;
+    yield* h.files.writeFileString(archivePath, "hello");
+    const progress: Array<readonly [number, number]> = [];
     yield* Effect.gen(function* () {
       const manager = yield* AgentDesktopManager.AgentDesktopManager;
       const desktop = yield* manager.acquire(owner, {});
-      const url = `https://owning-environment.example/api/agent-desktop-transfers/${"A".repeat(43)}`;
       const imported = yield* manager.transfer(owner, {
         operation: "import",
         transferId: "import-one",
         desktopId: desktop.id,
-        url,
+        archivePath,
         guestPath: "~/imported",
         compression: "none",
         collision: "create",
+        onProgress: (bytes, total) =>
+          Effect.sync(() => {
+            progress.push([bytes, total]);
+          }),
         sizeBytes: 5,
         sha256: "a".repeat(64),
       });
@@ -2227,15 +2193,13 @@ it.effect("transfers exact chunks in both directions and enforces cancellation o
         operation: "export",
         transferId: "export-one",
         desktopId: desktop.id,
-        url,
+        archivePath,
         guestPath: "~/source",
         compression: "none",
       });
       assert.equal(exported.transferId, "export-one");
-      assert.deepEqual(requests, [
-        { url, method: "GET" },
-        { url, method: "PUT" },
-      ]);
+      assert.equal(yield* h.files.readFileString(archivePath), "hello");
+      assert.deepEqual(progress, [[5, 5]]);
       const calls = yield* Ref.get(h.calls);
       assert.isTrue(
         calls.some(
@@ -2250,7 +2214,7 @@ it.effect("transfers exact chunks in both directions and enforces cancellation o
           operation: "export",
           transferId: "cancel-one",
           desktopId: desktop.id,
-          url,
+          archivePath,
           guestPath: "~/source",
           compression: "none",
         })

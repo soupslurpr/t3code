@@ -7,7 +7,7 @@ import * as Option from "effect/Option";
 import * as Path from "effect/Path";
 import * as TestClock from "effect/testing/TestClock";
 import { vi } from "vite-plus/test";
-import * as DesktopEnvironment from "../app/DesktopEnvironment.ts";
+import * as AgentDesktopEnvironment from "./AgentDesktopEnvironment.ts";
 import * as QemuProtocol from "./QemuProtocol.ts";
 import { make as makeQemu } from "./QemuAgentDesktop.ts";
 import { AgentDesktopId } from "@t3tools/contracts";
@@ -67,6 +67,7 @@ describe("QemuAgentDesktop", () => {
     assert(command.includes("q35,accel=kvm"));
     assert(command.includes(`unix:${paths.qmpSocket},server=on,wait=off`));
     assert(command.includes(`socket,path=${paths.qgaSocket},server=on,wait=off,id=qga0`));
+    assert(command.includes(`unix:${paths.vncSocket},share=force-shared`));
     assert(!command.some((value) => value.includes("param=--stats")));
     assert(command.some((value) => value.includes(`param=${paths.passtControlSocket}`)));
     assert(command.some((value) => value.includes("id=t3-nvram")));
@@ -247,6 +248,7 @@ describe("QemuAgentDesktop", () => {
       graphicsBackend: "compatibility-vga",
     });
     assert(command.includes("VGA,vgamem_mb=64"));
+    assert(command.includes(`unix:${paths.vncSocket},share=force-shared`));
   });
 
   it("builds an accelerated headless display with private framebuffer capture", () => {
@@ -422,14 +424,14 @@ it.effect.each([
       const directory = yield* fileSystem.makeTempDirectoryScoped({ prefix: "t3-pcap-test-" });
       const sizeChecked = yield* Deferred.make<void>();
       const service = yield* makeQemu.pipe(
-        Effect.provideService(DesktopEnvironment.DesktopEnvironment, {
+        Effect.provideService(AgentDesktopEnvironment.AgentDesktopEnvironment, {
           path,
           platform: "linux",
           processArch: "x64",
           agentDesktopsDir: directory,
           agentDesktopBaseImage: Option.none(),
           resolveResourcePathCandidates: () => [],
-        } as unknown as DesktopEnvironment.DesktopEnvironment["Service"]),
+        } as unknown as AgentDesktopEnvironment.AgentDesktopEnvironment["Service"]),
         Effect.provideService(FileSystem.FileSystem, {
           ...fileSystem,
           stat: (target) =>
@@ -524,14 +526,14 @@ it.effect("interrupts only the guest process returned by its own spawn", () =>
       });
     yield* Effect.addFinalizer(() => Effect.sync(() => monitor.mockRestore()));
     const service = yield* makeQemu.pipe(
-      Effect.provideService(DesktopEnvironment.DesktopEnvironment, {
+      Effect.provideService(AgentDesktopEnvironment.AgentDesktopEnvironment, {
         path,
         platform: "linux",
         processArch: "x64",
         agentDesktopsDir: directory,
         agentDesktopBaseImage: Option.none(),
         resolveResourcePathCandidates: () => [],
-      } as unknown as DesktopEnvironment.DesktopEnvironment["Service"]),
+      } as unknown as AgentDesktopEnvironment.AgentDesktopEnvironment["Service"]),
     );
     const running = yield* service
       .executeGuestProcess(id, {

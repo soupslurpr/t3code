@@ -1,14 +1,14 @@
 import type {
   AgentDesktopId,
   ComputerAutomationActInput,
+  ComputerAutomationAccessInput,
+  ComputerAutomationAvailabilityInput,
   ComputerAutomationObserveSequenceInput,
   ComputerAutomationObservation,
-  ComputerAutomationSnapshot,
   ComputerAutomationSnapshotInput,
-  ComputerAutomationStatus,
   ComputerAutomationTemporalCaptureOptions,
+  ComputerAutomationTargetInput,
   ComputerDesktopSelector,
-  PreviewAutomationOperation,
 } from "@t3tools/contracts";
 import {
   captureComputerTemporalFrame,
@@ -20,12 +20,8 @@ import * as Effect from "effect/Effect";
 import * as McpInvocationContext from "../../McpInvocationContext.ts";
 import * as McpToolAccess from "../../McpToolAccess.ts";
 import * as ComputerObservationStore from "../../../computer/ComputerObservationStore.ts";
-import * as PreviewAutomationBroker from "../../PreviewAutomationBroker.ts";
+import * as ComputerAutomationRouter from "../../../computer/ComputerAutomationRouter.ts";
 import { ComputerImageToolkit, ComputerStandardToolkit, ComputerToolkit } from "./tools.ts";
-
-const STATUS_TIMEOUT_MS = 5_000;
-const SNAPSHOT_TIMEOUT_MS = 30_000;
-const CONTROL_TIMEOUT_MS = 120_000;
 
 /** Resolves the concrete Agent desktop selected by an access request. */
 function observedAgentDesktopId(
@@ -59,19 +55,50 @@ const publishControllerObservation = Effect.fn("ComputerToolkit.publishControlle
   },
 );
 
-const invoke = Effect.fn("ComputerToolkit.invoke")(function* <A>(
-  operation: PreviewAutomationOperation,
-  input: unknown,
-  timeoutMs: number,
-): Effect.fn.Return<
-  A,
-  import("@t3tools/contracts").PreviewAutomationError,
-  McpInvocationContext.McpInvocationContext | PreviewAutomationBroker.PreviewAutomationBroker
-> {
+const withComputer = Effect.fn("ComputerToolkit.withComputer")(function* <Value>(
+  run: (
+    router: ComputerAutomationRouter.ComputerAutomationRouterShape,
+    scope: McpInvocationContext.McpThreadInvocationScope,
+  ) => Effect.Effect<Value, import("@t3tools/contracts").PreviewAutomationError>,
+) {
   const scope = yield* McpInvocationContext.requireThreadMcpCapability("computer");
-  const broker = yield* PreviewAutomationBroker.PreviewAutomationBroker;
-  return yield* broker.invoke<A>({ scope, operation, input, timeoutMs });
+  const router = yield* ComputerAutomationRouter.ComputerAutomationRouter;
+  return yield* run(router, scope);
 });
+
+/** Routes one status request through the explicit desktop boundary. */
+const statusComputer = (input: ComputerAutomationTargetInput) =>
+  withComputer((router, scope) => router.status(scope, input));
+
+/** Routes one availability request through the user-desktop host. */
+const requestComputerAvailability = (input: ComputerAutomationAvailabilityInput) =>
+  withComputer((router, scope) => router.requestAvailability(scope, input));
+
+/** Routes one availability release through the user-desktop host. */
+const releaseComputerAvailability = (input: ComputerAutomationAvailabilityInput) =>
+  withComputer((router, scope) => router.releaseAvailability(scope, input));
+
+/** Routes one access request to its explicit user or Agent desktop. */
+const requestComputerAccess = (input: ComputerAutomationAccessInput, access: "view" | "control") =>
+  withComputer((router, scope) =>
+    access === "control" ? router.requestControl(scope, input) : router.requestView(scope, input),
+  );
+
+/** Routes one snapshot to its explicit user or Agent desktop. */
+const snapshotComputer = (input: ComputerAutomationSnapshotInput) =>
+  withComputer((router, scope) => router.snapshot(scope, input));
+
+/** Routes one action batch to its explicit user or Agent desktop. */
+const actComputer = (input: ComputerAutomationActInput) =>
+  withComputer((router, scope) => router.act(scope, input));
+
+/** Routes one release to its explicit user or Agent desktop. */
+const releaseComputer = (input: ComputerAutomationTargetInput) =>
+  withComputer((router, scope) => router.release(scope, input));
+
+/** Routes one forget operation to its explicit user or Agent desktop. */
+const forgetComputer = (input: ComputerAutomationTargetInput) =>
+  withComputer((router, scope) => router.forget(scope, input));
 
 /** Builds the screenshot-only request shared by temporal observations. */
 function temporalSnapshotInput(
@@ -91,14 +118,10 @@ const actWithTemporalObservation = Effect.fn("ComputerToolkit.actWithTemporalObs
   function* (input: ComputerAutomationActInput) {
     const { temporalObservation, ...actionInput } = input;
     if (temporalObservation === undefined) {
-      return yield* invoke<ComputerAutomationObservation>(
-        "computerAct",
-        actionInput,
-        CONTROL_TIMEOUT_MS,
-      );
+      return yield* actComputer(actionInput);
     }
-    if (input.desktop?.kind !== "agent") {
-      return yield* invoke<ComputerAutomationObservation>("computerAct", input, CONTROL_TIMEOUT_MS);
+    if (input.desktop.kind === "user") {
+      return yield* actComputer(input);
     }
     const capture = {
       desktop: input.desktop,
@@ -106,18 +129,10 @@ const actWithTemporalObservation = Effect.fn("ComputerToolkit.actWithTemporalObs
     };
     const captureInput = {
       capture: temporalObservation,
-      snapshot: invoke<ComputerAutomationSnapshot>(
-        "computerSnapshot",
-        temporalSnapshotInput(capture),
-        SNAPSHOT_TIMEOUT_MS,
-      ),
+      snapshot: snapshotComputer(temporalSnapshotInput(capture)),
     };
     if ((temporalObservation.start ?? "before-actions") === "after-actions") {
-      const observation = yield* invoke<ComputerAutomationObservation>(
-        "computerAct",
-        actionInput,
-        CONTROL_TIMEOUT_MS,
-      );
+      const observation = yield* actComputer(actionInput);
       const temporalSequence = yield* captureComputerTemporalSequence(captureInput);
       return { ...observation, temporalSequence };
     }
@@ -130,7 +145,7 @@ const actWithTemporalObservation = Effect.fn("ComputerToolkit.actWithTemporalObs
     });
     const [observation, temporalSequence] = yield* Effect.all(
       [
-        invoke<ComputerAutomationObservation>("computerAct", actionInput, CONTROL_TIMEOUT_MS),
+        actComputer(actionInput),
         captureComputerTemporalSequence({ ...captureInput, startedAtMs, firstFrame }),
       ],
       { concurrency: "unbounded" },
@@ -140,17 +155,15 @@ const actWithTemporalObservation = Effect.fn("ComputerToolkit.actWithTemporalObs
 );
 
 const handlers = {
-  computer_status: McpToolAccess.readsAsCaller((input) =>
-    invoke<ComputerAutomationStatus>("computerStatus", input, STATUS_TIMEOUT_MS),
-  ),
+  computer_status: McpToolAccess.readsAsCaller((input) => statusComputer(input)),
   computer_request_availability: McpToolAccess.actsAsCaller((input) =>
-    invoke<ComputerAutomationStatus>("computerRequestAvailability", input, CONTROL_TIMEOUT_MS),
+    requestComputerAvailability(input),
   ),
   computer_release_availability: McpToolAccess.actsAsCaller((input) =>
-    invoke<ComputerAutomationStatus>("computerReleaseAvailability", input, CONTROL_TIMEOUT_MS),
+    releaseComputerAvailability(input),
   ),
   computer_request_view: McpToolAccess.actsAsCaller((input) =>
-    invoke<ComputerAutomationObservation>("computerRequestView", input, CONTROL_TIMEOUT_MS).pipe(
+    requestComputerAccess(input, "view").pipe(
       Effect.tap((observation) =>
         publishControllerObservation({
           desktopId: observedAgentDesktopId(input.desktop, observation),
@@ -161,7 +174,7 @@ const handlers = {
     ),
   ),
   computer_request_control: McpToolAccess.actsAsCaller((input) =>
-    invoke<ComputerAutomationObservation>("computerRequestControl", input, CONTROL_TIMEOUT_MS).pipe(
+    requestComputerAccess(input, "control").pipe(
       Effect.tap((observation) =>
         publishControllerObservation({
           desktopId: observedAgentDesktopId(input.desktop, observation),
@@ -172,7 +185,7 @@ const handlers = {
     ),
   ),
   computer_snapshot: McpToolAccess.readsAsCaller((input) =>
-    invoke<ComputerAutomationSnapshot>("computerSnapshot", input, SNAPSHOT_TIMEOUT_MS).pipe(
+    snapshotComputer(input).pipe(
       Effect.tap((snapshot) =>
         publishControllerObservation({
           desktopId: input.desktop.kind === "agent" ? input.desktop.desktopId : undefined,
@@ -185,11 +198,7 @@ const handlers = {
   computer_observe_sequence: McpToolAccess.readsAsCaller((input) =>
     captureComputerTemporalSequence({
       capture: input,
-      snapshot: invoke<ComputerAutomationSnapshot>(
-        "computerSnapshot",
-        temporalSnapshotInput(input),
-        SNAPSHOT_TIMEOUT_MS,
-      ),
+      snapshot: snapshotComputer(temporalSnapshotInput(input)),
     }).pipe(
       Effect.tap((temporalSequence) =>
         publishControllerObservation({
@@ -211,11 +220,9 @@ const handlers = {
       ),
     ),
   ),
-  computer_release: McpToolAccess.actsAsCaller((input) =>
-    invoke<ComputerAutomationStatus>("computerRelease", input, CONTROL_TIMEOUT_MS),
-  ),
+  computer_release: McpToolAccess.actsAsCaller((input) => releaseComputer(input)),
   computer_forget_control: McpToolAccess.actsAsCaller((input) =>
-    invoke<void>("computerForgetControl", input, CONTROL_TIMEOUT_MS).pipe(Effect.as(null)),
+    forgetComputer(input).pipe(Effect.as(null)),
   ),
 } satisfies McpToolAccess.Handlers<typeof ComputerToolkit.tools>;
 

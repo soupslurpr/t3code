@@ -18,13 +18,13 @@ import { ThreadManagementService } from "../../../orchestration-v2/ThreadManagem
 
 import * as ComputerObservationStore from "../../../computer/ComputerObservationStore.ts";
 import * as McpInvocationContext from "../../McpInvocationContext.ts";
-import * as PreviewAutomationBroker from "../../PreviewAutomationBroker.ts";
+import * as ComputerAutomationRouter from "../../../computer/ComputerAutomationRouter.ts";
 
 const dependencies = [
   ComputerObservationStore.ComputerObservationStore,
   ThreadManagementService,
   McpInvocationContext.McpInvocationContext,
-  PreviewAutomationBroker.PreviewAutomationBroker,
+  ComputerAutomationRouter.ComputerAutomationRouter,
 ];
 
 const computerTool = <T extends Tool.Any>(tool: T): T =>

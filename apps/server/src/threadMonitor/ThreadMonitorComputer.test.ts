@@ -1,3 +1,4 @@
+import * as ComputerAutomationRouter from "../computer/ComputerAutomationRouter.ts";
 import * as ComputerObservationStore from "../computer/ComputerObservationStore.ts";
 // @effect-diagnostics-next-line nodeBuiltinImport:off - Native broker fixtures use synchronous deterministic fingerprints.
 import * as NodeCrypto from "node:crypto";
@@ -250,6 +251,54 @@ const harness = Effect.fn("ComputerWatchTest.harness")(function* (
       ...(state.tokenUsage === undefined ? {} : { imageConditionTokenUsage: state.tokenUsage }),
     },
   });
+  const invoke = <A>(input: Parameters<Broker.PreviewAutomationBroker["Service"]["invoke"]>[0]) =>
+    Effect.gen(function* () {
+      calls.push(input);
+      if (input.operation === "computerRequestView" && requestView !== undefined)
+        yield* requestView;
+      if (input.operation === "computerSnapshot" && state.captureFails) {
+        if (state.captureDiagnostic)
+          return yield* new PreviewAutomationExecutionError({
+            operation: input.operation,
+            environmentId: input.scope.environmentId,
+            ...input.scope.thread,
+            clientId: "capture-host",
+            connectionId: PreviewAutomationConnectionId.make("capture-connection"),
+            requestId: "capture-request",
+            timeoutMs: 1_000,
+            remoteTag: "CaptureError",
+            remoteMessageLength: 14,
+            cause: "Capture failed",
+            computerFailure: {
+              code: "capture-failed",
+              category: "capture",
+              message: "Capture failed",
+              backendCode: "stream-capture-failed",
+              detail: "PipeWire could not duplicate a file descriptor (EMFILE)",
+            },
+          });
+        return yield* new PreviewAutomationNoAvailableHostError({
+          operation: input.operation,
+          environmentId: input.scope.environmentId,
+          ...input.scope.thread,
+        });
+      }
+      return (
+        input.operation === "computerSnapshot"
+          ? (state.snapshotFor?.(input.input) ??
+            snapshot(
+              state.pixels,
+              (
+                input.input as {
+                  screenshot?: { encoding?: ComputerAutomationScreenshotEncoding };
+                }
+              ).screenshot?.encoding,
+              (input.input as { screenshot?: { unchangedIfContentHash?: string } }).screenshot
+                ?.unchangedIfContentHash,
+            ))
+          : {}
+      ) as A;
+    });
   const observations = yield* ComputerObservationStore.make;
   const service = yield* Computer.make.pipe(
     Effect.provide(
@@ -289,55 +338,11 @@ const harness = Effect.fn("ComputerWatchTest.harness")(function* (
               >
             >),
         }),
-        Layer.mock(Broker.PreviewAutomationBroker)({
-          invoke: <A>(input: Parameters<Broker.PreviewAutomationBroker["Service"]["invoke"]>[0]) =>
-            Effect.gen(function* () {
-              calls.push(input);
-              if (input.operation === "computerRequestView" && requestView !== undefined)
-                yield* requestView;
-              if (input.operation === "computerSnapshot" && state.captureFails) {
-                if (state.captureDiagnostic)
-                  return yield* new PreviewAutomationExecutionError({
-                    operation: input.operation,
-                    environmentId: input.scope.environmentId,
-                    ...input.scope.thread,
-                    clientId: "capture-host",
-                    connectionId: PreviewAutomationConnectionId.make("capture-connection"),
-                    requestId: "capture-request",
-                    timeoutMs: 1_000,
-                    remoteTag: "CaptureError",
-                    remoteMessageLength: 14,
-                    cause: "Capture failed",
-                    computerFailure: {
-                      code: "capture-failed",
-                      category: "capture",
-                      message: "Capture failed",
-                      backendCode: "stream-capture-failed",
-                      detail: "PipeWire could not duplicate a file descriptor (EMFILE)",
-                    },
-                  });
-                return yield* new PreviewAutomationNoAvailableHostError({
-                  operation: input.operation,
-                  environmentId: input.scope.environmentId,
-                  ...input.scope.thread,
-                });
-              }
-              return (
-                input.operation === "computerSnapshot"
-                  ? (state.snapshotFor?.(input.input) ??
-                    snapshot(
-                      state.pixels,
-                      (
-                        input.input as {
-                          screenshot?: { encoding?: ComputerAutomationScreenshotEncoding };
-                        }
-                      ).screenshot?.encoding,
-                      (input.input as { screenshot?: { unchangedIfContentHash?: string } })
-                        .screenshot?.unchangedIfContentHash,
-                    ))
-                  : {}
-              ) as A;
-            }),
+        Layer.mock(ComputerAutomationRouter.ComputerAutomationRouter)({
+          requestView: (scope, input) => invoke({ scope, operation: "computerRequestView", input }),
+          snapshot: (scope, input) =>
+            invoke<ComputerAutomationSnapshot>({ scope, operation: "computerSnapshot", input }),
+          release: (scope, input) => invoke({ scope, operation: "computerRelease", input }),
         }),
       ),
     ),

@@ -66,6 +66,7 @@ import * as McpSessionRegistry from "./McpSessionRegistry.ts";
 import * as PreviewAutomationBroker from "./PreviewAutomationBroker.ts";
 import * as OrchestratorHandlers from "./toolkits/orchestrator/handlers.ts";
 import { OrchestratorToolkit } from "./toolkits/orchestrator/tools.ts";
+import * as ComputerAutomationRouter from "../computer/ComputerAutomationRouter.ts";
 import * as ComputerObservationStore from "../computer/ComputerObservationStore.ts";
 import * as PreviewHandlers from "./toolkits/preview/handlers.ts";
 import {
@@ -1312,7 +1313,7 @@ export const encodeComputerWatchRevisionResult = (encodedResult: unknown) => {
 const registerComputerTools = Effect.fn("McpHttpServer.registerComputerTools")(function* () {
   const server = yield* McpServer.McpServer;
   const observations = yield* ComputerObservationStore.ComputerObservationStore;
-  const broker = yield* PreviewAutomationBroker.PreviewAutomationBroker;
+  const computer = yield* ComputerAutomationRouter.ComputerAutomationRouter;
   const threads = yield* ThreadManagementService.ThreadManagementService;
   const built = yield* decodeAsAdvertised(ComputerToolkit);
   for (const tool of Object.values(built.tools)) {
@@ -1343,7 +1344,7 @@ const registerComputerTools = Effect.fn("McpHttpServer.registerComputerTools")(f
             Stream.unwrap,
             Stream.run(Sink.last()),
             Effect.flatMap(Effect.fromOption),
-            Effect.provideService(PreviewAutomationBroker.PreviewAutomationBroker, broker),
+            Effect.provideService(ComputerAutomationRouter.ComputerAutomationRouter, computer),
             Effect.provideService(ThreadManagementService.ThreadManagementService, threads),
             Effect.provideService(McpInvocationContext.McpInvocationContext, invocation),
             Effect.provideService(ComputerObservationStore.ComputerObservationStore, observations),
