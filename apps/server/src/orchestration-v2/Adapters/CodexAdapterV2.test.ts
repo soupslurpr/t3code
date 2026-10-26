@@ -915,6 +915,7 @@ describe("CodexAdapterV2 post-settle continuation", () => {
       Effect.void,
     onRequest: (method: string, params: unknown) => Effect.Effect<void> = () => Effect.void,
     readChildMetadata?: Parameters<typeof withCodexReplayChildMetadata>[2],
+    getModels?: CodexAdapterV2.CodexAdapterV2Options["getModels"],
   ) =>
     Effect.gen(function* () {
       const fileSystem = yield* FileSystem.FileSystem;
@@ -963,6 +964,7 @@ describe("CodexAdapterV2 post-settle continuation", () => {
         fileSystem,
         idAllocator,
         serverConfig,
+        ...(getModels === undefined ? {} : { getModels }),
         continuationRequests: {
           offer: (request) =>
             Effect.sync(() => {
@@ -1035,6 +1037,103 @@ describe("CodexAdapterV2 post-settle continuation", () => {
         awaitTerminal: (count: number) => changes.until(() => terminalEvents().length >= count),
       };
     });
+
+  it.effect.each(["legacy", "limited", "explicit"] as const)(
+    "honors the %s instance catalog in emitted Astra turn requests",
+    (catalog) =>
+      Effect.scoped(
+        Effect.gen(function* () {
+          const nativeThreadId = `astra-${catalog}`;
+          const model = "openai.gpt-6-astra";
+          const expected = catalog === "legacy" ? "max" : catalog === "explicit" ? "low" : "high";
+          const entries = codexReplayPreamble({
+            nativeThreadId,
+            nativeTurnId: "astra-turn",
+            prompt: "work",
+          });
+          entries[5] = {
+            type: "expect_outbound",
+            label: "astra turn",
+            frame: {
+              id: 3,
+              method: "turn/start",
+              params: {
+                threadId: nativeThreadId,
+                input: [{ type: "text", text: "work" }],
+                cwd: "/workspace",
+                model,
+                effort: expected,
+                approvalPolicy: "never",
+                approvalsReviewer: "user",
+                sandboxPolicy: { type: "dangerFullAccess" },
+                summary: "detailed",
+                collaborationMode: {
+                  mode: "default",
+                  settings: { model, reasoning_effort: expected },
+                },
+              },
+            },
+          };
+          const requests: unknown[] = [];
+          const harness = yield* makeCodexReplayHarness(
+            makeCodexReplayTranscript({ scenario: nativeThreadId, entries }),
+            () => Effect.void,
+            (method, params) =>
+              Effect.sync(() => {
+                if (method === "turn/start") requests.push(params);
+              }),
+            undefined,
+            Effect.succeed([
+              {
+                slug: model,
+                name: "Astra",
+                isCustom: false,
+                capabilities:
+                  catalog === "legacy"
+                    ? null
+                    : {
+                        optionDescriptors: [
+                          {
+                            id: "reasoningEffort",
+                            label: "Reasoning",
+                            type: "select",
+                            options: [
+                              { id: "low", label: "Low" },
+                              { id: "high", label: "High", isDefault: true },
+                            ],
+                            currentValue: "high",
+                          },
+                        ],
+                      },
+              },
+            ]),
+          );
+          const turn = makeCodexTestTurnInput({
+            threadId: harness.threadId,
+            providerThread: harness.providerThread,
+            now: yield* DateTime.now,
+            attemptId: RunAttemptId.make(`astra-${catalog}`),
+            text: "work",
+          });
+          yield* harness.runtime.startTurn({
+            ...turn,
+            modelSelection: {
+              instanceId: CodexAdapterV2.CODEX_DEFAULT_INSTANCE_ID,
+              model,
+              ...(catalog === "explicit"
+                ? { options: [{ id: "reasoningEffort", value: "low" }] }
+                : {}),
+            },
+          });
+          assert.lengthOf(requests, 1);
+          assert.propertyVal(requests[0], "effort", expected);
+        }).pipe(
+          Effect.provide(
+            Layer.mergeAll(IdAllocator.layer, McpProviderSessions.layer, NodeServices.layer),
+          ),
+        ),
+      ),
+  );
 
   it.effect.each(["supported", "unsupported", "invalid"] as const)(
     "delivers native history with %s app-server protocol",

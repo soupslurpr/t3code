@@ -19,7 +19,6 @@ import { classifyCodexManagedError } from "../../provider/CodexManagedErrors.ts"
 import {
   buildCodexInitializeParams,
   codexAppServerEnvironment,
-  codexDefaultReasoningEffortOverride,
 } from "../../provider/CodexProvider.ts";
 import {
   codexRateLimitsToUpdate,
@@ -43,7 +42,7 @@ import {
   dynamicToolSurface,
   dynamicToolTitle,
 } from "@t3tools/shared/toolActivity";
-import { getModelSelectionStringOptionValue, modelSelectionsEqual } from "@t3tools/shared/model";
+import { modelSelectionsEqual } from "@t3tools/shared/model";
 import { resolveSpawnCommand } from "@t3tools/shared/shell";
 import type {
   ChatAttachment,
@@ -51,6 +50,8 @@ import type {
   OrchestrationV2ConversationMessage,
   OrchestrationV2ExecutionNode,
   ModelSelection,
+  ModelCapabilities,
+  ServerProviderModel,
   OrchestrationV2PlanArtifact,
   OrchestrationV2ProviderCapabilities,
   OrchestrationV2ProviderFailure,
@@ -96,7 +97,10 @@ import * as Stream from "effect/Stream";
 import { ChildProcess, ChildProcessSpawner } from "effect/process";
 
 import { resolveAttachmentPath, resolveAttachmentPathById } from "../../attachmentStore.ts";
-import { getCodexServiceTierOptionValue } from "../../codexModelOptions.ts";
+import {
+  getCodexReasoningEffortOptionValue,
+  getCodexServiceTierOptionValue,
+} from "../../codexModelOptions.ts";
 import { ServerConfig } from "../../config.ts";
 import { expandHomePath } from "@t3tools/provider-core/server/pathExpansion";
 import { buildCodexAdditionalContext } from "../../provider/CodexDeveloperInstructions.ts";
@@ -729,6 +733,7 @@ export const buildCodexTurnStartParams = Effect.fn("CodexAdapterV2.buildCodexTur
     readonly codexInput: ReadonlyArray<CodexSchema.V2TurnStartParams__UserInput>;
     readonly runtimePolicy: ProviderAdapter.ProviderAdapterV2RuntimePolicy;
     readonly modelSelection: ModelSelection;
+    readonly modelCapabilities?: ModelCapabilities | null | undefined;
     readonly hasT3Mcp?: boolean;
     readonly browserToolsAvailable?: boolean;
     readonly deviceToolsAvailable?: boolean;
@@ -745,9 +750,10 @@ export const buildCodexTurnStartParams = Effect.fn("CodexAdapterV2.buildCodexTur
       input.runtimePolicy.sandboxPolicy === undefined
         ? runtimeModeDefaults.sandboxPolicy
         : yield* decodeTurnSandboxPolicy(input.runtimePolicy.sandboxPolicy);
-    const selectedEffort =
-      getModelSelectionStringOptionValue(input.modelSelection, "reasoningEffort") ??
-      codexDefaultReasoningEffortOverride(input.modelSelection.model);
+    const selectedEffort = getCodexReasoningEffortOptionValue(
+      input.modelSelection,
+      input.modelCapabilities,
+    );
     const effort =
       selectedEffort === undefined ? undefined : yield* decodeTurnReasoningEffort(selectedEffort);
     const serviceTier =
@@ -1551,7 +1557,7 @@ export type CodexAdapterV2DriverEnv =
 
 export const createCodexAdapterV2 = Effect.fn("CodexAdapterV2.createCodexAdapterV2")(function* (
   { instanceId, environment, enabled, config }: ProviderAdapterDriverCreateInput<CodexSettings>,
-  hooks: Pick<CodexAdapterV2Options, "onUsageLimits" | "resolveRuntime"> = {},
+  hooks: Pick<CodexAdapterV2Options, "onUsageLimits" | "resolveRuntime" | "getModels"> = {},
 ) {
   const clientFactory = yield* CodexAppServerClientFactory;
   const continuationRequests = yield* ProviderContinuationRequests.ProviderContinuationRequests;
@@ -1608,6 +1614,7 @@ export interface CodexAdapterV2Options {
   readonly environment: NodeJS.ProcessEnv;
   readonly clientFactory: CodexAppServerClientFactoryShape;
   readonly onUsageLimits?: ManagedServerProvider["applyUsageLimits"];
+  readonly getModels?: Effect.Effect<ReadonlyArray<ServerProviderModel>>;
   readonly resolveRuntime?: Effect.Effect<CodexEffectiveRuntime, ProviderSetupError, Scope.Scope>;
   readonly crypto: Crypto.Crypto;
   readonly fileSystem: FileSystem.FileSystem;
@@ -6251,11 +6258,16 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
           ) {
             const threadId = yield* getNativeThreadId(turnInput.providerThread);
             const mcpSession = yield* mcpSessions.read(turnInput.threadId);
+            const models =
+              adapterOptions.getModels === undefined ? undefined : yield* adapterOptions.getModels;
             const turnStartParams = yield* buildCodexTurnStartParams({
               nativeThreadId: threadId,
               codexInput,
               runtimePolicy: turnInput.runtimePolicy,
               modelSelection: turnInput.modelSelection,
+              modelCapabilities: models?.find(
+                (model) => model.slug === turnInput.modelSelection.model,
+              )?.capabilities,
               hasT3Mcp: mcpSession !== undefined,
               browserToolsAvailable: mcpSession?.browserToolsAvailable ?? true,
               deviceToolsAvailable: mcpSession?.capabilities?.has("device") ?? false,

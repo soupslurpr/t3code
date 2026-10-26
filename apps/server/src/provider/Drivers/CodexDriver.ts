@@ -184,7 +184,12 @@ export const CodexDriver: ProviderDriver<
         enabled,
         config,
       },
-      { onUsageLimits: (update) => snapshot.applyUsageLimits(update) },
+      {
+        onUsageLimits: (update) => snapshot.applyUsageLimits(update),
+        getModels: Effect.suspend(() => snapshot.getSnapshot).pipe(
+          Effect.map((value) => value.models),
+        ),
+      },
     ).pipe(
       Effect.mapError(
         (cause) =>

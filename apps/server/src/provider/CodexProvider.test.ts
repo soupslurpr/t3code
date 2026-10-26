@@ -2,6 +2,42 @@ import { assert, it } from "@effect/vitest";
 
 import { applyPreferredCodexDefaultModel, mapCodexModelCapabilities } from "./CodexProvider.ts";
 
+it.each(["gpt-6-astra", "openai.gpt-6-astra"])(
+  "defaults %s to Max only when the account supports it",
+  (model) => {
+    for (const supported of [
+      ["medium", "max"],
+      ["low", "high"],
+    ]) {
+      const capabilities = mapCodexModelCapabilities({
+        additionalSpeedTiers: [],
+        defaultReasoningEffort: supported[0]!,
+        description: "Account-specific Astra",
+        displayName: "Astra",
+        hidden: false,
+        id: model,
+        isDefault: true,
+        model,
+        supportedReasoningEfforts: supported.map((reasoningEffort) => ({
+          reasoningEffort,
+          description: reasoningEffort,
+        })),
+      });
+      const reasoning = capabilities.optionDescriptors?.find(
+        (descriptor) => descriptor.id === "reasoningEffort",
+      );
+      assert.equal(reasoning?.currentValue, supported.includes("max") ? "max" : "low");
+      assert.equal(reasoning?.type, "select");
+      if (reasoning?.type === "select") {
+        assert.deepEqual(
+          reasoning.options.map((option) => option.id),
+          supported,
+        );
+      }
+    }
+  },
+);
+
 it("maps current Codex model capability fields", () => {
   const capabilities = mapCodexModelCapabilities({
     additionalSpeedTiers: [],
