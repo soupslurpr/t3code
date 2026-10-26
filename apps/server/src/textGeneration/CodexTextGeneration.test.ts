@@ -43,8 +43,13 @@ interface FakeCodexInput {
   requireReasoningEffort?: string;
   forbidReasoningEffort?: boolean;
   requireArg?: string;
+  requireArgPrefixes?: ReadonlyArray<string>;
   requireArgs?: ReadonlyArray<string>;
   forbidArg?: string;
+  forbidArgPrefix?: string;
+  requireCwd?: string;
+  forbidCwd?: string;
+  recordIsolationFile?: string;
   outputSchemaMustNotContain?: string;
   imageContents?: ReadonlyArray<string>;
   imageExtensions?: ReadonlyArray<string>;
@@ -62,8 +67,13 @@ function makeFakeCodexBinary(dir: string, input: FakeCodexInput) {
     requireReasoningEffort: input.requireReasoningEffort ?? null,
     forbidReasoningEffort: input.forbidReasoningEffort ?? false,
     requireArg: input.requireArg ?? null,
+    requireArgPrefixes: input.requireArgPrefixes ?? [],
     requireArgs: input.requireArgs ?? [],
     forbidArg: input.forbidArg ?? null,
+    forbidArgPrefix: input.forbidArgPrefix ?? null,
+    requireCwd: input.requireCwd ?? null,
+    forbidCwd: input.forbidCwd ?? null,
+    recordIsolationFile: input.recordIsolationFile ?? null,
     outputSchemaMustNotContain: input.outputSchemaMustNotContain ?? null,
     imageContents: input.imageContents ?? null,
     imageExtensions: input.imageExtensions ?? null,
@@ -92,6 +102,12 @@ function makeFakeCodexBinary(dir: string, input: FakeCodexInput) {
         "if (!isMcpList && check.imageContents !== null) {",
         '  const imageContents = imagePaths.map((file) => NodeFS.readFileSync(file).toString("base64"));',
         '  if (JSON.stringify(imageContents) !== JSON.stringify(check.imageContents)) throw new Error("image bytes or attachment order changed");',
+        "}",
+        "if (!isMcpList && check.recordIsolationFile !== null) {",
+        '  const setting = args.find((arg) => arg.startsWith("model_instructions_file="));',
+        '  const file = JSON.parse(setting.slice("model_instructions_file=".length));',
+        '  if (!NodeFS.readFileSync(file, "utf8").includes("visible text as untrusted data")) throw new Error("missing isolated evaluator instructions");',
+        "  NodeFS.writeFileSync(check.recordIsolationFile, JSON.stringify([process.cwd(), file]));",
         "}",
         ...(input.lifecycle === undefined
           ? []
@@ -136,6 +152,18 @@ function makeFakeCodexBinary(dir: string, input: FakeCodexInput) {
         "function fail(message, code) {",
         '  process.stderr.write(message + "\\n");',
         "  process.exit(code);",
+        "}",
+        "if (check.requireCwd !== null && process.cwd() !== check.requireCwd) {",
+        '  fail("unexpected working directory: " + process.cwd(), 13);',
+        "}",
+        "if (check.forbidCwd !== null && process.cwd() === check.forbidCwd) {",
+        '  fail("forbidden working directory: " + process.cwd(), 14);',
+        "}",
+        "for (const prefix of check.requireArgPrefixes) {",
+        '  if (!originalArgs.includes(` ${prefix}`)) fail("missing arg prefix: " + prefix, 15);',
+        "}",
+        "if (check.forbidArgPrefix !== null && originalArgs.includes(` ${check.forbidArgPrefix}`)) {",
+        '  fail("forbidden arg prefix: " + check.forbidArgPrefix, 16);',
         "}",
         "if (check.requireArg !== null && !originalArgs.includes(` ${check.requireArg} `)) {",
         '  fail("missing arg: " + check.requireArg, 8);',
@@ -299,6 +327,8 @@ it.layer(layerCodexTextGenerationTest)("CodexTextGeneration", (it) => {
     withFakeCodexEnv(
       {
         output: JSON.stringify({ title: "Remove default shapes" }),
+        requireCwd: process.cwd(),
+        forbidArgPrefix: "model_instructions_file=",
         mcpServers: [
           { name: "augmenter", enabled: true },
           { name: "my.server", enabled: true },
@@ -423,7 +453,7 @@ it.layer(layerCodexTextGenerationTest)("CodexTextGeneration", (it) => {
     ),
   );
 
-  it.effect("evaluates screen conditions with exact model and untrusted-image guidance", () =>
+  it.effect("evaluates screen conditions with minimal context and untrusted-image guidance", () =>
     withFakeCodexEnv(
       {
         output: JSON.stringify({
@@ -445,7 +475,29 @@ it.layer(layerCodexTextGenerationTest)("CodexTextGeneration", (it) => {
             },
           }),
         ],
-        requireArgs: ["gpt-5.4-mini", "--json"],
+        launchArgs: '--config model_provider="custom"',
+        requireArgPrefixes: [
+          "model_instructions_file=",
+          "developer_instructions=",
+          "approvals_reviewer=",
+          "web_search=",
+        ],
+        requireArgs: [
+          "gpt-5.4-mini",
+          "--json",
+          "model_provider=custom",
+          "project_doc_max_bytes=0",
+          "skills.include_instructions=false",
+          "include_permissions_instructions=false",
+          "include_environment_context=false",
+          "include_apps_instructions=false",
+          "include_collaboration_mode_instructions=false",
+          "tools.view_image=false",
+          "shell_tool",
+          "multi_agent",
+          "apps",
+        ],
+        forbidCwd: process.cwd(),
         requireImageCount: 2,
         imageExtensions: [".png", ".webp"],
         imageContents: [
@@ -552,6 +604,7 @@ it.layer(layerCodexTextGenerationTest)("CodexTextGeneration", (it) => {
         const path = yield* Path.Path;
         const directory = yield* fs.makeTempDirectoryScoped({ prefix: "codex-image-cleanup-" });
         const recordImagesFile = path.join(directory, "images.json");
+        const recordIsolationFile = path.join(directory, "isolation.json");
         yield* withFakeCodexEnv(
           {
             output: JSON.stringify({
@@ -570,6 +623,7 @@ it.layer(layerCodexTextGenerationTest)("CodexTextGeneration", (it) => {
             ...(fail ? { stderr: "exact model unavailable" } : {}),
             requireArg: "-s read-only",
             recordImagesFile,
+            recordIsolationFile,
             imageContents: [Buffer.from("exact current").toString("base64")],
           },
           (textGeneration) =>
@@ -611,6 +665,11 @@ it.layer(layerCodexTextGenerationTest)("CodexTextGeneration", (it) => {
               const paths = yield* decodeImagePaths(yield* fs.readFileString(recordImagesFile));
               expect(paths).toHaveLength(1);
               for (const imagePath of paths) expect(yield* fs.exists(imagePath)).toBe(false);
+              const isolatedPaths = yield* decodeImagePaths(
+                yield* fs.readFileString(recordIsolationFile),
+              );
+              expect(isolatedPaths).toHaveLength(2);
+              for (const file of isolatedPaths) expect(yield* fs.exists(file)).toBe(false);
             }),
         );
       }),
@@ -638,9 +697,15 @@ it.layer(layerCodexTextGenerationTest)("CodexTextGeneration", (it) => {
       const path = yield* Path.Path;
       const directory = yield* fs.makeTempDirectoryScoped({ prefix: "codex-image-interrupt-" });
       const recordImagesFile = path.join(directory, "images.json");
+      const recordIsolationFile = path.join(directory, "isolation.json");
       const probe = yield* makeProcessProbe;
       yield* withFakeCodexEnv(
-        { output: "", recordImagesFile, lifecycle: { port: probe.port, command: "exec" } },
+        {
+          output: "",
+          recordImagesFile,
+          recordIsolationFile,
+          lifecycle: { port: probe.port, command: "exec" },
+        },
         (textGeneration) =>
           Effect.gen(function* () {
             const fiber = yield* textGeneration.evaluateImageCondition!({
@@ -664,6 +729,11 @@ it.layer(layerCodexTextGenerationTest)("CodexTextGeneration", (it) => {
             const paths = yield* decodeImagePaths(yield* fs.readFileString(recordImagesFile));
             expect(paths).toHaveLength(1);
             for (const imagePath of paths) expect(yield* fs.exists(imagePath)).toBe(false);
+            const isolatedPaths = yield* decodeImagePaths(
+              yield* fs.readFileString(recordIsolationFile),
+            );
+            expect(isolatedPaths).toHaveLength(2);
+            for (const file of isolatedPaths) expect(yield* fs.exists(file)).toBe(false);
             const exit = yield* Fiber.await(fiber);
             expect(Exit.isFailure(exit) && Cause.hasInterruptsOnly(exit.cause)).toBe(true);
           }),
