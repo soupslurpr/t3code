@@ -244,6 +244,7 @@ export const makeManagedCodexProvider = Effect.fn("makeManagedCodexProvider")(fu
   // already wraps openSession in withAccess, so resolve without re-entering it.
   const orchestrationAdapter = yield* createCodexAdapterV2(input, {
     onUsageLimits: (update) => snapshot.applyUsageLimits(update),
+    getModels: snapshot.getSnapshot.pipe(Effect.map((value) => value.models)),
     resolveRuntime: runtime.resolve,
   }).pipe(
     Effect.mapError(

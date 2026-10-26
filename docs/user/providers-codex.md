@@ -25,6 +25,10 @@ T3 Code can use your installed Codex and its existing login. Run `codex login`
 on the environment's machine to sign in. [Provider setup](./install.md#providers)
 covers installation and custom configuration.
 
+Astra uses Max reasoning by default when the account supports it. Explicit
+project, thread, and saved composer choices take precedence. If the account's
+reasoning choices exclude Max, its supported default is used instead.
+
 ## Use multiple accounts
 
 Add another ChatGPT account in **Settings → Providers**, then select the account
