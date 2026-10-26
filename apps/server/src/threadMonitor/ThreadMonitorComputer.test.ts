@@ -7,6 +7,7 @@ import {
   ProviderDriverKind,
   ProviderInstanceId,
   ThreadMonitorId,
+  TextGenerationError,
   PreviewAutomationNoAvailableHostError,
   type ComputerAutomationSnapshot,
   type ThreadMonitor,
@@ -17,6 +18,9 @@ import type { ImageConditionEvaluationInput } from "@t3tools/provider-core/serve
 import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
+import * as FileSystem from "effect/FileSystem";
+import * as Path from "effect/Path";
+import * as Sqlite from "../persistence/Sqlite.ts";
 import * as Fiber from "effect/Fiber";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
@@ -154,7 +158,12 @@ const harness = Effect.fn("ComputerWatchTest.harness")(function* (
         Effect.suspend(() => {
           evaluations.push(input);
           return state.evaluatorFails
-            ? Effect.die("unexpected evaluator invocation")
+            ? Effect.fail(
+                new TextGenerationError({
+                  operation: "evaluateImageCondition",
+                  detail: "Evaluation failed",
+                }),
+              )
             : Effect.succeed({
                 verdict: state.verdict,
                 summary: " Result ",
@@ -588,4 +597,132 @@ it.effect("releases an active watch after V2 deletion removes its owner", () =>
     assert.equal(h.calls.at(-1)?.operation, "computerRelease");
     assert.equal(h.calls.at(-1)?.scope.thread.providerSessionId, `thread-monitor:${monitor.id}`);
   }).pipe(Effect.provide(Layer.merge(Testkit.layer, NodeServices.layer))),
+);
+
+it.effect(
+  "coalesces the latest sample across a database close and reopen without exceeding the model budget",
+  () =>
+    Effect.gen(function* () {
+      const h = yield* harness();
+      const directory = yield* (yield* FileSystem.FileSystem).makeTempDirectoryScoped({
+        prefix: "computer-throttle-restart-",
+      });
+      const filename = (yield* Path.Path).join(directory, "statev2.sqlite");
+      const databaseLayer = () =>
+        Testkit.layerForDatabase(
+          Sqlite.layerFromPath(filename).pipe(Layer.provide(NodeServices.layer)),
+        );
+      const pending = yield* Effect.gen(function* () {
+        yield* Testkit.seedThread();
+        const service = yield* ThreadMonitorService.make.pipe(
+          Effect.provideService(ThreadMonitorComputerService, h.service),
+        );
+        const monitor = yield* service.createComputer({
+          threadId: Testkit.threadId,
+          monitor: {
+            ...modelWatch,
+            sampling: { intervalMs: 1_000, minEvaluationIntervalMs: 60_000 },
+          },
+        });
+        h.state.pixels = "first change";
+        yield* TestClock.adjust(1_000);
+        yield* service.checkNow({ threadId: Testkit.threadId, check: { monitorId: monitor.id } });
+        assert.equal(h.evaluations.length, 1);
+        h.state.pixels = "pending change";
+        yield* TestClock.adjust(1_000);
+        const current = (yield* service.checkNow({
+          threadId: Testkit.threadId,
+          check: { monitorId: monitor.id },
+        })).monitors[0]!;
+        assert.equal(
+          current.condition.type === "computer" && current.condition.evaluationPending,
+          true,
+        );
+        assert.equal(h.evaluations.length, 1);
+        return current;
+      }).pipe(Effect.provide(databaseLayer()));
+      yield* Effect.gen(function* () {
+        const repository = yield* Repository.ThreadMonitorRepository;
+        assert.deepEqual(Option.getOrThrow(yield* repository.getById(pending.id)), pending);
+        const service = yield* ThreadMonitorService.make.pipe(
+          Effect.provideService(ThreadMonitorComputerService, h.service),
+        );
+        yield* TestClock.adjust(58_000);
+        h.state.pixels = "latest change";
+        yield* service.checkNow({ threadId: Testkit.threadId, check: { monitorId: pending.id } });
+        assert.equal(h.evaluations.length, 1);
+        yield* TestClock.adjust(1_000);
+        const result = (yield* service.checkNow({
+          threadId: Testkit.threadId,
+          check: { monitorId: pending.id },
+        })).monitors[0]!;
+        assert.equal(h.evaluations.length, 2);
+        assert.equal(h.evaluations[1]?.currentPngBase64, png("latest change"));
+        assert.equal(
+          result.condition.type === "computer" && result.condition.evaluationPending,
+          false,
+        );
+        assert.equal(result.condition.type === "computer" && result.condition.evaluationCount, 2);
+        assert.equal(
+          result.condition.type === "computer" && result.condition.unchangedSampleCount,
+          1,
+        );
+      }).pipe(Effect.provide(databaseLayer()));
+    }).pipe(Effect.provide(NodeServices.layer)),
+);
+
+it.effect(
+  "keeps evaluator failures behind the persisted throttle while capture recovery uses capture cadence",
+  () =>
+    Effect.gen(function* () {
+      yield* Testkit.seedThread();
+      const h = yield* harness();
+      const service = yield* ThreadMonitorService.make.pipe(
+        Effect.provideService(ThreadMonitorComputerService, h.service),
+      );
+      const monitor = yield* service.createComputer({
+        threadId: Testkit.threadId,
+        monitor: {
+          ...modelWatch,
+          sampling: { intervalMs: 1_000, minEvaluationIntervalMs: 60_000 },
+        },
+      });
+      h.state.pixels = "change";
+      h.state.evaluatorFails = true;
+      yield* TestClock.adjust(1_000);
+      const failed = (yield* service.checkNow({
+        threadId: Testkit.threadId,
+        check: { monitorId: monitor.id },
+      })).monitors[0]!;
+      assert.equal(
+        failed.condition.type === "computer" && failed.condition.nextCheckAt,
+        "1970-01-01T00:01:01.000Z",
+      );
+      assert.equal(h.evaluations.length, 1);
+      h.state.evaluatorFails = false;
+      yield* TestClock.adjust(59_000);
+      yield* service.checkNow({ threadId: Testkit.threadId, check: { monitorId: monitor.id } });
+      assert.equal(h.evaluations.length, 1);
+      yield* TestClock.adjust(1_000);
+      const restored = (yield* service.checkNow({
+        threadId: Testkit.threadId,
+        check: { monitorId: monitor.id },
+      })).monitors[0]!;
+      assert.equal(h.evaluations.length, 2);
+      assert.equal(
+        restored.condition.type === "computer" && restored.condition.consecutiveFailures,
+        0,
+      );
+      h.state.captureFails = true;
+      yield* TestClock.adjust(1_000);
+      const captureFailed = (yield* service.checkNow({
+        threadId: Testkit.threadId,
+        check: { monitorId: monitor.id },
+      })).monitors[0]!;
+      assert.equal(
+        captureFailed.condition.type === "computer" && captureFailed.condition.nextCheckAt,
+        "1970-01-01T00:01:03.000Z",
+      );
+      assert.equal(h.evaluations.length, 2);
+    }).pipe(Effect.provide(Layer.merge(Testkit.layer, NodeServices.layer))),
 );

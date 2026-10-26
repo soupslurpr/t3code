@@ -36,6 +36,7 @@ import { ThreadMonitorRepository } from "../persistence/ThreadMonitors.ts";
 import { forkParked } from "../serverActivation.ts";
 import { ThreadMonitorService, type ThreadMonitorServiceShape } from "./ThreadMonitorService.ts";
 
+import { resolveComputerMonitorRetryDelay } from "./ThreadMonitorComputerPolicy.ts";
 import { ThreadMonitorComputerService } from "./ThreadMonitorComputerService.ts";
 
 const DELIVERY_SETTLE_MS = 750;
@@ -207,14 +208,18 @@ export const make = Effect.gen(function* () {
   const computerFailureCondition = (
     condition: ThreadMonitorComputerCondition,
     failedAt: string,
+    operation: string,
     detail: string,
   ): ThreadMonitorComputerCondition => {
     const failureCount = condition.consecutiveFailures + 1;
-    const retryDelay = Math.min(
-      DELIVERY_RETRY_MAX_MS,
-      Math.max(condition.sampling.intervalMs, BLOCKED_DELIVERY_RETRY_MS) *
-        2 ** Math.min(8, condition.consecutiveFailures),
-    );
+    const retryDelay = resolveComputerMonitorRetryDelay({
+      sampleIntervalMs: condition.sampling.intervalMs,
+      minEvaluationIntervalMs:
+        condition.match.type === "model" && operation === "computer-watch-evaluate"
+          ? condition.sampling.minEvaluationIntervalMs
+          : null,
+      consecutiveFailures: condition.consecutiveFailures,
+    });
     return {
       ...condition,
       nextCheckAt: DateTime.formatIso(DateTime.makeUnsafe(Date.parse(failedAt) + retryDelay)),
@@ -486,7 +491,12 @@ export const make = Effect.gen(function* () {
     if (Result.isFailure(checked)) {
       const failed: ThreadMonitor = {
         ...monitor,
-        condition: computerFailureCondition(monitor.condition, checkedAt, checked.failure.detail),
+        condition: computerFailureCondition(
+          monitor.condition,
+          checkedAt,
+          checked.failure.operation,
+          checked.failure.detail,
+        ),
         updatedAt: checkedAt,
       };
       yield* writeMonitor(failed);

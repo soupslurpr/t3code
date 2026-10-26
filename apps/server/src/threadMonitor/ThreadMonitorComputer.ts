@@ -29,6 +29,7 @@ import {
   ThreadMonitorComputerService,
   type ThreadMonitorComputerServiceShape,
 } from "./ThreadMonitorComputerService.ts";
+import { resolveModelEvaluation } from "./ThreadMonitorComputerPolicy.ts";
 
 const REQUEST_VIEW_TIMEOUT_MS = 120_000;
 const SNAPSHOT_TIMEOUT_MS = 30_000;
@@ -225,6 +226,7 @@ export const make = Effect.gen(function* () {
         });
         const sampling = {
           intervalMs: input.watch.sampling?.intervalMs ?? DEFAULT_INTERVAL_MS,
+          minEvaluationIntervalMs: input.watch.sampling?.minEvaluationIntervalMs ?? null,
           maxWidth: input.watch.sampling?.maxWidth ?? DEFAULT_MAX_IMAGE_DIMENSION,
           maxHeight: input.watch.sampling?.maxHeight ?? DEFAULT_MAX_IMAGE_DIMENSION,
           evaluateOnlyAfterChange: input.watch.sampling?.evaluateOnlyAfterChange ?? true,
@@ -267,6 +269,7 @@ export const make = Effect.gen(function* () {
           baselineStored: retainBaseline,
           lastCheckedAt: null,
           lastEvaluatedAt: null,
+          evaluationPending: false,
           lastVerdict: null,
           lastSummary: null,
           lastUsage: null,
@@ -382,9 +385,21 @@ export const make = Effect.gen(function* () {
         };
       }
 
-      if (unchanged && condition.sampling.evaluateOnlyAfterChange) {
-        return { condition: sampled, match: null };
-      }
+      const evaluation = resolveModelEvaluation({
+        changed: !unchanged,
+        evaluationPending: condition.evaluationPending,
+        evaluateOnlyAfterChange: condition.sampling.evaluateOnlyAfterChange,
+        minEvaluationIntervalMs: condition.sampling.minEvaluationIntervalMs,
+        lastEvaluatedAtMs:
+          condition.lastEvaluatedAt === null ? null : Date.parse(condition.lastEvaluatedAt),
+        checkedAtMs: Date.parse(checkedAt),
+      });
+      const scheduled: ThreadMonitorComputerCondition = {
+        ...sampled,
+        evaluationPending: evaluation.evaluationPending,
+      };
+      if (!evaluation.evaluate) return { condition: scheduled, match: null };
+
       const instance = yield* registry.getInstance(condition.match.modelSelection.instanceId);
       const evaluator = instance?.textGeneration.evaluateImageCondition;
       if (instance === undefined || !instance.enabled || evaluator === undefined) {
@@ -415,12 +430,19 @@ export const make = Effect.gen(function* () {
         currentPngBase64: screenshot.data,
         ...(baselinePngBase64 === undefined ? {} : { baselinePngBase64 }),
         modelSelection: condition.match.modelSelection,
-      });
+      }).pipe(
+        Effect.mapError((cause) =>
+          isThreadMonitorError(cause)
+            ? cause
+            : watchError("computer-watch-evaluate", boundedDetail(cause)),
+        ),
+      );
       const summary = result.summary.trim().slice(0, 2_000) || "The evaluator returned no summary.";
       const evidence = result.evidence.trim().slice(0, 4_000);
       const evaluated: ThreadMonitorComputerCondition = {
-        ...sampled,
+        ...scheduled,
         lastEvaluatedAt: checkedAt,
+        evaluationPending: false,
         lastVerdict: result.verdict,
         lastSummary: summary,
         lastUsage: result.usage,

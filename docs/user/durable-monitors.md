@@ -39,6 +39,12 @@ For a semantic condition, the agent selects an exact configured provider
 instance and model. T3 Code does not silently substitute a cheaper or different
 model. It normally skips evaluation while the crop is byte-for-byte unchanged;
 the agent can disable that gate when periodic interpretation is more useful.
+The agent can also set a minimum interval between model evaluations independently
+of the capture interval. Changes during that interval remain pending and
+coalesce into one evaluation of the latest sample. Omitting the minimum keeps
+evaluation unthrottled. A throttled watch can miss a condition that appears and
+disappears before the next evaluation, so transient conditions need a short or
+omitted minimum.
 Evaluator availability, token reporting, and explicit prompt-cache refresh are
 adapter capabilities. T3 Code reports unsupported capabilities instead of
 creating synthetic keepalive turns or hidden conversation messages.
