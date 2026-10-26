@@ -167,9 +167,17 @@ export const adoptForkMigrationHistory = Effect.fn("adoptForkMigrationHistory")(
         name: string;
       }>`PRAGMA table_info(thread_monitor_computer_evidence)`;
       if (
-        !["monitor_id", "baseline_png_base64", "terminal_png_base64"].every((name) =>
-          evidence.some((column) => column.name === name),
-        )
+        !(
+          Math.max(fork.length, legacy.length) >= 5
+            ? [
+                "monitor_id",
+                "baseline_images_json",
+                "previous_images_json",
+                "current_images_json",
+                "terminal_images_json",
+              ]
+            : ["monitor_id", "baseline_png_base64", "terminal_png_base64"]
+        ).every((name) => evidence.some((column) => column.name === name))
       ) {
         return yield* invalidHistory(
           "ComputerThreadMonitors identity conflicts with its evidence schema",
@@ -190,6 +198,25 @@ export const adoptForkMigrationHistory = Effect.fn("adoptForkMigrationHistory")(
     if (invalid.length > 0)
       return yield* invalidHistory(
         "ComputerMonitorEvaluationThrottle identity conflicts with its condition schema",
+      );
+  }
+
+  if (Math.max(fork.length, legacy.length) >= 5) {
+    const invalid = yield* sql`SELECT monitor_id FROM thread_monitors
+      WHERE condition_type = 'computer' AND CASE WHEN json_valid(condition_json) THEN
+        COALESCE(json_type(condition_json, '$.revision') != 'integer' OR json_extract(condition_json, '$.revision') < 1, 1)
+        OR COALESCE(json_type(condition_json, '$.observation.regions') != 'array' OR json_array_length(condition_json, '$.observation.regions') = 0, 1)
+        OR COALESCE(json_type(condition_json, '$.review') != 'object', 1)
+      ELSE 1 END LIMIT 1`;
+    const invalidEvidence = yield* sql`SELECT monitor_id FROM thread_monitor_computer_evidence
+      WHERE CASE WHEN json_valid(baseline_images_json) AND json_valid(previous_images_json)
+        AND json_valid(current_images_json) AND json_valid(terminal_images_json)
+      THEN json_type(baseline_images_json) != 'array' OR json_type(previous_images_json) != 'array'
+        OR json_type(current_images_json) != 'array' OR json_type(terminal_images_json) != 'array'
+      ELSE 1 END LIMIT 1`;
+    if (invalid.length > 0 || invalidEvidence.length > 0)
+      return yield* invalidHistory(
+        "AdaptiveComputerMonitors identity conflicts with its revision/evidence schema",
       );
   }
 

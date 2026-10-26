@@ -84,6 +84,13 @@ or after an action batch so the starting state and resulting transition remain v
 are returned only to that tool call under the existing view permission and are not saved as a video.
 A separately retained recording remains a distinct, intentional operation.
 
+For longer waits, ask your agent to watch the relevant screen regions. It can sample a small trigger
+region frequently and capture wider context only when a change needs evaluation. You can ask it to
+set a deadline or a review checkpoint, inspect the retained evidence, revise the watch, or cancel it.
+The selected evaluator reports visible facts; the agent that owns the task chooses the strategy.
+Reviews leave the watch active. Each revision replaces its baselines and clears its metrics, while a
+stale update is rejected. Retained evidence is bounded and is not a continuous recording.
+
 Desktop screenshots can contain information from any visible application. They become part of the
 agent's tool context, so close or hide sensitive windows before allowing computer use. This matters
 especially when you control an agent remotely: approval grants control of the machine running the
@@ -145,7 +152,7 @@ The desktop host exposes tools for:
 - running bounded action batches that can move, click, drag, emit discrete wheel ticks, type, press
   hotkeys or hold keys, wait for a duration or a visual change, and activate a current semantic
   target or window
-- leaving a durable, view-only screen-region watch that checks for an exact image change or asks an
+- leaving a durable, view-only multi-region watch that checks for an exact image change or asks an
   explicitly selected capable model whether a visible condition has been met
 - releasing the active session or forgetting remembered consent
 

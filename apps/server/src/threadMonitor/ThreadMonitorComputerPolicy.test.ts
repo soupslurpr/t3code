@@ -2,6 +2,7 @@ import { describe, expect, it } from "vite-plus/test";
 
 import {
   resolveComputerMonitorRetryDelay,
+  resolveControllerReview,
   resolveModelEvaluation,
 } from "./ThreadMonitorComputerPolicy.ts";
 
@@ -88,5 +89,37 @@ describe("resolveComputerMonitorRetryDelay", () => {
         consecutiveFailures: 2,
       }),
     ).toBe(20_000);
+  });
+});
+
+describe("resolveControllerReview", () => {
+  const reviewInput = {
+    policy: {
+      afterEvaluations: 10,
+      consecutiveUncertain: 3,
+      consecutiveFailures: 2,
+      at: null,
+    },
+    state: "idle" as const,
+    evaluationCount: 0,
+    consecutiveUncertain: 0,
+    consecutiveFailures: 0,
+    nowMs: 0,
+  };
+
+  it("requests a factual checkpoint when a configured threshold is reached", () => {
+    expect(resolveControllerReview({ ...reviewInput, consecutiveUncertain: 3 })).toContain(
+      "uncertain",
+    );
+  });
+
+  it("never repeats a checkpoint within the same revision", () => {
+    expect(
+      resolveControllerReview({
+        ...reviewInput,
+        state: "delivered",
+        evaluationCount: 100,
+      }),
+    ).toBeNull();
   });
 });

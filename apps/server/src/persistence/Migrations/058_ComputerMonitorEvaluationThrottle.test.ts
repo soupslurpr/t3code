@@ -1,5 +1,4 @@
 import { assert, it } from "@effect/vitest";
-import { ThreadMonitorComputerCondition } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
 import * as Schema from "effect/Schema";
@@ -8,9 +7,23 @@ import * as SqlClient from "effect/sql/SqlClient";
 import { runMigrations } from "../Migrations.ts";
 import * as NodeSqliteClient from "@t3tools/shared/nodeSqliteClient";
 
+const decodeLegacyObject = Schema.decodeSync(
+  Schema.fromJsonString(Schema.Record(Schema.String, Schema.Unknown)),
+);
 const encodeLegacyCondition = Schema.encodeUnknownSync(Schema.fromJsonString(Schema.Unknown));
 const decodeMigratedCondition = Schema.decodeUnknownSync(
-  Schema.fromJsonString(ThreadMonitorComputerCondition),
+  Schema.fromJsonString(
+    Schema.Struct({
+      sampling: Schema.Struct({
+        intervalMs: Schema.Number,
+        maxWidth: Schema.Number,
+        maxHeight: Schema.Number,
+        evaluateOnlyAfterChange: Schema.Boolean,
+        minEvaluationIntervalMs: Schema.NullOr(Schema.Number),
+      }),
+      evaluationPending: Schema.Boolean,
+    }),
+  ),
 );
 
 it.effect.each([false, true])(
@@ -107,7 +120,7 @@ it.effect.each([false, true])(
         [{ baseline_png_base64: "preserved-baseline", terminal_png_base64: "preserved-terminal" }],
       );
       const updated = {
-        ...condition,
+        ...decodeLegacyObject(legacyCondition),
         sampling: { ...condition.sampling, minEvaluationIntervalMs: 60_000 },
         evaluationPending: true,
         lastEvaluatedAt: "2026-08-14T00:00:50.000Z",

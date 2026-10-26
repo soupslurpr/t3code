@@ -13,6 +13,7 @@ import * as SqlClient from "effect/sql/SqlClient";
 import { runMigrations } from "../Migrations.ts";
 import OrchestrationV2 from "./055_OrchestrationV2.ts";
 import ThreadMonitors from "./055_ThreadMonitors.ts";
+import AdaptiveComputerMonitors from "./059_AdaptiveComputerMonitors.ts";
 import EvaluationThrottle from "./058_ComputerMonitorEvaluationThrottle.ts";
 import ComputerThreadMonitors from "./057_ComputerThreadMonitors.ts";
 import ThreadMonitorDelivery from "./056_ThreadMonitorDelivery.ts";
@@ -52,6 +53,7 @@ const seedLegacy = Effect.fn("ForkMigrationTest.seedLegacy")(function* (
   if (count >= 2) yield* ThreadMonitorDelivery;
   if (count >= 3) yield* ComputerThreadMonitors;
   if (count >= 4) yield* EvaluationThrottle;
+  if (count >= 5) yield* AdaptiveComputerMonitors;
   yield* sql`INSERT INTO thread_monitors (monitor_id, thread_id, label, condition_type,
     continuation_mode, status, created_at, updated_at)
     VALUES ('preserved', 'thread', 'Preserved signal', 'signal', 'record-only', 'active', ${createdAt}, ${createdAt})`;
@@ -99,7 +101,7 @@ describe("fork migration ledger adoption", () => {
     Effect.gen(function* () {
       const sql = yield* SqlClient.SqlClient;
       const executed = yield* runMigrations();
-      assert.deepEqual(executed.at(-1), [4, "ComputerMonitorEvaluationThrottle"]);
+      assert.deepEqual(executed.at(-1), [5, "AdaptiveComputerMonitors"]);
       yield* assertCurrentUpstream;
       assert.deepEqual(
         (yield* forkHistory).map(({ migration_id, name }) => ({ migration_id, name })),
@@ -108,6 +110,7 @@ describe("fork migration ledger adoption", () => {
           { migration_id: 2, name: "ThreadMonitorDelivery" },
           { migration_id: 3, name: "ComputerThreadMonitors" },
           { migration_id: 4, name: "ComputerMonitorEvaluationThrottle" },
+          { migration_id: 5, name: "AdaptiveComputerMonitors" },
         ],
       );
       assert.deepEqual(yield* runMigrations(), []);
@@ -220,7 +223,7 @@ describe("fork migration ledger adoption", () => {
           assert.deepEqual(yield* forkHistory, beforeFork);
         } else {
           yield* assertCurrentUpstream;
-          assert.lengthOf(yield* forkHistory, 4);
+          assert.lengthOf(yield* forkHistory, 5);
         }
       }).pipe(Effect.provide(memory)),
   );
@@ -328,7 +331,7 @@ describe("fork migration ledger adoption", () => {
               NodeEvents.EventEmitter.once(second, "message"),
             ]);
             first.postMessage("release", []);
-            assert.deepEqual(await completed, [[73], [0]]);
+            assert.deepEqual(await completed, [[74], [0]]);
           } finally {
             await Promise.all([first.terminate(), second.terminate()]);
           }

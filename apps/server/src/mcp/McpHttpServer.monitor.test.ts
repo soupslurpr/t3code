@@ -220,3 +220,103 @@ it.effect(
       assert.isTrue((yield* call("monitor_signal", input)).isError);
     }).pipe(Effect.provide(layer)),
 );
+
+it.effect(
+  "returns ordered watch evidence without embedding pixels in metadata and guards inspect/update callers",
+  () =>
+    Effect.gen(function* () {
+      yield* MonitorTestkit.seedThread();
+      const service = yield* ThreadMonitorService;
+      const monitor = yield* service.create({
+        threadId: MonitorTestkit.threadId,
+        monitor: { label: "Image transport", schedule: { type: "signal" } },
+      });
+      yield* (yield* OrchestratorV2).dispatch({
+        type: "message.dispatch",
+        commandId: CommandId.make("image-active"),
+        threadId: MonitorTestkit.threadId,
+        messageId: MessageId.make("image-active"),
+        text: "Inspect",
+        attachments: [],
+        createdBy: "user",
+        creationSource: "web",
+        dispatchMode: { type: "queue_after_active" },
+      });
+      let inspected = 0;
+      const imageRegistration = McpHttpServer.MonitorToolkitRegistrationLive.pipe(
+        Layer.provide(
+          Layer.succeed(ThreadMonitorService, {
+            ...service,
+            inspectComputer: () =>
+              Effect.sync(() => {
+                inspected += 1;
+                return {
+                  monitor,
+                  revision: 3,
+                  images: ["baseline", "fresh"].map((kind, index) => ({
+                    id: `${kind}:screen`,
+                    kind: kind as "baseline" | "fresh",
+                    regionId: "screen",
+                    capturedAt: "1970-01-01T00:00:00.000Z",
+                    hash: `hash-${index}`,
+                    width: 100,
+                    height: 50,
+                    frameIndex: index === 0 ? null : 0,
+                    elapsedMs: index === 0 ? null : 0,
+                    pngBase64: Buffer.from(`exact pixels ${index}`).toString("base64"),
+                  })),
+                };
+              }),
+          }),
+        ),
+        Layer.provideMerge(McpServer.McpServer.layer),
+      );
+      yield* Effect.gen(function* () {
+        const scope = { ...invocation, capabilities: new Set(["preview" as const]) };
+        const input = { monitorId: monitor.id };
+        for (const invalid of [
+          invocation,
+          { ...scope, thread: undefined },
+          {
+            ...scope,
+            client: { sessionId: "reader", label: "Read only", access: "read-only" as const },
+          },
+        ]) {
+          assert.isTrue((yield* call("computer_watch_inspect", input, invalid)).isError);
+          assert.isTrue(
+            (yield* call(
+              "computer_watch_update",
+              { ...input, expectedRevision: 1, acknowledgeReview: true },
+              invalid,
+            )).isError,
+          );
+        }
+        assert.equal(inspected, 0);
+        const result = yield* call("computer_watch_inspect", input, scope);
+        assert.isFalse(result.isError);
+        assert.equal(inspected, 1);
+        const images = result.content.filter((item) => item.type === "image");
+        assert.deepEqual(
+          images.map((item) => Buffer.from(item.data).toString()),
+          ["exact pixels 0", "exact pixels 1"],
+        );
+        assert.deepEqual(
+          images.map((item) => item._meta?.["t3/computerWatchImageKind"]),
+          ["baseline", "fresh"],
+        );
+        assert.equal(images[1]?._meta?.["t3/temporalFrameIndex"], 0);
+        assert.notInclude(JSON.stringify(result.structuredContent), "pngBase64");
+        assert.notInclude(
+          JSON.stringify(result.content.filter((item) => item.type === "text")),
+          Buffer.from("exact pixels 0").toString("base64"),
+        );
+        const failure = yield* call(
+          "computer_watch_update",
+          { ...input, expectedRevision: 1, acknowledgeReview: true },
+          scope,
+        );
+        assert.isTrue(failure.isError);
+        assert.include(JSON.stringify(failure), "is not a computer watch");
+      }).pipe(Effect.provide(imageRegistration));
+    }).pipe(Effect.provide(MonitorTestkit.layer)),
+);

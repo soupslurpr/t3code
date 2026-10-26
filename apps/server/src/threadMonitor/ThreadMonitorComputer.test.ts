@@ -2,6 +2,8 @@ import { assert, describe, it } from "@effect/vitest";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import {
   CommandId,
+  MessageId,
+  ThreadId,
   EnvironmentId,
   ProjectId,
   ProviderDriverKind,
@@ -12,6 +14,7 @@ import {
   type ComputerAutomationSnapshot,
   type ThreadMonitor,
   type ThreadMonitorComputerStartInput,
+  type ThreadMonitorComputerEvidenceImage,
 } from "@t3tools/contracts";
 import type { ProviderInstance } from "@t3tools/provider-core/server/driver";
 import type { ImageConditionEvaluationInput } from "@t3tools/provider-core/server/textGeneration";
@@ -38,6 +41,7 @@ import * as Registry from "../provider/ProviderInstanceRegistry.ts";
 import * as Repository from "../persistence/ThreadMonitors.ts";
 import { ServerActivation } from "../serverActivation.ts";
 import { OrchestratorV2 } from "../orchestration-v2/Orchestrator.ts";
+import { ProjectionStoreV2 } from "../orchestration-v2/ProjectionStore.ts";
 import * as Computer from "./ThreadMonitorComputer.ts";
 import { ThreadMonitorComputerService } from "./ThreadMonitorComputerService.ts";
 import * as ThreadMonitorService from "./ThreadMonitor.ts";
@@ -93,11 +97,30 @@ const makeMonitor = (condition: ThreadMonitor["condition"]): ThreadMonitor => ({
 const modelWatch: ThreadMonitorComputerStartInput = {
   label: "Visible completion",
   desktop: { kind: "agent", desktopId: "specific-desktop" },
-  region: { frameId: "current-frame", x: 0, y: 0, width: 200, height: 100 },
+  observation: {
+    regions: [
+      {
+        id: "screen",
+        role: "trigger",
+        region: { frameId: "current-frame", x: 0, y: 0, width: 200, height: 100 },
+        maxWidth: 200,
+        maxHeight: 100,
+      },
+    ],
+  },
   match: { type: "model", criterion: "The task is complete.", modelSelection, baseline: "initial" },
-  sampling: { intervalMs: 1_000, maxWidth: 200, maxHeight: 100 },
+  sampling: { intervalMs: 1_000 },
   continuation: "record-only",
 };
+
+const retainedEvidence = (
+  baselineImages: ReadonlyArray<ThreadMonitorComputerEvidenceImage> = [],
+) => ({
+  baselineImages,
+  previousImages: [],
+  currentImages: [],
+  terminalImages: [],
+});
 
 const harness = Effect.fn("ComputerWatchTest.harness")(function* (
   requestView?: Effect.Effect<void>,
@@ -113,6 +136,12 @@ const harness = Effect.fn("ComputerWatchTest.harness")(function* (
     evaluatorFails: false,
     verdict: "not-matched" as "matched" | "not-matched" | "uncertain",
     ownerExists: true,
+    snapshotFor: undefined as ((input: unknown) => ComputerAutomationSnapshot) | undefined,
+    usage: { inputTokens: null, cachedInputTokens: null, outputTokens: null } as {
+      inputTokens: number | null;
+      cachedInputTokens: number | null;
+      outputTokens: number | null;
+    },
   };
   const instance = {
     instanceId,
@@ -169,7 +198,7 @@ const harness = Effect.fn("ComputerWatchTest.harness")(function* (
                 summary: " Result ",
                 visibleFacts: ["Visible evidence"],
                 evidence: [{ imageId: "screen", description: "Visible evidence" }],
-                usage: { inputTokens: null, cachedInputTokens: null, outputTokens: null },
+                usage: state.usage,
               });
         }),
     },
@@ -229,7 +258,11 @@ const harness = Effect.fn("ComputerWatchTest.harness")(function* (
                   environmentId: input.scope.environmentId,
                   ...input.scope.thread,
                 });
-              return (input.operation === "computerSnapshot" ? snapshot(state.pixels) : {}) as A;
+              return (
+                input.operation === "computerSnapshot"
+                  ? (state.snapshotFor?.(input.input) ?? snapshot(state.pixels))
+                  : {}
+              ) as A;
             }),
         }),
       ),
@@ -253,7 +286,7 @@ describe("durable computer adapter", () => {
       Effect.gen(function* () {
         const h = yield* harness();
         const prepared = yield* h.prepare();
-        assert.deepEqual(prepared.condition.region, {
+        assert.deepEqual(prepared.condition.observation.regions[0]?.region, {
           coordinateSpace: "desktop-logical",
           displayId: "left",
           x: -201,
@@ -261,27 +294,27 @@ describe("durable computer adapter", () => {
           width: 101,
           height: 51,
         });
-        assert.equal(prepared.baselinePngBase64, png("initial"));
+        assert.equal(prepared.baselineImages[0]?.pngBase64, png("initial"));
         assert.equal(h.calls[0]?.scope.thread.providerSessionId, "thread-monitor:watch");
         assert.equal(h.calls[0]?.scope.thread.threadId, Testkit.threadId);
         assert.equal(h.calls[0]?.scope.requestNamespace, "thread-monitor:watch");
         assert.deepEqual(h.calls[0]?.input, { desktop: modelWatch.desktop, observation: false });
         const unchanged = yield* h.service.check({
           monitor: makeMonitor(prepared.condition),
-          baselinePngBase64: prepared.baselinePngBase64,
+          evidence: retainedEvidence(prepared.baselineImages),
           checkedAt: createdAt,
         });
         assert.equal(h.evaluations.length, 0);
-        assert.equal(unchanged.condition.unchangedSampleCount, 1);
+        assert.equal(unchanged.condition.observation.regions[0]?.unchangedSampleCount, 1);
         assert.isNull(unchanged.match);
         h.state.pixels = "changed";
         h.state.verdict = "matched";
         const checked = yield* h.service.check({
           monitor: makeMonitor(unchanged.condition),
-          baselinePngBase64: prepared.baselinePngBase64,
+          evidence: retainedEvidence(prepared.baselineImages),
           checkedAt: createdAt,
         });
-        assert.equal(checked.match?.terminalPngBase64, png("changed"));
+        assert.equal(checked.match?.terminalImages[0]?.pngBase64, png("changed"));
         assert.equal(checked.match?.summary, "Result");
         assert.deepEqual(h.evaluations, [
           {
@@ -298,7 +331,11 @@ describe("durable computer adapter", () => {
           {
             desktop: modelWatch.desktop,
             includeAccessibility: false,
-            screenshot: { region: prepared.condition.region, maxWidth: 200, maxHeight: 100 },
+            screenshot: {
+              region: prepared.condition.observation.regions[0]?.region,
+              maxWidth: 200,
+              maxHeight: 100,
+            },
           },
         );
         h.state.ownerExists = false;
@@ -315,15 +352,17 @@ describe("durable computer adapter", () => {
         const h = yield* harness();
         h.state.exists = false;
         const prepared = yield* h.prepare({ label: "Pixels", match: { type: "image-change" } });
-        assert.isUndefined(prepared.baselinePngBase64);
+        assert.equal(prepared.baselineImages[0]?.pngBase64, png("initial"));
         const stable = yield* h.service.check({
           monitor: makeMonitor(prepared.condition),
+          evidence: retainedEvidence(prepared.baselineImages),
           checkedAt: createdAt,
         });
         assert.isNull(stable.match);
         h.state.pixels = "changed";
         const changed = yield* h.service.check({
           monitor: makeMonitor(stable.condition),
+          evidence: retainedEvidence(prepared.baselineImages),
           checkedAt: createdAt,
         });
         assert.equal(changed.condition.lastVerdict, "matched");
@@ -347,7 +386,7 @@ describe("durable computer adapter", () => {
         const checked = yield* Effect.result(
           h.service.check({
             monitor: makeMonitor(prepared.condition),
-            baselinePngBase64: prepared.baselinePngBase64,
+            evidence: retainedEvidence(prepared.baselineImages),
             checkedAt: createdAt,
           }),
         );
@@ -378,7 +417,11 @@ describe("durable computer adapter", () => {
       assert.isTrue(
         Exit.isFailure(
           yield* Effect.exit(
-            h.service.check({ monitor: makeMonitor(prepared.condition), checkedAt: createdAt }),
+            h.service.check({
+              monitor: makeMonitor(prepared.condition),
+              evidence: retainedEvidence(),
+              checkedAt: createdAt,
+            }),
           ),
         ),
       );
@@ -420,10 +463,9 @@ it.effect(
         threadId: Testkit.threadId,
         monitor: modelWatch,
       });
-      assert.deepEqual(Option.getOrThrow(yield* repository.getComputerEvidence(first.id)), {
-        baselinePngBase64: png("initial"),
-        terminalPngBase64: null,
-      });
+      const initialEvidence = Option.getOrThrow(yield* repository.getComputerEvidence(first.id));
+      assert.equal(initialEvidence.baselineImages[0]?.pngBase64, png("initial"));
+      assert.deepEqual(initialEvidence.terminalImages, []);
       const restarted = yield* ThreadMonitorService.make.pipe(
         Effect.provideService(ThreadMonitorComputerService, h.service),
       );
@@ -440,10 +482,9 @@ it.effect(
         checked.condition.type === "computer" && checked.condition.resourceState,
         "released",
       );
-      assert.deepEqual(Option.getOrThrow(yield* repository.getComputerEvidence(first.id)), {
-        baselinePngBase64: png("initial"),
-        terminalPngBase64: png("changed"),
-      });
+      const terminalEvidence = Option.getOrThrow(yield* repository.getComputerEvidence(first.id));
+      assert.equal(terminalEvidence.baselineImages[0]?.pngBase64, png("initial"));
+      assert.equal(terminalEvidence.terminalImages[0]?.pngBase64, png("changed"));
       const pending = yield* service.createComputer({
         threadId: Testkit.threadId,
         monitor: modelWatch,
@@ -540,23 +581,54 @@ it.effect("rolls back watch and baseline together and rejects corrupted conditio
     assert.isTrue(
       Result.isFailure(
         yield* Effect.result(
-          repository.upsertComputer({ monitor, baselinePngBase64: prepared.baselinePngBase64 }),
+          repository.upsertComputerRevision({
+            monitor,
+            ...retainedEvidence(prepared.baselineImages),
+          }),
         ),
       ),
     );
     assert.isTrue(Option.isNone(yield* repository.getById(monitor.id)));
     yield* sql`DROP TRIGGER reject_evidence`;
-    yield* repository.upsertComputer({ monitor, baselinePngBase64: prepared.baselinePngBase64 });
+    yield* repository.upsertComputerRevision({
+      monitor,
+      ...retainedEvidence(prepared.baselineImages),
+    });
     assert.deepEqual(yield* repository.listByDeliveryGroupId("persisted-group"), [monitor]);
-    yield* repository.putComputerTerminal({ monitorId: monitor.id, pngBase64: png("terminal") });
-    yield* repository.putComputerBaseline({
-      monitorId: monitor.id,
-      pngBase64: png("new baseline"),
-    });
-    assert.deepEqual(Option.getOrThrow(yield* repository.getComputerEvidence(monitor.id)), {
-      baselinePngBase64: png("new baseline"),
-      terminalPngBase64: png("terminal"),
-    });
+    const evidence = {
+      ...retainedEvidence(prepared.baselineImages),
+      terminalImages: prepared.baselineImages.map((image) => ({
+        ...image,
+        id: "terminal:screen",
+        kind: "terminal" as const,
+        pngBase64: png("terminal"),
+      })),
+    };
+    yield* repository.upsertComputerRevision({ monitor, ...evidence });
+    const invalid = {
+      ...prepared.baselineImages[0]!,
+      kind: "invalid-generation",
+    } as unknown as ThreadMonitorComputerEvidenceImage;
+    assert.isTrue(
+      Exit.isFailure(
+        yield* Effect.exit(
+          repository.upsertComputerRevision({
+            monitor: { ...monitor, label: "Must roll back" },
+            ...evidence,
+            baselineImages: [invalid],
+          }),
+        ),
+      ),
+    );
+    assert.deepEqual(Option.getOrThrow(yield* repository.getById(monitor.id)), monitor);
+    assert.deepEqual(
+      Option.getOrThrow(yield* repository.getComputerEvidence(monitor.id)),
+      evidence,
+    );
+    yield* sql`UPDATE thread_monitor_computer_evidence SET baseline_images_json = 'broken' WHERE monitor_id = ${monitor.id}`;
+    assert.isTrue(
+      Result.isFailure(yield* Effect.result(repository.getComputerEvidence(monitor.id))),
+    );
     yield* sql`UPDATE thread_monitors SET condition_json = 'broken' WHERE monitor_id = ${monitor.id}`;
     assert.isTrue(Result.isFailure(yield* Effect.result(repository.getById(monitor.id))));
     assert.isTrue(
@@ -666,7 +738,8 @@ it.effect(
         );
         assert.equal(result.condition.type === "computer" && result.condition.evaluationCount, 2);
         assert.equal(
-          result.condition.type === "computer" && result.condition.unchangedSampleCount,
+          result.condition.type === "computer" &&
+            result.condition.observation.regions[0]?.unchangedSampleCount,
           1,
         );
       }).pipe(Effect.provide(databaseLayer()));
@@ -726,5 +799,374 @@ it.effect(
         "1970-01-01T00:01:03.000Z",
       );
       assert.equal(h.evaluations.length, 2);
+    }).pipe(Effect.provide(Layer.merge(Testkit.layer, NodeServices.layer))),
+);
+
+it.effect(
+  "captures context only for evaluation and returns fresh frames without mutating retained evidence",
+  () =>
+    Effect.gen(function* () {
+      const h = yield* harness();
+      h.state.usage = { inputTokens: 20, cachedInputTokens: 16, outputTokens: 5 };
+      h.state.snapshotFor = (input) => {
+        const x = (input as { screenshot: { region: { x: number } } }).screenshot.region.x;
+        const current = snapshot(x === -400 ? `context:${h.state.pixels}` : h.state.pixels);
+        return {
+          ...current,
+          frame: {
+            ...current.frame!,
+            toDesktopLogical: { scaleX: 1, scaleY: 1, offsetX: x, offsetY: 0 },
+          },
+        };
+      };
+      const region = (id: string, role: "trigger" | "context", x: number) => ({
+        id,
+        role,
+        purpose: id,
+        region: {
+          coordinateSpace: "desktop-logical" as const,
+          displayId: "left",
+          x,
+          y: 0,
+          width: 200,
+          height: 100,
+        },
+        maxWidth: 200,
+        maxHeight: 100,
+      });
+      const prepared = yield* h.prepare({
+        ...modelWatch,
+        observation: {
+          regions: [region("status", "trigger", -800), region("details", "context", -400)],
+        },
+      });
+      const captures = () =>
+        h.calls
+          .filter((call) => call.operation === "computerSnapshot")
+          .map(
+            (call) => (call.input as { screenshot: { region: { x: number } } }).screenshot.region.x,
+          );
+      assert.deepEqual(captures(), [-800, -400]);
+      const evidence = retainedEvidence(prepared.baselineImages);
+      const first = yield* h.service.check({
+        monitor: makeMonitor(prepared.condition),
+        evidence,
+        checkedAt: createdAt,
+      });
+      assert.deepEqual(captures(), [-800, -400, -800]);
+      assert.lengthOf(h.evaluations, 0);
+      assert.deepEqual(first.observedImages, []);
+      h.state.pixels = "changed";
+      const second = yield* h.service.check({
+        monitor: makeMonitor(first.condition),
+        evidence,
+        checkedAt: createdAt,
+      });
+      assert.deepEqual(captures(), [-800, -400, -800, -800, -400]);
+      assert.deepEqual(h.evaluations[0]?.images, [
+        {
+          id: "status",
+          purpose: "status",
+          currentPngBase64: png("changed"),
+          baselinePngBase64: png("initial"),
+        },
+        {
+          id: "details",
+          purpose: "details",
+          currentPngBase64: png("context:changed"),
+          baselinePngBase64: png("context:initial"),
+        },
+      ]);
+      assert.deepEqual(second.condition.totalUsage, h.state.usage);
+      assert.equal(second.condition.observation.regions[0]?.sampleCount, 2);
+      assert.equal(second.condition.observation.regions[1]?.sampleCount, 1);
+      const monitor = makeMonitor(second.condition);
+      const before = structuredClone(monitor);
+      const fresh = yield* h.service
+        .inspectFresh({ monitor, regionIds: ["details"], frameCount: 2, intervalMs: 100 })
+        .pipe(Effect.forkScoped);
+      yield* TestClock.adjust(100);
+      const images = yield* Fiber.join(fresh);
+      assert.deepEqual(
+        images.map(({ id, regionId, elapsedMs }) => ({ id, regionId, elapsedMs })),
+        [
+          { id: "fresh:0:details", regionId: "details", elapsedMs: 0 },
+          { id: "fresh:1:details", regionId: "details", elapsedMs: 100 },
+        ],
+      );
+      assert.deepEqual(monitor, before);
+      const captureCount = captures().length;
+      assert.isTrue(
+        Result.isFailure(
+          yield* Effect.result(
+            h.service.inspectFresh({
+              monitor,
+              regionIds: ["missing"],
+              frameCount: 1,
+              intervalMs: 100,
+            }),
+          ),
+        ),
+      );
+      assert.lengthOf(captures(), captureCount);
+    }),
+);
+
+it.effect(
+  "revises evidence atomically, rejects stale and foreign revisions, and permits review removal and cancellation",
+  () =>
+    Effect.gen(function* () {
+      yield* Testkit.seedThread();
+      const h = yield* harness();
+      const service = yield* ThreadMonitorService.make.pipe(
+        Effect.provideService(ThreadMonitorComputerService, h.service),
+      );
+      const repository = yield* Repository.ThreadMonitorRepository;
+      const sql = yield* SqlClient.SqlClient;
+      const monitor = yield* service.createComputer({
+        threadId: Testkit.threadId,
+        monitor: { ...modelWatch, review: { afterEvaluations: 5 } },
+      });
+      const before = Option.getOrThrow(yield* repository.getComputerEvidence(monitor.id));
+      const inspected = yield* service.inspectComputer({
+        threadId: Testkit.threadId,
+        inspect: { monitorId: monitor.id, fresh: { frameCount: 1 } },
+      });
+      assert.equal(inspected.revision, 1);
+      assert.deepEqual(
+        inspected.images.map(({ kind }) => kind),
+        ["baseline", "fresh"],
+      );
+      assert.deepEqual(
+        Option.getOrThrow(yield* repository.getComputerEvidence(monitor.id)),
+        before,
+      );
+      const foreign = yield* service
+        .updateComputer({
+          threadId: ThreadId.make("foreign"),
+          update: { monitorId: monitor.id, expectedRevision: 1, label: "Foreign" },
+        })
+        .pipe(Effect.flip);
+      assert.equal(foreign.code, "MONITOR_NOT_FOUND");
+      yield* sql`CREATE TRIGGER reject_revision BEFORE INSERT ON thread_monitor_computer_evidence BEGIN SELECT RAISE(ABORT, 'revision fault'); END`;
+      h.state.pixels = "replacement";
+      const failed = yield* service
+        .updateComputer({
+          threadId: Testkit.threadId,
+          update: { monitorId: monitor.id, expectedRevision: 1, label: "Must roll back" },
+        })
+        .pipe(Effect.result);
+      assert.isTrue(Result.isFailure(failed));
+      assert.deepEqual(Option.getOrThrow(yield* repository.getById(monitor.id)), monitor);
+      assert.deepEqual(
+        Option.getOrThrow(yield* repository.getComputerEvidence(monitor.id)),
+        before,
+      );
+      yield* sql`DROP TRIGGER reject_revision`;
+      const outcomes = yield* Effect.forEach(
+        ["First", "Second"],
+        (label) =>
+          service
+            .updateComputer({
+              threadId: Testkit.threadId,
+              update: {
+                monitorId: monitor.id,
+                expectedRevision: 1,
+                label,
+                review: null,
+                acknowledgeReview: true,
+                observation: {
+                  regions: [
+                    { id: "result", role: "trigger", maxWidth: 300, maxHeight: 42 },
+                    { id: "context", role: "context", maxWidth: 100 },
+                  ],
+                },
+              },
+            })
+            .pipe(Effect.result),
+        { concurrency: "unbounded" },
+      );
+      assert.lengthOf(outcomes.filter(Result.isSuccess), 1);
+      const rejected = outcomes.find(Result.isFailure)!;
+      assert.equal(rejected.failure.code, "REVISION_CONFLICT");
+      const revised = Option.getOrThrow(yield* repository.getById(monitor.id));
+      if (revised.condition.type !== "computer")
+        return yield* Effect.die("Expected computer watch");
+      assert.equal(revised.condition.revision, 2);
+      assert.equal(revised.condition.evaluationCount, 0);
+      assert.isNull(revised.condition.review.policy);
+      const after = Option.getOrThrow(yield* repository.getComputerEvidence(monitor.id));
+      assert.deepEqual(
+        after.baselineImages.map(({ regionId, pngBase64 }) => ({ regionId, pngBase64 })),
+        [
+          { regionId: "result", pngBase64: png("replacement") },
+          { regionId: "context", pngBase64: png("replacement") },
+        ],
+      );
+      assert.deepEqual(after.currentImages, []);
+      const restored = yield* service.updateComputer({
+        threadId: Testkit.threadId,
+        update: { monitorId: monitor.id, expectedRevision: 2, review: { afterEvaluations: 3 } },
+      });
+      assert.equal(
+        restored.condition.type === "computer" &&
+          restored.condition.review.policy?.afterEvaluations,
+        3,
+      );
+      const foreignInspection = yield* service
+        .inspectComputer({ threadId: ThreadId.make("foreign"), inspect: { monitorId: monitor.id } })
+        .pipe(Effect.flip);
+      assert.equal(foreignInspection.code, "MONITOR_NOT_FOUND");
+      yield* service.cancel({ threadId: Testkit.threadId, cancel: { monitorId: monitor.id } });
+      const terminal = yield* service
+        .updateComputer({
+          threadId: Testkit.threadId,
+          update: { monitorId: monitor.id, expectedRevision: 2, label: "Too late" },
+        })
+        .pipe(Effect.flip);
+      assert.equal(terminal.code, "MONITOR_NOT_ACTIVE");
+      const terminalFresh = yield* service
+        .inspectComputer({
+          threadId: Testkit.threadId,
+          inspect: { monitorId: monitor.id, fresh: {} },
+        })
+        .pipe(Effect.flip);
+      assert.equal(terminalFresh.code, "MONITOR_NOT_ACTIVE");
+      assert.equal(
+        (yield* service.inspectComputer({
+          threadId: Testkit.threadId,
+          inspect: { monitorId: monitor.id },
+        })).revision,
+        3,
+      );
+    }).pipe(Effect.provide(Layer.merge(Testkit.layer, NodeServices.layer))),
+);
+
+it.effect(
+  "delivers one nonterminal review, recovers an accepted review after a crash, and acknowledges it in a new revision",
+  () =>
+    Effect.gen(function* () {
+      yield* Testkit.seedThread();
+      const h = yield* harness();
+      h.state.verdict = "uncertain";
+      const service = yield* ThreadMonitorService.make.pipe(
+        Effect.provideService(ThreadMonitorComputerService, h.service),
+      );
+      const repository = yield* Repository.ThreadMonitorRepository;
+      const projections = yield* ProjectionStoreV2;
+      const monitor = yield* service.createComputer({
+        threadId: Testkit.threadId,
+        monitor: { ...modelWatch, review: { consecutiveUncertain: 1 } },
+      });
+      h.state.pixels = "uncertain change";
+      yield* TestClock.adjust(1_000);
+      const pending = (yield* service.checkNow({
+        threadId: Testkit.threadId,
+        check: { monitorId: monitor.id },
+      })).monitors[0]!;
+      assert.equal(
+        pending.condition.type === "computer" && pending.condition.review.state,
+        "pending",
+      );
+      yield* TestClock.adjust(750);
+      const delivered = (yield* service.checkNow({
+        threadId: Testkit.threadId,
+        check: { monitorId: monitor.id },
+      })).monitors[0]!;
+      assert.equal(delivered.status, "active");
+      assert.equal(
+        delivered.condition.type === "computer" && delivered.condition.review.state,
+        "delivered",
+      );
+      const records = yield* projections.getThreadRecords(Testkit.threadId, ["messages"]);
+      assert.lengthOf(records.messages, 1);
+      assert.include(records.messages[0]!.text, "computer_watch_update");
+      // Restore the pre-acknowledgement row while keeping the accepted V2 message.
+      yield* repository.upsert(pending);
+      const restarted = yield* ThreadMonitorService.make.pipe(
+        Effect.provideService(ThreadMonitorComputerService, h.service),
+      );
+      const recovered = (yield* restarted.checkNow({
+        threadId: Testkit.threadId,
+        check: { monitorId: monitor.id },
+      })).monitors[0]!;
+      assert.equal(
+        recovered.condition.type === "computer" && recovered.condition.review.state,
+        "delivered",
+      );
+      assert.lengthOf(
+        (yield* projections.getThreadRecords(Testkit.threadId, ["messages"])).messages,
+        1,
+      );
+      const revised = yield* restarted.updateComputer({
+        threadId: Testkit.threadId,
+        update: { monitorId: monitor.id, expectedRevision: 1, acknowledgeReview: true },
+      });
+      if (revised.condition.type !== "computer")
+        return yield* Effect.die("Expected computer watch");
+      assert.equal(revised.condition.revision, 2);
+      assert.equal(revised.condition.review.state, "idle");
+      assert.equal(revised.condition.review.policy?.consecutiveUncertain, 1);
+      assert.equal(revised.condition.evaluationCount, 0);
+      yield* restarted.cancel({ threadId: Testkit.threadId, cancel: { monitorId: monitor.id } });
+    }).pipe(Effect.provide(Layer.merge(Testkit.layer, NodeServices.layer))),
+);
+
+it.effect(
+  "persists review retry identity after a command conflict and delivers only at the retry deadline",
+  () =>
+    Effect.gen(function* () {
+      yield* Testkit.seedThread();
+      const h = yield* harness();
+      const service = yield* ThreadMonitorService.make.pipe(
+        Effect.provideService(ThreadMonitorComputerService, h.service),
+      );
+      const monitor = yield* service.createComputer({
+        threadId: Testkit.threadId,
+        monitor: { ...modelWatch, review: { at: "1970-01-01T00:00:01.000Z" } },
+      });
+      yield* TestClock.adjust(1_000);
+      yield* service.checkNow({ threadId: Testkit.threadId, check: { monitorId: monitor.id } });
+      yield* (yield* OrchestratorV2)
+        .dispatch({
+          type: "message.dispatch",
+          commandId: CommandId.make(`thread-monitor:${monitor.id}:review:1:1:1`),
+          threadId: ThreadId.make("missing"),
+          messageId: MessageId.make("conflicting-review"),
+          text: "Reject this command",
+          attachments: [],
+          createdBy: "system",
+          creationSource: "server",
+          dispatchMode: { type: "queue_after_active" },
+        })
+        .pipe(Effect.result);
+      yield* TestClock.adjust(750);
+      const retrying = (yield* service.checkNow({
+        threadId: Testkit.threadId,
+        check: { monitorId: monitor.id },
+      })).monitors[0]!;
+      if (retrying.condition.type !== "computer")
+        return yield* Effect.die("Expected computer watch");
+      assert.equal(retrying.condition.review.state, "pending");
+      assert.equal(retrying.condition.review.deliveryAttempts, 2);
+      assert.equal(retrying.condition.review.deliveryFailureCount, 1);
+      assert.equal(retrying.condition.review.deliveryRetryAt, "1970-01-01T00:00:02.750Z");
+      yield* TestClock.adjust(999);
+      yield* service.checkNow({ threadId: Testkit.threadId, check: { monitorId: monitor.id } });
+      assert.lengthOf(
+        (yield* (yield* ProjectionStoreV2).getThreadRecords(Testkit.threadId, ["messages"]))
+          .messages,
+        0,
+      );
+      yield* TestClock.adjust(1);
+      const delivered = (yield* service.checkNow({
+        threadId: Testkit.threadId,
+        check: { monitorId: monitor.id },
+      })).monitors[0]!;
+      assert.equal(
+        delivered.condition.type === "computer" && delivered.condition.review.state,
+        "delivered",
+      );
+      yield* service.cancel({ threadId: Testkit.threadId, cancel: { monitorId: monitor.id } });
     }).pipe(Effect.provide(Layer.merge(Testkit.layer, NodeServices.layer))),
 );

@@ -1,3 +1,4 @@
+import ForkMigration0005 from "./Migrations/059_AdaptiveComputerMonitors.ts";
 import * as Migrator from "effect/sql/Migrator";
 import * as Effect from "effect/Effect";
 import * as SqlClient from "effect/sql/SqlClient";
@@ -156,6 +157,7 @@ export const forkMigrationEntries = [
   [2, "ThreadMonitorDelivery", ForkMigration0002],
   [3, "ComputerThreadMonitors", ForkMigration0003],
   [4, "ComputerMonitorEvaluationThrottle", ForkMigration0004],
+  [5, "AdaptiveComputerMonitors", ForkMigration0005],
 ] as const;
 export const forkMigrationManifest = forkMigrationEntries.map(([id, name]) => [id, name] as const);
 
