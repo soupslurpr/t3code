@@ -1,3 +1,4 @@
+import { ThreadMonitorError } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
 
 import { ThreadMonitorService } from "../../../threadMonitor/ThreadMonitorService.ts";
@@ -6,6 +7,30 @@ import * as McpInvocationContext from "../../McpInvocationContext.ts";
 import { MonitorToolkit } from "./tools.ts";
 
 const handlers = {
+  computer_watch_start: McpToolAccess.actsAsCaller((monitor) =>
+    Effect.gen(function* () {
+      const {
+        thread: { threadId },
+      } = yield* McpInvocationContext.requireThreadMcpCapability("preview").pipe(
+        Effect.mapError(
+          () =>
+            new ThreadMonitorError({
+              code: "COMPUTER_WATCH_UNAVAILABLE",
+              operation: "computer-start",
+              detail: "Computer automation is not available to this caller.",
+            }),
+        ),
+      );
+      const service = yield* ThreadMonitorService;
+      return yield* service.createComputer({ threadId, monitor });
+    }),
+  ),
+  computer_watch_capabilities: McpToolAccess.reads(() =>
+    Effect.gen(function* () {
+      const service = yield* ThreadMonitorService;
+      return yield* service.computerCapabilities;
+    }),
+  ),
   monitor_start: McpToolAccess.actsAsCaller((monitor) =>
     Effect.gen(function* () {
       const scope = yield* McpInvocationContext.McpInvocationContext;

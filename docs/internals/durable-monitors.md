@@ -19,3 +19,9 @@ Fork migrations have a separate ledger from upstream. Recognition of released
 ID/name pairs precedes both migrators under one SQLite write transaction. An
 existing fork ledger cannot prove adoption completed; both histories must be
 validated, and missing migrations must be verified before committing.
+
+Computer watches store durable desktop coordinates, never expiring frame IDs.
+Their stable monitor controller owns only a view lease; release must not
+depend on reading a thread that deletion has already removed. Restart checks
+reacquire that same view identity. Exact evaluator selection is persisted; an
+unavailable provider or model degrades the watch without substitution.

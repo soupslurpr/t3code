@@ -138,6 +138,8 @@ The desktop host exposes tools for:
 - running bounded action batches that can move, click, drag, emit discrete wheel ticks, type, press
   hotkeys or hold keys, wait for a duration or a visual change, and activate a current semantic
   target or window
+- leaving a durable, view-only screen-region watch that checks for an exact image change or asks an
+  explicitly selected capable model whether a visible condition has been met
 - releasing the active session or forgetting remembered consent
 
 Full-display screenshots preserve aspect ratio and default to a maximum of 1600 by 900 pixels. An
@@ -265,3 +267,7 @@ desktop availability remains independent of that sharing choice and can be relea
 settings. During a control request, selecting a monitor without enabling remote interaction grants
 view-only access instead. Try the control request again when you are ready to approve keyboard and
 pointer access.
+
+A durable screen watch can observe an explicitly named Agent desktop owned by
+another controller in the same thread. The watch has view access only, and
+releasing it leaves the controlling agent's access intact.

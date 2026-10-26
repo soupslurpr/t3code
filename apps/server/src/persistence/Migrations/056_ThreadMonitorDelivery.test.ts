@@ -17,7 +17,7 @@ it.effect.each([false, true])("preserves F01 waits and adds F02 state, legacy66:
         SELECT 67, name, created_at FROM effect_sql_fork_migrations WHERE migration_id = 1`;
       yield* sql`DROP TABLE effect_sql_fork_migrations`;
     }
-    yield* runMigrations();
+    yield* runMigrations({ toForkMigrationInclusive: 2 });
     assert.deepEqual(
       yield* sql`SELECT label, status, delivery_attempts, delivery_group_id,
       delivery_retry_at, delivery_failure_count FROM thread_monitors`,
@@ -51,7 +51,7 @@ it.effect.each([false, true])("preserves F01 waits and adds F02 state, legacy66:
     );
     yield* sql`UPDATE thread_monitors SET delivery_group_id = 'persisted-group', delivery_retry_at = '2026-10-27T00:00:00.000Z', delivery_failure_count = 3`;
     const before = yield* sql`SELECT * FROM thread_monitors`;
-    assert.deepEqual(yield* runMigrations(), []);
+    assert.deepEqual(yield* runMigrations({ toForkMigrationInclusive: 2 }), []);
     assert.deepEqual(yield* sql`SELECT * FROM thread_monitors`, before);
     assert.deepEqual(yield* sql`PRAGMA foreign_key_check`, []);
   }).pipe(Effect.provide(NodeSqliteClient.layer({ filename: ":memory:" }))),

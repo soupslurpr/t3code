@@ -104,7 +104,6 @@ const createFixtureSource = Effect.fn("createMigrateDevDbFixtureSource")(functio
         ('monitor-hidden', 'settled-thread', 'Old timer', 'time', '2026-08-02',
           'record-only', NULL, 'delivered', '2026-08-01', '2026-08-01')`;
       // A snapshot can come from a later released fork with retained evidence.
-      yield* sql`CREATE TABLE thread_monitor_computer_evidence (monitor_id TEXT REFERENCES thread_monitors(monitor_id))`;
       yield* sql`INSERT INTO thread_monitor_computer_evidence (monitor_id) VALUES ('monitor-kept'), ('monitor-hidden')`;
     }),
   );

@@ -1,3 +1,4 @@
+import * as ThreadMonitorComputer from "./threadMonitor/ThreadMonitorComputer.ts";
 import * as ThreadMonitor from "./threadMonitor/ThreadMonitor.ts";
 import * as ThreadWorkspaceQuery from "./orchestration-v2/ThreadWorkspaceQuery.ts";
 import * as ProviderEventLoggers from "@t3tools/provider-core/server/ProviderEventLoggers";
@@ -683,7 +684,10 @@ const layerRuntimeCoreDependencies = layerRuntimeCoreDependenciesBase.pipe(
   ),
 );
 
+const layerPreviewAutomationBroker = PreviewAutomationBroker.layer;
+
 const layerThreadMonitor = ThreadMonitor.layer.pipe(
+  Layer.provide(ThreadMonitorComputer.layer.pipe(Layer.provide(layerPreviewAutomationBroker))),
   Layer.provide(RuntimeLayer.layerEventSink),
   Layer.provideMerge(ThreadWorkspaceQuery.layer),
   Layer.provideMerge(ProjectionStoreV2.layer),
@@ -755,7 +759,7 @@ const layerMakeRoutes = Layer.mergeAll(
     ),
   ),
   Layer.provide(PreviewBrowser.layer),
-  Layer.provide(PreviewAutomationBroker.layer),
+  Layer.provide(layerPreviewAutomationBroker),
   Layer.provide(ServerSelfUpdate.layer.pipe(Layer.provide(layerDesktopAppUpdate))),
   Layer.provide(layerCommandReadiness),
   Layer.provide(ServerHttp.layerBrowserApiCors),

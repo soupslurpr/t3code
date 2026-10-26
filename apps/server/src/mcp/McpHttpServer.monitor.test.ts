@@ -83,6 +83,37 @@ it.effect("enforces live, writable thread callers and hides foreign monitor stat
     assert.isTrue(
       (yield* call("monitor_start", input, { ...invocation, thread: undefined })).isError,
     );
+    const watch = {
+      label: "Visible completion",
+      match: { type: "image-change" },
+      continuation: "record-only",
+    };
+    assert.isTrue((yield* call("computer_watch_start", watch)).isError);
+    assert.isTrue(
+      (yield* call("computer_watch_start", watch, {
+        ...invocation,
+        capabilities: new Set(["preview"]),
+        client: { sessionId: "reader", label: "Read only", access: "read-only" },
+      })).isError,
+    );
+    assert.isTrue(
+      (yield* call("computer_watch_start", watch, {
+        ...invocation,
+        capabilities: new Set(["preview"]),
+        thread: undefined,
+      })).isError,
+    );
+    assert.isFalse(
+      (yield* call(
+        "computer_watch_capabilities",
+        {},
+        {
+          ...invocation,
+          thread: undefined,
+          client: { sessionId: "reader", label: "Read only", access: "read-only" },
+        },
+      )).isError,
+    );
     assert.isFalse((yield* call("monitor_start", input)).isError);
     const service = yield* ThreadMonitorService;
     const { monitors } = yield* service.status({ threadId: MonitorTestkit.threadId, query: {} });

@@ -13,6 +13,7 @@ import * as SqlClient from "effect/sql/SqlClient";
 import { runMigrations } from "../Migrations.ts";
 import OrchestrationV2 from "./055_OrchestrationV2.ts";
 import ThreadMonitors from "./055_ThreadMonitors.ts";
+import ComputerThreadMonitors from "./057_ComputerThreadMonitors.ts";
 import ThreadMonitorDelivery from "./056_ThreadMonitorDelivery.ts";
 
 // Released ledger fixtures are deliberately independent of the classifier's manifest.
@@ -48,6 +49,7 @@ const seedLegacy = Effect.fn("ForkMigrationTest.seedLegacy")(function* (
   yield* sql`DROP TABLE effect_sql_fork_migrations`;
   yield* ThreadMonitors;
   if (count >= 2) yield* ThreadMonitorDelivery;
+  if (count >= 3) yield* ComputerThreadMonitors;
   yield* sql`INSERT INTO thread_monitors (monitor_id, thread_id, label, condition_type,
     continuation_mode, status, created_at, updated_at)
     VALUES ('preserved', 'thread', 'Preserved signal', 'signal', 'record-only', 'active', ${createdAt}, ${createdAt})`;
@@ -95,13 +97,14 @@ describe("fork migration ledger adoption", () => {
     Effect.gen(function* () {
       const sql = yield* SqlClient.SqlClient;
       const executed = yield* runMigrations();
-      assert.deepEqual(executed.at(-1), [2, "ThreadMonitorDelivery"]);
+      assert.deepEqual(executed.at(-1), [3, "ComputerThreadMonitors"]);
       yield* assertCurrentUpstream;
       assert.deepEqual(
         (yield* forkHistory).map(({ migration_id, name }) => ({ migration_id, name })),
         [
           { migration_id: 1, name: "ThreadMonitors" },
           { migration_id: 2, name: "ThreadMonitorDelivery" },
+          { migration_id: 3, name: "ComputerThreadMonitors" },
         ],
       );
       assert.deepEqual(yield* runMigrations(), []);
@@ -157,6 +160,8 @@ describe("fork migration ledger adoption", () => {
     "wrong-offset",
     "schema",
     "delivery-schema",
+    "computer-schema",
+    "evidence-schema",
   ] as const)("rejects $0 atomically before creating an adoption ledger", (corruption) =>
     Effect.gen(function* () {
       const sql = yield* SqlClient.SqlClient;
@@ -173,6 +178,12 @@ describe("fork migration ledger adoption", () => {
           break;
         case "wrong-offset":
           yield* sql`UPDATE effect_sql_migrations SET migration_id = 80 WHERE migration_id = 69`;
+          break;
+        case "computer-schema":
+          yield* sql`ALTER TABLE thread_monitors RENAME COLUMN condition_json TO wrong_json`;
+          break;
+        case "evidence-schema":
+          yield* sql`DROP TABLE thread_monitor_computer_evidence`;
           break;
         case "delivery-schema":
           yield* sql`ALTER TABLE thread_monitors RENAME COLUMN delivery_retry_at TO wrong_retry`;
@@ -314,7 +325,7 @@ describe("fork migration ledger adoption", () => {
               NodeEvents.EventEmitter.once(second, "message"),
             ]);
             first.postMessage("release", []);
-            assert.deepEqual(await completed, [[71], [0]]);
+            assert.deepEqual(await completed, [[72], [0]]);
           } finally {
             await Promise.all([first.terminate(), second.terminate()]);
           }

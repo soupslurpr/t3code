@@ -20,6 +20,7 @@ import * as ProviderReplayHarness from "../orchestration-v2/testkit/ProviderRepl
 import * as ThreadMonitors from "../persistence/ThreadMonitors.ts";
 import * as Sqlite from "../persistence/Sqlite.ts";
 import { ServerActivation } from "../serverActivation.ts";
+import { ThreadMonitorComputerService } from "./ThreadMonitorComputerService.ts";
 import * as ThreadMonitor from "./ThreadMonitor.ts";
 
 export const threadId = ThreadId.make("monitor-owner");
@@ -63,6 +64,11 @@ export const layerForDatabase = (
     }),
   );
   return ThreadMonitor.layer.pipe(
+    Layer.provideMerge(
+      Layer.mock(ThreadMonitorComputerService)({
+        capabilities: Effect.succeed({ evaluators: [], deterministicMatches: ["image-change"] }),
+      }),
+    ),
     Layer.provideMerge(ThreadMonitors.layer),
     Layer.provideMerge(ThreadWorkspaceQuery.layer),
     Layer.provideMerge(management),
