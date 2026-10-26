@@ -19,6 +19,8 @@ describe("AgentPowerReporter", () => {
       isAgentWorking({ ...idle, pendingBackgroundTasks: [{ taskId: "command", kind: "command" }] }),
     );
     assert.isFalse(isAgentWorking(idle));
+    assert.isTrue(isAgentWorking({ ...idle, backgroundLiveness: "monitoring" }));
+    assert.isFalse(isAgentWorking({ ...idle, backgroundLiveness: null }));
   });
   it("does not hold power solely for human input or deleted threads", () => {
     assert.isFalse(

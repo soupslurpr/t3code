@@ -77,6 +77,33 @@ describe("resolveThreadListV2SnoozeMenuSelection", () => {
 });
 
 describe("resolveThreadListV2Status", () => {
+  it("decodes durable monitoring and clears it while keeping human requests visible", () => {
+    const raw = makeRawThreadShell({ status: "completed", backgroundLiveness: "monitoring" });
+    const monitoring = presentThreadShell(environmentId, decodeThreadShell(raw));
+    expect(resolveThreadListV2Status(monitoring)).toBe("monitoring");
+    expect(resolveThreadListV2Status({ ...monitoring, backgroundLiveness: null })).toBe("ready");
+    expect(resolveThreadListV2Status({ ...monitoring, hasPendingApprovals: true })).toBe(
+      "approval",
+    );
+    expect(resolveThreadListV2Status({ ...monitoring, hasPendingUserInput: true })).toBe("input");
+    expect(resolveThreadListV2Status({ ...monitoring, pendingGuestMessageCount: 1 })).toBe(
+      "request",
+    );
+    expect(
+      resolveThreadListV2Status({
+        ...monitoring,
+        runtime: {
+          status: "failed",
+          activeRunId: null,
+          providerInstanceId: ProviderInstanceId.make("codex"),
+          providerName: "Codex",
+          lastError: "Failure",
+          updatedAt: NOW,
+        },
+      }),
+    ).toBe("failed");
+  });
+
   it("presents decoded thread waits as Waiting while preserving requests and older servers", () => {
     const raw = makeRawThreadShell({
       status: "running",

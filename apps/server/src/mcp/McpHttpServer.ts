@@ -1,3 +1,5 @@
+import { MonitorToolkit } from "./toolkits/monitor/tools.ts";
+import { MonitorToolkitHandlersLive } from "./toolkits/monitor/handlers.ts";
 import { AgentDesktopToolkitHandlersLive } from "./toolkits/agentDesktop/handlers.ts";
 import { AgentDesktopToolkit } from "./toolkits/agentDesktop/tools.ts";
 import * as Cause from "effect/Cause";
@@ -1345,6 +1347,11 @@ export const ComputerToolkitRegistrationLive = Layer.mergeAll(
   ComputerImageRegistrationLive,
 );
 
+export const MonitorToolkitRegistrationLive = toolkitRegistration(
+  MonitorToolkit,
+  MonitorToolkitHandlersLive,
+);
+
 export const layerMcpTransport = McpServer.layerHttp({
   name: "T3 Code",
   version: packageJson.version,
@@ -1367,4 +1374,5 @@ export const layer = Layer.mergeAll(
   layerHtmlToolkit,
   ComputerToolkitRegistrationLive,
   AgentDesktopToolkitRegistrationLive,
+  MonitorToolkitRegistrationLive,
 ).pipe(Layer.provideMerge(layerMcpTransport));

@@ -95,6 +95,17 @@ const createFixtureSource = Effect.fn("createMigrateDevDbFixtureSource")(functio
         VALUES ('delivery-1', 'task-1', 'key-1', 1900000000000, '{}', '{}', '[]')`;
       yield* sql`INSERT INTO auth_sessions (session_id, subject, scopes, method, issued_at, expires_at)
         VALUES ('session-1', 'user', '[]', 'pairing', '2026-08-01', '2027-08-01')`;
+      yield* sql`INSERT INTO thread_monitors
+        (monitor_id, thread_id, label, condition_type, wake_at, continuation_mode,
+          resume_prompt, status, created_at, updated_at)
+        VALUES
+        ('monitor-kept', 'stopped-thread', 'Pending timer', 'time', '2026-08-02',
+          'resume-thread', 'Resume work', 'active', '2026-08-01', '2026-08-01'),
+        ('monitor-hidden', 'settled-thread', 'Old timer', 'time', '2026-08-02',
+          'record-only', NULL, 'delivered', '2026-08-01', '2026-08-01')`;
+      // A snapshot can come from a later released fork with retained evidence.
+      yield* sql`CREATE TABLE thread_monitor_computer_evidence (monitor_id TEXT REFERENCES thread_monitors(monitor_id))`;
+      yield* sql`INSERT INTO thread_monitor_computer_evidence (monitor_id) VALUES ('monitor-kept'), ('monitor-hidden')`;
     }),
   );
   return databasePath;
@@ -130,13 +141,18 @@ it.layer(NodeServices.layer)("migrate-dev-db", (it) => {
             tasks: number;
             webhooks: number;
             transfers: number;
+            monitors: number;
+            evidence: number;
           }>`
             SELECT
               (SELECT COUNT(*) FROM auth_sessions) AS auth,
               (SELECT COUNT(*) FROM scheduled_tasks) AS tasks,
               (SELECT COUNT(*) FROM scheduled_task_webhook_replay_keys) +
                 (SELECT COUNT(*) FROM scheduled_task_webhook_pending) AS webhooks,
-              (SELECT COUNT(*) FROM orchestration_v2_projection_context_transfers) AS transfers`;
+              (SELECT COUNT(*) FROM orchestration_v2_projection_context_transfers) AS transfers,
+              (SELECT COUNT(*) FROM thread_monitors) AS monitors,
+              (SELECT COUNT(*) FROM thread_monitor_computer_evidence) AS evidence`;
+          assert.deepStrictEqual(yield* sql`PRAGMA foreign_key_check`, []);
           return { threads, events, sessions, leftovers };
         }),
       );
@@ -152,7 +168,14 @@ it.layer(NodeServices.layer)("migrate-dev-db", (it) => {
         kept.sessions.map((row) => row.provider_session_id),
         ["session-shared"],
       );
-      assert.deepStrictEqual(kept.leftovers, { auth: 0, tasks: 0, webhooks: 0, transfers: 0 });
+      assert.deepStrictEqual(kept.leftovers, {
+        auth: 0,
+        tasks: 0,
+        webhooks: 0,
+        transfers: 0,
+        monitors: 0,
+        evidence: 0,
+      });
     }),
   );
 

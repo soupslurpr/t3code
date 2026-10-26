@@ -1,3 +1,4 @@
+import { ThreadMonitorService } from "./threadMonitor/ThreadMonitorService.ts";
 import { assert, it } from "@effect/vitest";
 import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
 import {
@@ -60,6 +61,7 @@ it.effect.each([
         scenario === "disabled-default" ? "custom" : "codex",
       );
       const events: ServerLifecycleStreamEvent[] = [];
+      const phases: string[] = [];
       const recovery = {
         terminalizedRuns: 0,
         stoppedSessions: 0,
@@ -104,14 +106,26 @@ it.effect.each([
           startupPresentation: "browser",
           autoBootstrapProjectFromCwd: true,
         }),
+        Layer.mock(ThreadMonitorService)({
+          start: Effect.sync(() => {
+            assert.deepEqual(phases, ["shells", "recovery"]);
+            phases.push("monitors");
+          }),
+        }),
         Layer.mock(Keybindings.Keybindings)({ start: Effect.void }),
         Layer.mock(LegacyV1ThreadImporter.LegacyV1ThreadImporter)({
           pendingThreadCount: Effect.succeed(0),
-          reconcileShells: Effect.succeed(imports),
+          reconcileShells: Effect.sync(() => {
+            phases.push("shells");
+            return imports;
+          }),
           importPendingTranscripts: Effect.succeed(imports),
         }),
         Layer.mock(ProviderRuntimeRecovery.ProviderRuntimeRecoveryService)({
-          recover: Effect.succeed(recovery),
+          recover: Effect.sync(() => {
+            phases.push("recovery");
+            return recovery;
+          }),
           prepareForShutdown: Effect.void,
           reconcile: () => Effect.succeed(recovery),
         }),
@@ -224,6 +238,7 @@ it.effect.each([
         const startup = yield* ServerRuntimeStartup.ServerRuntimeStartup;
         yield* startup.markHttpListening;
         const ready = yield* Effect.exit(startup.awaitCommandReady);
+        if (Exit.isSuccess(ready)) assert.deepEqual(phases, ["shells", "recovery", "monitors"]);
         assert.equal(Exit.isSuccess(ready), scenario !== "project-failure");
         const welcome = events.find((event) => event.type === "welcome");
         if (scenario === "project-failure") {

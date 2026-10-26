@@ -1,6 +1,8 @@
 import * as Migrator from "effect/sql/Migrator";
 import * as Effect from "effect/Effect";
 import * as SqlClient from "effect/sql/SqlClient";
+import { adoptForkMigrationHistory } from "./ForkMigrationHistory.ts";
+import ForkMigration0001 from "./Migrations/055_ThreadMonitors.ts";
 import { reconcileV2PreviewMigration } from "./reconcileV2PreviewMigration.ts";
 
 import Migration0001 from "./Migrations/001_OrchestrationEvents.ts";
@@ -146,12 +148,18 @@ const migrationEntries = [
   [69, "ThreadMessageSearch", Migration0069],
 ] as const;
 
+export const forkMigrationEntries = [[1, "ThreadMonitors", ForkMigration0001]] as const;
+export const forkMigrationManifest = forkMigrationEntries.map(([id, name]) => [id, name] as const);
+
 export const migrationManifest = migrationEntries.map(([id, name]) => [id, name] as const);
 
-const makeMigrationLoader = (throughId?: number) =>
+const makeMigrationLoader = (
+  entries: ReadonlyArray<(typeof migrationEntries)[number] | (typeof forkMigrationEntries)[number]>,
+  throughId?: number,
+) =>
   Migrator.fromRecord(
     Object.fromEntries(
-      migrationEntries
+      entries
         .filter(([id]) => throughId === undefined || id <= throughId)
         .map(([id, name, migration]) => [`${id}_${name}`, migration]),
     ),
@@ -194,47 +202,79 @@ const assertV2MigrationsCanRun = Effect.fn("assertV2MigrationsCanRun")(function*
 
 const run = Migrator.make({});
 
+const assertMigrationsCompleted = Effect.fn("assertMigrationsCompleted")(function* (
+  table: "effect_sql_migrations" | "effect_sql_fork_migrations",
+  manifest: ReadonlyArray<readonly [number, string]>,
+  throughId?: number,
+) {
+  const sql = yield* SqlClient.SqlClient;
+  const rows = yield* sql<{ readonly migration_id: number; readonly name: string }>`
+    SELECT migration_id, name FROM ${sql(table)}`;
+  const names = new Map(rows.map((row) => [row.migration_id, row.name]));
+  const missing = manifest.filter(
+    ([id, name]) => (throughId === undefined || id <= throughId) && names.get(id) !== name,
+  );
+  if (missing.length > 0) {
+    // Migrator treats insert constraints as another runner's lock and can return no work.
+    return yield* new Migrator.MigrationError({
+      kind: "BadState",
+      message: `${table} did not complete: ${missing.map(([id, name]) => `${id}_${name}`).join(", ")}`,
+    });
+  }
+});
+
 export interface RunMigrationsOptions {
   readonly toMigrationInclusive?: number | undefined;
+  readonly toForkMigrationInclusive?: number | undefined;
 }
 
 export const runMigrations = Effect.fn("runMigrations")(function* ({
   toMigrationInclusive,
+  toForkMigrationInclusive,
 }: RunMigrationsOptions = {}) {
   const includesV2 =
     toMigrationInclusive === undefined || toMigrationInclusive >= FIRST_V2_MIGRATION_ID;
-  const previewMigrations = includesV2 ? yield* reconcileV2PreviewMigration() : [];
-  if (includesV2) {
-    yield* assertV2MigrationsCanRun(toMigrationInclusive);
-  }
-  const executedMigrations = [
-    ...previewMigrations,
-    ...(yield* run({ loader: makeMigrationLoader(toMigrationInclusive) })),
-  ];
+  const sql = yield* SqlClient.SqlClient;
+  const executedMigrations = yield* sql.withTransaction(
+    Effect.gen(function* () {
+      const adoption = yield* adoptForkMigrationHistory(migrationManifest);
+      const previewRepairs: Array<readonly [number, string]> = [];
+      if (includesV2 && adoption.previewMissingFilesViewed) {
+        // Preview 54 also admits a missing 53; fill it before highest-ID skipping can hide it.
+        yield* Migration0053;
+        yield* sql`INSERT INTO effect_sql_migrations (migration_id, name) VALUES (53, 'PullRequestFilesViewed')`;
+        previewRepairs.push([53, "PullRequestFilesViewed"]);
+      }
+      const previewMigrations = includesV2 ? yield* reconcileV2PreviewMigration() : [];
+      if (includesV2) yield* assertV2MigrationsCanRun(toMigrationInclusive);
+      const upstream = yield* run({
+        loader: makeMigrationLoader(migrationEntries, toMigrationInclusive),
+      });
+      yield* assertMigrationsCompleted(
+        "effect_sql_migrations",
+        migrationManifest,
+        toMigrationInclusive,
+      );
+      const fork =
+        toMigrationInclusive === undefined || toForkMigrationInclusive !== undefined
+          ? yield* run({
+              table: "effect_sql_fork_migrations",
+              loader: makeMigrationLoader(forkMigrationEntries, toForkMigrationInclusive),
+            })
+          : [];
+      if (toMigrationInclusive === undefined || toForkMigrationInclusive !== undefined) {
+        yield* assertMigrationsCompleted(
+          "effect_sql_fork_migrations",
+          forkMigrationManifest,
+          toForkMigrationInclusive,
+        );
+      }
+      return [...previewRepairs, ...previewMigrations, ...upstream, ...fork];
+    }),
+  );
   const migrations = executedMigrations.map(([id, name]) => `${id}_${name}`);
   yield* migrations.length === 0
     ? Effect.logDebug("Database schema is current")
     : Effect.log("Migrations ran successfully").pipe(Effect.annotateLogs({ migrations }));
-
-  const sql = yield* SqlClient.SqlClient;
-  const recorded = yield* sql<{
-    readonly migration_id: number;
-    readonly name: string;
-  }>`SELECT migration_id, name FROM effect_sql_migrations`;
-  const manifestNames = new Map<number, string>(migrationEntries.map(([id, name]) => [id, name]));
-  const divergent = recorded.flatMap((row) => {
-    const expected = manifestNames.get(row.migration_id);
-    if (expected === undefined) {
-      return [`${row.migration_id}:${row.name} (unknown to this build)`];
-    }
-    return expected === row.name
-      ? []
-      : [`${row.migration_id}:${row.name} (this build: ${expected})`];
-  });
-  if (divergent.length > 0) {
-    yield* Effect.logWarning(
-      "Database migration history diverges from this build; recorded migration ids are skipped, not reconciled by name.",
-    ).pipe(Effect.annotateLogs({ divergent }));
-  }
   return executedMigrations;
 });

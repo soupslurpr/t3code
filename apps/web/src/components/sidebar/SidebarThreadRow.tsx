@@ -703,10 +703,10 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: SidebarThreadRowP
           icon: "working" as const,
           className: "text-info-foreground",
         }
-      : status === "waiting"
+      : status === "waiting" || status === "monitoring"
         ? {
-            label: "Waiting",
-            icon: "waiting" as const,
+            label: status === "monitoring" ? "Monitoring" : "Waiting",
+            icon: status === "waiting" ? ("waiting" as const) : null,
             className: "text-muted-foreground",
           }
         : status === "approval"

@@ -35,6 +35,28 @@ function thread(id: string, working: boolean) {
 }
 
 describe("createInboxReturnTracker", () => {
+  it("keeps monitors working until cancellation without hiding human attention", () => {
+    const monitoring = {
+      ...thread("monitoring", false),
+      backgroundLiveness: "monitoring" as const,
+    };
+    expect(isThreadWorking(monitoring)).toBe(true);
+    expect(isThreadWorking({ ...monitoring, backgroundLiveness: null })).toBe(false);
+    expect(isThreadWorking({ ...monitoring, hasPendingApprovals: true })).toBe(false);
+    expect(isThreadWorking({ ...monitoring, hasPendingUserInput: true })).toBe(false);
+    expect(isThreadWorking({ ...monitoring, pendingGuestMessageCount: 1 })).toBe(false);
+    expect(
+      isThreadWorking({
+        ...monitoring,
+        runtime: {
+          ...thread("failed", true).runtime!,
+          status: "failed",
+          lastError: "Failure",
+        },
+      }),
+    ).toBe(false);
+  });
+
   beforeEach(() => {
     vi.useFakeTimers();
     vi.setSystemTime(10_000);

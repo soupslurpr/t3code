@@ -14,6 +14,7 @@ type ThreadActivity = Pick<
   | "activityRunStatus"
   | "pendingRuntimeRequest"
   | "pendingBackgroundTasks"
+  | "backgroundLiveness"
   | "deletedAt"
 >;
 
@@ -23,7 +24,8 @@ export function isAgentWorking(thread: ThreadActivity | null): boolean {
   return (
     (thread.activeRunId !== null && thread.pendingRuntimeRequest === null) ||
     (thread.activityRunStatus === "waiting" && thread.pendingRuntimeRequest === null) ||
-    (thread.pendingBackgroundTasks?.length ?? 0) > 0
+    (thread.pendingBackgroundTasks?.length ?? 0) > 0 ||
+    thread.backgroundLiveness === "monitoring"
   );
 }
 
@@ -41,7 +43,9 @@ export const make = Effect.gen(function* () {
         event.type === "runtime-request.updated" ||
         event.type === "subagent.updated" ||
         event.type === "provider-thread.updated" ||
-        (event.type === "turn-item.updated" && turnItemUpdateCanEndBackgroundWork(event.payload)),
+        (event.type === "turn-item.updated" &&
+          (event.payload.type === "system_notice" ||
+            turnItemUpdateCanEndBackgroundWork(event.payload))),
     ),
     Stream.runForEach((event) => Queue.offer(changes, event.threadId)),
     Effect.forkScoped({ startImmediately: true }),

@@ -9904,13 +9904,20 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         : projection.providerThreads.find((candidate) => candidate.id === run?.providerThreadId);
     const hasBackgroundWork =
       run?.id === projection.runs.findLast((candidate) => candidate.status !== "queued")?.id &&
-      derivePendingBackgroundWork({
+      (derivePendingBackgroundWork({
         latestRun: run,
         providerThreads: projection.providerThreads,
         turnItems: projection.turnItems,
         activeProviderThreadId: projection.thread.activeProviderThreadId,
         runs: projection.runs,
-      }).length > 0;
+      }).length > 0 ||
+        (yield* projectionStore
+          .getThreadShell(command.threadId)
+          .pipe(
+            Effect.mapError(
+              (cause) => new OrchestratorProjectionError({ threadId: command.threadId, cause }),
+            ),
+          ))?.backgroundLiveness === "monitoring");
     // A failed start has no provider turn. Background work still belongs
     // to the provider thread, so Stop reaches its latest accepted turn.
     const providerTurn =

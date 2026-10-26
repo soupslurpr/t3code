@@ -205,6 +205,8 @@ const RECOVERY_KINDS: ReadonlyArray<ProjectionStore.ProjectionRecoveryKind> = [
 
 const CLEARED_TABLES: ReadonlyArray<string> = [
   "scheduled_tasks",
+  "thread_monitor_computer_evidence",
+  "thread_monitors",
   "orchestration_v2_effect_outbox",
   "orchestration_v2_thread_launch_workflows",
   "orchestration_command_receipts",
@@ -394,6 +396,10 @@ const pruneSnapshot = Effect.fn("pruneDevDbSnapshot")(function* (input: RunMigra
            OR (aggregate_kind = 'project'
             AND stream_id NOT IN (SELECT project_id FROM kept_projects))`;
       for (const table of CLEARED_TABLES) {
+        // Older copied histories may predate optional fork evidence tables.
+        const exists =
+          yield* sql`SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ${table}`;
+        if (exists.length === 0) continue;
         yield* sql`DELETE FROM ${sql(table)}`;
       }
     }),

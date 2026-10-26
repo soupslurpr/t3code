@@ -1,3 +1,4 @@
+import { ThreadMonitorService } from "./threadMonitor/ThreadMonitorService.ts";
 import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
 import { expect, it } from "@effect/vitest";
 import { DEFAULT_SERVER_SETTINGS, EnvironmentId, ProjectId } from "@t3tools/contracts";
@@ -105,6 +106,7 @@ it.effect("parks automatic pull until activation without delaying command readin
           startupPresentation: "browser",
           autoBootstrapProjectFromCwd: false,
         }),
+        Layer.mock(ThreadMonitorService)({ start: Effect.void }),
         Layer.mock(Keybindings.Keybindings)({ start: Effect.void }),
         Layer.mock(LegacyV1ThreadImporter.LegacyV1ThreadImporter)({
           pendingThreadCount: Effect.succeed(0),

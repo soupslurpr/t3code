@@ -256,6 +256,25 @@ describe("resolveSidebarThreadStatus", () => {
 
   const idle = { hasPendingApprovals: false, hasPendingUserInput: false, runtime: null };
 
+  it("shows durable monitoring without hiding failures or requests", () => {
+    const monitoring = { ...idle, backgroundLiveness: "monitoring" as const };
+    expect(resolveSidebarThreadStatus(monitoring)).toBe("monitoring");
+    expect(resolveSidebarThreadStatus({ ...monitoring, backgroundLiveness: null })).toBe("ready");
+    expect(resolveSidebarThreadStatus({ ...monitoring, hasPendingApprovals: true })).toBe(
+      "approval",
+    );
+    expect(resolveSidebarThreadStatus({ ...monitoring, hasPendingUserInput: true })).toBe("input");
+    expect(resolveSidebarThreadStatus({ ...monitoring, pendingGuestMessageCount: 1 })).toBe(
+      "request",
+    );
+    expect(
+      resolveSidebarThreadStatus({ ...monitoring, runtime: { ...runtime, status: "failed" } }),
+    ).toBe("failed");
+    expect(
+      resolveSidebarThreadStatus({ ...monitoring, runtime: { ...runtime, status: "idle" } }),
+    ).toBe("monitoring");
+  });
+
   it("prioritizes awaiting input over a running runtime, below approval", () => {
     expect(
       resolveSidebarThreadStatus({
