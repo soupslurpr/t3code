@@ -1,3 +1,5 @@
+import { ThreadWorkspaceQuery } from "../orchestration-v2/ThreadWorkspaceQuery.ts";
+import { AgentDesktopTransferService } from "../agentDesktop/AgentDesktopTransferService.ts";
 import { expect, it } from "@effect/vitest";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import {
@@ -49,6 +51,8 @@ const layer = McpHttpServer.AgentDesktopToolkitRegistrationLive.pipe(
   Layer.provideMerge(McpToolAccessTestkit.liveThreadsLayer),
   Layer.provideMerge(PreviewAutomationBroker.layer),
   Layer.provideMerge(NodeServices.layer),
+  Layer.provide(Layer.mock(ThreadWorkspaceQuery)({})),
+  Layer.provide(Layer.mock(AgentDesktopTransferService)({})),
 );
 const call = Effect.fn("AgentDesktopHttpTest.call")(
   (name: string, input: Record<string, unknown>, scope = invocation) =>
@@ -102,6 +106,12 @@ it.effect.each([
   ["agent_desktop_command", { executable: "/usr/bin/true" }],
   ["agent_desktop_read_file", { path: "/tmp/a" }],
   ["agent_desktop_write_file", { path: "/tmp/a", data: "a" }],
+  [
+    "agent_desktop_copy",
+    { source: { kind: "workspace", path: "a" }, destination: { kind: "agent", path: "~/a" } },
+  ],
+  ["agent_desktop_transfer_status", { transferId: "transfer-one" }],
+  ["agent_desktop_transfer_cancel", { transferId: "transfer-one" }],
   ["agent_desktop_inspect", {}],
   ["agent_desktop_create_port_route", { guestPort: 3000 }],
   ["agent_desktop_remove_port_route", { routeId: "route-one" }],
@@ -137,4 +147,36 @@ it.effect("denies Agent tools when the calling thread lacks the current capabili
       expect(JSON.stringify(result)).toContain("does not grant the preview capability");
     }),
   ).pipe(Effect.provide(layer)),
+);
+
+it.effect.each([
+  [
+    "agent_desktop_copy",
+    { source: { kind: "workspace", path: "a" }, destination: { kind: "agent", path: "~/a" } },
+  ],
+  ["agent_desktop_transfer_status", { transferId: "transfer-one" }],
+  ["agent_desktop_transfer_cancel", { transferId: "transfer-one" }],
+] as const)("denies %s after its capability is removed", ([name, input]) =>
+  Effect.gen(function* () {
+    const result = yield* call(name, input, { ...invocation, capabilities: new Set() });
+    expect(result.isError).toBe(true);
+    expect(JSON.stringify(result)).toContain("does not grant the preview capability");
+  }).pipe(Effect.provide(layer)),
+);
+
+it.effect.each([
+  [
+    "agent_desktop_copy",
+    { source: { kind: "workspace", path: "a" }, destination: { kind: "agent", path: "~/a" } },
+  ],
+  ["agent_desktop_transfer_cancel", { transferId: "transfer-one" }],
+] as const)("denies %s for a read-only client", ([name, input]) =>
+  Effect.gen(function* () {
+    const result = yield* call(name, input, {
+      ...invocation,
+      client: { sessionId: "read-only", label: "Observer", access: "read-only" },
+    });
+    expect(result.isError).toBe(true);
+    expect(JSON.stringify(result)).toContain("read-only");
+  }).pipe(Effect.provide(layer)),
 );

@@ -85,6 +85,9 @@ const makeQemu = (
       ReadonlyArray<ReadonlyArray<QemuAgentDesktop.QemuInputEvent>>
     >([]);
     const running = yield* Ref.make<ReadonlySet<AgentDesktopId>>(new Set());
+    const transferStarted = yield* Deferred.make<void>();
+    const releaseTransfer = yield* Deferred.make<void>();
+    const blockTransfer = yield* Ref.make(false);
     const commandStarted = yield* Deferred.make<void>();
     const releaseCommand = yield* Deferred.make<void>();
     const desktopParked = yield* Deferred.make<void>();
@@ -249,10 +252,21 @@ const makeQemu = (
                 : argumentsValue.includes("activate")
                   ? activationResponse
                   : undefined;
+        const isTransfer = argumentsValue[0]?.endsWith("/transfer-helper.py") === true;
         const result = {
           exitCode: 0,
-          stdout:
-            input.executable === "/usr/bin/getent"
+          stdout: isTransfer
+            ? JSON.stringify({
+                rootType: "file",
+                fileCount: 1,
+                directoryCount: 0,
+                symlinkCount: 0,
+                logicalBytes: 5,
+                wireBytes: 5,
+                compression: "none",
+                sha256: "a".repeat(64),
+              })
+            : input.executable === "/usr/bin/getent"
               ? "t3test:x:1000:1000::/home/t3test:/bin/bash\n"
               : accessibilityOutput !== undefined
                 ? accessibilityOutput
@@ -271,6 +285,19 @@ const makeQemu = (
             : Effect.void;
         return record(`exec:${id}:${input.executable}:${(input.arguments ?? []).join(" ")}`).pipe(
           Effect.andThen(execute),
+          Effect.andThen(
+            isTransfer
+              ? Ref.get(blockTransfer).pipe(
+                  Effect.flatMap((blocked) =>
+                    blocked
+                      ? Deferred.succeed(transferStarted, undefined).pipe(
+                          Effect.andThen(Deferred.await(releaseTransfer)),
+                        )
+                      : Effect.void,
+                  ),
+                )
+              : Effect.void,
+          ),
           Effect.as(result),
         );
       },
@@ -299,6 +326,9 @@ const makeQemu = (
       calls,
       captureEnabled,
       commandStarted,
+      transferStarted,
+      releaseTransfer,
+      blockTransfer,
       desktopParked,
       inputEvents,
       releaseCommand,
@@ -368,6 +398,8 @@ const managerHarness = (
       calls: qemu.calls,
       captureEnabled: qemu.captureEnabled,
       commandStarted: qemu.commandStarted,
+      transferStarted: qemu.transferStarted,
+      blockTransfer: qemu.blockTransfer,
       desktopParked: qemu.desktopParked,
       inputEvents: qemu.inputEvents,
       releaseCommand: qemu.releaseCommand,
@@ -1880,3 +1912,88 @@ describe("shared Agent observation lifecycle", () => {
       }),
   );
 });
+
+it.effect("transfers exact chunks in both directions and enforces cancellation ownership", () =>
+  Effect.gen(function* () {
+    const h = yield* managerHarness("transfer", { accessibility: true });
+    const requests: Array<{ url: string; method: string | undefined }> = [];
+    const fetch = vi.spyOn(globalThis, "fetch").mockImplementation(async (url, init) => {
+      requests.push({ url: String(url), method: init?.method });
+      if (init?.method === "GET")
+        return new Response("hello", { status: 206, headers: { "Content-Range": "bytes 0-4/5" } });
+      assert.deepEqual(
+        new Uint8Array(init?.body as ArrayBuffer),
+        new TextEncoder().encode("hello"),
+      );
+      return new Response(null, { status: 201, headers: { "Upload-Offset": "5" } });
+    });
+    yield* Effect.addFinalizer(() => Effect.sync(() => fetch.mockRestore()));
+    yield* Effect.gen(function* () {
+      const manager = yield* AgentDesktopManager.AgentDesktopManager;
+      const desktop = yield* manager.acquire(owner, {});
+      const url = `https://owning-environment.example/api/agent-desktop-transfers/${"A".repeat(43)}`;
+      const imported = yield* manager.transfer(owner, {
+        operation: "import",
+        transferId: "import-one",
+        desktopId: desktop.id,
+        url,
+        guestPath: "~/imported",
+        compression: "none",
+        collision: "create",
+        sizeBytes: 5,
+        sha256: "a".repeat(64),
+      });
+      assert.equal(imported.transferId, "import-one");
+      assert.equal(imported.wireBytes, 5);
+      const exported = yield* manager.transfer(owner, {
+        operation: "export",
+        transferId: "export-one",
+        desktopId: desktop.id,
+        url,
+        guestPath: "~/source",
+        compression: "none",
+      });
+      assert.equal(exported.transferId, "export-one");
+      assert.deepEqual(requests, [
+        { url, method: "GET" },
+        { url, method: "PUT" },
+      ]);
+      const calls = yield* Ref.get(h.calls);
+      assert.isTrue(
+        calls.some(
+          (call) =>
+            call.includes("--destination /home/t3test/imported") &&
+            call.includes("--owner-uid 1000 --owner-gid 1000"),
+        ),
+      );
+      yield* Ref.set(h.blockTransfer, true);
+      const active = yield* manager
+        .transfer(owner, {
+          operation: "export",
+          transferId: "cancel-one",
+          desktopId: desktop.id,
+          url,
+          guestPath: "~/source",
+          compression: "none",
+        })
+        .pipe(Effect.forkChild);
+      yield* Deferred.await(h.transferStarted);
+      const denied = yield* manager
+        .cancelTransfer(
+          { ...owner, controllerId: "foreign" },
+          { transferId: "cancel-one", desktopId: desktop.id },
+        )
+        .pipe(Effect.flip);
+      assert.deepInclude(denied, { code: "desktop-target-mismatch" });
+      yield* manager.cancelTransfer(owner, { transferId: "cancel-one", desktopId: desktop.id });
+      const cancelled = yield* Fiber.join(active).pipe(Effect.flip);
+      assert.deepInclude(cancelled, { operation: "transfer-cancelled" });
+      yield* manager.cancelTransfer(owner, { transferId: "cancel-one", desktopId: desktop.id });
+      assert.isTrue(
+        (yield* Ref.get(h.calls)).some((call) =>
+          call.endsWith("/usr/bin/rm:-f -- /run/t3-agent-desktop/transfers/cancel-one.bundle"),
+        ),
+      );
+    }).pipe(Effect.provide(h.layer));
+  }),
+);

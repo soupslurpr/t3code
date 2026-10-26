@@ -1,12 +1,15 @@
+import * as AgentDesktopTransferService from "../../../agentDesktop/AgentDesktopTransferService.ts";
 import type {
   AgentDesktop,
   AgentDesktopCommandInput,
   AgentDesktopCommandResult,
   AgentDesktopList,
+  AgentDesktopCopyInput,
   AgentDesktopPacketCapture,
   AgentDesktopPortRoute,
   AgentDesktopReadFileResult,
   AgentDesktopSetupResult,
+  AgentDesktopTransferTargetInput,
   AgentDesktopWriteFileResult,
   PreviewAutomationOperation,
 } from "@t3tools/contracts";
@@ -60,6 +63,29 @@ const handlers = {
   ),
   agent_desktop_write_file: McpToolAccess.actsAsCaller((input) =>
     invoke<AgentDesktopWriteFileResult>("agentDesktopWriteFile", input),
+  ),
+  agent_desktop_copy: McpToolAccess.actsAsCaller((input: AgentDesktopCopyInput) =>
+    Effect.gen(function* () {
+      const scope = yield* McpInvocationContext.requireThreadMcpCapability("preview");
+      const transfers = yield* AgentDesktopTransferService.AgentDesktopTransferService;
+      return yield* transfers.start(scope, input);
+    }),
+  ),
+  agent_desktop_transfer_status: McpToolAccess.readsAsCaller(
+    (input: AgentDesktopTransferTargetInput) =>
+      Effect.gen(function* () {
+        const scope = yield* McpInvocationContext.requireThreadMcpCapability("preview");
+        const transfers = yield* AgentDesktopTransferService.AgentDesktopTransferService;
+        return yield* transfers.status(scope, input);
+      }),
+  ),
+  agent_desktop_transfer_cancel: McpToolAccess.actsAsCaller(
+    (input: AgentDesktopTransferTargetInput) =>
+      Effect.gen(function* () {
+        const scope = yield* McpInvocationContext.requireThreadMcpCapability("preview");
+        const transfers = yield* AgentDesktopTransferService.AgentDesktopTransferService;
+        return yield* transfers.cancel(scope, input);
+      }),
   ),
   agent_desktop_inspect: McpToolAccess.readsAsCaller((input) =>
     invoke<AgentDesktop>("agentDesktopInspect", input, LIFECYCLE_TIMEOUT_MS),

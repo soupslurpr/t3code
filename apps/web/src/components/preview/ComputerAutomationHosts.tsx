@@ -7,6 +7,8 @@ import {
   ComputerAutomationTargetInput,
   ComputerAutomationAvailabilityInput,
   AgentDesktopAcquireInput,
+  type AgentDesktopHostTransferInput,
+  type AgentDesktopHostTransferCancelInput,
   AgentDesktopCommandInput,
   AgentDesktopCreatePortRouteInput,
   AgentDesktopInspectInput,
@@ -26,6 +28,9 @@ import { AsyncResult, Atom } from "effect/reactivity";
 
 import { isElectron } from "~/env";
 import { randomUUID } from "~/lib/utils";
+import { environmentSession } from "~/state/session";
+import * as Option from "effect/Option";
+import { resolveAgentDesktopTransferUrl } from "./agentDesktopTransferUrl";
 import { useEnvironments } from "~/state/environments";
 import { previewEnvironment } from "~/state/preview";
 import { useEnvironmentsWithScope } from "~/state/session";
@@ -41,6 +46,7 @@ const decodeAgentDesktopHumanRequest = Schema.decodeUnknownSync(AgentDesktopHuma
 async function handleComputerRequest(
   environmentId: EnvironmentId,
   request: PreviewAutomationRequest,
+  environmentHttpBaseUrl: string | null,
 ): Promise<unknown> {
   const computer = window.desktopBridge?.computer;
   if (computer === undefined)
@@ -117,6 +123,28 @@ async function handleComputerRequest(
     case "agentDesktopWriteFile":
       return await resolveDesktopComputerAutomation(
         agentDesktop?.writeFile(request.input as AgentDesktopWriteFileInput, computerContext),
+      );
+    case "agentDesktopTransfer": {
+      const input = request.input as AgentDesktopHostTransferInput;
+      if (environmentHttpBaseUrl === null) {
+        throw new Error("the environment HTTP endpoint is unavailable for file transfer");
+      }
+      return await resolveDesktopComputerAutomation(
+        agentDesktop?.transfer(
+          {
+            ...input,
+            url: resolveAgentDesktopTransferUrl(input.url, environmentHttpBaseUrl),
+          },
+          computerContext,
+        ),
+      );
+    }
+    case "agentDesktopTransferCancel":
+      return await resolveDesktopComputerAutomation(
+        agentDesktop?.cancelTransfer(
+          request.input as AgentDesktopHostTransferCancelInput,
+          computerContext,
+        ),
       );
     case "agentDesktopInspect":
       return await resolveDesktopComputerAutomation(
@@ -233,7 +261,14 @@ const computerHostAtom = Atom.family((environmentId: EnvironmentId) =>
           { reportFailure: false },
         );
       };
-      void handleComputerRequest(environmentId, event.request).then(
+      const prepared = get.registry.get(
+        environmentSession.preparedConnectionValueAtom(environmentId),
+      );
+      void handleComputerRequest(
+        environmentId,
+        event.request,
+        Option.isSome(prepared) ? prepared.value.httpBaseUrl : null,
+      ).then(
         (value) => answer({ ok: true, result: value }),
         (error: unknown) => answer({ ok: false, error: serializeComputerAutomationError(error) }),
       );

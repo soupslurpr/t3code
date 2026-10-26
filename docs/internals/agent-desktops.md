@@ -92,3 +92,11 @@ decoding, prerequisite remedies, pinned download validation, and image generatio
 AppImage smoke test can require fresh image provisioning and then exercises prerequisite reporting,
 guest commands, exact Unicode files, network access, screenshots, semantic targets, graphical input,
 human takeover, checkpoint, live clone, park/resume, and cleanup against a real KVM guest.
+
+Transfer control uses MCP and typed Electron IPC; bundle bytes use short-lived, direction-specific
+HTTP capabilities scoped to one transfer. Resolve relative capability paths against the requesting
+environment, and workspace paths through its V2 thread worktree. Never use a renderer's default
+environment or accept an arbitrary capability URL. Server-owned transfer fibers survive an MCP
+request but end with the service scope. Cancellation removes tickets and temporary archives.
+Node and the packaged Python helper share a versioned bundle format; both validate paths and link
+targets before installation, and upload retries must match already stored bytes.

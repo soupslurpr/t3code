@@ -91,6 +91,8 @@ const managerLayer = (commandOwner?: (value: AgentDesktopOwner) => void) => {
         ),
       readFile: () => unexpected,
       writeFile: () => unexpected,
+      transfer: () => unexpected,
+      cancelTransfer: () => unexpected,
       inspect: () => unexpected,
       createPortRoute: () => unexpected,
       removePortRoute: () => unexpected,

@@ -290,3 +290,11 @@ pointer access.
 A durable screen watch can observe an explicitly named Agent desktop owned by
 another controller in the same thread. The watch has view access only, and
 releasing it leaves the controlling agent's access intact.
+
+Agents can copy files or directory trees between the current thread workspace and an Agent desktop
+with `agent_desktop_copy`. Workspace paths stay inside that thread's project or worktree. Relative
+Agent desktop paths resolve below the graphical user's home and are installed with that user's
+ownership. Safe internal symlinks are preserved; standalone and escaping links are rejected.
+Choose create, replace, or directory merge explicitly. Use `agent_desktop_transfer_status` to follow
+an active copy and `agent_desktop_transfer_cancel` to stop it. Completed status remains available for
+24 hours while the server stays running.

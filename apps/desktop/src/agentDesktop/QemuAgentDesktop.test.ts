@@ -500,3 +500,48 @@ it.effect.each([
     }),
   ).pipe(Effect.provide(NodeServices.layer)),
 );
+
+it.effect("interrupts only the guest process returned by its own spawn", () =>
+  Effect.gen(function* () {
+    const fs = yield* FileSystem.FileSystem;
+    const path = yield* Path.Path;
+    const directory = yield* fs.makeTempDirectoryScoped({ prefix: "t3-qga-cancel-" });
+    const entered = yield* Deferred.make<void>();
+    const killed: Array<ReadonlyArray<string>> = [];
+    const monitor = vi
+      .spyOn(QemuProtocol, "invokeQga")
+      .mockImplementation((_socket, command, args) => {
+        if (command === "guest-exec" && args?.path === "/usr/bin/kill") {
+          killed.push(args.arg as ReadonlyArray<string>);
+          return Effect.succeed({ pid: 88 });
+        }
+        if (command === "guest-exec") return Effect.succeed({ pid: 314 });
+        if (command === "guest-exec-status") {
+          assert.equal(args?.pid, 314);
+          return Deferred.succeed(entered, undefined).pipe(Effect.andThen(Effect.never));
+        }
+        return Effect.die("Unexpected guest operation");
+      });
+    yield* Effect.addFinalizer(() => Effect.sync(() => monitor.mockRestore()));
+    const service = yield* makeQemu.pipe(
+      Effect.provideService(DesktopEnvironment.DesktopEnvironment, {
+        path,
+        platform: "linux",
+        processArch: "x64",
+        agentDesktopsDir: directory,
+        agentDesktopBaseImage: Option.none(),
+        resolveResourcePathCandidates: () => [],
+      } as unknown as DesktopEnvironment.DesktopEnvironment["Service"]),
+    );
+    const running = yield* service
+      .executeGuestProcess(id, {
+        executable: "/usr/bin/python",
+        arguments: ["transfer-helper.py"],
+        maxOutputBytes: 4096,
+      })
+      .pipe(Effect.forkChild);
+    yield* Deferred.await(entered);
+    yield* Fiber.interrupt(running);
+    assert.deepEqual(killed, [["-TERM", "314"]]);
+  }).pipe(Effect.provide(NodeServices.layer)),
+);
