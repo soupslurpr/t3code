@@ -1,11 +1,29 @@
 import type { EnvironmentId } from "@t3tools/contracts";
-import { splitFilePathPosition } from "@t3tools/shared/fileLinks";
+import { fileLinkLabel, splitFilePathPosition } from "@t3tools/shared/fileLinks";
+import { isMarkdownFileLinkLabel } from "@t3tools/shared/markdownLinks";
 
 import {
   shouldOpenMarkdownFileLinkInBrowserByDefault,
   type MarkdownFileLinkMeta,
 } from "../../markdown-links";
 import type { RemoteOpenMode } from "../../remoteOpen";
+
+export function markdownFileLinkLabel(
+  meta: Pick<MarkdownFileLinkMeta, "filePath" | "line" | "column">,
+  parentSuffixByPath: ReadonlyMap<string, string>,
+  label?: string,
+  href = meta.filePath,
+): string {
+  if (label && !isMarkdownFileLinkLabel(label, href)) return label;
+  return fileLinkLabel(
+    {
+      path: meta.filePath,
+      ...(meta.line !== undefined ? { line: meta.line } : {}),
+      ...(meta.column !== undefined ? { column: meta.column } : {}),
+    },
+    parentSuffixByPath,
+  );
+}
 
 export function canUseMarkdownFileShellActions(
   environmentId: EnvironmentId | null,

@@ -1,4 +1,4 @@
-import { buildFileLinkParentSuffixByPath, fileLinkLabel } from "@t3tools/shared/fileLinks";
+import { buildFileLinkParentSuffixByPath } from "@t3tools/shared/fileLinks";
 import {
   isWindowsDrivePathHref,
   normalizeMarkdownLinkDestination,
@@ -143,7 +143,6 @@ import {
   markdownFileEditorTarget,
   resolveMarkdownFileHostPath,
 } from "../markdownFileHostPath";
-import { isMarkdownFileLinkLabel } from "@t3tools/shared/markdownLinks";
 import { isElectron } from "../env";
 import { readLocalApi } from "../localApi";
 import { cn } from "../lib/utils";
@@ -201,7 +200,10 @@ import {
 } from "./chat/ChatMarkdownMedia";
 import { MarkdownExternalLinkContent } from "./chat/MarkdownExternalLink";
 import { MarkdownFileLink } from "./chat/MarkdownFileLink";
-import { canUseMarkdownFileShellActions } from "./chat/MarkdownFileLink.logic";
+import {
+  canUseMarkdownFileShellActions,
+  markdownFileLinkLabel,
+} from "./chat/MarkdownFileLink.logic";
 import { handleMarkdownFragmentClick, rehypeHeadingIds } from "./chat/markdownFragments";
 import { rehypeTextDirection } from "./chat/markdownTextDirection";
 import { hastHasText, hastPlainTextDeep, plainHastText } from "./chat/markdownHast.logic";
@@ -800,6 +802,7 @@ function useChatMarkdownState({
     fileLinkMeta: MarkdownFileLinkMeta,
     copyMarkdown: string,
     mediaSource?: string,
+    linkLabel?: string,
   ) => {
     const resolveHostPath = () =>
       resolveMarkdownFileHostPath({
@@ -825,13 +828,11 @@ function useChatMarkdownState({
         workspaceRelativePath={fileLinkMeta.workspaceRelativePath}
         panelPath={panelPath}
         line={fileLinkMeta.line}
-        label={fileLinkLabel(
-          {
-            path: fileLinkMeta.filePath,
-            ...(fileLinkMeta.line !== undefined ? { line: fileLinkMeta.line } : {}),
-            ...(fileLinkMeta.column !== undefined ? { column: fileLinkMeta.column } : {}),
-          },
+        label={markdownFileLinkLabel(
+          fileLinkMeta,
           fileLinkParentSuffixByPath,
+          linkLabel,
+          mediaSource,
         )}
         copyMarkdown={copyMarkdown}
         theme={resolvedTheme}
@@ -1296,14 +1297,7 @@ const CHAT_MARKDOWN_COMPONENTS = {
       source.startsWith("[") && source.includes("](")
         ? source
         : `[${(label || fileLinkMeta.basename).replace(/[\\[\]]/g, "\\$&")}](${normalizedHref})`;
-    const chip = fileLinkChip(fileLinkMeta, copyMarkdown, normalizedHref);
-    return isMarkdownFileLinkLabel(label, normalizedHref) ? (
-      chip
-    ) : (
-      <span data-markdown-copy={copyMarkdown}>
-        {children} {chip}
-      </span>
-    );
+    return fileLinkChip(fileLinkMeta, copyMarkdown, normalizedHref, label);
   },
   code: function MarkdownCode({ node, children, className, ...props }) {
     const { cwd, imageBaseDir, inlineCodeFileLinkMetaByText, fileLinkChip, mathEnabled, inline } =
