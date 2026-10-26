@@ -1,3 +1,4 @@
+import { readCodexThreadHistory } from "../../provider/CodexThreadHistory.ts";
 import * as DocumentText from "../../provider/DocumentText.ts";
 import { revertCodexThread } from "../../provider/CodexThreadRevert.ts";
 import { historyResponseItems } from "@t3tools/provider-core/server/handoffBudget";
@@ -7288,24 +7289,24 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
           readThreadSnapshot: Effect.fn("CodexAdapterV2.readThreadSnapshot")(
             function* (threadInput) {
               const threadId = yield* getNativeThreadId(threadInput.providerThread);
-              const response = yield* ensureInitialized.pipe(
-                Effect.andThen(client.request("thread/read", { threadId, includeTurns: true })),
+              const thread = yield* ensureInitialized.pipe(
+                Effect.andThen(readCodexThreadHistory(client, threadId)),
               );
               return {
                 providerThread: {
                   ...threadInput.providerThread,
                   nativeThreadRef: {
                     driver: CODEX_PROVIDER,
-                    nativeId: response.thread.id,
+                    nativeId: thread.id,
                     strength: "strong" as const,
                   },
                   nativeConversationHeadRef: threadInput.providerThread.nativeConversationHeadRef,
-                  updatedAt: codexTimestamp(response.thread.updatedAt),
+                  updatedAt: codexTimestamp(thread.updatedAt),
                 },
                 providerTurns: [],
                 messages: [],
                 runtimeRequests: [],
-                providerPayload: response.thread,
+                providerPayload: thread,
               };
             },
             (effect, threadInput) =>

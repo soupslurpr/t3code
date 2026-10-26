@@ -1,3 +1,4 @@
+import wireFixture from "../../provider/testFixtures/codexMultiAgentWire.json" with { type: "json" };
 import { historyResponseItems } from "@t3tools/provider-core/server/handoffBudget";
 import {
   makeProviderTextDeltaCoalescer,
@@ -1037,6 +1038,94 @@ describe("CodexAdapterV2 post-settle continuation", () => {
         awaitTerminal: (count: number) => changes.until(() => terminalEvents().length >= count),
       };
     });
+
+  it.effect.each(["paginated", "legacy", "repeated"] as const)(
+    "reads %s history through the snapshot adapter",
+    (mode) =>
+      Effect.gen(function* () {
+        const nativeThreadId = "snapshot-history-thread";
+        const preamble = codexReplayPreamble({
+          nativeThreadId,
+          nativeTurnId: "unused",
+          prompt: "unused",
+        }).slice(0, 5);
+        const thread = {
+          ...wireFixture.responses.threadStart.thread,
+          id: nativeThreadId,
+          historyMode: mode === "legacy" ? "legacy" : "paginated",
+          turns: [],
+        };
+        const turns = ["first", "second"].map((id) =>
+          makeCodexReplayTurn({ id, status: "completed" }),
+        );
+        const exchange = (
+          id: number,
+          method: string,
+          params: unknown,
+          result: unknown,
+        ): CodexReplay.CodexAppServerReplayEntry[] => [
+          { type: "expect_outbound", frame: { id, method, params } },
+          { type: "emit_inbound", frame: { id, result } },
+        ];
+        const page = (cursor: string | null) => ({
+          threadId: nativeThreadId,
+          cursor,
+          itemsView: "full",
+          limit: 100,
+          sortDirection: "asc",
+        });
+        const harness = yield* makeCodexReplayHarness(
+          makeCodexReplayTranscript({
+            scenario: `snapshot-${mode}`,
+            entries: [
+              ...preamble,
+              ...exchange(
+                3,
+                "thread/read",
+                { threadId: nativeThreadId, includeTurns: false },
+                { thread },
+              ),
+              ...(mode === "legacy"
+                ? exchange(
+                    4,
+                    "thread/read",
+                    { threadId: nativeThreadId, includeTurns: true },
+                    { thread: { ...thread, turns } },
+                  )
+                : [
+                    ...exchange(4, "thread/turns/list", page(null), {
+                      data: [turns[0]],
+                      nextCursor: "next",
+                    }),
+                    ...exchange(5, "thread/turns/list", page("next"), {
+                      data: [turns[1]],
+                      nextCursor: mode === "repeated" ? "next" : null,
+                    }),
+                  ]),
+            ],
+          }),
+        );
+        const input = { providerThread: harness.providerThread };
+        if (mode === "repeated") {
+          const failure = yield* harness.runtime.readThreadSnapshot(input).pipe(Effect.flip);
+          assert.equal(failure._tag, "ProviderAdapterReadThreadSnapshotError");
+          assert.include(String(failure.cause), "Thread history pagination repeated a cursor.");
+        } else {
+          const snapshot = yield* harness.runtime.readThreadSnapshot(input);
+          assert.deepInclude(snapshot.providerPayload, {
+            id: nativeThreadId,
+            historyMode: thread.historyMode,
+            turns,
+          });
+          assert.equal(snapshot.providerThread.nativeThreadRef?.nativeId, nativeThreadId);
+        }
+      }).pipe(
+        Effect.scoped,
+        Effect.provide(
+          Layer.mergeAll(IdAllocator.layer, McpProviderSessions.layer, NodeServices.layer),
+        ),
+      ),
+  );
 
   it.effect.each(["0.151.0", "0.150.0", "unknown"])(
     "delivers monitor harness input only with supported Codex %s",
@@ -5471,6 +5560,54 @@ describe("CodexAdapterV2 post-settle continuation", () => {
         ),
       ),
     ),
+  );
+
+  it.effect.each(["from-read", "from-resume"] as const)(
+    "preserves the child model lookup fallback %s",
+    (mode) =>
+      Effect.gen(function* () {
+        const observed = yield* Deferred.make<void>();
+        const calls: string[] = [];
+        const harness = yield* makeCodexReplayHarness(
+          resumeSubagentTranscript,
+          (event) =>
+            event.type === "subagent.updated" && event.subagent.model === "exact-child-model"
+              ? Deferred.succeed(observed, undefined)
+              : Effect.void,
+          undefined,
+          (threadId, method) =>
+            Effect.sync(() => {
+              calls.push(method);
+              return method === "thread/read"
+                ? {
+                    thread: {
+                      id: threadId,
+                      ...(mode === "from-read" ? { model: "exact-child-model" } : {}),
+                    },
+                  }
+                : { thread: { id: threadId }, model: "exact-child-model" };
+            }),
+        );
+        yield* harness.runtime.startTurn(
+          makeCodexTestTurnInput({
+            threadId: harness.threadId,
+            providerThread: harness.providerThread,
+            now: yield* DateTime.now,
+            attemptId: RunAttemptId.make(`lookup-${mode}`),
+            text: RESUME_PROMPT,
+          }),
+        );
+        yield* Deferred.await(observed);
+        assert.deepEqual(
+          calls,
+          mode === "from-read" ? ["thread/read"] : ["thread/read", "thread/resume"],
+        );
+      }).pipe(
+        Effect.scoped,
+        Effect.provide(
+          Layer.mergeAll(IdAllocator.layer, McpProviderSessions.layer, NodeServices.layer),
+        ),
+      ),
   );
 
   it.effect.each(["model/rerouted"] as const)(

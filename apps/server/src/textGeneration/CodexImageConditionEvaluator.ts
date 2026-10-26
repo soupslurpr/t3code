@@ -1,3 +1,4 @@
+import { readCodexThreadHistory } from "../provider/CodexThreadHistory.ts";
 import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
 import * as FileSystem from "effect/FileSystem";
@@ -397,6 +398,25 @@ export const makeCodexImageConditionEvaluator = Effect.fn("makeCodexImageConditi
             exit._tag === "Failure" ? abandonTurn(lane, turn.turn.id) : Effect.void,
           ),
         );
+        // Paginated completion notifications may omit the full turn items.
+        const completedTurn =
+          completed.completion.turn.status === "completed" &&
+          !completed.completion.turn.items.some((item) => item.type === "agentMessage")
+            ? yield* timeout(
+                readCodexThreadHistory(lane.client, lane.threadId),
+                "Codex evaluator history read timed out.",
+              ).pipe(
+                Effect.map(
+                  (thread) =>
+                    thread.turns.find((item) => item.id === turn.turn.id) ??
+                    completed.completion.turn,
+                ),
+                Effect.mapError(mapEvaluatorError("Failed to read the Codex evaluator result.")),
+                Effect.onExit((exit) =>
+                  Exit.isFailure(exit) ? abandonTurn(lane, turn.turn.id) : Effect.void,
+                ),
+              )
+            : completed.completion.turn;
         yield* timeout(
           lane.client.request("thread/revert", {
             beforeTurnId: turn.turn.id,
@@ -409,7 +429,6 @@ export const makeCodexImageConditionEvaluator = Effect.fn("makeCodexImageConditi
           Effect.tapError(() => closeLane(lane)),
         );
 
-        const completedTurn = completed.completion.turn;
         if (completedTurn.status !== "completed") {
           const detail =
             completedTurn.status === "failed" && completedTurn.error?.message

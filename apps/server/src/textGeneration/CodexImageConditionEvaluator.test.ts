@@ -64,6 +64,9 @@ function makeFakeEvaluatorAppServer(
       cacheWriteInputTokens?: number;
     };
     completionFirst?: boolean;
+    summaryCompletion?: boolean;
+    historyMode?: "paginated" | "legacy";
+    repeatedCursor?: boolean;
   } = {},
 ) {
   return Effect.gen(function* () {
@@ -87,13 +90,14 @@ const options = ${JSON.stringify(options)};
 const threadId = "evaluator-thread-1";
 const sessionId = "evaluator-session-1";
 let turnCount = 0;
+let completedTurn;
 
 const makeThread = (cwd) => ({
   cliVersion: "0.test",
   createdAt: 1,
   cwd,
   ephemeral: false,
-  historyMode: "paginated",
+  historyMode: options.historyMode ?? "paginated",
   id: threadId,
   modelProvider: "openai",
   preview: "",
@@ -183,26 +187,33 @@ lines.on("line", async (line) => {
       });
       if (!options.completionFirst) emitUsage();
       const invalid = process.env.${EVALUATOR_INVALID_FIRST_ENV} === "1" && turnCount === 1;
-      write({
-        method: "turn/completed",
-        params: {
-          threadId,
-          turn: {
-            id: turnId,
-            items: [{
-              id: "message-" + turnCount,
-              phase: "final_answer",
-              text: invalid ? "not json" : output,
-              type: "agentMessage",
-            }],
-            status: options.failure === "turn" ? "failed" : "completed",
-            ...(options.failure === "turn" ? { error: { message: "Exact model unavailable" } } : {}),
-          },
-        },
-      });
+      completedTurn = {
+        id: turnId,
+        items: [{
+          id: "message-" + turnCount,
+          phase: "final_answer",
+          text: invalid ? "not json" : output,
+          type: "agentMessage",
+        }],
+        status: options.failure === "turn" ? "failed" : "completed",
+        ...(options.failure === "turn" ? { error: { message: "Exact model unavailable" } } : {}),
+      };
+      write({ method: "turn/completed", params: { threadId,
+        turn: options.summaryCompletion ? { ...completedTurn, items: [] } : completedTurn,
+      } });
       if (options.completionFirst) emitUsage();
       return;
     }
+    case "thread/read":
+      respond(message.id, { thread: { ...makeThread(process.cwd()),
+        turns: params.includeTurns ? [completedTurn] : [],
+      } });
+      return;
+    case "thread/turns/list":
+      respond(message.id, { data: params.cursor === null ? [] : [completedTurn],
+        nextCursor: params.cursor === null || options.repeatedCursor ? "next" : null,
+      });
+      return;
     case "thread/revert":
       if (options.failure === "revert") { respondError(message.id, "revert unavailable"); return; }
       respond(message.id, { thread: makeThread(process.cwd()) });
@@ -383,6 +394,45 @@ it.layer(NodeServices.layer)("CodexImageConditionEvaluator", (it) => {
         containsObjectKey(messages.find((entry) => entry.method === "turn/start")?.params, "allOf"),
       ).toBe(false);
     }).pipe(Effect.scoped),
+  );
+
+  it.effect.each(["paginated", "legacy", "repeated"] as const)(
+    "hydrates summary-only evaluator completions through %s history before reverting",
+    (mode) =>
+      Effect.gen(function* () {
+        const fileSystem = yield* FileSystem.FileSystem;
+        const directory = yield* fileSystem.makeTempDirectoryScoped();
+        const fixture = yield* makeFakeEvaluatorAppServer(directory, {
+          summaryCompletion: true,
+          historyMode: mode === "legacy" ? "legacy" : "paginated",
+          repeatedCursor: mode === "repeated",
+        });
+        const evaluate = yield* makeCodexImageConditionEvaluator(
+          decodeCodexSettings({ binaryPath: fixture.binaryPath }),
+          { ...process.env, [EVALUATOR_LOG_PATH_ENV]: fixture.logPath },
+        );
+        const result = yield* evaluate(imageConditionInput()).pipe(Effect.result);
+        if (mode === "repeated") {
+          expect(Result.isFailure(result)).toBe(true);
+        } else {
+          expect(Result.getOrThrow(result).verdict).toBe("matched");
+        }
+        const log = yield* readEvaluatorLog(fixture.logPath);
+        const methods = log
+          .filter((entry) => entry.kind === "message")
+          .map((entry) => entry.method);
+        expect(methods).toEqual([
+          "initialize",
+          "initialized",
+          "thread/start",
+          "turn/start",
+          "thread/read",
+          ...(mode === "legacy" ? ["thread/read"] : ["thread/turns/list", "thread/turns/list"]),
+          ...(mode === "repeated"
+            ? ["turn/interrupt", "thread/revert", "thread/delete"]
+            : ["thread/revert"]),
+        ]);
+      }).pipe(Effect.scoped),
   );
 
   it.effect("reverts invalid output before reusing the evaluator thread", () =>
