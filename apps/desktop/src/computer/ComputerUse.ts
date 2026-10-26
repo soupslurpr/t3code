@@ -1018,83 +1018,131 @@ export const makeWithOptions = Effect.fn("ComputerUse.makeWithOptions")(function
       const screenshotOptions = input.screenshot === false ? null : (input.screenshot ?? {});
       const storedFrames = (yield* Ref.get(frameState)).frames;
       const requestedRegion = screenshotOptions?.region;
-      const [display, desktopRegion] = requestedRegion
-        ? yield* resolveStoredFrame(storedFrames, displays, requestedRegion.frameId).pipe(
-            Effect.flatMap(([stored, regionDisplay]) => {
-              const frame = stored.frame;
-              if (
-                requestedRegion.x + requestedRegion.width > frame.width ||
-                requestedRegion.y + requestedRegion.height > frame.height
-              ) {
-                const invalidHorizontal = requestedRegion.x + requestedRegion.width > frame.width;
-                const invalidOrigin = invalidHorizontal
-                  ? requestedRegion.x >= frame.width
-                  : requestedRegion.y >= frame.height;
-                const field = invalidHorizontal
-                  ? invalidOrigin
-                    ? "screenshot.region.x"
-                    : "screenshot.region.width"
-                  : invalidOrigin
-                    ? "screenshot.region.y"
-                    : "screenshot.region.height";
-                const received = invalidHorizontal
-                  ? invalidOrigin
-                    ? requestedRegion.x
-                    : requestedRegion.width
-                  : invalidOrigin
-                    ? requestedRegion.y
-                    : requestedRegion.height;
-                const max = invalidHorizontal
-                  ? invalidOrigin
-                    ? frame.width - 1
-                    : frame.width - requestedRegion.x
-                  : invalidOrigin
-                    ? frame.height - 1
-                    : frame.height - requestedRegion.y;
-                return Effect.fail(
-                  new ComputerUseRegionOutOfBoundsError({
-                    ...requestedRegion,
-                    frameWidth: frame.width,
-                    frameHeight: frame.height,
-                    field,
-                    received: String(received),
-                    expected: [`integer from ${invalidOrigin ? 0 : 1} through ${max}`],
-                  }),
-                );
-              }
-              return Effect.succeed([
-                regionDisplay,
-                {
-                  x:
-                    frame.toDesktopLogical.offsetX +
-                    requestedRegion.x * frame.toDesktopLogical.scaleX,
-                  y:
-                    frame.toDesktopLogical.offsetY +
-                    requestedRegion.y * frame.toDesktopLogical.scaleY,
-                  width: requestedRegion.width * frame.toDesktopLogical.scaleX,
-                  height: requestedRegion.height * frame.toDesktopLogical.scaleY,
-                },
-              ] as const);
-            }),
-          )
-        : yield* (
-            input.displayId
-              ? resolveDisplay(displays, input.displayId)
-              : resolveDisplay(displays, primaryId)
-          ).pipe(
-            Effect.map(
-              (selectedDisplay) =>
-                [
-                  selectedDisplay,
+      const [display, desktopRegion] =
+        requestedRegion && "frameId" in requestedRegion
+          ? yield* resolveStoredFrame(storedFrames, displays, requestedRegion.frameId).pipe(
+              Effect.flatMap(([stored, regionDisplay]) => {
+                const frame = stored.frame;
+                if (
+                  requestedRegion.x + requestedRegion.width > frame.width ||
+                  requestedRegion.y + requestedRegion.height > frame.height
+                ) {
+                  const invalidHorizontal = requestedRegion.x + requestedRegion.width > frame.width;
+                  const invalidOrigin = invalidHorizontal
+                    ? requestedRegion.x >= frame.width
+                    : requestedRegion.y >= frame.height;
+                  const field = invalidHorizontal
+                    ? invalidOrigin
+                      ? "screenshot.region.x"
+                      : "screenshot.region.width"
+                    : invalidOrigin
+                      ? "screenshot.region.y"
+                      : "screenshot.region.height";
+                  const received = invalidHorizontal
+                    ? invalidOrigin
+                      ? requestedRegion.x
+                      : requestedRegion.width
+                    : invalidOrigin
+                      ? requestedRegion.y
+                      : requestedRegion.height;
+                  const max = invalidHorizontal
+                    ? invalidOrigin
+                      ? frame.width - 1
+                      : frame.width - requestedRegion.x
+                    : invalidOrigin
+                      ? frame.height - 1
+                      : frame.height - requestedRegion.y;
+                  return Effect.fail(
+                    new ComputerUseRegionOutOfBoundsError({
+                      ...requestedRegion,
+                      frameWidth: frame.width,
+                      frameHeight: frame.height,
+                      field,
+                      received: String(received),
+                      expected: [`integer from ${invalidOrigin ? 0 : 1} through ${max}`],
+                    }),
+                  );
+                }
+                return Effect.succeed([
+                  regionDisplay,
                   {
-                    x: selectedDisplay.bounds.x,
-                    y: selectedDisplay.bounds.y,
-                    width: selectedDisplay.bounds.width,
-                    height: selectedDisplay.bounds.height,
+                    x:
+                      frame.toDesktopLogical.offsetX +
+                      requestedRegion.x * frame.toDesktopLogical.scaleX,
+                    y:
+                      frame.toDesktopLogical.offsetY +
+                      requestedRegion.y * frame.toDesktopLogical.scaleY,
+                    width: requestedRegion.width * frame.toDesktopLogical.scaleX,
+                    height: requestedRegion.height * frame.toDesktopLogical.scaleY,
                   },
-                ] as const,
-            ),
-          );
+                ] as const);
+              }),
+            )
+          : requestedRegion
+            ? yield* resolveDisplay(displays, requestedRegion.displayId).pipe(
+                Effect.flatMap((selectedDisplay) => {
+                  const bounds = selectedDisplay.bounds;
+                  const right = requestedRegion.x + requestedRegion.width;
+                  const bottom = requestedRegion.y + requestedRegion.height;
+                  const contained =
+                    requestedRegion.x >= bounds.x &&
+                    requestedRegion.y >= bounds.y &&
+                    right <= bounds.x + bounds.width &&
+                    bottom <= bounds.y + bounds.height;
+                  if (contained) return Effect.succeed([selectedDisplay, requestedRegion] as const);
+                  const invalidHorizontal =
+                    requestedRegion.x < bounds.x || right > bounds.x + bounds.width;
+                  const invalidOrigin = invalidHorizontal
+                    ? requestedRegion.x < bounds.x || requestedRegion.x >= bounds.x + bounds.width
+                    : requestedRegion.y < bounds.y || requestedRegion.y >= bounds.y + bounds.height;
+                  const field = invalidHorizontal
+                    ? invalidOrigin
+                      ? "screenshot.region.x"
+                      : "screenshot.region.width"
+                    : invalidOrigin
+                      ? "screenshot.region.y"
+                      : "screenshot.region.height";
+                  const received = invalidHorizontal
+                    ? invalidOrigin
+                      ? requestedRegion.x
+                      : requestedRegion.width
+                    : invalidOrigin
+                      ? requestedRegion.y
+                      : requestedRegion.height;
+                  return Effect.fail(
+                    new ComputerUseRegionOutOfBoundsError({
+                      frameId: `display:${requestedRegion.displayId}`,
+                      x: requestedRegion.x - bounds.x,
+                      y: requestedRegion.y - bounds.y,
+                      width: requestedRegion.width,
+                      height: requestedRegion.height,
+                      frameWidth: bounds.width,
+                      frameHeight: bounds.height,
+                      field,
+                      received: String(received),
+                      expected: ["region contained by its source display"],
+                    }),
+                  );
+                }),
+              )
+            : yield* (
+                input.displayId
+                  ? resolveDisplay(displays, input.displayId)
+                  : resolveDisplay(displays, primaryId)
+              ).pipe(
+                Effect.map(
+                  (selectedDisplay) =>
+                    [
+                      selectedDisplay,
+                      {
+                        x: selectedDisplay.bounds.x,
+                        y: selectedDisplay.bounds.y,
+                        width: selectedDisplay.bounds.width,
+                        height: selectedDisplay.bounds.height,
+                      },
+                    ] as const,
+                ),
+              );
       if (controllerStatus.permission !== "granted") {
         yield* Ref.set(lastPointer, null);
       }

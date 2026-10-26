@@ -14,14 +14,30 @@ import * as TestClock from "effect/testing/TestClock";
 import { vi } from "vite-plus/test";
 
 const { nativeImage } = vi.hoisted(() => {
-  const image = {
-    isEmpty: () => false,
-    getSize: () => ({ width: 100, height: 100 }),
-    crop: () => image,
-    resize: () => image,
-    toPNG: () => Buffer.from([1]),
-  };
-  return { nativeImage: { createFromBitmap: vi.fn(() => image) } };
+  class Image {
+    readonly width: number;
+    readonly height: number;
+    constructor(width = 100, height = 100) {
+      this.width = width;
+      this.height = height;
+    }
+    isEmpty() {
+      return false;
+    }
+    getSize() {
+      return { width: this.width, height: this.height };
+    }
+    crop(region: { width: number; height: number }) {
+      return new Image(region.width, region.height);
+    }
+    resize(size: { width: number; height: number }) {
+      return new Image(size.width, size.height);
+    }
+    toPNG() {
+      return Buffer.from([1]);
+    }
+  }
+  return { nativeImage: { createFromBitmap: vi.fn(() => new Image()) } };
 });
 
 vi.mock("electron", () => ({ nativeImage }));
@@ -702,6 +718,86 @@ describe("AgentDesktopManager", () => {
         assert.equal(calls.filter((call) => call.startsWith("create:")).length, 1);
         assert.equal(calls.filter((call) => call.startsWith("start:")).length, 1);
         assert(calls.some((call) => call.endsWith(":ctrl+l") && call.startsWith("key:")));
+      }).pipe(Effect.provide(harness.layer));
+    }),
+  );
+
+  it.effect("captures a durable Agent desktop region without a source frame", () =>
+    Effect.gen(function* () {
+      const harness = yield* managerHarness("durable-region", { captureAvailable: true });
+      yield* Effect.gen(function* () {
+        const manager = yield* AgentDesktopManager.AgentDesktopManager;
+        const desktop = yield* manager.acquire(owner, { label: "Durable crop" });
+        yield* manager.requestView(owner, { kind: "agent", desktopId: desktop.id });
+
+        const snapshot = yield* manager.snapshot(
+          owner.controllerId,
+          {
+            includeAccessibility: false,
+            screenshot: {
+              region: {
+                coordinateSpace: "desktop-logical",
+                displayId: "display-0",
+                x: 10,
+                y: 20,
+                width: 30,
+                height: 40,
+              },
+              maxWidth: 100,
+              maxHeight: 100,
+            },
+          },
+          desktop.id,
+        );
+
+        assert.deepInclude(snapshot.frame, {
+          displayId: "display-0",
+          width: 30,
+          height: 40,
+          toDesktopLogical: {
+            scaleX: 1,
+            scaleY: 1,
+            offsetX: 10,
+            offsetY: 20,
+          },
+        });
+      }).pipe(Effect.provide(harness.layer));
+    }),
+  );
+
+  it.effect("shares view-only access with another controller in the same thread", () =>
+    Effect.gen(function* () {
+      const harness = yield* managerHarness("shared-thread-view");
+      yield* Effect.gen(function* () {
+        const manager = yield* AgentDesktopManager.AgentDesktopManager;
+        const desktop = yield* manager.acquire(owner, { label: "Shared view" });
+        yield* manager.requestControl(owner, { kind: "agent", desktopId: desktop.id });
+        const viewer = yield* decodeAgentDesktopOwner({
+          ...owner,
+          controllerId: "monitor-controller",
+        });
+
+        const viewed = yield* manager.requestView(viewer, {
+          kind: "agent",
+          desktopId: desktop.id,
+        });
+        assert.strictEqual(viewed.permission, "view-only");
+        assert.strictEqual(
+          (yield* manager.status(owner.controllerId, desktop.id)).permission,
+          "granted",
+        );
+
+        const foreignThread = yield* decodeAgentDesktopOwner({
+          ...viewer,
+          threadId: "another-thread",
+        });
+        const error = yield* manager
+          .requestView(foreignThread, { kind: "agent", desktopId: desktop.id })
+          .pipe(Effect.flip);
+        assert.strictEqual(
+          ComputerUse.toComputerAutomationFailure(error).code,
+          "desktop-target-mismatch",
+        );
       }).pipe(Effect.provide(harness.layer));
     }),
   );
@@ -1637,4 +1733,88 @@ describe("AgentDesktopManager", () => {
       ],
     );
   });
+});
+
+describe("shared Agent observation lifecycle", () => {
+  it.effect.each(["viewer", "controller"] as const)(
+    "releases %s first without revoking the remaining lease",
+    (first) =>
+      Effect.gen(function* () {
+        const harness = yield* managerHarness(`shared-release-${first}`, {
+          captureAvailable: true,
+        });
+        yield* Effect.gen(function* () {
+          const manager = yield* AgentDesktopManager.AgentDesktopManager;
+          const desktop = yield* manager.acquire(owner, {});
+          const viewer = { ...owner, controllerId: "durable-watcher" };
+          yield* manager.requestControl(owner, { kind: "agent", desktopId: desktop.id });
+          yield* manager.requestView(viewer, { kind: "agent", desktopId: desktop.id });
+          const denied = yield* manager
+            .act(viewer.controllerId, { actions: [{ type: "press", key: "Enter" }] }, desktop.id)
+            .pipe(Effect.flip);
+          assert.equal(ComputerUse.toComputerAutomationFailure(denied).code, "desktop-busy");
+          const released = first === "viewer" ? viewer : owner;
+          const remaining = first === "viewer" ? owner : viewer;
+          yield* manager.release(released.controllerId, desktop.id);
+          assert.equal(
+            (yield* manager.status(remaining.controllerId, desktop.id)).permission,
+            first === "viewer" ? "granted" : "view-only",
+          );
+          assert.isDefined(
+            (yield* manager.snapshot(
+              remaining.controllerId,
+              { includeAccessibility: false },
+              desktop.id,
+            )).frame,
+          );
+          yield* manager.release(remaining.controllerId, desktop.id);
+          assert.equal(
+            (yield* manager.status(owner.controllerId, desktop.id)).permission,
+            "remembered",
+          );
+          yield* manager.requestView(viewer, { kind: "agent", desktopId: desktop.id });
+          assert.equal(
+            (yield* manager.requestControl(owner, { kind: "agent", desktopId: desktop.id }))
+              .permission,
+            "granted",
+          );
+          assert.equal(
+            (yield* manager.status(viewer.controllerId, desktop.id)).permission,
+            "view-only",
+          );
+          const foreignEnvironment = {
+            ...viewer,
+            environmentId: EnvironmentId.make("foreign-environment"),
+          };
+          assert.equal(
+            ComputerUse.toComputerAutomationFailure(
+              yield* manager
+                .requestView(foreignEnvironment, { kind: "agent", desktopId: desktop.id })
+                .pipe(Effect.flip),
+            ).code,
+            "desktop-target-mismatch",
+          );
+          for (const region of [
+            { displayId: "missing", x: 0, y: 0, width: 1, height: 1 },
+            { displayId: "display-0", x: -1, y: 0, width: 1, height: 1 },
+            { displayId: "display-0", x: 99, y: 0, width: 2, height: 1 },
+          ]) {
+            const error = yield* manager
+              .snapshot(
+                viewer.controllerId,
+                {
+                  includeAccessibility: false,
+                  screenshot: { region: { coordinateSpace: "desktop-logical", ...region } },
+                },
+                desktop.id,
+              )
+              .pipe(Effect.flip);
+            assert.equal(
+              ComputerUse.toComputerAutomationFailure(error).code,
+              region.displayId === "missing" ? "display-not-found" : "invalid-coordinate",
+            );
+          }
+        }).pipe(Effect.provide(harness.layer));
+      }),
+  );
 });
