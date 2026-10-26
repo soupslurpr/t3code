@@ -1038,6 +1038,109 @@ describe("CodexAdapterV2 post-settle continuation", () => {
       };
     });
 
+  it.effect.each(["0.151.0", "0.150.0", "unknown"])(
+    "delivers monitor harness input only with supported Codex %s",
+    (version) =>
+      Effect.scoped(
+        Effect.gen(function* () {
+          const supported = version === "0.151.0";
+          const nativeThreadId = `monitor-${version}`;
+          const prompt = "Automated T3 monitor continuation: $untrusted-observation";
+          const entries = codexReplayPreamble({
+            nativeThreadId,
+            nativeTurnId: "monitor-turn",
+            prompt,
+          });
+          entries[1] = {
+            type: "emit_inbound",
+            label: "initialize",
+            frame: {
+              id: 1,
+              result: {
+                userAgent: version === "unknown" ? "unknown" : `Codex/${version}`,
+                codexHome: "/tmp/codex-home",
+                platformFamily: "unix",
+                platformOs: "linux",
+              },
+            },
+          };
+          if (supported)
+            entries[5] = {
+              type: "expect_outbound",
+              label: "monitor turn",
+              frame: {
+                id: 3,
+                method: "turn/start",
+                params: {
+                  threadId: nativeThreadId,
+                  input: [],
+                  toolOutput: {
+                    namespace: "t3_code",
+                    name: "monitor",
+                    output: [{ type: "input_text", text: prompt }],
+                  },
+                  cwd: "/workspace",
+                  model: "gpt-5.4",
+                  approvalPolicy: "never",
+                  approvalsReviewer: "user",
+                  sandboxPolicy: { type: "dangerFullAccess" },
+                  summary: "detailed",
+                  collaborationMode: { mode: "default", settings: { model: "gpt-5.4" } },
+                },
+              },
+            };
+          const requests: unknown[] = [];
+          const harness = yield* makeCodexReplayHarness(
+            makeCodexReplayTranscript({ scenario: nativeThreadId, entries }),
+            () => Effect.void,
+            (method, params) =>
+              Effect.sync(() => {
+                if (method === "turn/start") requests.push(params);
+              }),
+          );
+          const turn = makeCodexTestTurnInput({
+            threadId: harness.threadId,
+            providerThread: harness.providerThread,
+            now: yield* DateTime.now,
+            attemptId: RunAttemptId.make(`monitor-${version}`),
+            text: prompt,
+          });
+          const automated = {
+            ...turn,
+            message: {
+              ...turn.message,
+              inputSource: "harness" as const,
+              createdBy: "system" as const,
+              creationSource: "server" as const,
+            },
+          };
+          if (supported) {
+            yield* harness.runtime.startTurn(automated);
+            assert.lengthOf(requests, 1);
+            assert.deepInclude(requests[0], {
+              input: [],
+              toolOutput: {
+                namespace: "t3_code",
+                name: "monitor",
+                output: [{ type: "input_text", text: prompt }],
+              },
+            });
+          } else {
+            const failure = yield* harness.runtime.startTurn(automated).pipe(Effect.flip);
+            assert.include(JSON.stringify(failure), "Codex CLI 0.151.0 or later");
+            assert.lengthOf(requests, 0);
+            yield* harness.runtime.startTurn(turn);
+            assert.lengthOf(requests, 1);
+            assert.notProperty(requests[0], "toolOutput");
+          }
+        }).pipe(
+          Effect.provide(
+            Layer.mergeAll(IdAllocator.layer, McpProviderSessions.layer, NodeServices.layer),
+          ),
+        ),
+      ),
+  );
+
   it.effect.each(["legacy", "limited", "explicit"] as const)(
     "honors the %s instance catalog in emitted Astra turn requests",
     (catalog) =>

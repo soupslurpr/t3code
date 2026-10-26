@@ -39,3 +39,11 @@ before checking whether its resulting run now makes the thread busy.
 The default health-review policy applies to new watches only. Preserve a stored
 null policy or explicitly disabled failure threshold when revising a watch;
 normalizing omission to the new default would silently re-enable warnings.
+
+Monitor continuations are V2 notifications, not user-message turn items. Keep
+structured observations separate from the stored controller instruction and
+render the full provider input only at turn start. Codex uses standalone
+harness tool output and must reject unsupported protocol versions; silently
+falling back to user input would change the event's provenance. Other adapters
+receive the explicitly labelled provider-neutral text on the normal queued
+start path. The legacy message column must remain for deferred V1 import.

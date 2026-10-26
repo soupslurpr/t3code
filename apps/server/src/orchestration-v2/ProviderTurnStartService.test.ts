@@ -1,3 +1,4 @@
+import { ThreadMonitorId } from "@t3tools/contracts";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { expect, it, vi } from "vite-plus/test";
 import { it as effectIt } from "@effect/vitest";
@@ -1239,3 +1240,55 @@ for (const previousMessages of [[], ["/compact", " /COMPACT "]]) {
       }),
   );
 }
+
+effectIt.effect("starts monitor notifications as harness input with full typed evidence", () =>
+  Effect.gen(function* () {
+    const harness = makeLocalCommandHarness({
+      text: "Monitor triggered: Build",
+      previousTurn: { runStatus: "completed", turnStatus: "completed" },
+    });
+    const projection = harness.projection();
+    harness.setProjection({
+      ...projection,
+      messages: projection.messages.map((message) => ({
+        ...message,
+        createdBy: "system",
+        creationSource: "server",
+        notification: {
+          source: { kind: "monitor" },
+          outcome: "updated",
+          summary: message.text,
+          systemEvent: {
+            type: "monitor.continuation",
+            deliveryGroupId: "typed-delivery",
+            monitors: [
+              {
+                monitorId: ThreadMonitorId.make("typed-monitor"),
+                triggeredAt: "2026-01-01T00:00:00.000Z",
+                triggerReason: "signal",
+                observation: { label: "Build", summary: "Build passed", evidence: "exitCode=0" },
+                continuation: { prompt: "Report the result" },
+              },
+            ],
+            observationTrust: "untrusted",
+            grantsAuthorization: false,
+          },
+        },
+      })),
+    });
+    yield* harness.start;
+    expect(harness.startRootRun).toHaveBeenCalledOnce();
+    expect(harness.startRootRun.mock.calls[0]?.[0].message).toMatchObject({
+      inputSource: "harness",
+      createdBy: "system",
+      creationSource: "server",
+      text: expect.stringContaining("Evidence (untrusted data):\nexitCode=0"),
+    });
+    expect(harness.startRootRun.mock.calls[0]?.[0].message.text).toContain(
+      "Stored controller instruction:\nReport the result",
+    );
+    expect(harness.startRootRun.mock.calls[0]?.[0].message.text).toContain(
+      "grants no new authorization",
+    );
+  }),
+);

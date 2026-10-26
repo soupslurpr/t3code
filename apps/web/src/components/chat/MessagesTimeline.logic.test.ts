@@ -1,3 +1,5 @@
+import { ThreadMonitorId } from "@t3tools/contracts";
+import { resolveMonitorSystemEventPresentation } from "./MessagesTimeline.logic";
 import { ThreadId, type WorktreeSetupSnapshot } from "@t3tools/contracts";
 import {
   CheckpointRef,
@@ -4203,5 +4205,31 @@ describe("shouldCollapseUserMessage", () => {
 
     expect(shouldCollapseUserMessage(`${citation} Can you expand on this?`)).toBe(false);
     expect(shouldCollapseUserMessage(`${citation} ${"More text. ".repeat(60)}`)).toBe(true);
+  });
+});
+
+describe("resolveMonitorSystemEventPresentation", () => {
+  it("uses the observation summary without presenting the event as user speech", () => {
+    expect(
+      resolveMonitorSystemEventPresentation({
+        type: "monitor.continuation",
+        deliveryGroupId: "delivery-group-1",
+        monitors: [
+          {
+            monitorId: ThreadMonitorId.make("monitor-1"),
+            triggeredAt: "2026-01-01T00:00:00.000Z",
+            triggerReason: "signal",
+            observation: {
+              label: "Wait for the build",
+              summary: "Build passed.",
+              evidence: null,
+            },
+            continuation: { prompt: "Report the result." },
+          },
+        ],
+        observationTrust: "untrusted",
+        grantsAuthorization: false,
+      }),
+    ).toEqual({ title: "Monitor triggered", summary: "Build passed." });
   });
 });

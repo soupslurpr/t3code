@@ -727,10 +727,17 @@ function codexRuntimeModeTurnDefaults(runtimeMode: RuntimeMode): {
   }
 }
 
+// Standalone tool output is available in the experimental protocol from Codex 0.151.
+export function supportsCodexToolOutput(userAgent: string): boolean {
+  const version = /\/(\d+)\.(\d+)\.(\d+)/.exec(userAgent);
+  return version !== null && (Number(version[1]) > 0 || Number(version[2]) >= 151);
+}
+
 export const buildCodexTurnStartParams = Effect.fn("CodexAdapterV2.buildCodexTurnStartParams")(
   function* (input: {
     readonly nativeThreadId: string;
     readonly codexInput: ReadonlyArray<CodexSchema.V2TurnStartParams__UserInput>;
+    readonly toolOutput?: CodexSchema.V2TurnStartParams__TurnToolOutput;
     readonly runtimePolicy: ProviderAdapter.ProviderAdapterV2RuntimePolicy;
     readonly modelSelection: ModelSelection;
     readonly modelCapabilities?: ModelCapabilities | null | undefined;
@@ -784,6 +791,7 @@ export const buildCodexTurnStartParams = Effect.fn("CodexAdapterV2.buildCodexTur
     return yield* decodeCodexTurnStartParamsWithCollaborationMode({
       threadId: input.nativeThreadId,
       input: input.codexInput,
+      ...(input.toolOutput === undefined ? {} : { toolOutput: input.toolOutput }),
       ...(additionalContext ? { additionalContext } : {}),
       cwd: input.runtimePolicy.cwd,
       model: input.modelSelection.model,
@@ -1709,6 +1717,7 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
           ),
         );
         const initialized = yield* Ref.make(false);
+        const toolOutputSupported = yield* Ref.make(false);
         // Codex rejects a second initialize on the shared app-server.
         const initializePermit = yield* Semaphore.make(1);
         const ensureInitialized = initializePermit.withPermit(
@@ -1718,7 +1727,7 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
               return;
             }
 
-            yield* client
+            const handshake = yield* client
               .request("initialize", {
                 clientInfo: buildCodexInitializeParams().clientInfo,
                 capabilities: CODEX_CLIENT_CAPABILITIES,
@@ -1732,6 +1741,8 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
                       : Effect.fail(error),
                 }),
               );
+            if (handshake !== undefined)
+              yield* Ref.set(toolOutputSupported, supportsCodexToolOutput(handshake.userAgent));
             yield* client.notify("initialized", undefined);
             yield* Ref.set(initialized, true);
           }),
@@ -3103,16 +3114,22 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
           >,
         ) {
           const inputItems: Array<CodexSchema.V2TurnStartParams__UserInput> = [];
-          const text = yield* providerMessageTextWithAttachmentPaths({
-            text: codexSkillMentionText(turnInput.message.text),
-            attachments: turnInput.message.attachments,
-            resolveExtractedTextPath: (path) =>
-              DocumentText.resolveExtractedTextPath(path).pipe(
-                Effect.provideService(FileSystem.FileSystem, fileSystem),
-              ),
-            resolveAttachmentPath: (attachment) =>
-              resolveAttachmentPath({ attachmentsDir: serverConfig.attachmentsDir, attachment }),
-          });
+          const text =
+            turnInput.message.inputSource === "harness"
+              ? turnInput.message.text
+              : yield* providerMessageTextWithAttachmentPaths({
+                  text: codexSkillMentionText(turnInput.message.text),
+                  attachments: turnInput.message.attachments,
+                  resolveExtractedTextPath: (path) =>
+                    DocumentText.resolveExtractedTextPath(path).pipe(
+                      Effect.provideService(FileSystem.FileSystem, fileSystem),
+                    ),
+                  resolveAttachmentPath: (attachment) =>
+                    resolveAttachmentPath({
+                      attachmentsDir: serverConfig.attachmentsDir,
+                      attachment,
+                    }),
+                });
           if (text.length > 0) {
             inputItems.push({
               type: "text",
@@ -6257,12 +6274,37 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
             codexInput: ReadonlyArray<CodexSchema.V2TurnStartParams__UserInput>,
           ) {
             const threadId = yield* getNativeThreadId(turnInput.providerThread);
+            const harness = turnInput.message.inputSource === "harness";
+            if (harness && !(yield* Ref.get(toolOutputSupported)))
+              return yield* toProtocolError(
+                "Automated monitor delivery requires Codex CLI 0.151.0 or later. Update Codex to resume this thread from a monitor.",
+              );
+            const toolOutput = harness
+              ? ({
+                  namespace: "t3_code",
+                  name: "monitor",
+                  output: codexInput.flatMap(
+                    (item): Array<CodexSchema.V2TurnStartParams__FunctionCallOutputContentItem> => {
+                      if (item.type === "text") return [{ type: "input_text", text: item.text }];
+                      if (item.type === "image")
+                        return [
+                          "url" in item
+                            ? { type: "input_image", image_url: item.url }
+                            : { type: "input_image", file_id: item.fileId },
+                        ];
+                      return [];
+                    },
+                  ),
+                } satisfies CodexSchema.V2TurnStartParams__TurnToolOutput)
+              : undefined;
+
             const mcpSession = yield* mcpSessions.read(turnInput.threadId);
             const models =
               adapterOptions.getModels === undefined ? undefined : yield* adapterOptions.getModels;
             const turnStartParams = yield* buildCodexTurnStartParams({
               nativeThreadId: threadId,
-              codexInput,
+              codexInput: harness ? [] : codexInput,
+              ...(toolOutput === undefined ? {} : { toolOutput }),
               runtimePolicy: turnInput.runtimePolicy,
               modelSelection: turnInput.modelSelection,
               modelCapabilities: models?.find(

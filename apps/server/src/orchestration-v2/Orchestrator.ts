@@ -5204,7 +5204,12 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
     }
     if (
       command.notification !== undefined &&
-      (command.createdBy !== "agent" ||
+      ((command.createdBy !== "agent" &&
+        !(
+          command.createdBy === "system" &&
+          command.creationSource === "server" &&
+          command.notification.systemEvent !== undefined
+        )) ||
         (command.creationSource !== "server" && command.creationSource !== "provider") ||
         (dispatchMode.type !== "queue_after_active" &&
           !(

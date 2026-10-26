@@ -1,3 +1,4 @@
+import ForkMigration0007 from "./Migrations/061_ProjectionThreadMessageSystemEvents.ts";
 import ForkMigration0006 from "./Migrations/060_ComputerMonitorImageEncoding.ts";
 import ForkMigration0005 from "./Migrations/059_AdaptiveComputerMonitors.ts";
 import * as Migrator from "effect/sql/Migrator";
@@ -160,6 +161,7 @@ export const forkMigrationEntries = [
   [4, "ComputerMonitorEvaluationThrottle", ForkMigration0004],
   [5, "AdaptiveComputerMonitors", ForkMigration0005],
   [6, "ComputerMonitorImageEncoding", ForkMigration0006],
+  [7, "ProjectionThreadMessageSystemEvents", ForkMigration0007],
 ] as const;
 export const forkMigrationManifest = forkMigrationEntries.map(([id, name]) => [id, name] as const);
 

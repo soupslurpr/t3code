@@ -1,3 +1,5 @@
+import { ThreadMonitorId, OrchestrationSystemEvent } from "@t3tools/contracts";
+import * as Schema from "effect/Schema";
 import { assert, it } from "@effect/vitest";
 import {
   ComposerContextId,
@@ -42,9 +44,8 @@ const layerTest = Layer.mergeAll(
   layerProjectionMaintenanceProvided,
 );
 
-const seedPendingTranscripts = Effect.gen(function* () {
+const seedLegacyMessages = Effect.gen(function* () {
   const sql = yield* SqlClient.SqlClient;
-  const importer = yield* LegacyV1ThreadImporter.LegacyV1ThreadImporter;
   const threadIds = [ThreadId.make("thread:first"), ThreadId.make("thread:later")];
   yield* sql`
     INSERT INTO projection_projects (
@@ -75,8 +76,14 @@ const seedPendingTranscripts = Effect.gen(function* () {
           '2026-01-02T01:00:00.000Z', '2026-01-02T01:00:00.000Z')
     `;
   }
-  yield* importer.reconcileShells;
 });
+const seedPendingTranscripts = seedLegacyMessages.pipe(
+  Effect.andThen(
+    LegacyV1ThreadImporter.LegacyV1ThreadImporter.pipe(
+      Effect.flatMap((importer) => importer.reconcileShells),
+    ),
+  ),
+);
 
 it.effect(
   "keeps hydrating later transcripts after a defect and leaves the failed thread pending",
@@ -655,3 +662,61 @@ it.layer(layerTest)("LegacyV1ThreadImporter", (it) => {
     }),
   );
 });
+
+const encodeSystemEvent = Schema.encodeSync(Schema.fromJsonString(OrchestrationSystemEvent));
+it.effect(
+  "imports typed legacy monitor events as notifications without losing delivery identity",
+  () =>
+    Effect.gen(function* () {
+      yield* seedLegacyMessages;
+      const sql = yield* SqlClient.SqlClient;
+      const importer = yield* LegacyV1ThreadImporter.LegacyV1ThreadImporter;
+      const projections = yield* ProjectionStore.ProjectionStoreV2;
+      const threadId = ThreadId.make("thread:first");
+      const event = {
+        type: "monitor.continuation" as const,
+        deliveryGroupId: "legacy-delivery",
+        monitors: [
+          {
+            monitorId: ThreadMonitorId.make("legacy-monitor"),
+            triggeredAt: "2026-01-01T02:00:00.000Z",
+            triggerReason: "signal" as const,
+            observation: {
+              label: "Wait for build",
+              summary: "Build passed",
+              evidence: "exitCode=0",
+            },
+            continuation: { prompt: "Report the result" },
+          },
+        ],
+        observationTrust: "untrusted" as const,
+        grantsAuthorization: false as const,
+      };
+      const id = "thread-monitor-group:legacy-delivery:continuation";
+      yield* sql`INSERT INTO projection_thread_messages (message_id, thread_id, role, text, system_event_json, is_streaming, created_at, updated_at)
+      VALUES (${id}, ${threadId}, 'system', 'Monitor triggered: Wait for build', ${encodeSystemEvent(event)}, 0, '2026-01-01T02:00:00.000Z', '2026-01-01T02:00:00.000Z')`;
+      yield* importer.reconcileShells;
+      yield* importer.ensureTranscript(threadId);
+      yield* importer.ensureTranscript(threadId);
+      const projection = yield* projections.getThreadProjection(threadId);
+      const imported = projection.messages.filter((message) => message.id === id);
+      assert.lengthOf(imported, 1);
+      assert.equal(imported[0]?.createdBy, "system");
+      assert.deepEqual(imported[0]?.notification?.systemEvent, event);
+      assert.isTrue(
+        projection.turnItems.some(
+          (item) =>
+            item.type === "notification" &&
+            item.systemEvent?.type === "monitor.continuation" &&
+            item.systemEvent.deliveryGroupId === "legacy-delivery",
+        ),
+      );
+      assert.isFalse(
+        projection.turnItems.some((item) => item.type === "user_message" && item.messageId === id),
+      );
+      assert.deepEqual(
+        yield* sql`SELECT system_event_json FROM projection_thread_messages WHERE message_id = ${id}`,
+        [{ system_event_json: encodeSystemEvent(event) }],
+      );
+    }).pipe(Effect.provide(layerTest)),
+);

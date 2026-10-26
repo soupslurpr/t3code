@@ -21,6 +21,12 @@ thread at delivery time. If another turn, approval, or user-input request is
 active, the continuation waits until the thread is available. An agent can
 also record a result without starting another turn.
 
+An automated continuation appears as a **Monitor triggered** or **Monitor review**
+event. Expand it to inspect the trigger, observation, evidence, and stored
+continuation. The event does not grant new authorization. Codex monitor
+continuations require Codex CLI 0.151.0 or later; update Codex if delivery
+reports that the installed version does not support automated input.
+
 Waits survive a T3 server restart. T3 Code does not run timers in a hosted
 service while the environment is offline; an overdue wait is reconciled the
 next time that server starts. Deleting a thread cancels its outstanding waits.

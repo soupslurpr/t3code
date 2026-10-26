@@ -1,3 +1,4 @@
+import { MonitorSystemEventCard } from "./MonitorSystemEventCard";
 import { Button } from "../../components/ui/Button";
 import * as Dialog from "../../components/ui/Dialog";
 import { useOpenPullRequest } from "../../native/useOpenPullRequest";
@@ -1443,6 +1444,18 @@ function renderFeedEntry(
         failed={item.status === "failed"}
       />
     );
+  }
+
+  if (entry.type === "activity-group" && entry.activities.length === 1) {
+    const item = entry.activities[0]!.projectedItem.item;
+    if (item.type === "notification" && item.systemEvent !== undefined)
+      return (
+        <MonitorSystemEventCard
+          event={item.systemEvent}
+          timestampLabel={formatMessageTime(entry.createdAt)}
+          iconSubtleColor={iconSubtleColor}
+        />
+      );
   }
 
   if (entry.type === "message") {

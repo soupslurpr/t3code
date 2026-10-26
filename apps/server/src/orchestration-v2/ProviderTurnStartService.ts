@@ -1,3 +1,4 @@
+import { formatMonitorSystemEventForProvider } from "../threadMonitor/ThreadMonitorContinuation.ts";
 import { modelSelectionsEqual } from "@t3tools/shared/model";
 import { projectComposerContextForProvider } from "@t3tools/shared/composerContextReferences";
 import {
@@ -1032,10 +1033,13 @@ export const layer: Layer.Layer<
       const routableSubagents = projection.subagents.filter((subagent) =>
         RunExecutionService.canRouteRelatedSubagent(subagent.status),
       );
-      const userText = projectComposerContextForProvider({
-        text: message.text,
-        records: message.context?.records ?? [],
-      });
+      const userText =
+        message.notification?.systemEvent === undefined
+          ? projectComposerContextForProvider({
+              text: message.text,
+              records: message.context?.records ?? [],
+            })
+          : formatMonitorSystemEventForProvider(message.notification.systemEvent);
       // The provider turn marks cancellation work delivered; restart continuations use their own text or resume natively.
       const noteContinuation = isRestartNoteContinuation(
         run,
@@ -1334,6 +1338,9 @@ export const layer: Layer.Layer<
         loadRunInterruptReason: runControls.loadRunInterruptReason,
         message: {
           messageId: message.id,
+          ...(message.notification?.systemEvent === undefined
+            ? {}
+            : { inputSource: "harness" as const }),
           text: userText,
           attachments: message.attachments,
           createdBy: message.createdBy,

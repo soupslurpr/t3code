@@ -1196,7 +1196,13 @@ it.effect(
       );
       const records = yield* projections.getThreadRecords(Testkit.threadId, ["messages"]);
       assert.lengthOf(records.messages, 1);
-      assert.include(records.messages[0]!.text, "computer_watch_update");
+      const event = records.messages[0]!.notification?.systemEvent;
+      assert.equal(event?.type, "monitor.review");
+      if (event?.type !== "monitor.review") return yield* Effect.die("Expected typed review");
+      assert.equal(event.monitorId, monitor.id);
+      assert.isFalse(event.grantsAuthorization);
+      assert.equal(event.metrics.evaluationCount, 1);
+      assert.equal(event.metrics.uncertainEvaluationCount, 1);
       // Restore the pre-acknowledgement row while keeping the accepted V2 message.
       yield* repository.upsert(pending);
       const restarted = yield* ThreadMonitorService.make.pipe(
@@ -1327,9 +1333,11 @@ it.effect("warns once on default capture degradation and resumes healthy samplin
     assert.equal(degraded.condition.review.state, "delivered");
     const records = yield* projections.getThreadRecords(Testkit.threadId, ["messages"]);
     assert.lengthOf(records.messages, 1);
-    assert.include(records.messages[0]!.text, "Latest observation error");
-    assert.include(records.messages[0]!.text, "stream-capture-failed");
-    assert.include(records.messages[0]!.text, "PipeWire");
+    const event = records.messages[0]!.notification?.systemEvent;
+    if (event?.type !== "monitor.review") return yield* Effect.die("Expected degraded review");
+    assert.equal(event.metrics.consecutiveFailures, 3);
+    assert.include(event.observation.error ?? "", "stream-capture-failed");
+    assert.include(event.observation.error ?? "", "PipeWire");
     h.state.captureFails = false;
     yield* TestClock.adjust(4_000);
     const healthy = (yield* check()).monitors[0]!;
