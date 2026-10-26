@@ -2,6 +2,7 @@ import { expect, it } from "@effect/vitest";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import {
   EnvironmentId,
+  COMPUTER_AUTOMATION_OPERATIONS,
   SERVER_BROWSER_AUTOMATION_CLIENT_ID,
   ProviderInstanceId,
   ThreadId,
@@ -257,7 +258,11 @@ it.effect("keeps focused user, primary Agent and server browser hosts independen
         }),
       ).toBe("primary-agent");
       expect(
-        yield* broker.invoke({ scope, operation: "computerAct", input: { actions: [] } }),
+        yield* broker.invoke({
+          scope,
+          operation: "computerAct",
+          input: { desktop: { kind: "user" }, actions: [] },
+        }),
       ).toBe("focused-user");
       expect(yield* broker.invoke({ scope, operation: "snapshot", input: {} })).toBe(
         SERVER_BROWSER_AUTOMATION_CLIENT_ID,
@@ -271,6 +276,32 @@ it.effect("keeps focused user, primary Agent and server browser hosts independen
         "computerAct",
       ]);
       expect(browser.map((request) => request.operation)).toEqual(["open", "snapshot"]);
+    }),
+  ).pipe(Effect.provide(layer)),
+);
+
+it.effect("rejects every missing computer target before routing a request", () =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      const broker = yield* PreviewAutomationBroker.PreviewAutomationBroker;
+      const received = yield* serve({
+        clientId: "user",
+        environmentId,
+        supportedOperations: COMPUTER_AUTOMATION_OPERATIONS,
+        computerDesktopKinds: ["user"],
+      });
+      for (const operation of COMPUTER_AUTOMATION_OPERATIONS) {
+        const error = yield* broker.invoke<void>({ scope, operation, input: {} }).pipe(Effect.flip);
+        expect(error).toMatchObject({
+          _tag: "PreviewAutomationDesktopTargetRequiredError",
+          computerFailure: {
+            code: "desktop-target-required",
+            field: "desktop",
+            received: "missing",
+          },
+        });
+      }
+      expect(received).toEqual([]);
     }),
   ).pipe(Effect.provide(layer)),
 );

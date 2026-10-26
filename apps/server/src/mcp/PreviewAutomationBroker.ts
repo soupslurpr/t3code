@@ -8,6 +8,7 @@ import {
   PreviewAutomationClientDisconnectedError,
   PreviewAutomationControlInterruptedError,
   PreviewAutomationControlReason,
+  PreviewAutomationDesktopTargetRequiredError,
   PreviewAutomationExecutionError,
   SERVER_BROWSER_AUTOMATION_CLIENT_ID,
   PreviewAutomationInvalidSelectorError,
@@ -178,18 +179,38 @@ const isComputerOperation = (operation: PreviewAutomationOperation): boolean =>
   computerOperations.has(operation) ||
   agentDesktopOperations.has(operation);
 
-const hostAssignmentKey = (
+/** Builds one provider-session affinity key without inferring a computer target. */
+function hostAssignmentKey(
   scope: McpInvocationContext.McpThreadInvocationScope,
   operation: PreviewAutomationOperation,
   computerDesktopKind?: "user" | "agent",
-): string =>
-  `${scope.environmentId}\u0000${scope.thread.providerSessionId}\u0000${scope.thread.threadId}\u0000${isComputerOperation(operation) ? `computer:${computerDesktopKind ?? "user"}` : "preview"}`;
+): string {
+  if (!isComputerOperation(operation)) {
+    return `${scope.environmentId}\u0000${scope.thread.providerSessionId}\u0000${scope.thread.threadId}\u0000preview`;
+  }
+  if (computerDesktopKind === undefined) {
+    throw new Error("computer desktop kind is required for host affinity");
+  }
+  return `${scope.environmentId}\u0000${scope.thread.providerSessionId}\u0000${scope.thread.threadId}\u0000computer:${computerDesktopKind}`;
+}
 
 function requestedComputerDesktopKind(input: unknown): "user" | "agent" | undefined {
   if (typeof input !== "object" || input === null || !("desktop" in input)) return undefined;
   const desktop = input.desktop;
   if (typeof desktop !== "object" || desktop === null || !("kind" in desktop)) return undefined;
   return desktop.kind === "user" || desktop.kind === "agent" ? desktop.kind : undefined;
+}
+
+function expectedComputerDesktopTargets(
+  operation: PreviewAutomationOperation,
+): ReadonlyArray<string> {
+  if (operation === "computerRequestAvailability" || operation === "computerReleaseAvailability") {
+    return ['{"kind":"user"}'];
+  }
+  if (operation === "computerRequestView" || operation === "computerRequestControl") {
+    return ['{"kind":"user"}', '{"kind":"agent"}', '{"kind":"agent","desktopId":"..."}'];
+  }
+  return ['{"kind":"user"}', '{"kind":"agent","desktopId":"..."}'];
 }
 
 function supportsComputerDesktopKind(
@@ -551,6 +572,34 @@ export const make = Effect.gen(function* PreviewAutomationBrokerMake() {
   const invoke = Effect.fn("PreviewAutomationBroker.invoke")(function* <A = unknown>(
     input: Parameters<PreviewAutomationBroker["Service"]["invoke"]>[0],
   ): Effect.fn.Return<A, PreviewAutomationError> {
+    const computerOperation = isComputerOperation(input.operation);
+    const explicitDesktopKind =
+      input.operation === AGENT_DESKTOP_HUMAN_AUTOMATION_OPERATION ||
+      agentDesktopOperations.has(input.operation)
+        ? ("agent" as const)
+        : computerOperation
+          ? requestedComputerDesktopKind(input.input)
+          : undefined;
+    if (computerOperation && explicitDesktopKind === undefined) {
+      return yield* new PreviewAutomationDesktopTargetRequiredError({
+        operation: input.operation,
+        environmentId: input.scope.environmentId,
+        threadId: input.scope.thread.threadId,
+        providerSessionId: input.scope.thread.providerSessionId,
+        providerInstanceId: input.scope.thread.providerInstanceId,
+        computerFailure: {
+          code: "desktop-target-required",
+          category: "invalid-input",
+          message: "An explicit desktop target is required.",
+          field: "desktop",
+          received: "missing",
+          expected: expectedComputerDesktopTargets(input.operation),
+          phase: "validation",
+          cleanup: { keys: "not-needed", buttons: "not-needed" },
+        },
+      });
+    }
+    const computerDesktopKind = computerOperation ? explicitDesktopKind : undefined;
     const deferred = yield* Deferred.make<unknown, PreviewAutomationError>();
     const route = yield* SynchronizedRef.modify(state, (current) => {
       const assignments = new Map(
@@ -562,15 +611,6 @@ export const make = Effect.gen(function* PreviewAutomationBrokerMake() {
           );
         }),
       );
-      const computerOperation = isComputerOperation(input.operation);
-      const explicitDesktopKind =
-        input.operation === AGENT_DESKTOP_HUMAN_AUTOMATION_OPERATION ||
-        agentDesktopOperations.has(input.operation)
-          ? ("agent" as const)
-          : computerOperation
-            ? requestedComputerDesktopKind(input.input)
-            : undefined;
-      const computerDesktopKind = computerOperation ? (explicitDesktopKind ?? "user") : undefined;
       const assignmentKey = hostAssignmentKey(input.scope, input.operation, computerDesktopKind);
       const assigned = assignments.get(assignmentKey);
       const assignedConnection = assigned ? current.clients.get(assigned.clientId) : undefined;
@@ -698,7 +738,7 @@ export const make = Effect.gen(function* PreviewAutomationBrokerMake() {
               : {}),
             tabId: requestContext.tabId,
             tabIdExplicit: input.tabId !== undefined,
-            agentSessionId: hostAssignmentKey(input.scope, input.operation),
+            agentSessionId: assignmentKey,
             operation: input.operation,
             input: input.input,
             timeoutMs,

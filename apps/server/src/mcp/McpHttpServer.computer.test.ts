@@ -17,6 +17,7 @@ import * as Layer from "effect/Layer";
 import * as Stream from "effect/Stream";
 import { McpSchema, McpServer } from "effect/ai";
 
+import { ComputerToolkit } from "./toolkits/computer/tools.ts";
 import * as McpHttpServer from "./McpHttpServer.ts";
 import * as McpInvocationContext from "./McpInvocationContext.ts";
 import * as McpToolAccessTestkit from "./McpToolAccess.testkit.ts";
@@ -123,7 +124,7 @@ it.effect("returns native screenshot bytes once, with bounded structured metadat
           },
         },
       });
-      const result = yield* call("computer_snapshot", {});
+      const result = yield* call("computer_snapshot", { desktop: { kind: "user" } });
       expect(result.isError).toBe(false);
       expect(result.content.filter((content) => content.type === "image")).toEqual([
         {
@@ -163,6 +164,7 @@ it.effect("keeps actionable native failures without exposing unrelated renderer 
         },
       });
       const result = yield* call("computer_act", {
+        desktop: { kind: "user" },
         actions: [{ type: "click", frameId: "old-frame", x: 1, y: 1 }],
         observation: false,
       });
@@ -191,10 +193,10 @@ it.effect.each([
       const result = yield* call(
         name,
         name === "computer_act"
-          ? { actions: [{ type: "press", key: "Meta" }] }
+          ? { desktop: { kind: "user" }, actions: [{ type: "press", key: "Meta" }] }
           : name === "computer_observe_sequence"
-            ? { frameCount: 2, intervalMs: 100 }
-            : {},
+            ? { desktop: { kind: "user" }, frameCount: 2, intervalMs: 100 }
+            : { desktop: { kind: "user" } },
         {
           ...invocation,
           thread: undefined,
@@ -202,26 +204,9 @@ it.effect.each([
         },
       );
       expect(result.isError).toBe(true);
-      if (
-        [
-          "computer_request_view",
-          "computer_request_control",
-          "computer_snapshot",
-          "computer_observe_sequence",
-          "computer_act",
-        ].includes(name)
-      ) {
-        expect(result.structuredContent).toMatchObject({
-          error: { _tag: "OrchestratorMcpFailure" },
-        });
-      } else {
-        expect(result.content).toEqual([
-          {
-            type: "text",
-            text: "This tool acts as the calling T3 thread, so it needs an agent running inside T3 Code. This MCP client signed in from outside a thread.",
-          },
-        ]);
-      }
+      expect(result.structuredContent).toMatchObject({
+        error: { _tag: "OrchestratorMcpFailure" },
+      });
     }),
   ).pipe(Effect.provide(layer)),
 );
@@ -231,7 +216,7 @@ it.effect("does not treat a browser capability omission as native access", () =>
     Effect.gen(function* () {
       const result = yield* call(
         "computer_request_control",
-        {},
+        { desktop: { kind: "user" } },
         { ...invocation, capabilities: new Set() },
       );
       expect(result.isError).toBe(true);
@@ -244,6 +229,7 @@ it.effect("returns bounded action validation details in visible tool content", (
   Effect.scoped(
     Effect.gen(function* () {
       const result = yield* call("computer_act", {
+        desktop: { kind: "user" },
         actions: [{ type: "wait", durationMs: 12_000 }],
       });
       expect(result.isError).toBe(true);
@@ -269,6 +255,7 @@ it.effect("keeps action receipts when the native observation is omitted", () =>
       const actionResults = [{ index: 0, type: "activate_window" }];
       yield* serve({ ok: true, result: { actionResults } });
       const result = yield* call("computer_act", {
+        desktop: { kind: "user" },
         actions: [{ type: "activate_window", windowId: "window-1" }],
         observation: false,
       });
@@ -456,7 +443,10 @@ it.effect("omits unchanged image content while preserving a fresh actionable fra
     };
     yield* serve((request) =>
       Effect.sync(() => {
-        expect(request.input).toEqual({ screenshot: { unchangedIfContentHash: contentHash } });
+        expect(request.input).toEqual({
+          desktop: { kind: "user" },
+          screenshot: { unchangedIfContentHash: contentHash },
+        });
         return {
           ok: true,
           result: {
@@ -468,6 +458,7 @@ it.effect("omits unchanged image content while preserving a fresh actionable fra
       }),
     );
     const result = yield* call("computer_snapshot", {
+      desktop: { kind: "user" },
       screenshot: { unchangedIfContentHash: contentHash },
     });
     expect(result.isError).toBe(false);
@@ -492,11 +483,19 @@ it.effect("preserves both discrete wheel axes through the MCP request and receip
     yield* serve((request) =>
       Effect.sync(() => {
         expect(request.operation).toBe("computerAct");
-        expect(request.input).toEqual({ actions: [action], observation: false });
+        expect(request.input).toEqual({
+          desktop: { kind: "user" },
+          actions: [action],
+          observation: false,
+        });
         return { ok: true, result: { actionResults: [receipt] } };
       }),
     );
-    const result = yield* call("computer_act", { actions: [action], observation: false });
+    const result = yield* call("computer_act", {
+      desktop: { kind: "user" },
+      actions: [action],
+      observation: false,
+    });
     expect(result.isError).toBe(false);
     expect(result.structuredContent).toEqual({ actionResults: [receipt] });
   }).pipe(Effect.provide(layer)),
@@ -558,7 +557,7 @@ it.effect.each(["computer_snapshot", "computer_act"] as const)(
           requests += 1;
           expect(request.input).toMatchObject(
             name === "computer_snapshot"
-              ? { detailScreenshots: details }
+              ? { desktop: { kind: "user" }, detailScreenshots: details }
               : { observation: { detailScreenshots: details } },
           );
           return {
@@ -573,8 +572,9 @@ it.effect.each(["computer_snapshot", "computer_act"] as const)(
       const result = yield* call(
         name,
         name === "computer_snapshot"
-          ? { detailScreenshots: details }
+          ? { desktop: { kind: "user" }, detailScreenshots: details }
           : {
+              desktop: { kind: "user" },
               actions: [{ type: "press", key: "Space" }],
               observation: { detailScreenshots: details },
             },
@@ -632,6 +632,7 @@ it.effect("retains temporal ordering and roles for overview and detail images", 
       },
     });
     const result = yield* call("computer_act", {
+      desktop: { kind: "user" },
       actions: [{ type: "press", key: "Space" }],
       observation: false,
       temporalObservation: {
@@ -663,4 +664,54 @@ it.effect("retains temporal ordering and roles for overview and detail images", 
       ]),
     );
   }).pipe(Effect.provide(layer)),
+);
+
+it.effect("returns a target-required failure for every computer tool without reaching a host", () =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      let routed = 0;
+      yield* serve(() =>
+        Effect.sync(() => {
+          routed += 1;
+          return { ok: true, result: null };
+        }),
+      );
+      for (const name of Object.keys(ComputerToolkit.tools)) {
+        const result = yield* call(name, {});
+        expect(result.isError, name).toBe(true);
+        expect(result.structuredContent).toMatchObject({
+          error: {
+            code: "desktop-target-required",
+            field: "desktop",
+            received: "missing",
+            phase: "validation",
+          },
+        });
+        expect(result.content).toEqual([
+          { type: "text", text: expect.stringContaining('"code":"desktop-target-required"') },
+        ]);
+      }
+      expect(routed).toBe(0);
+    }),
+  ).pipe(Effect.provide(layer)),
+);
+
+it.effect("preserves null results when forgetting an explicitly selected desktop", () =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      const requests: PreviewAutomationRequest[] = [];
+      yield* serve((request) =>
+        Effect.sync(() => {
+          requests.push(request);
+          return { ok: true, result: null };
+        }),
+      );
+      const result = yield* call("computer_forget_control", { desktop: { kind: "user" } });
+      expect(result.isError).toBe(false);
+      expect(result.content).toEqual([{ type: "text", text: "null" }]);
+      expect(requests).toMatchObject([
+        { operation: "computerForgetControl", input: { desktop: { kind: "user" } } },
+      ]);
+    }),
+  ).pipe(Effect.provide(layer)),
 );

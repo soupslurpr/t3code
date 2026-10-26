@@ -428,7 +428,11 @@ describe("durable computer adapter", () => {
       Effect.gen(function* () {
         const h = yield* harness();
         h.state.exists = false;
-        const prepared = yield* h.prepare({ label: "Pixels", match: { type: "image-change" } });
+        const prepared = yield* h.prepare({
+          desktop: { kind: "user" },
+          label: "Pixels",
+          match: { type: "image-change" },
+        });
         assert.equal(prepared.baselineImages[0]?.dataBase64, png("initial"));
         const stable = yield* h.service.check({
           monitor: makeMonitor(prepared.condition),
