@@ -67,6 +67,23 @@ const decodeF06Images = Schema.decodeUnknownSync(
   ),
 );
 
+// Freeze the released F08 shape so future app schema changes cannot reinterpret it.
+const F08TokenCount = Schema.NullOr(Schema.Int.check(Schema.isGreaterThanOrEqualTo(0)));
+const F08Usage = Schema.Struct({
+  inputTokens: F08TokenCount,
+  cachedInputTokens: F08TokenCount,
+  cacheWriteInputTokens: F08TokenCount,
+  outputTokens: F08TokenCount,
+});
+const decodeF08Condition = Schema.decodeUnknownSync(
+  Schema.fromJsonString(
+    Schema.Struct({
+      lastUsage: Schema.NullOr(F08Usage),
+      totalUsage: F08Usage,
+    }),
+  ),
+);
+
 const isPreviewHistory = (rows: ReadonlyArray<HistoryRow>) => {
   const tail = rows.filter((row) => row.migration_id >= 53);
   const legacy = tail.find(
@@ -301,6 +318,18 @@ export const adoptForkMigrationHistory = Effect.fn("adoptForkMigrationHistory")(
       },
       catch: () =>
         invalidHistory("ComputerMonitorImageEncoding identity conflicts with its image schema"),
+    });
+  }
+
+  if (Math.max(fork.length, legacy.length) >= 8) {
+    const conditions = yield* sql<{ readonly condition_json: string }>`
+      SELECT condition_json FROM thread_monitors WHERE condition_type = 'computer'`;
+    yield* Effect.try({
+      try: () => {
+        for (const row of conditions) decodeF08Condition(row.condition_json);
+      },
+      catch: () =>
+        invalidHistory("ComputerMonitorCacheWriteUsage identity conflicts with its usage schema"),
     });
   }
 

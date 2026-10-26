@@ -169,9 +169,15 @@ const harness = Effect.fn("ComputerWatchTest.harness")(function* (
     ownerExists: true,
     snapshotFor: undefined as ((input: unknown) => ComputerAutomationSnapshot) | undefined,
     tokenUsage: undefined as "exact" | undefined,
-    usage: { inputTokens: null, cachedInputTokens: null, outputTokens: null } as {
+    usage: {
+      inputTokens: null,
+      cachedInputTokens: null,
+      cacheWriteInputTokens: null,
+      outputTokens: null,
+    } as {
       inputTokens: number | null;
       cachedInputTokens: number | null;
+      cacheWriteInputTokens: number | null;
       outputTokens: number | null;
     },
   };
@@ -881,7 +887,12 @@ it.effect(
   () =>
     Effect.gen(function* () {
       const h = yield* harness();
-      h.state.usage = { inputTokens: 20, cachedInputTokens: 16, outputTokens: 5 };
+      h.state.usage = {
+        inputTokens: 20,
+        cachedInputTokens: 16,
+        cacheWriteInputTokens: 3,
+        outputTokens: 5,
+      };
       h.state.snapshotFor = (input) => {
         const {
           region: { x },
@@ -1619,7 +1630,12 @@ it.effect(
           sampling: { intervalMs: 1_000, minEvaluationIntervalMs: null },
         },
       });
-      h.state.usage = { inputTokens: 10, cachedInputTokens: 6, outputTokens: 2 };
+      h.state.usage = {
+        inputTokens: 10,
+        cachedInputTokens: 6,
+        cacheWriteInputTokens: 4,
+        outputTokens: 2,
+      };
       h.state.pixels = "first";
       yield* TestClock.adjust(1_000);
       yield* service.checkNow({ threadId: Testkit.threadId, check: { monitorId: monitor.id } });
@@ -1627,8 +1643,13 @@ it.effect(
         Effect.provideService(ThreadMonitorComputerService, h.service),
       );
       for (const usage of [
-        { inputTokens: null, cachedInputTokens: null, outputTokens: null },
-        { inputTokens: 0, cachedInputTokens: 0, outputTokens: 0 },
+        {
+          inputTokens: null,
+          cachedInputTokens: null,
+          cacheWriteInputTokens: null,
+          outputTokens: null,
+        },
+        { inputTokens: 0, cachedInputTokens: 0, cacheWriteInputTokens: 0, outputTokens: 0 },
       ]) {
         h.state.usage = usage;
         h.state.pixels += "next";
@@ -1641,6 +1662,7 @@ it.effect(
         assert.deepEqual(saved.condition.totalUsage, {
           inputTokens: 10,
           cachedInputTokens: 6,
+          cacheWriteInputTokens: 4,
           outputTokens: 2,
         });
       }

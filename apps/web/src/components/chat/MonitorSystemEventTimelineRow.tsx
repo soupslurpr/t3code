@@ -94,6 +94,9 @@ export function MonitorSystemEventTimelineRow({
                   {event.metrics.totalUsage.cachedInputTokens === null
                     ? ""
                     : ` · ${formatTokens(event.metrics.totalUsage.cachedInputTokens)} cached`}
+                  {event.metrics.totalUsage.cacheWriteInputTokens == null
+                    ? ""
+                    : ` · ${formatTokens(event.metrics.totalUsage.cacheWriteInputTokens)} cache write`}
                   {event.metrics.totalUsage.outputTokens === null
                     ? ""
                     : ` · ${formatTokens(event.metrics.totalUsage.outputTokens)} output tokens`}

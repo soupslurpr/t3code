@@ -81,6 +81,8 @@ import Migration0067 from "./Migrations/067_WebhookDedupe.ts";
 import Migration0068 from "./Migrations/068_ShellStopRequestIndex.ts";
 import Migration0069 from "./Migrations/069_ThreadMessageSearch.ts";
 
+import ComputerMonitorCacheWriteUsageMigration from "./Migrations/062_ComputerMonitorCacheWriteUsage.ts";
+
 const migrationEntries = [
   [1, "OrchestrationEvents", Migration0001],
   [2, "OrchestrationCommandReceipts", Migration0002],
@@ -162,6 +164,7 @@ export const forkMigrationEntries = [
   [5, "AdaptiveComputerMonitors", ForkMigration0005],
   [6, "ComputerMonitorImageEncoding", ForkMigration0006],
   [7, "ProjectionThreadMessageSystemEvents", ForkMigration0007],
+  [8, "ComputerMonitorCacheWriteUsage", ComputerMonitorCacheWriteUsageMigration],
 ] as const;
 export const forkMigrationManifest = forkMigrationEntries.map(([id, name]) => [id, name] as const);
 

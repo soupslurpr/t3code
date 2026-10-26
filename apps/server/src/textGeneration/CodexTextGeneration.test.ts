@@ -469,7 +469,7 @@ it.layer(layerCodexTextGenerationTest)("CodexTextGeneration", (it) => {
             usage: {
               input_tokens: 14_200,
               cached_input_tokens: 8_960,
-              cache_write_input_tokens: 0,
+              cache_write_input_tokens: 5_120,
               output_tokens: 37,
               reasoning_output_tokens: 12,
             },
@@ -541,6 +541,7 @@ it.layer(layerCodexTextGenerationTest)("CodexTextGeneration", (it) => {
           expect(result.usage).toEqual({
             inputTokens: 14_200,
             cachedInputTokens: 8_960,
+            cacheWriteInputTokens: 5_120,
             outputTokens: 37,
           });
         });
@@ -744,7 +745,12 @@ it.layer(layerCodexTextGenerationTest)("CodexTextGeneration", (it) => {
     {
       name: "missing",
       lines: [],
-      expected: { inputTokens: null, cachedInputTokens: null, outputTokens: null },
+      expected: {
+        inputTokens: null,
+        cachedInputTokens: null,
+        cacheWriteInputTokens: null,
+        outputTokens: null,
+      },
     },
     {
       name: "malformed",
@@ -755,7 +761,12 @@ it.layer(layerCodexTextGenerationTest)("CodexTextGeneration", (it) => {
           usage: { input_tokens: -1, cached_input_tokens: 3, output_tokens: 2 },
         }),
       ],
-      expected: { inputTokens: null, cachedInputTokens: null, outputTokens: null },
+      expected: {
+        inputTokens: null,
+        cachedInputTokens: null,
+        cacheWriteInputTokens: null,
+        outputTokens: null,
+      },
     },
     {
       name: "zero",
@@ -765,7 +776,27 @@ it.layer(layerCodexTextGenerationTest)("CodexTextGeneration", (it) => {
           usage: { input_tokens: 0, cached_input_tokens: 0, output_tokens: 0 },
         }),
       ],
-      expected: { inputTokens: 0, cachedInputTokens: 0, outputTokens: 0 },
+      expected: {
+        inputTokens: 0,
+        cachedInputTokens: 0,
+        cacheWriteInputTokens: null,
+        outputTokens: 0,
+      },
+    },
+    {
+      name: "exact zero cache write",
+      lines: [
+        JSON.stringify({
+          type: "turn.completed",
+          usage: {
+            input_tokens: 3,
+            cached_input_tokens: 2,
+            cache_write_input_tokens: 0,
+            output_tokens: 1,
+          },
+        }),
+      ],
+      expected: { inputTokens: 3, cachedInputTokens: 2, cacheWriteInputTokens: 0, outputTokens: 1 },
     },
     {
       name: "last valid event",
@@ -780,7 +811,12 @@ it.layer(layerCodexTextGenerationTest)("CodexTextGeneration", (it) => {
         }),
         "trailing diagnostic",
       ],
-      expected: { inputTokens: 80, cachedInputTokens: 60, outputTokens: 7 },
+      expected: {
+        inputTokens: 80,
+        cachedInputTokens: 60,
+        cacheWriteInputTokens: null,
+        outputTokens: 7,
+      },
     },
   ])("reports exact usage without inventing missing counts: $name", ({ lines, expected }) =>
     withFakeCodexEnv(

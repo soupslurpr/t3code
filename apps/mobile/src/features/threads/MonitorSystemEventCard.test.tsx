@@ -58,7 +58,12 @@ const review: OrchestrationSystemEvent = {
     evaluationCount: 2,
     uncertainEvaluationCount: 2,
     consecutiveFailures: 0,
-    totalUsage: { inputTokens: null, cachedInputTokens: 0, outputTokens: 10 },
+    totalUsage: {
+      inputTokens: null,
+      cachedInputTokens: 0,
+      cacheWriteInputTokens: 5120,
+      outputTokens: 10,
+    },
     regions: [
       {
         id: "status",
@@ -73,6 +78,8 @@ const review: OrchestrationSystemEvent = {
   observationTrust: "untrusted",
   grantsAuthorization: false,
 };
+
+(globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
 describe("MonitorSystemEventCard", () => {
   it.each([
@@ -98,6 +105,7 @@ describe("MonitorSystemEventCard", () => {
       if (event.type === "monitor.review") {
         expect(container.textContent).toContain("Input usage unavailable");
         expect(container.textContent).toContain("0 cached");
+        expect(container.textContent).toContain("5.12K cache write");
         expect(container.textContent).toContain("10 output tokens");
       } else expect(container.textContent).toContain("Stored continuation: Report the result");
       act(() => button.click());

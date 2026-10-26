@@ -1,3 +1,4 @@
+import { OrchestrationSystemEvent } from "./orchestrationSystemEvent.ts";
 import { describe, expect, it } from "vite-plus/test";
 import * as Schema from "effect/Schema";
 import {
@@ -230,4 +231,42 @@ describe("thread monitor contracts", () => {
       }),
     ).toThrow(/duration/u);
   });
+});
+
+it("decodes retained review usage without cache-write data and preserves exact zero", () => {
+  const event = {
+    type: "monitor.review",
+    monitorId: "monitor",
+    revision: 1,
+    requestedAt: "2026-01-01T00:00:00.000Z",
+    reason: "Review",
+    metrics: {
+      evaluationCount: 1,
+      uncertainEvaluationCount: 0,
+      consecutiveFailures: 0,
+      totalUsage: { inputTokens: 20, cachedInputTokens: 10, outputTokens: 5 },
+      regions: [
+        {
+          id: "screen",
+          role: "trigger",
+          sampleCount: 1,
+          changedSampleCount: 1,
+          unchangedSampleCount: 0,
+        },
+      ],
+    },
+    observation: { label: "Watch", error: null },
+    observationTrust: "untrusted",
+    grantsAuthorization: false,
+  };
+  const decode = Schema.decodeUnknownSync(OrchestrationSystemEvent);
+  expect(decode(event)).toEqual(event);
+  const current = {
+    ...event,
+    metrics: {
+      ...event.metrics,
+      totalUsage: { ...event.metrics.totalUsage, cacheWriteInputTokens: 0 },
+    },
+  };
+  expect(decode(current)).toEqual(current);
 });

@@ -99,6 +99,9 @@ export function MonitorSystemEventCard(props: {
                   {props.event.metrics.totalUsage.cachedInputTokens === null
                     ? ""
                     : ` · ${formatTokens(props.event.metrics.totalUsage.cachedInputTokens)} cached`}
+                  {props.event.metrics.totalUsage.cacheWriteInputTokens == null
+                    ? ""
+                    : ` · ${formatTokens(props.event.metrics.totalUsage.cacheWriteInputTokens)} cache write`}
                   {props.event.metrics.totalUsage.outputTokens === null
                     ? ""
                     : ` · ${formatTokens(props.event.metrics.totalUsage.outputTokens)} output tokens`}
