@@ -801,3 +801,25 @@ it.effect("retains the exact Agent screenshot delivered through MCP for its owne
     ).toEqual({ latestId: retained.latestId });
   }).pipe(Effect.provide(layer), Effect.scoped),
 );
+
+it.effect("surfaces missing Agent hosting as a structured computer failure", () =>
+  Effect.gen(function* () {
+    const result = yield* call("computer_request_control", { desktop: { kind: "agent" } });
+    expect(result.isError).toBe(true);
+    expect(result.structuredContent).toMatchObject({
+      error: {
+        _tag: "PreviewAutomationNoAvailableHostError",
+        operation: "computerRequestControl",
+        code: "agent-desktop-unavailable",
+        category: "resource",
+        backendCode: "no-connected-automation-host",
+      },
+    });
+    expect(result.content).toEqual([
+      {
+        type: "text",
+        text: expect.stringContaining('"backendCode":"no-connected-automation-host"'),
+      },
+    ]);
+  }).pipe(Effect.provide(layer)),
+);

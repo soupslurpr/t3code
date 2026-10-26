@@ -305,3 +305,127 @@ it.effect("rejects every missing computer target before routing a request", () =
     }),
   ).pipe(Effect.provide(layer)),
 );
+
+it.effect("explains missing environment hosts without exposing other environments", () =>
+  Effect.gen(function* () {
+    yield* serve({
+      clientId: "private-foreign-host",
+      environmentId: EnvironmentId.make("foreign"),
+      supportedOperations: ["agentDesktopList"],
+      computerDesktopKinds: ["agent"],
+    });
+    const broker = yield* PreviewAutomationBroker.PreviewAutomationBroker;
+    const error = yield* broker
+      .invoke<void>({ scope, operation: "agentDesktopList", input: {} })
+      .pipe(Effect.flip);
+    expect(error).toMatchObject({
+      _tag: "PreviewAutomationNoAvailableHostError",
+      computerFailure: {
+        code: "agent-desktop-unavailable",
+        category: "resource",
+        backendCode: "no-connected-automation-host",
+        detail:
+          "Connected hosts: 0; hosts supporting agentDesktopList: 0; advertised desktop kinds: none.",
+      },
+    });
+    expect(error.message).toContain("Agent desktops are owned by the environment");
+    expect(JSON.stringify(error)).not.toContain("private-foreign-host");
+  }).pipe(Effect.provide(layer), Effect.scoped),
+);
+
+it.effect("distinguishes desktop-kind, operation and assigned-host incompatibility", () =>
+  Effect.gen(function* () {
+    const broker = yield* PreviewAutomationBroker.PreviewAutomationBroker;
+    yield* serve({
+      clientId: "user",
+      environmentId,
+      supportedOperations: ["computerRequestControl"],
+      computerDesktopKinds: ["user"],
+    });
+    const missingKind = yield* broker
+      .invoke<void>({
+        scope,
+        operation: "computerRequestControl",
+        input: { desktop: { kind: "agent" } },
+      })
+      .pipe(Effect.flip);
+    expect(missingKind).toMatchObject({
+      computerFailure: {
+        backendCode: "environment-agent-desktop-host-required",
+        field: "desktop.kind",
+        received: "agent",
+        expected: ["user"],
+      },
+    });
+    yield* serve({
+      clientId: "agent",
+      environmentId,
+      supportedOperations: ["computerRequestControl"],
+      computerDesktopKinds: ["agent"],
+    });
+    const missingOperation = yield* broker
+      .invoke<void>({ scope, operation: "agentDesktopList", input: {} })
+      .pipe(Effect.flip);
+    expect(missingOperation).toMatchObject({
+      computerFailure: {
+        backendCode: "automation-operation-unsupported",
+        field: "operation",
+        received: "agentDesktopList",
+      },
+    });
+    yield* broker.invoke({
+      scope,
+      operation: "computerRequestControl",
+      input: { desktop: { kind: "agent" } },
+    });
+    const alternative = yield* serve({
+      clientId: "another-agent",
+      environmentId,
+      supportedOperations: ["agentDesktopList"],
+      computerDesktopKinds: ["agent"],
+    });
+    const assigned = yield* broker
+      .invoke<void>({ scope, operation: "agentDesktopList", input: {} })
+      .pipe(Effect.flip);
+    expect(assigned).toMatchObject({
+      computerFailure: { backendCode: "assigned-automation-host-incompatible" },
+    });
+    expect(alternative).toEqual([]);
+  }).pipe(Effect.provide(layer), Effect.scoped),
+);
+
+it.effect("retains a tagged remote missing-host failure", () =>
+  Effect.gen(function* () {
+    const failure = {
+      code: "agent-desktop-unavailable",
+      category: "resource",
+      message: "The environment host is unavailable.",
+      backendCode: "no-connected-automation-host",
+    };
+    yield* serve(
+      {
+        clientId: "agent",
+        environmentId,
+        supportedOperations: ["agentDesktopList"],
+        computerDesktopKinds: ["agent"],
+      },
+      {
+        ok: false,
+        error: {
+          _tag: "PreviewAutomationNoAvailableHostError",
+          message: "outer",
+          detail: { computerFailure: failure },
+        },
+      },
+    );
+    const broker = yield* PreviewAutomationBroker.PreviewAutomationBroker;
+    const error = yield* broker
+      .invoke<void>({ scope, operation: "agentDesktopList", input: {} })
+      .pipe(Effect.flip);
+    expect(error).toMatchObject({
+      _tag: "PreviewAutomationNoAvailableHostError",
+      computerFailure: failure,
+    });
+    expect(error.message).toBe(failure.message);
+  }).pipe(Effect.provide(layer), Effect.scoped),
+);

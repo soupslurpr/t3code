@@ -1,8 +1,13 @@
 import { Schema } from "effect";
 import { describe, expect, it } from "vite-plus/test";
 
-import { PreviewAutomationHost, PreviewAutomationStatus } from "./previewAutomation.ts";
+import {
+  PreviewAutomationError,
+  PreviewAutomationHost,
+  PreviewAutomationStatus,
+} from "./previewAutomation.ts";
 
+const decodeAutomationError = Schema.decodeUnknownSync(PreviewAutomationError);
 const decodeAutomationHost = Schema.decodeUnknownSync(PreviewAutomationHost);
 const decodeAutomationStatus = Schema.decodeUnknownSync(PreviewAutomationStatus);
 
@@ -40,5 +45,30 @@ describe("PreviewAutomationStatus", () => {
         viewport: { width: 412, height: 915 },
       }).viewport,
     ).toEqual({ width: 412, height: 915 });
+  });
+});
+
+describe("PreviewAutomationError", () => {
+  it("preserves a structured missing desktop-host failure", () => {
+    const error = decodeAutomationError({
+      _tag: "PreviewAutomationNoAvailableHostError",
+      operation: "agentDesktopList",
+      environmentId: "environment-1",
+      threadId: "thread-1",
+      providerSessionId: "provider-session-1",
+      providerInstanceId: "codex",
+      computerFailure: {
+        code: "agent-desktop-unavailable",
+        category: "resource",
+        message: "No Agent-desktop host is connected.",
+        backendCode: "no-connected-automation-host",
+      },
+    });
+
+    expect(error._tag).toBe("PreviewAutomationNoAvailableHostError");
+    if (error._tag === "PreviewAutomationNoAvailableHostError") {
+      expect(error.computerFailure?.backendCode).toBe("no-connected-automation-host");
+      expect(error.message).toBe("No Agent-desktop host is connected.");
+    }
   });
 });
