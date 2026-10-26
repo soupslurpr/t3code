@@ -303,6 +303,10 @@
       "types": "./src/mediaPreview.ts",
       "import": "./src/mediaPreview.ts"
     },
+    "./computerTemporalCapture": {
+      "types": "./src/computerTemporalCapture.ts",
+      "import": "./src/computerTemporalCapture.ts"
+    },
     "./filePreview": {
       "types": "./src/filePreview.ts",
       "import": "./src/filePreview.ts"

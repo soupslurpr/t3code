@@ -3,11 +3,13 @@ import {
   ComputerAutomationAccessInput,
   ComputerAutomationActInput,
   ComputerAutomationAvailabilityInput,
+  ComputerAutomationObserveSequenceInput,
   ComputerAutomationObservation,
   ComputerAutomationSnapshot,
   ComputerAutomationSnapshotInput,
   ComputerAutomationStatus,
   ComputerAutomationTargetInput,
+  ComputerAutomationTemporalSequence,
   PreviewAutomationError,
 } from "@t3tools/contracts";
 import * as Schema from "effect/Schema";
@@ -106,6 +108,17 @@ export const ComputerSnapshotTool = readonlyComputerTool(
   }).annotate(Tool.Title, "Capture computer display"),
 );
 
+export const ComputerObserveSequenceTool = readonlyComputerTool(
+  Tool.make("computer_observe_sequence", {
+    description:
+      "Capture a bounded, ephemeral sequence of timestamped screenshots from one user or Agent desktop. Use this when motion, animation, transient UI, or the cause of repeated visual changes cannot be understood from one image. Choose the crop, resolution, frame count, and interval; unchanged frames are still returned so timing remains explicit. The sequence is held only in this tool result and is not saved as a recording. Existing view access is required. Omission targets the user's desktop; always pass a concrete Agent desktopId returned by access.",
+    parameters: ComputerAutomationObserveSequenceInput,
+    success: ComputerAutomationTemporalSequence,
+    failure: Schema.Union([PreviewAutomationError, OrchestratorMcpFailure]),
+    dependencies,
+  }).annotate(Tool.Title, "Observe a desktop sequence"),
+);
+
 export const ComputerActTool = computerTool(
   Tool.make("computer_act", {
     description:
@@ -150,6 +163,7 @@ export const ComputerToolkit = Toolkit.make(
   ComputerRequestViewTool,
   ComputerRequestControlTool,
   ComputerSnapshotTool,
+  ComputerObserveSequenceTool,
   ComputerActTool,
   ComputerReleaseTool,
   ComputerForgetControlTool,
@@ -165,6 +179,7 @@ export const ComputerStandardToolkit = Toolkit.make(
 
 export const ComputerImageToolkit = Toolkit.make(
   ComputerSnapshotTool,
+  ComputerObserveSequenceTool,
   ComputerRequestViewTool,
   ComputerRequestControlTool,
   ComputerActTool,

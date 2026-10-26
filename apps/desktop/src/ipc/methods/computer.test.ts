@@ -1,16 +1,29 @@
 import { assert, describe, it } from "@effect/vitest";
-import { AgentDesktopId, EnvironmentId, ThreadId } from "@t3tools/contracts";
+import {
+  AgentDesktopId,
+  EnvironmentId,
+  ThreadId,
+  ComputerAutomationObservation,
+  makeDesktopComputerAutomationResultSchema,
+} from "@t3tools/contracts";
 import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
 import * as Fiber from "effect/Fiber";
 import * as Layer from "effect/Layer";
+import * as Schema from "effect/Schema";
 import * as TestClock from "effect/testing/TestClock";
 
 import * as ComputerUse from "../../computer/ComputerUse.ts";
 import * as ComputerUseRouter from "../../computer/ComputerUseRouter.ts";
 import * as GnomeRemoteDesktop from "../../computer/GnomeRemoteDesktop.ts";
 import { act, releaseAvailability, requestAvailability, requestView } from "./computer.ts";
+
+const decodeComputerObservationResult = Schema.decodeUnknownSync(
+  makeDesktopComputerAutomationResultSchema(ComputerAutomationObservation),
+);
+
+const userDesktop = { kind: "user" as const };
 
 const status = {
   available: true,
@@ -337,6 +350,99 @@ describe("computer IPC methods", () => {
         value: { actionResults: [{ index: 0, type: "press" }] },
       });
     }),
+  );
+
+  it.effect.each(["before-actions", "after-actions"] as const)(
+    "captures %s temporal frames inside one IPC request",
+    (start) =>
+      Effect.gen(function* () {
+        const events: string[] = [];
+        const actionStarted = yield* Deferred.make<void>();
+        const finishAction = yield* Deferred.make<void>();
+        const actions = [{ type: "press" as const, key: "Space" }];
+        const computer = makeComputer({
+          requestView: Effect.die("unexpected request view"),
+          act: (input) =>
+            Effect.gen(function* () {
+              assert.deepEqual(input, { desktop: userDesktop, actions, observation: false });
+              events.push("action-started");
+              yield* Deferred.succeed(actionStarted, undefined);
+              yield* Deferred.await(finishAction);
+              events.push("action-finished");
+              return [{ index: 0, type: "press" as const }];
+            }),
+          snapshot: (input) =>
+            Effect.sync(() => {
+              assert.deepEqual(input, {
+                desktop: userDesktop,
+                includeAccessibility: false,
+                screenshot: {},
+              });
+              events.push("snapshot");
+              return snapshot;
+            }),
+        });
+        const resultFiber = yield* act
+          .handler({
+            input: {
+              desktop: userDesktop,
+              actions,
+              observation: false,
+              temporalObservation: { frameCount: 5, intervalMs: 100, start },
+            },
+          })
+          .pipe(Effect.provide(computerRouterLayer(computer)), Effect.forkChild);
+
+        yield* Deferred.await(actionStarted);
+        assert.deepEqual(
+          events,
+          start === "before-actions" ? ["snapshot", "action-started"] : ["action-started"],
+        );
+        yield* Deferred.succeed(finishAction, undefined);
+        yield* TestClock.adjust("400 millis");
+
+        const result = decodeComputerObservationResult(yield* Fiber.join(resultFiber));
+        assert.isTrue(result.ok);
+        if (!result.ok) return;
+        assert.deepEqual(result.value.actionResults, [{ index: 0, type: "press" }]);
+        assert.equal(result.value.temporalSequence?.requestedFrameCount, 5);
+        assert.equal(result.value.temporalSequence?.capturedFrameCount, 5);
+        assert.deepEqual(
+          result.value.temporalSequence?.frames.map(({ index, elapsedMs }) => ({
+            index,
+            elapsedMs,
+          })),
+          [
+            { index: 0, elapsedMs: 0 },
+            { index: 1, elapsedMs: 100 },
+            { index: 2, elapsedMs: 200 },
+            { index: 3, elapsedMs: 300 },
+            { index: 4, elapsedMs: 400 },
+          ],
+        );
+        assert.deepEqual(
+          events,
+          start === "before-actions"
+            ? [
+                "snapshot",
+                "action-started",
+                "action-finished",
+                "snapshot",
+                "snapshot",
+                "snapshot",
+                "snapshot",
+              ]
+            : [
+                "action-started",
+                "action-finished",
+                "snapshot",
+                "snapshot",
+                "snapshot",
+                "snapshot",
+                "snapshot",
+              ],
+        );
+      }),
   );
 
   it.effect("retains only a bounded public computer failure across IPC", () => {

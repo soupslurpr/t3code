@@ -6,9 +6,13 @@ import {
   ProviderInstanceId,
   ThreadId,
   type PreviewAutomationResponse,
+  type PreviewAutomationRequest,
+  type ComputerAutomationSnapshot,
 } from "@t3tools/contracts";
 import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
+import * as Fiber from "effect/Fiber";
+import * as TestClock from "effect/testing/TestClock";
 import * as Layer from "effect/Layer";
 import * as Stream from "effect/Stream";
 import { McpSchema, McpServer } from "effect/ai";
@@ -60,7 +64,11 @@ const call = Effect.fn("ComputerHttpTest.call")(
 );
 
 const serve = Effect.fn("ComputerHttpTest.serve")(function* (
-  response: Pick<PreviewAutomationResponse, "ok" | "result" | "error">,
+  response:
+    | Pick<PreviewAutomationResponse, "ok" | "result" | "error">
+    | ((
+        request: PreviewAutomationRequest,
+      ) => Effect.Effect<Pick<PreviewAutomationResponse, "ok" | "result" | "error">>),
 ) {
   const broker = yield* PreviewAutomationBroker.PreviewAutomationBroker;
   const connected = yield* Deferred.make<void>();
@@ -68,16 +76,21 @@ const serve = Effect.fn("ComputerHttpTest.serve")(function* (
     clientId: "native-host",
     environmentId,
     supportedOperations: [...COMPUTER_AUTOMATION_OPERATIONS],
+    computerDesktopKinds: ["user", "agent"],
   });
   yield* Stream.runForEach(events, (event) =>
     event.type === "connected"
       ? Deferred.succeed(connected, undefined)
-      : broker.respond({
-          clientId: "native-host",
-          connectionId: event.connectionId,
-          requestId: event.request.requestId,
-          ...response,
-        }),
+      : (typeof response === "function" ? response(event.request) : Effect.succeed(response)).pipe(
+          Effect.flatMap((answer) =>
+            broker.respond({
+              clientId: "native-host",
+              connectionId: event.connectionId,
+              requestId: event.request.requestId,
+              ...answer,
+            }),
+          ),
+        ),
   ).pipe(Effect.forkScoped);
   yield* Deferred.await(connected);
 });
@@ -163,6 +176,7 @@ it.effect.each([
   "computer_request_view",
   "computer_request_control",
   "computer_snapshot",
+  "computer_observe_sequence",
   "computer_release",
   "computer_forget_control",
   "computer_act",
@@ -171,7 +185,11 @@ it.effect.each([
     Effect.gen(function* () {
       const result = yield* call(
         name,
-        name === "computer_act" ? { actions: [{ type: "press", key: "Meta" }] } : {},
+        name === "computer_act"
+          ? { actions: [{ type: "press", key: "Meta" }] }
+          : name === "computer_observe_sequence"
+            ? { frameCount: 2, intervalMs: 100 }
+            : {},
         {
           ...invocation,
           thread: undefined,
@@ -184,6 +202,7 @@ it.effect.each([
           "computer_request_view",
           "computer_request_control",
           "computer_snapshot",
+          "computer_observe_sequence",
           "computer_act",
         ].includes(name)
       ) {
@@ -253,4 +272,164 @@ it.effect("keeps action receipts when the native observation is omitted", () =>
       expect(result.content.filter((content) => content.type === "image")).toEqual([]);
     }),
   ).pipe(Effect.provide(layer)),
+);
+
+const temporalSnapshot = (index: number): ComputerAutomationSnapshot => ({
+  display: {
+    id: "primary",
+    label: "Primary",
+    primary: true,
+    bounds: { x: 0, y: 0, width: 10, height: 5 },
+    scaleFactor: 1,
+  },
+  cursor: null,
+  captureSource: "remote-desktop-stream",
+  screenshot: {
+    mimeType: "image/png",
+    data: Buffer.from(`png-${index}`).toString("base64"),
+    width: 10,
+    height: 5,
+  },
+});
+
+it.effect("returns temporal frames once in capture order with timing outside image bytes", () =>
+  Effect.gen(function* () {
+    const firstCapture = yield* Deferred.make<void>();
+    const requests: PreviewAutomationRequest[] = [];
+    yield* serve((request) =>
+      Effect.gen(function* () {
+        requests.push(request);
+        expect(request.operation).toBe("computerSnapshot");
+        expect(request.input).toEqual({
+          desktop: { kind: "user" },
+          displayId: "primary",
+          includeAccessibility: false,
+          screenshot: { maxWidth: 100 },
+        });
+        if (requests.length === 1) yield* Deferred.succeed(firstCapture, undefined);
+        return { ok: true, result: temporalSnapshot(requests.length - 1) };
+      }),
+    );
+    const fiber = yield* call("computer_observe_sequence", {
+      desktop: { kind: "user" },
+      displayId: "primary",
+      frameCount: 2,
+      intervalMs: 100,
+      screenshot: { maxWidth: 100 },
+    }).pipe(Effect.forkScoped);
+    yield* Deferred.await(firstCapture);
+    yield* TestClock.adjust(100);
+    const result = yield* Fiber.join(fiber);
+    expect(result.isError).toBe(false);
+    expect(result.structuredContent).toMatchObject({
+      requestedFrameCount: 2,
+      capturedFrameCount: 2,
+      intervalMs: 100,
+      elapsedMs: 100,
+      frames: [
+        { index: 0, elapsedMs: 0 },
+        { index: 1, elapsedMs: 100 },
+      ],
+    });
+    expect(JSON.stringify(result.structuredContent)).not.toContain('"data"');
+    expect(result.content.filter((item) => item.type === "image")).toEqual(
+      [0, 1].map((index) => ({
+        type: "image",
+        data: new Uint8Array(Buffer.from(`png-${index}`)),
+        mimeType: "image/png",
+        _meta: {
+          "codex/imageDetail": "original",
+          "t3/temporalFrameIndex": index,
+          "t3/temporalElapsedMs": index * 100,
+        },
+      })),
+    );
+    expect(requests).toHaveLength(2);
+  }).pipe(Effect.provide(layer)),
+);
+
+it.effect("keeps native temporal action capture in one request and strips nested image bytes", () =>
+  Effect.gen(function* () {
+    const requests: PreviewAutomationRequest[] = [];
+    yield* serve((request) =>
+      Effect.sync(() => {
+        requests.push(request);
+        return {
+          ok: true,
+          result: {
+            actionResults: [{ index: 0, type: "press" }],
+            temporalSequence: {
+              requestedFrameCount: 2,
+              capturedFrameCount: 2,
+              intervalMs: 100,
+              elapsedMs: 100,
+              frames: [0, 1].map((index) => ({
+                index,
+                elapsedMs: index * 100,
+                capturedAt: "1970-01-01T00:00:00.000Z",
+                snapshot: temporalSnapshot(index),
+              })),
+            },
+          },
+        };
+      }),
+    );
+    const input = {
+      desktop: { kind: "user" },
+      actions: [{ type: "press", key: "Space" }],
+      observation: false,
+      temporalObservation: { frameCount: 2, intervalMs: 100 },
+    };
+    const result = yield* call("computer_act", input);
+    expect(result.isError).toBe(false);
+    expect(requests).toHaveLength(1);
+    expect(requests[0]).toMatchObject({ operation: "computerAct", input });
+    expect(result.structuredContent).toMatchObject({
+      actionResults: [{ index: 0, type: "press" }],
+      temporalSequence: { capturedFrameCount: 2 },
+    });
+    expect(JSON.stringify(result.structuredContent)).not.toContain('"data"');
+    expect(result.content.filter((item) => item.type === "image")).toHaveLength(2);
+  }).pipe(Effect.provide(layer)),
+);
+
+it.effect.each(["before-actions", "after-actions"] as const)(
+  "captures an explicit Agent target %s without duplicating the action",
+  (start) =>
+    Effect.gen(function* () {
+      const firstCapture = yield* Deferred.make<void>();
+      const requests: PreviewAutomationRequest[] = [];
+      let captures = 0;
+      yield* serve((request) =>
+        Effect.gen(function* () {
+          requests.push(request);
+          expect(request.input).toMatchObject({
+            desktop: { kind: "agent", desktopId: "concrete-agent" },
+          });
+          if (request.operation === "computerAct") {
+            expect(request.input).not.toHaveProperty("temporalObservation");
+            return { ok: true, result: { actionResults: [{ index: 0, type: "press" }] } };
+          }
+          expect(request.operation).toBe("computerSnapshot");
+          if (captures === 0) yield* Deferred.succeed(firstCapture, undefined);
+          return { ok: true, result: temporalSnapshot(captures++) };
+        }),
+      );
+      const fiber = yield* call("computer_act", {
+        desktop: { kind: "agent", desktopId: "concrete-agent" },
+        actions: [{ type: "press", key: "Space" }],
+        observation: false,
+        temporalObservation: { frameCount: 2, intervalMs: 100, start },
+      }).pipe(Effect.forkScoped);
+      yield* Deferred.await(firstCapture);
+      yield* TestClock.adjust(100);
+      const result = yield* Fiber.join(fiber);
+      expect(result.isError).toBe(false);
+      expect(requests.map((request) => request.operation)).toEqual(
+        start === "before-actions"
+          ? ["computerSnapshot", "computerAct", "computerSnapshot"]
+          : ["computerAct", "computerSnapshot", "computerSnapshot"],
+      );
+      expect(result.content.filter((item) => item.type === "image")).toHaveLength(2);
+    }).pipe(Effect.provide(layer)),
 );
