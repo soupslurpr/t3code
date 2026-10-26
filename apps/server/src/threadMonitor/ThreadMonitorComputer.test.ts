@@ -1420,7 +1420,13 @@ it.effect.each([null, { consecutiveFailures: null }])(
           acknowledgeReview: true,
         },
       });
-      assert.isNull(revised.condition.type === "computer" && revised.condition.review.policy);
+      if (revised.condition.type !== "computer")
+        return yield* Effect.die("Expected computer watch");
+      if (review === null) assert.isNull(revised.condition.review.policy);
+      else {
+        assert.isNull(revised.condition.review.policy?.consecutiveFailures);
+        assert.equal(revised.condition.review.policy?.afterEvaluations, 12);
+      }
       h.state.captureFails = true;
       for (const delay of [1_000, 1_000, 2_000, 4_000]) {
         yield* TestClock.adjust(delay);
@@ -1783,4 +1789,119 @@ it.effect("returns atomic revision baselines independently of retained evaluator
     assert.equal(omitted.revision, 4);
     assert.equal(captureCount(), 4);
   }).pipe(Effect.provide(Layer.merge(Testkit.layer, NodeServices.layer))),
+);
+
+it.effect("defaults model watches to twelve evaluations and pauses pending reviews", () =>
+  Effect.gen(function* () {
+    const h = yield* harness();
+    const prepared = yield* h.prepare();
+    assert.equal(prepared.condition.review.policy?.afterEvaluations, 12);
+    h.state.pixels = "while paused";
+    const checked = yield* h.service.check({
+      monitor: makeMonitor({
+        ...prepared.condition,
+        review: {
+          ...prepared.condition.review,
+          state: "pending",
+          reason: "Review",
+          sequence: 1,
+          requestedAt: createdAt,
+        },
+      }),
+      evidence: retainedEvidence(prepared.baselineImages),
+      checkedAt: createdAt,
+    });
+    assert.lengthOf(h.evaluations, 0);
+    assert.deepEqual(checked.observedImages, []);
+    assert.isTrue(checked.condition.evaluationPending);
+    assert.equal(checked.condition.sampleCount, 1);
+  }),
+);
+
+it.effect(
+  "stops at the evaluation budget, resumes after acknowledgement and preserves opt-out",
+  () =>
+    Effect.gen(function* () {
+      yield* Testkit.seedThread();
+      const h = yield* harness();
+      h.state.tokenUsage = "exact";
+      h.state.usage = {
+        inputTokens: 100,
+        cachedInputTokens: 80,
+        cacheWriteInputTokens: 0,
+        outputTokens: 10,
+      };
+      const service = yield* ThreadMonitorService.make.pipe(
+        Effect.provideService(ThreadMonitorComputerService, h.service),
+      );
+      const { monitor } = yield* service.createComputer({
+        threadId: Testkit.threadId,
+        monitor: { ...modelWatch, sampling: { intervalMs: 1_000, evaluateOnlyAfterChange: false } },
+      });
+      for (let evaluation = 0; evaluation < 12; evaluation += 1) {
+        yield* TestClock.adjust(1_000);
+        yield* service.checkNow({ threadId: Testkit.threadId, check: { monitorId: monitor.id } });
+      }
+      const projections = yield* ProjectionStoreV2;
+      yield* TestClock.adjust(1_000);
+      const paused = (yield* service.checkNow({
+        threadId: Testkit.threadId,
+        check: { monitorId: monitor.id },
+      })).monitors[0]!;
+      assert.equal(h.evaluations.length, 12);
+      assert.equal(
+        paused.condition.type === "computer" && paused.condition.review.state,
+        "delivered",
+      );
+      const records = yield* projections.getThreadRecords(Testkit.threadId, ["messages"]);
+      const event = records.messages[0]?.notification?.systemEvent;
+      assert.lengthOf(records.messages, 1);
+      assert.equal(event?.type === "monitor.review" && event.evaluatorPaused, true);
+      assert.equal(event?.type === "monitor.review" && event.metrics.evaluationCount, 12);
+      assert.deepEqual(event?.type === "monitor.review" && event.metrics.totalUsage, {
+        inputTokens: 1200,
+        cachedInputTokens: 960,
+        cacheWriteInputTokens: 0,
+        outputTokens: 120,
+      });
+      const { monitor: resumed } = yield* service.updateComputer({
+        threadId: Testkit.threadId,
+        update: {
+          monitorId: monitor.id,
+          expectedRevision: 1,
+          acknowledgeReview: true,
+          review: { afterEvaluations: null },
+        },
+      });
+      assert.equal(resumed.condition.type === "computer" && resumed.condition.review.state, "idle");
+      const { monitor: retained } = yield* service.updateComputer({
+        threadId: Testkit.threadId,
+        update: { monitorId: monitor.id, expectedRevision: 2, label: "Keep opt-out" },
+      });
+      assert.isNull(
+        retained.condition.type === "computer" &&
+          retained.condition.review.policy?.afterEvaluations,
+      );
+      yield* TestClock.adjust(1_000);
+      yield* service.checkNow({ threadId: Testkit.threadId, check: { monitorId: monitor.id } });
+      assert.equal(h.evaluations.length, 13);
+      yield* service.updateComputer({
+        threadId: Testkit.threadId,
+        update: { monitorId: monitor.id, expectedRevision: 3, review: { afterEvaluations: 1 } },
+      });
+      yield* TestClock.adjust(1_000);
+      yield* service.checkNow({ threadId: Testkit.threadId, check: { monitorId: monitor.id } });
+      const activity = yield* projections.getThreadRecords(Testkit.threadId, ["turnItems"]);
+      const pauses = activity.turnItems.filter(
+        (item) => item.type === "system_notice" && item.id.includes(":review-paused:"),
+      );
+      assert.lengthOf(pauses, 2);
+      assert.lengthOf(new Set(pauses.map((item) => item.id)), 2);
+      assert.isTrue(
+        pauses.every(
+          (item) => item.type === "system_notice" && item.message.includes("evaluator paused"),
+        ),
+      );
+      yield* service.cancel({ threadId: Testkit.threadId, cancel: { monitorId: monitor.id } });
+    }).pipe(Effect.provide(Layer.merge(Testkit.layer, NodeServices.layer))),
 );

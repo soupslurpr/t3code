@@ -55,6 +55,13 @@ Evaluator availability, token reporting, and explicit prompt-cache refresh are
 adapter capabilities. T3 Code reports unsupported capabilities instead of
 creating synthetic keepalive turns or hidden conversation messages.
 
+A model-backed screen watch pauses evaluation after 12 evaluations by default and
+requests a controller review. Capture and hash comparison continue, but no more
+evaluator tokens are used until the controller inspects the watch and
+acknowledges, revises, or cancels it. The review reports evaluation counts,
+change rates, and available token usage. An agent can choose another evaluation
+checkpoint or explicitly disable it for a genuinely high-frequency condition.
+
 Ordinary screen samples are discarded after comparison. T3 Code stores hashes
 and bounded status details with the monitor, can optionally retain the initial
 PNG for visual comparison, and retains the terminal matching PNG for audit.

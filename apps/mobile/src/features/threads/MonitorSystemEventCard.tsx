@@ -13,7 +13,9 @@ export function MonitorSystemEventCard(props: {
   const [expanded, setExpanded] = useState(false);
   const title =
     props.event.type === "monitor.review"
-      ? "Monitor review"
+      ? props.event.evaluatorPaused === true
+        ? "Monitor evaluator paused"
+        : "Monitor review"
       : props.event.monitors.length === 1
         ? "Monitor triggered"
         : `${props.event.monitors.length} monitors triggered`;
@@ -86,6 +88,11 @@ export function MonitorSystemEventCard(props: {
               <Text selectable className="text-xs text-foreground-muted">
                 {props.event.reason}
               </Text>
+              {props.event.evaluatorPaused === true ? (
+                <Text className="font-t3-medium text-xs text-foreground-muted">
+                  Model evaluation is paused until the controller acknowledges this review.
+                </Text>
+              ) : null}
               <Text className="text-xs text-foreground-muted">
                 Revision {props.event.revision} · {props.event.metrics.evaluationCount} evaluations
                 · {props.event.metrics.uncertainEvaluationCount} uncertain ·{" "}
@@ -110,7 +117,11 @@ export function MonitorSystemEventCard(props: {
               {props.event.metrics.regions.map((region) => (
                 <Text key={region.id} className="text-xs text-foreground-muted">
                   {region.id} ({region.role}): {region.sampleCount} captures,{" "}
-                  {region.changedSampleCount} changed, {region.unchangedSampleCount} unchanged
+                  {region.changedSampleCount} changed
+                  {region.sampleCount === 0
+                    ? ""
+                    : ` (${Math.round((region.changedSampleCount / region.sampleCount) * 100)}%)`}
+                  , {region.unchangedSampleCount} unchanged
                 </Text>
               ))}
               {props.event.observation.error !== null ? (

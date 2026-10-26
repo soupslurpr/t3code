@@ -42,6 +42,7 @@ export const OrchestrationMonitorReviewEvent = Schema.Struct({
   revision: NonNegativeInt,
   requestedAt: IsoDateTime,
   reason: Schema.String.check(Schema.isMaxLength(1_000)),
+  evaluatorPaused: Schema.optional(Schema.Literal(true)),
   metrics: Schema.Struct({
     evaluationCount: NonNegativeInt,
     uncertainEvaluationCount: NonNegativeInt,

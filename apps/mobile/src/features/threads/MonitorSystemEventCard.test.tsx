@@ -85,6 +85,11 @@ describe("MonitorSystemEventCard", () => {
   it.each([
     { event: continuation, title: "Monitor triggered", detail: "exitCode=0" },
     { event: review, title: "Monitor review", detail: "Capture unavailable" },
+    {
+      event: { ...review, evaluatorPaused: true as const },
+      title: "Monitor evaluator paused",
+      detail: "Model evaluation is paused",
+    },
   ])(
     "opens and closes $title details without presenting observations as user speech",
     ({ event, title, detail }) => {

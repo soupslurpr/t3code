@@ -81,6 +81,11 @@ export function MonitorSystemEventTimelineRow({
             <div className="space-y-1.5">
               <p className="font-medium text-foreground/85">{event.observation.label}</p>
               <p>{event.reason}</p>
+              {event.evaluatorPaused === true ? (
+                <p className="font-medium text-foreground/70">
+                  Model evaluation is paused until the controller acknowledges this review.
+                </p>
+              ) : null}
               <p>
                 Revision {event.revision} · {event.metrics.evaluationCount} evaluations ·{" "}
                 {event.metrics.uncertainEvaluationCount} uncertain ·{" "}
@@ -105,7 +110,11 @@ export function MonitorSystemEventTimelineRow({
               {event.metrics.regions.map((region) => (
                 <p key={region.id}>
                   {region.id} ({region.role}): {region.sampleCount} captures,{" "}
-                  {region.changedSampleCount} changed, {region.unchangedSampleCount} unchanged
+                  {region.changedSampleCount} changed
+                  {region.sampleCount === 0
+                    ? ""
+                    : ` (${Math.round((region.changedSampleCount / region.sampleCount) * 100)}%)`}
+                  , {region.unchangedSampleCount} unchanged
                 </p>
               ))}
               {event.observation.error !== null ? (
