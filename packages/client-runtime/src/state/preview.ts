@@ -39,6 +39,25 @@ export function createPreviewEnvironmentAtoms<R, E>(
       // unmounted projects stop contributing probe candidates on the server.
       idleTtlMs: 0,
     }),
+    automationRequests: createEnvironmentRpcSubscriptionAtomFamily(runtime, {
+      label: "environment-data:computer:automation-requests",
+      tag: WS_METHODS.previewAutomationConnect,
+      transform: (stream) => stream.pipe(Stream.rechunk(1)),
+      // A host disconnect must close its stream and fail pending desktop requests.
+      idleTtlMs: 0,
+    }),
+    respondToAutomation: createEnvironmentRpcCommand(runtime, {
+      label: "environment-data:computer:automation-respond",
+      tag: WS_METHODS.previewAutomationRespond,
+    }),
+    focusAutomationHost: createEnvironmentRpcCommand(runtime, {
+      label: "environment-data:computer:automation-focus",
+      tag: WS_METHODS.previewAutomationFocusHost,
+      concurrency: {
+        mode: "latest",
+        key: ({ environmentId, input }) => `${environmentId}:${input.clientId}`,
+      },
+    }),
     open: createEnvironmentRpcCommand(runtime, {
       label: "environment-data:preview:open",
       tag: WS_METHODS.previewOpen,

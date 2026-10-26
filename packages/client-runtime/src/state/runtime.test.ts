@@ -2,6 +2,8 @@ import { describe, expect, it } from "@effect/vitest";
 import {
   EnvironmentId,
   type PreviewEvent,
+  type PreviewAutomationStreamEvent,
+  ThreadId,
   type TerminalAttachInput,
   type TerminalAttachStreamEvent,
   type TerminalMetadataStreamEvent,
@@ -258,6 +260,61 @@ describe("preview event subscriptions", () => {
     ),
   );
 });
+
+it.effect("delivers every native computer request in a batched host subscription", () =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      const events: PreviewAutomationStreamEvent[] = [
+        { type: "connected", connectionId: "native-connection" },
+        ...["first", "second"].map((requestId) => ({
+          type: "request" as const,
+          connectionId: "native-connection",
+          request: {
+            requestId,
+            threadId: ThreadId.make("computer-thread"),
+            operation: "computerStatus" as const,
+            input: {},
+            timeoutMs: 5000,
+          },
+        })),
+      ];
+      const releaseEvents = yield* Deferred.make<void>();
+      const stream = Stream.fromEffect(Deferred.await(releaseEvents)).pipe(
+        Stream.flatMap(() => Stream.fromIterable(events).pipe(Stream.concat(Stream.never))),
+      );
+      const harness = yield* makeEnvironmentQueryHarness(Effect.void, {
+        rpcSession: {
+          client: { [WS_METHODS.previewAutomationConnect]: () => stream },
+        } as unknown as RpcSession.RpcSession,
+      });
+      const atom = createPreviewEnvironmentAtoms(harness.runtime).automationRequests({
+        environmentId: QUERY_ENVIRONMENT.environmentId,
+        input: { clientId: "native-host", environmentId: QUERY_ENVIRONMENT.environmentId },
+      });
+      const registry = AtomRegistry.make();
+      const observed: PreviewAutomationStreamEvent[] = [];
+      const sawLast = yield* Deferred.make<void>();
+      const unsubscribe = registry.subscribe(
+        atom,
+        (result) => {
+          if (!AsyncResult.isSuccess(result)) return;
+          observed.push(result.value);
+          if (result.value === events[events.length - 1]) Deferred.doneUnsafe(sawLast, Exit.void);
+        },
+        { immediate: true },
+      );
+      yield* Effect.addFinalizer(() =>
+        Effect.sync(() => {
+          unsubscribe();
+          registry.dispose();
+        }),
+      );
+      yield* Deferred.succeed(releaseEvents, undefined);
+      yield* Deferred.await(sawLast);
+      expect(observed).toEqual(events);
+    }),
+  ),
+);
 
 describe("finite environment subscription lifecycle", () => {
   it.effect(

@@ -60,11 +60,15 @@ const setup = Effect.gen(function* () {
 });
 
 describe("command permissions", () => {
-  it.effect("requires the destination preview grant to close a browser tab", () =>
+  it.effect.each([
+    WS_METHODS.previewClose,
+    WS_METHODS.previewAutomationRespond,
+    WS_METHODS.previewAutomationFocusHost,
+  ])("requires the destination preview grant for %s", (method) =>
     Effect.scoped(
       Effect.gen(function* () {
         const registry = yield* setup;
-        const close = createCommandPermissions(runtime, WS_METHODS.previewClose);
+        const close = createCommandPermissions(runtime, method);
         registry.set(sessions(env), AsyncResult.success(grant(true)));
         expect(registry.get(close.permissionAtom(env))).toBe(false);
         expect((yield* close.authorize(registry, env).pipe(Effect.flip))._tag).toBe(

@@ -109,50 +109,61 @@ describe("environment RPC", () => {
     }),
   );
 
-  it.effect("switches durable subscriptions when the supervisor replaces the session", () =>
-    Effect.gen(function* () {
-      const subscriptions: string[] = [];
-      const subscriptionChanges = yield* Queue.make<void>();
-      const firstClient = {
-        [WS_METHODS.subscribeTerminalEvents]: () => {
-          subscriptions.push("first");
-          Queue.offerUnsafe(subscriptionChanges, undefined);
-          return Stream.never;
-        },
-      } as unknown as WsRpcProtocolClient;
-      const secondClient = {
-        [WS_METHODS.subscribeTerminalEvents]: () => {
-          subscriptions.push("second");
-          Queue.offerUnsafe(subscriptionChanges, undefined);
-          return Stream.never;
-        },
-      } as unknown as WsRpcProtocolClient;
-      const { activeSession, retryCount, supervisor } = yield* makeHarness();
-      const awaitSubscriptions = Effect.fn("TestEnvironmentRpc.awaitSubscriptions")(function* (
-        count: number,
-      ) {
-        for (;;) {
-          if (subscriptions.length >= count) {
-            return;
+  it.effect.each([WS_METHODS.subscribeTerminalEvents, WS_METHODS.previewAutomationConnect])(
+    "switches durable %s subscriptions when the supervisor replaces the session",
+    (method) =>
+      Effect.gen(function* () {
+        const subscriptions: string[] = [];
+        const subscriptionChanges = yield* Queue.make<void>();
+        const firstClient = {
+          [method]: () => {
+            subscriptions.push("first");
+            Queue.offerUnsafe(subscriptionChanges, undefined);
+            return Stream.never;
+          },
+        } as unknown as WsRpcProtocolClient;
+        const secondClient = {
+          [method]: () => {
+            subscriptions.push("second");
+            Queue.offerUnsafe(subscriptionChanges, undefined);
+            return Stream.never;
+          },
+        } as unknown as WsRpcProtocolClient;
+        const { activeSession, retryCount, supervisor } = yield* makeHarness();
+        const awaitSubscriptions = Effect.fn("TestEnvironmentRpc.awaitSubscriptions")(function* (
+          count: number,
+        ) {
+          for (;;) {
+            if (subscriptions.length >= count) {
+              return;
+            }
+            yield* Queue.take(subscriptionChanges);
           }
-          yield* Queue.take(subscriptionChanges);
-        }
-      });
+        });
 
-      const subscriptionFiber = yield* subscribe(WS_METHODS.subscribeTerminalEvents, {}).pipe(
-        Stream.runDrain,
-        Effect.provideService(EnvironmentSupervisor.EnvironmentSupervisor, supervisor),
-        Effect.forkChild,
-      );
-      yield* SubscriptionRef.set(activeSession, Option.some(session(firstClient)));
-      yield* awaitSubscriptions(1);
-      yield* SubscriptionRef.set(activeSession, Option.some(session(secondClient)));
-      yield* awaitSubscriptions(2);
-      yield* Fiber.interrupt(subscriptionFiber);
+        const subscriptionFiber = yield* subscribe(
+          method,
+          method === WS_METHODS.previewAutomationConnect
+            ? {
+                clientId: "computer-host",
+                environmentId: TARGET.environmentId,
+                supportedOperations: ["computerStatus"],
+              }
+            : {},
+        ).pipe(
+          Stream.runDrain,
+          Effect.provideService(EnvironmentSupervisor.EnvironmentSupervisor, supervisor),
+          Effect.forkChild,
+        );
+        yield* SubscriptionRef.set(activeSession, Option.some(session(firstClient)));
+        yield* awaitSubscriptions(1);
+        yield* SubscriptionRef.set(activeSession, Option.some(session(secondClient)));
+        yield* awaitSubscriptions(2);
+        yield* Fiber.interrupt(subscriptionFiber);
 
-      expect(subscriptions).toEqual(["first", "second"]);
-      expect(yield* Ref.get(retryCount)).toBe(0);
-    }),
+        expect(subscriptions).toEqual(["first", "second"]);
+        expect(yield* Ref.get(retryCount)).toBe(0);
+      }),
   );
 
   it.effect("keeps the producer session on an old value buffered across a session switch", () =>

@@ -16,9 +16,9 @@ describe("PreviewAutomationHost", () => {
       decodeAutomationHost({
         clientId: "current",
         environmentId: "environment-1",
-        supportedOperations: ["status", "resize"],
+        supportedOperations: ["status", "resize", "computerStatus"],
       }).supportedOperations,
-    ).toEqual(["status", "resize"]);
+    ).toEqual(["status", "resize", "computerStatus"]);
   });
 });
 

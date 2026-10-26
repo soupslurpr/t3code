@@ -6,6 +6,7 @@ import { environmentThreadShells } from "./state/threads";
 import { environmentShell } from "./state/shell";
 
 import { BrowserProfileReporter } from "./browser/BrowserProfileReporter";
+import { ComputerAutomationHosts } from "./components/preview/ComputerAutomationHosts";
 import { ElectronBrowserHost } from "./browser/ElectronBrowserHost";
 import { QuitHoldOverlay } from "./components/QuitHoldOverlay";
 import { appAtomRegistry, AppAtomRegistryProvider } from "./rpc/atomRegistry";
@@ -27,6 +28,7 @@ export function AppRoot({ router }: { readonly router: AppRouter }) {
     <AppAtomRegistryProvider>
       <RouterProvider router={router} />
       <ElectronBrowserHost />
+      <ComputerAutomationHosts />
       <BrowserProfileReporter />
       <QuitHoldOverlay />
     </AppAtomRegistryProvider>

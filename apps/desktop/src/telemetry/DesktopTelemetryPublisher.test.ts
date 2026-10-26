@@ -8,6 +8,7 @@ import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
 import * as Schema from "effect/Schema";
 import * as Scope from "effect/Scope";
+import * as Stream from "effect/Stream";
 import * as TestClock from "effect/testing/TestClock";
 
 import type * as Electron from "electron";
@@ -57,6 +58,54 @@ function layerElectronApp(
 }
 
 describe("DesktopTelemetryPublisher", () => {
+  it.effect("keeps the wake lease until every working backend ends or disconnects", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const publisher = yield* DesktopTelemetryPublisher.make();
+        const subscription = yield* publisher.subscribeAgentWorking;
+        assert.isFalse(subscription.latest);
+        yield* publisher.handleControlForSource("first", {
+          version: 1,
+          type: "setAgentWorking",
+          enabled: true,
+        });
+        yield* publisher.handleControlForSource("second", {
+          version: 1,
+          type: "setAgentWorking",
+          enabled: true,
+        });
+        yield* publisher.handleControlForSource("first", {
+          version: 1,
+          type: "setAgentWorking",
+          enabled: false,
+        });
+        assert.isTrue(yield* publisher.agentWorking);
+        yield* publisher.removeControlSource("second");
+        assert.isFalse(yield* publisher.agentWorking);
+        assert.deepEqual(yield* subscription.changes.pipe(Stream.take(2), Stream.runCollect), [
+          true,
+          false,
+        ]);
+      }).pipe(
+        Effect.provide(
+          Layer.mergeAll(
+            layerElectronApp([]),
+            layerHistory,
+            Layer.succeed(ElectronPowerMonitor.ElectronPowerMonitor, {
+              isOnBatteryPower: Effect.succeed(false),
+              getSystemIdleTime: Effect.succeed(0),
+              getSystemIdleState: () => Effect.succeed("active"),
+              getCurrentThermalState: Effect.succeed("nominal" as const),
+              onSimpleEvent: () => Effect.void,
+              onThermalStateChange: () => Effect.void,
+              onSpeedLimitChange: () => Effect.void,
+            }),
+          ),
+        ),
+      ),
+    ),
+  );
+
   it.effect("stops when its scope closes during an Electron telemetry sample", () =>
     Effect.gen(function* () {
       const pollStarted = yield* Deferred.make<void>();
@@ -70,7 +119,7 @@ describe("DesktopTelemetryPublisher", () => {
             Effect.as(0),
           ),
           getSystemIdleState: () => Effect.succeed("active"),
-          getCurrentThermalState: Effect.succeed("nominal"),
+          getCurrentThermalState: Effect.succeed("nominal" as const),
           onSimpleEvent: () => Effect.void,
           onThermalStateChange: () => Effect.void,
           onSpeedLimitChange: () => Effect.void,

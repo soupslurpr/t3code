@@ -181,6 +181,11 @@ contextBridge.exposeInMainWorld("desktopBridge", {
   setTailscaleServeEnabled: (input) =>
     ipcRenderer.invoke(IpcChannels.SET_TAILSCALE_SERVE_ENABLED_CHANNEL, input),
   getAdvertisedEndpoints: () => ipcRenderer.invoke(IpcChannels.GET_ADVERTISED_ENDPOINTS_CHANNEL),
+  getPowerSettings: () => ipcRenderer.invoke(IpcChannels.GET_POWER_SETTINGS_CHANNEL),
+  releaseDesktopAvailability: () =>
+    ipcRenderer.invoke(IpcChannels.RELEASE_DESKTOP_AVAILABILITY_CHANNEL),
+  setKeepAwakeWhileAgentsWork: (enabled) =>
+    ipcRenderer.invoke(IpcChannels.SET_KEEP_AWAKE_WHILE_AGENTS_WORK_CHANNEL, enabled),
   getWslState: () => ipcRenderer.invoke(IpcChannels.GET_WSL_STATE_CHANNEL),
   setWslBackendEnabled: (enabled) =>
     ipcRenderer.invoke(IpcChannels.SET_WSL_BACKEND_ENABLED_CHANNEL, enabled),
@@ -316,6 +321,22 @@ contextBridge.exposeInMainWorld("desktopBridge", {
         );
       };
     },
+  },
+  computer: {
+    requestAvailability: () =>
+      ipcRenderer.invoke(IpcChannels.COMPUTER_AUTOMATION_REQUEST_AVAILABILITY_CHANNEL),
+    releaseAvailability: () =>
+      ipcRenderer.invoke(IpcChannels.COMPUTER_AUTOMATION_RELEASE_AVAILABILITY_CHANNEL),
+    status: () => ipcRenderer.invoke(IpcChannels.COMPUTER_AUTOMATION_STATUS_CHANNEL),
+    requestView: (input) =>
+      ipcRenderer.invoke(IpcChannels.COMPUTER_AUTOMATION_REQUEST_VIEW_CHANNEL, input),
+    requestControl: (input) =>
+      ipcRenderer.invoke(IpcChannels.COMPUTER_AUTOMATION_REQUEST_CONTROL_CHANNEL, input),
+    snapshot: (input) =>
+      ipcRenderer.invoke(IpcChannels.COMPUTER_AUTOMATION_SNAPSHOT_CHANNEL, input),
+    act: (input) => ipcRenderer.invoke(IpcChannels.COMPUTER_AUTOMATION_ACT_CHANNEL, input),
+    release: () => ipcRenderer.invoke(IpcChannels.COMPUTER_AUTOMATION_RELEASE_CHANNEL),
+    forgetControl: () => ipcRenderer.invoke(IpcChannels.COMPUTER_AUTOMATION_FORGET_CONTROL_CHANNEL),
   },
   preview: {
     setForwardedShortcuts: (shortcuts) =>

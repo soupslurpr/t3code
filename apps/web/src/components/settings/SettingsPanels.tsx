@@ -98,6 +98,7 @@ import {
   useSettingsSearchTargetId,
 } from "./settingsLayout";
 import { searchableSetting } from "./settingsSearch";
+import { DesktopPowerSettingsRow } from "./DesktopPowerSettingsRow";
 import { BackgroundActivitySettingsRow } from "./BackgroundActivitySettings";
 
 const RESPONSE_STREAMING_MODE_LABELS: Record<ResponseStreamingMode, string> = {
@@ -1547,6 +1548,8 @@ export function GeneralSettingsPanel() {
             />
           }
         />
+
+        <DesktopPowerSettingsRow />
 
         <SettingsRow
           {...searchableSetting("continue-threads-after-server-update")}
