@@ -525,7 +525,7 @@ describe("computer IPC methods", () => {
     );
   });
 
-  it.effect("replaces private unrecognized failures across IPC", () => {
+  it.effect("returns bounded unrecognized backend diagnostics across IPC", () => {
     const error = new GnomeRemoteDesktop.GnomeRemoteDesktopCommandError({
       operation: "view",
       code: "private-portal-error",
@@ -541,10 +541,33 @@ describe("computer IPC methods", () => {
               code: "internal-error",
               category: "internal",
               message: "The desktop computer-use operation failed.",
+              backendCode: "private-portal-error",
+              detail: "private portal diagnostic",
             },
           });
         }),
       ),
     );
   });
+});
+
+it.effect("preserves both signed wheel axes across the native IPC boundary", () => {
+  const action = { type: "wheel" as const, horizontalTicks: -2, verticalTicks: 5 };
+  const receipt = { index: 0, ...action };
+  const computer = makeComputer({
+    requestView: Effect.die("unused"),
+    act: (input) => {
+      assert.deepEqual(input.actions, [action]);
+      return Effect.succeed([receipt]);
+    },
+  });
+  return act.handler({ input: { actions: [action], observation: false } }).pipe(
+    Effect.provide(computerRouterLayer(computer)),
+    Effect.tap((result) =>
+      Effect.sync(() => {
+        const decoded = decodeComputerObservationResult(result);
+        assert.deepEqual(decoded, { ok: true, value: { actionResults: [receipt] } });
+      }),
+    ),
+  );
 });

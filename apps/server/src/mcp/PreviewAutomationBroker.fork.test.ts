@@ -6,6 +6,7 @@ import {
   ThreadId,
   type PreviewAutomationHost,
   type PreviewAutomationRequest,
+  type PreviewAutomationResponse,
 } from "@t3tools/contracts";
 import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
@@ -29,7 +30,10 @@ const scope: McpInvocationContext.McpThreadInvocationScope = {
   issuedAt: 1,
 };
 const layer = PreviewAutomationBroker.layer.pipe(Layer.provide(NodeServices.layer));
-const serve = Effect.fn("ForkBrokerTest.serve")(function* (host: PreviewAutomationHost) {
+const serve = Effect.fn("ForkBrokerTest.serve")(function* (
+  host: PreviewAutomationHost,
+  answer?: Pick<PreviewAutomationResponse, "ok" | "result" | "error">,
+) {
   const broker = yield* PreviewAutomationBroker.PreviewAutomationBroker;
   const connected = yield* Deferred.make<void>();
   const received: PreviewAutomationRequest[] = [];
@@ -41,8 +45,7 @@ const serve = Effect.fn("ForkBrokerTest.serve")(function* (host: PreviewAutomati
       clientId: host.clientId,
       connectionId: event.connectionId,
       requestId: event.request.requestId,
-      ok: true,
-      result: host.clientId,
+      ...(answer ?? { ok: true, result: host.clientId }),
     });
   }).pipe(Effect.forkScoped);
   yield* Deferred.await(connected);
@@ -152,4 +155,41 @@ it.effect("retains distinct controllers for parallel provider sessions", () =>
       ]);
     }),
   ).pipe(Effect.provide(layer)),
+);
+
+it.effect("retains structured Agent desktop timeout diagnostics at the broker boundary", () =>
+  Effect.gen(function* () {
+    const failure = {
+      code: "timed-out",
+      category: "timeout",
+      message: "The Agent desktop command timed out.",
+      backendCode: "timed-out",
+      detail: "guest process 42 exceeded its timeout",
+    };
+    yield* serve(
+      {
+        clientId: "agent",
+        environmentId,
+        supportedOperations: ["agentDesktopCommand"],
+        computerDesktopKinds: ["agent"],
+      },
+      {
+        ok: false,
+        error: {
+          _tag: "PreviewAutomationExecutionError",
+          message: "private host log",
+          detail: { computerFailure: failure },
+        },
+      },
+    );
+    const error = yield* (yield* PreviewAutomationBroker.PreviewAutomationBroker)
+      .invoke<void>({
+        scope,
+        operation: "agentDesktopCommand",
+        input: { executable: "/usr/bin/env" },
+      })
+      .pipe(Effect.flip);
+    expect(error).toMatchObject({ computerFailure: failure });
+    expect(error.message).toBe(failure.message);
+  }).pipe(Effect.provide(layer)),
 );

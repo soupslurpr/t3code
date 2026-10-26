@@ -180,3 +180,30 @@ it.effect.each([
     expect(JSON.stringify(result)).toContain("read-only");
   }).pipe(Effect.provide(layer)),
 );
+
+it.effect("preserves structured guest timeouts through the broker and MCP boundary", () =>
+  Effect.gen(function* () {
+    const failure = {
+      code: "timed-out",
+      category: "timeout",
+      message: "The Agent desktop command timed out.",
+      backendCode: "timed-out",
+      detail: "guest process 42 exceeded its timeout",
+    };
+    yield* serve({
+      ok: false,
+      error: {
+        _tag: "PreviewAutomationExecutionError",
+        message: "private host log",
+        detail: { computerFailure: failure },
+      },
+    });
+    const result = yield* call("agent_desktop_command", {
+      executable: "/usr/bin/env",
+      environment: { LANG: "C.UTF-8" },
+    });
+    expect(result.isError).toBe(true);
+    expect(JSON.stringify(result)).toContain(failure.message);
+    expect(JSON.stringify(result)).not.toContain("private host log");
+  }).pipe(Effect.provide(layer)),
+);

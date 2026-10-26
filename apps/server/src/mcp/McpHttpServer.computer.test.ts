@@ -483,3 +483,20 @@ it.effect("omits unchanged image content while preserving a fresh actionable fra
     expect(JSON.stringify(result.structuredContent)).not.toContain('"data"');
   }).pipe(Effect.provide(layer)),
 );
+
+it.effect("preserves both discrete wheel axes through the MCP request and receipt", () =>
+  Effect.gen(function* () {
+    const action = { type: "wheel", horizontalTicks: -4, verticalTicks: 3 };
+    const receipt = { index: 0, ...action };
+    yield* serve((request) =>
+      Effect.sync(() => {
+        expect(request.operation).toBe("computerAct");
+        expect(request.input).toEqual({ actions: [action], observation: false });
+        return { ok: true, result: { actionResults: [receipt] } };
+      }),
+    );
+    const result = yield* call("computer_act", { actions: [action], observation: false });
+    expect(result.isError).toBe(false);
+    expect(result.structuredContent).toEqual({ actionResults: [receipt] });
+  }).pipe(Effect.provide(layer)),
+);

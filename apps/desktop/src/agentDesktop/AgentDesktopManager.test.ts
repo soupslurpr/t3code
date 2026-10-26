@@ -88,11 +88,13 @@ const makeQemu = (
     const transferStarted = yield* Deferred.make<void>();
     const releaseTransfer = yield* Deferred.make<void>();
     const blockTransfer = yield* Ref.make(false);
+    const commandEnvironment = yield* Ref.make<ReadonlyArray<string>>([]);
     const commandStarted = yield* Deferred.make<void>();
     const releaseCommand = yield* Deferred.make<void>();
     const desktopParked = yield* Deferred.make<void>();
     const inputReleaseFailed = yield* Ref.make(false);
     const sendKeyFailed = yield* Ref.make(false);
+    const wheelAcknowledgementLost = yield* Ref.make(false);
     const captureEnabled = yield* Ref.make(captureAvailable);
     let windowActivationAttemptCount = 0;
     const record = (call: string) => Ref.update(calls, (current) => [...current, call]);
@@ -284,7 +286,24 @@ const makeQemu = (
               )
             : Effect.void;
         return record(`exec:${id}:${input.executable}:${(input.arguments ?? []).join(" ")}`).pipe(
+          Effect.andThen(Ref.set(commandEnvironment, input.environment ?? [])),
           Effect.andThen(execute),
+          Effect.andThen(
+            argumentsValue.includes("wheel") &&
+              argumentsValue.slice(-2).some((value) => value !== "0")
+              ? Ref.get(wheelAcknowledgementLost).pipe(
+                  Effect.flatMap((lost) =>
+                    lost
+                      ? new QemuAgentDesktop.QemuAgentDesktopError({
+                          code: "internal-error",
+                          operation: "guest-exec",
+                          detail: "input may have been injected before acknowledgement was lost",
+                        })
+                      : Effect.void,
+                  ),
+                )
+              : Effect.void,
+          ),
           Effect.andThen(
             isTransfer
               ? Ref.get(blockTransfer).pipe(
@@ -324,8 +343,10 @@ const makeQemu = (
     });
     return {
       calls,
+      wheelAcknowledgementLost,
       captureEnabled,
       commandStarted,
+      commandEnvironment,
       transferStarted,
       releaseTransfer,
       blockTransfer,
@@ -344,6 +365,7 @@ const managerHarness = (
     readonly acceleratedGraphics?: boolean;
     readonly failInputReleaseOnce?: boolean;
     readonly failSendKeyOnce?: boolean;
+    readonly inputHelper?: boolean;
     readonly textInsertionResponse?: string;
     readonly activationResponse?: string;
     readonly initialDocument?: string;
@@ -375,6 +397,12 @@ const managerHarness = (
     }
     const accessibilityResource = `${agentDesktopsDir}/agent-desktop-accessibility.js`;
     if (accessibility) yield* fileSystem.writeFileString(accessibilityResource, "test helper");
+    const transferResource = `${agentDesktopsDir}/transfer-helper.py`;
+    yield* fileSystem.writeFileString(transferResource, "test transfer helper");
+    const inputHelperResource = `${agentDesktopsDir}/input-helper.py`;
+    if (options?.inputHelper === true) {
+      yield* fileSystem.writeFileString(inputHelperResource, "test input helper");
+    }
     const environmentLayer = Layer.effect(
       DesktopEnvironment.DesktopEnvironment,
       Effect.gen(function* () {
@@ -385,7 +413,14 @@ const managerHarness = (
           processArch: "x64",
           agentDesktopsDir,
           agentDesktopBaseImage: { _tag: "None" },
-          resolveResourcePathCandidates: () => (accessibility ? [accessibilityResource] : []),
+          resolveResourcePathCandidates: (resource: string) =>
+            resource === "computer-use/agent-desktop-accessibility.js" && accessibility
+              ? [accessibilityResource]
+              : resource === "agent-desktop/input-helper.py" && options?.inputHelper === true
+                ? [inputHelperResource]
+                : resource === "agent-desktop/transfer-helper.py"
+                  ? [transferResource]
+                  : [],
         } as unknown as DesktopEnvironment.DesktopEnvironment["Service"]);
       }),
     ).pipe(Layer.provide(NodeServices.layer));
@@ -396,8 +431,10 @@ const managerHarness = (
     );
     return {
       calls: qemu.calls,
+      wheelAcknowledgementLost: qemu.wheelAcknowledgementLost,
       captureEnabled: qemu.captureEnabled,
       commandStarted: qemu.commandStarted,
+      commandEnvironment: qemu.commandEnvironment,
       transferStarted: qemu.transferStarted,
       blockTransfer: qemu.blockTransfer,
       desktopParked: qemu.desktopParked,
@@ -868,6 +905,101 @@ describe("AgentDesktopManager", () => {
     }),
   );
 
+  it.effect("injects discrete wheel ticks through QEMU", () =>
+    Effect.gen(function* () {
+      const harness = yield* managerHarness("wheel-ticks", { captureAvailable: true });
+      yield* Effect.gen(function* () {
+        const manager = yield* AgentDesktopManager.AgentDesktopManager;
+        const desktop = yield* manager.acquire(owner, { label: "Wheel input" });
+        yield* manager.requestControl(owner, { kind: "agent", desktopId: desktop.id });
+        const snapshot = yield* manager.snapshot(
+          owner.controllerId,
+          { includeAccessibility: false },
+          desktop.id,
+        );
+        if (snapshot.frame === undefined) throw new Error("snapshot did not return a frame");
+        const result = yield* manager.act(
+          owner.controllerId,
+          {
+            actions: [
+              {
+                type: "wheel",
+                frameId: snapshot.frame.id,
+                x: 50,
+                y: 50,
+                verticalTicks: -7,
+              },
+            ],
+          },
+          desktop.id,
+        );
+
+        assert.deepEqual(result, [
+          { index: 0, type: "wheel", horizontalTicks: 0, verticalTicks: -7 },
+        ]);
+        const injected = (yield* Ref.get(harness.inputEvents)).flat();
+        assert.equal(
+          injected.filter(
+            (event) => event.type === "btn" && event.data.button === "wheel-up" && event.data.down,
+          ).length,
+          7,
+        );
+      }).pipe(Effect.provide(harness.layer));
+    }),
+  );
+
+  it.effect("injects horizontal wheel ticks through the guest input bridge", () =>
+    Effect.gen(function* () {
+      const harness = yield* managerHarness("horizontal-wheel", {
+        captureAvailable: true,
+        inputHelper: true,
+      });
+      yield* Effect.gen(function* () {
+        const manager = yield* AgentDesktopManager.AgentDesktopManager;
+        const desktop = yield* manager.acquire(owner, { label: "Horizontal wheel input" });
+        yield* manager.requestControl(owner, { kind: "agent", desktopId: desktop.id });
+        const snapshot = yield* manager.snapshot(
+          owner.controllerId,
+          { includeAccessibility: false },
+          desktop.id,
+        );
+        if (snapshot.frame === undefined) throw new Error("snapshot did not return a frame");
+        const result = yield* manager.act(
+          owner.controllerId,
+          {
+            actions: [
+              {
+                type: "wheel",
+                frameId: snapshot.frame.id,
+                x: 50,
+                y: 50,
+                horizontalTicks: 4,
+                verticalTicks: -2,
+              },
+            ],
+          },
+          desktop.id,
+        );
+
+        assert.deepEqual(result, [
+          { index: 0, type: "wheel", horizontalTicks: 4, verticalTicks: -2 },
+        ]);
+        const injected = (yield* Ref.get(harness.inputEvents)).flat();
+        assert.isFalse(
+          injected.some(
+            (event) =>
+              event.type === "btn" &&
+              (event.data.button === "wheel-left" || event.data.button === "wheel-right"),
+          ),
+        );
+        assert.include(
+          yield* Ref.get(harness.calls),
+          `exec:${desktop.id}:/usr/bin/python:/run/t3-agent-input/input-helper.py wheel 4 -2`,
+        );
+      }).pipe(Effect.provide(harness.layer));
+    }),
+  );
+
   it.effect("reports and recovers Agent desktop capture health", () =>
     Effect.gen(function* () {
       const harness = yield* managerHarness("capture-health", { captureAvailable: true });
@@ -1295,6 +1427,35 @@ describe("AgentDesktopManager", () => {
     }),
   );
 
+  it.effect("releases a transient chord when keyboard typing fails", () =>
+    Effect.gen(function* () {
+      const harness = yield* managerHarness("failed-key-chord", { failSendKeyOnce: true });
+      yield* Effect.gen(function* () {
+        const manager = yield* AgentDesktopManager.AgentDesktopManager;
+        const desktop = yield* manager.acquire(owner, { label: "Failed key chord" });
+        yield* manager.requestControl(owner, { kind: "agent", desktopId: desktop.id });
+
+        const error = yield* manager
+          .act(owner.controllerId, { actions: [{ type: "type", text: "a" }] }, desktop.id)
+          .pipe(Effect.flip);
+
+        assert.deepInclude(ComputerUse.toComputerAutomationFailure(error), {
+          code: "input-injection-failed",
+          category: "input-injection",
+          actionIndex: 0,
+          completedActionCount: 0,
+          cleanup: { keys: "released", buttons: "not-needed" },
+        });
+        const releasedKeys = (yield* Ref.get(harness.inputEvents))
+          .flat()
+          .flatMap((event) =>
+            event.type === "key" && !event.data.down ? [event.data.key.data] : [],
+          );
+        assert.deepEqual(releasedKeys, ["a"]);
+      }).pipe(Effect.provide(harness.layer));
+    }),
+  );
+
   it.effect("dwells between Agent desktop pointer button transitions", () =>
     Effect.gen(function* () {
       const harness = yield* managerHarness("pointer-dwell", { captureAvailable: true });
@@ -1339,35 +1500,6 @@ describe("AgentDesktopManager", () => {
           buttonEvents.map((event) => event.data.down),
           [true, false, true, false],
         );
-      }).pipe(Effect.provide(harness.layer));
-    }),
-  );
-
-  it.effect("releases a transient chord when keyboard typing fails", () =>
-    Effect.gen(function* () {
-      const harness = yield* managerHarness("failed-key-chord", { failSendKeyOnce: true });
-      yield* Effect.gen(function* () {
-        const manager = yield* AgentDesktopManager.AgentDesktopManager;
-        const desktop = yield* manager.acquire(owner, { label: "Failed key chord" });
-        yield* manager.requestControl(owner, { kind: "agent", desktopId: desktop.id });
-
-        const error = yield* manager
-          .act(owner.controllerId, { actions: [{ type: "type", text: "a" }] }, desktop.id)
-          .pipe(Effect.flip);
-
-        assert.deepInclude(ComputerUse.toComputerAutomationFailure(error), {
-          code: "input-injection-failed",
-          category: "input-injection",
-          actionIndex: 0,
-          completedActionCount: 0,
-          cleanup: { keys: "released", buttons: "not-needed" },
-        });
-        const releasedKeys = (yield* Ref.get(harness.inputEvents))
-          .flat()
-          .flatMap((event) =>
-            event.type === "key" && !event.data.down ? [event.data.key.data] : [],
-          );
-        assert.deepEqual(releasedKeys, ["a"]);
       }).pipe(Effect.provide(harness.layer));
     }),
   );
@@ -2049,4 +2181,88 @@ it.effect("transfers exact chunks in both directions and enforces cancellation o
       );
     }).pipe(Effect.provide(h.layer));
   }),
+);
+
+it.effect("never replays ambiguous wheel input and repairs the bridge for the next action", () =>
+  Effect.gen(function* () {
+    const harness = yield* managerHarness("wheel-acknowledgement", { inputHelper: true });
+    yield* Effect.gen(function* () {
+      const manager = yield* AgentDesktopManager.AgentDesktopManager;
+      const desktop = yield* manager.acquire(owner, { label: "Wheel acknowledgement" });
+      yield* manager.requestControl(owner, { kind: "agent", desktopId: desktop.id });
+      yield* manager.act(
+        owner.controllerId,
+        { actions: [{ type: "wheel", horizontalTicks: 1 }] },
+        desktop.id,
+      );
+      yield* Ref.set(harness.wheelAcknowledgementLost, true);
+      const failure = yield* manager
+        .act(
+          owner.controllerId,
+          {
+            actions: [{ type: "wheel", horizontalTicks: 4, verticalTicks: -2 }],
+          },
+          desktop.id,
+        )
+        .pipe(Effect.flip);
+      assert.include(
+        ComputerUse.toComputerAutomationFailure(failure).detail!,
+        "acknowledgement was lost",
+      );
+      const failedCalls = yield* Ref.get(harness.calls);
+      assert.equal(
+        failedCalls.filter((call) => call.endsWith("input-helper.py wheel 4 -2")).length,
+        1,
+      );
+      assert.equal(
+        failedCalls.filter((call) => call.endsWith("restart t3-agent-input.service")).length,
+        1,
+      );
+      yield* Ref.set(harness.wheelAcknowledgementLost, false);
+      const result = yield* manager.act(
+        owner.controllerId,
+        { actions: [{ type: "wheel", horizontalTicks: -3, verticalTicks: 2 }] },
+        desktop.id,
+      );
+      assert.deepEqual(result, [
+        { index: 0, type: "wheel", horizontalTicks: -3, verticalTicks: 2 },
+      ]);
+      assert.equal(
+        (yield* Ref.get(harness.calls)).filter((call) =>
+          call.endsWith("restart t3-agent-input.service"),
+        ).length,
+        2,
+      );
+    }).pipe(Effect.provide(harness.layer));
+  }),
+);
+
+it.effect(
+  "normalizes object and entry-list environments into the same exact guest invocation",
+  () =>
+    Effect.gen(function* () {
+      const harness = yield* managerHarness("command-environment");
+      yield* Effect.gen(function* () {
+        const manager = yield* AgentDesktopManager.AgentDesktopManager;
+        const desktop = yield* manager.acquire(owner, { label: "Command environment" });
+        const environments = [
+          { LANG: "C.UTF-8", VALUE: "literal $HOME=thing" },
+          [
+            { name: "LANG", value: "C.UTF-8" },
+            { name: "VALUE", value: "literal $HOME=thing" },
+          ],
+        ];
+        for (const environment of environments) {
+          yield* manager.command(owner, {
+            desktopId: desktop.id,
+            executable: "/usr/bin/env",
+            environment,
+          });
+          assert.deepEqual(yield* Ref.get(harness.commandEnvironment), [
+            "LANG=C.UTF-8",
+            "VALUE=literal $HOME=thing",
+          ]);
+        }
+      }).pipe(Effect.provide(harness.layer));
+    }),
 );
