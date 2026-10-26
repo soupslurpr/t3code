@@ -1,6 +1,8 @@
 import { AgentDesktopId, AgentDesktopOwner, EnvironmentId, ThreadId } from "@t3tools/contracts";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { assert, describe, it } from "@effect/vitest";
+import * as Clock from "effect/Clock";
+import * as DateTime from "effect/DateTime";
 import * as Deferred from "effect/Deferred";
 import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
@@ -42,14 +44,24 @@ const decodeRecordedAccessibilityLocator = Schema.decodeSync(
 const makeQemu = (
   accessibility: boolean,
   acceleratedGraphicsAvailable: boolean,
+  managedBaseImage: boolean,
   failInputReleaseOnce: boolean,
   failSendKeyOnce: boolean,
   textInsertionResponse: string,
   activationResponse: string,
   captureAvailable: boolean,
   windowActivationRequiresSwitch: boolean,
+  blockMaintenance: boolean,
 ) =>
   Effect.gen(function* () {
+    const baseImage = {
+      path: "/base.qcow2",
+      managed: managedBaseImage,
+      generation: "arch-gnome-v1-test",
+      sourceRelease: "20260801.566320",
+      profileVersion: "arch-gnome-v1",
+      builtAt: "2999-01-01T00:00:00.000Z",
+    } as const;
     const calls = yield* Ref.make<ReadonlyArray<string>>([]);
     const inputEvents = yield* Ref.make<
       ReadonlyArray<ReadonlyArray<QemuAgentDesktop.QemuInputEvent>>
@@ -61,6 +73,8 @@ const makeQemu = (
     const commandEnvironment = yield* Ref.make<ReadonlyArray<string>>([]);
     const commandStarted = yield* Deferred.make<void>();
     const releaseCommand = yield* Deferred.make<void>();
+    const maintenanceStarted = yield* Deferred.make<void>();
+    const releaseMaintenance = yield* Deferred.make<void>();
     const desktopParked = yield* Deferred.make<void>();
     const inputReleaseFailed = yield* Ref.make(false);
     const sendKeyFailed = yield* Ref.make(false);
@@ -69,13 +83,16 @@ const makeQemu = (
     let windowActivationAttemptCount = 0;
     const record = (call: string) => Ref.update(calls, (current) => [...current, call]);
     const service = QemuAgentDesktop.QemuAgentDesktop.of({
-      probe: Effect.succeed({
-        available: true,
-        baseImagePath: "/base.qcow2",
-        displayDevice: "virtio-vga",
-        acceleratedGraphicsAvailable,
-        requirements: [],
-      }),
+      probe: record("probe").pipe(
+        Effect.as({
+          available: true,
+          baseImagePath: "/base.qcow2",
+          baseImage,
+          displayDevice: "virtio-vga",
+          acceleratedGraphicsAvailable,
+          requirements: [],
+        }),
+      ),
       setup: Effect.succeed({
         attempted: false,
         completed: true,
@@ -84,11 +101,22 @@ const makeQemu = (
         probe: {
           available: true,
           baseImagePath: "/base.qcow2",
+          baseImage,
           displayDevice: "virtio-vga",
           acceleratedGraphicsAvailable,
           requirements: [],
         },
       }),
+      currentBaseImage: Effect.succeed(baseImage),
+      refreshBaseImage: Effect.gen(function* () {
+        yield* record("refresh-base-image");
+        yield* Deferred.succeed(maintenanceStarted, undefined);
+        return {
+          ...baseImage,
+          builtAt: DateTime.formatIso(DateTime.makeUnsafe(yield* Clock.currentTimeMillis)),
+        };
+      }),
+      pruneBaseImages: () => Effect.void,
       paths: () => {
         throw new Error("paths are not used by the manager test");
       },
@@ -116,6 +144,9 @@ const makeQemu = (
         ),
       checkpoint: (id, saveMemoryState) =>
         record(`checkpoint:${id}:${saveMemoryState ? "memory" : "disk"}`),
+      createUpdateRollback: (id) => record(`update-rollback-create:${id}`),
+      restoreUpdateRollback: (id) => record(`update-rollback-restore:${id}`),
+      discardUpdateRollback: (id) => record(`update-rollback-discard:${id}`),
       remove: (id) => record(`remove:${id}`),
       capture: (id) =>
         record(`capture:${id}`).pipe(
@@ -251,11 +282,15 @@ const makeQemu = (
           stderrTruncated: false,
         };
         const execute =
-          input.executable === "/usr/bin/t3-block"
-            ? Deferred.succeed(commandStarted, undefined).pipe(
-                Effect.andThen(Deferred.await(releaseCommand)),
+          blockMaintenance && input.executable === "/run/t3-agent-desktop/maintenance.sh"
+            ? Deferred.succeed(maintenanceStarted, undefined).pipe(
+                Effect.andThen(Deferred.await(releaseMaintenance)),
               )
-            : Effect.void;
+            : input.executable === "/usr/bin/t3-block"
+              ? Deferred.succeed(commandStarted, undefined).pipe(
+                  Effect.andThen(Deferred.await(releaseCommand)),
+                )
+              : Effect.void;
         return record(`exec:${id}:${input.executable}:${(input.arguments ?? []).join(" ")}`).pipe(
           Effect.andThen(Ref.set(commandEnvironment, input.environment ?? [])),
           Effect.andThen(execute),
@@ -294,7 +329,11 @@ const makeQemu = (
       readGuestFile: (_id, path) =>
         Effect.succeed({
           data: new TextEncoder().encode(
-            accessibility && path === "/etc/t3-agent-desktop-user" ? "t3test\n" : "hello",
+            path === "/etc/t3-agent-desktop-profile"
+              ? "arch-gnome-v1\n"
+              : accessibility && path === "/etc/t3-agent-desktop-user"
+                ? "t3test\n"
+                : "hello",
           ),
           eof: true,
         }),
@@ -324,6 +363,8 @@ const makeQemu = (
       desktopParked,
       inputEvents,
       releaseCommand,
+      maintenanceStarted,
+      releaseMaintenance,
       service,
     };
   });
@@ -334,11 +375,14 @@ const managerHarness = (
   options?: {
     readonly accessibility?: boolean;
     readonly acceleratedGraphics?: boolean;
+    readonly managedBaseImage?: boolean;
+    readonly baseImageProvisioned?: boolean;
     readonly failInputReleaseOnce?: boolean;
     readonly failSendKeyOnce?: boolean;
     readonly inputHelper?: boolean;
     readonly textInsertionResponse?: string;
     readonly activationResponse?: string;
+    readonly blockMaintenance?: boolean;
     readonly initialDocument?: string;
     readonly captureAvailable?: boolean;
     readonly windowActivationRequiresSwitch?: boolean;
@@ -349,12 +393,14 @@ const managerHarness = (
     const qemu = yield* makeQemu(
       accessibility,
       options?.acceleratedGraphics === true,
+      options?.managedBaseImage !== false,
       options?.failInputReleaseOnce === true,
       options?.failSendKeyOnce === true,
       options?.textInsertionResponse ?? "",
       options?.activationResponse ?? '{"ok":true,"result":{"keyboard":false}}',
       options?.captureAvailable === true,
       options?.windowActivationRequiresSwitch === true,
+      options?.blockMaintenance === true,
     );
     const fileSystem = yield* FileSystem.FileSystem;
     const agentDesktopsDir = yield* fileSystem.makeTempDirectoryScoped({
@@ -374,6 +420,8 @@ const managerHarness = (
     if (options?.inputHelper === true) {
       yield* fileSystem.writeFileString(inputHelperResource, "test input helper");
     }
+    const maintenanceResource = `${agentDesktopsDir}/maintenance.sh`;
+    yield* fileSystem.writeFileString(maintenanceResource, "#!/usr/bin/bash\nexit 0\n");
     const environmentLayer = Layer.effect(
       AgentDesktopEnvironment.AgentDesktopEnvironment,
       Effect.gen(function* () {
@@ -389,16 +437,27 @@ const managerHarness = (
               ? [accessibilityResource]
               : resource === "agent-desktop/input-helper.py" && options?.inputHelper === true
                 ? [inputHelperResource]
-                : resource === "agent-desktop/transfer-helper.py"
-                  ? [transferResource]
-                  : [],
+                : resource === "agent-desktop/maintenance.sh"
+                  ? [maintenanceResource]
+                  : resource === "agent-desktop/transfer-helper.py"
+                    ? [transferResource]
+                    : [],
         });
       }),
     ).pipe(Layer.provide(NodeServices.layer));
     const dependencies = Layer.mergeAll(
       NodeServices.layer,
       environmentLayer,
-      Layer.succeed(QemuAgentDesktop.QemuAgentDesktop, qemu.service),
+      Layer.succeed(QemuAgentDesktop.QemuAgentDesktop, {
+        ...qemu.service,
+        currentBaseImage: qemu.service.currentBaseImage.pipe(
+          Effect.map((base) =>
+            options?.baseImageProvisioned === false
+              ? { ...base, generation: null, builtAt: null, profileVersion: null }
+              : base,
+          ),
+        ),
+      }),
     );
     return {
       files: fileSystem,
@@ -413,6 +472,8 @@ const managerHarness = (
       desktopParked: qemu.desktopParked,
       inputEvents: qemu.inputEvents,
       releaseCommand: qemu.releaseCommand,
+      maintenanceStarted: qemu.maintenanceStarted,
+      releaseMaintenance: qemu.releaseMaintenance,
       layer: AgentDesktopManager.layer.pipe(Layer.provide(dependencies)),
     };
   }).pipe(Effect.provide(NodeServices.layer));
@@ -479,6 +540,54 @@ describe("AgentDesktopManager", () => {
           "desktop-target-mismatch",
         );
         assert.isFalse((yield* Ref.get(harness.calls)).some((call) => call.startsWith("create:")));
+      }).pipe(Effect.provide(harness.layer));
+    }),
+  );
+
+  it.effect("rolls back an interrupted desktop update before serving it", () =>
+    Effect.gen(function* () {
+      const desktopId = decodeAgentDesktopId("agent-interrupted-update");
+      const harness = yield* managerHarness("interrupted-update", {
+        initialDocument: encodeUnknownJson({
+          version: 1,
+          desktops: [
+            {
+              id: desktopId,
+              label: "Interrupted update",
+              owner,
+              state: "ready",
+              resources: {
+                cpuCount: 4,
+                memoryBytes: 4 * 1024 ** 3,
+                diskVirtualBytes: 64 * 1024 ** 3,
+                audio: false,
+              },
+              maintenance: {
+                status: "installing",
+                appliedProfileVersion: "arch-gnome-v0",
+                lastUpdatedAt: "2026-08-01T00:00:00.000Z",
+                startedAt: "2026-08-18T00:00:00.000Z",
+                previousState: "parked",
+                rollbackReady: true,
+              },
+              graphicsBackend: "virtio-gpu-2d",
+              routes: [],
+              createdAt: "2026-08-01T00:00:00.000Z",
+              lastActiveAt: "2026-08-01T01:00:00.000Z",
+              recoverableUntil: null,
+            },
+          ],
+        }),
+      });
+      yield* Effect.gen(function* () {
+        const manager = yield* AgentDesktopManager.AgentDesktopManager;
+        const recovered = (yield* manager.list).desktops[0];
+
+        assert.equal(recovered?.id, desktopId);
+        assert.equal(recovered?.state, "parked");
+        assert.equal(recovered?.maintenance.status, "due");
+        assert.include(recovered?.maintenance.detail ?? "", "interrupted update was rolled back");
+        assert.include(yield* Ref.get(harness.calls), `update-rollback-restore:${desktopId}`);
       }).pipe(Effect.provide(harness.layer));
     }),
   );
@@ -1964,6 +2073,7 @@ describe("AgentDesktopManager", () => {
       yield* Effect.gen(function* () {
         const manager = yield* AgentDesktopManager.AgentDesktopManager;
         const desktop = yield* manager.acquire(owner, { label: "Operations" });
+        assert.include(desktop.capabilities, "packet-capture");
         const command = yield* manager.command(owner, {
           desktopId: desktop.id,
           executable: "/usr/bin/printf",
@@ -2042,7 +2152,6 @@ describe("AgentDesktopManager", () => {
         yield* Deferred.await(harness.commandStarted);
 
         yield* TestClock.adjust(Duration.minutes(11));
-        yield* Effect.yieldNow;
         assert.isFalse((yield* Ref.get(harness.calls)).some((call) => call.startsWith("park:")));
 
         yield* Deferred.succeed(harness.releaseCommand, undefined);
@@ -2053,6 +2162,271 @@ describe("AgentDesktopManager", () => {
 
         const calls = yield* Ref.get(harness.calls);
         assert.isTrue(calls.some((call) => call.startsWith("park:")));
+      }).pipe(Effect.provide(harness.layer));
+    }),
+  );
+
+  it.effect("does not park a desktop while system maintenance is active", () =>
+    Effect.gen(function* () {
+      const harness = yield* managerHarness("active-maintenance", {
+        blockMaintenance: true,
+        captureAvailable: true,
+      });
+      yield* Effect.gen(function* () {
+        const manager = yield* AgentDesktopManager.AgentDesktopManager;
+        const desktop = yield* manager.acquire(owner, { label: "Active maintenance" });
+        yield* manager.manage(owner, { desktopId: desktop.id, operation: "stop" });
+        yield* manager.update(owner, {
+          target: { kind: "desktop", desktopId: desktop.id },
+        });
+        yield* Deferred.await(harness.maintenanceStarted);
+
+        yield* TestClock.adjust(Duration.minutes(11));
+        const duplicate = yield* manager.update(owner, {
+          target: { kind: "desktop", desktopId: desktop.id },
+        });
+        assert.isFalse(duplicate.accepted);
+        const busy = yield* manager
+          .manage(owner, {
+            desktopId: desktop.id,
+            operation: "resume",
+          })
+          .pipe(Effect.flip);
+        assert.equal(ComputerUse.toComputerAutomationFailure(busy).code, "desktop-busy");
+        assert.isFalse((yield* Ref.get(harness.calls)).some((call) => call.startsWith("park:")));
+
+        yield* Deferred.succeed(harness.releaseMaintenance, undefined);
+        const maintenance = yield* manager.awaitUpdate(owner, {
+          target: { kind: "desktop", desktopId: desktop.id },
+        });
+        assert.equal(maintenance.status, "current");
+      }).pipe(Effect.provide(harness.layer));
+    }),
+  );
+
+  it.effect("leaves an unconfigured manager idle across maintenance cycles", () =>
+    Effect.gen(function* () {
+      const harness = yield* managerHarness("idle", { baseImageProvisioned: false });
+      yield* Effect.gen(function* () {
+        yield* AgentDesktopManager.AgentDesktopManager;
+        yield* TestClock.adjust(Duration.minutes(10));
+        assert.deepEqual(yield* Ref.get(harness.calls), []);
+      }).pipe(Effect.provide(harness.layer));
+    }),
+  );
+
+  it.effect("adopts an older base-only setup and resumes its automatic maintenance", () =>
+    Effect.gen(function* () {
+      const harness = yield* managerHarness("legacy-base", { managedBaseImage: true });
+      yield* TestClock.setTime(Date.parse("3000-01-01T00:00:00.000Z"));
+      yield* Effect.gen(function* () {
+        const manager = yield* AgentDesktopManager.AgentDesktopManager;
+        yield* TestClock.adjust(Duration.minutes(1));
+        yield* Deferred.await(harness.maintenanceStarted);
+        const maintenance = yield* manager.awaitUpdate(owner, { target: { kind: "base-image" } });
+        assert.equal(maintenance.status, "current");
+        assert.include(yield* Ref.get(harness.calls), "refresh-base-image");
+        assert.deepEqual((yield* manager.list).desktops, []);
+      }).pipe(Effect.provide(harness.layer));
+    }),
+  );
+
+  it.effect("maintains an explicitly provisioned base before its first desktop", () =>
+    Effect.gen(function* () {
+      const harness = yield* managerHarness("configured-base", { managedBaseImage: true });
+      yield* Effect.gen(function* () {
+        const manager = yield* AgentDesktopManager.AgentDesktopManager;
+        yield* manager.setup;
+        yield* TestClock.adjust(Duration.minutes(1));
+        assert.include(yield* Ref.get(harness.calls), "probe");
+        assert.deepEqual((yield* manager.list).desktops, []);
+      }).pipe(Effect.provide(harness.layer));
+    }),
+  );
+
+  it.effect(
+    "persists manual updates independently of retention, skips automatic upgrades, and allows explicit upgrades",
+    () =>
+      Effect.gen(function* () {
+        const harness = yield* managerHarness("manual-updates", {
+          managedBaseImage: false,
+          captureAvailable: true,
+          blockMaintenance: true,
+        });
+        yield* TestClock.setTime(Date.parse("3000-01-01T00:00:00.000Z"));
+        const manualId = yield* Effect.gen(function* () {
+          const manager = yield* AgentDesktopManager.AgentDesktopManager;
+          const manual = yield* manager.acquire(owner, {
+            fresh: true,
+            requirements: { retention: "preserve" },
+          });
+          assert.equal(manual.updatePolicy, "automatic");
+          yield* manager.manage(owner, {
+            desktopId: manual.id,
+            operation: "set-update-policy",
+            updatePolicy: "manual",
+          });
+          const automatic = yield* manager.acquire(owner, {
+            fresh: true,
+            requirements: { retention: "preserve" },
+          });
+          yield* manager.manage(owner, { desktopId: manual.id, operation: "stop" });
+          yield* manager.manage(owner, { desktopId: automatic.id, operation: "stop" });
+          yield* TestClock.adjust(Duration.minutes(1));
+          yield* Deferred.await(harness.maintenanceStarted);
+          const before = yield* Ref.get(harness.calls);
+          assert.include(before, `update-rollback-create:${automatic.id}`);
+          assert.notInclude(before, `update-rollback-create:${manual.id}`);
+          yield* Deferred.succeed(harness.releaseMaintenance, undefined);
+          yield* manager.awaitUpdate(owner, {
+            target: { kind: "desktop", desktopId: automatic.id },
+          });
+          yield* manager.update(owner, { target: { kind: "desktop", desktopId: manual.id } });
+          assert.equal(
+            (yield* manager.awaitUpdate(owner, {
+              target: { kind: "desktop", desktopId: manual.id },
+            })).status,
+            "current",
+          );
+          assert.include(yield* Ref.get(harness.calls), `update-rollback-create:${manual.id}`);
+          return manual.id;
+        }).pipe(Effect.provide(harness.layer));
+        yield* Effect.gen(function* () {
+          const manager = yield* AgentDesktopManager.AgentDesktopManager;
+          const restored = (yield* manager.list).desktops.find(
+            (desktop) => desktop.id === manualId,
+          );
+          assert.equal(restored?.updatePolicy, "manual");
+          assert.equal(restored?.retention, "preserve");
+          yield* manager.manage(owner, {
+            desktopId: manualId,
+            operation: "set-update-policy",
+            updatePolicy: "automatic",
+          });
+          assert.equal(
+            (yield* manager.list).desktops.find((desktop) => desktop.id === manualId)?.updatePolicy,
+            "automatic",
+          );
+        }).pipe(Effect.provide(Layer.fresh(harness.layer)));
+      }),
+  );
+
+  it.effect("updates a stopped desktop and commits only after verification", () =>
+    Effect.gen(function* () {
+      const harness = yield* managerHarness("update-success", { captureAvailable: true });
+      yield* Effect.gen(function* () {
+        const manager = yield* AgentDesktopManager.AgentDesktopManager;
+        const desktop = yield* manager.acquire(owner, { label: "Update success" });
+        yield* manager.manage(owner, { desktopId: desktop.id, operation: "stop" });
+
+        const queued = yield* manager.update(owner, {
+          target: { kind: "desktop", desktopId: desktop.id },
+        });
+        assert.isTrue(queued.accepted);
+        assert.equal(queued.maintenance.status, "queued");
+        const maintenance = yield* manager.awaitUpdate(owner, {
+          target: { kind: "desktop", desktopId: desktop.id },
+        });
+        assert.equal(maintenance.status, "current");
+
+        const updated = (yield* manager.list).desktops.find(
+          (candidate) => candidate.id === desktop.id,
+        );
+        assert.equal(updated?.state, "stopped");
+        assert.equal(updated?.maintenance.status, "current");
+        assert.equal(updated?.maintenance.appliedProfileVersion, "arch-gnome-v1");
+
+        const calls = yield* Ref.get(harness.calls);
+        assert.include(calls, `update-rollback-create:${desktop.id}`);
+        assert.include(
+          calls,
+          `exec:${desktop.id}:/usr/bin/install:-d -m 0700 /run/t3-agent-desktop`,
+        );
+        assert.isTrue(
+          calls.some(
+            (call) =>
+              call === `exec:${desktop.id}:/run/t3-agent-desktop/maintenance.sh:arch-gnome-v1`,
+          ),
+        );
+        assert.isTrue(calls.some((call) => call === `capture:${desktop.id}`));
+        assert.include(calls, `update-rollback-discard:${desktop.id}`);
+        assert.notInclude(calls, `update-rollback-restore:${desktop.id}`);
+      }).pipe(Effect.provide(harness.layer));
+    }),
+  );
+
+  it.effect("refreshes the base image without changing existing desktop backing", () =>
+    Effect.gen(function* () {
+      const harness = yield* managerHarness("base-update");
+      yield* Effect.gen(function* () {
+        const manager = yield* AgentDesktopManager.AgentDesktopManager;
+        const desktop = yield* manager.acquire(owner, { label: "Existing generation" });
+
+        const queued = yield* manager.update(owner, { target: { kind: "base-image" } });
+        assert.isTrue(queued.accepted);
+        assert.equal(queued.maintenance.status, "queued");
+        assert.equal(queued.maintenance.appliedProfileVersion, "arch-gnome-v1");
+        const maintenance = yield* manager.awaitUpdate(owner, {
+          target: { kind: "base-image" },
+        });
+        assert.equal(maintenance.status, "current");
+
+        const listed = yield* manager.list;
+        assert.equal(listed.baseImage.maintenance.status, "current");
+        assert.equal(
+          listed.desktops.find((candidate) => candidate.id === desktop.id)?.baseGeneration,
+          desktop.baseGeneration,
+        );
+        assert.include(yield* Ref.get(harness.calls), "refresh-base-image");
+      }).pipe(Effect.provide(harness.layer));
+    }),
+  );
+
+  it.effect("leaves caller-supplied base images outside automatic maintenance", () =>
+    Effect.gen(function* () {
+      const harness = yield* managerHarness("external-base", { managedBaseImage: false });
+      yield* Effect.gen(function* () {
+        const manager = yield* AgentDesktopManager.AgentDesktopManager;
+        assert.isFalse((yield* manager.list).baseImage.managed);
+
+        const error = yield* manager
+          .update(owner, { target: { kind: "base-image" } })
+          .pipe(Effect.flip);
+        assert.equal(ComputerUse.toComputerAutomationFailure(error).code, "unsupported-operation");
+        assert.notInclude(yield* Ref.get(harness.calls), "refresh-base-image");
+      }).pipe(Effect.provide(harness.layer));
+    }),
+  );
+
+  it.effect("restores a stopped desktop when update verification fails", () =>
+    Effect.gen(function* () {
+      const harness = yield* managerHarness("update-rollback");
+      yield* Effect.gen(function* () {
+        const manager = yield* AgentDesktopManager.AgentDesktopManager;
+        const desktop = yield* manager.acquire(owner, { label: "Update rollback" });
+        yield* manager.manage(owner, { desktopId: desktop.id, operation: "stop" });
+
+        const queued = yield* manager.update(owner, {
+          target: { kind: "desktop", desktopId: desktop.id },
+        });
+        assert.isTrue(queued.accepted);
+        const maintenance = yield* manager.awaitUpdate(owner, {
+          target: { kind: "desktop", desktopId: desktop.id },
+        });
+        assert.equal(maintenance.status, "failed");
+
+        const restored = (yield* manager.list).desktops.find(
+          (candidate) => candidate.id === desktop.id,
+        );
+        assert.equal(restored?.state, "stopped");
+        assert.equal(restored?.maintenance.status, "failed");
+        assert.include(restored?.maintenance.detail ?? "", "test virtual display disconnected");
+        assert.include(restored?.maintenance.detail ?? "", "previous disk state was restored");
+
+        const calls = yield* Ref.get(harness.calls);
+        assert.include(calls, `update-rollback-create:${desktop.id}`);
+        assert.include(calls, `update-rollback-restore:${desktop.id}`);
+        assert.notInclude(calls, `update-rollback-discard:${desktop.id}`);
       }).pipe(Effect.provide(harness.layer));
     }),
   );

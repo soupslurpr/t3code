@@ -29,6 +29,7 @@ import {
   qemuKeyChordPhases,
   qemuKeyChordSequence,
   qemuSendKeyArguments,
+  retainedAgentDesktopBaseGenerations,
   parseAgentDesktopStorageCapacity,
   toQemuAbsoluteCoordinate,
   type QemuAgentDesktopPaths,
@@ -96,6 +97,29 @@ describe("QemuAgentDesktop", () => {
       "--output=json",
       "/machine/disk.qcow2",
     ]);
+  });
+
+  it("retains current and referenced base images plus one rollback generation", () => {
+    assert.deepEqual(
+      Array.from(
+        retainedAgentDesktopBaseGenerations(
+          ["arch-gnome-v1-100", "arch-gnome-v1-200", "arch-gnome-v1-300"],
+          "arch-gnome-v1-300",
+          new Set(["arch-gnome-v1-100"]),
+        ),
+      ).sort(),
+      ["arch-gnome-v1-100", "arch-gnome-v1-200", "arch-gnome-v1-300"],
+    );
+    assert.deepEqual(
+      Array.from(
+        retainedAgentDesktopBaseGenerations(
+          ["arch-gnome-v1-100", "arch-gnome-v1-200", "arch-gnome-v1-300"],
+          "arch-gnome-v1-300",
+          new Set(),
+        ),
+      ).sort(),
+      ["arch-gnome-v1-200", "arch-gnome-v1-300"],
+    );
   });
 
   it("parses bounded Agent desktop filesystem capacity", () => {
@@ -545,5 +569,47 @@ it.effect("interrupts only the guest process returned by its own spawn", () =>
     yield* Deferred.await(entered);
     yield* Fiber.interrupt(running);
     assert.deepEqual(killed, [["-TERM", "314"]]);
+  }).pipe(Effect.provide(NodeServices.layer)),
+);
+
+it.effect("caches missing prerequisites until setup or expiry requests a fresh probe", () =>
+  Effect.gen(function* () {
+    const path = yield* Path.Path;
+    let inspected = 0;
+    const service = yield* makeQemu.pipe(
+      Effect.provideService(AgentDesktopEnvironment.AgentDesktopEnvironment, {
+        path,
+        platform: "linux",
+        processArch: "x64",
+        agentDesktopsDir: "/test-agent-desktops",
+        agentDesktopBaseImage: Option.none(),
+        resolveResourcePathCandidates: () => [],
+      }),
+      Effect.provideService(
+        FileSystem.FileSystem,
+        FileSystem.makeNoop({
+          exists: () =>
+            Effect.sync(() => {
+              inspected++;
+              return false;
+            }),
+          readFileString: () => Effect.succeed(""),
+        }),
+      ),
+    );
+    assert.isFalse((yield* service.probe).available);
+    const initial = inspected;
+    assert.isAbove(initial, 0);
+    yield* service.probe;
+    yield* service.probe;
+    assert.equal(inspected, initial);
+    assert.isFalse((yield* service.setup).completed);
+    assert.isAbove(inspected, initial);
+    const afterSetup = inspected;
+    yield* service.probe;
+    assert.equal(inspected, afterSetup);
+    yield* TestClock.adjust("6 minutes");
+    yield* service.probe;
+    assert.isAbove(inspected, afterSetup);
   }).pipe(Effect.provide(NodeServices.layer)),
 );

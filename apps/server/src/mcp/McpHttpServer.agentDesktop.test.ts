@@ -13,6 +13,22 @@ import * as McpHttpServer from "./McpHttpServer.ts";
 import * as McpInvocationContext from "./McpInvocationContext.ts";
 import * as McpToolAccessTestkit from "./McpToolAccess.testkit.ts";
 
+const maintenance = {
+  status: "due" as const,
+  targetProfileVersion: "arch-gnome-v1",
+  appliedProfileVersion: null,
+  lastUpdatedAt: null,
+  startedAt: null,
+  completedAt: null,
+};
+const baseImage = {
+  managed: true,
+  generation: null,
+  sourceRelease: null,
+  builtAt: null,
+  maintenance,
+};
+
 const environmentId = EnvironmentId.make("computer-http-environment");
 const threadId = ThreadId.make("computer-http-thread");
 const invocation: McpInvocationContext.McpInvocationScope = {
@@ -50,6 +66,8 @@ const desktop = (
   owner: { environmentId: environment, threadId: thread, controllerId },
   state: "ready",
   automaticParking: true,
+  baseGeneration: null,
+  maintenance,
   capabilities: ["command"],
   graphics: {
     backend: "virtio-gpu-2d",
@@ -71,6 +89,7 @@ const layer = McpHttpServer.AgentDesktopToolkitRegistrationLive.pipe(
     Layer.mock(AgentDesktopManager.AgentDesktopManager)({
       list: Effect.succeed({
         available: true,
+        baseImage,
         desktops: [
           desktop("first"),
           desktop("second", environmentId, threadId, "second-controller"),
@@ -79,12 +98,21 @@ const layer = McpHttpServer.AgentDesktopToolkitRegistrationLive.pipe(
         ],
         requirements: [],
       }),
+      update: (owner, input) =>
+        Effect.sync(() => {
+          expect(owner).toEqual({ environmentId, threadId, controllerId: "computer-http-session" });
+          return {
+            accepted: true,
+            target: input.target,
+            maintenance: { ...maintenance, status: "queued" as const },
+          };
+        }),
       setup: Effect.succeed({
         attempted: true,
         completed: true,
         packages: ["passt"],
         imageProvisioned: false,
-        status: { available: true, desktops: [], requirements: [] },
+        status: { available: true, baseImage, desktops: [], requirements: [] },
       }),
       command: (owner) =>
         Effect.sync(() =>
@@ -130,6 +158,7 @@ it.effect("routes an Agent desktop list directly to the environment service", ()
 it.effect.each([
   ["agent_desktop_list", {}],
   ["agent_desktop_setup", {}],
+  ["agent_desktop_update", { target: { kind: "base-image" } }],
   ["agent_desktop_acquire", {}],
   ["agent_desktop_manage", { operation: "stop", desktopId: "agent-one" }],
   ["agent_desktop_command", { executable: "/usr/bin/true" }],
@@ -199,6 +228,8 @@ it.effect.each([
     { source: { kind: "workspace", path: "a" }, destination: { kind: "agent", path: "~/a" } },
   ],
   ["agent_desktop_transfer_cancel", { transferId: "transfer-one" }],
+  ["agent_desktop_update", { target: { kind: "base-image" } }],
+  ["agent_desktop_packet_capture", { durationMs: 1000, maxBytes: 1024 }],
 ] as const)("denies %s for a read-only client", ([name, input]) =>
   Effect.gen(function* () {
     const result = yield* call(name, input, {
@@ -229,6 +260,17 @@ it.effect("returns environment setup readiness through the guarded Agent tool", 
     expect(result.structuredContent).toMatchObject({
       completed: true,
       status: { available: true },
+    });
+  }).pipe(Effect.provide(layer)),
+);
+
+it.effect("queues Agent maintenance through the authenticated owner", () =>
+  Effect.gen(function* () {
+    const result = yield* call("agent_desktop_update", { target: { kind: "base-image" } });
+    expect(result.isError).toBe(false);
+    expect(result.structuredContent).toMatchObject({
+      accepted: true,
+      maintenance: { status: "queued" },
     });
   }).pipe(Effect.provide(layer)),
 );

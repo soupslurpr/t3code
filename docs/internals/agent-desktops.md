@@ -46,8 +46,10 @@ disables guest idle locking and suspend, starts QEMU Guest Agent, and does not e
 builds include a dependency-free image builder. Approved first-use setup downloads an immutable,
 pinned official Arch qcow2 image over HTTPS, validates its exact size and embedded published SHA-256,
 provisions through a NoCloud FAT seed, validates the result, and atomically installs a compressed
-base image. Downloads resume through a private partial file; verified sources are cached while failed
-build overlays are removed. Setup is serialized so concurrent agents cannot race the same image.
+base generation. A small manifest atomically selects the generation used by future desktops; an
+existing overlay continues to reference its exact immutable backing file. Downloads resume through a
+private partial file; verified sources are cached while failed build overlays are removed. Setup and
+refresh are serialized so concurrent agents cannot race the same image.
 The repository command can still consume a caller-supplied qcow2 image and requires a SHA-256 unless
 verification is explicitly skipped.
 
@@ -87,6 +89,23 @@ filesystem is frozen; software desktops retain full machine-state checkpoints. C
 flushes both live drives, converts them with shared-source access, and resumes the source even if
 copying fails. Deletes are recoverable for seven days unless permanent deletion is explicitly
 requested.
+
+## System maintenance
+
+Base generations are immutable: a verified manifest swap selects future
+desktops without changing any existing overlay's backing file. Cleanup
+must retain every referenced generation and a prior unreferenced one.
+Custom base images remain caller-managed.
+
+Update rollback covers both the system and firmware disks. Persist the
+rollback marker before guest changes, and recover interrupted maintenance
+before serving access. A saved-memory park cannot be upgraded in place;
+automatic maintenance only selects stopped or cold-parked desktops with
+no leases or active operations. Manual update policy is independent of
+retention and does not prevent an explicit update.
+
+Guest package/profile changes must bump the profile version in both the
+image builder and maintenance policy; their focused test checks alignment.
 
 ## Networking
 
