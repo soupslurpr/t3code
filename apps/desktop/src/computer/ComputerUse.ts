@@ -136,6 +136,19 @@ export class ComputerUseOperationError extends Schema.TaggedError<ComputerUseOpe
   }
 }
 
+/** Reports an invalid or conflicting logical lease above the native session. */
+export class ComputerUseLeaseError extends Schema.TaggedError<ComputerUseLeaseError>()(
+  "ComputerUseLeaseError",
+  {
+    code: Schema.Literals(["desktop-busy", "desktop-lease-required", "request-cancelled"]),
+    cause: Schema.String,
+  },
+) {
+  override get message(): string {
+    return this.cause;
+  }
+}
+
 export const ComputerUseError = Schema.Union([
   ComputerUseDisplayNotFoundError,
   ComputerUseCoordinateOutOfBoundsError,
@@ -143,6 +156,7 @@ export const ComputerUseError = Schema.Union([
   ComputerUseRegionOutOfBoundsError,
   ComputerUseActionError,
   ComputerUseOperationError,
+  ComputerUseLeaseError,
   GnomeRemoteDesktop.GnomeRemoteDesktopError,
 ]);
 export type ComputerUseError = typeof ComputerUseError.Type;
@@ -194,6 +208,7 @@ export function toComputerAutomationFailure(cause: unknown): ComputerAutomationF
     | undefined;
   let operationContext: ComputerUseOperation | undefined;
   let phaseContext: ComputerAutomationFailure["phase"] | undefined;
+  let cleanupContext: ComputerAutomationFailure["cleanup"] | undefined;
   for (let depth = 0; depth < 6; depth += 1) {
     const record = asRecord(current);
     if (record === undefined) break;
@@ -223,6 +238,12 @@ export function toComputerAutomationFailure(cause: unknown): ComputerAutomationF
       current = record.cause;
       continue;
     }
+    const nestedCleanup = boundedCleanup(record.cleanup);
+    if (!("_tag" in record) && "cause" in record && nestedCleanup !== undefined) {
+      cleanupContext = nestedCleanup;
+      current = record.cause;
+      continue;
+    }
     break;
   }
 
@@ -233,7 +254,7 @@ export function toComputerAutomationFailure(cause: unknown): ComputerAutomationF
     operationContext ?? (typeof error.operation === "string" ? error.operation : undefined);
   const actionField = (field: string) =>
     actionContext === undefined ? field : `actions[${actionContext.actionIndex}].${field}`;
-  const cleanup = boundedCleanup(error.cleanup);
+  const cleanup = cleanupContext ?? boundedCleanup(error.cleanup);
   const common = {
     ...(actionContext === undefined
       ? {}
@@ -259,7 +280,7 @@ export function toComputerAutomationFailure(cause: unknown): ComputerAutomationF
     ...(cleanup === undefined ? {} : { cleanup }),
   };
   const validationCleanup =
-    actionContext === undefined
+    actionContext === undefined || cleanup !== undefined
       ? {}
       : { cleanup: { keys: "not-needed" as const, buttons: "not-needed" as const } };
 
@@ -300,7 +321,11 @@ export function toComputerAutomationFailure(cause: unknown): ComputerAutomationF
       ...(typeof error.displayId === "string" ? { received: error.displayId.slice(0, 128) } : {}),
     };
   }
-  if (tag === "GnomeRemoteDesktopTimeoutError" || internalCode === "portal-timeout") {
+  if (
+    tag === "GnomeRemoteDesktopTimeoutError" ||
+    internalCode === "portal-timeout" ||
+    internalCode === "timed-out"
+  ) {
     return {
       code: "timed-out",
       category: "timeout",
@@ -327,6 +352,63 @@ export function toComputerAutomationFailure(cause: unknown): ComputerAutomationF
       ...common,
     };
   }
+  if (internalCode === "desktop-busy") {
+    return {
+      code: "desktop-busy",
+      category: "conflict",
+      message:
+        "Another agent currently controls this desktop; use a separate Agent desktop or wait for its release.",
+      ...common,
+    };
+  }
+  if (internalCode === "desktop-lease-required") {
+    return {
+      code: "desktop-lease-required",
+      category: "authorization",
+      message: "Request view or control access to this desktop before using it.",
+      ...common,
+    };
+  }
+  if (internalCode === "desktop-target-mismatch") {
+    return {
+      code: "desktop-target-mismatch",
+      category: "stale-target",
+      message: "The requested Agent desktop is unavailable to this controller.",
+      ...common,
+    };
+  }
+  if (internalCode === "agent-desktop-unavailable") {
+    return {
+      code: "agent-desktop-unavailable",
+      category: "resource",
+      message: "An Agent desktop is not available on this environment.",
+      ...common,
+    };
+  }
+  if (internalCode === "resource-exhausted") {
+    return {
+      code: "resource-exhausted",
+      category: "resource",
+      message: "The environment lacks the resources required for this Agent desktop operation.",
+      ...common,
+    };
+  }
+  if (internalCode === "guest-disconnected") {
+    return {
+      code: "guest-disconnected",
+      category: "resource",
+      message: "The Agent desktop guest is not currently responding.",
+      ...common,
+    };
+  }
+  if (internalCode === "guest-operation-failed") {
+    return {
+      code: "guest-operation-failed",
+      category: "internal",
+      message: "The Agent desktop guest rejected the requested operation.",
+      ...common,
+    };
+  }
   if (internalCode === "unsupported-key" || internalCode === "duplicate-hotkey-key") {
     return {
       code: "invalid-key-name",
@@ -336,6 +418,7 @@ export function toComputerAutomationFailure(cause: unknown): ComputerAutomationF
     };
   }
   if (
+    internalCode === "invalid-action" ||
     internalCode === "invalid-wheel" ||
     internalCode === "unsupported-button" ||
     internalCode === "key-already-held" ||
@@ -357,7 +440,29 @@ export function toComputerAutomationFailure(cause: unknown): ComputerAutomationF
       field: actionContext === undefined ? "targetId" : actionField("targetId"),
     };
   }
-  if (internalCode === "unsupported-method" || tag === "GnomeRemoteDesktopUnavailableError") {
+  if (internalCode === "accessibility-activation-failed") {
+    return {
+      code: "semantic-activation-failed",
+      category: "input-injection",
+      message: "The application rejected semantic activation of the selected target.",
+      ...common,
+      field: actionContext === undefined ? "targetId" : actionField("targetId"),
+    };
+  }
+  if (internalCode === "accessibility-insertion-failed") {
+    return {
+      code: "input-injection-failed",
+      category: "input-injection",
+      message:
+        "Exact text insertion failed after reaching the focused control; some text may have been inserted.",
+      ...common,
+    };
+  }
+  if (
+    internalCode === "unsupported-method" ||
+    internalCode === "unsupported-operation" ||
+    tag === "GnomeRemoteDesktopUnavailableError"
+  ) {
     return {
       code: "unsupported-operation",
       category: "unsupported-operation",
@@ -428,6 +533,7 @@ export interface ComputerUseShape {
     input: ComputerAutomationSnapshotInput,
   ) => Effect.Effect<ComputerAutomationSnapshot, ComputerUseError>;
   readonly act: (input: ComputerAutomationActInput) => Effect.Effect<void, ComputerUseError>;
+  readonly releaseInputs: Effect.Effect<void, ComputerUseError>;
   readonly release: Effect.Effect<void, ComputerUseError>;
   readonly forget: Effect.Effect<void, ComputerUseError>;
 }
@@ -1247,6 +1353,10 @@ export const makeWithOptions = Effect.fn("ComputerUse.makeWithOptions")(function
     Effect.ensuring(clearTransientState),
   );
 
+  const releaseInputs = controller.releaseInputs.pipe(
+    Effect.mapError(mapOperationError("release")),
+  );
+
   const requestControl = inputSemaphore.withPermits(1)(
     controller.start.pipe(
       Effect.andThen(status),
@@ -1281,6 +1391,7 @@ export const makeWithOptions = Effect.fn("ComputerUse.makeWithOptions")(function
     releaseAvailability,
     snapshot,
     act,
+    releaseInputs,
     release,
     forget,
   });

@@ -1,5 +1,8 @@
 import {
+  AGENT_DESKTOP_HUMAN_AUTOMATION_OPERATION,
+  AGENT_DESKTOP_AUTOMATION_OPERATIONS,
   ComputerAutomationFailure,
+  COMPUTER_AUTOMATION_OPERATIONS,
   isComputerAutomationFailureKind,
   PREVIEW_AUTOMATION_V1_OPERATIONS,
   PreviewAutomationClientDisconnectedError,
@@ -83,6 +86,7 @@ interface ClientConnection {
   readonly connectionId: string;
   readonly environmentId: PreviewAutomationHost["environmentId"];
   readonly supportedOperations: ReadonlySet<PreviewAutomationOperation>;
+  readonly computerDesktopKinds: ReadonlySet<"user" | "agent">;
   readonly focused: boolean;
   readonly preferred: boolean;
   readonly liveTabs: NonNullable<PreviewAutomationHostFocus["liveTabs"]>;
@@ -103,6 +107,7 @@ interface HostAssignment {
   readonly queue: ClientConnection["queue"];
   readonly tabId?: PreviewTabId;
   readonly tabSequence?: number;
+  readonly computerDesktopKind?: "user" | "agent";
 }
 
 interface PreviewAutomationRequestErrorContext {
@@ -166,8 +171,33 @@ const selectorDiagnosticsFromInput = (
 };
 
 /** Codex/OpenCode share sessions across threads; include thread id to isolate tabs and ownership. */
-const hostAssignmentKey = (scope: McpInvocationContext.McpThreadInvocationScope): string =>
-  `${scope.environmentId}\u0000${scope.thread.providerSessionId}\u0000${scope.thread.threadId}`;
+const computerOperations = new Set<string>(COMPUTER_AUTOMATION_OPERATIONS);
+const agentDesktopOperations = new Set<string>(AGENT_DESKTOP_AUTOMATION_OPERATIONS);
+
+const isComputerOperation = (operation: PreviewAutomationOperation): boolean =>
+  operation === AGENT_DESKTOP_HUMAN_AUTOMATION_OPERATION ||
+  computerOperations.has(operation) ||
+  agentDesktopOperations.has(operation);
+
+const hostAssignmentKey = (
+  scope: McpInvocationContext.McpThreadInvocationScope,
+  operation: PreviewAutomationOperation,
+): string =>
+  `${scope.environmentId}\u0000${scope.thread.providerSessionId}\u0000${scope.thread.threadId}\u0000${isComputerOperation(operation) ? "computer" : "preview"}`;
+
+function requestedComputerDesktopKind(input: unknown): "user" | "agent" | undefined {
+  if (typeof input !== "object" || input === null || !("desktop" in input)) return undefined;
+  const desktop = input.desktop;
+  if (typeof desktop !== "object" || desktop === null || !("kind" in desktop)) return undefined;
+  return desktop.kind === "user" || desktop.kind === "agent" ? desktop.kind : undefined;
+}
+
+function supportsComputerDesktopKind(
+  connection: ClientConnection,
+  kind: "user" | "agent",
+): boolean {
+  return connection.computerDesktopKinds.has(kind);
+}
 
 const isPreviewTabId = Schema.is(PreviewTabId);
 const decodeControlReason = Schema.decodeUnknownOption(PreviewAutomationControlReason);
@@ -422,6 +452,7 @@ export const make = Effect.gen(function* PreviewAutomationBrokerMake() {
       connectionId,
       environmentId: host.environmentId,
       supportedOperations: new Set(host.supportedOperations ?? PREVIEW_AUTOMATION_V1_OPERATIONS),
+      computerDesktopKinds: new Set(host.computerDesktopKinds ?? ["user"]),
       focused: false,
       preferred: options?.preferred ?? false,
       liveTabs: [],
@@ -531,11 +562,30 @@ export const make = Effect.gen(function* PreviewAutomationBrokerMake() {
           );
         }),
       );
-      const assignmentKey = hostAssignmentKey(input.scope);
+      const assignmentKey = hostAssignmentKey(input.scope, input.operation);
       const assigned = assignments.get(assignmentKey);
       const assignedConnection = assigned ? current.clients.get(assigned.clientId) : undefined;
+      const computerOperation = isComputerOperation(input.operation);
+      const explicitDesktopKind =
+        input.operation === AGENT_DESKTOP_HUMAN_AUTOMATION_OPERATION ||
+        agentDesktopOperations.has(input.operation)
+          ? ("agent" as const)
+          : computerOperation
+            ? requestedComputerDesktopKind(input.input)
+            : undefined;
+      const computerDesktopKind = computerOperation
+        ? (explicitDesktopKind ?? assigned?.computerDesktopKind ?? "user")
+        : undefined;
       const hasLiveAssignment = assignedConnection?.environmentId === input.scope.environmentId;
-      // Pin interactions to one desktop runtime so cookie/DOM state cannot jump between hosts.
+      const assignedTargetCompatible =
+        !computerOperation ||
+        (computerDesktopKind !== undefined &&
+          assignedConnection !== undefined &&
+          supportsComputerDesktopKind(assignedConnection, computerDesktopKind));
+      const explicitTargetSwitch =
+        computerOperation && explicitDesktopKind !== undefined && !assignedTargetCompatible;
+      // Browser and native state need independent host affinity. Explicit
+      // desktop targets may switch between user- and Agent-capable hosts.
       const ownsTargetTab = (host: ClientConnection, visibleOnly = false) =>
         host.liveTabs.some(
           (tab) =>
@@ -544,15 +594,20 @@ export const make = Effect.gen(function* PreviewAutomationBrokerMake() {
             (input.tabId === undefined || tab.tabId === input.tabId),
         );
       const connection =
-        hasLiveAssignment && supportsOperation(assignedConnection, input.operation)
+        hasLiveAssignment &&
+        assignedTargetCompatible &&
+        supportsOperation(assignedConnection, input.operation)
           ? assignedConnection
-          : hasLiveAssignment
+          : hasLiveAssignment && !explicitTargetSwitch
             ? undefined
             : Array.from(current.clients.values())
                 .filter(
                   (host) =>
                     host.environmentId === input.scope.environmentId &&
-                    supportsOperation(host, input.operation),
+                    supportsOperation(host, input.operation) &&
+                    (!computerOperation ||
+                      (computerDesktopKind !== undefined &&
+                        supportsComputerDesktopKind(host, computerDesktopKind))),
                 )
                 .sort(
                   (left, right) =>
@@ -583,6 +638,7 @@ export const make = Effect.gen(function* PreviewAutomationBrokerMake() {
         ...(canReuseAssignedTab && assigned.tabSequence !== undefined
           ? { tabSequence: assigned.tabSequence }
           : {}),
+        ...(computerDesktopKind === undefined ? {} : { computerDesktopKind }),
       });
 
       const requestSequence = current.requestSequence;
@@ -642,9 +698,12 @@ export const make = Effect.gen(function* PreviewAutomationBrokerMake() {
           request: {
             requestId,
             threadId: input.scope.thread.threadId,
+            ...(isComputerOperation(input.operation)
+              ? { controllerId: input.scope.thread.providerSessionId }
+              : {}),
             tabId: requestContext.tabId,
             tabIdExplicit: input.tabId !== undefined,
-            agentSessionId: hostAssignmentKey(input.scope),
+            agentSessionId: hostAssignmentKey(input.scope, input.operation),
             operation: input.operation,
             input: input.input,
             timeoutMs,
@@ -679,7 +738,7 @@ export const make = Effect.gen(function* PreviewAutomationBrokerMake() {
     const responseTabId = readResultTabId(result);
     const resultTabId = responseTabId === undefined ? input.tabId : responseTabId;
     if (resultTabId === undefined) return result;
-    const assignmentKey = hostAssignmentKey(input.scope);
+    const assignmentKey = hostAssignmentKey(input.scope, input.operation);
     yield* SynchronizedRef.update(state, (current) => {
       const assignment = current.assignments.get(assignmentKey);
       if (

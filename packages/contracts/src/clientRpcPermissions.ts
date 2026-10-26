@@ -17,6 +17,7 @@ export const CLIENT_GUARDED_RPC_SCOPES = {
   [WS_METHODS.previewClose]: AuthPreviewOperateScope,
   [WS_METHODS.previewAutomationRespond]: AuthPreviewOperateScope,
   [WS_METHODS.previewAutomationFocusHost]: AuthPreviewOperateScope,
+  [WS_METHODS.agentDesktopHumanInvoke]: AuthOrchestrationOperateScope,
   [WS_METHODS.serverRunStorageCleanup]: AuthSettingsWriteScope,
   [WS_METHODS.serverCheckOtlpEndpoint]: AuthSettingsWriteScope,
   [WS_METHODS.pullRequestsRunAction]: AuthSourceControlWriteScope,

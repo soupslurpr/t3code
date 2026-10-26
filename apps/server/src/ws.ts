@@ -1,3 +1,5 @@
+import { AGENT_DESKTOP_HUMAN_AUTOMATION_OPERATION, ProviderInstanceId } from "@t3tools/contracts";
+import * as Clock from "effect/Clock";
 import { OrchestrationDispatchCommandError } from "@t3tools/contracts";
 import * as Context from "effect/Context";
 import * as Crypto from "effect/Crypto";
@@ -92,7 +94,6 @@ import {
   EnvironmentAuthorizationError,
   type ProjectId,
   type ProviderDriverKind,
-  type ProviderInstanceId,
   ThreadId,
   type TerminalMetadataStreamEvent,
   type PullRequestRef,
@@ -265,6 +266,8 @@ import {
 import * as AgentSessionScanner from "./project/AgentSessionScanner.ts";
 import * as AgentSessionImporter from "./project/AgentSessionImporter.ts";
 import * as UsageLimitSources from "./usage/UsageLimitSources.ts";
+
+const AGENT_DESKTOP_HUMAN_PROVIDER_INSTANCE_ID = ProviderInstanceId.make("agent-desktop-human");
 
 const CONFIG_DISCOVERY_TIMEOUT = Duration.seconds(5);
 const isProviderUploadFeedbackError = Schema.is(ProviderUploadFeedbackError);
@@ -3069,6 +3072,28 @@ export const layerWsRpc = (
         [WS_METHODS.previewAutomationRespond]: (input) => previewAutomationBroker.respond(input),
         [WS_METHODS.previewAutomationFocusHost]: (input) =>
           previewAutomationBroker.focusHost(input),
+        [WS_METHODS.agentDesktopHumanInvoke]: Effect.fn("ws.agentDesktopHumanInvoke")(
+          function* (input) {
+            const environmentId = yield* serverEnvironment.getEnvironmentId.pipe(Effect.orDie);
+            return yield* previewAutomationBroker.invoke({
+              scope: {
+                environmentId,
+                requestNamespace: `human:${currentSessionId}`,
+                client: undefined,
+                thread: {
+                  threadId: input.threadId,
+                  providerSessionId: `human:${currentSessionId}`,
+                  providerInstanceId: AGENT_DESKTOP_HUMAN_PROVIDER_INSTANCE_ID,
+                },
+                capabilities: new Set(["preview"]),
+                issuedAt: yield* Clock.currentTimeMillis,
+              },
+              operation: AGENT_DESKTOP_HUMAN_AUTOMATION_OPERATION,
+              input: input.request,
+              timeoutMs: input.timeoutMs ?? 30_000,
+            });
+          },
+        ),
         [WS_METHODS.subscribePreviewEvents]: (_input) => previewManager.events,
         [WS_METHODS.deviceConfigure]: (input) => deviceService.configure(input),
         [WS_METHODS.deviceTestHost]: (input) => deviceService.testHost(input),

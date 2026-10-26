@@ -160,6 +160,7 @@ const HelperMethod = Schema.Literals([
   "hotkey",
   "keyDown",
   "keyUp",
+  "releaseInputs",
   "stop",
   "forget",
 ]);
@@ -355,6 +356,7 @@ export interface GnomeRemoteDesktopShape {
     readonly key: string;
   }) => Effect.Effect<void, GnomeRemoteDesktopError>;
   readonly keyUp: (input: { readonly key: string }) => Effect.Effect<void, GnomeRemoteDesktopError>;
+  readonly releaseInputs: Effect.Effect<void, GnomeRemoteDesktopError>;
   readonly stop: Effect.Effect<void, GnomeRemoteDesktopError>;
   readonly forget: Effect.Effect<void, GnomeRemoteDesktopError>;
 }
@@ -410,6 +412,7 @@ const unavailable = (reason: string): GnomeRemoteDesktopShape => {
     hotkey: () => fail,
     keyDown: () => fail,
     keyUp: () => fail,
+    releaseInputs: Effect.void,
     stop: Effect.void,
     forget: fail,
   });
@@ -836,6 +839,7 @@ export const make = Effect.gen(function* () {
     hotkey: (input) => control("hotkey", input),
     keyDown: (input) => control("keyDown", input),
     keyUp: (input) => control("keyUp", input),
+    releaseInputs: control("releaseInputs", {}),
     stop,
     forget,
   });

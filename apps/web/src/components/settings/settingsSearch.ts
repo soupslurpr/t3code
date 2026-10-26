@@ -29,6 +29,7 @@ export type SettingsPath =
   | "/settings/source-control"
   | "/settings/storage"
   | "/settings/connections"
+  | "/settings/agent-desktops"
   | "/settings/beta"
   | "/settings/archived";
 
@@ -88,6 +89,7 @@ export const SETTINGS_SECTION_LABELS: Readonly<Record<SettingsPath, string>> = {
   "/settings/source-control": "Source control",
   "/settings/storage": "Storage",
   "/settings/connections": "Connections",
+  "/settings/agent-desktops": "Agent desktops",
   "/settings/beta": "Beta",
   "/settings/archived": "Archive",
 };
@@ -222,6 +224,11 @@ export const SETTINGS_SEARCH_ITEMS = [
     searchTerms: [
       "new thread default runtime mode supervised approvals auto accept edits full access",
     ],
+  },
+  {
+    id: "agent-desktops",
+    title: "Agent desktops",
+    to: "/settings/agent-desktops",
   },
   {
     id: "color-scheme",
@@ -1064,6 +1071,7 @@ const SETTINGS_CATEGORY_SCOPES: Readonly<Record<SettingsPath, SettingsSearchScop
   "/settings/source-control": "environment-defaults",
   "/settings/storage": "project-defaults",
   "/settings/connections": "connections",
+  "/settings/agent-desktops": null,
   "/settings/scheduled-tasks": null,
   "/settings/beta": null,
   "/settings/archived": "project-defaults",

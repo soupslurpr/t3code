@@ -1,3 +1,5 @@
+import { AgentDesktopToolkitHandlersLive } from "./toolkits/agentDesktop/handlers.ts";
+import { AgentDesktopToolkit } from "./toolkits/agentDesktop/tools.ts";
 import * as Cause from "effect/Cause";
 import * as Clock from "effect/Clock";
 import * as Context from "effect/Context";
@@ -1278,6 +1280,11 @@ const ComputerImageRegistrationLive = imageToolRegistration(
   ComputerImageToolkitHandlersLive,
 );
 
+export const AgentDesktopToolkitRegistrationLive = toolkitRegistration(
+  AgentDesktopToolkit,
+  AgentDesktopToolkitHandlersLive,
+);
+
 export const ComputerToolkitRegistrationLive = Layer.mergeAll(
   ComputerStandardToolkitRegistrationLive,
   ComputerImageRegistrationLive,
@@ -1304,4 +1311,5 @@ export const layer = Layer.mergeAll(
   layerDeviceToolkit,
   layerHtmlToolkit,
   ComputerToolkitRegistrationLive,
+  AgentDesktopToolkitRegistrationLive,
 ).pipe(Layer.provideMerge(layerMcpTransport));

@@ -134,6 +134,22 @@ describe("command permissions", () => {
       }),
     ),
   );
+  it.effect("enforces destination grants and revocation for human Agent desktop control", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const registry = yield* setup;
+        const permissions = createCommandPermissions(runtime, WS_METHODS.agentDesktopHumanInvoke);
+        registry.set(sessions(env), AsyncResult.success(grant(true)));
+        expect(registry.get(permissions.permissionAtom(env))).toBe(true);
+        expect(permissions.permissionAtom(env)).toBe(permissions.permissionAtom(env));
+        yield* permissions.authorize(registry, env);
+        registry.set(sessions(other), AsyncResult.success(grant(false)));
+        expect(registry.get(permissions.permissionAtom(other))).toBe(false);
+        const denied = yield* permissions.authorize(registry, other).pipe(Effect.flip);
+        expect(denied._tag).toBe("EnvironmentAuthorizationError");
+      }),
+    ),
+  );
   it.effect("waits for an initial grant", () =>
     Effect.scoped(
       Effect.gen(function* () {

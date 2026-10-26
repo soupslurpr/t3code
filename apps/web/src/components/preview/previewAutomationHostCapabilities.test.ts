@@ -19,3 +19,16 @@ it("does not advertise native operations in clients without the computer bridge"
     previewAutomationHostCapabilities({ computerAvailable: false }).supportedOperations,
   ).toEqual([]);
 });
+
+it("advertises Agent routes only when the Agent bridge is present", () => {
+  const native = previewAutomationHostCapabilities({ computerAvailable: true });
+  const agent = previewAutomationHostCapabilities({
+    computerAvailable: true,
+    agentDesktopAvailable: true,
+  });
+  expect(native.computerDesktopKinds).toEqual(["user"]);
+  expect(native.supportedOperations).not.toContain("agentDesktopList");
+  expect(agent.computerDesktopKinds).toEqual(["user", "agent"]);
+  expect(agent.supportedOperations).toContain("agentDesktopList");
+  expect(agent.supportedOperations).toContain("agentDesktopHumanInvoke");
+});

@@ -3,6 +3,7 @@ import * as NodeServices from "@effect/platform-node/NodeServices";
 import { assert, describe, it } from "@effect/vitest";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
+import * as Option from "effect/Option";
 
 import * as DesktopEnvironment from "./DesktopEnvironment.ts";
 import * as DesktopConfig from "./DesktopConfig.ts";
@@ -38,6 +39,22 @@ const makeEnvironment = (
 ) => DesktopEnvironment.DesktopEnvironment.pipe(Effect.provide(layerEnvironment(overrides, env)));
 
 describe("DesktopEnvironment", () => {
+  it.effect("keeps Agent state private by default and honors explicit image overrides", () =>
+    Effect.gen(function* () {
+      const defaults = yield* makeEnvironment({}, { T3CODE_HOME: "/isolated/t3" });
+      assert.equal(defaults.agentDesktopsDir, "/isolated/t3/userdata/agent-desktops");
+      const custom = yield* makeEnvironment(
+        {},
+        {
+          T3CODE_AGENT_DESKTOP_HOME: " /isolated/agents ",
+          T3CODE_AGENT_DESKTOP_IMAGE: " /images/base.qcow2 ",
+        },
+      );
+      assert.equal(custom.agentDesktopsDir, "/isolated/agents");
+      assert.deepEqual(custom.agentDesktopBaseImage, Option.some("/images/base.qcow2"));
+    }),
+  );
+
   it.effect("uses the packaged Windows server sidecar as the backend root", () =>
     Effect.gen(function* () {
       const environment = yield* makeEnvironment({

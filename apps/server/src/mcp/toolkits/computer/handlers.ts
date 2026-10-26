@@ -30,8 +30,8 @@ const invoke = Effect.fn("ComputerToolkit.invoke")(function* <A>(
 });
 
 const handlers = {
-  computer_status: McpToolAccess.readsAsCaller(() =>
-    invoke<ComputerAutomationStatus>("computerStatus", {}, STATUS_TIMEOUT_MS),
+  computer_status: McpToolAccess.readsAsCaller((input) =>
+    invoke<ComputerAutomationStatus>("computerStatus", input, STATUS_TIMEOUT_MS),
   ),
   computer_request_availability: McpToolAccess.actsAsCaller((input) =>
     invoke<ComputerAutomationStatus>("computerRequestAvailability", input, CONTROL_TIMEOUT_MS),
@@ -51,11 +51,11 @@ const handlers = {
   computer_act: McpToolAccess.actsAsCaller((input) =>
     invoke<ComputerAutomationObservation>("computerAct", input, CONTROL_TIMEOUT_MS),
   ),
-  computer_release: McpToolAccess.actsAsCaller(() =>
-    invoke<ComputerAutomationStatus>("computerRelease", {}, CONTROL_TIMEOUT_MS),
+  computer_release: McpToolAccess.actsAsCaller((input) =>
+    invoke<ComputerAutomationStatus>("computerRelease", input, CONTROL_TIMEOUT_MS),
   ),
-  computer_forget_control: McpToolAccess.actsAsCaller(() =>
-    invoke<void>("computerForgetControl", {}, CONTROL_TIMEOUT_MS).pipe(Effect.as(null)),
+  computer_forget_control: McpToolAccess.actsAsCaller((input) =>
+    invoke<void>("computerForgetControl", input, CONTROL_TIMEOUT_MS).pipe(Effect.as(null)),
   ),
 } satisfies McpToolAccess.Handlers<typeof ComputerToolkit.tools>;
 

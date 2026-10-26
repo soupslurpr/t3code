@@ -1,6 +1,11 @@
 import * as Schema from "effect/Schema";
 
 import { TrimmedNonEmptyString } from "./baseSchemas.ts";
+import {
+  ComputerDesktopIdentity,
+  ComputerDesktopSelector,
+  ComputerDesktopTarget,
+} from "./agentDesktop.ts";
 
 const MAX_TYPE_DURATION_MS = 60_000;
 const MAX_ACTION_BATCH_ACTIONS = 32;
@@ -14,7 +19,7 @@ const MAX_FAILURE_CAUSE_DEPTH = 4;
 const MAX_OBSERVATION_DELAY_MS = 5_000;
 const MAX_SCREENSHOT_DIMENSION = 4_096;
 
-/** Counts code points that require GNOME's layout-independent Unicode entry path. */
+/** Counts code points that require a layout-independent exact-text path. */
 function unicodeEntryCount(text: string): number {
   return Array.from(text).filter((character) => !/^[\t\n\r\x20-\x7e]$/u.test(character)).length;
 }
@@ -102,8 +107,16 @@ export const ComputerAutomationFailureCode = Schema.Literals([
   "invalid-key-name",
   "invalid-coordinate",
   "display-not-found",
+  "desktop-busy",
+  "desktop-lease-required",
+  "desktop-target-mismatch",
+  "agent-desktop-unavailable",
+  "resource-exhausted",
+  "guest-disconnected",
+  "guest-operation-failed",
   "stale-frame",
   "stale-semantic-target",
+  "semantic-activation-failed",
   "unsupported-operation",
   "permission-denied",
   "input-injection-failed",
@@ -126,6 +139,8 @@ export const ComputerAutomationFailureCategory = Schema.Literals([
   "capture",
   "cancelled",
   "timeout",
+  "conflict",
+  "resource",
   "internal",
 ]);
 export type ComputerAutomationFailureCategory = typeof ComputerAutomationFailureCategory.Type;
@@ -192,8 +207,11 @@ export function findComputerAutomationFailureKind(
 }
 
 export const ComputerAutomationStatus = Schema.Struct({
+  desktop: Schema.optional(ComputerDesktopIdentity).annotate({
+    description: "Concrete user or agent desktop represented by this status.",
+  }),
   available: Schema.Boolean,
-  backend: Schema.NullOr(Schema.Literal("gnome-wayland-portal")),
+  backend: Schema.NullOr(Schema.Literals(["gnome-wayland-portal", "qemu-agent-desktop"])),
   permission: ComputerAutomationPermission.annotate({
     description:
       "Native portal session state. View-only and granted are active; remembered means no session is active but at least one restore token exists.",
@@ -352,13 +370,64 @@ export const ComputerAutomationObservationOptions = Schema.Struct({
   });
 export type ComputerAutomationObservationOptions = typeof ComputerAutomationObservationOptions.Type;
 
-export const ComputerAutomationSnapshotInput = ComputerAutomationObservationOptions;
-export type ComputerAutomationSnapshotInput = typeof ComputerAutomationSnapshotInput.Type;
+const ComputerAutomationDesktopTargetField = {
+  desktop: Schema.optional(ComputerDesktopTarget).annotate({
+    description:
+      "Existing desktop to use. Omission targets the user's desktop; pass the desktopId returned by Agent desktop access on every later operation.",
+  }),
+};
 
-export const ComputerAutomationAvailabilityInput = Schema.Record(Schema.String, Schema.Never);
+export const ComputerAutomationTargetInput = Schema.Struct(
+  ComputerAutomationDesktopTargetField,
+).annotate({
+  description:
+    "Targets an existing user or Agent desktop without relying on shared implicit selection.",
+});
+export type ComputerAutomationTargetInput = typeof ComputerAutomationTargetInput.Type;
+
+export const ComputerAutomationAvailabilityInput = Schema.Struct({
+  desktop: Schema.optional(Schema.Struct({ kind: Schema.Literal("user") })).annotate({
+    description: "User desktop to keep available. Omission also targets the user's desktop.",
+  }),
+}).annotate({
+  description:
+    "Targets the user's desktop availability lease without opening a view or control session.",
+});
 export type ComputerAutomationAvailabilityInput = typeof ComputerAutomationAvailabilityInput.Type;
 
+export const ComputerAutomationSnapshotInput = Schema.Struct({
+  ...ComputerAutomationDesktopTargetField,
+  ...ComputerAutomationObservationOptions.fields,
+})
+  .check(
+    Schema.makeFilter(
+      (input) =>
+        input.includeAccessibility !== false ||
+        input.screenshot !== false ||
+        "Include accessibility targets, a screenshot, or both.",
+    ),
+    Schema.makeFilter((input) => {
+      const screenshot = input.screenshot;
+      return (
+        screenshot === undefined ||
+        screenshot === false ||
+        screenshot.region === undefined ||
+        input.displayId === undefined ||
+        "Omit displayId when screenshot.region selects a source frame."
+      );
+    }),
+  )
+  .annotate({
+    description:
+      "Targets one desktop and configures a bounded observation with semantic targets and, by default, a PNG image.",
+  });
+export type ComputerAutomationSnapshotInput = typeof ComputerAutomationSnapshotInput.Type;
+
 export const ComputerAutomationAccessInput = Schema.Struct({
+  desktop: Schema.optional(ComputerDesktopSelector).annotate({
+    description:
+      "Desktop to use. Omission targets the user's desktop. Agent access returns a desktopId to pass on every later operation.",
+  }),
   observation: Schema.optional(
     Schema.Union([Schema.Literal(false), ComputerAutomationObservationOptions]).annotate({
       description:
@@ -403,8 +472,12 @@ export const ComputerAutomationSnapshot = Schema.Struct({
   pointer: Schema.optional(Schema.NullOr(ComputerAutomationPointer)),
   frame: Schema.optional(ComputerAutomationFrame),
   accessibility: Schema.optional(ComputerAutomationAccessibilitySnapshot),
-  captureSource: Schema.Literals(["screen-cast-stream", "remote-desktop-stream"]).annotate({
-    description: "Active GNOME portal stream used for the captured frame.",
+  captureSource: Schema.Literals([
+    "screen-cast-stream",
+    "remote-desktop-stream",
+    "virtual-display",
+  ]).annotate({
+    description: "Desktop display source used for the captured frame.",
   }),
   screenshot: Schema.optional(
     Schema.Struct({
@@ -568,7 +641,7 @@ export type ComputerAutomationWheelInput = typeof ComputerAutomationWheelInput.T
 export const ComputerAutomationTypeInput = Schema.Struct({
   text: Schema.String.check(Schema.isMaxLength(10_000)).annotate({
     description:
-      "Exact text to enter into the focused native control. Newline presses Enter and tab presses Tab. Non-ASCII code points use GNOME's layout-independent Unicode input method without changing the clipboard.",
+      "Exact text to enter into the focused native control. Newline is inserted directly when the focused editable control explicitly supports multiple lines and otherwise presses Enter; tab presses Tab. Non-ASCII code points use a layout-independent path without changing the clipboard.",
   }),
   intervalMs: Schema.optional(
     Schema.Int.check(Schema.isBetween({ minimum: 0, maximum: 250 })).annotate({
@@ -647,6 +720,7 @@ export const ComputerAutomationAction = Schema.Union([
 export type ComputerAutomationAction = typeof ComputerAutomationAction.Type;
 
 export const ComputerAutomationActInput = Schema.Struct({
+  ...ComputerAutomationDesktopTargetField,
   actions: Schema.Array(ComputerAutomationAction).check(
     Schema.isMinLength(1),
     Schema.isMaxLength(MAX_ACTION_BATCH_ACTIONS),

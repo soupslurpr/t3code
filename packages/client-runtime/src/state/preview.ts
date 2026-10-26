@@ -113,5 +113,14 @@ export function createPreviewEnvironmentAtoms<R, E>(
           JSON.stringify([environmentId, input.threadId, input.tabId]),
       },
     }),
+    invokeAgentDesktopHuman: createEnvironmentRpcCommand(runtime, {
+      label: "environment-data:agent-desktop:human-invoke",
+      tag: WS_METHODS.agentDesktopHumanInvoke,
+
+      concurrency: {
+        mode: "serial",
+        key: ({ environmentId, input }) => JSON.stringify([environmentId, input.threadId]),
+      },
+    }),
   };
 }
