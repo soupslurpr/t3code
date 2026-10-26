@@ -168,6 +168,7 @@ const harness = Effect.fn("ComputerWatchTest.harness")(function* (
     verdict: "not-matched" as "matched" | "not-matched" | "uncertain",
     ownerExists: true,
     snapshotFor: undefined as ((input: unknown) => ComputerAutomationSnapshot) | undefined,
+    tokenUsage: undefined as "exact" | undefined,
     usage: { inputTokens: null, cachedInputTokens: null, outputTokens: null } as {
       inputTokens: number | null;
       cachedInputTokens: number | null;
@@ -234,6 +235,14 @@ const harness = Effect.fn("ComputerWatchTest.harness")(function* (
         }),
     },
   } satisfies ProviderInstance;
+  const currentInstance = () => ({
+    ...instance,
+    enabled: state.enabled,
+    textGeneration: {
+      ...instance.textGeneration,
+      ...(state.tokenUsage === undefined ? {} : { imageConditionTokenUsage: state.tokenUsage }),
+    },
+  });
   const service = yield* Computer.make.pipe(
     Effect.provide(
       Layer.mergeAll(
@@ -243,14 +252,8 @@ const harness = Effect.fn("ComputerWatchTest.harness")(function* (
         }),
         Layer.mock(Registry.ProviderInstanceRegistry)({
           getInstance: (id) =>
-            Effect.sync(() =>
-              id === instanceId && state.exists
-                ? { ...instance, enabled: state.enabled }
-                : undefined,
-            ),
-          listInstances: Effect.sync(() =>
-            state.exists ? [{ ...instance, enabled: state.enabled }] : [],
-          ),
+            Effect.sync(() => (id === instanceId && state.exists ? currentInstance() : undefined)),
+          listInstances: Effect.sync(() => (state.exists ? [currentInstance()] : [])),
         }),
         Layer.mock(ThreadWorkspaceQuery)({
           getThreadShellById: () =>
@@ -1578,4 +1581,60 @@ it.effect("baselines the durable rounded region before comparing a fractional so
       fingerprint("durable region", { format: "webp", mode: "lossless" }),
     );
   }),
+);
+
+it.effect("advertises exact evaluator accounting only when the selected driver supports it", () =>
+  Effect.gen(function* () {
+    const h = yield* harness();
+    assert.equal((yield* h.service.capabilities).evaluators[0]?.tokenUsage, "unavailable");
+    h.state.tokenUsage = "exact";
+    assert.equal((yield* h.service.capabilities).evaluators[0]?.tokenUsage, "exact");
+    h.state.tokenUsage = undefined;
+    assert.equal((yield* h.service.capabilities).evaluators[0]?.tokenUsage, "unavailable");
+  }),
+);
+
+it.effect(
+  "persists exact evaluator usage across restart without replacing unknown counts with zero",
+  () =>
+    Effect.gen(function* () {
+      yield* Testkit.seedThread();
+      const h = yield* harness();
+      const repository = yield* Repository.ThreadMonitorRepository;
+      const service = yield* ThreadMonitorService.make.pipe(
+        Effect.provideService(ThreadMonitorComputerService, h.service),
+      );
+      const monitor = yield* service.createComputer({
+        threadId: Testkit.threadId,
+        monitor: {
+          ...modelWatch,
+          sampling: { intervalMs: 1_000, minEvaluationIntervalMs: null },
+        },
+      });
+      h.state.usage = { inputTokens: 10, cachedInputTokens: 6, outputTokens: 2 };
+      h.state.pixels = "first";
+      yield* TestClock.adjust(1_000);
+      yield* service.checkNow({ threadId: Testkit.threadId, check: { monitorId: monitor.id } });
+      const restarted = yield* ThreadMonitorService.make.pipe(
+        Effect.provideService(ThreadMonitorComputerService, h.service),
+      );
+      for (const usage of [
+        { inputTokens: null, cachedInputTokens: null, outputTokens: null },
+        { inputTokens: 0, cachedInputTokens: 0, outputTokens: 0 },
+      ]) {
+        h.state.usage = usage;
+        h.state.pixels += "next";
+        yield* TestClock.adjust(1_000);
+        yield* restarted.checkNow({ threadId: Testkit.threadId, check: { monitorId: monitor.id } });
+        const saved = Option.getOrThrow(yield* repository.getById(monitor.id));
+        if (saved.condition.type !== "computer")
+          return yield* Effect.die("Expected computer watch");
+        assert.deepEqual(saved.condition.lastUsage, usage);
+        assert.deepEqual(saved.condition.totalUsage, {
+          inputTokens: 10,
+          cachedInputTokens: 6,
+          outputTokens: 2,
+        });
+      }
+    }).pipe(Effect.provide(Layer.merge(Testkit.layer, NodeServices.layer))),
 );

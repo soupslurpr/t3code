@@ -1107,7 +1107,10 @@ export const make = Effect.gen(function* () {
             models: snapshot.models
               .slice(0, 256)
               .map((model) => ({ model: model.slug, name: model.name })),
-            tokenUsage: "unavailable" as const,
+            tokenUsage:
+              instance.textGeneration.imageConditionTokenUsage === "exact"
+                ? ("exact" as const)
+                : ("unavailable" as const),
             promptCacheRefresh: "unsupported" as const,
           })),
         ),

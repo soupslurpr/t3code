@@ -64,6 +64,43 @@ const ImageConditionOutput = Schema.Struct({
     }),
   ),
 });
+const CodexExecUsageEventJson = Schema.fromJsonString(
+  Schema.Struct({
+    type: Schema.Literal("turn.completed"),
+    usage: Schema.Struct({
+      input_tokens: Schema.Int.check(Schema.isGreaterThanOrEqualTo(0)),
+      cached_input_tokens: Schema.Int.check(Schema.isGreaterThanOrEqualTo(0)),
+      output_tokens: Schema.Int.check(Schema.isGreaterThanOrEqualTo(0)),
+    }),
+  }),
+);
+const decodeCodexExecUsageEvent = Schema.decodeUnknownOption(CodexExecUsageEventJson);
+
+interface CodexExecUsage {
+  readonly inputTokens: number | null;
+  readonly cachedInputTokens: number | null;
+  readonly outputTokens: number | null;
+}
+
+interface CodexJsonResult<A> {
+  readonly output: A;
+  readonly usage: CodexExecUsage;
+}
+
+/** Reads the terminal usage event from Codex exec JSONL output. */
+function codexExecUsage(stdout: string): CodexExecUsage {
+  for (const line of stdout.trim().split(/\r?\n/gu).toReversed()) {
+    const event = decodeCodexExecUsageEvent(line);
+    if (Option.isSome(event)) {
+      return {
+        inputTokens: event.value.usage.input_tokens,
+        cachedInputTokens: event.value.usage.cached_input_tokens,
+        outputTokens: event.value.usage.output_tokens,
+      };
+    }
+  }
+  return { inputTokens: null, cachedInputTokens: null, outputTokens: null };
+}
 
 /** Bounds model-authored monitor text after decoding without constraining Codex's JSON Schema. */
 function boundedImageConditionText(value: string, maxLength: number): string {
@@ -270,7 +307,7 @@ export const makeCodexTextGeneration = Effect.fn("makeCodexTextGeneration")(func
   }: Omit<TextGenerationOperations.Request<S>, "operation"> & {
     readonly operation: TextGenerationOperations.Operation | "evaluateImageCondition";
     readonly imagePaths?: ReadonlyArray<string>;
-  }): Effect.fn.Return<S["Type"], TextGenerationError, S["DecodingServices"]> {
+  }): Effect.fn.Return<CodexJsonResult<S["Type"]>, TextGenerationError, S["DecodingServices"]> {
     const imagePaths = suppliedImagePaths ?? (yield* materializeImageAttachments(attachments));
     const schemaJson = yield* encodeJsonForOperation(
       operation,
@@ -345,6 +382,7 @@ export const makeCodexTextGeneration = Effect.fn("makeCodexTextGeneration")(func
           schemaPath,
           "--output-last-message",
           outputPath,
+          "--json",
           ...imagePaths.flatMap((imagePath) => ["--image", imagePath]),
           "-",
         ],
@@ -393,6 +431,7 @@ export const makeCodexTextGeneration = Effect.fn("makeCodexTextGeneration")(func
               : `Codex CLI command failed with code ${exitCode}.`,
         });
       }
+      return codexExecUsage(stdout);
     });
 
     const cleanup = Effect.all([removeTempFileDir(schemaPath), removeTempFileDir(outputPath)], {
@@ -400,7 +439,7 @@ export const makeCodexTextGeneration = Effect.fn("makeCodexTextGeneration")(func
     }).pipe(Effect.asVoid);
 
     return yield* Effect.gen(function* () {
-      yield* runCodexCommand().pipe(
+      const usage = yield* runCodexCommand().pipe(
         Effect.scoped,
         Effect.timeoutOption(investigate?.timeoutMs ?? CODEX_TIMEOUT_MS),
         Effect.flatMap(
@@ -409,14 +448,14 @@ export const makeCodexTextGeneration = Effect.fn("makeCodexTextGeneration")(func
               Effect.fail(
                 new TextGenerationError({ operation, detail: "Codex CLI request timed out." }),
               ),
-            onSome: () => Effect.void,
+            onSome: (value) => Effect.succeed(value),
           }),
         ),
       );
 
       const decodeOutput = Schema.decodeEffect(Schema.fromJsonString(outputSchemaJson));
 
-      return yield* fileSystem.readFileString(outputPath).pipe(
+      const output = yield* fileSystem.readFileString(outputPath).pipe(
         Effect.mapError(
           (cause) =>
             new TextGenerationError({
@@ -437,6 +476,7 @@ export const makeCodexTextGeneration = Effect.fn("makeCodexTextGeneration")(func
             ),
         }),
       );
+      return { output, usage };
     }).pipe(Effect.ensuring(cleanup));
   });
 
@@ -483,7 +523,7 @@ export const makeCodexTextGeneration = Effect.fn("makeCodexTextGeneration")(func
       "Return matched only when the visible evidence clearly satisfies the condition. Return not-matched when it clearly does not. Return uncertain when the crops, rendering, or evidence are insufficient.",
       "Report only concise visible facts. Every evidence item must reference one supplied current image id and describe the visible evidence used.",
     ].join("\n\n");
-    const generated = yield* runCodexJson({
+    const { output: generated, usage } = yield* runCodexJson({
       operation: "evaluateImageCondition",
       cwd: input.cwd,
       prompt,
@@ -510,16 +550,15 @@ export const makeCodexTextGeneration = Effect.fn("makeCodexTextGeneration")(func
           ),
         }))
         .filter((item) => item.description.length > 0),
-      usage: {
-        inputTokens: null,
-        cachedInputTokens: null,
-        outputTokens: null,
-      },
+      usage,
     } satisfies TextGeneration.ImageConditionEvaluationResult;
   }, Effect.scoped);
 
   return {
-    ...TextGenerationOperations.fromRunner("CodexTextGeneration", runCodexJson),
+    ...TextGenerationOperations.fromRunner("CodexTextGeneration", (request) =>
+      runCodexJson(request).pipe(Effect.map(({ output }) => output)),
+    ),
     evaluateImageCondition,
+    imageConditionTokenUsage: "exact" as const,
   };
 });
