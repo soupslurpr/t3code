@@ -1,3 +1,4 @@
+import * as ComputerObservationStore from "../computer/ComputerObservationStore.ts";
 // @effect-diagnostics-next-line nodeBuiltinImport:off - Native broker fixtures use synchronous deterministic fingerprints.
 import * as NodeCrypto from "node:crypto";
 import { assert, describe, it } from "@effect/vitest";
@@ -249,10 +250,12 @@ const harness = Effect.fn("ComputerWatchTest.harness")(function* (
       ...(state.tokenUsage === undefined ? {} : { imageConditionTokenUsage: state.tokenUsage }),
     },
   });
+  const observations = yield* ComputerObservationStore.make;
   const service = yield* Computer.make.pipe(
     Effect.provide(
       Layer.mergeAll(
         NodeServices.layer,
+        Layer.succeed(ComputerObservationStore.ComputerObservationStore, observations),
         Layer.mock(ServerEnvironment.ServerEnvironment)({
           getEnvironmentId: Effect.succeed(EnvironmentId.make("test-environment")),
         }),
@@ -347,7 +350,7 @@ const harness = Effect.fn("ComputerWatchTest.harness")(function* (
       watch,
       createdAt,
     });
-  return { service, state, calls, evaluations, prepare };
+  return { service, state, calls, evaluations, prepare, observations };
 });
 
 describe("durable computer adapter", () => {
@@ -376,6 +379,14 @@ describe("durable computer adapter", () => {
           checkedAt: createdAt,
         });
         assert.equal(h.evaluations.length, 0);
+        assert.deepEqual(
+          yield* h.observations.read({
+            environmentId: EnvironmentId.make("test-environment"),
+            threadId: Testkit.threadId,
+            desktopId: "specific-desktop",
+          }),
+          { latestId: null },
+        );
         assert.equal(unchanged.condition.observation.regions[0]?.unchangedSampleCount, 1);
         assert.isNull(unchanged.match);
         h.state.pixels = "changed";
@@ -387,6 +398,22 @@ describe("durable computer adapter", () => {
         });
         assert.equal(checked.match?.terminalImages[0]?.dataBase64, png("changed"));
         assert.equal(checked.match?.summary, "Result");
+        const delivered = yield* h.observations.read({
+          environmentId: EnvironmentId.make("test-environment"),
+          threadId: Testkit.threadId,
+          desktopId: "specific-desktop",
+        });
+        assert.deepEqual(
+          delivered.observation?.images.map((image) => [
+            image.generation,
+            image.screenshot.state === "image" ? image.screenshot.data : null,
+          ]),
+          [
+            ["baseline", png("initial")],
+            ["current", png("changed")],
+          ],
+        );
+        assert.equal(delivered.observation?.recipient.kind, "watch-evaluator");
         assert.deepEqual(h.evaluations, [
           {
             cwd: "/exact/worktree",

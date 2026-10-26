@@ -65,6 +65,7 @@ import * as McpSessionRegistry from "./McpSessionRegistry.ts";
 import * as PreviewAutomationBroker from "./PreviewAutomationBroker.ts";
 import * as OrchestratorHandlers from "./toolkits/orchestrator/handlers.ts";
 import { OrchestratorToolkit } from "./toolkits/orchestrator/tools.ts";
+import * as ComputerObservationStore from "../computer/ComputerObservationStore.ts";
 import * as PreviewHandlers from "./toolkits/preview/handlers.ts";
 import {
   PreviewSnapshotTool,
@@ -1259,6 +1260,7 @@ const computerWatchInspectionResult = (encodedResult: unknown) => {
 
 const registerComputerTools = Effect.fn("McpHttpServer.registerComputerTools")(function* () {
   const server = yield* McpServer.McpServer;
+  const observations = yield* ComputerObservationStore.ComputerObservationStore;
   const broker = yield* PreviewAutomationBroker.PreviewAutomationBroker;
   const threads = yield* ThreadManagementService.ThreadManagementService;
   const built = yield* decodeAsAdvertised(ComputerToolkit);
@@ -1293,6 +1295,7 @@ const registerComputerTools = Effect.fn("McpHttpServer.registerComputerTools")(f
             Effect.provideService(PreviewAutomationBroker.PreviewAutomationBroker, broker),
             Effect.provideService(ThreadManagementService.ThreadManagementService, threads),
             Effect.provideService(McpInvocationContext.McpInvocationContext, invocation),
+            Effect.provideService(ComputerObservationStore.ComputerObservationStore, observations),
             Effect.matchCauseEffect({
               onFailure: (cause) => computerToolFailure(tool.name, cause, payload),
               onSuccess: ({ encodedResult }) => Effect.succeed(computerResult(encodedResult)),
@@ -1306,6 +1309,7 @@ const registerComputerTools = Effect.fn("McpHttpServer.registerComputerTools")(f
 const registerMonitorImageTools = Effect.fn("McpHttpServer.registerMonitorImageTools")(
   function* () {
     const server = yield* McpServer.McpServer;
+    const observations = yield* ComputerObservationStore.ComputerObservationStore;
     const service = yield* ThreadMonitorService;
     const management = yield* ThreadManagementService.ThreadManagementService;
     const built = yield* decodeAsAdvertised(MonitorImageToolkit);
@@ -1340,6 +1344,10 @@ const registerMonitorImageTools = Effect.fn("McpHttpServer.registerMonitorImageT
               Effect.provideService(ThreadMonitorService, service),
               Effect.provideService(ThreadManagementService.ThreadManagementService, management),
               Effect.provideService(McpInvocationContext.McpInvocationContext, invocation),
+              Effect.provideService(
+                ComputerObservationStore.ComputerObservationStore,
+                observations,
+              ),
               Effect.matchCauseEffect({
                 onFailure: (cause) => computerToolFailure(tool.name, cause),
                 onSuccess: ({ encodedResult }) =>

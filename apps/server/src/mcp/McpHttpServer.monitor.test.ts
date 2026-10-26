@@ -1,3 +1,4 @@
+import * as ComputerObservationStore from "../computer/ComputerObservationStore.ts";
 import { assert, it } from "@effect/vitest";
 import {
   CommandId,
@@ -45,6 +46,7 @@ const client = McpSchema.McpServerClient.of({
   getClient: Effect.die("unused"),
 });
 const layer = McpHttpServer.MonitorToolkitRegistrationLive.pipe(
+  Layer.provideMerge(ComputerObservationStore.layer),
   Layer.provideMerge(McpServer.McpServer.layer),
   Layer.provideMerge(MonitorTestkit.layer),
 );
@@ -246,6 +248,7 @@ it.effect(
       });
       let inspected = 0;
       const imageRegistration = McpHttpServer.MonitorToolkitRegistrationLive.pipe(
+        Layer.provideMerge(ComputerObservationStore.layer),
         Layer.provide(
           Layer.succeed(ThreadMonitorService, {
             ...service,

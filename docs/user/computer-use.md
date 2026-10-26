@@ -238,6 +238,12 @@ intentional parallel work.
 A human can temporarily view or take control of an Agent desktop; agent input is revoked during that
 takeover and can resume after the human lease ends.
 
+In Settings, open an Agent desktop's Watch view and choose Agent lens to inspect
+the latest images delivered to its controller or watch evaluator. You can select
+temporal frames or watch generations and view their original pixels at 1:1. Live
+shows the current desktop; the lens changes only on a new model observation and
+expires after thirty minutes or when the server restarts.
+
 The host chooses CPU, memory, and virtual disk capacity from current pressure and the task's stated
 needs. Agents describe needs such as graphics, interactivity, temporary disk use, audio, or whether a
 desktop must stay running; they do not select arbitrary host resource values. Idle desktops normally

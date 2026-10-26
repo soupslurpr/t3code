@@ -1,5 +1,6 @@
 import * as Effect from "effect/Effect";
 
+import * as ComputerObservationStore from "../../../computer/ComputerObservationStore.ts";
 import { ThreadMonitorService } from "../../../threadMonitor/ThreadMonitorService.ts";
 import * as McpToolAccess from "../../McpToolAccess.ts";
 import * as McpInvocationContext from "../../McpInvocationContext.ts";
@@ -28,7 +29,16 @@ const handlers = {
         thread: { threadId },
       } = yield* McpInvocationContext.requireThreadMcpCapability("computer");
       const service = yield* ThreadMonitorService;
-      return yield* service.inspectComputer({ threadId, inspect });
+      const inspection = yield* service.inspectComputer({ threadId, inspect });
+      const scope = yield* McpInvocationContext.requireThreadMcpCapability("computer");
+      const observations = yield* ComputerObservationStore.ComputerObservationStore;
+      yield* observations.publishWatchInspection({
+        environmentId: scope.environmentId,
+        threadId,
+        instanceId: scope.thread.providerInstanceId,
+        inspection,
+      });
+      return inspection;
     }),
   ),
   computer_watch_update: McpToolAccess.actsAsCaller((update) =>

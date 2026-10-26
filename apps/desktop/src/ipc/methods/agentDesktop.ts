@@ -301,6 +301,12 @@ const runHumanRequest = Effect.fn("agentDesktop.runHumanRequest")(function* (
       return yield* manager.act(context.controllerId, request.input, request.desktopId);
     case "release":
       return yield* manager.release(context.controllerId, request.desktopId);
+    case "observation":
+      return yield* new AgentDesktopManager.AgentDesktopManagerError({
+        code: "unsupported-operation",
+        operation: "observation",
+        detail: "agent observation reads are served by the environment server",
+      });
   }
 });
 

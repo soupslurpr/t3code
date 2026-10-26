@@ -1,3 +1,4 @@
+import * as ComputerObservationStore from "../computer/ComputerObservationStore.ts";
 import { expect, it } from "@effect/vitest";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import {
@@ -51,6 +52,7 @@ const client = McpSchema.McpServerClient.of({
   getClient: Effect.die("unused"),
 });
 const layer = McpHttpServer.ComputerToolkitRegistrationLive.pipe(
+  Layer.provideMerge(ComputerObservationStore.layer),
   Layer.provideMerge(McpServer.McpServer.layer),
   Layer.provideMerge(McpToolAccessTestkit.liveThreadsLayer),
   Layer.provideMerge(PreviewAutomationBroker.layer),
@@ -745,4 +747,57 @@ it.effect("routes computer access with browser access disabled", () =>
       ]);
     }),
   ).pipe(Effect.provide(layer)),
+);
+
+it.effect("retains the exact Agent screenshot delivered through MCP for its owner", () =>
+  Effect.gen(function* () {
+    const store = yield* ComputerObservationStore.ComputerObservationStore;
+    const desktopId = "agent-observed";
+    const screenshot: ComputerAutomationSnapshot = {
+      display: {
+        id: "primary",
+        label: "Primary",
+        primary: true,
+        bounds: { x: 0, y: 0, width: 10, height: 5 },
+        scaleFactor: 1,
+      },
+      cursor: null,
+      captureSource: "virtual-display",
+      frame: {
+        id: "exact-frame",
+        displayId: "primary",
+        coordinateSpace: "image-pixels",
+        width: 10,
+        height: 5,
+        toDesktopLogical: { offsetX: 0, offsetY: 0, scaleX: 1, scaleY: 1 },
+      },
+      screenshot: {
+        state: "image",
+        contentHash,
+        mimeType: "image/png",
+        data: Buffer.from("exact bytes").toString("base64"),
+        sizeBytes: 11,
+        encoding: { format: "png" },
+        width: 10,
+        height: 5,
+      },
+    };
+    yield* serve({ ok: true, result: screenshot });
+    const result = yield* call("computer_snapshot", { desktop: { kind: "agent", desktopId } });
+    expect(result.isError).toBe(false);
+    const retained = yield* store.read({ environmentId, threadId, desktopId });
+    expect(retained.observation?.images[0]?.screenshot).toEqual(screenshot.screenshot);
+    expect(retained.observation?.images[0]?.frame).toEqual(screenshot.frame);
+    expect(retained.observation?.recipient).toEqual({
+      kind: "controller",
+      instanceId: invocation.thread!.providerInstanceId,
+    });
+    const image = result.content.find((content) => content.type === "image");
+    expect(image?.type === "image" ? image.data : null).toEqual(
+      new Uint8Array(Buffer.from("exact bytes")),
+    );
+    expect(
+      yield* store.read({ environmentId, threadId, desktopId, afterId: retained.latestId! }),
+    ).toEqual({ latestId: retained.latestId });
+  }).pipe(Effect.provide(layer), Effect.scoped),
 );

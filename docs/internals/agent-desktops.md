@@ -58,6 +58,15 @@ identifiers include an accessibility generation. A newer semantic observation or
 expires them, while screenshot-only human views and monitors leave the current semantic observation
 intact. This prevents background viewing from racing the controlling agent's next semantic action.
 
+## Human Observation Lens
+
+The lens retains the exact images delivered to a controller or watch evaluator,
+separately from human live capture. Reads return bytes only when the observation id
+changes. The cache is memory-only: entries expire after thirty minutes and older
+entries are evicted above 32 desktops or 128 MiB of compressed images. The newest
+entry is retained even if one valid result exceeds that aggregate target. Restarting
+the server clears the lens; it cannot reconstruct model input from a later capture.
+
 ## Resources And Lifecycle
 
 Admission keeps at least 2 GiB and 20 percent of host memory free. A guest receives 2–8 GiB of memory,

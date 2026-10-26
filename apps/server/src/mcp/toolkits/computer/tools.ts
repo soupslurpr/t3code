@@ -16,10 +16,12 @@ import * as Schema from "effect/Schema";
 import { Tool, Toolkit } from "effect/ai";
 import { ThreadManagementService } from "../../../orchestration-v2/ThreadManagementService.ts";
 
+import * as ComputerObservationStore from "../../../computer/ComputerObservationStore.ts";
 import * as McpInvocationContext from "../../McpInvocationContext.ts";
 import * as PreviewAutomationBroker from "../../PreviewAutomationBroker.ts";
 
 const dependencies = [
+  ComputerObservationStore.ComputerObservationStore,
   ThreadManagementService,
   McpInvocationContext.McpInvocationContext,
   PreviewAutomationBroker.PreviewAutomationBroker,
