@@ -23,9 +23,11 @@ import { AsyncResult, Atom, AtomRegistry } from "effect/reactivity";
 import {
   AVAILABLE_CONNECTION_STATE,
   PrimaryConnectionTarget,
+  type NetworkStatus,
   type PreparedConnection,
   type SupervisorConnectionState,
 } from "../connection/model.ts";
+import type { ConnectionCatalogEntry } from "../connection/catalog.ts";
 import * as EnvironmentRegistry from "../connection/registry.ts";
 import * as EnvironmentSupervisor from "../connection/supervisor.ts";
 import * as Persistence from "../platform/persistence.ts";
@@ -210,6 +212,70 @@ describe("cached VCS refs", () => {
     ),
   );
 
+  it.effect("coalesces pending checkout refreshes and preserves the latest localOnly option", () =>
+    Effect.gen(function* () {
+      const entered = yield* Deferred.make<void>();
+      const release = yield* Deferred.make<void>();
+      const calls: Array<{ readonly cwd: string; readonly localOnly?: boolean }> = [];
+      const client = {
+        [WS_METHODS.vcsRefreshStatus]: (input: {
+          readonly cwd: string;
+          readonly localOnly?: boolean;
+        }) =>
+          Effect.gen(function* () {
+            calls.push(input);
+            if (calls.length === 1) {
+              yield* Deferred.succeed(entered, undefined);
+              yield* Deferred.await(release);
+            }
+          }),
+      } as unknown as WsRpcProtocolClient;
+      const supervisor = EnvironmentSupervisor.EnvironmentSupervisor.of({
+        target: TARGET,
+        state: yield* SubscriptionRef.make(CONNECTED_CONNECTION_STATE),
+        session: yield* SubscriptionRef.make(Option.some(session(client))),
+        prepared: yield* SubscriptionRef.make(Option.none<PreparedConnection>()),
+        connect: Effect.void,
+        disconnect: Effect.void,
+        retryNow: Effect.void,
+      });
+      const run: EnvironmentRegistry.EnvironmentRegistry["Service"]["run"] = (_id, effect) =>
+        Effect.provideService(effect, EnvironmentSupervisor.EnvironmentSupervisor, supervisor);
+      const runtime = Atom.runtime(
+        Layer.merge(
+          Layer.mock(EnvironmentRegistry.EnvironmentRegistry)({
+            run,
+            entries: yield* SubscriptionRef.make<
+              ReadonlyMap<EnvironmentId, ConnectionCatalogEntry>
+            >(new Map()),
+            networkStatus: yield* SubscriptionRef.make<NetworkStatus>("online"),
+          }),
+          Layer.succeed(Persistence.EnvironmentCacheStore, cacheWithRefs(Option.none())),
+        ),
+      );
+      const atoms = createVcsEnvironmentAtoms(runtime);
+      const registry = yield* Effect.acquireRelease(Effect.sync(AtomRegistry.make), (registry) =>
+        Effect.sync(() => registry.dispose()),
+      );
+      const first = atoms.refreshStatus.run(registry, {
+        environmentId: TARGET.environmentId,
+        input: { cwd: "/repo" },
+      });
+      yield* Deferred.await(entered);
+      const second = atoms.refreshStatus.run(registry, {
+        environmentId: TARGET.environmentId,
+        input: { cwd: "/repo" },
+      });
+      const latest = atoms.refreshStatus.run(registry, {
+        environmentId: TARGET.environmentId,
+        input: { cwd: "/repo", localOnly: true },
+      });
+      yield* Deferred.succeed(release, undefined);
+      const results = yield* Effect.promise(() => Promise.all([first, second, latest]));
+      expect(results.every(AsyncResult.isSuccess)).toBe(true);
+      expect(calls).toEqual([{ cwd: "/repo" }, { cwd: "/repo", localOnly: true }]);
+    }),
+  );
   it.effect("invalidates persisted refs when ref-affecting commands settle", () =>
     Effect.scoped(
       Effect.gen(function* () {

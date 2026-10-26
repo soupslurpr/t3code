@@ -1,5 +1,6 @@
 import * as Cause from "effect/Cause";
 import * as Context from "effect/Context";
+import * as Deferred from "effect/Deferred";
 import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
@@ -158,6 +159,10 @@ export const layerAutomaticFetchInterval = Layer.effect(
     );
   }),
 );
+type PendingVcsStatusRefresh = Deferred.Deferred<VcsStatusResult, GitManagerServiceError>;
+type PendingVcsStatusRefreshLease =
+  | { readonly pending: PendingVcsStatusRefresh; readonly owner: true }
+  | { readonly pending: PendingVcsStatusRefresh; readonly owner: false };
 
 export class VcsAutoPullPolicy extends Context.Reference<{
   readonly isEnabled: (cwd: string) => Effect.Effect<boolean, never>;
@@ -252,6 +257,9 @@ export const make = Effect.gen(function* () {
   const withRemoteWriteLock = <A, E, R>(cwd: string, effect: Effect.Effect<A, E, R>) =>
     remoteWriteLocks.withLock(cwd, effect);
   const pollersRef = yield* SynchronizedRef.make(new Map<string, ActiveRemotePoller>());
+  const pendingRefreshesRef = yield* SynchronizedRef.make(
+    new Map<string, PendingVcsStatusRefresh>(),
+  );
 
   const getCachedStatus = Effect.fn("VcsStatusBroadcaster.getCachedStatus")(function* (
     cwd: string,
@@ -507,27 +515,12 @@ export const make = Effect.gen(function* () {
     );
   });
 
-  const refreshStatus: VcsStatusBroadcaster["Service"]["refreshStatus"] = Effect.fn(
-    "VcsStatusBroadcaster.refreshStatus",
-  )(function* (rawCwd, options) {
-    const cwd = yield* withFileSystem(normalizeCwd(rawCwd));
-    if (options?.localOnly) {
-      return yield* withRemoteWriteLock(
-        cwd,
-        Effect.gen(function* () {
-          yield* workflow.invalidateLocalStatus(cwd);
-          const local = yield* workflow.localStatus({ cwd });
-          const previous = yield* getCachedStatus(cwd);
-          if (previous?.local?.value.refName !== local.refName) {
-            yield* workflow.invalidateRemoteStatus(cwd);
-            return yield* updateCachedStatus(cwd, local, null, { publish: true });
-          }
-          yield* updateCachedLocalStatus(cwd, local, { publish: true });
-          return mergeGitStatusParts(local, previous?.remote?.value ?? null);
-        }),
-      );
-    }
-    // Full invalidation also bypasses GitManager's slow PR cache.
+  const refreshStatusCore = Effect.fn("VcsStatusBroadcaster.refreshStatusCore")(function* (
+    cwd: string,
+    policyCwds: ReadonlyArray<string>,
+  ) {
+    // invalidateStatus (not the two partial invalidations) so an explicit
+    // refresh also bypasses GitManager's slow PR-lookup cache.
     return yield* withRemoteWriteLock(
       cwd,
       Effect.gen(function* () {
@@ -537,7 +530,7 @@ export const make = Effect.gen(function* () {
         const remote = yield* workflow.remoteStatus({ cwd }, { refreshUpstream });
         const local = yield* workflow.localStatus({ cwd });
         // Without a fetch, the cached behind count cannot justify an automatic pull.
-        const pulled = refreshUpstream ? yield* maybeAutoPull(cwd, remote, [rawCwd]) : null;
+        const pulled = refreshUpstream ? yield* maybeAutoPull(cwd, remote, policyCwds) : null;
         if (pulled !== null) return mergeGitStatusParts(pulled.local, pulled.remote);
         return yield* updateCachedStatus(cwd, local, remote, { publish: true });
       }),
@@ -570,6 +563,81 @@ export const make = Effect.gen(function* () {
         }),
       );
     });
+
+  const clearPendingRefresh = (cwd: string, pending: PendingVcsStatusRefresh) =>
+    SynchronizedRef.update(pendingRefreshesRef, (current) => {
+      if (current.get(cwd) !== pending) {
+        return current;
+      }
+      const next = new Map(current);
+      next.delete(cwd);
+      return next;
+    });
+
+  const acquirePendingRefresh = Effect.fn("VcsStatusBroadcaster.acquirePendingRefresh")(function* (
+    cwd: string,
+  ) {
+    return yield* SynchronizedRef.modifyEffect(
+      pendingRefreshesRef,
+      (
+        current,
+      ): Effect.Effect<
+        readonly [PendingVcsStatusRefreshLease, Map<string, PendingVcsStatusRefresh>]
+      > => {
+        const existing = current.get(cwd);
+        if (existing) {
+          return Effect.succeed([{ pending: existing, owner: false }, current]);
+        }
+
+        return Deferred.make<VcsStatusResult, GitManagerServiceError>().pipe(
+          Effect.map((pending) => {
+            const next = new Map(current);
+            next.set(cwd, pending);
+            return [{ pending, owner: true }, next] as const;
+          }),
+        );
+      },
+    );
+  });
+
+  const refreshStatus: VcsStatusBroadcaster["Service"]["refreshStatus"] = Effect.fn(
+    "VcsStatusBroadcaster.refreshStatus",
+  )(function* (rawCwd, options) {
+    const cwd = yield* withFileSystem(normalizeCwd(rawCwd));
+    if (options?.localOnly) {
+      return yield* withRemoteWriteLock(
+        cwd,
+        Effect.gen(function* () {
+          yield* workflow.invalidateLocalStatus(cwd);
+          const local = yield* workflow.localStatus({ cwd });
+          const previous = yield* getCachedStatus(cwd);
+          if (previous?.local?.value.refName !== local.refName) {
+            yield* workflow.invalidateRemoteStatus(cwd);
+            return yield* updateCachedStatus(cwd, local, null, { publish: true });
+          }
+          yield* updateCachedLocalStatus(cwd, local, { publish: true });
+          return mergeGitStatusParts(local, previous?.remote?.value ?? null);
+        }),
+      );
+    }
+    return yield* Effect.uninterruptibleMask((restore) =>
+      Effect.gen(function* () {
+        const acquired = yield* acquirePendingRefresh(rawCwd);
+        if (acquired.owner) {
+          yield* refreshStatusCore(cwd, [rawCwd]).pipe(
+            Effect.onExit((exit) =>
+              clearPendingRefresh(rawCwd, acquired.pending).pipe(
+                Effect.andThen(Deferred.done(acquired.pending, exit)),
+              ),
+            ),
+            Effect.exit,
+            Effect.forkIn(broadcasterScope),
+          );
+        }
+        return yield* restore(Deferred.await(acquired.pending));
+      }),
+    );
+  });
 
   // A subscription owns this loop; keep each poll's spans out of a never-ending parent span.
   const makeRemoteRefreshLoop = Effect.fnUntraced(function* (
