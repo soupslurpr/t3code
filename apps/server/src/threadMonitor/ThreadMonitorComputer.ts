@@ -1,4 +1,5 @@
 import {
+  type ComputerAutomationFailure,
   type ComputerAutomationObservation,
   type ComputerAutomationDesktopRegion,
   type ComputerAutomationScreenshotRegion,
@@ -43,6 +44,7 @@ const SNAPSHOT_TIMEOUT_MS = 30_000;
 const RELEASE_TIMEOUT_MS = 30_000;
 const DEFAULT_INTERVAL_MS = 30_000;
 const DEFAULT_MAX_IMAGE_DIMENSION = 1_024;
+const DEFAULT_FAILURE_REVIEW_THRESHOLD = 3;
 const isThreadMonitorError = Schema.is(ThreadMonitorError);
 
 type CapturedRegion = {
@@ -51,6 +53,16 @@ type CapturedRegion = {
 };
 
 function boundedDetail(cause: unknown): string {
+  if (typeof cause === "object" && cause !== null && "computerFailure" in cause) {
+    const failure = cause.computerFailure as ComputerAutomationFailure | undefined;
+    if (failure !== undefined) {
+      const code =
+        failure.backendCode === undefined
+          ? failure.code
+          : `${failure.code} (${failure.backendCode})`;
+      return `${code}: ${failure.detail ?? failure.message}`.slice(0, 2_000);
+    }
+  }
   const detail = cause instanceof Error ? cause.message : String(cause);
   return detail.slice(0, 2_000);
 }
@@ -111,13 +123,23 @@ function normalizeMatch(
 function normalizeReviewPolicy(
   review: ThreadMonitorComputerStartInput["review"],
 ): ThreadMonitorComputerReviewPolicy | null {
-  if (review === undefined) return null;
-  return {
-    afterEvaluations: review.afterEvaluations ?? null,
-    consecutiveUncertain: review.consecutiveUncertain ?? null,
-    consecutiveFailures: review.consecutiveFailures ?? null,
-    at: review.at ?? null,
+  if (review === null) return null;
+  const configured = review ?? {};
+  const policy = {
+    afterEvaluations: configured.afterEvaluations ?? null,
+    consecutiveUncertain: configured.consecutiveUncertain ?? null,
+    consecutiveFailures:
+      configured.consecutiveFailures === undefined
+        ? DEFAULT_FAILURE_REVIEW_THRESHOLD
+        : configured.consecutiveFailures,
+    at: configured.at ?? null,
   };
+  return policy.afterEvaluations === null &&
+    policy.consecutiveUncertain === null &&
+    policy.consecutiveFailures === null &&
+    policy.at === null
+    ? null
+    : policy;
 }
 
 /** Adds one nullable token measurement without inventing unavailable usage. */
@@ -390,6 +412,7 @@ export const make = Effect.gen(function* () {
     }
     if (
       input.watch.review?.at !== undefined &&
+      input.watch.review.at !== null &&
       Date.parse(input.watch.review.at) <= Date.parse(input.preparedAt)
     ) {
       return yield* watchError(

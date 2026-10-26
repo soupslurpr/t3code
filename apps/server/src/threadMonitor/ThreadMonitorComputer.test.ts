@@ -10,6 +10,8 @@ import {
   ProviderInstanceId,
   ThreadMonitorId,
   TextGenerationError,
+  PreviewAutomationConnectionId,
+  PreviewAutomationExecutionError,
   PreviewAutomationNoAvailableHostError,
   type ComputerAutomationSnapshot,
   type ThreadMonitor,
@@ -133,6 +135,7 @@ const harness = Effect.fn("ComputerWatchTest.harness")(function* (
     exists: true,
     models: [modelSelection.model],
     captureFails: false,
+    captureDiagnostic: false,
     evaluatorFails: false,
     verdict: "not-matched" as "matched" | "not-matched" | "uncertain",
     ownerExists: true,
@@ -252,12 +255,33 @@ const harness = Effect.fn("ComputerWatchTest.harness")(function* (
               calls.push(input);
               if (input.operation === "computerRequestView" && requestView !== undefined)
                 yield* requestView;
-              if (input.operation === "computerSnapshot" && state.captureFails)
+              if (input.operation === "computerSnapshot" && state.captureFails) {
+                if (state.captureDiagnostic)
+                  return yield* new PreviewAutomationExecutionError({
+                    operation: input.operation,
+                    environmentId: input.scope.environmentId,
+                    ...input.scope.thread,
+                    clientId: "capture-host",
+                    connectionId: PreviewAutomationConnectionId.make("capture-connection"),
+                    requestId: "capture-request",
+                    timeoutMs: 1_000,
+                    remoteTag: "CaptureError",
+                    remoteMessageLength: 14,
+                    cause: "Capture failed",
+                    computerFailure: {
+                      code: "capture-failed",
+                      category: "capture",
+                      message: "Capture failed",
+                      backendCode: "stream-capture-failed",
+                      detail: "PipeWire could not duplicate a file descriptor (EMFILE)",
+                    },
+                  });
                 return yield* new PreviewAutomationNoAvailableHostError({
                   operation: input.operation,
                   environmentId: input.scope.environmentId,
                   ...input.scope.thread,
                 });
+              }
               return (
                 input.operation === "computerSnapshot"
                   ? (state.snapshotFor?.(input.input) ?? snapshot(state.pixels))
@@ -1167,6 +1191,123 @@ it.effect(
         delivered.condition.type === "computer" && delivered.condition.review.state,
         "delivered",
       );
+      yield* service.cancel({ threadId: Testkit.threadId, cancel: { monitorId: monitor.id } });
+    }).pipe(Effect.provide(Layer.merge(Testkit.layer, NodeServices.layer))),
+);
+
+it.effect("warns once on default capture degradation and resumes healthy sampling", () =>
+  Effect.gen(function* () {
+    yield* Testkit.seedThread();
+    const h = yield* harness();
+    const service = yield* ThreadMonitorService.make.pipe(
+      Effect.provideService(ThreadMonitorComputerService, h.service),
+    );
+    const projections = yield* ProjectionStoreV2;
+    const monitor = yield* service.createComputer({
+      threadId: Testkit.threadId,
+      monitor: modelWatch,
+    });
+    assert.equal(
+      monitor.condition.type === "computer" && monitor.condition.review.policy?.consecutiveFailures,
+      3,
+    );
+    const check = () =>
+      service.checkNow({
+        threadId: Testkit.threadId,
+        check: { monitorId: monitor.id },
+      });
+    h.state.captureFails = true;
+    h.state.captureDiagnostic = true;
+    for (const delay of [1_000, 1_000, 2_000]) {
+      yield* TestClock.adjust(delay);
+      yield* check();
+    }
+    yield* TestClock.adjust(750);
+    const degraded = (yield* check()).monitors[0]!;
+    assert.equal(degraded.status, "active");
+    if (degraded.condition.type !== "computer") return yield* Effect.die("Expected computer watch");
+    assert.equal(degraded.condition.consecutiveFailures, 3);
+    assert.equal(degraded.condition.resourceState, "degraded");
+    assert.equal(degraded.condition.review.state, "delivered");
+    const records = yield* projections.getThreadRecords(Testkit.threadId, ["messages"]);
+    assert.lengthOf(records.messages, 1);
+    assert.include(records.messages[0]!.text, "Latest observation error");
+    assert.include(records.messages[0]!.text, "stream-capture-failed");
+    assert.include(records.messages[0]!.text, "PipeWire");
+    h.state.captureFails = false;
+    yield* TestClock.adjust(4_000);
+    const healthy = (yield* check()).monitors[0]!;
+    if (healthy.condition.type !== "computer") return yield* Effect.die("Expected computer watch");
+    assert.equal(healthy.condition.resourceState, "viewing");
+    assert.equal(healthy.condition.consecutiveFailures, 0);
+    assert.isNull(healthy.condition.observationError);
+    assert.equal(healthy.condition.review.state, "delivered");
+    assert.lengthOf(
+      (yield* projections.getThreadRecords(Testkit.threadId, ["messages"])).messages,
+      1,
+    );
+    yield* service.cancel({ threadId: Testkit.threadId, cancel: { monitorId: monitor.id } });
+  }).pipe(Effect.provide(Layer.merge(Testkit.layer, NodeServices.layer))),
+);
+
+it.effect.each([null, { consecutiveFailures: null }])(
+  "keeps disabled capture warnings disabled across revisions (%j)",
+  (review) =>
+    Effect.gen(function* () {
+      yield* Testkit.seedThread();
+      const h = yield* harness();
+      const service = yield* ThreadMonitorService.make.pipe(
+        Effect.provideService(ThreadMonitorComputerService, h.service),
+      );
+      const projections = yield* ProjectionStoreV2;
+      const monitor = yield* service.createComputer({
+        threadId: Testkit.threadId,
+        monitor: { ...modelWatch, review },
+      });
+      const revised = yield* service.updateComputer({
+        threadId: Testkit.threadId,
+        update: {
+          monitorId: monitor.id,
+          expectedRevision: 1,
+          label: "Revised",
+          acknowledgeReview: true,
+        },
+      });
+      assert.isNull(revised.condition.type === "computer" && revised.condition.review.policy);
+      h.state.captureFails = true;
+      for (const delay of [1_000, 1_000, 2_000, 4_000]) {
+        yield* TestClock.adjust(delay);
+        yield* service.checkNow({ threadId: Testkit.threadId, check: { monitorId: monitor.id } });
+      }
+      const failed = (yield* service.status({
+        threadId: Testkit.threadId,
+        query: { monitorId: monitor.id },
+      })).monitors[0]!;
+      assert.equal(failed.condition.type === "computer" && failed.condition.consecutiveFailures, 4);
+      assert.equal(failed.condition.type === "computer" && failed.condition.review.state, "idle");
+      assert.lengthOf(
+        (yield* projections.getThreadRecords(Testkit.threadId, ["messages"])).messages,
+        0,
+      );
+      h.state.captureFails = false;
+      const restored = yield* service.updateComputer({
+        threadId: Testkit.threadId,
+        update: {
+          monitorId: monitor.id,
+          expectedRevision: 2,
+          review: { consecutiveFailures: 1 },
+        },
+      });
+      assert.equal(
+        restored.condition.type === "computer" &&
+          restored.condition.review.policy?.consecutiveFailures,
+        1,
+      );
+      const disabled = yield* service.updateComputer({
+        threadId: Testkit.threadId,
+        update: { monitorId: monitor.id, expectedRevision: 3, review: null },
+      });
+      assert.isNull(disabled.condition.type === "computer" && disabled.condition.review.policy);
       yield* service.cancel({ threadId: Testkit.threadId, cancel: { monitorId: monitor.id } });
     }).pipe(Effect.provide(Layer.merge(Testkit.layer, NodeServices.layer))),
 );
