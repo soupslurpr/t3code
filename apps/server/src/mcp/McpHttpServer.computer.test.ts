@@ -22,6 +22,7 @@ import * as McpInvocationContext from "./McpInvocationContext.ts";
 import * as McpToolAccessTestkit from "./McpToolAccess.testkit.ts";
 import * as PreviewAutomationBroker from "./PreviewAutomationBroker.ts";
 
+const contentHash = "sha256-bgra8-v2:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA";
 const environmentId = EnvironmentId.make("computer-http-environment");
 const threadId = ThreadId.make("computer-http-thread");
 const invocation: McpInvocationContext.McpInvocationScope = {
@@ -111,6 +112,8 @@ it.effect("returns native screenshot bytes once, with bounded structured metadat
           cursor: null,
           captureSource: "remote-desktop-stream",
           screenshot: {
+            state: "image",
+            contentHash,
             mimeType: "image/png",
             data: Buffer.from("png").toString("base64"),
             sizeBytes: 3,
@@ -287,6 +290,8 @@ const temporalSnapshot = (index: number): ComputerAutomationSnapshot => ({
   cursor: null,
   captureSource: "remote-desktop-stream",
   screenshot: {
+    state: "image",
+    contentHash,
     mimeType: "image/png",
     data: Buffer.from(`png-${index}`).toString("base64"),
     sizeBytes: Buffer.byteLength(`png-${index}`),
@@ -436,4 +441,45 @@ it.effect.each(["before-actions", "after-actions"] as const)(
       );
       expect(result.content.filter((item) => item.type === "image")).toHaveLength(2);
     }).pipe(Effect.provide(layer)),
+);
+
+it.effect("omits unchanged image content while preserving a fresh actionable frame", () =>
+  Effect.gen(function* () {
+    const frame = {
+      id: "fresh-frame",
+      displayId: "primary",
+      coordinateSpace: "image-pixels",
+      width: 10,
+      height: 5,
+      toDesktopLogical: { offsetX: 20, offsetY: 30, scaleX: 2, scaleY: 2 },
+    };
+    yield* serve((request) =>
+      Effect.sync(() => {
+        expect(request.input).toEqual({ screenshot: { unchangedIfContentHash: contentHash } });
+        return {
+          ok: true,
+          result: {
+            ...temporalSnapshot(0),
+            frame,
+            screenshot: { state: "unchanged", contentHash, width: 10, height: 5 },
+          },
+        };
+      }),
+    );
+    const result = yield* call("computer_snapshot", {
+      screenshot: { unchangedIfContentHash: contentHash },
+    });
+    expect(result.isError).toBe(false);
+    expect(result.content.filter((content) => content.type === "image")).toEqual([]);
+    expect(result.structuredContent).toMatchObject({
+      frame,
+      screenshot: {
+        state: "unchanged",
+        contentHash,
+        width: 10,
+        height: 5,
+      },
+    });
+    expect(JSON.stringify(result.structuredContent)).not.toContain('"data"');
+  }).pipe(Effect.provide(layer)),
 );

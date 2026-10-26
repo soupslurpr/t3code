@@ -1,3 +1,5 @@
+// @effect-diagnostics-next-line nodeBuiltinImport:off - Native broker fixtures use synchronous deterministic fingerprints.
+import * as NodeCrypto from "node:crypto";
 import { assert, describe, it } from "@effect/vitest";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import {
@@ -58,9 +60,14 @@ const modelSelection = {
 };
 const createdAt = "2026-10-26T00:00:00.000Z";
 const png = (text: string) => Buffer.from(text).toString("base64");
+const fingerprint = (text: string, encoding: ComputerAutomationScreenshotEncoding) =>
+  `sha256-bgra8-v2:${NodeCrypto.createHash("sha256")
+    .update(JSON.stringify([text, encoding]))
+    .digest("base64url")}`;
 const snapshot = (
   text: string,
   encoding: ComputerAutomationScreenshotEncoding = { format: "webp", mode: "lossless" },
+  knownHash?: string,
 ): ComputerAutomationSnapshot => ({
   display: {
     id: "left",
@@ -79,14 +86,24 @@ const snapshot = (
     toDesktopLogical: { offsetX: -200.5, offsetY: 50.5, scaleX: 0.5, scaleY: 0.5 },
   },
   captureSource: "virtual-display",
-  screenshot: {
-    mimeType: encoding.format === "png" ? "image/png" : "image/webp",
-    data: png(text),
-    width: 200,
-    height: 100,
-    sizeBytes: Buffer.byteLength(text),
-    encoding,
-  },
+  screenshot:
+    knownHash === fingerprint(text, encoding)
+      ? {
+          state: "unchanged",
+          contentHash: knownHash,
+          width: 200,
+          height: 100,
+        }
+      : {
+          state: "image",
+          contentHash: fingerprint(text, encoding),
+          mimeType: encoding.format === "png" ? "image/png" : "image/webp",
+          data: png(text),
+          width: 200,
+          height: 100,
+          sizeBytes: Buffer.byteLength(text),
+          encoding,
+        },
 });
 const makeMonitor = (condition: ThreadMonitor["condition"]): ThreadMonitor => ({
   id: ThreadMonitorId.make("watch"),
@@ -303,6 +320,8 @@ const harness = Effect.fn("ComputerWatchTest.harness")(function* (
                           screenshot?: { encoding?: ComputerAutomationScreenshotEncoding };
                         }
                       ).screenshot?.encoding,
+                      (input.input as { screenshot?: { unchangedIfContentHash?: string } })
+                        .screenshot?.unchangedIfContentHash,
                     ))
                   : {}
               ) as A;
@@ -383,6 +402,7 @@ describe("durable computer adapter", () => {
               maxWidth: 200,
               maxHeight: 100,
               encoding: { format: "webp", mode: "lossless" },
+              unchangedIfContentHash: prepared.condition.observation.regions[0]?.lastSampleHash,
             },
           },
         );
@@ -863,14 +883,20 @@ it.effect(
         const {
           region: { x },
           encoding,
+          unchangedIfContentHash,
         } = (
           input as {
-            screenshot: { region: { x: number }; encoding: ComputerAutomationScreenshotEncoding };
+            screenshot: {
+              region: { x: number };
+              encoding: ComputerAutomationScreenshotEncoding;
+              unchangedIfContentHash?: string;
+            };
           }
         ).screenshot;
         const current = snapshot(
           x === -400 ? `context:${h.state.pixels}` : h.state.pixels,
           encoding,
+          unchangedIfContentHash,
         );
         return {
           ...current,
@@ -1377,4 +1403,179 @@ it.effect.each([null, { consecutiveFailures: null }])(
       assert.isNull(disabled.condition.type === "computer" && disabled.condition.review.policy);
       yield* service.cancel({ threadId: Testkit.threadId, cancel: { monitorId: monitor.id } });
     }).pipe(Effect.provide(Layer.merge(Testkit.layer, NodeServices.layer))),
+);
+
+it.effect.each(["a".repeat(64), "sha256-bgra8-v1:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"])(
+  "fails an incompatible persisted watch without sampling or false delivery: %s",
+  (oldHash) =>
+    Effect.gen(function* () {
+      yield* Testkit.seedThread();
+      const h = yield* harness();
+      const service = yield* ThreadMonitorService.make.pipe(
+        Effect.provideService(ThreadMonitorComputerService, h.service),
+      );
+      const repository = yield* Repository.ThreadMonitorRepository;
+      const first = yield* service.createComputer({
+        threadId: Testkit.threadId,
+        monitor: { ...modelWatch, match: { type: "image-change" }, continuation: "resume-thread" },
+      });
+      if (first.condition.type !== "computer") return yield* Effect.die("Expected computer watch");
+      const legacy = {
+        ...first,
+        condition: {
+          ...first.condition,
+          observation: {
+            regions: first.condition.observation.regions.map((region) => ({
+              ...region,
+              baselineHash: oldHash,
+              lastSampleHash: oldHash,
+            })),
+          },
+        },
+      };
+      yield* repository.upsert(legacy);
+      const before = h.calls.length;
+      const direct = yield* h.service
+        .check({ monitor: legacy, evidence: retainedEvidence(), checkedAt: createdAt })
+        .pipe(Effect.flip);
+      assert.equal(direct.code, "COMPUTER_FINGERPRINT_UNSUPPORTED");
+      assert.equal(h.calls.length, before);
+      const restarted = yield* ThreadMonitorService.make.pipe(
+        Effect.provideService(ThreadMonitorComputerService, h.service),
+      );
+      yield* TestClock.adjust(1_000);
+      const failed = (yield* restarted.checkNow({
+        threadId: Testkit.threadId,
+        check: { monitorId: first.id },
+      })).monitors[0]!;
+      assert.equal(failed.status, "failed");
+      assert.isNull(failed.trigger);
+      assert.include(failed.lastError!, "Restart this monitor");
+      assert.equal(
+        failed.condition.type === "computer" && failed.condition.resourceState,
+        "released",
+      );
+      assert.deepEqual(
+        h.calls.slice(before).map((call) => call.operation),
+        ["computerRelease"],
+      );
+      assert.deepEqual(Option.getOrThrow(yield* repository.getById(first.id)), failed);
+      assert.lengthOf(
+        (yield* (yield* ProjectionStoreV2).getThreadRecords(Testkit.threadId, ["messages"]))
+          .messages,
+        0,
+      );
+      yield* restarted.checkNow({ threadId: Testkit.threadId, check: { monitorId: first.id } });
+      assert.equal(h.calls.length, before + 1);
+    }).pipe(Effect.provide(Layer.merge(Testkit.layer, NodeServices.layer))),
+);
+
+it.effect("materializes omitted bytes once and reuses retained images for later evaluations", () =>
+  Effect.gen(function* () {
+    const h = yield* harness();
+    const prepared = yield* h.prepare({
+      ...modelWatch,
+      match: {
+        ...modelWatch.match,
+        type: "model",
+        criterion: "The task is complete.",
+        modelSelection,
+        baseline: "none",
+      },
+      sampling: { intervalMs: 1_000, evaluateOnlyAfterChange: false, minEvaluationIntervalMs: 0 },
+    });
+    const snapshots = () => h.calls.filter((call) => call.operation === "computerSnapshot");
+    const before = snapshots().length;
+    const checked = yield* h.service.check({
+      monitor: makeMonitor(prepared.condition),
+      evidence: retainedEvidence(prepared.baselineImages),
+      checkedAt: createdAt,
+    });
+    assert.equal(snapshots().length, before + 2);
+    assert.equal(h.evaluations[0]?.images[0]?.current.dataBase64, png("initial"));
+    assert.equal(checked.observedImages[0]?.dataBase64, png("initial"));
+    const reused = yield* h.service.check({
+      monitor: makeMonitor(checked.condition),
+      evidence: { ...retainedEvidence(), currentImages: checked.observedImages },
+      checkedAt: createdAt,
+    });
+    assert.equal(snapshots().length, before + 3);
+    assert.equal(reused.observedImages[0]?.dataBase64, png("initial"));
+    const repeated = yield* h.service.check({
+      monitor: makeMonitor(reused.condition),
+      evidence: retainedEvidence(),
+      checkedAt: createdAt,
+    });
+    assert.equal(snapshots().length, before + 5);
+    assert.equal(h.evaluations[2]?.images[0]?.current.dataBase64, png("initial"));
+    assert.equal(repeated.condition.observation.regions[0]?.sampleCount, 3);
+    assert.notProperty(
+      (snapshots().at(-1)!.input as { screenshot: object }).screenshot,
+      "unchangedIfContentHash",
+    );
+    const fresh = yield* h.service.inspectFresh({
+      monitor: makeMonitor(repeated.condition),
+      frameCount: 1,
+      intervalMs: 100,
+    });
+    assert.equal(fresh[0]?.dataBase64, png("initial"));
+    assert.notProperty(
+      (snapshots().at(-1)!.input as { screenshot: object }).screenshot,
+      "unchangedIfContentHash",
+    );
+  }),
+);
+
+it.effect("baselines the durable rounded region before comparing a fractional source crop", () =>
+  Effect.gen(function* () {
+    const h = yield* harness();
+    h.state.snapshotFor = (input) => {
+      const options = (
+        input as {
+          screenshot: {
+            region?: { coordinateSpace?: string };
+            unchangedIfContentHash?: string;
+          };
+        }
+      ).screenshot;
+      const durable = options.region?.coordinateSpace === "desktop-logical";
+      const current = snapshot("identical pixels");
+      const hash = fingerprint(durable ? "durable region" : "fractional region", {
+        format: "webp",
+        mode: "lossless",
+      });
+      return {
+        ...current,
+        screenshot:
+          options.unchangedIfContentHash === hash
+            ? {
+                state: "unchanged",
+                contentHash: hash,
+                width: 200,
+                height: 100,
+              }
+            : {
+                ...current.screenshot!,
+                state: "image",
+                contentHash: hash,
+                mimeType: "image/webp",
+                data: png("identical pixels"),
+                sizeBytes: 16,
+                encoding: { format: "webp", mode: "lossless" },
+              },
+      };
+    };
+    const prepared = yield* h.prepare({ ...modelWatch, match: { type: "image-change" } });
+    const result = yield* h.service.check({
+      monitor: makeMonitor(prepared.condition),
+      evidence: retainedEvidence(prepared.baselineImages),
+      checkedAt: createdAt,
+    });
+    assert.isNull(result.match);
+    assert.equal(result.condition.observation.regions[0]?.unchangedSampleCount, 1);
+    assert.equal(
+      prepared.baselineImages[0]?.hash,
+      fingerprint("durable region", { format: "webp", mode: "lossless" }),
+    );
+  }),
 );
