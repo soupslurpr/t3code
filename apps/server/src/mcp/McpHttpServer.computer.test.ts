@@ -130,7 +130,7 @@ it.effect("returns native screenshot bytes once, with bounded structured metadat
           type: "image",
           data: new Uint8Array(Buffer.from("png")),
           mimeType: "image/png",
-          _meta: { "codex/imageDetail": "original" },
+          _meta: { "codex/imageDetail": "original", "t3/computerImageRole": "overview" },
         },
       ]);
       expect(result.structuredContent).toMatchObject({
@@ -348,6 +348,7 @@ it.effect("returns temporal frames once in capture order with timing outside ima
         mimeType: "image/png",
         _meta: {
           "codex/imageDetail": "original",
+          "t3/computerImageRole": "overview",
           "t3/temporalFrameIndex": index,
           "t3/temporalElapsedMs": index * 100,
         },
@@ -498,5 +499,168 @@ it.effect("preserves both discrete wheel axes through the MCP request and receip
     const result = yield* call("computer_act", { actions: [action], observation: false });
     expect(result.isError).toBe(false);
     expect(result.structuredContent).toEqual({ actionResults: [receipt] });
+  }).pipe(Effect.provide(layer)),
+);
+
+const detailedSnapshot = (): ComputerAutomationSnapshot => ({
+  ...temporalSnapshot(0),
+  detailScreenshots: [
+    {
+      id: "composer",
+      purpose: "Read the draft.",
+      pointer: null,
+      frame: {
+        id: "detail-frame",
+        displayId: "primary",
+        coordinateSpace: "image-pixels",
+        width: 5,
+        height: 5,
+        toDesktopLogical: { scaleX: 1, scaleY: 1, offsetX: 5, offsetY: 0 },
+      },
+      screenshot: {
+        state: "image",
+        contentHash,
+        mimeType: "image/webp",
+        data: Buffer.from("detail").toString("base64"),
+        width: 5,
+        height: 5,
+        sizeBytes: 6,
+        encoding: { format: "webp", mode: "lossless" },
+      },
+    },
+    {
+      id: "unchanged",
+      pointer: null,
+      frame: {
+        id: "unchanged-frame",
+        displayId: "primary",
+        coordinateSpace: "image-pixels",
+        width: 5,
+        height: 5,
+        toDesktopLogical: { scaleX: 1, scaleY: 1, offsetX: 0, offsetY: 0 },
+      },
+      screenshot: { state: "unchanged", contentHash, width: 5, height: 5 },
+    },
+  ],
+});
+
+it.effect.each(["computer_snapshot", "computer_act"] as const)(
+  "returns each detail image once for %s while retaining unchanged metadata",
+  (name) =>
+    Effect.gen(function* () {
+      const details = [
+        { id: "composer", purpose: "Read the draft." },
+        { id: "unchanged", unchangedIfContentHash: contentHash },
+      ];
+      let requests = 0;
+      yield* serve((request) =>
+        Effect.sync(() => {
+          requests += 1;
+          expect(request.input).toMatchObject(
+            name === "computer_snapshot"
+              ? { detailScreenshots: details }
+              : { observation: { detailScreenshots: details } },
+          );
+          return {
+            ok: true,
+            result:
+              name === "computer_snapshot"
+                ? detailedSnapshot()
+                : { actionResults: [], snapshot: detailedSnapshot() },
+          };
+        }),
+      );
+      const result = yield* call(
+        name,
+        name === "computer_snapshot"
+          ? { detailScreenshots: details }
+          : {
+              actions: [{ type: "press", key: "Space" }],
+              observation: { detailScreenshots: details },
+            },
+      );
+      expect(result.isError).toBe(false);
+      expect(requests).toBe(1);
+      expect(JSON.stringify(result.structuredContent)).not.toContain('"data"');
+      const metadata = {
+        detailScreenshots: [
+          {
+            id: "composer",
+            frame: { id: "detail-frame" },
+            screenshot: { state: "image", mimeType: "image/webp" },
+          },
+          { id: "unchanged", frame: { id: "unchanged-frame" }, screenshot: { state: "unchanged" } },
+        ],
+      };
+      expect(result.structuredContent).toMatchObject(
+        name === "computer_snapshot" ? metadata : { snapshot: metadata },
+      );
+      const images = result.content.filter((item) => item.type === "image");
+      expect(images).toHaveLength(2);
+      expect(images[1]).toEqual({
+        type: "image",
+        data: new Uint8Array(Buffer.from("detail")),
+        mimeType: "image/webp",
+        _meta: {
+          "codex/imageDetail": "original",
+          "t3/computerImageRole": "detail",
+          "t3/computerDetailId": "composer",
+          "t3/computerDetailPurpose": "Read the draft.",
+        },
+      });
+    }).pipe(Effect.provide(layer)),
+);
+
+it.effect("retains temporal ordering and roles for overview and detail images", () =>
+  Effect.gen(function* () {
+    yield* serve({
+      ok: true,
+      result: {
+        actionResults: [],
+        temporalSequence: {
+          requestedFrameCount: 2,
+          capturedFrameCount: 2,
+          intervalMs: 100,
+          elapsedMs: 100,
+          frames: [0, 1].map((index) => ({
+            index,
+            elapsedMs: index * 100,
+            capturedAt: "1970-01-01T00:00:00.000Z",
+            snapshot: detailedSnapshot(),
+          })),
+        },
+      },
+    });
+    const result = yield* call("computer_act", {
+      actions: [{ type: "press", key: "Space" }],
+      observation: false,
+      temporalObservation: {
+        frameCount: 2,
+        intervalMs: 100,
+        detailScreenshots: [{ id: "composer" }, { id: "unchanged" }],
+      },
+    });
+    expect(result.isError).toBe(false);
+    expect(JSON.stringify(result.structuredContent)).not.toContain('"data"');
+    expect(
+      result.content.filter((item) => item.type === "image").map((item) => item._meta),
+    ).toEqual(
+      [0, 1].flatMap((index) => [
+        {
+          "codex/imageDetail": "original",
+          "t3/computerImageRole": "overview",
+          "t3/temporalFrameIndex": index,
+          "t3/temporalElapsedMs": index * 100,
+        },
+        {
+          "codex/imageDetail": "original",
+          "t3/computerImageRole": "detail",
+          "t3/computerDetailId": "composer",
+          "t3/computerDetailPurpose": "Read the draft.",
+          "t3/temporalFrameIndex": index,
+          "t3/temporalElapsedMs": index * 100,
+        },
+      ]),
+    );
   }).pipe(Effect.provide(layer)),
 );

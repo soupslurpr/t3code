@@ -18,6 +18,7 @@ vi.mock("electron", () => ({ nativeImage, screen }));
 
 import * as GnomeRemoteDesktop from "./GnomeRemoteDesktop.ts";
 import * as ComputerUse from "./ComputerUse.ts";
+import { renderComputerScreenshot } from "./ComputerScreenshotEncoding.ts";
 
 const display = {
   id: 7,
@@ -586,6 +587,191 @@ describe("ComputerUse", () => {
         },
         { operation: "click", input: { button: "left", count: 1 } },
       ]);
+    }),
+  );
+
+  it.effect("derives overview and detail frames from one native capture", () =>
+    Effect.gen(function* () {
+      const records: Array<InputRecord> = [];
+      let decodeCount = 0;
+      let encodeCount = 0;
+      const sourceImage = makeImage(1_600, 1_200);
+      const computer = yield* ComputerUse.makeWithOptions(
+        makePlatform({
+          decode: () => {
+            decodeCount += 1;
+            return sourceImage;
+          },
+          encode: async () => {
+            encodeCount += 1;
+            return {
+              state: "image" as const,
+              contentHash,
+              data: Buffer.from([1, 2, 3]),
+              mimeType: "image/webp",
+              encoding: { format: "webp" as const, mode: "lossless" as const },
+            };
+          },
+        }),
+        makeController(records),
+      );
+
+      const snapshot = yield* computer.snapshot({
+        includeAccessibility: false,
+        screenshot: { maxWidth: 400, maxHeight: 300 },
+        detailScreenshots: [
+          {
+            id: "toolbar",
+            purpose: "Inspect toolbar controls.",
+            region: {
+              coordinateSpace: "desktop-logical",
+              displayId: "7",
+              x: 0,
+              y: 100,
+              width: 200,
+              height: 100,
+            },
+            maxWidth: 400,
+            maxHeight: 200,
+          },
+        ],
+      });
+
+      assert.equal(records.filter(({ operation }) => operation === "snapshot").length, 1);
+      assert.equal(decodeCount, 1);
+      assert.equal(encodeCount, 2);
+      assert.deepInclude(snapshot.frame, {
+        id: "frame-1",
+        width: 400,
+        height: 300,
+        toDesktopLogical: { scaleX: 2, scaleY: 2, offsetX: -100, offsetY: 50 },
+      });
+      assert.deepInclude(snapshot.detailScreenshots?.[0], {
+        id: "toolbar",
+        purpose: "Inspect toolbar controls.",
+      });
+      assert.deepInclude(snapshot.detailScreenshots?.[0]?.frame, {
+        id: "frame-2",
+        width: 400,
+        height: 200,
+        toDesktopLogical: { scaleX: 0.5, scaleY: 0.5, offsetX: 0, offsetY: 100 },
+      });
+
+      records.length = 0;
+      yield* computer.act({
+        actions: [{ type: "click", frameId: "frame-2", x: 200, y: 100 }],
+      });
+      assert.deepEqual(records, [
+        { operation: "start" },
+        {
+          operation: "move",
+          input: {
+            x: 100,
+            y: 150,
+            durationMs: 0,
+            displayBounds: display.bounds,
+            streamSize: { width: 1600, height: 1200 },
+          },
+        },
+        { operation: "click", input: { button: "left", count: 1 } },
+      ]);
+    }),
+  );
+
+  it.effect("rejects mixed displays before taking a native capture", () =>
+    Effect.gen(function* () {
+      const records: InputRecord[] = [];
+      const computer = yield* ComputerUse.makeWithOptions(
+        makePlatform({ displays: [display, { ...display, id: 8 }] }),
+        makeController(records),
+      );
+      const failure = yield* computer
+        .snapshot({
+          detailScreenshots: [
+            {
+              id: "other",
+              region: {
+                coordinateSpace: "desktop-logical",
+                displayId: "8",
+                x: 0,
+                y: 100,
+                width: 100,
+                height: 100,
+              },
+            },
+          ],
+        })
+        .pipe(Effect.flip);
+      assert.strictEqual(failure._tag, "ComputerUseMixedDisplayCaptureError");
+      assert.include(ComputerUse.toComputerAutomationFailure(failure), {
+        code: "invalid-action",
+        field: "detailScreenshots[0].region",
+      });
+      assert.deepEqual(records, []);
+    }),
+  );
+
+  it.effect("compares each detail independently while retaining fresh actionable frames", () =>
+    Effect.gen(function* () {
+      const records: InputRecord[] = [];
+      const computer = yield* ComputerUse.makeWithOptions(
+        makePlatform({ encode: renderComputerScreenshot }),
+        makeController(records),
+      );
+      const detail = {
+        id: "detail",
+        maxWidth: 100,
+        maxHeight: 100,
+        region: {
+          coordinateSpace: "desktop-logical" as const,
+          displayId: "7",
+          x: 0,
+          y: 100,
+          width: 100,
+          height: 100,
+        },
+      };
+      const first = yield* computer.snapshot({
+        includeAccessibility: false,
+        screenshot: false,
+        detailScreenshots: [detail],
+      });
+      const prior = first.detailScreenshots![0]!;
+      const second = yield* computer.snapshot({
+        includeAccessibility: false,
+        screenshot: false,
+        detailScreenshots: [
+          { ...detail, unchangedIfContentHash: prior.screenshot.contentHash },
+          {
+            ...detail,
+            id: "png",
+            encoding: { format: "png" },
+            unchangedIfContentHash: prior.screenshot.contentHash,
+          },
+          {
+            ...detail,
+            id: "moved",
+            region: { ...detail.region, x: 1 },
+            unchangedIfContentHash: prior.screenshot.contentHash,
+          },
+        ],
+      });
+      assert.isUndefined(second.frame);
+      assert.isUndefined(second.screenshot);
+      assert.deepEqual(
+        second.detailScreenshots!.map((item) => item.screenshot.state),
+        ["unchanged", "image", "image"],
+      );
+      assert.notEqual(second.detailScreenshots![0]!.frame.id, prior.frame.id);
+      assert.equal(records.filter((item) => item.operation === "snapshot").length, 2);
+      records.length = 0;
+      yield* computer.act({
+        actions: [{ type: "click", frameId: second.detailScreenshots![0]!.frame.id, x: 50, y: 50 }],
+      });
+      assert.deepInclude(records.find((item) => item.operation === "move")?.input, {
+        x: 50,
+        y: 150,
+      });
     }),
   );
 
