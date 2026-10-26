@@ -2,6 +2,7 @@ import { expect, it } from "@effect/vitest";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import {
   EnvironmentId,
+  SERVER_BROWSER_AUTOMATION_CLIENT_ID,
   ProviderInstanceId,
   ThreadId,
   type PreviewAutomationHost,
@@ -33,13 +34,25 @@ const layer = PreviewAutomationBroker.layer.pipe(Layer.provide(NodeServices.laye
 const serve = Effect.fn("ForkBrokerTest.serve")(function* (
   host: PreviewAutomationHost,
   answer?: Pick<PreviewAutomationResponse, "ok" | "result" | "error">,
+  options?: { readonly focused?: boolean; readonly preferred?: boolean },
 ) {
   const broker = yield* PreviewAutomationBroker.PreviewAutomationBroker;
   const connected = yield* Deferred.make<void>();
   const received: PreviewAutomationRequest[] = [];
-  const events = yield* broker.connect(host);
+  const events = yield* broker.connect(host, options);
   yield* Stream.runForEach(events, (event) => {
-    if (event.type === "connected") return Deferred.succeed(connected, undefined);
+    if (event.type === "connected") {
+      return (
+        options?.focused
+          ? broker.focusHost({
+              clientId: host.clientId,
+              environmentId: host.environmentId,
+              connectionId: event.connectionId,
+              focused: true,
+            })
+          : Effect.void
+      ).pipe(Effect.andThen(Deferred.succeed(connected, undefined)));
+    }
     received.push(event.request);
     return broker.respond({
       clientId: host.clientId,
@@ -192,4 +205,72 @@ it.effect("retains structured Agent desktop timeout diagnostics at the broker bo
     expect(error).toMatchObject({ computerFailure: failure });
     expect(error.message).toBe(failure.message);
   }).pipe(Effect.provide(layer)),
+);
+
+it.effect("keeps focused user, primary Agent and server browser hosts independent", () =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      const broker = yield* PreviewAutomationBroker.PreviewAutomationBroker;
+      const browser = yield* serve(
+        {
+          clientId: SERVER_BROWSER_AUTOMATION_CLIENT_ID,
+          environmentId,
+          supportedOperations: ["open", "snapshot"],
+        },
+        undefined,
+        { preferred: true },
+      );
+      const user = yield* serve(
+        {
+          clientId: "focused-user",
+          environmentId,
+          supportedOperations: ["computerRequestControl", "computerAct"],
+          computerDesktopKinds: ["user"],
+        },
+        undefined,
+        { focused: true },
+      );
+      const agent = yield* serve({
+        clientId: "primary-agent",
+        environmentId,
+        supportedOperations: ["agentDesktopList", "computerRequestControl", "computerAct"],
+        computerDesktopKinds: ["user", "agent"],
+      });
+      expect(
+        yield* broker.invoke({
+          scope,
+          operation: "computerRequestControl",
+          input: { desktop: { kind: "user" } },
+        }),
+      ).toBe("focused-user");
+      expect(yield* broker.invoke({ scope, operation: "agentDesktopList", input: {} })).toBe(
+        "primary-agent",
+      );
+      expect(yield* broker.invoke({ scope, operation: "open", input: {} })).toBe(
+        SERVER_BROWSER_AUTOMATION_CLIENT_ID,
+      );
+      expect(
+        yield* broker.invoke({
+          scope,
+          operation: "computerAct",
+          input: { desktop: { kind: "agent", desktopId: "agent-one" }, actions: [] },
+        }),
+      ).toBe("primary-agent");
+      expect(
+        yield* broker.invoke({ scope, operation: "computerAct", input: { actions: [] } }),
+      ).toBe("focused-user");
+      expect(yield* broker.invoke({ scope, operation: "snapshot", input: {} })).toBe(
+        SERVER_BROWSER_AUTOMATION_CLIENT_ID,
+      );
+      expect(user.map((request) => request.operation)).toEqual([
+        "computerRequestControl",
+        "computerAct",
+      ]);
+      expect(agent.map((request) => request.operation)).toEqual([
+        "agentDesktopList",
+        "computerAct",
+      ]);
+      expect(browser.map((request) => request.operation)).toEqual(["open", "snapshot"]);
+    }),
+  ).pipe(Effect.provide(layer)),
 );

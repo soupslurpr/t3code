@@ -32,6 +32,7 @@ import { environmentSession } from "~/state/session";
 import * as Option from "effect/Option";
 import { resolveAgentDesktopTransferUrl } from "./agentDesktopTransferUrl";
 import { useEnvironments } from "~/state/environments";
+import { primaryEnvironmentIdAtom } from "~/state/primaryEnvironment";
 import { previewEnvironment } from "~/state/preview";
 import { useEnvironmentsWithScope } from "~/state/session";
 
@@ -189,6 +190,7 @@ const computerHostAtom = Atom.family((environmentId: EnvironmentId) =>
         environmentId,
         ...previewAutomationHostCapabilities({
           computerAvailable: true,
+          primaryEnvironment: environmentId === get(primaryEnvironmentIdAtom),
           agentDesktopAvailable: window.desktopBridge?.agentDesktop !== undefined,
         }),
       },
