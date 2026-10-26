@@ -108,6 +108,13 @@ The selected evaluator reports visible facts; the agent that owns the task choos
 Watches skip compression and image transfer when an exact fingerprint matches. Changed samples remain
 complete standalone images. Fingerprints include the crop, display, and encoding, so
 changing those settings always produces new image bytes.
+Starting a watch returns the exact images T3 Code captured as that revision's baseline, rather than
+assuming an earlier screenshot is still current. The owning agent can therefore catch a transient,
+wrong window, or late UI change and immediately rebaseline before it leaves the task unattended.
+Updates return their new baselines in the same way. When the agent already holds an image with the
+same exact region fingerprint, it can request metadata-only confirmation instead of receiving the
+same bytes again; it can also omit baseline images when direct review is unnecessary.
+
 Reviews leave the watch active. Each revision replaces its baselines and clears its metrics, while a
 stale update is rejected. Retained evidence is bounded and is not a continuous recording.
 

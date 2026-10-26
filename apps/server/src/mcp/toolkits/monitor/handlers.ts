@@ -13,7 +13,16 @@ const handlers = {
         thread: { threadId },
       } = yield* McpInvocationContext.requireThreadMcpCapability("computer");
       const service = yield* ThreadMonitorService;
-      return yield* service.createComputer({ threadId, monitor });
+      const result = yield* service.createComputer({ threadId, monitor });
+      const scope = yield* McpInvocationContext.requireThreadMcpCapability("computer");
+      const observations = yield* ComputerObservationStore.ComputerObservationStore;
+      yield* observations.publishWatchRevision({
+        environmentId: scope.environmentId,
+        threadId,
+        instanceId: scope.thread.providerInstanceId,
+        result,
+      });
+      return result;
     }),
   ),
   computer_watch_capabilities: McpToolAccess.reads(() =>
@@ -47,7 +56,16 @@ const handlers = {
         thread: { threadId },
       } = yield* McpInvocationContext.requireThreadMcpCapability("computer");
       const service = yield* ThreadMonitorService;
-      return yield* service.updateComputer({ threadId, update });
+      const result = yield* service.updateComputer({ threadId, update });
+      const scope = yield* McpInvocationContext.requireThreadMcpCapability("computer");
+      const observations = yield* ComputerObservationStore.ComputerObservationStore;
+      yield* observations.publishWatchRevision({
+        environmentId: scope.environmentId,
+        threadId,
+        instanceId: scope.thread.providerInstanceId,
+        result,
+      });
+      return result;
     }),
   ),
   monitor_start: McpToolAccess.actsAsCaller((monitor) =>
@@ -104,11 +122,14 @@ const handlers = {
 
 export const MonitorToolkitHandlersLive = McpToolAccess.toLayer(MonitorToolkit, handlers);
 
-const { computer_watch_inspect, ...standardHandlers } = handlers;
+const { computer_watch_start, computer_watch_inspect, computer_watch_update, ...standardHandlers } =
+  handlers;
 export const MonitorStandardToolkitHandlersLive = McpToolAccess.toLayer(
   MonitorStandardToolkit,
   standardHandlers,
 );
 export const MonitorImageToolkitHandlersLive = McpToolAccess.toLayer(MonitorImageToolkit, {
+  computer_watch_start,
   computer_watch_inspect,
+  computer_watch_update,
 });

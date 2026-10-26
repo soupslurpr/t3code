@@ -7,6 +7,8 @@ import {
   MessageId,
   ProviderInstanceId,
   ThreadId,
+  ThreadMonitorId,
+  type ThreadMonitor,
 } from "@t3tools/contracts";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
@@ -348,4 +350,200 @@ it.effect("keeps watch capabilities independent of browser permission and honors
     }
     assert.isFalse((yield* call("computer_watch_capabilities", {}, allowed)).isError);
   }).pipe(Effect.provide(layer)),
+);
+
+/** Creates one stable active computer-watch fixture. */
+function computerWatchMonitor(ownerThreadId: ThreadId, monitorId: ThreadMonitorId): ThreadMonitor {
+  return {
+    id: monitorId,
+    threadId: ownerThreadId,
+    label: "Inspect screen",
+    condition: {
+      type: "computer",
+      revision: 1,
+      desktop: { kind: "user" },
+      observation: {
+        regions: [
+          {
+            id: "screen",
+            role: "trigger",
+            purpose: null,
+            region: {
+              coordinateSpace: "desktop-logical",
+              displayId: "7",
+              x: 0,
+              y: 0,
+              width: 800,
+              height: 600,
+            },
+            maxWidth: 800,
+            maxHeight: 600,
+            encoding: { format: "webp", mode: "lossless" },
+            baselineHash: "sha256-bgra8-v2:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+            lastSampleHash: "sha256-bgra8-v2:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+            baselineStored: true,
+            sampleCount: 0,
+            changedSampleCount: 0,
+            unchangedSampleCount: 0,
+            lastCapturedAt: null,
+            lastChangedAt: null,
+          },
+        ],
+      },
+      match: { type: "image-change" },
+      sampling: {
+        intervalMs: 30_000,
+        minEvaluationIntervalMs: null,
+        evaluateOnlyAfterChange: true,
+      },
+      review: {
+        policy: null,
+        state: "idle",
+        reason: null,
+        sequence: 0,
+        requestedAt: null,
+        deliveredAt: null,
+        deliveryAttempts: 0,
+        deliveryRetryAt: null,
+        deliveryFailureCount: 0,
+      },
+      deadlineAt: null,
+      nextCheckAt: "2026-08-14T00:01:00.000Z",
+      lastCheckedAt: null,
+      lastEvaluatedAt: null,
+      lastEvaluationDurationMs: null,
+      totalEvaluationDurationMs: 0,
+      evaluationPending: false,
+      lastVerdict: null,
+      lastSummary: null,
+      lastUsage: null,
+      totalUsage: {
+        inputTokens: null,
+        cachedInputTokens: null,
+        cacheWriteInputTokens: null,
+        outputTokens: null,
+      },
+      sampleCount: 0,
+      evaluationCount: 0,
+      uncertainEvaluationCount: 0,
+      consecutiveUncertain: 0,
+      consecutiveFailures: 0,
+      observationError: null,
+      resourceState: "viewing",
+    },
+    continuation: { mode: "record-only" },
+    status: "active",
+    trigger: null,
+    createdAt: "2026-08-14T00:00:00.000Z",
+    updatedAt: "2026-08-14T00:00:00.000Z",
+    triggeredAt: null,
+    deliveredAt: null,
+    cancelledAt: null,
+    lastError: null,
+    deliveryAttempts: 0,
+    deliveryGroupId: null,
+    deliveryRetryAt: null,
+    deliveryFailureCount: 0,
+  };
+}
+
+const watchImage = {
+  id: "baseline:screen",
+  regionId: "screen",
+  capturedAt: "2026-08-14T00:00:00.000Z",
+  width: 800,
+  height: 600,
+  mimeType: "image/webp" as const,
+  dataBase64: Buffer.from("watch-image").toString("base64"),
+  sizeBytes: Buffer.byteLength("watch-image"),
+  encoding: { format: "webp" as const, mode: "lossless" as const },
+};
+
+it.effect("delivers exact start/update baselines once and retains caller guards", () =>
+  Effect.gen(function* () {
+    yield* MonitorTestkit.seedThread();
+    yield* (yield* OrchestratorV2).dispatch({
+      type: "message.dispatch",
+      commandId: CommandId.make("baseline-active"),
+      threadId: MonitorTestkit.threadId,
+      messageId: MessageId.make("baseline-active"),
+      text: "Watch",
+      attachments: [],
+      createdBy: "user",
+      creationSource: "web",
+      dispatchMode: { type: "queue_after_active" },
+    });
+    const service = yield* ThreadMonitorService;
+    const monitor = computerWatchMonitor(
+      MonitorTestkit.threadId,
+      ThreadMonitorId.make("baseline-watch"),
+    );
+    let calls = 0;
+    const revision = (number: number) =>
+      Effect.sync(() => {
+        calls += 1;
+        if (monitor.condition.type !== "computer") throw new Error("Computer fixture required");
+        return {
+          monitor: { ...monitor, condition: { ...monitor.condition, revision: number } },
+          revision: number,
+          baselineObservation: {
+            images: [
+              {
+                ...watchImage,
+                state: "image" as const,
+                contentHash: monitor.condition.observation.regions[0]!.baselineHash,
+              },
+            ],
+          },
+        };
+      });
+    const registration = McpHttpServer.MonitorToolkitRegistrationLive.pipe(
+      Layer.provide(
+        Layer.succeed(ThreadMonitorService, {
+          ...service,
+          createComputer: () => revision(1),
+          updateComputer: () => revision(2),
+        }),
+      ),
+      Layer.provideMerge(ComputerObservationStore.layer),
+      Layer.provideMerge(McpServer.McpServer.layer),
+    );
+    yield* Effect.gen(function* () {
+      const scope = { ...invocation, capabilities: new Set(["computer" as const]) };
+      const input = { label: "Watch", desktop: { kind: "user" }, match: { type: "image-change" } };
+      for (const invalid of [
+        invocation,
+        { ...scope, thread: undefined },
+        {
+          ...scope,
+          client: { sessionId: "reader", label: "Reader", access: "read-only" as const },
+        },
+      ]) {
+        assert.isTrue((yield* call("computer_watch_start", input, invalid)).isError);
+      }
+      assert.equal(calls, 0);
+      for (const [name, args] of [
+        ["computer_watch_start", input],
+        [
+          "computer_watch_update",
+          { monitorId: monitor.id, expectedRevision: 1, baselineObservation: {} },
+        ],
+      ] as const) {
+        const result = yield* call(name, args, scope);
+        assert.isFalse(result.isError);
+        assert.notInclude(JSON.stringify(result.structuredContent), "dataBase64");
+        assert.notInclude(
+          JSON.stringify(result.content.filter((item) => item.type === "text")),
+          watchImage.dataBase64,
+        );
+        const images = result.content.filter((item) => item.type === "image");
+        assert.deepEqual(
+          images.map((item) => Buffer.from(item.data).toString()),
+          ["watch-image"],
+        );
+        assert.equal(images[0]?._meta?.["t3/computerWatchImageKind"], "baseline");
+      }
+      assert.equal(calls, 2);
+    }).pipe(Effect.provide(registration));
+  }).pipe(Effect.provide(MonitorTestkit.layer)),
 );

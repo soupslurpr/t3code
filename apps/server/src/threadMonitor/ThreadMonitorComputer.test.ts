@@ -369,6 +369,7 @@ describe("durable computer adapter", () => {
           height: 51,
         });
         assert.equal(prepared.baselineImages[0]?.dataBase64, png("initial"));
+        assert.deepEqual(prepared.capturedBaselineImages, prepared.baselineImages);
         assert.equal(h.calls[0]?.scope.thread.providerSessionId, "thread-monitor:watch");
         assert.equal(h.calls[0]?.scope.thread.threadId, Testkit.threadId);
         assert.equal(h.calls[0]?.scope.requestNamespace, "thread-monitor:watch");
@@ -567,7 +568,7 @@ it.effect(
         Effect.provideService(ThreadMonitorComputerService, h.service),
       );
       const repository = yield* Repository.ThreadMonitorRepository;
-      const first = yield* service.createComputer({
+      const { monitor: first } = yield* service.createComputer({
         threadId: Testkit.threadId,
         monitor: modelWatch,
       });
@@ -593,12 +594,12 @@ it.effect(
       const terminalEvidence = Option.getOrThrow(yield* repository.getComputerEvidence(first.id));
       assert.equal(terminalEvidence.baselineImages[0]?.dataBase64, png("initial"));
       assert.equal(terminalEvidence.terminalImages[0]?.dataBase64, png("changed"));
-      const pending = yield* service.createComputer({
+      const { monitor: pending } = yield* service.createComputer({
         threadId: Testkit.threadId,
         monitor: modelWatch,
       });
       yield* service.cancel({ threadId: Testkit.threadId, cancel: { monitorId: pending.id } });
-      const deadline = yield* service.createComputer({
+      const { monitor: deadline } = yield* service.createComputer({
         threadId: Testkit.threadId,
         monitor: {
           ...modelWatch,
@@ -613,7 +614,7 @@ it.effect(
       })).monitors[0]!;
       assert.equal(expired.trigger?.reason, "deadline");
       assert.equal(h.calls.filter((call) => call.operation === "computerRelease").length, 3);
-      const interrupted = yield* service.createComputer({
+      const { monitor: interrupted } = yield* service.createComputer({
         threadId: Testkit.threadId,
         monitor: modelWatch,
       });
@@ -646,7 +647,7 @@ it.effect("keeps degraded capture retries durable and cleans up a failed baselin
       Effect.provideService(ThreadMonitorComputerService, h.service),
     );
     const repository = yield* Repository.ThreadMonitorRepository;
-    const first = yield* service.createComputer({
+    const { monitor: first } = yield* service.createComputer({
       threadId: Testkit.threadId,
       monitor: modelWatch,
     });
@@ -765,7 +766,7 @@ it.effect("releases an active watch after V2 deletion removes its owner", () =>
             .pipe(Effect.tap(() => Deferred.succeed(retired, undefined))),
       }),
     );
-    const monitor = yield* service.createComputer({
+    const { monitor } = yield* service.createComputer({
       threadId: Testkit.threadId,
       monitor: modelWatch,
     });
@@ -802,7 +803,7 @@ it.effect(
         const service = yield* ThreadMonitorService.make.pipe(
           Effect.provideService(ThreadMonitorComputerService, h.service),
         );
-        const monitor = yield* service.createComputer({
+        const { monitor } = yield* service.createComputer({
           threadId: Testkit.threadId,
           monitor: {
             ...modelWatch,
@@ -866,7 +867,7 @@ it.effect(
       const service = yield* ThreadMonitorService.make.pipe(
         Effect.provideService(ThreadMonitorComputerService, h.service),
       );
-      const monitor = yield* service.createComputer({
+      const { monitor } = yield* service.createComputer({
         threadId: Testkit.threadId,
         monitor: {
           ...modelWatch,
@@ -1065,7 +1066,7 @@ it.effect(
       );
       const repository = yield* Repository.ThreadMonitorRepository;
       const sql = yield* SqlClient.SqlClient;
-      const monitor = yield* service.createComputer({
+      const { monitor } = yield* service.createComputer({
         threadId: Testkit.threadId,
         monitor: { ...modelWatch, review: { afterEvaluations: 5 } },
       });
@@ -1157,7 +1158,7 @@ it.effect(
         ],
       );
       assert.deepEqual(after.currentImages, []);
-      const restored = yield* service.updateComputer({
+      const { monitor: restored } = yield* service.updateComputer({
         threadId: Testkit.threadId,
         update: { monitorId: monitor.id, expectedRevision: 2, review: { afterEvaluations: 3 } },
       });
@@ -1212,7 +1213,7 @@ it.effect(
       );
       const repository = yield* Repository.ThreadMonitorRepository;
       const projections = yield* ProjectionStoreV2;
-      const monitor = yield* service.createComputer({
+      const { monitor } = yield* service.createComputer({
         threadId: Testkit.threadId,
         monitor: { ...modelWatch, review: { consecutiveUncertain: 1 } },
       });
@@ -1262,7 +1263,7 @@ it.effect(
         (yield* projections.getThreadRecords(Testkit.threadId, ["messages"])).messages,
         1,
       );
-      const revised = yield* restarted.updateComputer({
+      const { monitor: revised } = yield* restarted.updateComputer({
         threadId: Testkit.threadId,
         update: { monitorId: monitor.id, expectedRevision: 1, acknowledgeReview: true },
       });
@@ -1289,7 +1290,7 @@ it.effect(
       const service = yield* ThreadMonitorService.make.pipe(
         Effect.provideService(ThreadMonitorComputerService, h.service),
       );
-      const monitor = yield* service.createComputer({
+      const { monitor } = yield* service.createComputer({
         threadId: Testkit.threadId,
         monitor: { ...modelWatch, review: { at: "1970-01-01T00:00:01.000Z" } },
       });
@@ -1347,7 +1348,7 @@ it.effect("warns once on default capture degradation and resumes healthy samplin
       Effect.provideService(ThreadMonitorComputerService, h.service),
     );
     const projections = yield* ProjectionStoreV2;
-    const monitor = yield* service.createComputer({
+    const { monitor } = yield* service.createComputer({
       threadId: Testkit.threadId,
       monitor: modelWatch,
     });
@@ -1406,11 +1407,11 @@ it.effect.each([null, { consecutiveFailures: null }])(
         Effect.provideService(ThreadMonitorComputerService, h.service),
       );
       const projections = yield* ProjectionStoreV2;
-      const monitor = yield* service.createComputer({
+      const { monitor } = yield* service.createComputer({
         threadId: Testkit.threadId,
         monitor: { ...modelWatch, review },
       });
-      const revised = yield* service.updateComputer({
+      const { monitor: revised } = yield* service.updateComputer({
         threadId: Testkit.threadId,
         update: {
           monitorId: monitor.id,
@@ -1436,7 +1437,7 @@ it.effect.each([null, { consecutiveFailures: null }])(
         0,
       );
       h.state.captureFails = false;
-      const restored = yield* service.updateComputer({
+      const { monitor: restored } = yield* service.updateComputer({
         threadId: Testkit.threadId,
         update: {
           monitorId: monitor.id,
@@ -1449,7 +1450,7 @@ it.effect.each([null, { consecutiveFailures: null }])(
           restored.condition.review.policy?.consecutiveFailures,
         1,
       );
-      const disabled = yield* service.updateComputer({
+      const { monitor: disabled } = yield* service.updateComputer({
         threadId: Testkit.threadId,
         update: { monitorId: monitor.id, expectedRevision: 3, review: null },
       });
@@ -1468,7 +1469,7 @@ it.effect.each(["a".repeat(64), "sha256-bgra8-v1:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA
         Effect.provideService(ThreadMonitorComputerService, h.service),
       );
       const repository = yield* Repository.ThreadMonitorRepository;
-      const first = yield* service.createComputer({
+      const { monitor: first } = yield* service.createComputer({
         threadId: Testkit.threadId,
         monitor: { ...modelWatch, match: { type: "image-change" }, continuation: "resume-thread" },
       });
@@ -1654,7 +1655,7 @@ it.effect(
       const service = yield* ThreadMonitorService.make.pipe(
         Effect.provideService(ThreadMonitorComputerService, h.service),
       );
-      const monitor = yield* service.createComputer({
+      const { monitor } = yield* service.createComputer({
         threadId: Testkit.threadId,
         monitor: {
           ...modelWatch,
@@ -1698,4 +1699,88 @@ it.effect(
         });
       }
     }).pipe(Effect.provide(Layer.merge(Testkit.layer, NodeServices.layer))),
+);
+
+it.effect("returns atomic revision baselines independently of retained evaluator evidence", () =>
+  Effect.gen(function* () {
+    yield* Testkit.seedThread();
+    const h = yield* harness();
+    const service = yield* ThreadMonitorService.make.pipe(
+      Effect.provideService(ThreadMonitorComputerService, h.service),
+    );
+    const created = yield* service.createComputer({
+      threadId: Testkit.threadId,
+      monitor: {
+        ...modelWatch,
+        observation: {
+          regions: [
+            {
+              id: "screen",
+              role: "trigger",
+              region: {
+                coordinateSpace: "desktop-logical",
+                displayId: "left",
+                x: -200,
+                y: 50,
+                width: 100,
+                height: 50,
+              },
+            },
+          ],
+        },
+        match: {
+          ...modelWatch.match,
+          type: "model",
+          criterion: "Complete",
+          modelSelection,
+          baseline: "none",
+        },
+      },
+    });
+    const initial = created.baselineObservation?.images[0];
+    assert.equal(initial?.state === "image" && initial.dataBase64, png("initial"));
+    const repository = yield* Repository.ThreadMonitorRepository;
+    assert.deepEqual(
+      Option.getOrThrow(yield* repository.getComputerEvidence(created.monitor.id)).baselineImages,
+      [],
+    );
+    const captureCount = () =>
+      h.calls.filter((call) => call.operation === "computerSnapshot").length;
+    assert.equal(captureCount(), 1);
+    const unchanged = yield* service.updateComputer({
+      threadId: Testkit.threadId,
+      update: {
+        monitorId: created.monitor.id,
+        expectedRevision: 1,
+        baselineObservation: {
+          unchangedIfContentHashes: [{ regionId: "screen", contentHash: initial!.contentHash }],
+        },
+      },
+    });
+    assert.equal(unchanged.revision, 2);
+    assert.equal(unchanged.baselineObservation?.images[0]?.state, "unchanged");
+    assert.notProperty(unchanged.baselineObservation?.images[0], "dataBase64");
+    assert.equal(captureCount(), 2);
+    h.state.pixels = "replacement";
+    const changed = yield* service.updateComputer({
+      threadId: Testkit.threadId,
+      update: {
+        monitorId: created.monitor.id,
+        expectedRevision: 2,
+        baselineObservation: {
+          unchangedIfContentHashes: [{ regionId: "screen", contentHash: initial!.contentHash }],
+        },
+      },
+    });
+    const image = changed.baselineObservation?.images[0];
+    assert.equal(image?.state === "image" && image.dataBase64, png("replacement"));
+    assert.equal(captureCount(), 3);
+    const omitted = yield* service.updateComputer({
+      threadId: Testkit.threadId,
+      update: { monitorId: created.monitor.id, expectedRevision: 3, baselineObservation: false },
+    });
+    assert.isNull(omitted.baselineObservation);
+    assert.equal(omitted.revision, 4);
+    assert.equal(captureCount(), 4);
+  }).pipe(Effect.provide(Layer.merge(Testkit.layer, NodeServices.layer))),
 );

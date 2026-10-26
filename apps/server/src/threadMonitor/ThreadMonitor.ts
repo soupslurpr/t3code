@@ -12,8 +12,10 @@ import {
   ThreadMonitorId,
   type ThreadId,
   type ThreadMonitor,
+  type ThreadMonitorComputerBaselineObservationInput,
   type ThreadMonitorComputerCondition,
   type ThreadMonitorComputerEvidenceImage,
+  type ThreadMonitorComputerRevisionResult,
   type ThreadMonitorCondition,
   type ThreadMonitorStartInput,
   type ThreadMonitorTrigger,
@@ -71,6 +73,56 @@ function previousComputerImages(
     frameIndex: null,
     elapsedMs: null,
   }));
+}
+
+/** Returns the exact baseline captured for a new watch revision without duplicate known bytes. */
+function computerRevisionResult(
+  monitor: ThreadMonitor,
+  images: ReadonlyArray<ThreadMonitorComputerEvidenceImage>,
+  observation: ThreadMonitorComputerBaselineObservationInput | undefined,
+): ThreadMonitorComputerRevisionResult {
+  if (monitor.condition.type !== "computer") {
+    throw new Error("computer revision result requires a computer monitor");
+  }
+  if (observation === false) {
+    return {
+      monitor,
+      revision: monitor.condition.revision,
+      baselineObservation: null,
+    };
+  }
+  const knownHashes = new Map(
+    observation?.unchangedIfContentHashes?.map(({ regionId, contentHash }) => [
+      regionId,
+      contentHash,
+    ]),
+  );
+  return {
+    monitor,
+    revision: monitor.condition.revision,
+    baselineObservation: {
+      images: images.map((image) => {
+        const metadata = {
+          id: image.id,
+          regionId: image.regionId,
+          capturedAt: image.capturedAt,
+          contentHash: image.hash,
+          width: image.width,
+          height: image.height,
+        };
+        return knownHashes.get(image.regionId) === image.hash
+          ? { state: "unchanged" as const, ...metadata }
+          : {
+              state: "image" as const,
+              ...metadata,
+              mimeType: image.mimeType,
+              dataBase64: image.dataBase64,
+              sizeBytes: image.sizeBytes,
+              encoding: image.encoding,
+            };
+      }),
+    },
+  };
 }
 
 /** Returns the timestamp that can trigger a monitor without an external signal. */
@@ -987,7 +1039,11 @@ export const make = Effect.gen(function* () {
                 .pipe(Effect.mapError(mapPersistenceError("computer-start", monitor.id)));
               yield* appendActivity(monitor, "started", `Monitoring screen: ${monitor.label}`);
               yield* wake;
-              return monitor;
+              return computerRevisionResult(
+                monitor,
+                prepared.capturedBaselineImages,
+                input.baselineObservation,
+              );
             }),
           ).pipe(
             Effect.onExit((exit) =>
@@ -1194,7 +1250,11 @@ export const make = Effect.gen(function* () {
       `Computer watch revised to revision ${prepared.condition.revision}: ${revised.label}`,
     );
     yield* wake;
-    return revised;
+    return computerRevisionResult(
+      revised,
+      prepared.capturedBaselineImages,
+      update.baselineObservation,
+    );
   }, mutex.withPermits(1));
 
   const status: ThreadMonitorServiceShape["status"] = Effect.fn("ThreadMonitor.status")(function* (
