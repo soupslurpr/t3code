@@ -12,6 +12,7 @@ import {
 const MonitorLabel = TrimmedNonEmptyString.check(Schema.isMaxLength(500));
 const MonitorPrompt = TrimmedNonEmptyString.check(Schema.isMaxLength(20_000));
 const MonitorResultSummary = TrimmedNonEmptyString.check(Schema.isMaxLength(2_000));
+const MonitorDeliveryGroupId = TrimmedNonEmptyString.check(Schema.isMaxLength(100));
 const MonitorEvidence = Schema.String.check(Schema.isMaxLength(20_000));
 
 export const ThreadMonitorScheduleInput = Schema.Union([
@@ -95,6 +96,9 @@ export const ThreadMonitor = Schema.Struct({
   cancelledAt: Schema.NullOr(IsoDateTime),
   lastError: Schema.NullOr(Schema.String.check(Schema.isMaxLength(4_000))),
   deliveryAttempts: NonNegativeInt,
+  deliveryGroupId: Schema.NullOr(MonitorDeliveryGroupId),
+  deliveryRetryAt: Schema.NullOr(IsoDateTime),
+  deliveryFailureCount: NonNegativeInt,
 });
 export type ThreadMonitor = typeof ThreadMonitor.Type;
 
@@ -148,7 +152,7 @@ export const ThreadMonitorSignalInput = Schema.Struct({
 export type ThreadMonitorSignalInput = typeof ThreadMonitorSignalInput.Type;
 
 export const ThreadMonitorCancelInput = Schema.Struct({
-  monitorId: ThreadMonitorId,
+  monitorId: Schema.optional(ThreadMonitorId),
 });
 export type ThreadMonitorCancelInput = typeof ThreadMonitorCancelInput.Type;
 

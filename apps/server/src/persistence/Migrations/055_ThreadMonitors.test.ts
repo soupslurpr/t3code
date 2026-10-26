@@ -35,7 +35,7 @@ it.effect.each([false, true])("creates F01 on fresh or current upstream: %s", (u
     }
     const before =
       yield* sql`SELECT monitor_id, condition_type, wake_at, resume_prompt FROM thread_monitors ORDER BY monitor_id`;
-    assert.deepEqual(yield* runMigrations(), []);
+    assert.deepEqual(yield* runMigrations({ toForkMigrationInclusive: 1 }), []);
     assert.deepEqual(
       yield* sql`SELECT monitor_id, condition_type, wake_at, resume_prompt FROM thread_monitors ORDER BY monitor_id`,
       before,

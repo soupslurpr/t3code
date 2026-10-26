@@ -34,6 +34,8 @@ const backgroundShell = (threadId: ThreadId, providerInstanceId: ProviderInstanc
     { taskId: "task:background", kind: "subagent" as const, providerInstanceId },
   ],
 });
+const deletedThreadId = ThreadId.make("thread:deleted");
+const deletedShell = liveThreadShell(deletedThreadId, { activeRunId: null });
 
 const shells = new Map([
   [supervisedThreadId, liveThreadShell(supervisedThreadId, { runtimeMode: "approval-required" })],
@@ -59,6 +61,7 @@ const shells = new Map([
       pendingBackgroundTasks: [{ taskId: "task:unknown", kind: "subagent" as const }],
     },
   ],
+  [deletedThreadId, { ...deletedShell, deletedAt: deletedShell.createdAt }],
 ]);
 
 const threadCaller = (threadId: ThreadId): McpInvocationContext.McpInvocationScope => ({
@@ -111,6 +114,7 @@ const ProbeToolkit = Toolkit.make(
   Tool.make("reads", probe),
   Tool.make("reads_as_caller", probe),
   Tool.make("acts_as_caller", probe),
+  Tool.make("completes_as_caller", probe),
   Tool.make("writes", probe),
   Tool.make("writes_with_capability", probe),
   Tool.make("writes_threads", {
@@ -131,6 +135,7 @@ const probeHandlers: McpToolAccess.Handlers<typeof ProbeToolkit.tools> = {
   reads: McpToolAccess.reads(() => ran),
   reads_as_caller: McpToolAccess.readsAsCaller(() => ran),
   acts_as_caller: McpToolAccess.actsAsCaller(() => ran),
+  completes_as_caller: McpToolAccess.completesAsCaller(() => ran),
   writes: McpToolAccess.writes(() => ran),
   writes_with_capability: McpToolAccess.writesWithCapability(() => ran),
   writes_threads: McpToolAccess.writesThreads(
@@ -176,6 +181,7 @@ export const refusedAtCompileTime = () => {
       reads: unchecked,
       reads_as_caller: unchecked,
       acts_as_caller: unchecked,
+      completes_as_caller: unchecked,
       writes: unchecked,
       writes_with_capability: unchecked,
       writes_threads: unchecked,
@@ -249,6 +255,24 @@ it.effect.each([
   ["acts_as_caller", archivedBackground, {}, "parent_not_active"],
   ["acts_as_caller", unknownOwnerBackground, {}, "parent_not_active"],
   ["acts_as_caller", fullAccessClient, {}, "thread_credential_required"],
+
+  // Existing durable work can complete after its turn or provider changes.
+  ["completes_as_caller", supervised, {}, "ran"],
+  ["completes_as_caller", ended, {}, "ran"],
+  [
+    "completes_as_caller",
+    {
+      ...ended,
+      thread: { ...ended.thread!, providerInstanceId: ProviderInstanceId.make("old-provider") },
+    },
+    {},
+    "ran",
+  ],
+  ["completes_as_caller", fullAccessClient, {}, "thread_credential_required"],
+  ["completes_as_caller", threadCaller(archivedThreadId), {}, "parent_not_active"],
+  ["completes_as_caller", threadCaller(deletedThreadId), {}, "thread_not_found"],
+  ["completes_as_caller", threadCaller(ThreadId.make("thread:missing")), {}, "thread_not_found"],
+  ["completes_as_caller", { ...ended, client: readOnlyClient.client }, {}, "capability_denied"],
 
   ["writes", supervised, {}, "ran"],
   ["writes", ended, {}, "parent_not_active"],

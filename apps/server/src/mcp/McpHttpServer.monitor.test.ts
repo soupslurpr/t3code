@@ -2,14 +2,18 @@ import { assert, it } from "@effect/vitest";
 import {
   CommandId,
   EnvironmentId,
+  EventId,
   MessageId,
   ProviderInstanceId,
   ThreadId,
 } from "@t3tools/contracts";
+import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import { McpSchema, McpServer } from "effect/ai";
 
+import { ProjectionStoreV2 } from "../orchestration-v2/ProjectionStore.ts";
+import { EventSinkV2 } from "../orchestration-v2/EventSink.ts";
 import { OrchestratorV2 } from "../orchestration-v2/Orchestrator.ts";
 import { ThreadMonitorService } from "../threadMonitor/ThreadMonitorService.ts";
 import * as MonitorTestkit from "../threadMonitor/ThreadMonitor.testkit.ts";
@@ -99,4 +103,89 @@ it.effect("enforces live, writable thread callers and hides foreign monitor stat
     });
     assert.equal(cancelled.monitors[0]?.status, "cancelled");
   }).pipe(Effect.provide(layer)),
+);
+
+it.effect(
+  "accepts owned signals after the turn ends and denies archived, foreign and read-only callers",
+  () =>
+    Effect.gen(function* () {
+      yield* MonitorTestkit.seedThread();
+      const threadId = MonitorTestkit.threadId;
+      const engine = yield* OrchestratorV2;
+      const service = yield* ThreadMonitorService;
+      const monitor = yield* service.create({
+        threadId,
+        monitor: { label: "Background result", schedule: { type: "signal" } },
+      });
+      yield* engine.dispatch({
+        type: "message.dispatch",
+        commandId: CommandId.make("ending"),
+        threadId,
+        messageId: MessageId.make("ending"),
+        text: "Set up background work",
+        attachments: [],
+        createdBy: "user",
+        creationSource: "web",
+        dispatchMode: { type: "queue_after_active" },
+      });
+      const projections = yield* ProjectionStoreV2;
+      const run = (yield* projections.getThreadRecords(threadId, ["runs"])).runs[0]!;
+      const now = yield* DateTime.now;
+      yield* (yield* EventSinkV2).write({
+        events: [
+          {
+            type: "run.updated",
+            id: EventId.make("ended"),
+            threadId,
+            occurredAt: now,
+            payload: { ...run, status: "completed", completedAt: now },
+          },
+        ],
+      });
+      assert.isTrue(
+        (yield* call("monitor_start", { label: "New work", schedule: { type: "signal" } })).isError,
+      );
+      const input = { monitorId: monitor.id, summary: "Only the owner can complete" };
+      assert.isTrue(
+        (yield* call("monitor_signal", input, {
+          ...invocation,
+          client: { sessionId: "reader", label: "Reader", access: "read-only" },
+        })).isError,
+      );
+      const other = ThreadId.make("other-owner");
+      yield* MonitorTestkit.seedThread(other);
+      assert.isTrue(
+        (yield* call("monitor_signal", input, {
+          ...invocation,
+          thread: { ...invocation.thread!, threadId: other },
+        })).isError,
+      );
+      yield* engine.dispatch({
+        type: "thread.archive",
+        commandId: CommandId.make("archive"),
+        threadId,
+      });
+      assert.isTrue((yield* call("monitor_signal", input)).isError);
+      assert.equal(
+        (yield* service.status({ threadId, query: { monitorId: monitor.id } })).monitors[0]?.status,
+        "active",
+      );
+      yield* engine.dispatch({
+        type: "thread.unarchive",
+        commandId: CommandId.make("reopen"),
+        threadId,
+      });
+      assert.isFalse((yield* call("monitor_signal", input)).isError);
+      assert.equal(
+        (yield* service.status({ threadId, query: { monitorId: monitor.id } })).monitors[0]?.trigger
+          ?.summary,
+        input.summary,
+      );
+      yield* engine.dispatch({
+        type: "thread.delete",
+        commandId: CommandId.make("delete"),
+        threadId,
+      });
+      assert.isTrue((yield* call("monitor_signal", input)).isError);
+    }).pipe(Effect.provide(layer)),
 );

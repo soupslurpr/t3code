@@ -21,6 +21,9 @@ const fixture: ThreadMonitor = {
   cancelledAt: null,
   lastError: null,
   deliveryAttempts: 0,
+  deliveryGroupId: null,
+  deliveryRetryAt: null,
+  deliveryFailureCount: 0,
 };
 const layer = ThreadMonitors.layer.pipe(Layer.provide(Sqlite.layerMemory));
 
@@ -75,4 +78,27 @@ it.effect(
         100,
       );
     }).pipe(Effect.provide(layer)),
+);
+
+it.effect("persists complete groups atomically and includes completed members in recovery", () =>
+  Effect.gen(function* () {
+    const repository = yield* ThreadMonitors.ThreadMonitorRepository;
+    const group = {
+      ...fixture,
+      deliveryGroupId: "group",
+      status: "triggered" as const,
+      deliveryFailureCount: 2,
+      deliveryRetryAt: "2026-10-27T00:00:00.000Z",
+    };
+    const second = { ...group, id: ThreadMonitorId.make("second"), status: "delivered" as const };
+    yield* repository.upsertMany([group, second]);
+    assert.deepEqual(yield* repository.listByDeliveryGroupId("group"), [group, second]);
+    const invalid = { ...second, deliveryFailureCount: -1 };
+    yield* repository
+      .upsertMany([{ ...group, label: "Must roll back" }, invalid])
+      .pipe(Effect.flip);
+    assert.deepEqual(yield* repository.listByDeliveryGroupId("group"), [group, second]);
+    yield* repository.deleteByThread(fixture.threadId);
+    assert.deepEqual(yield* repository.listByDeliveryGroupId("group"), []);
+  }).pipe(Effect.provide(layer)),
 );

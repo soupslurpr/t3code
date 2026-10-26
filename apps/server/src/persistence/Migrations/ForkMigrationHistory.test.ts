@@ -13,6 +13,7 @@ import * as SqlClient from "effect/sql/SqlClient";
 import { runMigrations } from "../Migrations.ts";
 import OrchestrationV2 from "./055_OrchestrationV2.ts";
 import ThreadMonitors from "./055_ThreadMonitors.ts";
+import ThreadMonitorDelivery from "./056_ThreadMonitorDelivery.ts";
 
 // Released ledger fixtures are deliberately independent of the classifier's manifest.
 const forkNames = [
@@ -46,6 +47,7 @@ const seedLegacy = Effect.fn("ForkMigrationTest.seedLegacy")(function* (
   yield* runMigrations({ toMigrationInclusive: base });
   yield* sql`DROP TABLE effect_sql_fork_migrations`;
   yield* ThreadMonitors;
+  if (count >= 2) yield* ThreadMonitorDelivery;
   yield* sql`INSERT INTO thread_monitors (monitor_id, thread_id, label, condition_type,
     continuation_mode, status, created_at, updated_at)
     VALUES ('preserved', 'thread', 'Preserved signal', 'signal', 'record-only', 'active', ${createdAt}, ${createdAt})`;
@@ -93,11 +95,14 @@ describe("fork migration ledger adoption", () => {
     Effect.gen(function* () {
       const sql = yield* SqlClient.SqlClient;
       const executed = yield* runMigrations();
-      assert.deepEqual(executed.at(-1), [1, "ThreadMonitors"]);
+      assert.deepEqual(executed.at(-1), [2, "ThreadMonitorDelivery"]);
       yield* assertCurrentUpstream;
       assert.deepEqual(
         (yield* forkHistory).map(({ migration_id, name }) => ({ migration_id, name })),
-        [{ migration_id: 1, name: "ThreadMonitors" }],
+        [
+          { migration_id: 1, name: "ThreadMonitors" },
+          { migration_id: 2, name: "ThreadMonitorDelivery" },
+        ],
       );
       assert.deepEqual(yield* runMigrations(), []);
       assert.deepEqual(yield* sql`PRAGMA foreign_key_check`, []);
@@ -115,7 +120,7 @@ describe("fork migration ledger adoption", () => {
         assert.isFalse(executed.some(([, name]) => name === "ThreadMonitors"));
         yield* assertCurrentUpstream;
         assert.deepEqual(
-          yield* forkHistory,
+          (yield* forkHistory).slice(0, count),
           forkNames.slice(0, count).map((name, index) => ({
             migration_id: index + 1,
             name,
@@ -145,35 +150,43 @@ describe("fork migration ledger adoption", () => {
     }).pipe(Effect.provide(memory)),
   );
 
-  it.effect.each(["gap", "wrong-name", "unknown-suffix", "wrong-offset", "schema"] as const)(
-    "rejects $0 atomically before creating an adoption ledger",
-    (corruption) =>
-      Effect.gen(function* () {
-        const sql = yield* SqlClient.SqlClient;
-        yield* seedLegacy(66, 3);
-        switch (corruption) {
-          case "gap":
-            yield* sql`DELETE FROM effect_sql_migrations WHERE migration_id = 68`;
-            break;
-          case "wrong-name":
-            yield* sql`UPDATE effect_sql_migrations SET name = 'WrongName' WHERE migration_id = 68`;
-            break;
-          case "unknown-suffix":
-            yield* sql`INSERT INTO effect_sql_migrations (migration_id, name) VALUES (70, 'UnknownFork')`;
-            break;
-          case "wrong-offset":
-            yield* sql`UPDATE effect_sql_migrations SET migration_id = 80 WHERE migration_id = 69`;
-            break;
-          case "schema":
-            yield* sql`ALTER TABLE thread_monitors RENAME COLUMN status TO wrong_status`;
-            break;
-        }
-        const beforeHistory = yield* history;
-        const beforeSchema = yield* tableNames;
-        assert.isTrue(Exit.isFailure(yield* Effect.exit(runMigrations())));
-        assert.deepEqual(yield* history, beforeHistory);
-        assert.deepEqual(yield* tableNames, beforeSchema);
-      }).pipe(Effect.provide(memory)),
+  it.effect.each([
+    "gap",
+    "wrong-name",
+    "unknown-suffix",
+    "wrong-offset",
+    "schema",
+    "delivery-schema",
+  ] as const)("rejects $0 atomically before creating an adoption ledger", (corruption) =>
+    Effect.gen(function* () {
+      const sql = yield* SqlClient.SqlClient;
+      yield* seedLegacy(66, 3);
+      switch (corruption) {
+        case "gap":
+          yield* sql`DELETE FROM effect_sql_migrations WHERE migration_id = 68`;
+          break;
+        case "wrong-name":
+          yield* sql`UPDATE effect_sql_migrations SET name = 'WrongName' WHERE migration_id = 68`;
+          break;
+        case "unknown-suffix":
+          yield* sql`INSERT INTO effect_sql_migrations (migration_id, name) VALUES (70, 'UnknownFork')`;
+          break;
+        case "wrong-offset":
+          yield* sql`UPDATE effect_sql_migrations SET migration_id = 80 WHERE migration_id = 69`;
+          break;
+        case "delivery-schema":
+          yield* sql`ALTER TABLE thread_monitors RENAME COLUMN delivery_retry_at TO wrong_retry`;
+          break;
+        case "schema":
+          yield* sql`ALTER TABLE thread_monitors RENAME COLUMN status TO wrong_status`;
+          break;
+      }
+      const beforeHistory = yield* history;
+      const beforeSchema = yield* tableNames;
+      assert.isTrue(Exit.isFailure(yield* Effect.exit(runMigrations())));
+      assert.deepEqual(yield* history, beforeHistory);
+      assert.deepEqual(yield* tableNames, beforeSchema);
+    }).pipe(Effect.provide(memory)),
   );
 
   it.effect.each([false, true])(
@@ -301,7 +314,7 @@ describe("fork migration ledger adoption", () => {
               NodeEvents.EventEmitter.once(second, "message"),
             ]);
             first.postMessage("release", []);
-            assert.deepEqual(await completed, [[70], [0]]);
+            assert.deepEqual(await completed, [[71], [0]]);
           } finally {
             await Promise.all([first.terminate(), second.terminate()]);
           }

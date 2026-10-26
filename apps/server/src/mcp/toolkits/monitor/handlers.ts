@@ -26,7 +26,7 @@ const handlers = {
       return yield* service.status({ threadId, query });
     }),
   ),
-  monitor_signal: McpToolAccess.actsAsCaller((signal) =>
+  monitor_signal: McpToolAccess.completesAsCaller((signal) =>
     Effect.gen(function* () {
       const scope = yield* McpInvocationContext.McpInvocationContext;
       const {

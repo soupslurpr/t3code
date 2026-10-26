@@ -158,6 +158,9 @@ export const adoptForkMigrationHistory = Effect.fn("adoptForkMigrationHistory")(
       "updated_at",
       "delivery_attempts",
     ];
+    if (Math.max(fork.length, legacy.length) >= 2) {
+      required.push("delivery_group_id", "delivery_retry_at", "delivery_failure_count");
+    }
     if (required.some((name) => !names.has(name))) {
       return yield* invalidHistory("ThreadMonitors identity conflicts with its schema");
     }

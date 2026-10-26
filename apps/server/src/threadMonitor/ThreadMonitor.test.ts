@@ -10,7 +10,8 @@ import * as Option from "effect/Option";
 import * as Path from "effect/Path";
 import * as TestClock from "effect/testing/TestClock";
 
-import { OrchestratorV2 } from "../orchestration-v2/Orchestrator.ts";
+import { ThreadManagementService } from "../orchestration-v2/ThreadManagementService.ts";
+import { OrchestratorDispatchError, OrchestratorV2 } from "../orchestration-v2/Orchestrator.ts";
 import { ProjectionStoreV2 } from "../orchestration-v2/ProjectionStore.ts";
 import * as Sqlite from "../persistence/Sqlite.ts";
 import { ThreadMonitorRepository } from "../persistence/ThreadMonitors.ts";
@@ -49,7 +50,10 @@ describe("durable V2 monitors", () => {
       yield* service.checkNow({ threadId, check: {} });
       const records = yield* projections.getThreadRecords(threadId, ["messages", "runs"]);
       assert.equal(records.messages.length, 1);
-      assert.equal(records.messages[0]?.id, `thread-monitor:${monitor.id}:continuation`);
+      assert.equal(
+        records.messages[0]?.id,
+        `thread-monitor-group:${delivered.monitors[0]?.deliveryGroupId}:continuation`,
+      );
       assert.equal(records.messages[0]?.createdBy, "system");
       assert.include(records.messages[0]?.text ?? "", "untrusted observational data");
       assert.equal(records.runs.length, 1);
@@ -161,7 +165,7 @@ describe("durable V2 monitors", () => {
         "triggered",
       );
       const cancelled = yield* service.cancel({ threadId, cancel: { monitorId: monitor.id } });
-      assert.equal(cancelled.status, "cancelled");
+      assert.equal(cancelled.monitors[0]?.status, "cancelled");
       assert.deepEqual(
         yield* service.cancel({ threadId, cancel: { monitorId: monitor.id } }),
         cancelled,
@@ -197,8 +201,7 @@ describe("durable V2 monitors", () => {
       yield* service.start;
       assert.equal((yield* repository.listOutstanding()).length, 1);
       const orphan = yield* repository.getById(ThreadMonitorId.make("orphan-100"));
-      assert.isTrue(Option.isSome(orphan));
-      if (Option.isSome(orphan)) assert.equal(orphan.value.status, "cancelled");
+      assert.isTrue(Option.isNone(orphan));
     }).pipe(Effect.provide(layer)),
   );
 
@@ -258,19 +261,17 @@ describe("durable V2 monitors", () => {
       yield* seedThread();
       const repository = yield* ThreadMonitorRepository;
       const retired = yield* Deferred.make<void>();
-      let retiredCount = 0;
       const service = yield* ThreadMonitor.make.pipe(
         Effect.provideService(ThreadMonitorRepository, {
           ...repository,
-          upsert: (monitor) =>
-            repository.upsert(monitor).pipe(
-              Effect.tap(() => {
-                if (monitor.threadId !== threadId || monitor.status !== "cancelled")
-                  return Effect.void;
-                retiredCount += 1;
-                return retiredCount === 102 ? Deferred.succeed(retired, undefined) : Effect.void;
-              }),
-            ),
+          deleteByThread: (id) =>
+            repository
+              .deleteByThread(id)
+              .pipe(
+                Effect.tap(() =>
+                  id === threadId ? Deferred.succeed(retired, undefined) : Effect.void,
+                ),
+              ),
         }),
         Effect.provideService(ServerActivation, Effect.void),
         Effect.provide(NodeServices.layer),
@@ -335,4 +336,306 @@ it.effect("restores a persisted monitor after closing and reopening the database
       );
     }),
   ).pipe(Effect.provide(NodeServices.layer)),
+);
+
+it.effect(
+  "coalesces triggers and recovers a partially persisted group after a service restart",
+  () =>
+    Effect.gen(function* () {
+      yield* seedThread();
+      const service = yield* ThreadMonitorService;
+      const repository = yield* ThreadMonitorRepository;
+      const first = yield* service.create({
+        threadId,
+        monitor: { label: "First condition", schedule: { type: "signal" } },
+      });
+      const second = yield* service.create({
+        threadId,
+        monitor: { label: "Second condition", schedule: { type: "signal" } },
+      });
+      for (const monitor of [first, second])
+        yield* service.signal({ threadId, signal: { monitorId: monitor.id } });
+      yield* TestClock.adjust("1 second");
+      const delivered = (yield* service.checkNow({ threadId, check: {} })).monitors;
+      assert.equal(delivered.length, 2);
+      assert.isTrue(delivered.every((monitor) => monitor.status === "delivered"));
+      assert.equal(delivered[0]?.deliveryGroupId, delivered[1]?.deliveryGroupId);
+      const projections = yield* ProjectionStoreV2;
+      const before = yield* projections.getThreadRecords(threadId, ["messages"]);
+      assert.equal(before.messages.length, 1);
+      assert.include(before.messages[0]!.text, "First condition");
+      assert.include(before.messages[0]!.text, "Second condition");
+      yield* repository.upsert({ ...delivered[0]!, status: "triggered", deliveredAt: null });
+      const restarted = yield* ThreadMonitor.make.pipe(Effect.provide(NodeServices.layer));
+      const recovered = yield* restarted.checkNow({
+        threadId,
+        check: { monitorId: delivered[0]!.id },
+      });
+      assert.equal(recovered.monitors[0]?.status, "delivered");
+      assert.deepEqual(
+        (yield* projections.getThreadRecords(threadId, ["messages"])).messages,
+        before.messages,
+      );
+      assert.isTrue(
+        (yield* repository.listByDeliveryGroupId(delivered[0]!.deliveryGroupId!)).every(
+          (monitor) => monitor.status === "delivered",
+        ),
+      );
+    }).pipe(Effect.provide(layer)),
+);
+
+it.effect("retains a rejected group's identity and persisted backoff across service restart", () =>
+  Effect.gen(function* () {
+    yield* seedThread();
+    const service = yield* ThreadMonitorService;
+    const engine = yield* OrchestratorV2;
+    const repository = yield* ThreadMonitorRepository;
+    const monitor = yield* service.create({
+      threadId,
+      monitor: { label: "Retry", schedule: { type: "signal" } },
+    });
+    const triggered = yield* service.signal({ threadId, signal: { monitorId: monitor.id } });
+    const groupId = "rejected-delivery-group";
+    yield* repository.upsert({ ...triggered, deliveryGroupId: groupId });
+    yield* engine
+      .dispatch({
+        type: "message.dispatch",
+        commandId: CommandId.make(`thread-monitor-group:${groupId}:resume:1`),
+        threadId: ThreadId.make("missing"),
+        messageId: MessageId.make("rejected"),
+        text: "Reject",
+        attachments: [],
+        createdBy: "system",
+        creationSource: "server",
+        dispatchMode: { type: "queue_after_active" },
+      })
+      .pipe(Effect.result);
+    yield* TestClock.adjust("1 second");
+    const retrying = (yield* service.checkNow({ threadId, check: {} })).monitors[0]!;
+    assert.equal(retrying.status, "triggered");
+    assert.equal(retrying.deliveryAttempts, 2);
+    assert.equal(retrying.deliveryFailureCount, 1);
+    assert.equal(Date.parse(retrying.deliveryRetryAt!) - Date.parse(retrying.updatedAt), 1_000);
+    const restarted = yield* ThreadMonitor.make.pipe(Effect.provide(NodeServices.layer));
+    assert.deepEqual((yield* restarted.checkNow({ threadId, check: {} })).monitors, [retrying]);
+    yield* TestClock.adjust("1 second");
+    const delivered = (yield* restarted.checkNow({ threadId, check: {} })).monitors[0]!;
+    assert.equal(delivered.status, "delivered");
+    assert.equal(delivered.deliveryGroupId, groupId);
+    assert.equal(delivered.deliveryAttempts, 2);
+    assert.equal(delivered.deliveryRetryAt, null);
+    assert.equal(
+      (yield* (yield* ProjectionStoreV2).getThreadRecords(threadId, ["messages"])).messages.length,
+      1,
+    );
+  }).pipe(Effect.provide(layer)),
+);
+
+it.effect("recovers an accepted F01 continuation without sending a new grouped message", () =>
+  Effect.gen(function* () {
+    yield* seedThread();
+    const service = yield* ThreadMonitorService;
+    const engine = yield* OrchestratorV2;
+    const repository = yield* ThreadMonitorRepository;
+    const monitor = yield* service.create({
+      threadId,
+      monitor: { label: "Upgraded", schedule: { type: "signal" } },
+    });
+    const triggered = yield* service.signal({ threadId, signal: { monitorId: monitor.id } });
+    yield* repository.upsert({ ...triggered, deliveryAttempts: 1 });
+    yield* engine.dispatch({
+      type: "message.dispatch",
+      commandId: CommandId.make(`thread-monitor:${monitor.id}:resume:1`),
+      threadId,
+      messageId: MessageId.make(`thread-monitor:${monitor.id}:continuation`),
+      text: "Already accepted at F01",
+      attachments: [],
+      createdBy: "system",
+      creationSource: "server",
+      dispatchMode: { type: "queue_after_active" },
+    });
+    assert.equal(
+      (yield* service.checkNow({ threadId, check: {} })).monitors[0]?.status,
+      "delivered",
+    );
+    assert.equal(
+      (yield* (yield* ProjectionStoreV2).getThreadRecords(threadId, ["messages"])).messages.length,
+      1,
+    );
+  }).pipe(Effect.provide(layer)),
+);
+
+it.effect("cancels all owned waits beyond the history page and preserves another thread", () =>
+  Effect.gen(function* () {
+    yield* seedThread();
+    const other = ThreadId.make("other-owner");
+    yield* seedThread(other);
+    const service = yield* ThreadMonitorService;
+    const repository = yield* ThreadMonitorRepository;
+    const monitor = yield* service.create({
+      threadId,
+      monitor: { label: "Wait", schedule: { type: "signal" } },
+    });
+    for (let index = 0; index < 101; index += 1)
+      yield* repository.upsert({ ...monitor, id: ThreadMonitorId.make(`cancel-${index}`) });
+    const foreign = yield* service.create({
+      threadId: other,
+      monitor: { label: "Preserve", schedule: { type: "signal" } },
+    });
+    assert.equal((yield* service.cancel({ threadId, cancel: {} })).monitors.length, 100);
+    assert.deepEqual(yield* repository.listOutstanding(), [foreign]);
+    assert.deepEqual(yield* service.cancel({ threadId, cancel: {} }), { monitors: [] });
+  }).pipe(Effect.provide(layer)),
+);
+
+it.effect("cancels waits on a persisted V2 interrupt without waiting for provider response", () =>
+  Effect.gen(function* () {
+    yield* seedThread();
+    const repository = yield* ThreadMonitorRepository;
+    const cancelled = yield* Deferred.make<void>();
+    const service = yield* ThreadMonitor.make.pipe(
+      Effect.provideService(ThreadMonitorRepository, {
+        ...repository,
+        upsert: (monitor) =>
+          repository
+            .upsert(monitor)
+            .pipe(
+              Effect.tap(() =>
+                monitor.status === "cancelled"
+                  ? Deferred.succeed(cancelled, undefined)
+                  : Effect.void,
+              ),
+            ),
+      }),
+      Effect.provideService(ServerActivation, Effect.void),
+      Effect.provide(NodeServices.layer),
+    );
+    const engine = yield* OrchestratorV2;
+    yield* engine.dispatch({
+      type: "message.dispatch",
+      commandId: CommandId.make("interrupt-active"),
+      threadId,
+      messageId: MessageId.make("interrupt-active"),
+      text: "Work",
+      attachments: [],
+      createdBy: "user",
+      creationSource: "web",
+      dispatchMode: { type: "queue_after_active" },
+    });
+    const monitor = yield* service.create({
+      threadId,
+      monitor: { label: "Wait", schedule: { type: "signal" } },
+    });
+    yield* service.start;
+    const run = (yield* (yield* ProjectionStoreV2).getThreadRecords(threadId, ["runs"])).runs[0]!;
+    yield* engine.dispatch({
+      type: "run.interrupt",
+      commandId: CommandId.make("interrupt-monitor"),
+      threadId,
+      runId: run.id,
+    });
+    yield* Deferred.await(cancelled);
+    assert.equal(
+      (yield* service.status({ threadId, query: { monitorId: monitor.id } })).monitors[0]?.status,
+      "cancelled",
+    );
+  }).pipe(Effect.provide(layer)),
+);
+
+it.effect("recovers partially delivered groups from a reopened on-disk database", () =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      const path = yield* Path.Path;
+      const directory = yield* fs.makeTempDirectoryScoped({ prefix: "monitor-group-restart-" });
+      const filename = path.join(directory, "state.sqlite");
+      const database = () =>
+        layerForDatabase(Sqlite.layerFromPath(filename).pipe(Layer.provide(NodeServices.layer)));
+      const { pending, acceptedMessage } = yield* Effect.gen(function* () {
+        yield* seedThread();
+        const service = yield* ThreadMonitorService;
+        for (const label of ["First persisted", "Second persisted"]) {
+          const monitor = yield* service.create({
+            threadId,
+            monitor: { label, schedule: { type: "signal" } },
+          });
+          yield* service.signal({ threadId, signal: { monitorId: monitor.id } });
+        }
+        yield* TestClock.adjust("1 second");
+        const delivered = (yield* service.checkNow({ threadId, check: {} })).monitors;
+        const pending = delivered[0]!;
+        yield* (yield* ThreadMonitorRepository).upsert({
+          ...pending,
+          status: "triggered",
+          deliveredAt: null,
+        });
+        const acceptedMessage = (yield* (yield* ProjectionStoreV2).getThreadRecords(threadId, [
+          "messages",
+        ])).messages[0]!;
+        return { pending, acceptedMessage };
+      }).pipe(Effect.provide(database()));
+      yield* Effect.gen(function* () {
+        const service = yield* ThreadMonitorService;
+        yield* service.start;
+        const recovered = yield* service.checkNow({ threadId, check: { monitorId: pending.id } });
+        assert.equal(recovered.monitors[0]?.status, "delivered");
+        assert.deepEqual(
+          (yield* (yield* ProjectionStoreV2).getThreadRecords(threadId, ["messages"])).messages,
+          [acceptedMessage],
+        );
+        assert.equal(
+          (yield* (yield* ThreadMonitorRepository).listByDeliveryGroupId(pending.deliveryGroupId!))
+            .length,
+          2,
+        );
+      }).pipe(Effect.provide(database()));
+    }),
+  ).pipe(Effect.provide(NodeServices.layer)),
+);
+
+it.effect("bounds persistent retry backoff and retains the command id for ambiguous failures", () =>
+  Effect.gen(function* () {
+    yield* seedThread();
+    const management = yield* ThreadManagementService;
+    const commands: Array<string> = [];
+    const service = yield* ThreadMonitor.make.pipe(
+      Effect.provideService(ThreadManagementService, {
+        ...management,
+        dispatch: (command) => {
+          commands.push(command.commandId);
+          return Effect.fail(
+            new OrchestratorDispatchError({
+              commandId: command.commandId,
+              commandType: command.type,
+              cause: "Transport disconnected",
+            }),
+          );
+        },
+      }),
+      Effect.provide(NodeServices.layer),
+    );
+    const monitor = yield* service.create({
+      threadId,
+      monitor: { label: "Disconnected", schedule: { type: "signal" } },
+    });
+    yield* service.signal({ threadId, signal: { monitorId: monitor.id } });
+    yield* TestClock.adjust("1 second");
+    for (const [index, delay] of [
+      1_000, 2_000, 4_000, 8_000, 16_000, 32_000, 64_000, 128_000, 256_000, 300_000, 300_000,
+    ].entries()) {
+      const retrying = (yield* service.checkNow({ threadId, check: {} })).monitors[0]!;
+      assert.equal(retrying.deliveryAttempts, 1);
+      assert.equal(retrying.deliveryFailureCount, index + 1);
+      assert.equal(Date.parse(retrying.deliveryRetryAt!) - Date.parse(retrying.updatedAt), delay);
+      yield* service.checkNow({ threadId, check: {} });
+      assert.equal(commands.length, index + 1);
+      yield* TestClock.adjust(delay);
+    }
+    assert.equal(new Set(commands).size, 1);
+    const recovered = yield* ThreadMonitor.make.pipe(Effect.provide(NodeServices.layer));
+    assert.equal(
+      (yield* recovered.checkNow({ threadId, check: {} })).monitors[0]?.status,
+      "delivered",
+    );
+  }).pipe(Effect.provide(layer)),
 );

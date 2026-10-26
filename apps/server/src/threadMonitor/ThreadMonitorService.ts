@@ -38,7 +38,7 @@ export interface ThreadMonitorServiceShape {
   readonly cancel: (input: {
     readonly threadId: ThreadId;
     readonly cancel: ThreadMonitorCancelInput;
-  }) => Effect.Effect<ThreadMonitor, ThreadMonitorError>;
+  }) => Effect.Effect<ThreadMonitorList, ThreadMonitorError>;
 
   readonly checkNow: (input: {
     readonly threadId: ThreadId;

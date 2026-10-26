@@ -2,6 +2,7 @@ import * as Migrator from "effect/sql/Migrator";
 import * as Effect from "effect/Effect";
 import * as SqlClient from "effect/sql/SqlClient";
 import { adoptForkMigrationHistory } from "./ForkMigrationHistory.ts";
+import ForkMigration0002 from "./Migrations/056_ThreadMonitorDelivery.ts";
 import ForkMigration0001 from "./Migrations/055_ThreadMonitors.ts";
 import { reconcileV2PreviewMigration } from "./reconcileV2PreviewMigration.ts";
 
@@ -148,7 +149,10 @@ const migrationEntries = [
   [69, "ThreadMessageSearch", Migration0069],
 ] as const;
 
-export const forkMigrationEntries = [[1, "ThreadMonitors", ForkMigration0001]] as const;
+export const forkMigrationEntries = [
+  [1, "ThreadMonitors", ForkMigration0001],
+  [2, "ThreadMonitorDelivery", ForkMigration0002],
+] as const;
 export const forkMigrationManifest = forkMigrationEntries.map(([id, name]) => [id, name] as const);
 
 export const migrationManifest = migrationEntries.map(([id, name]) => [id, name] as const);
