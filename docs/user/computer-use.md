@@ -162,10 +162,13 @@ The desktop host exposes tools for:
 - releasing the active session or forgetting remembered consent
 
 Full-display screenshots preserve aspect ratio and default to a maximum of 1600 by 900 pixels. An
-agent can request other bounded dimensions or return a sharper crop of a prior frame. Each image has
-a frame identifier and an explicit transform from its image pixels to Electron desktop-logical
-coordinates. Pointer actions reference that frame, preventing a crop or resolution change from
-silently moving a click. Display bounds continue to report logical desktop dimensions.
+agent can request other bounded dimensions or return a sharper crop of a prior frame. Images use
+lossless 8-bit WebP by default. An agent can instead choose near-lossless or lossy WebP when smaller
+transfers are worth reduced fidelity, or PNG when a downstream consumer requires it. Every result
+reports its actual encoding and compressed byte size. Each image also has a frame identifier and an
+explicit transform from its image pixels to Electron desktop-logical coordinates. Pointer actions
+reference that frame, preventing a crop or resolution change from silently moving a click. Display
+bounds continue to report logical desktop dimensions.
 
 GNOME Wayland does not expose the current pointer position to ordinary applications. Status and
 snapshot results therefore report `cursor: null`. After a pointer operation, snapshots draw a

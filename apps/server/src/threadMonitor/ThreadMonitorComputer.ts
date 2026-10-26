@@ -194,9 +194,9 @@ export const make = Effect.gen(function* () {
     } satisfies McpInvocationContext.McpThreadInvocationScope;
   });
 
-  const hashPng = (pngBase64: string) =>
+  const hashImage = (dataBase64: string) =>
     crypto
-      .digest("SHA-256", Buffer.from(pngBase64, "base64"))
+      .digest("SHA-256", Buffer.from(dataBase64, "base64"))
       .pipe(Effect.map((bytes) => Buffer.from(bytes).toString("hex")));
 
   const invoke = <A>(input: {
@@ -236,6 +236,7 @@ export const make = Effect.gen(function* () {
     readonly region?: ComputerAutomationScreenshotRegion | undefined;
     readonly maxWidth: number;
     readonly maxHeight: number;
+    readonly encoding?: ThreadMonitorComputerObservationRegionInput["encoding"];
   }) {
     return yield* invoke<ComputerAutomationSnapshot>({
       scope: input.scope,
@@ -248,6 +249,7 @@ export const make = Effect.gen(function* () {
           ...(input.region === undefined ? {} : { region: input.region }),
           maxWidth: input.maxWidth,
           maxHeight: input.maxHeight,
+          ...(input.encoding === undefined ? {} : { encoding: input.encoding }),
         },
       },
       timeoutMs: SNAPSHOT_TIMEOUT_MS,
@@ -271,6 +273,7 @@ export const make = Effect.gen(function* () {
         ...(input.region.region === undefined ? {} : { region: input.region.region }),
         maxWidth,
         maxHeight,
+        ...(input.region.encoding === undefined ? {} : { encoding: input.region.encoding }),
       });
       const screenshot = snapshot.screenshot;
       const normalizedRegion = durableRegion(snapshot);
@@ -280,7 +283,7 @@ export const make = Effect.gen(function* () {
           `The initial capture for region '${input.region.id}' or its coordinate frame was empty.`,
         );
       }
-      const hash = yield* hashPng(screenshot.data);
+      const hash = yield* hashImage(screenshot.data);
       return {
         state: {
           id: input.region.id,
@@ -289,6 +292,7 @@ export const make = Effect.gen(function* () {
           region: normalizedRegion,
           maxWidth,
           maxHeight,
+          encoding: screenshot.encoding,
           baselineHash: hash,
           lastSampleHash: hash,
           baselineStored: input.retainBaseline,
@@ -308,7 +312,10 @@ export const make = Effect.gen(function* () {
           height: screenshot.height,
           frameIndex: null,
           elapsedMs: null,
-          pngBase64: screenshot.data,
+          mimeType: screenshot.mimeType,
+          dataBase64: screenshot.data,
+          sizeBytes: screenshot.sizeBytes,
+          encoding: screenshot.encoding,
         },
       } satisfies CapturedRegion;
     },
@@ -330,6 +337,7 @@ export const make = Effect.gen(function* () {
         region: input.region.region,
         maxWidth: input.region.maxWidth,
         maxHeight: input.region.maxHeight,
+        encoding: input.region.encoding,
       });
       const screenshot = snapshot.screenshot;
       if (screenshot === undefined) {
@@ -338,7 +346,7 @@ export const make = Effect.gen(function* () {
           `The capture for region '${input.region.id}' was empty.`,
         );
       }
-      const hash = yield* hashPng(screenshot.data);
+      const hash = yield* hashImage(screenshot.data);
       const changed = hash !== input.region.lastSampleHash;
       return {
         state: {
@@ -363,7 +371,10 @@ export const make = Effect.gen(function* () {
           height: screenshot.height,
           frameIndex: input.frameIndex ?? null,
           elapsedMs: input.elapsedMs ?? null,
-          pngBase64: screenshot.data,
+          mimeType: screenshot.mimeType,
+          dataBase64: screenshot.data,
+          sizeBytes: screenshot.sizeBytes,
+          encoding: screenshot.encoding,
         },
       } satisfies CapturedRegion;
     },
@@ -735,14 +746,25 @@ export const make = Effect.gen(function* () {
       const result = yield* evaluator({
         cwd: thread.cwd,
         criterion: condition.match.criterion,
-        images: allCaptured.map(({ state, image }) => ({
-          id: state.id,
-          ...(state.purpose === null ? {} : { purpose: state.purpose }),
-          currentPngBase64: image.pngBase64,
-          ...(condition.match.type === "model" && condition.match.baseline === "initial"
-            ? { baselinePngBase64: baselines.get(state.id)?.pngBase64 }
-            : {}),
-        })),
+        images: allCaptured.map(({ state, image }) => {
+          const baseline =
+            condition.match.type === "model" && condition.match.baseline === "initial"
+              ? baselines.get(state.id)
+              : undefined;
+          return {
+            id: state.id,
+            ...(state.purpose === null ? {} : { purpose: state.purpose }),
+            current: { mimeType: image.mimeType, dataBase64: image.dataBase64 },
+            ...(baseline === undefined
+              ? {}
+              : {
+                  baseline: {
+                    mimeType: baseline.mimeType,
+                    dataBase64: baseline.dataBase64,
+                  },
+                }),
+          };
+        }),
         modelSelection: condition.match.modelSelection,
       }).pipe(
         Effect.mapError((cause) =>

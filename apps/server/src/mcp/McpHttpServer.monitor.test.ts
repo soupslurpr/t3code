@@ -263,7 +263,10 @@ it.effect(
                     height: 50,
                     frameIndex: index === 0 ? null : 0,
                     elapsedMs: index === 0 ? null : 0,
-                    pngBase64: Buffer.from(`exact pixels ${index}`).toString("base64"),
+                    dataBase64: Buffer.from(`exact pixels ${index}`).toString("base64"),
+                    mimeType: "image/webp" as const,
+                    sizeBytes: Buffer.byteLength(`exact pixels ${index}`),
+                    encoding: { format: "webp" as const, mode: "lossless" as const },
                   })),
                 };
               }),
@@ -304,8 +307,12 @@ it.effect(
           images.map((item) => item._meta?.["t3/computerWatchImageKind"]),
           ["baseline", "fresh"],
         );
+        assert.deepEqual(
+          images.map(({ mimeType }) => mimeType),
+          ["image/webp", "image/webp"],
+        );
         assert.equal(images[1]?._meta?.["t3/temporalFrameIndex"], 0);
-        assert.notInclude(JSON.stringify(result.structuredContent), "pngBase64");
+        assert.notInclude(JSON.stringify(result.structuredContent), "dataBase64");
         assert.notInclude(
           JSON.stringify(result.content.filter((item) => item.type === "text")),
           Buffer.from("exact pixels 0").toString("base64"),

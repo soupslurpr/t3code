@@ -1014,6 +1014,12 @@ export function resolveMacFileExclusions(arch?: typeof BuildArch.Type) {
   const unusedArch = arch === "arm64" ? "x64" : "arm64";
   return [...MAC_FILE_EXCLUSIONS, `!**/node_modules/node-pty/prebuilds/darwin-${unusedArch}/**/*`];
 }
+// Sharp resolves its JavaScript and native binding beside each other.
+export const DESKTOP_ASAR_UNPACK_GLOBS = [
+  "**/node_modules/sharp/**/*",
+  "**/node_modules/@img/**/*",
+] as const;
+
 // Large ASAR sidecars avoid NSIS extracting thousands of loose files during installs and updates.
 export const WINDOWS_SERVER_ASAR_RESOURCE = "server.asar";
 // Native modules and executables need real paths, so place them in ASAR's .unpacked sibling.
@@ -2791,12 +2797,16 @@ export const createBuildConfig = Effect.fn("createBuildConfig")(function* (
           ? LINUX_FILE_EXCLUSIONS
           : []),
     ],
+    asarUnpack: [...DESKTOP_ASAR_UNPACK_GLOBS],
     directories: {
       buildResources: "apps/desktop/resources",
     },
     // Disable smart unpack so native packages' JS/metadata stay archived and avoid slowing NSIS with loose files.
     ...(platform === "win"
-      ? { asar: { smartUnpack: false }, asarUnpack: [WINDOWS_NATIVE_ASAR_UNPACK_GLOB] }
+      ? {
+          asar: { smartUnpack: false },
+          asarUnpack: [WINDOWS_NATIVE_ASAR_UNPACK_GLOB, ...DESKTOP_ASAR_UNPACK_GLOBS],
+        }
       : {}),
     extraResources: [
       ...DESKTOP_EXTRA_RESOURCES,

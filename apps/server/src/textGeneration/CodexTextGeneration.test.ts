@@ -45,6 +45,7 @@ interface FakeCodexInput {
   forbidArg?: string;
   outputSchemaMustNotContain?: string;
   imageContents?: ReadonlyArray<string>;
+  imageExtensions?: ReadonlyArray<string>;
   recordImagesFile?: string;
   stdinMustContain?: string;
   stdinMustNotContain?: string;
@@ -62,6 +63,7 @@ function makeFakeCodexBinary(dir: string, input: FakeCodexInput) {
     forbidArg: input.forbidArg ?? null,
     outputSchemaMustNotContain: input.outputSchemaMustNotContain ?? null,
     imageContents: input.imageContents ?? null,
+    imageExtensions: input.imageExtensions ?? null,
     recordImagesFile: input.recordImagesFile ?? null,
     stdinMustContain: input.stdinMustContain ?? null,
     stdinMustNotContain: input.stdinMustNotContain ?? null,
@@ -82,6 +84,7 @@ function makeFakeCodexBinary(dir: string, input: FakeCodexInput) {
         'const isMcpList = args.includes("mcp") && args.includes("list");',
         'const imagePaths = args.flatMap((arg, index) => arg === "--image" ? [args[index + 1]] : []);',
         "if (!isMcpList && check.recordImagesFile !== null) NodeFS.writeFileSync(check.recordImagesFile, JSON.stringify(imagePaths));",
+        'if (!isMcpList && check.imageExtensions !== null && imagePaths.some((file,index) => !file.endsWith(check.imageExtensions[index]))) throw new Error("image encoding extension changed");',
         "if (!isMcpList && check.imageContents !== null) {",
         '  const imageContents = imagePaths.map((file) => NodeFS.readFileSync(file).toString("base64"));',
         '  if (JSON.stringify(imageContents) !== JSON.stringify(check.imageContents)) throw new Error("image bytes or attachment order changed");',
@@ -422,6 +425,7 @@ it.layer(layerCodexTextGenerationTest)("CodexTextGeneration", (it) => {
           evidence: [{ imageId: "dialog", description: "A dialog visibly says Complete." }],
         }),
         requireImageCount: 2,
+        imageExtensions: [".png", ".webp"],
         imageContents: [
           Buffer.from("baseline-image").toString("base64"),
           Buffer.from("current-image").toString("base64"),
@@ -441,8 +445,14 @@ it.layer(layerCodexTextGenerationTest)("CodexTextGeneration", (it) => {
               {
                 id: "dialog",
                 purpose: "Completion state",
-                currentPngBase64: Buffer.from("current-image").toString("base64"),
-                baselinePngBase64: Buffer.from("baseline-image").toString("base64"),
+                current: {
+                  mimeType: "image/webp",
+                  dataBase64: Buffer.from("current-image").toString("base64"),
+                },
+                baseline: {
+                  mimeType: "image/png",
+                  dataBase64: Buffer.from("baseline-image").toString("base64"),
+                },
               },
             ],
             modelSelection: DEFAULT_TEST_MODEL_SELECTION,
@@ -546,7 +556,13 @@ it.layer(layerCodexTextGenerationTest)("CodexTextGeneration", (it) => {
                 cwd: process.cwd(),
                 criterion: "A condition",
                 images: [
-                  { id: "main", currentPngBase64: Buffer.from("exact current").toString("base64") },
+                  {
+                    id: "main",
+                    current: {
+                      mimeType: "image/webp",
+                      dataBase64: Buffer.from("exact current").toString("base64"),
+                    },
+                  },
                 ],
                 modelSelection: DEFAULT_TEST_MODEL_SELECTION,
               }).pipe(Effect.exit);
@@ -608,7 +624,15 @@ it.layer(layerCodexTextGenerationTest)("CodexTextGeneration", (it) => {
             const fiber = yield* textGeneration.evaluateImageCondition!({
               cwd: process.cwd(),
               criterion: "Wait",
-              images: [{ id: "main", currentPngBase64: Buffer.from("current").toString("base64") }],
+              images: [
+                {
+                  id: "main",
+                  current: {
+                    mimeType: "image/webp",
+                    dataBase64: Buffer.from("current").toString("base64"),
+                  },
+                },
+              ],
               modelSelection: DEFAULT_TEST_MODEL_SELECTION,
             }).pipe(Effect.forkScoped);
             yield* probe.started;

@@ -1,4 +1,5 @@
 import * as Effect from "effect/Effect";
+import * as Schema from "effect/Schema";
 import * as Migrator from "effect/sql/Migrator";
 import * as SqlClient from "effect/sql/SqlClient";
 
@@ -33,6 +34,38 @@ const invalidHistory = (detail: string) =>
     kind: "BadState",
     message: `Cannot adopt migration history: ${detail}. No schema or history changes were committed.`,
   });
+
+// These released F06 shapes must not follow later application schema changes.
+const F06Encoding = Schema.Union([
+  Schema.Struct({ format: Schema.Literal("png") }),
+  Schema.Struct({ format: Schema.Literal("webp"), mode: Schema.Literal("lossless") }),
+  Schema.Struct({
+    format: Schema.Literal("webp"),
+    mode: Schema.Literals(["near-lossless", "lossy"]),
+    quality: Schema.optional(Schema.Int.check(Schema.isBetween({ minimum: 1, maximum: 100 }))),
+  }),
+]);
+const decodeF06Condition = Schema.decodeUnknownSync(
+  Schema.fromJsonString(
+    Schema.Struct({
+      observation: Schema.Struct({
+        regions: Schema.Array(Schema.Struct({ encoding: F06Encoding })),
+      }),
+    }),
+  ),
+);
+const decodeF06Images = Schema.decodeUnknownSync(
+  Schema.fromJsonString(
+    Schema.Array(
+      Schema.Struct({
+        mimeType: Schema.Literals(["image/png", "image/webp"]),
+        encoding: F06Encoding,
+        dataBase64: Schema.String,
+        sizeBytes: Schema.Int.check(Schema.isGreaterThan(0)),
+      }),
+    ),
+  ),
+);
 
 const isPreviewHistory = (rows: ReadonlyArray<HistoryRow>) => {
   const tail = rows.filter((row) => row.migration_id >= 53);
@@ -218,6 +251,37 @@ export const adoptForkMigrationHistory = Effect.fn("adoptForkMigrationHistory")(
       return yield* invalidHistory(
         "AdaptiveComputerMonitors identity conflicts with its revision/evidence schema",
       );
+  }
+
+  if (Math.max(fork.length, legacy.length) >= 6) {
+    const conditions = yield* sql<{ readonly condition_json: string }>`
+      SELECT condition_json FROM thread_monitors WHERE condition_type = 'computer'`;
+    const evidence = yield* sql<{
+      readonly baseline_images_json: string;
+      readonly previous_images_json: string;
+      readonly current_images_json: string;
+      readonly terminal_images_json: string;
+    }>`SELECT baseline_images_json, previous_images_json, current_images_json, terminal_images_json
+       FROM thread_monitor_computer_evidence`;
+    yield* Effect.try({
+      try: () => {
+        for (const row of conditions) decodeF06Condition(row.condition_json);
+        for (const row of evidence) {
+          for (const json of Object.values(row)) {
+            for (const image of decodeF06Images(json)) {
+              if (
+                image.mimeType !== `image/${image.encoding.format}` ||
+                Buffer.byteLength(image.dataBase64, "base64") !== image.sizeBytes
+              ) {
+                throw new Error("inconsistent image encoding metadata");
+              }
+            }
+          }
+        }
+      },
+      catch: () =>
+        invalidHistory("ComputerMonitorImageEncoding identity conflicts with its image schema"),
+    });
   }
 
   yield* sql`CREATE TABLE IF NOT EXISTS effect_sql_fork_migrations (

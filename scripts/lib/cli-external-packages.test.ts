@@ -35,6 +35,8 @@ describe("shouldBundleCliDependency", () => {
       "@napi-rs/keyring",
       "@clerk/electron-passkeys",
       "node-addon-api",
+      "sharp",
+      "@img/sharp-linux-x64",
     ]) {
       assert.strictEqual(shouldBundleCliDependency(id), false, id);
     }

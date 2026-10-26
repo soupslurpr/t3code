@@ -28,6 +28,8 @@ import {
   parseWslRuntimeArchiveMembers,
   readWorkspaceConfig,
   createBuildConfig,
+  DESKTOP_ASAR_UNPACK_GLOBS,
+  WINDOWS_NATIVE_ASAR_UNPACK_GLOB,
   DESKTOP_FILE_EXCLUSIONS,
   InvalidMacPasskeyRpDomainError,
   InvalidMacPasskeyPublishableKeyError,
@@ -473,6 +475,24 @@ it.layer(NodeServices.layer)("build-desktop-artifact", (it) => {
     }),
   );
 
+  it.effect.each(["mac", "linux", "win"] as const)(
+    "keeps Sharp's native package tree unpacked on %s",
+    (platform) =>
+      Effect.gen(function* () {
+        const config = yield* createBuildConfig(
+          platform,
+          platform === "mac" ? "dmg" : platform === "linux" ? "AppImage" : "nsis",
+          "0.1.2",
+          false,
+          false,
+          undefined,
+          undefined,
+        );
+        assert.includeMembers(config.asarUnpack as string[], [...DESKTOP_ASAR_UNPACK_GLOBS]);
+        if (platform === "win") assert.include(config.asarUnpack, WINDOWS_NATIVE_ASAR_UNPACK_GLOB);
+      }),
+  );
+
   it.effect("omits update feeds for pull request preview builds", () =>
     Effect.gen(function* () {
       const preview = yield* createBuildConfig(
@@ -504,6 +524,7 @@ it.layer(NodeServices.layer)("build-desktop-artifact", (it) => {
         undefined,
       );
 
+      assert.deepEqual(preview.asarUnpack, DESKTOP_ASAR_UNPACK_GLOBS);
       assert.isNull(preview.publish);
       assert.isNull(previewChannel.publish);
       assert.deepStrictEqual(release.publish, [
@@ -557,6 +578,7 @@ it.layer(NodeServices.layer)("build-desktop-artifact", (it) => {
         desktopDependencies: {
           "@napi-rs/keyring": "1.3.0",
           "playwright-core": "1.60.0",
+          sharp: "0.35.4",
         },
         arch: "arm64",
         fffNodeVersion: "0.9.4",
@@ -567,6 +589,7 @@ it.layer(NodeServices.layer)("build-desktop-artifact", (it) => {
         "node-pty": "1.1.0",
         "@napi-rs/keyring": "1.3.0",
         "playwright-core": "1.60.0",
+        sharp: "0.35.4",
         "@ff-labs/fff-bin-darwin-arm64": "0.9.4",
       },
     );

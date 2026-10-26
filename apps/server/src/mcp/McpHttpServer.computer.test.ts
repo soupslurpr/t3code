@@ -113,6 +113,8 @@ it.effect("returns native screenshot bytes once, with bounded structured metadat
           screenshot: {
             mimeType: "image/png",
             data: Buffer.from("png").toString("base64"),
+            sizeBytes: 3,
+            encoding: { format: "png" },
             width: 10,
             height: 5,
           },
@@ -287,6 +289,8 @@ const temporalSnapshot = (index: number): ComputerAutomationSnapshot => ({
   screenshot: {
     mimeType: "image/png",
     data: Buffer.from(`png-${index}`).toString("base64"),
+    sizeBytes: Buffer.byteLength(`png-${index}`),
+    encoding: { format: "png" },
     width: 10,
     height: 5,
   },

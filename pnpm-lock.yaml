@@ -460,6 +460,9 @@ importers:
       react-grab:
         specifier: ^0.1.32
         version: 0.1.44(react@19.3.0)
+      sharp:
+        specifier: 0.35.4
+        version: 0.35.4(@types/node@24.12.4)
       tldts:
         specifier: 'catalog:'
         version: 7.4.2

@@ -27,6 +27,8 @@ import {
   PreviewAutomationError,
   type RunId,
   ThreadId,
+  type ComputerAutomationScreenshotEncoding,
+  type ComputerAutomationScreenshotMimeType,
 } from "@t3tools/contracts";
 
 import packageJson from "../../package.json" with { type: "json" };
@@ -936,10 +938,12 @@ type ComputerSnapshotResult = {
 };
 
 type ComputerScreenshotResult = {
-  readonly mimeType: "image/png";
+  readonly mimeType: ComputerAutomationScreenshotMimeType;
   readonly data: string;
   readonly width: number;
   readonly height: number;
+  readonly sizeBytes: number;
+  readonly encoding: ComputerAutomationScreenshotEncoding;
 };
 
 type ComputerTemporalSequenceResult = {
@@ -969,6 +973,8 @@ function computerSnapshotResult(snapshot: ComputerSnapshotResult) {
               mimeType: screenshot.mimeType,
               width: screenshot.width,
               height: screenshot.height,
+              sizeBytes: screenshot.sizeBytes,
+              encoding: screenshot.encoding,
             },
           }),
     },
@@ -1076,13 +1082,16 @@ type ComputerWatchInspectionResult = {
     readonly height: number;
     readonly frameIndex: number | null;
     readonly elapsedMs: number | null;
-    readonly pngBase64: string;
+    readonly mimeType: ComputerAutomationScreenshotMimeType;
+    readonly dataBase64: string;
+    readonly sizeBytes: number;
+    readonly encoding: ComputerAutomationScreenshotEncoding;
     readonly [key: string]: unknown;
   }>;
   readonly [key: string]: unknown;
 };
 
-/** Converts retained monitor PNG data into ordered MCP image content. */
+/** Converts retained monitor image data into ordered MCP image content. */
 const computerWatchInspectionResult = (encodedResult: unknown) => {
   const inspection = encodedResult as ComputerWatchInspectionResult;
   const images = inspection.images.map((image) => ({
@@ -1093,6 +1102,9 @@ const computerWatchInspectionResult = (encodedResult: unknown) => {
     hash: image.hash,
     width: image.width,
     height: image.height,
+    mimeType: image.mimeType,
+    sizeBytes: image.sizeBytes,
+    encoding: image.encoding,
     frameIndex: image.frameIndex,
     elapsedMs: image.elapsedMs,
   }));
@@ -1104,8 +1116,8 @@ const computerWatchInspectionResult = (encodedResult: unknown) => {
       { type: "text", text: JSON.stringify(metadata) },
       ...inspection.images.map((image) => ({
         type: "image" as const,
-        data: new Uint8Array(Buffer.from(image.pngBase64, "base64")),
-        mimeType: "image/png" as const,
+        data: new Uint8Array(Buffer.from(image.dataBase64, "base64")),
+        mimeType: image.mimeType,
         _meta: {
           "codex/imageDetail": "original",
           "t3/computerWatchImageId": image.id,

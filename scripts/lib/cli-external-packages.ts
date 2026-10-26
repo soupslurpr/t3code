@@ -13,6 +13,11 @@ export const CLI_RUNTIME_EXTERNAL_PREFIXES = [
   "@clerk/electron-passkeys",
   "node-gyp-build",
   "node-addon-api",
+  // Screenshot encoding loads Sharp's platform binding from its installed tree.
+  "sharp",
+  "@img/",
+  "detect-libc",
+  "semver",
   "bufferutil",
   "utf-8-validate",
 ] as const;
