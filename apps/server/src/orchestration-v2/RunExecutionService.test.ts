@@ -1,3 +1,4 @@
+import { ProviderComputerLifecycle } from "./ProviderComputerLifecycle.ts";
 import { assert, it } from "@effect/vitest";
 import {
   CheckpointScopeId,
@@ -913,6 +914,7 @@ it.effect("fails the run when its ownership check cannot be read before calling 
   Effect.gen(function* () {
     const guardCalls = yield* Ref.make(0);
     const providerStarts = yield* Ref.make(0);
+    const computerResumes = yield* Ref.make(0);
     const writes = yield* Ref.make<ReadonlyArray<OrchestrationV2DomainEvent>>([]);
     const threadId = ThreadId.make("thread:run-execution-start-guard-read");
     const runId = RunId.make("run:run-execution-start-guard-read");
@@ -936,6 +938,10 @@ it.effect("fails the run when its ownership check cannot be read before calling 
             ingestNormalized: () => Effect.succeed([]),
           }),
           ServerSettings.layerTest(),
+          Layer.succeed(ProviderComputerLifecycle, {
+            resume: () => Ref.update(computerResumes, (count) => count + 1),
+            beginInterruption: () => Effect.succeed(Effect.void),
+          }),
         ),
       ),
     );
@@ -1008,6 +1014,7 @@ it.effect("fails the run when its ownership check cannot be read before calling 
 
     assert.equal(yield* Ref.get(guardCalls), 2);
     assert.equal(yield* Ref.get(providerStarts), 0);
+    assert.equal(yield* Ref.get(computerResumes), 0);
     const runUpdate = (yield* Ref.get(writes)).find((event) => event.type === "run.updated");
     assert.equal(
       runUpdate?.type === "run.updated" ? runUpdate.payload.status : undefined,
@@ -1114,6 +1121,7 @@ it.effect("starts the provider when checkpoint baseline capture fails", () =>
       id: CheckpointScopeId.make("checkpoint-scope:run-execution-baseline-failure"),
     } as OrchestrationV2CheckpointScope;
     const providerStarts = yield* Ref.make(0);
+    const computerResumed = yield* Ref.make(false);
     const writes = yield* Ref.make<
       ReadonlyArray<{
         events: ReadonlyArray<OrchestrationV2DomainEvent>;
@@ -1123,6 +1131,14 @@ it.effect("starts the provider when checkpoint baseline capture fails", () =>
     const layerTest = RunExecutionService.layer.pipe(
       Layer.provide(
         Layer.mergeAll(
+          Layer.succeed(ProviderComputerLifecycle, {
+            resume: (resumedThread) =>
+              Effect.gen(function* () {
+                assert.equal(resumedThread, threadId);
+                yield* Ref.set(computerResumed, true);
+              }),
+            beginInterruption: () => Effect.succeed(Effect.void),
+          }),
           McpAppModelContext.layerEmpty,
           PreviewAgentActivity.layer,
           Layer.mock(CheckpointService.CheckpointServiceV2)({
@@ -1160,7 +1176,11 @@ it.effect("starts the provider when checkpoint baseline capture fails", () =>
         providerSessionId,
         session: {
           events: Stream.never,
-          startTurn: () => Ref.update(providerStarts, (count) => count + 1),
+          startTurn: () =>
+            Effect.gen(function* () {
+              assert.isTrue(yield* Ref.get(computerResumed));
+              yield* Ref.update(providerStarts, (count) => count + 1);
+            }),
         } as unknown as ProviderAdapter.ProviderAdapterV2SessionRuntime,
         run: {
           id: runId,

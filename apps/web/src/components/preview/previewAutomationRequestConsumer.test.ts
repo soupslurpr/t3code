@@ -204,3 +204,24 @@ it("serializes native failures without leaking arbitrary exception details", asy
     message: "The desktop computer operation failed.",
   });
 });
+
+it("suppresses a stopped request while preserving access for acknowledged cleanup", async () => {
+  using h = setup();
+  h.send(event("stopped"));
+  await h.began("stopped").promise;
+  h.send({
+    type: "cancel",
+    connectionId: "one",
+    requestId: "stopped",
+    preserveDesktopAccess: true,
+  });
+  expect(h.signals.get("stopped")?.aborted).toBe(true);
+  expect(h.cancelled).toEqual([]);
+  h.send(event("cleanup"));
+  await h.began("cleanup").promise;
+  h.result("cleanup").resolve("retained viewing");
+  await h.replied.promise;
+  expect(h.responses.map((response) => response.requestId)).toEqual(["cleanup"]);
+  h.unmount();
+  expect(h.cancelled).toEqual([]);
+});

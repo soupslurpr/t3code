@@ -80,6 +80,10 @@ async function handleComputerRequest(
       return await resolveDesktopComputerAutomation(
         computer.rememberControl(request.input as ComputerAutomationAccessInput, computerContext),
       );
+    case "computerInterrupt":
+      return await resolveDesktopComputerAutomation(
+        computer.interrupt?.(request.input as ComputerAutomationTargetInput, computerContext),
+      );
     case "computerForceRelease":
       return await resolveDesktopComputerAutomation(
         computer.forceRelease(request.input as ComputerAutomationTargetInput, computerContext),
@@ -153,6 +157,8 @@ const computerHostAtom = Atom.family((environmentId: EnvironmentId) =>
         ...(userDesktop === undefined ? {} : { userDesktop }),
         ...previewAutomationHostCapabilities({
           computerAvailable: window.desktopBridge?.computer !== undefined,
+          computerInterruptAvailable:
+            typeof window.desktopBridge?.computer?.interrupt === "function",
           computerCapabilities: userDesktop?.capabilities ?? [],
         }),
       },

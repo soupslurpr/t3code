@@ -47,3 +47,14 @@ it("limits advertisements to the selected host's actual capabilities", () => {
     "computerForgetControl",
   ]);
 });
+
+it("advertises Stop cleanup only when the connected desktop supports it", () => {
+  const input = { computerAvailable: true, computerCapabilities: ["view", "control"] as const };
+  expect(previewAutomationHostCapabilities(input).supportedOperations).not.toContain(
+    "computerInterrupt",
+  );
+  expect(
+    previewAutomationHostCapabilities({ ...input, computerInterruptAvailable: true })
+      .supportedOperations,
+  ).toContain("computerInterrupt");
+});

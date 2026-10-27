@@ -406,3 +406,9 @@ ownership. Safe internal symlinks are preserved; standalone and escaping links a
 Choose create, replace, or directory merge explicitly. Use `agent_desktop_transfer_status` to follow
 an active copy and `agent_desktop_transfer_cancel` to stop it. Completed status remains available for
 24 hours while the server stays running.
+
+Stopping a thread cancels pending desktop input and control requests and
+releases that thread's control lease. Existing viewing, keep-awake
+availability, and independent screen watches remain available. Starting a
+new turn permits new computer requests; the agent must request control
+again before sending input.

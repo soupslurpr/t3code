@@ -996,3 +996,73 @@ it.effect("keeps the bootstrap owner separate from a focused remote client", () 
     );
   }),
 );
+
+it.effect("evicts an unanswered native host and ignores its late traffic after recovery", () =>
+  Effect.gen(function* () {
+    const broker = yield* PreviewAutomationBroker.PreviewAutomationBroker;
+    const events = yield* Queue.unbounded<PreviewAutomationStreamEvent>();
+    const host = {
+      clientId: "frozen-native",
+      environmentId,
+      userDesktop: registration("target"),
+      supportedOperations: [...COMPUTER_AUTOMATION_OPERATIONS],
+    };
+    yield* (yield* broker.connect(host)).pipe(
+      Stream.runForEach((event) => Queue.offer(events, event)),
+      Effect.forkScoped,
+    );
+    const connected = yield* Queue.take(events);
+    expect(connected.type).toBe("connected");
+    const invoke = (
+      operation: "computerStatus" | "computerAct" | "computerSnapshot",
+      timeoutMs = 10_000,
+    ) =>
+      broker.invoke({
+        scope,
+        operation,
+        input: { desktop: { kind: "user", desktopId: "target" } },
+        timeoutMs,
+      });
+    const warm = yield* invoke("computerStatus").pipe(Effect.forkScoped);
+    const warmRequest = yield* Queue.take(events);
+    if (warmRequest.type !== "request") return yield* Effect.die("expected warm request");
+    yield* broker.respond({
+      clientId: host.clientId,
+      connectionId: connected.connectionId,
+      requestId: warmRequest.request.requestId,
+      ok: true,
+      result: "warm",
+    });
+    yield* Fiber.join(warm);
+    const first = yield* invoke("computerAct", 1_000).pipe(Effect.result, Effect.forkScoped);
+    const firstRequest = yield* Queue.take(events);
+    if (firstRequest.type !== "request") return yield* Effect.die("expected action request");
+    const second = yield* invoke("computerSnapshot").pipe(Effect.result, Effect.forkScoped);
+    expect((yield* Queue.take(events)).type).toBe("request");
+    const healthy = yield* serveInventoryHost({ ...host, clientId: "healthy-native" });
+    yield* TestClock.adjust(2_000);
+    expect(yield* Fiber.join(first)).toMatchObject({
+      _tag: "Failure",
+      failure: { _tag: "PreviewAutomationTimeoutError" },
+    });
+    expect(yield* Fiber.join(second)).toMatchObject({
+      _tag: "Failure",
+      failure: { _tag: "PreviewAutomationClientDisconnectedError" },
+    });
+    yield* broker.respond({
+      clientId: host.clientId,
+      connectionId: connected.connectionId,
+      requestId: firstRequest.request.requestId,
+      ok: true,
+      result: "late",
+    });
+    yield* broker.focusHost({
+      clientId: host.clientId,
+      connectionId: connected.connectionId,
+      environmentId,
+      focused: true,
+    });
+    expect(yield* invoke("computerStatus")).toBe("healthy-native");
+    expect(healthy.requests).toHaveLength(1);
+  }).pipe(Effect.provide(layer), Effect.scoped),
+);
