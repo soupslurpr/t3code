@@ -1164,6 +1164,8 @@ export type OrchestrationV2IdleCompaction = typeof OrchestrationV2IdleCompaction
 
 export const OrchestrationV2ConversationMessage = Schema.Struct({
   notification: Schema.optional(OrchestrationV2Notification),
+  /** A monitor steer stays pending until the provider accepts it or it becomes a queued turn. */
+  notificationDelivery: Schema.optional(Schema.Literals(["pending", "accepted"])),
   ...OrchestrationV2CreationFields,
   scheduledTaskId: Schema.optional(ScheduledTaskId),
   senderThreadId: Schema.optional(ThreadId),

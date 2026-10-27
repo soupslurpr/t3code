@@ -1,3 +1,6 @@
+import { ProviderSessionId, ProviderThreadId, ProviderTurnId } from "@t3tools/contracts";
+import * as EffectOutbox from "../orchestration-v2/EffectOutbox.ts";
+import { makeMonitorContinuationEvent } from "./ThreadMonitorContinuation.ts";
 import type { ThreadMonitorSummaryList } from "@t3tools/contracts";
 import * as Queue from "effect/Queue";
 import * as Stream from "effect/Stream";
@@ -234,7 +237,7 @@ describe("durable V2 monitors", () => {
     }).pipe(Effect.provide(layer)),
   );
 
-  it.effect("defers continuation while a V2 run is active and cancels idempotently", () =>
+  it.effect("queues behind unsupported active work and cancels another wait idempotently", () =>
     Effect.gen(function* () {
       yield* seedThread();
       const engine = yield* OrchestratorV2;
@@ -258,23 +261,143 @@ describe("durable V2 monitors", () => {
       yield* TestClock.adjust("1 second");
       assert.equal(
         (yield* service.checkNow({ threadId, check: {} })).monitors[0]?.status,
-        "triggered",
+        "delivered",
       );
-      const cancelled = yield* service.cancel({ threadId, cancel: { monitorId: monitor.id } });
+      const queued = (yield* (yield* ProjectionStoreV2).getThreadProjection(threadId)).runs;
+      assert.equal(queued.filter((run) => run.status === "queued").length, 1);
+      const next = yield* service.create({
+        threadId,
+        monitor: { label: "Cancel", schedule: { type: "signal" } },
+      });
+      const cancelled = yield* service.cancel({ threadId, cancel: { monitorId: next.id } });
       assert.equal(cancelled.monitors[0]?.status, "cancelled");
       assert.deepEqual(
-        yield* service.cancel({ threadId, cancel: { monitorId: monitor.id } }),
+        yield* service.cancel({ threadId, cancel: { monitorId: next.id } }),
         cancelled,
       );
       assert.equal(
-        (yield* service.signal({ threadId, signal: { monitorId: monitor.id } })).status,
+        (yield* service.signal({ threadId, signal: { monitorId: next.id } })).status,
         "cancelled",
       );
       assert.equal(
-        (yield* service.checkNow({ threadId, check: {} })).monitors[0]?.status,
+        (yield* service.checkNow({ threadId, check: { monitorId: next.id } })).monitors[0]?.status,
         "cancelled",
       );
     }).pipe(Effect.provide(layer)),
+  );
+
+  it.effect("waits for native acceptance and recovers a shutdown-cancelled delivery once", () =>
+    Effect.gen(function* () {
+      yield* seedThread();
+      const service = yield* ThreadMonitorService;
+      const repository = yield* ThreadMonitorRepository;
+      const snapshots = yield* ProjectionStoreV2;
+      const outbox = yield* EffectOutbox.EffectOutboxV2;
+      yield* (yield* OrchestratorV2).dispatch({
+        type: "message.dispatch",
+        commandId: CommandId.make("shutdown-active"),
+        threadId,
+        messageId: MessageId.make("shutdown-active"),
+        text: "Work",
+        attachments: [],
+        createdBy: "user",
+        creationSource: "web",
+        dispatchMode: { type: "queue_after_active" },
+      });
+      const run = (yield* snapshots.getThreadProjection(threadId)).runs[0]!;
+      const created = yield* service.create({
+        threadId,
+        monitor: { label: "Build", schedule: { type: "signal" } },
+      });
+      const now = yield* DateTime.now;
+      const monitor = {
+        ...created,
+        status: "triggered" as const,
+        trigger: { reason: "signal" as const, summary: "Done", evidence: null },
+        triggeredAt: DateTime.formatIso(DateTime.makeUnsafe(DateTime.toEpochMillis(now) - 1000)),
+        deliveryGroupId: "pending-native",
+        deliveryAttempts: 1,
+      };
+      yield* repository.upsert(monitor);
+      const original = (yield* snapshots.getThreadProjection(threadId)).messages[0]!;
+      const messageId = MessageId.make("thread-monitor-group:pending-native:continuation");
+      const commandId = CommandId.make("thread-monitor-group:pending-native:resume:1");
+      yield* (yield* EventSinkV2).write({
+        events: [
+          {
+            id: EventId.make("pending-native-message"),
+            type: "message.updated",
+            threadId,
+            runId: run.id,
+            occurredAt: now,
+            payload: {
+              ...original,
+              id: messageId,
+              text: "Build done",
+              createdBy: "system",
+              creationSource: "server",
+              notificationDelivery: "pending",
+              notification: {
+                source: { kind: "monitor" },
+                outcome: "updated",
+                summary: "Build done",
+                systemEvent: makeMonitorContinuationEvent([monitor]),
+              },
+            },
+          },
+          {
+            id: EventId.make("pending-native-completed"),
+            type: "run.updated",
+            threadId,
+            runId: run.id,
+            occurredAt: now,
+            payload: { ...run, status: "cancelled", startedAt: now, completedAt: now },
+          },
+        ],
+      });
+      yield* outbox.enqueue([
+        {
+          id: "pending-native-effect",
+          commandId,
+          threadId,
+          request: {
+            type: "provider-turn.steer",
+            providerSessionId: ProviderSessionId.make("old-session"),
+            providerThreadId: ProviderThreadId.make("old-thread"),
+            providerTurnId: ProviderTurnId.make("old-turn"),
+            messageId,
+          },
+        },
+      ]);
+      assert.equal(
+        (yield* service.checkNow({ threadId, check: { monitorId: monitor.id } })).monitors[0]
+          ?.status,
+        "triggered",
+      );
+      assert.lengthOf((yield* snapshots.getThreadProjection(threadId)).runs, 1);
+      yield* outbox.cancelUnsettled({
+        threadId,
+        effectTypes: ["provider-turn.steer"],
+        reason: "Server shutdown",
+      });
+      assert.equal(
+        (yield* service.checkNow({ threadId, check: { monitorId: monitor.id } })).monitors[0]
+          ?.status,
+        "delivered",
+      );
+      yield* service.checkNow({ threadId, check: { monitorId: monitor.id } });
+      const recovered = yield* snapshots.getThreadProjection(threadId);
+      assert.lengthOf(recovered.runs, 2);
+      assert.equal(recovered.runs[1]?.userMessageId, messageId);
+      assert.lengthOf(
+        recovered.messages.filter((message) => message.id === messageId),
+        1,
+      );
+      assert.equal(
+        recovered.messages.find((message) => message.id === messageId)?.notification?.source.kind,
+        "monitor",
+      );
+    }).pipe(Effect.provide(Layer.fresh(layer))),
   );
 
   it.effect("does not retire imported owners until explicit startup and retires every orphan", () =>
@@ -301,7 +424,7 @@ describe("durable V2 monitors", () => {
     }).pipe(Effect.provide(layer)),
   );
 
-  it.effect("delivers a signal after active work finishes", () =>
+  it.effect("queues a signal until active work finishes", () =>
     Effect.gen(function* () {
       yield* seedThread();
       const engine = yield* OrchestratorV2;
@@ -326,7 +449,7 @@ describe("durable V2 monitors", () => {
       yield* TestClock.adjust("1 second");
       assert.equal(
         (yield* service.checkNow({ threadId, check: {} })).monitors[0]?.status,
-        "triggered",
+        "delivered",
       );
       const run = (yield* projections.getThreadRecords(threadId, ["runs"])).runs[0]!;
       const now = yield* DateTime.now;
@@ -341,6 +464,7 @@ describe("durable V2 monitors", () => {
           },
         ],
       });
+      yield* engine.resumeQueuedRuns;
       assert.equal(
         (yield* service.checkNow({ threadId, check: {} })).monitors[0]?.status,
         "delivered",

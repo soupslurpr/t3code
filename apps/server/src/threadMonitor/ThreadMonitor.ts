@@ -43,6 +43,8 @@ import * as Stream from "effect/Stream";
 import { ThreadManagementService } from "../orchestration-v2/ThreadManagementService.ts";
 import { EventSinkV2 } from "../orchestration-v2/EventSink.ts";
 import { ProjectionStoreV2 } from "../orchestration-v2/ProjectionStore.ts";
+import { EffectOutboxV2, layer as EffectOutboxLayer } from "../orchestration-v2/EffectOutbox.ts";
+import { isUndeliveredMailboxSteer } from "../orchestration-v2/NotificationMailbox.ts";
 import { ThreadWorkspaceQuery } from "../orchestration-v2/ThreadWorkspaceQuery.ts";
 import * as ThreadMonitorRepositoryLayer from "../persistence/ThreadMonitors.ts";
 import { ThreadMonitorRepository } from "../persistence/ThreadMonitors.ts";
@@ -296,6 +298,7 @@ function requestControllerReview(
 }
 
 export const make = Effect.gen(function* () {
+  const effectOutbox = yield* EffectOutboxV2;
   const crypto = yield* Crypto.Crypto;
   const engine = yield* ThreadManagementService;
   const eventSink = yield* EventSinkV2;
@@ -585,6 +588,29 @@ export const make = Effect.gen(function* () {
     return failed;
   });
 
+  const notificationDelivery = Effect.fn("ThreadMonitor.notificationDelivery")(
+    function* (threadId: ThreadId, messageId: MessageId, commandId: CommandId) {
+      const prior = yield* projections.getThreadRecords(threadId, ["messages"], {
+        messageIds: [messageId],
+      });
+      const message = prior.messages.find((entry) => entry.id === messageId);
+      if (message === undefined) return "new" as const;
+      if (message.notificationDelivery !== "pending") return "accepted" as const;
+      const effects = yield* effectOutbox.listByCommandId(commandId);
+      // Let the outbox finish native acceptance or its completion-race fallback.
+      // Only recover a delivery it no longer owns (for example after shutdown).
+      if (effects.some((effect) => effect.status === "pending" || effect.status === "running"))
+        return "pending" as const;
+      const state = yield* projections.getThreadRecords(threadId, ["runs", "providerTurns"], {
+        runIds: message.runId === null ? [] : [message.runId],
+      });
+      return isUndeliveredMailboxSteer({ ...state, messages: prior.messages }, messageId)
+        ? ("retry" as const)
+        : ("pending" as const);
+    },
+    Effect.mapError(mapPersistenceError("delivery-recovery")),
+  );
+
   const deliverGroup = Effect.fn("ThreadMonitor.deliver")(function* (
     monitors: ReadonlyArray<ThreadMonitor>,
     now: string,
@@ -610,12 +636,14 @@ export const make = Effect.gen(function* () {
     // An accepted message is authoritative even if some member writes did not
     // survive a crash or a new active run now blocks another continuation.
     const messageId = MessageId.make(`thread-monitor-group:${first.deliveryGroupId}:continuation`);
-    const prior = yield* projections
-      .getThreadRecords(thread.id, ["messages"], {
-        messageIds: [messageId],
-      })
-      .pipe(Effect.mapError(mapPersistenceError("delivery-recovery", first.id)));
-    if (prior.messages.length > 0) {
+    const previousAttempt = Math.max(1, ...monitors.map((monitor) => monitor.deliveryAttempts));
+    const delivery = yield* notificationDelivery(
+      thread.id,
+      messageId,
+      CommandId.make(`thread-monitor-group:${first.deliveryGroupId}:resume:${previousAttempt}`),
+    );
+    if (delivery === "pending") return;
+    if (delivery === "accepted") {
       yield* writeMonitors(
         monitors
           .filter((monitor) => monitor.status === "triggered")
@@ -630,17 +658,12 @@ export const make = Effect.gen(function* () {
       );
       return;
     }
-    if (
-      thread.activeRunId !== null ||
-      thread.pendingRuntimeRequest !== null ||
-      thread.archivedAt !== null
-    )
-      return;
+    if (thread.pendingRuntimeRequest !== null || thread.archivedAt !== null) return;
 
     // Reuse an in-flight attempt after a restart. The orchestration receipt
     // closes the crash window between accepting one grouped continuation and
     // marking every member delivered.
-    const attempt = Math.max(1, ...monitors.map((monitor) => monitor.deliveryAttempts));
+    const attempt = previousAttempt + (delivery === "retry" ? 1 : 0);
     const attempting = monitors.map((monitor): ThreadMonitor => ({
       ...monitor,
       deliveryAttempts: attempt,
@@ -699,6 +722,7 @@ export const make = Effect.gen(function* () {
       return;
     }
 
+    if ((yield* notificationDelivery(thread.id, messageId, commandId)) !== "accepted") return;
     yield* Effect.forEach(
       attempting,
       (monitor) => {
@@ -742,10 +766,16 @@ export const make = Effect.gen(function* () {
     const messageId = MessageId.make(
       `thread-monitor:${monitor.id}:review:${monitor.condition.revision}:${monitor.condition.review.sequence}`,
     );
-    const prior = yield* projections
-      .getThreadRecords(thread.id, ["messages"], { messageIds: [messageId] })
-      .pipe(Effect.mapError(mapPersistenceError("computer-review-recovery", monitor.id)));
-    if (prior.messages.length > 0) {
+    const previousAttempt = Math.max(1, monitor.condition.review.deliveryAttempts);
+    const delivery = yield* notificationDelivery(
+      thread.id,
+      messageId,
+      CommandId.make(
+        `thread-monitor:${monitor.id}:review:${monitor.condition.revision}:${monitor.condition.review.sequence}:${previousAttempt}`,
+      ),
+    );
+    if (delivery === "pending") return monitor;
+    if (delivery === "accepted") {
       const recovered: ThreadMonitor = {
         ...monitor,
         updatedAt: now,
@@ -763,14 +793,9 @@ export const make = Effect.gen(function* () {
       yield* writeMonitor(recovered);
       return recovered;
     }
-    if (
-      thread.activeRunId !== null ||
-      thread.pendingRuntimeRequest !== null ||
-      thread.archivedAt !== null
-    )
-      return monitor;
+    if (thread.pendingRuntimeRequest !== null || thread.archivedAt !== null) return monitor;
 
-    const attempt = Math.max(1, monitor.condition.review.deliveryAttempts);
+    const attempt = previousAttempt + (delivery === "retry" ? 1 : 0);
     const attempting: ThreadMonitor = {
       ...monitor,
       updatedAt: now,
@@ -839,6 +864,8 @@ export const make = Effect.gen(function* () {
       return retrying;
     }
 
+    if ((yield* notificationDelivery(thread.id, messageId, commandId)) !== "accepted")
+      return attempting;
     const delivered: ThreadMonitor = {
       ...attempting,
       lastError: null,
@@ -1940,4 +1967,5 @@ export const make = Effect.gen(function* () {
 
 export const layer = Layer.effect(ThreadMonitorService, make).pipe(
   Layer.provide(ThreadMonitorRepositoryLayer.layer),
+  Layer.provide(EffectOutboxLayer),
 );
