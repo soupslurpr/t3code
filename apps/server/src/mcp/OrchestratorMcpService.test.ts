@@ -22,10 +22,14 @@ import {
 } from "@t3tools/contracts";
 import { checkpointWorkspace } from "@t3tools/provider-testing/replayWorkspace";
 import * as DateTime from "effect/DateTime";
+import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
+import * as Fiber from "effect/Fiber";
 import * as Layer from "effect/Layer";
 import * as Ref from "effect/Ref";
 import * as Schema from "effect/Schema";
+import * as Stream from "effect/Stream";
+import * as TestClock from "effect/testing/TestClock";
 
 import { CodexProviderCapabilitiesV2 } from "../orchestration-v2/Adapters/CodexAdapterV2.ts";
 import * as CommandReceiptStore from "../orchestration-v2/CommandReceiptStore.ts";
@@ -1121,6 +1125,219 @@ describe("OrchestratorMcpService provider resolution", () => {
     runtimeRequests: [],
     turnItems: [],
   } as unknown as OrchestrationV2ThreadProjection;
+
+  it.effect.each([
+    { caller: "muse", timeoutMs: 3_600_000, expected: 240_000 },
+    { caller: "codex", timeoutMs: 3_600_000, expected: 3_600_000 },
+    { caller: "claudeAgent", timeoutMs: 3_600_000, expected: 3_600_000 },
+    { caller: "opencode", timeoutMs: 3_600_000, expected: 3_600_000 },
+    { caller: "cursor", timeoutMs: 3_600_000, expected: 240_000 },
+    { caller: "pi", timeoutMs: 3_600_000, expected: 240_000 },
+    { caller: "grok", timeoutMs: 3_600_000, expected: 240_000 },
+    { caller: "acpRegistry", timeoutMs: 3_600_000, expected: 240_000 },
+    { caller: "antigravity", timeoutMs: 3_600_000, expected: 240_000 },
+    { caller: "forkOnly", timeoutMs: 3_600_000, expected: 240_000 },
+    { caller: "missing", timeoutMs: 3_600_000, expected: 240_000 },
+    { caller: "external", timeoutMs: 3_600_000, expected: 240_000 },
+    { caller: "muse", timeoutMs: 5_000, expected: 5_000 },
+    { caller: "codex", timeoutMs: 5_000, expected: 5_000 },
+    { caller: "muse", timeoutMs: undefined, expected: 240_000 },
+    { caller: "codex", timeoutMs: undefined, expected: 600_000 },
+    { caller: "codex", timeoutMs: 7_200_000, expected: 3_600_000 },
+    { caller: "muse", timeoutMs: 0, expected: 1 },
+  ])(
+    "caps thread waits for $caller with requested timeout $timeoutMs",
+    ({ caller, timeoutMs, expected }) =>
+      Effect.gen(function* () {
+        const received = yield* Ref.make<ReadonlyArray<number>>([]);
+        const shell = liveThreadShell(childThreadId);
+        const waitScope: McpInvocationScope =
+          caller === "external"
+            ? {
+                ...scope,
+                thread: undefined,
+                client: {
+                  sessionId: "external-wait",
+                  label: "External client",
+                  access: "full-access",
+                },
+              }
+            : scope;
+        const layerDependencies = Layer.mergeAll(
+          NodeServices.layer,
+          Layer.mock(ThreadManagementService.ThreadManagementService)({
+            getThreadRecords: () => Effect.succeed(parentProjection([])),
+            getThreadShell: () => Effect.succeed(shell),
+            getProjectThreadRecords: () => Effect.succeed(idleThreadProjection(shell)),
+            waitForThread: (input) =>
+              Ref.update(received, (values) => [...values, input.timeoutMs]).pipe(
+                Effect.as({ threadId: input.threadId, run: null, timedOut: true }),
+              ),
+          }),
+          ServerSettings.layerTest(),
+          providerRegistryLayer(
+            caller === "missing"
+              ? []
+              : [
+                  providerSnapshot({
+                    instanceId: codexInstanceId,
+                    driver: ProviderDriverKind.make(caller === "external" ? "codex" : caller),
+                  }),
+                ],
+          ),
+          adapterRegistryLayer([]),
+          Layer.mock(ProjectService.ProjectService)({}),
+          Layer.mock(SecretRequests.SecretRequests)({}),
+          Layer.mock(ScheduledTaskService.ScheduledTaskService)({}),
+        );
+
+        yield* Effect.gen(function* () {
+          const service = yield* OrchestratorMcpService.OrchestratorMcpService;
+          const result = yield* service.waitForThread(waitScope, {
+            threadId: childThreadId,
+            ...(timeoutMs === undefined ? {} : { timeoutMs }),
+          });
+          assert.deepEqual(yield* Ref.get(received), [expected]);
+          assert.isTrue(result.timedOut);
+        }).pipe(Effect.provide(layerOrchestratorService.pipe(Layer.provide(layerDependencies))));
+      }),
+  );
+
+  it.effect("ends a Muse delegation wait at the caller ceiling and leaves the child running", () =>
+    Effect.gen(function* () {
+      const watching = yield* Deferred.make<void>();
+      const commands = yield* Ref.make<ReadonlyArray<string>>([]);
+      const childInstanceId = ProviderInstanceId.make("codex-child");
+      const task = {
+        id: taskId,
+        threadId: parentThreadId,
+        origin: "app_owned",
+        childThreadId,
+        providerInstanceId: childInstanceId,
+        driver: "codex",
+        model: "gpt-5.4",
+        status: "running",
+        result: null,
+      };
+      const layerDependencies = Layer.mergeAll(
+        NodeServices.layer,
+        Layer.mock(ThreadManagementService.ThreadManagementService)({
+          hasReceipt: () => Effect.succeed(false),
+          getThreadRecords: (threadId) =>
+            Effect.succeed(
+              threadId === parentThreadId ? parentProjection([task]) : childProjection,
+            ),
+          getThreadEventSequence: () => Effect.succeed(0),
+          streamStoredEventsFrom: () =>
+            Stream.fromEffect(
+              Deferred.succeed(watching, undefined).pipe(Effect.andThen(Effect.never)),
+            ),
+          dispatch: (command) =>
+            Ref.update(commands, (values) => [...values, command.type]).pipe(
+              Effect.as({
+                storedEvents: [{ event: { type: "subagent.updated", payload: task } }],
+              } as never),
+            ),
+        }),
+        ServerSettings.layerTest(),
+        providerRegistryLayer([
+          providerSnapshot({
+            instanceId: codexInstanceId,
+            driver: ProviderDriverKind.make("muse"),
+          }),
+          providerSnapshot({
+            instanceId: childInstanceId,
+            driver: ProviderDriverKind.make("codex"),
+            model: "gpt-5.4",
+          }),
+        ]),
+        adapterRegistryLayer([childInstanceId]),
+        Layer.mock(ProjectService.ProjectService)({}),
+        Layer.mock(SecretRequests.SecretRequests)({}),
+        Layer.mock(ScheduledTaskService.ScheduledTaskService)({}),
+      );
+
+      yield* Effect.gen(function* () {
+        const service = yield* OrchestratorMcpService.OrchestratorMcpService;
+        const waiting = yield* service
+          .delegateTask(scope, {
+            task: "Keep working.",
+            target: { providerInstanceId: childInstanceId, model: "gpt-5.4" },
+            mode: "wait",
+            timeoutMs: 3_600_000,
+            clientRequestId: "muse-wait",
+          })
+          .pipe(Effect.forkChild);
+        yield* Deferred.await(watching);
+        yield* TestClock.adjust(239_999);
+        assert.isUndefined(waiting.pollUnsafe());
+        yield* TestClock.adjust(1);
+        const result = yield* Fiber.join(waiting);
+        assert.isTrue(result.waitTimedOut);
+        assert.equal(result.status, "running");
+        assert.deepEqual(yield* Ref.get(commands), [
+          "delegated_task.request",
+          "delegated_task.wake-policy",
+        ]);
+        assert.isFalse((yield* service.taskStatus(scope, taskId)).waitTimedOut);
+      }).pipe(Effect.provide(layerOrchestratorService.pipe(Layer.provide(layerDependencies))));
+    }),
+  );
+
+  it.effect.each(["timeout", "interrupt"])("closes an unanswered Muse secret card on %s", (end) =>
+    Effect.gen(function* () {
+      const pending = yield* Deferred.make<void>();
+      const statuses = yield* Ref.make<ReadonlyArray<string>>([]);
+      const layerDependencies = Layer.mergeAll(
+        NodeServices.layer,
+        Layer.mock(ThreadManagementService.ThreadManagementService)({
+          getThreadRecords: () => Effect.succeed({ ...parentProjection([]), turnItems: [] }),
+          dispatch: (command) =>
+            command.type === "secret_request.record"
+              ? Ref.update(statuses, (values) => [...values, command.secretStatus]).pipe(
+                  Effect.andThen(Deferred.succeed(pending, undefined)),
+                  Effect.as({} as never),
+                )
+              : Effect.die("Unexpected command"),
+        }),
+        ServerSettings.layerTest(),
+        providerRegistryLayer([
+          providerSnapshot({
+            instanceId: codexInstanceId,
+            driver: ProviderDriverKind.make("muse"),
+          }),
+        ]),
+        adapterRegistryLayer([]),
+        Layer.mock(ProjectService.ProjectService)({}),
+        Layer.mock(SecretRequests.SecretRequests)({}),
+        Layer.mock(ScheduledTaskService.ScheduledTaskService)({}),
+      );
+
+      yield* Effect.gen(function* () {
+        const service = yield* OrchestratorMcpService.OrchestratorMcpService;
+        const waiting = yield* service
+          .requestSecret(scope, {
+            label: "Webhook secret",
+            reason: "Sign webhook requests.",
+            timeoutMs: 3_600_000,
+            clientRequestId: "muse-secret-wait",
+          })
+          .pipe(Effect.forkChild);
+        yield* Deferred.await(pending);
+        if (end === "interrupt") {
+          yield* Fiber.interrupt(waiting);
+          assert.deepEqual(yield* Ref.get(statuses), ["pending", "cancelled"]);
+          return;
+        }
+        yield* TestClock.adjust(239_999);
+        assert.isUndefined(waiting.pollUnsafe());
+        assert.deepEqual(yield* Ref.get(statuses), ["pending"]);
+        yield* TestClock.adjust(1);
+        assert.deepEqual(yield* Fiber.join(waiting), { status: "timed_out" });
+        assert.deepEqual(yield* Ref.get(statuses), ["pending", "cancelled"]);
+      }).pipe(Effect.provide(layerOrchestratorService.pipe(Layer.provide(layerDependencies))));
+    }),
+  );
 
   it.effect(
     "advertises orchestration capability from registered adapters rather than a driver allowlist",

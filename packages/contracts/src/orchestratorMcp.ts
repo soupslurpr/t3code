@@ -167,7 +167,8 @@ export const OrchestratorMcpDelegateTaskInput = Schema.Struct({
     }),
   ),
   timeoutMs: Schema.optional(Schema.Finite).annotate({
-    description: "Mode 'wait' only. Default 10 min. A timeout does not cancel the child.",
+    description:
+      "Mode 'wait' only. Default 10 min, capped by the calling harness MCP budget. A timeout does not cancel the child; use task_status later.",
   }),
   clientRequestId: Schema.optional(OrchestratorMcpClientRequestId),
   runtimeMode: Schema.optional(
@@ -213,7 +214,8 @@ export const OrchestratorMcpDelegateTaskResult = Schema.Struct({
     description: "Oldest pending approval, or null. Ends a wait. Grants no approval rights.",
   }),
   waitTimedOut: Schema.Boolean.annotate({
-    description: "True only on the timed-out wait call. The child keeps running.",
+    description:
+      "True only when the effective wait budget elapsed, possibly before timeoutMs. The child keeps running; later task_status returns false.",
   }),
   next: Schema.optional(OrchestratorMcpRunningTaskNext),
 });
@@ -482,7 +484,10 @@ export type OrchestratorMcpThreadSendResult = typeof OrchestratorMcpThreadSendRe
 export const OrchestratorMcpThreadWaitInput = Schema.Struct({
   threadId: ThreadId,
   runId: Schema.optional(RunId),
-  timeoutMs: Schema.optional(Schema.Finite),
+  timeoutMs: Schema.optional(Schema.Finite).annotate({
+    description:
+      "Requested wait budget, default 10 minutes. A shorter calling harness MCP budget can return timedOut=true before this budget elapses. Work continues; call t3_thread_wait again to keep waiting.",
+  }),
 });
 export type OrchestratorMcpThreadWaitInput = typeof OrchestratorMcpThreadWaitInput.Type;
 
@@ -649,7 +654,10 @@ export const OrchestratorMcpRequestSecretInput = Schema.Struct({
   }),
   timeoutMs: Schema.optional(
     Schema.Int.check(Schema.isBetween({ minimum: 1_000, maximum: 60 * 60 * 1_000 })),
-  ).annotate({ description: "Default 10 min." }),
+  ).annotate({
+    description:
+      "Default 10 min, capped by the calling harness MCP budget. Timeout closes the card; ask again with a new clientRequestId if needed.",
+  }),
   clientRequestId: Schema.optional(OrchestratorMcpClientRequestId).annotate({
     description: "Retry key for this ask. New key after a timeout or cancel.",
   }),

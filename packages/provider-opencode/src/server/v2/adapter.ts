@@ -527,6 +527,8 @@ const RECONNECT_WAIT = "30 seconds";
 const LOST_BACKGROUND =
   "T3 Code lost its connection to OpenCode while this subagent ran, so its result is not shown.";
 const INVENTORY_TIMEOUT = "5 seconds";
+// Leave response time beyond the server's maximum one-hour MCP wait.
+const OPENCODE_T3_MCP_TOOL_TIMEOUT_MS = 65 * 60 * 1_000;
 const ACTIVE_CHECK_TIMEOUT = "5 seconds";
 // Other failures may still have admitted the prompt.
 const CLEAR_PROMPT_REJECTIONS: ReadonlySet<string> = new Set([
@@ -3036,6 +3038,7 @@ export const make = Effect.fn("OpenCode2Adapter.make")(function* (instanceId: Pr
               url: mcpSession!.endpoint,
               headers: { Authorization: wanted.credential },
               oauth: false,
+              timeout: new Mcp.TimeoutConfig({ execution: OPENCODE_T3_MCP_TOOL_TIMEOUT_MS }),
             }),
           })
           .pipe(
