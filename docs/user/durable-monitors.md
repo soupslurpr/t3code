@@ -22,8 +22,9 @@ active, the continuation waits until the thread is available. An agent can
 also record a result without starting another turn.
 
 An automated continuation appears as a **Monitor triggered** or **Monitor review**
-event. Expand it to inspect the trigger, observation, evidence, and stored
-continuation. The event does not grant new authorization. Codex monitor
+event. Expand it to inspect the trigger, observation, and evidence. The agent
+resumes using the existing conversation, without a separate handoff prompt.
+The event does not grant new authorization. Codex monitor
 continuations require Codex CLI 0.151.0 or later; update Codex if delivery
 reports that the installed version does not support automated input.
 

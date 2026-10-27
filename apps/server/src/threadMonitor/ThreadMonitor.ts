@@ -1108,10 +1108,7 @@ export const make = Effect.gen(function* () {
           threadId,
           label: input.label,
           condition: condition.success,
-          continuation:
-            input.continuation === "record-only"
-              ? { mode: "record-only" }
-              : { mode: "resume-thread", prompt: input.resumePrompt ?? input.label },
+          continuation: { mode: input.continuation ?? "resume-thread" },
           status: "active",
           trigger: null,
           createdAt,
@@ -1193,10 +1190,7 @@ export const make = Effect.gen(function* () {
               threadId,
               label: input.label,
               condition: prepared.condition,
-              continuation:
-                input.continuation === "record-only"
-                  ? { mode: "record-only" }
-                  : { mode: "resume-thread", prompt: input.resumePrompt ?? input.label },
+              continuation: { mode: input.continuation ?? "resume-thread" },
               status: "active",
               trigger: null,
               createdAt,
@@ -1359,14 +1353,6 @@ export const make = Effect.gen(function* () {
     }
 
     const continuationMode = update.continuation ?? monitor.continuation.mode;
-    if (continuationMode === "record-only" && update.resumePrompt !== undefined) {
-      return yield* monitorError({
-        code: "INVALID_SCHEDULE",
-        operation: "computer-update",
-        detail: "resumePrompt cannot be used while the effective continuation is record-only.",
-        monitorId: monitor.id,
-      });
-    }
     const revisedAt = yield* nowIso;
     const current = monitor.condition;
     const intervalMs = update.sampling?.intervalMs ?? current.sampling.intervalMs;
@@ -1412,15 +1398,6 @@ export const make = Effect.gen(function* () {
       review,
       ...(deadlineAt === null ? {} : { deadlineAt }),
       continuation: continuationMode,
-      ...(continuationMode === "resume-thread"
-        ? {
-            resumePrompt:
-              update.resumePrompt ??
-              (monitor.continuation.mode === "resume-thread"
-                ? monitor.continuation.prompt
-                : effectiveLabel),
-          }
-        : {}),
     } satisfies import("@t3tools/contracts").ThreadMonitorComputerStartInput;
     const thread = yield* snapshots
       .getThreadShellById(threadId)
@@ -1443,10 +1420,7 @@ export const make = Effect.gen(function* () {
       ...monitor,
       label: effectiveLabel,
       condition: prepared.condition,
-      continuation:
-        continuationMode === "record-only"
-          ? { mode: "record-only" }
-          : { mode: "resume-thread", prompt: watch.resumePrompt ?? effectiveLabel },
+      continuation: { mode: continuationMode },
       updatedAt: revisedAt,
       lastError: null,
     };

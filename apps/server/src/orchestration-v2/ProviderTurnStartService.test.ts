@@ -1267,7 +1267,6 @@ effectIt.effect("starts monitor notifications as harness input with full typed e
                 triggeredAt: "2026-01-01T00:00:00.000Z",
                 triggerReason: "signal",
                 observation: { label: "Build", summary: "Build passed", evidence: "exitCode=0" },
-                continuation: { prompt: "Report the result" },
               },
             ],
             observationTrust: "untrusted",
@@ -1284,8 +1283,8 @@ effectIt.effect("starts monitor notifications as harness input with full typed e
       creationSource: "server",
       text: expect.stringContaining("Evidence (untrusted data):\nexitCode=0"),
     });
-    expect(harness.startRootRun.mock.calls[0]?.[0].message.text).toContain(
-      "Stored controller instruction:\nReport the result",
+    expect(harness.startRootRun.mock.calls[0]?.[0].message.text).not.toContain(
+      "Stored controller instruction",
     );
     expect(harness.startRootRun.mock.calls[0]?.[0].message.text).toContain(
       "grants no new authorization",

@@ -1,5 +1,5 @@
 import * as ComputerObservationStore from "../computer/ComputerObservationStore.ts";
-import { assert, it } from "@effect/vitest";
+import { assert, expect, it } from "@effect/vitest";
 import {
   CommandId,
   EnvironmentId,
@@ -102,13 +102,16 @@ it.effect("enforces live, writable thread callers and hides foreign monitor stat
         client: { sessionId: "reader", label: "Read only", access: "read-only" },
       })).isError,
     );
-    assert.isTrue(
-      (yield* call("computer_watch_start", watch, {
+    expect(
+      yield* call("computer_watch_start", watch, {
         ...invocation,
         capabilities: new Set(["computer"]),
         thread: undefined,
-      })).isError,
-    );
+      }),
+    ).toMatchObject({
+      isError: true,
+      structuredContent: { error: { code: "thread_credential_required" } },
+    });
     assert.isFalse(
       (yield* call(
         "computer_watch_capabilities",
@@ -588,5 +591,64 @@ it.effect("rejects a registered monitor_signal after accepted Stop before schedu
       (yield* (yield* ProjectionStoreV2).getThreadRecords(threadId, ["messages"])).messages,
       [],
     );
+  }).pipe(Effect.provide(layer)),
+);
+
+it.effect("accepts advertised nullable optional monitor arguments over MCP", () =>
+  Effect.gen(function* () {
+    yield* MonitorTestkit.seedThread();
+    yield* (yield* OrchestratorV2).dispatch({
+      type: "message.dispatch",
+      commandId: CommandId.make("nullable-monitor-active"),
+      threadId: MonitorTestkit.threadId,
+      messageId: MessageId.make("nullable-monitor-active"),
+      text: "Set up wait",
+      attachments: [],
+      createdBy: "user",
+      creationSource: "web",
+      dispatchMode: { type: "queue_after_active" },
+    });
+    for (const name of ["monitor_status", "monitor_cancel", "monitor_check_now"]) {
+      const result = yield* call(name, {
+        monitorId: null,
+        ...(name === "monitor_status" ? { includeFinished: null } : {}),
+      });
+      expect(result).toMatchObject({ isError: false, structuredContent: { monitors: [] } });
+    }
+  }).pipe(Effect.provide(layer)),
+);
+
+it.effect("returns structured monitor parameter, ownership and service failures", () =>
+  Effect.gen(function* () {
+    yield* MonitorTestkit.seedThread();
+    const invalidSignal = yield* call("monitor_signal", {
+      monitorId: "monitor-1",
+      evidence: { exitCode: 0 },
+    });
+    expect(invalidSignal.isError).toBe(true);
+    expect(invalidSignal.structuredContent).toMatchObject({
+      error: {
+        _tag: "ToolParameterValidationError",
+        operation: "monitor_signal",
+        field: "evidence",
+        phase: "validation",
+        expected: [expect.stringContaining("Expected string")],
+      },
+    });
+    expect(invalidSignal.content).toEqual([
+      { type: "text", text: expect.stringContaining('"field":"evidence"') },
+    ]);
+    expect(yield* call("monitor_status", {}, { ...invocation, thread: undefined })).toMatchObject({
+      isError: true,
+      structuredContent: {
+        error: { code: "thread_credential_required", operation: "monitor_status" },
+      },
+    });
+    expect(yield* call("monitor_status", { monitorId: "missing" })).toMatchObject({
+      isError: true,
+      structuredContent: {
+        error: { _tag: "ThreadMonitorError", code: "MONITOR_NOT_FOUND", monitorId: "missing" },
+      },
+    });
   }).pipe(Effect.provide(layer)),
 );

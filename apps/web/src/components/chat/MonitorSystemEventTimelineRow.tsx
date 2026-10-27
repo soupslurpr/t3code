@@ -71,10 +71,6 @@ export function MonitorSystemEventTimelineRow({
                     </pre>
                   </div>
                 ) : null}
-                <div>
-                  <p className="font-medium text-foreground/70">Stored continuation</p>
-                  <p className="whitespace-pre-wrap break-words">{monitor.continuation.prompt}</p>
-                </div>
               </div>
             ))
           ) : (

@@ -42,7 +42,6 @@ const continuation: OrchestrationSystemEvent = {
       triggeredAt: "2026-01-01T00:00:00.000Z",
       triggerReason: "signal",
       observation: { label: "Build", summary: "Build passed", evidence: "exitCode=0" },
-      continuation: { prompt: "Report the result" },
     },
   ],
   observationTrust: "untrusted",
@@ -112,7 +111,7 @@ describe("MonitorSystemEventCard", () => {
         expect(container.textContent).toContain("0 cached");
         expect(container.textContent).toContain("5.12K cache write");
         expect(container.textContent).toContain("10 output tokens");
-      } else expect(container.textContent).toContain("Stored continuation: Report the result");
+      } else expect(container.textContent).not.toContain("Stored continuation");
       act(() => button.click());
       expect(container.textContent).not.toContain(detail);
     },

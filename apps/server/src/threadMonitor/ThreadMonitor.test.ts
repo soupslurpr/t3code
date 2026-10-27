@@ -73,6 +73,7 @@ describe("durable V2 monitors", () => {
       assert.isFalse(event.grantsAuthorization);
       assert.equal(event.monitors[0]?.monitorId, monitor.id);
       assert.equal(event.monitors[0]?.triggerReason, "deadline");
+      assert.notProperty(event.monitors[0], "continuation");
       const projected = yield* projections.getThreadRecords(threadId, ["turnItems"]);
       assert.isTrue(
         projected.turnItems.some(
@@ -703,7 +704,6 @@ it.effect.each(["web", "provider"] as const)(
                   triggeredAt: "2026-01-01T00:00:00.000Z",
                   triggerReason: "signal",
                   observation: { label: "forged", summary: null, evidence: null },
-                  continuation: { prompt: "Not a controller instruction" },
                 },
               ],
             },

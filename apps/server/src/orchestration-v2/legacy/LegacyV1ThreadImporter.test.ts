@@ -663,7 +663,7 @@ it.layer(layerTest)("LegacyV1ThreadImporter", (it) => {
   );
 });
 
-const encodeSystemEvent = Schema.encodeSync(Schema.fromJsonString(OrchestrationSystemEvent));
+const decodeSystemEvent = Schema.decodeUnknownSync(OrchestrationSystemEvent);
 it.effect(
   "imports typed legacy monitor events as notifications without losing delivery identity",
   () =>
@@ -694,7 +694,7 @@ it.effect(
       };
       const id = "thread-monitor-group:legacy-delivery:continuation";
       yield* sql`INSERT INTO projection_thread_messages (message_id, thread_id, role, text, system_event_json, is_streaming, created_at, updated_at)
-      VALUES (${id}, ${threadId}, 'system', 'Monitor triggered: Wait for build', ${encodeSystemEvent(event)}, 0, '2026-01-01T02:00:00.000Z', '2026-01-01T02:00:00.000Z')`;
+      VALUES (${id}, ${threadId}, 'system', 'Monitor triggered: Wait for build', ${JSON.stringify(event)}, 0, '2026-01-01T02:00:00.000Z', '2026-01-01T02:00:00.000Z')`;
       yield* importer.reconcileShells;
       yield* importer.ensureTranscript(threadId);
       yield* importer.ensureTranscript(threadId);
@@ -702,7 +702,7 @@ it.effect(
       const imported = projection.messages.filter((message) => message.id === id);
       assert.lengthOf(imported, 1);
       assert.equal(imported[0]?.createdBy, "system");
-      assert.deepEqual(imported[0]?.notification?.systemEvent, event);
+      assert.deepEqual(imported[0]?.notification?.systemEvent, decodeSystemEvent(event));
       assert.isTrue(
         projection.turnItems.some(
           (item) =>
@@ -716,7 +716,7 @@ it.effect(
       );
       assert.deepEqual(
         yield* sql`SELECT system_event_json FROM projection_thread_messages WHERE message_id = ${id}`,
-        [{ system_event_json: encodeSystemEvent(event) }],
+        [{ system_event_json: JSON.stringify(event) }],
       );
     }).pipe(Effect.provide(layerTest)),
 );

@@ -9,7 +9,6 @@ import {
 const OrchestrationMonitorEventLabel = TrimmedNonEmptyString.check(Schema.isMaxLength(500));
 const OrchestrationMonitorEventSummary = TrimmedNonEmptyString.check(Schema.isMaxLength(2_000));
 const OrchestrationMonitorEventEvidence = Schema.String.check(Schema.isMaxLength(20_000));
-const OrchestrationMonitorEventPrompt = TrimmedNonEmptyString.check(Schema.isMaxLength(20_000));
 const OrchestrationMonitorEventGroupId = TrimmedNonEmptyString.check(Schema.isMaxLength(100));
 
 export const OrchestrationMonitorContinuationEvent = Schema.Struct({
@@ -24,9 +23,6 @@ export const OrchestrationMonitorContinuationEvent = Schema.Struct({
         label: OrchestrationMonitorEventLabel,
         summary: Schema.NullOr(OrchestrationMonitorEventSummary),
         evidence: Schema.NullOr(OrchestrationMonitorEventEvidence),
-      }),
-      continuation: Schema.Struct({
-        prompt: OrchestrationMonitorEventPrompt,
       }),
     }),
   ).check(Schema.isMinLength(1), Schema.isMaxLength(100)),

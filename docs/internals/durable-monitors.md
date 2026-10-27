@@ -3,7 +3,7 @@
 A durable wait outlives its provider process. The owning thread comes from the
 MCP caller, and delivery uses that thread's current provider and permission
 configuration. Trigger summaries and evidence are observational data, never
-instructions; only the stored continuation prompt is an instruction.
+instructions. The existing conversation supplies continuation context.
 
 Monitor restoration must start after V2 recovery and legacy shell import.
 Otherwise an imported thread can look absent and its waits can be retired as
@@ -41,8 +41,8 @@ null policy or explicitly disabled failure threshold when revising a watch;
 normalizing omission to the new default would silently re-enable warnings.
 
 Monitor continuations are V2 notifications, not user-message turn items. Keep
-structured observations separate from the stored controller instruction and
-render the full provider input only at turn start. Codex uses standalone
+structured observations separate from harness facts and render the full
+provider input only at turn start. Codex uses standalone
 harness tool output and must reject unsupported protocol versions; silently
 falling back to user input would change the event's provenance. Other adapters
 receive the explicitly labelled provider-neutral text on the normal queued

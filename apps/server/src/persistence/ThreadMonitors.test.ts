@@ -12,7 +12,7 @@ const fixture: ThreadMonitor = {
   threadId: ThreadId.make("owner"),
   label: "Exact Unicode 🥣",
   condition: { type: "signal", deadlineAt: "2026-10-27T00:00:00.000Z" },
-  continuation: { mode: "resume-thread", prompt: "Continue" },
+  continuation: { mode: "resume-thread" },
   status: "active",
   trigger: null,
   createdAt: "2026-10-26T00:00:00.000Z",
@@ -150,4 +150,22 @@ it.effect("signals only active owned signal monitors without a Stop cancellation
     assert.isFalse(yield* repository.trySignal({ ...signal, summary: "Duplicate result" }));
     assert.deepEqual(Option.getOrThrow(yield* repository.getById(signalMonitor.id)), triggered);
   }).pipe(Effect.provide(ThreadMonitors.layer.pipe(Layer.provideMerge(Sqlite.layerMemory)))),
+);
+
+it.effect(
+  "loads old prompt-bearing rows and saves prompt-free monitors with existing constraints",
+  () =>
+    Effect.gen(function* () {
+      const repository = yield* ThreadMonitors.ThreadMonitorRepository;
+      const sql = yield* SqlClient.SqlClient;
+      yield* repository.upsert(fixture);
+      yield* sql`UPDATE thread_monitors SET resume_prompt = 'Old handoff' WHERE monitor_id = ${fixture.id}`;
+      const stored = Option.getOrThrow(yield* repository.getById(fixture.id));
+      assert.deepEqual(stored.continuation, { mode: "resume-thread" });
+      yield* repository.upsert({ ...stored, label: "Updated build watch" });
+      const rows = yield* sql<{
+        resume_prompt: string;
+      }>`SELECT resume_prompt FROM thread_monitors WHERE monitor_id = ${fixture.id}`;
+      assert.strictEqual(rows[0]?.resume_prompt, "Updated build watch");
+    }).pipe(Effect.provide(ThreadMonitors.layer.pipe(Layer.provideMerge(Sqlite.layerMemory)))),
 );
