@@ -159,7 +159,7 @@
       "generatedNotices": [
         {
           "licenseId": "Apache-2.0",
-          "copyrights": ["Copyright 2009, 2010, 2013 Andr\u00e9 Berg"]
+          "copyrights": ["Copyright 2009, 2010, 2013 André Berg"]
         }
       ]
     },
@@ -236,6 +236,25 @@
             "Unmodified KaTeX_* mathematical fonts. Reserved Font Names include KaTeX_Main, KaTeX_Math, KaTeX_AMS, and KaTeX_Caligraphic."
           ]
         }
+      ]
+    },
+    {
+      "bundles": ["mobile"],
+      "license": "MIT",
+      "name": "Expo native menu touch gate",
+      "noticeFile": "apps/mobile/modules/t3-native-controls/LICENSE",
+      "sourceUrl": "https://registry.npmjs.org/expo-modules-core/58.0.11",
+      "version": "58.0.11"
+    },
+    {
+      "bundles": ["server"],
+      "includeInBundles": ["desktop", "mobile", "web"],
+      "name": "GitHub GraphQL schema and documentation",
+      "license": "MIT AND CC-BY-4.0",
+      "sourceUrl": "https://github.com/github/docs/blob/bd52de7384c1d3267e5c365efd94b69e6bdc8cc3/src/graphql/data/fpt/schema.docs.graphql",
+      "noticeFiles": [
+        "packages/source-control-github/LICENSE.github-code.txt",
+        "packages/source-control-github/LICENSE.github-docs.txt"
       ]
     }
   ],
@@ -332,7 +351,9 @@
       "version": "0.4.0",
       "license": "Apache-2.0 AND OFL-1.1",
       "generatedNotices": [
-        { "licenseId": "Apache-2.0" },
+        {
+          "licenseId": "Apache-2.0"
+        },
         {
           "licenseId": "OFL-1.1",
           "copyrights": [
