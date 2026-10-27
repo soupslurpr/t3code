@@ -83,7 +83,8 @@ const make = Effect.gen(function* () {
             if (
               request.kind !== "user_input" ||
               request.status !== "pending" ||
-              request.responseCapability.type !== "live"
+              (request.responseCapability.type !== "live" &&
+                request.responseCapability.type !== "message")
             ) {
               continue;
             }
@@ -142,10 +143,11 @@ const make = Effect.gen(function* () {
       ) {
         return;
       }
-      // A blocking delegate_task wait delivers the question itself.
+      // A delegate_task wait delivers any answerable question itself.
       if (
         task.completionWake === "settled_only" &&
-        event.payload.responseCapability.type === "live" &&
+        (event.payload.responseCapability.type === "live" ||
+          event.payload.responseCapability.type === "message") &&
         parent.runs.some(
           (run) =>
             run.id === task.runId &&
