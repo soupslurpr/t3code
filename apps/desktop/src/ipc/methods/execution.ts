@@ -1,6 +1,8 @@
 /** Exposes desktop process execution through validated Electron IPC. */
 import {
   DesktopExecutionRequestSchema,
+  DesktopTransferRequestSchema,
+  UserDesktopTransferResult,
   UserDesktopExecutionResult,
   makeDesktopComputerAutomationResultSchema,
   type ComputerAutomationFailure,
@@ -46,6 +48,20 @@ export const execution = DesktopIpc.makeIpcMethod({
   handler: Effect.fn("desktop.ipc.execution")(function* (request) {
     const service = yield* DesktopExecution.DesktopExecution;
     return yield* service.invoke(request.context, request.input).pipe(
+      Effect.map((value) => ({ ok: true as const, value })),
+      Effect.catch((cause) => Effect.succeed({ ok: false as const, error: failure(cause) })),
+    );
+  }),
+});
+
+/** Uses execution authorization while streaming archive bytes outside IPC. */
+export const transfer = DesktopIpc.makeIpcMethod({
+  channel: IpcChannels.DESKTOP_TRANSFER_CHANNEL,
+  payload: DesktopTransferRequestSchema,
+  result: makeDesktopComputerAutomationResultSchema(UserDesktopTransferResult),
+  handler: Effect.fn("desktop.ipc.transfer")(function* (request) {
+    const service = yield* DesktopExecution.DesktopExecution;
+    return yield* service.transfer(request.context, request.input).pipe(
       Effect.map((value) => ({ ok: true as const, value })),
       Effect.catch((cause) => Effect.succeed({ ok: false as const, error: failure(cause) })),
     );

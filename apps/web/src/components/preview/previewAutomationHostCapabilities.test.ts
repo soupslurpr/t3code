@@ -89,3 +89,17 @@ it("advertises Stop cleanup only when the connected desktop supports it", () => 
       .supportedOperations,
   ).toContain("computerInterrupt");
 });
+
+it("negotiates file transfer separately while reusing execution permission", () => {
+  const input = {
+    computerAvailable: false,
+    executionAvailable: true,
+    computerCapabilities: ["execution"] as const,
+  };
+  expect(previewAutomationHostCapabilities(input).supportedOperations).toEqual([
+    "computerExecution",
+  ]);
+  expect(
+    previewAutomationHostCapabilities({ ...input, transferAvailable: true }).supportedOperations,
+  ).toEqual(["computerExecution", "computerTransfer"]);
+});

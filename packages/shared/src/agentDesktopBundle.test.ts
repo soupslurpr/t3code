@@ -25,6 +25,21 @@ const withTempDirectory = Effect.fn("agentDesktopBundle.withTempDirectory")(func
 }, Effect.provide(NodeServices.layer));
 
 describe("Agent desktop bundle", () => {
+  it.live("refuses to include its own growing archive in the copied tree", () =>
+    withTempDirectory(async (directory) => {
+      const source = NodePath.join(directory, "source");
+      await NodeFSP.mkdir(source);
+      await NodeFSP.writeFile(NodePath.join(source, "keep"), "unchanged");
+      await expect(
+        packAgentDesktopBundle({
+          sourcePath: source,
+          outputPath: NodePath.join(source, "archive.bundle"),
+        }),
+      ).rejects.toMatchObject({ code: "invalid-entry" });
+      assert.deepEqual(await NodeFSP.readdir(source), ["keep"]);
+    }),
+  );
+
   it.effect("round trips files, directories, metadata, and internal symlinks", () =>
     withTempDirectory(async (directory) => {
       const source = NodePath.join(directory, "source");

@@ -1,3 +1,5 @@
+import { UserDesktopTransfers } from "../computer/UserDesktopTransfers.ts";
+import { ThreadWorkspaceQuery } from "../orchestration-v2/ThreadWorkspaceQuery.ts";
 import * as UserDesktops from "../persistence/UserDesktops.ts";
 import * as Context from "effect/Context";
 import * as Ref from "effect/Ref";
@@ -10,6 +12,7 @@ import * as NodeServices from "@effect/platform-node/NodeServices";
 import {
   COMPUTER_AUTOMATION_OPERATIONS,
   EnvironmentId,
+  UserDesktopTransferRequestError,
   ProviderInstanceId,
   ThreadId,
   type PreviewAutomationResponse,
@@ -106,6 +109,16 @@ const managerLayer = Layer.effect(
   }),
 );
 const layer = McpHttpServer.ComputerToolkitRegistrationLive.pipe(
+  Layer.provide(
+    Layer.mock(UserDesktopTransfers)({
+      download: () => null,
+      status: () =>
+        Effect.fail(
+          new UserDesktopTransferRequestError({ message: "Transfer not found in this thread." }),
+        ),
+    }),
+  ),
+  Layer.provide(Layer.mock(ThreadWorkspaceQuery)({})),
   Layer.provideMerge(ComputerObservationStore.layer),
   Layer.provideMerge(McpServer.McpServer.layer),
   Layer.provideMerge(McpToolAccessTestkit.liveThreadsLayer),
@@ -793,7 +806,12 @@ it.effect("returns a target-required failure for every computer tool without rea
         }),
       );
       for (const name of Object.keys(ComputerToolkit.tools).filter(
-        (name) => name !== "user_desktop_list",
+        (name) =>
+          ![
+            "user_desktop_list",
+            "user_desktop_transfer_status",
+            "user_desktop_transfer_cancel",
+          ].includes(name),
       )) {
         const result = yield* call(name, {});
         expect(result.isError, name).toBe(true);
@@ -996,4 +1014,43 @@ it.effect("scopes desktop execution tools to a capable thread before routing", (
       },
     ]);
   }).pipe(Effect.provide(layer), Effect.scoped),
+);
+
+it.effect(
+  "denies desktop transfer tools outside a capable thread and preserves transfer-id lookup",
+  () =>
+    Effect.gen(function* () {
+      for (const [name, input] of [
+        [
+          "user_desktop_copy",
+          {
+            desktop: { kind: "user", desktopId: "user-desktop-1" },
+            copyId: "copy",
+            direction: "to-desktop",
+            workspacePath: "file",
+            desktopPath: "copy",
+          },
+        ],
+        ["user_desktop_transfer_status", { transferId: "transfer-1" }],
+        ["user_desktop_transfer_cancel", { transferId: "transfer-1" }],
+      ] as const) {
+        const external = yield* call(name, input, {
+          ...invocation,
+          thread: undefined,
+          client: { sessionId: "external", label: "External", access: "full-access" },
+        });
+        expect(external.isError).toBe(true);
+        expect(external.structuredContent).toMatchObject({
+          error: { _tag: "OrchestratorMcpFailure" },
+        });
+        const incapable = yield* call(name, input, { ...invocation, capabilities: new Set() });
+        expect(incapable.isError).toBe(true);
+        expect(JSON.stringify(incapable)).toContain("PreviewAutomationUnavailableError");
+      }
+      const missing = yield* call("user_desktop_transfer_status", { transferId: "unknown" });
+      expect(missing.isError).toBe(true);
+      expect(missing.structuredContent).toMatchObject({
+        error: { _tag: "UserDesktopTransferRequestError" },
+      });
+    }).pipe(Effect.provide(layer), Effect.scoped),
 );

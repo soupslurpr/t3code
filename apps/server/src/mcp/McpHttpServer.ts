@@ -89,12 +89,15 @@ import {
 import * as HtmlHandlers from "./toolkits/html/handlers.ts";
 import { HtmlPreviewTool, HtmlPreviewToolkit, HtmlRenderToolkit } from "./toolkits/html/tools.ts";
 
+import { UserDesktopTransfers } from "../computer/UserDesktopTransfers.ts";
+import { ThreadWorkspaceQuery } from "../orchestration-v2/ThreadWorkspaceQuery.ts";
 import { ComputerToolkitHandlersLive } from "./toolkits/computer/handlers.ts";
 import { ComputerToolkit } from "./toolkits/computer/tools.ts";
 
 const MAX_VALIDATION_EXPECTATION_LENGTH = 128;
 const MAX_VALIDATION_FIELD_LENGTH = 128;
 const USER_DESKTOP_ONLY_TOOL_NAMES = new Set([
+  "user_desktop_copy",
   "user_desktop_execution",
   "user_desktop_command",
   "user_desktop_process",
@@ -103,7 +106,14 @@ const USER_DESKTOP_ONLY_TOOL_NAMES = new Set([
 ]);
 const COMPUTER_ACCESS_TOOL_NAMES = new Set(["computer_request_view", "computer_request_control"]);
 const EXPLICIT_DESKTOP_TARGET_TOOL_NAMES = new Set(
-  Object.keys(ComputerToolkit.tools).filter((name) => name !== "user_desktop_list"),
+  Object.keys(ComputerToolkit.tools).filter(
+    (name) =>
+      ![
+        "user_desktop_list",
+        "user_desktop_transfer_status",
+        "user_desktop_transfer_cancel",
+      ].includes(name),
+  ),
 );
 
 const mcpResourceMetadataUrl = (request: HttpServerRequest.HttpServerRequest) =>
@@ -1435,6 +1445,8 @@ const registerComputerTools = Effect.fn("McpHttpServer.registerComputerTools")(f
   const computer = yield* ComputerAutomationRouter.ComputerAutomationRouter;
   const threads = yield* ThreadManagementService.ThreadManagementService;
   const broker = yield* PreviewAutomationBroker.PreviewAutomationBroker;
+  const transfers = yield* UserDesktopTransfers;
+  const workspace = yield* ThreadWorkspaceQuery;
   const built = yield* decodeAsAdvertised(ComputerToolkit);
   for (const tool of Object.values(built.tools)) {
     yield* server.addTool({
@@ -1464,6 +1476,8 @@ const registerComputerTools = Effect.fn("McpHttpServer.registerComputerTools")(f
             Stream.unwrap,
             Stream.run(Sink.last()),
             Effect.flatMap(Effect.fromOption),
+            Effect.provideService(UserDesktopTransfers, transfers),
+            Effect.provideService(ThreadWorkspaceQuery, workspace),
             Effect.provideService(ComputerAutomationRouter.ComputerAutomationRouter, computer),
             Effect.provideService(ThreadManagementService.ThreadManagementService, threads),
             Effect.provideService(McpInvocationContext.McpInvocationContext, invocation),

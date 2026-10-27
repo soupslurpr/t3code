@@ -1,3 +1,4 @@
+import { UserDesktopTransfers } from "../../../computer/UserDesktopTransfers.ts";
 import * as PreviewAutomationBroker from "../../PreviewAutomationBroker.ts";
 import type {
   DesktopExecutionAccess,
@@ -174,6 +175,28 @@ const invokeExecution = Effect.fn("ComputerToolkit.invokeExecution")(function* <
 });
 
 const handlers = {
+  user_desktop_copy: McpToolAccess.actsAsCaller((input) =>
+    Effect.gen(function* () {
+      const scope = yield* McpInvocationContext.requireThreadMcpCapability("computer");
+      const transfers = yield* UserDesktopTransfers;
+      return yield* transfers.start(scope, input);
+    }),
+  ),
+  user_desktop_transfer_status: McpToolAccess.readsAsCaller((input) =>
+    Effect.gen(function* () {
+      const scope = yield* McpInvocationContext.requireThreadMcpCapability("computer");
+      const transfers = yield* UserDesktopTransfers;
+      return yield* transfers.status(scope, input);
+    }),
+  ),
+  user_desktop_transfer_cancel: McpToolAccess.actsAsCaller((input) =>
+    Effect.gen(function* () {
+      const scope = yield* McpInvocationContext.requireThreadMcpCapability("computer");
+      const transfers = yield* UserDesktopTransfers;
+      return yield* transfers.cancel(scope, input);
+    }),
+  ),
+
   user_desktop_execution: McpToolAccess.actsAsCaller((input) =>
     invokeExecution<DesktopExecutionAccess>({ operation: "access", desktop: input.desktop, input }),
   ),

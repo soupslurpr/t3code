@@ -16,6 +16,8 @@ import { Atom } from "effect/reactivity";
 import { isElectron } from "~/env";
 import { randomUUID } from "~/lib/utils";
 import { useEnvironments } from "~/state/environments";
+import { readPreparedConnection } from "../../state/session";
+import type { UserDesktopTransferRequest } from "@t3tools/contracts";
 import { serverEnvironment } from "~/state/server";
 import { previewEnvironment } from "~/state/preview";
 import { useEnvironmentsWithScope } from "~/state/session";
@@ -32,7 +34,11 @@ async function handleComputerRequest(
   request: PreviewAutomationRequest,
 ): Promise<unknown> {
   const computer = window.desktopBridge?.computer;
-  if (computer === undefined && request.operation !== "computerExecution")
+  if (
+    computer === undefined &&
+    request.operation !== "computerExecution" &&
+    request.operation !== "computerTransfer"
+  )
     throw new Error("Computer automation is unavailable on this desktop.");
   if (request.controllerId === undefined) {
     throw new PreviewAutomationComputerControllerRequiredError({
@@ -48,6 +54,19 @@ async function handleComputerRequest(
     threadId: request.threadId,
   };
   switch (request.operation) {
+    case "computerTransfer": {
+      const input = request.input as UserDesktopTransferRequest;
+      const connection = readPreparedConnection(environmentId);
+      if (connection === null) throw new Error("The transfer environment is disconnected.");
+      return await resolveDesktopComputerAutomation(
+        window.desktopBridge?.transfer?.(
+          input.operation === "run"
+            ? { ...input, url: new URL(input.url, connection.httpBaseUrl).toString() }
+            : input,
+          computerContext,
+        ),
+      );
+    }
     case "computerExecution":
       return await resolveDesktopComputerAutomation(
         window.desktopBridge?.execution?.(
@@ -136,6 +155,14 @@ async function cancelComputerRequest(
     environmentId,
     threadId: request.threadId,
   };
+  if (request.operation === "computerTransfer") {
+    const input = request.input as UserDesktopTransferRequest;
+    await window.desktopBridge?.transfer?.(
+      { operation: "cancel", desktop: input.desktop, transferId: input.transferId },
+      context,
+    );
+    return;
+  }
   if (request.operation === "computerExecution") {
     const input = request.input as UserDesktopExecutionInput;
     if (input.operation === "access" && input.input.action === "request") {
@@ -173,6 +200,10 @@ const computerHostAtom = Atom.family((environmentId: EnvironmentId) =>
     const executionAvailable =
       window.desktopBridge?.execution !== undefined &&
       serverConfig?.environment.capabilities.userDesktopExecution === true;
+    const transferAvailable =
+      executionAvailable &&
+      window.desktopBridge?.transfer !== undefined &&
+      serverConfig?.environment.capabilities.userDesktopTransfers === true;
     const requestsAtom = previewEnvironment.automationRequests({
       environmentId,
       input: {
@@ -180,6 +211,7 @@ const computerHostAtom = Atom.family((environmentId: EnvironmentId) =>
         environmentId,
         ...previewAutomationHostCapabilities({
           executionAvailable,
+          transferAvailable,
           ...(userDesktop === undefined ? {} : { userDesktop }),
           computerAvailable: window.desktopBridge?.computer !== undefined,
           computerInterruptAvailable:

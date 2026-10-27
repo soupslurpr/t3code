@@ -27,6 +27,10 @@ it("exports bounded object schemas and accurate safety annotations", () => {
     expect(schema.oneOf, `${tool.name} must not export a root oneOf`).toBeUndefined();
     if (name === "user_desktop_list") {
       expect(schema.required, `${tool.name} must not require a desktop`).toBeUndefined();
+    } else if (name === "user_desktop_transfer_status" || name === "user_desktop_transfer_cancel") {
+      expect(schema.required, `${tool.name} must target an existing transfer`).toEqual([
+        "transferId",
+      ]);
     } else {
       expect(schema.required, `${tool.name} must require an explicit desktop`).toContain("desktop");
     }
