@@ -321,6 +321,7 @@ it.layer(NodeServices.layer)("CodexImageConditionEvaluator", (it) => {
       const starts = log.filter((entry) => entry.kind === "started");
       const messages = log.filter((entry) => entry.kind === "message");
       expect(starts).toHaveLength(1);
+      expect(starts[0]?.argv?.slice(0, 3)).toEqual(["app-server", "--disable", "plugins"]);
       expect(starts[0]?.cwd).not.toBe(process.cwd());
       expect(starts[0]?.argv).toEqual(
         expect.arrayContaining([

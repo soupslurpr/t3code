@@ -396,7 +396,7 @@ it.layer(layerCodexTextGenerationTest)("CodexTextGeneration", (it) => {
           body: "",
         }),
         launchArgs: "--strict-config --listen off",
-        requireArg: "--strict-config",
+        requireArg: "--disable plugins --strict-config",
         forbidArg: "--listen",
       },
       (textGeneration) =>
