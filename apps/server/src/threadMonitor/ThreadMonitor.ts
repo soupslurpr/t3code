@@ -91,6 +91,15 @@ function monitorSummary(monitor: ThreadMonitor): ThreadMonitorSummary {
     deadlineAt: condition.type === "time" ? null : condition.deadlineAt,
     continuation: monitor.continuation,
     reviewRequired: condition.type === "computer" && condition.review.state !== "idle",
+    ...(condition.type === "thread-run" ? { targetRun: condition } : {}),
+    ...(condition.type === "computer"
+      ? {
+          review: condition.review,
+          usage: condition.totalUsage,
+          evaluationCount: condition.evaluationCount,
+        }
+      : {}),
+    result: monitor.trigger?.summary ?? null,
     lastError:
       monitor.lastError ?? (condition.type === "computer" ? condition.observationError : null),
   };
@@ -162,7 +171,8 @@ function computerRevisionResult(
 /** Returns the timestamp that can trigger a monitor without an external signal. */
 function monitorWakeAt(monitor: ThreadMonitor): string | null {
   if (monitor.condition.type === "time") return monitor.condition.at;
-  if (monitor.condition.type === "signal") return monitor.condition.deadlineAt;
+  if (monitor.condition.type === "signal" || monitor.condition.type === "thread-run")
+    return monitor.condition.deadlineAt;
   const wakeTimes = [monitor.condition.nextCheckAt];
   if (monitor.condition.deadlineAt !== null) wakeTimes.push(monitor.condition.deadlineAt);
   if (
@@ -216,6 +226,7 @@ function monitorError(input: {
 function normalizeCondition(
   schedule: ThreadMonitorStartInput["schedule"],
   now: string,
+  afterSequence: number,
 ): Result.Result<ThreadMonitorCondition, ThreadMonitorError> {
   const nowDate = DateTime.makeUnsafe(now);
   const nowMs = DateTime.toEpochMillis(nowDate);
@@ -246,6 +257,22 @@ function normalizeCondition(
     }
   }
 
+  if (schedule.type === "thread-run") {
+    if (schedule.deadlineAt !== undefined && Date.parse(schedule.deadlineAt) <= nowMs) {
+      return Result.fail(
+        monitorError({
+          code: "INVALID_SCHEDULE",
+          operation: "start",
+          detail: "deadlineAt must be in the future.",
+        }),
+      );
+    }
+    return Result.succeed({
+      ...schedule,
+      deadlineAt: schedule.deadlineAt ?? null,
+      run: schedule.run.type === "exact" ? schedule.run : { type: "next", afterSequence },
+    });
+  }
   const candidate = schedule.type === "at" ? schedule.at : schedule.deadlineAt;
   if (candidate === undefined) {
     return Result.succeed({ type: "signal", deadlineAt: null });
@@ -319,8 +346,15 @@ export const make = Effect.gen(function* () {
   >();
   const cancellationCleanups = new Set<ThreadMonitorId>();
   const wakeQueue = yield* Queue.sliding<void>(1);
-  const changes = yield* PubSub.sliding<void>(1);
-  const notifyChanged = PubSub.publish(changes, undefined).pipe(Effect.asVoid);
+  const changes = new Map<ThreadId, { topic: PubSub.PubSub<void>; references: number }>();
+  const changesMutex = yield* Semaphore.make(1);
+  const notifyChanged = (threadId: ThreadId) =>
+    Effect.suspend(() => {
+      const entry = changes.get(threadId);
+      return entry === undefined
+        ? Effect.void
+        : PubSub.publish(entry.topic, undefined).pipe(Effect.asVoid);
+    });
 
   const nowIso = DateTime.now.pipe(Effect.map(DateTime.formatIso));
   const wake = Queue.offer(wakeQueue, undefined).pipe(Effect.asVoid);
@@ -346,13 +380,17 @@ export const make = Effect.gen(function* () {
   const writeMonitor = (monitor: ThreadMonitor) =>
     repository.upsert(monitor).pipe(
       Effect.mapError(mapPersistenceError("write", monitor.id)),
-      Effect.tap(() => notifyChanged),
+      Effect.tap(() => notifyChanged(monitor.threadId)),
     );
 
   const writeMonitors = (monitors: ReadonlyArray<ThreadMonitor>) =>
     repository.upsertMany(monitors).pipe(
       Effect.mapError(mapPersistenceError("write-group")),
-      Effect.tap(() => notifyChanged),
+      Effect.tap(() =>
+        Effect.forEach(new Set(monitors.map((monitor) => monitor.threadId)), notifyChanged, {
+          discard: true,
+        }),
+      ),
     );
 
   const writeComputerRevision = Effect.fn("ThreadMonitor.writeComputerRevision")(
@@ -364,7 +402,7 @@ export const make = Effect.gen(function* () {
     ) =>
       repository.upsertComputerRevision({ monitor, ...evidence }).pipe(
         Effect.mapError(mapPersistenceError("computer-revision", monitor.id)),
-        Effect.tap(() => notifyChanged),
+        Effect.tap(() => notifyChanged(monitor.threadId)),
       ),
   );
 
@@ -1026,6 +1064,32 @@ export const make = Effect.gen(function* () {
 
       let monitor = current;
       const wakeAt = monitorWakeAt(monitor);
+      if (monitor.status === "active" && monitor.condition.type === "thread-run") {
+        const target = yield* repository
+          .getTargetRun(monitor.condition)
+          .pipe(Effect.mapError(mapPersistenceError("thread-run", monitor.id)));
+        if (Option.isSome(target)) {
+          const status = target.value.status;
+          const outcome =
+            status === "completed"
+              ? "completed"
+              : status === "failed"
+                ? "failed"
+                : ["interrupted", "cancelled", "rolled_back"].includes(status)
+                  ? "stopped"
+                  : null;
+          if (outcome !== null)
+            monitor = yield* triggerMonitor(
+              monitor,
+              {
+                reason: "condition",
+                summary: `Run ${target.value.id} ${outcome}. Verify the broader task separately.`,
+                evidence: `Thread: ${monitor.condition.threadId}\nRun: ${target.value.id}\nOutcome: ${outcome}\nStatus: ${status}`,
+              },
+              now,
+            );
+        }
+      }
       if (monitor.status === "active" && monitor.condition.type === "computer") {
         if (
           monitor.condition.deadlineAt !== null &&
@@ -1165,8 +1229,30 @@ export const make = Effect.gen(function* () {
         }
 
         const createdAt = yield* nowIso;
-        const condition = normalizeCondition(input.schedule, createdAt);
+        const condition = normalizeCondition(input.schedule, createdAt, afterSequence);
         if (Result.isFailure(condition)) return yield* condition.failure;
+        if (condition.success.type === "thread-run") {
+          const target = yield* snapshots
+            .getThreadShellById(condition.success.threadId)
+            .pipe(Effect.mapError(mapPersistenceError("start")));
+          if (Option.isNone(target))
+            return yield* monitorError({
+              code: "THREAD_UNAVAILABLE",
+              operation: "start",
+              detail: "The target thread is unavailable in this environment.",
+            });
+          if (condition.success.run.type === "exact") {
+            const run = yield* repository
+              .getTargetRun(condition.success)
+              .pipe(Effect.mapError(mapPersistenceError("start")));
+            if (Option.isNone(run))
+              return yield* monitorError({
+                code: "INVALID_SCHEDULE",
+                operation: "start",
+                detail: "The selected run does not belong to the target thread.",
+              });
+          }
+        }
         const id = ThreadMonitorId.make(yield* crypto.randomUUIDv4().pipe(Effect.orDie));
         const monitor: ThreadMonitor = {
           id,
@@ -1189,7 +1275,7 @@ export const make = Effect.gen(function* () {
         };
         yield* repository.upsert(monitor, { afterSequence }).pipe(
           Effect.mapError(mapPersistenceError("write", monitor.id)),
-          Effect.tap(() => notifyChanged),
+          Effect.tap(() => notifyChanged(monitor.threadId)),
         );
         yield* appendActivity(monitor, "started", `Monitoring: ${monitor.label}`);
         yield* wake;
@@ -1557,9 +1643,64 @@ export const make = Effect.gen(function* () {
     Stream.unwrap(
       Effect.gen(function* () {
         // Subscribe first so writes during the initial read cannot be lost.
-        const subscription = yield* PubSub.subscribe(changes);
+        const entry = yield* Effect.acquireRelease(
+          changesMutex.withPermits(1)(
+            Effect.gen(function* () {
+              const existing = changes.get(threadId);
+              if (existing !== undefined) {
+                existing.references++;
+                return existing;
+              }
+              const created = { topic: yield* PubSub.sliding<void>(1), references: 1 };
+              changes.set(threadId, created);
+              return created;
+            }),
+          ),
+          (entry) =>
+            changesMutex.withPermits(1)(
+              Effect.gen(function* () {
+                if (--entry.references === 0) {
+                  changes.delete(threadId);
+                  yield* PubSub.shutdown(entry.topic);
+                }
+              }),
+            ),
+        );
+        const subscription = yield* PubSub.subscribe(entry.topic);
         const snapshot = status({ threadId, query: {} }).pipe(
-          Effect.map(({ monitors }) => ({ monitors: monitors.map(monitorSummary) })),
+          Effect.flatMap(({ monitors }) =>
+            Effect.gen(function* () {
+              const needsDelivery = monitors.some(
+                (monitor) =>
+                  monitor.status === "triggered" ||
+                  (monitor.condition.type === "computer" &&
+                    monitor.condition.review.state === "pending"),
+              );
+              const thread = needsDelivery
+                ? yield* snapshots
+                    .getThreadShellById(threadId)
+                    .pipe(Effect.mapError(mapPersistenceError("status")))
+                : Option.none();
+              const blockedReason = Option.isNone(thread)
+                ? null
+                : thread.value.archivedAt !== null
+                  ? "The thread is archived."
+                  : thread.value.pendingRuntimeRequest !== null
+                    ? "Waiting for approval or user input."
+                    : null;
+              return {
+                monitors: monitors.map((monitor) => ({
+                  ...monitorSummary(monitor),
+                  blockedReason:
+                    monitor.status === "triggered" ||
+                    (monitor.condition.type === "computer" &&
+                      monitor.condition.review.state === "pending")
+                      ? blockedReason
+                      : null,
+                })),
+              };
+            }),
+          ),
         );
         return Stream.concat(
           Stream.fromEffect(snapshot),
@@ -1625,6 +1766,7 @@ export const make = Effect.gen(function* () {
           lastError: null,
           deliveryRetryAt: null,
         };
+        yield* notifyChanged(threadId);
         yield* appendActivity(triggered, "triggered", `Monitor triggered: ${triggered.label}`);
         yield* wake;
         return triggered;
@@ -1793,7 +1935,7 @@ export const make = Effect.gen(function* () {
         yield* repository
           .deleteByThread(threadId)
           .pipe(Effect.mapError(mapPersistenceError("delete-thread")));
-        yield* notifyChanged;
+        yield* notifyChanged(threadId);
       }),
     );
   });
@@ -1815,13 +1957,20 @@ export const make = Effect.gen(function* () {
         );
         return;
       }
-      const outstanding = yield* repository
-        .listOutstanding()
-        .pipe(
-          Effect.catch((cause) =>
-            Effect.logWarning("failed to schedule durable monitors", { cause }).pipe(Effect.as([])),
-          ),
+      const scheduled = yield* repository.listOutstanding().pipe(Effect.result);
+      if (Result.isFailure(scheduled)) {
+        yield* Effect.logWarning("failed to schedule durable monitors", {
+          cause: scheduled.failure,
+        });
+        // An unavailable deadline list is not an empty one. Retry even when
+        // this environment has no other activity to wake the scheduler.
+        yield* Effect.raceFirst(
+          Queue.take(wakeQueue),
+          Effect.sleep(Duration.millis(BLOCKED_DELIVERY_RETRY_MS)),
         );
+        return;
+      }
+      const outstanding = scheduled.success;
       const currentTime = yield* Clock.currentTimeMillis;
       let waitMs = Number.POSITIVE_INFINITY;
       for (const monitor of outstanding) {
@@ -1935,8 +2084,15 @@ export const make = Effect.gen(function* () {
                     Effect.andThen(wake),
                   );
               }
-              if (event.type === "run.updated" || event.type === "runtime-request.updated") {
-                return wake;
+              if (
+                event.type === "run.created" ||
+                event.type === "run.updated" ||
+                event.type === "runtime-request.updated"
+              ) {
+                return notifyChanged(event.threadId).pipe(Effect.andThen(wake));
+              }
+              if (event.type === "thread.archived" || event.type === "thread.unarchived") {
+                return notifyChanged(event.threadId).pipe(Effect.andThen(wake));
               }
               return Effect.void;
             }),

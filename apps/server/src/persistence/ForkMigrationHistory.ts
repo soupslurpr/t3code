@@ -84,6 +84,24 @@ const decodeF08Condition = Schema.decodeUnknownSync(
   ),
 );
 
+// Freeze the released F14 shape independently of the current monitor contracts.
+const decodeF14Condition = Schema.decodeUnknownSync(
+  Schema.fromJsonString(
+    Schema.Struct({
+      type: Schema.Literal("thread-run"),
+      threadId: Schema.String,
+      run: Schema.Union([
+        Schema.Struct({ type: Schema.Literal("exact"), runId: Schema.String }),
+        Schema.Struct({
+          type: Schema.Literal("next"),
+          afterSequence: Schema.Int.check(Schema.isGreaterThanOrEqualTo(0)),
+        }),
+      ]),
+      deadlineAt: Schema.NullOr(Schema.String),
+    }),
+  ),
+);
+
 const isPreviewHistory = (rows: ReadonlyArray<HistoryRow>) => {
   const tail = rows.filter((row) => row.migration_id >= 53);
   const legacy = tail.find(
@@ -396,6 +414,25 @@ export const adoptForkMigrationHistory = Effect.fn("adoptForkMigrationHistory")(
       return yield* invalidHistory(
         "ThreadMonitorCancellation contains an invalid cancellation state",
       );
+  }
+
+  if (fork.length >= 14) {
+    const schema = yield* sql<{
+      readonly sql: string;
+    }>`SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'thread_monitors'`;
+    if (!schema[0]?.sql.includes("'thread-run'"))
+      return yield* invalidHistory(
+        "ThreadRunMonitors identity conflicts with its condition constraint",
+      );
+    const rows = yield* sql<{
+      readonly condition_json: string;
+    }>`SELECT condition_json FROM thread_monitors WHERE condition_type = 'thread-run'`;
+    yield* Effect.try({
+      try: () => {
+        for (const row of rows) decodeF14Condition(row.condition_json);
+      },
+      catch: () => invalidHistory("ThreadRunMonitors identity conflicts with its run condition"),
+    });
   }
 
   yield* sql`CREATE TABLE IF NOT EXISTS effect_sql_fork_migrations (

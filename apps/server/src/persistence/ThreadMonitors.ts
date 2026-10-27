@@ -3,7 +3,10 @@ import {
   NonNegativeInt,
   ThreadId,
   ThreadMonitor,
-  ThreadMonitorComputerCondition,
+  ThreadMonitorCondition,
+  ThreadMonitorRunCondition,
+  RunId,
+  OrchestrationV2RunStatus,
   ThreadMonitorComputerEvidenceImage,
   ThreadMonitorId,
   ThreadMonitorStatus,
@@ -67,6 +70,13 @@ export interface ThreadMonitorRepositoryShape {
     monitorId: ThreadMonitorId,
   ) => Effect.Effect<void, ProjectionRepositoryError>;
 
+  readonly getTargetRun: (
+    condition: ThreadMonitorRunCondition,
+  ) => Effect.Effect<
+    Option.Option<{ readonly id: RunId; readonly status: OrchestrationV2RunStatus }>,
+    ProjectionRepositoryError
+  >;
+
   readonly getById: (
     monitorId: ThreadMonitorId,
   ) => Effect.Effect<Option.Option<ThreadMonitor>, ProjectionRepositoryError>;
@@ -91,7 +101,7 @@ const ThreadMonitorRow = Schema.Struct({
   monitorId: ThreadMonitorId,
   threadId: ThreadId,
   label: Schema.String,
-  conditionType: Schema.Literals(["time", "signal", "computer"]),
+  conditionType: Schema.Literals(["time", "signal", "computer", "thread-run"]),
   conditionJson: Schema.NullOr(Schema.String),
   wakeAt: Schema.NullOr(IsoDateTime),
   continuationMode: Schema.Literals(["resume-thread", "record-only"]),
@@ -118,7 +128,7 @@ const ComputerEvidenceRow = Schema.Struct({
   currentImagesJson: Schema.String,
   terminalImagesJson: Schema.String,
 });
-const decodeComputerCondition = Schema.decodeUnknownSync(ThreadMonitorComputerCondition);
+const decodeCondition = Schema.decodeUnknownSync(ThreadMonitorCondition);
 const ComputerEvidenceImagesJson = Schema.fromJsonString(
   Schema.Array(ThreadMonitorComputerEvidenceImage),
 );
@@ -130,11 +140,14 @@ const toRow = (monitor: ThreadMonitor): ThreadMonitorRow => ({
   threadId: monitor.threadId,
   label: monitor.label,
   conditionType: monitor.condition.type,
-  conditionJson: monitor.condition.type === "computer" ? JSON.stringify(monitor.condition) : null,
+  conditionJson:
+    monitor.condition.type === "computer" || monitor.condition.type === "thread-run"
+      ? JSON.stringify(monitor.condition)
+      : null,
   wakeAt:
     monitor.condition.type === "time"
       ? monitor.condition.at
-      : monitor.condition.type === "signal"
+      : monitor.condition.type === "signal" || monitor.condition.type === "thread-run"
         ? monitor.condition.deadlineAt
         : monitor.condition.nextCheckAt,
   continuationMode: monitor.continuation.mode,
@@ -155,11 +168,11 @@ const toRow = (monitor: ThreadMonitor): ThreadMonitorRow => ({
 });
 
 /** Decodes the structured computer condition stored outside fixed scheduler columns. */
-function computerConditionFromRow(row: ThreadMonitorRow): ThreadMonitorComputerCondition {
+function structuredConditionFromRow(row: ThreadMonitorRow): ThreadMonitorCondition {
   if (row.conditionJson === null) {
-    throw new Error(`computer monitor '${row.monitorId}' has no condition payload`);
+    throw new Error(`monitor '${row.monitorId}' has no condition payload`);
   }
-  return decodeComputerCondition(JSON.parse(row.conditionJson));
+  return decodeCondition(JSON.parse(row.conditionJson));
 }
 
 const fromRow = (row: ThreadMonitorRow): ThreadMonitor => ({
@@ -171,7 +184,7 @@ const fromRow = (row: ThreadMonitorRow): ThreadMonitor => ({
       ? { type: "time", at: row.wakeAt ?? row.createdAt }
       : row.conditionType === "signal"
         ? { type: "signal", deadlineAt: row.wakeAt }
-        : computerConditionFromRow(row),
+        : structuredConditionFromRow(row),
   continuation: { mode: row.continuationMode },
   status: row.status,
   trigger:
@@ -519,6 +532,25 @@ const make = Effect.gen(function* () {
 
   return {
     upsert,
+    getTargetRun: (condition) => {
+      const run = condition.run;
+      return sql<{ readonly id: RunId; readonly status: OrchestrationV2RunStatus }>`
+        SELECT run_id AS id, status FROM orchestration_v2_projection_runs
+        WHERE thread_id = ${condition.threadId} AND run_id = ${
+          run.type === "exact"
+            ? sql`${run.runId}`
+            : sql`(SELECT json_extract(payload_json, '$.id') FROM orchestration_events
+                 WHERE aggregate_kind = 'thread' AND stream_id = ${condition.threadId}
+                   AND application_event_version = 2 AND event_type = 'run.created'
+                   AND sequence > ${run.afterSequence}
+                 ORDER BY sequence ASC LIMIT 1)`
+        }
+      `.pipe(
+        Effect.map((rows) => Option.fromUndefinedOr(rows[0])),
+        Effect.mapError(toPersistenceSqlError("ThreadMonitorRepository.getTargetRun")),
+      );
+    },
+
     upsertMany: (monitors) =>
       sql
         .withTransaction(

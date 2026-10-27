@@ -30,7 +30,7 @@ it.effect.each([40, 63, 64, 65, 66, 69])(
       const sql = yield* SqlClient.SqlClient;
       yield* seed(base);
       const before = yield* snapshot;
-      yield* runMigrations();
+      yield* runMigrations({ toForkMigrationInclusive: 13 });
       const after = yield* snapshot;
       assert.deepEqual(
         after.monitors,
@@ -42,7 +42,7 @@ it.effect.each([40, 63, 64, 65, 66, 69])(
         [{ migration_id: 13, name: "ThreadMonitorCancellation" }],
       );
       assert.deepEqual(yield* sql`PRAGMA foreign_key_check`, []);
-      assert.deepEqual(yield* runMigrations(), []);
+      assert.deepEqual(yield* runMigrations({ toForkMigrationInclusive: 13 }), []);
     }).pipe(Effect.provide(memory)),
 );
 it.effect("adopts released base66 cancellation without replay or losing pending Stop", () =>
@@ -54,12 +54,12 @@ it.effect("adopts released base66 cancellation without replay or losing pending 
     const before = yield* snapshot;
     yield* sql`INSERT INTO effect_sql_migrations (migration_id, name, created_at) SELECT 66 + migration_id, name, created_at FROM effect_sql_fork_migrations`;
     yield* sql`DROP TABLE effect_sql_fork_migrations`;
-    yield* runMigrations();
+    yield* runMigrations({ toForkMigrationInclusive: 13 });
     const after = yield* snapshot;
     assert.deepEqual(after.monitors, before.monitors);
     assert.deepEqual(after.evidence, before.evidence);
     assert.deepEqual(after.fork, before.fork);
-    assert.deepEqual(yield* runMigrations(), []);
+    assert.deepEqual(yield* runMigrations({ toForkMigrationInclusive: 13 }), []);
   }).pipe(Effect.provide(memory)),
 );
 it.effect.each(["missing", "invalid-state", "legacy-missing"] as const)(
@@ -78,7 +78,9 @@ it.effect.each(["missing", "invalid-state", "legacy-missing"] as const)(
         yield* sql`DELETE FROM effect_sql_fork_migrations`;
       }
       const before = yield* snapshot;
-      assert.isTrue(Exit.isFailure(yield* Effect.exit(runMigrations())));
+      assert.isTrue(
+        Exit.isFailure(yield* Effect.exit(runMigrations({ toForkMigrationInclusive: 13 }))),
+      );
       assert.deepEqual(yield* snapshot, before);
     }).pipe(Effect.provide(memory)),
 );
