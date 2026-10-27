@@ -750,8 +750,8 @@ const make = Effect.gen(function* () {
     const folded = settingsFileTrusted
       ? foldLegacyProjectSettings(loaded, legacyProjectRows)
       : loaded;
-    // Remove retired keys only after copying secrets and writing the new file; failures retry on next load.
-    const legacySecretsCopied = yield* Effect.forEach(
+    // Fail before any settings rewrite if copying a legacy secret fails; failed loads are retried.
+    yield* Effect.forEach(
       settingsFileTrusted
         ? migrateLegacySourceControlSettings(folded, legacySourceControl).secretMoves
         : [],
@@ -760,17 +760,13 @@ const make = Effect.gen(function* () {
           Effect.flatMap((secret) =>
             Option.isNone(secret) ? Effect.void : secretStore.set(move.to, secret.value),
           ),
-          Effect.as(true),
-          Effect.catch(() =>
-            Effect.logWarning("failed to copy a source control secret to its new name", {
-              secretName: move.to,
-            }).pipe(Effect.as(false)),
+          Effect.mapError(
+            (cause) => new ServerSettingsError({ settingsPath, operation: "write-secret", cause }),
           ),
         ),
-    ).pipe(Effect.map((copied) => copied.every(Boolean)));
+    );
     const hasLegacySourceControl =
       settingsFileTrusted &&
-      legacySecretsCopied &&
       (legacySourceControl.bitbucket !== undefined || legacySourceControl.github !== undefined);
     const sourceControlMigration = hasLegacySourceControl
       ? migrateLegacySourceControlSettings(folded, legacySourceControl)
