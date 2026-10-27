@@ -120,8 +120,13 @@ export function musePermissionProfile(runtimeMode: RuntimeMode) {
   return runtimeMode === "full-access" ? ":unrestricted" : ":ask-me";
 }
 
+const MUSE_HOST_SETTINGS = [
+  "runtime_capabilities.plugin:tbh-reminders:reminder:goal-reminder.enabled=false",
+  "context_compaction.provider_context_limit_tokens=500000",
+];
+
 export function museServeArgs(
-  options: Pick<MuseSdkHostOptions, "readOnly" | "sessionLogging" | "runtimeMode">,
+  options: Pick<MuseSdkHostOptions, "readOnly" | "sessionLogging" | "runtimeMode" | "launchArgs">,
 ) {
   const args = ["serve"];
   if (options.readOnly) {
@@ -131,6 +136,27 @@ export function museServeArgs(
     args.push("--trust-workspace");
     if (options.runtimeMode === "full-access") args.push("--disable-sandbox");
   }
+  // Per-host settings turn off the goal observer and set a 500k context budget.
+  // The leaf budget key keeps default thresholds; neither writes user settings.
+  const launchArgs = options.launchArgs ?? [];
+  const explicitKeys = new Set(
+    launchArgs.map((arg, index) => {
+      const setting =
+        arg === "-c" || arg === "--config"
+          ? launchArgs[index + 1]
+          : arg.startsWith("--config=")
+            ? arg.slice(9)
+            : arg.startsWith("-c")
+              ? arg.slice(2)
+              : undefined;
+      return setting?.split("=")[0];
+    }),
+  );
+  args.push(
+    ...MUSE_HOST_SETTINGS.flatMap((setting) =>
+      explicitKeys.has(setting.split("=")[0]) ? [] : ["-c", setting],
+    ),
+  );
   return args;
 }
 
@@ -146,57 +172,84 @@ export async function createMuseSdkHost(
   options: MuseSdkHostOptions,
   spawn: typeof spawnMspConnection = spawnMspConnection,
 ): Promise<MuseSdkHost> {
-  options.signal?.throwIfAborted();
   const launch = options.launch ?? { command: options.binaryPath, args: [] };
-  const handshake = spawn({
-    command: launch.command,
-    args: [...launch.args, ...(options.launchArgs ?? []), ...museServeArgs(options)],
-    ...(options.cwd ? { cwd: options.cwd } : {}),
-    env: options.environment ?? makeMuseEnvironment(),
-    shutdownTimeoutMs: 10_000,
-    ...(options.onProcessExit ? { onProcessExit: options.onProcessExit } : {}),
-  });
-  let closePromise: Promise<void> | undefined;
-  const close = () => {
-    options.signal?.removeEventListener("abort", onAbort);
-    return (closePromise ??= handshake.close().then(() => undefined));
-  };
-  let rejectStartup: (reason: unknown) => void = () => {};
-  const onAbort = () => {
-    rejectStartup(options.signal?.reason ?? new Error("Muse SDK startup aborted."));
-    void close().catch(() => {});
-  };
-  const interrupted = new Promise<never>((_resolve, reject) => {
-    rejectStartup = reject;
-  });
-  options.signal?.addEventListener("abort", onAbort, { once: true });
-  if (options.signal?.aborted) onAbort();
-  const timer = setTimeout(
-    () => rejectStartup(new Error("Muse SDK initialization timed out.")),
-    options.startupTimeoutMs ?? 20_000,
-  );
-  timer.unref();
-  try {
-    const host = await Promise.race([
-      handshake.initialize(museInitializeParams(options.readOnly)),
-      interrupted,
-    ]);
-    if (host.initializeResult.schema?.version !== 1) {
-      throw new Error("Muse SDK returned an unsupported protocol envelope version.");
-    }
-    // Fingerprint warnings permit additive schema changes; successful initialization proves readiness.
-    return {
-      connection: host.connection,
-      initializeResult: host.initializeResult,
-      exited: host.exited,
-      stderrTail: () => handshake.child.stderrTail,
-      close,
+  let serveArgs = museServeArgs(options);
+  while (true) {
+    options.signal?.throwIfAborted();
+    const handshake = spawn({
+      command: launch.command,
+      args: [...launch.args, ...(options.launchArgs ?? []), ...serveArgs],
+      ...(options.cwd ? { cwd: options.cwd } : {}),
+      env: options.environment ?? makeMuseEnvironment(),
+      shutdownTimeoutMs: 10_000,
+      ...(options.onProcessExit ? { onProcessExit: options.onProcessExit } : {}),
+    });
+    let closePromise: Promise<void> | undefined;
+    const close = () => {
+      options.signal?.removeEventListener("abort", onAbort);
+      return (closePromise ??= handshake.close().then(() => undefined));
     };
-  } catch (error) {
-    await close();
-    throw error;
-  } finally {
-    clearTimeout(timer);
+    let rejectStartup: (reason: unknown) => void = () => {};
+    const onAbort = () => {
+      rejectStartup(options.signal?.reason ?? new Error("Muse SDK startup aborted."));
+      void close().catch(() => {});
+    };
+    const interrupted = new Promise<never>((_resolve, reject) => {
+      rejectStartup = reject;
+    });
+    options.signal?.addEventListener("abort", onAbort, { once: true });
+    if (options.signal?.aborted) onAbort();
+    let timedOut = false;
+    const timer = setTimeout(() => {
+      timedOut = true;
+      rejectStartup(new Error("Muse SDK initialization timed out."));
+    }, options.startupTimeoutMs ?? 20_000);
+    timer.unref();
+    let initialized = false;
+    try {
+      const host = await Promise.race([
+        handshake.initialize(museInitializeParams(options.readOnly)),
+        interrupted,
+      ]);
+      initialized = true;
+      if (host.initializeResult.schema?.version !== 1) {
+        throw new Error("Muse SDK returned an unsupported protocol envelope version.");
+      }
+      // Fingerprint warnings permit additive schema changes; successful initialization proves readiness.
+      return {
+        connection: host.connection,
+        initializeResult: host.initializeResult,
+        exited: host.exited,
+        stderrTail: () => handshake.child.stderrTail,
+        close,
+      };
+    } catch (error) {
+      await close();
+      if (initialized || timedOut || options.signal?.aborted) throw error;
+      // Older hosts can refuse -c or individual settings. Retry only after shutdown,
+      // removing at least one of our pairs so attempts are bounded.
+      const stderr = handshake.child?.stderrTail ?? [];
+      const unsupportedConfigFlag = stderr.some(
+        (line) =>
+          /\b(?:unexpected|unknown) argument:? ['"](?:-c|--config)['"]/.test(line) ||
+          /\bFound argument ['"](?:-c|--config)['"] which wasn't expected\b/.test(line),
+      );
+      const retryArgs = [...serveArgs];
+      for (const setting of MUSE_HOST_SETTINGS) {
+        const index = retryArgs.indexOf(setting);
+        const key = setting.split("=")[0];
+        if (
+          index !== -1 &&
+          (unsupportedConfigFlag || stderr.some((line) => line.includes(`-c ${key}: refusing run`)))
+        ) {
+          retryArgs.splice(index - 1, 2);
+        }
+      }
+      if (retryArgs.length === serveArgs.length) throw error;
+      serveArgs = retryArgs;
+    } finally {
+      clearTimeout(timer);
+    }
   }
 }
 

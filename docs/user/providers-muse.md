@@ -32,6 +32,10 @@ share its Muse login; give an instance its own `META_API_KEY` to bill it
 separately. Existing conversations retain their instance when its model catalog
 becomes unavailable.
 
+On Muse 1.4.4 and later, T3 Code launches Muse with the automatic goal reminder off
+and a 500,000-token context budget. These overrides apply per launch without
+changing global Muse settings; older Muse versions do not support them.
+
 ## Models
 
 Models and reasoning choices come from Muse on the selected host. After changing
