@@ -27,6 +27,8 @@ import {
   BuildCommandFailedError,
   parseWslRuntimeArchiveMembers,
   readWorkspaceConfig,
+  createStageWorkspaceConfig,
+  createStagePatchedDependencies,
   createBuildConfig,
   DESKTOP_ASAR_UNPACK_GLOBS,
   WINDOWS_NATIVE_ASAR_UNPACK_GLOB,
@@ -70,6 +72,12 @@ import {
 } from "./update-release-package-versions.ts";
 import * as HostProcess from "@t3tools/shared/HostProcess";
 import { symlinksSupported } from "@t3tools/shared/testing/symlinks";
+
+import desktopManifest from "../apps/desktop/package.json" with { type: "json" };
+import {
+  isDesktopRuntimeExternalDependency,
+  selectDesktopRuntimeExternalDependencies,
+} from "./lib/desktop-external-packages.ts";
 
 const encodeModuleUrl = Schema.encodeEffect(Schema.fromJsonString(Schema.String));
 const decodePackageVersion = Schema.decodeUnknownEffect(
@@ -561,6 +569,28 @@ it.layer(NodeServices.layer)("build-desktop-artifact", (it) => {
           `allowBuilds names a missing tarball: ${key}`,
         );
       }
+    }),
+  );
+
+  it.effect("keeps desktop PTY subpaths external and stages its matching patched version", () =>
+    Effect.gen(function* () {
+      const workspace = yield* readWorkspaceConfig();
+      const dependencies = selectDesktopRuntimeExternalDependencies(desktopManifest.dependencies);
+      assert.isTrue(isDesktopRuntimeExternalDependency("node-pty"));
+      assert.isTrue(isDesktopRuntimeExternalDependency("node-pty/lib/utils.js"));
+      assert.equal(dependencies["node-pty"], desktopManifest.dependencies["node-pty"]);
+      const staged = createStageWorkspaceConfig({
+        platform: "linux",
+        arch: "x64",
+        overrides: workspace.overrides ?? {},
+        patchedDependencies: createStagePatchedDependencies(
+          workspace.patchedDependencies ?? {},
+          dependencies,
+        ),
+      });
+      const version = staged.overrides?.["node-pty"];
+      assert.isString(version);
+      assert.property(staged.patchedDependencies, `node-pty@${version}`);
     }),
   );
 

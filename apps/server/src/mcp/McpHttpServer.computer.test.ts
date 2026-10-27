@@ -174,7 +174,7 @@ const serve = Effect.fn("ComputerHttpTest.serve")(function* (
       desktopId: "user-desktop-1",
       defaultLabel: "Test desktop",
       platform: "linux",
-      capabilities: ["view", "control", "availability"],
+      capabilities: ["view", "control", "availability", "execution"],
     },
     environmentId,
     supportedOperations: [...COMPUTER_AUTOMATION_OPERATIONS],
@@ -947,4 +947,53 @@ it.effect("surfaces an unavailable local Agent runtime as a structured computer 
       },
     ]);
   }).pipe(Effect.provide(layer)),
+);
+
+it.effect("scopes desktop execution tools to a capable thread before routing", () =>
+  Effect.gen(function* () {
+    const requests: PreviewAutomationRequest[] = [];
+    yield* serve((request) =>
+      Effect.sync(() => {
+        requests.push(request);
+        return {
+          ok: true,
+          result: {
+            kind: "list",
+            desktop: { kind: "user", desktopId: "user-desktop-1" },
+            processes: [],
+          },
+        };
+      }),
+    );
+    const desktop = { kind: "user", desktopId: "user-desktop-1" };
+    for (const [name, input] of [
+      ["user_desktop_execution", { desktop, action: "status" }],
+      ["user_desktop_command", { desktop, commandId: "scoped", executable: "/bin/echo" }],
+      ["user_desktop_process", { desktop, action: "list" }],
+    ] as const) {
+      const external = yield* call(name, input, {
+        ...invocation,
+        thread: undefined,
+        client: { sessionId: "external", label: "External", access: "full-access" },
+      });
+      expect(external.isError).toBe(true);
+      expect(external.structuredContent).toMatchObject({
+        error: { _tag: "OrchestratorMcpFailure" },
+      });
+      const incapable = yield* call(name, input, { ...invocation, capabilities: new Set() });
+      expect(incapable.isError).toBe(true);
+      expect(JSON.stringify(incapable)).toContain("PreviewAutomationUnavailableError");
+    }
+    expect(requests).toEqual([]);
+    const listed = yield* call("user_desktop_process", { desktop, action: "list" });
+    expect(listed.isError, JSON.stringify(listed)).toBe(false);
+    expect(listed.structuredContent).toEqual({ kind: "list", desktop, processes: [] });
+    expect(requests).toMatchObject([
+      {
+        operation: "computerExecution",
+        threadId,
+        input: { operation: "process", desktop, input: { desktop, action: "list" } },
+      },
+    ]);
+  }).pipe(Effect.provide(layer), Effect.scoped),
 );

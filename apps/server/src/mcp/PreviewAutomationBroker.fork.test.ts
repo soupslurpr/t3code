@@ -1066,3 +1066,53 @@ it.effect("evicts an unanswered native host and ignores its late traffic after r
     expect(healthy.requests).toHaveLength(1);
   }).pipe(Effect.provide(layer), Effect.scoped),
 );
+
+it.effect("routes command execution to its exact desktop independently of screen access", () =>
+  Effect.gen(function* () {
+    const broker = yield* PreviewAutomationBroker.PreviewAutomationBroker;
+    const desktop = { kind: "user", desktopId: "execution-desktop" } as const;
+    const host = yield* serveInventoryHost({
+      clientId: "execution-host",
+      environmentId,
+      userDesktop: {
+        ...registration(desktop.desktopId),
+        platform: "macos",
+        capabilities: ["execution"],
+      },
+      supportedOperations: ["computerExecution"],
+    });
+    const input = { operation: "process", desktop, input: { action: "list", desktop } } as const;
+    expect(yield* broker.invoke({ scope, operation: "computerExecution", input })).toBe(
+      "execution-host",
+    );
+    expect(host.requests[0]).toMatchObject({
+      operation: "computerExecution",
+      input,
+      threadId: scope.thread.threadId,
+    });
+    expect(
+      (yield* broker.listUserDesktops(environmentId, { includeExecution: true })).desktops[0]
+        ?.capabilities,
+    ).toEqual(["execution"]);
+    expect((yield* broker.listUserDesktops(environmentId)).desktops[0]?.capabilities).toEqual([]);
+    expect(
+      yield* broker
+        .invoke<void>({
+          scope,
+          operation: "computerExecution",
+          input: { ...input, desktop: { kind: "user", desktopId: "other-desktop" } },
+        })
+        .pipe(Effect.flip),
+    ).toMatchObject({ computerFailure: { code: "desktop-offline" } });
+    expect(
+      yield* runUserDesktopHumanRequest(broker, scope, {
+        request: { operation: "execution", desktopId: desktop.desktopId, input },
+      }),
+    ).toBe("execution-host");
+    expect(
+      yield* runUserDesktopHumanRequest(broker, scope, {
+        request: { operation: "list", includeExecution: true },
+      }),
+    ).toMatchObject({ desktops: [{ capabilities: ["execution"] }] });
+  }).pipe(Effect.provide(layer), Effect.scoped),
+);

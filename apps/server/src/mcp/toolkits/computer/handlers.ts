@@ -1,5 +1,9 @@
 import * as PreviewAutomationBroker from "../../PreviewAutomationBroker.ts";
 import type {
+  DesktopExecutionAccess,
+  DesktopProcessResult,
+  DesktopProcessList,
+  UserDesktopExecutionInput,
   ComputerObservationDesktopId,
   ComputerAutomationActInput,
   ComputerAutomationAccessInput,
@@ -156,12 +160,39 @@ const actWithTemporalObservation = Effect.fn("ComputerToolkit.actWithTemporalObs
   },
 );
 
+const invokeExecution = Effect.fn("ComputerToolkit.invokeExecution")(function* <Value>(
+  input: UserDesktopExecutionInput,
+) {
+  const scope = yield* McpInvocationContext.requireThreadMcpCapability("computer");
+  const broker = yield* PreviewAutomationBroker.PreviewAutomationBroker;
+  return yield* broker.invoke<Value>({
+    scope,
+    operation: "computerExecution",
+    input,
+    timeoutMs: input.operation === "access" ? 120_000 : 45_000,
+  });
+});
+
 const handlers = {
+  user_desktop_execution: McpToolAccess.actsAsCaller((input) =>
+    invokeExecution<DesktopExecutionAccess>({ operation: "access", desktop: input.desktop, input }),
+  ),
+  user_desktop_command: McpToolAccess.actsAsCaller((input) =>
+    invokeExecution<DesktopProcessResult>({ operation: "command", ...input }),
+  ),
+  user_desktop_process: McpToolAccess.actsAsCaller((input) =>
+    invokeExecution<DesktopProcessResult | DesktopProcessList>({
+      operation: "process",
+      desktop: input.desktop,
+      input,
+    }),
+  ),
+
   user_desktop_list: McpToolAccess.readsAsCaller(() =>
     Effect.gen(function* () {
       const scope = yield* McpInvocationContext.requireThreadMcpCapability("computer");
       const broker = yield* PreviewAutomationBroker.PreviewAutomationBroker;
-      return yield* broker.listUserDesktops(scope.environmentId).pipe(
+      return yield* broker.listUserDesktops(scope.environmentId, { includeExecution: true }).pipe(
         Effect.mapError(
           () =>
             new UserDesktopInventoryError({

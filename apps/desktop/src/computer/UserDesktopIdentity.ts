@@ -77,7 +77,11 @@ function defaultLabel(hostname: string): UserDesktopLabel {
 
 /** Advertises only the platforms implemented by the current computer-use host. */
 function platformCapabilities(platform: UserDesktopPlatform): ReadonlyArray<UserDesktopCapability> {
-  return platform === "linux" ? ["view", "control", "availability"] : [];
+  return platform === "linux"
+    ? ["view", "control", "availability", "execution"]
+    : platform === "macos" || platform === "windows"
+      ? ["execution"]
+      : [];
 }
 
 const writeIdentity = Effect.fn("userDesktopIdentity.write")(function* (input: {

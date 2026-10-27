@@ -33,7 +33,9 @@ export const userDesktopListingAtom = Atom.family((environmentIds: string) =>
         decodeEnvironmentIds(environmentIds).map(async (environmentId) => {
           try {
             const list = decodeUserDesktopList(
-              await request(environmentId, { request: { operation: "list" } }),
+              await request(environmentId, {
+                request: { operation: "list", includeExecution: true },
+              }),
             );
             const entries = await Promise.all(
               list.desktops.map(async (desktop): Promise<UserDesktopEntry> => {

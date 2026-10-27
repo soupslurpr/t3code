@@ -26,7 +26,9 @@ export const runUserDesktopHumanRequest = Effect.fn("UserDesktopHuman.run")(func
   const { request } = input;
   if (request.operation === "list") {
     return yield* broker
-      .listUserDesktops(scope.environmentId)
+      .listUserDesktops(scope.environmentId, {
+        includeExecution: request.includeExecution === true,
+      })
       .pipe(Effect.mapError(inventoryFailure));
   }
   if (request.operation === "rename" || request.operation === "remove") {
@@ -63,6 +65,8 @@ export const runUserDesktopHumanRequest = Effect.fn("UserDesktopHuman.run")(func
       ...(input.timeoutMs === undefined ? {} : { timeoutMs: input.timeoutMs }),
     });
   switch (request.operation) {
+    case "execution":
+      return yield* invokeComputer("computerExecution", { ...request.input, desktop });
     case "status":
       return yield* invokeComputer("computerStatus", { desktop });
     case "request-view":
