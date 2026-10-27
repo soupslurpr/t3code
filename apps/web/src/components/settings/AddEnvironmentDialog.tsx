@@ -325,14 +325,12 @@ export function AddEnvironmentDialog({
     }
   };
 
-  const handleSavedBackendHostChange = (value: string) => {
+  const handleSavedBackendHostBlur = (value: string) => {
     const parsedPairingUrl = parsePairingUrlFields(value);
     if (parsedPairingUrl) {
       setSavedBackendHost(parsedPairingUrl.host);
       setSavedBackendPairingCode(parsedPairingUrl.pairingCode);
-      return;
     }
-    setSavedBackendHost(value);
   };
   const renderConnectionModeCard = (input: {
     readonly mode: "remote" | "ssh";
@@ -383,7 +381,8 @@ export function AddEnvironmentDialog({
           <span className="mb-1.5 block text-xs font-medium text-foreground">Host</span>
           <Input
             value={savedBackendHost}
-            onChange={(event) => handleSavedBackendHostChange(event.target.value)}
+            onChange={(event) => setSavedBackendHost(event.target.value)}
+            onBlur={(event) => handleSavedBackendHostBlur(event.target.value)}
             placeholder="backend.example.com"
             disabled={isAddingSavedBackend}
             spellCheck={false}
@@ -402,7 +401,7 @@ export function AddEnvironmentDialog({
       </div>
       <div>
         <span className="mt-1 block text-2xs text-muted-foreground">
-          Paste a full pairing URL here to fill both fields automatically.
+          Enter a full pairing URL, or enter the host and pairing code separately.
         </span>
       </div>
     </div>
