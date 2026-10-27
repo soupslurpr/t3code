@@ -693,3 +693,38 @@ describe("V2 environment commands", () => {
     }).pipe(Effect.provide(layerTestCrypto)),
   );
 });
+
+it.effect.each([false, true])(
+  "cancels imported monitor-only work with threadStop capability %s",
+  (advertiseThreadStop) =>
+    Effect.gen(function* () {
+      const commands: OrchestrationV2Command[] = [];
+      const projectionRequests: ThreadId[] = [];
+      const supervisor = yield* makeSupervisor({
+        commands,
+        projects: [],
+        advertiseThreadStop,
+        projectionRequests,
+        projection: {
+          ...v2Projection,
+          runs: [],
+          providerThreads: [],
+          turnItems: [],
+          subagents: [],
+        },
+      });
+      yield* interruptThreadTurn({
+        threadId: v2ThreadId,
+        commandId: CommandId.make("cancel-monitors"),
+        cancelMonitors: true,
+      }).pipe(Effect.provideService(EnvironmentSupervisor.EnvironmentSupervisor, supervisor));
+      expect(commands).toEqual([
+        {
+          type: advertiseThreadStop ? "thread.stop" : "thread.monitors.cancel",
+          threadId: v2ThreadId,
+          commandId: "cancel-monitors",
+        },
+      ]);
+      expect(projectionRequests).toEqual(advertiseThreadStop ? [] : [v2ThreadId]);
+    }).pipe(Effect.provide(layerTestCrypto)),
+);

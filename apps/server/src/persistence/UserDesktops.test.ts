@@ -101,7 +101,7 @@ it.effect.each([40, 66, 69])(
       yield* sql`INSERT INTO thread_monitors (monitor_id, thread_id, label, condition_type, continuation_mode, status, created_at, updated_at)
       VALUES ('preserved', 'thread', 'Watch', 'signal', 'record-only', 'active', '2026-01-01', '2026-01-01')`;
       const before = yield* sql`SELECT * FROM thread_monitors`;
-      yield* runMigrations();
+      yield* runMigrations({ toForkMigrationInclusive: 9 });
       assert.deepEqual(yield* sql`SELECT * FROM thread_monitors`, before);
       assert.deepEqual(
         yield* sql`SELECT migration_id, name FROM effect_sql_fork_migrations WHERE migration_id = 9`,
@@ -115,7 +115,7 @@ it.effect.each([40, 66, 69])(
           { migration_id: 69, name: "ThreadMessageSearch" },
         ],
       );
-      assert.deepEqual(yield* runMigrations(), []);
+      assert.deepEqual(yield* runMigrations({ toForkMigrationInclusive: 9 }), []);
     }).pipe(Effect.provide(NodeSqliteClient.layer({ filename: ":memory:" }))),
 );
 
@@ -168,7 +168,7 @@ it.effect.each([40, 63, 64, 65, 66, 69])("adds F10 and reserves F11/F12 after ba
   Effect.gen(function* () {
     const sql = yield* SqlClient.SqlClient;
     yield* runMigrations({ toMigrationInclusive: base, toForkMigrationInclusive: 9 });
-    yield* runMigrations();
+    yield* runMigrations({ toForkMigrationInclusive: 12 });
     assert.deepEqual(
       yield* sql`SELECT migration_id, name FROM effect_sql_fork_migrations WHERE migration_id >= 10`,
       [
@@ -181,7 +181,7 @@ it.effect.each([40, 63, 64, 65, 66, 69])("adds F10 and reserves F11/F12 after ba
       yield* sql`SELECT name FROM sqlite_master WHERE name IN ('preview_sessions', 'tool_runs')`,
       [],
     );
-    assert.deepEqual(yield* runMigrations(), []);
+    assert.deepEqual(yield* runMigrations({ toForkMigrationInclusive: 12 }), []);
   }).pipe(Effect.provide(NodeSqliteClient.layer({ filename: ":memory:" }))),
 );
 

@@ -1,3 +1,4 @@
+import { EventSinkV2 } from "./EventSink.ts";
 import { assert, it } from "@effect/vitest";
 import {
   CommandId,
@@ -1550,5 +1551,74 @@ it.effect.each(["missing session", "completed", "failed", "cancelled"] as const)
         )?.status,
         "running",
       );
+    }).pipe(Effect.provide(layerTest)),
+);
+
+it.effect.each(["never-run", "completed-run", "explicit-terminal"] as const)(
+  "interruptThread cancels monitor-only work for %s while preserving explicit terminal idempotence",
+  (state) =>
+    Effect.gen(function* () {
+      const orchestrator = yield* Orchestrator.OrchestratorV2;
+      const management = yield* ThreadManagementService.ThreadManagementService;
+      const threadId = ThreadId.make("monitor-interrupt");
+      const projectId = ProjectId.make("project:thread-stop");
+      yield* orchestrator.dispatch({
+        type: "thread.create",
+        commandId: CommandId.make("create-monitor-interrupt"),
+        threadId,
+        projectId,
+        title: "Monitor Stop",
+        modelSelection,
+        runtimeMode: "full-access",
+        interactionMode: "default",
+        branch: null,
+        worktreePath: null,
+        createdBy: "user",
+        creationSource: "web",
+      });
+      let completedRun: import("@t3tools/contracts").RunId | undefined;
+      if (state !== "never-run") {
+        yield* orchestrator.dispatch({
+          type: "message.dispatch",
+          commandId: CommandId.make("monitor-run"),
+          threadId,
+          messageId: MessageId.make("monitor-run"),
+          text: "Work",
+          attachments: [],
+          createdBy: "user",
+          creationSource: "web",
+          dispatchMode: { type: "queue_after_active" },
+        });
+        const run = (yield* orchestrator.getThreadRecords(threadId, ["runs"])).runs[0]!;
+        const now = yield* DateTime.now;
+        yield* (yield* EventSinkV2).write({
+          events: [
+            {
+              type: "run.updated",
+              id: EventId.make("completed-monitor-run"),
+              threadId,
+              occurredAt: now,
+              payload: { ...run, status: "completed", completedAt: now },
+            },
+          ],
+        });
+        completedRun = run.id;
+      }
+      const sql = yield* SqlClient.SqlClient;
+      yield* sql`INSERT INTO thread_monitors (monitor_id, thread_id, label, condition_type, continuation_mode, status, created_at, updated_at)
+   VALUES ('wait', ${threadId}, 'Monitor', 'signal', 'record-only', 'active', '2026-10-26T00:00:00.000Z', '2026-10-26T00:00:00.000Z')`;
+      const result = yield* management.interruptThread({
+        commandId: CommandId.make("interrupt-monitor"),
+        threadId,
+        projectId,
+        ...(state === "explicit-terminal" ? { runId: completedRun! } : {}),
+      });
+      assert.equal(
+        result.type,
+        state === "explicit-terminal" ? "already_terminal" : "monitors_cancel_requested",
+      );
+      assert.deepEqual(yield* sql`SELECT cancellation_requested FROM thread_monitors`, [
+        { cancellation_requested: state === "explicit-terminal" ? 0 : 1 },
+      ]);
     }).pipe(Effect.provide(layerTest)),
 );

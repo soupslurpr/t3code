@@ -279,20 +279,23 @@ export const make = Effect.gen(function* () {
   const checks = new Map<ThreadMonitorId, Fiber.Fiber<void, ThreadMonitorError>>();
   const pendingStarts = new Map<
     ThreadMonitorId,
-    { threadId: ThreadId; stopped: Deferred.Deferred<void> }
+    { threadId: ThreadId; afterSequence: number; stopped: Deferred.Deferred<void> }
   >();
   const releases = new Map<
     ThreadMonitorId,
     { threadId: ThreadId; fiber: Fiber.Fiber<void, ThreadMonitorError> }
   >();
+  const cancellationCleanups = new Set<ThreadMonitorId>();
   const wakeQueue = yield* Queue.sliding<void>(1);
 
   const nowIso = DateTime.now.pipe(Effect.map(DateTime.formatIso));
   const wake = Queue.offer(wakeQueue, undefined).pipe(Effect.asVoid);
 
-  const stopPendingStarts = (threadId: ThreadId) =>
+  const stopPendingStarts = (threadId: ThreadId, beforeSequence = Number.POSITIVE_INFINITY) =>
     Effect.forEach(
-      [...pendingStarts.values()].filter((pending) => pending.threadId === threadId),
+      [...pendingStarts.values()].filter(
+        (pending) => pending.threadId === threadId && pending.afterSequence < beforeSequence,
+      ),
       (pending) => Deferred.succeed(pending.stopped, undefined),
       { discard: true },
     );
@@ -315,21 +318,27 @@ export const make = Effect.gen(function* () {
   const writeComputerRevision = Effect.fn("ThreadMonitor.writeComputerRevision")(
     (
       monitor: ThreadMonitor,
-      evidence: import("./ThreadMonitorComputerService.ts").ThreadMonitorComputerEvidence,
+      evidence: import("./ThreadMonitorComputerService.ts").ThreadMonitorComputerEvidence & {
+        readonly afterSequence?: number;
+      },
     ) =>
       repository
         .upsertComputerRevision({ monitor, ...evidence })
         .pipe(Effect.mapError(mapPersistenceError("computer-revision", monitor.id))),
   );
 
+  // Called under the state lock. Desktop cleanup can wait on a remote computer,
+  // so it has its own fiber and never holds the scheduler's state lock.
   const releaseComputer = Effect.fn("ThreadMonitor.releaseComputer")(function* (
     monitor: ThreadMonitor,
+    captureRelease?: (fiber: Fiber.Fiber<void, ThreadMonitorError>) => void,
   ) {
-    if (
-      monitor.condition.type !== "computer" ||
-      monitor.condition.resourceState === "released" ||
-      releases.has(monitor.id)
-    ) {
+    if (monitor.condition.type !== "computer" || monitor.condition.resourceState === "released") {
+      return monitor;
+    }
+    const releasing = releases.get(monitor.id);
+    if (releasing !== undefined) {
+      captureRelease?.(releasing.fiber);
       return monitor;
     }
     const checking = checks.get(monitor.id);
@@ -350,6 +359,7 @@ export const make = Effect.gen(function* () {
       );
     }).pipe(Effect.ensuring(Effect.sync(() => releases.delete(monitor.id))), Effect.forkIn(scope));
     releases.set(monitor.id, { threadId: monitor.threadId, fiber });
+    captureRelease?.(fiber);
     return monitor;
   });
 
@@ -1068,11 +1078,16 @@ export const make = Effect.gen(function* () {
   });
 
   const reconcile = (threadId?: ThreadId, monitorId?: ThreadMonitorId, startChecks = true) =>
-    mutex.withPermits(1)(reconcileUnlocked(threadId, monitorId, startChecks));
+    processCancellationRequests().pipe(
+      Effect.andThen(mutex.withPermits(1)(reconcileUnlocked(threadId, monitorId, startChecks))),
+    );
 
   const create: ThreadMonitorServiceShape["create"] = ({ threadId, monitor: input }) =>
     mutex.withPermits(1)(
       Effect.gen(function* () {
+        const afterSequence = yield* eventSink
+          .latestSequence()
+          .pipe(Effect.mapError(mapPersistenceError("start")));
         const thread = yield* snapshots
           .getThreadShellById(threadId)
           .pipe(Effect.mapError(mapPersistenceError("start")));
@@ -1110,7 +1125,9 @@ export const make = Effect.gen(function* () {
           deliveryRetryAt: null,
           deliveryFailureCount: 0,
         };
-        yield* writeMonitor(monitor);
+        yield* repository
+          .upsert(monitor, { afterSequence })
+          .pipe(Effect.mapError(mapPersistenceError("write", monitor.id)));
         yield* appendActivity(monitor, "started", `Monitoring: ${monitor.label}`);
         yield* wake;
         return monitor;
@@ -1122,17 +1139,6 @@ export const make = Effect.gen(function* () {
   )(function* (
     ...[{ threadId, monitor: input }]: Parameters<ThreadMonitorServiceShape["createComputer"]>
   ) {
-    const thread = yield* snapshots
-      .getThreadShellById(threadId)
-      .pipe(Effect.mapError(mapPersistenceError("computer-start")));
-    if (Option.isNone(thread)) {
-      return yield* monitorError({
-        code: "THREAD_UNAVAILABLE",
-        operation: "computer-start",
-        detail: `Thread '${threadId}' is unavailable.`,
-      });
-    }
-
     const createdAt = yield* nowIso;
     const id = ThreadMonitorId.make(yield* crypto.randomUUIDv4().pipe(Effect.orDie));
     const stopped = yield* Deferred.make<void>();
@@ -1143,10 +1149,30 @@ export const make = Effect.gen(function* () {
       monitorId: id,
     });
     return yield* Effect.acquireUseRelease(
-      Effect.sync(() => pendingStarts.set(id, { threadId, stopped })),
-      () =>
+      mutex.withPermits(1)(
+        Effect.gen(function* () {
+          const afterSequence = yield* eventSink
+            .latestSequence()
+            .pipe(Effect.mapError(mapPersistenceError("computer-start", id)));
+          pendingStarts.set(id, { threadId, stopped, afterSequence });
+          return afterSequence;
+        }),
+      ),
+      (afterSequence) =>
         Effect.uninterruptibleMask((restore) =>
           Effect.gen(function* () {
+            const thread = yield* snapshots
+              .getThreadShellById(threadId)
+              .pipe(Effect.mapError(mapPersistenceError("computer-start")));
+            if (Option.isNone(thread)) {
+              return yield* monitorError({
+                code: "THREAD_UNAVAILABLE",
+                operation: "computer-start",
+                detail: `Thread '${threadId}' is unavailable.`,
+              });
+            }
+
+            if (yield* Deferred.isDone(stopped)) return yield* cancelled;
             const prepared = yield* restore(
               computer
                 .prepare({
@@ -1198,6 +1224,7 @@ export const make = Effect.gen(function* () {
                       detail: `Thread '${threadId}' is unavailable.`,
                     });
                   yield* writeComputerRevision(monitor, {
+                    afterSequence,
                     baselineImages: prepared.baselineImages,
                     previousImages: [],
                     currentImages: [],
@@ -1499,68 +1526,172 @@ export const make = Effect.gen(function* () {
           });
         }
         const now = yield* nowIso;
-        const triggered = yield* triggerMonitor(
-          monitor,
-          {
-            reason: "signal",
-            summary: input.summary ?? null,
-            evidence: input.evidence ?? null,
-          },
-          now,
-        );
+        const trigger: ThreadMonitorTrigger = {
+          reason: "signal",
+          summary: input.summary ?? null,
+          evidence: input.evidence ?? null,
+        };
+        // Stop writes its cancellation barrier in the command transaction,
+        // independently of this lock. Test it in the signal's write so a late
+        // background watcher cannot mutate a monitor awaiting cancellation.
+        const accepted = yield* repository
+          .trySignal({
+            monitorId: monitor.id,
+            threadId,
+            triggeredAt: now,
+            summary: trigger.summary,
+            evidence: trigger.evidence,
+          })
+          .pipe(Effect.mapError(mapPersistenceError("signal", monitor.id)));
+        if (!accepted) {
+          yield* wake;
+          const current = yield* readOwnedMonitor(threadId, monitor.id, "signal");
+          if (current.status !== "active") return current;
+          return yield* monitorError({
+            code: "MONITOR_NOT_SIGNALABLE",
+            operation: "signal",
+            detail: `Monitor '${monitor.id}' is being cancelled and cannot be externally signalled.`,
+            monitorId: monitor.id,
+          });
+        }
+        const triggered: ThreadMonitor = {
+          ...monitor,
+          status: "triggered",
+          trigger,
+          updatedAt: now,
+          triggeredAt: now,
+          lastError: null,
+          deliveryRetryAt: null,
+        };
+        yield* appendActivity(triggered, "triggered", `Monitor triggered: ${triggered.label}`);
         yield* wake;
         return triggered;
       }),
     );
 
-  const cancel: ThreadMonitorServiceShape["cancel"] = ({ threadId, cancel: input }) =>
-    mutex
-      .withPermits(1)(
-        Effect.gen(function* () {
-          if (input.monitorId === undefined) yield* stopPendingStarts(threadId);
-          const monitors =
-            input.monitorId === undefined
-              ? (yield* repository
-                  .listOutstanding()
-                  .pipe(Effect.mapError(mapPersistenceError("cancel")))).filter(
-                  (monitor) => monitor.threadId === threadId,
-                )
-              : [yield* readOwnedMonitor(threadId, input.monitorId, "cancel")];
-          if (monitors.length === 0) return { monitors: [] };
-          const cancelledAt = yield* nowIso;
-          const cancelled = yield* Effect.forEach(monitors, (monitor) =>
-            Effect.gen(function* () {
-              if (!isOutstanding(monitor)) return monitor;
-              const result: ThreadMonitor = {
-                ...monitor,
-                status: "cancelled",
-                updatedAt: cancelledAt,
-                cancelledAt,
-                lastError: null,
-                deliveryRetryAt: null,
-              };
-              yield* writeMonitor(result);
-              yield* releaseComputer(result);
-              yield* appendActivity(result, "cancelled", `Monitor cancelled: ${result.label}`);
-              return result;
-            }),
-          );
-          yield* wake;
-          return { monitors: cancelled.slice(0, 100) };
-        }),
-      )
-      .pipe(
-        Effect.flatMap((result) =>
-          awaitReleases(threadId, input.monitorId).pipe(
-            Effect.andThen(
-              Effect.forEach(result.monitors, (monitor) =>
-                readOwnedMonitor(threadId, monitor.id, "cancel"),
-              ),
-            ),
-            Effect.map((monitors) => ({ monitors })),
-          ),
-        ),
+  const cancelState = Effect.fn("ThreadMonitor.cancelState")(function* ({
+    threadId,
+    cancel: input,
+  }: Parameters<ThreadMonitorServiceShape["cancel"]>[0]) {
+    const releasing = new Set<Fiber.Fiber<void, ThreadMonitorError>>();
+    const captureRelease = (fiber: Fiber.Fiber<void, ThreadMonitorError>) => releasing.add(fiber);
+    const monitors = yield* mutex.withPermits(1)(
+      Effect.gen(function* () {
+        for (const [id, entry] of releases) {
+          if (
+            entry.threadId === threadId &&
+            (input.monitorId === undefined || id === input.monitorId)
+          ) {
+            captureRelease(entry.fiber);
+          }
+        }
+        if (input.monitorId === undefined) yield* stopPendingStarts(threadId);
+        const monitors =
+          input.monitorId === undefined
+            ? (yield* repository
+                .listOutstanding()
+                .pipe(Effect.mapError(mapPersistenceError("cancel")))).filter(
+                (monitor) => monitor.threadId === threadId,
+              )
+            : [yield* readOwnedMonitor(threadId, input.monitorId, "cancel")];
+        const cancelledAt = yield* nowIso;
+        const cancelled = yield* Effect.forEach(monitors, (monitor) =>
+          Effect.gen(function* () {
+            if (!isOutstanding(monitor)) {
+              yield* releaseComputer(monitor, captureRelease);
+              if (monitor.status === "cancelled") {
+                yield* appendActivity(monitor, "cancelled", `Monitor cancelled: ${monitor.label}`);
+              }
+              return monitor;
+            }
+            const result: ThreadMonitor = {
+              ...monitor,
+              status: "cancelled",
+              updatedAt: cancelledAt,
+              cancelledAt,
+              lastError: null,
+              deliveryRetryAt: null,
+            };
+            yield* writeMonitor(result);
+            yield* releaseComputer(result, captureRelease);
+            yield* appendActivity(result, "cancelled", `Monitor cancelled: ${result.label}`);
+            return result;
+          }),
+        );
+        yield* wake;
+        return cancelled.slice(0, 100);
+      }),
+    );
+    return { monitors, releasing: [...releasing] };
+  });
+
+  const cancel: ThreadMonitorServiceShape["cancel"] = Effect.fn("ThreadMonitor.cancel")(
+    function* (input) {
+      const result = yield* cancelState(input);
+      // Keep the actual fibers: a failed release removes itself from the map.
+      yield* Effect.forEach(result.releasing, (fiber) => Fiber.join(fiber), { discard: true });
+      const monitors = yield* Effect.forEach(result.monitors, (monitor) =>
+        readOwnedMonitor(input.threadId, monitor.id, "cancel"),
       );
+      return { monitors };
+    },
+  );
+
+  const processCancellationRequests = Effect.fn("ThreadMonitor.processCancellationRequests")(
+    function* () {
+      const requests = yield* repository
+        .listCancellationRequests()
+        .pipe(Effect.mapError(mapPersistenceError("cancel")));
+      for (const request of requests) {
+        if (cancellationCleanups.has(request.monitorId)) continue;
+        cancellationCleanups.add(request.monitorId);
+        const result = yield* cancelState({
+          threadId: request.threadId,
+          cancel: { monitorId: request.monitorId },
+        }).pipe(
+          // Deleting a thread also deletes its watches and pending requests.
+          Effect.catchIf(
+            (error) => error.code === "MONITOR_NOT_FOUND",
+            () => Effect.succeed({ monitors: [], releasing: [] }),
+          ),
+          Effect.onExit((exit) =>
+            exit._tag === "Failure"
+              ? Effect.sync(() => cancellationCleanups.delete(request.monitorId))
+              : Effect.void,
+          ),
+        );
+        const acknowledge = repository
+          .acknowledgeCancellation(request.monitorId)
+          .pipe(Effect.mapError(mapPersistenceError("cancel", request.monitorId)));
+        if (result.releasing.length === 0) {
+          yield* acknowledge.pipe(
+            Effect.ensuring(Effect.sync(() => cancellationCleanups.delete(request.monitorId))),
+          );
+          continue;
+        }
+        // Cancellation is durable now. Remote cleanup must not hold startup or
+        // unrelated monitor delivery; retry failures while retaining the request.
+        yield* Effect.forEach(result.releasing, (fiber) => Fiber.join(fiber), {
+          discard: true,
+        }).pipe(
+          Effect.andThen(acknowledge),
+          Effect.catch((error) =>
+            Effect.logWarning("failed to finish durable monitor cancellation", {
+              monitorId: request.monitorId,
+              code: error.code,
+              detail: error.detail,
+            }).pipe(Effect.andThen(Effect.sleep(Duration.millis(BLOCKED_DELIVERY_RETRY_MS)))),
+          ),
+          Effect.ensuring(
+            Effect.sync(() => cancellationCleanups.delete(request.monitorId)).pipe(
+              Effect.andThen(wake),
+            ),
+          ),
+          Effect.forkIn(scope),
+        );
+      }
+    },
+  );
 
   const checkNow: ThreadMonitorServiceShape["checkNow"] = Effect.fn("ThreadMonitor.checkNow")(
     function* (...[{ threadId, check }]: Parameters<ThreadMonitorServiceShape["checkNow"]>) {
@@ -1594,7 +1725,7 @@ export const make = Effect.gen(function* () {
           .pipe(Effect.mapError(mapPersistenceError("delete-thread")));
         yield* Effect.forEach(
           monitors.filter((monitor) => monitor.threadId === threadId),
-          releaseComputer,
+          (monitor) => releaseComputer(monitor),
           { discard: true },
         );
         yield* repository
@@ -1602,20 +1733,25 @@ export const make = Effect.gen(function* () {
           .pipe(Effect.mapError(mapPersistenceError("delete-thread")));
       }),
     );
-    yield* awaitReleases(threadId);
   });
 
   const schedulerLoop = Effect.forever(
     Effect.gen(function* () {
-      yield* reconcile().pipe(
-        Effect.catch((error) =>
-          Effect.logWarning("durable monitor reconciliation failed", {
-            code: error.code,
-            operation: error.operation,
-            detail: error.detail,
-          }),
-        ),
-      );
+      const reconciled = yield* reconcile().pipe(Effect.result);
+      if (Result.isFailure(reconciled)) {
+        yield* Effect.logWarning("durable monitor reconciliation failed", {
+          code: reconciled.failure.code,
+          operation: reconciled.failure.operation,
+          detail: reconciled.failure.detail,
+        });
+        // A failed Stop must retry before scheduling any continuation, even if
+        // the stopped watch's deadline is still hours away.
+        yield* Effect.raceFirst(
+          Queue.take(wakeQueue),
+          Effect.sleep(Duration.millis(BLOCKED_DELIVERY_RETRY_MS)),
+        );
+        return;
+      }
       const outstanding = yield* repository
         .listOutstanding()
         .pipe(
@@ -1665,6 +1801,7 @@ export const make = Effect.gen(function* () {
 
   const start = Effect.fn("ThreadMonitor.start")(function* () {
     const afterSequence = yield* eventSink.latestSequence().pipe(Effect.orDie);
+    yield* processCancellationRequests().pipe(Effect.orDie);
     const outstanding = yield* repository
       .listOutstanding()
       .pipe(
@@ -1704,7 +1841,7 @@ export const make = Effect.gen(function* () {
       Effect.gen(function* () {
         yield* Effect.forkScoped(
           eventSink.stream({ afterSequence }).pipe(
-            Stream.runForEach(({ event }) => {
+            Stream.runForEach(({ event, sequence }) => {
               if (event.type === "thread.deleted") {
                 return deleteThreadMonitors(event.threadId).pipe(
                   Effect.catch((error) =>
@@ -1721,16 +1858,19 @@ export const make = Effect.gen(function* () {
                 event.type === "turn-item.updated" &&
                 event.payload.type === "run_interrupt_request"
               ) {
-                return cancel({ threadId: event.threadId, cancel: {} }).pipe(
-                  Effect.catch((error) =>
-                    Effect.logWarning("failed to cancel durable monitors", {
-                      threadId: event.threadId,
-                      code: error.code,
-                      detail: error.detail,
-                    }),
-                  ),
-                  Effect.andThen(wake),
-                );
+                return mutex
+                  .withPermits(1)(stopPendingStarts(event.threadId, sequence))
+                  .pipe(
+                    Effect.andThen(processCancellationRequests()),
+                    Effect.catch((error) =>
+                      Effect.logWarning("failed to cancel durable monitors", {
+                        threadId: event.threadId,
+                        code: error.code,
+                        detail: error.detail,
+                      }),
+                    ),
+                    Effect.andThen(wake),
+                  );
               }
               if (event.type === "run.updated" || event.type === "runtime-request.updated") {
                 return wake;

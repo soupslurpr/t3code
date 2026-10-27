@@ -3049,6 +3049,11 @@ export const OrchestrationV2Command = Schema.Union([
     holdQueue: Schema.optional(Schema.Boolean),
   }),
   Schema.Struct({
+    type: Schema.Literal("thread.monitors.cancel"),
+    commandId: CommandId,
+    threadId: ThreadId,
+  }),
+  Schema.Struct({
     type: Schema.Literal("queued-message.promote-to-steer"),
     commandId: CommandId,
     threadId: ThreadId,

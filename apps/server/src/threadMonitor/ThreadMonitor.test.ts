@@ -1,3 +1,12 @@
+import * as Context from "effect/Context";
+import * as Ref from "effect/Ref";
+import * as Fiber from "effect/Fiber";
+import * as SqlClient from "effect/sql/SqlClient";
+import { ThreadWorkspaceQuery } from "../orchestration-v2/ThreadWorkspaceQuery.ts";
+import {
+  ThreadMonitorComputerService,
+  type ThreadMonitorComputerPrepareResult,
+} from "./ThreadMonitorComputerService.ts";
 import { assert, describe, it } from "@effect/vitest";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { EventId, CommandId, MessageId, ThreadId, ThreadMonitorId } from "@t3tools/contracts";
@@ -715,4 +724,699 @@ it.effect.each(["web", "provider"] as const)(
       assert.lengthOf(projection.messages, 0);
       assert.lengthOf(projection.runs, 0);
     }).pipe(Effect.provide(layer)),
+);
+
+it.effect("rejects a signal after monitor-only thread.stop is accepted", () =>
+  Effect.gen(function* () {
+    yield* seedThread();
+    const service = yield* ThreadMonitorService;
+    const engine = yield* OrchestratorV2;
+    const monitor = yield* service.create({
+      threadId,
+      monitor: { label: "Stopped signal", schedule: { type: "signal" } },
+    });
+    yield* engine.dispatch({
+      type: "thread.stop",
+      commandId: CommandId.make("monitor-only-stop"),
+      threadId,
+    });
+    const result = yield* service
+      .signal({ threadId, signal: { monitorId: monitor.id } })
+      .pipe(Effect.result);
+    assert.equal(result._tag, "Failure");
+    if (result._tag === "Failure") assert.equal(result.failure.code, "MONITOR_NOT_SIGNALABLE");
+  }).pipe(Effect.provide(layer)),
+);
+
+interface ComputerMonitorProbeShape {
+  readonly beforeOwnerRead: Ref.Ref<Effect.Effect<void>>;
+  readonly beforeDispatch: Ref.Ref<Effect.Effect<void>>;
+  readonly beforePrepare: Ref.Ref<Effect.Effect<void>>;
+  readonly beforeCheck: Ref.Ref<Effect.Effect<void>>;
+  readonly beforeRevise: Ref.Ref<Effect.Effect<void>>;
+  readonly beforeInspect: Ref.Ref<Effect.Effect<void>>;
+  readonly beforeRelease: Ref.Ref<Effect.Effect<void>>;
+  readonly checks: Ref.Ref<number>;
+  readonly failNextChecks: Ref.Ref<number>;
+  readonly failFingerprint: Ref.Ref<boolean>;
+  readonly releases: Ref.Ref<number>;
+}
+
+class ComputerMonitorProbe extends Context.Service<
+  ComputerMonitorProbe,
+  ComputerMonitorProbeShape
+>()("t3/threadMonitor/ThreadMonitor.test/ComputerMonitorProbe") {}
+
+const computerProbeLayer = Layer.effect(
+  ComputerMonitorProbe,
+  Effect.gen(function* () {
+    return ComputerMonitorProbe.of({
+      beforeOwnerRead: yield* Ref.make(Effect.void),
+      beforeDispatch: yield* Ref.make(Effect.void),
+      beforePrepare: yield* Ref.make(Effect.void),
+      beforeCheck: yield* Ref.make(Effect.void),
+      beforeRevise: yield* Ref.make(Effect.void),
+      beforeInspect: yield* Ref.make(Effect.void),
+      beforeRelease: yield* Ref.make(Effect.void),
+      checks: yield* Ref.make(0),
+      failNextChecks: yield* Ref.make(0),
+      failFingerprint: yield* Ref.make(false),
+      releases: yield* Ref.make(0),
+    });
+  }),
+);
+
+const workingComputerLayer = Layer.effect(
+  ThreadMonitorComputerService,
+  Effect.gen(function* () {
+    const probe = yield* ComputerMonitorProbe;
+    return {
+      prepare: (input) => {
+        const baselineImages = [
+          {
+            id: "baseline:screen",
+            kind: "baseline" as const,
+            regionId: "screen",
+            capturedAt: input.createdAt,
+            hash: "baseline-hash",
+            width: 300,
+            height: 200,
+            frameIndex: null,
+            elapsedMs: null,
+            mimeType: "image/webp" as const,
+            dataBase64: "YmFzZWxpbmU=",
+            sizeBytes: 8,
+            encoding: { format: "webp" as const, mode: "lossless" as const },
+          },
+        ];
+        return Ref.get(probe.beforePrepare).pipe(
+          Effect.flatten,
+          Effect.andThen(
+            Effect.succeed<ThreadMonitorComputerPrepareResult>({
+              condition: {
+                type: "computer",
+                revision: 1,
+                desktop: input.watch.desktop,
+                observation: {
+                  regions: [
+                    {
+                      id: "screen",
+                      role: "trigger",
+                      purpose: null,
+                      region: {
+                        coordinateSpace: "desktop-logical",
+                        displayId: "display-0",
+                        x: 10,
+                        y: 20,
+                        width: 300,
+                        height: 200,
+                      },
+                      maxWidth: 1_024,
+                      maxHeight: 1_024,
+                      encoding: { format: "webp", mode: "lossless" },
+                      baselineHash: "baseline-hash",
+                      lastSampleHash: "baseline-hash",
+                      baselineStored: true,
+                      sampleCount: 0,
+                      changedSampleCount: 0,
+                      unchangedSampleCount: 0,
+                      lastCapturedAt: null,
+                      lastChangedAt: null,
+                    },
+                  ],
+                },
+                match:
+                  input.watch.match.type === "model"
+                    ? { ...input.watch.match, baseline: input.watch.match.baseline ?? "none" }
+                    : input.watch.match,
+                sampling: {
+                  intervalMs: input.watch.sampling?.intervalMs ?? 30_000,
+                  minEvaluationIntervalMs: input.watch.sampling?.minEvaluationIntervalMs ?? null,
+                  evaluateOnlyAfterChange: input.watch.sampling?.evaluateOnlyAfterChange ?? true,
+                },
+                review: {
+                  policy:
+                    input.watch.review === null
+                      ? null
+                      : {
+                          afterEvaluations:
+                            input.watch.review?.afterEvaluations === undefined
+                              ? input.watch.match.type === "model"
+                                ? 12
+                                : null
+                              : input.watch.review.afterEvaluations,
+                          consecutiveUncertain: input.watch.review?.consecutiveUncertain ?? null,
+                          consecutiveFailures:
+                            input.watch.review?.consecutiveFailures === undefined
+                              ? 3
+                              : input.watch.review.consecutiveFailures,
+                          at: input.watch.review?.at ?? null,
+                        },
+                  state: "idle",
+                  reason: null,
+                  sequence: 0,
+                  requestedAt: null,
+                  deliveredAt: null,
+                  deliveryAttempts: 0,
+                  deliveryRetryAt: null,
+                  deliveryFailureCount: 0,
+                },
+                deadlineAt: input.watch.deadlineAt ?? null,
+                nextCheckAt: DateTime.formatIso(
+                  DateTime.makeUnsafe(
+                    Date.parse(input.createdAt) + (input.watch.sampling?.intervalMs ?? 30_000),
+                  ),
+                ),
+                lastCheckedAt: null,
+                lastEvaluatedAt: null,
+                lastEvaluationDurationMs: null,
+                totalEvaluationDurationMs: 0,
+                evaluationPending: false,
+                lastVerdict: null,
+                lastSummary: null,
+                lastUsage: null,
+                totalUsage: {
+                  inputTokens: null,
+                  cachedInputTokens: null,
+                  cacheWriteInputTokens: null,
+                  outputTokens: null,
+                },
+                sampleCount: 0,
+                evaluationCount: 0,
+                uncertainEvaluationCount: 0,
+                consecutiveUncertain: 0,
+                consecutiveFailures: 0,
+                observationError: null,
+                resourceState: "viewing",
+              },
+              capturedBaselineImages: baselineImages,
+              baselineImages,
+            }),
+          ),
+        );
+      },
+      check: () => Effect.die("Cancellation tests must not sample the desktop"),
+      revise: () => Effect.die("Cancellation tests must not revise the desktop"),
+      inspectFresh: () => Effect.die("Cancellation tests must not inspect the desktop"),
+      release: () =>
+        Effect.flatten(Ref.get(probe.beforeRelease)).pipe(
+          Effect.andThen(Ref.update(probe.releases, (count) => count + 1)),
+        ),
+      capabilities: Effect.succeed({ evaluators: [], deterministicMatches: ["image-change"] }),
+    } satisfies ThreadMonitorComputerService["Service"];
+  }),
+);
+const makeComputerMonitorRuntime = <R>(monitorLayer: Layer.Layer<ThreadMonitorService, never, R>) =>
+  monitorLayer.pipe(
+    Layer.provide(workingComputerLayer),
+    Layer.provideMerge(computerProbeLayer),
+    Layer.provideMerge(layer),
+    Layer.provide(NodeServices.layer),
+  );
+const delayedDispatchMonitorLayer = Layer.effect(ThreadMonitorService, ThreadMonitor.make).pipe(
+  Layer.provide(
+    Layer.effect(
+      ThreadManagementService,
+      Effect.gen(function* () {
+        const threads = yield* ThreadManagementService;
+        const probe = yield* ComputerMonitorProbe;
+        return {
+          ...threads,
+          dispatch: (command) =>
+            command.type === "message.dispatch" && command.notification?.systemEvent !== undefined
+              ? Ref.get(probe.beforeDispatch).pipe(
+                  Effect.flatten,
+                  Effect.andThen(threads.dispatch(command)),
+                )
+              : threads.dispatch(command),
+        } satisfies ThreadManagementService["Service"];
+      }),
+    ),
+  ),
+);
+
+const delayedOwnerMonitorLayer = Layer.effect(ThreadMonitorService, ThreadMonitor.make).pipe(
+  Layer.provide(
+    Layer.effect(
+      ThreadWorkspaceQuery,
+      Effect.gen(function* () {
+        const snapshots = yield* ThreadWorkspaceQuery;
+        const probe = yield* ComputerMonitorProbe;
+        return {
+          ...snapshots,
+          getThreadShellById: (id) =>
+            Ref.get(probe.beforeOwnerRead).pipe(
+              Effect.flatten,
+              Effect.andThen(snapshots.getThreadShellById(id)),
+            ),
+        } satisfies ThreadWorkspaceQuery["Service"];
+      }),
+    ),
+  ),
+);
+
+const stoppedDuringSignalMonitorLayer = Layer.effect(ThreadMonitorService, ThreadMonitor.make).pipe(
+  Layer.provide(
+    Layer.effect(
+      ThreadMonitorRepository,
+      Effect.gen(function* () {
+        const repository = yield* ThreadMonitorRepository;
+        const engine = yield* OrchestratorV2;
+        return {
+          ...repository,
+          trySignal: (input) =>
+            engine
+              .dispatch({
+                type: "thread.monitors.cancel",
+                commandId: CommandId.make("stop-between-signal-read-and-write"),
+                threadId: input.threadId,
+              })
+              .pipe(
+                Effect.orDie,
+                Effect.tap(() =>
+                  repository
+                    .listCancellationRequests()
+                    .pipe(
+                      Effect.map((requests) =>
+                        assert.deepEqual(requests, [
+                          { threadId: input.threadId, monitorId: input.monitorId },
+                        ]),
+                      ),
+                    ),
+                ),
+                Effect.andThen(repository.trySignal(input)),
+              ),
+        } satisfies ThreadMonitorRepository["Service"];
+      }),
+    ),
+  ),
+);
+
+it.effect.each(["before read", "after read"] as const)(
+  "rejects a late signal when Stop commits %s and awaits monitor cleanup",
+  (stopTiming) =>
+    Effect.gen(function* () {
+      yield* seedThread();
+      const service = yield* ThreadMonitorService;
+      const repository = yield* ThreadMonitorRepository;
+      const engine = yield* OrchestratorV2;
+      const monitor = yield* service.create({
+        threadId,
+        monitor: { label: "Stopped background build", schedule: { type: "signal" } },
+      });
+      if (stopTiming === "before read") {
+        yield* engine.dispatch({
+          type: "thread.monitors.cancel",
+          commandId: CommandId.make("stop-before-background-signal"),
+          threadId,
+        });
+      }
+      const stoppedAtSequence = yield* engine.getThreadEventSequence(threadId);
+      const failure = yield* service
+        .signal({ threadId, signal: { monitorId: monitor.id, summary: "Late build result" } })
+        .pipe(Effect.flip);
+      assert.strictEqual(failure.code, "MONITOR_NOT_SIGNALABLE");
+      assert.deepEqual(Option.getOrThrow(yield* repository.getById(monitor.id)), monitor);
+      assert.deepEqual(yield* repository.listCancellationRequests(), [
+        { threadId, monitorId: monitor.id },
+      ]);
+      if (stopTiming === "before read") {
+        assert.strictEqual(yield* engine.getThreadEventSequence(threadId), stoppedAtSequence);
+      }
+
+      yield* service.start;
+      const cancelled = yield* service.signal({ threadId, signal: { monitorId: monitor.id } });
+      assert.strictEqual(cancelled.status, "cancelled");
+      assert.isNull(cancelled.trigger);
+      assert.isFalse(
+        (yield* engine.getThreadProjection(threadId)).messages.some(
+          (message) => message.notification !== undefined,
+        ),
+      );
+    }).pipe(
+      Effect.provide(
+        stopTiming === "before read"
+          ? makeComputerMonitorRuntime(Layer.effect(ThreadMonitorService, ThreadMonitor.make))
+          : makeComputerMonitorRuntime(stoppedDuringSignalMonitorLayer),
+      ),
+    ),
+);
+
+it.effect.each(["time", "signal", "computer"] as const)(
+  "retains Stop during initial %s owner validation without cancelling later creates",
+  (kind) =>
+    Effect.gen(function* () {
+      yield* seedThread();
+      const service = yield* ThreadMonitorService;
+      const probe = yield* ComputerMonitorProbe;
+      const repository = yield* ThreadMonitorRepository;
+      const entered = yield* Deferred.make<void>();
+      const proceed = yield* Deferred.make<void>();
+      yield* Ref.set(
+        probe.beforeOwnerRead,
+        Deferred.succeed(entered, undefined).pipe(Effect.andThen(Deferred.await(proceed))),
+      );
+      const create = (label: string) =>
+        kind === "computer"
+          ? service
+              .createComputer({
+                threadId,
+                monitor: {
+                  label,
+                  desktop: { kind: "agent", desktopId: "pending-owner" },
+                  match: { type: "image-change" },
+                },
+              })
+              .pipe(Effect.map((result) => result.monitor))
+          : service.create({
+              threadId,
+              monitor: {
+                label,
+                schedule:
+                  kind === "time" ? { type: "after", durationMs: 60_000 } : { type: "signal" },
+              },
+            });
+      const pending = yield* create("Created before Stop").pipe(Effect.forkScoped);
+      yield* Deferred.await(entered);
+      yield* (yield* OrchestratorV2).dispatch({
+        type: "thread.monitors.cancel",
+        commandId: CommandId.make(`stop-during-owner-${kind}`),
+        threadId,
+      });
+      assert.isEmpty(yield* repository.listCancellationRequests());
+      yield* Deferred.succeed(proceed, undefined);
+      const stopped = yield* Fiber.join(pending);
+      const newer = yield* create("Created after Stop");
+      assert.strictEqual(stopped.createdAt, newer.createdAt);
+      // Later ordinary writes preserve the accepted cancellation request.
+      yield* repository.upsert({ ...stopped, label: "Updated before reconciliation" });
+      assert.deepEqual(yield* repository.listCancellationRequests(), [
+        { threadId, monitorId: stopped.id },
+      ]);
+      yield* service.start;
+      const result = yield* service.checkNow({ threadId, check: { monitorId: stopped.id } });
+      assert.strictEqual(result.monitors[0]?.status, "cancelled");
+      assert.strictEqual(Option.getOrThrow(yield* repository.getById(newer.id)).status, "active");
+      assert.strictEqual(yield* Ref.get(probe.checks), 0);
+      assert.strictEqual(yield* Ref.get(probe.releases), kind === "computer" ? 1 : 0);
+    }).pipe(Effect.provide(makeComputerMonitorRuntime(delayedOwnerMonitorLayer))),
+);
+
+it.effect.each(["continuation", "review"] as const)(
+  "rejects monitor.%s delivery when Stop commits during dispatch",
+  (kind) =>
+    Effect.gen(function* () {
+      yield* seedThread();
+      const service = yield* ThreadMonitorService;
+      const probe = yield* ComputerMonitorProbe;
+      const repository = yield* ThreadMonitorRepository;
+      const entered = yield* Deferred.make<void>();
+      const proceed = yield* Deferred.make<void>();
+      const monitor =
+        kind === "continuation"
+          ? yield* service.create({
+              threadId,
+              monitor: { label: "Delayed continuation", schedule: { type: "signal" } },
+            })
+          : (yield* service.createComputer({
+              threadId,
+              monitor: {
+                label: "Delayed controller review",
+                desktop: { kind: "agent", desktopId: "review-stop" },
+                match: { type: "image-change" },
+                review: {
+                  at: DateTime.formatIso(DateTime.add(yield* DateTime.now, { seconds: 1 })),
+                },
+              },
+            })).monitor;
+      if (kind === "continuation") {
+        yield* service.signal({ threadId, signal: { monitorId: monitor.id } });
+      } else {
+        yield* TestClock.adjust("1 second");
+        yield* service.checkNow({ threadId, check: { monitorId: monitor.id } });
+      }
+      yield* TestClock.adjust("1 second");
+      yield* Ref.set(
+        probe.beforeDispatch,
+        Deferred.succeed(entered, undefined).pipe(Effect.andThen(Deferred.await(proceed))),
+      );
+      const delivering = yield* service
+        .checkNow({ threadId, check: { monitorId: monitor.id } })
+        .pipe(Effect.forkScoped);
+      yield* Deferred.await(entered);
+      const engine = yield* OrchestratorV2;
+      yield* engine.dispatch({
+        type: "thread.monitors.cancel",
+        commandId: CommandId.make(`stop-delayed-${kind}`),
+        threadId,
+      });
+      assert.deepEqual(yield* repository.listCancellationRequests(), [
+        { threadId, monitorId: monitor.id },
+      ]);
+      yield* Deferred.succeed(proceed, undefined);
+      yield* Fiber.join(delivering);
+      const result = yield* service.checkNow({ threadId, check: { monitorId: monitor.id } });
+      assert.strictEqual(result.monitors[0]?.status, "cancelled");
+      const projection = yield* engine.getThreadProjection(threadId);
+      assert.isEmpty(projection.messages);
+      assert.isEmpty(projection.runs);
+    }).pipe(Effect.provide(makeComputerMonitorRuntime(delayedDispatchMonitorLayer))),
+);
+
+it.effect("retains a Stop accepted before a pending desktop request has a row", () =>
+  Effect.gen(function* () {
+    yield* seedThread();
+    const service = yield* ThreadMonitorService;
+    const probe = yield* ComputerMonitorProbe;
+    const repository = yield* ThreadMonitorRepository;
+    const entered = yield* Deferred.make<void>();
+    const proceed = yield* Deferred.make<void>();
+    yield* Ref.set(
+      probe.beforePrepare,
+      Deferred.succeed(entered, undefined).pipe(Effect.andThen(Deferred.await(proceed))),
+    );
+    const pending = yield* service
+      .createComputer({
+        threadId,
+        monitor: {
+          label: "Preparation started before Stop",
+          desktop: { kind: "agent", desktopId: "pending-stop" },
+          match: { type: "image-change" },
+        },
+      })
+      .pipe(Effect.forkScoped);
+    yield* Deferred.await(entered);
+    yield* (yield* OrchestratorV2).dispatch({
+      type: "thread.monitors.cancel",
+      commandId: CommandId.make("stop-before-first-computer-row"),
+      threadId,
+    });
+    assert.isEmpty(yield* repository.listCancellationRequests());
+    // The subscriber is deliberately inactive while preparation finishes.
+    yield* Deferred.succeed(proceed, undefined);
+    const stopped = (yield* Fiber.join(pending)).monitor;
+    const newer = (yield* service.createComputer({
+      threadId,
+      monitor: {
+        label: "Preparation started after Stop",
+        desktop: { kind: "agent", desktopId: "newer-stop" },
+        match: { type: "image-change" },
+      },
+    })).monitor;
+    assert.strictEqual(stopped.createdAt, newer.createdAt);
+    assert.deepEqual(yield* repository.listCancellationRequests(), [
+      { threadId, monitorId: stopped.id },
+    ]);
+    yield* service.start;
+    const status = yield* service.checkNow({ threadId, check: { monitorId: stopped.id } });
+    assert.strictEqual(status.monitors[0]?.status, "cancelled");
+    assert.strictEqual(Option.getOrThrow(yield* repository.getById(newer.id)).status, "active");
+    assert.strictEqual(yield* Ref.get(probe.checks), 0);
+    assert.strictEqual(yield* Ref.get(probe.releases), 1);
+  }).pipe(
+    Effect.provide(
+      makeComputerMonitorRuntime(Layer.effect(ThreadMonitorService, ThreadMonitor.make)),
+    ),
+  ),
+);
+
+it.effect("starts and delivers unrelated monitors while accepted Stop cleanup waits", () =>
+  Effect.gen(function* () {
+    yield* seedThread();
+    const service = yield* ThreadMonitorService;
+    const probe = yield* ComputerMonitorProbe;
+    const repository = yield* ThreadMonitorRepository;
+    const entered = yield* Deferred.make<void>();
+    const proceed = yield* Deferred.make<void>();
+    yield* Ref.set(
+      probe.beforeRelease,
+      Deferred.succeed(entered, undefined).pipe(Effect.andThen(Deferred.await(proceed))),
+    );
+    const stopped = (yield* service.createComputer({
+      threadId,
+      monitor: {
+        label: "Slow remote cleanup",
+        desktop: { kind: "agent", desktopId: "remote-stop" },
+        match: { type: "image-change" },
+      },
+    })).monitor;
+    yield* (yield* OrchestratorV2).dispatch({
+      type: "thread.monitors.cancel",
+      commandId: CommandId.make("stop-slow-remote-watch"),
+      threadId,
+    });
+    yield* service.start;
+    yield* Deferred.await(entered);
+    const independent = yield* service.create({
+      threadId,
+      monitor: { label: "Independent wait", schedule: { type: "signal" } },
+    });
+    yield* service.signal({ threadId, signal: { monitorId: independent.id } });
+    yield* TestClock.adjust("1 second");
+    const delivered = yield* service.checkNow({ threadId, check: { monitorId: independent.id } });
+    assert.strictEqual(delivered.monitors[0]?.status, "delivered");
+    assert.strictEqual(
+      Option.getOrThrow(yield* repository.getById(stopped.id)).status,
+      "cancelled",
+    );
+    assert.strictEqual(yield* Ref.get(probe.releases), 0);
+    assert.deepEqual(yield* repository.listCancellationRequests(), [
+      { threadId, monitorId: stopped.id },
+    ]);
+    yield* Deferred.succeed(proceed, undefined);
+    const finished = yield* service.cancel({ threadId, cancel: { monitorId: stopped.id } });
+    const condition = finished.monitors[0]?.condition;
+    assert.strictEqual(condition?.type === "computer" ? condition.resourceState : null, "released");
+  }).pipe(
+    Effect.provide(
+      makeComputerMonitorRuntime(Layer.effect(ThreadMonitorService, ThreadMonitor.make)),
+    ),
+  ),
+);
+
+it.effect("retains cancellation until failed resource-state persistence is retried", () =>
+  Effect.gen(function* () {
+    yield* seedThread();
+    const service = yield* ThreadMonitorService;
+    const repository = yield* ThreadMonitorRepository;
+    const probe = yield* ComputerMonitorProbe;
+    const sql = yield* SqlClient.SqlClient;
+    const { monitor } = yield* service.createComputer({
+      threadId,
+      monitor: {
+        label: "Retry release persistence",
+        desktop: { kind: "agent", desktopId: "retry-stop" },
+        match: { type: "image-change" },
+      },
+    });
+    yield* sql`
+        CREATE TRIGGER fail_monitor_release BEFORE UPDATE OF condition_json ON thread_monitors
+        WHEN json_extract(NEW.condition_json, '$.resourceState') = 'released'
+        BEGIN SELECT RAISE(ABORT, 'temporary release persistence failure'); END
+      `;
+    yield* (yield* OrchestratorV2).dispatch({
+      type: "thread.monitors.cancel",
+      commandId: CommandId.make("stop-retry-release"),
+      threadId,
+    });
+    const failed = yield* service
+      .cancel({ threadId, cancel: { monitorId: monitor.id } })
+      .pipe(Effect.flip);
+    assert.strictEqual(failed.code, "PERSISTENCE_FAILURE");
+    assert.strictEqual(
+      Option.getOrThrow(yield* repository.getById(monitor.id)).status,
+      "cancelled",
+    );
+    assert.deepEqual(yield* repository.listCancellationRequests(), [
+      { threadId, monitorId: monitor.id },
+    ]);
+    assert.strictEqual(yield* Ref.get(probe.releases), 1);
+    yield* sql`DROP TRIGGER fail_monitor_release`;
+    const recovered = yield* service.cancel({ threadId, cancel: { monitorId: monitor.id } });
+    const condition = recovered.monitors[0]?.condition;
+    assert.strictEqual(condition?.type === "computer" ? condition.resourceState : null, "released");
+    // The retained request is acknowledged once successful cleanup is durable.
+    yield* service.start;
+    assert.isEmpty(yield* repository.listCancellationRequests());
+  }).pipe(
+    Effect.provide(
+      makeComputerMonitorRuntime(Layer.effect(ThreadMonitorService, ThreadMonitor.make)),
+    ),
+  ),
+);
+
+it.effect("replays an accepted Stop before delivery without cancelling newer watches", () =>
+  Effect.gen(function* () {
+    const fs = yield* FileSystem.FileSystem;
+    const path = yield* Path.Path;
+    const directory = yield* fs.makeTempDirectoryScoped({ prefix: "monitor-stop-restart-" });
+    const filename = path.join(directory, "statev2.sqlite");
+    const makePersistentLayer = () =>
+      layerForDatabase(Sqlite.layerFromPath(filename).pipe(Layer.provide(NodeServices.layer)));
+    const commandId = CommandId.make("stop-before-server-shutdown");
+    const { stoppedId, newerId } = yield* Effect.gen(function* () {
+      yield* seedThread();
+      const service = yield* ThreadMonitorService;
+      const stopped = yield* service.create({
+        threadId,
+        monitor: { label: "Must never resume", schedule: { type: "after", durationMs: 1_000 } },
+      });
+      yield* (yield* OrchestratorV2).dispatch({
+        type: "thread.monitors.cancel",
+        commandId,
+        threadId,
+      });
+      // No consumer is running. The newer watch has the same creation timestamp.
+      const newer = yield* service.create({
+        threadId,
+        monitor: { label: "Created after Stop", schedule: { type: "signal" } },
+      });
+      assert.strictEqual(newer.createdAt, stopped.createdAt);
+      assert.strictEqual(
+        (yield* service.status({ threadId, query: { monitorId: stopped.id } })).monitors[0]?.status,
+        "active",
+      );
+      return { stoppedId: stopped.id, newerId: newer.id };
+    }).pipe(Effect.provide(makePersistentLayer()));
+
+    yield* TestClock.adjust("2 seconds");
+    yield* Effect.gen(function* () {
+      const service = yield* ThreadMonitorService;
+      const engine = yield* OrchestratorV2;
+      const sql = yield* SqlClient.SqlClient;
+      yield* sql`
+        CREATE TRIGGER fail_monitor_cancellation BEFORE UPDATE OF status ON thread_monitors
+        WHEN NEW.status = 'cancelled' BEGIN SELECT RAISE(ABORT, 'temporary cancellation failure'); END
+      `;
+      const failed = yield* service.checkNow({ threadId, check: {} }).pipe(Effect.flip);
+      assert.strictEqual(failed.code, "PERSISTENCE_FAILURE");
+      assert.isFalse(
+        (yield* engine.getThreadProjection(threadId)).messages.some(
+          (message) => message.notification !== undefined,
+        ),
+      );
+      yield* sql`DROP TRIGGER fail_monitor_cancellation`;
+
+      yield* service.start;
+      // Retrying the original accepted command must retain its original targets.
+      yield* engine.dispatch({ type: "thread.monitors.cancel", commandId, threadId });
+      const status = yield* service.checkNow({ threadId, check: {} });
+      assert.strictEqual(
+        status.monitors.find((monitor) => monitor.id === stoppedId)?.status,
+        "cancelled",
+      );
+      assert.strictEqual(
+        status.monitors.find((monitor) => monitor.id === newerId)?.status,
+        "active",
+      );
+      assert.isFalse(
+        (yield* engine.getThreadProjection(threadId)).messages.some(
+          (message) => message.notification !== undefined,
+        ),
+      );
+      assert.isEmpty(
+        yield* sql`SELECT monitor_id FROM thread_monitors WHERE cancellation_requested = 1`,
+      );
+    }).pipe(Effect.provide(makePersistentLayer()));
+  }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
 );

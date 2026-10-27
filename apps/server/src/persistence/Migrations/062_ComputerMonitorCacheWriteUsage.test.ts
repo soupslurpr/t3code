@@ -46,7 +46,7 @@ it.effect.each([40, 66, 69])(
       const sql = yield* SqlClient.SqlClient;
       yield* seed(base);
       const evidence = yield* sql`SELECT * FROM thread_monitor_computer_evidence`;
-      yield* runMigrations();
+      yield* runMigrations({ toForkMigrationInclusive: 8 });
       const rows = yield* sql<{
         readonly condition_json: string;
       }>`SELECT condition_json FROM thread_monitors`;
@@ -60,7 +60,7 @@ it.effect.each([40, 66, 69])(
         yield* sql`SELECT migration_id, name FROM effect_sql_fork_migrations WHERE migration_id = 8`,
         [{ migration_id: 8, name: "ComputerMonitorCacheWriteUsage" }],
       );
-      assert.deepEqual(yield* runMigrations(), []);
+      assert.deepEqual(yield* runMigrations({ toForkMigrationInclusive: 8 }), []);
     }).pipe(Effect.provide(memory)),
 );
 it.effect.each([null, 0, 5120])(
@@ -79,10 +79,10 @@ it.effect.each([null, 0, 5120])(
       yield* sql`INSERT INTO effect_sql_migrations (migration_id, name, created_at)
       SELECT 66 + migration_id, name, created_at FROM effect_sql_fork_migrations`;
       yield* sql`DROP TABLE effect_sql_fork_migrations`;
-      yield* runMigrations();
+      yield* runMigrations({ toForkMigrationInclusive: 8 });
       yield* migration;
       assert.deepEqual(yield* sql`SELECT * FROM thread_monitors`, before);
-      assert.deepEqual(yield* runMigrations(), []);
+      assert.deepEqual(yield* runMigrations({ toForkMigrationInclusive: 8 }), []);
     }).pipe(Effect.provide(memory)),
 );
 it.effect.each(["missing-claimed-field", "negative-count", "partial-row-failure"] as const)(
@@ -105,7 +105,9 @@ it.effect.each(["missing-claimed-field", "negative-count", "partial-row-failure"
         yield* sql`INSERT INTO effect_sql_fork_migrations (migration_id, name) VALUES (8, 'ComputerMonitorCacheWriteUsage')`;
       }
       const before = yield* snapshot;
-      assert.isTrue(Exit.isFailure(yield* Effect.exit(runMigrations())));
+      assert.isTrue(
+        Exit.isFailure(yield* Effect.exit(runMigrations({ toForkMigrationInclusive: 8 }))),
+      );
       assert.deepEqual(yield* snapshot, before);
     }).pipe(Effect.provide(memory)),
 );

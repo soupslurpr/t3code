@@ -370,6 +370,34 @@ export const adoptForkMigrationHistory = Effect.fn("adoptForkMigrationHistory")(
     }
   }
 
+  if (Math.max(fork.length, legacy.length) >= 13) {
+    const columns = yield* sql<{
+      readonly name: string;
+      readonly type: string;
+      readonly notnull: number;
+      readonly dflt_value: string | null;
+    }>`PRAGMA table_info(thread_monitors)`;
+    if (
+      !columns.some(
+        (column) =>
+          column.name === "cancellation_requested" &&
+          column.type.toUpperCase() === "INTEGER" &&
+          column.notnull === 1 &&
+          column.dflt_value === "0",
+      )
+    ) {
+      return yield* invalidHistory(
+        "ThreadMonitorCancellation identity conflicts with its cancellation schema",
+      );
+    }
+    const invalid =
+      yield* sql`SELECT monitor_id FROM thread_monitors WHERE cancellation_requested NOT IN (0, 1) LIMIT 1`;
+    if (invalid.length > 0)
+      return yield* invalidHistory(
+        "ThreadMonitorCancellation contains an invalid cancellation state",
+      );
+  }
+
   yield* sql`CREATE TABLE IF NOT EXISTS effect_sql_fork_migrations (
     migration_id integer PRIMARY KEY NOT NULL,
     created_at datetime NOT NULL DEFAULT current_timestamp,

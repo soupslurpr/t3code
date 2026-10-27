@@ -401,7 +401,10 @@ export function useThreadLifecycle(input: ThreadLifecycleInput) {
     setStoppingBackgroundWorkKey(requestKey);
     const result = await interruptThreadTurn({
       environmentId,
-      input: { threadId: activeThread.id },
+      input: {
+        threadId: activeThread.id,
+        cancelMonitors: activeThread.backgroundLiveness === "monitoring",
+      },
     });
     // Acceptance does not confirm termination. Allow retry while the provider
     // finishes stopping the tasks or reports a failure.

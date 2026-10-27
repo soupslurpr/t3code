@@ -184,6 +184,7 @@ export interface StartThreadTurnInput extends ThreadCommandInput {
 export interface InterruptThreadTurnInput extends ThreadCommandInput {
   readonly runId?: RunId;
   readonly subagentId?: NodeId;
+  readonly cancelMonitors?: boolean;
   readonly turnId?: string;
 }
 
@@ -893,7 +894,13 @@ export const interruptThreadTurn = Effect.fn("EnvironmentCommands.interruptThrea
       }
     }
     if (runId === undefined) {
-      let result = { sequence: 0 };
+      let result = input.cancelMonitors
+        ? yield* dispatch({
+            type: "thread.monitors.cancel",
+            commandId: yield* allocateCommandId(input),
+            threadId,
+          })
+        : { sequence: 0 };
       for (const link of visibleThreadPullRequests(projection.thread.pullRequests ?? [])) {
         if (link.watch === undefined) continue;
         result = yield* dispatch({
@@ -909,7 +916,6 @@ export const interruptThreadTurn = Effect.fn("EnvironmentCommands.interruptThrea
       return result;
     }
   }
-  if (runId === undefined) return { sequence: 0 };
   return yield* dispatch({
     type: "run.interrupt",
     commandId: yield* allocateCommandId(input),

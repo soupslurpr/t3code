@@ -504,6 +504,7 @@ function commandThreadId(command: OrchestrationV2ServerCommand): ThreadId {
     case "prepared-run.retry":
     case "subagent.stop":
     case "run.interrupt":
+    case "thread.monitors.cancel":
     case "queued-message.promote-to-steer":
     case "queued-run.start":
     case "queue.resume":
@@ -10383,6 +10384,45 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       ),
   );
 
+  const dispatchMonitorCancellation = Effect.fn("Orchestrator.dispatchMonitorCancellation")(
+    function* (
+      command: Extract<
+        OrchestrationV2ServerCommand,
+        { readonly type: "thread.monitors.cancel" | "thread.stop" }
+      >,
+      events: Ref.Ref<Array<OrchestrationV2DomainEvent>>,
+    ) {
+      const projection = yield* loadProjectionForCommand(command, []);
+      const now = yield* DateTime.now;
+      yield* emit(
+        events,
+        command,
+      )({
+        type: "turn-item.updated",
+        threadId: command.threadId,
+        occurredAt: now,
+        payload: {
+          id: TurnItemId.make(`monitor-interrupt:${command.commandId}`),
+          threadId: command.threadId,
+          runId: null,
+          nodeId: null,
+          providerThreadId: null,
+          providerTurnId: null,
+          nativeItemRef: null,
+          parentItemId: null,
+          ordinal: yield* nextTurnItemOrdinal(projection),
+          status: "completed",
+          title: "Monitor cancellation requested",
+          startedAt: now,
+          completedAt: now,
+          updatedAt: now,
+          type: "run_interrupt_request",
+          message: "Cancel outstanding monitors",
+        },
+      });
+    },
+  );
+
   const dispatchThreadStop = Effect.fn("Orchestrator.dispatchThreadStop")(function* (
     command: Extract<OrchestrationV2ServerCommand, { readonly type: "thread.stop" }>,
     events: Ref.Ref<Array<OrchestrationV2DomainEvent>>,
@@ -11777,8 +11817,26 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
           ]);
         }
         break;
-      case "thread.stop":
+      case "thread.stop": {
         cancelUnsettledEffects = yield* dispatchThreadStop(command, events, effects);
+        const stoppedMonitors = (yield* Ref.get(events)).some(
+          (event) =>
+            event.type === "turn-item.updated" && event.payload.type === "run_interrupt_request",
+        );
+        const shell = yield* projectionStore
+          .getThreadShell(command.threadId)
+          .pipe(
+            Effect.mapError(
+              (cause) => new OrchestratorProjectionError({ threadId: command.threadId, cause }),
+            ),
+          );
+        if (!stoppedMonitors && shell?.backgroundLiveness === "monitoring") {
+          yield* dispatchMonitorCancellation(command, events);
+        }
+        break;
+      }
+      case "thread.monitors.cancel":
+        yield* dispatchMonitorCancellation(command, events);
         break;
       case "queued-message.promote-to-steer":
         yield* dispatchQueuedMessagePromoteToSteer(command, events, effects);

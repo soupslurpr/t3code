@@ -35,6 +35,7 @@ export interface ThreadMonitorRepositoryShape {
   /** Atomically writes one computer-monitor revision and all bounded evidence. */
   readonly upsertComputerRevision: (input: {
     readonly monitor: ThreadMonitor;
+    readonly afterSequence?: number;
     readonly baselineImages: ReadonlyArray<ThreadMonitorComputerEvidenceImage>;
     readonly previousImages: ReadonlyArray<ThreadMonitorComputerEvidenceImage>;
     readonly currentImages: ReadonlyArray<ThreadMonitorComputerEvidenceImage>;
@@ -47,7 +48,24 @@ export interface ThreadMonitorRepositoryShape {
     groupId: string,
   ) => Effect.Effect<ReadonlyArray<ThreadMonitor>, ProjectionRepositoryError>;
   readonly deleteByThread: (threadId: ThreadId) => Effect.Effect<void, ProjectionRepositoryError>;
-  readonly upsert: (monitor: ThreadMonitor) => Effect.Effect<void, ProjectionRepositoryError>;
+  readonly upsert: (
+    monitor: ThreadMonitor,
+    initialCreation?: { readonly afterSequence: number },
+  ) => Effect.Effect<void, ProjectionRepositoryError>;
+  readonly trySignal: (input: {
+    readonly monitorId: ThreadMonitorId;
+    readonly threadId: ThreadId;
+    readonly triggeredAt: string;
+    readonly summary: string | null;
+    readonly evidence: string | null;
+  }) => Effect.Effect<boolean, ProjectionRepositoryError>;
+  readonly listCancellationRequests: () => Effect.Effect<
+    ReadonlyArray<{ readonly threadId: ThreadId; readonly monitorId: ThreadMonitorId }>,
+    ProjectionRepositoryError
+  >;
+  readonly acknowledgeCancellation: (
+    monitorId: ThreadMonitorId,
+  ) => Effect.Effect<void, ProjectionRepositoryError>;
 
   readonly getById: (
     monitorId: ThreadMonitorId,
@@ -396,6 +414,15 @@ const make = Effect.gen(function* () {
     `,
   });
 
+  const listCancellationRequests = SqlSchema.findAll({
+    Request: Schema.Void,
+    Result: Schema.Struct({ threadId: ThreadId, monitorId: ThreadMonitorId }),
+    execute: () => sql`
+      SELECT thread_id AS "threadId", monitor_id AS "monitorId"
+      FROM thread_monitors WHERE cancellation_requested = 1
+    `,
+  });
+
   const deleteThreadRows = SqlSchema.void({
     Request: Schema.Struct({ threadId: ThreadId }),
     execute: ({ threadId }) => sql`
@@ -463,10 +490,31 @@ const make = Effect.gen(function* () {
     `,
   });
 
-  const upsert: ThreadMonitorRepositoryShape["upsert"] = (monitor) =>
-    upsertRow(toRow(monitor)).pipe(
-      Effect.mapError(toPersistenceSqlError("ThreadMonitorRepository.upsert:query")),
-    );
+  // A Stop can commit while initial validation or desktop preparation has no row.
+  // Run this lookup in the same transaction as the first monitor write.
+  const retainAcceptedStops = (monitor: ThreadMonitor, afterSequence: number) =>
+    sql`
+    UPDATE thread_monitors SET cancellation_requested = 1
+    WHERE monitor_id = ${monitor.id} AND EXISTS (
+      SELECT 1 FROM orchestration_events
+      WHERE aggregate_kind = 'thread' AND stream_id = ${monitor.threadId}
+        AND application_event_version = 2
+        AND sequence > ${afterSequence}
+        AND event_type = 'turn-item.updated'
+        AND json_extract(payload_json, '$.type') = 'run_interrupt_request'
+    )
+  `.pipe(Effect.asVoid);
+
+  const upsert: ThreadMonitorRepositoryShape["upsert"] = (monitor, initialCreation) => {
+    const write = upsertRow(toRow(monitor));
+    return (
+      initialCreation === undefined
+        ? write
+        : sql.withTransaction(
+            write.pipe(Effect.andThen(retainAcceptedStops(monitor, initialCreation.afterSequence))),
+          )
+    ).pipe(Effect.mapError(toPersistenceSqlError("ThreadMonitorRepository.upsert:query")));
+  };
 
   const getById: ThreadMonitorRepositoryShape["getById"] = (monitorId) =>
     getRow({ monitorId }).pipe(
@@ -491,6 +539,25 @@ const make = Effect.gen(function* () {
           toPersistenceSqlError("ThreadMonitorRepository.listByDeliveryGroupId:query"),
         ),
       ),
+    trySignal: ({ monitorId, threadId, triggeredAt, summary, evidence }) =>
+      sql<{ monitorId: ThreadMonitorId }>`
+        UPDATE thread_monitors SET
+          status = 'triggered',
+          trigger_reason = 'signal',
+          trigger_summary = ${summary},
+          trigger_evidence = ${evidence},
+          updated_at = ${triggeredAt},
+          triggered_at = ${triggeredAt},
+          last_error = NULL,
+          delivery_retry_at = NULL
+        WHERE monitor_id = ${monitorId} AND thread_id = ${threadId}
+          AND condition_type = 'signal' AND status = 'active'
+          AND cancellation_requested = 0
+        RETURNING monitor_id AS "monitorId"
+      `.pipe(
+        Effect.map((rows) => rows.length > 0),
+        Effect.mapError(toPersistenceSqlError("ThreadMonitorRepository.trySignal:query")),
+      ),
     getById,
     listByThread: (input) =>
       listThreadRows(input).pipe(
@@ -501,6 +568,21 @@ const make = Effect.gen(function* () {
       listOutstandingRows(undefined).pipe(
         Effect.flatMap((rows) => Effect.try(() => rows.map(fromRow))),
         Effect.mapError(toPersistenceSqlError("ThreadMonitorRepository.listOutstanding:query")),
+      ),
+    listCancellationRequests: () =>
+      listCancellationRequests(undefined).pipe(
+        Effect.mapError(
+          toPersistenceSqlError("ThreadMonitorRepository.listCancellationRequests:query"),
+        ),
+      ),
+    acknowledgeCancellation: (monitorId) =>
+      sql`
+      UPDATE thread_monitors SET cancellation_requested = 0 WHERE monitor_id = ${monitorId}
+    `.pipe(
+        Effect.asVoid,
+        Effect.mapError(
+          toPersistenceSqlError("ThreadMonitorRepository.acknowledgeCancellation:query"),
+        ),
       ),
     deleteByThread: (threadId) =>
       deleteThreadRows({ threadId }).pipe(
@@ -528,6 +610,11 @@ const make = Effect.gen(function* () {
       sql
         .withTransaction(
           upsertRow(toRow(input.monitor)).pipe(
+            Effect.andThen(
+              input.afterSequence === undefined
+                ? Effect.void
+                : retainAcceptedStops(input.monitor, input.afterSequence),
+            ),
             Effect.flatMap(() =>
               putComputerEvidenceRow({
                 monitorId: input.monitor.id,

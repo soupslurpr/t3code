@@ -552,3 +552,41 @@ it.effect("delivers exact start/update baselines once and retains caller guards"
     }).pipe(Effect.provide(registration));
   }).pipe(Effect.provide(MonitorTestkit.layer)),
 );
+
+it.effect("rejects a registered monitor_signal after accepted Stop before scheduler cleanup", () =>
+  Effect.gen(function* () {
+    yield* MonitorTestkit.seedThread();
+    const threadId = MonitorTestkit.threadId;
+    const service = yield* ThreadMonitorService;
+    const engine = yield* OrchestratorV2;
+    const monitor = yield* service.create({
+      threadId,
+      monitor: { label: "Stopped callback", schedule: { type: "signal" } },
+    });
+    yield* engine.dispatch({
+      type: "thread.monitors.cancel",
+      commandId: CommandId.make("stop-callback"),
+      threadId,
+    });
+    const result = yield* call("monitor_signal", {
+      monitorId: monitor.id,
+      summary: "Stale callback",
+    });
+    assert.isTrue(result.isError);
+    assert.include(JSON.stringify(result), "cannot be externally signalled");
+    assert.deepEqual(
+      (yield* service.status({ threadId, query: { monitorId: monitor.id } })).monitors,
+      [monitor],
+    );
+    yield* service.start;
+    assert.isFalse((yield* call("monitor_signal", { monitorId: monitor.id })).isError);
+    const current = (yield* service.status({ threadId, query: { monitorId: monitor.id } }))
+      .monitors[0]!;
+    assert.equal(current.status, "cancelled");
+    assert.isNull(current.trigger);
+    assert.deepEqual(
+      (yield* (yield* ProjectionStoreV2).getThreadRecords(threadId, ["messages"])).messages,
+      [],
+    );
+  }).pipe(Effect.provide(layer)),
+);

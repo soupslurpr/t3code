@@ -283,7 +283,7 @@ const ThreadWaitTool = Tool.make("t3_thread_wait", {
 
 const ThreadInterruptTool = Tool.make("t3_thread_interrupt", {
   description:
-    "Interrupt a top-level thread's running turn. No `runId`: newest running turn. No effect when idle. For a delegate, use `task_cancel`.",
+    "Interrupt a top-level thread's running turn. No `runId`: newest running turn, or cancel outstanding durable monitors when no run is active. An explicit terminal run has no further effect. For a delegate, use `task_cancel`.",
   parameters: OrchestratorMcpThreadInterruptInput,
   success: OrchestratorMcpThreadInterruptResult,
   failure: OrchestratorMcpFailure,
