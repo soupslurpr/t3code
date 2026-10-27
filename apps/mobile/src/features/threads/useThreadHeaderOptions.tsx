@@ -95,8 +95,35 @@ export function useThreadHeaderOptions(props: {
         ? undefined
         : () => compactHomeHeaderItems,
     // The workspace navigator adds compose to the Duo detail column's bar.
-    unstable_headerRightItems: () =>
-      usesDuoHeader || layout.usesSplitView ? threadCenterHeaderItems : compactRightHeaderItems,
+    unstable_headerRightItems: () => [
+      withNativeGlassHeaderItem({
+        type: "button" as const,
+        identifier: "thread-desktops",
+        label: "Desktop",
+        accessibilityLabel: "Desktop",
+        icon: { name: "desktopcomputer", type: "sfSymbol" as const },
+        onPress: () =>
+          navigation.navigate("ThreadDesktops", {
+            environmentId: props.gitControls.environmentId,
+            threadId: props.gitControls.threadId,
+          }),
+      }),
+      withNativeGlassHeaderItem({
+        type: "button" as const,
+        identifier: "thread-monitors",
+        label: "Monitors",
+        accessibilityLabel: "Monitors",
+        icon: { name: "clock", type: "sfSymbol" as const },
+        onPress: () =>
+          navigation.navigate("ThreadMonitors", {
+            environmentId: props.gitControls.environmentId,
+            threadId: props.gitControls.threadId,
+          }),
+      }),
+      ...(usesDuoHeader || layout.usesSplitView
+        ? threadCenterHeaderItems
+        : compactRightHeaderItems),
+    ],
     unstable_headerToolbarItems: () => [],
     unstable_headerSubtitle: props.usesNativeHeaderGlass ? props.subtitle : undefined,
     contentStyle: undefined,

@@ -422,3 +422,43 @@ it.effect("requires operate permission before a monitor cancellation handler run
     expect(handled).toBe(1);
   }).pipe(Effect.scoped),
 );
+
+it.effect("authorizes desktop activity reads before invoking the thread service", () =>
+  Effect.gen(function* () {
+    const group = WsRpcGroup.omit(
+      ...[...WsRpcGroup.requests.keys()].filter(
+        (
+          tag,
+        ): tag is Exclude<
+          keyof typeof RPC_REQUIRED_SCOPES,
+          typeof WS_METHODS.threadDesktopActivity
+        > => tag !== WS_METHODS.threadDesktopActivity,
+      ),
+    );
+    let handled = 0;
+    for (const allowed of [false, true]) {
+      const client = yield* RpcTest.makeClient(group).pipe(
+        Effect.provide(
+          Layer.mergeAll(
+            group.toLayerHandler(WS_METHODS.threadDesktopActivity, () =>
+              Effect.sync(() => {
+                handled++;
+                return { commands: [], transfers: [] };
+              }),
+            ),
+            RpcAuthorization.layer(allowed ? [AuthOrchestrationReadScope] : []),
+          ),
+        ),
+      );
+      const request = client[WS_METHODS.threadDesktopActivity]({
+        threadId: ThreadId.make("owner"),
+      });
+      if (allowed) yield* request;
+      else
+        expect(yield* request.pipe(Effect.flip)).toMatchObject({
+          requiredPermission: AuthOrchestrationReadScope,
+        });
+    }
+    expect(handled).toBe(1);
+  }).pipe(Effect.scoped),
+);

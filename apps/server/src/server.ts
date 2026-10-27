@@ -1,3 +1,4 @@
+import * as ThreadDesktopActivity from "./computer/ThreadDesktopActivity.ts";
 import * as ThreadMonitorSignalCallbacks from "./threadMonitor/ThreadMonitorSignalCallbacks.ts";
 import * as MonitorSignalRoute from "./threadMonitor/signalRoute.ts";
 import * as ProviderComputerLifecycle from "./orchestration-v2/ProviderComputerLifecycle.ts";
@@ -720,13 +721,17 @@ const layerRuntimeCoreDependencies = layerRuntimeCoreDependenciesBase.pipe(
   ),
 );
 
-const layerAgentDesktopServices = Layer.mergeAll(
-  UserDesktopTransfers.layer.pipe(Layer.provide(layerPreviewAutomationBroker)),
-  layerAgentDesktopManager,
-  layerComputerAutomationRouter,
-  AgentDesktopTransfer.layer.pipe(
-    Layer.provide(layerAgentDesktopManager),
-    Layer.provide(layerServerEnvironment),
+const layerAgentDesktopServices = ThreadDesktopActivity.layer.pipe(
+  Layer.provideMerge(
+    Layer.mergeAll(
+      UserDesktopTransfers.layer.pipe(Layer.provide(layerPreviewAutomationBroker)),
+      layerAgentDesktopManager,
+      layerComputerAutomationRouter,
+      AgentDesktopTransfer.layer.pipe(
+        Layer.provide(layerAgentDesktopManager),
+        Layer.provide(layerServerEnvironment),
+      ),
+    ),
   ),
 );
 

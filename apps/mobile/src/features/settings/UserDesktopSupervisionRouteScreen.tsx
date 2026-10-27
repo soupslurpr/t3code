@@ -1,3 +1,10 @@
+import {
+  AgentDesktopId,
+  type AgentDesktopOwner,
+  type ThreadId,
+  type ComputerObservationList,
+} from "@t3tools/contracts";
+import { createAgentDesktopSupervisionTransport } from "./AgentDesktopSupervisionTransport";
 import { squashAtomCommandFailure } from "@t3tools/client-runtime/state/runtime";
 import type {
   ComputerAutomationAction,
@@ -52,6 +59,8 @@ export interface UserDesktopSupervisionRouteParams extends Record<string, unknow
   readonly desktopId: UserDesktopId;
   readonly label: string;
   readonly supportsControl: boolean;
+  readonly threadId?: ThreadId;
+  readonly agentOwner?: AgentDesktopOwner;
 }
 
 interface TouchStart {
@@ -109,7 +118,7 @@ export function UserDesktopSupervisionRouteScreen(
 ) {
   return (
     <UserDesktopSupervisionContent
-      key={`${props.route.params.environmentId}:${props.route.params.desktopId}`}
+      key={`${props.route.params.environmentId}:${props.route.params.desktopId}:${props.route.params.threadId ?? ""}:${props.route.params.agentOwner?.controllerId ?? "user"}`}
       {...props}
     />
   );
@@ -124,9 +133,15 @@ function UserDesktopSupervisionContent({
   const threads = useThreadShells();
   const connected = useAtomValue(environmentConnectedAtom(params.environmentId));
   const permitted = useAtomValue(
-    previewEnvironment.invokeUserDesktopHuman.permissionAtom(params.environmentId),
+    (params.agentOwner === undefined
+      ? previewEnvironment.invokeUserDesktopHuman
+      : previewEnvironment.invokeAgentDesktopHuman
+    ).permissionAtom(params.environmentId),
   );
   const invoke = useAtomCommand(previewEnvironment.invokeUserDesktopHuman, {
+    reportFailure: false,
+  });
+  const invokeAgent = useAtomCommand(previewEnvironment.invokeAgentDesktopHuman, {
     reportFailure: false,
   });
   const [view, setView] = useState(emptyMobileDesktopSupervision);
@@ -138,6 +153,9 @@ function UserDesktopSupervisionContent({
   const sessionRef = useRef<ReturnType<typeof createMobileDesktopSupervision> | null>(null);
   const accessQueue = useRef(Promise.resolve());
   const { environmentId, desktopId } = params;
+  const agentEnvironmentId = params.agentOwner?.environmentId;
+  const agentThreadId = params.agentOwner?.threadId;
+  const agentControllerId = params.agentOwner?.controllerId;
   useFocusEffect(() => {
     if (!connected || !permitted) {
       setView({
@@ -149,12 +167,39 @@ function UserDesktopSupervisionContent({
       });
       return;
     }
+    const agentTransport =
+      agentEnvironmentId === undefined ||
+      agentThreadId === undefined ||
+      agentControllerId === undefined
+        ? null
+        : createAgentDesktopSupervisionTransport(
+            {
+              environmentId: agentEnvironmentId,
+              threadId: agentThreadId,
+              controllerId: agentControllerId,
+            },
+            AgentDesktopId.make(desktopId),
+            async (input) => {
+              const result = await invokeAgent({ environmentId, input });
+              if (result._tag === "Success") return result.value;
+              throw squashAtomCommandFailure(result);
+            },
+          );
     const session = createMobileDesktopSupervision({
       desktopId,
       accessQueue,
       run: async <Value,>(input: Parameters<typeof invoke>[0]["input"]) => {
+        if (agentTransport !== null) return (await agentTransport(input)) as Value;
         const result = await invoke({ environmentId, input });
-        if (result._tag === "Success") return result.value as Value;
+        if (result._tag === "Success") {
+          if (params.threadId !== undefined && input.request.operation === "observation-list") {
+            const list = result.value as ComputerObservationList;
+            return {
+              observations: list.observations.filter((item) => item.threadId === params.threadId),
+            } as Value;
+          }
+          return result.value as Value;
+        }
         throw squashAtomCommandFailure(result);
       },
       onChange: setView,
@@ -559,12 +604,14 @@ function UserDesktopSupervisionContent({
             onPress={() => void releaseTransientAccess()}
           />
         ) : null}
-        <SupervisionButton
-          label="End all access"
-          disabled={busy}
-          destructive
-          onPress={endAllAccess}
-        />
+        {params.threadId === undefined && params.agentOwner === undefined ? (
+          <SupervisionButton
+            label="End all access"
+            disabled={busy}
+            destructive
+            onPress={endAllAccess}
+          />
+        ) : null}
       </ScrollView>
     </View>
   );

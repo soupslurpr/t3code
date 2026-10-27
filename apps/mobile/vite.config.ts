@@ -4,6 +4,8 @@ import { defineConfig, normalizePath } from "vite-plus";
 import "vite-plus/test/config";
 
 const reactTests = [
+  "src/features/threads/ThreadMonitorsRouteScreen.test.tsx",
+  "src/features/threads/ThreadDesktopsRouteScreen.test.tsx",
   "src/features/settings/UserDesktopSupervisionRouteScreen.test.tsx",
   "src/features/threads/MonitorSystemEventCard.test.tsx",
   "src/lib/useMediaVideoPlayback.test.tsx",

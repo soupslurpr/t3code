@@ -160,6 +160,12 @@ describe("user desktop transfers", () => {
           ({ dispose }) => Effect.promise(dispose),
         );
         const started = yield* transfers.start(owner, input);
+        assert.deepEqual(
+          (yield* transfers.listForThread(environmentId, threadId)).map((item) => item.id),
+          [started.id],
+        );
+        assert.deepEqual(yield* transfers.listForThread("another-environment", threadId), []);
+        assert.deepEqual(yield* transfers.listForThread(environmentId, "another-thread"), []);
         const request = yield* Queue.take(requests);
         const url = `http://t3.test${request.input.url}`;
         const fetch = (token?: string) =>

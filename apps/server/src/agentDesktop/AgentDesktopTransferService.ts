@@ -898,10 +898,30 @@ export const make = Effect.gen(function* () {
     return (yield* requireOwnedRecord(scope, input.transferId)).snapshot;
   });
 
-  return AgentDesktopTransferService.of({ start, status, cancel });
+  const listForThread: AgentDesktopTransferServiceShape["listForThread"] = (
+    environmentId,
+    threadId,
+  ) =>
+    Ref.get(state).pipe(
+      Effect.map((current) =>
+        Array.from(current.transfers.values())
+          .filter(
+            (record) =>
+              record.owner.environmentId === environmentId && record.owner.threadId === threadId,
+          )
+          .map((record) => record.snapshot)
+          .sort((a, b) => b.startedAt.localeCompare(a.startedAt))
+          .slice(0, 50),
+      ),
+    );
+  return AgentDesktopTransferService.of({ start, status, cancel, listForThread });
 });
 
 export interface AgentDesktopTransferServiceShape {
+  readonly listForThread: (
+    environmentId: string,
+    threadId: string,
+  ) => Effect.Effect<ReadonlyArray<AgentDesktopTransfer>>;
   readonly start: (
     scope: McpInvocationContext.McpThreadInvocationScope,
     input: AgentDesktopCopyInput,

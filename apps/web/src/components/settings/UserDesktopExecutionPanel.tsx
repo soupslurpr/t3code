@@ -5,12 +5,14 @@ import {
   type DesktopProcessOutputNavigation,
   type DesktopProcessOutputPage,
 } from "@t3tools/client-runtime/desktop-process-output";
+import { useAtomValue } from "@effect/atom-react";
 import { squashAtomCommandFailure } from "@t3tools/client-runtime/state/runtime";
 import {
   UserDesktopExecutionResult,
   type DesktopExecutionAccess,
   type DesktopProcess,
   type EnvironmentId,
+  type ThreadId,
   type UserDesktopExecutionInput,
   type UserDesktopTarget,
 } from "@t3tools/contracts";
@@ -31,14 +33,19 @@ export function UserDesktopExecutionPanel({
   environmentId,
   environmentLabel,
   desktop,
+  threadId,
 }: {
   readonly environmentId: EnvironmentId;
   readonly environmentLabel: string;
   readonly desktop: UserDesktopTarget;
+  readonly threadId?: ThreadId | undefined;
 }) {
   const invoke = useAtomCommand(previewEnvironment.invokeUserDesktopHuman, {
     reportFailure: false,
   });
+  const allowed = useAtomValue(
+    previewEnvironment.invokeUserDesktopHuman.permissionAtom(environmentId),
+  );
   const [expanded, setExpanded] = useState(false);
   const [access, setAccess] = useState<DesktopExecutionAccess | null>(null);
   const [processes, setProcesses] = useState<ReadonlyArray<DesktopProcess>>([]);
@@ -52,7 +59,7 @@ export function UserDesktopExecutionPanel({
   const [refreshError, setRefreshError] = useState<string | null>(null);
   const error = actionError ?? refreshError;
   const [pendingCount, setPendingCount] = useState(0);
-  const busy = pendingCount > 0;
+  const busy = !allowed || pendingCount > 0;
   const [scope, setScope] = useState<"environment" | "desktop">("environment");
   const refreshing = useRef(false);
   const desktopId = desktop.desktopId;
@@ -76,7 +83,12 @@ export function UserDesktopExecutionPanel({
         run({ operation: "process", desktop: target, input: { action: "list", desktop: target } }),
       ]);
       if (permission.kind === "access") setAccess(permission);
-      if (list.kind === "list") setProcesses(list.processes);
+      if (list.kind === "list")
+        setProcesses(
+          list.processes.filter(
+            (process) => threadId === undefined || process.threadId === threadId,
+          ),
+        );
       setRefreshError(null);
     } catch (cause) {
       setRefreshError(
@@ -145,81 +157,96 @@ export function UserDesktopExecutionPanel({
               <AlertDescription>{error}</AlertDescription>
             </Alert>
           ) : null}
-          <div className="flex flex-wrap items-center gap-2">
-            <select
-              aria-label="Execution permission scope"
-              className="h-8 rounded-md border bg-background px-2 text-xs"
-              value={scope}
-              onChange={(event) =>
-                setScope(event.target.value === "desktop" ? "desktop" : "environment")
-              }
-            >
-              <option value="environment">This environment</option>
-              <option value="desktop">All environments</option>
-            </select>
-            <Button
-              size="sm"
-              variant="outline"
-              disabled={busy}
-              onClick={() =>
-                void perform({
-                  operation: "access",
-                  desktop,
-                  input: { action: "request", desktop, scope },
-                })
-              }
-            >
-              Allow commands
-            </Button>
-            <Button
-              size="sm"
-              variant="outline"
-              onClick={() =>
-                void perform({ operation: "access", desktop, input: { action: "revoke", desktop } })
-              }
-            >
-              Revoke and stop
-            </Button>
+          {threadId === undefined ? (
+            <>
+              <div className="flex flex-wrap items-center gap-2">
+                <select
+                  aria-label="Execution permission scope"
+                  className="h-8 rounded-md border bg-background px-2 text-xs"
+                  value={scope}
+                  onChange={(event) =>
+                    setScope(event.target.value === "desktop" ? "desktop" : "environment")
+                  }
+                >
+                  <option value="environment">This environment</option>
+                  <option value="desktop">All environments</option>
+                </select>
+                <Button
+                  size="sm"
+                  variant="outline"
+                  disabled={busy}
+                  onClick={() =>
+                    void perform({
+                      operation: "access",
+                      desktop,
+                      input: { action: "request", desktop, scope },
+                    })
+                  }
+                >
+                  Allow commands
+                </Button>
+                <Button
+                  size="sm"
+                  variant="outline"
+                  disabled={busy}
+                  onClick={() =>
+                    void perform({
+                      operation: "access",
+                      desktop,
+                      input: { action: "revoke", desktop },
+                    })
+                  }
+                >
+                  Revoke and stop
+                </Button>
+                <Button size="sm" variant="ghost" disabled={busy} onClick={() => void refresh()}>
+                  Refresh
+                </Button>
+              </div>
+              {access ? (
+                <p className="text-xs text-muted-foreground">
+                  Runs as {access.user} · {access.grants.length} permission{" "}
+                  {access.grants.length === 1 ? "grant" : "grants"}
+                </p>
+              ) : null}
+              {access?.grants.map((grant) => (
+                <div
+                  key={grant.grantId}
+                  className="flex flex-wrap items-center justify-between gap-2 text-xs"
+                >
+                  <span>
+                    {grant.scope === "desktop"
+                      ? "All environments"
+                      : grant.scope === "environment"
+                        ? "This environment"
+                        : `Thread ${grant.threadId}`}{" "}
+                    · {grant.remembered ? "Remembered" : "Until T3 Code quits"}
+                    {grant.expiresAt
+                      ? ` · Expires ${new Date(grant.expiresAt).toLocaleString()}`
+                      : ""}
+                  </span>
+                  <Button
+                    size="xs"
+                    variant="ghost"
+                    disabled={busy}
+                    onClick={() =>
+                      void perform({
+                        operation: "access",
+                        desktop,
+                        input: { action: "revoke", desktop, grantId: grant.grantId },
+                      })
+                    }
+                  >
+                    Revoke and stop
+                  </Button>
+                </div>
+              ))}
+            </>
+          ) : (
             <Button size="sm" variant="ghost" disabled={busy} onClick={() => void refresh()}>
-              Refresh
+              Refresh commands
             </Button>
-          </div>
-          {access ? (
-            <p className="text-xs text-muted-foreground">
-              Runs as {access.user} · {access.grants.length} permission{" "}
-              {access.grants.length === 1 ? "grant" : "grants"}
-            </p>
-          ) : null}
-          {access?.grants.map((grant) => (
-            <div
-              key={grant.grantId}
-              className="flex flex-wrap items-center justify-between gap-2 text-xs"
-            >
-              <span>
-                {grant.scope === "desktop"
-                  ? "All environments"
-                  : grant.scope === "environment"
-                    ? "This environment"
-                    : `Thread ${grant.threadId}`}{" "}
-                · {grant.remembered ? "Remembered" : "Until T3 Code quits"}
-                {grant.expiresAt ? ` · Expires ${new Date(grant.expiresAt).toLocaleString()}` : ""}
-              </span>
-              <Button
-                size="xs"
-                variant="ghost"
-                disabled={busy}
-                onClick={() =>
-                  void perform({
-                    operation: "access",
-                    desktop,
-                    input: { action: "revoke", desktop, grantId: grant.grantId },
-                  })
-                }
-              >
-                Revoke and stop
-              </Button>
-            </div>
-          ))}
+          )}
           {processes.length === 0 ? (
             <p className="text-xs text-muted-foreground">No commands in this environment.</p>
           ) : (

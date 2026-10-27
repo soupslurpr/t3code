@@ -5,6 +5,7 @@ import {
 } from "@react-navigation/native";
 import {
   EnvironmentId,
+  ThreadId,
   UserDesktopId,
   type UserDesktopView,
   type UserDesktopAuditEvent,
@@ -94,7 +95,10 @@ vi.mock("../../components/ui/ErrorBanner", () => ({ ErrorBanner: () => null }));
 vi.mock("../../native/StackHeader", () => ({ NativeStackScreenOptions: () => null }));
 vi.mock("../../state/entities", () => ({ useThreadShells: () => [] }));
 vi.mock("../../state/preview", () => ({
-  previewEnvironment: { invokeUserDesktopHuman: { permissionAtom: () => "permission" } },
+  previewEnvironment: {
+    invokeUserDesktopHuman: { permissionAtom: () => "permission" },
+    invokeAgentDesktopHuman: { permissionAtom: () => "permission" },
+  },
 }));
 vi.mock("../../state/use-atom-command", () => ({ useAtomCommand: () => state.invoke }));
 import { SettingsUserDesktopsRouteScreen } from "./SettingsUserDesktopsRouteScreen";
@@ -199,7 +203,12 @@ function setup() {
       blocked = pending;
       return pending;
     },
-    async render(desktopId = "desktop", environmentId = "remote") {
+    async render(
+      desktopId = "desktop",
+      environmentId = "remote",
+      kind: "user" | "agent" = "user",
+      threadId?: string,
+    ) {
       await act(async () =>
         root.render(
           <NavigationContext.Provider value={navigation}>
@@ -211,6 +220,16 @@ function setup() {
                   desktopId: UserDesktopId.make(desktopId),
                   label: "Desktop",
                   supportsControl: true,
+                  ...(threadId === undefined ? {} : { threadId: ThreadId.make(threadId) }),
+                  ...(kind === "agent"
+                    ? {
+                        agentOwner: {
+                          environmentId: EnvironmentId.make(environmentId),
+                          threadId: ThreadId.make(threadId ?? "owner"),
+                          controllerId: "agent",
+                        },
+                      }
+                    : {}),
                 },
               }}
             />
@@ -410,4 +429,52 @@ it("shows recent access on inventory refresh without fetching audit on each poll
   state.allowed = new Set();
   await screen.inventory();
   expect(screen.text()).not.toContain("codex");
+});
+
+for (const operation of ["request-view", "request-control", "return-control"] as const) {
+  it.each(["unmount", "background", "blur", "target"] as const)(
+    `releases a late Agent ${operation} on %s`,
+    async (how) => {
+      await using screen = setup();
+      await screen.render("desktop", "remote", "agent", "owner");
+      if (operation !== "request-view") await screen.press("Start Live");
+      const pending = screen.block(operation);
+      await screen.press(
+        operation === "request-view"
+          ? "Start Live"
+          : operation === "request-control"
+            ? "Take control"
+            : "Return to agent",
+      );
+      await pending.started.promise;
+      const captures = screen.operations().filter((op) => op === "snapshot").length;
+      if (how === "unmount") await screen.unmount();
+      else if (how === "background") await screen.background("background");
+      else if (how === "blur") await screen.focus(false);
+      else await screen.render("replacement", "remote", "agent", "owner");
+      await act(async () => pending.finish.resolve());
+      expect(screen.access.get("remote:desktop")).toBe("none");
+      expect(screen.operations().filter((op) => op === "snapshot")).toHaveLength(captures);
+    },
+  );
+}
+it("keeps Agent supervision stable on rerenders and passive after focus and connection recovery", async () => {
+  await using screen = setup();
+  await screen.render("desktop", "remote", "agent", "owner");
+  const initial = [...screen.operations()];
+  await screen.render("desktop", "remote", "agent", "owner");
+  expect(screen.operations()).toEqual(initial);
+  await screen.press("Start Live");
+  await screen.press("Take control");
+  await screen.press("Return to agent");
+  expect(screen.access.get("remote:desktop")).toBe("view");
+  await screen.focus(false);
+  expect(screen.access.get("remote:desktop")).toBe("none");
+  await screen.focus(true);
+  state.connected = false;
+  await screen.render("desktop", "remote", "agent", "owner");
+  state.connected = true;
+  await screen.render("desktop", "remote", "agent", "owner");
+  expect(screen.operations().filter((op) => op === "request-view")).toHaveLength(1);
+  expect(screen.text()).not.toContain("End all access");
 });

@@ -2,7 +2,6 @@ import { useAtomValue } from "@effect/atom-react";
 import { AsyncResult } from "effect/reactivity";
 import { appAtomRegistry } from "~/rpc/atomRegistry";
 import { useStableCallback } from "~/hooks/useStableCallback";
-import { useEnvironmentsWithScope } from "~/state/session";
 import { agentDesktopListingAtom } from "./agentDesktopListing";
 import {
   isAgentDesktopMaintenanceActive,
@@ -23,7 +22,7 @@ import type {
   ComputerObservationUpdate,
   EnvironmentId,
 } from "@t3tools/contracts";
-import { AuthOrchestrationOperateScope, ThreadId } from "@t3tools/contracts";
+import { ThreadId } from "@t3tools/contracts";
 import {
   CircleStopIcon,
   EyeIcon,
@@ -47,7 +46,8 @@ import {
 
 import { formatRelativeTimeLabel } from "~/timestampFormat";
 import { useThreadShells } from "~/state/entities";
-import { useEnvironments } from "~/state/environments";
+import { useAgentDesktopViewerLease, type AgentViewerLease } from "./useAgentDesktopViewerLease";
+import { useDesktopEnvironments, type DesktopThreadScope } from "./useDesktopEnvironments";
 import { previewEnvironment } from "~/state/preview";
 import { useAtomCommand } from "~/state/use-atom-command";
 import { cn } from "~/lib/utils";
@@ -282,6 +282,7 @@ function AgentObservationOverlay({
 
 /** Renders shared Live, Agent lens, and full-screen control for one concrete desktop. */
 export function ComputerDesktopViewer({
+  embedded = false,
   label,
   description,
   observation,
@@ -304,6 +305,7 @@ export function ComputerDesktopViewer({
   onRelease,
   onAction,
 }: {
+  embedded?: boolean;
   label: string;
   description: ReactNode;
   observation: ComputerAutomationSnapshot | null;
@@ -660,13 +662,22 @@ export function ComputerDesktopViewer({
           width: `min(100%, ${liveFrame.width}px, calc(65vh * ${liveFrame.width / liveFrame.height}))`,
         };
 
+  const Popup = embedded ? InlineDesktopPopup : DialogPopup;
+  const Panel = embedded ? "div" : DialogPanel;
   return (
-    <DialogPopup size="wide" bottomStickOnMobile={false}>
-      <DialogHeader>
-        <DialogTitle>{label}</DialogTitle>
-        <DialogDescription>{description}</DialogDescription>
-      </DialogHeader>
-      <DialogPanel>
+    <Popup size="wide" bottomStickOnMobile={false}>
+      {embedded ? (
+        <header>
+          <h3 className="font-medium">{label}</h3>
+          <p className="text-sm text-muted-foreground">{description}</p>
+        </header>
+      ) : (
+        <DialogHeader>
+          <DialogTitle>{label}</DialogTitle>
+          <DialogDescription>{description}</DialogDescription>
+        </DialogHeader>
+      )}
+      <Panel>
         <div
           ref={bindSurface}
           className={cn(
@@ -947,24 +958,41 @@ export function ComputerDesktopViewer({
             </Button>
           )}
         </div>
-      </DialogPanel>
-    </DialogPopup>
+      </Panel>
+    </Popup>
   );
 }
 
+function InlineDesktopPopup({
+  children,
+}: {
+  children?: ReactNode;
+  size?: "wide";
+  bottomStickOnMobile?: boolean;
+}) {
+  return <section className="grid gap-3">{children}</section>;
+}
+
 /** Lists, watches, takes over, and manages isolated Agent desktops. */
-export function AgentDesktopSettings() {
-  const { environments, isReady: environmentsReady } = useEnvironments();
+export function AgentDesktopSettings({ thread }: { thread?: DesktopThreadScope } = {}) {
+  const ownerThreadId = thread?.threadId;
+  const {
+    environments,
+    isReady: environmentsReady,
+    permissionDenied,
+  } = useDesktopEnvironments("agent", thread);
   const threads = useThreadShells();
   const invoke = useAtomCommand(previewEnvironment.invokeAgentDesktopHuman, {
     reportFailure: false,
   });
-  const operable = useEnvironmentsWithScope(environments, AuthOrchestrationOperateScope);
+  const operable = environments.map((environment) => environment.environmentId);
   const listingAtom = agentDesktopListingAtom(JSON.stringify(Array.from(operable).sort()));
   const listing = useAtomValue(listingAtom);
   const [mutationError, setError] = useState<string | null>(null);
   const listed = AsyncResult.isSuccess(listing) ? listing.value : null;
-  const desktops = listed?.desktops ?? [];
+  const desktops = (listed?.desktops ?? []).filter(
+    (desktop) => ownerThreadId === undefined || desktop.owner.threadId === ownerThreadId,
+  );
   const availability = listed?.availability ?? new Map<EnvironmentId, EnvironmentAvailability>();
   const error = mutationError ?? listed?.error ?? null;
   const loading = !environmentsReady || AsyncResult.isInitial(listing) || listing.waiting;
@@ -978,6 +1006,7 @@ export function AgentDesktopSettings() {
   const [viewerError, setViewerError] = useState<string | null>(null);
   const [viewer, setViewerState] = useState<{
     readonly desktop: AgentDesktopView;
+    readonly lease: AgentViewerLease;
     readonly observation: ComputerAutomationSnapshot;
     readonly agentObservation: ComputerObservation | null;
     readonly controlling: boolean;
@@ -1000,6 +1029,18 @@ export function AgentDesktopSettings() {
     if (result._tag === "Success") return result.value as Value;
     throw squashAtomCommandFailure(result);
   };
+
+  const resetViewer = useStableCallback(() => {
+    setViewer(null);
+    setViewerError(null);
+  });
+  const runLease = useStableCallback(run);
+  const {
+    open: openLease,
+    close: closeViewer,
+    request: requestLease,
+    isCurrent: isCurrentLease,
+  } = useAgentDesktopViewerLease(runLease, resetViewer);
 
   const refresh = async () => {
     setError(null);
@@ -1065,7 +1106,14 @@ export function AgentDesktopSettings() {
 
   const manage = async (
     desktop: AgentDesktopView,
-    operation: "resume" | "park" | "stop" | "delete" | "restore" | "delete-permanently",
+    operation:
+      | "resume"
+      | "park"
+      | "stop"
+      | "delete"
+      | "restore"
+      | "delete-permanently"
+      | "set-update-policy",
   ) => {
     setBusyDesktopId(desktop.id);
     setError(null);
@@ -1075,7 +1123,13 @@ export function AgentDesktopSettings() {
         request: {
           operation: "manage",
           owner: desktop.owner,
-          input: { operation, desktopId: desktop.id },
+          input: {
+            operation,
+            desktopId: desktop.id,
+            ...(operation === "set-update-policy"
+              ? { updatePolicy: desktop.updatePolicy === "manual" ? "automatic" : "manual" }
+              : {}),
+          },
         },
       });
       await refresh();
@@ -1090,11 +1144,10 @@ export function AgentDesktopSettings() {
     setOpeningViewerId(desktop.id);
     setError(null);
     setViewerError(null);
+    let lease: AgentViewerLease | null = null;
     try {
-      await run(desktop.owner.environmentId, {
-        threadId: desktop.owner.threadId,
-        request: { operation: "request-view", owner: desktop.owner, desktopId: desktop.id },
-      });
+      lease = await openLease(desktop);
+      if (lease === null) return;
       const observation = await run<ComputerAutomationSnapshot>(desktop.owner.environmentId, {
         threadId: desktop.owner.threadId,
         request: {
@@ -1121,13 +1174,16 @@ export function AgentDesktopSettings() {
       } catch (cause) {
         setViewerError(`Agent lens unavailable: ${failureMessage(cause)}`);
       }
+      if (!isCurrentLease(lease)) return;
       setViewer({
         desktop,
+        lease,
         observation,
         agentObservation,
         controlling: false,
       });
     } catch (cause) {
+      if (lease !== null && isCurrentLease(lease)) await closeViewer();
       setError(failureMessage(cause));
     } finally {
       setOpeningViewerId(null);
@@ -1207,13 +1263,6 @@ export function AgentDesktopSettings() {
     return () => {
       cancelled = true;
       if (timeout !== null) clearTimeout(timeout);
-      if (viewerRef.current?.desktop.id === desktop.id) {
-        viewerRef.current = null;
-        void run(desktop.owner.environmentId, {
-          threadId: desktop.owner.threadId,
-          request: { operation: "release", owner: desktop.owner, desktopId: desktop.id },
-        }).catch(() => {});
-      }
     };
   });
 
@@ -1249,33 +1298,8 @@ export function AgentDesktopSettings() {
     setBusyDesktopId(viewer.desktop.id);
     setViewerError(null);
     try {
-      if (controlling) {
-        await run(viewer.desktop.owner.environmentId, {
-          threadId: viewer.desktop.owner.threadId,
-          request: {
-            operation: "request-control",
-            owner: viewer.desktop.owner,
-            desktopId: viewer.desktop.id,
-          },
-        });
-      } else {
-        await run(viewer.desktop.owner.environmentId, {
-          threadId: viewer.desktop.owner.threadId,
-          request: {
-            operation: "release",
-            owner: viewer.desktop.owner,
-            desktopId: viewer.desktop.id,
-          },
-        });
-        await run(viewer.desktop.owner.environmentId, {
-          threadId: viewer.desktop.owner.threadId,
-          request: {
-            operation: "request-view",
-            owner: viewer.desktop.owner,
-            desktopId: viewer.desktop.id,
-          },
-        });
-      }
+      if (!(await requestLease(viewer.lease, controlling ? "request-control" : "return-control")))
+        return false;
       setViewer((current) => (current === null ? null : { ...current, controlling }));
       return true;
     } catch (cause) {
@@ -1283,25 +1307,6 @@ export function AgentDesktopSettings() {
       return false;
     } finally {
       setBusyDesktopId(null);
-    }
-  };
-
-  const closeViewer = async () => {
-    const current = viewer;
-    setViewer(null);
-    setViewerError(null);
-    if (current === null) return;
-    try {
-      await run(current.desktop.owner.environmentId, {
-        threadId: current.desktop.owner.threadId,
-        request: {
-          operation: "release",
-          owner: current.desktop.owner,
-          desktopId: current.desktop.id,
-        },
-      });
-    } catch {
-      // Closing the viewer is best effort; the host also clears leases on disconnect.
     }
   };
 
@@ -1334,8 +1339,9 @@ export function AgentDesktopSettings() {
         requirement.remedy?.automatic,
     ) === true;
 
+  const Container = thread === undefined ? SettingsPageContainer : "div";
   return (
-    <SettingsPageContainer>
+    <Container>
       <SettingsSection
         id="agent-desktops"
         title="Agent desktops"
@@ -1347,17 +1353,21 @@ export function AgentDesktopSettings() {
         }
       >
         <p className="px-3 pb-1 text-sm text-muted-foreground sm:px-4">
-          Independent desktops that agents can use without interrupting your desktop. Resources,
-          parking, retention, system updates, and network boundaries are managed automatically.
-          Inactive desktops enter a seven-day recovery window after 30 days or when host storage is
-          low.
+          {thread === undefined
+            ? "Independent desktops that agents can use without interrupting your desktop. Manage resources, retention, and automatic or manual system updates here. Inactive disposable desktops enter a seven-day recovery window after 30 days or when storage is low."
+            : "Watch this thread’s desktops, inspect the Agent lens, or take control and return it to the agent."}
         </p>
+        {permissionDenied ? (
+          <p className="text-sm text-muted-foreground">
+            Desktop supervision requires operate access to this environment.
+          </p>
+        ) : null}
         {error ? (
           <Alert variant="error">
             <AlertDescription>{error}</AlertDescription>
           </Alert>
         ) : null}
-        {environmentNotices.map(([environmentId, status]) => {
+        {(thread === undefined ? environmentNotices : []).map(([environmentId, status]) => {
           const hasAutomaticRemedy = status.requirements.some(
             (requirement) =>
               requirement.status !== "ready" && requirement.remedy?.automatic === true,
@@ -1434,7 +1444,7 @@ export function AgentDesktopSettings() {
         ) : (
           <div className="grid gap-3">
             {desktops.map((desktop) => {
-              const thread = threadById.get(desktop.owner.threadId);
+              const ownerThread = threadById.get(desktop.owner.threadId);
               const environment = environmentById.get(desktop.owner.environmentId);
               const busy = busyDesktopId === desktop.id;
               const openingViewer = openingViewerId === desktop.id;
@@ -1452,6 +1462,9 @@ export function AgentDesktopSettings() {
                       </Badge>
                       {!desktop.automaticParking ? (
                         <Badge variant="secondary">Kept running</Badge>
+                      ) : null}
+                      {desktop.updatePolicy === "manual" ? (
+                        <Badge variant="secondary">Manual updates</Badge>
                       ) : null}
                       {desktop.retention === "preserve" ? (
                         <Badge variant="secondary">preserved</Badge>
@@ -1471,7 +1484,8 @@ export function AgentDesktopSettings() {
                       )}
                     </h3>
                     <p className="col-start-1 text-sm text-muted-foreground">
-                      {thread?.title ?? "Unknown thread"} · {environment?.label ?? "Unknown device"}
+                      {ownerThread?.title ?? "Unknown thread"} ·{" "}
+                      {environment?.label ?? "Unknown device"}
                     </p>
                     <div className="col-start-2 row-start-1 row-span-2">
                       {recoverable ? null : (
@@ -1505,84 +1519,96 @@ export function AgentDesktopSettings() {
                         </p>
                       )}
                     </div>
-                    <div className="flex flex-wrap gap-2">
-                      {recoverable ? (
-                        <>
-                          <Button
-                            size="xs"
-                            variant="outline"
-                            disabled={busy}
-                            onClick={() => void manage(desktop, "restore")}
-                          >
-                            <RotateCcwIcon />
-                            Restore
-                          </Button>
-                          <Button
-                            size="xs"
-                            variant="destructive-outline"
-                            disabled={busy}
-                            onClick={() => setPermanentDeleteDesktop(desktop)}
-                          >
-                            <Trash2Icon />
-                            Delete permanently
-                          </Button>
-                        </>
-                      ) : (
-                        <>
-                          {resumable &&
-                          (maintenance?.status === "due" || maintenance?.status === "failed") ? (
+                    {thread === undefined ? (
+                      <div className="flex flex-wrap gap-2">
+                        <Button
+                          size="xs"
+                          variant="outline"
+                          disabled={busy || maintenanceActive}
+                          onClick={() => void manage(desktop, "set-update-policy")}
+                        >
+                          {desktop.updatePolicy === "manual"
+                            ? "Enable automatic updates"
+                            : "Use manual updates"}
+                        </Button>
+                        {recoverable ? (
+                          <>
                             <Button
                               size="xs"
                               variant="outline"
                               disabled={busy}
-                              onClick={() => void updateDesktop(desktop)}
+                              onClick={() => void manage(desktop, "restore")}
                             >
-                              <RefreshCwIcon />
-                              Update
+                              <RotateCcwIcon />
+                              Restore
                             </Button>
-                          ) : null}
-                          {resumable ? (
+                            <Button
+                              size="xs"
+                              variant="destructive-outline"
+                              disabled={busy}
+                              onClick={() => setPermanentDeleteDesktop(desktop)}
+                            >
+                              <Trash2Icon />
+                              Delete permanently
+                            </Button>
+                          </>
+                        ) : (
+                          <>
+                            {resumable &&
+                            (maintenance?.status === "due" || maintenance?.status === "failed") ? (
+                              <Button
+                                size="xs"
+                                variant="outline"
+                                disabled={busy}
+                                onClick={() => void updateDesktop(desktop)}
+                              >
+                                <RefreshCwIcon />
+                                Update
+                              </Button>
+                            ) : null}
+                            {resumable ? (
+                              <Button
+                                size="xs"
+                                variant="outline"
+                                disabled={busy || maintenanceActive}
+                                onClick={() => void manage(desktop, "resume")}
+                              >
+                                <PlayIcon />
+                                Resume
+                              </Button>
+                            ) : (
+                              <Button
+                                size="xs"
+                                variant="outline"
+                                disabled={busy || maintenanceActive}
+                                onClick={() => void manage(desktop, "park")}
+                              >
+                                <PauseIcon />
+                                Park
+                              </Button>
+                            )}
                             <Button
                               size="xs"
                               variant="outline"
                               disabled={busy || maintenanceActive}
-                              onClick={() => void manage(desktop, "resume")}
+                              onClick={() => void manage(desktop, "stop")}
                             >
-                              <PlayIcon />
-                              Resume
+                              <CircleStopIcon />
+                              Stop
                             </Button>
-                          ) : (
                             <Button
                               size="xs"
-                              variant="outline"
+                              variant="destructive-outline"
                               disabled={busy || maintenanceActive}
-                              onClick={() => void manage(desktop, "park")}
+                              onClick={() => void manage(desktop, "delete")}
                             >
-                              <PauseIcon />
-                              Park
+                              <Trash2Icon />
+                              Delete
                             </Button>
-                          )}
-                          <Button
-                            size="xs"
-                            variant="outline"
-                            disabled={busy || maintenanceActive}
-                            onClick={() => void manage(desktop, "stop")}
-                          >
-                            <CircleStopIcon />
-                            Stop
-                          </Button>
-                          <Button
-                            size="xs"
-                            variant="destructive-outline"
-                            disabled={busy || maintenanceActive}
-                            onClick={() => void manage(desktop, "delete")}
-                          >
-                            <Trash2Icon />
-                            Delete
-                          </Button>
-                        </>
-                      )}
-                    </div>
+                          </>
+                        )}
+                      </div>
+                    ) : null}
                   </div>
                 </section>
               );
@@ -1595,6 +1621,14 @@ export function AgentDesktopSettings() {
         {viewer ? (
           <div key={`${viewer.desktop.owner.environmentId}:${viewer.desktop.id}`} ref={bindViewer}>
             <ComputerDesktopViewer
+              embedded={thread !== undefined}
+              secondaryActions={
+                thread === undefined ? undefined : (
+                  <Button variant="outline" size="sm" onClick={() => void closeViewer()}>
+                    Close viewer
+                  </Button>
+                )
+              }
               label={viewer.desktop.label}
               description={
                 <>
@@ -1607,7 +1641,10 @@ export function AgentDesktopSettings() {
               observation={viewer.observation}
               agentObservation={viewer.agentObservation}
               controlling={viewer.controlling}
-              busy={busyDesktopId === viewer.desktop.id}
+              busy={
+                busyDesktopId === viewer.desktop.id ||
+                !operable.includes(viewer.desktop.owner.environmentId)
+              }
               error={viewerError}
               onTakeControl={() => setViewerControl(true)}
               onRelease={() => setViewerControl(false)}
@@ -1673,6 +1710,6 @@ export function AgentDesktopSettings() {
           </AlertDialogFooter>
         </AlertDialogPopup>
       </AlertDialog>
-    </SettingsPageContainer>
+    </Container>
   );
 }

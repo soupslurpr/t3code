@@ -227,3 +227,19 @@ it.effect("returns human-approved setup readiness without a desktop owner", () =
     });
   }),
 );
+
+it.effect.each(["status", "return-control"] as const)(
+  "rejects cross-thread human %s before touching a desktop lease",
+  (operation) =>
+    Effect.gen(function* () {
+      const manager = yield* AgentDesktopManager.AgentDesktopManager.pipe(
+        Effect.provide(Layer.mock(AgentDesktopManager.AgentDesktopManager)({})),
+      );
+      const error = yield* AgentDesktopHuman.runAgentDesktopHumanRequest(manager, scope, {
+        operation,
+        owner: { environmentId, threadId: ThreadId.make("another-thread"), controllerId: "agent" },
+        desktopId: AgentDesktopId.make("foreign"),
+      }).pipe(Effect.flip);
+      assert.deepInclude(error, { code: "desktop-target-mismatch" });
+    }),
+);

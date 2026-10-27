@@ -1,3 +1,4 @@
+import * as ThreadDesktopActivity from "./computer/ThreadDesktopActivity.ts";
 import { ThreadMonitorService } from "./threadMonitor/ThreadMonitorService.ts";
 import * as AgentDesktopManager from "./agentDesktop/AgentDesktopManager.ts";
 import * as ComputerObservationStore from "./computer/ComputerObservationStore.ts";
@@ -398,6 +399,7 @@ it.effect("shell snapshots omit idle children and older settled threads only on 
 const layerUnusedConfigRpcServices = Layer.mergeAll(
   ComputerObservationStore.layer,
   Layer.mock(AgentDesktopManager.AgentDesktopManager)({}),
+  Layer.mock(ThreadDesktopActivity.ThreadDesktopActivityService)({}),
   Layer.mock(DocumentText.DocumentText)({}),
   Layer.mock(ServerSecretStore.ServerSecretStore)({}),
   Layer.mock(WorkspacePaths.WorkspacePaths)({}),
