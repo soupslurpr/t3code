@@ -1,3 +1,4 @@
+import * as ComputerObservationStore from "./ComputerObservationStore.ts";
 import {
   UserDesktopInventoryError,
   UserDesktopManagementError,
@@ -36,6 +37,16 @@ export const runUserDesktopHumanRequest = Effect.fn("UserDesktopHuman.run")(func
       Effect.mapError((error) => (isManagementError(error) ? error : inventoryFailure())),
       Effect.as(null),
     );
+  }
+  if (request.operation === "observation-list" || request.operation === "observation") {
+    const observations = yield* ComputerObservationStore.ComputerObservationStore;
+    return yield* request.operation === "observation-list"
+      ? observations.list({ environmentId: scope.environmentId, desktopId: request.desktopId })
+      : observations.readById({
+          environmentId: scope.environmentId,
+          desktopId: request.desktopId,
+          observationId: request.observationId,
+        });
   }
   const desktop = { kind: "user" as const, desktopId: request.desktopId };
   const operation =

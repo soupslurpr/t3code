@@ -1,6 +1,6 @@
 import * as PreviewAutomationBroker from "../../PreviewAutomationBroker.ts";
 import type {
-  AgentDesktopId,
+  ComputerObservationDesktopId,
   ComputerAutomationActInput,
   ComputerAutomationAccessInput,
   ComputerAutomationAvailabilityInput,
@@ -25,12 +25,12 @@ import * as ComputerObservationStore from "../../../computer/ComputerObservation
 import * as ComputerAutomationRouter from "../../../computer/ComputerAutomationRouter.ts";
 import { ComputerImageToolkit, ComputerStandardToolkit, ComputerToolkit } from "./tools.ts";
 
-/** Resolves the concrete Agent desktop selected by an access request. */
-function observedAgentDesktopId(
+/** Resolves the concrete desktop selected by an access request. */
+function observedDesktopId(
   desktop: ComputerDesktopSelector,
   observation: ComputerAutomationObservation,
-): AgentDesktopId | undefined {
-  if (desktop.kind !== "agent") return undefined;
+): ComputerObservationDesktopId | undefined {
+  if (desktop.kind === "user") return desktop.desktopId;
   if (desktop.desktopId !== undefined) return desktop.desktopId;
   const selected = observation.status?.desktop;
   return selected?.kind === "agent" ? selected.id : undefined;
@@ -39,7 +39,7 @@ function observedAgentDesktopId(
 /** Retains one direct observation only after the computer tool produced it successfully. */
 const publishControllerObservation = Effect.fn("ComputerToolkit.publishControllerObservation")(
   function* (input: {
-    readonly desktopId: AgentDesktopId | undefined;
+    readonly desktopId: ComputerObservationDesktopId | undefined;
     readonly source: "request-view" | "request-control" | "snapshot" | "act" | "sequence";
     readonly observation: ComputerAutomationObservation;
   }) {
@@ -184,7 +184,7 @@ const handlers = {
     requestComputerAccess(input, "view").pipe(
       Effect.tap((observation) =>
         publishControllerObservation({
-          desktopId: observedAgentDesktopId(input.desktop, observation),
+          desktopId: observedDesktopId(input.desktop, observation),
           source: "request-view",
           observation,
         }),
@@ -195,7 +195,7 @@ const handlers = {
     requestComputerAccess(input, "control").pipe(
       Effect.tap((observation) =>
         publishControllerObservation({
-          desktopId: observedAgentDesktopId(input.desktop, observation),
+          desktopId: observedDesktopId(input.desktop, observation),
           source: "request-control",
           observation,
         }),
@@ -206,7 +206,7 @@ const handlers = {
     snapshotComputer(input).pipe(
       Effect.tap((snapshot) =>
         publishControllerObservation({
-          desktopId: input.desktop.kind === "agent" ? input.desktop.desktopId : undefined,
+          desktopId: input.desktop.desktopId,
           source: "snapshot",
           observation: { snapshot },
         }),
@@ -220,7 +220,7 @@ const handlers = {
     }).pipe(
       Effect.tap((temporalSequence) =>
         publishControllerObservation({
-          desktopId: input.desktop.kind === "agent" ? input.desktop.desktopId : undefined,
+          desktopId: input.desktop.desktopId,
           source: "sequence",
           observation: { temporalSequence },
         }),
@@ -231,7 +231,7 @@ const handlers = {
     actWithTemporalObservation(input).pipe(
       Effect.tap((observation) =>
         publishControllerObservation({
-          desktopId: input.desktop.kind === "agent" ? input.desktop.desktopId : undefined,
+          desktopId: input.desktop.desktopId,
           source: "act",
           observation,
         }),

@@ -1,9 +1,12 @@
+import { UserDesktopHumanRequest } from "./userDesktop.ts";
 import { Schema } from "effect";
 import { describe, expect, it } from "vite-plus/test";
 
-import { ComputerObservation } from "./computerObservation.ts";
+import { ComputerObservation, ComputerObservationList } from "./computerObservation.ts";
 import { AgentDesktopHumanRequest } from "./previewAutomation.ts";
 
+const decodeObservationList = Schema.decodeUnknownSync(ComputerObservationList);
+const decodeUserDesktopHumanRequest = Schema.decodeUnknownSync(UserDesktopHumanRequest);
 const decodeObservation = Schema.decodeUnknownSync(ComputerObservation);
 const decodeHumanRequest = Schema.decodeUnknownSync(AgentDesktopHumanRequest);
 const contentHash = "sha256-bgra8-v2:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA";
@@ -74,5 +77,41 @@ describe("computer observation contracts", () => {
         afterId: "computer-observation-1",
       }),
     ).toMatchObject({ operation: "observation", afterId: "computer-observation-1" });
+  });
+
+  it("decodes image-free User desktop observation summaries", () => {
+    const input = observation();
+    expect(
+      decodeObservationList({
+        observations: [
+          {
+            id: input.id,
+            desktopId: "user-desktop-1",
+            threadId: input.threadId,
+            observedAt: input.observedAt,
+            source: input.source,
+            recipient: input.recipient,
+            imageCount: input.images.length,
+            hasAccessibility: false,
+          },
+        ],
+      }),
+    ).toMatchObject({ observations: [{ desktopId: "user-desktop-1", imageCount: 1 }] });
+  });
+
+  it("decodes scoped User desktop observation reads", () => {
+    expect(
+      decodeUserDesktopHumanRequest({
+        operation: "observation-list",
+        desktopId: "user-desktop-1",
+      }),
+    ).toEqual({ operation: "observation-list", desktopId: "user-desktop-1" });
+    expect(
+      decodeUserDesktopHumanRequest({
+        operation: "observation",
+        desktopId: "user-desktop-1",
+        observationId: "computer-observation-1",
+      }),
+    ).toMatchObject({ operation: "observation", observationId: "computer-observation-1" });
   });
 });

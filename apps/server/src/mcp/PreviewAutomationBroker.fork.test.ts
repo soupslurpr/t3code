@@ -1,3 +1,4 @@
+import * as ComputerObservationStore from "../computer/ComputerObservationStore.ts";
 import * as UserDesktops from "../persistence/UserDesktops.ts";
 import { expect, it } from "@effect/vitest";
 import * as NodeServices from "@effect/platform-node/NodeServices";
@@ -39,9 +40,12 @@ const scope: McpInvocationContext.McpThreadInvocationScope = {
   capabilities: new Set(["preview"]),
   issuedAt: 1,
 };
-const layer = PreviewAutomationBroker.layer.pipe(
-  Layer.provide(UserDesktops.layerMemory),
-  Layer.provide(NodeServices.layer),
+const layer = Layer.merge(
+  ComputerObservationStore.layer,
+  PreviewAutomationBroker.layer.pipe(
+    Layer.provide(UserDesktops.layerMemory),
+    Layer.provide(NodeServices.layer),
+  ),
 );
 const registration = (desktopId: string) => ({
   protocolVersion: 1 as const,
@@ -700,4 +704,87 @@ it.effect("routes stable logical identity across provider credential restarts", 
       "stable-controller",
     ]);
   }).pipe(Effect.provide(layer)),
+);
+
+it.effect(
+  "reads retained user evidence without requesting a new capture and rejects foreign scopes",
+  () =>
+    Effect.gen(function* () {
+      const broker = yield* PreviewAutomationBroker.PreviewAutomationBroker;
+      const observations = yield* ComputerObservationStore.ComputerObservationStore;
+      const target = yield* serveInventoryHost({
+        clientId: "evidence-host",
+        environmentId,
+        supportedOperations: COMPUTER_AUTOMATION_OPERATIONS,
+        userDesktop: registration("user-evidence"),
+      });
+      yield* observations.publishController({
+        environmentId,
+        threadId: scope.thread.threadId,
+        instanceId: scope.thread.providerInstanceId,
+        desktopId: "user-evidence",
+        source: "snapshot",
+        observation: {
+          snapshot: {
+            display: {
+              id: "display-0",
+              label: "Display",
+              primary: true,
+              bounds: { x: 0, y: 0, width: 800, height: 600 },
+              scaleFactor: 1,
+            },
+            cursor: null,
+            captureSource: "virtual-display",
+            accessibility: {
+              available: true,
+              coordinateSpace: "focused-window",
+              window: null,
+              windows: [],
+              targets: [],
+              truncated: false,
+            },
+          },
+        },
+      });
+      const retained = yield* observations.read({
+        environmentId,
+        threadId: scope.thread.threadId,
+        desktopId: "user-evidence",
+      });
+      const observationId = retained.latestId!;
+      expect(
+        yield* runUserDesktopHumanRequest(broker, scope, {
+          request: {
+            operation: "observation-list",
+            desktopId: "user-evidence",
+          },
+        }),
+      ).toMatchObject({ observations: [{ id: observationId, hasAccessibility: true }] });
+      expect(
+        yield* runUserDesktopHumanRequest(broker, scope, {
+          request: {
+            operation: "observation",
+            desktopId: "user-evidence",
+            observationId,
+          },
+        }),
+      ).toEqual(retained);
+      expect(
+        yield* runUserDesktopHumanRequest(
+          broker,
+          { ...scope, environmentId: EnvironmentId.make("foreign-environment") },
+          { request: { operation: "observation", desktopId: "user-evidence", observationId } },
+        ),
+      ).toEqual({ latestId: null });
+      expect(
+        yield* runUserDesktopHumanRequest(broker, scope, {
+          request: {
+            operation: "observation",
+            desktopId: "other-desktop",
+            observationId,
+          },
+        }),
+      ).toEqual({ latestId: null });
+      expect(target.requests).toEqual([]);
+    }).pipe(Effect.provide(layer), Effect.scoped),
 );
