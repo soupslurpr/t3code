@@ -43,14 +43,22 @@ const decodeModelList = Schema.decodeUnknownEffect(
 );
 
 export function museModelCapabilities(
-  model?: Pick<
-    typeof ModelCatalogEntry.Type,
-    "variants" | "defaultReasoningEffort" | "reasoningEffortVariants"
+  model?: Partial<
+    Pick<
+      typeof ModelCatalogEntry.Type,
+      "modelId" | "variants" | "defaultReasoningEffort" | "reasoningEffortVariants"
+    >
   >,
 ): ModelCapabilities {
   const reported = model?.variants !== undefined && model.variants !== "unknown";
   const efforts = (reported ? model.variants : FALLBACK_EFFORTS).filter(isMuseReasoningEffort);
-  const preferredDefault = reported ? model?.defaultReasoningEffort : FALLBACK_DEFAULT_EFFORT;
+  const preferredDefault =
+    (model?.modelId === "muse-wonder-full-1.0" || model?.modelId === "muse-wonder-1.0") &&
+    efforts.includes("max")
+      ? "max"
+      : reported
+        ? model?.defaultReasoningEffort
+        : FALLBACK_DEFAULT_EFFORT;
   const defaultValue = efforts.find((tier) => tier === preferredDefault) ?? efforts[0];
   if (!defaultValue) return createModelCapabilities({ optionDescriptors: [] });
   return createModelCapabilities({
