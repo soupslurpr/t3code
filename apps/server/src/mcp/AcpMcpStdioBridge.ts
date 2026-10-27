@@ -1,6 +1,9 @@
 // Relay JSON-RPC verbatim; schema decoding would reject foreign payloads.
 // @effect-diagnostics nodeBuiltinImport:off preferSchemaOverJson:off
 import * as NodeReadline from "node:readline";
+import * as NodeCrypto from "node:crypto";
+import * as NodeFSP from "node:fs/promises";
+import * as NodePath from "node:path";
 
 import * as Cause from "effect/Cause";
 import * as Effect from "effect/Effect";
@@ -58,7 +61,14 @@ export interface McpToolSessionOptions {
   readonly fetchImplementation?: (url: string, init?: RequestInit) => Promise<Response>;
 }
 
+export interface AcpMcpToolCallOptions extends Omit<McpToolSessionOptions, "clientName"> {
+  readonly tool: string;
+  readonly arguments: Readonly<Record<string, unknown>>;
+  readonly mediaDirectory?: string;
+}
+
 export interface McpToolSession {
+  readonly list: (cursor?: string) => Effect.Effect<unknown, AcpMcpBridgeError>;
   /** Resolves to the JSON-RPC `result` of `tools/call`, a `CallToolResult`. */
   readonly call: (
     tool: string,
@@ -148,6 +158,10 @@ export const mcpToolSession = (
     });
     yield* send({ jsonrpc: "2.0", method: "notifications/initialized" });
     return {
+      list: (cursor) =>
+        request("tools/list", cursor === undefined ? {} : { cursor }).pipe(
+          Effect.map((envelope) => envelope.result),
+        ),
       call: (tool, args) =>
         request("tools/call", { name: tool, arguments: args }).pipe(
           Effect.map((envelope) => envelope.result),
@@ -156,22 +170,143 @@ export const mcpToolSession = (
   });
 };
 
-/**
- * This is the terminal fallback for ACP agents that accept `mcpServers` in
- * `session/new` but fail to expose those tools to their model. Compliant ACP
- * agents continue to use the stdio bridge above.
- */
-function callAcpMcpTool(options: {
-  readonly endpoint: string;
-  readonly authorization: string;
-  readonly tool: string;
-  readonly arguments: Readonly<Record<string, unknown>>;
-}): Effect.Effect<unknown, AcpMcpBridgeError> {
-  return mcpToolSession({ ...options, clientName: "t3-code-acp-cli" }).pipe(
-    Effect.flatMap((session) => session.call(options.tool, options.arguments)),
-    Effect.scoped,
-  );
+function asRecord(value: unknown): Record<string, unknown> | undefined {
+  return typeof value === "object" && value !== null && !Array.isArray(value)
+    ? (value as Record<string, unknown>)
+    : undefined;
 }
+
+const MAX_IMAGE_BYTES = 25 * 1024 * 1024;
+const IMAGE_EXTENSIONS = new Map([
+  ["image/png", ".png"],
+  ["image/jpeg", ".jpg"],
+  ["image/webp", ".webp"],
+  ["image/gif", ".gif"],
+  ["image/avif", ".avif"],
+  ["image/bmp", ".bmp"],
+  ["image/svg+xml", ".svg"],
+  ["image/tiff", ".tiff"],
+  ["image/x-icon", ".ico"],
+]);
+
+// Node builtins keep per-call CLI startup independent of the server's service graph.
+const materializeImages = Effect.fn("AcpMcpStdioBridge.materializeImages")(
+  (result: unknown, mediaDirectory: string) =>
+    Effect.tryPromise({
+      try: async () => {
+        const record = asRecord(result);
+        if (!record || !Array.isArray(record.content)) return result;
+        const content: unknown[] = [];
+        let directoryCreated = false;
+        for (const block of record.content) {
+          const image = asRecord(block);
+          if (
+            image?.type !== "image" ||
+            typeof image.data !== "string" ||
+            typeof image.mimeType !== "string"
+          ) {
+            content.push(block);
+            continue;
+          }
+          // Check before allocating decoded bytes, including for oversized results.
+          if (Buffer.byteLength(image.data, "base64") > MAX_IMAGE_BYTES) {
+            content.push(block, {
+              type: "text",
+              text: "Image file was not written: decoded size exceeds the 25 MiB limit; the original image block is unchanged.",
+            });
+            continue;
+          }
+          const directory = NodePath.resolve(mediaDirectory);
+          try {
+            if (!directoryCreated) {
+              await NodeFSP.mkdir(directory, { recursive: true, mode: 0o700 });
+              directoryCreated = true;
+            }
+            const filePath = NodePath.join(
+              directory,
+              `image-${NodeCrypto.randomUUID()}${IMAGE_EXTENSIONS.get(image.mimeType) ?? ".bin"}`,
+            );
+            // Open separately so cleanup owns the file only after exclusive creation.
+            const file = await NodeFSP.open(filePath, "wx", 0o600);
+            try {
+              try {
+                await file.writeFile(Buffer.from(image.data, "base64"));
+              } finally {
+                await file.close();
+              }
+            } catch (cause) {
+              await NodeFSP.unlink(filePath).catch(() => undefined);
+              throw cause;
+            }
+            const { data: _data, ...rest } = image;
+            content.push({ ...rest, filePath });
+          } catch (cause) {
+            // The tool already ran: losing its receipt could cause a repeated action.
+            content.push(block, {
+              type: "text",
+              text: `Image file was not written: ${bridgeError(cause).message}. The original image block and tool result are preserved; do not repeat an action just to recover its image.`,
+            });
+          }
+        }
+        return { ...record, content };
+      },
+      catch: bridgeError,
+    }),
+);
+
+/** Terminal fallback when an agent accepts MCP configuration but exposes no tools. */
+export const callAcpMcpTool = Effect.fn("AcpMcpStdioBridge.callTool")(function* (
+  options: AcpMcpToolCallOptions,
+) {
+  const session = yield* mcpToolSession({ ...options, clientName: "t3-code-acp-cli" });
+  const result = yield* session.call(options.tool, options.arguments);
+  return options.mediaDirectory === undefined
+    ? result
+    : yield* materializeImages(result, options.mediaDirectory);
+}, Effect.scoped);
+
+export const listAcpMcpTools = Effect.fn("AcpMcpStdioBridge.listTools")(function* (
+  options: Omit<McpToolSessionOptions, "clientName"> & { readonly filter?: string },
+) {
+  const session = yield* mcpToolSession({ ...options, clientName: "t3-code-acp-cli" });
+  const tools: Array<{ name: string; description: unknown; inputSchema: unknown }> = [];
+  const filter = options.filter?.toLowerCase();
+  const cursors = new Set<string>();
+  let cursor: string | undefined;
+  do {
+    const result = asRecord(yield* session.list(cursor));
+    if (!result || !Array.isArray(result.tools))
+      return yield* Effect.fail(
+        new AcpMcpBridgeError("T3 Code MCP endpoint returned an invalid tool list."),
+      );
+    for (const value of result.tools) {
+      const tool = asRecord(value);
+      if (!tool || typeof tool.name !== "string" || !asRecord(tool.inputSchema))
+        return yield* Effect.fail(
+          new AcpMcpBridgeError("T3 Code MCP endpoint returned an invalid tool definition."),
+        );
+      if (filter === undefined || tool.name.toLowerCase().includes(filter))
+        tools.push({
+          name: tool.name,
+          description: tool.description,
+          inputSchema: tool.inputSchema,
+        });
+    }
+    if (result.nextCursor !== undefined && typeof result.nextCursor !== "string")
+      return yield* Effect.fail(
+        new AcpMcpBridgeError("T3 Code MCP endpoint returned an invalid tool cursor."),
+      );
+    cursor = result.nextCursor;
+    if (cursor !== undefined) {
+      if (cursors.has(cursor))
+        return yield* Effect.fail(
+          new AcpMcpBridgeError("T3 Code MCP endpoint repeated a tool cursor."),
+        );
+      cursors.add(cursor);
+    }
+  } while (cursor !== undefined);
+  return tools;
+}, Effect.scoped);
 
 export function runAcpMcpStdioBridge(options: AcpMcpStdioBridgeOptions): Effect.Effect<void> {
   const fetchImplementation = options.fetchImplementation ?? fetch;
@@ -321,7 +456,7 @@ export function runAcpMcpStdioBridge(options: AcpMcpStdioBridgeOptions): Effect.
 
 /** Avoid heavy imports on the ACP first-message path. */
 export async function runAcpMcpCliFastPath(
-  command: "acp-mcp-bridge" | "acp-mcp-call",
+  command: "acp-mcp-bridge" | "acp-mcp-call" | "acp-mcp-list",
   args: ReadonlyArray<string>,
 ): Promise<void> {
   const endpoint = process.env.T3_ACP_MCP_ENDPOINT;
@@ -340,6 +475,17 @@ export async function runAcpMcpCliFastPath(
         output: process.stdout,
       }),
     );
+    return;
+  }
+  if (command === "acp-mcp-list") {
+    const result = await Effect.runPromise(
+      listAcpMcpTools({
+        endpoint,
+        authorization,
+        ...(args[0] === undefined ? {} : { filter: args[0] }),
+      }),
+    );
+    process.stdout.write(`${JSON.stringify(result)}\n`);
     return;
   }
   const [tool, argumentsJson] = args;
@@ -367,6 +513,9 @@ export async function runAcpMcpCliFastPath(
       authorization,
       tool,
       arguments: parsed as Record<string, unknown>,
+      ...(process.env.T3_ACP_MCP_MEDIA_DIR === undefined
+        ? {}
+        : { mediaDirectory: process.env.T3_ACP_MCP_MEDIA_DIR }),
     }),
   );
   process.stdout.write(`${JSON.stringify(result)}\n`);

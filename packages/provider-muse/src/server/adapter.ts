@@ -26,6 +26,8 @@ import {
 } from "@t3tools/contracts";
 import type { MuseSettings } from "../settings.ts";
 import { AgentScope } from "@t3tools/shared/AgentScope";
+import * as HostProcess from "@t3tools/shared/HostProcess";
+import type { SelfInvocation } from "@t3tools/shared/nodeRuntime";
 import { isLeadModel, LEAD_INSTRUCTION, LEAD_ROLE_OPTION_ID } from "@t3tools/shared/lead";
 import { getModelSelectionStringOptionValue } from "@t3tools/shared/model";
 import * as Cause from "effect/Cause";
@@ -193,6 +195,7 @@ export interface MuseAdapterV2Options {
   readonly instanceId: ProviderInstanceId;
   readonly settings: MuseSettings;
   readonly environment: NodeJS.ProcessEnv;
+  readonly selfInvocation?: SelfInvocation;
   readonly modelCatalog?: Effect.Effect<ReadonlyArray<ServerProviderModel>>;
   readonly createHost?: typeof createMuseSdkHost;
   readonly requestTimeoutMs?: number;
@@ -265,6 +268,13 @@ const INFORMATIONAL_NOTIFICATIONS = new Set([
 ]);
 const TOOLS_WITH_NATIVE_ROWS = new Set(["write_todos", "request_user_input", "workflow"]);
 const responseAnswerSchema = Schema.Union([Schema.String, Schema.Array(Schema.String)]);
+const MCP_BRIDGE_ENV_KEYS = new Set([
+  "T3_ACP_MCP_ENDPOINT",
+  "T3_ACP_MCP_AUTHORIZATION",
+  "T3_ACP_MCP_NODE",
+  "T3_ACP_MCP_ENTRYPOINT",
+  "T3_ACP_MCP_MEDIA_DIR",
+]);
 
 export const makeMuseAdapterV2 = Effect.fn("makeMuseAdapterV2")(function* (
   options: MuseAdapterV2Options,
@@ -274,6 +284,12 @@ export const makeMuseAdapterV2 = Effect.fn("makeMuseAdapterV2")(function* (
   const fileSystem = yield* FileSystem.FileSystem;
   const mcpSessions = yield* McpProviderSessions.McpProviderSessions;
   const agentScope = yield* AgentScope;
+  const platform = yield* HostProcess.Platform;
+  const bridgeInvocation =
+    platform === "win32"
+      ? '$env:ELECTRON_RUN_AS_NODE="1"; $PSNativeCommandArgumentPassing="Standard"; $t3Args=@(); if ($env:T3_ACP_MCP_ENTRYPOINT) { $t3Args += $env:T3_ACP_MCP_ENTRYPOINT }; & $env:T3_ACP_MCP_NODE @t3Args'
+      : 'ELECTRON_RUN_AS_NODE=1 "$T3_ACP_MCP_NODE" ${T3_ACP_MCP_ENTRYPOINT:+"$T3_ACP_MCP_ENTRYPOINT"}';
+  const bridgeInstructions = `T3 Code MCP fallback: Prefer native T3 tools. If they are absent, use the terminal (${platform === "win32" ? "PowerShell 7.3+" : "POSIX shell"}): discover tools and input schemas with \`${bridgeInvocation} acp-mcp-list [filter]\` (optional name substring), then call \`${bridgeInvocation} acp-mcp-call <tool> '<json>'\`. Preserve tool idempotency keys when retrying. Open image filePath results with read_file to view them. Never print the bridge environment values.`;
 
   const protocolError = (detail: string, payload?: unknown) =>
     new ProviderAdapter.ProviderAdapterProtocolError({
@@ -324,6 +340,8 @@ export const makeMuseAdapterV2 = Effect.fn("makeMuseAdapterV2")(function* (
       const commands = yield* Semaphore.make(1);
       const eventPermit = yield* Semaphore.make(1);
       let host: MuseSdkHost;
+      let bridgeProviderSessionId: string | undefined;
+      let mediaDirectory: string | undefined;
       let hostEpoch = 0;
       let closed = false;
       let broken = false;
@@ -331,6 +349,7 @@ export const makeMuseAdapterV2 = Effect.fn("makeMuseAdapterV2")(function* (
       let relaunchable = false;
       let nativeSessionId: string | undefined;
       let thread: OrchestrationV2ProviderThread | undefined;
+      let detachedNativeSession: { nativeId: string; appThreadId: ThreadId | null } | undefined;
       let active: ActiveTurn | undefined;
       let runningNativeTurnId: string | undefined;
       // Keep delayed acknowledgements from overwriting newer lifecycle observations.
@@ -1049,6 +1068,7 @@ export const makeMuseAdapterV2 = Effect.fn("makeMuseAdapterV2")(function* (
         const failed = host;
         const turn = active;
         broken = true;
+        bridgeProviderSessionId = undefined;
         relaunchable = !turn;
         wake = undefined;
         const rootCause = Cause.isCause(cause) ? Cause.squash(cause) : cause;
@@ -1718,14 +1738,37 @@ export const makeMuseAdapterV2 = Effect.fn("makeMuseAdapterV2")(function* (
         ),
         Effect.forkIn(scope),
       );
-      const launchHost = Effect.fnUntraced(function* () {
+      const launchHost = Effect.fn("MuseAdapterV2.launchHost")(function* () {
         const epoch = ++hostEpoch;
+        bridgeProviderSessionId = undefined;
+        const mcpSession = yield* mcpSessions.read(input.threadId);
+        const environment = { ...options.environment };
+        for (const key of Object.keys(environment)) {
+          if (MCP_BRIDGE_ENV_KEYS.has(platform === "win32" ? key.toUpperCase() : key))
+            delete environment[key];
+        }
+        const self = options.selfInvocation;
+        if (mcpSession && self) {
+          mediaDirectory ??= yield* fileSystem
+            .makeTempDirectoryScoped({ prefix: "t3-muse-mcp-" })
+            .pipe(
+              Effect.provideService(Scope.Scope, scope),
+              Effect.mapError((cause) =>
+                protocolError("Cannot create Muse MCP media directory", cause),
+              ),
+            );
+          environment.T3_ACP_MCP_ENDPOINT = mcpSession.endpoint;
+          environment.T3_ACP_MCP_AUTHORIZATION = mcpSession.authorizationHeader;
+          environment.T3_ACP_MCP_NODE = self.command;
+          if (self.entrypoint !== undefined) environment.T3_ACP_MCP_ENTRYPOINT = self.entrypoint;
+          environment.T3_ACP_MCP_MEDIA_DIR = mediaDirectory;
+        }
         const launch = yield* agentScope.wrap({
           command: options.settings.binaryPath || "muse",
           args: [],
           name: "muse",
           threadId: input.threadId,
-          env: options.environment,
+          env: environment,
         });
         // Finalizers run in reverse order: reap detached work after closing the host.
         const scopeUnit = launch.unit;
@@ -1741,7 +1784,7 @@ export const makeMuseAdapterV2 = Effect.fn("makeMuseAdapterV2")(function* (
               binaryPath: launch.command,
               launchArgs: launch.args,
               cwd,
-              environment: options.environment,
+              environment,
               runtimeMode: input.runtimePolicy.runtimeMode,
               onProcessExit: (exit) => {
                 Deferred.doneUnsafe(processExited, Effect.succeed(exit));
@@ -1762,6 +1805,7 @@ export const makeMuseAdapterV2 = Effect.fn("makeMuseAdapterV2")(function* (
             Effect.gen(function* () {
               if (host === created) {
                 closed = true;
+                bridgeProviderSessionId = undefined;
                 hostEpoch++;
               }
               const close = Effect.tryPromise(() => created.close());
@@ -1776,6 +1820,7 @@ export const makeMuseAdapterV2 = Effect.fn("makeMuseAdapterV2")(function* (
           { interruptible: true },
         ).pipe(Effect.provideService(Scope.Scope, scope));
         host = created;
+        bridgeProviderSessionId = self ? mcpSession?.providerSessionId : undefined;
         created.connection.onNotification((notification) => {
           Queue.offerUnsafe(inbox, {
             type: "notification",
@@ -1849,26 +1894,63 @@ export const makeMuseAdapterV2 = Effect.fn("makeMuseAdapterV2")(function* (
         }
         if (active)
           return yield* protocolError("Cannot change Muse sessions during an active turn");
-        const existing = args.existingProviderThread;
+        let existing = args.existingProviderThread;
         if (
           existing &&
           (existing.driver !== MUSE_PROVIDER || existing.providerInstanceId !== options.instanceId)
         )
           return yield* protocolError("Muse thread belongs to another provider instance");
-        const requestedId = existing
+        if (existing?.nativeThreadRef === null) detachedNativeSession = undefined;
+        let requestedId = existing
           ? (existing.nativeThreadRef?.nativeId ?? undefined)
-          : input.initialNativeThreadId;
-        if (
-          thread &&
-          (!requestedId || requestedId === nativeSessionId) &&
-          thread.appThreadId === args.threadId
-        )
-          return thread;
-        if (thread) return yield* protocolError("Open a new host to attach another Muse session");
+          : (input.initialNativeThreadId ??
+            (detachedNativeSession?.appThreadId === args.threadId
+              ? detachedNativeSession.nativeId
+              : undefined));
+        const mcpSession = yield* mcpSessions.read(args.threadId);
+        const refreshBridge =
+          options.selfInvocation !== undefined &&
+          mcpSession !== undefined &&
+          bridgeProviderSessionId !== mcpSession.providerSessionId;
+        if (thread) {
+          if (
+            (requestedId && requestedId !== nativeSessionId) ||
+            thread.appThreadId !== args.threadId
+          )
+            return yield* protocolError("Open a new host to attach another Muse session");
+          if (!refreshBridge) return thread;
+          // Credentials can arrive or rotate after openSession. Replacing an idle
+          // host must resume its session, including when ensureThread omits it.
+          existing = thread;
+          requestedId = nativeSessionId;
+        }
+        if (refreshBridge) {
+          yield* Effect.gen(function* () {
+            if (wake || observedChildren.size > 0 || runningNativeTurnId)
+              return yield* protocolError(
+                "Cannot enable the Muse MCP bridge during background work",
+              );
+            yield* Effect.gen(function* () {
+              hostEpoch++;
+              yield* Effect.tryPromise({
+                try: () => host.close(),
+                catch: (cause) => protocolError("Cannot close the previous Muse host", cause),
+              });
+              yield* launchHost();
+              // A rejected resume leaves no attachment; retain the identity for
+              // retries that omit it, unless recovery explicitly starts fresh.
+              if (thread && nativeSessionId !== undefined)
+                detachedNativeSession = {
+                  nativeId: nativeSessionId,
+                  appThreadId: thread.appThreadId,
+                };
+              thread = undefined;
+            }).pipe(Effect.onError(failHost));
+          }).pipe(eventPermit.withPermits(1));
+        }
         let resumeRejectedByHost = false;
         return yield* Effect.gen(function* () {
           nativeSessionId = requestedId ?? host.connection.mintCommandId();
-          const mcpSession = yield* mcpSessions.read(args.threadId);
           if (mcpSession && !host.initializeResult.grantedCapabilities.includes("sessionMcp"))
             return yield* protocolError(
               "Update Muse Code to a version that supports session MCP servers",
@@ -1944,6 +2026,7 @@ export const makeMuseAdapterV2 = Effect.fn("makeMuseAdapterV2")(function* (
                 createdAt,
                 updatedAt: createdAt,
               };
+          detachedNativeSession = undefined;
           session = {
             ...session,
             model: result.session.modelId ?? args.modelSelection.model,
@@ -2129,6 +2212,9 @@ export const makeMuseAdapterV2 = Effect.fn("makeMuseAdapterV2")(function* (
                       reasoningEffort: effort,
                     }),
                   },
+                  ...(bridgeProviderSessionId !== undefined
+                    ? [{ type: "text", text: bridgeInstructions }]
+                    : []),
                   ...(lead
                     ? [
                         {

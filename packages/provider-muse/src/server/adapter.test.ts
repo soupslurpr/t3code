@@ -29,6 +29,8 @@ import * as Effect from "effect/Effect";
 import * as Option from "effect/Option";
 import type * as Exit from "effect/Exit";
 import * as Fiber from "effect/Fiber";
+import * as FileSystem from "effect/FileSystem";
+import * as Path from "effect/Path";
 import * as Layer from "effect/Layer";
 import * as Queue from "effect/Queue";
 import * as Schema from "effect/Schema";
@@ -65,6 +67,35 @@ const modelSelection = (instanceId = INSTANCE_ID) => ({
   model: MODEL,
   options: [{ id: "reasoningEffort", value: "max" }],
 });
+const MCP_SESSION = {
+  environmentId: EnvironmentId.make("test-environment"),
+  threadId: THREAD_ID,
+  providerSessionId: "test-session",
+  providerInstanceId: INSTANCE_ID,
+  endpoint: "http://127.0.0.1:43210/mcp",
+  authorizationHeader: "Bearer thread-scoped-test-token",
+  browserToolsAvailable: true,
+  capabilities: new Set(["device"]),
+};
+const MCP_CONFIG = {
+  mcpServers: {
+    "t3-code": {
+      transport: "streamableHttp",
+      mode: "optional",
+      url: "http://127.0.0.1:43210/mcp",
+      headers: { Authorization: "Bearer thread-scoped-test-token" },
+    },
+  },
+};
+const SELF_INVOCATION = { command: "/fake/node", entrypoint: "/fake/t3/bin.ts" };
+const INHERITED_BRIDGE_ENV = {
+  PATH: "/fake/bin",
+  T3_ACP_MCP_ENDPOINT: "http://inherited.invalid/mcp",
+  T3_ACP_MCP_AUTHORIZATION: "Bearer inherited-token",
+  T3_ACP_MCP_NODE: "/inherited/node",
+  T3_ACP_MCP_ENTRYPOINT: "/inherited/bin.ts",
+  T3_ACP_MCP_MEDIA_DIR: "/inherited/media",
+};
 
 interface NativeCall {
   readonly method: string;
@@ -205,23 +236,36 @@ const makeHarness = Effect.fnUntraced(function* (
   replacement?: Effect.Success<ReturnType<typeof makeFakeMuse>>,
   existingProviderThread?: OrchestrationV2ProviderThread,
   policy = runtimePolicy,
-  overrides: Pick<
-    MuseAdapterV2Options,
-    "createHost" | "nativeEventLogger" | "modelCatalog" | "continuationRequests" | "onUsageLimits"
-  > = {},
+  overrides: Partial<
+    Pick<
+      MuseAdapterV2Options,
+      | "createHost"
+      | "nativeEventLogger"
+      | "modelCatalog"
+      | "continuationRequests"
+      | "onUsageLimits"
+      | "environment"
+      | "selfInvocation"
+    >
+  > & { readonly beforeRegister?: Effect.Effect<void> } = {},
 ) {
   let hostCount = 0;
+  const hostOptions: Array<Parameters<NonNullable<MuseAdapterV2Options["createHost"]>>[0]> = [];
+  const { beforeRegister, ...adapterOverrides } = overrides;
   const adapter = yield* makeMuseAdapterV2({
     instanceId,
     settings: museSettings,
     environment: { PATH: "/fake/bin" },
+    ...adapterOverrides,
     createHost: async (options) => {
-      assert.deepStrictEqual(options.environment, { PATH: "/fake/bin" });
+      hostOptions.push(options);
+      if (overrides.createHost) return overrides.createHost(options);
+      if (!overrides.environment && !overrides.selfInvocation)
+        assert.deepStrictEqual(options.environment, { PATH: "/fake/bin" });
       const selected = hostCount++ === 0 ? fake : (replacement ?? fake);
       selected.observeProcessExit(options.onProcessExit);
       return selected.host;
     },
-    ...overrides,
   });
   const runtime = yield* adapter.openSession({
     threadId: THREAD_ID,
@@ -230,6 +274,7 @@ const makeHarness = Effect.fnUntraced(function* (
     runtimePolicy: policy,
     ...(initialNativeThreadId ? { initialNativeThreadId } : {}),
   });
+  yield* beforeRegister ?? Effect.void;
   const emitted = yield* Queue.unbounded<ProviderAdapter.ProviderAdapterV2Event>();
   const allEvents: ProviderAdapter.ProviderAdapterV2Event[] = [];
   const eventsEnded = yield* Deferred.make<Exit.Exit<void, Stream.Error<typeof runtime.events>>>();
@@ -268,7 +313,16 @@ const makeHarness = Effect.fnUntraced(function* (
       }
     }
   });
-  return { adapter, runtime, providerThread, takeEvent, allEvents, policy, eventsEnded };
+  return {
+    adapter,
+    runtime,
+    providerThread,
+    takeEvent,
+    allEvents,
+    policy,
+    eventsEnded,
+    hostOptions,
+  };
 });
 
 const preallocatedProviderThread = Effect.fnUntraced(function* () {
@@ -385,33 +439,578 @@ const approval = (turnId: string) => ({
 describe("MuseAdapterV2", () => {
   it.effect("connects the thread's MCP credential on native start and resume", () =>
     Effect.gen(function* () {
-      yield* (yield* McpProviderSessions.McpProviderSessions).set({
-        environmentId: EnvironmentId.make("test-environment"),
-        threadId: THREAD_ID,
-        providerSessionId: "test-session",
-        providerInstanceId: INSTANCE_ID,
-        endpoint: "http://127.0.0.1:43210/mcp",
-        authorizationHeader: "Bearer thread-scoped-test-token",
-        browserToolsAvailable: true,
-        capabilities: new Set(["device"]),
-      });
+      yield* (yield* McpProviderSessions.McpProviderSessions).set(MCP_SESSION);
       for (const nativeId of [undefined, "saved-native-session"]) {
         const fake = yield* makeFakeMuse();
         fake.host.initializeResult.grantedCapabilities.push("sessionMcp");
         yield* makeHarness(fake, INSTANCE_ID, nativeId);
         const call = yield* fake.takeCall(nativeId ? "session/resume" : "session/start");
-        assert.deepStrictEqual(call.params.config, {
-          mcpServers: {
-            "t3-code": {
-              transport: "streamableHttp",
-              mode: "optional",
-              url: "http://127.0.0.1:43210/mcp",
-              headers: { Authorization: "Bearer thread-scoped-test-token" },
-            },
-          },
-        });
+        assert.deepStrictEqual(call.params.config, MCP_CONFIG);
       }
     }).pipe(Effect.scoped, Effect.provide(testLayer)),
+  );
+
+  it.effect.each([SELF_INVOCATION, { command: "/fake/t3", entrypoint: undefined }])(
+    "launches with the current bridge credential and guides every turn ($command)",
+    (selfInvocation) =>
+      Effect.gen(function* () {
+        const fileSystem = yield* FileSystem.FileSystem;
+        const path = yield* Path.Path;
+        let wrappedEnvironment: NodeJS.ProcessEnv | undefined;
+        const directory = yield* Effect.gen(function* () {
+          yield* (yield* McpProviderSessions.McpProviderSessions).set(MCP_SESSION);
+          const fake = yield* makeFakeMuse();
+          fake.host.initializeResult.grantedCapabilities.push("sessionMcp");
+          const harness = yield* makeHarness(
+            fake,
+            INSTANCE_ID,
+            undefined,
+            undefined,
+            undefined,
+            runtimePolicy,
+            {
+              selfInvocation,
+              environment: INHERITED_BRIDGE_ENV,
+            },
+          );
+          const launched = harness.hostOptions[0]!;
+          const environment = launched.environment!;
+          assert.deepStrictEqual(wrappedEnvironment, environment);
+          assert.strictEqual(environment.PATH, INHERITED_BRIDGE_ENV.PATH);
+          assert.strictEqual(environment.T3_ACP_MCP_ENDPOINT, MCP_SESSION.endpoint);
+          assert.strictEqual(environment.T3_ACP_MCP_AUTHORIZATION, MCP_SESSION.authorizationHeader);
+          assert.strictEqual(environment.T3_ACP_MCP_NODE, selfInvocation.command);
+          assert.strictEqual(environment.T3_ACP_MCP_ENTRYPOINT, selfInvocation.entrypoint);
+          const mediaDirectory = environment.T3_ACP_MCP_MEDIA_DIR!;
+          assert.isTrue(path.isAbsolute(mediaDirectory));
+          assert.isTrue(yield* fileSystem.exists(mediaDirectory));
+          yield* fileSystem.writeFileString(path.join(mediaDirectory, "result.png"), "test image");
+          assert.notInclude(JSON.stringify(launched.launchArgs), MCP_SESSION.authorizationHeader);
+          for (const ordinal of [1, 2]) {
+            yield* harness.runtime.startTurn(yield* turnInput(harness.providerThread, ordinal));
+            const started = yield* fake.takeCall("turn/start");
+            const parts = started.params.input as Array<{ type: string; text: string }>;
+            const fallback = parts.filter((part) => part.text.includes("T3 Code MCP fallback:"));
+            assert.lengthOf(fallback, 1);
+            assert.include(
+              fallback[0]!.text,
+              'ELECTRON_RUN_AS_NODE=1 "$T3_ACP_MCP_NODE" ${T3_ACP_MCP_ENTRYPOINT:+"$T3_ACP_MCP_ENTRYPOINT"} acp-mcp-list',
+            );
+            assert.include(fallback[0]!.text, "acp-mcp-call <tool> '<json>'");
+            assert.include(fallback[0]!.text, "read_file");
+            assert.notInclude(JSON.stringify(parts), MCP_SESSION.authorizationHeader);
+            assert.notInclude(JSON.stringify(parts), MCP_SESSION.endpoint);
+            yield* fake.emit("turn/completed", {
+              turnId: started.commandId,
+              terminal: "completed",
+            });
+            yield* harness.takeEvent("turn.terminal");
+          }
+          return mediaDirectory;
+        }).pipe(
+          Effect.scoped,
+          Effect.provideService(HostProcess.Platform, "linux"),
+          Effect.provideService(AgentScope, {
+            ...AgentScope.defaultValue(),
+            wrap: (input) => {
+              wrappedEnvironment = input.env;
+              return Effect.succeed({ command: input.command, args: input.args });
+            },
+            oomKilled: () => Effect.succeed(false),
+            clear: () => Effect.void,
+          }),
+        );
+        assert.isFalse(yield* fileSystem.exists(directory));
+        assert.strictEqual(INHERITED_BRIDGE_ENV.T3_ACP_MCP_AUTHORIZATION, "Bearer inherited-token");
+      }).pipe(Effect.provide(testLayer)),
+  );
+
+  it.effect.each([
+    { credential: false, self: true },
+    { credential: true, self: false },
+    { credential: false, self: false },
+  ])(
+    "strips inherited bridge state without both prerequisites ($credential, $self)",
+    ({ credential, self }) =>
+      Effect.gen(function* () {
+        if (credential) yield* (yield* McpProviderSessions.McpProviderSessions).set(MCP_SESSION);
+        const fake = yield* makeFakeMuse();
+        fake.host.initializeResult.grantedCapabilities.push("sessionMcp");
+        const harness = yield* makeHarness(
+          fake,
+          INSTANCE_ID,
+          undefined,
+          undefined,
+          undefined,
+          runtimePolicy,
+          {
+            environment: INHERITED_BRIDGE_ENV,
+            ...(self ? { selfInvocation: SELF_INVOCATION } : {}),
+          },
+        );
+        assert.deepStrictEqual(harness.hostOptions[0]!.environment, { PATH: "/fake/bin" });
+        yield* harness.runtime.startTurn(yield* turnInput(harness.providerThread));
+        const call = yield* fake.takeCall("turn/start");
+        assert.notInclude(JSON.stringify(call.params.input), "T3 Code MCP fallback:");
+      }).pipe(Effect.scoped, Effect.provide(testLayer)),
+  );
+
+  it.effect(
+    "uses PowerShell guidance and removes case-insensitive inherited Windows bridge variables",
+    () =>
+      Effect.gen(function* () {
+        yield* (yield* McpProviderSessions.McpProviderSessions).set(MCP_SESSION);
+        const fake = yield* makeFakeMuse();
+        fake.host.initializeResult.grantedCapabilities.push("sessionMcp");
+        const harness = yield* makeHarness(
+          fake,
+          INSTANCE_ID,
+          undefined,
+          undefined,
+          undefined,
+          runtimePolicy,
+          {
+            selfInvocation: SELF_INVOCATION,
+            environment: { PATH: "/fake/bin", t3_acp_mcp_authorization: "inherited" },
+          },
+        );
+        assert.notProperty(harness.hostOptions[0]!.environment, "t3_acp_mcp_authorization");
+        assert.strictEqual(
+          harness.hostOptions[0]!.environment!.T3_ACP_MCP_AUTHORIZATION,
+          MCP_SESSION.authorizationHeader,
+        );
+        yield* harness.runtime.startTurn(yield* turnInput(harness.providerThread));
+        const started = yield* fake.takeCall("turn/start");
+        const parts = started.params.input as Array<{ type: string; text: string }>;
+        const fallback = parts.find((part) => part.text.includes("T3 Code MCP fallback:"))!;
+        assert.include(fallback.text, "PowerShell 7.3+");
+        assert.include(fallback.text, '$PSNativeCommandArgumentPassing="Standard"');
+        assert.include(
+          JSON.stringify(started.params.input),
+          "& $env:T3_ACP_MCP_NODE @t3Args acp-mcp-list",
+        );
+      }).pipe(
+        Effect.scoped,
+        Effect.provide(testLayer),
+        Effect.provideService(HostProcess.Platform, "win32"),
+      ),
+  );
+
+  it.effect("refreshes bridge credentials on an idle broken-host relaunch", () =>
+    Effect.gen(function* () {
+      const mcpSessions = yield* McpProviderSessions.McpProviderSessions;
+      yield* mcpSessions.set(MCP_SESSION);
+      const fake = yield* makeFakeMuse();
+      const replacement = yield* makeFakeMuse("replacement");
+      fake.host.initializeResult.grantedCapabilities.push("sessionMcp");
+      replacement.host.initializeResult.grantedCapabilities.push("sessionMcp");
+      const harness = yield* makeHarness(
+        fake,
+        INSTANCE_ID,
+        "saved-session",
+        replacement,
+        undefined,
+        runtimePolicy,
+        { selfInvocation: SELF_INVOCATION },
+      );
+      yield* fake.disconnect();
+      yield* harness.takeEvent(
+        "provider_session.updated",
+        (event) => event.providerSession.status === "error",
+      );
+      yield* mcpSessions.set({ ...MCP_SESSION, authorizationHeader: "Bearer rotated-token" });
+      yield* harness.runtime.resumeThread({ providerThread: harness.providerThread });
+      assert.lengthOf(harness.hostOptions, 2);
+      assert.strictEqual(
+        harness.hostOptions[0]!.environment!.T3_ACP_MCP_AUTHORIZATION,
+        MCP_SESSION.authorizationHeader,
+      );
+      assert.strictEqual(
+        harness.hostOptions[1]!.environment!.T3_ACP_MCP_AUTHORIZATION,
+        "Bearer rotated-token",
+      );
+      assert.strictEqual(
+        harness.hostOptions[1]!.environment!.T3_ACP_MCP_MEDIA_DIR,
+        harness.hostOptions[0]!.environment!.T3_ACP_MCP_MEDIA_DIR,
+      );
+      const resumed = yield* replacement.takeCall("session/resume");
+      assert.strictEqual(resumed.params.sessionId, "saved-session");
+      assert.deepStrictEqual(resumed.params.config, {
+        mcpServers: {
+          "t3-code": {
+            ...MCP_CONFIG.mcpServers["t3-code"],
+            headers: { Authorization: "Bearer rotated-token" },
+          },
+        },
+      });
+      yield* startConversation(harness, replacement);
+    }).pipe(Effect.scoped, Effect.provide(testLayer)),
+  );
+
+  it.effect("replaces an idle host only when its installed bridge credential changes", () =>
+    Effect.gen(function* () {
+      const mcpSessions = yield* McpProviderSessions.McpProviderSessions;
+      yield* mcpSessions.set(MCP_SESSION);
+      const fake = yield* makeFakeMuse();
+      const replacement = yield* makeFakeMuse("replacement");
+      fake.host.initializeResult.grantedCapabilities.push("sessionMcp");
+      replacement.host.initializeResult.grantedCapabilities.push("sessionMcp");
+      const harness = yield* makeHarness(
+        fake,
+        INSTANCE_ID,
+        undefined,
+        replacement,
+        undefined,
+        runtimePolicy,
+        { selfInvocation: SELF_INVOCATION },
+      );
+      const ensure = harness.runtime.ensureThread({
+        threadId: THREAD_ID,
+        modelSelection: modelSelection(),
+        runtimePolicy,
+      });
+      yield* mcpSessions.set({ ...MCP_SESSION, browserToolsAvailable: false });
+      yield* ensure;
+      assert.lengthOf(harness.hostOptions, 1);
+      assert.strictEqual(fake.closeCount(), 0);
+
+      const rotated = {
+        ...MCP_SESSION,
+        providerSessionId: "rotated-session",
+        endpoint: "http://127.0.0.1:43211/mcp",
+        authorizationHeader: "Bearer rotated-token",
+      };
+      yield* mcpSessions.set(rotated);
+      const resumed = yield* ensure;
+      assert.strictEqual(resumed.id, harness.providerThread.id);
+      assert.deepStrictEqual(resumed.nativeThreadRef, harness.providerThread.nativeThreadRef);
+      assert.lengthOf(harness.hostOptions, 2);
+      assert.strictEqual(fake.closeCount(), 1);
+      assert.strictEqual(
+        harness.hostOptions[0]!.environment!.T3_ACP_MCP_AUTHORIZATION,
+        MCP_SESSION.authorizationHeader,
+      );
+      assert.strictEqual(
+        harness.hostOptions[1]!.environment!.T3_ACP_MCP_AUTHORIZATION,
+        rotated.authorizationHeader,
+      );
+      assert.strictEqual(
+        harness.hostOptions[1]!.environment!.T3_ACP_MCP_ENDPOINT,
+        rotated.endpoint,
+      );
+      assert.strictEqual(
+        harness.hostOptions[1]!.environment!.T3_ACP_MCP_MEDIA_DIR,
+        harness.hostOptions[0]!.environment!.T3_ACP_MCP_MEDIA_DIR,
+      );
+      const call = yield* replacement.takeCall("session/resume");
+      assert.strictEqual(call.params.sessionId, harness.providerThread.nativeThreadRef?.nativeId);
+      assert.deepStrictEqual(call.params.config, {
+        mcpServers: {
+          "t3-code": {
+            ...MCP_CONFIG.mcpServers["t3-code"],
+            url: rotated.endpoint,
+            headers: { Authorization: rotated.authorizationHeader },
+          },
+        },
+      });
+      assert.isFalse(replacement.calls.some((call) => call.method === "session/start"));
+      yield* mcpSessions.set({ ...rotated });
+      yield* ensure;
+      assert.lengthOf(harness.hostOptions, 2);
+      assert.lengthOf(
+        replacement.calls.filter((call) => call.method === "session/resume"),
+        1,
+      );
+      yield* startConversation(harness, replacement);
+    }).pipe(Effect.scoped, Effect.provide(testLayer)),
+  );
+
+  it.effect.each([undefined, "saved-session"])(
+    "relaunches once when credentials arrive before registration (%s)",
+    (nativeId) =>
+      Effect.gen(function* () {
+        const fake = yield* makeFakeMuse();
+        const replacement = yield* makeFakeMuse("replacement");
+        replacement.host.initializeResult.grantedCapabilities.push("sessionMcp");
+        const mcpSessions = yield* McpProviderSessions.McpProviderSessions;
+        const harness = yield* makeHarness(
+          fake,
+          INSTANCE_ID,
+          nativeId,
+          replacement,
+          undefined,
+          runtimePolicy,
+          {
+            selfInvocation: SELF_INVOCATION,
+            beforeRegister: mcpSessions.set(MCP_SESSION),
+          },
+        );
+        assert.lengthOf(harness.hostOptions, 2);
+        assert.deepStrictEqual(harness.hostOptions[0]!.environment, { PATH: "/fake/bin" });
+        assert.strictEqual(
+          harness.hostOptions[1]!.environment!.T3_ACP_MCP_AUTHORIZATION,
+          MCP_SESSION.authorizationHeader,
+        );
+        assert.strictEqual(fake.closeCount(), 1);
+        assert.isEmpty(fake.calls);
+        const registered = yield* replacement.takeCall(
+          nativeId ? "session/resume" : "session/start",
+        );
+        assert.strictEqual(
+          registered.params.sessionId,
+          nativeId ?? harness.providerThread.nativeThreadRef?.nativeId,
+        );
+        yield* harness.runtime.ensureThread({
+          threadId: THREAD_ID,
+          modelSelection: modelSelection(),
+          runtimePolicy,
+        });
+        assert.lengthOf(harness.hostOptions, 2);
+        yield* startConversation(harness, replacement);
+      }).pipe(Effect.scoped, Effect.provide(testLayer)),
+  );
+
+  it.effect(
+    "retains the attached native identity when enabling the bridge after registration",
+    () =>
+      Effect.gen(function* () {
+        const fake = yield* makeFakeMuse();
+        const replacement = yield* makeFakeMuse("replacement");
+        replacement.host.initializeResult.grantedCapabilities.push("sessionMcp");
+        const harness = yield* makeHarness(
+          fake,
+          INSTANCE_ID,
+          undefined,
+          replacement,
+          undefined,
+          runtimePolicy,
+          { selfInvocation: SELF_INVOCATION },
+        );
+        yield* (yield* McpProviderSessions.McpProviderSessions).set(MCP_SESSION);
+        const resumed = yield* harness.runtime.ensureThread({
+          threadId: THREAD_ID,
+          modelSelection: modelSelection(),
+          runtimePolicy,
+        });
+        assert.strictEqual(resumed.id, harness.providerThread.id);
+        assert.deepStrictEqual(resumed.nativeThreadRef, harness.providerThread.nativeThreadRef);
+        assert.strictEqual(
+          (yield* replacement.takeCall("session/resume")).params.sessionId,
+          harness.providerThread.nativeThreadRef?.nativeId,
+        );
+        assert.isFalse(replacement.calls.some((call) => call.method === "session/start"));
+        assert.strictEqual(fake.closeCount(), 1);
+        yield* startConversation(harness, replacement);
+      }).pipe(Effect.scoped, Effect.provide(testLayer)),
+  );
+
+  it.effect("retries a rejected late-bridge resume when the retry omits identity", () =>
+    Effect.gen(function* () {
+      const fake = yield* makeFakeMuse();
+      const replacement = yield* makeFakeMuse("replacement");
+      replacement.host.initializeResult.grantedCapabilities.push("sessionMcp");
+      const harness = yield* makeHarness(
+        fake,
+        INSTANCE_ID,
+        undefined,
+        replacement,
+        undefined,
+        runtimePolicy,
+        { selfInvocation: SELF_INVOCATION },
+      );
+      yield* (yield* McpProviderSessions.McpProviderSessions).set(MCP_SESSION);
+      replacement.queueResponse(
+        "session/resume",
+        new MspError({
+          code: -32000,
+          message: "temporary native rejection",
+          data: { kind: "internal" },
+        }),
+      );
+      const failed = yield* harness.runtime
+        .resumeThread({ providerThread: harness.providerThread })
+        .pipe(Effect.result);
+      assert.strictEqual(failed._tag, "Failure");
+      const resumed = yield* harness.runtime.ensureThread({
+        threadId: THREAD_ID,
+        modelSelection: modelSelection(),
+        runtimePolicy,
+      });
+      assert.strictEqual(resumed.id, harness.providerThread.id);
+      assert.deepStrictEqual(resumed.nativeThreadRef, harness.providerThread.nativeThreadRef);
+      const resumes = replacement.calls.filter((call) => call.method === "session/resume");
+      assert.lengthOf(resumes, 2);
+      assert.isTrue(
+        resumes.every(
+          (call) => call.params.sessionId === harness.providerThread.nativeThreadRef?.nativeId,
+        ),
+      );
+      assert.isFalse(replacement.calls.some((call) => call.method === "session/start"));
+      assert.lengthOf(harness.hostOptions, 2);
+      yield* startConversation(harness, replacement);
+    }).pipe(Effect.scoped, Effect.provide(testLayer)),
+  );
+
+  it.effect.each(["cleared native ref", "different app thread"] as const)(
+    "does not reuse a detached bridge identity for a %s",
+    (recovery) =>
+      Effect.gen(function* () {
+        const fake = yield* makeFakeMuse();
+        const replacement = yield* makeFakeMuse("replacement");
+        replacement.host.initializeResult.grantedCapabilities.push("sessionMcp");
+        const harness = yield* makeHarness(
+          fake,
+          INSTANCE_ID,
+          undefined,
+          replacement,
+          undefined,
+          runtimePolicy,
+          { selfInvocation: SELF_INVOCATION },
+        );
+        yield* (yield* McpProviderSessions.McpProviderSessions).set(MCP_SESSION);
+        replacement.queueResponse(
+          "session/resume",
+          new MspError({
+            code: -32000,
+            message: "temporary native rejection",
+            data: { kind: "internal" },
+          }),
+        );
+        const failed = yield* harness.runtime
+          .resumeThread({ providerThread: harness.providerThread })
+          .pipe(Effect.result);
+        assert.strictEqual(failed._tag, "Failure");
+        const threadId =
+          recovery === "cleared native ref" ? THREAD_ID : ThreadId.make("another-app-thread");
+        const fresh = yield* harness.runtime.ensureThread({
+          threadId,
+          modelSelection: modelSelection(),
+          runtimePolicy,
+          ...(recovery === "cleared native ref"
+            ? {
+                existingProviderThread: { ...harness.providerThread, nativeThreadRef: null },
+              }
+            : {}),
+        });
+        assert.strictEqual(fresh.appThreadId, threadId);
+        assert.notStrictEqual(
+          fresh.nativeThreadRef?.nativeId,
+          harness.providerThread.nativeThreadRef?.nativeId,
+        );
+        const started = yield* replacement.takeCall("session/start");
+        assert.strictEqual(started.params.sessionId, fresh.nativeThreadRef?.nativeId);
+        assert.lengthOf(
+          replacement.calls.filter((call) => call.method === "session/resume"),
+          1,
+        );
+        const ensured = yield* harness.runtime.ensureThread({
+          threadId,
+          modelSelection: modelSelection(),
+          runtimePolicy,
+        });
+        assert.deepStrictEqual(ensured, fresh);
+        assert.lengthOf(harness.hostOptions, 2);
+        assert.strictEqual(replacement.closeCount(), 0);
+      }).pipe(Effect.scoped, Effect.provide(testLayer)),
+  );
+
+  it.effect.each(["late", "rotated"] as const)(
+    "does not terminate native background work to install a %s bridge credential",
+    (credential) =>
+      Effect.gen(function* () {
+        const mcpSessions = yield* McpProviderSessions.McpProviderSessions;
+        if (credential === "rotated") yield* mcpSessions.set(MCP_SESSION);
+        const fake = yield* makeFakeMuse();
+        fake.host.initializeResult.grantedCapabilities.push("sessionMcp");
+        const offers =
+          yield* Queue.unbounded<ProviderContinuationRequests.ProviderContinuationRequest>();
+        const harness = yield* makeHarness(
+          fake,
+          INSTANCE_ID,
+          undefined,
+          undefined,
+          undefined,
+          runtimePolicy,
+          {
+            selfInvocation: SELF_INVOCATION,
+            continuationRequests: {
+              offer: (request) => Queue.offer(offers, request).pipe(Effect.asVoid),
+            },
+          },
+        );
+        yield* fake.emit("turn/started", { turnId: "native-background-turn" });
+        yield* Queue.take(offers);
+        yield* mcpSessions.set({
+          ...MCP_SESSION,
+          providerSessionId: "new-session",
+          authorizationHeader: "Bearer new-token",
+        });
+        const result = yield* harness.runtime
+          .ensureThread({ threadId: THREAD_ID, modelSelection: modelSelection(), runtimePolicy })
+          .pipe(Effect.result);
+        assert.strictEqual(result._tag, "Failure");
+        assert.strictEqual(fake.closeCount(), 0);
+        assert.lengthOf(harness.hostOptions, 1);
+        assert.isTrue(yield* harness.runtime.hasPendingBackgroundWork!);
+      }).pipe(Effect.scoped, Effect.provide(testLayer)),
+  );
+
+  it.effect(
+    "resumes a checkpointed MCP session with the same native identity and no preflight",
+    () =>
+      Effect.gen(function* () {
+        yield* (yield* McpProviderSessions.McpProviderSessions).set(MCP_SESSION);
+        const fake = yield* makeFakeMuse();
+        fake.host.initializeResult.grantedCapabilities.push("sessionMcp");
+        const response = {
+          session: { sessionId: "compacted-session" },
+          history: { items: null, checkpointBoundary: { throughItemId: "compacted-item" } },
+        };
+        fake.queueResponse("session/read", response);
+        fake.queueResponse("session/resume", response);
+        const harness = yield* makeHarness(
+          fake,
+          INSTANCE_ID,
+          "compacted-session",
+          undefined,
+          undefined,
+          runtimePolicy,
+          { selfInvocation: SELF_INVOCATION },
+        );
+        assert.strictEqual(harness.providerThread.nativeThreadRef?.nativeId, "compacted-session");
+        assert.strictEqual(
+          (yield* fake.takeCall("session/resume")).params.sessionId,
+          "compacted-session",
+        );
+        assert.isFalse(
+          fake.calls.some(
+            (call) => call.method === "session/read" || call.method === "session/start",
+          ),
+        );
+        assert.strictEqual(fake.closeCount(), 0);
+        yield* startConversation(harness, fake);
+      }).pipe(Effect.scoped, Effect.provide(testLayer)),
+  );
+
+  it.effect("cleans bridge media when host creation fails", () =>
+    Effect.gen(function* () {
+      const fileSystem = yield* FileSystem.FileSystem;
+      let mediaDirectory: string | undefined;
+      const result = yield* Effect.gen(function* () {
+        yield* (yield* McpProviderSessions.McpProviderSessions).set(MCP_SESSION);
+        const fake = yield* makeFakeMuse();
+        yield* makeHarness(fake, INSTANCE_ID, undefined, undefined, undefined, runtimePolicy, {
+          selfInvocation: SELF_INVOCATION,
+          createHost: async (options) => {
+            mediaDirectory = options.environment?.T3_ACP_MCP_MEDIA_DIR;
+            throw new Error("fake launch failed");
+          },
+        });
+      }).pipe(Effect.scoped, Effect.result);
+      assert.strictEqual(result._tag, "Failure");
+      assert.isDefined(mediaDirectory);
+      assert.isFalse(yield* fileSystem.exists(mediaDirectory!));
+    }).pipe(Effect.provide(testLayer)),
   );
 
   it.effect("selects the runtime mode's permission profile on native start and resume", () =>
