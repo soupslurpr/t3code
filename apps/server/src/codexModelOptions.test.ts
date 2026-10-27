@@ -73,6 +73,7 @@ it("resolves explicit resets without rewriting qualified wire model ids", () => 
     model: "gpt-6-astra",
     effort: "max",
     serviceTier: null,
+    cyberAccessProgram: null,
   });
   for (const model of ["gpt-6-astra", "openai.gpt-6-astra"]) {
     const selection = createModelSelection(ProviderInstanceId.make("account"), model, [
@@ -83,17 +84,19 @@ it("resolves explicit resets without rewriting qualified wire model ids", () => 
       model,
       effort: "low",
       serviceTier: "fast",
+      cyberAccessProgram: null,
     });
     assert.deepEqual(resolveCodexModelSettings(createModelSelection(selection.instanceId, model)), {
       model,
       effort: "max",
       serviceTier: null,
+      cyberAccessProgram: null,
     });
   }
   assert.deepEqual(
     resolveCodexModelSettings(
       createModelSelection(ProviderInstanceId.make("account"), "custom-gpt-6-astra"),
     ),
-    { model: "custom-gpt-6-astra", effort: null, serviceTier: null },
+    { model: "custom-gpt-6-astra", effort: null, serviceTier: null, cyberAccessProgram: null },
   );
 });

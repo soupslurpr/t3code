@@ -54,7 +54,10 @@ import {
   type CodexResetCreditsSummary,
 } from "./codexUsageLimits.ts";
 import * as HostProcess from "@t3tools/shared/HostProcess";
-import { DEFAULT_CODEX_REASONING_EFFORT } from "../codexModelOptions.ts";
+import {
+  codexAccessProgramOptionDescriptors,
+  DEFAULT_CODEX_REASONING_EFFORT,
+} from "../codexModelOptions.ts";
 import packageJson from "../../package.json" with { type: "json" };
 const isCodexAppServerSpawnError = Schema.is(CodexErrors.CodexAppServerSpawnError);
 const RATE_LIMITS_PROBE_TIMEOUT_MS = 3_000;
@@ -248,6 +251,10 @@ export function mapCodexModelCapabilities(
     });
   }
 
+  optionDescriptors.push(
+    ...codexAccessProgramOptionDescriptors(model.availableAccessPrograms?.cyber),
+  );
+
   return createModelCapabilities({
     optionDescriptors,
     ...(hasDocumentedPromptCacheMinimum(model.model)
@@ -337,7 +344,10 @@ function appendCustomCodexModels(
   const fallbackModelCapabilities = models.find((model) => model.capabilities)?.capabilities;
   const fallbackCapabilities = fallbackModelCapabilities
     ? createModelCapabilities({
-        optionDescriptors: fallbackModelCapabilities.optionDescriptors ?? [],
+        // Access programs are advertised per model and cannot be inferred for custom slugs.
+        optionDescriptors: (fallbackModelCapabilities.optionDescriptors ?? []).filter(
+          (descriptor) => descriptor.id !== "cyberAccessProgram",
+        ),
       })
     : null;
   return providerModelsFromSettings(models, customModels, fallbackCapabilities);

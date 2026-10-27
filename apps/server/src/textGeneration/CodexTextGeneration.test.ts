@@ -302,6 +302,42 @@ it.layer(layerCodexTextGenerationTest)("CodexTextGeneration", (it) => {
       ),
   );
 
+  it.effect.each(
+    [false, true].flatMap((managedRuntime) =>
+      [
+        { selected: "standard", cli: "standard" },
+        { selected: "daybreakBlue", cli: "daybreak_blue" },
+        { selected: "daybreakRed", cli: "daybreak_red" },
+        { selected: "automatic", cli: undefined },
+        { selected: undefined, cli: undefined },
+      ].map((program) => ({ ...program, managedRuntime })),
+    ),
+  )(
+    "honors access program $selected for text generation (managed: $managedRuntime)",
+    ({ selected, cli, managedRuntime }) =>
+      withFakeCodexEnv(
+        {
+          output: JSON.stringify({ subject: "Update project", body: "" }),
+          managedRuntime,
+          ...(cli
+            ? { requireArg: `--cyber-access-program ${cli}` }
+            : { forbidArg: "--cyber-access-program" }),
+        },
+        (textGeneration) =>
+          textGeneration.generateCommitMessage({
+            cwd: process.cwd(),
+            branch: "feature/daybreak",
+            stagedSummary: "M README.md",
+            stagedPatch: "diff --git a/README.md b/README.md",
+            modelSelection: createModelSelection(
+              ProviderInstanceId.make("codex"),
+              "gpt-6-sol",
+              selected ? [{ id: "cyberAccessProgram", value: selected }] : [],
+            ),
+          }),
+      ),
+  );
+
   it.effect("omits a persisted service tier for managed ChatGPT text generation", () =>
     withFakeCodexEnv(
       {

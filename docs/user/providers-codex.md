@@ -29,6 +29,13 @@ Astra uses Max reasoning by default when the account supports it. Explicit
 project, thread, and saved composer choices take precedence. If the account's
 reasoning choices exclude Max, its supported default is used instead.
 
+## Use Daybreak access
+
+Select the underlying model, such as GPT-6 Sol, then choose **Daybreak Blue** in
+its **Access program** options. This option appears when your account advertises
+Daybreak access for that model. **Automatic** lets Codex choose the program;
+**Standard**, when available, explicitly requests standard safeguards.
+
 ## Use multiple accounts
 
 Add another ChatGPT account in **Settings → Providers**, then select the account
