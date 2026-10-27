@@ -1,3 +1,8 @@
+import {
+  DesktopThreadLifecycle,
+  type DesktopAuthorizationSyncInput,
+  type DesktopAuthorizationReferences,
+} from "./desktopAuthorization.ts";
 import { UserDesktopTransferRequest, type UserDesktopTransferResult } from "./desktopTransfer.ts";
 import { UserDesktopExecutionInput, type UserDesktopExecutionResult } from "./desktopExecution.ts";
 import * as Schema from "effect/Schema";
@@ -1032,6 +1037,8 @@ export const DesktopComputerAutomationContextSchema = Schema.Struct({
   controllerKind: Schema.optionalKey(ComputerAutomationControllerKind),
   environmentId: Schema.optionalKey(EnvironmentId),
   threadId: Schema.optionalKey(ThreadId),
+  lifecycle: Schema.optionalKey(DesktopThreadLifecycle),
+  connectionGeneration: Schema.optionalKey(TrimmedNonEmptyString),
 });
 
 /** Carries execution requests independently of graphical access. */
@@ -1093,6 +1100,10 @@ export type DesktopComputerAutomationResult<Value> =
     };
 
 export interface DesktopBridge {
+  onDesktopAuthorizationChanged?: (listener: (environmentId: string) => void) => () => void;
+  authorization?: (
+    input: DesktopAuthorizationSyncInput,
+  ) => Promise<DesktopComputerAutomationResult<DesktopAuthorizationReferences>>;
   transfer?: (
     input: UserDesktopTransferRequest,
     context: DesktopComputerAutomationContext,
@@ -1297,6 +1308,8 @@ export interface DesktopComputerAutomationContext {
   readonly controllerKind?: ComputerAutomationControllerKind;
   readonly environmentId?: EnvironmentId;
   readonly threadId?: ThreadId;
+  readonly lifecycle?: DesktopThreadLifecycle;
+  readonly connectionGeneration?: string;
 }
 
 /** Renderer callback invoked by Electron with a fresh user gesture before display-media capture. */

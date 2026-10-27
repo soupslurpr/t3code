@@ -4,6 +4,8 @@ import {
   AgentDesktopAcquireInput,
   AgentDesktopCommandInput,
   AgentDesktopCommandResult,
+  AgentDesktopProcessInput,
+  AgentDesktopProcessResponse,
   AgentDesktopCopyInput,
   AgentDesktopCreatePortRouteInput,
   AgentDesktopInspectInput,
@@ -119,12 +121,23 @@ export const AgentDesktopManageTool = agentDesktopTool(
 export const AgentDesktopCommandTool = agentDesktopTool(
   Tool.make("agent_desktop_command", {
     description:
-      "Execute one exact process inside an Agent desktop through its private guest channel. This is argv-based and does not invoke a shell; run /bin/sh or /bin/bash explicitly when shell syntax is useful. Omit desktopId to use this session's current assignment. Root is the default inside the isolated guest; set user to run as another guest account. Environment accepts either a name/value object or {name, value} entries. stdin is literal text; use a shell redirect for a guest file. Output, runtime, timeout, truncation, and guest failures are reported precisely.",
+      "Execute an exact argv process inside the selected Agent desktop. Supply a stable commandId for managed execution and idempotent retries; waitMs (default 1000, max 30000) bounds only the initial wait. The returned version-2 process handle supports continuing work, byte-paged UTF-8/base64 output, PTY, input, resize and whole-scope stop through agent_desktop_process. Timeout, if supplied, terminates the owned cgroup with bounded TERM then KILL. Closing a managed tool wait does not stop the command. Omitting commandId uses the bounded legacy one-shot adapter (five-minute default timeout, cancellation stops its whole scope, no cross-request retry guarantee). This is argv-based and does not invoke a shell; run /bin/sh or /bin/bash explicitly when shell syntax is useful. Omit desktopId to use this session's current assignment. Root is the default inside the isolated guest; set user to run as another guest account. Environment accepts either a name/value object or {name, value} entries. stdin is literal text; use a shell redirect for a guest file. Output, runtime, timeout, truncation, and guest failures are reported precisely.",
     parameters: AgentDesktopCommandInput,
     success: AgentDesktopCommandResult,
     failure: Schema.Union([PreviewAutomationError, OrchestratorMcpFailure]),
     dependencies,
   }).annotate(Tool.Title, "Run Agent desktop command"),
+);
+
+export const AgentDesktopProcessTool = agentDesktopTool(
+  Tool.make("agent_desktop_process", {
+    description:
+      "List or inspect this thread's managed jobs on one exact Agent desktop. Read uses independent byte offsets and bounded UTF-8/base64 pages, with explicit truncation and a retained tail. Write sends stdin, resize controls a PTY, signal defaults to TERM with bounded KILL escalation (SIGKILL forces stop), and forget removes only completed output while retaining retry identity. Unknown/stopping scopes still block automatic parking and updates. A read wait never stops a job.",
+    parameters: AgentDesktopProcessInput,
+    success: AgentDesktopProcessResponse,
+    failure: Schema.Union([PreviewAutomationError, OrchestratorMcpFailure]),
+    dependencies,
+  }).annotate(Tool.Title, "Inspect or control Agent desktop process"),
 );
 
 export const AgentDesktopReadFileTool = readonlyAgentDesktopTool(
@@ -237,6 +250,7 @@ export const AgentDesktopToolkit = Toolkit.make(
   AgentDesktopAcquireTool,
   AgentDesktopManageTool,
   AgentDesktopCommandTool,
+  AgentDesktopProcessTool,
   AgentDesktopReadFileTool,
   AgentDesktopWriteFileTool,
   AgentDesktopCopyTool,

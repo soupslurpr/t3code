@@ -113,7 +113,7 @@ describe("fork migration ledger adoption", () => {
     Effect.gen(function* () {
       const sql = yield* SqlClient.SqlClient;
       const executed = yield* runMigrations();
-      assert.deepEqual(executed.at(-1), [14, "ThreadRunMonitors"]);
+      assert.deepEqual(executed.at(-1), [16, "ProcessMonitors"]);
       yield* assertCurrentUpstream;
       assert.deepEqual(
         (yield* forkHistory).map(({ migration_id, name }) => ({ migration_id, name })),
@@ -132,6 +132,8 @@ describe("fork migration ledger adoption", () => {
           { migration_id: 12, name: "ToolRuns" },
           { migration_id: 13, name: "ThreadMonitorCancellation" },
           { migration_id: 14, name: "ThreadRunMonitors" },
+          { migration_id: 15, name: "DesktopAuthorizationActivity" },
+          { migration_id: 16, name: "ProcessMonitors" },
         ],
       );
       assert.deepEqual(yield* runMigrations(), []);
@@ -162,18 +164,12 @@ describe("fork migration ledger adoption", () => {
       }).pipe(Effect.provide(memory)),
   );
 
-  it.effect("preserves all released stable identities beyond the current loader boundary", () =>
+  it.effect("preserves the complete released F01–F16 stable ledger without replay", () =>
     Effect.gen(function* () {
       const sql = yield* SqlClient.SqlClient;
       yield* seedLegacy(66, 13);
       yield* runMigrations();
-      yield* sql`INSERT INTO effect_sql_fork_migrations ${sql.insert(
-        forkNames.slice(14).map((name, index) => ({
-          migration_id: index + 15,
-          name,
-          created_at: createdAt,
-        })),
-      )}`;
+      yield* sql`UPDATE effect_sql_fork_migrations SET created_at = ${createdAt}`;
       const before = yield* forkHistory;
       for (let attempt = 0; attempt < 2; attempt += 1) assert.deepEqual(yield* runMigrations(), []);
       assert.deepEqual(yield* forkHistory, before);
@@ -244,7 +240,7 @@ describe("fork migration ledger adoption", () => {
           assert.deepEqual(yield* forkHistory, beforeFork);
         } else {
           yield* assertCurrentUpstream;
-          assert.lengthOf(yield* forkHistory, 14);
+          assert.lengthOf(yield* forkHistory, 16);
         }
       }).pipe(Effect.provide(memory)),
   );
@@ -292,7 +288,7 @@ describe("fork migration ledger adoption", () => {
       yield* sql`DROP TRIGGER reject_upgrade`;
       yield* runMigrations();
       yield* assertCurrentUpstream;
-      assert.lengthOf(yield* forkHistory, 14);
+      assert.lengthOf(yield* forkHistory, 16);
     }).pipe(Effect.provide(memory)),
   );
 
@@ -352,7 +348,7 @@ describe("fork migration ledger adoption", () => {
               NodeEvents.EventEmitter.once(second, "message"),
             ]);
             first.postMessage("release", []);
-            assert.deepEqual(await completed, [[83], [0]]);
+            assert.deepEqual(await completed, [[85], [0]]);
           } finally {
             await Promise.all([first.terminate(), second.terminate()]);
           }

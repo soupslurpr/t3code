@@ -1,3 +1,9 @@
+import type { DesktopProcessActivity } from "@t3tools/contracts";
+import { DesktopScreenPermissionsPanel } from "../settings/DesktopScreenPermissionsPanel";
+import {
+  UserDesktopExecutionPanel,
+  AgentDesktopExecutionPanel,
+} from "../settings/UserDesktopExecutionPanel";
 import { useAtomValue } from "@effect/atom-react";
 import {
   useIsFocused,
@@ -80,6 +86,7 @@ export function ThreadDesktopsRouteScreen({
   const agentInvoke = useAtomCommand(previewEnvironment.invokeAgentDesktopHuman, {
     reportFailure: false,
   });
+  const [selected, setSelected] = useState<DesktopProcessActivity | null>(null);
   const [agents, setAgents] = useState<ReadonlyArray<AgentDesktop>>([]);
   const [users, setUsers] = useState<UserDesktopList["desktops"]>([]);
   const [error, setError] = useState<string | null>(null);
@@ -101,7 +108,10 @@ export function ThreadDesktopsRouteScreen({
         threadId,
         () =>
           allowed
-            ? userInvoke({ environmentId, input: { request: { operation: "list" } } })
+            ? userInvoke({
+                environmentId,
+                input: { request: { operation: "list", includeExecution: true } },
+              })
             : Promise.resolve(null),
         () =>
           agentAllowed
@@ -205,7 +215,42 @@ export function ThreadDesktopsRouteScreen({
             <Text>{desktop.connectionState} · Supervise</Text>
           </Pressable>
         ))}
+        {users
+          .filter(
+            (desktop) =>
+              desktop.connectionState === "online" && desktop.capabilities.includes("view"),
+          )
+          .map((desktop) => (
+            <DesktopScreenPermissionsPanel
+              key={`screen:${desktop.desktop.desktopId}`}
+              environmentId={environmentId}
+              desktopId={desktop.desktop.desktopId}
+              threadId={threadId}
+            />
+          ))}
         <Text className="font-t3-bold">Commands and transfers</Text>
+        {agents.map((desktop) => (
+          <AgentDesktopExecutionPanel
+            key={desktop.id}
+            desktopId={desktop.id}
+            owner={desktop.owner}
+            label={desktop.label}
+          />
+        ))}
+        {users
+          .filter(
+            (desktop) =>
+              desktop.connectionState === "online" && desktop.capabilities.includes("execution"),
+          )
+          .map((desktop) => (
+            <UserDesktopExecutionPanel
+              key={desktop.desktop.desktopId}
+              environmentId={environmentId}
+              environmentLabel={environmentLabel}
+              desktop={desktop.desktop}
+              threadId={threadId}
+            />
+          ))}
         {activity.data?.transfers.map((transfer) => (
           <View key={transfer.id} className="gap-1 rounded-2xl bg-subtle p-4">
             <Text>
@@ -221,8 +266,15 @@ export function ThreadDesktopsRouteScreen({
         {activity.data?.commands.map((command) => (
           <View key={command.id} className="gap-2 rounded-2xl bg-subtle p-4">
             <Text className="font-t3-bold">
-              {command.tool.split("__").at(-1)} · {command.status}
+              {command.process
+                ? `Process ${command.process.phase}`
+                : `${command.tool.split("__").at(-1)} · Tool ${command.status}`}
             </Text>
+            {command.process ? (
+              <Pressable accessibilityRole="button" onPress={() => setSelected(command.process!)}>
+                <Text>Inspect process on {command.process.desktop.desktopId}</Text>
+              </Pressable>
+            ) : null}
             <Text selectable className="text-sm">
               {command.input}
             </Text>
@@ -231,6 +283,26 @@ export function ThreadDesktopsRouteScreen({
             </Text>
           </View>
         ))}
+        {selected ? (
+          selected.desktop.kind === "agent" ? (
+            <AgentDesktopExecutionPanel
+              key={selected.processId}
+              desktopId={selected.desktop.desktopId}
+              owner={{ environmentId, threadId, controllerId: "human-supervision" }}
+              label={selected.desktop.desktopId}
+              initialProcessId={selected.processId}
+            />
+          ) : (
+            <UserDesktopExecutionPanel
+              key={selected.processId}
+              environmentId={environmentId}
+              environmentLabel={environmentLabel}
+              desktop={{ kind: "user", desktopId: selected.desktop.desktopId }}
+              threadId={threadId}
+              initialProcessId={selected.processId}
+            />
+          )
+        ) : null}
         {activity.data?.commands.length === 0 && activity.data.transfers.length === 0 ? (
           <Text className="text-foreground-muted">No recent desktop activity.</Text>
         ) : null}

@@ -236,6 +236,7 @@ import * as RemoteOpenTargets from "./environment/RemoteOpenTargets.ts";
 import * as DefectReporter from "./observability/DefectReporter.ts";
 import * as EventLoopMonitor from "./observability/EventLoopMonitor.ts";
 import * as BackgroundPolicy from "./background/BackgroundPolicy.ts";
+import * as DesktopExecutionAuthorizationChannel from "./computer/DesktopExecutionAuthorizationChannel.ts";
 import * as EnvironmentAuth from "./auth/EnvironmentAuth.ts";
 import { requiredScopeForDeviceList, rpcAuthorizationError } from "./auth/RpcAuthorization.ts";
 import * as RpcAuthorization from "./auth/RpcAuthorization.ts";
@@ -1250,6 +1251,7 @@ export const layerWsRpc = (
   clientAnalyticsProps: Readonly<Record<string, unknown>>,
   previewAutomationBroker: PreviewAutomationBroker.PreviewAutomationBroker["Service"],
   serverBrowser: ServerBrowser.ServerBrowser["Service"],
+  desktopAuthorization: DesktopExecutionAuthorizationChannel.DesktopExecutionAuthorizationChannel["Service"],
 ) =>
   Layer.effectContext(
     Effect.gen(function* () {
@@ -3146,7 +3148,7 @@ export const layerWsRpc = (
                 thread: {
                   controllerId: `human:${currentSessionId}`,
                   controllerKind: "human" as const,
-                  threadId: USER_DESKTOP_SETTINGS_THREAD_ID,
+                  threadId: input.threadId ?? USER_DESKTOP_SETTINGS_THREAD_ID,
                   providerSessionId: `human:${currentSessionId}`,
                   providerInstanceId: USER_DESKTOP_HUMAN_PROVIDER_INSTANCE_ID,
                 },
@@ -3154,6 +3156,12 @@ export const layerWsRpc = (
                 issuedAt: yield* Clock.currentTimeMillis,
               },
               input,
+              currentSessionId,
+            ).pipe(
+              Effect.provideService(
+                DesktopExecutionAuthorizationChannel.DesktopExecutionAuthorizationChannel,
+                desktopAuthorization,
+              ),
             );
           },
         ),
@@ -3395,6 +3403,8 @@ export const layer = Layer.unwrap(
   Effect.gen(function* () {
     const previewAutomationBroker = yield* PreviewAutomationBroker.PreviewAutomationBroker;
     const serverBrowser = yield* ServerBrowser.ServerBrowser;
+    const desktopAuthorization =
+      yield* DesktopExecutionAuthorizationChannel.DesktopExecutionAuthorizationChannel;
     const serverSelfUpdate = yield* ServerSelfUpdate.ServerSelfUpdate;
     const pullRequests = yield* PullRequestService.PullRequestService;
     const reviewGuides = yield* PullRequestReviewGuideService.PullRequestReviewGuideService;
@@ -3468,6 +3478,7 @@ export const layer = Layer.unwrap(
               clientAnalyticsProps,
               previewAutomationBroker,
               serverBrowser,
+              desktopAuthorization,
             ).pipe(
               Layer.provideMerge(RpcSerialization.layerJson),
               // Handler-context reporters see only request defects, not server-wide defects.

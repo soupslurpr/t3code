@@ -288,7 +288,8 @@ export interface QemuAgentDesktopShape {
     restoreParkedState: boolean,
     graphicsBackend: QemuGraphicsBackend,
   ) => Effect.Effect<void, QemuAgentDesktopError>;
-  readonly isRunning: (id: AgentDesktopId) => Effect.Effect<boolean>;
+  /** False requires affirmative termination evidence; unavailable control is an error. */
+  readonly isRunning: (id: AgentDesktopId) => Effect.Effect<boolean, QemuAgentDesktopError>;
   readonly stop: (id: AgentDesktopId) => Effect.Effect<void, QemuAgentDesktopError>;
   readonly park: (
     id: AgentDesktopId,
@@ -1660,21 +1661,51 @@ export const make = Effect.gen(function* () {
   const isRunning: QemuAgentDesktopShape["isRunning"] = (id) =>
     qmp(id, "query-status").pipe(
       Effect.as(true),
-      Effect.orElseSucceed(() => false),
+      Effect.catch(() =>
+        Effect.gen(function* () {
+          const result = yield* runProcess(SYSTEMCTL_EXECUTABLE, [
+            "--user",
+            "show",
+            `${paths(id).unitName}.service`,
+            "--property=LoadState,ActiveState,MainPID",
+          ]);
+          const properties = Object.fromEntries(
+            result.stdout
+              .trim()
+              .split("\n")
+              .map((line) => line.split("=", 2)),
+          );
+          if (
+            result.exitCode === 0 &&
+            (properties.LoadState === "loaded" || properties.LoadState === "not-found") &&
+            (properties.ActiveState === "inactive" || properties.ActiveState === "failed") &&
+            properties.MainPID === "0"
+          )
+            return false;
+          return yield* new QemuAgentDesktopError({
+            code: "guest-disconnected",
+            operation: "probe-running",
+            detail:
+              "The Agent desktop control channel is unavailable; guest termination is unconfirmed.",
+          });
+        }).pipe(Effect.mapError(mapFailure("probe-running", "guest-disconnected"))),
+      ),
     );
 
   const stopUnit = (id: AgentDesktopId) =>
-    runProcess(SYSTEMCTL_EXECUTABLE, ["--user", "stop", paths(id).unitName], STOP_TIMEOUT).pipe(
-      Effect.asVoid,
-      Effect.mapError(mapFailure("stop")),
-    );
+    runChecked(
+      "stop",
+      SYSTEMCTL_EXECUTABLE,
+      ["--user", "stop", paths(id).unitName],
+      STOP_TIMEOUT,
+    ).pipe(Effect.asVoid, Effect.mapError(mapFailure("stop")));
 
   const waitUntilStopped = Effect.fn("QemuAgentDesktop.waitUntilStopped")(function* (
     id: AgentDesktopId,
   ) {
     const deadline = (yield* Clock.currentTimeMillis) + Duration.toMillis(STOP_TIMEOUT);
     while ((yield* Clock.currentTimeMillis) < deadline) {
-      if (!(yield* isRunning(id))) {
+      if (!(yield* isRunning(id).pipe(Effect.orElseSucceed(() => true)))) {
         // Let systemd finish collecting the transient unit before this id is reused.
         yield* stopUnit(id).pipe(Effect.ignore);
         return;
@@ -1682,6 +1713,12 @@ export const make = Effect.gen(function* () {
       yield* Effect.sleep(Duration.millis(100));
     }
     yield* stopUnit(id);
+    if (yield* isRunning(id))
+      return yield* new QemuAgentDesktopError({
+        code: "guest-disconnected",
+        operation: "stop",
+        detail: "The Agent desktop is still running after its unit was stopped.",
+      });
   });
 
   const create: QemuAgentDesktopShape["create"] = Effect.fn("QemuAgentDesktop.create")(
@@ -1785,74 +1822,80 @@ export const make = Effect.gen(function* () {
   };
 
   const start: QemuAgentDesktopShape["start"] = Effect.fn("QemuAgentDesktop.start")(
-    function* (
+    (
       ...[id, resources, routes, restoreParkedState, graphicsBackend]: Parameters<
         QemuAgentDesktopShape["start"]
       >
-    ) {
-      const availability = yield* requireAvailable();
-      if (yield* isRunning(id)) return;
-      const softwareGraphicsAvailable =
-        (graphicsBackend === "virtio-gpu-2d" && availability.displayDevice === "virtio-vga") ||
-        (graphicsBackend === "compatibility-vga" && availability.displayDevice !== null);
-      if (graphicsBackend === "virgl" && !availability.acceleratedGraphicsAvailable) {
-        return yield* new QemuAgentDesktopError({
-          code: "agent-desktop-unavailable",
-          operation: "resolve-display",
-          detail: "hardware graphics acceleration is unavailable on this environment host",
-        });
-      }
-      if (graphicsBackend !== "virgl" && !softwareGraphicsAvailable) {
-        return yield* new QemuAgentDesktopError({
-          code: "agent-desktop-unavailable",
-          operation: "resolve-display",
-          detail: `QEMU cannot provide the ${graphicsBackend} display backend`,
-        });
-      }
-      const machine = paths(id);
-      yield* fileSystem.remove(machine.runtimeDirectory, { recursive: true, force: true });
-      yield* fileSystem.makeDirectory(machine.runtimeDirectory, { recursive: true });
-      yield* fileSystem.chmod(machine.runtimeDirectory, 0o700);
-      const graphicsMemoryBytes =
-        graphicsBackend === "virgl" ? ACCELERATED_GRAPHICS_MEMORY_ALLOWANCE_BYTES : 0;
-      const memoryHighBytes = resources.memoryBytes + graphicsMemoryBytes;
-      const memoryMaxBytes = Math.floor(memoryHighBytes * 1.25 + 512 * 1024 * 1024);
-      yield* runChecked("start", SYSTEMD_RUN_EXECUTABLE, [
-        "--user",
-        `--unit=${machine.unitName}`,
-        "--collect",
-        "--quiet",
-        "--service-type=exec",
-        "--property=KillMode=mixed",
-        "--property=TimeoutStopSec=10s",
-        `--property=MemoryHigh=${memoryHighBytes}`,
-        `--property=MemoryMax=${memoryMaxBytes}`,
-        "--property=CPUWeight=100",
-        QEMU_EXECUTABLE,
-        ...buildQemuCommand({
-          id,
-          paths: machine,
-          resources,
-          restoreParkedState,
-          graphicsBackend,
-        }),
-      ]);
-      yield* waitUntilRunning(id);
-      yield* waitUntilGuestReady(id);
-      if (restoreParkedState) {
-        yield* qmp(id, "human-monitor-command", { "command-line": "delvm t3-parked" }).pipe(
-          Effect.ignore,
+    ) =>
+      Effect.suspend(() => {
+        let launchAttempted = false;
+        return Effect.gen(function* () {
+          const availability = yield* requireAvailable();
+          if (yield* isRunning(id)) return;
+          const softwareGraphicsAvailable =
+            (graphicsBackend === "virtio-gpu-2d" && availability.displayDevice === "virtio-vga") ||
+            (graphicsBackend === "compatibility-vga" && availability.displayDevice !== null);
+          if (graphicsBackend === "virgl" && !availability.acceleratedGraphicsAvailable) {
+            return yield* new QemuAgentDesktopError({
+              code: "agent-desktop-unavailable",
+              operation: "resolve-display",
+              detail: "hardware graphics acceleration is unavailable on this environment host",
+            });
+          }
+          if (graphicsBackend !== "virgl" && !softwareGraphicsAvailable) {
+            return yield* new QemuAgentDesktopError({
+              code: "agent-desktop-unavailable",
+              operation: "resolve-display",
+              detail: `QEMU cannot provide the ${graphicsBackend} display backend`,
+            });
+          }
+          const machine = paths(id);
+          yield* fileSystem.remove(machine.runtimeDirectory, { recursive: true, force: true });
+          yield* fileSystem.makeDirectory(machine.runtimeDirectory, { recursive: true });
+          yield* fileSystem.chmod(machine.runtimeDirectory, 0o700);
+          const graphicsMemoryBytes =
+            graphicsBackend === "virgl" ? ACCELERATED_GRAPHICS_MEMORY_ALLOWANCE_BYTES : 0;
+          const memoryHighBytes = resources.memoryBytes + graphicsMemoryBytes;
+          const memoryMaxBytes = Math.floor(memoryHighBytes * 1.25 + 512 * 1024 * 1024);
+          launchAttempted = true;
+          yield* runChecked("start", SYSTEMD_RUN_EXECUTABLE, [
+            "--user",
+            `--unit=${machine.unitName}`,
+            "--collect",
+            "--quiet",
+            "--service-type=exec",
+            "--property=KillMode=mixed",
+            "--property=TimeoutStopSec=10s",
+            `--property=MemoryHigh=${memoryHighBytes}`,
+            `--property=MemoryMax=${memoryMaxBytes}`,
+            "--property=CPUWeight=100",
+            QEMU_EXECUTABLE,
+            ...buildQemuCommand({
+              id,
+              paths: machine,
+              resources,
+              restoreParkedState,
+              graphicsBackend,
+            }),
+          ]);
+          yield* waitUntilRunning(id);
+          yield* waitUntilGuestReady(id);
+          if (restoreParkedState) {
+            yield* qmp(id, "human-monitor-command", { "command-line": "delvm t3-parked" }).pipe(
+              Effect.ignore,
+            );
+          }
+          yield* Effect.forEach(routes, (route) => addRoute(id, route), { discard: true });
+        }).pipe(
+          Effect.tapError(() => (launchAttempted ? stopUnit(id).pipe(Effect.ignore) : Effect.void)),
+          Effect.mapError(mapFailure("start")),
         );
-      }
-      yield* Effect.forEach(routes, (route) => addRoute(id, route), { discard: true });
-    },
-    (effect, id) => effect.pipe(Effect.tapError(() => stopUnit(id).pipe(Effect.ignore))),
-    Effect.mapError(mapFailure("start")),
+      }),
   );
 
   const stop: QemuAgentDesktopShape["stop"] = Effect.fn("QemuAgentDesktop.stop")(
     function* (...[id]: Parameters<QemuAgentDesktopShape["stop"]>) {
-      if (!(yield* isRunning(id))) return;
+      if (!(yield* isRunning(id).pipe(Effect.orElseSucceed(() => true)))) return;
       yield* qmp(id, "system_powerdown").pipe(Effect.ignore);
       yield* waitUntilStopped(id);
     },
@@ -2025,6 +2068,13 @@ export const make = Effect.gen(function* () {
   const remove: QemuAgentDesktopShape["remove"] = Effect.fn("QemuAgentDesktop.remove")(
     function* (...[id]: Parameters<QemuAgentDesktopShape["remove"]>) {
       yield* stopUnit(id).pipe(Effect.ignore);
+      // Missing units may reject stop; only confirmed termination permits deleting their disks.
+      if (yield* isRunning(id))
+        return yield* new QemuAgentDesktopError({
+          code: "guest-disconnected",
+          operation: "delete",
+          detail: "The Agent desktop is still running; its disks have been retained.",
+        });
       const machine = paths(id);
       yield* fileSystem.remove(machine.runtimeDirectory, { recursive: true, force: true });
       yield* fileSystem.remove(machine.directory, { recursive: true, force: true });

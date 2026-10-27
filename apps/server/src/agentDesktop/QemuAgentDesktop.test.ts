@@ -5,6 +5,9 @@ import * as FileSystem from "effect/FileSystem";
 import * as Fiber from "effect/Fiber";
 import * as Option from "effect/Option";
 import * as Path from "effect/Path";
+import * as Sink from "effect/Sink";
+import * as Stream from "effect/Stream";
+import { ChildProcessSpawner } from "effect/process";
 import * as TestClock from "effect/testing/TestClock";
 import { vi } from "vite-plus/test";
 import * as AgentDesktopEnvironment from "./AgentDesktopEnvironment.ts";
@@ -612,4 +615,135 @@ it.effect("caches missing prerequisites until setup or expiry requests a fresh p
     yield* service.probe;
     assert.isAbove(inspected, afterSetup);
   }).pipe(Effect.provide(NodeServices.layer)),
+);
+
+it.effect.each([
+  {
+    name: "an active unit",
+    properties: "LoadState=loaded\nActiveState=active\nMainPID=42",
+    stopped: false,
+  },
+  {
+    name: "a stopping unit",
+    properties: "LoadState=loaded\nActiveState=deactivating\nMainPID=42",
+    stopped: false,
+  },
+  { name: "an unavailable service manager", properties: "", stopped: false, exitCode: 1 },
+  {
+    name: "incomplete unit metadata",
+    properties: "LoadState=loaded\nActiveState=inactive",
+    stopped: false,
+  },
+  {
+    name: "a stopped unit",
+    properties: "LoadState=loaded\nActiveState=inactive\nMainPID=0",
+    stopped: true,
+  },
+  {
+    name: "an absent unit",
+    properties: "LoadState=not-found\nActiveState=inactive\nMainPID=0",
+    stopped: true,
+  },
+  {
+    name: "a failed unit with no process",
+    properties: "LoadState=loaded\nActiveState=failed\nMainPID=0",
+    stopped: true,
+  },
+])("requires affirmative stopped evidence after a QMP failure: $name", (scenario) =>
+  Effect.gen(function* () {
+    const path = yield* Path.Path;
+    const calls: string[] = [];
+    const removed: string[] = [];
+    const qmp = vi.spyOn(QemuProtocol, "invokeQmp").mockReturnValue(
+      Effect.fail(
+        new QemuProtocol.QemuProtocolError({
+          channel: "qmp",
+          code: "timeout",
+          detail: "control unavailable",
+        }),
+      ),
+    );
+    yield* Effect.addFinalizer(() => Effect.sync(() => qmp.mockRestore()));
+    const service = yield* makeQemu.pipe(
+      Effect.provideService(AgentDesktopEnvironment.AgentDesktopEnvironment, {
+        path,
+        platform: "linux",
+        processArch: "x64",
+        agentDesktopsDir: "/test-agent-desktops",
+        agentDesktopBaseImage: Option.some("/test-base.qcow2"),
+        resolveResourcePathCandidates: () => [],
+      }),
+      Effect.provideService(
+        FileSystem.FileSystem,
+        FileSystem.makeNoop({
+          exists: () => Effect.succeed(true),
+          access: () => Effect.void,
+          readDirectory: () => Effect.succeed([]),
+          readFileString: () => Effect.succeed(""),
+          remove: (path) =>
+            Effect.sync(() => {
+              removed.push(path);
+            }),
+        }),
+      ),
+      Effect.provideService(
+        ChildProcessSpawner.ChildProcessSpawner,
+        ChildProcessSpawner.make((command) => {
+          assert.equal(command._tag, "StandardCommand");
+          if (command._tag !== "StandardCommand") return Effect.die("unexpected pipeline");
+          calls.push([command.command, ...command.args].join(" "));
+          const unitProbe =
+            command.command === "/usr/bin/systemctl" && command.args.includes("show");
+          return Effect.succeed(
+            ChildProcessSpawner.makeHandle({
+              pid: ChildProcessSpawner.ProcessId(1),
+              exitCode: Effect.succeed(
+                ChildProcessSpawner.ExitCode(unitProbe ? (scenario.exitCode ?? 0) : 0),
+              ),
+              isRunning: Effect.succeed(false),
+              kill: () => Effect.void,
+              unref: Effect.succeed(Effect.void),
+              stdin: Sink.drain,
+              stdout: Stream.encodeText(
+                Stream.make(unitProbe ? scenario.properties : 'name "virtio-vga"'),
+              ),
+              stderr: Stream.empty,
+              all: Stream.empty,
+              getInputFd: () => Sink.drain,
+              getOutputFd: () => Stream.empty,
+            }),
+          );
+        }),
+      ),
+    );
+    if (scenario.stopped) {
+      assert.isFalse(yield* service.isRunning(id));
+      yield* service.remove(id);
+      assert.lengthOf(removed, 2);
+    } else {
+      assert.equal((yield* service.isRunning(id).pipe(Effect.flip)).code, "guest-disconnected");
+      const rejected = yield* service
+        .start(
+          id,
+          {
+            cpuCount: 2,
+            memoryBytes: 2 * 1024 ** 3,
+            diskVirtualBytes: 64 * 1024 ** 3,
+            audio: false,
+          },
+          [],
+          false,
+          "virtio-gpu-2d",
+        )
+        .pipe(Effect.flip);
+      assert.equal(rejected.code, "guest-disconnected");
+      assert.isFalse(
+        calls.some((call) => call.includes("--user stop") || call.includes("systemd-run")),
+      );
+      assert.equal((yield* service.remove(id).pipe(Effect.flip)).code, "guest-disconnected");
+      assert.isEmpty(removed);
+      qmp.mockReturnValue(Effect.succeed({ status: "running" }));
+      assert.isTrue(yield* service.isRunning(id));
+    }
+  }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
 );

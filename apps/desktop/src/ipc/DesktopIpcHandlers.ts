@@ -1,7 +1,7 @@
 import * as Effect from "effect/Effect";
 
 import { receiveProviderAuthCallback, cancelProviderAuthCallback } from "./methods/providerAuth.ts";
-import { execution, transfer } from "./methods/execution.ts";
+import { authorization, execution, transfer } from "./methods/execution.ts";
 import * as DesktopIpc from "./DesktopIpc.ts";
 import { installNotificationBadge } from "./methods/notificationBadge.ts";
 import { getClientSettings, setClientSettings } from "./methods/clientSettings.ts";
@@ -96,6 +96,7 @@ export const installDesktopIpcHandlers = Effect.fn("desktop.ipc.installHandlers"
   yield* installNotificationBadge();
   yield* PreviewIpc.installPreviewEventForwarding();
   yield* ipc.handle(execution);
+  yield* ipc.handle(authorization);
   yield* ipc.handle(transfer);
 
   yield* ipc.handle(AppActivationIpc.setReady);

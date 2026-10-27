@@ -200,7 +200,9 @@ export const make = Effect.gen(function* () {
 
   const forget: ComputerUseRouterShape["forget"] = (context, input) => {
     const desktop = targetFromInput(input);
-    return requireLocalUserDesktop(desktop, "forget").pipe(Effect.andThen(user.forget(context)));
+    return requireLocalUserDesktop(desktop, "forget").pipe(
+      Effect.andThen(user.forget(context, input.permission)),
+    );
   };
 
   return ComputerUseRouter.of({

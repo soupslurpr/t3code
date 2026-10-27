@@ -108,7 +108,7 @@ const serveSnapshots = (clientId: string, result: unknown) =>
     const events = yield* broker.connect({ clientId, environmentId });
     yield* Stream.runForEach(events, (event) => {
       if (event.type === "connected") return Deferred.succeed(connected, undefined);
-      if (event.type === "cancel") return Effect.void;
+      if (event.type === "cancel" || event.type === "lifecycle") return Effect.void;
       inputs.push(event.request.input);
       return broker.respond({
         clientId,
@@ -260,7 +260,7 @@ it.effect.each([
       const events = yield* broker.connect({ clientId: "mcp-image-option-client", environmentId });
       yield* Stream.runForEach(events, (event) => {
         if (event.type === "connected") return Deferred.succeed(connected, undefined);
-        if (event.type === "cancel") return Effect.void;
+        if (event.type === "cancel" || event.type === "lifecycle") return Effect.void;
         requests += 1;
         expect(event.request).toMatchObject({
           operation: "snapshot",

@@ -1,5 +1,7 @@
+import { DesktopProcessActivityRecorder } from "../computer/DesktopProcessActivityRecorder.ts";
 import {
   ComputerAutomationFailure,
+  ThreadDesktopActivityError,
   EnvironmentDesktopAutomationError,
   COMPUTER_AUTOMATION_OPERATIONS,
   isComputerAutomationFailureKind,
@@ -41,6 +43,7 @@ import {
   type UserDesktopAuditLog,
   type UserDesktopHostRegistration,
   UserDesktopId,
+  UserDesktopExecutionInput,
   type UserDesktopList,
   UserDesktopManagementError,
   type UserDesktopRenameInput,
@@ -57,14 +60,35 @@ import * as Option from "effect/Option";
 import * as Queue from "effect/Queue";
 import * as Schema from "effect/Schema";
 import * as Stream from "effect/Stream";
+import * as Schedule from "effect/Schedule";
 import * as SynchronizedRef from "effect/SynchronizedRef";
 
 import * as McpInvocationContext from "./McpInvocationContext.ts";
 import * as UserDesktops from "../persistence/UserDesktops.ts";
+import type { DesktopThreadLifecycleService } from "../computer/DesktopThreadLifecycle.ts";
 
 const HOST_RESPONSE_GRACE_MS = 1_000;
 const isComputerAutomationFailure = Schema.is(ComputerAutomationFailure);
 const THREAD_COMPUTER_INTERRUPTION_TIMEOUT_MS = 10_000;
+const isExecutionInput = Schema.is(UserDesktopExecutionInput);
+
+function isHumanPermissionRequest(input: PreviewAutomationInvokeInput): boolean {
+  switch (input.operation) {
+    case "computerRequestView":
+    case "computerRequestControl":
+    case "computerRememberView":
+    case "computerRememberControl":
+      return true;
+    case "computerExecution":
+      return (
+        isExecutionInput(input.input) &&
+        input.input.operation === "access" &&
+        (input.input.input.action === "request" || input.input.input.action === "edit")
+      );
+    default:
+      return false;
+  }
+}
 
 export interface PreviewAutomationInvokeInput {
   readonly scope: McpInvocationContext.McpThreadInvocationScope;
@@ -101,7 +125,9 @@ export class PreviewAutomationBroker extends Context.Service<
       host: PreviewAutomationHost,
       options?: PreviewAutomationConnectOptions,
     ) => Effect.Effect<Stream.Stream<PreviewAutomationStreamEvent>>;
-    readonly focusHost: (host: PreviewAutomationHostFocus) => Effect.Effect<void>;
+    readonly focusHost: (
+      host: PreviewAutomationHostFocus,
+    ) => Effect.Effect<void, ThreadDesktopActivityError>;
     readonly respond: (
       response: PreviewAutomationResponse,
     ) => Effect.Effect<void, PreviewAutomationError>;
@@ -145,6 +171,8 @@ interface ClientConnection {
   readonly lastActiveAt: IsoDateTime | null;
   readonly connectedAt: IsoDateTime;
   readonly queue: Queue.Queue<PreviewAutomationStreamEvent, Cause.Done>;
+  readonly authorizationVersion: 2 | undefined;
+  readonly authorizationThreads: ReadonlySet<ThreadId>;
 }
 
 interface PendingRequest {
@@ -758,10 +786,17 @@ export class EnvironmentUserDesktopHost extends Context.Reference<
   defaultValue: () => undefined,
 }) {}
 
+/** Negotiated only by desktop hosts that can enforce the scoped permission protocol. */
+export class DesktopLifecycleSource extends Context.Reference<
+  DesktopThreadLifecycleService["Service"] | null
+>("t3/mcp/PreviewAutomationBroker/DesktopLifecycleSource", { defaultValue: () => null }) {}
+
 export const make = Effect.gen(function* PreviewAutomationBrokerMake() {
   const crypto = yield* Crypto.Crypto;
   const userDesktops = yield* UserDesktops.UserDesktopRepository;
   const environmentHost = yield* EnvironmentUserDesktopHost;
+  const lifecycleSource = yield* DesktopLifecycleSource;
+  const recordProcessActivity = yield* DesktopProcessActivityRecorder;
   const environmentHostLastSeenAt =
     environmentHost === undefined ? undefined : DateTime.formatIso(yield* DateTime.now);
   if (environmentHost !== undefined && environmentHostLastSeenAt !== undefined) {
@@ -781,6 +816,77 @@ export const make = Effect.gen(function* PreviewAutomationBrokerMake() {
     requestSequence: 0,
     focusSequence: 0,
   });
+
+  const publishLifecycle = Effect.fn("PreviewAutomationBroker.publishLifecycle")(function* (
+    connection: ClientConnection,
+    threadIds: ReadonlyArray<ThreadId>,
+  ) {
+    if (lifecycleSource === null || connection.authorizationVersion !== 2) return;
+    for (let offset = 0; offset < threadIds.length; offset += 256) {
+      const snapshots = yield* Effect.forEach(
+        threadIds.slice(offset, offset + 256),
+        (threadId) => lifecycleSource.read(connection.environmentId, threadId).pipe(Effect.option),
+        { concurrency: 8 },
+      );
+      yield* Queue.offer(connection.queue, {
+        type: "lifecycle",
+        connectionId: connection.connectionId,
+        snapshots: snapshots.flatMap((snapshot) =>
+          Option.isSome(snapshot) ? [snapshot.value] : [],
+        ),
+        unavailableThreadIds: snapshots.flatMap((snapshot, index) =>
+          Option.isNone(snapshot) ? [threadIds[offset + index]!] : [],
+        ),
+      }).pipe(Effect.ignore);
+    }
+  });
+
+  if (lifecycleSource !== null)
+    yield* lifecycleSource.changes.pipe(
+      Stream.runForEach((threadId) =>
+        Effect.gen(function* () {
+          const current = yield* SynchronizedRef.get(state);
+          yield* Effect.forEach(
+            [...current.clients.values()].filter(
+              (connection) =>
+                threadId === null ||
+                connection.authorizationThreads.has(threadId) ||
+                [...current.pending.values()].some(
+                  (request) =>
+                    request.queue === connection.queue && request.context.threadId === threadId,
+                ),
+            ),
+            (connection) =>
+              publishLifecycle(
+                connection,
+                threadId === null ? [...connection.authorizationThreads] : [threadId],
+              ),
+            { concurrency: 8, discard: true },
+          );
+        }),
+      ),
+      Effect.tapError((error) =>
+        Effect.gen(function* () {
+          const current = yield* SynchronizedRef.get(state);
+          yield* Effect.forEach(
+            [...current.clients.values()].filter(
+              (connection) => connection.authorizationVersion === 2,
+            ),
+            (connection) =>
+              Queue.offer(connection.queue, {
+                type: "lifecycle",
+                connectionId: connection.connectionId,
+                snapshots: [],
+                unavailable: true,
+              }).pipe(Effect.ignore),
+            { concurrency: 8, discard: true },
+          );
+          yield* Effect.logWarning("Desktop lifecycle subscription failed; retrying", error);
+        }),
+      ),
+      Effect.retry(Schedule.spaced("1 second")),
+      Effect.forkScoped,
+    );
 
   const closeConnection = Effect.fn("PreviewAutomationBroker.closeConnection")(function* (
     queue: ClientConnection["queue"],
@@ -852,6 +958,8 @@ export const make = Effect.gen(function* PreviewAutomationBrokerMake() {
       lastActiveAt: null,
       connectedAt,
       queue,
+      authorizationVersion: host.authorizationVersion,
+      authorizationThreads: new Set(),
     };
     if (host.userDesktop !== undefined) {
       yield* userDesktops
@@ -917,6 +1025,10 @@ export const make = Effect.gen(function* PreviewAutomationBrokerMake() {
         ...currentHost,
         focused: host.focused,
         liveTabs: host.liveTabs ?? currentHost.liveTabs,
+        authorizationThreads:
+          host.authorizationThreads === undefined
+            ? currentHost.authorizationThreads
+            : new Set(host.authorizationThreads),
         focusOrder: host.focused ? focusSequence : currentHost.focusOrder,
         lastActiveAt: lastActiveAt ?? currentHost.lastActiveAt,
       });
@@ -933,6 +1045,44 @@ export const make = Effect.gen(function* PreviewAutomationBrokerMake() {
             Effect.logWarning("user desktop activity persistence failed", { error }),
           ),
         );
+    }
+    if (recordProcessActivity !== null && host.processActivities !== undefined) {
+      const connection = (yield* SynchronizedRef.get(state)).clients.get(host.clientId);
+      if (
+        connection?.connectionId !== host.connectionId ||
+        connection.environmentId !== host.environmentId ||
+        connection.userDesktop === undefined
+      )
+        return yield* new ThreadDesktopActivityError({
+          message: "The desktop activity connection changed; reconnect before retrying.",
+        });
+      {
+        for (const activity of host.processActivities) {
+          if (
+            activity.environmentId !== connection.environmentId ||
+            activity.desktop.kind !== "user" ||
+            activity.desktop.desktopId !== connection.userDesktop.desktopId
+          )
+            return yield* new ThreadDesktopActivityError({
+              message: "Desktop activity must belong to this connection and destination.",
+            });
+          // An ack is sent only after the event commit. Retrying the host report is safe.
+          yield* recordProcessActivity(activity).pipe(
+            Effect.mapError(
+              () =>
+                new ThreadDesktopActivityError({
+                  message: "Desktop activity was not committed; retry this report.",
+                }),
+            ),
+          );
+        }
+      }
+    }
+    if (host.authorizationThreads !== undefined) {
+      const current = yield* SynchronizedRef.get(state);
+      const connection = current.clients.get(host.clientId);
+      if (connection?.connectionId === host.connectionId)
+        yield* publishLifecycle(connection, host.authorizationThreads);
     }
   });
 
@@ -1346,6 +1496,33 @@ export const make = Effect.gen(function* PreviewAutomationBrokerMake() {
       }).pipe(Effect.ignore);
     });
     const awaitResponse = Effect.fn("PreviewAutomationBroker.awaitResponse")(function* () {
+      const agent = (input.scope.thread.controllerKind ?? "agent") === "agent";
+      const lifecycle =
+        lifecycleSource !== null &&
+        connection.authorizationVersion === 2 &&
+        computerOperation &&
+        (agent || isHumanPermissionRequest(input))
+          ? yield* lifecycleSource
+              .read(input.scope.environmentId, input.scope.thread.threadId)
+              .pipe(
+                Effect.catch((cause) =>
+                  agent
+                    ? Effect.fail(
+                        new PreviewAutomationExecutionError({
+                          ...requestContext,
+                          remoteTag: "DesktopThreadLifecycleError",
+                          remoteMessageLength: 0,
+                          cause,
+                          reason:
+                            "Committed source thread state is unavailable; desktop access was withheld.",
+                        }),
+                      )
+                    : // Settings may have no durable thread. The native prompt can
+                      // still offer explicit bounded access without automatic lifetime.
+                      Effect.void,
+                ),
+              )
+          : undefined;
       const offered = yield* SynchronizedRef.modifyEffect(state, (current) => {
         // Serialize publication with Stop and connection-generation retirement.
         if (current.clients.get(connection.clientId)?.queue !== connection.queue) {
@@ -1358,6 +1535,8 @@ export const make = Effect.gen(function* PreviewAutomationBrokerMake() {
           request: {
             requestId,
             threadId: input.scope.thread.threadId,
+            ...(lifecycle === undefined ? {} : { lifecycle }),
+            connectionGeneration: connection.connectionId,
             ...(isComputerOperation(input.operation)
               ? {
                   controllerId: input.scope.thread.controllerId,

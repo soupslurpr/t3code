@@ -1,4 +1,5 @@
 import * as Schema from "effect/Schema";
+import { DesktopCapabilityGrant, DesktopGrantPolicy } from "./desktopAuthorization.ts";
 
 import { IsoDateTime, NonNegativeInt, ThreadId, TrimmedNonEmptyString } from "./baseSchemas.ts";
 import {
@@ -292,6 +293,12 @@ export function findComputerAutomationFailureKind(
 }
 
 export const ComputerAutomationStatus = Schema.Struct({
+  authorization: Schema.optional(
+    Schema.Struct({
+      protocolVersion: Schema.Literal(2),
+      grants: Schema.Array(DesktopCapabilityGrant),
+    }),
+  ),
   desktop: Schema.optional(ComputerDesktopIdentity).annotate({
     description: "Concrete user or agent desktop represented by this status.",
   }),
@@ -632,9 +639,15 @@ const ComputerAutomationDesktopTargetField = {
   }),
 };
 
-export const ComputerAutomationTargetInput = Schema.Struct(
-  ComputerAutomationDesktopTargetField,
-).annotate({
+export const DesktopScreenPermissionRevision = Schema.Struct({
+  grantId: TrimmedNonEmptyString,
+  revision: NonNegativeInt,
+});
+export type DesktopScreenPermissionRevision = typeof DesktopScreenPermissionRevision.Type;
+export const ComputerAutomationTargetInput = Schema.Struct({
+  ...ComputerAutomationDesktopTargetField,
+  permission: Schema.optional(DesktopScreenPermissionRevision),
+}).annotate({
   description:
     "Targets an existing user or Agent desktop without relying on shared implicit selection.",
 });
@@ -713,6 +726,11 @@ export const ComputerAutomationSnapshotInput = Schema.Struct({
 export type ComputerAutomationSnapshotInput = typeof ComputerAutomationSnapshotInput.Type;
 
 export const ComputerAutomationAccessInput = Schema.Struct({
+  permission: Schema.optional(DesktopScreenPermissionRevision),
+  permissionPolicy: Schema.optional(DesktopGrantPolicy).annotate({
+    description:
+      "Suggested T3 screen policy. Only a human request can edit existing authority; the destination's native prompt makes the decision.",
+  }),
   desktop: ComputerDesktopSelector.annotate({
     description:
       "Desktop to use. Agent access returns a desktopId to pass on every later operation.",

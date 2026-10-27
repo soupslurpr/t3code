@@ -1,3 +1,7 @@
+import * as DesktopExecutionAuthorizationChannel from "./computer/DesktopExecutionAuthorizationChannel.ts";
+import * as DesktopThreadLifecycle from "./computer/DesktopThreadLifecycle.ts";
+import * as ThreadMonitorProcess from "./threadMonitor/ThreadMonitorProcess.ts";
+import * as DesktopProcessActivityRecorder from "./computer/DesktopProcessActivityRecorder.ts";
 import * as ThreadDesktopActivity from "./computer/ThreadDesktopActivity.ts";
 import * as ThreadMonitorSignalCallbacks from "./threadMonitor/ThreadMonitorSignalCallbacks.ts";
 import * as MonitorSignalRoute from "./threadMonitor/signalRoute.ts";
@@ -223,7 +227,18 @@ const HTTP_ROUTER_CONFIG = {
 const HTTP_PREEMPTIVE_SHUTDOWN_GRACE_MS = 0;
 const layerComputerObservationStore = ComputerObservationStore.layer;
 const layerPersistence = Layer.empty.pipe(Layer.provideMerge(SqlitePersistence.layerConfig));
+const layerDesktopProcessActivity = DesktopProcessActivityRecorder.layer.pipe(
+  Layer.provide(RuntimeLayer.layerEventSink),
+  Layer.provide(layerPersistence),
+);
 const layerPreviewAutomationBroker = PreviewAutomationBroker.layer.pipe(
+  Layer.provide(layerDesktopProcessActivity),
+  Layer.provide(
+    Layer.effect(
+      PreviewAutomationBroker.DesktopLifecycleSource,
+      DesktopThreadLifecycle.DesktopThreadLifecycleService,
+    ).pipe(Layer.provide(DesktopThreadLifecycle.layer)),
+  ),
   Layer.provide(
     Layer.effect(
       PreviewAutomationBroker.EnvironmentUserDesktopHost,
@@ -238,6 +253,7 @@ const layerQemuAgentDesktop = QemuAgentDesktop.layer.pipe(
   Layer.provide(layerAgentDesktopEnvironment),
 );
 const layerAgentDesktopManager = AgentDesktopManager.layer.pipe(
+  Layer.provide(layerDesktopProcessActivity),
   Layer.provideMerge(layerQemuAgentDesktop),
   Layer.provide(layerAgentDesktopEnvironment),
 );
@@ -736,6 +752,12 @@ const layerAgentDesktopServices = ThreadDesktopActivity.layer.pipe(
 );
 
 const layerThreadMonitor = ThreadMonitor.layer.pipe(
+  Layer.provide(
+    ThreadMonitorProcess.layer.pipe(
+      Layer.provide(layerAgentDesktopManager),
+      Layer.provide(layerPreviewAutomationBroker),
+    ),
+  ),
   Layer.provide(ThreadMonitorComputer.layer.pipe(Layer.provide(layerComputerAutomationRouter))),
   Layer.provide(RuntimeLayer.layerEventSink),
   Layer.provideMerge(ThreadWorkspaceQuery.layer),
@@ -812,6 +834,14 @@ const layerMakeRoutes = Layer.mergeAll(
     ),
   ),
   Layer.provide(PreviewBrowser.layer),
+  Layer.provide(
+    DesktopExecutionAuthorizationChannel.layer.pipe(
+      Layer.provide(DesktopThreadLifecycle.layer),
+      Layer.provide(layerPersistence),
+      Layer.provide(layerAuth),
+      Layer.provide(layerServerEnvironment),
+    ),
+  ),
   Layer.provide(layerPreviewAutomationBroker),
   Layer.provide(ServerSelfUpdate.layer.pipe(Layer.provide(layerDesktopAppUpdate))),
   Layer.provide(layerCommandReadiness),

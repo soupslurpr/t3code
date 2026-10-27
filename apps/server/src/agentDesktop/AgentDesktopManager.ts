@@ -9,6 +9,8 @@ import {
   type AgentDesktopBaseImage,
   type AgentDesktopCommandInput,
   type AgentDesktopCommandResult,
+  type AgentDesktopProcessInput,
+  type AgentDesktopProcessResponse,
   type AgentDesktopCreatePortRouteInput,
   type AgentDesktopId,
   type AgentDesktopInspectInput,
@@ -64,6 +66,7 @@ import * as Semaphore from "effect/Semaphore";
 import { renderComputerScreenshot } from "../computer/ComputerScreenshotEncoding.ts";
 import * as ComputerUse from "../computer/ComputerAutomationFailure.ts";
 import * as AgentDesktopEnvironment from "./AgentDesktopEnvironment.ts";
+import * as AgentDesktopCommands from "./AgentDesktopCommands.ts";
 import { cropAgentDesktopImage, decodeAgentDesktopCapture } from "./AgentDesktopImage.ts";
 import {
   AGENT_DESKTOP_PROFILE_VERSION,
@@ -111,8 +114,6 @@ const MAINTENANCE_INTERVAL = Duration.minutes(1);
 const MAINTENANCE_RETRY_INTERVAL = Duration.hours(6);
 const HUMAN_LEASE_TTL = Duration.seconds(30);
 const STATE_FILE_NAME = "desktops.json";
-const DEFAULT_COMMAND_TIMEOUT_MS = 5 * 60 * 1000;
-const DEFAULT_COMMAND_OUTPUT_BYTES = 1024 * 1024;
 const DEFAULT_FILE_READ_BYTES = 1024 * 1024;
 const MAX_NETWORK_CONNECTIONS = 256;
 const GUEST_ACCESSIBILITY_RESOURCE = "agent-desktop/accessibility.js";
@@ -678,6 +679,10 @@ export interface AgentDesktopManagerShape {
     owner: AgentDesktopOwner,
     input: AgentDesktopCommandInput,
   ) => Effect.Effect<AgentDesktopCommandResult, AgentDesktopManagerOperationError>;
+  readonly process: (
+    owner: AgentDesktopOwner,
+    input: AgentDesktopProcessInput,
+  ) => Effect.Effect<AgentDesktopProcessResponse, AgentDesktopManagerOperationError>;
   readonly readFile: (
     owner: AgentDesktopOwner,
     input: AgentDesktopReadFileInput,
@@ -1068,6 +1073,7 @@ export const make = Effect.gen(function* () {
   const fileSystem = yield* FileSystem.FileSystem;
   const crypto = yield* Crypto.Crypto;
   const qemu = yield* QemuAgentDesktop.QemuAgentDesktop;
+  const commands = yield* AgentDesktopCommands.AgentDesktopCommands;
   const statePath = environment.path.join(environment.agentDesktopsDir, STATE_FILE_NAME);
   const stateSemaphore = yield* Semaphore.make(1);
   const lifecycleSemaphore = yield* Semaphore.make(1);
@@ -1181,6 +1187,8 @@ export const make = Effect.gen(function* () {
         reconciledLifecycle = true;
         return { ...desktop, state: lifecycleState };
       }),
+      // A failed control probe must not rewrite saved VM state as stopped.
+      Effect.orElseSucceed(() => desktop),
     ),
   );
   const runtimes = new Map<AgentDesktopId, RuntimeState>();
@@ -2424,7 +2432,9 @@ export const make = Effect.gen(function* () {
       Array.from(current.desktops.values())
         .filter(
           (desktop) =>
-            isRunningState(desktop.state) && desktop.requirements?.preventParking !== true,
+            isRunningState(desktop.state) &&
+            desktop.requirements?.preventParking !== true &&
+            commands.activeCount(desktop.id) === 0,
         )
         .sort((left, right) => left.lastActiveAt.localeCompare(right.lastActiveAt)),
       (desktop) => {
@@ -2436,6 +2446,7 @@ export const make = Effect.gen(function* () {
               Effect.map(
                 (activeOperationCount) =>
                   activeOperationCount === 0 &&
+                  commands.activeCount(desktop.id) === 0 &&
                   lease?.controllerId == null &&
                   (lease?.viewers.size ?? 0) === 0,
               ),
@@ -2615,7 +2626,11 @@ export const make = Effect.gen(function* () {
             lease?.controllerId !== undefined &&
             lease.controllerId !== owner.controllerId;
           const activeOperationCount = yield* Ref.get(runtime.activeOperationCount);
-          if (controlledByAnother || activeOperationCount > 0) {
+          if (
+            controlledByAnother ||
+            activeOperationCount > 0 ||
+            commands.activeCount(desktop.id) > 0
+          ) {
             if (busyBehavior === "skip") return undefined;
             return yield* new AgentDesktopManagerError({
               code: "desktop-busy",
@@ -4504,6 +4519,7 @@ export const make = Effect.gen(function* () {
             yield* revokeDesktopLease(desktop, runtime, "ignore");
             yield* setLifecycle(desktop.id, "stopping");
             yield* qemu.stop(desktop.id);
+            yield* commands.ended(desktop.id).pipe(Effect.mapError(commandFailure));
             return yield* summary((yield* setLifecycle(desktop.id, "stopped"))!);
           case "snapshot":
             yield* ensureStarted(desktop);
@@ -4608,6 +4624,7 @@ export const make = Effect.gen(function* () {
           case "delete-permanently":
             yield* revokeDesktopLease(desktop, runtime, "ignore");
             yield* qemu.remove(desktop.id);
+            yield* commands.ended(desktop.id).pipe(Effect.mapError(commandFailure));
             yield* removeDesktopState(desktop.id);
             return yield* summary({ ...desktop, state: "deleting" });
         }
@@ -4713,7 +4730,8 @@ export const make = Effect.gen(function* () {
         if (
           (lease?.controllerId ?? null) !== null ||
           (lease?.viewers.size ?? 0) > 0 ||
-          activeOperationCount > 0
+          activeOperationCount > 0 ||
+          commands.activeCount(desktop.id) > 0
         ) {
           return yield* new AgentDesktopManagerError({
             code: "desktop-busy",
@@ -4830,51 +4848,21 @@ export const make = Effect.gen(function* () {
     );
   });
 
+  const commandFailure = (cause: AgentDesktopCommands.AgentDesktopCommandError) =>
+    new AgentDesktopManagerError({
+      code: "invalid-action",
+      operation: "command",
+      detail: cause.message,
+    });
   const command: AgentDesktopManagerShape["command"] = (owner, input) =>
     useOperationalDesktop(owner, input.desktopId, (desktop) =>
-      Effect.gen(function* () {
-        const innerExecutable =
-          input.workingDirectory === undefined ? input.executable : "/usr/bin/env";
-        const innerArguments = [
-          ...(input.workingDirectory === undefined ? [] : ["-C", input.workingDirectory]),
-          ...(input.workingDirectory === undefined ? [] : [input.executable]),
-          ...(input.arguments ?? []),
-        ];
-        const executable = input.user === undefined ? innerExecutable : "/usr/bin/runuser";
-        const argumentsValue =
-          input.user === undefined
-            ? innerArguments
-            : ["-u", input.user, "--", innerExecutable, ...innerArguments];
-        const startedAtMilliseconds = yield* Clock.currentTimeMillis;
-        const environmentEntries =
-          input.environment === undefined
-            ? undefined
-            : Array.isArray(input.environment)
-              ? input.environment
-              : Object.entries(input.environment).map(([name, value]) => ({ name, value }));
-        const result = yield* qemu.executeGuestProcess(desktop.id, {
-          executable,
-          ...(argumentsValue.length === 0 ? {} : { arguments: argumentsValue }),
-          ...(environmentEntries === undefined
-            ? {}
-            : {
-                environment: environmentEntries.map((entry) => `${entry.name}=${entry.value}`),
-              }),
-          ...(input.stdin === undefined ? {} : { stdin: new TextEncoder().encode(input.stdin) }),
-          timeoutMs: input.timeoutMs ?? DEFAULT_COMMAND_TIMEOUT_MS,
-          maxOutputBytes: input.maxOutputBytes ?? DEFAULT_COMMAND_OUTPUT_BYTES,
-        });
-        const completedAtMilliseconds = yield* Clock.currentTimeMillis;
-        yield* touchDesktop(desktop);
-        return {
-          desktopId: desktop.id,
-          ...result,
-          startedAt: isoTime(startedAtMilliseconds),
-          completedAt: isoTime(completedAtMilliseconds),
-          durationMs: Math.max(0, completedAtMilliseconds - startedAtMilliseconds),
-        };
-      }),
+      commands.command(owner, desktop.id, input).pipe(
+        Effect.mapError(commandFailure),
+        Effect.tap(() => touchDesktop(desktop)),
+      ),
     );
+  const process: AgentDesktopManagerShape["process"] = (owner, input) =>
+    commands.process(owner, input).pipe(Effect.mapError(commandFailure));
 
   const readFile: AgentDesktopManagerShape["readFile"] = (owner, input) =>
     useOperationalDesktop(owner, input.desktopId, (desktop) =>
@@ -5707,7 +5695,7 @@ export const make = Effect.gen(function* () {
             lastActiveAt: desktop.lastActiveAt,
             preventParking: desktop.requirements?.preventParking === true,
             hasLease: (lease?.controllerId ?? null) !== null || (lease?.viewers.size ?? 0) > 0,
-            activeOperationCount,
+            activeOperationCount: activeOperationCount + commands.activeCount(desktop.id),
           })
         ) {
           continue;
@@ -5833,7 +5821,9 @@ export const make = Effect.gen(function* () {
           const current = yield* Ref.get(state);
           const desktops = Array.from(current.desktops.values()).filter(
             (desktop) =>
-              isRunningState(desktop.state) && desktop.requirements?.preventParking !== true,
+              isRunningState(desktop.state) &&
+              desktop.requirements?.preventParking !== true &&
+              commands.activeCount(desktop.id) === 0,
           );
           yield* Effect.forEach(
             desktops,
@@ -5948,6 +5938,7 @@ export const make = Effect.gen(function* () {
     acquire,
     manage,
     command,
+    process,
     readFile,
     writeFile,
     transfer,
@@ -5969,4 +5960,6 @@ export const make = Effect.gen(function* () {
   });
 });
 
-export const layer = Layer.effect(AgentDesktopManager, make);
+export const layer = Layer.effect(AgentDesktopManager, make).pipe(
+  Layer.provideMerge(AgentDesktopCommands.layer),
+);

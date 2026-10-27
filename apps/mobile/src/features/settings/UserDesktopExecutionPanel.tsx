@@ -1,5 +1,6 @@
+import { environmentConnectedAtom } from "../../state/use-remote-environment-registry";
+/** Supervises exact desktop processes independently of graphical access. */
 import { useAtomValue } from "@effect/atom-react";
-/** Supervises desktop commands from a paired mobile client. */
 import {
   hasMoreDesktopProcessOutput,
   updateDesktopProcessOutputPage,
@@ -8,405 +9,636 @@ import {
 } from "@t3tools/client-runtime/desktop-process-output";
 import { squashAtomCommandFailure } from "@t3tools/client-runtime/state/runtime";
 import {
+  AgentDesktopProcessResponse,
   UserDesktopExecutionResult,
+  isDesktopProcessLive,
+  hasDesktopProcessInputGrant,
+  type AgentDesktopOwner,
   type DesktopExecutionAccess,
   type DesktopProcess,
+  type DesktopExecutionGrant,
   type EnvironmentId,
-  type UserDesktopExecutionInput,
+  type ThreadId,
+  type UserDesktopProcessInput,
+  type UserDesktopExecutionAccessInput,
   type UserDesktopTarget,
 } from "@t3tools/contracts";
-import { useFocusEffect } from "@react-navigation/native";
 import * as Schema from "effect/Schema";
-import { useCallback, useRef, useState } from "react";
-import { Pressable, ScrollView, View } from "react-native";
-
-import { AppText as Text } from "../../components/ui/AppText";
+import { useEffect, useRef, useState } from "react";
 import { previewEnvironment } from "../../state/preview";
 import { useAtomCommand } from "../../state/use-atom-command";
+import { AppState, Pressable, ScrollView, TextInput, View } from "react-native";
+import { useFocusEffect } from "@react-navigation/native";
+import { AppText as Text } from "../../components/ui/AppText";
+import { DesktopExecutionPermissions } from "./DesktopExecutionPermissions";
 
-const REFRESH_INTERVAL_MS = 3000;
-const OUTPUT_PAGE_BYTES = 32 * 1024;
-const decodeResult = Schema.decodeUnknownSync(UserDesktopExecutionResult);
+const decodeUser = Schema.decodeUnknownSync(UserDesktopExecutionResult);
+const decodeAgent = Schema.decodeUnknownSync(AgentDesktopProcessResponse);
+type ProcessInput = Omit<UserDesktopProcessInput, "desktop">;
+type Target =
+  | UserDesktopTarget
+  | { readonly kind: "agent"; readonly desktopId: string; readonly owner: AgentDesktopOwner };
 
-/** Lists execution grants and processes without acquiring desktop view or control. */
-export function UserDesktopExecutionPanel({
+export function UserDesktopExecutionPanel(props: {
+  environmentId: EnvironmentId;
+  environmentLabel: string;
+  desktop: UserDesktopTarget;
+  threadId?: ThreadId | undefined;
+  initialProcessId?: string | undefined;
+}) {
+  return (
+    <DesktopProcessPanel
+      key={JSON.stringify([props.environmentId, props.desktop.desktopId, props.threadId])}
+      {...props}
+    />
+  );
+}
+export function AgentDesktopExecutionPanel({
+  desktopId,
+  owner,
+  label,
+  initialProcessId,
+}: {
+  desktopId: string;
+  owner: AgentDesktopOwner;
+  label: string;
+  initialProcessId?: string | undefined;
+}) {
+  return (
+    <DesktopProcessPanel
+      key={JSON.stringify([owner.environmentId, desktopId, owner.threadId, owner.controllerId])}
+      environmentId={owner.environmentId}
+      environmentLabel={label}
+      desktop={{ kind: "agent", desktopId, owner }}
+      threadId={owner.threadId}
+      initialProcessId={initialProcessId}
+    />
+  );
+}
+
+function DesktopProcessPanel({
   environmentId,
   environmentLabel,
   desktop,
+  threadId,
+  initialProcessId,
 }: {
-  readonly environmentId: EnvironmentId;
-  readonly environmentLabel: string;
-  readonly desktop: UserDesktopTarget;
+  environmentId: EnvironmentId;
+  environmentLabel: string;
+  desktop: Target;
+  threadId?: ThreadId | undefined;
+  initialProcessId?: string | undefined;
 }) {
-  const invoke = useAtomCommand(previewEnvironment.invokeUserDesktopHuman, {
+  const user = useAtomCommand(previewEnvironment.invokeUserDesktopHuman, { reportFailure: false });
+  const agent = useAtomCommand(previewEnvironment.invokeAgentDesktopHuman, {
     reportFailure: false,
   });
   const allowed = useAtomValue(
-    previewEnvironment.invokeUserDesktopHuman.permissionAtom(environmentId),
+    desktop.kind === "user"
+      ? previewEnvironment.invokeUserDesktopHuman.permissionAtom(environmentId, {
+          request: {
+            operation: "execution",
+            desktopId: desktop.desktopId,
+            input: { operation: "access", desktop, input: { action: "status", desktop } },
+          },
+        })
+      : previewEnvironment.invokeAgentDesktopHuman.permissionAtom(environmentId, {
+          request: {
+            operation: "process",
+            owner: desktop.owner,
+            input: { action: "list", desktopId: desktop.desktopId },
+          },
+        }),
   );
-  const [expanded, setExpanded] = useState(false);
+  const [expanded, setExpanded] = useState(initialProcessId !== undefined);
   const [access, setAccess] = useState<DesktopExecutionAccess | null>(null);
-  const [processes, setProcesses] = useState<ReadonlyArray<DesktopProcess>>([]);
-  const [outputPage, setOutputPage] = useState<DesktopProcessOutputPage | null>(null);
-  const output = outputPage?.result ?? null;
-  const previousOutputOffsets = outputPage?.history.at(-1);
-  const hasMoreOutput = output !== null && hasMoreDesktopProcessOutput(output);
-  // Read once more after process exit to collect output written since the last page.
-  const canReadMoreOutput = hasMoreOutput || output?.process.status === "running";
-  const [actionError, setError] = useState<string | null>(null);
-  const [refreshError, setRefreshError] = useState<string | null>(null);
-  const error = actionError ?? refreshError;
-  const [pendingCount, setPendingCount] = useState(0);
-  const busy = !allowed || pendingCount > 0;
+  const [processes, setProcesses] = useState<readonly DesktopProcess[]>([]);
+  const [cursor, setCursor] = useState<string | null>(null);
+  const [page, setPage] = useState<DesktopProcessOutputPage | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [pending, setPending] = useState(0);
   const refreshing = useRef(false);
+  const [listCursor, setListCursor] = useState<string | undefined>(undefined);
+  const busy = !allowed || pending > 0;
+  const connected = useAtomValue(environmentConnectedAtom(environmentId));
   const desktopId = desktop.desktopId;
-  const run = useCallback(
-    async (input: UserDesktopExecutionInput) => {
-      const result = await invoke({
-        environmentId,
-        input: { request: { operation: "execution", desktopId, input }, timeoutMs: 120_000 },
-      });
-      if (result._tag !== "Success") throw squashAtomCommandFailure(result);
-      return decodeResult(result.value);
-    },
-    [desktopId, environmentId, invoke],
-  );
-
-  const refresh = useCallback(async () => {
+  const kind = desktop.kind;
+  const ownerEnvironmentId = desktop.kind === "agent" ? desktop.owner.environmentId : undefined;
+  const ownerThreadId = desktop.kind === "agent" ? desktop.owner.threadId : undefined;
+  const ownerControllerId = desktop.kind === "agent" ? desktop.owner.controllerId : undefined;
+  const process = async (input: ProcessInput) => {
+    const result =
+      kind === "user"
+        ? await user({
+            environmentId,
+            input: {
+              ...(threadId ? { threadId } : {}),
+              request: {
+                operation: "execution",
+                desktopId,
+                input: {
+                  operation: "process",
+                  desktop: { kind: "user", desktopId },
+                  input: { ...input, desktop: { kind: "user", desktopId } },
+                },
+              },
+            },
+          })
+        : await agent({
+            environmentId,
+            input: {
+              threadId: ownerThreadId!,
+              request: {
+                operation: "process",
+                owner: {
+                  environmentId: ownerEnvironmentId!,
+                  threadId: ownerThreadId!,
+                  controllerId: ownerControllerId!,
+                },
+                input: { ...input, desktopId },
+              },
+            },
+          });
+    if (result._tag !== "Success") throw squashAtomCommandFailure(result);
+    const value = kind === "user" ? decodeUser(result.value) : decodeAgent(result.value);
+    if (value.kind !== "list" && value.kind !== "process")
+      throw new Error("Process supervision requires a compatible desktop.");
+    return value;
+  };
+  const permission = async (input: UserDesktopExecutionAccessInput, sourceThreadId = threadId) => {
+    const result = await user({
+      environmentId,
+      input: {
+        ...(sourceThreadId ? { threadId: sourceThreadId } : {}),
+        request: {
+          operation: "execution",
+          desktopId,
+          input: { operation: "access", desktop: { kind: "user", desktopId }, input },
+        },
+        timeoutMs: 120_000,
+      },
+    });
+    if (result._tag !== "Success") throw squashAtomCommandFailure(result);
+    const value = decodeUser(result.value);
+    if (value.kind === "access") setAccess(value);
+  };
+  const refresh = async (next = listCursor) => {
     if (refreshing.current) return;
     refreshing.current = true;
-    const target = { kind: "user", desktopId } as const;
-    try {
-      const [permission, list] = await Promise.all([
-        run({ operation: "access", desktop: target, input: { action: "status", desktop: target } }),
-        run({ operation: "process", desktop: target, input: { action: "list", desktop: target } }),
-      ]);
-      if (permission.kind === "access") setAccess(permission);
-      if (list.kind === "list") setProcesses(list.processes);
-      setRefreshError(null);
-    } catch (cause) {
-      setRefreshError(cause instanceof Error ? cause.message : "Could not read execution status.");
-    } finally {
-      refreshing.current = false;
-    }
-  }, [desktopId, run]);
-
-  useFocusEffect(
-    useCallback(() => {
-      if (!expanded) return;
-      void refresh();
-      const timer = setInterval(() => void refresh(), REFRESH_INTERVAL_MS);
-      return () => clearInterval(timer);
-    }, [expanded, refresh]),
-  );
-
+    return (async () => {
+      const list = await process({
+        action: "list",
+        limit: 50,
+        ...(threadId ? { threadId } : {}),
+        ...(next ? { cursor: next } : {}),
+      });
+      if (list.kind === "list") {
+        setListCursor(next);
+        setProcesses(list.processes);
+        setCursor(list.nextCursor ?? null);
+      }
+      if (kind === "user")
+        await permission({ action: "status", desktop: { kind: "user", desktopId } });
+      setError(null);
+    })()
+      .catch((cause: unknown) => {
+        setError(cause instanceof Error ? cause.message : "Could not refresh commands.");
+      })
+      .finally(() => {
+        refreshing.current = false;
+      });
+  };
+  useFocusEffect(() => {
+    if (!expanded || !allowed || !connected) return;
+    void refresh();
+    const timer = setInterval(() => {
+      if (AppState.currentState === "active") void refresh();
+    }, 3_000);
+    return () => clearInterval(timer);
+  });
   const perform = async (
-    input: UserDesktopExecutionInput,
+    input: ProcessInput,
     navigation: DesktopProcessOutputNavigation = "first",
   ) => {
-    setPendingCount((count) => count + 1);
-    try {
-      setError(null);
-      const result = await run(input);
-      if (
-        result.kind === "process" &&
-        input.operation === "process" &&
-        input.input.action === "read"
-      )
-        setOutputPage((current) => updateDesktopProcessOutputPage(current, result, navigation));
-      if (input.operation === "process" && input.input.action === "forget")
-        setOutputPage((current) =>
-          current?.result.process.processId === input.input.processId ? null : current,
+    setPending((value) => value + 1);
+    return (async () => {
+      const result = await process(input);
+      if (input.action === "read" && result.kind === "process")
+        setPage((current) => updateDesktopProcessOutputPage(current, result, navigation));
+      if (input.action === "forget")
+        setPage((current) =>
+          current?.result.process.processId === input.processId ? null : current,
         );
       await refresh();
-    } catch (cause) {
-      setError(cause instanceof Error ? cause.message : "Desktop execution request failed.");
-    } finally {
-      setPendingCount((count) => count - 1);
-    }
+      return true;
+    })()
+      .catch((cause: unknown) => {
+        setError(cause instanceof Error ? cause.message : "Command operation failed.");
+        return false;
+      })
+      .finally(() => {
+        setPending((value) => value - 1);
+      });
   };
+  const affectedWork = async (grant: DesktopExecutionGrant) => {
+    const jobs: DesktopProcess[] = [];
+    let next: string | undefined;
+    do {
+      const result = await process({
+        action: "list",
+        grantId: grant.grantId,
+        limit: 100,
+        ...(next ? { cursor: next } : {}),
+      });
+      if (result.kind !== "list") throw new Error("Could not read affected commands.");
+      jobs.push(...result.processes.filter(isDesktopProcessLive));
+      next = result.nextCursor ?? undefined;
+    } while (next);
+    return jobs;
+  };
+  // oxlint-disable-next-line t3code/react-effect-budget -- Load the selected remote process output while its panel is mounted.
+  useEffect(() => {
+    if (initialProcessId === undefined) return;
+    let active = true;
+    void process({ action: "read", processId: initialProcessId, maxBytes: 32 * 1024 })
+      .then((result) => {
+        if (active && result.kind === "process")
+          setPage(updateDesktopProcessOutputPage(null, result, "first"));
+      })
+      .catch((cause: unknown) => {
+        if (active)
+          setError(cause instanceof Error ? cause.message : "Could not read this process.");
+      });
+    return () => {
+      active = false;
+    };
+  }, [initialProcessId, process]);
+  const output = page?.result;
 
   return (
-    <View className="gap-3 rounded-[16px] bg-subtle p-3">
-      <Pressable
-        accessibilityRole="button"
-        accessibilityState={{ expanded }}
-        onPress={() => setExpanded(!expanded)}
-      >
-        <Text className="py-2 text-sm font-t3-bold text-foreground">
-          Command execution via {environmentLabel} {expanded ? "−" : "+"}
-        </Text>
-      </Pressable>
+    <View className="gap-3 rounded-xl bg-card p-3">
+      {
+        <ProcessButton
+          label={`${expanded ? "Hide" : "Show"} commands · ${environmentLabel}`}
+          onPress={() => setExpanded(!expanded)}
+          disabled={false}
+        />
+      }
       {expanded ? (
         <>
           <Text className="text-xs text-foreground-muted">
-            Commands run independently of screen sharing. Permission requests appear on this
-            desktop.
+            {kind} desktop {desktopId} ·{" "}
+            {threadId ? `Thread ${threadId}` : `Environment ${environmentId}`}
           </Text>
-          {error ? (
-            <Text accessibilityRole="alert" className="text-sm text-destructive">
-              {error}
-            </Text>
+          {error ? <Text accessibilityRole="alert">{error}</Text> : null}
+          {access && desktop.kind === "user" ? (
+            <DesktopExecutionPermissions
+              access={access}
+              desktop={desktop}
+              threadId={threadId}
+              affectedWork={affectedWork}
+              busy={busy}
+              submit={(input, source) => {
+                setPending((value) => value + 1);
+                void permission(input, source)
+                  .then(() => refresh())
+                  .catch((cause: unknown) =>
+                    setError(cause instanceof Error ? cause.message : "Permission change failed."),
+                  )
+                  .finally(() => setPending((value) => value - 1));
+              }}
+            />
           ) : null}
-          <View className="flex-row flex-wrap gap-3">
-            <Pressable
-              accessibilityRole="button"
+          {
+            <ProcessButton
+              label={"Refresh commands"}
+              onPress={() => void refresh()}
               disabled={busy}
-              onPress={() =>
-                void perform({
-                  operation: "access",
-                  desktop,
-                  input: { action: "request", desktop, scope: "environment" },
-                })
-              }
-            >
-              <Text className="py-2 text-sm font-t3-medium text-foreground">
-                Allow this environment
+            />
+          }
+          {processes.length === 0 ? <Text>No commands for this source.</Text> : null}
+          {processes.map((job) => (
+            <View key={job.processId} className="gap-2 rounded-xl bg-subtle p-3">
+              <Text selectable>{[job.executable, ...job.arguments].join(" ")}</Text>
+              <Text>
+                {job.status}
+                {job.timedOut ? " · Timed out" : ""}
+                {job.exitCode !== null ? ` · Exit ${job.exitCode}` : ""}
+                {job.signal ? ` · ${job.signal}` : ""}
               </Text>
-            </Pressable>
-            <Pressable
-              accessibilityRole="button"
-              disabled={busy}
-              onPress={() =>
-                void perform({
-                  operation: "access",
-                  desktop,
-                  input: { action: "request", desktop, scope: "desktop" },
-                })
-              }
-            >
-              <Text className="py-2 text-sm font-t3-medium text-foreground">
-                Allow all environments
+              <Text selectable className="text-xs text-foreground-muted">
+                Process {job.processId} · Thread {job.threadId} · Runtime {job.runtimeGeneration}
               </Text>
-            </Pressable>
-            <Pressable
-              accessibilityRole="button"
-              onPress={() =>
-                void perform({ operation: "access", desktop, input: { action: "revoke", desktop } })
-              }
-            >
-              <Text className="py-2 text-sm font-t3-medium text-foreground">Revoke and stop</Text>
-            </Pressable>
-          </View>
-          {access ? (
-            <Text className="text-xs text-foreground-muted">
-              Runs as {access.user} · {access.grants.length} permission grant
-              {access.grants.length === 1 ? "" : "s"}
-            </Text>
-          ) : null}
-          {access?.grants.map((grant) => (
-            <View key={grant.grantId} className="gap-1">
-              <Text className="text-xs text-foreground-muted">
-                {grant.scope === "desktop"
-                  ? "All environments"
-                  : grant.scope === "environment"
-                    ? "This environment"
-                    : `Thread ${grant.threadId}`}{" "}
-                · {grant.remembered ? "Remembered" : "Until T3 Code quits"}
-                {grant.expiresAt ? ` · Expires ${grant.expiresAt}` : ""}
-              </Text>
-              <Pressable
-                accessibilityRole="button"
-                disabled={busy}
-                onPress={() =>
-                  void perform({
-                    operation: "access",
-                    desktop,
-                    input: { action: "revoke", desktop, grantId: grant.grantId },
-                  })
-                }
-              >
-                <Text className="py-2 text-sm text-foreground">
-                  Revoke permission and stop its commands
-                </Text>
-              </Pressable>
-            </View>
-          ))}
-          {processes.length === 0 ? (
-            <Text className="text-xs text-foreground-muted">No commands in this environment.</Text>
-          ) : (
-            processes.map((process) => (
-              <View key={process.processId} className="gap-2 rounded-[12px] bg-card p-3">
-                <Text numberOfLines={2} className="text-xs text-foreground">
-                  {[process.executable, ...process.arguments].join(" ")}
-                </Text>
-                <Text className="text-xs text-foreground-muted">
-                  {process.status === "running"
-                    ? "Running"
-                    : process.timedOut
-                      ? "Timed out"
-                      : process.signal
-                        ? `Signal ${process.signal}`
-                        : `Exit ${process.exitCode}`}
-                </Text>
-                <View className="flex-row flex-wrap gap-4">
-                  <Pressable
-                    accessibilityRole="button"
-                    disabled={busy}
+              <View className="flex-row flex-wrap gap-2">
+                {
+                  <ProcessButton
+                    label={"Output"}
                     onPress={() =>
                       void perform({
-                        operation: "process",
-                        desktop,
-                        input: {
-                          action: "read",
-                          desktop,
-                          processId: process.processId,
-                          maxBytes: OUTPUT_PAGE_BYTES,
-                        },
+                        action: "read",
+                        processId: job.processId,
+                        maxBytes: 32 * 1024,
                       })
                     }
-                  >
-                    <Text className="py-2 text-sm text-foreground">Output</Text>
-                  </Pressable>
-                  {process.status === "running" ? (
-                    <>
-                      <Pressable
-                        accessibilityRole="button"
-                        disabled={busy}
+                    disabled={busy}
+                  />
+                }
+                {isDesktopProcessLive(job) ? (
+                  <>
+                    {
+                      <ProcessButton
+                        label={"Stop"}
                         onPress={() =>
                           void perform({
-                            operation: "process",
-                            desktop,
-                            input: { action: "signal", desktop, processId: process.processId },
+                            action: "signal",
+                            processId: job.processId,
+                            signal: "SIGTERM",
                           })
                         }
-                      >
-                        <Text className="py-2 text-sm text-foreground">Stop</Text>
-                      </Pressable>
-                      <Pressable
-                        accessibilityRole="button"
                         disabled={busy}
+                      />
+                    }
+                    {
+                      <ProcessButton
+                        label={"Force stop"}
                         onPress={() =>
                           void perform({
-                            operation: "process",
-                            desktop,
-                            input: {
-                              action: "signal",
-                              desktop,
-                              processId: process.processId,
-                              signal: "SIGKILL",
-                            },
+                            action: "signal",
+                            processId: job.processId,
+                            signal: "SIGKILL",
                           })
                         }
-                      >
-                        <Text className="py-2 text-sm text-foreground">Force stop</Text>
-                      </Pressable>
-                    </>
-                  ) : (
-                    <Pressable
-                      accessibilityRole="button"
-                      disabled={busy}
-                      onPress={() =>
-                        void perform({
-                          operation: "process",
-                          desktop,
-                          input: { action: "forget", desktop, processId: process.processId },
-                        })
-                      }
-                    >
-                      <Text className="py-2 text-sm text-foreground">Forget output</Text>
-                    </Pressable>
-                  )}
-                </View>
+                        disabled={busy}
+                      />
+                    }
+                  </>
+                ) : (
+                  <ProcessButton
+                    label={"Forget output"}
+                    onPress={() => void perform({ action: "forget", processId: job.processId })}
+                    disabled={busy}
+                  />
+                )}
               </View>
-            ))
-          )}
+              {isDesktopProcessLive(job) && !job.stdinClosed ? (
+                <ProcessInputControls
+                  process={job}
+                  busy={busy}
+                  inputAllowed={kind === "agent" || hasDesktopProcessInputGrant(access, job)}
+                  send={(input) => perform({ ...input, processId: job.processId })}
+                />
+              ) : null}
+            </View>
+          ))}
+          {listCursor ? (
+            <ProcessButton
+              label={"Newest commands"}
+              onPress={() => void refresh("")}
+              disabled={busy}
+            />
+          ) : null}
+          {cursor ? (
+            <ProcessButton
+              label={"Older commands"}
+              onPress={() => void refresh(cursor)}
+              disabled={busy}
+            />
+          ) : null}
           {output ? (
             <View className="gap-2">
-              <Text className="text-xs font-t3-bold text-foreground">
-                Captured output · {output.process.commandId}
-              </Text>
-              <ScrollView
-                key={`${output.process.processId}:${output.stdout.offset}:${output.stderr.offset}`}
-                nestedScrollEnabled
-                className="max-h-72"
-                contentContainerClassName="gap-2"
-              >
-                <Text selectable className="text-xs text-foreground">
+              <Text>Captured output · {output.process.commandId}</Text>
+              {
+                <ProcessButton
+                  label={"Close output"}
+                  onPress={() => setPage(null)}
+                  disabled={false}
+                />
+              }
+              <ScrollView className="max-h-80">
+                <Text selectable className="font-mono text-xs">
                   {output.stdout.data || "No stdout in this page."}
                 </Text>
                 {output.stderr.data ? (
-                  <Text selectable className="text-xs text-foreground">
+                  <Text selectable className="font-mono text-xs">
                     {output.stderr.data}
                   </Text>
                 ) : null}
               </ScrollView>
+              <Text className="text-xs">
+                Stdout bytes {output.stdout.offset}–{output.stdout.nextOffset} /{" "}
+                {output.stdout.totalBytes}; stderr {output.stderr.offset}–{output.stderr.nextOffset}{" "}
+                / {output.stderr.totalBytes}.
+              </Text>
               {output.stdout.truncated || output.stderr.truncated ? (
-                <Text className="text-xs text-foreground-muted">
-                  Some output exceeded the configured storage limit.
+                <Text>
+                  The storage limit retains the beginning and most recent tail. Paging skips
+                  discarded bytes.
                 </Text>
               ) : null}
-              {output.process.outputError ? (
-                <Text className="text-xs text-foreground-muted">{output.process.outputError}</Text>
-              ) : null}
-              <View className="flex-row flex-wrap items-center gap-3">
-                <Pressable
-                  accessibilityRole="button"
-                  accessibilityState={{ disabled: busy || !previousOutputOffsets }}
-                  disabled={busy || !previousOutputOffsets}
-                  className={busy || !previousOutputOffsets ? "opacity-40" : ""}
-                  onPress={() =>
-                    previousOutputOffsets &&
-                    void perform(
-                      {
-                        operation: "process",
-                        desktop,
-                        input: {
+              {output.process.outputError ? <Text>{output.process.outputError}</Text> : null}
+              <View className="flex-row flex-wrap gap-2">
+                {
+                  <ProcessButton
+                    label={"Previous page"}
+                    onPress={() =>
+                      void perform(
+                        {
                           action: "read",
-                          desktop,
                           processId: output.process.processId,
-                          ...previousOutputOffsets,
-                          maxBytes: OUTPUT_PAGE_BYTES,
+                          ...page!.history.at(-1)!,
+                          maxBytes: 32 * 1024,
+                          encoding: output.stdout.encoding,
                         },
-                      },
-                      "previous",
-                    )
-                  }
-                >
-                  <Text className="py-2 text-sm text-foreground">Previous page</Text>
-                </Pressable>
-                <Text className="text-xs text-foreground-muted">
-                  Page {(outputPage?.history.length ?? 0) + 1}
-                </Text>
-                <Pressable
-                  accessibilityRole="button"
-                  accessibilityState={{ disabled: busy || !canReadMoreOutput }}
-                  disabled={busy || !canReadMoreOutput}
-                  className={busy || !canReadMoreOutput ? "opacity-40" : ""}
-                  onPress={() =>
-                    void perform(
-                      {
-                        operation: "process",
-                        desktop,
-                        input: {
+                        "previous",
+                      )
+                    }
+                    disabled={busy || !page?.history.length}
+                  />
+                }
+                {
+                  <ProcessButton
+                    label={"Next / refresh"}
+                    onPress={() =>
+                      void perform(
+                        {
                           action: "read",
-                          desktop,
                           processId: output.process.processId,
                           stdoutOffset: output.stdout.nextOffset,
                           stderrOffset: output.stderr.nextOffset,
-                          maxBytes: OUTPUT_PAGE_BYTES,
+                          maxBytes: 32 * 1024,
+                          encoding: output.stdout.encoding,
                         },
-                      },
-                      "next",
-                    )
-                  }
-                >
-                  <Text className="py-2 text-sm text-foreground">
-                    {hasMoreOutput
-                      ? "Next page"
-                      : canReadMoreOutput
-                        ? "Check for new output"
-                        : "End of output"}
-                  </Text>
-                </Pressable>
+                        "next",
+                      )
+                    }
+                    disabled={
+                      busy ||
+                      !(hasMoreDesktopProcessOutput(output) || isDesktopProcessLive(output.process))
+                    }
+                  />
+                }
+                {
+                  <ProcessButton
+                    label={
+                      output.stdout.encoding === "base64" ? "Read as text" : "Read exact base64"
+                    }
+                    onPress={() =>
+                      void perform({
+                        action: "read",
+                        processId: output.process.processId,
+                        stdoutOffset: output.stdout.offset,
+                        stderrOffset: output.stderr.offset,
+                        maxBytes: 32 * 1024,
+                        encoding: output.stdout.encoding === "base64" ? "utf8" : "base64",
+                      })
+                    }
+                    disabled={busy}
+                  />
+                }
               </View>
-              <Pressable accessibilityRole="button" onPress={() => setOutputPage(null)}>
-                <Text className="py-2 text-sm text-foreground">Close output</Text>
-              </Pressable>
             </View>
           ) : null}
         </>
       ) : null}
     </View>
+  );
+}
+
+function ProcessInputControls({
+  process,
+  busy,
+  inputAllowed,
+  send,
+}: {
+  process: DesktopProcess;
+  busy: boolean;
+  inputAllowed: boolean;
+  send: (input: ProcessInput) => Promise<boolean>;
+}) {
+  const [expanded, setExpanded] = useState(false);
+  const disabled = busy || !inputAllowed;
+  const [text, setText] = useState("");
+  const [columns, setColumns] = useState("80");
+  const [rows, setRows] = useState("24");
+
+  return (
+    <View className="gap-2">
+      {
+        <ProcessButton
+          label={`${expanded ? "Hide" : "Show"} input`}
+          onPress={() => setExpanded(!expanded)}
+          disabled={false}
+        />
+      }
+      {expanded ? (
+        <>
+          {!inputAllowed ? (
+            <Text>
+              Allow commands for this thread before sending input. Output and stop remain available.
+            </Text>
+          ) : null}
+          <TextInput
+            accessibilityLabel={`Input for ${process.processId}`}
+            multiline
+            value={text}
+            onChangeText={setText}
+            editable={!disabled}
+            className="rounded-lg bg-card p-2 text-foreground"
+          />
+          <View className="flex-row flex-wrap gap-2">
+            {
+              <ProcessButton
+                label={"Send input"}
+                onPress={() => {
+                  const sent = text;
+                  void send({ action: "write", data: sent }).then((accepted) => {
+                    if (accepted) setText((current) => (current === sent ? "" : current));
+                  });
+                }}
+                disabled={disabled || !text}
+              />
+            }
+            {
+              <ProcessButton
+                label={"Send Enter"}
+                onPress={() => send({ action: "write", data: "\n" })}
+                disabled={disabled}
+              />
+            }
+            {
+              <ProcessButton
+                label={process.terminal ? "Send EOF" : "Close stdin"}
+                onPress={() =>
+                  send(
+                    process.terminal
+                      ? { action: "write", data: "\u0004" }
+                      : { action: "write", close: true },
+                  )
+                }
+                disabled={disabled}
+              />
+            }
+          </View>
+          {process.terminal ? (
+            <View className="gap-2">
+              <TextInput
+                accessibilityLabel="Terminal columns"
+                editable={!disabled}
+                keyboardType="number-pad"
+                value={columns}
+                onChangeText={setColumns}
+                className="rounded-lg bg-card p-2 text-foreground"
+              />
+              <TextInput
+                accessibilityLabel="Terminal rows"
+                editable={!disabled}
+                keyboardType="number-pad"
+                value={rows}
+                onChangeText={setRows}
+                className="rounded-lg bg-card p-2 text-foreground"
+              />
+              {
+                <ProcessButton
+                  label={"Resize terminal"}
+                  onPress={() =>
+                    send({ action: "resize", columns: Number(columns), rows: Number(rows) })
+                  }
+                  disabled={
+                    disabled ||
+                    ![columns, rows].every(
+                      (value) =>
+                        Number.isInteger(Number(value)) &&
+                        Number(value) >= 1 &&
+                        Number(value) <= 1000,
+                    )
+                  }
+                />
+              }
+            </View>
+          ) : null}
+        </>
+      ) : null}
+    </View>
+  );
+}
+
+function ProcessButton({
+  label,
+  onPress,
+  disabled,
+}: {
+  label: string;
+  onPress: () => void;
+  disabled: boolean;
+}) {
+  return (
+    <Pressable
+      accessibilityRole="button"
+      disabled={disabled}
+      onPress={onPress}
+      className="p-2 disabled:opacity-40"
+    >
+      <Text>{label}</Text>
+    </Pressable>
   );
 }

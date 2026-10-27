@@ -24,6 +24,7 @@ import {
   UserDesktopProcessInput,
   UserDesktopExecutionAccessInput,
   DesktopProcessResult,
+  DesktopProcessAccepted,
   DesktopProcessList,
   DesktopExecutionAccess,
 } from "@t3tools/contracts";
@@ -86,7 +87,7 @@ export const ComputerStatusTool = readonlyComputerTool(
 export const ComputerRequestAvailabilityTool = safeComputerTool(
   Tool.make("computer_request_availability", {
     description:
-      "Keep one exact user desktop returned by user_desktop_list available for possible later agent work without opening monitor sharing or requesting keyboard and pointer control. Call this early when a task may eventually need that desktop, especially before the user leaves. The availability lease prevents automatic locking and suspend, remains after computer_release and across later tasks, and ends only through computer_release_availability, computer_forget_control, manual locking, disabling the power policy, or quitting T3 Code. View and control requests establish the same lease automatically. The returned status reports keepAwake true when it is active. This operation is unnecessary for Agent desktops because their guest idle locking and suspend are disabled.",
+      "Keep one exact user desktop returned by user_desktop_list available for possible later agent work without opening monitor sharing or requesting keyboard and pointer control. Call this early when a task may eventually need that desktop, especially before the user leaves. The availability lease prevents automatic locking and suspend, remains after computer_release and across later tasks, and ends only through computer_release_availability, manual locking, disabling the power policy, or quitting T3 Code. View and control requests establish the same lease automatically. The returned status reports keepAwake true when it is active. This operation is unnecessary for Agent desktops because their guest idle locking and suspend are disabled.",
     parameters: ComputerAutomationAvailabilityInput,
     success: ComputerAutomationStatus,
     failure: Schema.Union([PreviewAutomationError, OrchestratorMcpFailure]),
@@ -171,7 +172,7 @@ export const ComputerActTool = computerTool(
 export const ComputerReleaseTool = safeComputerTool(
   Tool.make("computer_release", {
     description:
-      "Cancel pending authorization or end one explicitly targeted native view/control session immediately. For a user desktop, pass the exact target selected from user_desktop_list; for an Agent desktop, pass the concrete desktopId used by this agent so another parallel desktop is untouched. In-flight and queued input is cancelled, and any held keys or mouse buttons are released before the final status returns. Before releasing, use judgment to close temporary programs or windows and restore the prior focus unless leaving the result visible is useful or requested. The returned final status confirms cleanup, so do not call computer_status solely to verify release. Remembered GNOME access is retained, and the user-desktop availability lease remains active so a later task can reconnect before automatic locking. Use computer_release_availability separately only when allowing the user desktop to lock is actually appropriate. Use computer_forget_control to discard remembered approval and availability together.",
+      "Cancel pending authorization or end one explicitly targeted native view/control session immediately. For a user desktop, pass the exact target selected from user_desktop_list; for an Agent desktop, pass the concrete desktopId used by this agent so another parallel desktop is untouched. In-flight and queued input is cancelled, and any held keys or mouse buttons are released before the final status returns. Before releasing, use judgment to close temporary programs or windows and restore the prior focus unless leaving the result visible is useful or requested. The returned final status confirms cleanup, so do not call computer_status solely to verify release. Remembered GNOME access is retained, and the user-desktop availability lease remains active so a later task can reconnect before automatic locking. Use computer_release_availability separately only when allowing the user desktop to lock is actually appropriate. Use computer_forget_control to remove this thread’s scoped T3 screen grants. Shared operating-system consent is managed by the person at the destination desktop.",
     parameters: ComputerAutomationTargetInput,
     success: ComputerAutomationStatus,
     failure: Schema.Union([PreviewAutomationError, OrchestratorMcpFailure]),
@@ -184,7 +185,7 @@ export const ComputerReleaseTool = safeComputerTool(
 export const ComputerForgetControlTool = safeComputerTool(
   Tool.make("computer_forget_control", {
     description:
-      "End active computer access for one explicit desktop target. For a user desktop, pass the exact target selected from user_desktop_list; this also discards T3's remembered GNOME view and control restore tokens and releases retained desktop availability, so future access requires fresh user approval and may require unlocking. Pass a concrete Agent desktopId to release only that Agent desktop. Use this when access should not persist.",
+      "End active computer access for one explicit desktop target. For a user desktop, pass the exact target selected from user_desktop_list; this removes this thread’s T3 view/control grants and releases only its lease. Broader grants may still permit access. Shared operating-system restore tokens and other sources’ leases remain intact; only the person at the destination desktop can forget shared native consent. Pass a concrete Agent desktopId to release only that Agent desktop. Use this when access should not persist.",
     parameters: ComputerAutomationTargetInput,
     success: Schema.Null,
     failure: Schema.Union([PreviewAutomationError, OrchestratorMcpFailure]),
@@ -208,9 +209,9 @@ export const UserDesktopExecutionTool = computerTool(
 export const UserDesktopCommandTool = computerTool(
   Tool.make("user_desktop_command", {
     description:
-      "Start an exact executable and argv on the selected user desktop after user_desktop_execution grants access. Use a unique commandId; retrying the same id and command in this environment returns the original process, while different input is rejected. Retry IDs last until the process is forgotten or T3 Desktop quits. Invoke a shell explicitly for shell syntax, or a platform elevation command such as pkexec for local authentication. Set terminal:true or {columns,rows} for an interactive PTY; PTYs combine stdout and stderr. Environment inherits the desktop host account's environment unless inheritEnvironment:false; null entries remove variables. stdin supports UTF-8 or canonical base64; keepStdinOpen permits later pipe input. waitMs only bounds this call, while timeoutMs optionally limits process lifetime. Processes otherwise continue across turns, cancelled waits, and reconnects until stopped or T3 Desktop quits. Read, write, signal, resize, and forget through user_desktop_process. Output is stored on the selected host, 64 MiB per stream by default; maxStoredOutputBytes:null removes that storage limit. Returned byte offsets page output; use base64 for exact binary data. Never rerun an uncertain command under a new id before checking its original id or the process list.",
+      "Start an exact executable and argv on the selected user desktop after user_desktop_execution grants access. Use a unique commandId; retrying the same id and command in this environment returns the original process, while different input is rejected. Retry IDs survive output forgetting and last for this T3 Desktop runtime. Retrying forgotten output reports that it was removed and never starts the command again. Invoke a shell explicitly for shell syntax, or a platform elevation command such as pkexec for local authentication. Set terminal:true or {columns,rows} for an interactive PTY; PTYs combine stdout and stderr. Environment inherits the desktop host account's environment unless inheritEnvironment:false; null entries remove variables. stdin supports UTF-8 or canonical base64; keepStdinOpen permits later pipe input. waitMs only bounds this call, while timeoutMs optionally limits process lifetime. Processes otherwise continue across turns, cancelled waits, and reconnects until stopped or T3 Desktop quits. Read, write, signal, resize, and forget through user_desktop_process. Output is stored on the selected host, 64 MiB per stream by default; maxStoredOutputBytes:null removes that storage limit. Returned byte offsets page output; use base64 for exact binary data. Never rerun an uncertain command under a new id before checking its original id or the process list.",
     parameters: UserDesktopCommandInput,
-    success: DesktopProcessResult,
+    success: Schema.Union([DesktopProcessResult, DesktopProcessAccepted]),
     failure: Schema.Union([PreviewAutomationError, OrchestratorMcpFailure]),
     dependencies: userDesktopDependencies,
   }).annotate(Tool.Title, "Run user desktop command"),

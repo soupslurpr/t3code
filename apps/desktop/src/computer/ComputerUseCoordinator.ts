@@ -12,11 +12,14 @@ import * as Cause from "effect/Cause";
 import * as Clock from "effect/Clock";
 import * as Context from "effect/Context";
 import * as Duration from "effect/Duration";
+import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
 import * as Fiber from "effect/Fiber";
 import * as Layer from "effect/Layer";
 import * as Ref from "effect/Ref";
+import * as Stream from "effect/Stream";
+import * as DesktopScreenPermissions from "./DesktopScreenPermissions.ts";
 import * as Semaphore from "effect/Semaphore";
 
 import * as ComputerUse from "./ComputerUse.ts";
@@ -36,6 +39,13 @@ interface LeaseHolder {
   readonly expiresAtMs: number | null;
 }
 
+interface AcquisitionIntent {
+  readonly key: string;
+  readonly cancellation: Deferred.Deferred<never, ComputerUse.ComputerUseLeaseError>;
+  readonly finished: Deferred.Deferred<void>;
+  cancelled: boolean;
+}
+
 interface PendingAcquisition {
   readonly holder: LeaseHolder;
   readonly access: "view" | "control";
@@ -50,7 +60,8 @@ interface LeaseState {
   readonly explicitAvailability: ReadonlySet<string>;
   readonly humanAvailability: ReadonlySet<string>;
   readonly sequence: number;
-  readonly transitioning: boolean;
+  // Each native cleanup keeps acquisitions fenced until its own finalizer runs.
+  readonly cleanupCount: number;
 }
 
 interface NativeAcquisitionPlan {
@@ -76,9 +87,12 @@ type AcquisitionPlan = NativeAcquisitionPlan | HandoffPlan | HeldPlan;
 
 type ControlOptions = Pick<
   ComputerAutomationAccessInput,
-  "returnControlToAgent" | "takeoverLeaseId"
+  "returnControlToAgent" | "takeoverLeaseId" | "permissionPolicy" | "permission"
 >;
-type ViewOptions = Pick<ComputerAutomationAccessInput, "releaseControlToView">;
+type ViewOptions = Pick<
+  ComputerAutomationAccessInput,
+  "releaseControlToView" | "permissionPolicy" | "permission"
+>;
 
 /** Expands a remembered control grant to the view capability it necessarily includes. */
 function effectiveRememberedAccess(
@@ -94,6 +108,10 @@ function normalizeContext(context: DesktopComputerAutomationContext): Controller
     controllerKind: context.controllerKind ?? "agent",
     ...(context.environmentId === undefined ? {} : { environmentId: context.environmentId }),
     ...(context.threadId === undefined ? {} : { threadId: context.threadId }),
+    ...(context.lifecycle === undefined ? {} : { lifecycle: context.lifecycle }),
+    ...(context.connectionGeneration === undefined
+      ? {}
+      : { connectionGeneration: context.connectionGeneration }),
   };
 }
 
@@ -112,7 +130,7 @@ function sameEnvironment(left: ControllerContext, right: ControllerContext): boo
 }
 
 /** Creates an empty logical lease state without resetting lease-token uniqueness. */
-function emptyLeaseState(sequence = 0, transitioning = false): LeaseState {
+function emptyLeaseState(sequence = 0, cleanupCount = 0): LeaseState {
   return {
     viewers: new Map(),
     controller: null,
@@ -121,7 +139,7 @@ function emptyLeaseState(sequence = 0, transitioning = false): LeaseState {
     explicitAvailability: new Set(),
     humanAvailability: new Set(),
     sequence,
-    transitioning,
+    cleanupCount,
   };
 }
 
@@ -213,6 +231,7 @@ export interface ComputerUseCoordinatorShape {
   ) => Effect.Effect<ComputerAutomationStatus, ComputerUse.ComputerUseError>;
   readonly forget: (
     context: DesktopComputerAutomationContext,
+    permission?: ComputerAutomationAccessInput["permission"],
   ) => Effect.Effect<void, ComputerUse.ComputerUseError>;
 }
 
@@ -224,6 +243,7 @@ export class ComputerUseCoordinator extends Context.Service<
 /** Creates exclusive control and shared viewing leases for one user desktop. */
 export const make = Effect.gen(function* () {
   const computer = yield* ComputerUse.ComputerUse;
+  const permissions = yield* DesktopScreenPermissions.DesktopScreenPermissions;
   const identity = yield* UserDesktopIdentity.UserDesktopIdentity;
   const userDesktop = {
     id: identity.registration.desktopId,
@@ -234,6 +254,25 @@ export const make = Effect.gen(function* () {
   const leaseSemaphore = yield* Semaphore.make(1);
   const actionSemaphore = yield* Semaphore.make(1);
   const actionGeneration = yield* Ref.make(0);
+  const acquisitions = new Set<AcquisitionIntent>();
+  const cancelAcquisitions = (key?: string) => {
+    const cancelled = [...acquisitions].filter((intent) => key === undefined || intent.key === key);
+    for (const intent of cancelled) intent.cancelled = true;
+    // The caller first clears lease state, so interruption cannot duplicate its native cleanup.
+    return Effect.gen(function* () {
+      for (const intent of cancelled)
+        yield* Deferred.fail(
+          intent.cancellation,
+          new ComputerUse.ComputerUseLeaseError({
+            code: "request-cancelled",
+            cause: "desktop access was released while authorization was pending",
+          }),
+        );
+      yield* Effect.forEach(cancelled, (intent) => Deferred.await(intent.finished), {
+        discard: true,
+      });
+    });
+  };
   const activeAction = yield* Ref.make<Fiber.Fiber<
     ReadonlyArray<ComputerAutomationActionResult>,
     ComputerUse.ComputerUseError
@@ -251,14 +290,58 @@ export const make = Effect.gen(function* () {
       ),
     );
 
-  const finishTransition = Ref.update(state, (current) =>
-    current.transitioning ? { ...current, transitioning: false } : current,
-  );
+  const finishTransition = Ref.update(state, (current) => ({
+    ...current,
+    cleanupCount: current.cleanupCount - 1,
+  }));
 
   const cancelActiveAction = Effect.fn("ComputerUseCoordinator.cancelActiveAction")(function* () {
     yield* Ref.update(actionGeneration, (generation) => generation + 1);
     const action = yield* Ref.get(activeAction);
     if (action !== null) yield* Fiber.interrupt(action);
+  });
+
+  const reconcileAuthority = Effect.fn("ComputerUseCoordinator.reconcileAuthority")(function* () {
+    const cleanup = yield* withLeaseState(
+      Ref.modify(state, (current) => {
+        if (current.cleanupCount > 0) return [null, current] as const;
+        const viewers = new Map(
+          [...current.viewers].filter(([, holder]) => permissions.has(holder.context, "view")),
+        );
+        const controlLost =
+          current.controller !== null && !permissions.has(current.controller.context, "control");
+        const controller = controlLost ? null : current.controller;
+        const displacedController =
+          current.displacedController !== null &&
+          permissions.has(current.displacedController.context, "control")
+            ? current.displacedController
+            : null;
+        if (
+          !controlLost &&
+          viewers.size === current.viewers.size &&
+          displacedController === current.displacedController
+        )
+          return [null, current] as const;
+        for (const key of current.viewers.keys()) if (!viewers.has(key)) permissions.release(key);
+        const releaseNative = viewers.size === 0 && controller === null && current.pending === null;
+        return [
+          { controlLost, releaseNative },
+          {
+            ...current,
+            viewers,
+            controller,
+            displacedController,
+            cleanupCount: current.cleanupCount + 1,
+          },
+        ] as const;
+      }),
+    );
+    if (cleanup === null) return;
+    yield* Effect.gen(function* () {
+      if (cleanup.controlLost) yield* cancelActiveAction();
+      if (cleanup.releaseNative) yield* computer.release;
+      else if (cleanup.controlLost) yield* actionSemaphore.withPermits(1)(computer.releaseInputs);
+    }).pipe(Effect.ensuring(finishTransition));
   });
 
   const readNativeStatus = Effect.fn("ComputerUseCoordinator.readNativeStatus")(function* () {
@@ -269,11 +352,12 @@ export const make = Effect.gen(function* () {
     const cleanup = yield* withLeaseState(
       Ref.modify(state, (current) => {
         // Ignore status captured before another lease transition completed.
-        if (current !== observed || current.pending !== null || current.transitioning) {
+        if (current !== observed || current.pending !== null || current.cleanupCount > 0) {
           return [null, current] as const;
         }
         const revokeControl = current.controller !== null && status.permission !== "granted";
         const revokeView = !canView && current.viewers.size > 0;
+        if (revokeView) for (const key of current.viewers.keys()) permissions.release(key);
         if (!revokeControl && !revokeView) return [null, current] as const;
         const releaseAvailability =
           !canView && current.humanAvailability.size > 0 && current.explicitAvailability.size === 0;
@@ -285,7 +369,7 @@ export const make = Effect.gen(function* () {
             controller: revokeControl ? null : current.controller,
             displacedController: null,
             humanAvailability: canView ? current.humanAvailability : new Set<string>(),
-            transitioning: true,
+            cleanupCount: current.cleanupCount + 1,
           },
         ] as const;
       }),
@@ -308,7 +392,7 @@ export const make = Effect.gen(function* () {
     const nowMs = yield* Clock.currentTimeMillis;
     const cleanup = yield* withLeaseState(
       Ref.modify(state, (current) => {
-        if (current.transitioning) {
+        if (current.cleanupCount > 0) {
           return [
             { releaseInputs: false, releaseNative: false, releaseAvailability: false },
             current,
@@ -325,6 +409,7 @@ export const make = Effect.gen(function* () {
             current,
           ] as const;
         }
+        for (const key of expiredKeys) permissions.release(key);
         const hadAccess = current.controller !== null || current.viewers.size > 0;
         const viewers = new Map(
           Array.from(current.viewers).filter(([key]) => !expiredKeys.has(key)),
@@ -353,7 +438,9 @@ export const make = Effect.gen(function* () {
             controller,
             displacedController: controllerExpired ? null : current.displacedController,
             humanAvailability,
-            transitioning: releaseNative || controllerExpired || releaseAvailability,
+            cleanupCount:
+              current.cleanupCount +
+              (releaseNative || controllerExpired || releaseAvailability ? 1 : 0),
           },
         ] as const;
       }),
@@ -401,6 +488,7 @@ export const make = Effect.gen(function* () {
   const presentStatus = Effect.fn("ComputerUseCoordinator.presentStatus")(function* (
     input: DesktopComputerAutomationContext,
   ) {
+    yield* reconcileAuthority().pipe(Effect.ignore);
     yield* expireHumanLeases().pipe(Effect.ignore);
     yield* refreshHumanLease(input);
     const context = normalizeContext(input);
@@ -435,6 +523,7 @@ export const make = Effect.gen(function* () {
     return {
       ...status,
       desktop: userDesktop,
+      authorization: { protocolVersion: 2, grants: permissions.grants(context) },
       permission,
       rememberedAccess,
       lease: {
@@ -459,6 +548,7 @@ export const make = Effect.gen(function* () {
   const requireView = Effect.fn("ComputerUseCoordinator.requireView")(function* (
     input: DesktopComputerAutomationContext,
   ) {
+    yield* permissions.require(input, "view");
     yield* expireHumanLeases().pipe(Effect.ignore);
     yield* refreshHumanLease(input);
     const key = controllerKey(normalizeContext(input));
@@ -472,6 +562,7 @@ export const make = Effect.gen(function* () {
     batch: ComputerAutomationActionBatchInput,
     generation: number,
   ) {
+    yield* permissions.require(input, "control");
     yield* expireHumanLeases().pipe(Effect.ignore);
     yield* refreshHumanLease(input);
     return yield* withLeaseState(
@@ -492,7 +583,9 @@ export const make = Effect.gen(function* () {
             ? leaseRequired("the controller has no control lease for this desktop")
             : leaseConflict("another controller holds the desktop control lease");
         }
-        const action = yield* Effect.forkChild(computer.act(batch));
+        const action = yield* Effect.forkChild(
+          computer.act(batch, permissions.require(input, "control")),
+        );
         yield* Ref.set(activeAction, action);
         return action;
       }),
@@ -502,6 +595,7 @@ export const make = Effect.gen(function* () {
   const beginAcquisition = Effect.fn("ComputerUseCoordinator.beginAcquisition")(function* (
     input: DesktopComputerAutomationContext,
     access: "view" | "control",
+    intent: AcquisitionIntent,
     takeoverLeaseId?: string,
   ) {
     yield* expireHumanLeases().pipe(Effect.ignore);
@@ -510,6 +604,11 @@ export const make = Effect.gen(function* () {
     const nowMs = yield* Clock.currentTimeMillis;
     return yield* withLeaseState(
       Effect.gen(function* () {
+        if (intent.cancelled)
+          return yield* new ComputerUse.ComputerUseLeaseError({
+            code: "request-cancelled",
+            cause: "desktop access was released while authorization was pending",
+          });
         const current = yield* Ref.get(state);
         const key = controllerKey(context);
         const alreadyHeld =
@@ -517,7 +616,7 @@ export const make = Effect.gen(function* () {
             ? current.viewers.has(key) || current.controller?.key === key
             : current.controller?.key === key;
         if (alreadyHeld) return { _tag: "held" } as const;
-        if (current.transitioning || current.pending !== null) {
+        if (current.cleanupCount > 0 || current.pending !== null) {
           return yield* leaseConflict("another controller holds or is changing desktop access");
         }
         const [holder, sequence] = leaseHolder(current, context, nowMs);
@@ -574,6 +673,7 @@ export const make = Effect.gen(function* () {
 
   const completeNativeAcquisition = Effect.fn("ComputerUseCoordinator.completeNativeAcquisition")(
     function* (plan: NativeAcquisitionPlan) {
+      yield* permissions.require(plan.holder.context, plan.access);
       const holder = renewHumanLeaseHolder(plan.holder, yield* Clock.currentTimeMillis);
       const completed = yield* withLeaseState(
         Ref.modify(state, (current) => {
@@ -612,6 +712,7 @@ export const make = Effect.gen(function* () {
   const completeHandoff = Effect.fn("ComputerUseCoordinator.completeHandoff")(function* (
     plan: HandoffPlan,
   ) {
+    yield* permissions.require(plan.holder.context, "control");
     const holder = renewHumanLeaseHolder(plan.holder, yield* Clock.currentTimeMillis);
     const completed = yield* withLeaseState(
       Ref.modify(state, (current) => {
@@ -659,19 +760,25 @@ export const make = Effect.gen(function* () {
         if (current.pending?.holder !== plan.holder) return [null, current] as const;
         return [
           {
-            releaseNative: plan._tag === "native" && plan.nativeAccess !== null,
+            releaseNative:
+              plan._tag === "native" &&
+              plan.nativeAccess !== null &&
+              current.viewers.size === 0 &&
+              current.controller === null,
+            cancelNative: plan._tag === "native" && plan.nativeAccess !== null,
             releaseAvailability:
               plan.holder.context.controllerKind === "human" &&
               current.humanAvailability.size === 0 &&
               current.explicitAvailability.size === 0,
           },
-          { ...current, pending: null, transitioning: true },
+          { ...current, pending: null, cleanupCount: current.cleanupCount + 1 },
         ] as const;
       }),
     );
     if (cleanup === null) return;
     yield* Effect.gen(function* () {
       if (cleanup.releaseNative) yield* computer.release;
+      else if (cleanup.cancelNative) yield* computer.cancelPendingAccess;
       if (cleanup.releaseAvailability) yield* computer.releaseAvailability;
     }).pipe(
       Effect.catch((cause) =>
@@ -683,48 +790,85 @@ export const make = Effect.gen(function* () {
     );
   });
 
-  const acquire = Effect.fn("ComputerUseCoordinator.acquire")(function* (
-    context: DesktopComputerAutomationContext,
-    access: "view" | "control",
-    takeoverLeaseId?: string,
-  ) {
-    const plan = yield* beginAcquisition(context, access, takeoverLeaseId);
-    if (plan._tag === "held") {
-      yield* refreshHumanLease(context);
-      return yield* presentStatus(context);
-    }
-    const cleanupPending = removePendingAcquisition(plan.holder, access);
-    return yield* Effect.gen(function* () {
-      if (plan._tag === "handoff") {
-        yield* cancelActiveAction();
-        if (plan.requestNativeAvailability) yield* computer.requestAvailability;
-        yield* actionSemaphore.withPermits(1)(
-          computer.releaseInputs.pipe(Effect.andThen(completeHandoff(plan))),
+  const acquire = Effect.fn("ComputerUseCoordinator.acquire")(
+    function* (
+      context: DesktopComputerAutomationContext,
+      access: "view" | "control",
+      takeoverLeaseId?: string,
+      policy?: ComputerAutomationAccessInput["permissionPolicy"],
+      permission?: ComputerAutomationAccessInput["permission"],
+    ) {
+      const key = controllerKey(normalizeContext(context));
+      const cancellation = yield* Deferred.make<never, ComputerUse.ComputerUseLeaseError>();
+      const finished = yield* Deferred.make<void>();
+      const intent = { key, cancelled: false, cancellation, finished };
+      acquisitions.add(intent);
+      permissions.retain(key, context);
+      return yield* Effect.gen(function* () {
+        yield* permissions.request(context, access, policy, permission);
+        yield* permissions.require(context, access);
+        const plan = yield* beginAcquisition(context, access, intent, takeoverLeaseId);
+        if (plan._tag === "held") {
+          yield* refreshHumanLease(context);
+          return yield* presentStatus(context);
+        }
+        const cleanupPending = removePendingAcquisition(plan.holder, access);
+        return yield* Effect.gen(function* () {
+          if (plan._tag === "handoff") {
+            yield* cancelActiveAction();
+            if (plan.requestNativeAvailability) yield* computer.requestAvailability;
+            yield* actionSemaphore.withPermits(1)(
+              computer.releaseInputs.pipe(Effect.andThen(completeHandoff(plan))),
+            );
+            return yield* presentStatus(context);
+          }
+          if (plan.nativeAccess === "control") yield* computer.requestControl;
+          if (plan.nativeAccess === "view") {
+            yield* computer.status.pipe(
+              Effect.flatMap((status) =>
+                status.permission === "remembered" &&
+                status.rememberedAccess.includes("control") &&
+                !status.rememberedAccess.includes("view")
+                  ? computer.requestControl
+                  : computer.requestView,
+              ),
+            );
+          }
+          if (plan.requestNativeAvailability) {
+            yield* computer.requestAvailability;
+          }
+          yield* completeNativeAcquisition(plan);
+          return yield* presentStatus(context);
+        }).pipe(
+          Effect.onError(() => cancelAcquisition(plan)),
+          Effect.ensuring(cleanupPending),
         );
-        return yield* presentStatus(context);
-      }
-      if (plan.nativeAccess === "control") yield* computer.requestControl;
-      if (plan.nativeAccess === "view") {
-        yield* computer.status.pipe(
-          Effect.flatMap((status) =>
-            status.permission === "remembered" &&
-            status.rememberedAccess.includes("control") &&
-            !status.rememberedAccess.includes("view")
-              ? computer.requestControl
-              : computer.requestView,
+      }).pipe(
+        (acquisition) => Effect.raceFirst(acquisition, Deferred.await(cancellation)),
+        Effect.ensuring(
+          Effect.sync(() => acquisitions.delete(intent)).pipe(
+            Effect.andThen(Deferred.succeed(finished, undefined)),
           ),
-        );
-      }
-      if (plan.requestNativeAvailability) {
-        yield* computer.requestAvailability;
-      }
-      yield* completeNativeAcquisition(plan);
-      return yield* presentStatus(context);
-    }).pipe(
-      Effect.onError(() => cancelAcquisition(plan)),
-      Effect.ensuring(cleanupPending),
-    );
-  });
+        ),
+      );
+    },
+    (effect, context) =>
+      effect.pipe(
+        Effect.onError(() =>
+          Ref.get(state).pipe(
+            Effect.map((leases) => {
+              const key = controllerKey(normalizeContext(context));
+              if (
+                !leases.viewers.has(key) &&
+                leases.controller?.key !== key &&
+                ![...acquisitions].some((intent) => intent.key === key && !intent.cancelled)
+              )
+                permissions.release(key);
+            }),
+          ),
+        ),
+      ),
+  );
 
   const returnControlToAgent = Effect.fn("ComputerUseCoordinator.returnControlToAgent")(function* (
     input: DesktopComputerAutomationContext,
@@ -738,7 +882,7 @@ export const make = Effect.gen(function* () {
     const plan = yield* withLeaseState(
       Effect.gen(function* () {
         const current = yield* Ref.get(state);
-        if (current.transitioning || current.pending !== null) {
+        if (current.cleanupCount > 0 || current.pending !== null) {
           return yield* leaseConflict("desktop control is already changing");
         }
         if (current.controller?.key !== key) {
@@ -750,7 +894,8 @@ export const make = Effect.gen(function* () {
         if (
           displaced === null ||
           displaced.context.controllerKind !== "agent" ||
-          !current.viewers.has(displaced.key)
+          !current.viewers.has(displaced.key) ||
+          !permissions.has(displaced.context, "control")
         ) {
           return yield* leaseRequired(
             "there is no still-viewing displaced agent to receive control",
@@ -811,7 +956,7 @@ export const make = Effect.gen(function* () {
     const shouldReleaseInputs = yield* withLeaseState(
       Effect.gen(function* () {
         const current = yield* Ref.get(state);
-        if (current.transitioning || current.pending !== null) {
+        if (current.cleanupCount > 0 || current.pending !== null) {
           return yield* leaseConflict("desktop control is already changing");
         }
         if (current.controller?.key !== key) {
@@ -824,16 +969,16 @@ export const make = Effect.gen(function* () {
           ...current,
           controller: null,
           displacedController: null,
-          transitioning: true,
+          cleanupCount: current.cleanupCount + 1,
         });
         return true;
       }),
     );
     if (shouldReleaseInputs) {
-      yield* cancelActiveAction();
-      yield* actionSemaphore
-        .withPermits(1)(computer.releaseInputs)
-        .pipe(Effect.ensuring(finishTransition));
+      yield* cancelActiveAction().pipe(
+        Effect.andThen(actionSemaphore.withPermits(1)(computer.releaseInputs)),
+        Effect.ensuring(finishTransition),
+      );
     }
     return yield* presentStatus(context);
   });
@@ -843,12 +988,16 @@ export const make = Effect.gen(function* () {
     access: "view" | "control",
   ) {
     const context = normalizeContext(input);
+    yield* permissions.confirmShared(
+      context,
+      "Remember operating-system screen consent on this desktop?",
+    );
     const nowMs = yield* Clock.currentTimeMillis;
     const holder = yield* withLeaseState(
       Effect.gen(function* () {
         const current = yield* Ref.get(state);
         if (
-          current.transitioning ||
+          current.cleanupCount > 0 ||
           current.pending !== null ||
           current.controller !== null ||
           current.viewers.size > 0
@@ -869,12 +1018,18 @@ export const make = Effect.gen(function* () {
   const requestView: ComputerUseCoordinatorShape["requestView"] = (context, options) =>
     options?.releaseControlToView === true
       ? releaseControlToView(context)
-      : acquire(context, "view");
+      : acquire(context, "view", undefined, options?.permissionPolicy, options?.permission);
 
   const requestControl: ComputerUseCoordinatorShape["requestControl"] = (context, options) =>
     options?.returnControlToAgent === true
       ? returnControlToAgent(context)
-      : acquire(context, "control", options?.takeoverLeaseId);
+      : acquire(
+          context,
+          "control",
+          options?.takeoverLeaseId,
+          options?.permissionPolicy,
+          options?.permission,
+        );
 
   const rememberView: ComputerUseCoordinatorShape["rememberView"] = (context) =>
     remember(context, "view");
@@ -884,13 +1039,13 @@ export const make = Effect.gen(function* () {
 
   const requestAvailability: ComputerUseCoordinatorShape["requestAvailability"] = Effect.fn(
     "ComputerUseCoordinator.requestAvailability",
-  )(function* (input: DesktopComputerAutomationContext) {
+  )(function* (...[input]: Parameters<ComputerUseCoordinatorShape["requestAvailability"]>) {
     const context = normalizeContext(input);
     const key = controllerKey(context);
     yield* withLeaseState(
       Effect.gen(function* () {
         const current = yield* Ref.get(state);
-        if (current.transitioning) {
+        if (current.cleanupCount > 0) {
           return yield* leaseConflict("desktop access is changing");
         }
         yield* computer.requestAvailability;
@@ -906,7 +1061,7 @@ export const make = Effect.gen(function* () {
 
   const releaseAvailability: ComputerUseCoordinatorShape["releaseAvailability"] = Effect.fn(
     "ComputerUseCoordinator.releaseAvailability",
-  )(function* (input: DesktopComputerAutomationContext) {
+  )(function* (...[input]: Parameters<ComputerUseCoordinatorShape["releaseAvailability"]>) {
     const context = normalizeContext(input);
     const key = controllerKey(context);
     yield* withLeaseState(
@@ -925,10 +1080,13 @@ export const make = Effect.gen(function* () {
   });
 
   const snapshot: ComputerUseCoordinatorShape["snapshot"] = (context, input) =>
-    requireView(context).pipe(Effect.andThen(computer.snapshot(input)));
+    requireView(context).pipe(
+      Effect.andThen(computer.snapshot(input)),
+      Effect.tap(() => permissions.require(context, "view")),
+    );
 
   const act: ComputerUseCoordinatorShape["act"] = Effect.fn("ComputerUseCoordinator.act")(
-    function* (context, input) {
+    function* (...[context, input]: Parameters<ComputerUseCoordinatorShape["act"]>) {
       const generation = yield* Ref.get(actionGeneration);
       return yield* actionSemaphore.withPermits(1)(
         Effect.gen(function* () {
@@ -956,6 +1114,8 @@ export const make = Effect.gen(function* () {
     if (context.controllerKind !== "agent") {
       return yield* leaseConflict("only agent desktop access can be interrupted by a turn stop");
     }
+    const cancelAcquiring = cancelAcquisitions(controllerKey(context));
+    yield* permissions.cancel(context);
     const key = controllerKey(context);
     const cleanup = yield* withLeaseState(
       Ref.modify(state, (current) => {
@@ -970,32 +1130,37 @@ export const make = Effect.gen(function* () {
             controller: releasedControl ? null : current.controller,
             displacedController: releasedControl || displaced ? null : current.displacedController,
             pending: pending === null ? current.pending : null,
-            transitioning: current.transitioning || releasedControl || pending?.native === true,
+            cleanupCount:
+              current.cleanupCount + (releasedControl || pending?.native === true ? 1 : 0),
           },
         ] as const;
       }),
     );
-    if (cleanup !== null) {
-      yield* Effect.gen(function* () {
+    yield* Effect.gen(function* () {
+      yield* cancelAcquiring;
+      if (cleanup !== null) {
         if (cleanup.releasedControl) yield* cancelActiveAction();
         if (cleanup.cancelNative) yield* computer.cancelPendingAccess;
         if (cleanup.releasedControl) {
           yield* actionSemaphore.withPermits(1)(computer.releaseInputs);
         }
-      }).pipe(
-        Effect.ensuring(
-          cleanup.releasedControl || cleanup.cancelNative ? finishTransition : Effect.void,
-        ),
-      );
-    }
+      }
+    }).pipe(
+      Effect.ensuring(
+        cleanup?.releasedControl || cleanup?.cancelNative ? finishTransition : Effect.void,
+      ),
+    );
     return yield* presentStatus(context);
   });
 
   const release: ComputerUseCoordinatorShape["release"] = Effect.fn(
     "ComputerUseCoordinator.release",
-  )(function* (input: DesktopComputerAutomationContext) {
+  )(function* (...[input]: Parameters<ComputerUseCoordinatorShape["release"]>) {
     const context = normalizeContext(input);
+    const cancelAcquiring = cancelAcquisitions(controllerKey(context));
+    yield* permissions.cancel(context);
     const key = controllerKey(context);
+    permissions.release(key);
     const cleanup = yield* withLeaseState(
       Ref.modify(state, (current) => {
         const cancelledPending = current.pending?.holder.key === key;
@@ -1020,10 +1185,11 @@ export const make = Effect.gen(function* () {
           cancelledPending || releasedControl || releaseNative || releaseAvailability;
         return [
           {
-            cancelledPending,
+            cancelNative: cancelledPending && current.pending?.native === true,
             releaseInputs: releasedControl && !releaseNative,
             releaseNative,
             releaseAvailability,
+            ownsTransition: transitioning,
           },
           {
             ...current,
@@ -1032,76 +1198,87 @@ export const make = Effect.gen(function* () {
             displacedController: releasedControl ? null : current.displacedController,
             pending,
             humanAvailability,
-            transitioning,
+            cleanupCount: current.cleanupCount + (transitioning ? 1 : 0),
           },
         ] as const;
       }),
     );
     yield* Effect.gen(function* () {
+      yield* cancelAcquiring;
       if (cleanup.releaseInputs || cleanup.releaseNative) yield* cancelActiveAction();
-      if (cleanup.cancelledPending || cleanup.releaseNative) yield* computer.release;
-      else if (cleanup.releaseInputs) {
-        yield* actionSemaphore.withPermits(1)(computer.releaseInputs);
+      if (cleanup.releaseNative) yield* computer.release;
+      else {
+        if (cleanup.cancelNative) yield* computer.cancelPendingAccess;
+        if (cleanup.releaseInputs) {
+          yield* actionSemaphore.withPermits(1)(computer.releaseInputs);
+        }
       }
       if (cleanup.releaseAvailability) yield* computer.releaseAvailability;
-    }).pipe(Effect.ensuring(finishTransition));
+    }).pipe(Effect.ensuring(cleanup.ownsTransition ? finishTransition : Effect.void));
     return yield* presentStatus(context);
   });
 
   const forceRelease: ComputerUseCoordinatorShape["forceRelease"] = Effect.fn(
     "ComputerUseCoordinator.forceRelease",
-  )(function* (context: DesktopComputerAutomationContext) {
-    const sequence = yield* withLeaseState(
-      Ref.modify(state, (current) => [current.sequence, emptyLeaseState(current.sequence, true)]),
+  )(function* (...[context]: Parameters<ComputerUseCoordinatorShape["forceRelease"]>) {
+    yield* permissions.confirmShared(context, "End all screen access on this desktop?");
+    const cancelAcquiring = cancelAcquisitions();
+    yield* permissions.cancelAll;
+    yield* withLeaseState(
+      Ref.update(state, (current) => {
+        for (const key of current.viewers.keys()) permissions.release(key);
+        return emptyLeaseState(current.sequence, current.cleanupCount + 1);
+      }),
     );
-    yield* cancelActiveAction().pipe(
+    yield* cancelAcquiring.pipe(
+      Effect.andThen(cancelActiveAction()),
       Effect.andThen(computer.release),
       Effect.ensuring(computer.releaseAvailability.pipe(Effect.ignore)),
       Effect.ensuring(finishTransition),
     );
-    yield* Ref.update(state, (current) => ({ ...current, sequence }));
     return yield* presentStatus(context);
   });
 
   const forceForget: ComputerUseCoordinatorShape["forceForget"] = Effect.fn(
     "ComputerUseCoordinator.forceForget",
-  )(function* () {
-    yield* withLeaseState(Ref.update(state, (current) => emptyLeaseState(current.sequence, true)));
-    yield* cancelActiveAction().pipe(
+  )(function* (...[context]: Parameters<ComputerUseCoordinatorShape["forceForget"]>) {
+    yield* permissions.confirmShared(
+      context,
+      "Remove all T3 screen permissions and remembered operating-system consent?",
+    );
+    const cancelAcquiring = cancelAcquisitions();
+    yield* permissions.cancelAll;
+    yield* permissions.revokeAll;
+    yield* withLeaseState(
+      Ref.update(state, (current) => {
+        for (const key of current.viewers.keys()) permissions.release(key);
+        return emptyLeaseState(current.sequence, current.cleanupCount + 1);
+      }),
+    );
+    yield* cancelAcquiring.pipe(
+      Effect.andThen(cancelActiveAction()),
       Effect.andThen(computer.forget),
       Effect.ensuring(computer.releaseAvailability.pipe(Effect.ignore)),
       Effect.ensuring(finishTransition),
     );
   });
 
-  const forget: ComputerUseCoordinatorShape["forget"] = Effect.fn("ComputerUseCoordinator.forget")(
-    function* (input: DesktopComputerAutomationContext) {
-      const context = normalizeContext(input);
-      const key = controllerKey(context);
-      yield* withLeaseState(
-        Effect.gen(function* () {
-          const current = yield* Ref.get(state);
-          if (
-            current.transitioning ||
-            (current.controller !== null && current.controller.key !== key) ||
-            (current.pending !== null && current.pending.holder.key !== key)
-          ) {
-            return yield* leaseConflict("another controller holds or is changing desktop access");
-          }
-          yield* Ref.set(state, emptyLeaseState(current.sequence, true));
-        }),
-      );
-      yield* cancelActiveAction().pipe(
-        Effect.andThen(computer.forget),
-        Effect.ensuring(computer.releaseAvailability.pipe(Effect.ignore)),
-        Effect.ensuring(finishTransition),
-      );
-    },
+  const forget: ComputerUseCoordinatorShape["forget"] = (context, permission) =>
+    permission !== undefined
+      ? permissions.revoke(context, permission)
+      : context.controllerKind === "local"
+        ? forceForget(context)
+        : permissions.revokeOwn(context).pipe(Effect.andThen(release(context)), Effect.asVoid);
+
+  yield* permissions.changes.pipe(
+    Stream.runForEach(() => reconcileAuthority().pipe(Effect.ignore)),
+    Effect.forkScoped,
   );
 
   yield* Effect.sleep(HUMAN_LEASE_SWEEP_INTERVAL).pipe(
     Effect.andThen(
-      expireHumanLeases().pipe(
+      reconcileAuthority().pipe(
+        Effect.andThen(expireHumanLeases()),
         Effect.catch((cause) =>
           Effect.logWarning("could not expire User desktop human leases", {
             detail: String(cause).slice(0, 500),

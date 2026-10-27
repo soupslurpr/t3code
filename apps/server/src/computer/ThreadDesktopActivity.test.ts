@@ -14,7 +14,7 @@ const environmentId = EnvironmentId.make("selected-environment");
 const threadId = ThreadId.make("selected-thread");
 
 it.effect(
-  "bounds command output and history to the owning thread and scopes both transfer registries",
+  "keeps recent process milestones ahead of older tool rows with bounded thread-scoped output",
   () =>
     Effect.gen(function* () {
       const sql = yield* SqlClient.SqlClient;
@@ -22,6 +22,25 @@ it.effect(
         yield* sql`INSERT INTO orchestration_v2_projection_turn_items (turn_item_id, thread_id, ordinal, type, status, updated_at, payload_json)
       VALUES (${`command-${ordinal}`}, ${threadId}, ${ordinal}, 'dynamic_tool', 'completed', '2026-10-14T00:00:00Z', ${encode({ toolName: "mcp__t3_code__agent_desktop_command", input: "x".repeat(10_000), output: "y".repeat(20_000) })})`;
       }
+      yield* sql`INSERT INTO orchestration_v2_projection_turn_items (turn_item_id, thread_id, ordinal, type, status, updated_at, payload_json)
+        VALUES ('new-process-milestone', ${threadId}, 0, 'system_notice', 'completed', '2026-10-15T00:00:00Z', ${encode(
+          {
+            message: "Newest process completed",
+            desktopProcess: {
+              activityId: "generation:process:completed",
+              desktop: { kind: "user", desktopId: "target" },
+              environmentId,
+              threadId,
+              processId: "process",
+              commandId: "command",
+              runtimeGeneration: "generation",
+              phase: "completed",
+              status: "exited",
+              exitCode: 0,
+              signal: null,
+            },
+          },
+        )})`;
       yield* sql`INSERT INTO orchestration_v2_projection_turn_items (turn_item_id, thread_id, ordinal, type, status, updated_at, payload_json)
     VALUES ('foreign', 'another-thread', 100, 'dynamic_tool', 'completed', '2026-10-14T00:00:00Z', ${encode({ toolName: "user_desktop_command", output: "Foreign output" })})`;
       const calls: string[] = [];
@@ -56,10 +75,13 @@ it.effect(
         ),
       );
       assert.equal(result.commands.length, 20);
-      assert.equal(result.commands[0]?.id, "command-24");
-      assert.equal(result.commands.at(-1)?.id, "command-5");
-      assert.equal(result.commands[0]?.input.length, 4096);
-      assert.equal(result.commands[0]?.output.length, 8192);
+      assert.equal(result.commands[0]?.id, "new-process-milestone");
+      assert.equal(result.commands[0]?.process?.processId, "process");
+      assert.equal(result.commands[0]?.process?.status, "exited");
+      assert.equal(result.commands[1]?.id, "command-24");
+      assert.equal(result.commands.at(-1)?.id, "command-6");
+      assert.equal(result.commands[1]?.input.length, 4096);
+      assert.equal(result.commands[1]?.output.length, 8192);
       assert.deepEqual(calls, [
         `user:${environmentId}:${threadId}`,
         `agent:${environmentId}:${threadId}`,

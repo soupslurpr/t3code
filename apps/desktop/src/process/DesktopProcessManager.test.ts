@@ -200,13 +200,26 @@ describe("desktop process execution", () => {
         `process.${stream}.write('abcdefgh');process.stdin.resume()`,
         { keepStdinOpen: true, maxStoredOutputBytes: 4, waitMs: 0 },
       );
-      const retained = await manager.operate(owner, false, {
+      let retained = await manager.operate(owner, false, {
         action: "read",
         desktop,
         processId: initial.process.processId,
         waitMs: 30_000,
       });
-      expect(retained?.[stream]).toMatchObject({ data: "abcd", nextOffset: 4, truncated: true });
+      expect(retained?.[stream]).toMatchObject({ data: "abc", nextOffset: 3, truncated: true });
+      retained = await manager.operate(owner, false, {
+        action: "read",
+        desktop,
+        processId: initial.process.processId,
+        stdoutOffset: retained!.stdout.nextOffset,
+        stderrOffset: retained!.stderr.nextOffset,
+      });
+      expect(retained?.[stream]).toMatchObject({
+        data: "h",
+        offset: 7,
+        nextOffset: 8,
+        retainedEnd: 8,
+      });
 
       const controller = new AbortController();
       const reading = manager.operate(
@@ -268,6 +281,55 @@ describe("desktop process execution", () => {
     await expect(NodeFSP.readFile(result.process.stdoutPath)).rejects.toMatchObject({
       code: "ENOENT",
     });
+  });
+
+  it("retains recovery and shutdown ownership while a native job is unknown", async () => {
+    const initial = await command("uncertain", "process.stdin.resume()", {
+      keepStdinOpen: true,
+      waitMs: 0,
+    });
+    const entry = manager.get(initial.process.processId, owner, false);
+    // A post-spawn setup failure can leave the exact owner connected but its status unknown.
+    entry.snapshot = { ...entry.snapshot, status: "unknown" };
+    await expect(
+      manager.operate(owner, false, {
+        action: "forget",
+        desktop,
+        processId: initial.process.processId,
+      }),
+    ).rejects.toMatchObject({ code: "process-running" });
+    expect(manager.list(owner.environmentId)).toMatchObject([
+      { processId: initial.process.processId, status: "unknown" },
+    ]);
+    await manager.close();
+    expect(entry.snapshot.status).toBe("exited");
+    expect(entry.control?.destroyed).toBe(true);
+  });
+
+  it("delivers terminal EOF without closing or destroying the PTY", async () => {
+    const initial = await command(
+      "terminal-eof",
+      "process.stdin.on('end',()=>process.stdout.write('EOF received'));process.stdin.resume();process.stdout.write('ready')",
+      {
+        terminal: true,
+        waitMs: 0,
+      },
+    );
+    await manager.operate(owner, false, {
+      action: "read",
+      desktop,
+      processId: initial.process.processId,
+      waitMs: 30_000,
+    });
+    await manager.operate(owner, false, {
+      action: "write",
+      desktop,
+      processId: initial.process.processId,
+      data: "\u0004",
+    });
+    const result = await complete(initial);
+    expect(result.process.exitCode).toBe(0);
+    expect(result.stdout.data).toContain("EOF received");
   });
 
   it("keeps a process alive when its read is cancelled and supports explicit termination", async () => {
@@ -406,6 +468,33 @@ describe("desktop process execution", () => {
       expect((await complete(initial)).process.status).toBe("exited");
     },
   );
+
+  it("retains a binary tail and the final failure after exceeding the output limit", async () => {
+    const result = await command(
+      "failure-tail",
+      "process.stdout.write(Buffer.alloc(4096, 255));process.stdout.write('failure');process.exit(9)",
+      {
+        maxStoredOutputBytes: 1024,
+        encoding: "base64",
+      },
+    );
+    expect(result.process.exitCode).toBe(9);
+    expect(result.stdout).toMatchObject({
+      storedBytes: 1024,
+      nextOffset: 768,
+      totalBytes: 4103,
+      truncated: true,
+    });
+    const tail = await manager.operate(owner, false, {
+      action: "read",
+      desktop,
+      processId: result.process.processId,
+      stdoutOffset: 768,
+      encoding: "base64",
+    });
+    expect(tail?.stdout).toMatchObject({ offset: 3847, nextOffset: 4103 });
+    expect(Buffer.from(tail!.stdout.data, "base64").subarray(-7).toString()).toBe("failure");
+  });
 
   it("releases retained output when the desktop shuts down", async () => {
     const result = await command("shutdown", "process.stdout.write('temporary')");

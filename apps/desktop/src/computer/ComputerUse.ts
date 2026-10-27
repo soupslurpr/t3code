@@ -174,6 +174,7 @@ export class ComputerUseLeaseError extends Schema.TaggedError<ComputerUseLeaseEr
       "desktop-lease-required",
       "desktop-target-mismatch",
       "request-cancelled",
+      "permission-denied",
     ]),
     cause: Schema.String,
   },
@@ -670,6 +671,7 @@ export interface ComputerUseShape {
   ) => Effect.Effect<ComputerAutomationSnapshot, ComputerUseError>;
   readonly act: (
     input: ComputerAutomationActionBatchInput,
+    beforeAction?: Effect.Effect<void, ComputerUseError>,
   ) => Effect.Effect<ReadonlyArray<ComputerAutomationActionResult>, ComputerUseError>;
   readonly releaseInputs: Effect.Effect<void, ComputerUseError>;
   readonly cancelPendingAccess: Effect.Effect<void, ComputerUseError>;
@@ -1588,7 +1590,7 @@ export const makeWithOptions = Effect.fn("ComputerUse.makeWithOptions")(function
     }
   });
 
-  const act: ComputerUseShape["act"] = (input) =>
+  const act: ComputerUseShape["act"] = (input, beforeAction = Effect.void) =>
     inputSemaphore.withPermits(1)(
       Effect.gen(function* () {
         const { displays } = yield* readDisplays("act");
@@ -1697,6 +1699,7 @@ export const makeWithOptions = Effect.fn("ComputerUse.makeWithOptions")(function
         const actionResults: ComputerAutomationActionResult[] = [];
         for (const [index, action] of input.actions.entries()) {
           const actionResult = yield* Effect.gen(function* () {
+            yield* beforeAction;
             switch (action.type) {
               case "click": {
                 const target = resolvedPoint(resolvedPoints, index);

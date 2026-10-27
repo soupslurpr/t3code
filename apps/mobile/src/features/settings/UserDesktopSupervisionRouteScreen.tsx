@@ -1,3 +1,5 @@
+import { UserDesktopExecutionPanel, AgentDesktopExecutionPanel } from "./UserDesktopExecutionPanel";
+import { DesktopScreenPermissionsPanel } from "./DesktopScreenPermissionsPanel";
 import {
   AgentDesktopId,
   type AgentDesktopOwner,
@@ -604,6 +606,27 @@ function UserDesktopSupervisionContent({
             onPress={() => void releaseTransientAccess()}
           />
         ) : null}
+        {params.agentOwner ? (
+          <AgentDesktopExecutionPanel
+            desktopId={params.desktopId}
+            owner={params.agentOwner}
+            label={params.label}
+          />
+        ) : (
+          <>
+            <DesktopScreenPermissionsPanel
+              environmentId={params.environmentId}
+              desktopId={params.desktopId}
+              threadId={params.threadId}
+            />
+            <UserDesktopExecutionPanel
+              environmentId={params.environmentId}
+              environmentLabel={params.environmentLabel}
+              desktop={{ kind: "user", desktopId: params.desktopId }}
+              threadId={params.threadId}
+            />
+          </>
+        )}
         {params.threadId === undefined && params.agentOwner === undefined ? (
           <SupervisionButton
             label="End all access"

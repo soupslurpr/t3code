@@ -195,7 +195,7 @@ const serve = Effect.fn("ComputerHttpTest.serve")(function* (
   yield* Stream.runForEach(events, (event) =>
     event.type === "connected"
       ? Deferred.succeed(connected, undefined)
-      : event.type === "cancel"
+      : event.type === "cancel" || event.type === "lifecycle"
         ? Effect.void
         : (typeof response === "function"
             ? response(event.request)

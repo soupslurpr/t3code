@@ -1,3 +1,4 @@
+import * as DesktopExecutionAuthorizationHost from "../process/DesktopExecutionAuthorizationHost.ts";
 import {
   SERVER_EXIT_CODE_STATE_DIR_OWNED,
   DesktopBackendBootstrap,
@@ -171,6 +172,9 @@ function makeTestInstance(input: MakeInstanceInput) {
       ...input.desktopTelemetryPublisher,
     }),
     DesktopBrowserHost.layer,
+    Layer.succeed(DesktopExecutionAuthorizationHost.DesktopExecutionAuthorizationHost, {
+      open: Effect.succeed({ events: Stream.empty, handleCommandLine: () => Effect.void }),
+    }),
     DesktopWslEnvironment.layerTest(
       input.pruneRuntimes === undefined ? {} : { pruneRuntimes: input.pruneRuntimes },
     ),

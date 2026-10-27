@@ -1,3 +1,6 @@
+import type { AuthSessionId } from "@t3tools/contracts";
+import * as Option from "effect/Option";
+import { DesktopExecutionAuthorizationChannel } from "./DesktopExecutionAuthorizationChannel.ts";
 import * as ComputerObservationStore from "./ComputerObservationStore.ts";
 import {
   UserDesktopInventoryError,
@@ -22,6 +25,7 @@ export const runUserDesktopHumanRequest = Effect.fn("UserDesktopHuman.run")(func
   broker: PreviewAutomationBroker.PreviewAutomationBroker["Service"],
   scope: McpInvocationContext.McpThreadInvocationScope,
   input: UserDesktopHumanInvokeInput,
+  sessionId: AuthSessionId,
 ) {
   const { request } = input;
   if (request.operation === "list") {
@@ -65,8 +69,29 @@ export const runUserDesktopHumanRequest = Effect.fn("UserDesktopHuman.run")(func
       ...(input.timeoutMs === undefined ? {} : { timeoutMs: input.timeoutMs }),
     });
   switch (request.operation) {
-    case "execution":
+    case "screen-permission":
+      return yield* invokeComputer(
+        request.action === "remove"
+          ? "computerForgetControl"
+          : request.capability === "control"
+            ? "computerRequestControl"
+            : "computerRequestView",
+        {
+          desktop,
+          permission: request.permission,
+          ...(request.policy === undefined ? {} : { permissionPolicy: request.policy }),
+          observation: false,
+        },
+      );
+    case "execution": {
+      const authorization = yield* DesktopExecutionAuthorizationChannel;
+      const result = yield* authorization.invoke(sessionId, scope.thread.threadId, {
+        ...request.input,
+        desktop,
+      });
+      if (Option.isSome(result)) return result.value;
       return yield* invokeComputer("computerExecution", { ...request.input, desktop });
+    }
     case "status":
       return yield* invokeComputer("computerStatus", { desktop });
     case "request-view":

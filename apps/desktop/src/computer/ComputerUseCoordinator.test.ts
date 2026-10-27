@@ -9,6 +9,9 @@ import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
 import * as Fiber from "effect/Fiber";
 import * as Layer from "effect/Layer";
+import * as Semaphore from "effect/Semaphore";
+import * as Stream from "effect/Stream";
+import * as DesktopScreenPermissions from "./DesktopScreenPermissions.ts";
 import * as TestClock from "effect/testing/TestClock";
 
 import * as ComputerUse from "./ComputerUse.ts";
@@ -153,10 +156,29 @@ function makePendingComputer(
 const withCoordinator = <A, E, R>(
   effect: Effect.Effect<A, E, R | ComputerUseCoordinator.ComputerUseCoordinator>,
   computer: ComputerUse.ComputerUseShape,
+  permissions: Partial<DesktopScreenPermissions.DesktopScreenPermissions["Service"]> = {},
 ) =>
   effect.pipe(
     Effect.provide(
       ComputerUseCoordinator.layer.pipe(
+        Layer.provide(
+          Layer.succeed(DesktopScreenPermissions.DesktopScreenPermissions, {
+            has: () => true,
+            require: () => Effect.void,
+            request: () => Effect.void,
+            changes: Stream.empty,
+            confirmShared: () => Effect.void,
+            grants: () => [],
+            retain: () => {},
+            release: () => {},
+            cancel: () => Effect.void,
+            cancelAll: Effect.void,
+            revoke: () => Effect.void,
+            revokeOwn: () => Effect.void,
+            revokeAll: Effect.void,
+            ...permissions,
+          }),
+        ),
         Layer.provide(
           Layer.merge(
             Layer.succeed(ComputerUse.ComputerUse, ComputerUse.ComputerUse.of(computer)),
@@ -168,12 +190,259 @@ const withCoordinator = <A, E, R>(
   );
 
 describe("ComputerUseCoordinator", () => {
+  it.effect.each(["release", "authority-loss", "forceRelease", "forceForget"] as const)(
+    "keeps %s cleanup fenced across an unrelated release",
+    (operation) =>
+      Effect.gen(function* () {
+        const started = yield* Deferred.make<void>();
+        const finish = yield* Deferred.make<void>();
+        const calls: string[] = [];
+        let active = false;
+        let revoked = false;
+        const stop = Deferred.succeed(started, undefined).pipe(
+          Effect.andThen(Deferred.await(finish)),
+          Effect.tap(() =>
+            Effect.sync(() => {
+              active = false;
+            }),
+          ),
+        );
+        yield* withCoordinator(
+          Effect.gen(function* () {
+            const coordinator = yield* ComputerUseCoordinator.ComputerUseCoordinator;
+            const first = agent("first");
+            yield* coordinator.requestView(first);
+            revoked = operation === "authority-loss";
+            const cleanup = yield* (
+              operation === "authority-loss"
+                ? coordinator.status(first)
+                : operation === "release"
+                  ? coordinator.release(first)
+                  : coordinator[operation](human("settings"))
+            ).pipe(Effect.forkChild);
+            yield* Deferred.await(started);
+            yield* coordinator.release(agent("unrelated"));
+            const denied = yield* coordinator.requestView(agent("next")).pipe(Effect.flip);
+            assert.equal(ComputerUse.toComputerAutomationFailure(denied).code, "desktop-busy");
+            assert.lengthOf(calls, 1);
+            yield* Deferred.succeed(finish, undefined);
+            yield* Fiber.join(cleanup);
+            assert.equal((yield* coordinator.requestView(agent("next"))).lease?.access, "view");
+            assert.lengthOf(calls, 2);
+          }),
+          {
+            ...makeComputer(calls),
+            status: Effect.sync(() => ({
+              ...nativeStatus,
+              permission: active ? "granted" : "remembered",
+            })),
+            requestView: Effect.sync(() => {
+              active = true;
+              calls.push("view");
+              return nativeStatus;
+            }),
+            release: stop,
+            forget: stop,
+            releaseAvailability: Effect.succeed(nativeStatus),
+          },
+          { has: (context) => !(revoked && context.controllerId === "first") },
+        );
+      }),
+  );
+
+  it.effect.each([
+    ["release", "inputs-first"],
+    ["release", "native-first"],
+    ["forceRelease", "inputs-first"],
+    ["forceRelease", "native-first"],
+    ["forceForget", "inputs-first"],
+    ["forceForget", "native-first"],
+  ] as const)("preserves both cleanup owners for %s finishing %s", ([operation, order]) =>
+    Effect.gen(function* () {
+      const inputsStarted = yield* Deferred.make<void>();
+      const finishInputs = yield* Deferred.make<void>();
+      const nativeStarted = yield* Deferred.make<void>();
+      const finishNative = yield* Deferred.make<void>();
+      const calls: string[] = [];
+      const stop = Deferred.succeed(nativeStarted, undefined).pipe(
+        Effect.andThen(Deferred.await(finishNative)),
+      );
+      yield* withCoordinator(
+        Effect.gen(function* () {
+          const coordinator = yield* ComputerUseCoordinator.ComputerUseCoordinator;
+          yield* coordinator.requestControl(agent("first"));
+          yield* coordinator.requestView(agent("second"));
+          const first = yield* coordinator.release(agent("first")).pipe(Effect.forkChild);
+          yield* Deferred.await(inputsStarted);
+          const second = yield* (
+            operation === "release"
+              ? coordinator.release(agent("second"))
+              : coordinator[operation](human("settings"))
+          ).pipe(Effect.forkChild);
+          yield* Deferred.await(nativeStarted);
+          if (order === "inputs-first") {
+            yield* Deferred.succeed(finishInputs, undefined);
+            yield* Fiber.join(first);
+          } else {
+            yield* Deferred.succeed(finishNative, undefined);
+            yield* Fiber.join(second);
+          }
+          const denied = yield* coordinator.requestView(agent("next")).pipe(Effect.flip);
+          assert.equal(ComputerUse.toComputerAutomationFailure(denied).code, "desktop-busy");
+          yield* Deferred.succeed(finishInputs, undefined);
+          yield* Deferred.succeed(finishNative, undefined);
+          yield* Fiber.join(first);
+          yield* Fiber.join(second);
+          assert.equal((yield* coordinator.requestView(agent("next"))).lease?.access, "view");
+        }),
+        {
+          ...makeComputer(calls),
+          releaseInputs: Deferred.succeed(inputsStarted, undefined).pipe(
+            Effect.andThen(Deferred.await(finishInputs)),
+          ),
+          release: stop,
+          forget: stop,
+        },
+      );
+    }),
+  );
+
+  it.effect(
+    "withholds native acquisition until the released controller's input cleanup finishes",
+    () =>
+      Effect.gen(function* () {
+        const actionStarted = yield* Deferred.make<void>();
+        const cleanupStarted = yield* Deferred.make<void>();
+        const cleanupFinished = yield* Deferred.make<void>();
+        const viewQueued = yield* Deferred.make<void>();
+        const input = yield* Semaphore.make(1);
+        const calls: string[] = [];
+        const native = makeComputer(calls);
+        yield* withCoordinator(
+          Effect.gen(function* () {
+            const coordinator = yield* ComputerUseCoordinator.ComputerUseCoordinator;
+            yield* coordinator.requestControl(agent("first"));
+            const acting = yield* coordinator
+              .act(agent("first"), { actions: [] })
+              .pipe(Effect.forkChild);
+            yield* Deferred.await(actionStarted);
+            const releasing = yield* coordinator.release(agent("first")).pipe(Effect.forkChild);
+            yield* Deferred.await(cleanupStarted);
+            yield* coordinator.release(agent("unrelated"));
+            const acquiring = yield* coordinator
+              .requestView(agent("next"))
+              .pipe(Effect.result, Effect.forkChild);
+            const reachedNative = yield* Effect.raceFirst(
+              Deferred.await(viewQueued).pipe(Effect.as(true)),
+              Fiber.join(acquiring).pipe(Effect.as(false)),
+            );
+            assert.isFalse(reachedNative);
+            yield* Deferred.succeed(cleanupFinished, undefined);
+            yield* Fiber.join(releasing);
+            yield* Fiber.await(acting);
+            assert.equal((yield* Fiber.join(acquiring))._tag, "Failure");
+            assert.equal((yield* coordinator.requestView(agent("next"))).lease?.access, "view");
+          }),
+          {
+            ...native,
+            requestView: Deferred.succeed(viewQueued, undefined).pipe(
+              Effect.andThen(input.withPermit(native.requestView)),
+            ),
+            act: () =>
+              input.withPermit(
+                Deferred.succeed(actionStarted, undefined).pipe(
+                  Effect.andThen(Effect.never),
+                  Effect.onInterrupt(() =>
+                    Deferred.succeed(cleanupStarted, undefined).pipe(
+                      Effect.andThen(Deferred.await(cleanupFinished)),
+                    ),
+                  ),
+                ),
+              ),
+          },
+        );
+      }),
+  );
+
+  it.effect.each(["release", "forceRelease"] as const)(
+    "%s cancels native access still queued behind native preparation",
+    (operation) =>
+      Effect.gen(function* () {
+        const started = yield* Deferred.make<void>();
+        const resume = yield* Deferred.make<void>();
+        const calls: string[] = [];
+        const native = makeComputer(calls);
+        yield* withCoordinator(
+          Effect.gen(function* () {
+            const coordinator = yield* ComputerUseCoordinator.ComputerUseCoordinator;
+            const viewer = agent("viewer");
+            const pending = yield* coordinator.requestView(viewer).pipe(Effect.forkChild);
+            yield* Deferred.await(started);
+            yield* coordinator[operation](operation === "release" ? viewer : human("settings"));
+            yield* Deferred.succeed(resume, undefined);
+            const cancelled = yield* Fiber.join(pending).pipe(Effect.flip);
+            assert.equal(
+              ComputerUse.toComputerAutomationFailure(cancelled).code,
+              "request-cancelled",
+            );
+            assert.notInclude(calls, "requestView");
+            assert.equal((yield* coordinator.status(viewer)).lease?.access, "none");
+            yield* coordinator.requestView(viewer);
+            assert.equal((yield* coordinator.status(viewer)).lease?.access, "view");
+          }),
+          {
+            ...native,
+            requestView: Deferred.succeed(started, undefined).pipe(
+              Effect.andThen(Deferred.await(resume)),
+              Effect.andThen(native.requestView),
+            ),
+          },
+        );
+      }),
+  );
+
+  it.effect.each(["release", "interrupt", "forceRelease", "forceForget"] as const)(
+    "%s invalidates access between permission approval and native acquisition",
+    (operation) =>
+      Effect.gen(function* () {
+        const started = yield* Deferred.make<void>();
+        const resume = yield* Deferred.make<void>();
+        const calls: string[] = [];
+        yield* withCoordinator(
+          Effect.gen(function* () {
+            const coordinator = yield* ComputerUseCoordinator.ComputerUseCoordinator;
+            const viewer = agent("viewer");
+            const pending = yield* coordinator.requestView(viewer).pipe(Effect.forkChild);
+            yield* Deferred.await(started);
+            yield* coordinator[operation](
+              operation === "release" || operation === "interrupt" ? viewer : human("settings"),
+            );
+            yield* Deferred.succeed(resume, undefined);
+            const cancelled = yield* Fiber.join(pending).pipe(Effect.flip);
+            assert.equal(
+              ComputerUse.toComputerAutomationFailure(cancelled).code,
+              "request-cancelled",
+            );
+            assert.notInclude(calls, "requestView");
+            assert.equal((yield* coordinator.status(viewer)).lease?.access, "none");
+            yield* coordinator.requestView(viewer);
+            assert.equal((yield* coordinator.status(viewer)).lease?.access, "view");
+          }),
+          makeComputer(calls),
+          {
+            require: () =>
+              Deferred.succeed(started, undefined).pipe(Effect.andThen(Deferred.await(resume))),
+          },
+        );
+      }),
+  );
+
   it.effect.each([
     ["agent", "requestView"],
     ["agent", "requestControl"],
     ["local", "requestView"],
     ["local", "requestControl"],
-  ] as const)("releases availability acquired through %j", ([controllerKind, access]) => {
+  ] as const)("releases availability acquired through %s %s", ([controllerKind, access]) => {
     const calls: string[] = [];
     const controller = { ...agent("controller"), controllerKind };
     return withCoordinator(
@@ -592,7 +861,6 @@ describe("ComputerUseCoordinator", () => {
         );
       }),
   );
-
   it.effect("lets a human preempt and explicitly return control to the displaced agent", () => {
     const calls: string[] = [];
     return withCoordinator(
@@ -790,6 +1058,41 @@ describe("ComputerUseCoordinator", () => {
     }),
   );
 
+  it.effect("cancels a pending human handoff without closing the existing controller", () =>
+    Effect.gen(function* () {
+      const calls: string[] = [];
+      const started = yield* Deferred.make<void>();
+      const finish = yield* Deferred.make<void>();
+      yield* withCoordinator(
+        Effect.gen(function* () {
+          const coordinator = yield* ComputerUseCoordinator.ComputerUseCoordinator;
+          const controller = agent("controller");
+          const supervisor = human("supervisor");
+          yield* coordinator.requestControl(controller);
+          const pending = yield* coordinator.requestControl(supervisor).pipe(Effect.forkChild);
+          yield* Deferred.await(started);
+          yield* coordinator.release(supervisor);
+          yield* Deferred.succeed(finish, undefined);
+          const cancelled = yield* Fiber.join(pending).pipe(Effect.flip);
+          assert.equal(
+            ComputerUse.toComputerAutomationFailure(cancelled).code,
+            "request-cancelled",
+          );
+          assert.equal((yield* coordinator.status(controller)).lease?.access, "control");
+          assert.equal((yield* coordinator.status(supervisor)).lease?.access, "none");
+          assert.notInclude(calls, "release");
+          assert.notInclude(calls, "cancelPendingAccess");
+        }),
+        {
+          ...makeComputer(calls),
+          releaseInputs: Deferred.succeed(started, undefined).pipe(
+            Effect.andThen(Deferred.await(finish)),
+          ),
+        },
+      );
+    }),
+  );
+
   it.effect("requires a current lease token for human and cross-environment takeover", () => {
     const calls: string[] = [];
     return withCoordinator(
@@ -811,13 +1114,6 @@ describe("ComputerUseCoordinator", () => {
         yield* coordinator.requestControl(secondHuman, {
           takeoverLeaseId: humanConflict.lease!.takeoverLeaseId,
         });
-
-        const stale = yield* coordinator
-          .requestControl(firstHuman, {
-            takeoverLeaseId: humanConflict.lease!.takeoverLeaseId,
-          })
-          .pipe(Effect.flip);
-        assert.strictEqual(ComputerUse.toComputerAutomationFailure(stale).code, "desktop-busy");
 
         yield* coordinator.forceRelease(secondHuman);
         const remoteAgent = agent("remote-agent", differentEnvironmentId);
@@ -905,8 +1201,8 @@ describe("ComputerUseCoordinator", () => {
           yield* Deferred.await(firstActionStarted);
           const queued = yield* Effect.forkChild(
             coordinator.act(agentController, { actions: [{ type: "press", key: "B" }] }),
-            { startImmediately: true },
           );
+          yield* Effect.yieldNow;
           const takeover = yield* Effect.forkChild(coordinator.requestControl(supervisor));
           yield* Deferred.await(takeoverStarted);
           const interrupted = yield* Effect.flip(Fiber.join(first));
@@ -984,8 +1280,8 @@ describe("ComputerUseCoordinator", () => {
           yield* Deferred.await(started);
           const queued = yield* Effect.forkChild(
             coordinator.act(controller, { actions: [{ type: "press", key: "A" }] }),
-            { startImmediately: true },
           );
+          yield* Effect.yieldNow;
           yield* coordinator.interrupt(controller);
           yield* coordinator.requestControl(controller);
           for (const action of [active, queued]) {
@@ -1187,7 +1483,7 @@ describe("ComputerUseCoordinator", () => {
     ["agent", "interruption"],
     ["human", "failure"],
     ["human", "interruption"],
-  ] as const)("cleans up authorization for %j", ([controllerKind, termination]) =>
+  ] as const)("cleans up %s authorization after %s", ([controllerKind, termination]) =>
     Effect.gen(function* () {
       const calls: string[] = [];
       const started = yield* Deferred.make<void>();
@@ -1232,7 +1528,7 @@ describe("ComputerUseCoordinator", () => {
     ["interrupt", "success"],
     ["interrupt", "failure"],
   ] as const)(
-    "ignores late authorization after %s and a replacement request: %s",
+    "ignores late authorization after %s and %s with a replacement request",
     ([transition, completion]) =>
       Effect.gen(function* () {
         const calls: string[] = [];

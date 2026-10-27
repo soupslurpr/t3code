@@ -1,3 +1,4 @@
+import { DesktopScreenPermissionsPanel } from "./DesktopScreenPermissionsPanel";
 import { relativeTime } from "../../lib/time";
 import { squashAtomCommandFailure } from "@t3tools/client-runtime/state/runtime";
 import type {
@@ -343,6 +344,19 @@ export function SettingsUserDesktopsRouteScreen() {
                     </Text>
                   </View>
                 </View>
+                {group.routes
+                  .filter(
+                    (route) =>
+                      route.desktop.connectionState === "online" &&
+                      route.desktop.capabilities.includes("view"),
+                  )
+                  .map((route) => (
+                    <DesktopScreenPermissionsPanel
+                      key={`screen:${route.environmentId}`}
+                      environmentId={route.environmentId}
+                      desktopId={route.desktop.desktop.desktopId}
+                    />
+                  ))}
                 {group.routes
                   .filter(
                     (route) =>

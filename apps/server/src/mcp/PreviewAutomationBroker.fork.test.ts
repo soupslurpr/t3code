@@ -1,3 +1,5 @@
+import { AuthSessionId } from "@t3tools/contracts";
+import { DesktopExecutionAuthorizationChannel } from "../computer/DesktopExecutionAuthorizationChannel.ts";
 import * as ComputerObservationStore from "../computer/ComputerObservationStore.ts";
 import * as UserDesktops from "../persistence/UserDesktops.ts";
 import { expect, it } from "@effect/vitest";
@@ -22,7 +24,7 @@ import * as Layer from "effect/Layer";
 import * as Stream from "effect/Stream";
 import * as Fiber from "effect/Fiber";
 import { PersistenceSqlError } from "../persistence/Errors.ts";
-import { runUserDesktopHumanRequest } from "../computer/UserDesktopHuman.ts";
+import { runUserDesktopHumanRequest as runHumanRequest } from "../computer/UserDesktopHuman.ts";
 
 import * as McpInvocationContext from "./McpInvocationContext.ts";
 import * as PreviewAutomationBroker from "./PreviewAutomationBroker.ts";
@@ -64,7 +66,7 @@ const serveInventoryHost = Effect.fn("ForkBrokerTest.serveInventoryHost")(functi
   const events = yield* broker.connect(host);
   const fiber = yield* Stream.runForEach(events, (event) => {
     if (event.type === "connected") return Deferred.succeed(connected, undefined);
-    if (event.type === "cancel") return Effect.void;
+    if (event.type === "cancel" || event.type === "lifecycle") return Effect.void;
     requests.push(event.request);
     return broker.respond({
       clientId: host.clientId,
@@ -114,9 +116,9 @@ const serve = Effect.fn("ForkBrokerTest.serve")(function* (
               focused: true,
             })
           : Effect.void
-      ).pipe(Effect.andThen(Deferred.succeed(connected, undefined)));
+      ).pipe(Effect.orDie, Effect.andThen(Deferred.succeed(connected, undefined)));
     }
-    if (event.type === "cancel") return Effect.void;
+    if (event.type === "cancel" || event.type === "lifecycle") return Effect.void;
     received.push(event.request);
     return broker.respond({
       clientId: host.clientId,
@@ -1116,3 +1118,17 @@ it.effect("routes command execution to its exact desktop independently of screen
     ).toMatchObject({ desktops: [{ capabilities: ["execution"] }] });
   }).pipe(Effect.provide(layer), Effect.scoped),
 );
+
+function runUserDesktopHumanRequest(
+  ...args: [
+    Parameters<typeof runHumanRequest>[0],
+    Parameters<typeof runHumanRequest>[1],
+    Parameters<typeof runHumanRequest>[2],
+  ]
+) {
+  return runHumanRequest(...args, AuthSessionId.make("test-session")).pipe(
+    Effect.provideService(DesktopExecutionAuthorizationChannel, {
+      invoke: () => Effect.succeedNone,
+    }),
+  );
+}

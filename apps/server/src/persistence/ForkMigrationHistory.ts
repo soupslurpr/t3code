@@ -102,6 +102,53 @@ const decodeF14Condition = Schema.decodeUnknownSync(
   ),
 );
 
+// Released schema validation stays independent of future runtime condition fields.
+const decodeF16Condition = Schema.decodeSync(
+  Schema.fromJsonString(
+    Schema.Struct({
+      type: Schema.Literal("process"),
+      desktop: Schema.Struct({
+        kind: Schema.Literals(["user", "agent"]),
+        desktopId: Schema.String,
+      }),
+      processId: Schema.String,
+      runtimeGeneration: Schema.String,
+      deadlineAt: Schema.NullOr(Schema.String),
+      nextCheckAt: Schema.String,
+      released: Schema.Boolean,
+    }),
+  ),
+);
+const normalizedIndexSql = (sql: string) => sql.replace(/\s+/g, "").toLowerCase();
+const f15ActivityExpression = `CASE
+  WHEN event_type = 'message.updated'
+    AND ((json_extract(payload_json, '$.createdBy') = 'user'
+      AND json_extract(payload_json, '$.role') = 'user'
+      AND json_extract(payload_json, '$.notification') IS NULL)
+      OR json_extract(payload_json, '$.delegatedCompletion') IS NOT NULL)
+    THEN json_extract(payload_json, '$.createdAt')
+  WHEN event_type = 'run.updated'
+    THEN COALESCE(json_extract(payload_json, '$.completedAt'), json_extract(payload_json, '$.startedAt'))
+  WHEN event_type = 'subagent.updated'
+    THEN json_extract(payload_json, '$.completedAt')
+  WHEN event_type = 'turn-item.updated'
+    AND json_extract(payload_json, '$.type') = 'system_notice'
+    AND json_extract(payload_json, '$.desktopProcess.phase') IN ('started', 'input', 'completed')
+    THEN json_extract(payload_json, '$.completedAt')
+END`;
+const releasedDesktopIndexes = [
+  [
+    "desktop_authorization_activity_idx",
+    `CREATE INDEX desktop_authorization_activity_idx ON orchestration_events(stream_id, (${f15ActivityExpression}) DESC, sequence ASC) WHERE aggregate_kind = 'thread' AND (${f15ActivityExpression}) IS NOT NULL`,
+  ],
+  [
+    "desktop_activity_updated_idx",
+    "CREATE INDEX desktop_activity_updated_idx ON orchestration_v2_projection_turn_items(thread_id, updated_at DESC, ordinal DESC, turn_item_id DESC)",
+  ],
+] as const;
+const f16ReleaseIndex =
+  "CREATE INDEX idx_thread_monitors_process_release ON thread_monitors(wake_at) WHERE condition_type = 'process' AND json_extract(condition_json, '$.released') = 0 AND status NOT IN ('active', 'triggered')";
+
 const isPreviewHistory = (rows: ReadonlyArray<HistoryRow>) => {
   const tail = rows.filter((row) => row.migration_id >= 53);
   const legacy = tail.find(
@@ -432,6 +479,47 @@ export const adoptForkMigrationHistory = Effect.fn("adoptForkMigrationHistory")(
         for (const row of rows) decodeF14Condition(row.condition_json);
       },
       catch: () => invalidHistory("ThreadRunMonitors identity conflicts with its run condition"),
+    });
+  }
+
+  if (fork.length >= 15) {
+    for (const [name, expected] of releasedDesktopIndexes) {
+      const indexes = yield* sql<{
+        readonly sql: string;
+      }>`SELECT sql FROM sqlite_master WHERE type = 'index' AND name = ${name}`;
+      if (
+        indexes.length !== 1 ||
+        normalizedIndexSql(indexes[0]!.sql) !== normalizedIndexSql(expected)
+      )
+        return yield* invalidHistory(
+          "DesktopAuthorizationActivity identity conflicts with its indexes",
+        );
+    }
+  }
+  if (fork.length >= 16) {
+    const schema = yield* sql<{
+      readonly sql: string;
+    }>`SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'thread_monitors'`;
+    if (!schema[0]?.sql.includes("'process'"))
+      return yield* invalidHistory(
+        "ProcessMonitors identity conflicts with its condition constraint",
+      );
+    const indexes = yield* sql<{
+      readonly sql: string;
+    }>`SELECT sql FROM sqlite_master WHERE type = 'index' AND name = 'idx_thread_monitors_process_release'`;
+    if (
+      indexes.length !== 1 ||
+      normalizedIndexSql(indexes[0]!.sql) !== normalizedIndexSql(f16ReleaseIndex)
+    )
+      return yield* invalidHistory("ProcessMonitors identity conflicts with its release index");
+    const rows = yield* sql<{
+      readonly condition_json: string;
+    }>`SELECT condition_json FROM thread_monitors WHERE condition_type = 'process'`;
+    yield* Effect.try({
+      try: () => {
+        for (const row of rows) decodeF16Condition(row.condition_json);
+      },
+      catch: () => invalidHistory("ProcessMonitors identity conflicts with its process condition"),
     });
   }
 

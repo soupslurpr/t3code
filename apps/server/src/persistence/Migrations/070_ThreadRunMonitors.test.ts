@@ -58,7 +58,7 @@ it.effect.each([40, 63, 64, 65, 66, 69])(
       const sql = yield* SqlClient.SqlClient;
       yield* seed(base);
       const before = yield* snapshot;
-      yield* runMigrations();
+      yield* runMigrations({ toForkMigrationInclusive: 14 });
       const after = yield* snapshot;
       assert.deepEqual(after.monitors, before.monitors);
       assert.deepEqual(after.evidence, before.evidence);
@@ -90,8 +90,8 @@ it.effect.each([40, 63, 64, 65, 66, 69])(
       yield* sql`INSERT INTO thread_monitors (monitor_id, thread_id, label, condition_type, condition_json,
       continuation_mode, status, created_at, updated_at) VALUES ('run', 'owner', 'Wait', 'thread-run', ${run}, 'record-only', 'active', '2026-01-01', '2026-01-01')`;
       const adopted = yield* snapshot;
-      assert.deepEqual(yield* runMigrations(), []);
-      assert.deepEqual(yield* runMigrations(), []);
+      assert.deepEqual(yield* runMigrations({ toForkMigrationInclusive: 14 }), []);
+      assert.deepEqual(yield* runMigrations({ toForkMigrationInclusive: 14 }), []);
       assert.deepEqual(yield* snapshot, adopted);
       yield* sql`DELETE FROM thread_monitors WHERE monitor_id = 'computer'`;
       assert.deepEqual(yield* sql`SELECT monitor_id FROM thread_monitor_computer_evidence`, []);
@@ -100,7 +100,7 @@ it.effect.each([40, 63, 64, 65, 66, 69])(
 it.effect("starts with independent upstream69 and fork14 on a fresh database", () =>
   Effect.gen(function* () {
     const sql = yield* SqlClient.SqlClient;
-    yield* runMigrations();
+    yield* runMigrations({ toForkMigrationInclusive: 14 });
     assert.deepEqual(
       yield* sql`SELECT migration_id, name FROM effect_sql_fork_migrations WHERE migration_id=14`,
       [{ migration_id: 14, name: "ThreadRunMonitors" }],
@@ -123,12 +123,14 @@ it.effect.each(["claimed-without-rebuild", "failed-rebuild", "invalid-run"] as c
       else if (kind === "failed-rebuild")
         yield* sql`CREATE TABLE thread_monitors_next (wrong TEXT)`;
       else {
-        yield* runMigrations();
+        yield* runMigrations({ toForkMigrationInclusive: 14 });
         yield* sql`INSERT INTO thread_monitors (monitor_id, thread_id, label, condition_type, condition_json,
       continuation_mode, status, created_at, updated_at) VALUES ('bad', 'owner', 'Bad', 'thread-run', '{}', 'record-only', 'active', '2026-01-01', '2026-01-01')`;
       }
       const before = yield* snapshot;
-      assert.isTrue(Exit.isFailure(yield* Effect.exit(runMigrations())));
+      assert.isTrue(
+        Exit.isFailure(yield* Effect.exit(runMigrations({ toForkMigrationInclusive: 14 }))),
+      );
       assert.deepEqual(yield* snapshot, before);
     }).pipe(Effect.provide(memory)),
 );

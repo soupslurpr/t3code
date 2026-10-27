@@ -17,6 +17,7 @@ const state = vi.hoisted(() => ({
   allowed: true,
   currentState: "active",
   listeners: new Set<(state: string) => void>(),
+  atomListeners: new Set<() => void>(),
   environments: [{ environmentId: "remote", label: "Remote" }],
 }));
 vi.mock("@react-navigation/native", async () => {
@@ -34,9 +35,19 @@ vi.mock("@react-navigation/native", async () => {
   }: typeof import("@react-navigation/native") = nativeRequire("@react-navigation/core");
   return { NavigationContext, useIsFocused, useFocusEffect, useNavigation };
 });
-vi.mock("@effect/atom-react", () => ({
-  useAtomValue: (key: string) => (key === "connection" ? state.connected : state.allowed),
-}));
+vi.mock("@effect/atom-react", async () => {
+  const { useSyncExternalStore } = await import("react");
+  return {
+    useAtomValue: (key: string) =>
+      useSyncExternalStore(
+        (listener) => {
+          state.atomListeners.add(listener);
+          return () => state.atomListeners.delete(listener);
+        },
+        () => (key === "connection" ? state.connected : state.allowed),
+      ),
+  };
+});
 vi.mock("../../state/environments", () => ({
   useEnvironments: () => ({ environments: state.environments }),
 }));
@@ -142,6 +153,7 @@ function setup() {
   state.allowed = true;
   state.currentState = "active";
   state.listeners.clear();
+  state.atomListeners.clear();
   state.navigate.mockReset();
   state.refresh.mockReset();
   state.user.mockReset().mockResolvedValue({
@@ -169,13 +181,14 @@ function setup() {
       return container.textContent;
     },
     async render(threadId = "owner") {
-      await act(async () =>
+      await act(async () => {
+        for (const listener of state.atomListeners) listener();
         root.render(
           <NavigationContext.Provider value={navigation}>
             <ThreadDesktopsRouteScreen route={{ params: { environmentId: "remote", threadId } }} />
           </NavigationContext.Provider>,
-        ),
-      );
+        );
+      });
     },
     async focus(next: boolean) {
       focused = next;
@@ -240,4 +253,41 @@ it("refreshes only while focused, preserves its selected target, and never loops
   await screen.render("other");
   expect(screen.text).toContain("Agent other");
   expect(state.agent.mock.calls.every(([call]) => call.environmentId === "remote")).toBe(true);
+});
+
+it("keeps command refresh stable across inventory updates, focus and connection changes", async () => {
+  await using screen = setup();
+  state.agent.mockImplementation(async ({ input }) => ({
+    _tag: "Success",
+    value:
+      input.request.operation === "process"
+        ? { kind: "list", protocolVersion: 2, desktopId: "agent-owner", processes: [] }
+        : { desktops: [agent("owner"), agent("other")] },
+  }));
+  const reads = () =>
+    state.agent.mock.calls.filter(([call]) => call.input.request.operation === "process");
+  await screen.render();
+  await screen.press("Show commands · Agent owner");
+  expect(reads()).toHaveLength(1);
+  expect(screen.text).toContain("No commands for this source.");
+  await screen.render();
+  expect(reads()).toHaveLength(1);
+  await screen.advance();
+  expect(reads()).toHaveLength(2);
+  await screen.focus(false);
+  await screen.advance();
+  expect(reads()).toHaveLength(2);
+  await screen.focus(true);
+  expect(reads()).toHaveLength(3);
+  state.connected = false;
+  await screen.render();
+  await screen.advance();
+  expect(reads()).toHaveLength(3);
+  state.connected = true;
+  await screen.render();
+  expect(reads()).toHaveLength(4);
+  await screen.press("Hide commands · Agent owner");
+  await screen.advance();
+  expect(reads()).toHaveLength(4);
+  expect(reads().every(([call]) => call.input.threadId === "owner")).toBe(true);
 });

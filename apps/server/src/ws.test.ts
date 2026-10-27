@@ -1,3 +1,4 @@
+import { DesktopExecutionAuthorizationChannel } from "./computer/DesktopExecutionAuthorizationChannel.ts";
 import * as ThreadDesktopActivity from "./computer/ThreadDesktopActivity.ts";
 import { ThreadMonitorService } from "./threadMonitor/ThreadMonitorService.ts";
 import * as AgentDesktopManager from "./agentDesktop/AgentDesktopManager.ts";
@@ -580,6 +581,7 @@ it.effect(
             {},
             yield* PreviewAutomationBroker.PreviewAutomationBroker,
             yield* ServerBrowser.ServerBrowser,
+            yield* DesktopExecutionAuthorizationChannel,
           ).pipe(Layer.provide(configRpcServices)),
         ),
       );
@@ -642,6 +644,7 @@ it.effect(
           Layer.fresh(layerConfigSources),
           Layer.mock(PreviewAutomationBroker.PreviewAutomationBroker)({}),
           Layer.mock(ServerBrowser.ServerBrowser)({}),
+          Layer.mock(DesktopExecutionAuthorizationChannel)({}),
         ),
       ),
       Effect.scoped,
@@ -748,6 +751,7 @@ it.effect("on-demand clients get provider config without workspace snapshots", (
           {},
           yield* PreviewAutomationBroker.PreviewAutomationBroker,
           yield* ServerBrowser.ServerBrowser,
+          yield* DesktopExecutionAuthorizationChannel,
         ).pipe(Layer.provide(configRpcServices)),
       ),
     );
@@ -799,6 +803,7 @@ it.effect("on-demand clients get provider config without workspace snapshots", (
         Layer.fresh(layerConfigSources),
         Layer.mock(PreviewAutomationBroker.PreviewAutomationBroker)({}),
         Layer.mock(ServerBrowser.ServerBrowser)({}),
+        Layer.mock(DesktopExecutionAuthorizationChannel)({}),
       ),
     ),
     Effect.scoped,

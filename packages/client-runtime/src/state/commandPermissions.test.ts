@@ -12,6 +12,7 @@ import {
   AuthPreviewOperateScope,
   AuthSettingsWriteScope,
   AuthSourceControlWriteScope,
+  AuthTerminalOperateScope,
   ThreadId,
   EnvironmentId,
   ScheduledTaskId,
@@ -409,4 +410,106 @@ it.effect("rejects protected unary and streamed RPCs outside a guarded command",
     expect(streamed._tag).toBe("EnvironmentAuthorizationError");
     expect(writes).toBe(0);
   }),
+);
+
+it.effect(
+  "requires both current destination grants for desktop execution, including after stale UI permission",
+  () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const registry = yield* setup;
+        const permission = createCommandPermissions(runtime, WS_METHODS.userDesktopHumanInvoke);
+        const desktop = { kind: "user", desktopId: "desktop" } as const;
+        const input = {
+          request: {
+            operation: "execution",
+            desktopId: desktop.desktopId,
+            input: { operation: "access", desktop, input: { action: "request", desktop } },
+          },
+        };
+        registry.set(sessions(env), AsyncResult.success(grant(true)));
+        expect(registry.get(permission.permissionAtom(env, input))).toBe(false);
+        expect(
+          (yield* permission.authorize(registry, env, input).pipe(Effect.flip)).requiredScope,
+        ).toBe(AuthTerminalOperateScope);
+        const complete = {
+          ...grant(true),
+          scopes: [AuthOrchestrationOperateScope, AuthTerminalOperateScope],
+          permissions: [AuthOrchestrationOperateScope, AuthTerminalOperateScope],
+        };
+        registry.set(sessions(env), AsyncResult.success(complete));
+        expect(registry.get(permission.permissionAtom(env, input))).toBe(true);
+        yield* permission.authorize(registry, env, input);
+        registry.set(sessions(other), AsyncResult.success(grant(true)));
+        expect(
+          (yield* permission.authorize(registry, other, input).pipe(Effect.flip)).requiredScope,
+        ).toBe(AuthTerminalOperateScope);
+        registry.set(sessions(env), AsyncResult.success(grant(true)));
+        expect(
+          (yield* permission.authorize(registry, env, input).pipe(Effect.flip)).requiredScope,
+        ).toBe(AuthTerminalOperateScope);
+        registry.set(
+          sessions(env),
+          AsyncResult.success({
+            ...grant(false),
+            scopes: [AuthTerminalOperateScope],
+            permissions: [AuthTerminalOperateScope],
+          }),
+        );
+        expect(
+          (yield* permission.authorize(registry, env, input).pipe(Effect.flip)).requiredScope,
+        ).toBe(AuthOrchestrationOperateScope);
+      }),
+    ),
+);
+
+it.effect(
+  "requires both current grants for Agent desktop process supervision after cached availability",
+  () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const registry = yield* setup;
+        const permission = createCommandPermissions(runtime, WS_METHODS.agentDesktopHumanInvoke);
+        const input = {
+          threadId: ThreadId.make("thread"),
+          request: {
+            operation: "process",
+            owner: { environmentId: env, threadId: ThreadId.make("thread"), controllerId: "human" },
+            input: { action: "list", desktopId: "agent-desktop" },
+          },
+        } as const;
+        registry.set(sessions(env), AsyncResult.success(grant(true)));
+        expect(registry.get(permission.permissionAtom(env, input))).toBe(false);
+        expect(
+          (yield* permission.authorize(registry, env, input).pipe(Effect.flip)).requiredScope,
+        ).toBe(AuthTerminalOperateScope);
+        const complete = {
+          ...grant(true),
+          scopes: [AuthOrchestrationOperateScope, AuthTerminalOperateScope],
+          permissions: [AuthOrchestrationOperateScope, AuthTerminalOperateScope],
+        };
+        registry.set(sessions(env), AsyncResult.success(complete));
+        expect(registry.get(permission.permissionAtom(env, input))).toBe(true);
+        yield* permission.authorize(registry, env, input);
+        registry.set(sessions(other), AsyncResult.success(grant(true)));
+        expect(
+          (yield* permission.authorize(registry, other, input).pipe(Effect.flip)).requiredScope,
+        ).toBe(AuthTerminalOperateScope);
+        registry.set(sessions(env), AsyncResult.success(grant(true)));
+        expect(
+          (yield* permission.authorize(registry, env, input).pipe(Effect.flip)).requiredScope,
+        ).toBe(AuthTerminalOperateScope);
+        registry.set(
+          sessions(env),
+          AsyncResult.success({
+            ...grant(false),
+            scopes: [AuthTerminalOperateScope],
+            permissions: [AuthTerminalOperateScope],
+          }),
+        );
+        expect(
+          (yield* permission.authorize(registry, env, input).pipe(Effect.flip)).requiredScope,
+        ).toBe(AuthOrchestrationOperateScope);
+      }),
+    ),
 );

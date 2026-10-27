@@ -1,3 +1,4 @@
+import { AgentDesktopCommandInput, DesktopProcess } from "@t3tools/contracts";
 import { runAgentDesktopHumanRequest } from "./AgentDesktopHuman.ts";
 import {
   AgentDesktopId,
@@ -48,6 +49,17 @@ const decodeRecordedAccessibilityLocator = Schema.decodeSync(
 );
 
 /** Creates a deterministic in-memory hypervisor and its recorded calls. */
+const decodeCommandRequest = Schema.decodeSync(
+  Schema.fromJsonString(
+    Schema.Struct({
+      action: Schema.String,
+      process: Schema.optional(DesktopProcess),
+      processId: Schema.optional(Schema.String),
+      input: Schema.optional(AgentDesktopCommandInput),
+    }),
+  ),
+);
+
 const makeQemu = (
   accessibility: boolean,
   acceleratedGraphicsAvailable: boolean,
@@ -87,6 +99,7 @@ const makeQemu = (
     const sendKeyFailed = yield* Ref.make(false);
     const wheelAcknowledgementLost = yield* Ref.make(false);
     const captureEnabled = yield* Ref.make(captureAvailable);
+    const commandReceipts = new Map<string, DesktopProcess>();
     let windowActivationAttemptCount = 0;
     const record = (call: string) => Ref.update(calls, (current) => [...current, call]);
     const service = QemuAgentDesktop.QemuAgentDesktop.of({
@@ -230,6 +243,68 @@ const makeQemu = (
           : Effect.die("unexpected guest command"),
       executeGuestProcess: (id, input) => {
         const argumentsValue = input.arguments ?? [];
+        if (argumentsValue[0]?.includes("/command-helper-")) {
+          const request = decodeCommandRequest(new TextDecoder().decode(input.stdin));
+          return Effect.gen(function* () {
+            if (request.action === "start" && request.process !== undefined) {
+              const environment = request.input?.environment ?? {};
+              yield* Ref.set(
+                commandEnvironment,
+                Array.isArray(environment)
+                  ? environment.map(({ name, value }) => `${name}=${value}`)
+                  : Object.entries(environment).map(([name, value]) => `${name}=${value}`),
+              );
+              if (request.input?.executable === "/usr/bin/t3-block") {
+                yield* Deferred.succeed(commandStarted, undefined);
+                yield* Deferred.await(releaseCommand);
+              }
+              commandReceipts.set(request.process.processId, {
+                ...request.process,
+                status: "exited",
+                exitCode: 0,
+                stdinClosed: true,
+                completedAt: DateTime.formatIso(yield* DateTime.now),
+              });
+            }
+            const process = commandReceipts.get(
+              request.processId ?? request.process?.processId ?? "",
+            );
+            const output = {
+              data: "ok\n",
+              encoding: "utf8",
+              offset: 0,
+              nextOffset: 3,
+              totalBytes: 3,
+              storedBytes: 3,
+              truncated: false,
+              invalidUtf8: false,
+            };
+            return {
+              exitCode: 0,
+              stderr: "",
+              stdoutTruncated: false,
+              stderrTruncated: false,
+              stdout: encodeUnknownJson(
+                request.action === "capabilities"
+                  ? { version: 2, generation: "guest-test", cgroup: 2, systemdVersion: "262" }
+                  : process === undefined
+                    ? { version: 2, error: "receipt-missing" }
+                    : {
+                        version: 2,
+                        process,
+                        stdout: output,
+                        stderr: {
+                          ...output,
+                          data: "",
+                          nextOffset: 0,
+                          totalBytes: 0,
+                          storedBytes: 0,
+                        },
+                      },
+              ),
+            };
+          });
+        }
         const encodedTextInput = argumentsValue.at(-1);
         const successfulTextInsertion = () => {
           if (typeof encodedTextInput !== "string") {
@@ -2288,7 +2363,7 @@ describe("AgentDesktopManager", () => {
           arguments: ["ok"],
         });
         assert.equal(command.stdout, "ok\n");
-        assert.equal(command.exitCode, 0);
+        assert.equal("exitCode" in command && command.exitCode, 0);
 
         const file = yield* manager.readFile(owner, {
           desktopId: desktop.id,

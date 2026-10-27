@@ -258,8 +258,29 @@ export const ThreadMonitorRunCondition = Schema.Struct({
 });
 export type ThreadMonitorRunCondition = typeof ThreadMonitorRunCondition.Type;
 
+export const ThreadMonitorProcessCondition = Schema.Struct({
+  type: Schema.Literal("process"),
+  desktop: ComputerDesktopTarget,
+  processId: TrimmedNonEmptyString.check(Schema.isMaxLength(128)),
+  runtimeGeneration: TrimmedNonEmptyString.check(Schema.isMaxLength(128)),
+  deadlineAt: Schema.NullOr(IsoDateTime),
+  nextCheckAt: IsoDateTime,
+  released: Schema.Boolean,
+});
+export type ThreadMonitorProcessCondition = typeof ThreadMonitorProcessCondition.Type;
+
 /** Selects when a durable monitor becomes eligible to trigger. */
 export const ThreadMonitorScheduleInput = Schema.Union([
+  Schema.Struct({
+    type: Schema.Literal("process"),
+    desktop: ComputerDesktopTarget,
+    processId: ThreadMonitorProcessCondition.fields.processId,
+    runtimeGeneration: ThreadMonitorProcessCondition.fields.runtimeGeneration,
+    deadlineAt: Schema.optional(IsoDateTime),
+  }).annotate({
+    description:
+      "Wait for an exact process owned by this thread. Requires current command permission at registration. Returns terminal status only, including after natural permission expiry. A deadline ends the wait, never the command.",
+  }),
   Schema.Struct({
     type: Schema.Literal("thread-run"),
     threadId: ThreadId.annotate({
@@ -298,6 +319,7 @@ export const ThreadMonitorScheduleInput = Schema.Union([
 export type ThreadMonitorScheduleInput = typeof ThreadMonitorScheduleInput.Type;
 
 export const ThreadMonitorCondition = Schema.Union([
+  ThreadMonitorProcessCondition,
   ThreadMonitorRunCondition,
   Schema.Struct({
     type: Schema.Literal("time"),
@@ -377,13 +399,14 @@ export const ThreadMonitorSummary = Schema.Struct({
   id: ThreadMonitorId,
   label: MonitorLabel,
   status: ThreadMonitorStatus,
-  condition: Schema.Literals(["time", "signal", "image-change", "model", "thread-run"]),
+  condition: Schema.Literals(["time", "signal", "image-change", "model", "thread-run", "process"]),
   criterion: Schema.NullOr(ComputerWatchCriterion),
   nextCheckAt: Schema.NullOr(IsoDateTime),
   deadlineAt: Schema.NullOr(IsoDateTime),
   continuation: ThreadMonitorContinuation,
   reviewRequired: Schema.Boolean,
   targetRun: Schema.optional(ThreadMonitorRunCondition),
+  targetProcess: Schema.optional(ThreadMonitorProcessCondition),
   blockedReason: Schema.optional(Schema.NullOr(Schema.String)),
   review: Schema.optional(ThreadMonitorComputerReview),
   usage: Schema.optional(ThreadMonitorComputerUsage),

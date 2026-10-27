@@ -10,7 +10,7 @@ import * as NodeStream from "node:stream";
 import type { IPty } from "node-pty";
 import * as DateTime from "effect/DateTime";
 
-import { ThreadId } from "@t3tools/contracts";
+import { EnvironmentId, ThreadId, isDesktopProcessLive } from "@t3tools/contracts";
 import type {
   DesktopProcess,
   DesktopProcessOutput,
@@ -40,6 +40,7 @@ interface ManagerOptions {
   readonly user: string;
   readonly homeDirectory: string;
   readonly now: () => number;
+  readonly onStatusChange?: ((process: DesktopProcess) => void) | undefined;
 }
 
 interface ProcessEntry {
@@ -57,6 +58,7 @@ interface ProcessEntry {
   terminal?: IPty;
   timer?: ReturnType<typeof setTimeout>;
   outputPending: Promise<void>;
+  forgotten?: boolean;
 }
 
 /** Carries a bounded failure through the native process boundary. */
@@ -87,38 +89,61 @@ class ProcessLog {
 
   readonly path: string;
   private readonly handle: NodeFSP.FileHandle;
-  private readonly limit: number;
+  private readonly prefixLimit: number;
+  private readonly tailLimit: number;
+  private prefixBytes = 0;
+  private tail: Buffer | null = Buffer.alloc(0);
+  private tailBytes = 0;
+  private tailStart = 0;
   private readonly notify: () => void;
   private closing: Promise<void> | undefined;
 
   constructor(path: string, handle: NodeFSP.FileHandle, limit: number, notify: () => void) {
     this.path = path;
     this.handle = handle;
-    this.limit = limit;
+    this.tailLimit = Number.isFinite(limit) ? Math.min(64 * 1024, Math.floor(limit / 4)) : 0;
+    this.prefixLimit = limit - this.tailLimit;
     this.notify = notify;
   }
 
   async append(bytes: Buffer): Promise<void> {
-    this.totalBytes += bytes.length;
     if (this.error === null) {
       try {
-        const retained = bytes.subarray(0, Math.max(0, this.limit - this.storedBytes));
-        let offset = 0;
-        while (offset < retained.length) {
-          const { bytesWritten } = await this.handle.write(
-            retained,
-            offset,
-            retained.length - offset,
-            this.storedBytes,
-          );
-          if (bytesWritten === 0) throw new Error("output file accepted no bytes");
-          offset += bytesWritten;
-          this.storedBytes += bytesWritten;
-        }
+        const prefix = bytes.subarray(0, Math.max(0, this.prefixLimit - this.prefixBytes));
+        const write = async (data: Buffer, position: number) => {
+          let offset = 0;
+          while (offset < data.length) {
+            const { bytesWritten } = await this.handle.write(
+              data,
+              offset,
+              data.length - offset,
+              position + offset,
+            );
+            if (bytesWritten === 0) throw new Error("output file accepted no bytes");
+            offset += bytesWritten;
+          }
+        };
+        await write(prefix, this.prefixBytes);
+        const remainder = bytes.subarray(prefix.length);
+        const tail =
+          this.tailLimit === 0
+            ? Buffer.alloc(0)
+            : Buffer.from(
+                Buffer.concat([this.tail ?? Buffer.alloc(0), remainder]).subarray(-this.tailLimit),
+              );
+        if (tail.length > 0) await write(tail, this.prefixLimit);
+        // Publish a coherent prefix/tail snapshot only after the file writes.
+        // Readers use the immutable tail buffer while a later append overwrites it.
+        this.prefixBytes += prefix.length;
+        this.tail = tail;
+        this.tailBytes = tail.length;
+        this.tailStart = this.totalBytes + bytes.length - this.tailBytes;
+        this.storedBytes = this.prefixBytes + this.tailBytes;
       } catch (cause) {
         this.error = cause instanceof Error ? cause.message : "output capture failed";
       }
     }
+    this.totalBytes += bytes.length;
     this.notify();
   }
 
@@ -136,20 +161,37 @@ class ProcessLog {
     encoding: "utf8" | "base64",
     complete: boolean,
   ): Promise<DesktopProcessOutput> {
-    const { storedBytes, totalBytes } = this;
-    if (offset > storedBytes)
-      throw new DesktopExecutionError("invalid-offset", "output offset exceeds retained output");
-    const buffer = Buffer.alloc(Math.min(maxBytes, storedBytes - offset));
+    const { storedBytes, totalBytes, prefixBytes, tailBytes, tail } = this;
+    if (offset > totalBytes)
+      throw new DesktopExecutionError("invalid-offset", "output offset exceeds total output");
+    const tailOffset = this.tailStart;
+    const retainedEnd = tailBytes > 0 ? tailOffset + tailBytes : prefixBytes;
+    if (offset >= prefixBytes) offset = Math.max(offset, tailOffset);
+    const end = offset < prefixBytes && tailOffset > prefixBytes ? prefixBytes : retainedEnd;
+    const count = Math.max(0, Math.min(maxBytes, end - offset));
     const handle = this.closing === undefined ? this.handle : await NodeFSP.open(this.path, "r");
-    const { bytesRead } = await handle.read(buffer, 0, buffer.length, offset).finally(() => {
-      if (handle !== this.handle) return handle.close();
-    });
-    let bytes = buffer.subarray(0, bytesRead);
-    // Retain incomplete UTF-8 sequences while more bytes can still arrive.
+    let bytes: Buffer;
+    try {
+      const prefixLength = Math.min(count, Math.max(0, prefixBytes - offset));
+      const buffer = Buffer.alloc(prefixLength);
+      const { bytesRead } = await handle.read(buffer, 0, buffer.length, offset);
+      const tailLength = count - prefixLength;
+      const tailPosition = Math.max(0, offset + prefixLength - tailOffset);
+      const suffix =
+        tail === null
+          ? Buffer.alloc(tailLength)
+          : tail.subarray(tailPosition, tailPosition + tailLength);
+      if (tail === null && suffix.length > 0)
+        await handle.read(suffix, 0, suffix.length, prefixBytes + tailPosition);
+      bytes = Buffer.concat([buffer.subarray(0, bytesRead), suffix]);
+    } finally {
+      if (handle !== this.handle) await handle.close();
+    }
+    // Never strand the cursor on a codepoint cut by retention. Within a
+    // contiguous range, incomplete UTF-8 remains for the next page.
     if (
       encoding === "utf8" &&
-      (offset + bytes.length < storedBytes ||
-        (!complete && totalBytes === storedBytes && this.error === null))
+      (offset + bytes.length < end || (!complete && end === totalBytes && this.error === null))
     ) {
       let boundary = bytes.length - 1;
       while (boundary >= 0 && (bytes[boundary]! & 0xc0) === 0x80) boundary--;
@@ -181,13 +223,17 @@ class ProcessLog {
       nextOffset: offset + bytes.length,
       totalBytes,
       storedBytes,
+      tailOffset,
+      retainedEnd,
       truncated: totalBytes > storedBytes,
       invalidUtf8,
     };
   }
 
   close(): Promise<void> {
-    return (this.closing ??= this.handle.close());
+    return (this.closing ??= this.handle.close().then(() => {
+      if (this.error === null) this.tail = null;
+    }));
   }
 }
 
@@ -245,11 +291,12 @@ export function desktopCommandEnvironment(
 
 /** Manages commands until explicit forgetting or desktop shutdown. */
 export class DesktopProcessManager {
+  readonly runtimeGeneration = NodeCrypto.randomUUID();
   private readonly entries = new Map<string, ProcessEntry>();
   private readonly revokedGrants = new Set<string>();
   private readonly starts = new Map<
     string,
-    { fingerprint: string; promise: Promise<ProcessEntry> }
+    { owner: ProcessOwner; grantId: string; fingerprint: string; promise: Promise<ProcessEntry> }
   >();
   private closed = false;
 
@@ -264,6 +311,7 @@ export class DesktopProcessManager {
     grantId: string,
     input: UserDesktopCommandInput,
     signal?: AbortSignal,
+    grantRevision = 1,
   ): Promise<DesktopProcessResult> {
     if (this.closed)
       throw new DesktopExecutionError("desktop-closing", "desktop execution is shutting down");
@@ -294,16 +342,19 @@ export class DesktopProcessManager {
       .digest("hex");
     const key = JSON.stringify([owner.environmentId, input.commandId]);
     const prior = this.starts.get(key);
+    if (prior !== undefined && prior.owner.threadId !== owner.threadId)
+      throw new DesktopExecutionError("permission-denied", "command belongs to another thread");
     if (prior !== undefined && prior.fingerprint !== fingerprint) {
       throw new DesktopExecutionError(
         "command-conflict",
         "commandId already identifies a different command",
       );
     }
-    const promise = prior?.promise ?? this.spawn(owner, grantId, input);
+    const promise = prior?.promise ?? this.spawn(owner, grantId, input, grantRevision);
     if (prior === undefined) {
-      this.starts.set(key, { fingerprint, promise });
-      void promise.catch(() => this.starts.delete(key));
+      this.starts.set(key, { owner, grantId, fingerprint, promise });
+      // A failed acknowledgement is not permission to execute a non-idempotent command again.
+      void promise.catch(() => undefined);
     }
     const entry = await promise;
     if (entry.owner.threadId !== owner.threadId)
@@ -318,22 +369,27 @@ export class DesktopProcessManager {
   }
 
   /** Lists the processes owned by an environment, optionally narrowing to one thread. */
-  list(environmentId: string, threadId?: string): ReadonlyArray<DesktopProcess> {
+  list(environmentId: string | undefined, threadId?: string): ReadonlyArray<DesktopProcess> {
     return [...this.entries.values()]
       .filter(
         (entry) =>
-          entry.owner.environmentId === environmentId &&
+          (environmentId === undefined || entry.owner.environmentId === environmentId) &&
           (threadId === undefined || entry.owner.threadId === threadId),
       )
       .map((entry) => this.snapshot(entry));
   }
 
   /** Resolves one process without leaking another environment's work. */
-  get(processId: string, owner: ProcessOwner, allThreads: boolean): ProcessEntry {
+  get(
+    processId: string,
+    owner: ProcessOwner,
+    allThreads: boolean,
+    allEnvironments = false,
+  ): ProcessEntry {
     const entry = this.entries.get(processId);
     if (
       entry === undefined ||
-      entry.owner.environmentId !== owner.environmentId ||
+      (!allEnvironments && entry.owner.environmentId !== owner.environmentId) ||
       (!allThreads && entry.owner.threadId !== owner.threadId)
     ) {
       throw new DesktopExecutionError(
@@ -350,10 +406,11 @@ export class DesktopProcessManager {
     allThreads: boolean,
     input: Exclude<UserDesktopProcessInput, { action: "list" }>,
     signal?: AbortSignal,
+    allEnvironments = false,
   ): Promise<DesktopProcessResult | null> {
     if (input.processId === undefined)
       throw new DesktopExecutionError("invalid-input", "processId is required");
-    const entry = this.get(input.processId, owner, allThreads);
+    const entry = this.get(input.processId, owner, allThreads, allEnvironments);
     switch (input.action) {
       case "read": {
         const deadline = this.options.now() + (input.waitMs ?? 0);
@@ -371,8 +428,8 @@ export class DesktopProcessManager {
             entry,
             () =>
               entry.snapshot.status !== "running" ||
-              entry.stdout.storedBytes !== result.stdout.storedBytes ||
-              entry.stderr.storedBytes !== result.stderr.storedBytes ||
+              entry.stdout.totalBytes !== result.stdout.totalBytes ||
+              entry.stderr.totalBytes !== result.stderr.totalBytes ||
               entry.stdout.error !== null ||
               entry.stderr.error !== null,
             Math.max(0, deadline - this.options.now()),
@@ -418,7 +475,7 @@ export class DesktopProcessManager {
         entry.terminal.resize(input.columns, input.rows);
         break;
       case "forget":
-        if (entry.snapshot.status === "running")
+        if (isDesktopProcessLive(entry.snapshot))
           throw new DesktopExecutionError(
             "process-running",
             "stop the process before forgetting its output",
@@ -426,19 +483,23 @@ export class DesktopProcessManager {
         await Promise.all([entry.stdout.close(), entry.stderr.close()]);
         await NodeFSP.rm(entry.directory, { recursive: true, force: true });
         this.entries.delete(input.processId);
-        this.starts.delete(JSON.stringify([entry.owner.environmentId, entry.snapshot.commandId]));
+        entry.forgotten = true;
         return null;
     }
     return this.read(entry, input.desktop, {
-      stdoutOffset: entry.stdout.storedBytes,
-      stderrOffset: entry.stderr.storedBytes,
+      stdoutOffset: entry.stdout.totalBytes,
+      stderrOffset: entry.stderr.totalBytes,
     });
   }
 
   /** Stops processes authorized by revoked grants. */
   async revoke(grantIds: ReadonlySet<string>): Promise<void> {
     for (const grantId of grantIds) this.revokedGrants.add(grantId);
-    await Promise.allSettled([...this.starts.values()].map((start) => start.promise));
+    await Promise.allSettled(
+      [...this.starts.values()]
+        .filter((start) => grantIds.has(start.grantId))
+        .map((start) => start.promise),
+    );
     await Promise.all(
       [...this.entries.values()]
         .filter((entry) => grantIds.has(entry.grantId))
@@ -466,6 +527,7 @@ export class DesktopProcessManager {
   private snapshot(entry: ProcessEntry): DesktopProcess {
     return {
       ...entry.snapshot,
+      environmentId: EnvironmentId.make(entry.owner.environmentId),
       threadId: ThreadId.make(entry.owner.threadId),
       outputError: entry.stdout.error ?? entry.stderr.error,
     };
@@ -481,6 +543,11 @@ export class DesktopProcessManager {
       encoding?: "utf8" | "base64" | undefined;
     },
   ): Promise<DesktopProcessResult> {
+    if (entry.forgotten)
+      throw new DesktopExecutionError(
+        "output-forgotten",
+        "This command already ran and its output was forgotten. Use a new commandId only to deliberately run a new command.",
+      );
     const snapshot = this.snapshot(entry);
     const [stdout, stderr] = await Promise.all([
       entry.stdout.read(
@@ -523,6 +590,7 @@ export class DesktopProcessManager {
     owner: ProcessOwner,
     grantId: string,
     input: UserDesktopCommandInput,
+    grantRevision: number,
   ): Promise<ProcessEntry> {
     const workingDirectory = NodePath.resolve(
       this.options.homeDirectory,
@@ -548,8 +616,13 @@ export class DesktopProcessManager {
     const stdoutPath = NodePath.join(directory, "stdout");
     const stderrPath = NodePath.join(directory, "stderr");
     const changed = new Set<() => void>();
+    let lastStatus: DesktopProcess["status"] | undefined;
     const notify = () => {
       for (const listener of changed) listener();
+      if (lastStatus !== entry.snapshot.status) {
+        lastStatus = entry.snapshot.status;
+        this.options.onStatusChange?.(this.snapshot(entry));
+      }
     };
     const limit =
       input.maxStoredOutputBytes === null
@@ -580,6 +653,9 @@ export class DesktopProcessManager {
       changed,
       outputPending: Promise.resolve(),
       snapshot: {
+        runtimeGeneration: this.runtimeGeneration,
+        grantId,
+        grantRevision,
         processId: NodeCrypto.randomUUID(),
         commandId: input.commandId,
         executable: input.executable,
@@ -593,6 +669,7 @@ export class DesktopProcessManager {
         completedAt: null,
         exitCode: null,
         signal: null,
+        timeoutMs: input.timeoutMs ?? null,
         timedOut: false,
         stdinClosed: false,
         stdoutPath,
@@ -760,6 +837,7 @@ export class DesktopProcessManager {
       }
       await ready;
       this.entries.set(entry.snapshot.processId, entry);
+      notify();
       if (this.closed || this.revokedGrants.has(grantId)) await this.signal(entry, "SIGKILL");
       if (input.timeoutMs != null && entry.snapshot.status === "running") {
         entry.timer = setTimeout(() => {
@@ -781,11 +859,22 @@ export class DesktopProcessManager {
         await this.signal(entry, "SIGKILL").catch((cleanup: unknown) => {
           stderr.error += `; ${cleanup instanceof Error ? cleanup.message : "process cleanup failed"}`;
         });
+        if (entry.snapshot.status === "running")
+          entry.snapshot = { ...entry.snapshot, status: "unknown" };
+        notify();
         return entry;
       }
       await Promise.all([stdout.close(), stderr.close()]);
-      await NodeFSP.rm(directory, { recursive: true, force: true });
-      throw cause;
+      stderr.error = cause instanceof Error ? cause.message : "process could not start";
+      entry.snapshot = {
+        ...entry.snapshot,
+        status: "failed",
+        stdinClosed: true,
+        completedAt: DateTime.formatIso(DateTime.makeUnsafe(this.options.now())),
+      };
+      this.entries.set(entry.snapshot.processId, entry);
+      notify();
+      return entry;
     }
   }
 }

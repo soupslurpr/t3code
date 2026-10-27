@@ -13,28 +13,54 @@ connected environment server support command execution.
 
 ## Commands on a user desktop
 
-Ask an agent to run a command on a named desktop. It selects that desktop and requests execution
-permission there. Approve the local T3 Code prompt for one thread, one environment, or all connected
-environments. You can set an expiry or choose to remember permission after restarting T3 Code.
-Commands run as the account running the desktop app. Commands that need administrator access can
-use the operating system's local authentication prompt.
+Ask an agent to run a command on a named desktop. Commands run as the account running that
+desktop app; administrator access still uses the operating system's authorization.
 
-Use **Settings → User desktops → Command execution** on web, desktop, or mobile to manage permission,
-inspect running commands and captured output, stop a process, or remove completed output. Each
-connected environment has its own process list. Screen viewing and control permission are separate.
+The selected desktop owns the permission. When it also runs the source environment's native
+backend under the same account, you can approve from that environment's web, desktop, or mobile
+client with both orchestration and terminal permissions. Otherwise approval appears on the selected
+desktop. For example, operating coolcrab from roamingcrab can approve coolcrab's own native backend;
+a coolcrab thread requesting roamingcrab still needs roamingcrab's approval. A standalone server,
+WSL backend, or container does not receive native approval rights from its hostname.
 
-Commands continue when a tool finishes waiting, a turn stops, or a client disconnects. Quitting the
-desktop app stops its commands and removes their captured output. Revoking permission stops commands
-started with that grant by default; agents can explicitly leave them running when revoking. Expiry
-prevents further agent access without stopping existing commands, which you can still supervise in
-Settings. Output is retained up to 64 MiB per stream unless the agent selects a different limit.
+Choose access for one thread, one environment, or all environments. All-environment changes require
+confirmation on the selected desktop. Thread access defaults to **Automatic**: 15 minutes after
+thread settlement, 24 hours without task activity, or seven days after approval, whichever comes
+first. **Until a time** and **Until revoked** are deliberate alternatives. **Remember across
+restart** is independent and off by default. Reads, output traffic, and an idle background process
+do not extend automatic permission. Expired records are removed and cannot revive on reconnect.
+Previously saved permissions have a one-time transition deadline of at most seven days; replace
+them with your preferred policy before that deadline if continued access is needed.
+
+Use **Settings → User desktops → Command execution**, or the thread's **Desktops** panel, to manage
+permissions, inspect commands and paged output, send terminal input, and stop commands. Each command
+retains its exact environment and thread owner even when permission covers a broader scope. Agents
+can access only their own thread's commands. Screen viewing and control are separate permissions.
+
+Commands continue when a tool finishes waiting, a turn stops, a client disconnects, or permission
+expires. After expiry or thread deletion, an authorized human from the original environment can
+still inspect and stop existing work; new commands and input require current permission. Removing
+a permission shows its affected work and offers a separate stop choice, enabled by default. Removing
+one permission leaves any independent covering permission in effect. Quitting the desktop app stops
+its commands and removes their output.
+
+On the target computer, native **Settings → User desktops → Commands on this desktop** lists work
+and permissions from every environment. You can inspect or stop commands and change or remove
+permissions there even when their original server is disconnected. Remote clients show only work
+owned by the selected environment.
+
+Captured output keeps a bounded beginning and tail, with 64 MiB per stream by default. Paging shows
+byte ranges and any discarded gap; binary output is available as base64. A completion wait registered
+while authorized can deliver one status-only result after natural expiry. Its deadline ends the wait
+without stopping the command. Explicit permission removal cancels associated waits.
 
 ## Copy Files Between Computers
 
 Ask an agent to copy a file or directory between its workspace and a named connected desktop.
 Transfers use the existing T3 connection and that desktop's command execution permission, so screen
 sharing and a separate file server are unnecessary. The agent can report progress or cancel a copy.
-Revoking execution permission also cancels transfers using that grant.
+Removing execution permission cancels transfers accepted under that permission when its stop-work
+choice is enabled. Natural expiry leaves already accepted copies running.
 
 Copies verify their size and checksum before extraction. By default, an existing destination is
 preserved; ask explicitly to replace it or merge directories. A cancelled directory merge can leave
@@ -43,6 +69,12 @@ before retrying. Both the environment server and the desktop receiving or sendin
 version that supports transfers; you can direct the work from web, desktop, or mobile.
 
 ## Permission And Safety
+
+T3 screen permissions use the same scope, lifetime, and independent remember choices as execution,
+but always require confirmation on the selected desktop. Manage them under **Screen permissions**
+in Settings or the thread's Desktops panel. Operating-system consent is a separate requirement:
+a remembered GNOME token never grants a new thread T3 permission. Expiry ends only the affected
+source's access, preserving other authorized viewers and independent permissions.
 
 User-desktop access has two levels. A view-only session shares the selected monitors and permits snapshots
 without requesting keyboard or pointer access. A control session combines those monitor streams with
@@ -75,9 +107,10 @@ uses them to reconnect without a routine dialog. GNOME remains in control: it ca
 invalidate a token, require approval again, and shows its active sharing indicator whenever a
 session is connected. T3 Code does not receive or store your portal choices directly.
 
-The same Settings page can end all active access or forget approval for a selected user desktop.
-Those user actions interrupt every agent lease on that desktop, including pending authorization,
-rather than waiting for the agent that acquired access to release it.
+The same Settings page can request that all active access end or that operating-system approval be
+forgotten. These shared actions require target-local human confirmation and affect every screen
+lease on that desktop. Removing one scoped T3 permission preserves independent permissions and
+remembered operating-system consent.
 
 The agent can call `computer_release` to cancel pending authorization, in-flight or queued input, or
 the active sharing session immediately. Held keys and mouse buttons are released before the final
@@ -87,9 +120,9 @@ locking makes the user desktop unavailable. A later `computer_status` reports `r
 reusable approval exists, and `keepAwake` remains true while availability is retained. The agent can
 call
 `computer_release_availability`, or you can select **Allow locking** in General settings, to remove
-only the availability lease without disabling the persistent policy. `computer_forget_control` ends
-the session, deletes both restore tokens, and releases availability, so the next request requires
-fresh approval and may require unlocking. Quitting the desktop app releases availability while
+only the availability lease without disabling the persistent policy. `computer_forget_control` removes an agent’s own thread permission and releases its lease. It does
+not erase shared operating-system consent or another source’s access. Forgetting shared native
+consent is a separate target-local human action. Quitting the desktop app releases availability while
 retaining remembered consent.
 
 Agents treat desktop changes as temporary by default. When it is appropriate for the task, they
@@ -401,11 +434,16 @@ request a capture with `agent_desktop_packet_capture`, specifying a duration and
 one desktop's virtual network traffic on the host and returns a private capture file, without requiring
 capture software inside the guest.
 
-Guest commands use an exact executable and argument vector over a private guest channel rather than
-an implicit shell. Bounded file reads and writes use that same channel. The default command user is
-root inside the guest, so isolation separates those privileges from the host rather than pretending
-the guest itself is unprivileged. Private QEMU control sockets and machine state are owner-only on the
-host.
+Guest commands use an exact executable and argument vector over a private guest channel, with root
+as the default user. Managed commands return a continuing process handle and keep the same identity
+when retried. They support terminal input, resize, bounded output paging, and stopping the entire
+owned job including ordinary descendants. A wait ending does not stop the command; choose a runtime
+timeout when needed. Live or uncertain jobs prevent automatic parking and maintenance. A guest
+reboot ends its command generation, so retrying an old command ID reports the old outcome rather
+than executing it again. The thread's Desktops panel and Agent desktop settings provide command
+supervision on web, desktop, and mobile. Bounded file reads and writes use the same private channel.
+Guest root privileges are separate from the host. Private QEMU sockets and machine state remain
+owner-only on the host.
 
 The current implementation targets x86-64 Arch Linux hosts with KVM, a systemd user manager, QEMU,
 UEFI firmware, and passt networking. `agent_desktop_list` reports every prerequisite separately.

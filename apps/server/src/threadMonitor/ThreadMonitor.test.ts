@@ -1,3 +1,6 @@
+import * as ServerConfigLayer from "../config.ts";
+import type { DesktopProcessCompletionReceipt } from "@t3tools/contracts";
+import * as ThreadMonitorProcess from "./ThreadMonitorProcess.ts";
 import { RunId, type OrchestrationV2RunStatus } from "@t3tools/contracts";
 import { PersistenceSqlError } from "../persistence/Errors.ts";
 import * as NodeHttpServer from "@effect/platform-node/NodeHttpServer";
@@ -40,6 +43,8 @@ import { ThreadMonitorRepository } from "../persistence/ThreadMonitors.ts";
 import { EventSinkV2 } from "../orchestration-v2/EventSink.ts";
 import { ServerActivation } from "../serverActivation.ts";
 import * as ThreadMonitor from "./ThreadMonitor.ts";
+import * as ThreadMonitors from "../persistence/ThreadMonitors.ts";
+import { ThreadMonitorError } from "@t3tools/contracts";
 import { ThreadMonitorService } from "./ThreadMonitorService.ts";
 import { layer, layerForDatabase, seedThread, threadId } from "./ThreadMonitor.testkit.ts";
 
@@ -2231,3 +2236,262 @@ it.effect("reports an archived delivery blocker and removes it on unarchive", ()
     assert.isFalse(snapshot.monitors.some((monitor) => monitor.blockedReason !== null));
   }).pipe(Effect.provide(layer)),
 );
+
+const processSchedule = {
+  type: "process",
+  desktop: { kind: "agent", desktopId: "owned-desktop" },
+  processId: "owned-process",
+  runtimeGeneration: "original-runtime",
+} as const;
+const processReceipt: DesktopProcessCompletionReceipt = {
+  processId: processSchedule.processId,
+  runtimeGeneration: processSchedule.runtimeGeneration,
+  status: "exited",
+  exitCode: 7,
+  signal: null,
+  completedAt: "1970-01-01T00:00:00.000Z",
+};
+const processMonitorRuntime = <E, R>(
+  adapter: Layer.Layer<never, E, R>,
+  database: Parameters<typeof layerForDatabase>[0] = Sqlite.layerMemory,
+) => Layer.fresh(layerForDatabase(database).pipe(Layer.provide(adapter)));
+
+describe("durable process waits", () => {
+  it.effect(
+    "resumes the thread once with a status-only completion and retries receipt cleanup",
+    () =>
+      Effect.gen(function* () {
+        let releases = 0;
+        const adapter = Layer.succeed(ThreadMonitorProcess.ThreadMonitorProcess, {
+          authorize: () => Effect.void,
+          check: () => Effect.succeed(processReceipt),
+          release: () =>
+            Effect.suspend(() =>
+              ++releases === 1
+                ? Effect.fail(
+                    new ThreadMonitorError({
+                      code: "INVALID_SCHEDULE",
+                      operation: "process-wait",
+                      detail: "Test target disconnected during acknowledgement",
+                    }),
+                  )
+                : Effect.void,
+            ),
+        });
+        yield* Effect.gen(function* () {
+          yield* seedThread();
+          const service = yield* ThreadMonitorService;
+          const monitor = yield* service.create({
+            threadId,
+            monitor: { label: "Completed command", schedule: processSchedule },
+          });
+          yield* service.checkNow({ threadId, check: { monitorId: monitor.id } });
+          yield* TestClock.adjust("1 second");
+          const checked = yield* service.checkNow({ threadId, check: { monitorId: monitor.id } });
+          assert.equal(checked.monitors[0]?.status, "delivered");
+          yield* TestClock.adjust("5 seconds");
+          yield* service.checkNow({ threadId, check: { monitorId: monitor.id } });
+          const projection = yield* (yield* ProjectionStoreV2).getThreadRecords(threadId, [
+            "messages",
+            "runs",
+          ]);
+          const notifications = projection.messages.filter(
+            (message) => message.notification?.systemEvent?.type === "monitor.continuation",
+          );
+          assert.lengthOf(notifications, 1);
+          assert.lengthOf(projection.runs, 1);
+          assert.isAtLeast(releases, 2);
+          const stored = yield* (yield* ThreadMonitorRepository).getById(monitor.id);
+          assert.isTrue(
+            Option.isSome(stored) &&
+              stored.value.condition.type === "process" &&
+              stored.value.condition.released,
+          );
+        }).pipe(Effect.provide(processMonitorRuntime(adapter)));
+      }),
+  );
+
+  it.effect(
+    "persists before reconciling an already exited process and delivers once without output",
+    () =>
+      Effect.gen(function* () {
+        let releases = 0;
+        const adapter = Layer.effect(
+          ThreadMonitorProcess.ThreadMonitorProcess,
+          Effect.gen(function* () {
+            const repository = yield* ThreadMonitorRepository;
+            return {
+              authorize: () => Effect.void,
+              check: (monitor: import("@t3tools/contracts").ThreadMonitor) =>
+                Effect.gen(function* () {
+                  assert.isTrue(Option.isSome(yield* repository.getById(monitor.id)));
+                  return processReceipt;
+                }).pipe(Effect.orDie),
+              release: () =>
+                Effect.sync(() => {
+                  releases += 1;
+                }),
+            };
+          }),
+        ).pipe(Layer.provide(ThreadMonitors.layer), Layer.provide(Sqlite.layerMemory));
+        yield* Effect.gen(function* () {
+          yield* seedThread();
+          const service = yield* ThreadMonitorService;
+          const monitor = yield* service.create({
+            threadId,
+            monitor: {
+              label: "Already exited",
+              continuation: "record-only",
+              schedule: processSchedule,
+            },
+          });
+          const checked = yield* service.checkNow({ threadId, check: { monitorId: monitor.id } });
+          assert.equal(checked.monitors[0]?.status, "delivered");
+          assert.include(checked.monitors[0]?.trigger?.evidence, '"exitCode":7');
+          assert.notInclude(checked.monitors[0]?.trigger?.evidence, "stdout");
+          assert.equal(releases, 1);
+          yield* service.checkNow({ threadId, check: { monitorId: monitor.id } });
+          assert.equal(releases, 1);
+          const stored = yield* (yield* ThreadMonitorRepository).getById(monitor.id);
+          assert.isTrue(
+            Option.isSome(stored) &&
+              stored.value.condition.type === "process" &&
+              stored.value.condition.released,
+          );
+        }).pipe(Effect.provide(processMonitorRuntime(adapter)));
+      }),
+  );
+
+  it.effect("ends a deadline by releasing the wait without a process stop operation", () =>
+    Effect.gen(function* () {
+      let releases = 0;
+      const adapter = Layer.succeed(ThreadMonitorProcess.ThreadMonitorProcess, {
+        authorize: () => Effect.void,
+        check: () => Effect.succeed(null),
+        release: () =>
+          Effect.sync(() => {
+            releases += 1;
+          }),
+      });
+      yield* Effect.gen(function* () {
+        yield* seedThread();
+        const service = yield* ThreadMonitorService;
+        const monitor = yield* service.create({
+          threadId,
+          monitor: {
+            label: "Deadline",
+            continuation: "record-only",
+            schedule: { ...processSchedule, deadlineAt: "1970-01-01T00:01:00.000Z" },
+          },
+        });
+        yield* service.checkNow({ threadId, check: { monitorId: monitor.id } });
+        yield* TestClock.adjust("1 minute");
+        const checked = yield* service.checkNow({ threadId, check: { monitorId: monitor.id } });
+        assert.equal(checked.monitors[0]?.status, "delivered");
+        assert.equal(checked.monitors[0]?.trigger?.reason, "deadline");
+        assert.include(checked.monitors[0]?.trigger?.summary, "left running");
+        assert.equal(releases, 1);
+      }).pipe(Effect.provide(processMonitorRuntime(adapter)));
+    }),
+  );
+
+  it.effect("records revocation as cancellation without waking the provider", () =>
+    Effect.gen(function* () {
+      const adapter = Layer.succeed(ThreadMonitorProcess.ThreadMonitorProcess, {
+        authorize: () => Effect.void,
+        check: () =>
+          Effect.succeed({
+            ...processReceipt,
+            status: "permission-revoked" as const,
+            exitCode: null,
+          }),
+        release: () => Effect.void,
+      });
+      yield* Effect.gen(function* () {
+        yield* seedThread();
+        const service = yield* ThreadMonitorService;
+        const monitor = yield* service.create({
+          threadId,
+          monitor: { label: "Revoked", schedule: processSchedule },
+        });
+        const checked = yield* service.checkNow({ threadId, check: { monitorId: monitor.id } });
+        assert.equal(checked.monitors[0]?.status, "cancelled");
+        const projection = yield* (yield* ProjectionStoreV2).getThreadRecords(threadId, [
+          "messages",
+          "runs",
+        ]);
+        assert.equal(
+          projection.messages.filter(
+            (message) => message.notification?.systemEvent?.type === "monitor.continuation",
+          ).length,
+          0,
+        );
+      }).pipe(Effect.provide(processMonitorRuntime(adapter)));
+    }),
+  );
+
+  it.effect("rejects a registration cancelled while target authorization is in flight", () =>
+    Effect.gen(function* () {
+      const entered = yield* Deferred.make<void>();
+      const blocked = yield* Deferred.make<void>();
+      let releases = 0;
+      const adapter = Layer.succeed(ThreadMonitorProcess.ThreadMonitorProcess, {
+        authorize: () =>
+          Deferred.succeed(entered, undefined).pipe(Effect.andThen(Deferred.await(blocked))),
+        check: () => Effect.succeed(processReceipt),
+        release: () =>
+          Effect.sync(() => {
+            releases += 1;
+          }),
+      });
+      yield* Effect.gen(function* () {
+        yield* seedThread();
+        const service = yield* ThreadMonitorService;
+        const pending = yield* service
+          .create({ threadId, monitor: { label: "Cancelled start", schedule: processSchedule } })
+          .pipe(Effect.forkChild);
+        yield* Deferred.await(entered);
+        yield* service.cancel({ threadId, cancel: {} });
+        assert.equal((yield* Fiber.join(pending).pipe(Effect.flip)).code, "MONITOR_NOT_ACTIVE");
+        assert.equal(releases, 1);
+        assert.isEmpty(
+          (yield* service.status({ threadId, query: { includeFinished: true } })).monitors,
+        );
+      }).pipe(Effect.provide(processMonitorRuntime(adapter)));
+    }),
+  );
+
+  it.effect("reconciles a completion missed while the service was stopped", () =>
+    Effect.gen(function* () {
+      const config = yield* ServerConfig;
+      const database = Sqlite.layerFromPath(config.dbPath).pipe(Layer.provide(NodeServices.layer));
+      let completed = false;
+      const adapter = Layer.succeed(ThreadMonitorProcess.ThreadMonitorProcess, {
+        authorize: () => Effect.void,
+        check: () => Effect.sync(() => (completed ? processReceipt : null)),
+        release: () => Effect.void,
+      });
+      const runtime = () => processMonitorRuntime(adapter, database);
+      const monitor = yield* Effect.gen(function* () {
+        yield* seedThread();
+        return yield* (yield* ThreadMonitorService).create({
+          threadId,
+          monitor: { label: "Reconnect", continuation: "record-only", schedule: processSchedule },
+        });
+      }).pipe(Effect.provide(runtime()));
+      completed = true;
+      yield* Effect.gen(function* () {
+        const service = yield* ThreadMonitorService;
+        const checked = yield* service.checkNow({ threadId, check: { monitorId: monitor.id } });
+        assert.equal(checked.monitors[0]?.status, "delivered");
+        assert.include(checked.monitors[0]?.trigger?.evidence, "original-runtime");
+      }).pipe(Effect.provide(runtime()));
+    }).pipe(
+      Effect.provide(
+        ServerConfigLayer.layerTest(process.cwd(), { prefix: "process-wait-restart-" }).pipe(
+          Layer.provideMerge(NodeServices.layer),
+        ),
+      ),
+    ),
+  );
+});
