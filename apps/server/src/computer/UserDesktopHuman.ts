@@ -3,6 +3,7 @@ import {
   UserDesktopInventoryError,
   UserDesktopManagementError,
   type UserDesktopHumanInvokeInput,
+  type PreviewAutomationOperation,
 } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
@@ -49,23 +50,45 @@ export const runUserDesktopHumanRequest = Effect.fn("UserDesktopHuman.run")(func
         });
   }
   const desktop = { kind: "user" as const, desktopId: request.desktopId };
-  const operation =
-    request.operation === "status"
-      ? "computerStatus"
-      : request.operation === "remember-view"
-        ? "computerRememberView"
-        : request.operation === "remember-control"
-          ? "computerRememberControl"
-          : request.operation === "release"
-            ? "computerForceRelease"
-            : "computerForceForgetControl";
-  return yield* broker.invoke({
-    scope,
-    operation,
-    input:
-      operation === "computerRememberView" || operation === "computerRememberControl"
-        ? { desktop, observation: false }
-        : { desktop },
-    ...(input.timeoutMs === undefined ? {} : { timeoutMs: input.timeoutMs }),
-  });
+  const invokeComputer = (operation: PreviewAutomationOperation, requestInput: unknown) =>
+    broker.invoke({
+      scope,
+      operation,
+      input: requestInput,
+      ...(input.timeoutMs === undefined ? {} : { timeoutMs: input.timeoutMs }),
+    });
+  switch (request.operation) {
+    case "status":
+      return yield* invokeComputer("computerStatus", { desktop });
+    case "request-view":
+      return yield* invokeComputer("computerRequestView", { desktop, observation: false });
+    case "request-control":
+      return yield* invokeComputer("computerRequestControl", {
+        desktop,
+        observation: false,
+        ...(request.takeoverLeaseId === undefined
+          ? {}
+          : { takeoverLeaseId: request.takeoverLeaseId }),
+      });
+    case "return-control":
+      return yield* invokeComputer("computerRequestControl", {
+        desktop,
+        observation: false,
+        returnControlToAgent: true,
+      });
+    case "snapshot":
+      return yield* invokeComputer("computerSnapshot", { desktop, ...request.input });
+    case "act":
+      return yield* invokeComputer("computerAct", { desktop, ...request.input });
+    case "remember-view":
+      return yield* invokeComputer("computerRememberView", { desktop, observation: false });
+    case "remember-control":
+      return yield* invokeComputer("computerRememberControl", { desktop, observation: false });
+    case "release":
+      return yield* invokeComputer("computerRelease", { desktop });
+    case "end-all-access":
+      return yield* invokeComputer("computerForceRelease", { desktop });
+    case "forget":
+      return yield* invokeComputer("computerForceForgetControl", { desktop });
+  }
 });

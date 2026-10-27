@@ -41,6 +41,7 @@ async function handleComputerRequest(
   }
   const computerContext = {
     controllerId: request.controllerId,
+    controllerKind: request.controllerKind ?? ("agent" as const),
     environmentId,
     threadId: request.threadId,
   };
@@ -116,7 +117,12 @@ async function cancelComputerRequest(
 ) {
   const computer = window.desktopBridge?.computer;
   if (computer === undefined || request.controllerId === undefined) return;
-  const context = { controllerId: request.controllerId, environmentId, threadId: request.threadId };
+  const context = {
+    controllerId: request.controllerId,
+    controllerKind: request.controllerKind ?? ("agent" as const),
+    environmentId,
+    threadId: request.threadId,
+  };
   switch (request.operation) {
     case "computerRequestAvailability":
       await computer.releaseAvailability(

@@ -82,6 +82,22 @@ describe("computer automation contracts", () => {
     ).toMatchObject({ code: "desktop-target-required", field: "desktop" });
   });
 
+  it("accepts exact takeover confirmation or return-control, but not both", () => {
+    expect(decodeAccess({ ...userDesktop, takeoverLeaseId: "computer-lease-1" })).toMatchObject({
+      takeoverLeaseId: "computer-lease-1",
+    });
+    expect(decodeAccess({ ...userDesktop, returnControlToAgent: true })).toMatchObject({
+      returnControlToAgent: true,
+    });
+    expect(() =>
+      decodeAccess({
+        ...userDesktop,
+        takeoverLeaseId: "computer-lease-1",
+        returnControlToAgent: true,
+      }),
+    ).toThrow(/cannot be combined/u);
+  });
+
   it("accepts display-relative coordinates and bounded click options", () => {
     expect(decodeClick({ frameId: "frame-1", x: 120.5, y: 80, button: "right", count: 2 })).toEqual(
       {
@@ -501,6 +517,33 @@ describe("computer automation contracts", () => {
         cursor: null,
       }),
     ).toMatchObject({ available: true, permission: "view-only" });
+  });
+
+  it("represents redacted logical lease ownership", () => {
+    expect(
+      decodeStatus({
+        available: true,
+        backend: "gnome-wayland-portal",
+        permission: "view-only",
+        rememberedAccess: ["view", "control"],
+        displayState: "active",
+        keepAwake: true,
+        displays: [],
+        cursor: null,
+        lease: {
+          access: "view",
+          controller: { kind: "agent", sameEnvironment: false },
+          takeoverLeaseId: "computer-lease-2",
+          canReturnControl: false,
+        },
+      }),
+    ).toMatchObject({
+      lease: {
+        access: "view",
+        controller: { kind: "agent", sameEnvironment: false },
+        takeoverLeaseId: "computer-lease-2",
+      },
+    });
   });
 
   it("reports a locked display separately from its keep-awake lease", () => {

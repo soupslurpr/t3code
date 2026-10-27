@@ -68,9 +68,12 @@ intact. This prevents background viewing from racing the controlling agent's nex
 The lens retains the exact images delivered to a controller or watch evaluator,
 separately from human live capture. Reads return bytes only when the observation id
 changes. The cache is memory-only: entries expire after thirty minutes and older
-entries are evicted above 32 desktops or 128 MiB of compressed images. The newest
+entries are evicted above 128 observations or 128 MiB of compressed images. The newest
 entry is retained even if one valid result exceeds that aggregate target. Restarting
 the server clears the lens; it cannot reconstruct model input from a later capture.
+User desktops share this store; their historical reads are scoped to the selected desktop and
+environment. Live capture remains a separate access request. See
+[User desktop supervision](./user-desktop-supervision.md) for the host-wide ownership boundary.
 
 ## Resources And Lifecycle
 

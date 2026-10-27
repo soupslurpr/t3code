@@ -3107,6 +3107,7 @@ export const layerWsRpc = (
               thread: {
                 threadId: input.threadId,
                 controllerId: `human:${currentSessionId}`,
+                controllerKind: "human" as const,
                 providerSessionId: `human:${currentSessionId}`,
                 providerInstanceId: AGENT_DESKTOP_HUMAN_PROVIDER_INSTANCE_ID,
               },
@@ -3135,6 +3136,7 @@ export const layerWsRpc = (
                 client: undefined,
                 thread: {
                   controllerId: `human:${currentSessionId}`,
+                  controllerKind: "human" as const,
                   threadId: USER_DESKTOP_SETTINGS_THREAD_ID,
                   providerSessionId: `human:${currentSessionId}`,
                   providerInstanceId: USER_DESKTOP_HUMAN_PROVIDER_INSTANCE_ID,

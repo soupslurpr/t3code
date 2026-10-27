@@ -1,5 +1,6 @@
 import {
   type AuthMcpClientAccess,
+  type ComputerAutomationControllerKind,
   type EnvironmentId,
   McpCapabilityUnavailableError,
   OrchestratorMcpFailure,
@@ -23,6 +24,7 @@ const ALL_MCP_CAPABILITIES = [
 export type McpCapability = (typeof ALL_MCP_CAPABILITIES)[number];
 
 export interface McpThreadCaller {
+  readonly controllerKind?: ComputerAutomationControllerKind;
   readonly controllerId: string;
   readonly threadId: ThreadId;
   readonly providerSessionId: string;

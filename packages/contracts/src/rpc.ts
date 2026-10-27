@@ -1,8 +1,5 @@
-import {
-  UserDesktopHumanInvokeInput,
-  UserDesktopInventoryError,
-  UserDesktopManagementError,
-} from "./userDesktop.ts";
+import { UserDesktopHumanInvokeInput } from "./previewAutomation.ts";
+import { UserDesktopInventoryError, UserDesktopManagementError } from "./userDesktop.ts";
 import {
   OrchestrationV2SearchThreadError,
   OrchestrationV2SearchThreadInput,

@@ -137,16 +137,25 @@ it.effect("retains distinct logical controllers for parallel callers", () =>
         environmentId,
         supportedOperations: ["computerRequestControl"],
       });
-      for (const providerSessionId of ["provider-one", "provider-two"]) {
+      for (const [providerSessionId, controllerKind] of [
+        ["provider-one", "agent"],
+        ["provider-two", "human"],
+      ] as const) {
         yield* broker.invoke({
           scope: {
             ...scope,
-            thread: { ...scope.thread, controllerId: providerSessionId, providerSessionId },
+            thread: {
+              ...scope.thread,
+              controllerId: providerSessionId,
+              providerSessionId,
+              controllerKind,
+            },
           },
           operation: "computerRequestControl",
           input: { desktop: { kind: "user", desktopId: "user-desktop-1" } },
         });
       }
+      expect(agent.map((request) => request.controllerKind)).toEqual(["agent", "human"]);
       expect(agent.map((request) => request.controllerId)).toEqual([
         "provider-one",
         "provider-two",
@@ -599,6 +608,7 @@ it.effect(
         thread: {
           ...scope.thread,
           controllerId: "human:session",
+          controllerKind: "human" as const,
           providerSessionId: "human:session",
           providerInstanceId: ProviderInstanceId.make("user-desktop-human"),
         },
@@ -608,6 +618,7 @@ it.effect(
         "remember-view",
         "remember-control",
         "release",
+        "end-all-access",
         "forget",
       ] as const) {
         expect(
@@ -620,12 +631,14 @@ it.effect(
         "computerStatus",
         "computerRememberView",
         "computerRememberControl",
+        "computerRelease",
         "computerForceRelease",
         "computerForceForgetControl",
       ]);
       expect(target.requests.every((request) => request.controllerId === "human:session")).toBe(
         true,
       );
+      expect(target.requests.every((request) => request.controllerKind === "human")).toBe(true);
       expect(target.requests.slice(1, 3).map((request) => request.input)).toEqual(
         [1, 2].map(() => ({
           desktop: { kind: "user", desktopId: "user-human" },
