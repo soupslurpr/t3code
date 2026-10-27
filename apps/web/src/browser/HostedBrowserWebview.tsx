@@ -5,13 +5,18 @@ import type {
 } from "@t3tools/contracts";
 import { useShallow } from "zustand/react/shallow";
 import { useEffect, useEffectEvent, useRef, useState } from "react";
+import { flushSync } from "react-dom";
 
 import { previewBridge } from "~/components/preview/previewBridge";
 import { usePreviewBridge } from "~/components/preview/usePreviewBridge";
 import { useClientSettingsHydrated } from "~/hooks/useSettings";
 import { cn, isMacPlatform } from "~/lib/utils";
 
-import { resolveBrowserSurfacePanelRect, useBrowserSurfaceStore } from "./browserSurfaceStore";
+import {
+  acquireBrowserSurfaceActivity,
+  resolveBrowserSurfacePanelRect,
+  useBrowserSurfaceStore,
+} from "./browserSurfaceStore";
 import { useActiveBrowserRecordingTabIds } from "./browserRecording";
 import {
   browserViewportSettingKey,
@@ -102,6 +107,57 @@ export function HostedBrowserWebview(props: {
   const recordingActive = useActiveBrowserRecordingTabIds().has(runtimeTabId);
   usePreviewBridge({ threadRef, tabId, runtimeTabId, serverDriven });
 
+  const [webviewGeneration, setWebviewGeneration] = useState(0);
+
+  // oxlint-disable-next-line t3code/react-effect-budget -- Subscribe to main-process capture leases and release them when the guest changes.
+  useEffect(() => {
+    const bridge = window.desktopBridge?.preview;
+    if (!bridge?.onCaptureRequest || !bridge.acknowledgeCapture) return;
+    const captures = new Map<string, () => void>();
+    const releaseCapture = (requestId: string) => {
+      captures.get(requestId)?.();
+      captures.delete(requestId);
+    };
+    const unsubscribe = bridge.onCaptureRequest((event) => {
+      if (!event.active) {
+        releaseCapture(event.requestId);
+        return;
+      }
+      const guest = webviewRef.current;
+      if (!guest || captures.has(event.requestId)) return;
+      try {
+        if (guest.getWebContentsId() !== event.webContentsId) return;
+      } catch {
+        // A different guest may still be attaching when this event is broadcast.
+        return;
+      }
+      let frame = 0;
+      flushSync(() => {
+        const release = acquireBrowserSurfaceActivity(runtimeTabId);
+        captures.set(event.requestId, () => {
+          cancelAnimationFrame(frame);
+          release();
+        });
+      });
+      // Commit the in-window placement before the main process requests a frame.
+      frame = requestAnimationFrame(() => {
+        frame = requestAnimationFrame(() => {
+          if (captures.has(event.requestId)) {
+            void bridge
+              .acknowledgeCapture?.(event.requestId)
+              .catch(() => releaseCapture(event.requestId));
+          }
+        });
+      });
+    });
+    return () => {
+      unsubscribe();
+      for (const release of captures.values()) release();
+      captures.clear();
+    };
+    // oxlint-disable-next-line react/exhaustive-effect-dependencies -- A replaced guest must release the old guest's leases.
+  }, [runtimeTabId, webviewGeneration]);
+
   const serverColorScheme = serverRendering?.colorScheme;
   const serverZoomFactor = serverRendering?.zoomFactor;
 
@@ -130,7 +186,6 @@ export function HostedBrowserWebview(props: {
     withDesktopTab(runtimeTabId, () => bridge.setZoomFactor(runtimeTabId, serverZoomFactor));
   }, [runtimeTabId, serverZoomFactor]);
 
-  const [webviewGeneration, setWebviewGeneration] = useState(0);
   const [recoverySrc, setRecoverySrc] = useState(initialSrc);
   const remountCrashedWebview = useEffectEvent(() => {
     setRecoverySrc(initialUrl ?? initialSrc);

@@ -4,7 +4,10 @@ import {
   DesktopBrowserCommand,
   DesktopBrowserEvent,
   type DesktopBrowserEvent as DesktopBrowserEventType,
+  type DesktopPreviewCaptureRequest,
 } from "@t3tools/contracts";
+import * as Deferred from "effect/Deferred";
+import * as NodeCrypto from "node:crypto";
 import * as Context from "effect/Context";
 import * as NodePath from "node:path";
 import * as Effect from "effect/Effect";
@@ -16,6 +19,7 @@ import * as Stream from "effect/Stream";
 
 import { createCdpRelayConnection, type CdpRelayConnection } from "./CdpRelay.ts";
 import { sendPageCommand } from "./GuestInput.ts";
+import type { PreviewManagerError } from "./Manager.ts";
 
 const encodeEvent = Schema.encodeSync(Schema.fromJsonString(DesktopBrowserEvent));
 const decodeCommand = Schema.decodeUnknownOption(Schema.fromJsonString(DesktopBrowserCommand));
@@ -35,7 +39,30 @@ export interface DesktopBrowserTabKey {
 export interface DesktopBrowserTabDebugger {
   readonly webContents: Electron.WebContents;
   readonly debugger: Electron.Debugger;
+  readonly withCaptureActivity: <A, E>(
+    capture: Effect.Effect<A, E>,
+  ) => Effect.Effect<A, E | PreviewManagerError>;
 }
+
+class DesktopBrowserCaptureError extends Schema.TaggedError<DesktopBrowserCaptureError>()(
+  "DesktopBrowserCaptureError",
+  {
+    reason: Schema.Literals(["changed", "paint-timeout", "capture-timeout", "failed"]),
+    cause: Schema.optional(Schema.Defect()),
+  },
+) {
+  override get message(): string {
+    const details = {
+      changed: "the browser tab changed during capture.",
+      "paint-timeout": "the browser surface did not become paintable within 2 seconds.",
+      "capture-timeout": "the compositor did not supply a screenshot within 8 seconds.",
+      failed: "the compositor could not capture a frame.",
+    };
+    return `Desktop browser screenshot failed: ${details[this.reason]}`;
+  }
+}
+
+const isDesktopBrowserCaptureError = Schema.is(DesktopBrowserCaptureError);
 
 const keyOf = ({ threadId, tabId }: DesktopBrowserTabKey) => `${threadId}\u0000${tabId}`;
 
@@ -43,6 +70,7 @@ interface AttachedTab {
   readonly key: DesktopBrowserTabKey;
   readonly debuggee: DesktopBrowserTabDebugger;
   relay: CdpRelayConnection | null;
+  readonly captureControllers: Map<AbortController, string | undefined>;
   screenshotTurn: object | null;
   /** Each holds focus and painting while `held` and whoever queued it still waits on it. */
   readonly waitingScreenshots: Array<{
@@ -89,6 +117,8 @@ export class DesktopBrowserHost extends Context.Service<
     readonly detach: (key: DesktopBrowserTabKey) => void;
     readonly humanStartedDownload: (source: Electron.WebContents) => boolean;
     readonly placeDownload: (source: Electron.WebContents, item: Electron.DownloadItem) => boolean;
+    readonly captureRequests: Stream.Stream<DesktopPreviewCaptureRequest>;
+    readonly acknowledgeCapture: (requestId: string) => void;
     readonly pointers: Stream.Stream<{
       readonly key: DesktopBrowserTabKey;
       readonly phase: "move" | "click";
@@ -115,11 +145,136 @@ export const make = Effect.gen(function* () {
     readonly key: DesktopBrowserTabKey;
     readonly active: boolean;
   }>();
-  const runFork = Effect.runForkWith(yield* Effect.context<never>());
+  const context = yield* Effect.context<never>();
+  const runFork = Effect.runForkWith(context);
+  const runPromise = Effect.runPromiseWith(context);
   const tabs = new Map<string, AttachedTab>();
   /** Threads whose agent turn runs, by the server's account. */
   const agentTurns = new Set<string>();
   const emit = (event: DesktopBrowserEventType) => runFork(PubSub.publish(outbox, event));
+
+  const captureRequests = yield* PubSub.unbounded<DesktopPreviewCaptureRequest>();
+  const pendingCaptures = new Map<string, Deferred.Deferred<void>>();
+  // A hung native warmup must not occupy the separate CDP screenshot queue.
+  const warming = new WeakSet<Electron.WebContents>();
+  const capture = async (
+    tab: AttachedTab,
+    parameters: Readonly<Record<string, unknown>>,
+    owner: string | undefined,
+    current: () => boolean,
+    trackPending: (pending: Promise<unknown>) => void,
+  ) => {
+    const { webContents, debugger: debuggee } = tab.debuggee;
+    const controller = new AbortController();
+    tab.captureControllers.set(controller, owner);
+    const requireCurrent = (signal: AbortSignal) => {
+      signal.throwIfAborted();
+      if (!current() || tabs.get(keyOf(tab.key)) !== tab || webContents.isDestroyed()) {
+        throw new DesktopBrowserCaptureError({ reason: "changed" });
+      }
+    };
+    try {
+      return await runPromise(
+        tab.debuggee.withCaptureActivity(
+          Effect.acquireUseRelease(
+            Effect.gen(function* () {
+              const ready = yield* Deferred.make<void>();
+              const requestId = NodeCrypto.randomUUID();
+              pendingCaptures.set(requestId, ready);
+              return { requestId, ready, webContentsId: webContents.id };
+            }),
+            ({ requestId, ready, webContentsId }) =>
+              Effect.gen(function* () {
+                yield* PubSub.publish(captureRequests, {
+                  requestId,
+                  webContentsId,
+                  active: true,
+                });
+                yield* Deferred.await(ready).pipe(
+                  Effect.timeoutOrElse({
+                    duration: "2 seconds",
+                    orElse: () =>
+                      Effect.fail(
+                        new DesktopBrowserCaptureError({
+                          reason: "paint-timeout",
+                        }),
+                      ),
+                  }),
+                );
+                return yield* Effect.tryPromise({
+                  try: async (signal) => {
+                    requireCurrent(signal);
+                    // CDP may resize the surface for a scaled clip. Request its
+                    // screenshot first, then produce an initial frame and, if
+                    // CDP is still waiting, a frame after that capture setup.
+                    let screenshotSettled = false;
+                    const screenshotRequest = Promise.resolve()
+                      .then(() => debuggee.sendCommand("Page.captureScreenshot", parameters))
+                      .finally(() => {
+                        screenshotSettled = true;
+                      });
+                    trackPending(screenshotRequest);
+                    if (!warming.has(webContents)) {
+                      warming.add(webContents);
+                      const releaseWarmup = () => warming.delete(webContents);
+                      void Promise.resolve()
+                        .then(async () => {
+                          await webContents.capturePage(undefined, {
+                            stayHidden: true,
+                            stayAwake: false,
+                          });
+                          requireCurrent(signal);
+                          if (!screenshotSettled) {
+                            await webContents.capturePage(undefined, {
+                              stayHidden: true,
+                              stayAwake: false,
+                            });
+                          }
+                        })
+                        .then(releaseWarmup, releaseWarmup);
+                    }
+                    // Native capture only requests paint; its unused image must
+                    // not delay or replace CDP's screenshot result.
+                    const screenshot = await screenshotRequest;
+                    requireCurrent(signal);
+                    return screenshot;
+                  },
+                  catch: (cause) =>
+                    isDesktopBrowserCaptureError(cause)
+                      ? cause
+                      : new DesktopBrowserCaptureError({
+                          reason: "failed",
+                          cause,
+                        }),
+                }).pipe(
+                  Effect.timeoutOrElse({
+                    duration: "8 seconds",
+                    orElse: () =>
+                      Effect.fail(
+                        new DesktopBrowserCaptureError({
+                          reason: "capture-timeout",
+                        }),
+                      ),
+                  }),
+                );
+              }),
+            ({ requestId, webContentsId }) =>
+              Effect.gen(function* () {
+                pendingCaptures.delete(requestId);
+                yield* PubSub.publish(captureRequests, {
+                  requestId,
+                  webContentsId,
+                  active: false,
+                });
+              }),
+          ),
+        ),
+        { signal: controller.signal },
+      );
+    } finally {
+      tab.captureControllers.delete(controller);
+    }
+  };
 
   const nextScreenshot = (tab: AttachedTab) => {
     tab.screenshotTurn = null;
@@ -139,7 +294,11 @@ export const make = Effect.gen(function* () {
     relay: CdpRelayConnection,
     ownerLive: () => boolean,
     /** Sends only while `current` holds; holds focus and painting only while `held`. */
-    capture: (current: () => boolean, held: boolean) => Promise<unknown>,
+    capture: (
+      current: () => boolean,
+      held: boolean,
+      trackPending: (pending: Promise<unknown>) => void,
+    ) => Promise<unknown>,
   ) =>
     new Promise<unknown>((resolve, reject) => {
       const live = () => tab.relay === relay && ownerLive();
@@ -152,9 +311,21 @@ export const make = Effect.gen(function* () {
           }
           const turn = {};
           tab.screenshotTurn = turn;
-          capture(() => tab.screenshotTurn === turn && live(), waiting.held)
+          let pending: Promise<unknown> | undefined;
+          capture(
+            () => tab.screenshotTurn === turn && live(),
+            waiting.held,
+            (request) => {
+              pending = request;
+            },
+          )
             .finally(() => {
-              if (tab.screenshotTurn === turn) nextScreenshot(tab);
+              const release = () => {
+                if (tab.screenshotTurn === turn) nextScreenshot(tab);
+              };
+              // A timed-out CDP request still owns its Chromium slot until it settles.
+              if (pending) void pending.then(release, release);
+              else release();
             })
             .then(resolve, reject);
         },
@@ -260,6 +431,8 @@ export const make = Effect.gen(function* () {
    * nothing pending from the old one. A released relay's screencast has no viewer to stop it.
    */
   const dropFocusHolds = (tab: AttachedTab) => {
+    for (const controller of tab.captureControllers.keys()) controller.abort();
+    tab.captureControllers.clear();
     tab.focusPending.clear();
     releaseFocusWhenIdle(tab);
     syncPainting(tab);
@@ -275,6 +448,12 @@ export const make = Effect.gen(function* () {
   /** A detached session, such as a closed viewer, waits on nothing it sent. */
   const dropSessionHolds = (tab: AttachedTab, owner: string) => {
     tab.screencasts.delete(owner);
+    for (const [controller, captureOwner] of tab.captureControllers) {
+      if (captureOwner === owner) {
+        controller.abort();
+        tab.captureControllers.delete(controller);
+      }
+    }
     for (const [pending, hold] of tab.focusPending) {
       if (hold.owner === owner) tab.focusPending.delete(pending);
     }
@@ -326,11 +505,13 @@ export const make = Effect.gen(function* () {
             tab.agentUsed = true;
           }
           // Waits for focus emulation; insertText and other non-CDP input would not queue behind it.
-          const forward = (current?: () => boolean) => {
+          const forward = (current?: () => boolean, prepareCapture?: () => Promise<unknown>) => {
             const change = tab.focusChange;
             const run = () =>
               current === undefined || current()
-                ? send(method, params, sessionId)
+                ? prepareCapture
+                  ? prepareCapture()
+                  : send(method, params, sessionId)
                 : Promise.reject(new Error("The page this screenshot was for has moved on."));
             return change === null ? run() : change.then(run);
           };
@@ -339,8 +520,17 @@ export const make = Effect.gen(function* () {
                 tab,
                 relay,
                 () => owner === undefined || !detachedOwners.has(owner),
-                (current, held) =>
-                  held ? holdFocus(tab, method, owner, () => forward(current)) : forward(current),
+                (current, held, trackPending) =>
+                  held
+                    ? holdFocus(tab, method, owner, () =>
+                        forward(
+                          current,
+                          sessionId === undefined
+                            ? () => capture(tab, params, owner, current, trackPending)
+                            : undefined,
+                        ),
+                      )
+                    : forward(current),
               )
             : method === "Page.startScreencast"
               ? holdFocus(tab, method, owner, forward).catch((cause: unknown) => {
@@ -392,8 +582,8 @@ export const make = Effect.gen(function* () {
     const id = keyOf(key);
     const tab = tabs.get(id);
     if (!tab) return;
+    dropRelay(tab);
     tabs.delete(id);
-    tab.relay = null;
     tab.debuggee.debugger.off("message", tab.onMessage);
     tab.debuggee.webContents.off("did-navigate", tab.onNewDocument);
     syncPainting(tab);
@@ -408,6 +598,7 @@ export const make = Effect.gen(function* () {
       key,
       debuggee,
       relay: null,
+      captureControllers: new Map(),
       screenshotTurn: null,
       waitingScreenshots: [],
       downloadDirectory: null,
@@ -485,6 +676,11 @@ export const make = Effect.gen(function* () {
   });
 
   return DesktopBrowserHost.of({
+    captureRequests: Stream.fromPubSub(captureRequests),
+    acknowledgeCapture: (requestId) => {
+      const ready = pendingCaptures.get(requestId);
+      if (ready) runFork(Deferred.succeed(ready, undefined));
+    },
     pointers: Stream.fromPubSub(pointers),
     painting: Stream.fromPubSub(painting),
     // Subscribes before announcing, so no attach falls between the two.

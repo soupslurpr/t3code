@@ -1772,3 +1772,42 @@ public licenses.
 
 Creative Commons may be contacted at creativecommons.org.
 ```
+
+## T3 Code background browser capture
+
+Source: [T3 Code PR #17298](https://github.com/pingdotgg/t3code/tree/8953e431c1a8d55f6b99dfa9bbe3efc8cf46cf82)
+
+- `apps/desktop/src/ipc/channels.ts`: adapted; apply the background capture fix to this fork’s current implementation.
+- `apps/desktop/src/ipc/methods/preview.ts`: adapted; preserve the current upstream capture, focus and renderer lifecycle.
+- `apps/desktop/src/preload.ts`: adapted; apply the background capture fix to this fork’s current implementation.
+- `apps/desktop/src/preview/DesktopBrowserHost.test.ts`: adapted; preserve the current upstream capture, focus and renderer lifecycle.
+- `apps/desktop/src/preview/DesktopBrowserHost.ts`: adapted; preserve the current upstream capture, focus and renderer lifecycle.
+- `apps/desktop/src/preview/Manager.test.ts`: adapted; apply the background capture fix to this fork’s current implementation.
+- `apps/desktop/src/preview/Manager.ts`: adapted; apply the background capture fix to this fork’s current implementation.
+- `apps/web/src/browser/HostedBrowserWebview.tsx`: adapted; preserve the current upstream capture, focus and renderer lifecycle.
+- `packages/contracts/src/ipc.ts`: adapted; apply the background capture fix to this fork’s current implementation.
+- `apps/desktop/src/preview/BackgroundCapture.test.ts`: adapted; preserve the current upstream capture, focus and renderer lifecycle.
+
+```text
+MIT License
+
+Copyright (c) 2026 T3 Tools Inc.
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+```

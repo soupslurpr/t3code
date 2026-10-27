@@ -6,9 +6,12 @@ import {
 } from "@t3tools/contracts";
 import * as Cause from "effect/Cause";
 import * as Effect from "effect/Effect";
+import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 import { beforeEach, describe, expect, it, vi } from "vite-plus/test";
 
+import * as ElectronWindow from "../../electron/ElectronWindow.ts";
+import * as DesktopBrowserHost from "../../preview/DesktopBrowserHost.ts";
 import * as PreviewManager from "../../preview/Manager.ts";
 import * as PreviewIpc from "./preview.ts";
 import * as DesktopIpc from "../DesktopIpc.ts";
@@ -35,6 +38,35 @@ vi.mock("electron", () => ({
 const decodeCaptureFailure = Schema.decodeUnknownEffect(PreviewCaptureFailure);
 
 describe("preview IPC methods", () => {
+  effectIt.effect.each([7, 9, null])("acknowledges capture only from main window %s", (mainId) =>
+    Effect.gen(function* () {
+      const acknowledged: string[] = [];
+      let listener: DesktopIpc.DesktopIpcHandleListener | undefined;
+      const ipc = DesktopIpc.make({
+        removeHandler: vi.fn(),
+        handle: (_channel, registered) => {
+          listener = registered;
+        },
+        removeAllListeners: vi.fn(),
+        on: vi.fn(),
+      });
+      expect(PreviewIpc.methods).toContain(PreviewIpc.acknowledgeCapture);
+      yield* ipc.handle(PreviewIpc.acknowledgeCapture).pipe(
+        Effect.provideService(ElectronWindow.ElectronWindow, {
+          main: Effect.succeed(
+            mainId === null ? Option.none() : Option.some({ webContents: { id: mainId } }),
+          ),
+        } as ElectronWindow.ElectronWindow["Service"]),
+        Effect.provideService(DesktopBrowserHost.DesktopBrowserHost, {
+          acknowledgeCapture: (id: string) => {
+            acknowledged.push(id);
+          },
+        } as DesktopBrowserHost.DesktopBrowserHost["Service"]),
+      );
+      yield* Effect.promise(async () => listener!({ sender: { id: 7 } }, "request"));
+      expect(acknowledged).toEqual(mainId === 7 ? ["request"] : []);
+    }).pipe(Effect.scoped),
+  );
   const invokeCapture = (
     method: typeof PreviewIpc.startRecording | typeof PreviewIpc.captureScreenshot,
     manager: Partial<PreviewManager.PreviewManager["Service"]>,
