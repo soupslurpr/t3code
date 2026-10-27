@@ -12,6 +12,7 @@ import * as Context from "effect/Context";
 import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
 import * as Option from "effect/Option";
+import * as Schedule from "effect/Schedule";
 import * as Schema from "effect/Schema";
 import * as Stream from "effect/Stream";
 import * as SubscriptionRef from "effect/SubscriptionRef";
@@ -247,6 +248,8 @@ interface SubscriptionOptions<TTag extends EnvironmentSubscriptionRpcTag> {
     cause: Cause.Cause<EnvironmentRpcStreamFailure<TTag>>,
   ) => Effect.Effect<void, never, never>;
   readonly retryExpectedFailureAfter?: Duration.Input;
+  /** Reopen a successfully ended registration stream without replacing its healthy session. */
+  readonly resubscribeOnCompletionAfter?: Duration.Input;
   readonly resubscribe?: Stream.Stream<unknown, never, never>;
 }
 
@@ -313,6 +316,9 @@ function subscribeDynamicMapped<TTag extends EnvironmentSubscriptionRpcTag, A>(
                       return stream.pipe(Stream.ensuring(completeObservation));
                     }),
                   ).pipe(
+                    options?.resubscribeOnCompletionAfter === undefined
+                      ? (stream) => stream
+                      : Stream.repeat(Schedule.spaced(options.resubscribeOnCompletionAfter)),
                     Stream.tapCause((cause) =>
                       options?.onDefect !== undefined &&
                       cause.reasons.some(
