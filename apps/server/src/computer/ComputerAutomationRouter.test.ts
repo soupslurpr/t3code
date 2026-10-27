@@ -155,7 +155,7 @@ it.effect(
 it.effect("routes user desktop access and both release directions through the broker", () =>
   Effect.gen(function* () {
     const h = yield* harness();
-    const input = { desktop: { kind: "user" as const } };
+    const input = { desktop: { kind: "user" as const, desktopId: "user-desktop-1" } };
     yield* h.router.status(scope, input);
     yield* h.router.requestView(scope, input);
     yield* h.router.requestControl(scope, input);

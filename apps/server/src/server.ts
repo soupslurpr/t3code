@@ -1,3 +1,4 @@
+import * as UserDesktops from "./persistence/UserDesktops.ts";
 import * as AgentDesktopEnvironment from "./agentDesktop/AgentDesktopEnvironment.ts";
 import * as AgentDesktopManager from "./agentDesktop/AgentDesktopManager.ts";
 import * as QemuAgentDesktop from "./agentDesktop/QemuAgentDesktop.ts";
@@ -215,7 +216,11 @@ const HTTP_ROUTER_CONFIG = {
 // Skip Effect's default 20 s grace; WebSocket scope finalizers already close connections gracefully.
 const HTTP_PREEMPTIVE_SHUTDOWN_GRACE_MS = 0;
 const layerComputerObservationStore = ComputerObservationStore.layer;
-const layerPreviewAutomationBroker = PreviewAutomationBroker.layer;
+const layerPersistence = Layer.empty.pipe(Layer.provideMerge(SqlitePersistence.layerConfig));
+const layerPreviewAutomationBroker = PreviewAutomationBroker.layer.pipe(
+  Layer.provide(UserDesktops.layer),
+  Layer.provide(layerPersistence),
+);
 const layerAgentDesktopEnvironment = AgentDesktopEnvironment.layer;
 const layerQemuAgentDesktop = QemuAgentDesktop.layer.pipe(
   Layer.provide(layerAgentDesktopEnvironment),
@@ -351,8 +356,6 @@ const layerHttpServer = Layer.unwrap(
 );
 
 const layerPlatformServices = DocumentText.layer.pipe(Layer.provideMerge(NodeServices.layer));
-
-const layerPersistence = Layer.empty.pipe(Layer.provideMerge(SqlitePersistence.layerConfig));
 
 const layerVcsDriverRegistry = VcsDriverRegistry.layer.pipe(Layer.provide(VcsProjectConfig.layer));
 

@@ -1,3 +1,5 @@
+import { EnvironmentId, ThreadId, TrimmedNonEmptyString } from "@t3tools/contracts";
+import * as Schema from "effect/Schema";
 import type {
   ComputerAutomationFailure,
   DesktopComputerAutomationResult,
@@ -22,6 +24,17 @@ export async function resolveDesktopComputerAutomation<Value>(
 export function serializeComputerAutomationError(
   error: unknown,
 ): NonNullable<PreviewAutomationResponse["error"]> {
+  if (isControllerRequiredError(error)) {
+    return {
+      _tag: error.responseTag,
+      message: error.message,
+      detail: {
+        requestId: error.requestId,
+        environmentId: error.environmentId,
+        threadId: error.threadId,
+      },
+    };
+  }
   if (error instanceof DesktopComputerAutomationError) {
     const failure = error.failure;
     const failureKind =
@@ -41,3 +54,22 @@ export function serializeComputerAutomationError(
     message: "The desktop computer operation failed.",
   };
 }
+
+export class PreviewAutomationComputerControllerRequiredError extends Schema.TaggedError<PreviewAutomationComputerControllerRequiredError>()(
+  "PreviewAutomationComputerControllerRequiredError",
+  {
+    requestId: TrimmedNonEmptyString,
+    environmentId: EnvironmentId,
+    threadId: ThreadId,
+  },
+) {
+  get responseTag() {
+    return "PreviewAutomationUnsupportedClientError" as const;
+  }
+
+  override get message(): string {
+    return `Computer request ${this.requestId} has no controller identity. Update the T3 environment server.`;
+  }
+}
+
+const isControllerRequiredError = Schema.is(PreviewAutomationComputerControllerRequiredError);

@@ -462,7 +462,7 @@ describe("durable computer adapter", () => {
         const h = yield* harness();
         h.state.exists = false;
         const prepared = yield* h.prepare({
-          desktop: { kind: "user" },
+          desktop: { kind: "user", desktopId: "user-desktop-1" },
           label: "Pixels",
           match: { type: "image-change" },
         });

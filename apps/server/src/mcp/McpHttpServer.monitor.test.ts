@@ -88,7 +88,7 @@ it.effect("enforces live, writable thread callers and hides foreign monitor stat
       (yield* call("monitor_start", input, { ...invocation, thread: undefined })).isError,
     );
     const watch = {
-      desktop: { kind: "user" },
+      desktop: { kind: "user", desktopId: "user-desktop-1" },
       label: "Visible completion",
       match: { type: "image-change" },
       continuation: "record-only",
@@ -361,7 +361,7 @@ function computerWatchMonitor(ownerThreadId: ThreadId, monitorId: ThreadMonitorI
     condition: {
       type: "computer",
       revision: 1,
-      desktop: { kind: "user" },
+      desktop: { kind: "user", desktopId: "user-desktop-1" },
       observation: {
         regions: [
           {
@@ -510,7 +510,11 @@ it.effect("delivers exact start/update baselines once and retains caller guards"
     );
     yield* Effect.gen(function* () {
       const scope = { ...invocation, capabilities: new Set(["computer" as const]) };
-      const input = { label: "Watch", desktop: { kind: "user" }, match: { type: "image-change" } };
+      const input = {
+        label: "Watch",
+        desktop: { kind: "user", desktopId: "user-desktop-1" },
+        match: { type: "image-change" },
+      };
       for (const invalid of [
         invocation,
         { ...scope, thread: undefined },

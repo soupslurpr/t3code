@@ -1,3 +1,4 @@
+import * as UserDesktops from "../../../persistence/UserDesktops.ts";
 import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { expect, it } from "@effect/vitest";
@@ -63,7 +64,10 @@ it.effect.each([
       );
       const tab = yield* manager.open({ threadId, url: "http://localhost:3000" });
       const layerDependencies = Layer.mergeAll(
-        PreviewAutomationBroker.layer.pipe(Layer.provide(NodeServices.layer)),
+        PreviewAutomationBroker.layer.pipe(
+          Layer.provide(UserDesktops.layerMemory),
+          Layer.provide(NodeServices.layer),
+        ),
         Layer.succeed(Preview.PreviewManager, manager),
         Layer.succeed(McpInvocationContext.McpInvocationContext, scope),
         McpToolAccessTestkit.liveThreadsLayer,

@@ -333,6 +333,22 @@ export const adoptForkMigrationHistory = Effect.fn("adoptForkMigrationHistory")(
     });
   }
 
+  if (Math.max(fork.length, legacy.length) >= 9) {
+    const columns = yield* sql<{ readonly name: string }>`PRAGMA table_info(user_desktops)`;
+    const required = [
+      "desktop_id",
+      "default_label",
+      "custom_label",
+      "platform",
+      "capabilities_json",
+      "last_seen_at",
+      "last_active_at",
+    ];
+    if (!required.every((name) => columns.some((column) => column.name === name))) {
+      return yield* invalidHistory("UserDesktops identity conflicts with its inventory schema");
+    }
+  }
+
   yield* sql`CREATE TABLE IF NOT EXISTS effect_sql_fork_migrations (
     migration_id integer PRIMARY KEY NOT NULL,
     created_at datetime NOT NULL DEFAULT current_timestamp,

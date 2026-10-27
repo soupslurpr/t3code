@@ -1,3 +1,4 @@
+import * as UserDesktops from "../persistence/UserDesktops.ts";
 import * as Context from "effect/Context";
 import * as Ref from "effect/Ref";
 import * as AgentDesktopManager from "../agentDesktop/AgentDesktopManager.ts";
@@ -109,7 +110,7 @@ const layer = McpHttpServer.ComputerToolkitRegistrationLive.pipe(
   Layer.provideMerge(McpToolAccessTestkit.liveThreadsLayer),
   Layer.provideMerge(ComputerAutomationRouter.layer.pipe(Layer.provide(managerLayer))),
   Layer.provideMerge(responseLayer),
-  Layer.provideMerge(PreviewAutomationBroker.layer),
+  Layer.provideMerge(PreviewAutomationBroker.layer.pipe(Layer.provide(UserDesktops.layerMemory))),
   Layer.provideMerge(NodeServices.layer),
 );
 const call = Effect.fn("ComputerHttpTest.call")(
@@ -119,6 +120,36 @@ const call = Effect.fn("ComputerHttpTest.call")(
       Effect.provideService(McpInvocationContext.McpInvocationContext, scope),
       Effect.provideService(McpSchema.McpServerClient, client),
     ),
+);
+
+it.effect(
+  "lists explicit desktops without access and rejects a target missing its concrete id",
+  () =>
+    Effect.gen(function* () {
+      const requests: PreviewAutomationRequest[] = [];
+      yield* serve((request) => {
+        requests.push(request);
+        return Effect.succeed({ ok: true, result: null });
+      });
+      const server = yield* McpServer.McpServer;
+      const listTool = server.tools.find(({ tool }) => tool.name === "user_desktop_list");
+      expect(listTool?.tool.annotations).toMatchObject({
+        readOnlyHint: true,
+        destructiveHint: false,
+      });
+      const listed = yield* call("user_desktop_list", {});
+      expect(listed.isError).toBe(false);
+      expect(listed.structuredContent).toMatchObject({
+        desktops: [
+          { desktop: { kind: "user", desktopId: "user-desktop-1" }, connectionState: "online" },
+        ],
+      });
+      const missingId = yield* call("computer_status", { desktop: { kind: "user" } });
+      expect(missingId.structuredContent).toMatchObject({
+        error: { code: "desktop-target-required", field: "desktop.desktopId", received: "missing" },
+      });
+      expect(requests).toEqual([]);
+    }).pipe(Effect.provide(layer), Effect.scoped),
 );
 
 const serve = Effect.fn("ComputerHttpTest.serve")(function* (
@@ -137,6 +168,13 @@ const serve = Effect.fn("ComputerHttpTest.serve")(function* (
   const connected = yield* Deferred.make<void>();
   const events = yield* broker.connect({
     clientId: "native-host",
+    userDesktop: {
+      protocolVersion: 1,
+      desktopId: "user-desktop-1",
+      defaultLabel: "Test desktop",
+      platform: "linux",
+      capabilities: ["view", "control", "availability"],
+    },
     environmentId,
     supportedOperations: [...COMPUTER_AUTOMATION_OPERATIONS],
   });
@@ -184,7 +222,9 @@ it.effect("returns native screenshot bytes once, with bounded structured metadat
           },
         },
       });
-      const result = yield* call("computer_snapshot", { desktop: { kind: "user" } });
+      const result = yield* call("computer_snapshot", {
+        desktop: { kind: "user", desktopId: "user-desktop-1" },
+      });
       expect(result.isError).toBe(false);
       expect(result.content.filter((content) => content.type === "image")).toEqual([
         {
@@ -224,7 +264,7 @@ it.effect("keeps actionable native failures without exposing unrelated renderer 
         },
       });
       const result = yield* call("computer_act", {
-        desktop: { kind: "user" },
+        desktop: { kind: "user", desktopId: "user-desktop-1" },
         actions: [{ type: "click", frameId: "old-frame", x: 1, y: 1 }],
         observation: false,
       });
@@ -253,10 +293,17 @@ it.effect.each([
       const result = yield* call(
         name,
         name === "computer_act"
-          ? { desktop: { kind: "user" }, actions: [{ type: "press", key: "Meta" }] }
+          ? {
+              desktop: { kind: "user", desktopId: "user-desktop-1" },
+              actions: [{ type: "press", key: "Meta" }],
+            }
           : name === "computer_observe_sequence"
-            ? { desktop: { kind: "user" }, frameCount: 2, intervalMs: 100 }
-            : { desktop: { kind: "user" } },
+            ? {
+                desktop: { kind: "user", desktopId: "user-desktop-1" },
+                frameCount: 2,
+                intervalMs: 100,
+              }
+            : { desktop: { kind: "user", desktopId: "user-desktop-1" } },
         {
           ...invocation,
           thread: undefined,
@@ -276,7 +323,7 @@ it.effect("rejects native access without the independent computer capability", (
     Effect.gen(function* () {
       const result = yield* call(
         "computer_request_control",
-        { desktop: { kind: "user" } },
+        { desktop: { kind: "user", desktopId: "user-desktop-1" } },
         { ...invocation, capabilities: new Set() },
       );
       expect(result.isError).toBe(true);
@@ -289,7 +336,7 @@ it.effect("returns bounded action validation details in visible tool content", (
   Effect.scoped(
     Effect.gen(function* () {
       const result = yield* call("computer_act", {
-        desktop: { kind: "user" },
+        desktop: { kind: "user", desktopId: "user-desktop-1" },
         actions: [{ type: "wait", durationMs: 12_000 }],
       });
       expect(result.isError).toBe(true);
@@ -315,7 +362,7 @@ it.effect("keeps action receipts when the native observation is omitted", () =>
       const actionResults = [{ index: 0, type: "activate_window" }];
       yield* serve({ ok: true, result: { actionResults } });
       const result = yield* call("computer_act", {
-        desktop: { kind: "user" },
+        desktop: { kind: "user", desktopId: "user-desktop-1" },
         actions: [{ type: "activate_window", windowId: "window-1" }],
         observation: false,
       });
@@ -357,7 +404,7 @@ it.effect("returns temporal frames once in capture order with timing outside ima
         requests.push(request);
         expect(request.operation).toBe("computerSnapshot");
         expect(request.input).toEqual({
-          desktop: { kind: "user" },
+          desktop: { kind: "user", desktopId: "user-desktop-1" },
           displayId: "primary",
           includeAccessibility: false,
           screenshot: { maxWidth: 100 },
@@ -367,7 +414,7 @@ it.effect("returns temporal frames once in capture order with timing outside ima
       }),
     );
     const fiber = yield* call("computer_observe_sequence", {
-      desktop: { kind: "user" },
+      desktop: { kind: "user", desktopId: "user-desktop-1" },
       displayId: "primary",
       frameCount: 2,
       intervalMs: 100,
@@ -432,7 +479,7 @@ it.effect("keeps native temporal action capture in one request and strips nested
       }),
     );
     const input = {
-      desktop: { kind: "user" },
+      desktop: { kind: "user", desktopId: "user-desktop-1" },
       actions: [{ type: "press", key: "Space" }],
       observation: false,
       temporalObservation: { frameCount: 2, intervalMs: 100 },
@@ -504,7 +551,7 @@ it.effect("omits unchanged image content while preserving a fresh actionable fra
     yield* serve((request) =>
       Effect.sync(() => {
         expect(request.input).toEqual({
-          desktop: { kind: "user" },
+          desktop: { kind: "user", desktopId: "user-desktop-1" },
           screenshot: { unchangedIfContentHash: contentHash },
         });
         return {
@@ -518,7 +565,7 @@ it.effect("omits unchanged image content while preserving a fresh actionable fra
       }),
     );
     const result = yield* call("computer_snapshot", {
-      desktop: { kind: "user" },
+      desktop: { kind: "user", desktopId: "user-desktop-1" },
       screenshot: { unchangedIfContentHash: contentHash },
     });
     expect(result.isError).toBe(false);
@@ -544,7 +591,7 @@ it.effect("preserves both discrete wheel axes through the MCP request and receip
       Effect.sync(() => {
         expect(request.operation).toBe("computerAct");
         expect(request.input).toEqual({
-          desktop: { kind: "user" },
+          desktop: { kind: "user", desktopId: "user-desktop-1" },
           actions: [action],
           observation: false,
         });
@@ -552,7 +599,7 @@ it.effect("preserves both discrete wheel axes through the MCP request and receip
       }),
     );
     const result = yield* call("computer_act", {
-      desktop: { kind: "user" },
+      desktop: { kind: "user", desktopId: "user-desktop-1" },
       actions: [action],
       observation: false,
     });
@@ -617,7 +664,10 @@ it.effect.each(["computer_snapshot", "computer_act"] as const)(
           requests += 1;
           expect(request.input).toMatchObject(
             name === "computer_snapshot"
-              ? { desktop: { kind: "user" }, detailScreenshots: details }
+              ? {
+                  desktop: { kind: "user", desktopId: "user-desktop-1" },
+                  detailScreenshots: details,
+                }
               : { observation: { detailScreenshots: details } },
           );
           return {
@@ -632,9 +682,9 @@ it.effect.each(["computer_snapshot", "computer_act"] as const)(
       const result = yield* call(
         name,
         name === "computer_snapshot"
-          ? { desktop: { kind: "user" }, detailScreenshots: details }
+          ? { desktop: { kind: "user", desktopId: "user-desktop-1" }, detailScreenshots: details }
           : {
-              desktop: { kind: "user" },
+              desktop: { kind: "user", desktopId: "user-desktop-1" },
               actions: [{ type: "press", key: "Space" }],
               observation: { detailScreenshots: details },
             },
@@ -692,7 +742,7 @@ it.effect("retains temporal ordering and roles for overview and detail images", 
       },
     });
     const result = yield* call("computer_act", {
-      desktop: { kind: "user" },
+      desktop: { kind: "user", desktopId: "user-desktop-1" },
       actions: [{ type: "press", key: "Space" }],
       observation: false,
       temporalObservation: {
@@ -736,7 +786,9 @@ it.effect("returns a target-required failure for every computer tool without rea
           return { ok: true, result: null };
         }),
       );
-      for (const name of Object.keys(ComputerToolkit.tools)) {
+      for (const name of Object.keys(ComputerToolkit.tools).filter(
+        (name) => name !== "user_desktop_list",
+      )) {
         const result = yield* call(name, {});
         expect(result.isError, name).toBe(true);
         expect(result.structuredContent).toMatchObject({
@@ -766,11 +818,16 @@ it.effect("preserves null results when forgetting an explicitly selected desktop
           return { ok: true, result: null };
         }),
       );
-      const result = yield* call("computer_forget_control", { desktop: { kind: "user" } });
+      const result = yield* call("computer_forget_control", {
+        desktop: { kind: "user", desktopId: "user-desktop-1" },
+      });
       expect(result.isError).toBe(false);
       expect(result.content).toEqual([{ type: "text", text: "null" }]);
       expect(requests).toMatchObject([
-        { operation: "computerForgetControl", input: { desktop: { kind: "user" } } },
+        {
+          operation: "computerForgetControl",
+          input: { desktop: { kind: "user", desktopId: "user-desktop-1" } },
+        },
       ]);
     }),
   ).pipe(Effect.provide(layer)),
@@ -798,10 +855,15 @@ it.effect("routes computer access with browser access disabled", () =>
           };
         }),
       );
-      const result = yield* call("computer_status", { desktop: { kind: "user" } });
+      const result = yield* call("computer_status", {
+        desktop: { kind: "user", desktopId: "user-desktop-1" },
+      });
       expect(result.isError).toBe(false);
       expect(requests).toMatchObject([
-        { operation: "computerStatus", input: { desktop: { kind: "user" } } },
+        {
+          operation: "computerStatus",
+          input: { desktop: { kind: "user", desktopId: "user-desktop-1" } },
+        },
       ]);
     }),
   ).pipe(Effect.provide(layer)),

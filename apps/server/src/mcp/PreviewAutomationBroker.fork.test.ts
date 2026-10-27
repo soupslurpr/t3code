@@ -1,3 +1,4 @@
+import * as UserDesktops from "../persistence/UserDesktops.ts";
 import { expect, it } from "@effect/vitest";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import {
@@ -14,6 +15,9 @@ import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Stream from "effect/Stream";
+import * as Fiber from "effect/Fiber";
+import { PersistenceSqlError } from "../persistence/Errors.ts";
+import { runUserDesktopHumanRequest } from "../computer/UserDesktopHuman.ts";
 
 import * as McpInvocationContext from "./McpInvocationContext.ts";
 import * as PreviewAutomationBroker from "./PreviewAutomationBroker.ts";
@@ -31,7 +35,38 @@ const scope: McpInvocationContext.McpThreadInvocationScope = {
   capabilities: new Set(["preview"]),
   issuedAt: 1,
 };
-const layer = PreviewAutomationBroker.layer.pipe(Layer.provide(NodeServices.layer));
+const layer = PreviewAutomationBroker.layer.pipe(
+  Layer.provide(UserDesktops.layerMemory),
+  Layer.provide(NodeServices.layer),
+);
+const registration = (desktopId: string) => ({
+  protocolVersion: 1 as const,
+  desktopId,
+  defaultLabel: desktopId,
+  platform: "linux" as const,
+  capabilities: ["view" as const, "control" as const, "availability" as const],
+});
+const serveInventoryHost = Effect.fn("ForkBrokerTest.serveInventoryHost")(function* (
+  host: PreviewAutomationHost,
+) {
+  const broker = yield* PreviewAutomationBroker.PreviewAutomationBroker;
+  const connected = yield* Deferred.make<void>();
+  const requests: PreviewAutomationRequest[] = [];
+  const events = yield* broker.connect(host);
+  const fiber = yield* Stream.runForEach(events, (event) => {
+    if (event.type === "connected") return Deferred.succeed(connected, undefined);
+    requests.push(event.request);
+    return broker.respond({
+      clientId: host.clientId,
+      connectionId: event.connectionId,
+      requestId: event.request.requestId,
+      ok: true,
+      result: host.clientId,
+    });
+  }).pipe(Effect.forkScoped);
+  yield* Deferred.await(connected);
+  return { fiber, requests };
+});
 const serve = Effect.fn("ForkBrokerTest.serve")(function* (
   host: PreviewAutomationHost,
   answer?: Pick<PreviewAutomationResponse, "ok" | "result" | "error">,
@@ -40,7 +75,24 @@ const serve = Effect.fn("ForkBrokerTest.serve")(function* (
   const broker = yield* PreviewAutomationBroker.PreviewAutomationBroker;
   const connected = yield* Deferred.make<void>();
   const received: PreviewAutomationRequest[] = [];
-  const events = yield* broker.connect(host, options);
+  const events = yield* broker.connect(
+    {
+      ...host,
+      ...(host.userDesktop === undefined &&
+      host.supportedOperations?.some((operation) => operation.startsWith("computer"))
+        ? {
+            userDesktop: {
+              protocolVersion: 1 as const,
+              desktopId: "user-desktop-1",
+              defaultLabel: "Test desktop",
+              platform: "linux" as const,
+              capabilities: ["view" as const, "control" as const, "availability" as const],
+            },
+          }
+        : {}),
+    },
+    options,
+  );
   yield* Stream.runForEach(events, (event) => {
     if (event.type === "connected") {
       return (
@@ -79,7 +131,7 @@ it.effect("retains distinct controllers for parallel provider sessions", () =>
         yield* broker.invoke({
           scope: { ...scope, thread: { ...scope.thread, providerSessionId } },
           operation: "computerRequestControl",
-          input: { desktop: { kind: "user" } },
+          input: { desktop: { kind: "user", desktopId: "user-desktop-1" } },
         });
       }
       expect(agent.map((request) => request.controllerId)).toEqual([
@@ -118,7 +170,7 @@ it.effect("retains structured native desktop timeout diagnostics at the broker b
       .invoke<void>({
         scope,
         operation: "computerAct",
-        input: { desktop: { kind: "user" }, actions: [] },
+        input: { desktop: { kind: "user", desktopId: "user-desktop-1" }, actions: [] },
       })
       .pipe(Effect.flip);
     expect(error).toMatchObject({ computerFailure: failure });
@@ -176,7 +228,11 @@ it.effect("retains a tagged remote missing-host failure", () =>
     );
     const broker = yield* PreviewAutomationBroker.PreviewAutomationBroker;
     const error = yield* broker
-      .invoke<void>({ scope, operation: "computerStatus", input: { desktop: { kind: "user" } } })
+      .invoke<void>({
+        scope,
+        operation: "computerStatus",
+        input: { desktop: { kind: "user", desktopId: "user-desktop-1" } },
+      })
       .pipe(Effect.flip);
     expect(error).toMatchObject({
       _tag: "PreviewAutomationNoAvailableHostError",
@@ -211,7 +267,7 @@ it.effect("keeps focused user and preferred server-browser hosts independent", (
       yield* broker.invoke({
         scope,
         operation: "computerRequestControl",
-        input: { desktop: { kind: "user" } },
+        input: { desktop: { kind: "user", desktopId: "user-desktop-1" } },
       }),
     ).toBe("focused-user");
     expect(yield* broker.invoke({ scope, operation: "open", input: {} })).toBe(
@@ -221,7 +277,7 @@ it.effect("keeps focused user and preferred server-browser hosts independent", (
       yield* broker.invoke({
         scope,
         operation: "computerAct",
-        input: { desktop: { kind: "user" }, actions: [] },
+        input: { desktop: { kind: "user", desktopId: "user-desktop-1" }, actions: [] },
       }),
     ).toBe("focused-user");
     expect(yield* broker.invoke({ scope, operation: "snapshot", input: {} })).toBe(
@@ -243,17 +299,21 @@ it.effect("explains missing native hosts without exposing other environments", (
       supportedOperations: ["computerStatus"],
     });
     const error = yield* (yield* PreviewAutomationBroker.PreviewAutomationBroker)
-      .invoke<void>({ scope, operation: "computerStatus", input: { desktop: { kind: "user" } } })
+      .invoke<void>({
+        scope,
+        operation: "computerStatus",
+        input: { desktop: { kind: "user", desktopId: "user-desktop-1" } },
+      })
       .pipe(Effect.flip);
     expect(error).toMatchObject({
       _tag: "PreviewAutomationNoAvailableHostError",
-      computerFailure: { backendCode: "no-connected-automation-host" },
+      computerFailure: { backendCode: "user-desktop-offline" },
     });
     expect(JSON.stringify(error)).not.toContain("private-foreign-host");
   }).pipe(Effect.provide(layer), Effect.scoped),
 );
 
-it.effect("distinguishes unsupported operations and never substitutes an assigned host", () =>
+it.effect("distinguishes unsupported operations from conflicting desktop identity claims", () =>
   Effect.gen(function* () {
     const broker = yield* PreviewAutomationBroker.PreviewAutomationBroker;
     yield* serve({
@@ -261,13 +321,13 @@ it.effect("distinguishes unsupported operations and never substitutes an assigne
       environmentId,
       supportedOperations: ["computerRequestControl"],
     });
-    const input = { desktop: { kind: "user" } };
+    const input = { desktop: { kind: "user", desktopId: "user-desktop-1" } };
     const unsupported = yield* broker
       .invoke<void>({ scope, operation: "computerStatus", input })
       .pipe(Effect.flip);
     expect(unsupported).toMatchObject({
       computerFailure: {
-        backendCode: "automation-operation-unsupported",
+        backendCode: "user-desktop-operation-unsupported",
         field: "operation",
         received: "computerStatus",
       },
@@ -282,8 +342,281 @@ it.effect("distinguishes unsupported operations and never substitutes an assigne
       .invoke<void>({ scope, operation: "computerStatus", input })
       .pipe(Effect.flip);
     expect(assigned).toMatchObject({
-      computerFailure: { backendCode: "assigned-automation-host-incompatible" },
+      computerFailure: { code: "desktop-identity-conflict" },
     });
     expect(alternative).toEqual([]);
   }).pipe(Effect.provide(layer), Effect.scoped),
+);
+
+it.effect(
+  "routes a stable identity through disconnect and reconnect without substituting another desktop",
+  () =>
+    Effect.gen(function* () {
+      const broker = yield* PreviewAutomationBroker.PreviewAutomationBroker;
+      const first = yield* serveInventoryHost({
+        clientId: "first",
+        environmentId,
+        supportedOperations: ["computerStatus"],
+        userDesktop: registration("user-first"),
+      });
+      const second = yield* serveInventoryHost({
+        clientId: "second",
+        environmentId,
+        supportedOperations: ["computerStatus"],
+        userDesktop: registration("user-second"),
+      });
+      const input = { desktop: { kind: "user", desktopId: "user-first" } };
+      expect(yield* broker.invoke({ scope, operation: "computerStatus", input })).toBe("first");
+      yield* Fiber.interrupt(first.fiber);
+      expect(
+        yield* broker.invoke<void>({ scope, operation: "computerStatus", input }).pipe(Effect.flip),
+      ).toMatchObject({ computerFailure: { code: "desktop-offline" } });
+      expect(second.requests).toEqual([]);
+      yield* serveInventoryHost({
+        clientId: "reconnected",
+        environmentId,
+        supportedOperations: ["computerStatus"],
+        userDesktop: registration("user-first"),
+      });
+      expect(yield* broker.invoke({ scope, operation: "computerStatus", input })).toBe(
+        "reconnected",
+      );
+      expect((yield* broker.listUserDesktops(environmentId)).desktops).toHaveLength(2);
+    }).pipe(Effect.provide(layer), Effect.scoped),
+);
+
+it.effect(
+  "blocks duplicate identity claims and resumes routing once the duplicate disconnects",
+  () =>
+    Effect.gen(function* () {
+      const broker = yield* PreviewAutomationBroker.PreviewAutomationBroker;
+      yield* serveInventoryHost({
+        clientId: "original",
+        environmentId,
+        supportedOperations: ["computerStatus"],
+        userDesktop: registration("user-shared"),
+      });
+      const duplicate = yield* serveInventoryHost({
+        clientId: "duplicate",
+        environmentId,
+        supportedOperations: ["computerStatus"],
+        userDesktop: registration("user-shared"),
+      });
+      const input = { desktop: { kind: "user", desktopId: "user-shared" } };
+      expect((yield* broker.listUserDesktops(environmentId)).desktops).toMatchObject([
+        { connectionState: "identity-conflict" },
+      ]);
+      expect(
+        yield* broker.invoke<void>({ scope, operation: "computerStatus", input }).pipe(Effect.flip),
+      ).toMatchObject({ computerFailure: { code: "desktop-identity-conflict" } });
+      yield* Fiber.interrupt(duplicate.fiber);
+      expect(yield* broker.invoke({ scope, operation: "computerStatus", input })).toBe("original");
+    }).pipe(Effect.provide(layer), Effect.scoped),
+);
+
+it.effect(
+  "retains an offline inventory, allows rename and removal, and restores the same identity on reconnect",
+  () =>
+    Effect.gen(function* () {
+      const broker = yield* PreviewAutomationBroker.PreviewAutomationBroker;
+      const host = {
+        clientId: "inventory",
+        environmentId,
+        supportedOperations: ["computerStatus" as const],
+        userDesktop: registration("user-inventory"),
+      };
+      const connected = yield* serveInventoryHost(host);
+      expect(
+        yield* broker.removeUserDesktop(environmentId, "user-inventory").pipe(Effect.flip),
+      ).toMatchObject({ code: "user-desktop-online" });
+      yield* broker.renameUserDesktop({ desktopId: "user-inventory", label: "Workstation" });
+      yield* Fiber.interrupt(connected.fiber);
+      expect((yield* broker.listUserDesktops(environmentId)).desktops).toMatchObject([
+        { label: "Workstation", connectionState: "offline" },
+      ]);
+      yield* broker.removeUserDesktop(environmentId, "user-inventory");
+      expect((yield* broker.listUserDesktops(environmentId)).desktops).toEqual([]);
+      yield* serveInventoryHost(host);
+      expect((yield* broker.listUserDesktops(environmentId)).desktops).toMatchObject([
+        { desktop: { kind: "user", desktopId: "user-inventory" }, connectionState: "online" },
+      ]);
+    }).pipe(Effect.provide(layer), Effect.scoped),
+);
+
+it.effect(
+  "distinguishes incompatible clients, unsupported platforms and missing concrete targets",
+  () =>
+    Effect.gen(function* () {
+      const broker = yield* PreviewAutomationBroker.PreviewAutomationBroker;
+      const legacy = yield* serveInventoryHost({
+        clientId: "legacy",
+        environmentId,
+        supportedOperations: ["computerStatus"],
+      });
+      expect(yield* broker.listUserDesktops(environmentId)).toEqual({
+        desktops: [],
+        incompatibleClientCount: 1,
+      });
+      expect(
+        yield* broker
+          .invoke<void>({
+            scope,
+            operation: "computerStatus",
+            input: { desktop: { kind: "user" } },
+          })
+          .pipe(Effect.flip),
+      ).toMatchObject({
+        computerFailure: { code: "desktop-target-required", field: "desktop.desktopId" },
+      });
+      expect(
+        yield* broker
+          .invoke<void>({
+            scope,
+            operation: "computerStatus",
+            input: { desktop: { kind: "user", desktopId: "unknown" } },
+          })
+          .pipe(Effect.flip),
+      ).toMatchObject({
+        computerFailure: {
+          code: "desktop-offline",
+          backendCode: "connected-client-update-required",
+        },
+      });
+      expect(legacy.requests).toEqual([]);
+      yield* serveInventoryHost({
+        clientId: "unsupported",
+        environmentId,
+        supportedOperations: [],
+        userDesktop: { ...registration("user-unsupported"), platform: "unknown", capabilities: [] },
+      });
+      expect(
+        yield* broker
+          .invoke<void>({
+            scope,
+            operation: "computerStatus",
+            input: { desktop: { kind: "user", desktopId: "user-unsupported" } },
+          })
+          .pipe(Effect.flip),
+      ).toMatchObject({
+        computerFailure: {
+          code: "unsupported-operation",
+          backendCode: "user-desktop-capability-unavailable",
+        },
+      });
+    }).pipe(Effect.provide(layer), Effect.scoped),
+);
+
+it.effect.each([false, true])(
+  "lists live metadata when persistence writes fail and stored data exists: %s",
+  (hasStaleRecord) =>
+    Effect.gen(function* () {
+      const repository = UserDesktops.UserDesktopRepository.of({
+        upsertHost: () =>
+          Effect.fail(
+            new PersistenceSqlError({
+              operation: "test.upsertHost",
+              cause: new Error("unavailable"),
+            }),
+          ),
+        list: () =>
+          Effect.succeed(
+            hasStaleRecord
+              ? [
+                  {
+                    desktopId: "user-live",
+                    defaultLabel: "Stale",
+                    customLabel: null,
+                    platform: "unknown",
+                    capabilities: [],
+                    lastSeenAt: "2026-01-01T00:00:00.000Z",
+                    lastActiveAt: null,
+                  },
+                ]
+              : [],
+          ),
+        rename: () => Effect.void,
+        remove: () => Effect.void,
+        markActive: () => Effect.void,
+      });
+      yield* Effect.gen(function* () {
+        yield* serveInventoryHost({
+          clientId: "live",
+          environmentId,
+          supportedOperations: ["computerStatus"],
+          userDesktop: registration("user-live"),
+        });
+        const broker = yield* PreviewAutomationBroker.PreviewAutomationBroker;
+        expect((yield* broker.listUserDesktops(environmentId)).desktops).toMatchObject([
+          {
+            label: "user-live",
+            platform: "linux",
+            capabilities: ["view", "control", "availability"],
+            connectionState: "online",
+          },
+        ]);
+      }).pipe(
+        Effect.provide(
+          PreviewAutomationBroker.layer.pipe(
+            Layer.provide(
+              Layer.merge(
+                NodeServices.layer,
+                Layer.succeed(UserDesktops.UserDesktopRepository, repository),
+              ),
+            ),
+          ),
+        ),
+      );
+    }).pipe(Effect.scoped),
+);
+
+it.effect(
+  "routes human remember, release and forget requests to the selected desktop with a human controller",
+  () =>
+    Effect.gen(function* () {
+      const broker = yield* PreviewAutomationBroker.PreviewAutomationBroker;
+      const target = yield* serveInventoryHost({
+        clientId: "human-target",
+        environmentId,
+        supportedOperations: COMPUTER_AUTOMATION_OPERATIONS,
+        userDesktop: registration("user-human"),
+      });
+      const humanScope = {
+        ...scope,
+        requestNamespace: "human:session",
+        thread: {
+          ...scope.thread,
+          providerSessionId: "human:session",
+          providerInstanceId: ProviderInstanceId.make("user-desktop-human"),
+        },
+      };
+      for (const operation of [
+        "status",
+        "remember-view",
+        "remember-control",
+        "release",
+        "forget",
+      ] as const) {
+        expect(
+          yield* runUserDesktopHumanRequest(broker, humanScope, {
+            request: { operation, desktopId: "user-human" },
+          }),
+        ).toBe("human-target");
+      }
+      expect(target.requests.map((request) => request.operation)).toEqual([
+        "computerStatus",
+        "computerRememberView",
+        "computerRememberControl",
+        "computerForceRelease",
+        "computerForceForgetControl",
+      ]);
+      expect(target.requests.every((request) => request.controllerId === "human:session")).toBe(
+        true,
+      );
+      expect(target.requests.slice(1, 3).map((request) => request.input)).toEqual(
+        [1, 2].map(() => ({
+          desktop: { kind: "user", desktopId: "user-human" },
+          observation: false,
+        })),
+      );
+    }).pipe(Effect.provide(layer), Effect.scoped),
 );

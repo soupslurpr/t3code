@@ -19,6 +19,7 @@ import {
   PanelsTopLeftIcon,
   KeyboardIcon,
   Link2Icon,
+  MonitorIcon,
   MonitorCogIcon,
   PaletteIcon,
   SearchIcon,
@@ -89,6 +90,7 @@ const SETTINGS_SECTION_ICONS: Readonly<
   "/settings/storage": HardDriveIcon,
   "/settings/connections": Link2Icon,
   "/settings/agent-desktops": MonitorCogIcon,
+  "/settings/user-desktops": MonitorIcon,
   "/settings/beta": FlaskConicalIcon,
   "/settings/archived": ArchiveIcon,
 };

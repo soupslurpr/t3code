@@ -16,6 +16,7 @@ import * as Layer from "effect/Layer";
 
 import * as ComputerUse from "./ComputerUse.ts";
 import * as ComputerUseCoordinator from "./ComputerUseCoordinator.ts";
+import * as UserDesktopIdentity from "./UserDesktopIdentity.ts";
 
 export type ComputerUseRouterError = ComputerUse.ComputerUseError;
 
@@ -32,6 +33,22 @@ export interface ComputerUseRouterShape {
     context: DesktopComputerAutomationContext,
     input: ComputerAutomationAccessInput,
   ) => Effect.Effect<ComputerAutomationStatus, ComputerUseRouterError>;
+  readonly rememberView: (
+    context: DesktopComputerAutomationContext,
+    input: ComputerAutomationAccessInput,
+  ) => Effect.Effect<ComputerAutomationStatus, ComputerUseRouterError>;
+  readonly rememberControl: (
+    context: DesktopComputerAutomationContext,
+    input: ComputerAutomationAccessInput,
+  ) => Effect.Effect<ComputerAutomationStatus, ComputerUseRouterError>;
+  readonly forceRelease: (
+    context: DesktopComputerAutomationContext,
+    input: ComputerAutomationTargetInput,
+  ) => Effect.Effect<ComputerAutomationStatus, ComputerUseRouterError>;
+  readonly forceForget: (
+    context: DesktopComputerAutomationContext,
+    input: ComputerAutomationTargetInput,
+  ) => Effect.Effect<void, ComputerUseRouterError>;
   readonly requestAvailability: (
     context: DesktopComputerAutomationContext,
     input: ComputerAutomationAvailabilityInput,
@@ -75,6 +92,22 @@ function agentDesktopMovedToServer(
 /** Routes every computer operation to its requested desktop. */
 export const make = Effect.gen(function* () {
   const user = yield* ComputerUseCoordinator.ComputerUseCoordinator;
+  const identity = yield* UserDesktopIdentity.UserDesktopIdentity;
+
+  const requireLocalUserDesktop = (
+    desktop: ComputerDesktopTarget,
+    operation: Parameters<typeof agentDesktopMovedToServer>[0],
+  ): Effect.Effect<void, ComputerUseRouterError> => {
+    if (desktop.kind === "agent") return Effect.fail(agentDesktopMovedToServer(operation));
+    return desktop.desktopId === identity.registration.desktopId
+      ? Effect.void
+      : Effect.fail(
+          new ComputerUse.ComputerUseLeaseError({
+            code: "desktop-target-mismatch",
+            cause: "the requested user desktop does not match this desktop host",
+          }),
+        );
+  };
 
   const targetFromInput = (input: ComputerAutomationTargetInput): ComputerDesktopTarget =>
     input.desktop;
@@ -83,6 +116,7 @@ export const make = Effect.gen(function* () {
     context: DesktopComputerAutomationContext,
     input: ComputerAutomationAccessInput,
     access: "view" | "control",
+    remember = false,
   ) {
     const requested = input.desktop;
     if (requested.kind === "agent") {
@@ -90,16 +124,24 @@ export const make = Effect.gen(function* () {
         access === "control" ? "requestControl" : "requestView",
       );
     }
-    return yield* access === "control"
-      ? user.requestControl(context.controllerId)
-      : user.requestView(context.controllerId);
+    yield* requireLocalUserDesktop(
+      requested,
+      access === "control" ? "requestControl" : "requestView",
+    );
+    return yield* remember
+      ? access === "control"
+        ? user.rememberControl(context.controllerId)
+        : user.rememberView(context.controllerId)
+      : access === "control"
+        ? user.requestControl(context.controllerId)
+        : user.requestView(context.controllerId);
   });
 
   const status: ComputerUseRouterShape["status"] = (context, input) => {
     const desktop = targetFromInput(input);
-    return desktop.kind === "user"
-      ? user.status(context.controllerId)
-      : Effect.fail(agentDesktopMovedToServer("status"));
+    return requireLocalUserDesktop(desktop, "status").pipe(
+      Effect.andThen(user.status(context.controllerId)),
+    );
   };
 
   const requestView: ComputerUseRouterShape["requestView"] = (context, input) =>
@@ -108,44 +150,68 @@ export const make = Effect.gen(function* () {
   const requestControl: ComputerUseRouterShape["requestControl"] = (context, input) =>
     requestAccess(context, input, "control");
 
-  const requestAvailability: ComputerUseRouterShape["requestAvailability"] = (context) =>
-    user.requestAvailability(context.controllerId);
+  const rememberView: ComputerUseRouterShape["rememberView"] = (context, input) =>
+    requestAccess(context, input, "view", true);
 
-  const releaseAvailability: ComputerUseRouterShape["releaseAvailability"] = (context) =>
-    user.releaseAvailability(context.controllerId);
+  const rememberControl: ComputerUseRouterShape["rememberControl"] = (context, input) =>
+    requestAccess(context, input, "control", true);
+
+  const forceRelease: ComputerUseRouterShape["forceRelease"] = (context, input) =>
+    requireLocalUserDesktop(input.desktop, "release").pipe(
+      Effect.andThen(user.forceRelease(context.controllerId)),
+    );
+
+  const forceForget: ComputerUseRouterShape["forceForget"] = (context, input) =>
+    requireLocalUserDesktop(input.desktop, "forget").pipe(
+      Effect.andThen(user.forceForget(context.controllerId)),
+    );
+
+  const requestAvailability: ComputerUseRouterShape["requestAvailability"] = (context, input) =>
+    requireLocalUserDesktop(input.desktop, "requestAvailability").pipe(
+      Effect.andThen(user.requestAvailability(context.controllerId)),
+    );
+
+  const releaseAvailability: ComputerUseRouterShape["releaseAvailability"] = (context, input) =>
+    requireLocalUserDesktop(input.desktop, "releaseAvailability").pipe(
+      Effect.andThen(user.releaseAvailability(context.controllerId)),
+    );
 
   const snapshot: ComputerUseRouterShape["snapshot"] = (context, input) => {
     const { desktop, ...observation } = input;
-    return desktop.kind === "user"
-      ? user.snapshot(context.controllerId, observation)
-      : Effect.fail(agentDesktopMovedToServer("snapshot"));
+    return requireLocalUserDesktop(desktop, "snapshot").pipe(
+      Effect.andThen(user.snapshot(context.controllerId, observation)),
+    );
   };
 
   const act: ComputerUseRouterShape["act"] = (context, input) => {
     const { desktop, ...actions } = input;
-    return desktop.kind === "user"
-      ? user.act(context.controllerId, actions)
-      : Effect.fail(agentDesktopMovedToServer("act"));
+    return requireLocalUserDesktop(desktop, "act").pipe(
+      Effect.andThen(user.act(context.controllerId, actions)),
+    );
   };
 
   const release: ComputerUseRouterShape["release"] = (context, input) => {
     const desktop = targetFromInput(input);
-    return desktop.kind === "user"
-      ? user.release(context.controllerId)
-      : Effect.fail(agentDesktopMovedToServer("release"));
+    return requireLocalUserDesktop(desktop, "release").pipe(
+      Effect.andThen(user.release(context.controllerId)),
+    );
   };
 
   const forget: ComputerUseRouterShape["forget"] = (context, input) => {
     const desktop = targetFromInput(input);
-    return desktop.kind === "user"
-      ? user.forget(context.controllerId)
-      : Effect.fail(agentDesktopMovedToServer("forget"));
+    return requireLocalUserDesktop(desktop, "forget").pipe(
+      Effect.andThen(user.forget(context.controllerId)),
+    );
   };
 
   return ComputerUseRouter.of({
     status,
     requestView,
     requestControl,
+    rememberView,
+    rememberControl,
+    forceRelease,
+    forceForget,
     requestAvailability,
     releaseAvailability,
     snapshot,

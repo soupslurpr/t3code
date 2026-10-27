@@ -96,7 +96,7 @@ it("advertises availability and control only when the native tool capability is 
     available.t3_code_desktop!.value,
     /Every computer operation requires an explicit desktop target/,
   );
-  NodeAssert.match(available.t3_code_desktop!.value, /desktop: \{ kind: "user" \}/);
+  NodeAssert.match(available.t3_code_desktop!.value, /desktop: \{ kind: "user", desktopId \}/);
   NodeAssert.doesNotMatch(available.t3_code_desktop!.value, /Omitting desktop/);
   NodeAssert.equal(unavailable.t3_code_desktop, undefined);
 });

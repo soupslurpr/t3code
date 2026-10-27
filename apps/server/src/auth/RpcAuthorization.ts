@@ -199,6 +199,7 @@ export const RPC_REQUIRED_SCOPES = {
   [WS_METHODS.previewAutomationRespond]: AuthPreviewOperateScope,
   [WS_METHODS.previewAutomationFocusHost]: AuthPreviewOperateScope,
   [WS_METHODS.agentDesktopHumanInvoke]: AuthOrchestrationOperateScope,
+  [WS_METHODS.userDesktopHumanInvoke]: AuthOrchestrationOperateScope,
   [WS_METHODS.subscribePreviewEvents]: AuthOrchestrationReadScope,
   [WS_METHODS.subscribeDiscoveredLocalServers]: AuthOrchestrationReadScope,
   [WS_METHODS.deviceConfigure]: AuthSettingsWriteScope,

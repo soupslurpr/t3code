@@ -1,3 +1,4 @@
+import * as PreviewAutomationBroker from "../../PreviewAutomationBroker.ts";
 import type {
   AgentDesktopId,
   ComputerAutomationActInput,
@@ -10,6 +11,7 @@ import type {
   ComputerAutomationTargetInput,
   ComputerDesktopSelector,
 } from "@t3tools/contracts";
+import { UserDesktopInventoryError } from "@t3tools/contracts";
 import {
   captureComputerTemporalFrame,
   captureComputerTemporalSequence,
@@ -155,6 +157,22 @@ const actWithTemporalObservation = Effect.fn("ComputerToolkit.actWithTemporalObs
 );
 
 const handlers = {
+  user_desktop_list: McpToolAccess.readsAsCaller(() =>
+    Effect.gen(function* () {
+      const scope = yield* McpInvocationContext.requireThreadMcpCapability("computer");
+      const broker = yield* PreviewAutomationBroker.PreviewAutomationBroker;
+      return yield* broker.listUserDesktops(scope.environmentId).pipe(
+        Effect.mapError(
+          () =>
+            new UserDesktopInventoryError({
+              code: "user-desktop-inventory-unavailable",
+              detail: "The user-desktop inventory is temporarily unavailable.",
+            }),
+        ),
+      );
+    }),
+  ),
+
   computer_status: McpToolAccess.readsAsCaller((input) => statusComputer(input)),
   computer_request_availability: McpToolAccess.actsAsCaller((input) =>
     requestComputerAvailability(input),
