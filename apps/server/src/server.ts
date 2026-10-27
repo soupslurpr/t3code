@@ -218,6 +218,12 @@ const HTTP_PREEMPTIVE_SHUTDOWN_GRACE_MS = 0;
 const layerComputerObservationStore = ComputerObservationStore.layer;
 const layerPersistence = Layer.empty.pipe(Layer.provideMerge(SqlitePersistence.layerConfig));
 const layerPreviewAutomationBroker = PreviewAutomationBroker.layer.pipe(
+  Layer.provide(
+    Layer.effect(
+      PreviewAutomationBroker.EnvironmentUserDesktopHost,
+      Effect.map(ServerConfig.ServerConfig, (config) => config.environmentHost),
+    ),
+  ),
   Layer.provide(UserDesktops.layer),
   Layer.provide(layerPersistence),
 );

@@ -4,6 +4,7 @@ import { expect, it } from "@effect/vitest";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import {
   EnvironmentId,
+  MAX_USER_DESKTOPS,
   COMPUTER_AUTOMATION_OPERATIONS,
   SERVER_BROWSER_AUTOMATION_CLIENT_ID,
   ProviderInstanceId,
@@ -478,6 +479,7 @@ it.effect(
       expect(yield* broker.listUserDesktops(environmentId)).toEqual({
         desktops: [],
         incompatibleClientCount: 1,
+        environmentHost: { status: "unidentified" },
       });
       expect(
         yield* broker
@@ -878,4 +880,119 @@ it.effect("does not audit rejected access", () =>
       .pipe(Effect.flip);
     expect(yield* broker.listUserDesktopAudit("user-desktop-1")).toEqual({ events: [] });
   }).pipe(Effect.provide(layer), Effect.scoped),
+);
+
+const USER_DESKTOP = registration("user-desktop-1");
+it.effect("identifies the desktop-managed environment host while it is offline", () =>
+  Effect.gen(function* () {
+    const broker = yield* PreviewAutomationBroker.make.pipe(
+      Effect.provideService(PreviewAutomationBroker.EnvironmentUserDesktopHost, USER_DESKTOP),
+      Effect.provide(Layer.merge(UserDesktops.layerMemory, NodeServices.layer)),
+    );
+
+    expect(yield* broker.listUserDesktops(scope.environmentId)).toMatchObject({
+      environmentHost: {
+        status: "identified",
+        desktop: { kind: "user", desktopId: USER_DESKTOP.desktopId },
+      },
+      desktops: [
+        {
+          desktop: { kind: "user", desktopId: USER_DESKTOP.desktopId },
+          connectionState: "offline",
+        },
+      ],
+    });
+  }),
+);
+
+it.effect("retains the environment host when the inventory reaches its bound", () =>
+  Effect.gen(function* () {
+    const records = [
+      ...Array.from({ length: MAX_USER_DESKTOPS }, (_, index) =>
+        UserDesktops.UserDesktopRecord.make({
+          desktopId: `other-desktop-${index}`,
+          defaultLabel: `Other desktop ${index}`,
+          customLabel: null,
+          platform: "linux",
+          capabilities: ["view", "control", "availability"],
+          lastSeenAt: "2026-01-01T00:00:00.000Z",
+          lastActiveAt: null,
+        }),
+      ),
+      UserDesktops.UserDesktopRecord.make({
+        desktopId: USER_DESKTOP.desktopId,
+        defaultLabel: USER_DESKTOP.defaultLabel,
+        customLabel: null,
+        platform: USER_DESKTOP.platform,
+        capabilities: USER_DESKTOP.capabilities,
+        lastSeenAt: "2025-01-01T00:00:00.000Z",
+        lastActiveAt: null,
+      }),
+    ];
+    const repository = UserDesktops.UserDesktopRepository.of({
+      upsertHost: () => Effect.void,
+      list: () => Effect.succeed(records),
+      rename: () => Effect.void,
+      remove: () => Effect.void,
+      markActive: () => Effect.void,
+      recordAudit: () => Effect.void,
+      listAudit: () => Effect.succeed({ events: [] }),
+    });
+    const broker = yield* PreviewAutomationBroker.make.pipe(
+      Effect.provideService(PreviewAutomationBroker.EnvironmentUserDesktopHost, USER_DESKTOP),
+      Effect.provideService(UserDesktops.UserDesktopRepository, repository),
+      Effect.provide(NodeServices.layer),
+    );
+
+    const listed = yield* broker.listUserDesktops(scope.environmentId);
+
+    expect(listed.desktops).toHaveLength(MAX_USER_DESKTOPS);
+    expect(
+      listed.desktops.some((desktop) => desktop.desktop.desktopId === USER_DESKTOP.desktopId),
+    ).toBe(true);
+  }),
+);
+
+it.effect("keeps the bootstrap owner separate from a focused remote client", () =>
+  Effect.gen(function* () {
+    const broker = yield* PreviewAutomationBroker.make.pipe(
+      Effect.provideService(PreviewAutomationBroker.EnvironmentUserDesktopHost, USER_DESKTOP),
+      Effect.provide(Layer.merge(UserDesktops.layerMemory, NodeServices.layer)),
+    );
+    const remote = yield* broker.connect({
+      clientId: "remote-client",
+      environmentId,
+      userDesktop: registration("remote-user"),
+      supportedOperations: ["computerStatus"],
+    });
+    const ready = yield* Deferred.make<void>();
+    const fiber = yield* Stream.runForEach(remote, (event) =>
+      event.type === "connected"
+        ? broker
+            .focusHost({
+              clientId: "remote-client",
+              environmentId,
+              connectionId: event.connectionId,
+              focused: true,
+            })
+            .pipe(Effect.andThen(Deferred.succeed(ready, undefined)))
+        : Effect.void,
+    ).pipe(Effect.forkScoped);
+    yield* Deferred.await(ready);
+    const listed = yield* broker.listUserDesktops(environmentId);
+    expect(listed.environmentHost).toEqual({
+      status: "identified",
+      desktop: { kind: "user", desktopId: USER_DESKTOP.desktopId },
+    });
+    expect(
+      listed.desktops.find((desktop) => desktop.desktop.desktopId === "remote-user"),
+    ).toMatchObject({ connectionState: "online", t3Focused: true });
+    expect(
+      listed.desktops.find((desktop) => desktop.desktop.desktopId === USER_DESKTOP.desktopId),
+    ).toMatchObject({ connectionState: "offline" });
+    yield* Fiber.interrupt(fiber);
+    expect((yield* broker.listUserDesktops(environmentId)).environmentHost).toEqual(
+      listed.environmentHost,
+    );
+  }),
 );

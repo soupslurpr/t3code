@@ -68,6 +68,14 @@ const makeDesktopBootstrap = (
   ...overrides,
 });
 
+const ENVIRONMENT_HOST = {
+  protocolVersion: 1,
+  desktopId: "user-desktop-1",
+  defaultLabel: "Test desktop",
+  platform: "linux",
+  capabilities: ["view", "control", "availability"],
+} as const;
+
 const liveProcess = Effect.acquireRelease(
   Effect.promise(async () => {
     const child = NodeChildProcess.spawn(process.execPath, ["-e", "process.stdin.resume()"], {
@@ -383,6 +391,7 @@ it.layer(NodeServices.layer)("cli config resolution", (it) => {
           t3Home: "/tmp/t3-bootstrap-home",
           noBrowser: false,
           desktopBootstrapToken: "desktop-token",
+          environmentHost: ENVIRONMENT_HOST,
           tailscaleServeEnabled: false,
           tailscaleServePort: 443,
         }),
@@ -442,6 +451,7 @@ it.layer(NodeServices.layer)("cli config resolution", (it) => {
         noBrowser: true,
         startupPresentation: "browser",
         desktopBootstrapToken: "desktop-token",
+        environmentHost: ENVIRONMENT_HOST,
         autoBootstrapProjectFromCwd: true,
         logWebSocketEvents: true,
         tailscaleServeEnabled: false,
