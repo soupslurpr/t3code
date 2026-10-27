@@ -126,6 +126,7 @@ function ConfiguredSettingsRouteScreen() {
           onPress: () => navigation.navigate("SettingsAuth"),
         },
         environmentsRow(Object.keys(savedConnectionsById).length),
+        userDesktopsRow,
         {
           id: "SettingsNotifications",
           icon: "bell.badge",
@@ -139,8 +140,19 @@ function ConfiguredSettingsRouteScreen() {
 
 function LocalSettingsRouteScreen() {
   const { savedConnectionsById } = useSavedRemoteConnections();
-  return <SettingsList connections={[environmentsRow(Object.keys(savedConnectionsById).length)]} />;
+  return (
+    <SettingsList
+      connections={[environmentsRow(Object.keys(savedConnectionsById).length), userDesktopsRow]}
+    />
+  );
 }
+
+const userDesktopsRow: SettingsListRow = {
+  id: "SettingsUserDesktops",
+  icon: "desktopcomputer",
+  label: "User Desktops",
+  target: "SettingsUserDesktops",
+};
 
 function environmentsRow(count: number): SettingsListRow {
   return {

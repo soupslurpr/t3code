@@ -196,6 +196,11 @@ control** keeps live viewing; **Return control** explicitly resumes a
 displaced agent when available. Closing supervision or hiding the client
 releases its access. Leaving full screen releases human input control.
 
+On mobile, open **Settings → User Desktops → Supervise**. Live supports
+touch input and a text field after taking control. Leaving the screen,
+backgrounding the app, or losing the environment connection releases
+transient access. Reopening supervision starts passively again.
+
 ## Agent Tools
 
 The environment exposes tools for:
