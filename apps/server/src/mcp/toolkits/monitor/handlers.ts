@@ -1,3 +1,4 @@
+import * as ThreadMonitorSignalCallbacks from "../../../threadMonitor/ThreadMonitorSignalCallbacks.ts";
 import * as Effect from "effect/Effect";
 
 import * as ComputerObservationStore from "../../../computer/ComputerObservationStore.ts";
@@ -81,7 +82,7 @@ const handlers = {
       const {
         thread: { threadId },
       } = yield* McpInvocationContext.requireThreadScope(scope, "Durable monitors");
-      const service = yield* ThreadMonitorService;
+      const service = yield* ThreadMonitorSignalCallbacks.ThreadMonitorSignalCallbacks;
       return yield* service.create({ threadId, monitor });
     }),
   ),

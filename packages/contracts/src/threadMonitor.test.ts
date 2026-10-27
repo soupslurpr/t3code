@@ -95,13 +95,41 @@ describe("thread monitor contracts", () => {
     ).toEqual({ mode: "resume-thread" });
   });
 
-  it("accepts only bounded string evidence", () => {
+  it("preserves text evidence and normalizes structured evidence", () => {
     expect(decodeSignal({ monitorId: "monitor-1", evidence: "exitCode=0" }).evidence).toBe(
       "exitCode=0",
     );
-    expect(() => decodeSignal({ monitorId: "monitor-1", evidence: { exitCode: 0 } })).toThrow();
-    expect(() => decodeSignal({ monitorId: "monitor-1", evidence: "x".repeat(20_001) })).toThrow();
+    const evidence = {
+      exit_code: 0,
+      results: { paths: ["results.json"], error: null, valid: true },
+    };
+    expect(decodeSignal({ monitorId: "monitor-1", evidence }).evidence).toBe(
+      JSON.stringify(evidence, null, 2),
+    );
+    expect(decodeSignal({ monitorId: "monitor-1" }).evidence).toBeUndefined();
   });
+
+  it("bounds evidence after serialization without truncating it", () => {
+    expect(
+      decodeSignal({ monitorId: "monitor-1", evidence: "x".repeat(20_000) }).evidence,
+    ).toHaveLength(20_000);
+    const evidence = {
+      output: "x".repeat(20_000 - JSON.stringify({ output: "" }, null, 2).length),
+    };
+    expect(decodeSignal({ monitorId: "monitor-1", evidence }).evidence).toHaveLength(20_000);
+    for (const oversized of ["x".repeat(20_001), { output: `${evidence.output}x` }]) {
+      expect(() => decodeSignal({ monitorId: "monitor-1", evidence: oversized })).toThrow(
+        "Evidence exceeds 20,000 characters.",
+      );
+    }
+  });
+
+  it.each([42, true, [], { value: undefined }, { value: Infinity }])(
+    "rejects unsupported evidence (%#)",
+    (evidence) => {
+      expect(() => decodeSignal({ monitorId: "monitor-1", evidence })).toThrow();
+    },
+  );
 
   it("requires an explicit watched desktop", () => {
     expect(() =>

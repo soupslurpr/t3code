@@ -1,3 +1,5 @@
+import * as ThreadMonitorSignalCallbacks from "./threadMonitor/ThreadMonitorSignalCallbacks.ts";
+import * as MonitorSignalRoute from "./threadMonitor/signalRoute.ts";
 import * as ProviderComputerLifecycle from "./orchestration-v2/ProviderComputerLifecycle.ts";
 import * as UserDesktops from "./persistence/UserDesktops.ts";
 import * as AgentDesktopEnvironment from "./agentDesktop/AgentDesktopEnvironment.ts";
@@ -773,6 +775,7 @@ const layerMakeRoutes = Layer.mergeAll(
       Layer.provide(PullRequestHttp.layer),
       Layer.provide(ProjectHttp.layer),
       Layer.provide(ServerHttp.layerServerEnvironmentHttpApi),
+      Layer.provide(MonitorSignalRoute.layer),
       Layer.provide(WebhookRoute.layer.pipe(Layer.provide(RelayDeliveryProof.layer))),
       Layer.provide(AuthHttp.layerAuthenticatedAuth),
     ),
@@ -791,6 +794,7 @@ const layerMakeRoutes = Layer.mergeAll(
     Layer.provide(McpOAuth.layerMcpClientAuthenticator),
   ),
 ).pipe(
+  Layer.provide(ThreadMonitorSignalCallbacks.layer),
   Layer.provide(
     PullRequestReviewGuideService.layer.pipe(Layer.provide(PullRequestReviewGuides.layer)),
   ),

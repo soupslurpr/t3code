@@ -1,3 +1,7 @@
+import * as NodeHttpServer from "@effect/platform-node/NodeHttpServer";
+import * as NodeServices from "@effect/platform-node/NodeServices";
+import { ServerConfig } from "../config.ts";
+import * as ThreadMonitorSignalCallbacks from "../threadMonitor/ThreadMonitorSignalCallbacks.ts";
 import * as ComputerObservationStore from "../computer/ComputerObservationStore.ts";
 import { assert, expect, it } from "@effect/vitest";
 import {
@@ -48,10 +52,16 @@ const client = McpSchema.McpServerClient.of({
   },
   getClient: Effect.die("unused"),
 });
+const monitorRuntime = ThreadMonitorSignalCallbacks.layer.pipe(
+  Layer.provideMerge(MonitorTestkit.layer),
+  Layer.provide(ServerConfig.layerTest(process.cwd(), { prefix: "t3-mcp-monitor-test-" })),
+  Layer.provide(NodeHttpServer.layerTest),
+  Layer.provide(NodeServices.layer),
+);
 const layer = McpHttpServer.MonitorToolkitRegistrationLive.pipe(
   Layer.provideMerge(ComputerObservationStore.layer),
   Layer.provideMerge(McpServer.McpServer.layer),
-  Layer.provideMerge(MonitorTestkit.layer),
+  Layer.provideMerge(monitorRuntime),
 );
 const call = Effect.fn("MonitorHttpTest.call")(
   (name: string, input: Record<string, unknown>, scope = invocation) =>
@@ -124,19 +134,31 @@ it.effect("enforces live, writable thread callers and hides foreign monitor stat
         },
       )).isError,
     );
-    assert.isFalse((yield* call("monitor_start", input)).isError);
+    const started = yield* call("monitor_start", input);
+    assert.isFalse(started.isError);
+    expect(started.structuredContent).toMatchObject({
+      signalCallback: { authorizationHeader: expect.stringMatching(/^Bearer [a-f0-9]{64}$/) },
+    });
     const service = yield* ThreadMonitorService;
     const { monitors } = yield* service.status({ threadId: MonitorTestkit.threadId, query: {} });
     assert.equal(monitors.length, 1);
     const monitor = monitors[0]!;
+    assert.notProperty(monitor, "signalCallback");
     const foreign = {
       ...invocation,
       thread: { ...invocation.thread!, threadId: ThreadId.make("foreign") },
     };
     assert.isTrue((yield* call("monitor_status", { monitorId: monitor.id }, foreign)).isError);
     assert.isFalse(
-      (yield* call("monitor_signal", { monitorId: monitor.id, summary: "Done" })).isError,
+      (yield* call("monitor_signal", {
+        monitorId: monitor.id,
+        summary: "Done",
+        evidence: { exitCode: 0, lines: ["finished"] },
+      })).isError,
     );
+    const evidence = (yield* service.status({ threadId: MonitorTestkit.threadId, query: {} }))
+      .monitors[0]!.trigger!.evidence!;
+    expect(JSON.parse(evidence)).toEqual({ exitCode: 0, lines: ["finished"] });
     assert.isFalse((yield* call("monitor_cancel", { monitorId: monitor.id })).isError);
     const cancelled = yield* service.status({
       threadId: MonitorTestkit.threadId,
@@ -336,7 +358,7 @@ it.effect(
         assert.isTrue(failure.isError);
         assert.include(JSON.stringify(failure), "is not a computer watch");
       }).pipe(Effect.provide(imageRegistration));
-    }).pipe(Effect.provide(MonitorTestkit.layer)),
+    }).pipe(Effect.provide(monitorRuntime)),
 );
 
 it.effect("keeps watch capabilities independent of browser permission and honors revocation", () =>
@@ -553,7 +575,7 @@ it.effect("delivers exact start/update baselines once and retains caller guards"
       }
       assert.equal(calls, 2);
     }).pipe(Effect.provide(registration));
-  }).pipe(Effect.provide(MonitorTestkit.layer)),
+  }).pipe(Effect.provide(monitorRuntime)),
 );
 
 it.effect("rejects a registered monitor_signal after accepted Stop before scheduler cleanup", () =>
@@ -623,7 +645,7 @@ it.effect("returns structured monitor parameter, ownership and service failures"
     yield* MonitorTestkit.seedThread();
     const invalidSignal = yield* call("monitor_signal", {
       monitorId: "monitor-1",
-      evidence: { exitCode: 0 },
+      evidence: false,
     });
     expect(invalidSignal.isError).toBe(true);
     expect(invalidSignal.structuredContent).toMatchObject({
@@ -632,7 +654,6 @@ it.effect("returns structured monitor parameter, ownership and service failures"
         operation: "monitor_signal",
         field: "evidence",
         phase: "validation",
-        expected: [expect.stringContaining("Expected string")],
       },
     });
     expect(invalidSignal.content).toEqual([

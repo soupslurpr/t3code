@@ -28,11 +28,22 @@ const MonitorDeliveryGroupId = TrimmedNonEmptyString.check(Schema.isMaxLength(10
 // Keep the wire schema simple for MCP clients while validating the decoded value.
 const MonitorEvidence = Schema.String.pipe(
   Schema.decodeTo(
-    Schema.String.check(Schema.isMaxLength(20_000)),
+    Schema.String.check(
+      Schema.isMaxLength(20_000, { message: "Evidence exceeds 20,000 characters." }),
+    ),
     SchemaTransformation.passthrough(),
   ),
 );
-
+const MonitorSignalEvidence = Schema.Union([Schema.String, Schema.JsonObject]).pipe(
+  Schema.decodeTo(
+    MonitorEvidence,
+    SchemaTransformation.transform({
+      decode: (evidence) =>
+        typeof evidence === "string" ? evidence : JSON.stringify(evidence, null, 2),
+      encode: (evidence) => evidence,
+    }),
+  ),
+);
 const ComputerWatchCriterion = TrimmedNonEmptyString.check(Schema.isMaxLength(8_000));
 const ComputerWatchHash = TrimmedNonEmptyString.check(Schema.isMaxLength(128));
 const ComputerWatchRegionId = TrimmedNonEmptyString.check(Schema.isMaxLength(100));
@@ -316,6 +327,22 @@ export const ThreadMonitor = Schema.Struct({
   deliveryFailureCount: NonNegativeInt,
 });
 export type ThreadMonitor = typeof ThreadMonitor.Type;
+
+/** A narrow credential for a worker to complete one signal monitor. */
+export const ThreadMonitorStartResult = Schema.Struct({
+  ...ThreadMonitor.fields,
+  signalCallback: Schema.optional(
+    Schema.Struct({
+      url: Schema.String,
+      authorizationHeader: Schema.String,
+      command: Schema.String.annotate({
+        description:
+          "POSIX shell command for a worker on this environment. Pipe a JSON object with optional summary and evidence into its stdin. Keep this credential private; it can only signal this monitor. The credential survives restarts, but update the URL if the server's listening address changes.",
+      }),
+    }),
+  ),
+});
+export type ThreadMonitorStartResult = typeof ThreadMonitorStartResult.Type;
 
 /** Lightweight client rows; screen regions, samples, and evidence stay on the server. */
 export const ThreadMonitorSummary = Schema.Struct({
@@ -683,7 +710,10 @@ export type ThreadMonitorList = typeof ThreadMonitorList.Type;
 export const ThreadMonitorSignalInput = Schema.Struct({
   monitorId: ThreadMonitorId,
   summary: Schema.optional(MonitorResultSummary),
-  evidence: Schema.optional(MonitorEvidence),
+  evidence: Schema.optional(MonitorSignalEvidence).annotate({
+    description:
+      "Optional supporting details, as text or a JSON object. Maximum 20,000 characters of text or serialized JSON.",
+  }),
 });
 export type ThreadMonitorSignalInput = typeof ThreadMonitorSignalInput.Type;
 

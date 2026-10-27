@@ -82,7 +82,8 @@ it("exports bounded object schemas and provider-neutral lifecycle tools", () => 
     readonly properties?: Readonly<Record<string, unknown>>;
   };
   expect(signalSchema.properties?.evidence).toEqual({
-    anyOf: [{ type: "string" }, { type: "null" }],
+    anyOf: [{ anyOf: [{ type: "string" }, { type: "object" }] }, { type: "null" }],
+    description: expect.stringContaining("20,000 characters"),
   });
 
   const computerCapabilities = MonitorToolkit.tools.computer_watch_capabilities;
