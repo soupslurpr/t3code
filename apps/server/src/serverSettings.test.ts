@@ -1966,3 +1966,18 @@ it.layer(NodeServices.layer)("server settings", (it) => {
     }).pipe(Effect.provide(layerServerSettings())),
   );
 });
+
+it.effect("keeps a usage-limit recovery opt-out across writes and fresh reads", () =>
+  Effect.gen(function* () {
+    const service = yield* ServerSettingsModule.ServerSettingsService;
+    assert.isTrue((yield* service.getSettings).autoResumeLimitedThreads);
+    yield* service.updateSettings({ autoResumeLimitedThreads: false });
+    yield* service.updateSettings({ enableProviderUpdateChecks: false });
+    const persisted = yield* Effect.gen(function* () {
+      return yield* (yield* ServerSettingsModule.ServerSettingsService).getSettings;
+    }).pipe(Effect.provide(Layer.fresh(ServerSettingsModule.layer)));
+    assert.isFalse(persisted.autoResumeLimitedThreads);
+    yield* service.updateSettings({ autoResumeLimitedThreads: true });
+    assert.isTrue((yield* service.getSettings).autoResumeLimitedThreads);
+  }).pipe(Effect.provide(layerServerSettings().pipe(Layer.provideMerge(NodeServices.layer)))),
+);

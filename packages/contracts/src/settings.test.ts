@@ -370,3 +370,19 @@ describe("server model preferences", () => {
     expect(decodeServerSettingsPatch(input)).toEqual(input);
   });
 });
+
+describe("usage-limit recovery defaults", () => {
+  it.each([undefined, false, true])(
+    "preserves explicit choices through stored settings: %s",
+    (value) => {
+      const settings = decodeServerSettings(
+        value === undefined ? {} : { autoResumeLimitedThreads: value },
+      );
+      expect(settings.autoResumeLimitedThreads).toBe(value ?? true);
+      expect(decodeServerSettings(encodeServerSettings(settings)).autoResumeLimitedThreads).toBe(
+        value ?? true,
+      );
+      expect(settings.snoozeLimitedThreads).toBe(false);
+    },
+  );
+});
