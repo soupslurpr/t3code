@@ -1248,7 +1248,8 @@ export const make = Effect.gen(function* () {
     );
   });
 
-  const computerCapabilities = computer.capabilities;
+  const capabilities = computer.monitorCapabilities;
+  const computerCapabilities = computer.computerCapabilities;
 
   const inspectComputer: ThreadMonitorServiceShape["inspectComputer"] = Effect.fn(
     "ThreadMonitor.inspectComputer",
@@ -1864,6 +1865,7 @@ export const make = Effect.gen(function* () {
     start: startOnce,
     create,
     createComputer,
+    capabilities,
     computerCapabilities,
     inspectComputer,
     updateComputer,

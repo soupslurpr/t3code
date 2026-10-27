@@ -8,6 +8,7 @@ import type {
   ThreadMonitor,
   ThreadMonitorCancelInput,
   ThreadMonitorCheckInput,
+  ThreadMonitorCapabilities,
   ThreadMonitorComputerCapabilities,
   ThreadMonitorComputerInspectInput,
   ThreadMonitorComputerInspection,
@@ -24,6 +25,7 @@ import * as Context from "effect/Context";
 import type * as Effect from "effect/Effect";
 
 export interface ThreadMonitorServiceShape {
+  readonly capabilities: (threadId?: ThreadId) => Effect.Effect<ThreadMonitorCapabilities>;
   /** Restores waits only after runtime recovery and legacy shell import. */
   readonly start: Effect.Effect<void>;
   readonly create: (input: {
@@ -37,8 +39,10 @@ export interface ThreadMonitorServiceShape {
     readonly monitor: ThreadMonitorComputerStartInput;
   }) => Effect.Effect<ThreadMonitorComputerRevisionResult, ThreadMonitorError>;
 
-  /** Lists configured evaluator routes and deterministic computer conditions. */
-  readonly computerCapabilities: Effect.Effect<ThreadMonitorComputerCapabilities>;
+  /** Lists controller cache timing, evaluator routes, and deterministic conditions. */
+  readonly computerCapabilities: (
+    threadId?: ThreadId,
+  ) => Effect.Effect<ThreadMonitorComputerCapabilities>;
 
   /** Reads retained and optional fresh images for one active computer watch. */
   readonly inspectComputer: (input: {

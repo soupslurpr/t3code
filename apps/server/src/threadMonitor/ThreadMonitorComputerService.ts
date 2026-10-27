@@ -2,6 +2,7 @@ import type {
   ProviderInstanceId,
   ThreadId,
   ThreadMonitor,
+  ThreadMonitorCapabilities,
   ThreadMonitorComputerCapabilities,
   ThreadMonitorComputerCondition,
   ThreadMonitorComputerEvidenceImage,
@@ -68,7 +69,10 @@ export interface ThreadMonitorComputerServiceShape {
 
   readonly release: (monitor: ThreadMonitor) => Effect.Effect<void>;
 
-  readonly capabilities: Effect.Effect<ThreadMonitorComputerCapabilities>;
+  readonly monitorCapabilities: (threadId?: ThreadId) => Effect.Effect<ThreadMonitorCapabilities>;
+  readonly computerCapabilities: (
+    threadId?: ThreadId,
+  ) => Effect.Effect<ThreadMonitorComputerCapabilities>;
 }
 
 export class ThreadMonitorComputerService extends Context.Service<

@@ -52,3 +52,8 @@ Usage fields remain independent: input, cached input, cache-write input and
 output are reported exactly when supplied, with null for unavailable data.
 Migration must not reset a retained cache-write count or rebucket other
 counts. Older append-only review events may lack the cache-write field.
+
+Controller cache timing must come from that thread's exact current provider
+instance and model, never an evaluator or a custom-model fallback. A minimum
+lifetime starts when an eligible cache entry is created or refreshed; it is
+not a remaining lifetime or expiration deadline. Omit it when unknown.

@@ -18,6 +18,7 @@ import {
   ComputerAutomationScreenshotEncoding,
   ComputerAutomationScreenshotMimeType,
 } from "./computerAutomation.ts";
+import { PromptCacheTiming } from "./model.ts";
 import { ModelSelection } from "./modelSelection.ts";
 import { ProviderInstanceId } from "./providerInstance.ts";
 
@@ -510,7 +511,16 @@ export const ThreadMonitorComputerEvaluator = Schema.Struct({
 });
 export type ThreadMonitorComputerEvaluator = typeof ThreadMonitorComputerEvaluator.Type;
 
+export const ThreadMonitorCapabilities = Schema.Struct({
+  controllerPromptCache: Schema.optional(PromptCacheTiming).annotate({
+    description:
+      "Prompt-cache timing for the current controller model. Omitted when the provider exposes no reliable minimum.",
+  }),
+});
+export type ThreadMonitorCapabilities = typeof ThreadMonitorCapabilities.Type;
+
 export const ThreadMonitorComputerCapabilities = Schema.Struct({
+  ...ThreadMonitorCapabilities.fields,
   evaluators: Schema.Array(ThreadMonitorComputerEvaluator).check(Schema.isMaxLength(64)),
   deterministicMatches: Schema.Array(Schema.Literal("image-change")),
 });

@@ -98,5 +98,10 @@ it("advertises availability and control only when the native tool capability is 
   );
   NodeAssert.match(available.t3_code_desktop!.value, /desktop: \{ kind: "user", desktopId \}/);
   NodeAssert.doesNotMatch(available.t3_code_desktop!.value, /Omitting desktop/);
+  NodeAssert.match(available.t3_code_desktop!.value, /controllerPromptCache.minimumLifetimeMs/);
+  NodeAssert.match(
+    available.t3_code_desktop!.value,
+    /otherwise do not schedule a cache-driven review/,
+  );
   NodeAssert.equal(unavailable.t3_code_desktop, undefined);
 });

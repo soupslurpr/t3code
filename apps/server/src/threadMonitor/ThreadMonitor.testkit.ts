@@ -66,7 +66,30 @@ export const layerForDatabase = (
   return ThreadMonitor.layer.pipe(
     Layer.provideMerge(
       Layer.mock(ThreadMonitorComputerService)({
-        capabilities: Effect.succeed({ evaluators: [], deterministicMatches: ["image-change"] }),
+        monitorCapabilities: (owner) =>
+          Effect.succeed(
+            owner === threadId
+              ? {
+                  controllerPromptCache: {
+                    minimumLifetimeMs: 1_800_000,
+                    source: "provider-documented" as const,
+                  },
+                }
+              : {},
+          ),
+        computerCapabilities: (owner) =>
+          Effect.succeed({
+            ...(owner === threadId
+              ? {
+                  controllerPromptCache: {
+                    minimumLifetimeMs: 1_800_000,
+                    source: "provider-documented" as const,
+                  },
+                }
+              : {}),
+            evaluators: [],
+            deterministicMatches: ["image-change"],
+          }),
       }),
     ),
     Layer.provideMerge(ThreadMonitors.layer),

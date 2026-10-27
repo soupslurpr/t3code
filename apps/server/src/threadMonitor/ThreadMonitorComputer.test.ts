@@ -165,6 +165,8 @@ const harness = Effect.fn("ComputerWatchTest.harness")(function* (
     enabled: true,
     exists: true,
     models: [modelSelection.model],
+    controllerModel: modelSelection.model,
+    promptCache: undefined as import("@t3tools/contracts").PromptCacheTiming | undefined,
     captureFails: false,
     captureDiagnostic: false,
     evaluatorFails: false,
@@ -208,7 +210,8 @@ const harness = Effect.fn("ComputerWatchTest.harness")(function* (
               slug,
               name: slug,
               isCustom: false,
-              capabilities: {},
+              capabilities:
+                state.promptCache === undefined ? {} : { promptCache: state.promptCache },
             })),
           }) satisfies Effect.Success<ProviderInstance["snapshot"]["getSnapshot"]>,
       ),
@@ -322,7 +325,7 @@ const harness = Effect.fn("ComputerWatchTest.harness")(function* (
                     id: Testkit.threadId,
                     projectId: ProjectId.make("project"),
                     worktreePath: "/exact/worktree",
-                    modelSelection,
+                    modelSelection: { ...modelSelection, model: state.controllerModel },
                     title: "Owner",
                     runtimeMode: "full-access",
                     interactionMode: "default",
@@ -519,7 +522,7 @@ describe("durable computer adapter", () => {
     Effect.gen(function* () {
       const h = yield* harness();
       const prepared = yield* h.prepare();
-      const capabilities = yield* h.service.capabilities;
+      const capabilities = yield* h.service.computerCapabilities(Testkit.threadId);
       assert.deepEqual(
         capabilities.evaluators.map(({ instanceId, tokenUsage, promptCacheRefresh }) => ({
           instanceId,
@@ -542,7 +545,7 @@ describe("durable computer adapter", () => {
       );
       assert.equal(h.evaluations.length, 0);
       h.state.enabled = false;
-      assert.deepEqual((yield* h.service.capabilities).evaluators, []);
+      assert.deepEqual((yield* h.service.computerCapabilities(Testkit.threadId)).evaluators, []);
     }),
   );
 
@@ -1655,11 +1658,20 @@ it.effect("baselines the durable rounded region before comparing a fractional so
 it.effect("advertises exact evaluator accounting only when the selected driver supports it", () =>
   Effect.gen(function* () {
     const h = yield* harness();
-    assert.equal((yield* h.service.capabilities).evaluators[0]?.tokenUsage, "unavailable");
+    assert.equal(
+      (yield* h.service.computerCapabilities(Testkit.threadId)).evaluators[0]?.tokenUsage,
+      "unavailable",
+    );
     h.state.tokenUsage = "exact";
-    assert.equal((yield* h.service.capabilities).evaluators[0]?.tokenUsage, "exact");
+    assert.equal(
+      (yield* h.service.computerCapabilities(Testkit.threadId)).evaluators[0]?.tokenUsage,
+      "exact",
+    );
     h.state.tokenUsage = undefined;
-    assert.equal((yield* h.service.capabilities).evaluators[0]?.tokenUsage, "unavailable");
+    assert.equal(
+      (yield* h.service.computerCapabilities(Testkit.threadId)).evaluators[0]?.tokenUsage,
+      "unavailable",
+    );
   }),
 );
 
@@ -2184,4 +2196,33 @@ it.effect("concurrent revisions preserve the revision that commits first", () =>
       "Committed revision",
     );
   }).pipe(Effect.provide(Layer.merge(Testkit.layer, NodeServices.layer))),
+);
+
+it.effect("resolves cache timing from the current controller and omits unknown guarantees", () =>
+  Effect.gen(function* () {
+    const h = yield* harness();
+    assert.deepEqual(yield* h.service.monitorCapabilities(Testkit.threadId), {});
+    h.state.promptCache = { minimumLifetimeMs: 1_800_000, source: "provider-documented" };
+    assert.deepEqual(yield* h.service.monitorCapabilities(Testkit.threadId), {
+      controllerPromptCache: h.state.promptCache,
+    });
+    assert.deepEqual(
+      (yield* h.service.computerCapabilities(Testkit.threadId)).controllerPromptCache,
+      h.state.promptCache,
+    );
+    h.state.controllerModel = "unknown-model";
+    assert.deepEqual(yield* h.service.monitorCapabilities(Testkit.threadId), {});
+    assert.notProperty(
+      yield* h.service.computerCapabilities(Testkit.threadId),
+      "controllerPromptCache",
+    );
+    h.state.controllerModel = modelSelection.model;
+    h.state.exists = false;
+    assert.deepEqual(yield* h.service.monitorCapabilities(Testkit.threadId), {});
+    h.state.exists = true;
+    h.state.ownerExists = false;
+    assert.deepEqual(yield* h.service.monitorCapabilities(Testkit.threadId), {});
+    assert.deepEqual(yield* h.service.monitorCapabilities(), {});
+    assert.lengthOf((yield* h.service.computerCapabilities()).evaluators, 1);
+  }).pipe(Effect.provide(NodeServices.layer)),
 );

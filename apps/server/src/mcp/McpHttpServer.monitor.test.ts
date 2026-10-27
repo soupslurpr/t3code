@@ -652,3 +652,41 @@ it.effect("returns structured monitor parameter, ownership and service failures"
     });
   }).pipe(Effect.provide(layer)),
 );
+
+it.effect(
+  "reports controller cache timing without granting computer access or guessing external context",
+  () =>
+    Effect.gen(function* () {
+      yield* MonitorTestkit.seedThread();
+      const timing = { minimumLifetimeMs: 1_800_000, source: "provider-documented" };
+      expect(yield* call("monitor_capabilities", {})).toMatchObject({
+        isError: false,
+        structuredContent: { controllerPromptCache: timing },
+      });
+      expect(
+        yield* call("monitor_capabilities", {}, { ...invocation, thread: undefined }),
+      ).toMatchObject({ isError: false, structuredContent: {} });
+      expect((yield* call("computer_watch_capabilities", {})).isError).toBe(true);
+      expect(
+        yield* call(
+          "computer_watch_capabilities",
+          {},
+          { ...invocation, capabilities: new Set(["computer"]) },
+        ),
+      ).toMatchObject({
+        isError: false,
+        structuredContent: {
+          controllerPromptCache: timing,
+          evaluators: [],
+          deterministicMatches: ["image-change"],
+        },
+      });
+      expect(
+        (yield* call(
+          "computer_watch_capabilities",
+          {},
+          { ...invocation, capabilities: new Set(["computer"]), thread: undefined },
+        )).structuredContent,
+      ).not.toHaveProperty("controllerPromptCache");
+    }).pipe(Effect.provide(layer)),
+);

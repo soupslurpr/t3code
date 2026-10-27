@@ -128,6 +128,11 @@ same bytes again; it can also omit baseline images when direct review is unneces
 Reviews leave the watch active. Each revision replaces its baselines and clears its metrics, while a
 stale update is rejected. Retained evidence is bounded and is not a continuous recording.
 
+For a cache-conscious watch, the agent can query the controller model's
+minimum prompt-cache lifetime and its source. This is a planning hint, not
+an exact expiration time; an unknown value is omitted. The agent can let
+the cache expire when another turn would not justify its cost.
+
 Desktop screenshots can contain information from any visible application. They become part of the
 agent's tool context, so close or hide sensitive windows before allowing computer use. This matters
 especially when you control an agent remotely: approval grants control of the machine running the

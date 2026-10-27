@@ -7,6 +7,13 @@ import * as McpInvocationContext from "../../McpInvocationContext.ts";
 import { MonitorToolkit, MonitorImageToolkit, MonitorStandardToolkit } from "./tools.ts";
 
 const handlers = {
+  monitor_capabilities: McpToolAccess.reads(() =>
+    Effect.gen(function* () {
+      const scope = yield* McpInvocationContext.McpInvocationContext;
+      const service = yield* ThreadMonitorService;
+      return yield* service.capabilities(scope.thread?.threadId);
+    }),
+  ),
   computer_watch_start: McpToolAccess.actsAsCaller((monitor) =>
     Effect.gen(function* () {
       const {
@@ -27,9 +34,9 @@ const handlers = {
   ),
   computer_watch_capabilities: McpToolAccess.reads(() =>
     Effect.gen(function* () {
-      yield* McpInvocationContext.requireMcpCapability("computer");
+      const scope = yield* McpInvocationContext.requireMcpCapability("computer");
       const service = yield* ThreadMonitorService;
-      return yield* service.computerCapabilities;
+      return yield* service.computerCapabilities(scope.thread?.threadId);
     }),
   ),
   computer_watch_inspect: McpToolAccess.actsAsCaller((inspect) =>

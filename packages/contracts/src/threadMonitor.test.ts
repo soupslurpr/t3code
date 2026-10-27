@@ -8,6 +8,7 @@ import {
   ThreadMonitorStartInput,
   ThreadMonitorSignalInput,
   ThreadMonitorContinuation,
+  ThreadMonitorCapabilities,
 } from "./threadMonitor.ts";
 
 describe("durable monitor input", () => {
@@ -338,4 +339,24 @@ it("decodes retained review usage without cache-write data and preserves exact z
     },
   };
   expect(decode(current)).toEqual(current);
+});
+
+const decodeCapabilities = Schema.decodeUnknownSync(ThreadMonitorCapabilities);
+it("accepts missing cache timing but rejects unbacked or invalid minimum lifetimes", () => {
+  expect(decodeCapabilities({})).toEqual({});
+  for (const source of ["provider-reported", "provider-documented"]) {
+    const capabilities = { controllerPromptCache: { source, minimumLifetimeMs: 1_800_000 } };
+    expect(decodeCapabilities(capabilities)).toEqual(capabilities);
+  }
+  for (const minimumLifetimeMs of [0, -1, 0.5])
+    expect(() =>
+      decodeCapabilities({
+        controllerPromptCache: { source: "provider-reported", minimumLifetimeMs },
+      }),
+    ).toThrow();
+  expect(() =>
+    decodeCapabilities({
+      controllerPromptCache: { source: "guessed", minimumLifetimeMs: 1_800_000 },
+    }),
+  ).toThrow();
 });
