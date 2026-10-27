@@ -8,6 +8,8 @@ import {
   type ThreadId,
   type UserDesktopExecutionInput,
   type UserDesktopExecutionResult,
+  type DesktopScreenPermissionInput,
+  type DesktopScreenAuthorization,
 } from "@t3tools/contracts";
 import * as Context from "effect/Context";
 import * as Crypto from "effect/Crypto";
@@ -32,6 +34,11 @@ export class DesktopExecutionAuthorizationChannel extends Context.Service<
   {
     /** Holds native command/transfer admission until this scope closes. Uncertainty keeps the worktree. */
     readonly reserveWorktreeCleanup: Effect.Effect<boolean, never, Scope.Scope>;
+    readonly invokeScreen: (
+      sessionId: AuthSessionId,
+      threadId: ThreadId,
+      input: DesktopScreenPermissionInput,
+    ) => Effect.Effect<Option.Option<DesktopScreenAuthorization>, DesktopAuthorizationError>;
     /** None means this target has no proven native same-account relationship. */
     readonly invoke: (
       sessionId: AuthSessionId,
@@ -64,6 +71,10 @@ const make = Effect.gen(function* () {
   const pending = new Map<
     string,
     Deferred.Deferred<UserDesktopExecutionResult, DesktopAuthorizationError>
+  >();
+  const screenReplies = new Map<
+    string,
+    Deferred.Deferred<DesktopScreenAuthorization, DesktopAuthorizationError>
   >();
   const cleanupReplies = new Map<string, Deferred.Deferred<boolean, DesktopAuthorizationError>>();
   const writeLock = yield* Semaphore.make(1);
@@ -99,7 +110,18 @@ const make = Effect.gen(function* () {
             ? Effect.void
             : Deferred.succeed(reply, event.acquired).pipe(Effect.asVoid);
         }
+        if (event.type === "screen-result") {
+          const reply = screenReplies.get(event.invocationId);
+          return reply === undefined
+            ? Effect.void
+            : Deferred.succeed(reply, event.value).pipe(Effect.asVoid);
+        }
         if (event.type === "error") {
+          const screenReply = screenReplies.get(event.invocationId);
+          if (screenReply !== undefined)
+            return Deferred.fail(screenReply, new DesktopAuthorizationError(event)).pipe(
+              Effect.asVoid,
+            );
           const cleanupReply = cleanupReplies.get(event.invocationId);
           if (cleanupReply !== undefined)
             return Deferred.fail(cleanupReply, new DesktopAuthorizationError(event)).pipe(
@@ -125,6 +147,7 @@ const make = Effect.gen(function* () {
           connected = false;
           yield* Deferred.fail(ready, unavailable());
           for (const reply of pending.values()) yield* Deferred.fail(reply, unavailable());
+          for (const reply of screenReplies.values()) yield* Deferred.fail(reply, unavailable());
           for (const reply of cleanupReplies.values()) yield* Deferred.fail(reply, unavailable());
         }),
       ),
@@ -196,6 +219,63 @@ const make = Effect.gen(function* () {
         Effect.ensuring(Effect.sync(() => pending.delete(invocationId))),
       );
   });
+  const invokeScreen = Effect.fn("DesktopExecutionAuthorizationChannel.invokeScreen")(function* (
+    sessionId: AuthSessionId,
+    threadId: ThreadId,
+    input: DesktopScreenPermissionInput,
+  ) {
+    // This read occurs at decision acceptance, not at websocket establishment or UI rendering.
+    const authorize = Effect.gen(function* () {
+      const current = yield* sessions.current(sessionId).pipe(Effect.mapError(() => unavailable()));
+      if (
+        Option.isNone(current) ||
+        !current.value.scopes.includes("orchestration:operate") ||
+        !current.value.scopes.includes("terminal:operate")
+      )
+        return yield* new DesktopAuthorizationError({
+          code: "permission-denied",
+          message:
+            "Screen permission administration requires current orchestration and terminal permissions.",
+        });
+    });
+    yield* authorize;
+    if (input.localPrompt === true || input.policy?.scope === "desktop") return Option.none();
+    if (inputFd === undefined || controlFd === undefined) return Option.none();
+    if (!connected) return yield* unavailable();
+    const target = yield* Deferred.await(ready).pipe(
+      Effect.timeoutOrElse({ duration: "5 seconds", orElse: () => Effect.fail(unavailable()) }),
+    );
+    if (target.desktop.desktopId !== input.desktop.desktopId) return Option.none();
+    const environmentId = yield* environment.getEnvironmentId.pipe(
+      Effect.mapError(() => unavailable()),
+    );
+    const source = yield* lifecycle.read(environmentId, threadId).pipe(Effect.option);
+    const invocationId = yield* crypto.randomUUIDv4().pipe(Effect.orDie);
+    const reply = yield* Deferred.make<DesktopScreenAuthorization, DesktopAuthorizationError>();
+    screenReplies.set(invocationId, reply);
+    return yield* writeLock
+      .withPermits(1)(
+        Effect.gen(function* () {
+          yield* authorize;
+          if (!connected) return yield* unavailable();
+          yield* send({
+            type: "screen",
+            generation: target.generation,
+            invocationId,
+            sessionId,
+            threadId,
+            input,
+            ...(Option.isSome(source) ? { lifecycle: source.value } : {}),
+          });
+        }),
+      )
+      .pipe(
+        Effect.andThen(Deferred.await(reply)),
+        Effect.asSome,
+        Effect.timeoutOrElse({ duration: "120 seconds", orElse: () => Effect.fail(unavailable()) }),
+        Effect.ensuring(Effect.sync(() => screenReplies.delete(invocationId))),
+      );
+  });
   const reserveWorktreeCleanup = Effect.gen(function* () {
     if (!connected || config.environmentHost === undefined) return false;
     const target = yield* Deferred.await(ready).pipe(
@@ -234,6 +314,6 @@ const make = Effect.gen(function* () {
         Effect.timeoutOrElse({ duration: "5 seconds", orElse: () => Effect.fail(unavailable()) }),
       );
   }).pipe(Effect.orElseSucceed(() => false));
-  return DesktopExecutionAuthorizationChannel.of({ invoke, reserveWorktreeCleanup });
+  return DesktopExecutionAuthorizationChannel.of({ invoke, invokeScreen, reserveWorktreeCleanup });
 });
 export const layer = Layer.effect(DesktopExecutionAuthorizationChannel, make);

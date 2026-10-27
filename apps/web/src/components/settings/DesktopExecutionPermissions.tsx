@@ -102,8 +102,9 @@ export function DesktopExecutionPermissions({
         .map((item) => (
           <div key={item.requestId} className="flex flex-wrap items-center gap-2">
             <span>
-              Permission requested by thread {item.threadId}
-              {local ? ` · Environment ${item.environmentId}` : ""}
+              Permission requested by {item.source?.threadTitle || item.threadId}
+              {` · ${item.source?.environmentLabel || item.environmentId}`}
+              {item.source?.projectName ? ` · ${item.source.projectName}` : ""}
             </span>
             {canManage ? (
               <>
@@ -270,9 +271,9 @@ export function DesktopExecutionPermissions({
               ? "All environments"
               : grant.scope === "environment"
                 ? local
-                  ? `Environment ${grant.environmentId}`
+                  ? `Environment ${grant.source?.environmentLabel || grant.environmentId}`
                   : "This environment"
-                : `Thread ${grant.threadId}`}{" "}
+                : `Thread ${grant.source?.threadTitle || grant.threadId}`}{" "}
             {local && grant.scope === "thread" ? `· Environment ${grant.environmentId} ` : ""}·{" "}
             {grant.expiresAt !== null
               ? `Expires ${new Date(grant.expiresAt).toLocaleString()}`

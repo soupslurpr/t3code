@@ -1135,6 +1135,7 @@ export function UserDesktopSettings({ thread }: { thread?: DesktopThreadScope } 
                           key={`screen:${entry.environmentId}`}
                           environmentId={entry.environmentId}
                           desktopId={entry.desktop.desktop.desktopId}
+                          desktopLabel={entry.desktop.label}
                           threadId={thread?.threadId}
                         />
                       ))}

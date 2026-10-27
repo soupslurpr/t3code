@@ -10,6 +10,7 @@ import {
   type UserDesktopView,
   type UserDesktopAuditEvent,
   type UserDesktopHumanInvokeInput,
+  type DesktopScreenAuthorization,
 } from "@t3tools/contracts";
 import { act, type ReactNode } from "react";
 import { createRoot } from "react-dom/client";
@@ -67,6 +68,7 @@ vi.mock("react-native", async () => {
     RefreshControl: () => null,
     ActivityIndicator: () => null,
     Image: () => null,
+    TextInput: () => null,
     StyleSheet: { absoluteFill: {} },
     Alert: { alert: vi.fn() },
     AppState: {
@@ -103,6 +105,129 @@ vi.mock("../../state/preview", () => ({
 vi.mock("../../state/use-atom-command", () => ({ useAtomCommand: () => state.invoke }));
 import { SettingsUserDesktopsRouteScreen } from "./SettingsUserDesktopsRouteScreen";
 import { UserDesktopSupervisionRouteScreen } from "./UserDesktopSupervisionRouteScreen";
+import { DesktopScreenPermissionsPanel } from "./DesktopScreenPermissionsPanel";
+
+it.each(["approve", "deny", "local"] as const)(
+  "handles %s screen decisions for the named source on the selected desktop",
+  async (decision) => {
+    await using screen = setup();
+    const environmentId = EnvironmentId.make("remote");
+    const threadId = ThreadId.make("requesting-thread");
+    const policy = {
+      scope: "thread",
+      lifetime: "automatic",
+      remembered: false,
+      deadline: null,
+    } as const;
+    const source = {
+      environmentLabel: "Source machine",
+      projectName: "Project",
+      threadTitle: "Requesting task",
+    };
+    let authorization: DesktopScreenAuthorization = {
+      protocolVersion: 2,
+      grants: [],
+      remoteApprovalAvailable: decision !== "local",
+      pendingRequests: [
+        {
+          requestId: "pending-request",
+          environmentId,
+          threadId,
+          source,
+          capability: "control",
+          expiresAt: "2099-01-01T00:00:00Z",
+          proposedPolicy: policy,
+        },
+      ],
+    };
+    state.invoke.mockImplementation(
+      async ({
+        environmentId: targetEnvironment,
+        input,
+      }: {
+        environmentId: EnvironmentId;
+        input: UserDesktopHumanInvokeInput;
+      }) => {
+        expect(targetEnvironment).toBe(environmentId);
+        expect(input.request).toMatchObject({ desktopId: "selected-desktop" });
+        if (input.request.operation === "screen-permission") {
+          expect(input.threadId).toBe(threadId);
+          if (input.request.action === "approve") {
+            expect(input.request).toMatchObject({ requestId: "pending-request", policy });
+            authorization = {
+              ...authorization,
+              pendingRequests: [],
+              grants: [
+                {
+                  ...policy,
+                  source,
+                  environmentId,
+                  threadId,
+                  capability: "control",
+                  grantId: "approved",
+                  revision: 3,
+                  issuedAt: "2026-10-26T00:00:00Z",
+                  expiresAt: "2099-01-01T00:00:00Z",
+                  absoluteExpiresAt: null,
+                  idleExpiresAt: null,
+                  settledExpiresAt: null,
+                  sourceRevision: 1,
+                  activityRevision: 1,
+                  sourceState: "active",
+                  suspended: false,
+                  migrated: false,
+                },
+              ],
+            };
+          } else if (input.request.action === "deny") {
+            expect(input.request.requestId).toBe("pending-request");
+            authorization = { ...authorization, pendingRequests: [] };
+          } else {
+            expect(input.request).toMatchObject({
+              action: "remove",
+              permission: { grantId: "approved", revision: 3 },
+            });
+            authorization = { ...authorization, grants: [] };
+          }
+        }
+        return {
+          _tag: "Success",
+          value: {
+            authorization,
+            available: true,
+            backend: null,
+            permission: "prompt-required",
+            rememberedAccess: [],
+            displayState: "active",
+            keepAwake: false,
+            displays: [],
+            cursor: null,
+          },
+        };
+      },
+    );
+    await screen.permissions();
+    await screen.press("Show screen permissions");
+    expect(screen.text()).toContain("Requesting task");
+    expect(screen.text()).toContain("Source machine");
+    expect(screen.text()).toContain("Selected workstation");
+    if (decision === "local") {
+      expect(screen.text()).not.toContain("Approve request");
+      expect(screen.text()).not.toContain("Deny");
+      expect(screen.operations()).toEqual(["status"]);
+      return;
+    }
+    await screen.press(decision === "approve" ? "Approve request" : "Deny");
+    expect(screen.text()).not.toContain("Approve request");
+    if (decision === "approve") {
+      expect(screen.text()).toContain("Ends when T3 quits");
+      await screen.press("Remove permission");
+      expect(screen.text()).not.toContain("Change permission");
+      expect(authorization.grants).toEqual([]);
+    }
+    expect(authorization.pendingRequests).toEqual([]);
+  },
+);
 
 function deferred() {
   let resolve!: () => void;
@@ -197,6 +322,17 @@ function setup() {
   return {
     operations,
     access,
+    async permissions() {
+      await act(async () =>
+        root.render(
+          <DesktopScreenPermissionsPanel
+            environmentId={EnvironmentId.make("remote")}
+            desktopId="selected-desktop"
+            desktopLabel="Selected workstation"
+          />,
+        ),
+      );
+    },
     text: () => container.textContent,
     block(operation: string) {
       const pending = { operation, started: deferred(), finish: deferred() };

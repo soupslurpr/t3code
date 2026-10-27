@@ -31,56 +31,75 @@ import {
 import * as RpcAuthorization from "./RpcAuthorization.ts";
 
 describe("RPC authorization scopes", () => {
-  it.effect("requires command and task permission together for User desktop execution", () =>
-    Effect.gen(function* () {
-      const group = WsRpcGroup.omit(
-        ...[...WsRpcGroup.requests.keys()].filter(
-          (
-            tag,
-          ): tag is Exclude<
-            keyof typeof RPC_REQUIRED_SCOPES,
-            typeof WS_METHODS.userDesktopHumanInvoke
-          > => tag !== WS_METHODS.userDesktopHumanInvoke,
-        ),
-      );
-      const desktop = { kind: "user", desktopId: "desktop" } as const;
-      const input = {
-        request: {
-          operation: "execution",
-          desktopId: desktop.desktopId,
-          input: { operation: "access", desktop, input: { action: "status", desktop } },
-        },
-      } as const;
-      let calls = 0;
-      for (const scopes of [
-        [AuthOrchestrationOperateScope],
-        [AuthTerminalOperateScope],
-        [AuthOrchestrationOperateScope, AuthTerminalOperateScope],
-      ]) {
-        const client = yield* RpcTest.makeClient(group).pipe(
-          Effect.provide(
-            Layer.mergeAll(
-              group.toLayerHandler(WS_METHODS.userDesktopHumanInvoke, () =>
-                Effect.sync(() => {
-                  calls++;
-                  return null;
-                }),
-              ),
-              RpcAuthorization.layer(scopes),
-            ),
+  it.effect.each(["execution", "screen-permission"] as const)(
+    "requires command and task permission together for User desktop %s",
+    (operation) =>
+      Effect.gen(function* () {
+        const group = WsRpcGroup.omit(
+          ...[...WsRpcGroup.requests.keys()].filter(
+            (
+              tag,
+            ): tag is Exclude<
+              keyof typeof RPC_REQUIRED_SCOPES,
+              typeof WS_METHODS.userDesktopHumanInvoke
+            > => tag !== WS_METHODS.userDesktopHumanInvoke,
           ),
         );
-        if (scopes.length === 1)
-          expect(
-            (yield* client[WS_METHODS.userDesktopHumanInvoke](input).pipe(
-              Effect.asVoid,
-              Effect.flip,
-            ))._tag,
-          ).toBe("EnvironmentAuthorizationError");
-        else yield* client[WS_METHODS.userDesktopHumanInvoke](input);
-      }
-      expect(calls).toBe(1);
-    }).pipe(Effect.scoped),
+        const desktop = { kind: "user", desktopId: "desktop" } as const;
+        const input = {
+          request:
+            operation === "screen-permission"
+              ? {
+                  operation,
+                  desktopId: desktop.desktopId,
+                  action: "request" as const,
+                  capability: "view" as const,
+                  policy: {
+                    scope: "environment" as const,
+                    lifetime: "until-time" as const,
+                    remembered: false,
+                    deadline: "2099-01-01T00:00:00Z",
+                  },
+                }
+              : {
+                  operation,
+                  desktopId: desktop.desktopId,
+                  input: {
+                    operation: "access" as const,
+                    desktop,
+                    input: { action: "status" as const, desktop },
+                  },
+                },
+        } as const;
+        let calls = 0;
+        for (const scopes of [
+          [AuthOrchestrationOperateScope],
+          [AuthTerminalOperateScope],
+          [AuthOrchestrationOperateScope, AuthTerminalOperateScope],
+        ]) {
+          const client = yield* RpcTest.makeClient(group).pipe(
+            Effect.provide(
+              Layer.mergeAll(
+                group.toLayerHandler(WS_METHODS.userDesktopHumanInvoke, () =>
+                  Effect.sync(() => {
+                    calls++;
+                    return null;
+                  }),
+                ),
+                RpcAuthorization.layer(scopes),
+              ),
+            ),
+          );
+          if (scopes.length === 1)
+            expect(
+              yield* client[WS_METHODS.userDesktopHumanInvoke](input).pipe(
+                Effect.match({ onFailure: (error) => error._tag, onSuccess: () => "Allowed" }),
+              ),
+            ).toBe("EnvironmentAuthorizationError");
+          else yield* client[WS_METHODS.userDesktopHumanInvoke](input);
+        }
+        expect(calls).toBe(1);
+      }).pipe(Effect.scoped),
   );
   it.effect(
     "requires command and task permission together for Agent desktop process supervision",

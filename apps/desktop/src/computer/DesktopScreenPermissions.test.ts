@@ -38,6 +38,12 @@ const source = (thread = "thread"): DesktopComputerAutomationContext => ({
     settledAt: null,
   },
 });
+const temporaryPolicy = {
+  scope: "thread",
+  lifetime: "automatic",
+  remembered: false,
+  deadline: null,
+} as const;
 const status = {
   available: true,
   backend: "gnome-wayland-portal",
@@ -65,6 +71,7 @@ function withScreen<A, E, R>(
   calls: string[],
   overrides: Partial<ComputerUse.ComputerUseShape> = {},
   prompt?: ElectronDialog.ElectronDialog["Service"]["showMessageBox"],
+  wrapFs?: (fs: FileSystem.FileSystem) => FileSystem.FileSystem,
 ) {
   return Effect.gen(function* () {
     const fs = yield* FileSystem.FileSystem;
@@ -107,7 +114,11 @@ function withScreen<A, E, R>(
       Effect.provide(
         ComputerUseCoordinator.layer.pipe(
           Layer.provideMerge(DesktopScreenPermissions.layer),
-          Layer.provideMerge(DesktopGrants.layer),
+          Layer.provideMerge(
+            DesktopGrants.layer.pipe(
+              Layer.provide(Layer.succeed(FileSystem.FileSystem, wrapFs ? wrapFs(fs) : fs)),
+            ),
+          ),
           Layer.provideMerge(Layer.succeed(ComputerUse.ComputerUse, native)),
           Layer.provideMerge(UserDesktopIdentity.layer),
           Layer.provideMerge(
@@ -134,6 +145,338 @@ function withScreen<A, E, R>(
 }
 
 describe("scoped desktop screen permissions", () => {
+  it.effect.each([
+    { operation: "release", phase: "write" },
+    { operation: "interrupt", phase: "write" },
+    { operation: "fiber", phase: "write" },
+    { operation: "release", phase: "publication" },
+    { operation: "interrupt", phase: "publication" },
+    { operation: "fiber", phase: "publication" },
+  ] as const)(
+    "$operation during native approval $phase restores authority and requires a new prompt",
+    ({ operation, phase }) =>
+      Effect.gen(function* () {
+        const prompted = yield* Deferred.make<void>();
+        const reprompted = yield* Deferred.make<void>();
+        const saving = yield* Deferred.make<void>();
+        const resume = yield* Deferred.make<void>();
+        let prompts = 0;
+        let holdSave = false;
+        const calls: string[] = [];
+        yield* withScreen(
+          Effect.gen(function* () {
+            const permissions = yield* DesktopScreenPermissions.DesktopScreenPermissions;
+            const coordinator = yield* ComputerUseCoordinator.ComputerUseCoordinator;
+            const store = yield* DesktopGrants.DesktopGrants;
+            const environment = yield* DesktopEnvironment.DesktopEnvironment;
+            const fs = yield* FileSystem.FileSystem;
+            const context = source();
+            const independent = approveGrant({
+              grantId: "independent-execution",
+              capability: "execution",
+              owner: { environmentId: context.environmentId!, threadId: context.threadId! },
+              source: context.lifecycle,
+              now: store.now(),
+              policy: { ...temporaryPolicy, remembered: true },
+            });
+            yield* store.withPermit(store.replace([independent]));
+            const original = yield* coordinator.requestControl(context).pipe(Effect.forkChild);
+            yield* Deferred.await(prompted);
+            const human = { ...context, controllerKind: "human" as const };
+            const requestId = permissions.authorization(human).pendingRequests![0]!.requestId;
+            holdSave = true;
+            const decision = yield* permissions
+              .invokeFromNativeBackend(human, {
+                action: "approve",
+                requestId,
+                policy: { ...temporaryPolicy, remembered: true },
+              })
+              .pipe(Effect.forkChild);
+            yield* Deferred.await(saving);
+            const cancellation = yield* (
+              operation === "fiber" ? Fiber.interrupt(original) : coordinator[operation](context)
+            ).pipe(Effect.forkChild({ startImmediately: true }));
+            yield* Deferred.succeed(resume, undefined);
+            yield* Fiber.join(cancellation);
+            const originalExit = yield* Fiber.await(original);
+            assert.equal(originalExit._tag, "Failure");
+            const failure = yield* Fiber.join(decision).pipe(Effect.flip);
+            assert.instanceOf(failure, ComputerUse.ComputerUseLeaseError);
+            assert.deepEqual(store.list(), [independent]);
+            const persisted = yield* fs.readFileString(
+              environment.path.join(environment.stateDir, "desktop-execution-grants.json"),
+            );
+            assert.deepEqual(JSON.parse(persisted).grants, [independent]);
+            const restored = yield* Effect.gen(function* () {
+              const reloaded = yield* DesktopGrants.DesktopGrants;
+              const owner = { environmentId: context.environmentId!, threadId: context.threadId! };
+              yield* reloaded.synchronize(owner, context.lifecycle!, context.connectionGeneration!);
+              return reloaded.select(owner, "control");
+            }).pipe(Effect.provide(Layer.fresh(DesktopGrants.layer)));
+            assert.isUndefined(restored);
+            assert.notInclude(calls, "control");
+            const retry = yield* coordinator.requestControl(context).pipe(Effect.forkChild);
+            yield* Deferred.await(reprompted);
+            assert.equal(prompts, 2);
+            yield* coordinator.release(context);
+            yield* Fiber.join(retry).pipe(Effect.flip);
+          }),
+          calls,
+          {},
+          () => {
+            prompts++;
+            return Deferred.succeed(prompts === 1 ? prompted : reprompted, undefined).pipe(
+              Effect.andThen(Effect.never),
+            );
+          },
+          (fs) => ({
+            ...fs,
+            writeFileString: (file, contents, options) =>
+              holdSave && phase === "write" && file.includes("desktop-execution-grants.json.")
+                ? Deferred.succeed(saving, undefined).pipe(
+                    Effect.andThen(Deferred.await(resume)),
+                    Effect.andThen(fs.writeFileString(file, contents, options)),
+                  )
+                : fs.writeFileString(file, contents, options),
+            remove: (file, options) =>
+              holdSave && phase === "publication" && file.includes("desktop-execution-grants.json.")
+                ? Deferred.succeed(saving, undefined).pipe(
+                    Effect.andThen(Deferred.await(resume)),
+                    Effect.andThen(fs.remove(file, options)),
+                  )
+                : fs.remove(file, options),
+          }),
+        );
+      }),
+  );
+
+  it.effect(
+    "approves a named pending request through the native channel while retaining OS consent",
+    () =>
+      Effect.gen(function* () {
+        const prompted = yield* Deferred.make<void>();
+        const calls: string[] = [];
+        const context = {
+          ...source("named-thread"),
+          lifecycle: {
+            ...source("named-thread").lifecycle!,
+            source: {
+              environmentLabel: "coolcrab",
+              projectName: "T3 Code",
+              threadTitle: "Restore Wonder Full",
+            },
+          },
+        };
+        yield* withScreen(
+          Effect.gen(function* () {
+            const coordinator = yield* ComputerUseCoordinator.ComputerUseCoordinator;
+            const permissions = yield* DesktopScreenPermissions.DesktopScreenPermissions;
+            const store = yield* DesktopGrants.DesktopGrants;
+            const work = yield* coordinator.requestControl(context).pipe(Effect.forkChild);
+            yield* Deferred.await(prompted);
+            assert.notInclude(calls, "control");
+            const human = {
+              ...context,
+              controllerKind: "human" as const,
+              connectionGeneration: "private-native-generation",
+            };
+            const pending = permissions.authorization(human).pendingRequests!;
+            assert.lengthOf(pending, 1);
+            assert.equal(pending[0]!.source?.threadTitle, "Restore Wonder Full");
+            const input = {
+              action: "approve" as const,
+              requestId: pending[0]!.requestId,
+              policy: temporaryPolicy,
+            };
+            for (const rejected of [
+              { ...human, environmentId: EnvironmentId.make("foreign") },
+              { ...human, threadId: ThreadId.make("different-thread") },
+              { ...context, controllerKind: "agent" as const },
+            ]) {
+              yield* permissions.invokeFromNativeBackend(rejected, input).pipe(Effect.flip);
+              assert.isEmpty(store.list());
+            }
+            const approved = yield* permissions.invokeFromNativeBackend(human, input);
+            assert.isTrue(approved.remoteApprovalAvailable);
+            assert.isEmpty(approved.pendingRequests);
+            yield* Fiber.join(work);
+            assert.include(calls, "control");
+            assert.equal(store.list()[0]!.threadId, context.threadId);
+            assert.equal(store.list()[0]!.source?.projectName, "T3 Code");
+            yield* coordinator.release(context);
+            assert.lengthOf(store.list(), 1);
+            yield* permissions.invokeFromNativeBackend(human, {
+              action: "remove",
+              permission: {
+                grantId: store.list()[0]!.grantId,
+                revision: store.list()[0]!.revision,
+              },
+            });
+            assert.isEmpty(store.list());
+          }),
+          calls,
+          {},
+          (options) => {
+            assert.include(options.detail!, "Thread: Restore Wonder Full");
+            assert.include(options.detail!, "Project: T3 Code");
+            assert.include(options.detail!, "Environment: coolcrab");
+            return Deferred.succeed(prompted, undefined).pipe(Effect.andThen(Effect.never));
+          },
+        );
+      }),
+  );
+
+  it.effect.each(["deleted", "settled", "reconnected"] as const)(
+    "checks current lifecycle and connection before approving a pending request: %s",
+    (state) =>
+      Effect.gen(function* () {
+        const prompted = yield* Deferred.make<void>();
+        yield* withScreen(
+          Effect.gen(function* () {
+            const permissions = yield* DesktopScreenPermissions.DesktopScreenPermissions;
+            const store = yield* DesktopGrants.DesktopGrants;
+            const context = source();
+            const work = yield* permissions.request(context, "control").pipe(Effect.forkChild);
+            yield* Deferred.await(prompted);
+            const human = {
+              ...context,
+              controllerKind: "human" as const,
+              connectionGeneration: "private-native-generation",
+              lifecycle: {
+                ...context.lifecycle!,
+                state: state === "reconnected" ? ("active" as const) : state,
+                revision: 2,
+                settledAt: state === "settled" ? "1970-01-01T00:00:00.000Z" : null,
+              },
+            };
+            const requestId = permissions.authorization(human).pendingRequests![0]!.requestId;
+            if (state === "reconnected")
+              store.connect(context.environmentId!, "replacement-automation-generation");
+            const decision = permissions.invokeFromNativeBackend(human, {
+              action: "approve",
+              requestId,
+              policy: temporaryPolicy,
+            });
+            if (state === "settled") {
+              yield* decision;
+              yield* Fiber.join(work);
+              assert.equal(store.list()[0]!.sourceState, "settled");
+              assert.equal(store.list()[0]!.expiresAt, "1970-01-01T00:15:00.000Z");
+            } else {
+              yield* decision.pipe(Effect.flip);
+              assert.isEmpty(store.list());
+              yield* Fiber.interrupt(work);
+            }
+          }),
+          [],
+          {},
+          () => Deferred.succeed(prompted, undefined).pipe(Effect.andThen(Effect.never)),
+        );
+      }),
+  );
+
+  it.effect.each(["deny", "cancel"] as const)(
+    "rejects obsolete native decisions after %s",
+    (action) =>
+      Effect.gen(function* () {
+        const prompted = yield* Deferred.make<void>();
+        const calls: string[] = [];
+        yield* withScreen(
+          Effect.gen(function* () {
+            const permissions = yield* DesktopScreenPermissions.DesktopScreenPermissions;
+            const store = yield* DesktopGrants.DesktopGrants;
+            const context = source();
+            const human = { ...context, controllerKind: "human" as const };
+            const work = yield* permissions.request(context, "control").pipe(Effect.forkChild);
+            yield* Deferred.await(prompted);
+            const requestId = permissions.authorization(human).pendingRequests![0]!.requestId;
+            if (action === "deny")
+              yield* permissions.invokeFromNativeBackend(human, { action: "deny", requestId });
+            else yield* permissions.cancel(context);
+            yield* Fiber.join(work).pipe(Effect.flip);
+            yield* permissions
+              .invokeFromNativeBackend(human, {
+                action: "approve",
+                requestId,
+                policy: temporaryPolicy,
+              })
+              .pipe(Effect.flip);
+            assert.isEmpty(store.list());
+            assert.notInclude(calls, "control");
+          }),
+          calls,
+          {},
+          () => Deferred.succeed(prompted, undefined).pipe(Effect.andThen(Effect.never)),
+        );
+      }),
+  );
+
+  it.effect(
+    "requires explicit native policy, current revision and local consent for shared permissions",
+    () =>
+      Effect.gen(function* () {
+        const calls: string[] = [];
+        yield* withScreen(
+          Effect.gen(function* () {
+            const permissions = yield* DesktopScreenPermissions.DesktopScreenPermissions;
+            const store = yield* DesktopGrants.DesktopGrants;
+            const context = source();
+            store.connect(context.environmentId!, "active-automation-generation");
+            const human = {
+              ...context,
+              controllerKind: "human" as const,
+              connectionGeneration: "private-native-generation",
+            };
+            yield* permissions
+              .invokeFromNativeBackend(human, { action: "request", capability: "view" })
+              .pipe(Effect.flip);
+            yield* permissions
+              .invokeFromNativeBackend(human, {
+                action: "request",
+                capability: "view",
+                policy: { ...temporaryPolicy, scope: "desktop", lifetime: "until-revoked" },
+              })
+              .pipe(Effect.flip);
+            yield* permissions.invokeFromNativeBackend(human, {
+              action: "request",
+              capability: "view",
+              policy: temporaryPolicy,
+            });
+            const grant = store.list()[0]!;
+            yield* permissions
+              .invokeFromNativeBackend(human, {
+                action: "edit",
+                capability: "view",
+                permission: { grantId: grant.grantId, revision: grant.revision + 1 },
+                policy: temporaryPolicy,
+              })
+              .pipe(Effect.flip);
+            assert.equal(store.list()[0]!.revision, grant.revision);
+            yield* permissions
+              .invokeFromNativeBackend(human, {
+                action: "edit",
+                capability: "view",
+                permission: { grantId: grant.grantId, revision: grant.revision },
+                policy: { ...temporaryPolicy, scope: "environment", lifetime: "until-revoked" },
+              })
+              .pipe(Effect.flip);
+            assert.deepEqual(store.list(), [grant]);
+            yield* permissions.invokeFromNativeBackend(human, {
+              action: "edit",
+              capability: "view",
+              permission: { grantId: grant.grantId, revision: grant.revision },
+              policy: { ...temporaryPolicy, remembered: true },
+            });
+            assert.lengthOf(store.list(), 1);
+            assert.equal(store.list()[0]!.revision, grant.revision + 1);
+            assert.isTrue(store.list()[0]!.remembered);
+            assert.equal(store.generation(context.environmentId!), "active-automation-generation");
+            assert.isEmpty(calls);
+          }),
+          calls,
+        );
+      }),
+  );
   it.effect.each(["release", "interrupt", "forceRelease", "forceForget"] as const)(
     "%s cancels screen permission before source preflight completes",
     (operation) =>

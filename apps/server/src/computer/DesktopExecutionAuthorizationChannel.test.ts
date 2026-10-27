@@ -66,25 +66,37 @@ it("binds the native desktop, rejects reverse access and stale sessions, and rel
               generation: "native-generation",
               desktop: { kind: "user", desktopId: "coolcrab-desktop" },
             }
-          : {
-              type: "result",
-              invocationId: command.invocationId,
-              value: {
-                kind: "access",
-                desktop: { kind: "user", desktopId: "coolcrab-desktop" },
-                user: "test-account",
-                homeDirectory: "/test",
-                platform: "linux",
-                granted: false,
-                grants: [],
-                remoteApprovalAvailable: true,
-              },
-            };
+          : command.type === "screen"
+            ? {
+                type: "screen-result",
+                invocationId: command.invocationId,
+                value: {
+                  protocolVersion: 2,
+                  grants: [],
+                  pendingRequests: [],
+                  remoteApprovalAvailable: true,
+                },
+              }
+            : {
+                type: "result",
+                invocationId: command.invocationId,
+                value: {
+                  kind: "access",
+                  desktop: { kind: "user", desktopId: "coolcrab-desktop" },
+                  user: "test-account",
+                  homeDirectory: "/test",
+                  platform: "linux",
+                  granted: false,
+                  grants: [],
+                  remoteApprovalAvailable: true,
+                },
+              };
       if (command.type === "invoke") {
         invocations++;
         expect(command.generation).toBe("native-generation");
         expect(command.lifecycle?.environmentId).toBe("coolcrab-environment");
-      } else expect(command.environmentId).toBe("coolcrab-environment");
+      } else if (command.type === "hello")
+        expect(command.environmentId).toBe("coolcrab-environment");
       const stream = child.stdio[3];
       if (!stream || !("write" in stream)) throw new Error("Missing native reply descriptor");
       stream.write(`${JSON.stringify(response)}\n`);
@@ -105,6 +117,7 @@ it("binds the native desktop, rejects reverse access and stale sessions, and rel
     expect(commands).toEqual([
       "hello",
       "invoke",
+      "screen",
       ...Array.from({ length: 5 }, () => ["cleanup-acquire", "cleanup-release"]).flat(),
     ]);
     expect(result).toEqual({ code: 0, signal: null });

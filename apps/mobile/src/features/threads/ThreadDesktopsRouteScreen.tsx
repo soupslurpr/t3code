@@ -225,6 +225,7 @@ export function ThreadDesktopsRouteScreen({
               key={`screen:${desktop.desktop.desktopId}`}
               environmentId={environmentId}
               desktopId={desktop.desktop.desktopId}
+              desktopLabel={desktop.label}
               threadId={threadId}
             />
           ))}

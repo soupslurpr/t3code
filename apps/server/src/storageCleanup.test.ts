@@ -294,6 +294,7 @@ const cleanupFixture = (
       Effect.provideService(NativeAuthorization.DesktopExecutionAuthorizationChannel, {
         reserveWorktreeCleanup,
         invoke: () => Effect.die("Unused authorization invocation"),
+        invokeScreen: () => Effect.die("Unused screen authorization invocation"),
       }),
       Effect.provideService(GitVcsDriver.GitVcsDriver, {
         ...git,

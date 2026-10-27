@@ -1,5 +1,5 @@
 import * as Schema from "effect/Schema";
-import { DesktopCapabilityGrant, DesktopGrantPolicy } from "./desktopAuthorization.ts";
+import { DesktopScreenAuthorization, DesktopGrantPolicy } from "./desktopAuthorization.ts";
 
 import { IsoDateTime, NonNegativeInt, ThreadId, TrimmedNonEmptyString } from "./baseSchemas.ts";
 import {
@@ -293,12 +293,7 @@ export function findComputerAutomationFailureKind(
 }
 
 export const ComputerAutomationStatus = Schema.Struct({
-  authorization: Schema.optional(
-    Schema.Struct({
-      protocolVersion: Schema.Literal(2),
-      grants: Schema.Array(DesktopCapabilityGrant),
-    }),
-  ),
+  authorization: Schema.optional(DesktopScreenAuthorization),
   desktop: Schema.optional(ComputerDesktopIdentity).annotate({
     description: "Concrete user or agent desktop represented by this status.",
   }),
@@ -729,7 +724,7 @@ export const ComputerAutomationAccessInput = Schema.Struct({
   permission: Schema.optional(DesktopScreenPermissionRevision),
   permissionPolicy: Schema.optional(DesktopGrantPolicy).annotate({
     description:
-      "Suggested T3 screen policy. Only a human request can edit existing authority; the destination's native prompt makes the decision.",
+      "Suggested T3 screen policy. Only an explicit human approval grants or changes access; an authorized client can approve for its environment’s native desktop host.",
   }),
   desktop: ComputerDesktopSelector.annotate({
     description:

@@ -1,3 +1,4 @@
+import { permissionSourceDescription } from "../computer/permissionSourceDescription.ts";
 import * as DesktopProcessActivityJournal from "./DesktopProcessActivityJournal.ts";
 import { DESKTOP_AUTHORIZATION_CHANGED_CHANNEL } from "../ipc/channels.ts";
 /** Authorizes desktop execution independently of screen sharing and process ownership. */
@@ -507,6 +508,7 @@ export const make = Effect.gen(function* () {
       result,
       description: {
         requestId,
+        ...(context.lifecycle?.source === undefined ? {} : { source: context.lifecycle.source }),
         environmentId: context.environmentId!,
         threadId: context.threadId!,
         desktop,
@@ -604,7 +606,7 @@ export const make = Effect.gen(function* () {
           type: "question",
           title: "Choose command permission scope",
           message: `Allow commands on ${identity.registration.defaultLabel} as ${user}?`,
-          detail: `Source environment: ${owner.environmentId}\nThread: ${owner.threadId}\nDesktop: ${desktop.desktopId}\n\nCommands and file transfers can read or change files accessible to this account. Screen permission is separate.\nRequest: ${requestId}`,
+          detail: `${permissionSourceDescription(context)}\nDesktop: ${identity.registration.defaultLabel} (${desktop.desktopId})\n\nCommands and file transfers can read or change files accessible to this account. Screen permission is separate.\nRequest: ${requestId}`,
           buttons: ["Cancel", "This thread", "This environment", "All environments"],
           defaultId: proposalScope === "thread" ? 1 : proposalScope === "environment" ? 2 : 3,
           cancelId: 0,
@@ -632,7 +634,7 @@ export const make = Effect.gen(function* () {
           type: "question",
           title: "Choose command permission lifetime",
           message: `Allow execution for ${scope === "thread" ? "this thread" : scope === "environment" ? "this environment" : "all environments"}?`,
-          detail: `${automatic ? "Automatic: 15 minutes after settlement, 24 hours without task activity, and at most seven days.\n" : ""}Until a time: ${finiteDeadline}\nExpiry removes agent access; running commands continue. You can inspect and stop them in Settings → User desktops.`,
+          detail: `${permissionSourceDescription(context)}\n\n${automatic ? "Automatic: 15 minutes after settlement, 24 hours without task activity, and at most seven days.\n" : ""}Until a time: ${finiteDeadline}\nExpiry removes agent access; running commands continue. You can inspect and stop them in Settings → User desktops.`,
           buttons: choices,
           defaultId:
             automatic && proposalLifetime === "automatic"

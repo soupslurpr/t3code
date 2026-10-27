@@ -1,4 +1,8 @@
-import type { AuthSessionId } from "@t3tools/contracts";
+import {
+  DesktopAuthorizationError,
+  type ComputerAutomationStatus,
+  type AuthSessionId,
+} from "@t3tools/contracts";
 import * as Option from "effect/Option";
 import { DesktopExecutionAuthorizationChannel } from "./DesktopExecutionAuthorizationChannel.ts";
 import * as ComputerObservationStore from "./ComputerObservationStore.ts";
@@ -61,15 +65,37 @@ export const runUserDesktopHumanRequest = Effect.fn("UserDesktopHuman.run")(func
       .pipe(Effect.mapError(inventoryFailure));
   }
   const desktop = { kind: "user" as const, desktopId: request.desktopId };
-  const invokeComputer = (operation: PreviewAutomationOperation, requestInput: unknown) =>
-    broker.invoke({
+  const invokeComputer = <A = unknown>(
+    operation: PreviewAutomationOperation,
+    requestInput: unknown,
+  ) =>
+    broker.invoke<A>({
       scope,
       operation,
       input: requestInput,
       ...(input.timeoutMs === undefined ? {} : { timeoutMs: input.timeoutMs }),
     });
   switch (request.operation) {
-    case "screen-permission":
+    case "screen-permission": {
+      const authorization = yield* DesktopExecutionAuthorizationChannel;
+      const nativeResult = yield* authorization.invokeScreen(sessionId, scope.thread.threadId, {
+        ...request,
+        desktop,
+      });
+      if (Option.isSome(nativeResult)) return nativeResult.value;
+      if (request.action === "status") {
+        const status = yield* invokeComputer<ComputerAutomationStatus>("computerStatus", {
+          desktop,
+        });
+        return status.authorization === undefined
+          ? null
+          : { ...status.authorization, remoteApprovalAvailable: false };
+      }
+      if (request.action === "approve" || request.action === "deny")
+        return yield* new DesktopAuthorizationError({
+          code: "permission-denied",
+          message: "Approve screen access on the selected desktop.",
+        });
       return yield* invokeComputer(
         request.action === "remove"
           ? "computerForgetControl"
@@ -83,6 +109,7 @@ export const runUserDesktopHumanRequest = Effect.fn("UserDesktopHuman.run")(func
           observation: false,
         },
       );
+    }
     case "execution": {
       const authorization = yield* DesktopExecutionAuthorizationChannel;
       const result = yield* authorization.invoke(sessionId, scope.thread.threadId, {
@@ -92,8 +119,21 @@ export const runUserDesktopHumanRequest = Effect.fn("UserDesktopHuman.run")(func
       if (Option.isSome(result)) return result.value;
       return yield* invokeComputer("computerExecution", { ...request.input, desktop });
     }
-    case "status":
-      return yield* invokeComputer("computerStatus", { desktop });
+    case "status": {
+      const status = yield* invokeComputer<ComputerAutomationStatus>("computerStatus", { desktop });
+      const channel = yield* DesktopExecutionAuthorizationChannel;
+      const authorization = yield* channel
+        .invokeScreen(sessionId, scope.thread.threadId, { action: "status", desktop })
+        .pipe(
+          Effect.catchTags({
+            DesktopAuthorizationError: (error) =>
+              error.code === "permission-denied" ? Effect.succeedNone : Effect.fail(error),
+          }),
+        );
+      return Option.isSome(authorization)
+        ? { ...status, authorization: authorization.value }
+        : status;
+    }
     case "request-view":
       return yield* invokeComputer("computerRequestView", { desktop, observation: false });
     case "request-control":
