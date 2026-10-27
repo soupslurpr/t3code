@@ -117,6 +117,17 @@ it("keeps application fragments independent from Codex mode defaults and gates e
         );
         NodeAssert.equal(context.t3_code_browser !== undefined, browser);
         NodeAssert.equal(context.t3_code_devices !== undefined, device);
+        if (device) {
+          NodeAssert.match(
+            context.t3_code_devices!.value,
+            /standalone automation remain available/,
+          );
+          NodeAssert.match(context.t3_code_devices!.value, /Helpers are installed on first use/);
+          NodeAssert.doesNotMatch(
+            context.t3_code_devices!.value,
+            /only for builds|CLI, which is on PATH/,
+          );
+        }
         NodeAssert.equal(context.t3_code_desktop !== undefined, computer);
         NodeAssert.equal(context.t3_code_desktop_actions !== undefined, computer);
         NodeAssert.match(

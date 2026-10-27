@@ -145,7 +145,7 @@ export function useRightPanelActions(input: RightPanelActionsInput) {
   const addPullRequestsSurfaceStable = useStableCallback(addPullRequestsSurface);
   const addDeviceSurface = () => {
     if (!activeThreadRef) return;
-    if (!deviceState.onboardingCompleted || deviceState.hostStatus === "disabled") {
+    if (deviceState.hostStatus === "disabled") {
       openDeviceSetupDialog(scopedThreadKey(activeThreadRef));
       return;
     }

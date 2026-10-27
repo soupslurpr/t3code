@@ -10,12 +10,18 @@ import * as Schema from "effect/Schema";
 import * as Semaphore from "effect/Semaphore";
 
 import * as ProcessRunner from "../processRunner.ts";
-import DEVICE_TOOL_VERSIONS from "./deviceToolVersions.json" with { type: "json" };
 
-const DEVICE_HUB_PACKAGE = "expo-device-hub";
-export const DEVICE_HUB_VERSION = DEVICE_TOOL_VERSIONS[DEVICE_HUB_PACKAGE];
-const AGENT_DEVICE_PACKAGE = "agent-device";
-export const AGENT_DEVICE_VERSION = DEVICE_TOOL_VERSIONS[AGENT_DEVICE_PACKAGE];
+import {
+  AGENT_DEVICE_VERSION,
+  DEVICE_HUB_VERSION,
+  deviceToolLocks,
+  deviceToolRevision,
+  finishDeviceNativeInstall,
+  type DeviceToolName,
+} from "./DeviceToolManifest.ts";
+export { AGENT_DEVICE_VERSION, DEVICE_HUB_VERSION } from "./DeviceToolManifest.ts";
+
+const encodeJson = Schema.encodeSync(Schema.fromJsonString(Schema.Unknown));
 
 const INSTALL_TIMEOUT = Duration.minutes(10);
 const installLock = Semaphore.makeUnsafe(1);
@@ -47,25 +53,30 @@ export class DeviceToolchainInstallError extends Schema.TaggedError<DeviceToolch
 }
 
 interface ToolSpec {
-  readonly name: string;
+  readonly name: DeviceToolName;
   readonly version: string;
   readonly entry: ReadonlyArray<string>;
 }
 
 const HUB_SPEC: ToolSpec = {
-  name: DEVICE_HUB_PACKAGE,
+  name: "expo-device-hub",
   version: DEVICE_HUB_VERSION,
   entry: ["dist", "server", "cli.mjs"],
 };
 
 const AGENT_DEVICE_SPEC: ToolSpec = {
-  name: AGENT_DEVICE_PACKAGE,
+  name: "agent-device",
   version: AGENT_DEVICE_VERSION,
   entry: ["bin", "agent-device.mjs"],
 };
 
 const toolPaths = (path: Path.Path, baseDir: string, spec: ToolSpec): DeviceToolPaths => {
-  const installDir = path.join(baseDir, "tools", spec.name, spec.version);
+  const installDir = path.join(
+    baseDir,
+    "tools",
+    spec.name,
+    `${spec.version}-${deviceToolRevision(spec.name)}`,
+  );
   return {
     installDir,
     entryPath: path.join(installDir, "node_modules", spec.name, ...spec.entry),
@@ -117,13 +128,21 @@ const installTool = Effect.fn("DeviceToolchain.installTool")(function* (
     .pipe(Effect.mapError(fail("preparing the install directory")));
 
   return yield* Effect.gen(function* () {
+    const lock = deviceToolLocks[spec.name];
+    yield* fs
+      .writeFileString(path.join(stagingDir, "package.json"), encodeJson(lock.packages[""]))
+      .pipe(Effect.mapError(fail("writing the package manifest")));
+    yield* fs
+      .writeFileString(path.join(stagingDir, "package-lock.json"), encodeJson(lock))
+      .pipe(Effect.mapError(fail("writing the dependency lock")));
     const installArgs = [
-      "install",
+      "ci",
       "--prefix",
       stagingDir,
       "--no-fund",
       "--no-audit",
-      `${spec.name}@${spec.version}`,
+      "--ignore-scripts",
+      "--omit=dev",
     ];
     const result = yield* runner
       .run({ command: "npm", args: installArgs, timeout: INSTALL_TIMEOUT })
@@ -134,20 +153,39 @@ const installTool = Effect.fn("DeviceToolchain.installTool")(function* (
             error.cause.reason._tag === "NotFound"
               ? runner.run({
                   command: "pnpm",
-                  args: ["--package=npm@11", "dlx", "npm", ...installArgs],
+                  args: ["--package=npm@11.12.1", "dlx", "npm", ...installArgs],
                   timeout: INSTALL_TIMEOUT,
                 })
               : Effect.fail(error),
         }),
-        Effect.mapError(fail("running npm install")),
+        Effect.mapError(fail("running npm ci")),
       );
     if (result.code !== 0) {
       return yield* new DeviceToolchainInstallError({
         tool: spec.name,
-        step: "running npm install",
+        step: "running npm ci",
         exitCode: Number(result.code),
         cause: result,
       });
+    }
+    if (spec.name === "expo-device-hub") {
+      const native = yield* runner
+        .run({
+          command: process.execPath,
+          args: [
+            "-e",
+            `(${finishDeviceNativeInstall})(${encodeJson(stagingDir)}).catch(error => { console.error(error.message); process.exitCode = 1; });`,
+          ],
+          timeout: INSTALL_TIMEOUT,
+        })
+        .pipe(Effect.mapError(fail("installing the verified streaming binary")));
+      if (native.code !== 0)
+        return yield* new DeviceToolchainInstallError({
+          tool: spec.name,
+          step: "installing the verified streaming binary",
+          exitCode: Number(native.code),
+          cause: native,
+        });
     }
     const stagedEntry = path.join(stagingDir, "node_modules", spec.name, ...spec.entry);
     if (!(yield* fs.exists(stagedEntry).pipe(Effect.orElseSucceed(() => false)))) {
@@ -223,24 +261,41 @@ export const deviceToolVersions = Effect.fn("DeviceToolchain.versions")(function
         () => Effect.succeed([]),
       ),
     );
-    const versions = yield* Effect.filter(names, (version) =>
-      /^[0-9]+\.[0-9]+\.[0-9]+(?:-[a-zA-Z0-9.-]+)?$/.test(version)
+    const versions = yield* Effect.forEach(names, (directoryName) =>
+      /^[0-9]+\.[0-9]+\.[0-9]+(?:-[a-zA-Z0-9.-]+)?$/.test(directoryName)
         ? Effect.gen(function* () {
-            const paths = toolPaths(path, baseDir, { ...spec, version });
-            const sentinel = yield* fs.readFileString(paths.sentinelPath).pipe(
-              Effect.catchIf(
-                (error) => error.reason._tag === "NotFound",
-                () => Effect.succeed(null),
-              ),
-            );
-            return sentinel?.trim() === version && (yield* fs.exists(paths.entryPath));
+            const installDir = path.join(directory, directoryName);
+            const sentinel = yield* fs
+              .readFileString(path.join(installDir, ".install-complete"))
+              .pipe(
+                Effect.catchIf(
+                  (error) => error.reason._tag === "NotFound",
+                  () => Effect.succeed(null),
+                ),
+              );
+            const version = sentinel?.trim();
+            if (
+              !version ||
+              !/^[0-9]+\.[0-9]+\.[0-9]+(?:-[a-zA-Z0-9.-]+)?$/.test(version) ||
+              (directoryName !== version &&
+                !(
+                  directoryName.startsWith(`${version}-`) &&
+                  /^[0-9a-f]{16}$/.test(directoryName.slice(version.length + 1))
+                ))
+            )
+              return [];
+            return (yield* fs.exists(
+              path.join(installDir, "node_modules", spec.name, ...spec.entry),
+            ))
+              ? [version]
+              : [];
           })
-        : Effect.succeed(false),
+        : Effect.succeed([]),
     );
     return {
       requiredVersion: spec.version,
-      installedVersions: versions.sort(),
-      runningVersion: (spec.name === DEVICE_HUB_PACKAGE ? running.hub : running.agent) ?? null,
+      installedVersions: [...new Set(versions.flat())].sort(),
+      runningVersion: (spec.name === "expo-device-hub" ? running.hub : running.agent) ?? null,
     };
   });
   return yield* Effect.gen(function* () {

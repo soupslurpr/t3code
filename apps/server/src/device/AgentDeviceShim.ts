@@ -29,7 +29,7 @@ if (!informational && !(hasValue("--config") && hasValue("--session"))) {
   console.error("Call device_open first and include its --config and --session flags.");
   process.exit(1);
 }
-const env = { ...process.env, ELECTRON_RUN_AS_NODE: "1" };
+const env = { ...process.env, ELECTRON_RUN_AS_NODE: "1", AGENT_DEVICE_NO_UPDATE_NOTIFIER: "1", AGENT_DEVICE_STATE_DIR: ${JSON.stringify(path.join(input.stateDir, "device", "agent-client"))} };
 delete env.AGENT_DEVICE_DAEMON_BASE_URL;
 delete env.AGENT_DEVICE_DAEMON_AUTH_TOKEN;
 delete env.AGENT_DEVICE_CONFIG;
