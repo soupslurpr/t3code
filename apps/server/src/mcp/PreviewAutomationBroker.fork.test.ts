@@ -559,6 +559,8 @@ it.effect.each([false, true])(
         rename: () => Effect.void,
         remove: () => Effect.void,
         markActive: () => Effect.void,
+        recordAudit: () => Effect.void,
+        listAudit: () => Effect.succeed({ events: [] }),
       });
       yield* Effect.gen(function* () {
         yield* serveInventoryHost({
@@ -800,4 +802,80 @@ it.effect(
       ).toEqual({ latestId: null });
       expect(target.requests).toEqual([]);
     }).pipe(Effect.provide(layer), Effect.scoped),
+);
+
+it.effect(
+  "audits successful access transitions with nested caller identity and no authorization payload",
+  () =>
+    Effect.gen(function* () {
+      const broker = yield* PreviewAutomationBroker.PreviewAutomationBroker;
+      yield* serve({
+        clientId: "audit-host",
+        environmentId,
+        supportedOperations: COMPUTER_AUTOMATION_OPERATIONS,
+      });
+      const desktop = { kind: "user" as const, desktopId: "user-desktop-1" };
+      yield* broker.invoke({
+        scope,
+        operation: "computerRequestControl",
+        input: { desktop, takeoverLeaseId: "opaque-confirmation", typedText: "private typed text" },
+      });
+      const human = { ...scope, thread: { ...scope.thread, controllerKind: "human" as const } };
+      for (const [operation, options] of [
+        ["computerRequestView", { releaseControlToView: true }],
+        ["computerRequestControl", { returnControlToAgent: true }],
+        ["computerRelease", {}],
+        ["computerForceRelease", {}],
+        ["computerRememberView", {}],
+        ["computerRememberControl", {}],
+        ["computerForceForgetControl", {}],
+      ] as const)
+        yield* broker.invoke({ scope: human, operation, input: { desktop, ...options } });
+      const audit = yield* broker.listUserDesktopAudit(desktop.desktopId);
+      expect(audit.events.map((event) => event.action)).toEqual([
+        "approval-forgotten",
+        "control-remembered",
+        "view-remembered",
+        "all-access-ended",
+        "access-released",
+        "control-returned-to-agent",
+        "control-released",
+        "control-granted",
+      ]);
+      expect(audit.events.at(-1)).toMatchObject({
+        actorKind: "agent",
+        threadId: scope.thread.threadId,
+        actorLabel: scope.thread.providerInstanceId,
+        takeover: true,
+      });
+      expect(audit.events[0]).toMatchObject({ actorKind: "human", takeover: false });
+      expect(audit.events[0]).not.toHaveProperty("threadId");
+      expect(audit.events[0]).not.toHaveProperty("actorLabel");
+      expect(JSON.stringify(audit)).not.toContain("opaque-confirmation");
+      expect(JSON.stringify(audit)).not.toContain("private typed text");
+      expect(
+        yield* runUserDesktopHumanRequest(broker, human, {
+          request: { operation: "audit", desktopId: desktop.desktopId },
+        }),
+      ).toEqual(audit);
+      expect(yield* broker.listUserDesktopAudit("other-desktop")).toEqual({ events: [] });
+    }).pipe(Effect.provide(layer), Effect.scoped),
+);
+
+it.effect("does not audit rejected access", () =>
+  Effect.gen(function* () {
+    const broker = yield* PreviewAutomationBroker.PreviewAutomationBroker;
+    yield* serve(
+      { clientId: "denied-host", environmentId, supportedOperations: ["computerRequestControl"] },
+      { ok: false, error: { _tag: "PreviewAutomationExecutionError", message: "Denied" } },
+    );
+    yield* broker
+      .invoke<void>({
+        scope,
+        operation: "computerRequestControl",
+        input: { desktop: { kind: "user", desktopId: "user-desktop-1" } },
+      })
+      .pipe(Effect.flip);
+    expect(yield* broker.listUserDesktopAudit("user-desktop-1")).toEqual({ events: [] });
+  }).pipe(Effect.provide(layer), Effect.scoped),
 );

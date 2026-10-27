@@ -201,6 +201,11 @@ touch input and a text field after taking control. Leaving the screen,
 backgrounding the app, or losing the environment connection releases
 transient access. Reopening supervision starts passively again.
 
+User desktop cards show recent access events from each connected environment,
+including grants, release, takeover and remembered approval changes. The history
+records time, action and actor metadata. It does not retain screenshots, typed
+text or approval tokens. Refresh the inventory to reload recent history.
+
 ## Agent Tools
 
 The environment exposes tools for:

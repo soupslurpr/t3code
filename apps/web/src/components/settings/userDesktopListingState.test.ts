@@ -82,3 +82,26 @@ it("rejects an inventory response that omits a concrete identity", () => {
     }),
   ).toThrow();
 });
+
+it("keeps environment identity when merging recent access for a physical desktop", () => {
+  const event = {
+    sequence: 1,
+    desktopId: "user-workstation",
+    occurredAt: "2026-01-01T00:00:00.000Z",
+    actorKind: "human" as const,
+    action: "view-granted" as const,
+    takeover: false,
+  };
+  const audit = [
+    { environmentId: EnvironmentId.make("local"), event },
+    {
+      environmentId: EnvironmentId.make("remote"),
+      event: { ...event, occurredAt: "2026-01-02T00:00:00.000Z" },
+    },
+    { environmentId: EnvironmentId.make("foreign"), event },
+    { environmentId: EnvironmentId.make("local"), event: { ...event, desktopId: "different" } },
+  ];
+  const group = groupEntries([entry("local"), entry("remote")], audit)[0]!;
+  expect(group.audit.map((row) => row.environmentId)).toEqual(["remote", "local"]);
+  expect(groupEntries([entry("local")], audit)[0]?.audit).toEqual([audit[0]]);
+});

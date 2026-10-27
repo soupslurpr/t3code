@@ -33,6 +33,8 @@ import {
   type PreviewAutomationResponse,
   type PreviewAutomationStreamEvent,
   type UserDesktopCapability,
+  type UserDesktopAuditAction,
+  type UserDesktopAuditLog,
   UserDesktopId,
   type UserDesktopList,
   UserDesktopManagementError,
@@ -96,6 +98,9 @@ export class PreviewAutomationBroker extends Context.Service<
       environmentId: PreviewAutomationHost["environmentId"],
       desktopId: UserDesktopId,
     ) => Effect.Effect<void, UserDesktops.UserDesktopRepositoryError | UserDesktopManagementError>;
+    readonly listUserDesktopAudit: (
+      desktopId: UserDesktopId,
+    ) => Effect.Effect<UserDesktopAuditLog, UserDesktops.UserDesktopRepositoryError>;
   }
 >()("t3/mcp/PreviewAutomationBroker") {}
 
@@ -254,6 +259,50 @@ function requestedComputerDesktop(input: unknown): RequestedComputerDesktop {
       ? desktop.desktopId
       : undefined;
   return { kind, desktopId };
+}
+
+interface UserDesktopAuditTransition {
+  readonly action: UserDesktopAuditAction;
+  readonly takeover: boolean;
+}
+
+/** Selects successful access transitions that are safe and useful to persist as metadata. */
+function userDesktopAuditTransition(
+  operation: PreviewAutomationOperation,
+  input: unknown,
+): UserDesktopAuditTransition | null {
+  const options = typeof input === "object" && input !== null ? input : {};
+  switch (operation) {
+    case "computerRequestView":
+      return {
+        action:
+          "releaseControlToView" in options && options.releaseControlToView === true
+            ? "control-released"
+            : "view-granted",
+        takeover: false,
+      };
+    case "computerRequestControl":
+      return {
+        action:
+          "returnControlToAgent" in options && options.returnControlToAgent === true
+            ? "control-returned-to-agent"
+            : "control-granted",
+        takeover: "takeoverLeaseId" in options && typeof options.takeoverLeaseId === "string",
+      };
+    case "computerRelease":
+      return { action: "access-released", takeover: false };
+    case "computerForceRelease":
+      return { action: "all-access-ended", takeover: false };
+    case "computerRememberView":
+      return { action: "view-remembered", takeover: false };
+    case "computerRememberControl":
+      return { action: "control-remembered", takeover: false };
+    case "computerForgetControl":
+    case "computerForceForgetControl":
+      return { action: "approval-forgotten", takeover: false };
+    default:
+      return null;
+  }
 }
 
 const USER_DESKTOP_TARGETS = ['{"kind":"user","desktopId":"<id from user_desktop_list>"}'] as const;
@@ -918,6 +967,11 @@ export const make = Effect.gen(function* PreviewAutomationBrokerMake() {
     yield* userDesktops.remove(desktopId);
   });
 
+  const listUserDesktopAudit: PreviewAutomationBroker["Service"]["listUserDesktopAudit"] =
+    Effect.fn("PreviewAutomationBroker.listUserDesktopAudit")((desktopId) =>
+      userDesktops.listAudit(desktopId),
+    );
+
   const respond: PreviewAutomationBroker["Service"]["respond"] = Effect.fn(
     "PreviewAutomationBroker.respond",
   )(function* (response) {
@@ -1201,6 +1255,33 @@ export const make = Effect.gen(function* PreviewAutomationBrokerMake() {
       });
     });
     const result = yield* awaitResponse().pipe(Effect.ensuring(cancelPending));
+    const auditTransition = userDesktopAuditTransition(input.operation, input.input);
+    if (requestedDesktop.desktopId !== undefined && auditTransition !== null) {
+      const occurredAt = DateTime.formatIso(yield* DateTime.now);
+      const actorKind =
+        input.scope.thread === undefined || input.scope.thread.controllerKind === "human"
+          ? ("human" as const)
+          : ("agent" as const);
+      yield* userDesktops
+        .recordAudit({
+          desktopId: requestedDesktop.desktopId,
+          occurredAt,
+          actorKind,
+          action: auditTransition.action,
+          ...(actorKind === "agent" && input.scope.thread !== undefined
+            ? {
+                threadId: input.scope.thread.threadId,
+                actorLabel: input.scope.thread.providerInstanceId,
+              }
+            : {}),
+          takeover: auditTransition.takeover,
+        })
+        .pipe(
+          Effect.catch((error) =>
+            Effect.logWarning("user desktop access audit persistence failed", { error }),
+          ),
+        );
+    }
     if (input.updateCurrentTab === false || assignmentKey === undefined) return result;
     const responseTabId = readResultTabId(result);
     const resultTabId = responseTabId === undefined ? input.tabId : responseTabId;
@@ -1239,6 +1320,7 @@ export const make = Effect.gen(function* PreviewAutomationBrokerMake() {
     listUserDesktops,
     renameUserDesktop,
     removeUserDesktop,
+    listUserDesktopAudit,
   });
 }).pipe(Effect.withSpan("PreviewAutomationBroker.make"));
 

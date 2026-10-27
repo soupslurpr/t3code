@@ -8,6 +8,7 @@ import { appAtomRegistry } from "~/rpc/atomRegistry";
 import { previewEnvironment } from "~/state/preview";
 import {
   decodeUserDesktopList,
+  decodeUserDesktopAuditLog,
   decodeComputerStatus,
   type UserDesktopEntry,
 } from "./userDesktopListingState";
@@ -81,6 +82,33 @@ export const userDesktopListingAtom = Atom.family((environmentIds: string) =>
           Effect.asVoid,
         ),
       ),
+    ),
+  ).pipe(Atom.setIdleTTL(0)),
+);
+
+const decodeAuditTargets = Schema.decodeSync(
+  Schema.fromJsonString(
+    Schema.Array(Schema.Struct({ environmentId: EnvironmentId, desktopId: Schema.String })),
+  ),
+);
+
+export const userDesktopAuditAtom = Atom.family((targets: string) =>
+  Atom.make(
+    Effect.promise(async () =>
+      (
+        await Promise.all(
+          decodeAuditTargets(targets).map(async ({ environmentId, desktopId }) => {
+            try {
+              const log = decodeUserDesktopAuditLog(
+                await request(environmentId, { request: { operation: "audit", desktopId } }),
+              );
+              return log.events.map((event) => ({ environmentId, event }));
+            } catch {
+              return [];
+            }
+          }),
+        )
+      ).flat(),
     ),
   ).pipe(Atom.setIdleTTL(0)),
 );

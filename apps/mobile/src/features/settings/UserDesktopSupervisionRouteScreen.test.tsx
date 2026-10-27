@@ -3,7 +3,13 @@ import {
   type NavigationProp,
   type ParamListBase,
 } from "@react-navigation/native";
-import { EnvironmentId, UserDesktopId, type UserDesktopHumanInvokeInput } from "@t3tools/contracts";
+import {
+  EnvironmentId,
+  UserDesktopId,
+  type UserDesktopView,
+  type UserDesktopAuditEvent,
+  type UserDesktopHumanInvokeInput,
+} from "@t3tools/contracts";
 import { act, type ReactNode } from "react";
 import { createRoot } from "react-dom/client";
 import { expect, it, vi } from "vite-plus/test";
@@ -18,6 +24,8 @@ const state = vi.hoisted(() => ({
     { environmentId: "remote", environmentLabel: "Remote", connectionState: "connected" },
   ],
   allowed: new Set(["remote"]),
+  desktops: [] as UserDesktopView[],
+  audit: [] as UserDesktopAuditEvent[],
 }));
 vi.mock("@react-navigation/native", async () => {
   const { createRequire } = await import("node:module");
@@ -108,6 +116,8 @@ function setup() {
     { environmentId: "remote", environmentLabel: "Remote", connectionState: "connected" },
   ];
   state.allowed = new Set(["remote"]);
+  state.desktops = [];
+  state.audit = [];
   state.listeners.clear();
   const listeners = { focus: new Set<() => void>(), blur: new Set<() => void>() };
   let focused = true;
@@ -154,20 +164,24 @@ function setup() {
         if (request.operation === "release" || request.operation === "end-all-access")
           access.set(key, "none");
         const value =
-          request.operation === "observation-list"
-            ? { observations: [] }
-            : request.operation === "observation"
-              ? { latestId: null }
-              : request.operation === "snapshot"
-                ? { display: { id: "primary" } }
-                : {
-                    displays: [],
-                    lease: {
-                      access: access.get(key) ?? "none",
-                      controller: null,
-                      canReturnControl: true,
-                    },
-                  };
+          request.operation === "list"
+            ? { desktops: state.desktops, incompatibleClientCount: 0 }
+            : request.operation === "audit"
+              ? { events: state.audit }
+              : request.operation === "observation-list"
+                ? { observations: [] }
+                : request.operation === "observation"
+                  ? { latestId: null }
+                  : request.operation === "snapshot"
+                    ? { display: { id: "primary" } }
+                    : {
+                        displays: [],
+                        lease: {
+                          access: access.get(key) ?? "none",
+                          controller: null,
+                          canReturnControl: true,
+                        },
+                      };
         return { _tag: "Success", value };
       },
     );
@@ -179,6 +193,7 @@ function setup() {
   return {
     operations,
     access,
+    text: () => container.textContent,
     block(operation: string) {
       const pending = { operation, started: deferred(), finish: deferred() };
       blocked = pending;
@@ -352,4 +367,47 @@ it("refreshes inventory while focused and never captures or loops on a listing r
   expect(screen.operations()).toEqual(["list", "list", "list"]);
   await screen.unmount();
   expect(vi.getTimerCount()).toBe(0);
+});
+
+it("shows recent access on inventory refresh without fetching audit on each poll", async () => {
+  vi.useFakeTimers();
+  using _timers = { [Symbol.dispose]: () => vi.useRealTimers() };
+  await using screen = setup();
+  state.desktops = [
+    {
+      desktop: { kind: "user", desktopId: "workstation" },
+      label: "Workstation",
+      defaultLabel: "Workstation",
+      platform: "linux",
+      capabilities: ["view", "control"],
+      connectionState: "online",
+      lastSeenAt: "2026-01-01T00:00:00.000Z",
+      lastActiveAt: null,
+      t3Focused: false,
+    },
+  ];
+  state.audit = [
+    {
+      sequence: 1,
+      desktopId: "workstation",
+      occurredAt: "2026-01-01T00:00:00.000Z",
+      actorKind: "agent",
+      action: "control-granted",
+      actorLabel: "codex",
+      takeover: true,
+    },
+  ];
+  await screen.inventory();
+  expect(screen.operations()).toEqual(["list", "audit"]);
+  expect(screen.text()).toContain("Recent access");
+  expect(screen.text()).toContain("Took control");
+  expect(screen.text()).toContain("codex");
+  await act(async () => vi.advanceTimersByTimeAsync(5000));
+  expect(screen.operations()).toEqual(["list", "audit", "list"]);
+  await screen.focus(false);
+  await screen.focus(true);
+  expect(screen.operations().slice(-2)).toEqual(["list", "audit"]);
+  state.allowed = new Set();
+  await screen.inventory();
+  expect(screen.text()).not.toContain("codex");
 });

@@ -1,6 +1,6 @@
 import * as Schema from "effect/Schema";
 
-import { IsoDateTime, TrimmedNonEmptyString } from "./baseSchemas.ts";
+import { IsoDateTime, NonNegativeInt, ThreadId, TrimmedNonEmptyString } from "./baseSchemas.ts";
 
 export const MAX_USER_DESKTOPS = 256;
 
@@ -50,6 +50,39 @@ export const UserDesktopView = Schema.Struct({
   lastActiveAt: Schema.NullOr(IsoDateTime),
 });
 export type UserDesktopView = typeof UserDesktopView.Type;
+
+/** Names one durable, metadata-only User desktop access transition. */
+export const UserDesktopAuditAction = Schema.Literals([
+  "view-granted",
+  "control-granted",
+  "control-released",
+  "control-returned-to-agent",
+  "access-released",
+  "all-access-ended",
+  "view-remembered",
+  "control-remembered",
+  "approval-forgotten",
+]);
+export type UserDesktopAuditAction = typeof UserDesktopAuditAction.Type;
+
+/** Records a successful access transition without screen, input, or authorization contents. */
+export const UserDesktopAuditEvent = Schema.Struct({
+  sequence: NonNegativeInt,
+  desktopId: UserDesktopId,
+  occurredAt: IsoDateTime,
+  actorKind: Schema.Literals(["agent", "human"]),
+  action: UserDesktopAuditAction,
+  threadId: Schema.optional(ThreadId),
+  actorLabel: Schema.optional(TrimmedNonEmptyString.check(Schema.isMaxLength(128))),
+  takeover: Schema.Boolean,
+});
+export type UserDesktopAuditEvent = typeof UserDesktopAuditEvent.Type;
+
+/** Returns a bounded newest-first window of durable User desktop access metadata. */
+export const UserDesktopAuditLog = Schema.Struct({
+  events: Schema.Array(UserDesktopAuditEvent).check(Schema.isMaxLength(50)),
+});
+export type UserDesktopAuditLog = typeof UserDesktopAuditLog.Type;
 
 /** Lists durable user desktops and incompatible connected clients. */
 export const UserDesktopList = Schema.Struct({

@@ -21,6 +21,7 @@ import type {
   ComputerAutomationStatus,
   EnvironmentId,
   UserDesktopHumanInvokeInput,
+  UserDesktopAuditAction,
   UserDesktopView,
 } from "@t3tools/contracts";
 import {
@@ -42,7 +43,7 @@ import { AuthOrchestrationOperateScope } from "@t3tools/contracts";
 import { appAtomRegistry } from "~/rpc/atomRegistry";
 import { useEnvironmentsWithScope } from "~/state/session";
 import { useStableCallback } from "~/hooks/useStableCallback";
-import { userDesktopListingAtom } from "./userDesktopListing";
+import { userDesktopListingAtom, userDesktopAuditAtom } from "./userDesktopListing";
 import {
   groupEntries,
   type UserDesktopGroup,
@@ -120,6 +121,30 @@ function platformLabel(platform: UserDesktopView["platform"]): string {
   return "Unknown platform";
 }
 
+/** Formats one durable access transition for the User desktop card. */
+function auditActionLabel(action: UserDesktopAuditAction): string {
+  switch (action) {
+    case "view-granted":
+      return "Started viewing";
+    case "control-granted":
+      return "Took control";
+    case "control-released":
+      return "Released control";
+    case "control-returned-to-agent":
+      return "Returned control to agent";
+    case "access-released":
+      return "Ended own access";
+    case "all-access-ended":
+      return "Ended all access";
+    case "view-remembered":
+      return "Remembered view approval";
+    case "control-remembered":
+      return "Remembered control approval";
+    case "approval-forgotten":
+      return "Forgot approval";
+  }
+}
+
 /** Labels one retained model-facing observation for the Agent lens selector. */
 function observationSummaryLabel(
   observation: ComputerObservationSummary,
@@ -142,6 +167,21 @@ export function UserDesktopSettings() {
   const listingAtom = userDesktopListingAtom(JSON.stringify(Array.from(operable).sort()));
   const listing = useAtomValue(listingAtom);
   const entries = AsyncResult.isSuccess(listing) ? listing.value.entries : [];
+  const auditAtom = userDesktopAuditAtom(
+    JSON.stringify(
+      entries
+        .map((entry) => ({
+          environmentId: entry.environmentId,
+          desktopId: entry.desktop.desktop.desktopId,
+        }))
+        .sort(
+          (a, b) =>
+            a.environmentId.localeCompare(b.environmentId) ||
+            a.desktopId.localeCompare(b.desktopId),
+        ),
+    ),
+  );
+  const audit = useAtomValue(auditAtom);
   const incompatibleClientCount = AsyncResult.isSuccess(listing)
     ? listing.value.incompatibleClientCount
     : 0;
@@ -186,7 +226,7 @@ export function UserDesktopSettings() {
   const environmentById = new Map(
     environments.map((environment) => [environment.environmentId, environment]),
   );
-  const desktopGroups = groupEntries(entries);
+  const desktopGroups = groupEntries(entries, AsyncResult.isSuccess(audit) ? audit.value : []);
 
   const run = async <Value,>(environmentId: EnvironmentId, input: UserDesktopHumanInvokeInput) => {
     const result = await invoke({ environmentId, input });
@@ -194,7 +234,10 @@ export function UserDesktopSettings() {
     throw squashAtomCommandFailure(result);
   };
 
-  const refresh = useStableCallback(() => appAtomRegistry.refresh(listingAtom));
+  const refresh = useStableCallback(() => {
+    appAtomRegistry.refresh(listingAtom);
+    appAtomRegistry.refresh(auditAtom);
+  });
 
   const performAccessAction = async (
     group: UserDesktopGroup,
@@ -935,6 +978,42 @@ export function UserDesktopSettings() {
                       </span>
                       <span className="font-mono">{group.desktopId}</span>
                     </div>
+                    {group.audit.slice(0, 3).length > 0 ? (
+                      <div
+                        aria-label={`Recent access for ${desktop.label}`}
+                        className="grid gap-2 rounded-lg border bg-muted/20 p-3"
+                      >
+                        <div className="flex items-center gap-2 text-xs font-medium">
+                          <HistoryIcon className="size-4 text-muted-foreground" />
+                          Recent access
+                        </div>
+                        {group.audit.slice(0, 3).map(({ environmentId, event }) => {
+                          const actorLabel =
+                            event.actorLabel ?? (event.actorKind === "human" ? "Human" : "Agent");
+                          const threadLabel =
+                            event.threadId === undefined
+                              ? null
+                              : (threadById.get(event.threadId)?.title ?? event.threadId);
+                          const environmentLabel =
+                            environmentById.get(environmentId)?.label ?? "Unknown environment";
+                          return (
+                            <div
+                              key={`${environmentId}:${event.sequence}`}
+                              className="flex flex-wrap items-baseline gap-x-2 gap-y-0.5 text-xs"
+                            >
+                              <span className="font-medium">{auditActionLabel(event.action)}</span>
+                              {event.takeover ? <Badge variant="secondary">Takeover</Badge> : null}
+                              <span className="text-muted-foreground">
+                                {[actorLabel, threadLabel, environmentLabel]
+                                  .filter((label) => label !== null)
+                                  .join(" · ")}{" "}
+                                · {formatRelativeTimeLabel(event.occurredAt)}
+                              </span>
+                            </div>
+                          );
+                        })}
+                      </div>
+                    ) : null}
                     {group.hasIdentityConflict ? (
                       <Alert variant="error">
                         <AlertDescription>

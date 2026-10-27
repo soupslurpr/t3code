@@ -33,3 +33,8 @@ A later capture cannot reconstruct what a model previously saw.
 See the [lease coordinator](../../apps/desktop/src/computer/ComputerUseCoordinator.ts),
 [human request service](../../apps/server/src/computer/UserDesktopHuman.ts), and
 [observation store](../../apps/server/src/computer/ComputerObservationStore.ts).
+
+Access history belongs to the environment that routed the successful request.
+Clients combine those histories by physical desktop identity while retaining
+the environment on each event. The durable audit stores only access metadata;
+retained observation images remain bounded, ephemeral evidence in memory.

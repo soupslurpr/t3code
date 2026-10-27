@@ -349,6 +349,27 @@ export const adoptForkMigrationHistory = Effect.fn("adoptForkMigrationHistory")(
     }
   }
 
+  if (Math.max(fork.length, legacy.length) >= 10) {
+    const columns = yield* sql<{
+      readonly name: string;
+    }>`PRAGMA table_info(user_desktop_access_audit)`;
+    const required = [
+      "sequence",
+      "desktop_id",
+      "occurred_at",
+      "actor_kind",
+      "action",
+      "thread_id",
+      "actor_label",
+      "takeover",
+    ];
+    if (!required.every((name) => columns.some((column) => column.name === name))) {
+      return yield* invalidHistory(
+        "UserDesktopAccessAudit identity conflicts with its access history schema",
+      );
+    }
+  }
+
   yield* sql`CREATE TABLE IF NOT EXISTS effect_sql_fork_migrations (
     migration_id integer PRIMARY KEY NOT NULL,
     created_at datetime NOT NULL DEFAULT current_timestamp,

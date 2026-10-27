@@ -49,6 +49,11 @@ export const runUserDesktopHumanRequest = Effect.fn("UserDesktopHuman.run")(func
           observationId: request.observationId,
         });
   }
+  if (request.operation === "audit") {
+    return yield* broker
+      .listUserDesktopAudit(request.desktopId)
+      .pipe(Effect.mapError(inventoryFailure));
+  }
   const desktop = { kind: "user" as const, desktopId: request.desktopId };
   const invokeComputer = (operation: PreviewAutomationOperation, requestInput: unknown) =>
     broker.invoke({
