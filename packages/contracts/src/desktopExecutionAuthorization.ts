@@ -16,6 +16,16 @@ export class DesktopAuthorizationError extends Schema.TaggedError<DesktopAuthori
 export const DesktopExecutionAuthorizationCommand = Schema.Union([
   Schema.Struct({ type: Schema.Literal("hello"), environmentId: EnvironmentId }),
   Schema.Struct({
+    type: Schema.Literal("cleanup-acquire"),
+    invocationId: TrimmedNonEmptyString,
+    generation: TrimmedNonEmptyString,
+  }),
+  Schema.Struct({
+    type: Schema.Literal("cleanup-release"),
+    invocationId: TrimmedNonEmptyString,
+    generation: TrimmedNonEmptyString,
+  }),
+  Schema.Struct({
     type: Schema.Literal("invoke"),
     invocationId: TrimmedNonEmptyString,
     generation: TrimmedNonEmptyString,
@@ -32,6 +42,11 @@ export const DesktopExecutionAuthorizationEvent = Schema.Union([
     type: Schema.Literal("ready"),
     generation: TrimmedNonEmptyString,
     desktop: UserDesktopTarget,
+  }),
+  Schema.Struct({
+    type: Schema.Literal("cleanup-result"),
+    invocationId: TrimmedNonEmptyString,
+    acquired: Schema.Boolean,
   }),
   Schema.Struct({
     type: Schema.Literal("result"),

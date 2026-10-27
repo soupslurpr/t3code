@@ -65,7 +65,7 @@ const make = Effect.gen(function* () {
           if (
             environmentId === undefined ||
             command.generation !== generation ||
-            command.input.desktop.desktopId !== desktop.desktopId
+            (command.type === "invoke" && command.input.desktop.desktopId !== desktop.desktopId)
           ) {
             yield* Queue.offer(events, {
               type: "error",
@@ -73,6 +73,20 @@ const make = Effect.gen(function* () {
               code: "connection-changed",
               message: "The native desktop authorization channel changed.",
             });
+            return;
+          }
+          if (command.type !== "invoke") {
+            const leaseId = `${generation}:${command.invocationId}`;
+            if (command.type === "cleanup-release") {
+              yield* execution.releaseWorktreeCleanup(leaseId);
+            } else {
+              const acquired = yield* execution.reserveWorktreeCleanup(leaseId);
+              yield* Queue.offer(events, {
+                type: "cleanup-result",
+                invocationId: command.invocationId,
+                acquired,
+              });
+            }
             return;
           }
           const key = fingerprint(command);
