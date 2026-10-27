@@ -343,7 +343,7 @@ it.effect("returns bounded action validation details in visible tool content", (
     Effect.gen(function* () {
       const result = yield* call("computer_act", {
         desktop: { kind: "user", desktopId: "user-desktop-1" },
-        actions: [{ type: "wait", durationMs: 12_000 }],
+        actions: [{ type: "wait", durationMs: 60_001 }],
       });
       expect(result.isError).toBe(true);
       expect(result.structuredContent).toMatchObject({

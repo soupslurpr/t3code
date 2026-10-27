@@ -1713,7 +1713,7 @@ describe("AgentDesktopManager", () => {
     }),
   );
 
-  it.effect("reports exact invalid key details and releases held input", () =>
+  it.effect("rejects a later invalid key before holding input", () =>
     Effect.gen(function* () {
       const harness = yield* managerHarness("invalid-key");
       yield* Effect.gen(function* () {
@@ -1739,13 +1739,15 @@ describe("AgentDesktopManager", () => {
           category: "invalid-input",
           message: "The action contains an unsupported or duplicate key name.",
           actionIndex: 1,
-          completedActionCount: 1,
+          completedActionCount: 0,
           field: "actions[1].key",
           received: "Hyper",
           expected: ["named key", "single printable ASCII character"],
           phase: "validation",
-          cleanup: { keys: "released", buttons: "not-needed" },
+          cleanup: { keys: "not-needed", buttons: "not-needed" },
         });
+        const calls = yield* Ref.get(harness.calls);
+        assert.isFalse(calls.some((call) => call.startsWith("input:") || call.startsWith("key:")));
       }).pipe(Effect.provide(harness.layer));
     }),
   );
@@ -1854,7 +1856,7 @@ describe("AgentDesktopManager", () => {
     }),
   );
 
-  it.effect("preserves cleanup details after a later validation failure", () =>
+  it.effect("preflights later frame references before holding input", () =>
     Effect.gen(function* () {
       const harness = yield* managerHarness("stale-frame-cleanup");
       yield* Effect.gen(function* () {
@@ -1880,12 +1882,14 @@ describe("AgentDesktopManager", () => {
           category: "stale-target",
           message: "The referenced screenshot frame is stale; capture a new observation.",
           actionIndex: 1,
-          completedActionCount: 1,
+          completedActionCount: 0,
           field: "actions[1].frameId",
           received: "missing-frame",
           phase: "validation",
-          cleanup: { keys: "released", buttons: "not-needed" },
+          cleanup: { keys: "not-needed", buttons: "not-needed" },
         });
+        const calls = yield* Ref.get(harness.calls);
+        assert.isFalse(calls.some((call) => call.startsWith("input:") || call.startsWith("key:")));
       }).pipe(Effect.provide(harness.layer));
     }),
   );
@@ -1894,6 +1898,7 @@ describe("AgentDesktopManager", () => {
     Effect.gen(function* () {
       const harness = yield* managerHarness("retry-input-release", {
         failInputReleaseOnce: true,
+        failSendKeyOnce: true,
       });
       yield* Effect.gen(function* () {
         const manager = yield* AgentDesktopManager.AgentDesktopManager;
@@ -1906,7 +1911,7 @@ describe("AgentDesktopManager", () => {
             {
               actions: [
                 { type: "key_down", key: "Alt" },
-                { type: "press", key: "Hyper" },
+                { type: "press", key: "A" },
               ],
             },
             desktop.id,

@@ -625,8 +625,22 @@ describe("computer automation contracts", () => {
         ],
       }),
     ).toThrow();
+    expect(
+      decodeAct({ ...userDesktop, actions: [{ type: "wait", durationMs: 60_000 }] }),
+    ).toMatchObject({
+      actions: [{ type: "wait", durationMs: 60_000 }],
+    });
     expect(() =>
-      decodeAct({ ...userDesktop, actions: [{ type: "wait", durationMs: 5_001 }] }),
+      decodeAct({
+        ...userDesktop,
+        actions: [
+          { type: "wait", durationMs: 60_000 },
+          { type: "wait", durationMs: 1 },
+        ],
+      }),
+    ).toThrow();
+    expect(() =>
+      decodeAct({ ...userDesktop, actions: [{ type: "wait", durationMs: 60_001 }] }),
     ).toThrow();
     expect(() =>
       decodeAct({
