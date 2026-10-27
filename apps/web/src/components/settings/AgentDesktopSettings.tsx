@@ -17,6 +17,7 @@ import type {
   AgentDesktopSetupResult,
   ComputerAutomationAction,
   ComputerAutomationSnapshot,
+  ComputerAutomationStatus,
   ComputerObservation,
   ComputerObservationImage,
   ComputerObservationUpdate,
@@ -38,6 +39,7 @@ import {
 import {
   type KeyboardEvent as ReactKeyboardEvent,
   type PointerEvent as ReactPointerEvent,
+  type ReactNode,
   type WheelEvent as ReactWheelEvent,
   useRef,
   useState,
@@ -73,7 +75,7 @@ import {
 import { SettingsPageContainer, SettingsSection } from "./settingsLayout";
 import {
   acquireAgentDesktopKeyboardCapture,
-  type AgentDesktopKeyboardCapture,
+  createDesktopControlLease,
 } from "./agentDesktopKeyboardCapture";
 
 import {
@@ -278,23 +280,48 @@ function AgentObservationOverlay({
   );
 }
 
-function DesktopViewer({
-  desktop,
+/** Renders shared Live, Agent lens, and full-screen control for one concrete desktop. */
+export function ComputerDesktopViewer({
+  label,
+  description,
   observation,
   agentObservation,
   controlling,
   busy,
   error,
+  liveStarted = true,
+  liveDisabledReason = null,
+  controlDisabledReason = null,
+  liveDisplays = [],
+  selectedDisplayId = null,
+  lensControls,
+  secondaryActions,
+  onStartLive,
+  onSelectDisplay,
+  onShowInLive,
+  onConfirmTakeControl,
   onTakeControl,
   onRelease,
   onAction,
 }: {
-  desktop: AgentDesktopView;
+  label: string;
+  description: ReactNode;
   observation: ComputerAutomationSnapshot | null;
   agentObservation: ComputerObservation | null;
   controlling: boolean;
   busy: boolean;
   error: string | null;
+  liveStarted?: boolean;
+  liveDisabledReason?: string | null;
+  controlDisabledReason?: string | null;
+  liveDisplays?: ComputerAutomationStatus["displays"];
+  selectedDisplayId?: string | null;
+  lensControls?: ReactNode;
+  secondaryActions?: ReactNode;
+  onStartLive?: () => Promise<void>;
+  onSelectDisplay?: (displayId: string) => Promise<void>;
+  onShowInLive?: (displayId: string) => Promise<void>;
+  onConfirmTakeControl?: () => Promise<boolean>;
   onTakeControl: () => Promise<boolean>;
   onRelease: () => Promise<boolean>;
   onAction: (actions: ReadonlyArray<ComputerAutomationAction>) => Promise<void>;
@@ -304,7 +331,7 @@ function DesktopViewer({
   const dragStartRef = useRef<ViewerDragStart | null>(null);
   const heldKeysRef = useRef(new Set<string>());
   const hoverTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const keyboardCaptureRef = useRef<AgentDesktopKeyboardCapture | null>(null);
+  const controlLeaseRef = useRef<ReturnType<typeof createDesktopControlLease> | null>(null);
   const controlAttemptRef = useRef(false);
   const mountedRef = useRef(true);
   const [captureBusy, setCaptureBusy] = useState(false);
@@ -312,22 +339,25 @@ function DesktopViewer({
 
   const [lens, setLens] = useState<{
     observationId: string | null;
+    liveStarted: boolean;
     viewMode: "live" | "lens";
     selectedObservationViewId: string | null;
     inspectPixels: boolean;
     inspectSemantics: boolean;
   }>({
     observationId: agentObservation?.id ?? null,
-    viewMode: "live",
+    liveStarted,
+    viewMode: !liveStarted && agentObservation !== null ? "lens" : "live",
     selectedObservationViewId: null,
     inspectPixels: false,
     inspectSemantics: false,
   });
-  if (lens.observationId !== (agentObservation?.id ?? null)) {
+  if (lens.observationId !== (agentObservation?.id ?? null) || lens.liveStarted !== liveStarted) {
     setLens({
       ...lens,
       observationId: agentObservation?.id ?? null,
-      viewMode: agentObservation === null ? "live" : lens.viewMode,
+      liveStarted,
+      viewMode: agentObservation === null ? "live" : !liveStarted ? "lens" : lens.viewMode,
       selectedObservationViewId: null,
       inspectPixels: false,
       inspectSemantics: false,
@@ -519,8 +549,8 @@ function DesktopViewer({
   };
 
   const releaseKeyboardCapture = async () => {
-    const capture = keyboardCaptureRef.current;
-    keyboardCaptureRef.current = null;
+    const capture = controlLeaseRef.current;
+    controlLeaseRef.current = null;
     if (capture === null) return;
     try {
       await capture.release();
@@ -529,34 +559,47 @@ function DesktopViewer({
     }
   };
 
+  const startLive = async () => {
+    setViewMode("live");
+    if (liveStarted || onStartLive === undefined) return;
+    setCaptureError(null);
+    try {
+      await onStartLive();
+    } catch (cause) {
+      if (mountedRef.current) setCaptureError(failureMessage(cause));
+    }
+  };
+
   const takeControl = async () => {
     if (controlAttemptRef.current) return;
+    if (!liveStarted) {
+      setCaptureError("Start Live before taking control.");
+      return;
+    }
     controlAttemptRef.current = true;
     setViewMode("live");
     setCaptureBusy(true);
     setCaptureError(null);
     try {
+      if (onConfirmTakeControl !== undefined && !(await onConfirmTakeControl())) return;
       const capture = await acquireAgentDesktopKeyboardCapture();
       if (!mountedRef.current) {
         await capture.release();
         return;
       }
-      keyboardCaptureRef.current = capture;
-      const granted = await onTakeControl();
-      if (!mountedRef.current) {
-        if (granted) await onRelease();
-        await capture.release();
+      const lease = createDesktopControlLease({
+        capture,
+        takeControl: onTakeControl,
+        releaseControl: onRelease,
+      });
+      controlLeaseRef.current = lease;
+      const granted = await lease.ready;
+      if (!mountedRef.current || document.fullscreenElement === null || !granted) {
+        if (controlLeaseRef.current === lease) controlLeaseRef.current = null;
+        await lease.release();
         return;
       }
-      const ownsCapture = keyboardCaptureRef.current === capture;
-      if (granted && ownsCapture) surfaceRef.current?.focus({ preventScroll: true });
-      if (!granted || !ownsCapture || document.fullscreenElement === null) {
-        if (granted && ownsCapture) await onRelease();
-        if (ownsCapture) await releaseKeyboardCapture();
-        if (granted) {
-          setCaptureError("Full screen ended before Agent desktop control became active.");
-        }
-      }
+      surfaceRef.current?.focus({ preventScroll: true });
     } catch (cause) {
       await releaseKeyboardCapture();
       if (mountedRef.current) setCaptureError(failureMessage(cause));
@@ -568,12 +611,20 @@ function DesktopViewer({
 
   const releaseControl = async () => {
     releaseHeldKeys();
-    await onRelease();
     await releaseKeyboardCapture();
   };
 
+  const bindControl = useStableCallback((node: HTMLButtonElement | null) => {
+    if (node === null) return;
+    return () => {
+      const lease = controlLeaseRef.current;
+      controlLeaseRef.current = null;
+      void lease?.revoke().catch(() => undefined);
+    };
+  });
+
   const fullscreenChanged = useStableCallback(() => {
-    if (document.fullscreenElement !== null || keyboardCaptureRef.current === null) return;
+    if (document.fullscreenElement !== null || controlLeaseRef.current === null) return;
     void releaseControl();
   });
   const bindSurface = useStableCallback((node: HTMLDivElement | null) => {
@@ -586,8 +637,8 @@ function DesktopViewer({
       surfaceRef.current = null;
       cancelHover();
       document.removeEventListener("fullscreenchange", fullscreenChanged);
-      const capture = keyboardCaptureRef.current;
-      keyboardCaptureRef.current = null;
+      const capture = controlLeaseRef.current;
+      controlLeaseRef.current = null;
       if (capture !== null) void capture.release();
     };
   });
@@ -595,6 +646,11 @@ function DesktopViewer({
   const liveFrame = observation?.frame;
   const lensActive = viewMode === "lens" && agentObservation !== null;
   const selectedImages = selectedObservationView?.images ?? [];
+  const selectedDisplayableImage = selectedImages.find(
+    (image) => image.screenshot.state === "image",
+  );
+  const lensDisplayId =
+    selectedDisplayableImage?.frame?.displayId ?? selectedDisplayableImage?.region?.displayId;
   const hasSelectedPixels = selectedImages.some((image) => image.screenshot.state === "image");
   const liveSurfaceStyle =
     liveFrame === undefined
@@ -607,12 +663,8 @@ function DesktopViewer({
   return (
     <DialogPopup size="wide" bottomStickOnMobile={false}>
       <DialogHeader>
-        <DialogTitle>{desktop.label}</DialogTitle>
-        <DialogDescription>
-          Live supervision for this isolated Agent desktop. Taking control safely releases input
-          held by its agent and enters full screen so host shortcuts go only to the remote desktop.
-          GNOME may ask once to inhibit shortcuts; Super+Escape always restores them.
-        </DialogDescription>
+        <DialogTitle>{label}</DialogTitle>
+        <DialogDescription>{description}</DialogDescription>
       </DialogHeader>
       <DialogPanel>
         <div
@@ -624,7 +676,7 @@ function DesktopViewer({
           )}
           tabIndex={controlling ? 0 : -1}
           role="application"
-          aria-label={`${desktop.label} remote screen`}
+          aria-label={`${label} remote screen`}
           onBlur={releaseHeldKeys}
           onContextMenu={(event) => controlling && event.preventDefault()}
           onKeyDown={handleKeyDown}
@@ -637,22 +689,61 @@ function DesktopViewer({
           onPointerUp={handlePointerUp}
           onWheel={handleWheel}
         >
-          {observation?.screenshot?.state === "image" && liveFrame !== undefined ? (
+          {viewMode === "live" &&
+          liveStarted &&
+          observation?.screenshot?.state === "image" &&
+          liveFrame !== undefined ? (
             <div className="relative mx-auto" style={liveSurfaceStyle}>
               <img
                 ref={imageRef}
                 src={`data:${observation.screenshot.mimeType};base64,${observation.screenshot.data}`}
-                alt={`${desktop.label} screen`}
+                alt={`${label} screen`}
                 draggable={false}
                 className="size-full touch-none select-none object-fill"
               />
-              {lensActive && selectedObservationView !== null ? (
-                <AgentObservationOverlay liveFrame={liveFrame} images={selectedImages} />
-              ) : null}
+            </div>
+          ) : lensActive &&
+            liveStarted &&
+            observation?.screenshot?.state === "image" &&
+            liveFrame !== undefined ? (
+            <div className="relative mx-auto" style={liveSurfaceStyle}>
+              <img
+                src={`data:${observation.screenshot.mimeType};base64,${observation.screenshot.data}`}
+                alt={`${label} screen with Agent lens overlay`}
+                draggable={false}
+                className="size-full select-none object-fill"
+              />
+              <AgentObservationOverlay liveFrame={liveFrame} images={selectedImages} />
+            </div>
+          ) : lensActive && selectedDisplayableImage?.screenshot.state === "image" ? (
+            <div
+              className="relative mx-auto"
+              style={{
+                aspectRatio: `${selectedDisplayableImage.screenshot.width} / ${selectedDisplayableImage.screenshot.height}`,
+                width: `min(100%, ${selectedDisplayableImage.screenshot.width}px, calc(65vh * ${selectedDisplayableImage.screenshot.width / selectedDisplayableImage.screenshot.height}))`,
+              }}
+            >
+              <img
+                src={`data:${selectedDisplayableImage.screenshot.mimeType};base64,${selectedDisplayableImage.screenshot.data}`}
+                alt={`${label} Agent lens observation`}
+                draggable={false}
+                className="size-full select-none object-fill"
+              />
+              <div className="pointer-events-none absolute inset-0 border-2 border-ring shadow-inner" />
             </div>
           ) : (
-            <div className="flex aspect-video items-center justify-center text-sm text-white/60">
-              No screen frame is available.
+            <div className="flex aspect-video flex-col items-center justify-center gap-3 px-6 text-center text-sm text-white/60">
+              <p>
+                {viewMode === "live" && !liveStarted
+                  ? (liveDisabledReason ?? "Start Live to request a current screen frame.")
+                  : "No screen frame is available."}
+              </p>
+              {viewMode === "live" && !liveStarted && liveDisabledReason === null ? (
+                <Button variant="secondary" disabled={busy} onClick={() => void startLive()}>
+                  <EyeIcon />
+                  Start Live
+                </Button>
+              ) : null}
             </div>
           )}
         </div>
@@ -662,7 +753,8 @@ function DesktopViewer({
               size="xs"
               variant={viewMode === "live" ? "secondary" : "ghost"}
               aria-pressed={viewMode === "live"}
-              onClick={() => setViewMode("live")}
+              disabled={liveDisabledReason !== null}
+              onClick={() => void startLive()}
             >
               Live
             </Button>
@@ -687,6 +779,24 @@ function DesktopViewer({
             </div>
           ) : null}
         </div>
+        {liveStarted && liveDisplays.length > 1 ? (
+          <div className="mt-2 flex flex-wrap items-center gap-1.5">
+            <span className="mr-1 text-2xs text-muted-foreground">Display</span>
+            {liveDisplays.map((display) => (
+              <Button
+                key={display.id}
+                size="xs"
+                variant={selectedDisplayId === display.id ? "secondary" : "outline"}
+                aria-pressed={selectedDisplayId === display.id}
+                disabled={busy || onSelectDisplay === undefined}
+                onClick={() => void onSelectDisplay?.(display.id)}
+              >
+                {display.label || (display.primary ? "Primary" : display.id)}
+              </Button>
+            ))}
+          </div>
+        ) : null}
+        {lensActive ? lensControls : null}
         {lensActive && agentObservation !== null ? (
           <div className="mt-2 rounded-lg border bg-muted/20 p-2.5">
             <div className="flex flex-wrap items-center gap-1.5">
@@ -721,6 +831,16 @@ function DesktopViewer({
                   onClick={() => setInspectSemantics((current) => !current)}
                 >
                   {agentObservation.accessibility.targets.length} semantic targets
+                </Button>
+              ) : null}
+              {lensDisplayId !== undefined && onShowInLive !== undefined ? (
+                <Button
+                  size="xs"
+                  variant="outline"
+                  disabled={busy || liveDisabledReason !== null}
+                  onClick={() => void onShowInLive(lensDisplayId)}
+                >
+                  Show in Live
                 </Button>
               ) : null}
             </div>
@@ -792,21 +912,36 @@ function DesktopViewer({
         <div className="mt-3 min-h-5 text-xs text-muted-foreground">
           {error ??
             captureError ??
+            controlDisabledReason ??
             (controlling
               ? "Full-screen input control is active. Click the screen to focus its keyboard."
-              : "Watching live. Taking control captures host shortcuts in full screen.")}
+              : liveStarted
+                ? "Watching live. Taking control captures host shortcuts in full screen."
+                : "Live viewing is off. Agent lens data does not start a new screen capture.")}
         </div>
         <div className="mt-2 flex flex-wrap justify-end gap-2">
+          {secondaryActions}
           {controlling ? (
             <Button
               variant="outline"
               disabled={busy || captureBusy}
+              ref={bindControl}
               onClick={() => void releaseControl()}
             >
               Release control
             </Button>
           ) : (
-            <Button disabled={busy || captureBusy} onClick={() => void takeControl()}>
+            <Button
+              disabled={
+                busy ||
+                captureBusy ||
+                !liveStarted ||
+                liveDisabledReason !== null ||
+                controlDisabledReason !== null
+              }
+              title={controlDisabledReason ?? undefined}
+              onClick={() => void takeControl()}
+            >
               <HandIcon />
               {captureBusy ? "Taking control…" : "Take control"}
             </Button>
@@ -1459,8 +1594,16 @@ export function AgentDesktopSettings() {
       <Dialog open={viewer !== null} onOpenChange={(open) => !open && void closeViewer()}>
         {viewer ? (
           <div key={`${viewer.desktop.owner.environmentId}:${viewer.desktop.id}`} ref={bindViewer}>
-            <DesktopViewer
-              desktop={viewer.desktop}
+            <ComputerDesktopViewer
+              label={viewer.desktop.label}
+              description={
+                <>
+                  Live supervision for this isolated Agent desktop. Taking control safely releases
+                  input held by its agent and enters full screen so host shortcuts go only to the
+                  remote desktop. GNOME may ask once to inhibit shortcuts; Super+Escape always
+                  restores them.
+                </>
+              }
               observation={viewer.observation}
               agentObservation={viewer.agentObservation}
               controlling={viewer.controlling}

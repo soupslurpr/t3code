@@ -1,6 +1,19 @@
 import { describe, expect, it, vi } from "@effect/vitest";
 
-import { acquireAgentDesktopKeyboardCapture } from "./agentDesktopKeyboardCapture";
+import {
+  acquireAgentDesktopKeyboardCapture,
+  createDesktopControlLease,
+} from "./agentDesktopKeyboardCapture";
+
+function deferred<Value>() {
+  let resolve!: (value: Value) => void;
+  let reject!: (reason: unknown) => void;
+  const promise = new Promise<Value>((done, fail) => {
+    resolve = done;
+    reject = fail;
+  });
+  return { promise, resolve, reject };
+}
 
 function makeEnvironment(fullscreenElement: unknown | null = null) {
   const environment = {
@@ -97,5 +110,71 @@ describe("Agent desktop keyboard capture", () => {
       acquireAgentDesktopKeyboardCapture({ ...environment, keyboard: null }),
     ).rejects.toThrow("unavailable");
     expect(environment.document.documentElement.requestFullscreen).not.toHaveBeenCalled();
+  });
+});
+
+describe("desktop control grant lifetime", () => {
+  it("releases a late grant after fullscreen exit without waiting to unlock keys", async () => {
+    const grant = deferred<boolean>();
+    const capture = { release: vi.fn(async () => undefined) };
+    const releaseControl = vi.fn(async () => true);
+    const lease = createDesktopControlLease({
+      capture,
+      takeControl: () => grant.promise,
+      releaseControl,
+    });
+    await lease.release();
+    expect(capture.release).toHaveBeenCalledOnce();
+    expect(releaseControl).not.toHaveBeenCalled();
+    grant.resolve(true);
+    expect(await lease.ready).toBe(false);
+    await lease.release();
+    expect(releaseControl).toHaveBeenCalledOnce();
+    expect(capture.release).toHaveBeenCalledOnce();
+  });
+
+  it("releases active control once across repeated close notifications", async () => {
+    const capture = { release: vi.fn(async () => undefined) };
+    const releaseControl = vi.fn(async () => true);
+    const lease = createDesktopControlLease({
+      capture,
+      takeControl: async () => true,
+      releaseControl,
+    });
+    expect(await lease.ready).toBe(true);
+    await Promise.all([lease.release(), lease.release()]);
+    expect(capture.release).toHaveBeenCalledOnce();
+    expect(releaseControl).toHaveBeenCalledOnce();
+  });
+
+  it("unlocks keys when a pending request is rejected without releasing another holder", async () => {
+    const grant = deferred<boolean>();
+    const capture = { release: vi.fn(async () => undefined) };
+    const releaseControl = vi.fn(async () => true);
+    const lease = createDesktopControlLease({
+      capture,
+      takeControl: () => grant.promise,
+      releaseControl,
+    });
+    const failure = expect(lease.ready).rejects.toThrow("denied");
+    await lease.release();
+    grant.reject(new Error("denied"));
+    await failure;
+    expect(capture.release).toHaveBeenCalledOnce();
+    expect(releaseControl).not.toHaveBeenCalled();
+  });
+  it("unlocks after control is returned without releasing the new holder", async () => {
+    const capture = { release: vi.fn(async () => undefined) };
+    const releaseControl = vi.fn(async () => true);
+    const lease = createDesktopControlLease({
+      capture,
+      takeControl: async () => true,
+      releaseControl,
+    });
+    expect(await lease.ready).toBe(true);
+    await lease.revoke();
+    await lease.release();
+    expect(capture.release).toHaveBeenCalledOnce();
+    expect(releaseControl).not.toHaveBeenCalled();
   });
 });

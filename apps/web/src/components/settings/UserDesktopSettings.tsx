@@ -1,5 +1,23 @@
+import {
+  mountUserDesktopSupervision,
+  readUserDesktopSupervision,
+  requestUserDesktopLive,
+  retainUnchangedImage,
+} from "./userDesktopSupervision";
+import { useThreadShells } from "~/state/entities";
+import { Dialog } from "../ui/dialog";
+import { Select, SelectItem, SelectPopup, SelectTrigger, SelectValue } from "../ui/select";
+import { ComputerDesktopViewer } from "./AgentDesktopSettings";
 import { squashAtomCommandFailure } from "@t3tools/client-runtime/state/runtime";
 import type {
+  ComputerAutomationAction,
+  ComputerAutomationLeaseId,
+  ComputerAutomationSnapshot,
+  ComputerObservation,
+  ComputerObservationId,
+  ComputerObservationList,
+  ComputerObservationSummary,
+  ComputerObservationUpdate,
   ComputerAutomationStatus,
   EnvironmentId,
   UserDesktopHumanInvokeInput,
@@ -7,6 +25,9 @@ import type {
 } from "@t3tools/contracts";
 import {
   EyeIcon,
+  HandIcon,
+  HistoryIcon,
+  Undo2Icon,
   KeyboardIcon,
   MonitorIcon,
   PencilIcon,
@@ -14,7 +35,7 @@ import {
   ShieldOffIcon,
   Trash2Icon,
 } from "lucide-react";
-import { useState } from "react";
+import { useRef, useState } from "react";
 import { useAtomValue } from "@effect/atom-react";
 import { AsyncResult } from "effect/reactivity";
 import { AuthOrchestrationOperateScope } from "@t3tools/contracts";
@@ -22,7 +43,11 @@ import { appAtomRegistry } from "~/rpc/atomRegistry";
 import { useEnvironmentsWithScope } from "~/state/session";
 import { useStableCallback } from "~/hooks/useStableCallback";
 import { userDesktopListingAtom } from "./userDesktopListing";
-import { groupEntries, type UserDesktopGroup } from "./userDesktopListingState";
+import {
+  groupEntries,
+  type UserDesktopGroup,
+  type UserDesktopEntry,
+} from "./userDesktopListingState";
 
 import { formatRelativeTimeLabel } from "~/timestampFormat";
 import { useEnvironments } from "~/state/environments";
@@ -45,12 +70,35 @@ import { Input } from "../ui/input";
 import { SettingsPageContainer, SettingsSection } from "./settingsLayout";
 
 const ACCESS_REQUEST_TIMEOUT_MS = 120_000;
+const VIEWER_MAX_WIDTH = 1_280;
+const VIEWER_MAX_HEIGHT = 720;
 
 interface PendingRequest {
   readonly environmentId: EnvironmentId;
   readonly desktopId: string;
   readonly label: string;
   readonly operation: "remember-view" | "remember-control" | "end-all-access" | "forget";
+}
+
+interface UserDesktopViewer {
+  readonly generation: number;
+  readonly group: UserDesktopGroup;
+  readonly entry: UserDesktopEntry;
+  readonly status: ComputerAutomationStatus;
+  readonly liveStarted: boolean;
+  readonly observation: ComputerAutomationSnapshot | null;
+  readonly observationList: ComputerObservationList["observations"];
+  readonly selectedObservationId: ComputerObservationId | null;
+  readonly agentObservation: ComputerObservation | null;
+  readonly selectedDisplayId: string | null;
+}
+
+interface TakeoverConfirmation {
+  readonly leaseId: ComputerAutomationLeaseId;
+  readonly desktopLabel: string;
+  readonly controllerKind: "agent" | "human" | "local";
+  readonly sameEnvironment: boolean;
+  readonly resolve: (confirmed: boolean) => void;
 }
 
 /** Converts an RPC failure into bounded user-facing prose. */
@@ -72,9 +120,24 @@ function platformLabel(platform: UserDesktopView["platform"]): string {
   return "Unknown platform";
 }
 
+/** Labels one retained model-facing observation for the Agent lens selector. */
+function observationSummaryLabel(
+  observation: ComputerObservationSummary,
+  environmentLabel: string,
+  threadTitle: string,
+): string {
+  const recipient =
+    observation.recipient.kind === "controller"
+      ? observation.recipient.instanceId
+      : observation.recipient.modelSelection.model;
+  return `${recipient} · ${threadTitle} · ${environmentLabel} · ${observation.source.replaceAll("-", " ")} · ${formatRelativeTimeLabel(observation.observedAt)}`;
+}
+
 /** Lists and manages the concrete user desktops exposed to one environment. */
 export function UserDesktopSettings() {
   const { environments, isReady: environmentsReady } = useEnvironments();
+  const threads = useThreadShells();
+  const threadById = new Map(threads.map((thread) => [thread.id, thread]));
   const operable = useEnvironmentsWithScope(environments, AuthOrchestrationOperateScope);
   const listingAtom = userDesktopListingAtom(JSON.stringify(Array.from(operable).sort()));
   const listing = useAtomValue(listingAtom);
@@ -92,6 +155,33 @@ export function UserDesktopSettings() {
   const [editingKey, setEditingKey] = useState<string | null>(null);
   const [editingLabel, setEditingLabel] = useState("");
   const [removeGroup, setRemoveGroup] = useState<UserDesktopGroup | null>(null);
+
+  const [viewer, setViewerState] = useState<UserDesktopViewer | null>(null);
+  const [viewerBusy, setViewerBusy] = useState(false);
+  const [viewerError, setViewerError] = useState<string | null>(null);
+  const [takeoverConfirmation, setTakeoverConfirmation] = useState<TakeoverConfirmation | null>(
+    null,
+  );
+  const [localDesktopId] = useState(
+    () => window.desktopBridge?.getUserDesktopHost?.().desktopId ?? null,
+  );
+  const viewerRef = useRef(viewer);
+  const viewerActionQueue = useRef<Promise<void>>(Promise.resolve());
+  const confirmedTakeoverLeaseId = useRef<ComputerAutomationLeaseId | null>(null);
+  const takeoverConfirmationRef = useRef<TakeoverConfirmation | null>(null);
+
+  const viewerGeneration = useRef(0);
+  const viewerCleanup = useRef<(() => void) | null>(null);
+  const setViewer = (
+    next:
+      | UserDesktopViewer
+      | null
+      | ((current: UserDesktopViewer | null) => UserDesktopViewer | null),
+  ) => {
+    const value = typeof next === "function" ? next(viewerRef.current) : next;
+    viewerRef.current = value;
+    setViewerState(value);
+  };
 
   const environmentById = new Map(
     environments.map((environment) => [environment.environmentId, environment]),
@@ -144,6 +234,449 @@ export function UserDesktopSettings() {
     }
   };
 
+  const readObservation = async (entry: UserDesktopEntry, observationId: ComputerObservationId) => {
+    const update = await run<ComputerObservationUpdate>(entry.environmentId, {
+      request: {
+        operation: "observation",
+        desktopId: entry.desktop.desktop.desktopId,
+        observationId,
+      },
+    });
+    return update.observation ?? null;
+  };
+
+  const defaultObservation = (
+    observations: ComputerObservationList["observations"],
+    status: ComputerAutomationStatus,
+  ) => {
+    const controllingThreadId =
+      status.lease?.controller?.kind === "agent" && status.lease.controller.sameEnvironment === true
+        ? status.lease.controller.threadId
+        : undefined;
+    return (
+      observations.find(
+        (observation) =>
+          controllingThreadId !== undefined && observation.threadId === controllingThreadId,
+      ) ?? observations[0]
+    );
+  };
+
+  const openViewer = async (group: UserDesktopGroup) => {
+    const entry =
+      group.routes.find(
+        (route) =>
+          route.desktop.connectionState === "online" &&
+          route.desktop.capabilities.includes("view") &&
+          route.status !== null,
+      ) ??
+      group.routes.find(
+        (route) =>
+          route.desktop.connectionState === "online" && route.desktop.capabilities.includes("view"),
+      );
+    if (entry === undefined) return;
+    const generation = ++viewerGeneration.current;
+    setViewerBusy(true);
+    setViewerError(null);
+    try {
+      const { status, list, selectedObservation, agentObservation } =
+        await readUserDesktopSupervision(
+          (input) => run(entry.environmentId, input),
+          group.desktopId,
+        );
+      if (generation !== viewerGeneration.current) return;
+      const primaryDisplay =
+        status.displays.find((display) => display.primary) ?? status.displays[0];
+      setViewer({
+        generation,
+        group,
+        entry,
+        status,
+        liveStarted: false,
+        observation: null,
+        observationList: list.observations,
+        selectedObservationId: selectedObservation?.id ?? null,
+        agentObservation,
+        selectedDisplayId: primaryDisplay?.id ?? null,
+      });
+    } catch (cause) {
+      setError(failureMessage(cause));
+    } finally {
+      setViewerBusy(false);
+    }
+  };
+
+  const captureViewer = async (
+    selected: UserDesktopViewer,
+    displayId = selected.selectedDisplayId,
+  ) => {
+    const contentHash =
+      selected.observation?.screenshot?.state === "image"
+        ? selected.observation.screenshot.contentHash
+        : undefined;
+    const observation = await run<ComputerAutomationSnapshot>(selected.entry.environmentId, {
+      request: {
+        operation: "snapshot",
+        desktopId: selected.group.desktopId,
+        input: {
+          ...(displayId === null ? {} : { displayId }),
+          includeAccessibility: false,
+          screenshot: {
+            maxWidth: VIEWER_MAX_WIDTH,
+            maxHeight: VIEWER_MAX_HEIGHT,
+            ...(contentHash === undefined ? {} : { unchangedIfContentHash: contentHash }),
+          },
+        },
+      },
+    });
+    setViewer((current) =>
+      current?.generation === selected.generation && current.selectedDisplayId === displayId
+        ? {
+            ...current,
+            observation: retainUnchangedImage(current.observation, observation),
+            selectedDisplayId: observation.display.id,
+          }
+        : current,
+    );
+    return observation;
+  };
+
+  const startLive = async (displayId?: string) => {
+    const selected = viewerRef.current;
+    if (selected === null) return;
+    setViewerBusy(true);
+    setViewerError(null);
+    try {
+      const result = await requestUserDesktopLive(
+        (input) => run(selected.entry.environmentId, input),
+        selected.group.desktopId,
+        displayId ?? selected.selectedDisplayId,
+        () => viewerRef.current?.generation === selected.generation,
+      );
+      if (result === null) return;
+      setViewer((current) =>
+        current?.generation === selected.generation
+          ? {
+              ...current,
+              status: result.status,
+              liveStarted: true,
+              observation: result.observation,
+              selectedDisplayId: result.observation.display.id,
+            }
+          : current,
+      );
+    } catch (cause) {
+      setViewerError(failureMessage(cause));
+      throw cause;
+    } finally {
+      setViewerBusy(false);
+    }
+  };
+
+  const selectDisplay = async (displayId: string) => {
+    const selected = viewerRef.current;
+    if (selected === null || selected.selectedDisplayId === displayId) return;
+    setViewerBusy(true);
+    setViewerError(null);
+    try {
+      const next = { ...selected, observation: null, selectedDisplayId: displayId };
+      setViewer(next);
+      await captureViewer(next, displayId);
+    } catch (cause) {
+      setViewerError(failureMessage(cause));
+    } finally {
+      setViewerBusy(false);
+    }
+  };
+
+  const selectObservation = async (observationId: string | null) => {
+    const selected = viewerRef.current;
+    const summary = selected?.observationList.find(
+      (observation) => observation.id === observationId,
+    );
+    if (selected === null || summary === undefined) return;
+    setViewerBusy(true);
+    setViewerError(null);
+    try {
+      const observation = await readObservation(selected.entry, summary.id);
+      setViewer((current) =>
+        current?.generation === selected.generation
+          ? {
+              ...current,
+              selectedObservationId: summary.id,
+              agentObservation: observation,
+            }
+          : current,
+      );
+    } catch (cause) {
+      setViewerError(`Agent lens unavailable: ${failureMessage(cause)}`);
+    } finally {
+      setViewerBusy(false);
+    }
+  };
+
+  const confirmTakeover = (): Promise<boolean> => {
+    const selected = viewerRef.current;
+    const leaseId = selected?.status.lease?.takeoverLeaseId;
+    const controller = selected?.status.lease?.controller;
+    if (
+      selected === null ||
+      leaseId === undefined ||
+      controller === null ||
+      controller === undefined
+    ) {
+      confirmedTakeoverLeaseId.current = null;
+      return Promise.resolve(true);
+    }
+    return new Promise((resolve) => {
+      const confirmation = {
+        leaseId,
+        desktopLabel: selected.entry.desktop.label,
+        controllerKind: controller.kind,
+        sameEnvironment: controller.sameEnvironment,
+        resolve,
+      } satisfies TakeoverConfirmation;
+      takeoverConfirmationRef.current = confirmation;
+      setTakeoverConfirmation(confirmation);
+    });
+  };
+
+  const settleTakeoverConfirmation = (confirmed: boolean) => {
+    const current = takeoverConfirmationRef.current;
+    if (current === null) return;
+    takeoverConfirmationRef.current = null;
+    confirmedTakeoverLeaseId.current = confirmed ? current.leaseId : null;
+    setTakeoverConfirmation(null);
+    current.resolve(confirmed);
+  };
+
+  const takeViewerControl = async () => {
+    const selected = viewerRef.current;
+    if (selected === null) return false;
+    const takeoverLeaseId = confirmedTakeoverLeaseId.current;
+    confirmedTakeoverLeaseId.current = null;
+    setViewerBusy(true);
+    setViewerError(null);
+    let granted = false;
+    try {
+      const status = await run<ComputerAutomationStatus>(selected.entry.environmentId, {
+        request: {
+          operation: "request-control",
+          desktopId: selected.group.desktopId,
+          ...(takeoverLeaseId === null ? {} : { takeoverLeaseId }),
+        },
+        timeoutMs: ACCESS_REQUEST_TIMEOUT_MS,
+      });
+      granted = status.lease?.access === "control";
+      if (viewerRef.current?.generation !== selected.generation) {
+        await run(selected.entry.environmentId, {
+          request: { operation: "release", desktopId: selected.group.desktopId },
+        });
+        return false;
+      }
+      setViewer((current) =>
+        current?.generation === selected.generation
+          ? { ...current, status, liveStarted: true }
+          : current,
+      );
+      await captureViewer({ ...selected, status, liveStarted: true });
+      return status.lease?.access === "control";
+    } catch (cause) {
+      if (granted) {
+        await run(selected.entry.environmentId, {
+          request: { operation: "release-control", desktopId: selected.group.desktopId },
+        }).catch(() => undefined);
+      }
+      setViewerError(failureMessage(cause));
+      return false;
+    } finally {
+      setViewerBusy(false);
+    }
+  };
+
+  const releaseViewerControl = async () => {
+    const selected = viewerRef.current;
+    if (selected === null) return false;
+    setViewerBusy(true);
+    setViewerError(null);
+    try {
+      const status = await run<ComputerAutomationStatus>(selected.entry.environmentId, {
+        request: { operation: "release-control", desktopId: selected.group.desktopId },
+      });
+      setViewer((current) =>
+        current?.generation === selected.generation ? { ...current, status } : current,
+      );
+      return true;
+    } catch (cause) {
+      setViewerError(failureMessage(cause));
+      return false;
+    } finally {
+      setViewerBusy(false);
+    }
+  };
+
+  const returnViewerControl = async () => {
+    const selected = viewerRef.current;
+    if (selected === null) return;
+    setViewerBusy(true);
+    setViewerError(null);
+    try {
+      const status = await run<ComputerAutomationStatus>(selected.entry.environmentId, {
+        request: { operation: "return-control", desktopId: selected.group.desktopId },
+      });
+      setViewer((current) =>
+        current?.generation === selected.generation ? { ...current, status } : current,
+      );
+    } catch (cause) {
+      setViewerError(failureMessage(cause));
+    } finally {
+      setViewerBusy(false);
+    }
+  };
+
+  const stopAgentControl = async () => {
+    const selected = viewerRef.current;
+    if (selected?.status.lease?.controller?.kind !== "agent") return;
+    if (!(await confirmTakeover())) return;
+    const takeoverLeaseId = confirmedTakeoverLeaseId.current;
+    confirmedTakeoverLeaseId.current = null;
+    setViewerBusy(true);
+    setViewerError(null);
+    try {
+      await run(selected.entry.environmentId, {
+        request: {
+          operation: "request-control",
+          desktopId: selected.group.desktopId,
+          ...(takeoverLeaseId === null ? {} : { takeoverLeaseId }),
+        },
+      });
+      await run(selected.entry.environmentId, {
+        request: { operation: "release", desktopId: selected.group.desktopId },
+      });
+      const status = await run<ComputerAutomationStatus>(selected.entry.environmentId, {
+        request: { operation: "status", desktopId: selected.group.desktopId },
+      });
+      setViewer((current) =>
+        current?.generation === selected.generation ? { ...current, status } : current,
+      );
+    } catch (cause) {
+      setViewerError(failureMessage(cause));
+    } finally {
+      setViewerBusy(false);
+    }
+  };
+
+  const actInViewer = (actions: ReadonlyArray<ComputerAutomationAction>): Promise<void> => {
+    const selected = viewerRef.current;
+    if (selected?.status.lease?.access !== "control") return Promise.resolve();
+    const execute = async () => {
+      const current = viewerRef.current;
+      if (
+        current?.generation !== selected.generation ||
+        current.status.lease?.access !== "control"
+      ) {
+        return;
+      }
+      try {
+        await run(current.entry.environmentId, {
+          request: {
+            operation: "act",
+            desktopId: current.group.desktopId,
+            input: { actions: [...actions], observation: false },
+          },
+        });
+        await captureViewer(current);
+        setViewerError(null);
+      } catch (cause) {
+        setViewerError(failureMessage(cause));
+      }
+    };
+    const queued = viewerActionQueue.current.then(execute, execute);
+    viewerActionQueue.current = queued;
+    return queued;
+  };
+
+  const closeViewer = useStableCallback(async () => {
+    viewerGeneration.current += 1;
+    const selected = viewerRef.current;
+    settleTakeoverConfirmation(false);
+    setViewer(null);
+    setViewerError(null);
+    const cleanup = viewerCleanup.current;
+    viewerCleanup.current = null;
+    if (cleanup !== null) cleanup();
+    else if (selected !== null)
+      await run(selected.entry.environmentId, {
+        request: { operation: "release", desktopId: selected.group.desktopId },
+      }).catch(() => undefined);
+  });
+
+  const bindViewer = useStableCallback((node: HTMLDivElement | null) => {
+    const initial = viewerRef.current;
+    if (node === null || initial === null) return;
+    const { generation, entry, group } = initial;
+    const currentSession = () => viewerRef.current?.generation === generation;
+    const cleanup = mountUserDesktopSupervision({
+      document,
+      isLive: () => currentSession() && viewerRef.current?.liveStarted === true,
+      capture: async () => {
+        const selected = viewerRef.current;
+        if (selected?.generation === generation) await captureViewer(selected);
+      },
+      metadata: async () => {
+        const [status, list] = await Promise.all([
+          run<ComputerAutomationStatus>(entry.environmentId, {
+            request: { operation: "status", desktopId: group.desktopId },
+          }),
+          run<ComputerObservationList>(entry.environmentId, {
+            request: { operation: "observation-list", desktopId: group.desktopId },
+          }),
+        ]);
+        const current = viewerRef.current;
+        if (current?.generation !== generation) return;
+        const summary =
+          list.observations.find(
+            (observation) => observation.id === current.selectedObservationId,
+          ) ?? defaultObservation(list.observations, status);
+        const agentObservation =
+          summary === undefined
+            ? null
+            : summary.id === current.selectedObservationId
+              ? current.agentObservation
+              : await readObservation(entry, summary.id);
+        setViewer((selected) =>
+          selected?.generation === generation
+            ? {
+                ...selected,
+                status,
+                observationList: list.observations,
+                selectedObservationId: summary?.id ?? null,
+                agentObservation,
+              }
+            : selected,
+        );
+      },
+      onError: (cause) => {
+        if (currentSession()) setViewerError(failureMessage(cause));
+      },
+      onHidden: () => {
+        void closeViewer();
+      },
+      release: () =>
+        run(entry.environmentId, {
+          request: { operation: "release", desktopId: group.desktopId },
+        }).then(() => undefined),
+    });
+    viewerCleanup.current = cleanup;
+    return () => {
+      cleanup();
+      if (viewerCleanup.current === cleanup) viewerCleanup.current = null;
+      if (currentSession()) {
+        viewerGeneration.current += 1;
+        viewerRef.current = null;
+      }
+    };
+  });
+
   const saveRename = async (group: UserDesktopGroup) => {
     const label = editingLabel.trim();
     if (label.length === 0) return;
@@ -187,6 +720,31 @@ export function UserDesktopSettings() {
       setError(failureMessage(cause));
     }
   };
+
+  const selectedViewerSummary = viewer?.observationList.find(
+    (observation) => observation.id === viewer.selectedObservationId,
+  );
+  const viewerEnvironmentLabel =
+    viewer === null
+      ? "Unknown environment"
+      : (environmentById.get(viewer.entry.environmentId)?.label ?? "Unknown environment");
+  const viewerThreadTitle =
+    selectedViewerSummary === undefined
+      ? "Unknown thread"
+      : (threadById.get(selectedViewerSummary.threadId)?.title ?? selectedViewerSummary.threadId);
+  const viewerIsLocalDesktop =
+    viewer !== null && localDesktopId !== null && viewer.group.desktopId === localDesktopId;
+  const viewerLiveDisabledReason =
+    viewer === null
+      ? null
+      : viewerIsLocalDesktop
+        ? "Live view is hidden here to avoid recursively mirroring T3 into itself. Agent lens and control status remain available."
+        : !viewer.status.available
+          ? (viewer.status.detail ?? "Live viewing is unavailable on this desktop.")
+          : null;
+  const viewerSupportsControl =
+    viewer?.entry.desktop.connectionState === "online" &&
+    viewer.entry.desktop.capabilities.includes("control");
 
   return (
     <SettingsPageContainer>
@@ -259,6 +817,12 @@ export function UserDesktopSettings() {
                   route.desktop.connectionState === "online" &&
                   route.desktop.capabilities.includes("control"),
               );
+              const activeLease = group.routes
+                .map((route) => route.status?.lease)
+                .find(
+                  (lease) =>
+                    lease !== undefined && (lease.controller !== null || lease.access !== "none"),
+                );
               const environmentLabels = [
                 ...new Set(
                   group.routes.map(
@@ -285,16 +849,47 @@ export function UserDesktopSettings() {
                           {connectionLabel(group.connectionState)}
                         </Badge>
                         {group.t3Focused ? <Badge variant="secondary">T3 focused</Badge> : null}
+                        {activeLease?.controller ? (
+                          <Badge variant="secondary">
+                            {activeLease.controller.kind === "human"
+                              ? "Human control"
+                              : activeLease.controller.kind === "agent"
+                                ? "Agent control"
+                                : "Local control"}
+                          </Badge>
+                        ) : activeLease?.access === "view" ? (
+                          <Badge variant="secondary">Live view</Badge>
+                        ) : null}
                       </h3>
                       <p className="mt-1 text-sm text-muted-foreground">
                         {environmentLabels.length === 1
                           ? environmentLabels[0]
                           : `Available through ${environmentLabels.join(", ")}`}{" "}
                         · {platformLabel(desktop.platform)}
-                        {" · "}seen {formatRelativeTimeLabel(desktop.lastSeenAt)}
+                        {group.connectionState !== "identity-conflict" ? (
+                          <>
+                            {" · "}
+                            {group.connectionState === "online" ? "Connected" : "Last seen"}{" "}
+                            {formatRelativeTimeLabel(desktop.lastSeenAt)}
+                          </>
+                        ) : null}
                       </p>
                     </div>
-                    <div>
+                    <div className="flex items-center gap-1">
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        disabled={
+                          pending !== null ||
+                          viewerBusy ||
+                          group.connectionState !== "online" ||
+                          !supportsView
+                        }
+                        onClick={() => void openViewer(group)}
+                      >
+                        <EyeIcon />
+                        Supervise
+                      </Button>
                       <Button
                         variant="ghost"
                         size="icon-sm"
@@ -417,6 +1012,140 @@ export function UserDesktopSettings() {
           </div>
         )}
       </SettingsSection>
+
+      <Dialog open={viewer !== null} onOpenChange={(open) => !open && void closeViewer()}>
+        {viewer ? (
+          <div key={viewer.generation} ref={bindViewer}>
+            <ComputerDesktopViewer
+              label={viewer.entry.desktop.label}
+              description={
+                <>
+                  Open Agent lens observations without starting a new capture, or start Live to
+                  watch the selected display. Taking control safely releases queued and held agent
+                  input, then captures host shortcuts in full screen. GNOME shows the native sharing
+                  indicator while access is active.
+                </>
+              }
+              observation={viewer.observation}
+              agentObservation={viewer.agentObservation}
+              controlling={viewer.status.lease?.access === "control"}
+              busy={viewerBusy}
+              error={viewerError}
+              liveStarted={viewer.liveStarted}
+              liveDisabledReason={viewerLiveDisabledReason}
+              controlDisabledReason={
+                viewerSupportsControl ? null : "Control is unavailable on this desktop."
+              }
+              liveDisplays={viewer.status.displays}
+              selectedDisplayId={viewer.selectedDisplayId}
+              lensControls={
+                <div className="mt-2 flex items-center gap-2 rounded-lg border bg-muted/20 p-2.5">
+                  <HistoryIcon className="size-4 shrink-0 text-muted-foreground" />
+                  {viewer.observationList.length === 0 ? (
+                    <p className="text-xs text-muted-foreground">
+                      No model-facing observations are retained for this desktop.
+                    </p>
+                  ) : (
+                    <Select
+                      value={viewer.selectedObservationId}
+                      onValueChange={(value) => void selectObservation(value)}
+                      disabled={viewerBusy}
+                    >
+                      <SelectTrigger
+                        size="sm"
+                        className="min-w-0 flex-1"
+                        aria-label="Agent lens observation"
+                      >
+                        <SelectValue>
+                          {selectedViewerSummary === undefined
+                            ? "Choose an observation"
+                            : observationSummaryLabel(
+                                selectedViewerSummary,
+                                viewerEnvironmentLabel,
+                                viewerThreadTitle,
+                              )}
+                        </SelectValue>
+                      </SelectTrigger>
+                      <SelectPopup
+                        align="start"
+                        alignItemWithTrigger={false}
+                        className="max-w-[min(90vw,48rem)]"
+                      >
+                        {viewer.observationList.map((observation) => (
+                          <SelectItem key={observation.id} value={observation.id}>
+                            {observationSummaryLabel(
+                              observation,
+                              viewerEnvironmentLabel,
+                              threadById.get(observation.threadId)?.title ?? observation.threadId,
+                            )}
+                          </SelectItem>
+                        ))}
+                      </SelectPopup>
+                    </Select>
+                  )}
+                </div>
+              }
+              secondaryActions={
+                <>
+                  {viewer.status.lease?.canReturnControl === true ? (
+                    <Button variant="outline" disabled={viewerBusy} onClick={returnViewerControl}>
+                      <Undo2Icon />
+                      Return control to agent
+                    </Button>
+                  ) : null}
+                  {viewerIsLocalDesktop &&
+                  viewer.status.lease?.controller?.kind === "agent" &&
+                  viewer.status.lease.access !== "control" ? (
+                    <Button variant="outline" disabled={viewerBusy} onClick={stopAgentControl}>
+                      <HandIcon />
+                      Stop agent control
+                    </Button>
+                  ) : null}
+                </>
+              }
+              onStartLive={() => startLive()}
+              onSelectDisplay={selectDisplay}
+              onShowInLive={(displayId) =>
+                viewer.liveStarted ? selectDisplay(displayId) : startLive(displayId)
+              }
+              onConfirmTakeControl={confirmTakeover}
+              onTakeControl={takeViewerControl}
+              onRelease={releaseViewerControl}
+              onAction={actInViewer}
+            />
+          </div>
+        ) : null}
+      </Dialog>
+
+      <AlertDialog
+        open={takeoverConfirmation !== null}
+        onOpenChange={(open) => {
+          if (!open) settleTakeoverConfirmation(false);
+        }}
+      >
+        <AlertDialogPopup>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Take control of this desktop?</AlertDialogTitle>
+            <AlertDialogDescription>
+              {takeoverConfirmation === null
+                ? "The current desktop controller changed."
+                : `${takeoverConfirmation.desktopLabel} is controlled by ${
+                    takeoverConfirmation.controllerKind === "human"
+                      ? "another person"
+                      : takeoverConfirmation.controllerKind === "agent"
+                        ? "an agent"
+                        : "a local controller"
+                  }${takeoverConfirmation.sameEnvironment ? "" : " through another environment"}. Taking over immediately cancels its queued input and releases held keys and buttons.`}
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogClose onClick={() => settleTakeoverConfirmation(false)}>
+              Cancel
+            </AlertDialogClose>
+            <Button onClick={() => settleTakeoverConfirmation(true)}>Take control</Button>
+          </AlertDialogFooter>
+        </AlertDialogPopup>
+      </AlertDialog>
 
       <AlertDialog
         open={removeGroup !== null}
