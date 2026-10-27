@@ -1079,6 +1079,9 @@ export function ConnectionsSettings() {
                   ) : (
                     [
                       primaryServerConfig?.environment.serverVersion ?? null,
+                      primaryServerConfig?.environment.forkBuild
+                        ? `${primaryServerConfig.environment.forkBuild.channel} · ${primaryServerConfig.environment.forkBuild.revision?.slice(0, 12) ?? "development"}`
+                        : null,
                       primaryEnvironment?.displayUrl ?? null,
                     ]
                       .filter((value): value is string => value !== null)

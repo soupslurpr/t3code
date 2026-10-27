@@ -1,4 +1,6 @@
 // @effect-diagnostics-next-line nodeBuiltinImport:off -- Vite config runs before any Effect runtime.
+import * as NodeChildProcess from "node:child_process";
+// @effect-diagnostics-next-line nodeBuiltinImport:off -- Vite config runs before any Effect runtime.
 import * as NodeFSP from "node:fs/promises";
 import * as NodeZlib from "node:zlib";
 
@@ -23,6 +25,16 @@ import { thirdPartyLicensesPlugin } from "../../scripts/lib/third-party-licenses
 import { tailwindPlugins } from "./vite/tailwind";
 import { warmBundledDevPlugin } from "./vite/warmBundledDev";
 
+const forkRevision = (() => {
+  try {
+    return NodeChildProcess.execFileSync("git", ["rev-parse", "HEAD"], {
+      cwd: import.meta.dirname,
+      encoding: "utf8",
+    }).trim();
+  } catch {
+    return null;
+  }
+})();
 const repoEnv = loadRepoEnv();
 Object.assign(process.env, repoEnv);
 
@@ -318,6 +330,7 @@ export default defineConfig(() => {
       ),
       "import.meta.env.VITE_RELEASE_CHANNEL": JSON.stringify(configuredReleaseChannel),
       "import.meta.env.APP_VERSION": JSON.stringify(configuredAppVersion),
+      "import.meta.env.T3CODE_FORK_REVISION": JSON.stringify(forkRevision),
     },
     resolve: {
       tsconfigPaths: true,

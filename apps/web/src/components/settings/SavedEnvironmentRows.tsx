@@ -214,6 +214,9 @@ export function SavedBackendListRow({
     // The headline below names the failure in full.
     diagnosis ? null : resumingServerUpdate ? "Restarting" : status.text,
     enabled && versionMismatch ? serverVersion : null,
+    environment.serverConfig?.environment.forkBuild
+      ? `${environment.serverConfig.environment.forkBuild.channel} · ${environment.serverConfig.environment.forkBuild.revision?.slice(0, 12) ?? "development"}`
+      : null,
   ]
     .filter((value): value is string => value !== null)
     .join(" · ");

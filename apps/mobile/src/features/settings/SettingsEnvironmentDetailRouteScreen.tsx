@@ -233,6 +233,12 @@ function EnvironmentDetail({ environmentId }: { readonly environmentId: Environm
                 <SettingsSection title="T3 Code">
                   <View className="gap-1 p-4">
                     <Text className="text-base text-foreground">Version {version}</Text>
+                    {config.environment.forkBuild ? (
+                      <Text className="text-sm text-foreground-muted">
+                        {config.environment.forkBuild.channel} ·{" "}
+                        {config.environment.forkBuild.revision?.slice(0, 12) ?? "development"}
+                      </Text>
+                    ) : null}
                     {running ? (
                       <Text className="text-sm text-foreground-muted">
                         {updateState.stage === "resuming"
