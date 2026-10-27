@@ -404,7 +404,7 @@ describe("resolveWorktreeCleanup", () => {
       worktreeOnDelete: true,
       worktreeOnMerge: true,
       worktreeUnchanged: false,
-      worktreeKeepWhen: "uncommitted-changes",
+      worktreeKeepWhen: "any-local-files",
     });
     expect(
       resolveWorktreeCleanup(applyServerSettingsPatch(edited, { worktreeCleanup: null }), null)

@@ -36,7 +36,7 @@ describe("storage cleanup settings", () => {
       worktreeOnMerge: false,
       worktreeOnDelete: false,
       worktreeUnchanged: false,
-      worktreeKeepWhen: "uncommitted-changes",
+      worktreeKeepWhen: "any-local-files",
       browserArtifactsAfterDays: null,
       logsAfterDays: null,
     });
@@ -73,7 +73,7 @@ describe("storage cleanup settings", () => {
       }).projectSettingsOverrides[ProjectId.make("project")]?.worktreeCleanup,
     ).toMatchObject({
       mode: "custom",
-      rules: { worktreeSettledAfterDays: null, worktreeKeepWhen: "uncommitted-changes" },
+      rules: { worktreeSettledAfterDays: null, worktreeKeepWhen: "any-local-files" },
     });
   });
 
@@ -90,7 +90,7 @@ describe("storage cleanup settings", () => {
       },
     });
     expect(settings.worktreeCleanup).toMatchObject({
-      rules: { worktreeKeepWhen: "uncommitted-changes" },
+      rules: { worktreeKeepWhen: "any-local-files" },
     });
     expect(
       decodeServerSettingsPatch({ storageCleanup: { worktreeKeepWhen: "tracked-changes" } }),

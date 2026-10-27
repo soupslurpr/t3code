@@ -932,7 +932,7 @@ export type WorktreeKeepWhen = typeof WorktreeKeepWhen.Type;
 
 export const WorktreeCleanupRules = Schema.Struct({
   worktreeKeepWhen: WorktreeKeepWhen.pipe(
-    Schema.withDecodingDefault(Effect.succeed("uncommitted-changes")),
+    Schema.withDecodingDefault(Effect.succeed("any-local-files")),
   ),
   worktreeAfterDays: StorageRetentionDays,
   worktreeSettledAfterDays: SettledWorktreeRetentionDays.pipe(
@@ -1084,7 +1084,7 @@ export type StorageCleanupReport = typeof StorageCleanupReport.Type;
 
 export const StorageCleanupSettings = Schema.Struct({
   worktreeKeepWhen: WorktreeKeepWhen.pipe(
-    Schema.withDecodingDefault(Effect.succeed("uncommitted-changes")),
+    Schema.withDecodingDefault(Effect.succeed("any-local-files")),
   ),
   worktreeAfterDays: StorageRetentionDays.pipe(Schema.withDecodingDefault(Effect.succeed(null))),
   worktreeSettledAfterDays: SettledWorktreeRetentionDays.pipe(
