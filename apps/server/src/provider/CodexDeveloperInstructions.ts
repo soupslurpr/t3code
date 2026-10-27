@@ -34,54 +34,42 @@ const normalizeAvailability = (
 ): T3CodeToolAvailability =>
   typeof availability === "boolean" ? { browser: availability, device: false } : availability;
 
-/** Instructions for unavailable tools would steer the model away from its remaining automation. */
-const toolInstructions = (availability: boolean | T3CodeToolAvailability): string => {
-  const tools = normalizeAvailability(availability);
-  return [
-    tools.browser ? T3_CODE_BROWSER_TOOL_INSTRUCTIONS : "",
-    tools.device ? T3_CODE_DEVICE_TOOL_INSTRUCTIONS : "",
-  ]
-    .filter(Boolean)
-    .join("\n\n");
-};
-
 export interface CodexRuntimeInfo {
   readonly model: string;
   readonly modelName?: string | undefined;
   readonly reasoningEffort?: string | undefined;
 }
 
+function applicationContext(value: string): V2TurnStartParams__AdditionalContextEntry {
+  return { kind: "application", value: value.trim() };
+}
+
 /** Keep this outside collaboration mode; model-catalog mode text overrides client developer_instructions. */
-export function buildCodexAdditionalContext(
+export function buildCodexApplicationContext(
   runtime: CodexRuntimeInfo,
   toolsAvailable: boolean | T3CodeToolAvailability = true,
   computerToolsAvailable = true,
 ): Record<string, V2TurnStartParams__AdditionalContextEntry> {
-  const tools = toolInstructions(toolsAvailable);
-  // Split values to fit per-entry caps; number keys because Codex emits them in key order.
+  const tools = normalizeAvailability(toolsAvailable);
   return {
     ...Object.fromEntries(
       T3_CODE_ORCHESTRATION_SECTIONS.map((section, index) => [
         `t3_code_orchestration_${String(index + 1).padStart(2, "0")}`,
-        { kind: "application" as const, value: section },
+        applicationContext(section),
       ]),
     ),
-    t3_code_runtime: {
-      kind: "application",
-      value: buildRuntimeInstructions({ harness: "Codex", ...runtime }),
-    },
+    ...(tools.browser
+      ? { t3_code_browser: applicationContext(T3_CODE_BROWSER_TOOL_INSTRUCTIONS) }
+      : {}),
+    ...(tools.device
+      ? { t3_code_devices: applicationContext(T3_CODE_DEVICE_TOOL_INSTRUCTIONS) }
+      : {}),
     ...(computerToolsAvailable
       ? {
-          t3_code_desktop: {
-            kind: "application" as const,
-            value: T3_CODE_COMPUTER_TOOL_INSTRUCTIONS,
-          },
-          t3_code_desktop_actions: {
-            kind: "application" as const,
-            value: T3_CODE_COMPUTER_ACTION_INSTRUCTIONS,
-          },
+          t3_code_desktop: applicationContext(T3_CODE_COMPUTER_TOOL_INSTRUCTIONS),
+          t3_code_desktop_actions: applicationContext(T3_CODE_COMPUTER_ACTION_INSTRUCTIONS),
         }
       : {}),
-    ...(tools ? { t3_code_tools: { kind: "application", value: tools } } : {}),
+    t3_code_runtime: applicationContext(buildRuntimeInstructions({ harness: "Codex", ...runtime })),
   };
 }

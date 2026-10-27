@@ -1,6 +1,12 @@
-import { DEFAULT_MODEL, type ModelCapabilities, type ModelSelection } from "@t3tools/contracts";
+import {
+  ProviderInstanceId,
+  DEFAULT_MODEL,
+  type ModelCapabilities,
+  type ModelSelection,
+} from "@t3tools/contracts";
 import {
   codexModelFamily,
+  normalizeModelSlug,
   getModelSelectionBooleanOptionValue,
   getModelSelectionStringOptionValue,
 } from "@t3tools/shared/model";
@@ -37,4 +43,28 @@ export function getCodexServiceTierOptionValue(
     getModelSelectionStringOptionValue(modelSelection, "serviceTier") ??
     (getModelSelectionBooleanOptionValue(modelSelection, "fastMode") === true ? "fast" : undefined)
   );
+}
+
+export interface CodexModelSettings {
+  readonly model: string;
+  readonly effort: string | null;
+  readonly serviceTier: string | null;
+}
+
+export function resolveCodexModelSettings(
+  modelSelection?: ModelSelection | null,
+  capabilities?: ModelCapabilities | null,
+): CodexModelSettings {
+  const model = normalizeModelSlug(modelSelection?.model) ?? DEFAULT_MODEL;
+  return {
+    model,
+    effort:
+      getCodexReasoningEffortOptionValue(
+        modelSelection == null
+          ? { instanceId: ProviderInstanceId.make("codex"), model }
+          : { ...modelSelection, model },
+        capabilities,
+      ) ?? null,
+    serviceTier: getCodexServiceTierOptionValue(modelSelection) ?? null,
+  };
 }

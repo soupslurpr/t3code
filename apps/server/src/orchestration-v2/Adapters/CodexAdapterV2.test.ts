@@ -159,10 +159,11 @@ describe("CodexAdapterV2 runtime policy", () => {
               mode: interactionMode,
               settings: {
                 model: "gpt-5.4",
-                ...(reasoningEffort === undefined ? {} : { reasoning_effort: reasoningEffort }),
+                reasoning_effort: reasoningEffort ?? null,
+                developer_instructions: null,
               },
             });
-            assert.equal(params.effort, reasoningEffort);
+            assert.equal(params.effort, reasoningEffort ?? null);
             assert.equal(params.additionalContext !== undefined, hasT3Mcp === true);
           }
         }
@@ -655,7 +656,12 @@ function codexReplayPreamble(input: {
           approvalsReviewer: "user",
           sandboxPolicy: { type: "dangerFullAccess" },
           summary: "detailed",
-          collaborationMode: { mode: "default", settings: { model: "gpt-5.4" } },
+          effort: null,
+          serviceTier: null,
+          collaborationMode: {
+            mode: "default",
+            settings: { model: "gpt-5.4", reasoning_effort: null, developer_instructions: null },
+          },
         },
       },
     },
@@ -1174,7 +1180,16 @@ describe("CodexAdapterV2 post-settle continuation", () => {
                   approvalsReviewer: "user",
                   sandboxPolicy: { type: "dangerFullAccess" },
                   summary: "detailed",
-                  collaborationMode: { mode: "default", settings: { model: "gpt-5.4" } },
+                  effort: null,
+                  serviceTier: null,
+                  collaborationMode: {
+                    mode: "default",
+                    settings: {
+                      model: "gpt-5.4",
+                      reasoning_effort: null,
+                      developer_instructions: null,
+                    },
+                  },
                 },
               },
             };
@@ -1255,13 +1270,14 @@ describe("CodexAdapterV2 post-settle continuation", () => {
                 cwd: "/workspace",
                 model,
                 effort: expected,
+                serviceTier: null,
                 approvalPolicy: "never",
                 approvalsReviewer: "user",
                 sandboxPolicy: { type: "dangerFullAccess" },
                 summary: "detailed",
                 collaborationMode: {
                   mode: "default",
-                  settings: { model, reasoning_effort: expected },
+                  settings: { model, reasoning_effort: expected, developer_instructions: null },
                 },
               },
             },
@@ -1840,7 +1856,16 @@ describe("CodexAdapterV2 post-settle continuation", () => {
                 model: "gpt-5.4",
                 ...turnPolicies[turnModes[index]!],
                 summary: "detailed",
-                collaborationMode: { mode: "default", settings: { model: "gpt-5.4" } },
+                effort: null,
+                serviceTier: null,
+                collaborationMode: {
+                  mode: "default",
+                  settings: {
+                    model: "gpt-5.4",
+                    reasoning_effort: null,
+                    developer_instructions: null,
+                  },
+                },
               },
             },
           },

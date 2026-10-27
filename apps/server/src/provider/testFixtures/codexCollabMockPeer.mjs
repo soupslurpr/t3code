@@ -1,3 +1,4 @@
+#!/usr/bin/env node
 import * as NodeFS from "node:fs";
 import * as NodeReadline from "node:readline";
 import * as NodePath from "node:path";
@@ -40,6 +41,35 @@ rl.on("line", (line) => {
     });
     return;
   }
+  if (
+    script.trackSettings &&
+    ["thread/start", "thread/resume", "thread/fork", "turn/start"].includes(method)
+  ) {
+    NodeFS.appendFileSync(
+      `${process.env.T3_CODEX_COLLAB_SCRIPT}.settings-requests`,
+      `${JSON.stringify({ method, params: message.params })}\n`,
+    );
+    if (method !== "turn/start") {
+      const settings = script.savedSettings ?? {};
+      write({
+        id,
+        result: {
+          ...fixture.responses.threadStart,
+          thread: {
+            ...fixture.responses.threadStart.thread,
+            ...(method === "thread/fork"
+              ? { id: `${script.rootThreadId}-fork`, sessionId: `${script.rootThreadId}-fork` }
+              : {}),
+          },
+          model: message.params.model ?? settings.model ?? "gpt-6-astra",
+          reasoningEffort:
+            message.params.config?.model_reasoning_effort ?? settings.effort ?? "medium",
+          serviceTier: message.params.serviceTier ?? settings.serviceTier ?? null,
+        },
+      });
+      return;
+    }
+  }
   if (method === undefined && script.serverRequests?.some((request) => request.id === id)) {
     NodeFS.appendFileSync(
       `${process.env.T3_CODEX_COLLAB_SCRIPT}.responses`,
@@ -61,7 +91,7 @@ rl.on("line", (line) => {
     write({
       id,
       result: {
-        userAgent: "t3-collab-mock/0.0.0",
+        userAgent: script.userAgent ?? "t3-collab-mock/0.0.0",
         codexHome: "/tmp",
         platformFamily: "unix",
         platformOs: "linux",

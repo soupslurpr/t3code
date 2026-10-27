@@ -98,13 +98,10 @@ import * as Stream from "effect/Stream";
 import { ChildProcess, ChildProcessSpawner } from "effect/process";
 
 import { resolveAttachmentPath, resolveAttachmentPathById } from "../../attachmentStore.ts";
-import {
-  getCodexReasoningEffortOptionValue,
-  getCodexServiceTierOptionValue,
-} from "../../codexModelOptions.ts";
+import { resolveCodexModelSettings } from "../../codexModelOptions.ts";
 import { ServerConfig } from "../../config.ts";
 import { expandHomePath } from "@t3tools/provider-core/server/pathExpansion";
-import { buildCodexAdditionalContext } from "../../provider/CodexDeveloperInstructions.ts";
+import { buildCodexApplicationContext } from "../../provider/CodexDeveloperInstructions.ts";
 import {
   describeMcpElicitation,
   toMcpElicitationResponse,
@@ -758,16 +755,11 @@ export const buildCodexTurnStartParams = Effect.fn("CodexAdapterV2.buildCodexTur
       input.runtimePolicy.sandboxPolicy === undefined
         ? runtimeModeDefaults.sandboxPolicy
         : yield* decodeTurnSandboxPolicy(input.runtimePolicy.sandboxPolicy);
-    const selectedEffort = getCodexReasoningEffortOptionValue(
-      input.modelSelection,
-      input.modelCapabilities,
-    );
+    const modelSettings = resolveCodexModelSettings(input.modelSelection, input.modelCapabilities);
+    const selectedEffort = modelSettings.effort ?? undefined;
     const effort =
       selectedEffort === undefined ? undefined : yield* decodeTurnReasoningEffort(selectedEffort);
-    const serviceTier =
-      input.omitServiceTier === true
-        ? undefined
-        : getCodexServiceTierOptionValue(input.modelSelection);
+    const serviceTier = input.omitServiceTier === true ? undefined : modelSettings.serviceTier;
     // MCP-written app context must be quoted user input, not developer instructions.
     const appContext = Object.fromEntries(
       (input.appContext ?? []).map((entry) => [
@@ -777,8 +769,8 @@ export const buildCodexTurnStartParams = Effect.fn("CodexAdapterV2.buildCodexTur
     );
     const t3Context =
       input.hasT3Mcp === true
-        ? buildCodexAdditionalContext(
-            { model: input.modelSelection.model, reasoningEffort: effort ?? undefined },
+        ? buildCodexApplicationContext(
+            { model: modelSettings.model, reasoningEffort: effort ?? undefined },
             {
               browser: input.browserToolsAvailable ?? true,
               device: input.deviceToolsAvailable ?? false,
@@ -795,21 +787,22 @@ export const buildCodexTurnStartParams = Effect.fn("CodexAdapterV2.buildCodexTur
       ...(input.toolOutput === undefined ? {} : { toolOutput: input.toolOutput }),
       ...(additionalContext ? { additionalContext } : {}),
       cwd: input.runtimePolicy.cwd,
-      model: input.modelSelection.model,
+      model: modelSettings.model,
       // Catalogues can default summaries to "none"; request them explicitly on every turn.
       summary: "detailed",
       // Omitting the reviewer on resume preserves the previous Auto reviewer.
       approvalsReviewer: runtimeModeDefaults.approvalsReviewer,
       ...(approvalPolicy === undefined ? {} : { approvalPolicy }),
       ...(sandboxPolicy === undefined ? {} : { sandboxPolicy }),
-      ...(effort === undefined ? {} : { effort }),
+      effort: effort ?? null,
       ...(serviceTier === undefined ? {} : { serviceTier }),
       // Codex supplies its own mode instructions; send both modes to clear Plan on exit.
       collaborationMode: {
         mode: input.runtimePolicy.interactionMode,
         settings: {
-          model: input.modelSelection.model,
-          ...(effort === undefined ? {} : { reasoning_effort: effort }),
+          model: modelSettings.model,
+          reasoning_effort: effort ?? null,
+          developer_instructions: null,
         },
       },
     });
@@ -1341,19 +1334,30 @@ const CODEX_T3_MCP_TOOL_TIMEOUT_SEC = 65 * 60;
 
 function codexThreadRuntimeParams(input: {
   readonly mcpSession: McpProviderSession.McpProviderSessionConfig | undefined;
-  readonly modelSelection?: { readonly model: string };
+  readonly modelSelection?: ModelSelection;
+  readonly omitServiceTier?: boolean;
+  readonly modelCapabilities?: ModelCapabilities | null | undefined;
   readonly runtimePolicy?: ProviderAdapter.ProviderAdapterV2RuntimePolicy;
 }): {
   readonly cwd?: string;
   readonly model?: string;
+  readonly serviceTier?: string | null;
   readonly config: Readonly<Record<string, Schema.Json>>;
 } {
   const { mcpSession } = input;
+  const modelSettings =
+    input.modelSelection === undefined
+      ? undefined
+      : resolveCodexModelSettings(input.modelSelection, input.modelCapabilities);
   return {
     ...(input.runtimePolicy?.cwd == null ? {} : { cwd: input.runtimePolicy.cwd }),
-    ...(input.modelSelection === undefined ? {} : { model: input.modelSelection.model }),
+    ...(modelSettings === undefined ? {} : { model: modelSettings.model }),
+    ...(input.omitServiceTier || modelSettings?.serviceTier == null
+      ? {}
+      : { serviceTier: modelSettings.serviceTier }),
     config: {
       ...CODEX_THREAD_CONFIG,
+      ...(modelSettings?.effort == null ? {} : { model_reasoning_effort: modelSettings.effort }),
       ...(mcpSession === undefined
         ? {}
         : {
@@ -1646,6 +1650,18 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
     threadId === null ? Effect.succeed(undefined) : mcpSessions.read(threadId);
   const { clientFactory, crypto, fileSystem, idAllocator, serverConfig } = adapterOptions;
   const continuationRequests = adapterOptions.continuationRequests;
+  const resolveThreadRuntimeParams = Effect.fn("CodexAdapterV2.resolveThreadRuntimeParams")(
+    function* (params: Parameters<typeof codexThreadRuntimeParams>[0]) {
+      const models =
+        adapterOptions.getModels === undefined ? undefined : yield* adapterOptions.getModels;
+      return codexThreadRuntimeParams({
+        ...params,
+        omitServiceTier: adapterOptions.resolveRuntime !== undefined,
+        modelCapabilities: models?.find((model) => model.slug === params.modelSelection?.model)
+          ?.capabilities,
+      });
+    },
+  );
 
   return ProviderAdapter.ProviderAdapterV2.of({
     instanceId: adapterOptions.instanceId,
@@ -6587,14 +6603,11 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
             ensureInitialized.pipe(
               Effect.andThen(mcpSessions.read(threadInput.threadId)),
               Effect.flatMap((mcpSession) =>
-                client.request(
-                  "thread/start",
-                  codexThreadRuntimeParams({
-                    mcpSession,
-                    modelSelection: threadInput.modelSelection,
-                    runtimePolicy: threadInput.runtimePolicy,
-                  }),
-                ),
+                resolveThreadRuntimeParams({
+                  mcpSession,
+                  modelSelection: threadInput.modelSelection,
+                  runtimePolicy: threadInput.runtimePolicy,
+                }).pipe(Effect.flatMap((params) => client.request("thread/start", params))),
               ),
               Effect.map((response): OrchestrationV2ProviderThread =>
                 providerThreadFromCodexThread({
@@ -6622,7 +6635,7 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
               const resume = client.raw.request("thread/resume", {
                 threadId: nativeThreadId,
                 excludeTurns: true,
-                ...codexThreadRuntimeParams({
+                ...(yield* resolveThreadRuntimeParams({
                   mcpSession: yield* readMcpSession(
                     threadInput.threadId ?? threadInput.providerThread.appThreadId,
                   ),
@@ -6632,7 +6645,7 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
                   ...(threadInput.runtimePolicy === undefined
                     ? {}
                     : { runtimePolicy: threadInput.runtimePolicy }),
-                }),
+                })),
               });
               const response = yield* ensureInitialized.pipe(
                 Effect.andThen(
@@ -7356,11 +7369,11 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
                 yield* client.raw.request("thread/resume", {
                   threadId,
                   excludeTurns: true,
-                  ...codexThreadRuntimeParams({
+                  ...(yield* resolveThreadRuntimeParams({
                     mcpSession: yield* readMcpSession(threadInput.providerThread.appThreadId),
                     modelSelection: input.modelSelection,
                     runtimePolicy: input.runtimePolicy,
-                  }),
+                  })),
                 });
               }
               const response = yield* ensureInitialized.pipe(
@@ -7408,7 +7421,7 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
                     ...(boundary.lastTurnId === undefined
                       ? {}
                       : { lastTurnId: boundary.lastTurnId }),
-                    ...codexThreadRuntimeParams({
+                    ...(yield* resolveThreadRuntimeParams({
                       mcpSession: yield* mcpSessions.read(threadInput.targetThreadId),
                       ...(threadInput.modelSelection === undefined
                         ? {}
@@ -7416,7 +7429,7 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
                       ...(threadInput.runtimePolicy === undefined
                         ? {}
                         : { runtimePolicy: threadInput.runtimePolicy }),
-                    }),
+                    })),
                   }),
                 ),
                 Effect.mapError(
