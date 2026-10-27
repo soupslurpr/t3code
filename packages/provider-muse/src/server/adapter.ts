@@ -1803,7 +1803,7 @@ export const makeMuseAdapterV2 = Effect.fn("makeMuseAdapterV2")(function* (
         )
           return thread;
         if (thread) return yield* protocolError("Open a new host to attach another Muse session");
-        let missingNativeSession = false;
+        let resumeRejectedByHost = false;
         return yield* Effect.gen(function* () {
           nativeSessionId = requestedId ?? host.connection.mintCommandId();
           const mcpSession = yield* mcpSessions.read(args.threadId);
@@ -1840,10 +1840,8 @@ export const makeMuseAdapterV2 = Effect.fn("makeMuseAdapterV2")(function* (
                 },
           ).pipe(
             Effect.catch((error) => {
-              missingNativeSession =
-                requestedId !== undefined &&
-                error.payload instanceof MspError &&
-                (error.payload.kind === "sessionNotFound" || error.payload.kind === "notFound");
+              // A resume rejection from the host leaves it reusable for a fresh session.
+              resumeRejectedByHost = requestedId !== undefined && error.payload instanceof MspError;
               return Effect.fail(error);
             }),
             Effect.flatMap((value) => decode(MuseSessionResult, value)),
@@ -1896,7 +1894,7 @@ export const makeMuseAdapterV2 = Effect.fn("makeMuseAdapterV2")(function* (
           return thread;
         }).pipe(
           Effect.onError((cause) =>
-            missingNativeSession ? Effect.void : eventPermit.withPermits(1)(failHost(cause)),
+            resumeRejectedByHost ? Effect.void : eventPermit.withPermits(1)(failHost(cause)),
           ),
         );
       });
