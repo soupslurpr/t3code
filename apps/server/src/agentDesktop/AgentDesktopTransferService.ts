@@ -558,7 +558,7 @@ export const make = Effect.gen(function* () {
         {
           environmentId: record.scope.environmentId,
           threadId: record.scope.thread.threadId,
-          controllerId: record.scope.thread.providerSessionId,
+          controllerId: record.scope.thread.controllerId,
         },
         {
           operation: "import",
@@ -633,7 +633,7 @@ export const make = Effect.gen(function* () {
         {
           environmentId: record.scope.environmentId,
           threadId: record.scope.thread.threadId,
-          controllerId: record.scope.thread.providerSessionId,
+          controllerId: record.scope.thread.controllerId,
         },
         {
           operation: "export",
@@ -879,7 +879,7 @@ export const make = Effect.gen(function* () {
         {
           environmentId: scope.environmentId,
           threadId: scope.thread.threadId,
-          controllerId: scope.thread.providerSessionId,
+          controllerId: scope.thread.controllerId,
         },
         {
           transferId: input.transferId,

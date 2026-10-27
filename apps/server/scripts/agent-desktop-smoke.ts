@@ -75,6 +75,7 @@ const scope = {
   environmentId: EnvironmentId.make("environment-server-smoke"),
   thread: {
     threadId: ThreadId.make("thread-server-smoke"),
+    controllerId: "controller-server-smoke",
     providerSessionId: "controller-server-smoke",
     providerInstanceId: ProviderInstanceId.make("codex"),
   },
@@ -86,7 +87,7 @@ const scope = {
 const owner = {
   environmentId: scope.environmentId,
   threadId: scope.thread.threadId,
-  controllerId: scope.thread.providerSessionId,
+  controllerId: scope.thread.controllerId,
 };
 const message = "environment server transfer: exact Unicode ’ →\n";
 

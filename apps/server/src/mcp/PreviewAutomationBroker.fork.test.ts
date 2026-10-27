@@ -8,10 +8,13 @@ import {
   ProviderInstanceId,
   ThreadId,
   type PreviewAutomationHost,
+  type PreviewAutomationStreamEvent,
   type PreviewAutomationRequest,
   type PreviewAutomationResponse,
 } from "@t3tools/contracts";
 import * as Deferred from "effect/Deferred";
+import * as Queue from "effect/Queue";
+import * as TestClock from "effect/testing/TestClock";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Stream from "effect/Stream";
@@ -28,6 +31,7 @@ const scope: McpInvocationContext.McpThreadInvocationScope = {
   requestNamespace: "provider-one",
   thread: {
     threadId: ThreadId.make("thread-one"),
+    controllerId: "provider-one",
     providerSessionId: "provider-one",
     providerInstanceId: ProviderInstanceId.make("codex"),
   },
@@ -55,6 +59,7 @@ const serveInventoryHost = Effect.fn("ForkBrokerTest.serveInventoryHost")(functi
   const events = yield* broker.connect(host);
   const fiber = yield* Stream.runForEach(events, (event) => {
     if (event.type === "connected") return Deferred.succeed(connected, undefined);
+    if (event.type === "cancel") return Effect.void;
     requests.push(event.request);
     return broker.respond({
       clientId: host.clientId,
@@ -106,6 +111,7 @@ const serve = Effect.fn("ForkBrokerTest.serve")(function* (
           : Effect.void
       ).pipe(Effect.andThen(Deferred.succeed(connected, undefined)));
     }
+    if (event.type === "cancel") return Effect.void;
     received.push(event.request);
     return broker.respond({
       clientId: host.clientId,
@@ -118,7 +124,7 @@ const serve = Effect.fn("ForkBrokerTest.serve")(function* (
   return received;
 });
 
-it.effect("retains distinct controllers for parallel provider sessions", () =>
+it.effect("retains distinct logical controllers for parallel callers", () =>
   Effect.scoped(
     Effect.gen(function* () {
       const broker = yield* PreviewAutomationBroker.PreviewAutomationBroker;
@@ -129,7 +135,10 @@ it.effect("retains distinct controllers for parallel provider sessions", () =>
       });
       for (const providerSessionId of ["provider-one", "provider-two"]) {
         yield* broker.invoke({
-          scope: { ...scope, thread: { ...scope.thread, providerSessionId } },
+          scope: {
+            ...scope,
+            thread: { ...scope.thread, controllerId: providerSessionId, providerSessionId },
+          },
           operation: "computerRequestControl",
           input: { desktop: { kind: "user", desktopId: "user-desktop-1" } },
         });
@@ -585,6 +594,7 @@ it.effect(
         requestNamespace: "human:session",
         thread: {
           ...scope.thread,
+          controllerId: "human:session",
           providerSessionId: "human:session",
           providerInstanceId: ProviderInstanceId.make("user-desktop-human"),
         },
@@ -619,4 +629,75 @@ it.effect(
         })),
       );
     }).pipe(Effect.provide(layer), Effect.scoped),
+);
+
+it.effect.each(["timeout", "interruption"] as const)(
+  "cancels the exact routed request after %s",
+  (reason) =>
+    Effect.gen(function* () {
+      const broker = yield* PreviewAutomationBroker.PreviewAutomationBroker;
+      const received = yield* Queue.unbounded<PreviewAutomationStreamEvent>();
+      const events = yield* broker.connect({
+        clientId: "cancel-host",
+        environmentId,
+        userDesktop: registration("cancel-target"),
+        supportedOperations: ["computerRequestControl"],
+      });
+      yield* Stream.runForEach(events, (event) => Queue.offer(received, event)).pipe(
+        Effect.forkScoped,
+      );
+      const connected = yield* Queue.take(received);
+      expect(connected.type).toBe("connected");
+      const invoking = yield* broker
+        .invoke({
+          scope,
+          operation: "computerRequestControl",
+          input: { desktop: { kind: "user", desktopId: "cancel-target" } },
+          updateCurrentTab: false,
+          timeoutMs: 1000,
+        })
+        .pipe(Effect.result, Effect.forkScoped);
+      const request = yield* Queue.take(received);
+      expect(request.type).toBe("request");
+      if (request.type !== "request") return yield* Effect.die("Expected native request");
+      if (reason === "timeout") {
+        yield* TestClock.adjust("1 second");
+        const result = yield* Fiber.join(invoking);
+        expect(result._tag).toBe("Failure");
+      } else {
+        yield* Fiber.interrupt(invoking);
+      }
+      expect(yield* Queue.take(received)).toEqual({
+        type: "cancel",
+        connectionId: connected.connectionId,
+        requestId: request.request.requestId,
+      });
+    }).pipe(Effect.provide(layer)),
+);
+
+it.effect("routes stable logical identity across provider credential restarts", () =>
+  Effect.gen(function* () {
+    const broker = yield* PreviewAutomationBroker.PreviewAutomationBroker;
+    const received = yield* serve({
+      clientId: "stable-host",
+      environmentId,
+      userDesktop: registration("stable-target"),
+      supportedOperations: ["computerStatus"],
+    });
+    for (const providerSessionId of ["old-credential", "new-credential"]) {
+      yield* broker.invoke({
+        scope: {
+          ...scope,
+          requestNamespace: providerSessionId,
+          thread: { ...scope.thread, controllerId: "stable-controller", providerSessionId },
+        },
+        operation: "computerStatus",
+        input: { desktop: { kind: "user", desktopId: "stable-target" } },
+      });
+    }
+    expect(received.map((request) => request.controllerId)).toEqual([
+      "stable-controller",
+      "stable-controller",
+    ]);
+  }).pipe(Effect.provide(layer)),
 );

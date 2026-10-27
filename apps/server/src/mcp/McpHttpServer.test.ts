@@ -41,6 +41,7 @@ const invocation = {
   requestNamespace: "provider-session-mcp-test",
   thread: {
     threadId,
+    controllerId: "provider-session-mcp-test",
     providerSessionId: "provider-session-mcp-test",
     providerInstanceId: ProviderInstanceId.make("codex"),
   },
@@ -107,6 +108,7 @@ const serveSnapshots = (clientId: string, result: unknown) =>
     const events = yield* broker.connect({ clientId, environmentId });
     yield* Stream.runForEach(events, (event) => {
       if (event.type === "connected") return Deferred.succeed(connected, undefined);
+      if (event.type === "cancel") return Effect.void;
       inputs.push(event.request.input);
       return broker.respond({
         clientId,
@@ -180,7 +182,7 @@ it.effect.each([{}, { includeImage: false }])(
           environmentId,
         });
         yield* Stream.runForEach(events, (event) =>
-          event.type === "connected"
+          event.type !== "request"
             ? Effect.void
             : broker.respond({
                 clientId: "mcp-failure-client",
@@ -258,6 +260,7 @@ it.effect.each([
       const events = yield* broker.connect({ clientId: "mcp-image-option-client", environmentId });
       yield* Stream.runForEach(events, (event) => {
         if (event.type === "connected") return Deferred.succeed(connected, undefined);
+        if (event.type === "cancel") return Effect.void;
         requests += 1;
         expect(event.request).toMatchObject({
           operation: "snapshot",
@@ -631,6 +634,7 @@ it.effect("terminates HTTP MCP sessions with DELETE", () =>
         requestNamespace: "provider-session",
         thread: {
           threadId: ThreadId.make("thread-provider"),
+          controllerId: "provider-session",
           providerSessionId: "provider-session",
           providerInstanceId: ProviderInstanceId.make("codex"),
         },
@@ -707,6 +711,7 @@ it.effect("admits provider and OAuth client credentials and points only clients 
         requestNamespace: "provider-session",
         thread: {
           threadId: ThreadId.make("thread-provider"),
+          controllerId: "provider-session",
           providerSessionId: "provider-session",
           providerInstanceId: ProviderInstanceId.make("codex"),
         },
@@ -829,6 +834,7 @@ it.effect("lists pull request watch tools only to threads that are not delegated
         requestNamespace: token,
         thread: {
           threadId: ThreadId.make(`thread-${token}`),
+          controllerId: token,
           providerSessionId: token,
           providerInstanceId: ProviderInstanceId.make("codex"),
           subagent,

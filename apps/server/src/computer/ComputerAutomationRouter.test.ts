@@ -20,6 +20,7 @@ const scope: McpInvocationContext.McpThreadInvocationScope = {
   environmentId: EnvironmentId.make("router-environment"),
   thread: {
     threadId: ThreadId.make("router-thread"),
+    controllerId: "stable-controller-one",
     providerSessionId: "controller-one",
     providerInstanceId: ProviderInstanceId.make("codex"),
   },
@@ -117,7 +118,8 @@ it.effect(
     Effect.gen(function* () {
       const h = yield* harness();
       for (const providerSessionId of ["controller-one", "controller-two"]) {
-        const caller = { ...scope, thread: { ...scope.thread, providerSessionId } };
+        const controllerId = `stable-${providerSessionId}`;
+        const caller = { ...scope, thread: { ...scope.thread, controllerId, providerSessionId } };
         const target = { desktop: { kind: "agent" as const, desktopId: "agent-one" } };
         const granted = yield* h.router.requestControl(caller, { ...target, observation: false });
         assert.equal(granted.status?.desktop?.id, "agent-one");
@@ -137,15 +139,13 @@ it.effect(
           Array.from({ length: 2 }, () => ({
             environmentId: scope.environmentId,
             threadId: scope.thread.threadId,
-            controllerId: providerSessionId,
+            controllerId,
           })),
         );
         assert(
           h.agentCalls
             .slice(-7)
-            .every(
-              (call) => call.controller === providerSessionId && call.desktopId === "agent-one",
-            ),
+            .every((call) => call.controller === controllerId && call.desktopId === "agent-one"),
         );
       }
       assert.deepEqual(h.remoteCalls, []);

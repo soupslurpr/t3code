@@ -80,6 +80,7 @@ const scope: McpInvocationContext.McpInvocationScope = {
   requestNamespace: "mcp-core-session",
   thread: {
     threadId,
+    controllerId: "mcp-core-session",
     providerSessionId: "mcp-core-session",
     providerInstanceId: ProviderInstanceId.make("codex"),
   },

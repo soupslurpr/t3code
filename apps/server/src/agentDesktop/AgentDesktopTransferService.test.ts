@@ -36,7 +36,12 @@ const now = "2026-08-14T00:00:00.000Z";
 const modelSelection = { instanceId: providerInstanceId, model: "test-model" } as const;
 const scope: McpInvocationContext.McpThreadInvocationScope = {
   environmentId,
-  thread: { threadId, providerSessionId: "session-transfer-test", providerInstanceId },
+  thread: {
+    threadId,
+    controllerId: "controller-transfer-test",
+    providerSessionId: "session-transfer-test",
+    providerInstanceId,
+  },
   requestNamespace: "transfer-test",
   client: undefined,
   capabilities: new Set(["computer"]),
@@ -93,8 +98,14 @@ function managerLayer(
   >,
 ) {
   return Layer.mock(AgentDesktopManager.AgentDesktopManager)({
-    transfer: (_owner, input) => handleTransfer(input),
-    cancelTransfer: () => Effect.void,
+    transfer: (owner, input) => {
+      assert.equal(owner.controllerId, scope.thread.controllerId);
+      return handleTransfer(input);
+    },
+    cancelTransfer: (owner) => {
+      assert.equal(owner.controllerId, scope.thread.controllerId);
+      return Effect.void;
+    },
   });
 }
 

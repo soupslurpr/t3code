@@ -329,6 +329,7 @@ it.effect("task_cancel ends a delegated child's background native subagent", () 
           requestNamespace: "provider-session:task-cancel",
           thread: {
             threadId: parentThreadId,
+            controllerId: "provider-session:task-cancel",
             providerSessionId: "provider-session:task-cancel",
             providerInstanceId: instanceId,
           },

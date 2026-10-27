@@ -206,6 +206,7 @@ export const make = Effect.gen(function* () {
       environmentId: yield* environment.getEnvironmentId,
       thread: {
         threadId: input.threadId,
+        controllerId: `thread-monitor:${input.monitorId}`,
         providerSessionId: `thread-monitor:${input.monitorId}`,
         providerInstanceId: input.providerInstanceId,
       },

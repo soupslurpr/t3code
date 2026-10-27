@@ -32,6 +32,7 @@ const scope = {
   requestNamespace: "provider-session-1",
   thread: {
     threadId: ThreadId.make("thread-1"),
+    controllerId: "provider-session-1",
     providerSessionId: "provider-session-1",
     providerInstanceId: ProviderInstanceId.make("codex"),
   },
@@ -60,6 +61,7 @@ const requestsFrom = (
         onConnected(event.connectionId);
         return Result.failVoid;
       }
+      if (event.type === "cancel") return Result.failVoid;
       return Result.succeed({ ...event.request, connectionId: event.connectionId });
     }),
   );
@@ -268,7 +270,7 @@ it.effect("announces a live replacement stream before delivering requests", () =
         Stream.take(2),
         Stream.runForEach((event) => {
           receivedTypes.push(event.type);
-          return event.type === "connected"
+          return event.type !== "request"
             ? Effect.void
             : broker.respond({
                 clientId: "client-1",
@@ -419,6 +421,7 @@ it.effect("routes requests for background threads through an environment-level h
           thread: {
             ...scope.thread,
             threadId: backgroundThreadId,
+            controllerId: "provider-session-background",
             providerSessionId: "provider-session-background",
           },
         },

@@ -77,7 +77,7 @@ function ownerFromScope(scope: McpInvocationContext.McpThreadInvocationScope): A
   return {
     environmentId: scope.environmentId,
     threadId: scope.thread.threadId,
-    controllerId: scope.thread.providerSessionId,
+    controllerId: scope.thread.controllerId,
   };
 }
 
@@ -126,7 +126,7 @@ export const make = Effect.gen(function* () {
   const agentStatus = (
     scope: McpInvocationContext.McpThreadInvocationScope,
     desktopId: AgentDesktopId,
-  ) => agent.status(scope.thread.providerSessionId, desktopId);
+  ) => agent.status(scope.thread.controllerId, desktopId);
 
   const observeAgent = Effect.fn("ComputerAutomationRouter.observeAgent")(function* (input: {
     readonly scope: McpInvocationContext.McpThreadInvocationScope;
@@ -138,7 +138,7 @@ export const make = Effect.gen(function* () {
       return input.status === undefined ? {} : { status: input.status };
     }
     const snapshot = yield* agent
-      .snapshot(input.scope.thread.providerSessionId, input.options, input.desktopId)
+      .snapshot(input.scope.thread.controllerId, input.options, input.desktopId)
       .pipe(Effect.option);
     if (snapshot._tag === "None") {
       return {
@@ -148,7 +148,7 @@ export const make = Effect.gen(function* () {
     }
     if (input.status === undefined) return { snapshot: snapshot.value };
     const refreshed = yield* agent
-      .status(input.scope.thread.providerSessionId, input.desktopId)
+      .status(input.scope.thread.controllerId, input.desktopId)
       .pipe(Effect.option);
     const status = statusWithObservedDisplay(
       refreshed._tag === "None"
@@ -234,7 +234,7 @@ export const make = Effect.gen(function* () {
     return local(
       scope,
       "computerSnapshot",
-      agent.snapshot(scope.thread.providerSessionId, options, desktop.desktopId),
+      agent.snapshot(scope.thread.controllerId, options, desktop.desktopId),
     );
   };
 
@@ -246,7 +246,7 @@ export const make = Effect.gen(function* () {
     return local(
       scope,
       "computerAct",
-      agent.act(scope.thread.providerSessionId, actions, desktop.desktopId),
+      agent.act(scope.thread.controllerId, actions, desktop.desktopId),
     ).pipe(
       Effect.flatMap((actionResults) =>
         observeAgent({
@@ -264,7 +264,7 @@ export const make = Effect.gen(function* () {
       : local(
           scope,
           "computerRelease",
-          agent.release(scope.thread.providerSessionId, input.desktop.desktopId),
+          agent.release(scope.thread.controllerId, input.desktop.desktopId),
         );
 
   const forget: ComputerAutomationRouterShape["forget"] = (scope, input) =>
@@ -273,7 +273,7 @@ export const make = Effect.gen(function* () {
       : local(
           scope,
           "computerForgetControl",
-          agent.forget(scope.thread.providerSessionId, input.desktop.desktopId),
+          agent.forget(scope.thread.controllerId, input.desktop.desktopId),
         );
 
   return ComputerAutomationRouter.of({

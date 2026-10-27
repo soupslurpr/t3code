@@ -282,6 +282,7 @@ const releasedDesktopTabs: Array<string> = [];
 const desktopTurns = new NodeEvents.EventEmitter();
 const desktopConnections: Array<{ endpoint: string; context: ReturnType<typeof makeContext> }> = [];
 const testThread = {
+  controllerId: "browser-controller",
   threadId: ThreadId.make("browser-test-thread"),
   providerSessionId: "agent-a",
   providerInstanceId: ProviderInstanceId.make("codex"),
@@ -296,7 +297,7 @@ const scope = {
 };
 const asSession = (providerSessionId: string) => ({
   ...scope,
-  thread: { ...testThread, providerSessionId },
+  thread: { ...testThread, controllerId: "browser-controller", providerSessionId },
 });
 const dependencies = Layer.mergeAll(
   Broker.layer.pipe(Layer.provide(UserDesktops.layerMemory)),

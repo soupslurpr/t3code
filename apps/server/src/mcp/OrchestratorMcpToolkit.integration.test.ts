@@ -284,6 +284,7 @@ describe("orchestrator MCP toolkit", () => {
             requestNamespace: "mcp-provider-session-replay-parent",
             thread: {
               threadId: parentThreadId,
+              controllerId: "mcp-provider-session-replay-parent",
               providerSessionId: "mcp-provider-session-replay-parent",
               providerInstanceId: codexInstanceId,
             },

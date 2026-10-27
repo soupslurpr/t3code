@@ -26,6 +26,7 @@ import {
 import type { ProviderInstance } from "@t3tools/provider-core/server/driver";
 import type { ImageConditionEvaluationInput } from "@t3tools/provider-core/server/textGeneration";
 import * as Deferred from "effect/Deferred";
+import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
 import * as FileSystem from "effect/FileSystem";
@@ -760,8 +761,13 @@ it.effect("releases an active watch after V2 deletion removes its owner", () =>
     const h = yield* harness();
     const repository = yield* Repository.ThreadMonitorRepository;
     const retired = yield* Deferred.make<void>();
+    const released = yield* Deferred.make<void>();
     const service = yield* ThreadMonitorService.make.pipe(
-      Effect.provideService(ThreadMonitorComputerService, h.service),
+      Effect.provideService(ThreadMonitorComputerService, {
+        ...h.service,
+        release: (monitor) =>
+          h.service.release(monitor).pipe(Effect.tap(() => Deferred.succeed(released, undefined))),
+      }),
       Effect.provideService(ServerActivation, Effect.void),
       Effect.provideService(Repository.ThreadMonitorRepository, {
         ...repository,
@@ -783,6 +789,7 @@ it.effect("releases an active watch after V2 deletion removes its owner", () =>
       threadId: Testkit.threadId,
     });
     yield* Deferred.await(retired);
+    yield* Deferred.await(released);
     assert.isTrue(Option.isNone(yield* repository.getById(monitor.id)));
     assert.isTrue(Option.isNone(yield* repository.getComputerEvidence(monitor.id)));
     assert.equal(h.calls.at(-1)?.operation, "computerRelease");
@@ -1909,4 +1916,272 @@ it.effect(
       );
       yield* service.cancel({ threadId: Testkit.threadId, cancel: { monitorId: monitor.id } });
     }).pipe(Effect.provide(Layer.merge(Testkit.layer, NodeServices.layer))),
+);
+
+const concurrentMonitorHarness = Effect.fn("ComputerWatchTest.concurrentHarness")(function* () {
+  yield* Testkit.seedThread();
+  const h = yield* harness();
+  const gates = {
+    prepare: Effect.void,
+    check: Effect.void,
+    revise: Effect.void,
+    inspectFresh: Effect.void,
+    release: Effect.void,
+  };
+  const service = yield* ThreadMonitorService.make.pipe(
+    Effect.provideService(ThreadMonitorComputerService, {
+      ...h.service,
+      prepare: (input) =>
+        Effect.suspend(() => gates.prepare.pipe(Effect.andThen(h.service.prepare(input)))),
+      check: (input) =>
+        Effect.suspend(() => gates.check.pipe(Effect.andThen(h.service.check(input)))),
+      revise: (input) =>
+        Effect.suspend(() => gates.revise.pipe(Effect.andThen(h.service.revise(input)))),
+      inspectFresh: (input) =>
+        Effect.suspend(() =>
+          gates.inspectFresh.pipe(Effect.andThen(h.service.inspectFresh(input))),
+        ),
+      release: (input) =>
+        Effect.suspend(() => gates.release.pipe(Effect.andThen(h.service.release(input)))),
+    }),
+  );
+  const create = () => service.createComputer({ threadId: Testkit.threadId, monitor: modelWatch });
+  return { h, service, gates, create };
+});
+
+it.effect("pending desktop access leaves other monitor operations available", () =>
+  Effect.gen(function* () {
+    const { service, gates, create } = yield* concurrentMonitorHarness();
+    const entered = yield* Deferred.make<void>();
+    const proceed = yield* Deferred.make<void>();
+    gates.prepare = Deferred.succeed(entered, undefined).pipe(
+      Effect.andThen(Deferred.await(proceed)),
+      Effect.asVoid,
+    );
+    const pending = yield* create().pipe(Effect.forkScoped);
+    yield* Deferred.await(entered);
+    const independent = yield* service.create({
+      threadId: Testkit.threadId,
+      monitor: { label: "Independent signal", schedule: { type: "signal" } },
+    });
+    assert.equal(
+      (yield* service.status({ threadId: Testkit.threadId, query: { monitorId: independent.id } }))
+        .monitors[0]?.status,
+      "active",
+    );
+    assert.equal(
+      (yield* service.signal({ threadId: Testkit.threadId, signal: { monitorId: independent.id } }))
+        .status,
+      "triggered",
+    );
+    yield* service.cancel({ threadId: Testkit.threadId, cancel: { monitorId: independent.id } });
+    yield* Deferred.succeed(proceed, undefined);
+    yield* Fiber.join(pending);
+  }).pipe(Effect.provide(Layer.merge(Testkit.layer, NodeServices.layer))),
+);
+
+it.effect("pending observation leaves other watches running and cancellation wins", () =>
+  Effect.gen(function* () {
+    const { service, h, gates, create } = yield* concurrentMonitorHarness();
+    const entered = yield* Deferred.make<void>();
+    const interrupted = yield* Deferred.make<void>();
+    gates.check = Deferred.succeed(entered, undefined).pipe(
+      Effect.andThen(Effect.never),
+      Effect.onInterrupt(() => Deferred.succeed(interrupted, undefined)),
+    );
+    const { monitor } = yield* create();
+    yield* TestClock.adjust("1 second");
+    const pending = yield* service
+      .checkNow({ threadId: Testkit.threadId, check: { monitorId: monitor.id } })
+      .pipe(Effect.forkScoped);
+    yield* Deferred.await(entered);
+    gates.check = Effect.void;
+    h.state.verdict = "matched";
+    const second = yield* create();
+    h.state.pixels = "changed";
+    yield* TestClock.adjust("1 second");
+    const secondStatus = yield* service.checkNow({
+      threadId: Testkit.threadId,
+      check: { monitorId: second.monitor.id },
+    });
+    assert.equal(secondStatus.monitors[0]?.status, "delivered");
+    yield* service.cancel({ threadId: Testkit.threadId, cancel: { monitorId: monitor.id } });
+    yield* Deferred.await(interrupted);
+    assert.equal((yield* Fiber.join(pending)).monitors[0]?.status, "cancelled");
+    const repository = yield* Repository.ThreadMonitorRepository;
+    assert.lengthOf(
+      Option.getOrThrow(yield* repository.getComputerEvidence(monitor.id)).terminalImages,
+      0,
+    );
+  }).pipe(Effect.provide(Layer.merge(Testkit.layer, NodeServices.layer))),
+);
+
+it.effect("a committed revision supersedes an in-flight observation", () =>
+  Effect.gen(function* () {
+    const { service, gates, create } = yield* concurrentMonitorHarness();
+    const entered = yield* Deferred.make<void>();
+    gates.check = Deferred.succeed(entered, undefined).pipe(Effect.andThen(Effect.never));
+    const { monitor } = yield* create();
+    yield* TestClock.adjust("1 second");
+    const pending = yield* service
+      .checkNow({ threadId: Testkit.threadId, check: { monitorId: monitor.id } })
+      .pipe(Effect.forkScoped);
+    yield* Deferred.await(entered);
+    const updated = yield* service.updateComputer({
+      threadId: Testkit.threadId,
+      update: { monitorId: monitor.id, expectedRevision: 1, label: "New criterion" },
+    });
+    assert.equal(updated.revision, 2);
+    const result = yield* Fiber.join(pending);
+    assert.equal(result.monitors[0]?.label, "New criterion");
+    assert.equal(result.monitors[0]?.status, "active");
+  }).pipe(Effect.provide(Layer.merge(Testkit.layer, NodeServices.layer))),
+);
+
+it.effect("deadline processing interrupts a pending observation", () =>
+  Effect.gen(function* () {
+    const { service, gates } = yield* concurrentMonitorHarness();
+    const entered = yield* Deferred.make<void>();
+    gates.check = Deferred.succeed(entered, undefined).pipe(Effect.andThen(Effect.never));
+    const now = yield* DateTime.now;
+    const { monitor } = yield* service.createComputer({
+      threadId: Testkit.threadId,
+      monitor: { ...modelWatch, deadlineAt: DateTime.formatIso(DateTime.add(now, { seconds: 2 })) },
+    });
+    yield* TestClock.adjust("1 second");
+    const pending = yield* service
+      .checkNow({ threadId: Testkit.threadId, check: { monitorId: monitor.id } })
+      .pipe(Effect.forkScoped);
+    yield* Deferred.await(entered);
+    yield* TestClock.adjust("1 second");
+    const result = yield* service.checkNow({
+      threadId: Testkit.threadId,
+      check: { monitorId: monitor.id },
+    });
+    assert.equal(result.monitors[0]?.trigger?.reason, "deadline");
+    assert.equal((yield* Fiber.join(pending)).monitors[0]?.status, "delivered");
+  }).pipe(Effect.provide(Layer.merge(Testkit.layer, NodeServices.layer))),
+);
+
+it.effect("slow desktop release leaves persisted cancellation and other monitors available", () =>
+  Effect.gen(function* () {
+    const { service, gates, create } = yield* concurrentMonitorHarness();
+    const entered = yield* Deferred.make<void>();
+    const proceed = yield* Deferred.make<void>();
+    gates.release = Deferred.succeed(entered, undefined).pipe(
+      Effect.andThen(Deferred.await(proceed)),
+      Effect.asVoid,
+    );
+    const { monitor } = yield* create();
+    const pending = yield* service
+      .cancel({ threadId: Testkit.threadId, cancel: { monitorId: monitor.id } })
+      .pipe(Effect.forkScoped);
+    yield* Deferred.await(entered);
+    assert.equal(
+      (yield* service.status({ threadId: Testkit.threadId, query: { monitorId: monitor.id } }))
+        .monitors[0]?.status,
+      "cancelled",
+    );
+    const independent = yield* service.create({
+      threadId: Testkit.threadId,
+      monitor: { label: "Independent", schedule: { type: "signal" } },
+    });
+    yield* service.cancel({ threadId: Testkit.threadId, cancel: { monitorId: independent.id } });
+    yield* Deferred.succeed(proceed, undefined);
+    yield* Fiber.join(pending);
+  }).pipe(Effect.provide(Layer.merge(Testkit.layer, NodeServices.layer))),
+);
+
+it.effect.each(["revise", "inspectFresh"] as const)(
+  "pending %s cannot revive a cancelled watch",
+  (operation) =>
+    Effect.gen(function* () {
+      const { service, h, gates, create } = yield* concurrentMonitorHarness();
+      const entered = yield* Deferred.make<void>();
+      const proceed = yield* Deferred.make<void>();
+      gates[operation] = Deferred.succeed(entered, undefined).pipe(
+        Effect.andThen(Deferred.await(proceed)),
+        Effect.asVoid,
+      );
+      const { monitor } = yield* create();
+      const pending = yield* (
+        operation === "revise"
+          ? service
+              .updateComputer({
+                threadId: Testkit.threadId,
+                update: { monitorId: monitor.id, expectedRevision: 1, label: "Too late" },
+              })
+              .pipe(Effect.asVoid)
+          : service
+              .inspectComputer({
+                threadId: Testkit.threadId,
+                inspect: { monitorId: monitor.id, fresh: {} },
+              })
+              .pipe(Effect.asVoid)
+      ).pipe(Effect.result, Effect.forkScoped);
+      yield* Deferred.await(entered);
+      yield* service.cancel({ threadId: Testkit.threadId, cancel: { monitorId: monitor.id } });
+      const count = h.calls.filter((call) => call.operation === "computerRelease").length;
+      yield* Deferred.succeed(proceed, undefined);
+      const result = yield* Fiber.join(pending);
+      assert.isTrue(Result.isFailure(result));
+      if (Result.isFailure(result)) assert.equal(result.failure.code, "MONITOR_NOT_ACTIVE");
+      assert.equal(
+        h.calls.filter((call) => call.operation === "computerRelease").length,
+        count + 1,
+      );
+    }).pipe(Effect.provide(Layer.merge(Testkit.layer, NodeServices.layer))),
+);
+
+it.effect("cancel all stops pending desktop access before a monitor is persisted", () =>
+  Effect.gen(function* () {
+    const { service, gates, create } = yield* concurrentMonitorHarness();
+    const entered = yield* Deferred.make<void>();
+    gates.prepare = Deferred.succeed(entered, undefined).pipe(Effect.andThen(Effect.never));
+    const pending = yield* create().pipe(Effect.result, Effect.forkScoped);
+    yield* Deferred.await(entered);
+    yield* service.cancel({ threadId: Testkit.threadId, cancel: {} });
+    const result = yield* Fiber.join(pending);
+    assert.isTrue(Result.isFailure(result));
+    if (Result.isFailure(result)) assert.equal(result.failure.code, "MONITOR_NOT_ACTIVE");
+    assert.lengthOf(
+      (yield* service.status({ threadId: Testkit.threadId, query: { includeFinished: true } }))
+        .monitors,
+      0,
+    );
+  }).pipe(Effect.provide(Layer.merge(Testkit.layer, NodeServices.layer))),
+);
+
+it.effect("concurrent revisions preserve the revision that commits first", () =>
+  Effect.gen(function* () {
+    const { service, gates, create } = yield* concurrentMonitorHarness();
+    const entered = yield* Deferred.make<void>();
+    const proceed = yield* Deferred.make<void>();
+    gates.revise = Deferred.succeed(entered, undefined).pipe(
+      Effect.andThen(Deferred.await(proceed)),
+      Effect.asVoid,
+    );
+    const { monitor } = yield* create();
+    const pending = yield* service
+      .updateComputer({
+        threadId: Testkit.threadId,
+        update: { monitorId: monitor.id, expectedRevision: 1, label: "Slow revision" },
+      })
+      .pipe(Effect.result, Effect.forkScoped);
+    yield* Deferred.await(entered);
+    gates.revise = Effect.void;
+    yield* service.updateComputer({
+      threadId: Testkit.threadId,
+      update: { monitorId: monitor.id, expectedRevision: 1, label: "Committed revision" },
+    });
+    yield* Deferred.succeed(proceed, undefined);
+    const result = yield* Fiber.join(pending);
+    assert.isTrue(Result.isFailure(result));
+    if (Result.isFailure(result)) assert.equal(result.failure.code, "REVISION_CONFLICT");
+    assert.equal(
+      (yield* service.status({ threadId: Testkit.threadId, query: { monitorId: monitor.id } }))
+        .monitors[0]?.label,
+      "Committed revision",
+    );
+  }).pipe(Effect.provide(Layer.merge(Testkit.layer, NodeServices.layer))),
 );

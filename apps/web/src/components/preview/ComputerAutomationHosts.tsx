@@ -9,9 +9,8 @@ import {
   type ComputerAutomationSnapshotInput,
   type EnvironmentId,
   type PreviewAutomationRequest,
-  type PreviewAutomationResponse,
 } from "@t3tools/contracts";
-import { AsyncResult, Atom } from "effect/reactivity";
+import { Atom } from "effect/reactivity";
 
 import { isElectron } from "~/env";
 import { randomUUID } from "~/lib/utils";
@@ -22,8 +21,8 @@ import { useEnvironmentsWithScope } from "~/state/session";
 import {
   PreviewAutomationComputerControllerRequiredError,
   resolveDesktopComputerAutomation,
-  serializeComputerAutomationError,
 } from "./previewAutomationErrors";
+import { createPreviewAutomationRequestConsumerAtom } from "./previewAutomationRequestConsumer";
 import { previewAutomationHostCapabilities } from "./previewAutomationHostCapabilities";
 
 async function handleComputerRequest(
@@ -111,6 +110,31 @@ async function handleComputerRequest(
   throw new Error("This desktop host only supports user desktop automation.");
 }
 
+async function cancelComputerRequest(
+  environmentId: EnvironmentId,
+  request: PreviewAutomationRequest,
+) {
+  const computer = window.desktopBridge?.computer;
+  if (computer === undefined || request.controllerId === undefined) return;
+  const context = { controllerId: request.controllerId, environmentId, threadId: request.threadId };
+  switch (request.operation) {
+    case "computerRequestAvailability":
+      await computer.releaseAvailability(
+        request.input as ComputerAutomationAvailabilityInput,
+        context,
+      );
+      return;
+    case "computerRequestView":
+    case "computerRequestControl":
+    case "computerRememberView":
+    case "computerRememberControl":
+    case "computerSnapshot":
+    case "computerAct":
+      await computer.release(request.input as ComputerAutomationTargetInput, context);
+      return;
+  }
+}
+
 const computerHostAtom = Atom.family((environmentId: EnvironmentId) =>
   Atom.make((get) => {
     const clientId = randomUUID();
@@ -122,15 +146,19 @@ const computerHostAtom = Atom.family((environmentId: EnvironmentId) =>
         environmentId,
         ...(userDesktop === undefined ? {} : { userDesktop }),
         ...previewAutomationHostCapabilities({
-          computerAvailable: userDesktop === undefined || userDesktop.capabilities.includes("view"),
+          computerAvailable: window.desktopBridge?.computer !== undefined,
+          computerCapabilities: userDesktop?.capabilities ?? [],
         }),
       },
     });
-    let disposed = false;
-    let connectionId: string | null = null;
+    const connectionAtom = Atom.make<string | null>(null);
     let lastFocusReport: string | null = null;
     const reportFocus = () => {
-      if (connectionId === null) return;
+      const connectionId = get.once(connectionAtom);
+      if (connectionId === null) {
+        lastFocusReport = null;
+        return;
+      }
       const input = {
         clientId,
         environmentId,
@@ -154,52 +182,33 @@ const computerHostAtom = Atom.family((environmentId: EnvironmentId) =>
     window.addEventListener("blur", reportFocus);
     document.addEventListener("visibilitychange", reportFocus);
     get.addFinalizer(() => {
-      disposed = true;
       window.removeEventListener("focus", reportFocus);
       window.removeEventListener("blur", reportFocus);
       document.removeEventListener("visibilitychange", reportFocus);
     });
-    get.subscribe(requestsAtom, (result) => {
-      if (AsyncResult.isFailure(result)) {
-        connectionId = null;
-        lastFocusReport = null;
-        return;
-      }
-      if (!AsyncResult.isSuccess(result)) return;
-      const event = result.value;
-      if (event.type === "connected") {
-        connectionId = event.connectionId;
-        reportFocus();
-        return;
-      }
-      if (event.connectionId !== connectionId) return;
-      const answer = (
-        outcome:
-          | { ok: true; result: unknown }
-          | { ok: false; error: NonNullable<PreviewAutomationResponse["error"]> },
-      ) => {
-        if (disposed || connectionId !== event.connectionId) return;
-        return runAtomCommand(
-          get.registry,
-          previewEnvironment.respondToAutomation,
-          {
-            environmentId,
-            input: {
-              clientId,
-              connectionId: event.connectionId,
-              requestId: event.request.requestId,
-              ...outcome,
-            },
-          },
-          { reportFailure: false },
-        );
-      };
-      void handleComputerRequest(environmentId, event.request).then(
-        (value) => answer({ ok: true, result: value }),
-        (error: unknown) => answer({ ok: false, error: serializeComputerAutomationError(error) }),
-      );
-    });
-    get.mount(requestsAtom);
+    get.subscribe(connectionAtom, reportFocus);
+    get.mount(
+      createPreviewAutomationRequestConsumerAtom({
+        requestsAtom,
+        clientId,
+        connectionAtom,
+        environmentId,
+        requestHandlerAtom: Atom.make({
+          handle: (request: PreviewAutomationRequest) =>
+            handleComputerRequest(environmentId, request),
+          cancel: (request: PreviewAutomationRequest) =>
+            cancelComputerRequest(environmentId, request),
+        }),
+        respond: (input) =>
+          runAtomCommand(
+            get.registry,
+            previewEnvironment.respondToAutomation,
+            { environmentId, input },
+            { reportFailure: false },
+          ),
+        label: `computer-requests:${environmentId}`,
+      }),
+    );
   }).pipe(Atom.setIdleTTL(0), Atom.withLabel(`computer-host:${environmentId}`)),
 );
 
