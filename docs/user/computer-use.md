@@ -46,12 +46,13 @@ The same Settings page can end all active access or forget approval for a select
 Those user actions interrupt every agent lease on that desktop, including pending authorization,
 rather than waiting for the agent that acquired access to release it.
 
-The agent can call `computer_release` to cancel pending authorization or end the active sharing
-session immediately. This removes capture and input access but retains any restore tokens you
-explicitly created in Settings and retains desktop availability, so a later task can reconnect before
-automatic locking makes the user desktop unavailable. A later `computer_status` reports `remembered`
-only when reusable approval exists, and `keepAwake` remains true while availability is retained. The
-agent can call
+The agent can call `computer_release` to cancel pending authorization, in-flight or queued input, or
+the active sharing session immediately. Held keys and mouse buttons are released before the final
+status returns. This removes capture and input access but retains any restore tokens you explicitly
+created in Settings and retains desktop availability, so a later task can reconnect before automatic
+locking makes the user desktop unavailable. A later `computer_status` reports `remembered` only when
+reusable approval exists, and `keepAwake` remains true while availability is retained. The agent can
+call
 `computer_release_availability`, or you can select **Allow locking** in General settings, to remove
 only the availability lease without disabling the persistent policy. `computer_forget_control` ends
 the session, deletes both restore tokens, and releases availability, so the next request requires
@@ -161,16 +162,19 @@ Text actions request exact Unicode, including smart punctuation, arrows, combini
 emoji. A focused editable accessibility control receives the text directly and confirms the exact
 inserted substring. The action receipt separates requested, backend-accepted, and
 application-confirmed code-point counts and labels verification as exact, partial, or unavailable.
-Backend acceptance alone never claims that an application consumed or rendered key events. When direct insertion is not
-available, both desktop kinds use keyboard events only for exact ASCII and report
-`exact-text-unavailable` for non-ASCII instead of claiming success after a compositor or application
-silently drops it, or replaying a Unicode input-method sequence that an application might
-misinterpret. Agent desktop key chords use explicit key-down, hold, reverse key-up, and settle
-phases instead of QEMU's asynchronous timed-key shortcut. Keyboard taps and pointer clicks use short human-equivalent transition timing to avoid
-dropped events or accidental repeats, and typing waits briefly for the application input queue before
-returning. Neither path reads or changes the clipboard. On either desktop, a focused multiline
-editable control accepts a whole text block directly; literal Newline and Tab fail without an accessible editable control. Intentional Enter and Tab
-keys use press actions. Exact insertion never replays text through the keyboard after an uncertain partial failure.
+Backend acceptance alone never claims that an application consumed or rendered key events. When
+direct insertion is not available, both desktop kinds use keyboard events for exact ASCII and a
+temporary IBus engine for non-ASCII text. That fallback requires Python, PyGObject, and IBus. If exact delivery is unavailable, the action reports
+`exact-text-unavailable` instead of claiming success after a compositor or application silently
+drops input. Agent desktop key chords combine QEMU's timed self-release with a delayed explicit
+key-up safeguard. Keyboard taps and pointer clicks use
+short human-equivalent transition timing to avoid dropped events or accidental repeats, and typing
+waits briefly for the application input queue before returning. Neither path reads or changes the
+clipboard. On either desktop, a focused multiline
+editable control accepts a whole text block directly. Elsewhere, a type action containing Newline or
+Tab fails before injecting any text; agents use explicit press or hotkey actions when they intend
+those control keys. Exact insertion never replays text through the keyboard after an uncertain
+partial failure.
 
 Taking over an Agent desktop enters full screen and captures host-reserved shortcuts so keys such as
 Super reach only the guest. GNOME may show a first-use prompt to allow shortcut inhibition. Its

@@ -116,6 +116,7 @@ const DEFAULT_COMMAND_OUTPUT_BYTES = 1024 * 1024;
 const DEFAULT_FILE_READ_BYTES = 1024 * 1024;
 const MAX_NETWORK_CONNECTIONS = 256;
 const GUEST_ACCESSIBILITY_RESOURCE = "agent-desktop/accessibility.js";
+const GUEST_IBUS_COMMIT_RESOURCE = "agent-desktop/ibus-commit.py";
 const GUEST_INPUT_RESOURCE = "agent-desktop/input-helper.py";
 const GUEST_INPUT_DIRECTORY = "/run/t3-agent-input";
 const GUEST_INPUT_PATH = `${GUEST_INPUT_DIRECTORY}/input-helper.py`;
@@ -133,6 +134,7 @@ const GUEST_MAINTENANCE_PATH = `${GUEST_ACCESSIBILITY_DIRECTORY}/maintenance.sh`
 const GUEST_PROFILE_MARKER_PATH = "/etc/t3-agent-desktop-profile";
 const GUEST_MAINTENANCE_TIMEOUT_MS = 2 * 60 * 60 * 1_000;
 const GUEST_ACCESSIBILITY_PATH = `${GUEST_ACCESSIBILITY_DIRECTORY}/accessibility.js`;
+const GUEST_IBUS_COMMIT_PATH = `${GUEST_ACCESSIBILITY_DIRECTORY}/ibus-commit.py`;
 const GUEST_DESKTOP_USER_PATH = "/etc/t3-agent-desktop-user";
 const GUEST_INTEGRATION_TIMEOUT_MS = 10_000;
 const GUEST_ACCESSIBILITY_OUTPUT_BYTES = 2 * 1024 * 1024;
@@ -409,6 +411,22 @@ const decodeGuestAccessibilityProbe = Schema.decodeUnknownEffect(GuestAccessibil
 const decodeGuestTextInsertionResult = Schema.decodeUnknownEffect(GuestTextInsertionResult);
 
 /** Reports a manager-level targeting, admission, or lifecycle failure. */
+const GuestIbusCommitResponse = Schema.Union([
+  Schema.Struct({
+    ok: Schema.Literal(true),
+    acceptedCodePoints: Schema.Int.check(Schema.isBetween({ minimum: 0, maximum: 10_000 })),
+  }),
+  Schema.Struct({
+    ok: Schema.Literal(false),
+    code: Schema.String.check(Schema.isMaxLength(128)),
+    detail: Schema.String.check(Schema.isMaxLength(2_000)),
+    acceptedCodePoints: Schema.Int.check(Schema.isBetween({ minimum: 0, maximum: 10_000 })),
+  }),
+]);
+const decodeGuestIbusCommitResponse = Schema.decodeEffect(
+  Schema.fromJsonString(GuestIbusCommitResponse),
+);
+
 const GuestTransferTree = Schema.Struct({
   rootType: Schema.Literals(["file", "directory", "symlink"]),
   fileCount: Schema.Int.check(Schema.isGreaterThanOrEqualTo(0)),
@@ -453,6 +471,8 @@ export class AgentDesktopManagerError extends Schema.TaggedError<AgentDesktopMan
       "stale-accessibility-target",
       "accessibility-activation-failed",
       "accessibility-insertion-failed",
+      "exact-text-unavailable",
+      "ibus-injection-failed",
       "source-unavailable",
       "invalid-destination",
       "destination-exists",
@@ -529,6 +549,7 @@ interface RuntimeState {
   readonly accessibilityTargets: Ref.Ref<ReadonlyMap<string, GuestAccessibilityLocator>>;
   readonly accessibilityWindows: Ref.Ref<ReadonlyMap<string, GuestAccessibilityWindowLocator>>;
   readonly guestIntegration: Ref.Ref<GuestDesktopIdentity | null>;
+  readonly guestIbusIntegration: Ref.Ref<GuestDesktopIdentity | null>;
   readonly guestInputPrepared: Ref.Ref<boolean>;
 }
 
@@ -1061,6 +1082,13 @@ export const make = Effect.gen(function* () {
     }
     return null;
   });
+  const guestIbusCommitSource = yield* Effect.gen(function* () {
+    for (const candidate of environment.resolveResourcePathCandidates(GUEST_IBUS_COMMIT_RESOURCE)) {
+      const source = yield* fileSystem.readFileString(candidate).pipe(Effect.option);
+      if (Option.isSome(source)) return source.value;
+    }
+    return null;
+  });
   const guestInputSource = yield* Effect.gen(function* () {
     for (const candidate of environment.resolveResourcePathCandidates(GUEST_INPUT_RESOURCE)) {
       const source = yield* fileSystem.readFileString(candidate).pipe(Effect.option);
@@ -1107,6 +1135,7 @@ export const make = Effect.gen(function* () {
         new Map(),
       ),
       guestIntegration: yield* Ref.make<GuestDesktopIdentity | null>(null),
+      guestIbusIntegration: yield* Ref.make<GuestDesktopIdentity | null>(null),
       guestInputPrepared: yield* Ref.make(false),
     } satisfies RuntimeState;
   });
@@ -2068,6 +2097,75 @@ export const make = Effect.gen(function* () {
     );
   });
 
+  const runGuestIbusCommit = Effect.fn("AgentDesktopManager.runGuestIbusCommit")(function* (
+    desktop: PersistedDesktop,
+    identity: GuestDesktopIdentity,
+    text: string,
+    intervalMs: number,
+  ) {
+    if (guestIbusCommitSource === null) {
+      return yield* new AgentDesktopManagerError({
+        code: "exact-text-unavailable",
+        operation: "guest-ibus-commit",
+        detail: "the bundled Agent desktop IBus helper is missing",
+        field: "text",
+        expected: ["IBus exact-text helper"],
+        phase: "execution",
+      });
+    }
+    const encodedInput = Buffer.from(
+      yield* encodeGuestTextInsertionInput({ text, intervalMs }).pipe(
+        Effect.mapError(
+          (cause) =>
+            new AgentDesktopManagerError({
+              code: "internal-error",
+              operation: "guest-ibus-commit-encode",
+              detail: String(cause).slice(0, 256),
+            }),
+        ),
+      ),
+      "utf8",
+    ).toString("base64");
+    const processResult = yield* runGuestSessionProcess(
+      desktop,
+      identity,
+      "/usr/bin/python",
+      [GUEST_IBUS_COMMIT_PATH, encodedInput],
+      64 * 1_024,
+      GUEST_INTEGRATION_TIMEOUT_MS + Array.from(text).length * intervalMs,
+    );
+    const successful = yield* requireGuestProcessSuccess("guest-ibus-commit", processResult);
+    const response = yield* decodeGuestIbusCommitResponse(successful.stdout).pipe(
+      Effect.mapError(
+        (cause) =>
+          new AgentDesktopManagerError({
+            code: "internal-error",
+            operation: "guest-ibus-commit-decode",
+            detail: `guest IBus returned an invalid response: ${String(cause).slice(0, 256)}`,
+          }),
+      ),
+    );
+    const requestedCodePoints = Array.from(text).length;
+    if (response.ok && response.acceptedCodePoints === requestedCodePoints) {
+      return response.acceptedCodePoints;
+    }
+    const acceptedCodePoints = response.acceptedCodePoints;
+    const detail = response.ok
+      ? "guest IBus accepted an unexpected number of code points"
+      : response.detail;
+    return yield* new AgentDesktopManagerError({
+      code: acceptedCodePoints === 0 ? "exact-text-unavailable" : "ibus-injection-failed",
+      operation: "guest-ibus-commit",
+      detail:
+        acceptedCodePoints === 0
+          ? detail
+          : `${detail}; ${acceptedCodePoints} code points may already have been inserted`,
+      field: "text",
+      expected: ["exact Unicode accepted by the focused application input method"],
+      phase: "execution",
+    });
+  });
+
   const prepareGuestIntegration = Effect.fn("AgentDesktopManager.prepareGuestIntegration")(
     function* (desktop: PersistedDesktop, runtime: RuntimeState) {
       const prepared = yield* Ref.get(runtime.guestIntegration);
@@ -2140,6 +2238,79 @@ export const make = Effect.gen(function* () {
     },
   );
 
+  const prepareGuestIbus = Effect.fn("AgentDesktopManager.prepareGuestIbus")(function* (
+    desktop: PersistedDesktop,
+    runtime: RuntimeState,
+  ) {
+    const prepared = yield* Ref.get(runtime.guestIbusIntegration);
+    if (prepared !== null) return prepared;
+    if (guestIbusCommitSource === null) {
+      return yield* new AgentDesktopManagerError({
+        code: "exact-text-unavailable",
+        operation: "guest-ibus-install",
+        detail: "the bundled Agent desktop IBus helper is missing",
+        field: "text",
+        expected: ["IBus exact-text helper"],
+        phase: "execution",
+      });
+    }
+    const identity = yield* resolveGuestDesktopIdentity(desktop);
+    yield* qemu
+      .executeGuestProcess(desktop.id, {
+        executable: "/usr/bin/mkdir",
+        arguments: ["-p", GUEST_ACCESSIBILITY_DIRECTORY],
+        timeoutMs: GUEST_INTEGRATION_TIMEOUT_MS,
+        maxOutputBytes: 4_096,
+      })
+      .pipe(Effect.flatMap((result) => requireGuestProcessSuccess("guest-ibus-mkdir", result)));
+    yield* qemu.writeGuestFile(
+      desktop.id,
+      GUEST_IBUS_COMMIT_PATH,
+      new TextEncoder().encode(guestIbusCommitSource),
+      "overwrite",
+    );
+    yield* qemu
+      .executeGuestProcess(desktop.id, {
+        executable: "/usr/bin/chmod",
+        arguments: ["0644", GUEST_IBUS_COMMIT_PATH],
+        timeoutMs: GUEST_INTEGRATION_TIMEOUT_MS,
+        maxOutputBytes: 4_096,
+      })
+      .pipe(Effect.flatMap((result) => requireGuestProcessSuccess("guest-ibus-chmod", result)));
+    const probe = yield* runGuestSessionProcess(
+      desktop,
+      identity,
+      "/usr/bin/python",
+      [GUEST_IBUS_COMMIT_PATH],
+      64 * 1_024,
+    ).pipe(Effect.flatMap((result) => requireGuestProcessSuccess("guest-ibus-probe", result)));
+    const probeResponse = yield* decodeGuestIbusCommitResponse(probe.stdout).pipe(
+      Effect.mapError(
+        (cause) =>
+          new AgentDesktopManagerError({
+            code: "exact-text-unavailable",
+            operation: "guest-ibus-probe",
+            detail: `the Agent desktop IBus helper is unavailable: ${String(cause).slice(0, 256)}`,
+            field: "text",
+            expected: ["working Python, PyGObject, and IBus session"],
+            phase: "execution",
+          }),
+      ),
+    );
+    if (probeResponse.ok || probeResponse.code !== "invalid-input") {
+      return yield* new AgentDesktopManagerError({
+        code: "exact-text-unavailable",
+        operation: "guest-ibus-probe",
+        detail: "the Agent desktop IBus helper failed its dependency probe",
+        field: "text",
+        expected: ["working Python, PyGObject, and IBus session"],
+        phase: "execution",
+      });
+    }
+    yield* Ref.set(runtime.guestIbusIntegration, identity);
+    return identity;
+  });
+
   const ensureStarted = Effect.fn("AgentDesktopManager.ensureStarted")(function* (
     desktop: PersistedDesktop,
   ) {
@@ -2178,6 +2349,7 @@ export const make = Effect.gen(function* () {
     const runtime = (yield* Ref.get(state)).runtimes.get(desktop.id);
     if (runtime !== undefined) {
       yield* Ref.set(runtime.guestIntegration, null);
+      yield* Ref.set(runtime.guestIbusIntegration, null);
       yield* Ref.set(runtime.captureHealth, untestedCaptureHealth());
     }
     return (yield* setLifecycle(desktop.id, "ready")) ?? desktop;
@@ -3579,14 +3751,25 @@ export const make = Effect.gen(function* () {
       case "type": {
         const intervalMs = action.intervalMs ?? 0;
         const normalizedText = action.text.replaceAll(/\r\n|\r/gu, "\n");
+        const sendQemuText = Effect.fn("AgentDesktopManager.sendQemuText")(function* (
+          text: string,
+        ) {
+          const chords = yield* validatedInput(() => QemuInput.qemuTextChords(text));
+          for (const chord of chords) {
+            yield* sendTransientKey(desktop, runtime, chord);
+            if (intervalMs > 0) yield* Effect.sleep(Duration.millis(intervalMs));
+          }
+          return Array.from(text).length;
+        });
+        let acceptedCodePoints = 0;
+        let confirmedCodePoints = 0;
+        let usedAccessibility = false;
+        let usedKeyEvents = false;
+        let usedInputMethod = false;
         const insertion =
           normalizedText.length === 0
             ? ({ status: "unavailable" } as const)
             : yield* insertGuestText(desktop, runtime, normalizedText, intervalMs);
-        let acceptedCodePoints = 0;
-        let confirmedCodePoints = 0;
-        const usedAccessibility = insertion.status === "inserted";
-        let usedKeyEvents = false;
         if (insertion.status === "inserted") {
           if (
             insertion.injectedCodePoints === undefined ||
@@ -3600,37 +3783,62 @@ export const make = Effect.gen(function* () {
           }
           acceptedCodePoints = insertion.injectedCodePoints;
           confirmedCodePoints = insertion.confirmedCodePoints;
+          usedAccessibility = true;
+        } else if (/[\n\t]/u.test(normalizedText)) {
+          return yield* new AgentDesktopManagerError({
+            code: "exact-text-unavailable",
+            operation: "guest-text-insertion",
+            detail:
+              "newline and tab text require a focused accessible editable control and were not injected",
+            field: "text",
+            expected: [
+              "printable ASCII without newline or tab",
+              "focused accessible editable control",
+            ],
+            phase: "execution",
+          });
+        } else if (QemuInput.canTypeExactlyWithQemu(normalizedText)) {
+          acceptedCodePoints = yield* sendQemuText(normalizedText);
+          usedKeyEvents = normalizedText.length > 0;
         } else {
-          // Validate the whole literal before any key can submit or move focus.
-          const chords = yield* validatedInput(() => QemuInput.qemuTextChords(normalizedText));
-          for (const chord of chords) {
-            yield* sendTransientKey(desktop, runtime, chord);
-            if (intervalMs > 0) yield* Effect.sleep(Duration.millis(intervalMs));
-          }
-          acceptedCodePoints = Array.from(normalizedText).length;
-          usedKeyEvents = acceptedCodePoints > 0;
+          const identity = yield* prepareGuestIbus(desktop, runtime);
+          acceptedCodePoints = yield* runGuestIbusCommit(
+            desktop,
+            identity,
+            normalizedText,
+            intervalMs,
+          );
+          usedInputMethod = normalizedText.length > 0;
         }
         if (acceptedCodePoints > 0) {
           yield* Effect.sleep(Duration.millis(DEFAULT_TYPE_SETTLE_MS));
         }
-        if (action.submit === true) {
+        const verification: "exact" | "partial" | "unavailable" =
+          confirmedCodePoints === Array.from(normalizedText).length
+            ? "exact"
+            : confirmedCodePoints > 0
+              ? "partial"
+              : "unavailable";
+        const withholdSubmission =
+          action.submit === true && action.verification === "required" && verification !== "exact";
+        if (action.submit === true && !withholdSubmission) {
           yield* sendTransientKey(desktop, runtime, QemuInput.qemuPressQcodes("Enter"));
         }
-        if (action.submit === true) yield* Effect.sleep(Duration.millis(DEFAULT_SUBMIT_SETTLE_MS));
+        if (action.submit === true && !withholdSubmission) {
+          yield* Effect.sleep(Duration.millis(DEFAULT_SUBMIT_SETTLE_MS));
+        }
+        const deliveryMethods =
+          Number(usedAccessibility) + Number(usedKeyEvents) + Number(usedInputMethod);
         const delivery =
-          usedAccessibility && usedKeyEvents
+          deliveryMethods > 1
             ? "mixed"
             : usedAccessibility
               ? "accessibility"
               : usedKeyEvents
                 ? "key-events"
-                : "none";
-        const verification =
-          delivery === "accessibility" || delivery === "none"
-            ? "exact"
-            : delivery === "mixed"
-              ? "partial"
-              : "unavailable";
+                : usedInputMethod
+                  ? "input-method"
+                  : "none";
         return {
           index: actionIndex,
           type: action.type,
@@ -3640,6 +3848,12 @@ export const make = Effect.gen(function* () {
           verification,
           delivery,
           focusedEditable: usedAccessibility,
+          submission:
+            action.submit !== true
+              ? "not-requested"
+              : withholdSubmission
+                ? "withheld-unverified"
+                : "submitted",
         };
       }
       case "press":
@@ -3683,8 +3897,10 @@ export const make = Effect.gen(function* () {
       case "key_up": {
         const held = yield* Ref.get(runtime.heldKeys);
         const logicalKey = yield* validatedInput(() => QemuInput.qemuLogicalKeyId(action.key));
-        const qcodes = held.get(logicalKey);
-        if (qcodes === undefined) return { index: actionIndex, type: action.type };
+        const trackedQcodes = held.get(logicalKey);
+        const qcodes =
+          trackedQcodes ??
+          (yield* validatedInput(() => QemuInput.qemuKeyDownEvents(action.key))).heldQcodes;
         const next = new Map(held);
         next.delete(logicalKey);
         const retainedQcodes = new Set(Array.from(next.values()).flat());

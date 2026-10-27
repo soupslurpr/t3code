@@ -731,6 +731,7 @@ describe("computer automation contracts", () => {
             verification: "exact",
             delivery: "accessibility",
             focusedEditable: true,
+            submission: "not-requested",
           },
           {
             index: 1,
@@ -747,6 +748,25 @@ describe("computer automation contracts", () => {
         { type: "wait_for_change", changed: false },
       ],
     });
+    expect(
+      decodeObservation({
+        actionResults: [
+          {
+            index: 0,
+            type: "type",
+            requestedCodePoints: 18,
+            acceptedCodePoints: 18,
+            confirmedCodePoints: 0,
+            verification: "unavailable",
+            delivery: "input-method",
+            focusedEditable: false,
+            submission: "withheld-unverified",
+          },
+        ],
+      }),
+    ).toMatchObject({
+      actionResults: [{ delivery: "input-method", submission: "withheld-unverified" }],
+    });
     expect(() =>
       decodeObservation({
         actionResults: [
@@ -759,11 +779,36 @@ describe("computer automation contracts", () => {
             verification: "exact",
             delivery: "key-events",
             focusedEditable: false,
+            submission: "not-requested",
           },
         ],
       }),
     ).toThrow(/verification must agree/u);
   });
+
+  it.each(["key-events", "input-method"])(
+    "accepts application readback after %s delivery",
+    (delivery) => {
+      const receipt = {
+        index: 0,
+        type: "type",
+        requestedCodePoints: 31,
+        acceptedCodePoints: 31,
+        confirmedCodePoints: 31,
+        verification: "exact",
+        delivery,
+        focusedEditable: true,
+        submission: "not-requested",
+      };
+
+      expect(decodeObservation({ actionResults: [receipt] })).toMatchObject({
+        actionResults: [receipt],
+      });
+      expect(() =>
+        decodeObservation({ actionResults: [{ ...receipt, focusedEditable: false }] }),
+      ).toThrow();
+    },
+  );
 });
 
 it("supports durable desktop regions on negative-origin displays without mixing display selectors", () => {

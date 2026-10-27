@@ -256,6 +256,21 @@ const makeQemu = (
                 : argumentsValue.includes("activate")
                   ? activationResponse
                   : undefined;
+        const ibusHelperIndex = argumentsValue.indexOf("/run/t3-agent-desktop/ibus-commit.py");
+        const ibusOutput =
+          ibusHelperIndex < 0
+            ? undefined
+            : argumentsValue[ibusHelperIndex + 1] === undefined
+              ? '{"ok":false,"code":"invalid-input","detail":"one exact-text request is required","acceptedCodePoints":0}'
+              : (() => {
+                  const inputValue = JSON.parse(
+                    Buffer.from(argumentsValue[ibusHelperIndex + 1]!, "base64").toString("utf8"),
+                  ) as { readonly text: string };
+                  return JSON.stringify({
+                    ok: true,
+                    acceptedCodePoints: Array.from(inputValue.text).length,
+                  });
+                })();
         const isTransfer = argumentsValue[0]?.endsWith("/transfer-helper.py") === true;
         const result = {
           exitCode: 0,
@@ -272,11 +287,13 @@ const makeQemu = (
               })
             : input.executable === "/usr/bin/getent"
               ? "t3test:x:1000:1000::/home/t3test:/bin/bash\n"
-              : accessibilityOutput !== undefined
-                ? accessibilityOutput
-                : input.executable === "/usr/bin/ss"
-                  ? 'ESTAB 0 0 10.0.2.15:40000 203.0.113.1:443 users:(("chromium",pid=42,fd=7))\n'
-                  : "ok\n",
+              : ibusOutput !== undefined
+                ? ibusOutput
+                : accessibilityOutput !== undefined
+                  ? accessibilityOutput
+                  : input.executable === "/usr/bin/ss"
+                    ? 'ESTAB 0 0 10.0.2.15:40000 203.0.113.1:443 users:(("chromium",pid=42,fd=7))\n'
+                    : "ok\n",
           stderr: "",
           stdoutTruncated: false,
           stderrTruncated: false,
@@ -337,8 +354,8 @@ const makeQemu = (
           ),
           eof: true,
         }),
-      writeGuestFile: (id, path, data) =>
-        record(`write:${id}:${path}:${data.byteLength}`).pipe(Effect.as(data.byteLength)),
+      writeGuestFile: (id, path, data, mode) =>
+        record(`write:${id}:${path}:${data.byteLength}:${mode}`).pipe(Effect.as(data.byteLength)),
       addRoute: () => Effect.die("route is not expected"),
       removeRoute: () => Effect.die("route is not expected"),
       diskUsage: () => Effect.succeed({ allocatedBytes: 1, virtualBytes: 2 }),
@@ -380,6 +397,7 @@ const managerHarness = (
     readonly failInputReleaseOnce?: boolean;
     readonly failSendKeyOnce?: boolean;
     readonly inputHelper?: boolean;
+    readonly ibus?: boolean;
     readonly textInsertionResponse?: string;
     readonly activationResponse?: string;
     readonly blockMaintenance?: boolean;
@@ -420,6 +438,10 @@ const managerHarness = (
     if (options?.inputHelper === true) {
       yield* fileSystem.writeFileString(inputHelperResource, "test input helper");
     }
+    const ibusResource = `${agentDesktopsDir}/ibus-commit.py`;
+    if (options?.ibus === true) {
+      yield* fileSystem.writeFileString(ibusResource, "test IBus helper");
+    }
     const maintenanceResource = `${agentDesktopsDir}/maintenance.sh`;
     yield* fileSystem.writeFileString(maintenanceResource, "#!/usr/bin/bash\nexit 0\n");
     const environmentLayer = Layer.effect(
@@ -435,13 +457,15 @@ const managerHarness = (
           resolveResourcePathCandidates: (resource: string) =>
             resource === "agent-desktop/accessibility.js" && accessibility
               ? [accessibilityResource]
-              : resource === "agent-desktop/input-helper.py" && options?.inputHelper === true
-                ? [inputHelperResource]
-                : resource === "agent-desktop/maintenance.sh"
-                  ? [maintenanceResource]
-                  : resource === "agent-desktop/transfer-helper.py"
-                    ? [transferResource]
-                    : [],
+              : resource === "agent-desktop/ibus-commit.py" && options?.ibus === true
+                ? [ibusResource]
+                : resource === "agent-desktop/input-helper.py" && options?.inputHelper === true
+                  ? [inputHelperResource]
+                  : resource === "agent-desktop/maintenance.sh"
+                    ? [maintenanceResource]
+                    : resource === "agent-desktop/transfer-helper.py"
+                      ? [transferResource]
+                      : [],
         });
       }),
     ).pipe(Layer.provide(NodeServices.layer));
@@ -479,6 +503,23 @@ const managerHarness = (
   }).pipe(Effect.provide(NodeServices.layer));
 
 describe("AgentDesktopManager", () => {
+  it("includes guest diagnostics in the visible automation failure", () => {
+    assert.deepInclude(
+      ComputerUse.toComputerAutomationFailure(
+        new QemuAgentDesktop.QemuAgentDesktopError({
+          code: "guest-operation-failed",
+          operation: "guest-file-open",
+          detail: "invalid mode 'wbx'",
+        }),
+      ),
+      {
+        message: "The Agent desktop guest rejected the requested operation: invalid mode 'wbx'",
+        backendCode: "guest-operation-failed",
+        detail: "invalid mode 'wbx'",
+      },
+    );
+  });
+
   it.effect("reclaims an idle desktop after its controller changes", () =>
     Effect.gen(function* () {
       const desktopId = decodeAgentDesktopId("agent-preserved-before-restart");
@@ -1575,6 +1616,49 @@ describe("AgentDesktopManager", () => {
         assert.isTrue(calls.some((call) => call.startsWith("key:")));
       }).pipe(Effect.provide(fallbackHarness.layer));
 
+      const ibusHarness = yield* managerHarness("ibus-unicode-fallback", {
+        accessibility: true,
+        ibus: true,
+        textInsertionResponse: '{"ok":true,"result":{"status":"unavailable"}}',
+      });
+      yield* Effect.gen(function* () {
+        const manager = yield* AgentDesktopManager.AgentDesktopManager;
+        const desktop = yield* manager.acquire(owner, { label: "IBus text" });
+        yield* manager.requestControl(owner, { kind: "agent", desktopId: desktop.id });
+        const typing = yield* manager
+          .act(
+            owner.controllerId,
+            {
+              actions: [
+                {
+                  type: "type",
+                  text: "That’s exact → 😀",
+                  submit: true,
+                  verification: "required",
+                },
+              ],
+            },
+            desktop.id,
+          )
+          .pipe(Effect.forkChild);
+        yield* TestClock.adjust(Duration.millis(500));
+        const results = yield* Fiber.join(typing);
+
+        assert.deepInclude(results[0], {
+          type: "type",
+          requestedCodePoints: Array.from("That’s exact → 😀").length,
+          acceptedCodePoints: Array.from("That’s exact → 😀").length,
+          confirmedCodePoints: 0,
+          verification: "unavailable",
+          delivery: "input-method",
+          focusedEditable: false,
+          submission: "withheld-unverified",
+        });
+        const calls = yield* Ref.get(ibusHarness.calls);
+        assert.isTrue(calls.some((call) => call.includes("ibus-commit.py")));
+        assert.isFalse(calls.some((call) => call.startsWith("key:")));
+      }).pipe(Effect.provide(ibusHarness.layer));
+
       const unsafeFallbackHarness = yield* managerHarness("unsafe-unicode-fallback");
       yield* Effect.gen(function* () {
         const manager = yield* AgentDesktopManager.AgentDesktopManager;
@@ -1713,6 +1797,48 @@ describe("AgentDesktopManager", () => {
     }),
   );
 
+  it.effect("rejects newline and tab fallback before injecting a prefix", () =>
+    Effect.gen(function* () {
+      const harness = yield* managerHarness("unsafe-control-text");
+      yield* Effect.gen(function* () {
+        const manager = yield* AgentDesktopManager.AgentDesktopManager;
+        const desktop = yield* manager.acquire(owner, { label: "Unsafe control text" });
+        yield* manager.requestControl(owner, { kind: "agent", desktopId: desktop.id });
+
+        const error = yield* manager
+          .act(
+            owner.controllerId,
+            {
+              actions: [
+                {
+                  type: "type",
+                  text: "prefix before newline\nsecond line\tfield",
+                  submit: true,
+                  verification: "required",
+                },
+              ],
+            },
+            desktop.id,
+          )
+          .pipe(Effect.flip);
+
+        assert.deepInclude(ComputerUse.toComputerAutomationFailure(error), {
+          code: "exact-text-unavailable",
+          category: "unsupported-operation",
+          actionIndex: 0,
+          completedActionCount: 0,
+          field: "actions[0].text",
+          phase: "execution",
+          cleanup: { keys: "not-needed", buttons: "not-needed" },
+        });
+        const calls = yield* Ref.get(harness.calls);
+        assert.isFalse(calls.some((call) => call.startsWith("key:")));
+        assert.isFalse(calls.some((call) => call.startsWith("input:")));
+        assert.isFalse(calls.some((call) => call.includes("ibus-commit.py")));
+      }).pipe(Effect.provide(harness.layer));
+    }),
+  );
+
   it.effect("rejects a later invalid key before holding input", () =>
     Effect.gen(function* () {
       const harness = yield* managerHarness("invalid-key");
@@ -1769,8 +1895,13 @@ describe("AgentDesktopManager", () => {
           )
           .pipe(Effect.forkChild);
         yield* TestClock.adjust(Duration.millis(250));
-        yield* Fiber.join(typing);
+        const results = yield* Fiber.join(typing);
 
+        assert.deepInclude(results[0], {
+          verification: "exact",
+          delivery: "accessibility",
+          focusedEditable: true,
+        });
         const calls = yield* Ref.get(harness.calls);
         assert.equal(calls.filter((call) => call.includes("insert-text")).length, 1);
         assert.isFalse(calls.some((call) => call.startsWith("key:")));
@@ -1974,6 +2105,31 @@ describe("AgentDesktopManager", () => {
     }),
   );
 
+  it.effect("releases an untracked key as a recovery action", () =>
+    Effect.gen(function* () {
+      const harness = yield* managerHarness("untracked-key-release");
+      yield* Effect.gen(function* () {
+        const manager = yield* AgentDesktopManager.AgentDesktopManager;
+        const desktop = yield* manager.acquire(owner, { label: "Untracked key release" });
+        yield* manager.requestControl(owner, { kind: "agent", desktopId: desktop.id });
+
+        yield* manager.act(
+          owner.controllerId,
+          { actions: [{ type: "key_up", key: "Shift" }] },
+          desktop.id,
+        );
+
+        const transitions = (yield* Ref.get(harness.inputEvents)).flatMap((events) =>
+          events.map((event) => {
+            if (event.type !== "key") throw new Error("expected a key transition");
+            return `${event.data.key.data}:${event.data.down ? "down" : "up"}`;
+          }),
+        );
+        assert.deepEqual(transitions, ["shift:up"]);
+      }).pipe(Effect.provide(harness.layer));
+    }),
+  );
+
   it.effect("does not release explicitly held keys from transient chords", () =>
     Effect.gen(function* () {
       const harness = yield* managerHarness("transient-held-key");
@@ -2136,7 +2292,7 @@ describe("AgentDesktopManager", () => {
         assert.equal(result.bytesWritten, bytes);
         assert.include(
           yield* Ref.get(harness.calls),
-          `write:${desktop.id}:/tmp/archive.tar:${bytes}`,
+          `write:${desktop.id}:/tmp/archive.tar:${bytes}:overwrite`,
         );
       }).pipe(Effect.provide(harness.layer));
     }),
