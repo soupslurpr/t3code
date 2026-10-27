@@ -111,7 +111,12 @@ export function useNewThreadHandler() {
     const composerModelSelection = composerActiveProvider
       ? (carrySourceComposer?.modelSelectionByProvider[composerActiveProvider] ?? null)
       : null;
-    const carryModelSelection = composerModelSelection ?? carrySourceShell?.modelSelection ?? null;
+    // Automatically seeded project defaults must not override remembered choices elsewhere.
+    const carryModelSelection =
+      currentRouteTarget?.kind === "draft" &&
+      !hasExplicitComposerModelSelection(carrySourceComposer)
+        ? null
+        : (composerModelSelection ?? carrySourceShell?.modelSelection ?? null);
     const carryInteractionMode =
       carrySourceComposer?.interactionMode ??
       carrySourceShell?.interactionMode ??
