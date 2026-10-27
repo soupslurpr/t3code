@@ -5040,6 +5040,9 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
             !cancelledBeforeStart(run) &&
             runRanAfter(run, source),
         ) ||
+        projection.runs.some(
+          (run) => run.ordinal > (command.restartContinuationLastRunOrdinal ?? source.ordinal),
+        ) ||
         (yield* stopReachedRun(command, command.threadId, source.id))
       ) {
         // Preserve the current row so stale automatic deliveries receive an

@@ -2594,14 +2594,14 @@ it.layer(layerTest)("orchestration V2 foundation persistence", (it) => {
     }),
   );
 
-  it.effect(
-    "persists shutdown continuation intent through the real event sink without domain events",
-    () =>
+  it.effect.each([false, true])(
+    "persists and executes shutdown continuation through the event sink with captured queue: %s",
+    (capturedQueue) =>
       Effect.gen(function* () {
         const outbox = yield* EffectOutbox.EffectOutboxV2;
         const now = yield* DateTime.now;
-        const threadId = ThreadId.make("thread:shutdown-prepare");
-        const runId = RunId.make("run:shutdown-prepare");
+        const threadId = ThreadId.make(`thread:shutdown-prepare:${capturedQueue}`);
+        const runId = RunId.make(`run:shutdown-prepare:${capturedQueue}`);
         const providerThreadId = ProviderThreadId.make("provider-thread:shutdown-prepare");
         const sessionId = ProviderSessionId.make("session:shutdown-prepare");
         const attemptId = RunAttemptId.make("attempt:shutdown-prepare");
@@ -2612,10 +2612,21 @@ it.layer(layerTest)("orchestration V2 foundation persistence", (it) => {
               id: runId,
               ordinal: 1,
               status: "running",
+              startedAt: now,
               providerInstanceId,
               providerThreadId,
               activeAttemptId: attemptId,
             },
+            ...(capturedQueue
+              ? [
+                  {
+                    id: RunId.make("run:shutdown-queued"),
+                    ordinal: 2,
+                    status: "queued",
+                    startedAt: null,
+                  },
+                ]
+              : []),
           ],
           providerThreads: [
             {
@@ -2662,12 +2673,41 @@ it.layer(layerTest)("orchestration V2 foundation persistence", (it) => {
         assert.deepEqual(effects[0]?.request, {
           type: "provider-runtime.continue",
           sourceRunId: runId,
+          lastRunOrdinal: capturedQueue ? 2 : 1,
         });
-        yield* outbox.cancelUnsettled({
-          threadId,
-          effectTypes: ["provider-runtime.continue"],
-          reason: "fixture complete",
-        });
+        const settled = yield* Deferred.make<void>();
+        const executions = yield* Ref.make<
+          ReadonlyArray<EffectOutbox.OrchestrationEffectRequestV2>
+        >([]);
+        const layerWorker = EffectWorker.layerWithOptions({ workerId: "shutdown-proof" }).pipe(
+          Layer.provide(
+            Layer.mergeAll(
+              Layer.succeed(EffectOutbox.EffectOutboxV2, {
+                ...outbox,
+                succeed: (input) =>
+                  outbox
+                    .succeed(input)
+                    .pipe(Effect.tap(() => Deferred.succeed(settled, undefined))),
+              }),
+              Layer.succeed(EffectWorker.OrchestrationEffectExecutorV2, {
+                execute: (effect) =>
+                  Ref.update(executions, (requests) => [...requests, effect.request]),
+              }),
+            ),
+          ),
+        );
+        yield* Effect.gen(function* () {
+          yield* EffectWorker.runDaemonWithOptions({ concurrency: 1 }).pipe(Effect.forkScoped);
+          yield* Deferred.await(settled);
+          assert.deepEqual(yield* Ref.get(executions), [effects[0]!.request]);
+          const completed = yield* outbox.listByCommandId(
+            CommandId.make(`command:restart-prepare:${runId}`),
+          );
+          assert.deepEqual(
+            completed.map((effect) => effect.status),
+            ["succeeded"],
+          );
+        }).pipe(Effect.provide(layerWorker), Effect.scoped);
       }),
   );
 
