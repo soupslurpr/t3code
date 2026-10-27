@@ -1,15 +1,21 @@
 import { ServerProviderModel } from "@t3tools/contracts";
 import { MuseSettings } from "../settings.ts";
+import * as HostProcess from "@t3tools/shared/HostProcess";
 import { resolveSpawnCommand } from "@t3tools/shared/shell";
+import * as Crypto from "effect/Crypto";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
+import * as FileSystem from "effect/FileSystem";
 import * as Option from "effect/Option";
 import * as Result from "effect/Result";
 import * as ChildProcess from "effect/process/ChildProcess";
+import * as Hex from "effect/encoding/Hex";
 
 import { createMuseSdkHost, makeMuseEnvironment } from "./sdk.ts";
 import { parseMuseVersion } from "./maintenance.ts";
-import { discoverMuseModels, museModelCapabilities } from "./modelCatalog.ts";
+import { discoverMuseModelsAndUsage, museModelCapabilities } from "./modelCatalog.ts";
+import { museUsageToLimits } from "./usageLimits.ts";
+import { makeUnavailableUsageLimits } from "@t3tools/provider-core/server/usageLimits";
 import {
   buildServerProvider,
   COMPACT_SLASH_COMMAND,
@@ -116,12 +122,13 @@ export const checkMuseProviderStatus = Effect.fn("checkMuseProviderStatus")(func
     });
   }
 
-  const catalog = yield* discoverMuseModels(settings, museEnvironment, cwd, createHost).pipe(
-    Effect.scoped,
-    Effect.timeoutOption(12_000),
-    Effect.result,
-  );
-  if (Result.isFailure(catalog) || Option.isNone(catalog.success)) {
+  const catalog = yield* discoverMuseModelsAndUsage(
+    settings,
+    museEnvironment,
+    cwd,
+    createHost,
+  ).pipe(Effect.scoped, Effect.result);
+  if (Result.isFailure(catalog)) {
     return snapshot({
       installed: true,
       version,
@@ -131,13 +138,58 @@ export const checkMuseProviderStatus = Effect.fn("checkMuseProviderStatus")(func
         "Muse Code SDK could not read the model catalog. Check your Muse installation and run `muse login` on this T3 server host.",
     });
   }
-  const models = catalog.success.value;
+  const { models, usage, usageFailed, museHome } = catalog.success;
+  const fs = yield* FileSystem.FileSystem;
+  const hostname = yield* HostProcess.Hostname;
+  const resolvedHome = museHome
+    ? yield* fs.realPath(museHome).pipe(Effect.orElseSucceed(() => museHome))
+    : museHome;
+  const volumeId = resolvedHome
+    ? yield* fs.stat(resolvedHome).pipe(
+        Effect.map((info) => (Option.isSome(info.ino) ? `${info.dev}:${info.ino.value}` : "")),
+        Effect.orElseSucceed(() => ""),
+      )
+    : "";
+  const crypto = yield* Crypto.Crypto;
+  // MSP has no account identity. Use a host-scoped directory identity with the
+  // same hostname, resolved path, and volume ID triple as UsageSourceFingerprint.
+  // Instances sharing the directory still pool on the first live update.
+  const credentialFingerprint =
+    hostname && volumeId
+      ? yield* crypto
+          .digest(
+            "SHA-256",
+            new TextEncoder().encode(`muse\0${hostname}\0${volumeId}\0${resolvedHome}`),
+          )
+          .pipe(Effect.map(Hex.encode), Effect.orDie)
+      : undefined;
+  const now = DateTime.toEpochMillis(yield* DateTime.now);
+  const usageLimits = usage
+    ? museUsageToLimits({
+        usage,
+        checkedAt:
+          usage.observedAtMs > 0 && usage.observedAtMs <= now + 5 * 60_000
+            ? DateTime.formatIso(DateTime.makeUnsafe(usage.observedAtMs))
+            : checkedAt,
+        ...(credentialFingerprint ? { credentialFingerprint } : {}),
+      })
+    : {
+        ...makeUnavailableUsageLimits({
+          checkedAt,
+          reason: "probeFailed",
+          message: usageFailed
+            ? "Muse could not report subscription usage."
+            : "Muse has not reported subscription usage yet. Run a Muse turn, then refresh.",
+        }),
+        ...(credentialFingerprint ? { credentialFingerprint } : {}),
+      };
   // MSP has no auth signal and serves cached models while logged out; failures surface on first turn.
   return snapshot(
     {
       installed: true,
       version,
       auth: { status: "unknown" },
+      usageLimits,
       ...(models.length > 0
         ? { status: "ready" }
         : {

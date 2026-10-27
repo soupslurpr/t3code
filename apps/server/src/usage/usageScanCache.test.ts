@@ -59,6 +59,32 @@ function cacheWith(entries: readonly [string, number, readonly UsageRecord[]][])
 }
 
 describe("scan cache round trip", () => {
+  it.each([4, 5, 6, 7, 8, 9, 10])(
+    "retains v%s Muse history and rescans only pre-summary caches",
+    (version) => {
+      const original: CachedFile = {
+        size: 256,
+        mtimeMs: 100,
+        provider: "muse",
+        records: [record({ provider: "muse", model: "muse-model" })],
+        tailRecords: [record({ provider: "muse", model: "unknown", dedupeKey: "summary" })],
+        malformedRecords: 0,
+        position: position(),
+      };
+      const encoded = encodeScanCache(new Map([["/muse/session.jsonl", original]]));
+      const restored = decodeScanCache({ ...encoded, version }, TEST_FORMAT_MAP);
+      expect(restored.get("/muse/session.jsonl")).toEqual(
+        version === 10
+          ? original
+          : {
+              ...original,
+              size: -1,
+              position: { resumeOffset: 0, guardLength: 0, guardHash: 0, state: null },
+            },
+      );
+    },
+  );
+
   it("restores cached history unchanged except for Claude local placeholders", () => {
     const original = cacheWith([
       [

@@ -16,6 +16,7 @@ import {
   type NodeId,
   type OrchestrationV2TurnItem,
   type ProviderInstanceId,
+  type ProviderUsageLimitsUpdate,
   type PlanId,
   type OrchestrationV2PlanStep,
   type ProviderApprovalDecision,
@@ -90,6 +91,7 @@ import {
 } from "@t3tools/provider-core/server/subagentProjection";
 import { turnScopedSelectionTransition } from "@t3tools/provider-core/server/selectionTransition";
 import { museItemStatus, museToolPresentation } from "./itemPresentation.ts";
+import { museUsageToUpdate } from "./usageLimits.ts";
 
 const MUSE_PROVIDER = ProviderDriverKind.make("muse");
 const isOpenSessionError = Schema.is(ProviderAdapter.ProviderAdapterOpenSessionError);
@@ -195,6 +197,7 @@ export interface MuseAdapterV2Options {
   readonly createHost?: typeof createMuseSdkHost;
   readonly requestTimeoutMs?: number;
   readonly nativeEventLogger?: ProviderEventLoggers.EventNdjsonLogger;
+  readonly onUsageLimits?: (update: ProviderUsageLimitsUpdate) => Effect.Effect<void>;
   readonly continuationRequests?: {
     readonly offer: (
       request: ProviderContinuationRequests.ProviderContinuationRequest,
@@ -253,6 +256,7 @@ const nativeRef = (nativeId: string) => ({
 });
 const recordSchema = Schema.Record(Schema.String, Schema.Unknown);
 const INFORMATIONAL_NOTIFICATIONS = new Set([
+  "usage/changed",
   "session/contextUsage",
   "session/tokenUsage",
   "session/todoListChanged",
@@ -1307,6 +1311,8 @@ export const makeMuseAdapterV2 = Effect.fn("makeMuseAdapterV2")(function* (
         // usage/changed is account-wide and carries no session ID.
         if (method === "usage/changed") {
           latestSubscriptionUsage = yield* decode(MuseSubscriptionUsage, params);
+          if (options.onUsageLimits)
+            yield* options.onUsageLimits(museUsageToUpdate(latestSubscriptionUsage));
           return;
         }
         if (params.sessionId !== nativeSessionId) return;

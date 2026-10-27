@@ -8,6 +8,7 @@ import {
 import { describe, expect, it, vi } from "vite-plus/test";
 import {
   buildSubscriptionUsageSnapshot,
+  subscriptionUsageTimeline,
   createWidgetRefresher,
   WIDGET_REFRESH_INTERVAL,
 } from "./subscriptionUsageSnapshot";
@@ -50,6 +51,41 @@ function presentations(providers: readonly ServerProvider[] = [provider()]) {
 }
 
 describe("subscription widget snapshots", () => {
+  it("pools Muse instances sharing a home once and expires its observed windows", () => {
+    const muse = provider({
+      instanceId: ProviderInstanceId.make("muse-one"),
+      driver: ProviderDriverKind.make("muse"),
+      auth: { status: "unknown" },
+      usageLimits: {
+        checkedAt,
+        credentialFingerprint: "shared-muse-home",
+        windows: [
+          { ...window, id: "window", label: "Session" },
+          { ...window, id: "weekly", kind: "weekly", label: "Weekly", usedPercent: 20 },
+        ],
+      },
+    });
+    const snapshot = buildSubscriptionUsageSnapshot(
+      presentations([muse, { ...muse, instanceId: ProviderInstanceId.make("muse-two") }]),
+      deepLink,
+    );
+    expect(snapshot.checkedAt).toBe(now);
+    expect(snapshot.providers).toEqual([
+      expect.objectContaining({
+        name: "Muse Code",
+        detail: "Subscription remaining",
+        totalWindows: 2,
+        windows: [
+          expect.objectContaining({ label: "Session", remaining: 60 }),
+          expect.objectContaining({ label: "Weekly", remaining: 80 }),
+        ],
+      }),
+    ]);
+    expect(
+      subscriptionUsageTimeline(snapshot, now + 10 * 60_000)[0]?.props.providers[0]?.windows,
+    ).toEqual([]);
+  });
+
   it("uses provider data and its observation time without exposing account emails", () => {
     const snapshot = buildSubscriptionUsageSnapshot(
       presentations([provider({ displayName: "private@example.com" })]),

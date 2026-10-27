@@ -134,6 +134,9 @@ or endpoint configurations do not report subscription limits.
 API-key accounts may not report subscription limits. This also applies to Claude connections
 using a proxy through `ANTHROPIC_AUTH_TOKEN`.
 
+Muse Code reports its current window and weekly allowance, observed during turns. If Limits
+says Muse has not reported usage yet, run a Muse turn, then refresh.
+
 ## Connect a CLIProxyAPI hub
 
 To see pooled accounts, open **Settings → Providers → Usage providers → Add hub**. Choose the
@@ -148,10 +151,11 @@ settings section when you no longer need it.
 
 ## Subscription usage widget
 
-Add **Subscription usage** from your iOS or Android widget gallery to see remaining Codex and
-Claude quotas. Tap it to open **Usage → Limits**; on Android this works while T3 is running in
+Add **Subscription usage** from your iOS or Android widget gallery to see remaining Codex,
+Claude, and Muse Code quotas. Tap it to open **Usage → Limits**; on Android this works while T3 is running in
 the background, otherwise open the app from the launcher. On iOS, use **Edit Widget** to choose
-Session, Weekly, or both for each provider. Reopen T3 to refresh expired readings.
+Session, Weekly, or both for Codex and Claude. Muse Code shows its reported windows automatically.
+Reopen T3 to refresh expired readings.
 
 ## Keyboard shortcuts
 

@@ -22,6 +22,10 @@
     "./testing": {
       "types": "./src/testing.ts",
       "import": "./src/testing.ts"
+    },
+    "./server/usageLimits": {
+      "types": "./src/server/usageLimits.ts",
+      "import": "./src/server/usageLimits.ts"
     }
   },
   "scripts": {

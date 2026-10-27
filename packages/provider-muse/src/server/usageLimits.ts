@@ -32,3 +32,65 @@ export function museUsageLimitResetAt(
   );
   return resets.length > 0 ? DateTime.formatIso(DateTime.makeUnsafe(Math.max(...resets))) : null;
 }
+
+import type {
+  ProviderUsageLimitsUpdate,
+  ServerProviderUsageLimits,
+  ServerProviderUsageWindow,
+} from "@t3tools/contracts";
+import { clampPercent, makeUsageLimits } from "@t3tools/provider-core/server/usageLimits";
+import * as Option from "effect/Option";
+
+const WEEK_MINS = 7 * 24 * 60;
+const MONTH_MINS = 30 * 24 * 60;
+
+function isoFromEpochMs(value: number): string | undefined {
+  if (!Number.isFinite(value) || value <= 0) return undefined;
+  const date = DateTime.make(value);
+  return Option.isSome(date) ? DateTime.formatIso(date.value) : undefined;
+}
+
+/** The read response and host-global notification describe the same two windows. */
+export function museUsageToWindows(
+  usage: MuseSubscriptionUsage,
+): ReadonlyArray<ServerProviderUsageWindow> {
+  const duration = usage.window.windowDurationMins;
+  const kind = duration >= MONTH_MINS ? "monthly" : duration >= WEEK_MINS ? "weekly" : "session";
+  const windowReset = isoFromEpochMs(usage.window.resetsAtMs);
+  const weeklyReset = isoFromEpochMs(usage.weekly.resetsAtMs);
+  return [
+    {
+      id: "window",
+      kind,
+      label: kind === "monthly" ? "Monthly" : kind === "weekly" ? "Weekly" : "Session",
+      usedPercent: clampPercent(usage.window.usedPercent),
+      ...(Number.isFinite(duration) && duration > 0 ? { windowDurationMins: duration } : {}),
+      ...(windowReset ? { resetsAt: windowReset } : {}),
+    },
+    {
+      id: "weekly",
+      kind: "weekly",
+      label: "Weekly",
+      usedPercent: clampPercent(usage.weekly.usedPercent),
+      windowDurationMins: WEEK_MINS,
+      ...(weeklyReset ? { resetsAt: weeklyReset } : {}),
+    },
+  ];
+}
+
+export function museUsageToLimits(input: {
+  readonly usage: MuseSubscriptionUsage;
+  readonly checkedAt: string;
+  readonly credentialFingerprint?: string;
+}): ServerProviderUsageLimits {
+  return {
+    ...makeUsageLimits({ checkedAt: input.checkedAt, windows: museUsageToWindows(input.usage) }),
+    ...(input.credentialFingerprint !== undefined
+      ? { credentialFingerprint: input.credentialFingerprint }
+      : {}),
+  };
+}
+
+export function museUsageToUpdate(usage: MuseSubscriptionUsage): ProviderUsageLimitsUpdate {
+  return { complete: true, windows: museUsageToWindows(usage) };
+}
