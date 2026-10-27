@@ -191,11 +191,11 @@ describe("guarded restart", () => {
     );
   });
 
-  it.each([{}, null])("requires explicit continuation for sparse settings %j", (settings) => {
+  it.each([{}, null])("uses default continuation for sparse settings %j", (settings) => {
     using fixture = activeRunFixture();
     if (settings === null) NodeFS.rmSync(fixture.settingsPath);
     else NodeFS.writeFileSync(fixture.settingsPath, JSON.stringify(settings));
-    assert.throws(() => capture(fixture), "not enabled");
+    assert.deepEqual(capture(fixture), nativeContinuation);
   });
 
   it.each([
@@ -203,7 +203,7 @@ describe("guarded restart", () => {
     { environment: true, project: false, enabled: false },
     { environment: true, project: undefined, enabled: true },
     { environment: undefined, project: false, enabled: false },
-    { environment: undefined, project: undefined, enabled: false },
+    { environment: undefined, project: undefined, enabled: true },
     { environment: false, project: undefined, enabled: false },
   ])(
     "resolves the running project's restart preference: %j",

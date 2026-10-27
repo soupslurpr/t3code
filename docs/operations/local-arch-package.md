@@ -146,7 +146,7 @@ location and resumes the existing durable thread; it does not preserve the old p
 
 1. Record the selected full commit, audited package path, completed checks, and any database backup
    in saved work notes. Keep rollback packages and never restore a database automatically.
-2. For an existing V2 installation, confirm automatic thread continuation is explicitly enabled
+2. For an existing V2 installation, confirm automatic thread continuation is enabled (the default)
    for this project and keep this turn running. The helper checks the latest V2 run, its root
    provider thread's native resume identity, session binding, and running provider turn. Copied V1
    session records do not qualify. For the first V1-to-V2 upgrade, prepare the migration monitor

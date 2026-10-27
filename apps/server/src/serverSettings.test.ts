@@ -43,6 +43,14 @@ const decodeDeviceChoices = Schema.decodeEffect(
   ),
 );
 
+const decodePersistedRestartSettings = Schema.decodeEffect(
+  Schema.fromJsonString(
+    Schema.Struct({
+      continueThreadsAfterServerUpdate: Schema.optionalKey(Schema.Boolean),
+    }),
+  ),
+);
+
 const layerServerSettings = () =>
   ServerSettingsModule.layer.pipe(
     Layer.provideMerge(ServerSecretStore.layer),
@@ -103,6 +111,65 @@ const recordProviderUsage = (provider: string, instanceId: string | null = provi
   });
 
 it.layer(NodeServices.layer)("server settings", (it) => {
+  it.effect.each([
+    ["new environments", null, true],
+    ["existing sparse settings", "{}", true],
+    ["existing On settings", '{"continueThreadsAfterServerUpdate":true}', true],
+    ["existing Off settings", '{"continueThreadsAfterServerUpdate":false}', false],
+  ] as const)(
+    "preserves restart continuation for %s across settings writes and reloads",
+    ([_label, raw, enabled]) =>
+      Effect.gen(function* () {
+        const settings = yield* ServerSettingsModule.ServerSettingsService;
+        const config = yield* ServerConfig.ServerConfig;
+        const fs = yield* FileSystem.FileSystem;
+        if (raw !== null) yield* fs.writeFileString(config.settingsPath, raw);
+        assert.equal((yield* settings.getSettings).continueThreadsAfterServerUpdate, enabled);
+
+        yield* settings.updateSettings({ enableProviderUpdateChecks: false });
+        const persisted = yield* fs
+          .readFileString(config.settingsPath)
+          .pipe(Effect.flatMap(decodePersistedRestartSettings));
+        if (enabled) assert.notProperty(persisted, "continueThreadsAfterServerUpdate");
+        else assert.strictEqual(persisted.continueThreadsAfterServerUpdate, false);
+
+        const reloaded = yield* Effect.gen(function* () {
+          return yield* (yield* ServerSettingsModule.ServerSettingsService).getSettings;
+        }).pipe(Effect.provide(Layer.fresh(ServerSettingsModule.layer)));
+        assert.equal(reloaded.continueThreadsAfterServerUpdate, enabled);
+      }).pipe(Effect.provide(layerServerSettings())),
+  );
+
+  it.effect(
+    "resetting restart continuation removes the environment value and preserves project opt-outs",
+    () =>
+      Effect.gen(function* () {
+        const settings = yield* ServerSettingsModule.ServerSettingsService;
+        const config = yield* ServerConfig.ServerConfig;
+        const fs = yield* FileSystem.FileSystem;
+        const projectId = ProjectId.make("test-project");
+        yield* settings.updateSettings({
+          continueThreadsAfterServerUpdate: false,
+          projectSettingsOverrides: { [projectId]: { continueThreadsAfterServerUpdate: false } },
+        });
+        yield* settings.updateSettings({
+          continueThreadsAfterServerUpdate:
+            DEFAULT_SERVER_SETTINGS.continueThreadsAfterServerUpdate,
+        });
+        const persisted = yield* fs
+          .readFileString(config.settingsPath)
+          .pipe(Effect.flatMap(decodePersistedRestartSettings));
+        assert.notProperty(persisted, "continueThreadsAfterServerUpdate");
+        const reloaded = yield* Effect.gen(function* () {
+          return yield* (yield* ServerSettingsModule.ServerSettingsService).getSettings;
+        }).pipe(Effect.provide(Layer.fresh(ServerSettingsModule.layer)));
+        assert.isTrue(reloaded.continueThreadsAfterServerUpdate);
+        assert.isFalse(
+          reloaded.projectSettingsOverrides[projectId]?.continueThreadsAfterServerUpdate,
+        );
+      }).pipe(Effect.provide(layerServerSettings())),
+  );
+
   it.effect("new environments enable lazy device access and persist both choices", () =>
     Effect.gen(function* () {
       const settings = yield* ServerSettingsModule.ServerSettingsService;

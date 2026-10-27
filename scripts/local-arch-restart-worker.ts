@@ -229,9 +229,11 @@ function verifyContinuationPreference(databasePath: string, projectId: string): 
       Record<string, { readonly continueThreadsAfterServerUpdate?: unknown }>
     >;
   } | null;
+  // The copied worker has no workspace imports; match ServerSettings' default.
   NodeAssert.equal(
     settings?.projectSettingsOverrides?.[projectId]?.continueThreadsAfterServerUpdate ??
-      settings?.continueThreadsAfterServerUpdate,
+      settings?.continueThreadsAfterServerUpdate ??
+      true,
     true,
     "automatic restart continuation is not enabled for this project",
   );
