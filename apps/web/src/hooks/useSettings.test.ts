@@ -19,6 +19,7 @@ import {
   mergeEnvironmentSettings,
   persistClientSettingsPatch,
   persistClientSettingsUpdate,
+  persistLocalModelPreferences,
   prepareModelPreferencesPatch,
 } from "./useSettings";
 import { applyServerSettingsPatch } from "@t3tools/shared/serverSettings";
@@ -335,4 +336,51 @@ it("uses the environment's model preferences after migration, including empty li
   );
   expect(merged.favorites).toEqual([]);
   expect(merged.providerModelPreferences).toEqual({});
+});
+
+describe("local model preferences on older servers", () => {
+  it("serializes favorite, visibility and order changes without losing saved choices", async () => {
+    const provider = ProviderInstanceId.make("older-server");
+    const first = { ...DEFAULT_CLIENT_SETTINGS, favorites: [{ provider, model: "saved" }] };
+    persistenceMocks.getClientSettings.mockResolvedValue(first);
+    await Promise.all([
+      persistLocalModelPreferences({
+        setModelFavorites: [{ provider, model: "added", favorite: true }],
+      }),
+      persistLocalModelPreferences({
+        setModelsHidden: [{ provider, model: "hidden", hidden: true }],
+      }),
+      persistLocalModelPreferences({
+        setProviderModelOrder: { provider, modelOrder: ["added", "saved"] },
+      }),
+    ]);
+    expect(getClientSettings().favorites).toEqual([
+      ...first.favorites,
+      { provider, model: "added" },
+    ]);
+    expect(getClientSettings().providerModelPreferences[provider]).toEqual({
+      hiddenModels: ["hidden"],
+      modelOrder: ["added", "saved"],
+    });
+    await persistLocalModelPreferences({
+      setModelFavorites: [{ provider, model: "added", favorite: false }],
+      setModelsHidden: [{ provider, model: "hidden", hidden: false }],
+    });
+    expect(getClientSettings().favorites).toEqual(first.favorites);
+    expect(getClientSettings().providerModelPreferences[provider]).toEqual({
+      hiddenModels: [],
+      modelOrder: ["added", "saved"],
+    });
+    expect(persistenceMocks.setClientSettings).toHaveBeenCalledTimes(4);
+  });
+
+  it("keeps saved choices after a failed local write and permits retry", async () => {
+    const provider = ProviderInstanceId.make("older-failed");
+    const patch = { setModelFavorites: [{ provider, model: "choice", favorite: true }] };
+    persistenceMocks.setClientSettings.mockRejectedValueOnce(new Error("disk unavailable"));
+    await expect(persistLocalModelPreferences(patch)).rejects.toThrow("disk unavailable");
+    expect(getClientSettings().favorites).toEqual([]);
+    await persistLocalModelPreferences(patch);
+    expect(getClientSettings().favorites).toEqual([{ provider, model: "choice" }]);
+  });
 });

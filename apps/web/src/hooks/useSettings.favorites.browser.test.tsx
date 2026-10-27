@@ -10,6 +10,7 @@ import {
   AVAILABLE_CONNECTION_STATE,
   type SupervisorConnectionState,
 } from "@t3tools/client-runtime/connection";
+import { DEFAULT_CLIENT_SETTINGS } from "@t3tools/contracts/settings";
 import * as Cause from "effect/Cause";
 import { AsyncResult, Atom, AtomRegistry } from "effect/reactivity";
 import { applyServerSettingsPatch } from "@t3tools/shared/serverSettings";
@@ -23,7 +24,10 @@ const state = vi.hoisted(() => ({
     readonly isReady: boolean;
     readonly entries: ReadonlyMap<string, unknown>;
   }>,
-  settings: new Map<string, unknown>(),
+  settings: new Map<EnvironmentId, Atom.Writable<ServerSettings | null>>(),
+  configs: new Map<EnvironmentId, Atom.Atom<unknown>>(),
+  supportsModelPreferences: true,
+  persistLocal: vi.fn(),
   connections: new Map<
     EnvironmentId,
     Atom.Writable<AsyncResult.AsyncResult<SupervisorConnectionState>>
@@ -53,6 +57,7 @@ vi.mock("~/localApi", () => ({
   ensureLocalApi: () => ({
     persistence: {
       getClientSettings: async () => ({ favorites: [{ provider, model }] }),
+      setClientSettings: state.persistLocal,
     },
   }),
 }));
@@ -64,6 +69,7 @@ vi.mock(import("~/state/server"), async (original) => {
     serverEnvironment: {
       ...actual.serverEnvironment,
       settingsValueAtom: ((id: EnvironmentId) => state.settings.get(id)) as never,
+      configValueAtom: ((id: EnvironmentId) => state.configs.get(id)) as never,
       updateSettings: {
         ...actual.serverEnvironment.updateSettings,
         run: (_registry: unknown, input: unknown) => state.persist(input),
@@ -78,6 +84,10 @@ vi.mock(import("~/state/use-atom-command"), async (original) => ({
 
 import { appAtomRegistry } from "~/rpc/atomRegistry";
 import {
+  __resetClientSettingsPersistenceForTests,
+  __setClientSettingsForTests,
+  getClientSettings,
+  useUpdateEnvironmentModelPreferences,
   ensureClientSettingsHydrated,
   startModelPreferencesMigration,
   useToggleEnvironmentModelFavorite,
@@ -121,6 +131,10 @@ async function setup() {
   const registry = stack.adopt(AtomRegistry.make(), (registry) => registry.dispose());
   state.settings.clear();
   state.connections.clear();
+  state.configs.clear();
+  state.supportsModelPreferences = true;
+  state.persistLocal.mockReset().mockResolvedValue(undefined);
+  __resetClientSettingsPersistenceForTests();
   const durable = new Map<EnvironmentId, ServerSettings>();
   const toggles: Array<() => Promise<void>> = [];
   const writes: Write[] = [];
@@ -128,6 +142,13 @@ async function setup() {
   for (const id of [primaryId, remoteId]) {
     state.settings.set(id, Atom.make<ServerSettings | null>(initialSettings));
     durable.set(id, initialSettings);
+    state.configs.set(
+      id,
+      Atom.make((get) => ({
+        settings: get(settingsAtom(id)),
+        environment: { capabilities: { modelPreferences: state.supportsModelPreferences } },
+      })),
+    );
   }
   state.persist.mockReset().mockImplementation(
     ({
@@ -187,6 +208,55 @@ async function setup() {
 }
 
 describe("environment favorite toggles", () => {
+  it("keeps repeated favorite edits local when an older server cannot save them", async () => {
+    await using fixture = await setup();
+    state.supportsModelPreferences = false;
+    fixture.registry.set(settingsAtom(remoteId), DEFAULT_SERVER_SETTINGS);
+    __setClientSettingsForTests(DEFAULT_CLIENT_SETTINGS);
+    await fixture.mount(remoteId);
+    await act(() => fixture.click());
+    expect(getClientSettings().favorites).toEqual([{ provider, model }]);
+    await act(() => fixture.click());
+    expect(getClientSettings().favorites).toEqual([]);
+    expect(state.persistLocal).toHaveBeenCalledTimes(2);
+    expect(fixture.writes).toEqual([]);
+  });
+
+  it("keeps visibility and order edits local without losing favorites", async () => {
+    await using fixture = await setup();
+    state.supportsModelPreferences = false;
+    fixture.registry.set(settingsAtom(remoteId), DEFAULT_SERVER_SETTINGS);
+    __setClientSettingsForTests({ ...DEFAULT_CLIENT_SETTINGS, favorites: [{ provider, model }] });
+    let pending: Promise<unknown> | undefined;
+    function LegacyEditor() {
+      const save = useUpdateEnvironmentModelPreferences(remoteId);
+      return (
+        <button
+          onClick={() => {
+            pending = save({
+              setModelsHidden: [{ provider, model, hidden: true }],
+              setProviderModelOrder: { provider, modelOrder: [model] },
+            });
+          }}
+        >
+          Save preferences
+        </button>
+      );
+    }
+    await fixture.show(<LegacyEditor />);
+    await act(async () => {
+      fixture.click();
+      await pending;
+    });
+    expect(getClientSettings().favorites).toEqual([{ provider, model }]);
+    expect(getClientSettings().providerModelPreferences[provider]).toEqual({
+      hiddenModels: [model],
+      modelOrder: [model],
+    });
+    expect(state.persistLocal).toHaveBeenCalledOnce();
+    expect(fixture.writes).toEqual([]);
+  });
+
   it.each([false, true])(
     "toggles twice before any server echo when initially favorited=%s",
     async (initiallyFavorited) => {
@@ -274,6 +344,13 @@ describe("legacy model preferences migration", () => {
         state.settings.set(
           id,
           Atom.keepAlive(Atom.make<ServerSettings | null>(DEFAULT_SERVER_SETTINGS)),
+        );
+        state.configs.set(
+          id,
+          Atom.make((get) => ({
+            settings: get(state.settings.get(id)!),
+            environment: { capabilities: { modelPreferences: true } },
+          })),
         );
         state.connections.set(
           id,

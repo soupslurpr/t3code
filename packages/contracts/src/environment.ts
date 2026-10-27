@@ -100,6 +100,7 @@ export const ExecutionEnvironmentCapabilities = Schema.Struct({
   projectSettingsOverrides: Schema.optionalKey(Schema.Boolean),
   /** Hide the switch when absent; older servers silently drop per-project provider patches. */
   projectProviderInstanceOverrides: Schema.optionalKey(Schema.Boolean),
+  modelPreferences: Schema.optionalKey(Schema.Boolean),
   threadSnooze: Schema.optionalKey(Schema.Boolean),
   /** Clear published themes when absent; older servers never send updates. */
   environmentThemes: Schema.optionalKey(Schema.Boolean),

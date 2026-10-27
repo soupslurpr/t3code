@@ -18,6 +18,7 @@ import {
   ProviderDriverKind,
   ProviderInstanceId,
   type ServerProvider,
+  type ExecutionEnvironmentCapabilities,
   ServerSettings,
   type ServerSettingsPatch,
   withIdleCompaction,
@@ -634,6 +635,19 @@ export function applyServerSettingsPatch(
     ...nextWithReplacements,
     textGenerationModelSelection: createModelSelection(instanceId, model, options),
   };
+}
+
+/** Older servers decode missing preference fields as null and ignore their patches. */
+export function supportsServerModelPreferences(
+  settings: Pick<ServerSettings, "favorites" | "providerModelPreferences"> | null | undefined,
+  capabilities?: Pick<ExecutionEnvironmentCapabilities, "modelPreferences">,
+): boolean {
+  if (!settings) return false;
+  return (
+    capabilities?.modelPreferences ??
+    // Upstream servers shipped persisted preferences before this capability.
+    (settings.favorites !== null || settings.providerModelPreferences !== null)
+  );
 }
 
 export function resolveModelPreferences(
