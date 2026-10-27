@@ -1192,22 +1192,23 @@ const make = Effect.gen(function* () {
       // Follow-up tasks reuse a child thread; walk its subtree only once.
       if (stoppedChildThreadIds.has(threadId)) continue;
       stoppedChildThreadIds.add(threadId);
+      const recordFailure = (
+        error: Orchestrator.OrchestratorV2Error | ThreadManagementProviderInstanceDisabledError,
+      ) =>
+        Effect.logWarning("Unable to stop a delegated task", {
+          parentThreadId: input.threadId,
+          threadId,
+          error,
+        }).pipe(Effect.andThen(Effect.sync(() => failures.push(error))));
       yield* dispatch({
         type: "thread.stop",
         commandId: CommandId.make(`${input.commandId}:stop:${threadId}`),
         threadId,
         stopDelegatedTasks: false,
         ...(input.reason === undefined ? {} : { reason: input.reason }),
-      }).pipe(
-        Effect.andThen(stopDelegatedTasks({ ...input, threadId })),
-        Effect.catch((error) =>
-          Effect.logWarning("Unable to stop a delegated task", {
-            parentThreadId: input.threadId,
-            threadId,
-            error,
-          }).pipe(Effect.andThen(Effect.sync(() => failures.push(error)))),
-        ),
-      );
+      }).pipe(Effect.catch(recordFailure));
+      // A failed child Stop must not leave its descendants running.
+      yield* stopDelegatedTasks({ ...input, threadId }).pipe(Effect.catch(recordFailure));
     }
     if (failures[0] !== undefined) return yield* failures[0];
   });
