@@ -2,6 +2,7 @@ import { useAtomValue } from "@effect/atom-react";
 import { connectionStatusTitle } from "@t3tools/client-runtime/connection";
 import * as Option from "effect/Option";
 import { AsyncResult } from "effect/reactivity";
+import { scheduledTaskDispatchStatus } from "@t3tools/client-runtime/automations";
 import {
   Clock3Icon,
   CopyIcon,
@@ -744,7 +745,16 @@ function ScheduledTaskRow({
             )}
           </span>
           {task.lastRunStatus !== "never" ? (
-            <Badge variant={statusVariant(task.lastRunStatus)}>{task.lastRunStatus}</Badge>
+            <Tooltip>
+              <TooltipTrigger render={<span />}>
+                <Badge variant={statusVariant(task.lastRunStatus)}>
+                  {scheduledTaskDispatchStatus[task.lastRunStatus].label}
+                </Badge>
+              </TooltipTrigger>
+              <TooltipPopup>
+                {scheduledTaskDispatchStatus[task.lastRunStatus].description}
+              </TooltipPopup>
+            </Tooltip>
           ) : null}
           {task.lastRunError ? <span className="text-destructive">{task.lastRunError}</span> : null}
         </div>

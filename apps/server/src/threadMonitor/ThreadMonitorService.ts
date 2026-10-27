@@ -20,9 +20,11 @@ import type {
   ThreadMonitorSignalInput,
   ThreadMonitorStartInput,
   ThreadMonitorStatusInput,
+  ThreadMonitorSummaryList,
 } from "@t3tools/contracts";
 import * as Context from "effect/Context";
 import type * as Effect from "effect/Effect";
+import type * as Stream from "effect/Stream";
 
 export interface ThreadMonitorServiceShape {
   readonly capabilities: (threadId?: ThreadId) => Effect.Effect<ThreadMonitorCapabilities>;
@@ -60,6 +62,11 @@ export interface ThreadMonitorServiceShape {
     readonly threadId: ThreadId;
     readonly query: ThreadMonitorStatusInput;
   }) => Effect.Effect<ThreadMonitorList, ThreadMonitorError>;
+
+  /** Streams outstanding monitor summaries for a client viewing one thread. */
+  readonly subscribeSummaries: (
+    threadId: ThreadId,
+  ) => Stream.Stream<ThreadMonitorSummaryList, ThreadMonitorError>;
 
   readonly signal: (input: {
     readonly threadId: ThreadId;

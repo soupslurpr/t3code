@@ -1,3 +1,5 @@
+import type { ThreadMonitorSummaryList } from "@t3tools/contracts";
+import * as Queue from "effect/Queue";
 import * as ComputerAutomationRouter from "../computer/ComputerAutomationRouter.ts";
 import * as ComputerObservationStore from "../computer/ComputerObservationStore.ts";
 // @effect-diagnostics-next-line nodeBuiltinImport:off - Native broker fixtures use synchronous deterministic fingerprints.
@@ -2225,4 +2227,50 @@ it.effect("resolves cache timing from the current controller and omits unknown g
     assert.deepEqual(yield* h.service.monitorCapabilities(), {});
     assert.lengthOf((yield* h.service.computerCapabilities()).evaluators, 1);
   }).pipe(Effect.provide(NodeServices.layer)),
+);
+
+it.effect("streams revised screen conditions without screen regions or evidence", () =>
+  Effect.gen(function* () {
+    yield* Testkit.seedThread();
+    const h = yield* harness();
+    const service = yield* ThreadMonitorService.make.pipe(
+      Effect.provideService(ThreadMonitorComputerService, h.service),
+    );
+    const created = yield* service.createComputer({
+      threadId: Testkit.threadId,
+      monitor: {
+        ...modelWatch,
+        label: "Wait for export",
+        match: { type: "image-change" },
+      },
+    });
+    const updates = yield* Queue.unbounded<ThreadMonitorSummaryList>();
+    yield* service.subscribeSummaries(Testkit.threadId).pipe(
+      Stream.runForEach((snapshot) => Queue.offer(updates, snapshot)),
+      Effect.forkScoped,
+    );
+    const initial = (yield* Queue.take(updates)).monitors[0]!;
+    assert.strictEqual(initial.condition, "image-change");
+    assert.isNotNull(initial.nextCheckAt);
+    assert.notProperty(initial, "observation");
+    assert.notProperty(initial, "images");
+    yield* service.updateComputer({
+      threadId: Testkit.threadId,
+      update: {
+        monitorId: created.monitor.id,
+        expectedRevision: created.revision,
+        match: {
+          type: "model",
+          criterion: "The export completed successfully",
+          modelSelection,
+        },
+      },
+    });
+    const revised = (yield* Queue.take(updates)).monitors[0]!;
+    assert.strictEqual(revised.id, initial.id);
+    assert.strictEqual(revised.condition, "model");
+    assert.strictEqual(revised.criterion, "The export completed successfully");
+    assert.notProperty(revised, "observation");
+    assert.notProperty(revised, "images");
+  }).pipe(Effect.provide(Layer.merge(Testkit.layer, NodeServices.layer))),
 );

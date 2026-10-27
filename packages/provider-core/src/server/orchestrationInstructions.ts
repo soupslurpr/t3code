@@ -15,6 +15,8 @@ Ordinary coding tasks need no T3 tools.
 - Given a thread id, \`t3_thread_read\` it before you answer about it.
 - In your reply, a thread's first mention is its \`link\` verbatim. No \`link\`: \`[title](t3-thread://v1/<exact id>)\`. Never a plain title or bare id.
 - A secret: call \`request_secret\` yourself. Pass its \`secretRef\` to a T3 tool, or use \`delivery: "file"\` for a shell command. Never ask in chat or invent one. When asked only to schedule, \`schedule_task\` without running its prompt.
+- \`schedule_task\` creates recurring prompts. Its run status describes prompt dispatch; inspect the target thread for agent progress and results.
+- \`monitor_start\` waits once for a deadline (\`after\`/\`at\`) or an external \`signal\`; \`computer_watch_start\` waits for a screen condition. Use monitors to resume existing work when a condition is met. After creating a monitor that resumes the thread, finish the current turn so T3 can wake it. Prefer an available condition watcher over recurring prompts that repeatedly ask whether the same wait is finished.
 - T3 tools may load late. Try the name once before you call it absent.`,
   `### Visuals and preview
 

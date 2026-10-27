@@ -1,3 +1,6 @@
+import type { ThreadMonitorSummaryList } from "@t3tools/contracts";
+import * as Queue from "effect/Queue";
+import * as Stream from "effect/Stream";
 import * as Context from "effect/Context";
 import * as Ref from "effect/Ref";
 import * as Fiber from "effect/Fiber";
@@ -31,6 +34,73 @@ import { ThreadMonitorService } from "./ThreadMonitorService.ts";
 import { layer, layerForDatabase, seedThread, threadId } from "./ThreadMonitor.testkit.ts";
 
 describe("durable V2 monitors", () => {
+  it.effect("streams initial state, new waits, and individual cancellation", () =>
+    Effect.gen(function* () {
+      yield* seedThread();
+      const service = yield* ThreadMonitorService;
+      const updates = yield* Queue.unbounded<ThreadMonitorSummaryList>();
+      yield* service.subscribeSummaries(threadId).pipe(
+        Stream.runForEach((snapshot) => Queue.offer(updates, snapshot)),
+        Effect.forkScoped,
+      );
+      assert.deepStrictEqual(yield* Queue.take(updates), { monitors: [] });
+      const monitor = yield* service.create({
+        threadId,
+        monitor: { label: "Wait for upload", schedule: { type: "signal" } },
+      });
+      assert.deepStrictEqual((yield* Queue.take(updates)).monitors, [
+        {
+          id: monitor.id,
+          label: "Wait for upload",
+          status: "active",
+          condition: "signal",
+          criterion: null,
+          nextCheckAt: null,
+          deadlineAt: null,
+          continuation: { mode: "resume-thread" },
+          reviewRequired: false,
+          lastError: null,
+        },
+      ]);
+      yield* service.cancel({ threadId, cancel: { monitorId: monitor.id } });
+      yield* TestClock.adjust("1 second");
+      assert.deepStrictEqual(yield* Queue.take(updates), { monitors: [] });
+      assert.strictEqual(
+        (yield* service.status({ threadId, query: { monitorId: monitor.id } })).monitors[0]?.status,
+        "cancelled",
+      );
+    }).pipe(Effect.provide(Layer.fresh(layer))),
+  );
+
+  it.effect("restores existing timer summaries without exposing another thread's waits", () =>
+    Effect.gen(function* () {
+      yield* seedThread();
+      const service = yield* ThreadMonitorService;
+      const monitor = yield* service.create({
+        threadId,
+        monitor: {
+          label: "One-time reminder",
+          schedule: { type: "after", durationMs: 60_000 },
+          continuation: "record-only",
+        },
+      });
+      const snapshot = Option.getOrThrow(
+        yield* service.subscribeSummaries(threadId).pipe(Stream.runHead),
+      );
+      assert.strictEqual(
+        snapshot.monitors[0]?.nextCheckAt,
+        monitor.condition.type === "time" ? monitor.condition.at : null,
+      );
+      assert.strictEqual(snapshot.monitors[0]?.continuation.mode, "record-only");
+      assert.deepStrictEqual(
+        Option.getOrThrow(
+          yield* service.subscribeSummaries(ThreadId.make("another-thread")).pipe(Stream.runHead),
+        ),
+        { monitors: [] },
+      );
+    }).pipe(Effect.provide(Layer.fresh(layer))),
+  );
+
   it.effect("persists timer deadlines and delivers one logical continuation", () =>
     Effect.gen(function* () {
       yield* seedThread();

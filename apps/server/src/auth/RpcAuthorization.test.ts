@@ -7,6 +7,7 @@ import {
   DEFAULT_SERVER_SETTINGS,
   ProviderInstanceId,
   ThreadId,
+  ThreadMonitorId,
   AuthOrchestrationOperateScope,
   AuthOrchestrationReadScope,
   AuthSourceControlWriteScope,
@@ -29,6 +30,14 @@ import {
 import * as RpcAuthorization from "./RpcAuthorization.ts";
 
 describe("RPC authorization scopes", () => {
+  it("allows reading monitor summaries but requires operate scope to cancel", () => {
+    expect(requiredScopeForRpcMethod(WS_METHODS.threadMonitorsSubscribe)).toBe(
+      AuthOrchestrationReadScope,
+    );
+    expect(requiredScopeForRpcMethod(WS_METHODS.threadMonitorsCancel)).toBe(
+      AuthOrchestrationOperateScope,
+    );
+  });
   it("declares exactly one scope for every RPC in the server group", () => {
     expect(new Set(Object.keys(RPC_REQUIRED_SCOPES))).toEqual(new Set(WsRpcGroup.requests.keys()));
   });
@@ -369,5 +378,47 @@ it.effect("denies manual cleanup before the handler without settings permission"
       requiredPermission: AuthSettingsWriteScope,
     });
     expect(handled).toBe(false);
+  }).pipe(Effect.scoped),
+);
+
+it.effect("requires operate permission before a monitor cancellation handler runs", () =>
+  Effect.gen(function* () {
+    const group = WsRpcGroup.omit(
+      ...[...WsRpcGroup.requests.keys()].filter(
+        (
+          tag,
+        ): tag is Exclude<
+          keyof typeof RPC_REQUIRED_SCOPES,
+          typeof WS_METHODS.threadMonitorsCancel
+        > => tag !== WS_METHODS.threadMonitorsCancel,
+      ),
+    );
+    let handled = 0;
+    for (const allowed of [false, true]) {
+      const client = yield* RpcTest.makeClient(group).pipe(
+        Effect.provide(
+          Layer.mergeAll(
+            group.toLayerHandler(WS_METHODS.threadMonitorsCancel, () =>
+              Effect.sync(() => {
+                handled++;
+              }),
+            ),
+            RpcAuthorization.layer(
+              allowed ? [AuthOrchestrationOperateScope] : [AuthOrchestrationReadScope],
+            ),
+          ),
+        ),
+      );
+      const request = client[WS_METHODS.threadMonitorsCancel]({
+        threadId: ThreadId.make("owner"),
+        monitorId: ThreadMonitorId.make("monitor"),
+      });
+      if (allowed) yield* request;
+      else
+        expect(yield* request.pipe(Effect.flip)).toMatchObject({
+          requiredPermission: AuthOrchestrationOperateScope,
+        });
+    }
+    expect(handled).toBe(1);
   }).pipe(Effect.scoped),
 );

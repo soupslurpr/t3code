@@ -19,6 +19,7 @@ import { describe, expect, it } from "vite-plus/test";
 
 import { v2Projection } from "./orchestrationV2TestFixtures.ts";
 import {
+  presentPendingBackgroundWork,
   deriveReportedModelSelection,
   deriveLatestThreadRun,
   deriveProviderSubagentStatus,
@@ -392,4 +393,18 @@ describe("provider-reported model selection", () => {
       }),
     ).toBeNull();
   });
+});
+
+it("names one monitor and counts multiple conditions without losing their labels", () => {
+  const tasks = [
+    { taskId: "build", kind: "monitor" as const, description: "Build finishes" },
+    { taskId: "checks", kind: "monitor" as const, description: "PR checks pass" },
+  ];
+  expect(presentPendingBackgroundWork(tasks.slice(0, 1))?.title).toBe("Monitoring: Build finishes");
+  const presentation = presentPendingBackgroundWork([...tasks, ...tasks]);
+  expect(presentation?.title).toBe("Monitoring 2 conditions");
+  expect(presentation?.items.map((item) => item.label)).toEqual([
+    "Build finishes",
+    "PR checks pass",
+  ]);
 });

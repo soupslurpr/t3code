@@ -203,6 +203,8 @@ const RPC_AGGREGATES = {
   [WS_METHODS.previewAutomationFocusHost]: "preview",
   [WS_METHODS.agentDesktopHumanInvoke]: "preview",
   [WS_METHODS.userDesktopHumanInvoke]: "preview",
+  [WS_METHODS.threadMonitorsSubscribe]: "threadMonitors",
+  [WS_METHODS.threadMonitorsCancel]: "threadMonitors",
   [WS_METHODS.subscribePreviewEvents]: "preview",
   [WS_METHODS.subscribeDiscoveredLocalServers]: "preview",
   [WS_METHODS.deviceConfigure]: "device",
