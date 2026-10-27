@@ -1,5 +1,5 @@
 // @effect-diagnostics nodeBuiltinImport:off globalTimers:off - This native adapter owns PTYs, process groups, positioned file I/O, and deadlines independently of request fibers.
-/** Owns native processes and bounded, seekable output independently of tool calls. */
+/** Owns native processes and seekable output independently of tool calls. */
 import * as NodeChildProcess from "node:child_process";
 import * as NodeCrypto from "node:crypto";
 import * as NodeFSP from "node:fs/promises";
@@ -9,6 +9,8 @@ import * as NodePath from "node:path";
 import * as NodeStream from "node:stream";
 import type { IPty } from "node-pty";
 import * as DateTime from "effect/DateTime";
+
+import { ProcessLogDiskGuard } from "./ProcessLogDiskGuard.ts";
 
 import { EnvironmentId, ThreadId, isDesktopProcessLive } from "@t3tools/contracts";
 import type {
@@ -21,7 +23,6 @@ import type {
 } from "@t3tools/contracts";
 
 const DEFAULT_READ_BYTES = 64 * 1024;
-const DEFAULT_STORED_BYTES = 64 * 1024 * 1024;
 const DEFAULT_WAIT_MS = 1000;
 const DEFAULT_TERMINAL_COLUMNS = 120;
 const DEFAULT_TERMINAL_ROWS = 30;
@@ -40,6 +41,7 @@ interface ManagerOptions {
   readonly user: string;
   readonly homeDirectory: string;
   readonly now: () => number;
+  readonly availableOutputBytes?: (() => Promise<number>) | undefined;
   readonly onStatusChange?: ((process: DesktopProcess) => void) | undefined;
 }
 
@@ -96,14 +98,22 @@ class ProcessLog {
   private tailBytes = 0;
   private tailStart = 0;
   private readonly notify: () => void;
+  private readonly diskGuard: ProcessLogDiskGuard;
   private closing: Promise<void> | undefined;
 
-  constructor(path: string, handle: NodeFSP.FileHandle, limit: number, notify: () => void) {
+  constructor(
+    path: string,
+    handle: NodeFSP.FileHandle,
+    limit: number,
+    notify: () => void,
+    diskGuard: ProcessLogDiskGuard,
+  ) {
     this.path = path;
     this.handle = handle;
     this.tailLimit = Number.isFinite(limit) ? Math.min(64 * 1024, Math.floor(limit / 4)) : 0;
     this.prefixLimit = limit - this.tailLimit;
     this.notify = notify;
+    this.diskGuard = diskGuard;
   }
 
   async append(bytes: Buffer): Promise<void> {
@@ -123,7 +133,6 @@ class ProcessLog {
             offset += bytesWritten;
           }
         };
-        await write(prefix, this.prefixBytes);
         const remainder = bytes.subarray(prefix.length);
         const tail =
           this.tailLimit === 0
@@ -131,7 +140,10 @@ class ProcessLog {
             : Buffer.from(
                 Buffer.concat([this.tail ?? Buffer.alloc(0), remainder]).subarray(-this.tailLimit),
               );
-        if (tail.length > 0) await write(tail, this.prefixLimit);
+        await this.diskGuard.write(prefix.length + tail.length, async () => {
+          await write(prefix, this.prefixBytes);
+          if (tail.length > 0) await write(tail, this.prefixLimit);
+        });
         // Publish a coherent prefix/tail snapshot only after the file writes.
         // Readers use the immutable tail buffer while a later append overwrites it.
         this.prefixBytes += prefix.length;
@@ -302,8 +314,17 @@ export class DesktopProcessManager {
   private pendingStarts = 0;
 
   private readonly options: ManagerOptions;
+  private readonly diskGuard: ProcessLogDiskGuard;
   constructor(options: ManagerOptions) {
     this.options = options;
+    this.diskGuard = new ProcessLogDiskGuard(
+      options.availableOutputBytes ??
+        (async () => {
+          const stat = await NodeFSP.statfs(options.directory);
+          return stat.bavail * stat.bsize;
+        }),
+      options.now,
+    );
   }
 
   /** Starts once per command id, preserving the running process when the caller disconnects. */
@@ -334,10 +355,7 @@ export class DesktopProcessManager {
           stdinEncoding: input.stdinEncoding ?? "utf8",
           keepStdinOpen: input.keepStdinOpen ?? false,
           timeoutMs: input.timeoutMs ?? null,
-          maxStoredOutputBytes:
-            input.maxStoredOutputBytes === null
-              ? null
-              : (input.maxStoredOutputBytes ?? DEFAULT_STORED_BYTES),
+          maxStoredOutputBytes: input.maxStoredOutputBytes ?? null,
         }),
       )
       .digest("hex");
@@ -640,10 +658,7 @@ export class DesktopProcessManager {
         this.options.onStatusChange?.(this.snapshot(entry));
       }
     };
-    const limit =
-      input.maxStoredOutputBytes === null
-        ? Infinity
-        : (input.maxStoredOutputBytes ?? DEFAULT_STORED_BYTES);
+    const limit = input.maxStoredOutputBytes ?? Infinity;
     const handles = await Promise.allSettled([
       NodeFSP.open(stdoutPath, "wx+", 0o600),
       NodeFSP.open(stderrPath, "wx+", 0o600),
@@ -658,8 +673,8 @@ export class DesktopProcessManager {
         ? stdoutHandle.reason
         : (stderrHandle as PromiseRejectedResult).reason;
     }
-    const stdout = new ProcessLog(stdoutPath, stdoutHandle.value, limit, notify);
-    const stderr = new ProcessLog(stderrPath, stderrHandle.value, limit, notify);
+    const stdout = new ProcessLog(stdoutPath, stdoutHandle.value, limit, notify, this.diskGuard);
+    const stderr = new ProcessLog(stderrPath, stderrHandle.value, limit, notify, this.diskGuard);
     const entry: ProcessEntry = {
       owner,
       grantId,

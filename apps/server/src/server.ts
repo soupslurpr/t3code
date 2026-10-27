@@ -1,3 +1,4 @@
+import * as UserDesktopCommands from "./computer/UserDesktopCommands.ts";
 import * as DesktopExecutionAuthorizationChannel from "./computer/DesktopExecutionAuthorizationChannel.ts";
 import * as DesktopThreadLifecycle from "./computer/DesktopThreadLifecycle.ts";
 import * as ThreadMonitorProcess from "./threadMonitor/ThreadMonitorProcess.ts";
@@ -752,6 +753,7 @@ const layerAgentDesktopServices = ThreadDesktopActivity.layer.pipe(
   Layer.provideMerge(
     Layer.mergeAll(
       UserDesktopTransfers.layer.pipe(Layer.provide(layerPreviewAutomationBroker)),
+      UserDesktopCommands.layer.pipe(Layer.provide(layerPreviewAutomationBroker)),
       layerAgentDesktopManager,
       layerComputerAutomationRouter,
       AgentDesktopTransfer.layer.pipe(
