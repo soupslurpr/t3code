@@ -137,7 +137,8 @@ export function PullRequestGuideTab({
         <AlertDescription>
           {running
             ? "Rewriting this guide. You will be told when the new one is ready."
-            : (failure ?? "Written before the latest push.")}
+            : (failure ??
+              "Written before the latest push. Rewrite the guide to see code excerpts.")}
         </AlertDescription>
         {!running && canWrite ? <AlertAction>{writeButton("Rewrite", "xs")}</AlertAction> : null}
       </Alert>
@@ -149,6 +150,7 @@ export function PullRequestGuideTab({
         environmentId={environmentId}
         reference={reference}
         guide={guide}
+        stale={stale}
         banner={banner}
         active={active}
         commenting={commenting}
