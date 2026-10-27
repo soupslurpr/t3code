@@ -1,3 +1,4 @@
+import * as ThreadWorktreeService from "./orchestration-v2/ThreadWorktreeService.ts";
 import * as ThreadDesktopActivity from "./computer/ThreadDesktopActivity.ts";
 import { ThreadMonitorService } from "./threadMonitor/ThreadMonitorService.ts";
 import { runUserDesktopHumanRequest } from "./computer/UserDesktopHuman.ts";
@@ -1326,6 +1327,7 @@ export const layerWsRpc = (
             );
       const usage = yield* UsageService.UsageService;
       const usageLimitSources = yield* UsageLimitSources.UsageLimitSources;
+      const threadWorktrees = yield* ThreadWorktreeService.ThreadWorktreeService;
       const worktreeSetupTracker = yield* WorktreeSetupTracker.WorktreeSetupTracker;
       const projectCloneTracker = yield* ProjectCloneTracker.ProjectCloneTracker;
       const repositoryIdentityResolver =
@@ -2978,6 +2980,8 @@ export const layerWsRpc = (
         [WS_METHODS.assetsPersistChatAttachments]: (input) =>
           persistChatAttachments(input).pipe(Effect.map((attachments) => ({ attachments }))),
         [WS_METHODS.subscribeVcsStatus]: (input) => vcsStatusBroadcaster.streamStatus(input),
+        [WS_METHODS.threadWorktreeRemove]: (input) => threadWorktrees.remove(input.threadId, input),
+        [WS_METHODS.threadWorktreeDetach]: (input) => threadWorktrees.detach(input.threadId, input),
         [WS_METHODS.subscribeWorktreeSetup]: (input) => worktreeSetupTracker.stream(input.threadId),
         [WS_METHODS.worktreeSetupCancel]: (input) =>
           worktreeSetupTracker

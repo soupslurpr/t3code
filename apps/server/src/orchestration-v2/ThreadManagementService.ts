@@ -87,6 +87,8 @@ function existingThreadIdsForCommand(
   switch (command.type) {
     case "thread.create":
       return [];
+    case "thread.worktree.detach":
+      return command.members.map((member) => member.threadId);
     // Read-state commands only rewrite the thread payload's visited/unread
     // watermark and open stats; they never touch messages, so they do not need the imported
     // v1 transcript hydrated first. Visits fire on every thread-activity bump

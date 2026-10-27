@@ -5,6 +5,9 @@ import {
   VcsListRefsResult,
   WorktreeMcpHandoffInput,
   WorktreeMcpHandoffResult,
+  WorktreeMcpDetachInput,
+  WorktreeMcpDetachResult,
+  ThreadWorktreeError,
   WorktreeMcpStatusResult,
   ThreadId,
 } from "@t3tools/contracts";
@@ -23,7 +26,11 @@ const dependencies = [
   WorktreeMcpService.WorktreeMcpService,
 ];
 
-const WorktreeToolFailure = Schema.Union([WorktreeMcpFailure, OrchestratorMcpFailure]);
+const WorktreeToolFailure = Schema.Union([
+  WorktreeMcpFailure,
+  OrchestratorMcpFailure,
+  ThreadWorktreeError,
+]);
 
 const WorktreeHandoffTool = Tool.make("t3_worktree_handoff", {
   description:
@@ -35,6 +42,21 @@ const WorktreeHandoffTool = Tool.make("t3_worktree_handoff", {
   dependencies,
 })
   .annotate(Tool.Title, "Hand off thread to a git worktree")
+  .annotate(Tool.Readonly, false)
+  .annotate(Tool.Destructive, true)
+  .annotate(Tool.Idempotent, false)
+  .annotate(Tool.OpenWorld, true);
+
+const WorktreeDetachTool = Tool.make("t3_worktree_detach", {
+  description:
+    "Move the calling thread and its subagent lineage to the main checkout, keeping branch and history. Directory removal requires idle work and closed terminals; force discards local changes. Call last, with continuationPrompt for remaining work; a late removalError means bindings moved but the directory remains.",
+  parameters: WorktreeMcpDetachInput,
+  success: WorktreeMcpDetachResult,
+  failure: WorktreeToolFailure,
+  failureMode: "return",
+  dependencies,
+})
+  .annotate(Tool.Title, "Move thread to the main checkout")
   .annotate(Tool.Readonly, false)
   .annotate(Tool.Destructive, true)
   .annotate(Tool.Idempotent, false)
@@ -83,6 +105,7 @@ const WorktreeListTool = Tool.make("t3_worktree_list", {
   .annotate(Tool.Destructive, false);
 export const WorktreeToolkit = Toolkit.make(
   WorktreeHandoffTool,
+  WorktreeDetachTool,
   WorktreeStatusTool,
   WorktreeListTool,
 );

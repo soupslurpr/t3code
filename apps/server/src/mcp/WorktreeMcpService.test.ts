@@ -1,14 +1,19 @@
+import { DispatchModeLimit } from "../orchestration-v2/DispatchModeLimit.ts";
 import { describe, expect, it, vi } from "@effect/vitest";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import {
   CommandId,
   EnvironmentId,
+  type OrchestrationV2ThreadShell,
   type OrchestrationV2ThreadProjection,
   type Project,
   ProjectId,
   ProviderInstanceId,
+  RunId,
   ThreadId,
   WorktreeMcpHandoffInput,
+  WorktreeMcpDetachInput,
+  ThreadWorktreeError,
 } from "@t3tools/contracts";
 import * as Cause from "effect/Cause";
 import * as Deferred from "effect/Deferred";
@@ -28,6 +33,7 @@ import {
   OrchestratorProjectionError,
 } from "../orchestration-v2/Orchestrator.ts";
 import * as ThreadManagementService from "../orchestration-v2/ThreadManagementService.ts";
+import * as ThreadWorktreeService from "../orchestration-v2/ThreadWorktreeService.ts";
 import * as ProjectService from "../project/ProjectService.ts";
 import * as ProjectSetupScriptRunner from "../project/ProjectSetupScriptRunner.ts";
 import * as ServerSettings from "../serverSettings.ts";
@@ -39,6 +45,7 @@ const environmentId = EnvironmentId.make("environment-worktree-test");
 const threadId = ThreadId.make("thread-worktree-test");
 const projectId = ProjectId.make("project-worktree-test");
 const workspaceRoot = "/repo/project";
+const isDetachInput = Schema.is(WorktreeMcpDetachInput);
 
 const makeScope = (
   capabilities: ReadonlySet<McpInvocationContext.McpCapability>,
@@ -57,6 +64,8 @@ const makeScope = (
 });
 
 interface ThreadFixture {
+  readonly runtimeMode?: "full-access" | "approval-required";
+  readonly interactionMode?: "default" | "plan";
   readonly branch?: string | null;
   readonly worktreePath?: string | null;
   readonly archivedAt?: string | null;
@@ -69,6 +78,8 @@ const makeProjection = (overrides: ThreadFixture = {}): OrchestrationV2ThreadPro
       id: threadId,
       projectId,
       title: "Worktree test thread",
+      runtimeMode: "full-access",
+      interactionMode: "default",
       branch: null,
       worktreePath: null,
       archivedAt: null,
@@ -90,6 +101,8 @@ const project: Project = {
 
 interface HarnessOptions {
   readonly git?: Partial<GitWorkflowService.GitWorkflowService["Service"]>;
+  readonly detachFailure?: ThreadWorktreeError;
+  readonly detachRemovalError?: ThreadWorktreeError;
   readonly thread?: ThreadFixture | null;
   readonly threadReadError?: "projection" | "dispatch";
   readonly capabilities?: ReadonlySet<McpInvocationContext.McpCapability>;
@@ -104,7 +117,7 @@ interface HarnessOptions {
   readonly threadAttachedOnRecheck?: boolean;
   readonly threadArchivedOnRecheck?: boolean;
   readonly threadReadFailsOnRecheck?: boolean;
-  readonly continuation?: "queued" | "fails" | "dies";
+  readonly activeRunId?: RunId | null;
   readonly projectMissing?: boolean;
   readonly projectReadFails?: boolean;
   readonly existingBranchWorktreePath?: string | null;
@@ -117,6 +130,17 @@ interface HarnessOptions {
 }
 
 const makeHarness = (options: HarnessOptions = {}) => {
+  const detach = vi.fn<ThreadWorktreeService.ThreadWorktreeService["Service"]["detach"]>(() =>
+    options.detachFailure
+      ? Effect.fail(options.detachFailure)
+      : Effect.succeed({
+          removed: options.detachRemovalError === undefined,
+          detachedThreadIds: [threadId],
+          ...(options.detachRemovalError === undefined
+            ? {}
+            : { removalError: options.detachRemovalError }),
+        }),
+  );
   const thread = options.thread === undefined ? {} : options.thread;
   const scope = makeScope(options.capabilities ?? new Set(["preview", "worktree"]));
   const dispatch = vi.fn((_: unknown) =>
@@ -176,22 +200,17 @@ const makeHarness = (options: HarnessOptions = {}) => {
       ? Effect.succeed(makeProjection(thread))
       : Effect.fail(new OrchestratorProjectionError({ threadId: id }));
   });
-  const sendToThread = vi.fn((_: unknown) => {
-    switch (options.continuation ?? "queued") {
-      case "fails":
-        return Effect.fail(
-          new ThreadManagementService.ThreadManagementThreadArchivedError({
-            threadId,
-          }),
-        );
-      case "dies":
-        return Effect.die(new Error("send defect"));
-      default:
-        return Effect.succeed({
-          delivery: "queued",
-        } as ThreadManagementService.ThreadManagementSendResult);
-    }
-  });
+  const sendToThread = vi.fn((_: unknown) =>
+    Effect.succeed({ delivery: "queued" } as ThreadManagementService.ThreadManagementSendResult),
+  );
+  const getThreadShell = vi.fn<
+    ThreadManagementService.ThreadManagementService["Service"]["getThreadShell"]
+  >(() =>
+    Effect.succeed({
+      activeRunId:
+        options.activeRunId === undefined ? RunId.make("run-caller") : options.activeRunId,
+    } as OrchestrationV2ThreadShell),
+  );
   const getById = vi.fn((id: ProjectId) =>
     options.projectReadFails
       ? (Effect.fail("simulated project read failure") as never)
@@ -292,8 +311,10 @@ const makeHarness = (options: HarnessOptions = {}) => {
   const layer = WorktreeMcpService.layer.pipe(
     Layer.provide(
       Layer.mergeAll(
+        Layer.mock(ThreadWorktreeService.ThreadWorktreeService)({ detach }),
         Layer.mock(ThreadManagementService.ThreadManagementService)({
           dispatch,
+          getThreadShell,
           getThreadRecords,
           sendToThread,
         } satisfies Partial<ThreadManagementService.ThreadManagementService["Service"]>),
@@ -328,8 +349,10 @@ const makeHarness = (options: HarnessOptions = {}) => {
     layer,
     scope,
     dispatch,
+    getThreadShell,
     sendToThread,
     fetchWorktreeBaseCommit,
+    detach,
     createWorktree,
     removeWorktree,
     deleteLocalBranch,
@@ -371,30 +394,141 @@ const runStatus = (harness: ReturnType<typeof makeHarness>) =>
 const decodeHandoffInput = Schema.decodeUnknownEffect(WorktreeMcpHandoffInput);
 
 describe("t3_worktree_handoff", () => {
-  it.effect("reports a continuation failure without failing the handoff", () => {
-    const harness = makeHarness({ continuation: "fails" });
+  it.effect("queues the continuation prompt as the thread's next message", () => {
+    const callerRunId = RunId.make("run-continuation-caller");
+    const harness = makeHarness({ activeRunId: callerRunId });
     return Effect.gen(function* () {
       const result = yield* runHandoff(harness, {
-        branch: "feature/continue-fails",
-        continuationPrompt: "Keep going.",
+        branch: "feature/continue",
+        continuationPrompt: "Keep fixing the login bug in the new worktree.",
       });
-      expect(result.continuation).toMatchObject({ status: "failed" });
-      expect(result.worktreePath).toBe("/worktrees/project/feature/continue-fails");
-      expect(harness.dispatch).toHaveBeenCalled();
+
+      expect(result.continuation).toEqual({ status: "scheduled", delivery: "queued" });
+      expect(harness.dispatch).toHaveBeenCalledExactlyOnceWith({
+        type: "thread.worktree.handoff",
+        commandId: expect.any(String),
+        branch: "feature/continue",
+        worktreePath: "/worktrees/project/feature/continue",
+        threadId,
+        continuation: {
+          messageId: expect.any(String),
+          text: "Keep fixing the login bug in the new worktree.",
+        },
+        callerRunId,
+      });
+      expect(harness.sendToThread).not.toHaveBeenCalled();
+      expect(harness.dispatch.mock.invocationCallOrder[0]).toBeLessThan(
+        harness.runForThread.mock.invocationCallOrder[0]!,
+      );
     });
   });
 
-  it.effect("does not queue a continuation when the thread update fails", () => {
+  it.effect("captures the caller run before creating the worktree", () => {
+    const harness = makeHarness();
+    harness.getThreadShell.mockReturnValueOnce(
+      Effect.succeed({ activeRunId: RunId.make("run-active") } as OrchestrationV2ThreadShell),
+    );
+    return Effect.gen(function* () {
+      yield* runHandoff(harness, { branch: "feature/active-run", runSetupScript: false });
+      expect(harness.dispatch).toHaveBeenCalledWith(
+        expect.objectContaining({ type: "thread.worktree.handoff", callerRunId: "run-active" }),
+      );
+      expect(harness.getThreadShell).toHaveBeenCalledExactlyOnceWith(threadId);
+      expect(harness.getThreadShell.mock.invocationCallOrder[0]).toBeLessThan(
+        harness.createWorktree.mock.invocationCallOrder[0]!,
+      );
+    });
+  });
+
+  it.effect("rejects a handoff before git work when the calling turn has ended", () => {
+    const harness = makeHarness({ activeRunId: null });
+    return Effect.gen(function* () {
+      const exit = yield* Effect.exit(
+        runHandoff(harness, {
+          branch: "feature/ended-caller",
+          continuationPrompt: "Continue in the worktree.",
+        }),
+      );
+      expectTypedFailure(exit, {
+        _tag: "WorktreeMcpFailure",
+        code: "invalid_request",
+        message:
+          "The calling turn is no longer running, so the worktree handoff was not performed.",
+      });
+      expect(harness.localStatus).not.toHaveBeenCalled();
+      expect(harness.fetchWorktreeBaseCommit).not.toHaveBeenCalled();
+      expect(harness.createWorktree).not.toHaveBeenCalled();
+      expect(harness.dispatch).not.toHaveBeenCalled();
+    });
+  });
+
+  it.effect("rolls back worktree and branch when handoff dispatch fails", () => {
     const harness = makeHarness({ dispatchFails: true });
     return Effect.gen(function* () {
       const exit = yield* Effect.exit(
         runHandoff(harness, {
-          branch: "feature/dispatch-fails-continue",
+          branch: "feature/continue-fails",
           continuationPrompt: "Keep going.",
         }),
       );
       expectTypedFailure(exit, { _tag: "WorktreeMcpFailure", code: "operation_failed" });
-      expect(harness.sendToThread).not.toHaveBeenCalled();
+      expect(harness.createWorktree).toHaveBeenCalledTimes(1);
+      expect(harness.removeWorktree).toHaveBeenCalledWith({
+        cwd: workspaceRoot,
+        path: "/worktrees/project/feature/continue-fails",
+        force: true,
+      });
+      expect(harness.deleteLocalBranch).toHaveBeenCalledWith({
+        cwd: workspaceRoot,
+        refName: "feature/continue-fails",
+        force: true,
+      });
+      expect(harness.removeWorktree.mock.invocationCallOrder[0]).toBeLessThan(
+        harness.deleteLocalBranch.mock.invocationCallOrder[0]!,
+      );
+      expect(harness.runForThread).not.toHaveBeenCalled();
+    });
+  });
+
+  it.effect("rolls back worktree and branch when handoff dispatch defects", () => {
+    const harness = makeHarness({ dispatchDies: true });
+    return Effect.gen(function* () {
+      const exit = yield* Effect.exit(
+        runHandoff(harness, {
+          branch: "feature/continue-dies",
+          continuationPrompt: "Keep going.",
+        }),
+      );
+      expectTypedFailure(exit, { _tag: "WorktreeMcpFailure", code: "operation_failed" });
+      expect(harness.createWorktree).toHaveBeenCalledTimes(1);
+      expect(harness.removeWorktree).toHaveBeenCalledWith({
+        cwd: workspaceRoot,
+        path: "/worktrees/project/feature/continue-dies",
+        force: true,
+      });
+      expect(harness.deleteLocalBranch).toHaveBeenCalledWith({
+        cwd: workspaceRoot,
+        refName: "feature/continue-dies",
+        force: true,
+      });
+      expect(harness.runForThread).not.toHaveBeenCalled();
+    });
+  });
+
+  it.effect("fails before git work when reading the caller run fails", () => {
+    const harness = makeHarness();
+    harness.getThreadShell.mockReturnValue(
+      Effect.fail(new OrchestratorProjectionError({ threadId })),
+    );
+    return Effect.gen(function* () {
+      const exit = yield* Effect.exit(runHandoff(harness, { branch: "feature/caller-read-fails" }));
+      expectTypedFailure(exit, { _tag: "WorktreeMcpFailure", code: "operation_failed" });
+      expect(harness.localStatus).not.toHaveBeenCalled();
+      expect(harness.fetchWorktreeBaseCommit).not.toHaveBeenCalled();
+      expect(harness.createWorktree).not.toHaveBeenCalled();
+      expect(harness.removeWorktree).not.toHaveBeenCalled();
+      expect(harness.deleteLocalBranch).not.toHaveBeenCalled();
+      expect(harness.dispatch).not.toHaveBeenCalled();
     });
   });
 
@@ -587,6 +721,8 @@ describe("t3_worktree_handoff", () => {
       const gate = yield* Deferred.make<void>();
       const harness = makeHarness({ dispatchGate: Deferred.await(gate) });
 
+      // The atomic dispatch and setup must finish even if session shutdown
+      // interrupts the request while the handoff is committing.
       const fiber = yield* Effect.forkChild(
         runHandoff(harness, {
           branch: "feature/interrupted",
@@ -600,8 +736,17 @@ describe("t3_worktree_handoff", () => {
       yield* Fiber.await(fiber);
       yield* Fiber.join(interruption);
 
-      expect(harness.dispatch).toHaveBeenCalledTimes(1);
-      expect(harness.sendToThread).toHaveBeenCalledTimes(1);
+      expect(harness.dispatch).toHaveBeenCalledExactlyOnceWith(
+        expect.objectContaining({
+          type: "thread.worktree.handoff",
+          continuation: {
+            messageId: expect.any(String),
+            text: "Keep going in the worktree.",
+          },
+        }),
+      );
+      // The setup script must also survive the pending interrupt; otherwise
+      // the continuation run starts in a worktree that was never set up.
       expect(harness.runForThread).toHaveBeenCalledTimes(1);
     }),
   );
@@ -688,5 +833,110 @@ describe("t3_worktree_status", () => {
         defaultStartFromOrigin: false,
       });
     });
+  });
+});
+
+describe("t3_worktree_detach", () => {
+  it.effect("constrains group detach to the calling thread's modes", () =>
+    Effect.gen(function* () {
+      const h = makeHarness({
+        thread: { runtimeMode: "approval-required", interactionMode: "plan" },
+      });
+      const service = yield* resolveService(h);
+      let limit: typeof DispatchModeLimit.Service;
+      h.detach.mockImplementation(() =>
+        Effect.gen(function* () {
+          limit = yield* DispatchModeLimit;
+          return { removed: false, detachedThreadIds: [threadId] };
+        }),
+      );
+      yield* service.detach(h.scope, { removeWorktree: false });
+      expect(limit).toMatchObject({ runtimeMode: "approval-required", interactionMode: "plan" });
+    }),
+  );
+
+  it.effect(
+    "defaults to directory removal and passes the calling session for an atomic continuation",
+    () =>
+      Effect.gen(function* () {
+        const h = makeHarness();
+        const service = yield* resolveService(h);
+        const result = yield* service.detach(h.scope, {
+          continuationPrompt: "Delete the merged branch, then settle.",
+        });
+        expect(h.detach).toHaveBeenCalledWith(
+          threadId,
+          { removeWorktree: true, force: false },
+          {
+            mcpCredentialId: h.scope.thread!.providerSessionId,
+            continuationPrompt: "Delete the merged branch, then settle.",
+          },
+        );
+        expect(result.continuation).toEqual({ status: "scheduled", delivery: "queued" });
+        expect(h.sendToThread).not.toHaveBeenCalled();
+        expect(h.deleteLocalBranch).not.toHaveBeenCalled();
+      }),
+  );
+
+  it.effect("allows keeping the directory and stopping without a continuation", () =>
+    Effect.gen(function* () {
+      const h = makeHarness();
+      const service = yield* resolveService(h);
+      const result = yield* service.detach(h.scope, { removeWorktree: false, force: true });
+      expect(h.detach).toHaveBeenCalledWith(
+        threadId,
+        { removeWorktree: false, force: true },
+        {
+          mcpCredentialId: h.scope.thread!.providerSessionId,
+          continuationPrompt: undefined,
+        },
+      );
+      expect(result.continuation.status).toBe("skipped");
+    }),
+  );
+
+  it.effect(
+    "refuses missing worktree capabilities and external callers before changing state",
+    () =>
+      Effect.gen(function* () {
+        const h = makeHarness();
+        const service = yield* resolveService(h);
+        expect(
+          (yield* service.detach({ ...h.scope, capabilities: new Set() }, {}).pipe(Effect.flip))
+            ._tag,
+        ).toBe("WorktreeMcpFailure");
+        expect(
+          yield* service.detach({ ...h.scope, thread: undefined }, {}).pipe(Effect.flip),
+        ).toMatchObject({ code: "thread_credential_required" });
+        expect(h.detach).not.toHaveBeenCalled();
+      }),
+  );
+
+  it.effect(
+    "preserves typed guard failures and reports a kept directory after the binding moved",
+    () =>
+      Effect.gen(function* () {
+        const refusal = new ThreadWorktreeError({
+          reason: "worktree-shared",
+          threadId,
+          worktreePath: "/worktree",
+          branch: "feature",
+        });
+        const failed = makeHarness({ detachFailure: refusal });
+        const service = yield* resolveService(failed);
+        expect(yield* service.detach(failed.scope, {}).pipe(Effect.flip)).toBe(refusal);
+        const partial = makeHarness({ detachRemovalError: refusal });
+        const partialService = yield* resolveService(partial);
+        const result = yield* partialService.detach(partial.scope, {});
+        expect(result.removed).toBe(false);
+        expect(result.detachedThreadIds).toEqual([threadId]);
+        expect(result.removalError).toBe(refusal);
+        expect(result.note).toContain("binding moved");
+      }),
+  );
+
+  it("bounds continuation prompts", () => {
+    expect(isDetachInput({ continuationPrompt: " " })).toBe(false);
+    expect(isDetachInput({ continuationPrompt: "x".repeat(120_001) })).toBe(false);
   });
 });

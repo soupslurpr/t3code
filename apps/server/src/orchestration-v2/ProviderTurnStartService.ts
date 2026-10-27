@@ -1,3 +1,5 @@
+import * as Option from "effect/Option";
+import * as ThreadWorktreeService from "./ThreadWorktreeService.ts";
 import { formatMonitorSystemEventForProvider } from "../threadMonitor/ThreadMonitorContinuation.ts";
 import { modelSelectionsEqual } from "@t3tools/shared/model";
 import { getLeadRole } from "@t3tools/shared/lead";
@@ -15,23 +17,16 @@ import {
   ThreadId,
 } from "@t3tools/contracts";
 import * as Context from "effect/Context";
-import * as Cause from "effect/Cause";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
-import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
-import * as Option from "effect/Option";
 import * as Path from "effect/Path";
 import * as Predicate from "effect/Predicate";
 import * as Schema from "effect/Schema";
 
-import * as ServerConfig from "../config.ts";
 import { withWorkspaceLease } from "../workspace/workspaceLease.ts";
-import * as GitWorkflowService from "../git/GitWorkflowService.ts";
-import * as ProjectService from "../project/ProjectService.ts";
 import * as ProviderAuthService from "../provider/ProviderAuthService.ts";
 import * as ServerSettings from "../serverSettings.ts";
-import { makeIsManagedWorktreePath } from "../worktreesDirectory.ts";
 import * as ProviderRegistry from "../provider/ProviderRegistry.ts";
 import { resolveLeadSelectionForTurn } from "../provider/lead.ts";
 import * as EventSink from "./EventSink.ts";
@@ -105,12 +100,8 @@ export const layer: Layer.Layer<
   | EventSink.EventSinkV2
   | ContextHandoffService.ContextHandoffServiceV2
   | IdAllocator.IdAllocatorV2
-  | FileSystem.FileSystem
   | Path.Path
-  | ServerConfig.ServerConfig
-  | ServerSettings.ServerSettingsService
-  | GitWorkflowService.GitWorkflowService
-  | ProjectService.ProjectService
+  | ThreadWorktreeService.ThreadWorktreeService
   | ProviderAuthService.ProviderAuthService
   | ProviderRegistry.ProviderRegistry
   | ServerSettings.ServerSettingsService
@@ -124,10 +115,8 @@ export const layer: Layer.Layer<
     const eventSink = yield* EventSink.EventSinkV2;
     const contextHandoffService = yield* ContextHandoffService.ContextHandoffServiceV2;
     const idAllocator = yield* IdAllocator.IdAllocatorV2;
-    const fileSystem = yield* FileSystem.FileSystem;
     const path = yield* Path.Path;
-    const gitWorkflow = yield* GitWorkflowService.GitWorkflowService;
-    const projects = yield* ProjectService.ProjectService;
+    const worktrees = yield* ThreadWorktreeService.ThreadWorktreeService;
     const providerAuth = yield* ProviderAuthService.ProviderAuthService;
     const providerRegistry = yield* ProviderRegistry.ProviderRegistry;
     const serverSettings = yield* ServerSettings.ServerSettingsService;
@@ -135,7 +124,6 @@ export const layer: Layer.Layer<
     const providerSessions = yield* ProviderSessionManager.ProviderSessionManagerV2;
     const runExecution = yield* RunExecutionService.RunExecutionServiceV2;
     const runtimePolicy = yield* RuntimePolicy.RuntimePolicyV2;
-    const isManagedWorktreePath = yield* makeIsManagedWorktreePath;
 
     // Build draining callbacks outside startup scope so they cannot retain full thread history.
     const makeRunControls = (input: {
@@ -489,42 +477,26 @@ export const layer: Layer.Layer<
           return;
         }
       }
-      const { worktreePath, branch } = projection.thread;
-      if (worktreePath !== null && branch !== null) {
-        const exists = yield* fileSystem
-          .exists(worktreePath)
-          .pipe(Effect.orElseSucceed(() => true));
-        if (!exists && (yield* isManagedWorktreePath(worktreePath))) {
-          const project = yield* projects.getById(projection.thread.projectId).pipe(
-            Effect.map(Option.getOrUndefined),
-            Effect.orElseSucceed(() => undefined),
-          );
-          if (project !== undefined) {
-            yield* Effect.logWarning("provider turn start recreating missing worktree", {
-              threadId: projection.thread.id,
-              worktreePath,
-              branch,
-            });
-            yield* gitWorkflow.pruneWorktrees({ cwd: project.workspaceRoot }).pipe(
-              Effect.andThen(
-                gitWorkflow.createWorktree({
-                  cwd: project.workspaceRoot,
-                  refName: branch,
-                  path: worktreePath,
-                }),
-              ),
-              Effect.catchCauseIf(
-                (cause) => !Cause.hasInterruptsOnly(cause),
-                (cause) =>
-                  Effect.logWarning("provider turn start failed to recreate worktree", {
-                    threadId: projection.thread.id,
-                    worktreePath,
-                    cause: Cause.pretty(cause),
-                  }),
-              ),
-            );
-          }
-        }
+      const workspace = yield* Effect.result(worktrees.ensure(projection.thread.id));
+      if (workspace._tag === "Failure") {
+        if (input.willRetry === true) return yield* workspace.failure;
+        yield* settleRunBeforeStart({
+          signal: "worktree-unavailable",
+          status: "failed",
+          now: yield* DateTime.now,
+          providerInstanceId: run.providerInstanceId,
+          itemProviderThreadId: providerThread.id,
+          item: {
+            type: "error",
+            title: "Worktree unavailable",
+            failure: makeProviderFailure({
+              cause: workspace.failure,
+              class: "provider_error",
+              message: workspace.failure.message,
+            }),
+          },
+        });
+        return;
       }
       const selectInheritedBackgroundItems = (
         current: ProjectionStore.ProjectionRuntimeRecoveryState,

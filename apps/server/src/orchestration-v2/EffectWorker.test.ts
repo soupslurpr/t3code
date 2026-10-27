@@ -108,6 +108,8 @@ function layerExecutorFor(input: {
         open: () => Effect.die("unused open"),
         get: () => Effect.succeedNone,
         isLive: () => Effect.succeed(false),
+        isMcpCaller: () => Effect.succeed(false),
+        listWorkspaceSessions: () => Effect.succeed([]),
         close: () => Effect.void,
         closeInstance: () => Effect.void,
         release: () => record("release"),

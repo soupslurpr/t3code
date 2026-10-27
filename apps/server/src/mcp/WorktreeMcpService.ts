@@ -1,6 +1,9 @@
 import {
   CommandId,
   MessageId,
+  type ThreadWorktreeError,
+  type WorktreeMcpDetachInput,
+  type WorktreeMcpDetachResult,
   type ProjectId,
   WorktreeMcpFailure,
   type WorktreeMcpContinuationStatus,
@@ -15,9 +18,15 @@ import * as Crypto from "effect/Crypto";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
+import * as Ref from "effect/Ref";
 
 import * as GitWorkflowService from "../git/GitWorkflowService.ts";
 import * as ThreadManagementService from "../orchestration-v2/ThreadManagementService.ts";
+import * as ThreadWorktreeService from "../orchestration-v2/ThreadWorktreeService.ts";
+import {
+  DispatchModeLimit,
+  type DispatchModeRefusal,
+} from "../orchestration-v2/DispatchModeLimit.ts";
 import * as ProjectService from "../project/ProjectService.ts";
 import * as ProjectSetupScriptRunner from "../project/ProjectSetupScriptRunner.ts";
 import * as ServerSettings from "../serverSettings.ts";
@@ -27,6 +36,10 @@ import type { McpInvocationScope, McpThreadInvocationScope } from "./McpInvocati
 export class WorktreeMcpService extends Context.Service<
   WorktreeMcpService,
   {
+    readonly detach: (
+      scope: McpInvocationScope,
+      input: WorktreeMcpDetachInput,
+    ) => Effect.Effect<WorktreeMcpDetachResult, WorktreeMcpFailure | ThreadWorktreeError>;
     readonly handoff: (
       scope: McpInvocationScope,
       input: WorktreeMcpHandoffInput,
@@ -57,6 +70,7 @@ const asOperationFailed = (prefix: string) =>
 const make = Effect.gen(function* () {
   const crypto = yield* Crypto.Crypto;
   const threadManagement = yield* ThreadManagementService.ThreadManagementService;
+  const worktrees = yield* ThreadWorktreeService.ThreadWorktreeService;
   const projects = yield* ProjectService.ProjectService;
   const serverSettings = yield* ServerSettings.ServerSettingsService;
   const gitWorkflow = yield* GitWorkflowService.GitWorkflowService;
@@ -71,7 +85,7 @@ const make = Effect.gen(function* () {
       ? Effect.fail(
           failure(
             "thread_credential_required",
-            "Worktree handoff and status act as the calling T3 thread, so they need an agent running inside T3 Code.",
+            "Worktree handoff, detach, and status act as the calling T3 thread, so they need an agent running inside T3 Code.",
           ),
         )
       : Effect.succeed(scope as McpThreadInvocationScope);
@@ -130,7 +144,6 @@ const make = Effect.gen(function* () {
           );
         return {
           commandId: CommandId.make(part("command", "worktree-handoff")),
-          continuationCommandId: CommandId.make(part("command", "worktree-continuation")),
           continuationMessageId: MessageId.make(part("message", "worktree-continuation")),
         };
       }),
@@ -155,6 +168,19 @@ const make = Effect.gen(function* () {
       return yield* failure(
         "invalid_request",
         `Thread '${scope.thread.threadId}' is archived and cannot be handed off to a worktree.`,
+      );
+    }
+
+    // Keep the calling run even if Stop settles it during the git work, so
+    // the atomic command can reject its workspace move and continuation.
+    const caller = yield* threadManagement
+      .getThreadShell(scope.thread.threadId)
+      .pipe(asOperationFailed(`Unable to read thread ${scope.thread.threadId} before handoff`));
+    const callerRunId = caller?.activeRunId ?? null;
+    if (callerRunId === null) {
+      return yield* failure(
+        "invalid_request",
+        "The calling turn is no longer running, so the worktree handoff was not performed.",
       );
     }
 
@@ -239,6 +265,8 @@ const make = Effect.gen(function* () {
         );
         const worktreePath = worktree.worktree.path;
 
+        // Setup runs after the handoff commits, so report its failure without
+        // failing a handoff whose binding and continuation are already recorded.
         const reportFailed = (logMessage: string) =>
           Effect.catchCause((cause: Cause.Cause<unknown>) => {
             const detail = errorMessage(Cause.squash(cause));
@@ -277,12 +305,20 @@ const make = Effect.gen(function* () {
           }
           yield* threadManagement
             .dispatch({
-              type: "thread.metadata.update",
+              type: "thread.worktree.handoff",
               commandId: ids.commandId,
               threadId: scope.thread.threadId,
               branch: worktree.worktree.refName,
               worktreePath,
-              expectedWorktreePath: null,
+              ...(input.continuationPrompt === undefined
+                ? {}
+                : {
+                    continuation: {
+                      messageId: ids.continuationMessageId,
+                      text: input.continuationPrompt,
+                    },
+                  }),
+              callerRunId,
             })
             .pipe(
               Effect.catchCause((cause) =>
@@ -303,33 +339,12 @@ const make = Effect.gen(function* () {
           ),
         );
 
-        // Queue continuation immediately after binding; detachment terminates the caller, so relaunch needs a durable message.
-        const queueContinuation: Effect.Effect<WorktreeMcpContinuationStatus, WorktreeMcpFailure> =
-          Effect.suspend(() =>
-            input.continuationPrompt === undefined
-              ? Effect.succeed<WorktreeMcpContinuationStatus>({ status: "skipped" })
-              : threadManagement
-                  .sendToThread({
-                    projectId: projection.thread.projectId,
-                    commandId: ids.continuationCommandId,
-                    threadId: scope.thread.threadId,
-                    messageId: ids.continuationMessageId,
-                    text: input.continuationPrompt,
-                    attachments: [],
-                    mode: "queue",
-                    createdBy: "agent",
-                    creationSource: "mcp",
-                  })
-                  .pipe(
-                    Effect.map((sendResult): WorktreeMcpContinuationStatus => ({
-                      status: "scheduled",
-                      delivery: sendResult.delivery,
-                    })),
-                    reportFailed("worktree handoff continuation failed to queue"),
-                  ),
-          );
+        yield* recheckAndBind;
 
-        const continuation = yield* recheckAndBind.pipe(Effect.andThen(queueContinuation));
+        const continuation: WorktreeMcpContinuationStatus =
+          input.continuationPrompt === undefined
+            ? { status: "skipped" }
+            : { status: "scheduled", delivery: "queued" };
 
         yield* vcsStatusBroadcaster
           .refreshStatus(worktreePath)
@@ -426,7 +441,60 @@ const make = Effect.gen(function* () {
     },
   );
 
-  return WorktreeMcpService.of({ handoff, status });
+  const detach: WorktreeMcpService["Service"]["detach"] = Effect.fn("WorktreeMcpService.detach")(
+    function* (callerScope, input) {
+      yield* requireCapability(callerScope);
+      const scope = yield* requireThreadScope(callerScope);
+      const { thread } = yield* loadThread(scope);
+      const refused = yield* Ref.make<DispatchModeRefusal | undefined>(undefined);
+      const result = yield* worktrees
+        .detach(
+          scope.thread.threadId,
+          {
+            removeWorktree: input.removeWorktree ?? true,
+            force: input.force ?? false,
+          },
+          {
+            mcpCredentialId: scope.thread.providerSessionId,
+            continuationPrompt: input.continuationPrompt,
+          },
+        )
+        .pipe(
+          Effect.provideService(DispatchModeLimit, {
+            runtimeMode: thread.runtimeMode,
+            interactionMode: thread.interactionMode,
+            refused,
+          }),
+          Effect.catch((error) =>
+            Ref.get(refused).pipe(
+              Effect.flatMap((refusal) =>
+                Effect.fail(
+                  refusal === undefined
+                    ? error
+                    : failure(
+                        "operation_failed",
+                        `Cannot move thread '${refusal.threadId}': its ${refusal.runtimeMode}/${refusal.interactionMode} modes exceed the calling thread's.`,
+                      ),
+                ),
+              ),
+            ),
+          ),
+        );
+      return {
+        ...result,
+        continuation:
+          input.continuationPrompt === undefined
+            ? { status: "skipped" as const }
+            : { status: "scheduled" as const, delivery: "queued" as const },
+        note:
+          result.removalError === undefined
+            ? "The thread group now uses the main checkout. The calling session ends; remaining work runs there on the next turn. The branch and conversation are kept."
+            : `The thread binding moved, but the worktree directory was kept: ${result.removalError.message} The branch and conversation are kept.`,
+      };
+    },
+  );
+
+  return WorktreeMcpService.of({ handoff, status, detach });
 });
 
 export const layer: Layer.Layer<
@@ -434,6 +502,7 @@ export const layer: Layer.Layer<
   never,
   | Crypto.Crypto
   | ThreadManagementService.ThreadManagementService
+  | ThreadWorktreeService.ThreadWorktreeService
   | ProjectService.ProjectService
   | ServerSettings.ServerSettingsService
   | GitWorkflowService.GitWorkflowService

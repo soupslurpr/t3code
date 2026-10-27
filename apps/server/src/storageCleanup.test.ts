@@ -1,3 +1,5 @@
+import { ProviderSessionId } from "@t3tools/contracts";
+import { storageCleanupThreadIdle } from "./workspace/worktreeOwnership.ts";
 import * as Schema from "effect/Schema";
 import { EnvironmentId } from "@t3tools/contracts";
 import * as Transfers from "./computer/UserDesktopTransfers.ts";
@@ -51,11 +53,7 @@ import {
   type OrchestrationV2ThreadShell,
 } from "@t3tools/contracts";
 import * as DateTime from "effect/DateTime";
-import {
-  storageCleanupActivityAt,
-  storageCleanupPullRequestMerged,
-  storageCleanupThreadIdle,
-} from "./storageCleanup.ts";
+import { storageCleanupActivityAt, storageCleanupPullRequestMerged } from "./storageCleanup.ts";
 
 const decodeNativeCommand = Schema.decodeUnknownEffect(UserDesktopCommandInput);
 const NOW_MS = Date.parse("2026-06-10T12:00:00.000Z");
@@ -277,9 +275,17 @@ const cleanupFixture = (
     let deletedThreads: OrchestrationV2ThreadShell[] = [];
     let storedWorktreePaths: string[] = [worktree];
     let projectRoots = [repo];
+    let probeFailure: string | undefined;
     let editBeforeRemoval = false;
     let openSessionCwd: string | null = null;
     let sessionLive = true;
+    let workspaceSessions:
+      | Effect.Success<
+          ReturnType<
+            ProviderSessionManager.ProviderSessionManagerV2["Service"]["listWorkspaceSessions"]
+          >
+        >
+      | undefined;
     let fullStatusCalls = 0;
     let snapshotReads = 0;
     let events: Stream.Stream<OrchestrationV2DomainEvent> = Stream.empty;
@@ -300,7 +306,10 @@ const cleanupFixture = (
               (input.args.includes("remove") || input.args.includes("--porcelain"))
             )
               yield* fs.writeFileString(`${worktree}/tracked.txt`, "late edit\n");
-            return yield* git.execute(input);
+            const result = yield* git.execute(input);
+            return probeFailure !== undefined && input.args[0] === "symbolic-ref"
+              ? { ...result, exitCode: 128, stderr: probeFailure }
+              : result;
           }),
         statusDetailsLocal: (...args) => {
           fullStatusCalls++;
@@ -351,7 +360,21 @@ const cleanupFixture = (
           Effect.sync(() => threads.find((thread) => thread.id === threadId) ?? null),
       } as unknown as ProjectionStore.ProjectionStoreV2["Service"]),
       Effect.provideService(ProviderSessionManager.ProviderSessionManagerV2, {
-        isLive: () => Effect.sync(() => sessionLive),
+        listWorkspaceSessions: () =>
+          Effect.sync(
+            () =>
+              workspaceSessions ??
+              (sessionLive && openSessionCwd !== null
+                ? [
+                    {
+                      id: ProviderSessionId.make("session-1"),
+                      generation: 1,
+                      cwd: openSessionCwd,
+                      threadWorkspaces: [],
+                    },
+                  ]
+                : []),
+          ),
       } as unknown as ProviderSessionManager.ProviderSessionManagerV2["Service"]),
       Effect.provideService(Orchestrator.OrchestratorV2, {
         streamDomainEvents: Stream.suspend(() => events),
@@ -398,6 +421,9 @@ const cleanupFixture = (
     return {
       service: Context.get(context, StorageCleanup.StorageCleanup),
       repo,
+      setProbeFailure: (stderr: string | undefined) => {
+        probeFailure = stderr;
+      },
       editBeforeRemoval: () => {
         editBeforeRemoval = true;
       },
@@ -445,6 +471,9 @@ const cleanupFixture = (
       },
       setProjectRoots: (roots: string[]) => {
         projectRoots = roots;
+      },
+      setWorkspaceSessions: (sessions: NonNullable<typeof workspaceSessions>) => {
+        workspaceSessions = sessions;
       },
       setSessionLive: (live: boolean) => {
         sessionLive = live;
@@ -1552,6 +1581,73 @@ describe("storage cleanup reports and local file policies", () => {
       }),
     ),
   );
+  it.live.each(["root", "nested", "alias", "null-cwd"] as const)(
+    "keeps a native-thread workspace owned by a shared runtime (%s)",
+    (location) =>
+      runCleanupTest(
+        Effect.gen(function* () {
+          const fixture = yield* cleanupFixture();
+          let nativeCwd = fixture.worktree;
+          if (location === "nested") {
+            nativeCwd = `${fixture.worktree}/nested`;
+            yield* fixture.fs.makeDirectory(nativeCwd);
+          } else if (location === "alias") {
+            nativeCwd = `${fixture.repo}/worktree-alias`;
+            yield* fixture.fs.symlink(fixture.worktree, nativeCwd);
+          }
+          fixture.setOpenSessionCwd(fixture.repo);
+          const owner = {
+            id: ProviderSessionId.make("session-1"),
+            generation: 1,
+            cwd: location === "null-cwd" ? null : fixture.repo,
+          };
+          fixture.setWorkspaceSessions([
+            {
+              ...owner,
+              threadWorkspaces: [{ threadId: ThreadId.make("thread-1"), cwd: nativeCwd }],
+            },
+          ]);
+          expect((yield* fixture.service.runNow).entries[0]).toMatchObject({
+            outcome: "kept",
+            reason: "Provider session is still open",
+            bytes: null,
+          });
+          expect(yield* fixture.fs.exists(fixture.worktree)).toBe(true);
+          // Once B's owner closes, an unrelated runtime at A does not block B.
+          fixture.setWorkspaceSessions([{ ...owner, generation: 2, threadWorkspaces: [] }]);
+          expect((yield* fixture.service.runNow).entries[0]?.outcome).toBe("removed");
+          expect(yield* fixture.fs.exists(fixture.worktree)).toBe(false);
+        }),
+      ),
+  );
+  it.live.each(["opening", "unconfirmed-release"] as const)(
+    "keeps a worktree owned by an %s generation outside residency",
+    (state) =>
+      runCleanupTest(
+        Effect.gen(function* () {
+          const fixture = yield* cleanupFixture();
+          if (state === "unconfirmed-release") fixture.setOpenSessionCwd(fixture.worktree);
+          fixture.setSessionLive(false);
+          fixture.setWorkspaceSessions([
+            {
+              id: ProviderSessionId.make("session-1"),
+              generation: 1,
+              cwd: fixture.worktree,
+              threadWorkspaces: [],
+            },
+          ]);
+          expect((yield* fixture.service.runNow).entries[0]).toMatchObject({
+            outcome: "kept",
+            reason: "Provider session is still open",
+            bytes: null,
+          });
+          expect(yield* fixture.fs.exists(fixture.worktree)).toBe(true);
+          fixture.setWorkspaceSessions([]);
+          expect((yield* fixture.service.runNow).entries[0]?.outcome).toBe("removed");
+          expect(yield* fixture.fs.exists(fixture.worktree)).toBe(false);
+        }),
+      ),
+  );
   it.live("compares the checked-out branch without a full status", () =>
     runCleanupTest(
       Effect.gen(function* () {
@@ -2129,6 +2225,24 @@ it.live("keeps a real transfer workspace through a linked-parent alias", () =>
       });
       yield* transfers.cancel(owner, { transferId: started.id });
       expect(yield* fixture.fs.exists(fixture.worktree)).toBe(true);
+    }),
+  ),
+);
+
+it.live.each([
+  ["fatal: not a git repository", "kept"],
+  ["fatal: gitfile does not point to a valid repository", "kept"],
+  ["fatal: permission denied", "failed"],
+] as const)("classifies cleanup Git failure %s as %s", ([stderr, outcome]) =>
+  runCleanupTest(
+    Effect.gen(function* () {
+      const f = yield* cleanupFixture();
+      f.setProbeFailure(stderr);
+      const report = yield* f.service.runNow;
+      expect(report.entries[0]).toMatchObject({ outcome });
+      expect(yield* f.fs.exists(f.worktree)).toBe(true);
+      f.setProbeFailure(undefined);
+      expect((yield* f.service.runNow).entries[0]?.outcome).toBe("removed");
     }),
   ),
 );

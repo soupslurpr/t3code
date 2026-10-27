@@ -1,3 +1,5 @@
+import { useThreadWorktreeActions } from "../hooks/useThreadWorktreeActions";
+import { vcsEnvironment } from "../state/vcs";
 import { threadPullRequestLinkMode } from "@t3tools/client-runtime/thread-pull-request-compatibility";
 import { visibleThreadPullRequests } from "@t3tools/shared/threadPullRequests";
 
@@ -732,6 +734,10 @@ function OpenCommandPaletteDialog(props: {
   };
 
   const { projectCwdById, projectByKey, projectTitleById } = useProjectLookups();
+  const { changeThreadWorktree, worktreeMenuState } = useThreadWorktreeActions();
+  const canChangeWorktree = useAtomValue(
+    vcsEnvironment.removeThreadWorktree.permissionAtom(activeThread?.environmentId ?? null),
+  );
 
   const activeThreadKey = activeThread
     ? scopedThreadKey(scopeThreadRef(activeThread.environmentId, activeThread.id))
@@ -1386,6 +1392,26 @@ function OpenCommandPaletteDialog(props: {
     });
   }
 
+  if (
+    activeThread?.worktreePath != null &&
+    worktreeMenuState(scopeThreadRef(activeThread.environmentId, activeThread.id)) !== undefined
+  ) {
+    const target = scopeThreadRef(activeThread.environmentId, activeThread.id);
+    for (const action of ["remove", "detach"] as const) {
+      actionItems.push({
+        kind: "action",
+        value: `action:worktree-${action}`,
+        searchTerms: ["worktree", "cleanup", "checkout", "recover"],
+        title: action === "remove" ? "Remove worktree…" : "Move to main checkout…",
+        description: canChangeWorktree
+          ? activeThread.worktreePath
+          : "Source control permission required",
+        icon: <RotateCcwIcon className={ITEM_ICON_CLASS} />,
+        disabled: !canChangeWorktree,
+        run: () => changeThreadWorktree(target, action),
+      });
+    }
+  }
   if (activeThread !== null) {
     const thread = activeThread;
     actionItems.push({

@@ -1,3 +1,4 @@
+import { ThreadWorktreeService } from "./orchestration-v2/ThreadWorktreeService.ts";
 import { DesktopExecutionAuthorizationChannel } from "./computer/DesktopExecutionAuthorizationChannel.ts";
 import * as ThreadDesktopActivity from "./computer/ThreadDesktopActivity.ts";
 import { ThreadMonitorService } from "./threadMonitor/ThreadMonitorService.ts";
@@ -398,6 +399,7 @@ it.effect("shell snapshots omit idle children and older settled threads only on 
 
 // Build the production RPC layer; unrelated capabilities fail if this test calls them.
 const layerUnusedConfigRpcServices = Layer.mergeAll(
+  Layer.mock(ThreadWorktreeService)({}),
   ComputerObservationStore.layer,
   Layer.mock(AgentDesktopManager.AgentDesktopManager)({}),
   Layer.mock(ThreadDesktopActivity.ThreadDesktopActivityService)({}),

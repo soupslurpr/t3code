@@ -463,6 +463,8 @@ const threadPullRequestLinksEqual = Schema.toEquivalence(Schema.NullOr(ThreadLin
 
 function commandThreadId(command: OrchestrationV2ServerCommand): ThreadId {
   switch (command.type) {
+    case "thread.worktree.detach":
+    case "thread.worktree.handoff":
     case "thread.create":
     case "thread.archive":
     case "thread.unarchive":
@@ -3873,7 +3875,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
               },
             });
             const pendingEffect = {
-              id: `effect:${command.commandId}:provider-session.detach:${session.id}`,
+              id: `effect:${command.commandId}:provider-session.detach:${command.threadId}:${session.id}`,
               commandId: command.commandId,
               threadId: command.threadId,
               request: {
@@ -9261,6 +9263,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
     readonly events: Ref.Ref<Array<OrchestrationV2DomainEvent>>;
     readonly effects: Ref.Ref<Array<PendingOrchestrationEffectV2>>;
     readonly now: DateTime.Utc;
+    readonly captureCheckpoint?: boolean;
   }) {
     const attempt = input.projection.attempts.find(
       (candidate) => candidate.id === input.providerTurn.runAttemptId,
@@ -9405,7 +9408,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       },
     });
     const scopeId = rootNode.checkpointScopeId;
-    if (scopeId !== null) {
+    if (scopeId !== null && input.captureCheckpoint !== false) {
       yield* Ref.update(input.effects, (effects) => [
         ...effects,
         {
@@ -11646,6 +11649,42 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       }),
     );
 
+  // A workspace continuation carries on the caller's task. Preserve its owner
+  // before interrupting the caller so finalization waits for the continuation.
+  const inheritWorktreeContinuationTask = Effect.fn("Orchestrator.inheritWorktreeContinuationTask")(
+    function* (
+      command: Extract<
+        OrchestrationV2InternalCommand,
+        { readonly type: "thread.worktree.handoff" | "thread.worktree.detach" }
+      >,
+      projection: Pick<OrchestrationV2ThreadProjection, "runs">,
+      events: Ref.Ref<Array<OrchestrationV2DomainEvent>>,
+    ) {
+      if (command.continuation === undefined) return;
+      const callerRun = projection.runs.find((run) => run.id === command.callerRunId);
+      if (callerRun?.delegatedTaskId === undefined) return;
+      const message = (yield* Ref.get(events))
+        .flatMap((event) =>
+          event.type === "message.updated" && event.payload.id === command.continuation?.messageId
+            ? [event.payload]
+            : [],
+        )
+        .at(-1);
+      const continuationRun = projection.runs.find((run) => run.id === message?.runId);
+      if (continuationRun === undefined || continuationRun.delegatedTaskId !== undefined) return;
+      yield* emit(
+        events,
+        command,
+      )({
+        type: "run.updated",
+        threadId: command.threadId,
+        runId: continuationRun.id,
+        occurredAt: yield* DateTime.now,
+        payload: { ...continuationRun, delegatedTaskId: callerRun.delegatedTaskId },
+      });
+    },
+  );
+
   const dispatchOnce = Effect.fn("orchestrationV2.dispatch.once")(function* (
     command: OrchestrationV2ServerCommand,
   ): Effect.fn.Return<
@@ -11763,6 +11802,184 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       case "provider.switch":
         yield* dispatchThreadMutation(command, events, effects);
         break;
+      case "thread.worktree.detach": {
+        const thread = yield* projectionStore
+          .getThread(command.threadId)
+          .pipe(
+            Effect.mapError(
+              (cause) => new OrchestratorProjectionError({ threadId: command.threadId, cause }),
+            ),
+          );
+        // Manual cleanup can move an archived thread without resuming it.
+        if (
+          thread.deletedAt !== null ||
+          (thread.archivedAt !== null &&
+            (command.callerRunId !== undefined || command.continuation !== undefined))
+        )
+          return yield* new OrchestratorDispatchError({
+            commandId: command.commandId,
+            commandType: command.type,
+            cause: `Thread ${command.threadId} is not active.`,
+          });
+        if (
+          command.callerRunId !== undefined &&
+          (yield* stopReachedRun(command, command.threadId, command.callerRunId))
+        )
+          return yield* new OrchestratorDispatchError({
+            commandId: command.commandId,
+            commandType: command.type,
+            cause:
+              "Stop reached the calling turn; its workspace move and continuation were cancelled.",
+          });
+        for (const member of command.members) {
+          yield* dispatchThreadMutation(
+            {
+              type: "thread.metadata.update",
+              commandId: command.commandId,
+              ...member,
+              worktreePath: null,
+              branch: null,
+            },
+            events,
+            effects,
+          );
+        }
+        // Stage the bindings first so the continuation resolves the main cwd.
+        // Its queue entry and every binding commit together, before any detach
+        // effect can stop the caller; a failed CAS leaves neither.
+        if (command.continuation !== undefined) {
+          const message = {
+            type: "message.dispatch" as const,
+            commandId: command.commandId,
+            threadId: command.threadId,
+            ...command.continuation,
+            attachments: [],
+            dispatchMode: { type: "queue_after_active" as const },
+            createdBy: "agent" as const,
+            creationSource: "mcp" as const,
+          };
+          yield* dispatchMessage(message, events, effects);
+          yield* recordSubagentFollowup(message, events).pipe(mapDispatchError(command));
+        }
+        if (command.callerRunId !== undefined) {
+          const projection = yield* getProjectionWithPendingEvents(command.threadId, events);
+          const run = projection.runs.find((run) => run.id === command.callerRunId);
+          const providerTurn = projection.providerTurns.find(
+            (turn) => turn.runAttemptId === run?.activeAttemptId && turn.status === "running",
+          );
+          if (run?.status !== "running" || providerTurn === undefined)
+            return yield* new OrchestratorDispatchError({
+              commandId: command.commandId,
+              commandType: command.type,
+              cause: "The calling turn is no longer running.",
+            });
+          yield* inheritWorktreeContinuationTask(command, projection, events);
+          // This is an intentional end to the calling turn. Letting session
+          // shutdown fail its stream would hold the continuation as a provider
+          // failure. The metadata detach effects stop the actual provider.
+          yield* settleInterruptedRun({
+            command: {
+              type: "run.interrupt",
+              commandId: command.commandId,
+              threadId: command.threadId,
+              runId: run.id,
+              reason: "Moved to the main checkout.",
+            },
+            projection,
+            providerTurn,
+            events,
+            effects,
+            now: yield* DateTime.now,
+            captureCheckpoint: false,
+          });
+        }
+        break;
+      }
+      case "thread.worktree.handoff": {
+        const thread = yield* projectionStore
+          .getThread(command.threadId)
+          .pipe(
+            Effect.mapError(
+              (cause) => new OrchestratorProjectionError({ threadId: command.threadId, cause }),
+            ),
+          );
+        if (thread.archivedAt !== null || thread.deletedAt !== null)
+          return yield* new OrchestratorDispatchError({
+            commandId: command.commandId,
+            commandType: command.type,
+            cause: `Thread ${command.threadId} is not active.`,
+          });
+        if (
+          command.callerRunId !== undefined &&
+          (yield* stopReachedRun(command, command.threadId, command.callerRunId))
+        )
+          return yield* new OrchestratorDispatchError({
+            commandId: command.commandId,
+            commandType: command.type,
+            cause:
+              "Stop reached the calling turn; its workspace move and continuation were cancelled.",
+          });
+        yield* dispatchThreadMutation(
+          {
+            type: "thread.metadata.update",
+            commandId: command.commandId,
+            threadId: command.threadId,
+            branch: command.branch,
+            worktreePath: command.worktreePath,
+            expectedWorktreePath: null,
+          },
+          events,
+          effects,
+        );
+        // Bind and queue together so the continuation resolves the new cwd
+        // before session shutdown can end the caller.
+        if (command.continuation !== undefined) {
+          const message = {
+            type: "message.dispatch" as const,
+            commandId: command.commandId,
+            threadId: command.threadId,
+            ...command.continuation,
+            attachments: [],
+            dispatchMode: { type: "queue_after_active" as const },
+            createdBy: "agent" as const,
+            creationSource: "mcp" as const,
+          };
+          yield* dispatchMessage(message, events, effects);
+          yield* recordSubagentFollowup(message, events).pipe(mapDispatchError(command));
+        }
+        if (command.callerRunId !== undefined) {
+          const projection = yield* getProjectionWithPendingEvents(command.threadId, events);
+          const run = projection.runs.find((run) => run.id === command.callerRunId);
+          const providerTurn = projection.providerTurns.find(
+            (turn) => turn.runAttemptId === run?.activeAttemptId && turn.status === "running",
+          );
+          if (run?.status !== "running" || providerTurn === undefined)
+            return yield* new OrchestratorDispatchError({
+              commandId: command.commandId,
+              commandType: command.type,
+              cause: "The calling turn is no longer running.",
+            });
+          yield* inheritWorktreeContinuationTask(command, projection, events);
+          // Session shutdown must not fail the caller's stream and hold the
+          // continuation as a provider failure. Metadata detach stops the provider.
+          yield* settleInterruptedRun({
+            command: {
+              type: "run.interrupt",
+              commandId: command.commandId,
+              threadId: command.threadId,
+              runId: run.id,
+              reason: "Moved to the worktree.",
+            },
+            projection,
+            providerTurn,
+            events,
+            effects,
+            now: yield* DateTime.now,
+            captureCheckpoint: false,
+          });
+        }
+        break;
+      }
       case "thread.pull-request-watch.sync":
         yield* dispatchPullRequestWatchSync(command, events, effects);
         break;
@@ -12084,12 +12301,18 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
     // Recheck under the lock; the user may have raised modes since sender preflight.
     const limit = yield* DispatchModeLimit;
     if (limit !== undefined) {
-      // Fork and merge-back sources are unlocked; validate the modes copied by their dispatch.
-      const threadId = commandThreadId(command);
-      const shell = yield* projectionStore
-        .getThreadShell(threadId)
-        .pipe(Effect.mapError((cause) => new OrchestratorProjectionError({ threadId, cause })));
-      if (shell !== null) yield* refuseAboveDispatchModeLimit(command, threadId, shell);
+      // A fork or merge-back source is not under this lock: its dispatch
+      // checks the copy it reads instead.
+      const threadIds =
+        command.type === "thread.worktree.detach"
+          ? new Set([commandThreadId(command), ...command.members.map((member) => member.threadId)])
+          : [commandThreadId(command)];
+      for (const threadId of threadIds) {
+        const shell = yield* projectionStore
+          .getThreadShell(threadId)
+          .pipe(Effect.mapError((cause) => new OrchestratorProjectionError({ threadId, cause })));
+        if (shell !== null) yield* refuseAboveDispatchModeLimit(command, threadId, shell);
+      }
     }
 
     const plan = yield* dispatchOnce(command).pipe(
@@ -12232,6 +12455,12 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
 
   // dispatchWithReceiptEffect owns the dispatch span; this wrapper selects the thread locks.
   const dispatchWithReceipt = Effect.fnUntraced(function* (command: OrchestrationV2ServerCommand) {
+    if (command.type === "thread.worktree.detach") {
+      return yield* command.members.reduceRight(
+        (effect, member) => threadDispatch.withLock(member.threadId, effect),
+        dispatchWithReceiptEffect(command),
+      );
+    }
     const dispatch = threadDispatch.withLock(
       commandThreadId(command),
       dispatchWithReceiptEffect(command),

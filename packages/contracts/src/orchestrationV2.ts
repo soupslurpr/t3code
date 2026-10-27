@@ -3204,6 +3204,40 @@ export type OrchestrationV2Command = typeof OrchestrationV2Command.Type;
 
 // Excluded from dispatchCommand so only the server can send these.
 const OrchestrationV2InternalCommand = Schema.Union([
+  /** The service locks members in lineage order; one receipt commits every binding together. */
+  Schema.Struct({
+    type: Schema.Literal("thread.worktree.detach"),
+    commandId: CommandId,
+    threadId: ThreadId,
+    members: Schema.Array(
+      Schema.Struct({
+        threadId: ThreadId,
+        expectedWorktreePath: Schema.String,
+      }),
+    ),
+    continuation: Schema.optional(
+      Schema.Struct({
+        messageId: MessageId,
+        text: TrimmedNonEmptyString,
+      }),
+    ),
+    callerRunId: Schema.optional(RunId),
+  }),
+  Schema.Struct({
+    type: Schema.Literal("thread.worktree.handoff"),
+    commandId: CommandId,
+    threadId: ThreadId,
+    branch: Schema.String,
+    worktreePath: Schema.String,
+    continuation: Schema.optional(
+      Schema.Struct({
+        messageId: MessageId,
+        text: TrimmedNonEmptyString,
+      }),
+    ),
+    callerRunId: Schema.optional(RunId),
+  }),
+
   // Guest share commands the server issues after checking T3 Connect and the guest token.
   Schema.Struct({
     type: Schema.Literal("thread.guest-share.open"),
