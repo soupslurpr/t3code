@@ -1,6 +1,11 @@
 import { MessageId, RunId } from "@t3tools/contracts";
 import { describe, expect, it } from "vite-plus/test";
-import { observeTimelineRun, getAnchoredTurnMetrics } from "./timelineScrollAnchoring";
+import {
+  observeTimelineRun,
+  getAnchoredTurnMetrics,
+  readTimelinePosition,
+  rememberTimelinePosition,
+} from "./timelineScrollAnchoring";
 
 function buildState({
   positions,
@@ -108,4 +113,37 @@ describe("observeTimelineRun", () => {
       existing.messageId,
     );
   });
+});
+
+it("retains follow ownership across catch-up and remembers deliberate scroll-away", () => {
+  const threadKey = "catch-up-scroll-ownership";
+  rememberTimelinePosition(
+    threadKey,
+    { rowId: "last-seen", scrollOffset: 900, offsetWithinRow: 0, atEnd: true },
+    true,
+  );
+  // New rows can leave the measured viewport far behind before the list settles.
+  rememberTimelinePosition(
+    threadKey,
+    { rowId: "last-seen", scrollOffset: 900, offsetWithinRow: 0, atEnd: false },
+    true,
+  );
+  expect(readTimelinePosition(threadKey)?.atEnd).toBe(true);
+  rememberTimelinePosition(
+    threadKey,
+    { rowId: "chosen-history", scrollOffset: 200, offsetWithinRow: 12, atEnd: false },
+    false,
+  );
+  expect(readTimelinePosition(threadKey)).toEqual({
+    rowId: "chosen-history",
+    scrollOffset: 200,
+    offsetWithinRow: 12,
+    atEnd: false,
+  });
+  rememberTimelinePosition(
+    threadKey,
+    { rowId: "latest", scrollOffset: 100_000, offsetWithinRow: 0, atEnd: true },
+    true,
+  );
+  expect(readTimelinePosition(threadKey)?.atEnd).toBe(true);
 });
