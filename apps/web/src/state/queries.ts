@@ -14,7 +14,7 @@ import {
 } from "@t3tools/client-runtime/state/thread-search";
 import { THREAD_SEARCH_QUERY_MAX_LENGTH } from "@t3tools/contracts";
 import { messageSearchTokens } from "@t3tools/shared/paletteSearch";
-import { type VcsRefTarget } from "@t3tools/client-runtime/state/vcs";
+import { vcsRefPageInput, type VcsRefTarget } from "@t3tools/client-runtime/state/vcs";
 import type {
   EnvironmentId,
   OrchestrationV2GetTurnItemResult,
@@ -166,12 +166,7 @@ function vcsRefPageAtom(targetKey: string, cursor: number | undefined) {
   const [environmentId, cwd, query] = JSON.parse(targetKey) as [EnvironmentId, string, string];
   return vcsEnvironment.listRefs({
     environmentId,
-    input: {
-      cwd,
-      ...(query.length > 0 ? { query } : {}),
-      ...(cursor === undefined ? {} : { cursor }),
-      limit: VCS_REF_LIST_LIMIT,
-    },
+    input: vcsRefPageInput(cwd, query, cursor, VCS_REF_LIST_LIMIT),
   });
 }
 

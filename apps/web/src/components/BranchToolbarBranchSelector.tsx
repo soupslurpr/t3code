@@ -506,6 +506,7 @@ export function BranchToolbarBranchSelector({
 
   const handleOpenChange = (open: boolean) => {
     setIsBranchMenuOpen(open);
+    if (open && !isBranchMenuOpen) branchRefState.refresh();
     if (open && !isBranchMenuOpen && branchCwd !== null) {
       void refreshStatus({ environmentId, input: { cwd: branchCwd, localOnly: true } });
     }
@@ -667,7 +668,7 @@ export function BranchToolbarBranchSelector({
             : "branch"
       }
       originControl={
-        isSelectingWorktreeBase
+        isSelectingWorktreeBase && branchRefState.data?.hasPrimaryRemote
           ? { checked: startFromOrigin, onCheckedChange: onStartFromOriginChange }
           : undefined
       }
@@ -716,6 +717,7 @@ export function BranchToolbarBranchSelector({
                 <ComposerControl size="xs" />
               )
             }
+            aria-label={`Ref: ${triggerLabel}`}
             className="min-w-0 max-w-full active:scale-100"
             disabled={isInitialBranchesLoadPending || isBranchActionPending}
           >

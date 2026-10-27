@@ -5,6 +5,7 @@ import {
   WS_METHODS,
   VcsProcessExitError,
   type VcsListRefsResult,
+  type VcsListRefsInput,
 } from "@t3tools/contracts";
 import { describe, expect, it } from "@effect/vitest";
 import * as Deferred from "effect/Deferred";
@@ -39,6 +40,7 @@ import {
   commitVcsRefsRefresh,
   createVcsEnvironmentAtoms,
   makeCachedVcsRefsChanges,
+  vcsRefPageInput,
 } from "./vcs.ts";
 import {
   invalidateCachedVcsRefs,
@@ -632,6 +634,63 @@ describe("cached VCS refs", () => {
         expect(yield* Ref.get(calls)).toBe(3);
       }),
     ),
+  );
+
+  it.effect(
+    "refreshes picker openings while search and later pages retain their ref snapshot",
+    () =>
+      Effect.gen(function* () {
+        let repository = ["main"];
+        let snapshot = [...repository];
+        const client = {
+          [WS_METHODS.vcsListRefs]: (input: VcsListRefsInput) =>
+            Effect.sync(() => {
+              if (input.refresh) snapshot = [...repository];
+              const refs = snapshot
+                .filter((name) => name.includes(input.query ?? ""))
+                .slice(input.cursor ?? 0);
+              return {
+                ...CACHED_REFS,
+                refs: refs.map((name) => ({
+                  name,
+                  current: name === "main",
+                  isDefault: name === "main",
+                  worktreePath: null,
+                })),
+                totalCount: refs.length,
+              };
+            }),
+        } as unknown as WsRpcProtocolClient;
+        const supervisor = EnvironmentSupervisor.EnvironmentSupervisor.of({
+          target: TARGET,
+          state: yield* SubscriptionRef.make(CONNECTED_CONNECTION_STATE),
+          session: yield* SubscriptionRef.make(Option.some(session(client))),
+          prepared: yield* SubscriptionRef.make(Option.none<PreparedConnection>()),
+          connect: Effect.void,
+          disconnect: Effect.void,
+          retryNow: Effect.void,
+        });
+        const read = (query: string, cursor: number | undefined = undefined) =>
+          Stream.unwrap(
+            makeCachedVcsRefsChanges(vcsRefPageInput("/repo", query, cursor, 100)).pipe(
+              Effect.provideService(EnvironmentSupervisor.EnvironmentSupervisor, supervisor),
+              Effect.provideService(
+                Persistence.EnvironmentCacheStore,
+                cacheWithRefs(Option.none()),
+              ),
+            ),
+          ).pipe(
+            Stream.runHead,
+            Effect.map((result) => Option.getOrThrow(result).refs.map((ref) => ref.name)),
+          );
+        expect(yield* read("")).toEqual(["main"]);
+        repository = ["main", "release"];
+        expect(yield* read("")).toEqual(["main", "release"]);
+        repository = ["main", "release", "feature"];
+        expect(yield* read("release")).toEqual(["release"]);
+        expect(yield* read("", 1)).toEqual(["release"]);
+        expect(yield* read("")).toEqual(["main", "release", "feature"]);
+      }).pipe(Effect.scoped),
   );
 
   it.effect("emits persisted refs before a live refresh", () =>

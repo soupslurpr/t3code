@@ -5,7 +5,7 @@ import {
 import { resolveFilesystemReadAccess } from "@t3tools/client-runtime/state/filesystem";
 import { environmentSession } from "./session";
 import { useEnvironmentPresentation } from "./presentation";
-import type { VcsRefTarget } from "@t3tools/client-runtime/state/vcs";
+import { vcsRefPageInput, type VcsRefTarget } from "@t3tools/client-runtime/state/vcs";
 import type {
   EnvironmentId,
   OrchestrationV2ProjectedTurnItem,
@@ -288,12 +288,7 @@ export function usePaginatedBranches(target: VcsRefTarget) {
       ? cursors.map((cursor) =>
           vcsEnvironment.listRefs({
             environmentId: target.environmentId!,
-            input: {
-              cwd: target.cwd!,
-              ...(query.length > 0 ? { query } : {}),
-              ...(cursor === undefined ? {} : { cursor }),
-              limit: VCS_REF_LIST_LIMIT,
-            },
+            input: vcsRefPageInput(target.cwd!, query, cursor, VCS_REF_LIST_LIMIT),
           }),
         )
       : [];

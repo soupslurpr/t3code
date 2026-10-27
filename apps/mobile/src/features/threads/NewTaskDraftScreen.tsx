@@ -976,6 +976,7 @@ export function NewTaskDraftScreen(props: {
     if (isComposerInteractionLocked) {
       return;
     }
+    if (routeName === "NewTaskBranch") flow.loadBranches();
     promptInputRef.current?.blur();
     void KeyboardController.dismiss({ animated: true });
     navigation.navigate(routeName);
