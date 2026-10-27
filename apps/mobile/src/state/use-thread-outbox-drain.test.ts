@@ -10,6 +10,8 @@ import {
 import { afterEach, beforeEach, describe, expect, it, vi } from "vite-plus/test";
 
 import type { PreparedTurnAttachments } from "../lib/attachmentUpload";
+import { withMobileLeadRole } from "../lib/lead";
+import { wonderMax } from "../features/threads/lead-test-fixtures";
 
 const harness = vi.hoisted(() => ({
   canOperate: true,
@@ -21,6 +23,7 @@ const harness = vi.hoisted(() => ({
   prepareTurnAttachments: vi.fn<typeof import("../lib/attachmentUpload").prepareTurnAttachments>(),
   draftFile: (() => {
     let document = "";
+    let readError: Error | null = null;
     let writeError: Error | null = null;
     return {
       setDocument(value: unknown) {
@@ -28,6 +31,9 @@ const harness = vi.hoisted(() => ({
       },
       setWriteError(error: Error | null) {
         writeError = error;
+      },
+      setReadError(error: Error | null) {
+        readError = error;
       },
       Directory: class {
         create() {}
@@ -41,6 +47,7 @@ const harness = vi.hoisted(() => ({
         moveSync() {}
 
         async text() {
+          if (readError) throw readError;
           return document;
         }
 
@@ -215,6 +222,7 @@ afterEach(() => {
   appAtomRegistry.set(pendingThreadCreationOutcomesAtom, {});
   appAtomRegistry.set(threadComposerErrorsAtom, {});
   harness.draftFile.setWriteError(null);
+  harness.draftFile.setReadError(null);
   harness.removePersistedFile.mockClear();
   harness.removeOutboxMessage.mockClear();
   harness.prepareTurnAttachments.mockReset();
@@ -467,6 +475,23 @@ describe("thread outbox drain delivery cleanup", () => {
 });
 
 describe("thread outbox delivered creation recovery", () => {
+  it("keeps saved Lead when recovering an edited Direct fallback after delivery", async () => {
+    await composerDrafts.waitForComposerDraftsLoaded();
+    const saved = withMobileLeadRole(wonderMax, "lead");
+    const message = {
+      ...queuedMessage({ messageId: "fallback-delivered", text: "Edited task" }),
+      modelSelection: withMobileLeadRole(wonderMax, "direct"),
+    };
+    const draftKey = `${message.environmentId}:${message.threadId}`;
+    composerDrafts.updateComposerDraftSettings(draftKey, { modelSelection: saved });
+    await harness.manager.enqueue(message);
+    expect(await recoverEditedCreationAfterDelivery(message)).toBe(true);
+    expect(composerDrafts.getComposerDraftSnapshot(draftKey)).toMatchObject({
+      text: message.text,
+      modelSelection: saved,
+    });
+    expect(remainingMessages()).toEqual([]);
+  });
   it("keeps an edit accepted while the older payload is persisted to the draft", async () => {
     const message = queuedMessage({
       messageId: "message-recovery-race",
@@ -746,3 +771,36 @@ describe("thread outbox recovery rollback", () => {
     expect(appAtomRegistry.get(threadComposerErrorsAtom)[draftKey]?.message).toBe("too large");
   });
 });
+
+it.each([false, true])(
+  "keeps saved Lead when restoring a Direct fallback (creation=%s)",
+  async (creation) => {
+    await composerDrafts.waitForComposerDraftsLoaded();
+    const saved = withMobileLeadRole(wonderMax, "lead");
+    const message: QueuedThreadMessage = {
+      ...queuedMessage({ messageId: "fallback-rejected", text: "Retry me" }),
+      modelSelection: withMobileLeadRole(wonderMax, "direct"),
+      ...(creation
+        ? {
+            creation: {
+              projectId: ProjectId.make("project"),
+              workspaceMode: "local" as const,
+              branch: null,
+              worktreePath: null,
+            },
+          }
+        : {}),
+    };
+    const threadKey = `${message.environmentId}:${message.threadId}`;
+    const draftKey = creation ? `new-task:restored-${message.messageId}` : threadKey;
+    composerDrafts.updateComposerDraftSettings(threadKey, { modelSelection: saved });
+    await harness.manager.enqueue(message);
+    expect(await restoreRejectedQueuedMessage(message, "nonretryable failure")).toBe("restored");
+    expect(composerDrafts.getComposerDraftSnapshot(draftKey)).toMatchObject({
+      text: message.text,
+      modelSelection: saved,
+    });
+    expect(composerDrafts.getComposerDraftSnapshot(threadKey).modelSelection).toBe(saved);
+    expect(remainingMessages()).toEqual([]);
+  },
+);

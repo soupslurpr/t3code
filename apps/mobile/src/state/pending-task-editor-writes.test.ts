@@ -2,6 +2,9 @@ import { CommandId, EnvironmentId, MessageId, ThreadId } from "@t3tools/contract
 import { beforeEach, describe, expect, it, vi } from "vite-plus/test";
 
 import type { QueuedThreadMessage } from "./thread-outbox-model";
+import { leadQueuedTask, wonderMax } from "../features/threads/lead-test-fixtures";
+import { withMobileLeadRole } from "../lib/lead";
+import { scopedThreadKey } from "../lib/scopedEntities";
 
 const harness = vi.hoisted(() => ({
   manager: null as unknown as ReturnType<
@@ -45,6 +48,8 @@ import { appAtomRegistry } from "./atom-registry";
 import {
   capturePendingTaskEditorWriteBaseline,
   flushPendingTaskEditorWrite,
+  rememberQueuedTaskModelPreference,
+  updatePendingTaskModelPreference,
 } from "./pending-task-editor-writes";
 import {
   composerDraftsAtom,
@@ -109,6 +114,29 @@ beforeEach(() => {
 });
 
 describe("pending task editor writes", () => {
+  it.each([false, true])(
+    "retains the saved Role when a Direct fallback is resubmitted (explicit Direct=%s)",
+    async (explicitDirect) => {
+      const direct = withMobileLeadRole(wonderMax, "direct");
+      const original = leadQueuedTask({ modelSelection: direct });
+      const draftKey = scopedThreadKey(original.environmentId, original.threadId);
+      const saved = withMobileLeadRole(wonderMax, "lead");
+      setDraft(draftKey, { ...draft("Unsent follow-up"), modelSelection: saved });
+      await harness.manager.enqueue(original);
+      if (explicitDirect) updatePendingTaskModelPreference(original, direct);
+
+      const edited = { ...original, text: "Changed only the task text" };
+      await harness.manager.enqueue(edited);
+      rememberQueuedTaskModelPreference(edited);
+
+      expect(getComposerDraftSnapshot(draftKey)).toMatchObject({
+        text: "Unsent follow-up",
+        modelSelection: explicitDirect ? direct : saved,
+      });
+      expect(queuedMessageText(original.messageId)).toBe(edited.text);
+      expect(edited.modelSelection).toBe(direct);
+    },
+  );
   it("chains a reopened editor that closes before the previous save finishes", async () => {
     const original = queuedMessage("message-close-before-save", "original");
     const firstEdit = queuedMessage("message-close-before-save", "first edit");

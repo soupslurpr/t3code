@@ -4,6 +4,8 @@ import { defineConfig, normalizePath } from "vite-plus";
 import "vite-plus/test/config";
 
 const reactTests = [
+  "src/features/threads/LeadRoleControl.test.tsx",
+  "src/features/threads/use-lead-role.test.tsx",
   "src/features/threads/ThreadMonitorsRouteScreen.test.tsx",
   "src/features/threads/ThreadDesktopsRouteScreen.test.tsx",
   "src/features/settings/UserDesktopSupervisionRouteScreen.test.tsx",

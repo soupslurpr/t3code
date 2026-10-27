@@ -14,6 +14,7 @@ import {
   isClaudeUltrathinkPrompt,
   normalizeModelSlug,
 } from "@t3tools/shared/model";
+import { LEAD_ROLE_OPTION_ID } from "@t3tools/shared/lead";
 import type { ReactNode } from "react";
 
 import type { DraftId } from "../../composerDraftStore";
@@ -135,7 +136,7 @@ export function getComposerProviderState(input: ComposerProviderStateInput): Com
   const descriptors = getProviderOptionDescriptors({ caps, selections });
   const primarySelectDescriptor = descriptors.find(
     (descriptor): descriptor is Extract<(typeof descriptors)[number], { type: "select" }> =>
-      descriptor.type === "select",
+      descriptor.type === "select" && descriptor.id !== LEAD_ROLE_OPTION_ID,
   );
   const primaryValue = getProviderOptionCurrentValue(primarySelectDescriptor ?? null);
   const promptEffort = typeof primaryValue === "string" ? primaryValue : null;

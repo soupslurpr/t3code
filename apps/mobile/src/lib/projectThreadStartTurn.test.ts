@@ -35,6 +35,7 @@ describe("project thread title", () => {
     const uploadedAttachments = [{ ...attachment, id: "prepared-attachment", sizeBytes: 3 }];
     const wire = serializeComposerMessageForServer(text, undefined, true);
     const spec = {
+      serverConfig: null,
       projectId: ProjectId.make("project"),
       projectCwd: "/workspace",
       threadId: "image-thread",

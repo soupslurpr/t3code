@@ -54,6 +54,11 @@ import {
 } from "@t3tools/client-runtime/state/runtime";
 import { videoMimeType } from "@t3tools/shared/video";
 import {
+  leadEligibleSelection,
+  leadUnavailableHint,
+  type LeadAvailability,
+} from "@t3tools/shared/lead";
+import {
   appendCodexArtifactTemplateUsePrompt,
   codexArtifactTemplateUsePrompt,
   type CodexArtifactTemplate,
@@ -67,6 +72,7 @@ import {
   type TurnDiffSummary,
 } from "../types";
 import {
+  type ComposerThreadDraftState,
   type ComposerFileAttachment,
   type ComposerImageAttachment,
   type DraftId,
@@ -1052,6 +1058,69 @@ export function getStartedThreadModelChangeBlockReason(input: {
   };
 }
 
+/** Manual model picks respect continuation and session restrictions. */
+export function getThreadModelSelectionBlockReason(
+  input: Omit<Parameters<typeof getStartedThreadModelChangeBlockReason>[0], "providers"> & {
+    providers: ReadonlyArray<ServerProvider>;
+    lockedProvider: ProviderDriverKind | null;
+  },
+) {
+  if (!input.supportsProviderSwitchingViaHandoff && input.lockedProvider !== null) {
+    const next = input.providers.find(
+      (entry) => entry.instanceId === input.nextModelSelection.instanceId,
+    );
+    const current = input.providers.find(
+      (entry) =>
+        entry.instanceId ===
+        (input.currentProviderInstanceId ?? input.currentModelSelection.instanceId),
+    );
+    if (
+      next?.driver !== input.lockedProvider ||
+      (current?.continuation?.groupKey &&
+        next?.continuation?.groupKey !== current.continuation.groupKey)
+    ) {
+      return {
+        title: "Start a new chat to switch providers",
+        description: "This thread does not support switching providers after it has started.",
+      };
+    }
+  }
+  return getStartedThreadModelChangeBlockReason(input);
+}
+
+/** Resolve the applied selection for the composer's Lead role. */
+export function resolveComposerLeadSelection(input: {
+  draft:
+    | Pick<ComposerThreadDraftState, "activeProvider" | "modelSelectionByProvider">
+    | null
+    | undefined;
+  fallbackSelection: ModelSelection | null;
+  multipleSelections: ReadonlyArray<ModelSelection> | null;
+  availability: LeadAvailability;
+}): ModelSelection | null {
+  if (input.multipleSelections !== null) return null;
+  const selection = input.draft?.activeProvider
+    ? input.draft.modelSelectionByProvider[input.draft.activeProvider]
+    : null;
+  return leadEligibleSelection(selection ?? input.fallbackSelection, input.availability);
+}
+
+export function resolveComposerLeadUnavailableHint(input: {
+  draft:
+    | Pick<ComposerThreadDraftState, "activeProvider" | "modelSelectionByProvider">
+    | null
+    | undefined;
+  fallbackSelection: ModelSelection | null;
+  multipleSelections: ReadonlyArray<ModelSelection> | null;
+  availability: LeadAvailability;
+}): string | null {
+  if (input.multipleSelections !== null) return null;
+  const selection = input.draft?.activeProvider
+    ? input.draft.modelSelectionByProvider[input.draft.activeProvider]
+    : null;
+  return leadUnavailableHint(selection ?? input.fallbackSelection, input.availability);
+}
+
 export async function waitForStartedServerThread(
   threadRef: ScopedThreadRef,
   timeoutMs = 1_000,
@@ -1361,7 +1430,9 @@ export function formatOutgoingPrompt(params: {
 }): string {
   const caps = getProviderModelCapabilities(params.models, params.model, params.provider);
   const promptEffort = resolvePromptInjectedEffort(caps, params.effort);
-  return applyClaudePromptEffortPrefix(params.text, promptEffort);
+  return promptEffort === null
+    ? params.text
+    : applyClaudePromptEffortPrefix(params.text, promptEffort);
 }
 
 export function isCompactCommandMessage(message: ChatMessage): boolean {

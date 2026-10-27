@@ -1,3 +1,4 @@
+import { LEAD_ROLE_OPTION_ID } from "@t3tools/shared/lead";
 import {
   buildTraitsTriggerDisplay,
   getDescriptorStringValue,
@@ -128,16 +129,18 @@ function getSelectedTraits(
   const modelIsUnavailable =
     provider === "opencode" &&
     !models.some((candidate) => candidate.slug === normalizeModelSlug(model, provider));
-  const descriptors = modelIsUnavailable
-    ? buildUnavailableModelOptionDescriptors(
-        planModeEnabled
-          ? modelOptions
-          : modelOptions?.filter((option) => option.id !== "agent" || option.value !== "plan"),
-      )
-    : getProviderOptionDescriptors({
-        caps,
-        selections: modelOptions,
-      });
+  const descriptors = (
+    modelIsUnavailable
+      ? buildUnavailableModelOptionDescriptors(
+          planModeEnabled
+            ? modelOptions
+            : modelOptions?.filter((option) => option.id !== "agent" || option.value !== "plan"),
+        )
+      : getProviderOptionDescriptors({
+          caps,
+          selections: modelOptions,
+        })
+  ).filter((descriptor) => descriptor.id !== LEAD_ROLE_OPTION_ID);
   const selectDescriptors = descriptors.filter(
     (descriptor): descriptor is Extract<ProviderOptionDescriptor, { type: "select" }> =>
       descriptor.type === "select",
@@ -341,6 +344,12 @@ export const TraitsMenuContent = memo(function TraitsMenuContentImpl({
     instanceId && model ? { instanceId, model, options: modelOptions ?? [] } : null;
   const setProviderModelOptions = useComposerDraftStore((store) => store.setProviderModelOptions);
   const updateModelOptions = (nextOptions: ProviderOptions | undefined) => {
+    const role = modelOptions?.find((option) => option.id === LEAD_ROLE_OPTION_ID);
+    if (role)
+      nextOptions = [
+        ...(nextOptions ?? []).filter((option) => option.id !== LEAD_ROLE_OPTION_ID),
+        role,
+      ];
     if ("onModelOptionsChange" in persistence) {
       persistence.onModelOptionsChange(nextOptions);
       return;
@@ -375,7 +384,8 @@ export const TraitsMenuContent = memo(function TraitsMenuContentImpl({
     modelIsUnavailable,
   } = selected;
   const updateDescriptors = (nextDescriptors: ReadonlyArray<ProviderOptionDescriptor>) => {
-    updateModelOptions(buildProviderOptionSelectionsFromDescriptors(nextDescriptors));
+    const nextOptions = buildProviderOptionSelectionsFromDescriptors(nextDescriptors) ?? [];
+    updateModelOptions(nextOptions.length > 0 ? nextOptions : undefined);
   };
 
   const handleSelectChange = (

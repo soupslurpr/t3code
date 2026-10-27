@@ -535,8 +535,13 @@ describe("mobile model options", () => {
     expect(resolveDefaultableModelSelection(null, legacy, null)).toBe(legacy);
   });
 
-  it("resolves new tasks from draft, project, sticky, then provider defaults", () => {
+  it("resolves new tasks from draft, project, sticky, Lead, then provider defaults", () => {
     const draft = { instanceId: ProviderInstanceId.make("codex"), model: "draft" };
+    const lead = {
+      instanceId: ProviderInstanceId.make("muse"),
+      model: "muse-wonder-full-1.0",
+      options: [{ id: "reasoningEffort", value: "max" }],
+    };
     const project = { instanceId: ProviderInstanceId.make("codex"), model: "project" };
     const sticky = { instanceId: ProviderInstanceId.make("codex"), model: "sticky" };
     const providerDefault = {
@@ -547,15 +552,22 @@ describe("mobile model options", () => {
       draftSelection: ModelSelection | null,
       projectDefaultSelection: ModelSelection | null,
       stickySelection: ModelSelection | null,
+      leadDefaultSelection?: ModelSelection | null,
     ) =>
       resolveNewTaskModelSelection({
         draftSelection,
+        leadDefaultSelection,
         projectDefaultSelection,
         stickySelection,
         modelOptions: [providerDefault],
       });
 
     expect(resolve(draft, project, sticky)).toBe(draft);
+    expect(resolve(draft, project, sticky, lead)).toBe(draft);
+    expect(resolve(null, project, sticky, lead)).toBe(project);
+    expect(resolve(null, null, sticky, lead)).toBe(sticky);
+    expect(resolve(null, null, null, lead)).toBe(lead);
+    expect(resolve(null, project, sticky, null)).toBe(project);
     expect(resolve(null, project, sticky)).toBe(project);
     expect(resolve(null, null, sticky)).toBe(sticky);
     expect(resolve(null, null, null)).toBe(providerDefault.selection);

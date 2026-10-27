@@ -1,3 +1,9 @@
+import { LeadRoleControl, type MobileLeadRoleControl } from "./LeadRoleControl";
+import {
+  leadEligibleSelection,
+  leadUnavailableHint,
+  LEAD_ROLE_OPTION_ID,
+} from "@t3tools/shared/lead";
 import {
   getPromptControlledTraits,
   getTraitSelectChange,
@@ -28,7 +34,6 @@ import { AnimatedLegendList } from "@legendapp/list/reanimated";
 import {
   getProviderOptionCurrentLabel,
   getProviderOptionCurrentValue,
-  getProviderOptionDescriptors,
 } from "@t3tools/shared/model";
 import { useNavigation, useRoute, type RouteProp } from "@react-navigation/native";
 import { type NativeStackNavigationProp } from "@react-navigation/native-stack";
@@ -259,6 +264,8 @@ type ThreadSettingsSessionProps = {
   readonly onUpdateOptionSelections: (selections: ReadonlyArray<ProviderOptionSelection>) => void;
   readonly runtimeMode: RuntimeMode;
   readonly onUpdateRuntimeMode: (mode: RuntimeMode) => void;
+  readonly leadRole?: MobileLeadRoleControl;
+  readonly leadUnavailableHint?: string | null;
 };
 
 export type ExistingThreadSettingsRouteSession = ThreadSettingsSessionProps & {
@@ -302,6 +309,8 @@ export function useExistingThreadSettingsRoutePresentation() {
 }
 
 type ThreadSettingsSessionValue = {
+  readonly leadRole: ThreadSettingsSessionProps["leadRole"];
+  readonly leadUnavailableHint: ThreadSettingsSessionProps["leadUnavailableHint"];
   readonly environmentId: EnvironmentId | null;
   readonly providerInstanceId?: ProviderInstanceId;
   readonly providerGroups: ReadonlyArray<ProviderGroup>;
@@ -540,8 +549,8 @@ function ThreadSettingsSessionProvider(
 
   const displayedDescriptors = pendingModel
     ? pendingModel.capabilities
-      ? getProviderOptionDescriptors({
-          caps: pendingModel.capabilities,
+      ? resolveProviderOptionDescriptors({
+          capabilities: pendingModel.capabilities,
           selections: pendingModel.selection.options,
         })
       : []
@@ -602,10 +611,14 @@ function ThreadSettingsSessionProvider(
       }
       if (!("modelOptions" in change)) return;
     }
+    const currentOptions = (pendingModel?.selection ?? props.selectedModel)?.options;
     const next =
       change && "modelOptions" in change
-        ? (change.modelOptions ?? [])
-        : applyProviderOptionSelection(displayedDescriptors, { id, value });
+        ? [
+            ...(change.modelOptions ?? []),
+            ...(currentOptions?.filter((option) => option.id === LEAD_ROLE_OPTION_ID) ?? []),
+          ]
+        : applyProviderOptionSelection(displayedDescriptors, { id, value }, currentOptions);
     if (!next) {
       return;
     }
@@ -647,6 +660,8 @@ function ThreadSettingsSessionProvider(
 
   const value = {
     environmentId: props.environmentId,
+    leadRole: props.leadRole,
+    leadUnavailableHint: props.leadUnavailableHint,
     providerInstanceId: props.providerInstanceId,
     providerGroups,
     manageHidden,
@@ -945,6 +960,12 @@ function ThreadSettingsOptionsItem(props: {
           />
         </Animated.View>
       </Animated.View>
+
+      <LeadRoleControl
+        role={session.leadRole}
+        pendingModel={session.pendingModel !== null}
+        unavailableHint={session.leadUnavailableHint}
+      />
 
       {(session.canManageHidden || (Platform.OS !== "ios" && session.hasLegacyModels)) && (
         <Text className="px-5 pb-2 pt-7 text-sm font-t3-medium text-foreground-muted">Catalog</Text>
@@ -1588,6 +1609,19 @@ export function NewTaskThreadSettingsRouteScreen() {
       onUpdateOptionSelections={flow.setSelectedModelOptions}
       runtimeMode={flow.runtimeMode}
       onUpdateRuntimeMode={flow.setRuntimeMode}
+      leadRole={
+        leadEligibleSelection(flow.selectedModel, flow.leadAvailability)
+          ? {
+              lead: flow.lead,
+              onChange: (lead) => (lead ? flow.restoreLead() : flow.removeLead()),
+            }
+          : undefined
+      }
+      leadUnavailableHint={
+        flow.editingPendingTask === null
+          ? leadUnavailableHint(flow.selectedModel, flow.leadAvailability)
+          : null
+      }
       onClose={() => navigation.goBack()}
     />
   );

@@ -1,3 +1,4 @@
+import { useStartThreadTurn } from "../../hooks/useStartThreadTurn";
 import {
   AuthOrchestrationOperateScope,
   type EnvironmentId,
@@ -97,9 +98,7 @@ export function usePlanFollowUpSend(input: PlanFollowUpSendInput) {
     anchorNewTurn,
     persistThreadSettingsForNextTurn,
   } = input;
-  const startThreadTurn = useOrchestrationCommand(threadEnvironment.startTurn, {
-    reportFailure: false,
-  });
+  const startThreadTurn = useStartThreadTurn();
   const setComposerDraftInteractionMode = useComposerDraftStore(
     (store) => store.setInteractionMode,
   );
@@ -266,9 +265,7 @@ export function useImplementPlanInNewThread(input: ImplementPlanInNewThreadInput
   const navigate = useNavigate();
   const createThread = useOrchestrationCommand(threadEnvironment.create, { reportFailure: false });
   const deleteThread = useOrchestrationCommand(threadEnvironment.delete, { reportFailure: false });
-  const startThreadTurn = useOrchestrationCommand(threadEnvironment.startTurn, {
-    reportFailure: false,
-  });
+  const startThreadTurn = useStartThreadTurn();
   const { sendInFlight: sendInFlightRef } = draftSendState(routeThreadKey);
 
   return async () => {

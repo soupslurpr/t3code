@@ -1,3 +1,8 @@
+import { resolveLeadAvailability } from "../modelSelection";
+import { resolveComposerLeadSelection, resolveComposerLeadUnavailableHint } from "./ChatView.logic";
+import { useLeadRole } from "../hooks/useLeadRole";
+import { LeadRoleControl, LeadUnavailableHint } from "./chat/LeadRoleControl";
+import { useStartThreadTurn } from "../hooks/useStartThreadTurn";
 import { sourceControlClients } from "@t3tools/client-runtime/source-control-clients";
 import { ScrollToEndButton, WorkspaceFileDropOverlay } from "./chat/TimelineOverlays";
 import { usePasteToFocusComposer } from "./chat/usePasteToFocusComposer";
@@ -432,9 +437,7 @@ export default function ChatView(props: ChatViewProps) {
   const setThreadInteractionMode = useOrchestrationCommand(threadEnvironment.setInteractionMode, {
     reportFailure: false,
   });
-  const startThreadTurn = useOrchestrationCommand(threadEnvironment.startTurn, {
-    reportFailure: false,
-  });
+  const startThreadTurn = useStartThreadTurn();
   const createAttachmentAssetUrl = useAtomQueryRunner(assetEnvironment.createUrl, {
     reportFailure: false,
     refresh: true,
@@ -1206,6 +1209,27 @@ export default function ChatView(props: ChatViewProps) {
       settings,
       activeProject?.id ?? null,
     ),
+  );
+  const leadAvailability = resolveLeadAvailability(
+    settings,
+    providerStatuses,
+    activeProject?.id ?? null,
+  );
+  const eligibleLeadSelection = useComposerDraftStore((store) =>
+    resolveComposerLeadSelection({
+      draft: store.getComposerDraft(composerDraftTarget),
+      fallbackSelection: isLocalDraftThread ? null : (activeThread?.modelSelection ?? null),
+      multipleSelections: multipleModelSelections,
+      availability: leadAvailability,
+    }),
+  );
+  const leadUnavailableHint = useComposerDraftStore((store) =>
+    resolveComposerLeadUnavailableHint({
+      draft: store.getComposerDraft(composerDraftTarget),
+      fallbackSelection: isLocalDraftThread ? null : (activeThread?.modelSelection ?? null),
+      multipleSelections: multipleModelSelections,
+      availability: leadAvailability,
+    }),
   );
   const activeThreadModelInstanceId = activeThread?.modelSelection.instanceId;
   const { selectedProviderEntry, requestedDriverKind } = resolveComposerProviderSelection({
@@ -2738,6 +2762,7 @@ export default function ChatView(props: ChatViewProps) {
     handleRuntimeModeChangeStable,
     onEnvModeChangeStable,
     onProviderModelSelectStable,
+    applyLeadRoleSelection,
     onStartFromOriginChange,
     openProviderSetupStable,
     toggleInteractionModeStable,
@@ -2762,6 +2787,19 @@ export default function ChatView(props: ChatViewProps) {
     setPendingServerThreadStartFromOriginByThreadId,
     scheduleComposerFocus,
   });
+  const { role: leadRole, onRoleChange } = useLeadRole({
+    selection: eligibleLeadSelection,
+    enabled: activeThread !== undefined && serverConfig !== null && !queuedRunEdit.isEditing,
+    onSelectionChange: applyLeadRoleSelection,
+  });
+  const leadRoleControl =
+    !queuedRunEdit.isEditing && (eligibleLeadSelection !== null || leadUnavailableHint !== null) ? (
+      eligibleLeadSelection !== null ? (
+        <LeadRoleControl role={leadRole} onRoleChange={onRoleChange} />
+      ) : (
+        <LeadUnavailableHint text={leadUnavailableHint!} />
+      )
+    ) : undefined;
   const { onResume, isResuming } = useComposerResume({
     environmentId,
     routeThreadKey,
@@ -3465,6 +3503,7 @@ export default function ChatView(props: ChatViewProps) {
                           ) : null}
                           {!composerMounted ? null : (
                             <ChatComposer
+                              leadRoleControl={leadRoleControl}
                               canOperateThread={canOperateThread}
                               reportedModelSelection={reportedModelSelection}
                               multipleModelSelections={multipleModelSelections}

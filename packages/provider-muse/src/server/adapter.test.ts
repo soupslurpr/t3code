@@ -1,3 +1,4 @@
+import { LEAD_INSTRUCTION, LEAD_MODEL_ID } from "@t3tools/shared/lead";
 import { assert, describe, it } from "@effect/vitest";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { MspError } from "@muse-code/sdk";
@@ -1768,3 +1769,56 @@ describe("MuseAdapterV2", () => {
     }).pipe(Effect.scoped, Effect.provide(testLayer)),
   );
 });
+
+it.effect.each([
+  { model: LEAD_MODEL_ID, effort: "max", role: "lead", expected: true },
+  { model: LEAD_MODEL_ID, effort: "high", role: "lead", expected: false },
+  { model: LEAD_MODEL_ID, effort: "max", role: "direct", expected: false },
+  { model: LEAD_MODEL_ID, effort: "max", role: undefined, expected: false },
+  { model: "muse-wonder-1.0", effort: "max", role: "lead", expected: false },
+])(
+  "injects one exact Lead block only for effective Full Max: %j",
+  ({ model, effort, role, expected }) =>
+    Effect.gen(function* () {
+      const fake = yield* makeFakeMuse();
+      const harness = yield* makeHarness(fake, INSTANCE_ID, "resumed-lead-session");
+      const selection = {
+        instanceId: INSTANCE_ID,
+        model,
+        options: [
+          { id: "reasoningEffort", value: effort },
+          ...(role ? [{ id: "leadRole", value: role }] : []),
+        ],
+      };
+      for (const ordinal of [1, 2]) {
+        const base = yield* turnInput(harness.providerThread, ordinal);
+        const text =
+          ordinal === 1 ? "  Preserve spacing\r\n\t" : `User-authored: ${LEAD_INSTRUCTION}`;
+        yield* harness.runtime.startTurn({
+          ...base,
+          modelSelection: selection,
+          appThread: { ...base.appThread, modelSelection: selection },
+          message: { ...base.message, text },
+        });
+        const call = yield* fake.takeCall("turn/start");
+        const parts = call.params.input as ReadonlyArray<{ type: string; text?: string }>;
+        const lead = parts.filter((part) => part.text?.startsWith("<lead_instructions>"));
+        assert.deepStrictEqual(
+          lead,
+          expected
+            ? [
+                {
+                  type: "text",
+                  text: `<lead_instructions>\n${LEAD_INSTRUCTION}\n</lead_instructions>`,
+                },
+              ]
+            : [],
+        );
+        assert.strictEqual(parts.at(-1)?.text, text);
+        assert.strictEqual(call.params.displayText, text);
+        assert.isFalse(parts.some((part) => part.text?.includes("One child per named model.")));
+        yield* fake.emit("turn/completed", { turnId: call.commandId, terminal: "completed" });
+        yield* harness.takeEvent("turn.terminal");
+      }
+    }).pipe(Effect.provide(testLayer)),
+);

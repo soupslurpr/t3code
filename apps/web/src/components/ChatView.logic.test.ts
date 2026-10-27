@@ -1,3 +1,6 @@
+import { LEAD_INSTRUCTION } from "@t3tools/shared/lead";
+import { formatOutgoingPrompt } from "./ChatView.logic";
+import { resolveComposerLeadSelection } from "./ChatView.logic";
 import {
   boundAttachmentIds,
   findRecordedWorktreeSetup,
@@ -86,6 +89,83 @@ function makeThread(overrides: Partial<Thread> = {}): Thread {
     ...overrides,
   });
 }
+
+describe("resolveComposerLeadSelection", () => {
+  const wonder = {
+    instanceId: ProviderInstanceId.make("muse"),
+    model: "muse-wonder-full-1.0",
+    options: [{ id: "reasoning", value: "max" }],
+  };
+  const current = {
+    ...wonder,
+    instanceId: ProviderInstanceId.make("muse_work"),
+    options: [...wonder.options, { id: "extra-option", value: true }],
+  };
+  const availability = {
+    selection: wonder,
+    missing: [],
+    wonderDefaultSelections: [],
+    wonderSelections: [wonder, { ...wonder, instanceId: current.instanceId }],
+  };
+  const draft = {
+    activeProvider: current.instanceId,
+    modelSelectionByProvider: { [wonder.instanceId]: wonder, [current.instanceId]: current },
+  };
+  const input = { draft, fallbackSelection: wonder, multipleSelections: null, availability };
+
+  it("uses the draft's active instance and preserves every option", () => {
+    expect(resolveComposerLeadSelection(input)).toBe(current);
+  });
+
+  it.each([
+    null,
+    undefined,
+    { activeProvider: null, modelSelectionByProvider: {} },
+    { activeProvider: current.instanceId, modelSelectionByProvider: {} },
+  ])("uses the server selection when the draft has no active selection: %j", (draft) => {
+    expect(resolveComposerLeadSelection({ ...input, draft, fallbackSelection: current })).toBe(
+      current,
+    );
+  });
+
+  it("does not select a model for a fresh draft without an active selection", () => {
+    expect(
+      resolveComposerLeadSelection({ ...input, draft: undefined, fallbackSelection: null }),
+    ).toBeNull();
+  });
+
+  it("does not substitute an eligible server or inactive selection for an ineligible active draft selection", () => {
+    expect(
+      resolveComposerLeadSelection({
+        ...input,
+        draft: {
+          ...draft,
+          modelSelectionByProvider: {
+            ...draft.modelSelectionByProvider,
+            [current.instanceId]: { ...current, options: [{ id: "reasoning", value: "high" }] },
+          },
+        },
+      }),
+    ).toBeNull();
+  });
+
+  it.each([
+    { multipleSelections: [] },
+    { multipleSelections: [current] },
+    { multipleSelections: [current, wonder] },
+  ])("rejects any active fan-out selection: %j", ({ multipleSelections }) => {
+    expect(resolveComposerLeadSelection({ ...input, multipleSelections })).toBeNull();
+  });
+
+  it("rechecks destination availability even if the selected Wonder model still qualifies", () => {
+    expect(
+      resolveComposerLeadSelection({
+        ...input,
+        availability: { ...availability, selection: null, missing: ["Sol xhigh"] },
+      }),
+    ).toBeNull();
+  });
+});
 
 const completedTurn = {
   runId: RunId.make("turn-1"),
@@ -1244,5 +1324,46 @@ describe("deriveWorkspaceMutationId", () => {
     expect(deriveWorkspaceMutationId([item("reply", "assistant_message", "completed")], null)).toBe(
       null,
     );
+  });
+});
+
+describe("Lead role send formatting", () => {
+  it.each([
+    "  Fix login\r\nKeep spacing.\t",
+    `  Fix login\r\n\n${LEAD_INSTRUCTION}\nKeep this sentence.\t`,
+  ])("sends Wonder user text byte-identically: %j", (text) => {
+    expect(
+      formatOutgoingPrompt({
+        provider: ProviderDriverKind.make("muse"),
+        model: "muse-wonder-full-1.0",
+        models: [
+          {
+            slug: "muse-wonder-full-1.0",
+            name: "Wonder Full",
+            isCustom: false,
+            capabilities: {
+              optionDescriptors: [
+                {
+                  id: "reasoningEffort",
+                  label: "Reasoning",
+                  type: "select",
+                  options: [{ id: "max", label: "Max" }],
+                  currentValue: "max",
+                },
+                {
+                  id: "leadRole",
+                  label: "Role",
+                  type: "select",
+                  options: [{ id: "lead", label: "Lead" }],
+                  currentValue: "lead",
+                },
+              ],
+            },
+          },
+        ],
+        effort: "max",
+        text,
+      }),
+    ).toBe(text);
   });
 });

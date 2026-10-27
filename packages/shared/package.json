@@ -3,6 +3,10 @@
   "private": true,
   "type": "module",
   "exports": {
+    "./lead": {
+      "types": "./src/lead.ts",
+      "import": "./src/lead.ts"
+    },
     "./changedFileKind": {
       "types": "./src/changedFileKind.ts",
       "import": "./src/changedFileKind.ts"

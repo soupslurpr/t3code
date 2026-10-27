@@ -36,6 +36,7 @@ import { withWorkspaceLease } from "../workspace/workspaceLease.ts";
 import * as GitWorkflow from "../git/GitWorkflowService.ts";
 import * as ProjectService from "../project/ProjectService.ts";
 import * as ProviderAuthService from "../provider/ProviderAuthService.ts";
+import * as ProviderRegistryMock from "../provider/testUtils/providerRegistryMock.ts";
 import * as ServerSettings from "../serverSettings.ts";
 import * as ContextHandoffService from "./ContextHandoffService.ts";
 import * as EventSink from "./EventSink.ts";
@@ -125,6 +126,8 @@ function startWithMissingWorktree(
   const layer = ProviderTurnStart.layer.pipe(
     Layer.provide(
       Layer.mergeAll(
+        ProviderRegistryMock.layer(),
+        ServerSettings.layerTest(),
         Layer.mock(ContextHandoffService.ContextHandoffServiceV2)({}),
         Layer.mock(EventSink.EventSinkV2)({ writeIfRunCurrent }),
         IdAllocator.layer,
@@ -682,6 +685,8 @@ function makeLocalCommandHarness(input: {
   const layer = ProviderTurnStart.layer.pipe(
     Layer.provide(
       Layer.mergeAll(
+        ProviderRegistryMock.layer(),
+        ServerSettings.layerTest(),
         Layer.mock(ContextHandoffService.ContextHandoffServiceV2)({
           prepareProviderHandoff: () => Effect.die("history read must fail first"),
         }),

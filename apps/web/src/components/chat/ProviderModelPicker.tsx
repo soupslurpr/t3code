@@ -5,7 +5,7 @@ import {
   type ProviderDriverKind,
   type ResolvedKeybindingsConfig,
 } from "@t3tools/contracts";
-import { memo, useRef, useState } from "react";
+import { memo, useRef, useState, type ReactNode } from "react";
 import { Badge } from "../ui/badge";
 import { Popover, PopoverPopup, PopoverTrigger } from "../ui/popover";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
@@ -77,6 +77,7 @@ export const ProviderModelPicker = memo(function ProviderModelPicker(props: {
   environmentId: EnvironmentId | null;
   activeInstanceId: ProviderInstanceId;
   model: string;
+  leadRoleControl?: ReactNode;
   selectedModels?: ReadonlyArray<{ instanceId: ProviderInstanceId; model: string }>;
   onToggleModel?: (instanceId: ProviderInstanceId, model: string) => void;
   lockedProvider: ProviderDriverKind | null;
@@ -310,7 +311,10 @@ export const ProviderModelPicker = memo(function ProviderModelPicker(props: {
           onInstanceModelChange={handleInstanceModelChange}
         />
         {props.selectedModels === undefined ? (
-          <ChatGptSharingControl provider={activeEntry?.snapshot ?? null} />
+          <>
+            <ChatGptSharingControl provider={activeEntry?.snapshot ?? null} />
+            {props.leadRoleControl}
+          </>
         ) : null}
       </PopoverPopup>
     </Popover>

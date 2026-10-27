@@ -15,6 +15,8 @@ import * as CheckpointStore from "../../checkpointing/CheckpointStore.ts";
 import * as ServerConfig from "../../config.ts";
 import * as SqlitePersistence from "../../persistence/Sqlite.ts";
 import * as ServerSettings from "../../serverSettings.ts";
+import * as ProviderRegistry from "../../provider/ProviderRegistry.ts";
+import * as ProviderRegistryMock from "../../provider/testUtils/providerRegistryMock.ts";
 import * as ThreadManagementService from "../ThreadManagementService.ts";
 import * as McpProviderSessions from "@t3tools/provider-core/server/McpProviderSessions";
 import * as McpSessionRegistryTestkit from "../../mcp/McpSessionRegistry.testkit.ts";
@@ -263,6 +265,8 @@ export function layerWithRegistry<Error>(
     McpProviderSessions.McpProviderSessions
   >,
   options: {
+    readonly providerRegistryLayer?: Layer.Layer<ProviderRegistry.ProviderRegistry>;
+    readonly serverSettingsLayer?: Layer.Layer<ServerSettings.ServerSettingsService>;
     readonly databaseLayer?: Layer.Layer<
       SqlClient.SqlClient,
       MigrationError | PlatformError.PlatformError | SqlError
@@ -297,12 +301,14 @@ export function layerWithRegistry<Error>(
   const layerProvidedRegistry = registryLayer.pipe(
     Layer.provide(Layer.merge(layerContinuationRequests, McpProviderSessions.layer)),
   );
-  const layerServerSettings = ServerSettings.layerTest({
-    responseStreamingMode: "turn",
-    ...(options.continueThreadsAfterServerUpdate === undefined
-      ? {}
-      : { continueThreadsAfterServerUpdate: options.continueThreadsAfterServerUpdate }),
-  }).pipe(Layer.orDie);
+  const layerServerSettings =
+    options.serverSettingsLayer ??
+    ServerSettings.layerTest({
+      responseStreamingMode: "turn",
+      ...(options.continueThreadsAfterServerUpdate === undefined
+        ? {}
+        : { continueThreadsAfterServerUpdate: options.continueThreadsAfterServerUpdate }),
+    }).pipe(Layer.orDie);
   const layerStores = Layer.mergeAll(
     EventStore.layer,
     ProjectionStore.layer,
@@ -392,6 +398,8 @@ export function layerWithRegistry<Error>(
   const layerProviderTurnStartServiceProvided = ProviderTurnStartService.layer.pipe(
     Layer.provide(
       Layer.mergeAll(
+        options.providerRegistryLayer ?? ProviderRegistryMock.layer(),
+        layerServerSettings,
         layerContextHandoffServiceProvided,
         layerEventSinkProvided,
         IdAllocator.layer,

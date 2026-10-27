@@ -219,6 +219,7 @@ export function resolveDefaultableModelSelection(
 
 export function resolveNewTaskModelSelection(input: {
   readonly draftSelection: ModelSelection | null;
+  readonly leadDefaultSelection?: ModelSelection | null;
   readonly projectDefaultSelection: ModelSelection | null;
   readonly stickySelection: ModelSelection | null;
   readonly modelOptions: ReadonlyArray<ModelOption>;
@@ -227,6 +228,7 @@ export function resolveNewTaskModelSelection(input: {
     input.draftSelection ??
     input.projectDefaultSelection ??
     input.stickySelection ??
+    input.leadDefaultSelection ??
     input.modelOptions.find((option) => option.isDefault && !option.isUnavailable)?.selection ??
     input.modelOptions.find((option) => !option.isUnavailable)?.selection ??
     null

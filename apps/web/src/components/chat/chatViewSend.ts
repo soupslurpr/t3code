@@ -1,3 +1,4 @@
+import { resolveLeadSelectionForDispatch } from "../../modelSelection";
 import {
   CommandId,
   type EnvironmentId,
@@ -308,10 +309,13 @@ export function resolveMultipleModelTargets(input: {
       planModeEnabled,
     });
     return {
-      selection: createModelSelection(
-        selection.instanceId,
-        selection.model,
-        providerState.modelOptionsForDispatch,
+      selection: resolveLeadSelectionForDispatch(
+        createModelSelection(
+          selection.instanceId,
+          selection.model,
+          providerState.modelOptionsForDispatch,
+        ),
+        null,
       ),
       text: formatOutgoingPrompt({
         provider: provider.driverKind,

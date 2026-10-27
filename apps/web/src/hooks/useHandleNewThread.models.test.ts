@@ -1,13 +1,17 @@
+import { DEFAULT_CLIENT_SETTINGS } from "@t3tools/contracts/settings";
+import { resolveModelPreferences } from "@t3tools/shared/serverSettings";
 import type { EnvironmentProject } from "@t3tools/client-runtime/state/shell";
 import { scopeProjectRef, scopeThreadRef } from "@t3tools/client-runtime/environment";
 import {
   DEFAULT_SERVER_SETTINGS,
+  ProviderDriverKind,
   EnvironmentId,
   ProjectId,
   ProviderInstanceId,
   ThreadId,
   type ModelSelection,
   type ServerSettings,
+  type ServerProvider,
 } from "@t3tools/contracts";
 import { describe, expect, it, vi } from "vite-plus/test";
 
@@ -35,7 +39,10 @@ const context = vi.hoisted(() => {
   };
   return {
     router,
-    configs: new Map<string, { settings: ServerSettings }>(),
+    configs: new Map<
+      string,
+      { settings: ServerSettings; providers?: ReadonlyArray<ServerProvider> }
+    >(),
     readProjects: vi.fn<() => ReadonlyArray<EnvironmentProject>>(),
     readThreadShell:
       vi.fn<() => { modelSelection: ModelSelection; interactionMode: "default" } | null>(),
@@ -71,7 +78,15 @@ vi.mock("../state/presentation", () => ({
 vi.mock("../state/olderSettledShelf", () => ({ readUnloadedThreadCount: () => 0 }));
 vi.mock("../components/Sidebar.logic", () => ({ orderItemsByPreferredIds: vi.fn() }));
 vi.mock("../lib/t3ProjectFileDefaults", () => ({ readT3ProjectFile: async () => null }));
-vi.mock("./useSettings", () => ({ useClientSettings: () => ({}) }));
+vi.mock("./useSettings", () => ({
+  useClientSettings: () => DEFAULT_CLIENT_SETTINGS,
+  getClientSettings: () => DEFAULT_CLIENT_SETTINGS,
+  mergeEnvironmentSettings: (server: ServerSettings) => ({
+    ...server,
+    ...DEFAULT_CLIENT_SETTINGS,
+    ...resolveModelPreferences(server, DEFAULT_CLIENT_SETTINGS),
+  }),
+}));
 
 const environmentId = EnvironmentId.make("environment-1");
 const sourceProjectId = ProjectId.make("source-project");
@@ -233,3 +248,82 @@ describe("new-thread model selection", () => {
     );
   });
 });
+
+it.each([true, false])(
+  "prefers Full Max only after saved sources (workers: %s)",
+  async (workers) => {
+    setup();
+    const config = context.configs.get(environmentId)!;
+    const providers: ServerProvider[] = [
+      { driver: "muse", models: ["muse-wonder-full-1.0", "muse-wonder-1.0"] },
+      ...(workers ? [{ driver: "codex", models: ["gpt-6-astra", "gpt-6.1-sol"] }] : []),
+    ].map((row) => ({
+      instanceId: ProviderInstanceId.make(row.driver),
+      driver: ProviderDriverKind.make(row.driver),
+      enabled: true,
+      installed: true,
+      version: null,
+      status: "ready",
+      auth: { status: "authenticated" },
+      checkedAt: "2026-10-26T00:00:00Z",
+      slashCommands: [],
+      skills: [],
+      models: row.models.map((model) => ({
+        slug: model,
+        name: model,
+        isCustom: false,
+        capabilities: {
+          optionDescriptors: [
+            {
+              type: "select",
+              id: "reasoningEffort",
+              label: "Reasoning",
+              options: [
+                { id: "max", label: "Max", isDefault: true },
+                { id: "xhigh", label: "Extra High" },
+              ],
+            },
+          ],
+        },
+      })),
+    }));
+    context.configs.set(environmentId, {
+      ...config,
+      providers,
+      settings: {
+        ...config.settings,
+        providerInstances: Object.fromEntries(
+          providers.map((p) => [p.instanceId, { driver: p.driver, enabled: true }]),
+        ),
+      },
+    });
+    expect(selectedModel(await openDraft(sourceProjectId))).toEqual(projectSelection);
+    expect(selectedModel(await openDraft(targetProjectId))).toEqual(rememberedSelection);
+    useComposerDraftStore.setState({
+      stickyModelSelectionByProvider: {},
+      stickyOptionsByModelByProvider: {},
+      stickyActiveProvider: null,
+    });
+    const emptyProject = ProjectId.make("empty-project");
+    context.router.state.matches = [{ params: {} }];
+    const draft = await openDraft(emptyProject);
+    expect(selectedModel(draft)).toEqual({
+      instanceId: "muse",
+      model: "muse-wonder-full-1.0",
+      options: [{ id: "reasoningEffort", value: "max" }],
+    });
+    const direct = {
+      instanceId: ProviderInstanceId.make("muse"),
+      model: "muse-wonder-full-1.0",
+      options: [
+        { id: "reasoningEffort", value: "high" },
+        { id: "leadRole", value: "direct" },
+      ],
+    };
+    useComposerDraftStore
+      .getState()
+      .setModelSelection(draft, direct, { explicit: true, replaceOptions: true });
+    expect(await openDraft(emptyProject)).toBe(draft);
+    expect(selectedModel(draft)).toEqual(direct);
+  },
+);

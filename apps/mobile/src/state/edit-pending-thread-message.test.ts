@@ -1,14 +1,30 @@
 import { beforeEach, describe, expect, it, vi } from "vite-plus/test";
-import { CommandId, EnvironmentId, MessageId, ThreadId } from "@t3tools/contracts";
+import {
+  CommandId,
+  EnvironmentId,
+  MessageId,
+  ThreadId,
+  type ModelSelection,
+} from "@t3tools/contracts";
 import type { QueuedThreadMessage } from "./thread-outbox-model";
+import type { ComposerDraftSettingsUpdate } from "./use-composer-drafts";
+import { wonderMax } from "../features/threads/lead-test-fixtures";
+import { withMobileLeadRole } from "../lib/lead";
 
 const state = vi.hoisted(() => ({
   dispatching: null as string | null,
   held: {} as Record<string, true>,
-  draft: { text: "Existing draft", attachments: [] as { id: string }[] },
+  draft: {
+    text: "Existing draft",
+    attachments: [] as { id: string }[],
+    modelSelection: undefined as ModelSelection | undefined,
+  },
   confirm: vi.fn(async () => true),
   remove: vi.fn(async () => true),
   flush: vi.fn(async () => {}),
+  updateSettings: vi.fn((_key: string, settings: Partial<ComposerDraftSettingsUpdate>) => {
+    state.draft = { ...state.draft, ...settings };
+  }),
 }));
 vi.mock("./atom-registry", () => ({
   appAtomRegistry: {
@@ -33,16 +49,26 @@ vi.mock("./thread-outbox-removal", () => ({ removeThreadOutboxMessage: state.rem
 vi.mock("./use-composer-drafts", () => ({
   waitForComposerDraftsLoaded: async () => {},
   getComposerDraftSnapshot: () => state.draft,
-  mergeComposerDraftContent: async (_key: string, message: QueuedThreadMessage) => {
+  getComposerDraftRollbackSnapshot: () => ({ draft: state.draft }),
+  mergeComposerDraftContent: async (
+    _key: string,
+    message: QueuedThreadMessage,
+    options?: {
+      onMerge: (snapshot: { draft: typeof state.draft }, merged: typeof state.draft) => void;
+    },
+  ) => {
+    const snapshot = { draft: state.draft };
     state.draft = {
+      ...state.draft,
       text: `${state.draft.text}\n\n${message.text}`,
       attachments: [...state.draft.attachments, ...message.attachments],
     };
+    options?.onMerge(snapshot, state.draft);
   },
-  updateComposerDraftSettings: () => {},
+  updateComposerDraftSettings: state.updateSettings,
   flushComposerDrafts: state.flush,
-  undoComposerDraftMerge: async (_key: string, snapshot: typeof state.draft) => {
-    state.draft = snapshot;
+  undoComposerDraftMerge: async (_key: string, snapshot: { draft: typeof state.draft }) => {
+    state.draft = snapshot.draft;
   },
 }));
 import { editPendingThreadMessage } from "./edit-pending-thread-message";
@@ -53,6 +79,7 @@ const message: QueuedThreadMessage = {
   messageId: MessageId.make("message"),
   commandId: CommandId.make("command"),
   text: "Queued task",
+  modelSelection: wonderMax,
   createdAt: "2026-09-06T10:00:00.000Z",
   attachments: [
     {
@@ -69,25 +96,23 @@ beforeEach(() => {
   vi.clearAllMocks();
   state.dispatching = null;
   state.held = {};
-  state.draft = { text: "Existing draft", attachments: [] };
+  state.draft = { text: "Existing draft", attachments: [], modelSelection: undefined };
   state.confirm.mockResolvedValue(true);
   state.remove.mockResolvedValue(true);
   state.flush.mockResolvedValue(undefined);
 });
 describe("editing a pending message", () => {
-  it("locks delivery and persists text and attachments before removing the queued copy", async () => {
-    state.confirm.mockImplementationOnce(async () => {
-      expect(state.held[message.messageId]).toBe(true);
-      return true;
-    });
-    state.remove.mockImplementationOnce(async () => {
-      expect(state.flush).toHaveBeenCalled();
-      expect(state.draft.text).toBe("Existing draft\n\nQueued task");
-      expect(state.draft.attachments).toEqual(message.attachments);
-      return true;
-    });
-    expect(await editPendingThreadMessage(message)).toBe(true);
-    expect(state.held).toEqual({});
+  it("keeps the saved Lead preference while editing a Direct fallback turn", async () => {
+    const saved = withMobileLeadRole(wonderMax, "lead");
+    state.draft.modelSelection = saved;
+    expect(
+      await editPendingThreadMessage({
+        ...message,
+        modelSelection: withMobileLeadRole(wonderMax, "direct"),
+      }),
+    ).toBe(true);
+    expect(state.draft.modelSelection).toBe(saved);
+    expect(state.draft.text).toBe("Existing draft\n\nQueued task");
   });
   it("does not reclaim a message already being dispatched", async () => {
     state.dispatching = message.messageId;

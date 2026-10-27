@@ -49,9 +49,21 @@ import type {
   EnvironmentShellState,
   EnvironmentThreadShell,
 } from "@t3tools/client-runtime/state/shell";
+import {
+  getLeadRole,
+  isLeadModel,
+  withLeadRole,
+  withoutLeadRoleOptions,
+  type LeadAvailability,
+  type LeadRole,
+} from "@t3tools/shared/lead";
 import { getLocalStorageItem } from "./hooks/useLocalStorage";
 import { readThreadPreviewState } from "./previewStateStore";
-import { resolveAppModelSelection, resolveAppModelSelectionForInstance } from "./modelSelection";
+import {
+  resolveAppModelSelection,
+  resolveAppModelSelectionForInstance,
+  resolveLeadSelectionForDispatch,
+} from "./modelSelection";
 import {
   DEFAULT_INTERACTION_MODE,
   DEFAULT_RUNTIME_MODE,
@@ -102,6 +114,24 @@ const isSnapShotSource = Schema.is(SnapShotSource);
 const isPreviewAnnotationPayload = Schema.is(PreviewAnnotationPayloadSchema);
 
 export const COMPOSER_DRAFT_STORAGE_KEY = "t3code:composer-drafts:v1";
+
+/** Own an inherited Lead preference before the server saves this turn's Direct fallback. */
+export function resolveComposerLeadSelectionForDispatch(
+  target: ComposerThreadTarget,
+  selection: ModelSelection,
+  availability: LeadAvailability,
+): ModelSelection {
+  const dispatched = resolveLeadSelectionForDispatch(selection, availability);
+  if (dispatched !== selection && getLeadRole(selection) === "lead") {
+    const store = useComposerDraftStore.getState();
+    const draft = store.getComposerDraft(target);
+    const applied = draft?.activeProvider
+      ? draft.modelSelectionByProvider[draft.activeProvider]
+      : null;
+    if (!applied) store.setModelSelection(target, selection, { replaceOptions: true });
+  }
+  return dispatched;
+}
 const COMPOSER_DRAFT_STORAGE_VERSION = 9;
 const DraftThreadEnvModeSchema = Schema.Literals(["local", "worktree"]);
 export type DraftThreadEnvMode = typeof DraftThreadEnvModeSchema.Type;
@@ -241,6 +271,7 @@ const PersistedComposerThreadDraftState = Schema.Struct({
   modelSelectionByProvider: Schema.optionalKey(Schema.Record(ProviderInstanceId, ModelSelection)),
   activeProvider: Schema.optionalKey(Schema.NullOr(ProviderInstanceId)),
   modelSelectionExplicit: Schema.optionalKey(Schema.Boolean),
+  leadRole: Schema.optionalKey(Schema.Literals(["direct", "lead"])),
   runtimeMode: Schema.optionalKey(RuntimeMode),
   interactionMode: Schema.optionalKey(ProviderInteractionMode),
 });
@@ -364,6 +395,8 @@ export interface ComposerThreadDraftState {
   modelSelectionByProvider: Partial<Record<ProviderInstanceId, ModelSelection>>;
   activeProvider: ProviderInstanceId | null;
   modelSelectionExplicit?: boolean;
+  /** This thread's Role survives switching models and providers. */
+  leadRole?: LeadRole;
   runtimeMode: RuntimeMode | null;
   interactionMode: ProviderInteractionMode | null;
 }
@@ -500,6 +533,7 @@ interface ComposerDraftStoreState {
       explicit?: boolean;
       /** Replace existing options even when the incoming selection has none. */
       replaceOptions?: boolean;
+      fallbackSelection?: ModelSelection;
     },
   ) => void;
   setModelOptions: (
@@ -658,11 +692,23 @@ function cloneModelSelection(selection: ModelSelection): DeepMutable<ModelSelect
 
 function compactModelSelectionByProvider(
   selections: Partial<Record<ProviderInstanceId, ModelSelection>>,
+  excludeLeadRole = false,
 ): DeepMutable<Record<ProviderInstanceId, ModelSelection>> {
   const entries: Array<[string, DeepMutable<ModelSelection>]> = [];
   for (const [provider, selection] of Object.entries(selections)) {
     if (selection !== undefined) {
-      entries.push([provider, cloneModelSelection(selection)]);
+      entries.push([
+        provider,
+        cloneModelSelection(
+          excludeLeadRole
+            ? createModelSelection(
+                selection.instanceId,
+                selection.model,
+                withoutLeadRoleOptions(selection.options),
+              )
+            : selection,
+        ),
+      ]);
     }
   }
   return Object.fromEntries(entries) as DeepMutable<Record<ProviderInstanceId, ModelSelection>>;
@@ -674,9 +720,10 @@ function compactStickyOptionsByModel(
   const result: Record<string, Record<string, ReadonlyArray<ProviderOptionSelection>>> = {};
   for (const [instanceId, optionsByModel] of Object.entries(optionsByModelByProvider)) {
     for (const [modelSlug, options] of Object.entries(optionsByModel ?? {})) {
-      if (options === undefined || options.length === 0) continue;
+      const rememberedOptions = withoutLeadRoleOptions(options);
+      if (rememberedOptions === undefined || rememberedOptions.length === 0) continue;
       result[instanceId] ??= {};
-      result[instanceId][modelSlug] = options;
+      result[instanceId][modelSlug] = rememberedOptions;
     }
   }
   return result as NonNullable<PersistedComposerDraftStoreState["stickyOptionsByModelByProvider"]>;
@@ -694,7 +741,7 @@ function seedStickyOptionsByModel(
     ) {
       continue;
     }
-    result[instanceId] = { [selection.model]: selection.options };
+    result[instanceId] = { [selection.model]: withoutLeadRoleOptions(selection.options)! };
   }
   return result as NonNullable<PersistedComposerDraftStoreState["stickyOptionsByModelByProvider"]>;
 }
@@ -864,6 +911,7 @@ function shouldRemoveDraft(draft: ComposerThreadDraftState): boolean {
     draft.threadContexts.length === 0 &&
     Object.keys(draft.modelSelectionByProvider).length === 0 &&
     draft.activeProvider === null &&
+    draft.leadRole === undefined &&
     draft.runtimeMode === null &&
     draft.interactionMode === null
   );
@@ -1879,6 +1927,7 @@ function normalizePersistedDraftsByThreadId(
       reviewComments.length === 0 &&
       threadContexts.length === 0 &&
       !hasModelData &&
+      draftCandidate.leadRole === undefined &&
       !runtimeMode &&
       !interactionMode
     ) {
@@ -1904,6 +1953,9 @@ function normalizePersistedDraftsByThreadId(
       ...(previewAnnotations.length > 0 ? { previewAnnotations } : {}),
       ...(reviewComments.length > 0 ? { reviewComments } : {}),
       ...(threadContexts.length > 0 ? { threadContexts } : {}),
+      ...(draftCandidate.leadRole === "direct" || draftCandidate.leadRole === "lead"
+        ? { leadRole: draftCandidate.leadRole }
+        : {}),
       ...(hasModelData
         ? {
             modelSelectionByProvider: compactModelSelectionByProvider(modelSelectionByProvider),
@@ -1951,7 +2003,9 @@ function stripLegacyModelSeedsFromEmptyDraftSessions(
         modelSelectionExplicit: _modelSelectionExplicit,
         ...retained
       } = draft;
-      return retained.runtimeMode || retained.interactionMode ? [[threadKey, retained]] : [];
+      return retained.runtimeMode || retained.interactionMode || retained.leadRole
+        ? [[threadKey, retained]]
+        : [];
     }),
   );
 }
@@ -2007,12 +2061,14 @@ export function partializeComposerDraftStoreState(
       draft.reviewComments.length === 0 &&
       draft.threadContexts.length === 0 &&
       !hasModelData &&
+      draft.leadRole === undefined &&
       draft.runtimeMode === null &&
       draft.interactionMode === null
     ) {
       continue;
     }
     const persistedDraft: DeepMutable<PersistedComposerThreadDraftState> = {
+      ...(draft.leadRole ? { leadRole: draft.leadRole } : {}),
       prompt: draft.prompt,
       attachments: draft.persistedAttachments,
       ...(draft.files.length > 0
@@ -2091,6 +2147,7 @@ export function partializeComposerDraftStoreState(
       state.logicalProjectDraftThreadKeyByLogicalProjectKey,
     stickyModelSelectionByProvider: compactModelSelectionByProvider(
       state.stickyModelSelectionByProvider,
+      true,
     ),
     stickyOptionsByModelByProvider: compactStickyOptionsByModel(
       state.stickyOptionsByModelByProvider,
@@ -2162,7 +2219,10 @@ function normalizeCurrentPersistedComposerDraftStoreState(
     ),
     draftThreadsByThreadKey,
     logicalProjectDraftThreadKeyByLogicalProjectKey,
-    stickyModelSelectionByProvider: compactModelSelectionByProvider(stickyModelSelectionByProvider),
+    stickyModelSelectionByProvider: compactModelSelectionByProvider(
+      stickyModelSelectionByProvider,
+      true,
+    ),
     stickyOptionsByModelByProvider:
       normalizedPersistedState.stickyOptionsByModelByProvider === undefined
         ? seedStickyOptionsByModel(stickyModelSelectionByProvider)
@@ -2338,6 +2398,7 @@ function toHydratedThreadDraft(
     modelSelectionByProvider,
     activeProvider,
     ...(persistedDraft.modelSelectionExplicit ? { modelSelectionExplicit: true } : {}),
+    ...(persistedDraft.leadRole ? { leadRole: persistedDraft.leadRole } : {}),
     runtimeMode: persistedDraft.runtimeMode ?? null,
     interactionMode: persistedDraft.interactionMode ?? null,
   };
@@ -2782,7 +2843,14 @@ const composerDraftStore = create<ComposerDraftStoreState>()(
           });
         },
         setStickyModelSelection: (modelSelection) => {
-          const normalized = normalizeModelSelection(modelSelection);
+          const normalizedSelection = normalizeModelSelection(modelSelection);
+          const normalized = normalizedSelection
+            ? createModelSelection(
+                normalizedSelection.instanceId,
+                normalizedSelection.model,
+                withoutLeadRoleOptions(normalizedSelection.options),
+              )
+            : null;
           set((state) => {
             if (!normalized) {
               return state;
@@ -2792,18 +2860,36 @@ const composerDraftStore = create<ComposerDraftStoreState>()(
             const nextSelection =
               normalized.options !== undefined
                 ? normalized
-                : createModelSelection(normalized.instanceId, normalized.model, current?.options);
+                : createModelSelection(
+                    normalized.instanceId,
+                    normalized.model,
+                    withoutLeadRoleOptions(current?.options),
+                  );
             const nextMap: Partial<Record<ProviderInstanceId, ModelSelection>> = {
               ...state.stickyModelSelectionByProvider,
               [normalized.instanceId]: nextSelection,
             };
-            if (Equal.equals(state.stickyModelSelectionByProvider, nextMap)) {
+            const nextOptionsByModel =
+              normalized.options !== undefined
+                ? {
+                    ...state.stickyOptionsByModelByProvider,
+                    [normalized.instanceId]: {
+                      ...state.stickyOptionsByModelByProvider[normalized.instanceId],
+                      [normalized.model]: normalized.options,
+                    },
+                  }
+                : state.stickyOptionsByModelByProvider;
+            if (
+              Equal.equals(state.stickyModelSelectionByProvider, nextMap) &&
+              Equal.equals(state.stickyOptionsByModelByProvider, nextOptionsByModel)
+            ) {
               return state.stickyActiveProvider === normalized.instanceId
                 ? state
                 : { stickyActiveProvider: normalized.instanceId };
             }
             return {
               stickyModelSelectionByProvider: nextMap,
+              stickyOptionsByModelByProvider: nextOptionsByModel,
               stickyActiveProvider: normalized.instanceId,
             };
           });
@@ -2819,6 +2905,15 @@ const composerDraftStore = create<ComposerDraftStoreState>()(
             const existing = state.draftsByThreadKey[threadKey];
             const base = existing ?? createEmptyThreadDraft();
             const nextMap = compactModelSelectionByProvider(stickyMap);
+            if (base.leadRole) {
+              for (const [instanceId, selection] of Object.entries(nextMap)) {
+                if (isLeadModel(selection.model)) {
+                  nextMap[instanceId as ProviderInstanceId] = cloneModelSelection(
+                    withLeadRole(selection, base.leadRole),
+                  );
+                }
+              }
+            }
             if (
               Equal.equals(base.modelSelectionByProvider, nextMap) &&
               base.activeProvider === stickyActiveProvider &&
@@ -2909,6 +3004,14 @@ const composerDraftStore = create<ComposerDraftStoreState>()(
             }
             const base = existing ?? createEmptyThreadDraft();
             const nextMap = { ...base.modelSelectionByProvider };
+            const leadRole =
+              getLeadRole(normalized) ??
+              base.leadRole ??
+              getLeadRole(
+                (base.activeProvider
+                  ? base.modelSelectionByProvider[base.activeProvider]
+                  : undefined) ?? opts?.fallbackSelection,
+              );
             if (normalized) {
               const current = nextMap[normalized.instanceId];
               if (normalized.options !== undefined || opts?.replaceOptions) {
@@ -2920,11 +3023,18 @@ const composerDraftStore = create<ComposerDraftStoreState>()(
                   current?.options,
                 );
               }
+              if (isLeadModel(normalized.model) && leadRole) {
+                nextMap[normalized.instanceId] = withLeadRole(
+                  nextMap[normalized.instanceId]!,
+                  leadRole,
+                );
+              }
             }
             const nextActiveProvider = normalized?.instanceId ?? base.activeProvider;
             if (
               Equal.equals(base.modelSelectionByProvider, nextMap) &&
               base.activeProvider === nextActiveProvider &&
+              base.leadRole === leadRole &&
               (base.modelSelectionExplicit ?? false) === (opts?.explicit === true)
             ) {
               return state;
@@ -2934,6 +3044,7 @@ const composerDraftStore = create<ComposerDraftStoreState>()(
               ...restBase,
               modelSelectionByProvider: nextMap,
               activeProvider: nextActiveProvider,
+              ...(leadRole ? { leadRole } : {}),
               ...(opts?.explicit === true ? { modelSelectionExplicit: true as const } : {}),
             };
             const nextDraftsByThreadKey = { ...state.draftsByThreadKey };
@@ -3023,6 +3134,11 @@ const composerDraftStore = create<ComposerDraftStoreState>()(
               const { options: _, ...rest } = currentForProvider;
               nextMap[instanceKey] = rest as ModelSelection;
             }
+            const leadRole = base.leadRole ?? getLeadRole(currentForProvider);
+            const nextSelection = nextMap[instanceKey];
+            if (nextSelection && isLeadModel(nextSelection.model) && leadRole) {
+              nextMap[instanceKey] = withLeadRole(nextSelection, leadRole);
+            }
 
             let nextStickyMap = state.stickyModelSelectionByProvider;
             let nextOptionsByModel = state.stickyOptionsByModelByProvider;
@@ -3039,13 +3155,13 @@ const composerDraftStore = create<ComposerDraftStoreState>()(
                 nextStickyMap[instanceKey] = createModelSelection(
                   instanceKey,
                   stickyBase.model,
-                  providerOpts,
+                  withoutLeadRoleOptions(providerOpts),
                 );
                 nextOptionsByModel = {
                   ...state.stickyOptionsByModelByProvider,
                   [instanceKey]: {
                     ...state.stickyOptionsByModelByProvider[instanceKey],
-                    [rememberedModel]: providerOpts,
+                    [rememberedModel]: withoutLeadRoleOptions(providerOpts)!,
                   },
                 };
               } else if ((stickyBase.options?.length ?? 0) > 0) {
@@ -3068,6 +3184,7 @@ const composerDraftStore = create<ComposerDraftStoreState>()(
             if (
               Equal.equals(base.modelSelectionByProvider, nextMap) &&
               Equal.equals(state.stickyModelSelectionByProvider, nextStickyMap) &&
+              base.leadRole === leadRole &&
               Equal.equals(state.stickyOptionsByModelByProvider, nextOptionsByModel) &&
               state.stickyActiveProvider === nextStickyActiveProvider
             ) {
@@ -3078,6 +3195,7 @@ const composerDraftStore = create<ComposerDraftStoreState>()(
             const nextDraft: ComposerThreadDraftState = {
               ...restBase,
               ...(options?.instanceId ? { activeProvider: instanceKey } : {}),
+              ...(leadRole ? { leadRole } : {}),
               modelSelectionByProvider: nextMap,
               modelSelectionExplicit: true,
             };

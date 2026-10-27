@@ -1,3 +1,4 @@
+import { useStartThreadTurn } from "../../hooks/useStartThreadTurn";
 import {
   mergeDirectPreviewAnnotation,
   resolveBackgroundDraftWorkspaceOptions,
@@ -324,9 +325,7 @@ export function useComposerSend(input: ComposerSendInput) {
   const navigate = useNavigate();
   const clientSettingsHydrated = useClientSettingsHydrated();
   const planModeEnabled = useEnvironmentSettings(environmentId, selectPlanModeEnabled);
-  const startThreadTurn = useOrchestrationCommand(threadEnvironment.startTurn, {
-    reportFailure: false,
-  });
+  const startThreadTurn = useStartThreadTurn();
   const uploadThreadFeedback = useOrchestrationCommand(threadEnvironment.uploadFeedback, {
     reportFailure: false,
   });

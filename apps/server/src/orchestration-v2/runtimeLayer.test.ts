@@ -50,6 +50,7 @@ import * as OrchestrationEventStore from "../persistence/OrchestrationEventStore
 import * as ProjectEnrichmentService from "../project/ProjectEnrichmentService.ts";
 import * as ProjectService from "../project/ProjectService.ts";
 import * as ServerSettings from "../serverSettings.ts";
+import * as ProviderRegistryMock from "../provider/testUtils/providerRegistryMock.ts";
 import * as McpSessionRegistryTestkit from "../mcp/McpSessionRegistry.testkit.ts";
 import * as ProviderInstanceRegistry from "../provider/ProviderInstanceRegistry.ts";
 import type { ProviderInstance } from "@t3tools/provider-core/server/driver";
@@ -85,7 +86,8 @@ import * as ThreadLaunchService from "./ThreadLaunchService.ts";
 import * as ThreadCommandExecutor from "./ThreadCommandExecutor.ts";
 import type * as ProviderAdapter from "@t3tools/provider-core/server/ProviderAdapter";
 
-const layerPlatformTest = Layer.merge(
+const layerPlatformTest = Layer.mergeAll(
+  ProviderRegistryMock.layer(),
   NodeServices.layer,
   Layer.mock(SourceControlProviderRegistry.SourceControlProviderRegistry)({
     resolveLink: () => Effect.die("unused title link"),

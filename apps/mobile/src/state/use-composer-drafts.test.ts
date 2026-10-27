@@ -1,3 +1,10 @@
+import {
+  defaultMobileLeadRole,
+  resolveMobileLeadAvailability,
+  withMobileLeadRole,
+} from "../lib/lead";
+import { leadServerConfig, wonderMax } from "../features/threads/lead-test-fixtures";
+import { rememberModelOptions, withRememberedModelOptions } from "./use-model-option-memory";
 import { PrimaryConnectionTarget } from "@t3tools/client-runtime/connection";
 import { createEnvironmentThreadShellAtoms } from "@t3tools/client-runtime/state/threads";
 import {
@@ -184,6 +191,7 @@ import {
   clearComposerDraftsEnvironment,
   ComposerDraftPersistenceError,
   composerDraftsAtom,
+  composerDraftsLoadedAtom,
   composerCloudDraftsAtom,
   createNewTaskDraft,
   createComposerDraftContextHistory,
@@ -2582,5 +2590,211 @@ describe("mobile composer drafts", () => {
       },
     });
     expect(composerAttachmentCleanupMocks.remove).not.toHaveBeenCalled();
+  });
+});
+
+describe("Role persistence", () => {
+  it.each(["direct", "lead"] as const)(
+    "retains %s in live and archived selections after content clears",
+    async (role) => {
+      await waitForComposerDraftsLoaded();
+      const key = "environment:role-persistence";
+      const selection = withMobileLeadRole(wonderMax, role);
+      appAtomRegistry.set(composerDraftsAtom, {
+        [key]: { text: "Task", attachments: [], modelSelection: selection },
+      });
+      appAtomRegistry.set(composerCloudDraftsAtom, {
+        accountId: null,
+        signedOut: {
+          account: {
+            drafts: { [key]: { text: "Archived", attachments: [], modelSelection: selection } },
+            queuedMessages: [],
+          },
+        },
+      });
+      clearComposerDraftContent(key);
+      await flushComposerDrafts();
+      const restored = decodePersistedComposerState(
+        JSON.parse(composerDraftFileMocks.getDocument()),
+      );
+      expect(restored.drafts[key]?.modelSelection).toEqual(selection);
+      expect(restored.cloudDrafts.signedOut.account?.drafts[key]?.modelSelection).toEqual(
+        selection,
+      );
+    },
+  );
+  it("ignores legacy draft fields without dropping text, selection or a settings-only Direct choice", () => {
+    const selection = withMobileLeadRole(wonderMax, "direct");
+    const state = decodePersistedComposerState({
+      schemaVersion: 1,
+      drafts: {
+        "environment:legacy": {
+          text: "Keep me",
+          attachments: [],
+          modelSelection: selection,
+          lead: true,
+          leadDirect: false,
+          leadRevision: 3,
+          leadArmingRevision: 1,
+          transferredLeadArmings: { old: 1 },
+        },
+        "new-task:direct": { text: "", attachments: [], modelSelection: selection },
+        "environment:marker-only": { text: "", attachments: [], lead: false, leadDirect: true },
+      },
+    });
+    expect(state.drafts["environment:legacy"]).toEqual({
+      text: "Keep me",
+      attachments: [],
+      modelSelection: selection,
+    });
+    expect(state.drafts["new-task:direct"]?.modelSelection).toEqual(selection);
+    expect(state.drafts).not.toHaveProperty("environment:marker-only");
+  });
+});
+
+describe("thread Role preference", () => {
+  it.each(["direct", "lead"] as const)(
+    "restores Full's %s preference after switching through ordinary Wonder and reloading",
+    async (role) => {
+      await ensureComposerDraftsLoaded();
+      const full = withMobileLeadRole(wonderMax, role);
+      const ordinary = { ...wonderMax, model: "muse-wonder-1.0" };
+      updateComposerDraftSettings("thread", { modelSelection: full });
+      updateComposerDraftSettings("thread", { modelSelection: ordinary });
+      expect(getComposerDraftSnapshot("thread").modelSelection).toEqual(ordinary);
+      await flushComposerDrafts();
+      const loaded = decodePersistedComposerState(JSON.parse(composerDraftFileMocks.getDocument()));
+      appAtomRegistry.set(composerDraftsAtom, loaded.drafts);
+      updateComposerDraftSettings("thread", { modelSelection: wonderMax });
+      expect(getComposerDraftSnapshot("thread").modelSelection).toEqual(full);
+    },
+  );
+
+  it.each([false, true])(
+    "keeps A Direct on switch-back after B Lead (reload: %s)",
+    async (reload) => {
+      await ensureComposerDraftsLoaded();
+      const direct = withMobileLeadRole(wonderMax, "direct");
+      updateComposerDraftSettings("thread-a", { modelSelection: direct });
+      rememberModelOptions(direct.instanceId, direct.model, direct.options!);
+      updateComposerDraftSettings("thread-a", {
+        modelSelection: { ...wonderMax, model: "another-model" },
+      });
+      if (reload) {
+        await flushComposerDrafts();
+        const loaded = decodePersistedComposerState(
+          JSON.parse(composerDraftFileMocks.getDocument()),
+        );
+        appAtomRegistry.set(composerDraftsAtom, loaded.drafts);
+        appAtomRegistry.set(modelOptionMemoryAtom, loaded.modelOptionMemory);
+      }
+      const lead = withMobileLeadRole(wonderMax, "lead");
+      updateComposerDraftSettings("thread-b", { modelSelection: lead });
+      rememberModelOptions(lead.instanceId, lead.model, lead.options!);
+      expect(withRememberedModelOptions(wonderMax)).toEqual(wonderMax);
+      updateComposerDraftSettings("thread-a", {
+        modelSelection: withRememberedModelOptions(wonderMax),
+      });
+      const restored = getComposerDraftSnapshot("thread-a");
+      expect(restored.leadRole).toBe("direct");
+      expect(
+        defaultMobileLeadRole(
+          restored.modelSelection!,
+          resolveMobileLeadAvailability(leadServerConfig(), null),
+        ),
+      ).toEqual(direct);
+      expect(getComposerDraftSnapshot("thread-b").modelSelection).toEqual(lead);
+      updateComposerDraftSettings("thread-a", { modelSelection: lead });
+      expect(getComposerDraftSnapshot("thread-a").leadRole).toBe("lead");
+    },
+  );
+
+  it("retains an inherited role when a thread switches away before creating a local draft", () => {
+    const inherited = withMobileLeadRole(wonderMax, "direct");
+    updateComposerDraftSettings(
+      "thread",
+      { modelSelection: { ...wonderMax, model: "other-model" } },
+      inherited,
+    );
+    updateComposerDraftSettings("thread", { modelSelection: wonderMax });
+    expect(getComposerDraftSnapshot("thread").modelSelection).toEqual(inherited);
+  });
+
+  it("strips obsolete global Role memory while preserving a thread's saved role", () => {
+    const direct = withMobileLeadRole(wonderMax, "direct");
+    const loaded = decodePersistedComposerState({
+      schemaVersion: 1,
+      drafts: { thread: { ...DRAFT, modelSelection: direct } },
+      stickyModelSelection: direct,
+      modelOptionMemory: { [wonderMax.instanceId]: { [wonderMax.model]: direct.options } },
+    });
+    expect(loaded.drafts.thread?.modelSelection).toEqual(direct);
+    expect(loaded.stickyModelSelection).toEqual(wonderMax);
+    expect(loaded.modelOptionMemory[wonderMax.instanceId]?.[wonderMax.model]).toEqual(
+      wonderMax.options,
+    );
+  });
+});
+
+describe("draft hydration readiness", () => {
+  it("blocks default Lead until a slow read preserves saved text and explicit Direct", async () => {
+    const key = "environment-1:hydration-default-lead";
+    const saved = {
+      text: "Saved unsent task",
+      attachments: [],
+      modelSelection: withMobileLeadRole(wonderMax, "direct"),
+    };
+    composerDraftFileMocks.setDocument({ schemaVersion: 1, drafts: { [key]: saved } });
+    composerDraftFileMocks.blockRead();
+    const published: Array<ComposerDraft> = [];
+    const unsubscribe = appAtomRegistry.subscribe(composerDraftsLoadedAtom, (loaded) => {
+      if (loaded) published.push(getComposerDraftSnapshot(key));
+    });
+    onTestFinished(() => {
+      composerDraftFileMocks.releaseRead();
+      unsubscribe();
+    });
+    const mayDefaultArm = () => {
+      const snapshot = getComposerDraftSnapshot(key);
+      return (
+        appAtomRegistry.get(composerDraftsLoadedAtom) &&
+        snapshot.modelSelection &&
+        defaultMobileLeadRole(
+          snapshot.modelSelection,
+          resolveMobileLeadAvailability(leadServerConfig(), null),
+        ) !== snapshot.modelSelection
+      );
+    };
+    expect(appAtomRegistry.get(composerDraftsLoadedAtom)).toBe(false);
+    ensureComposerDraftsLoaded();
+    const loading = waitForComposerDraftsLoaded();
+    await Promise.resolve();
+    expect(appAtomRegistry.get(composerDraftsLoadedAtom)).toBe(false);
+    expect(mayDefaultArm()).toBe(false);
+    expect(appAtomRegistry.get(composerDraftsAtom)[key]).toBeUndefined();
+    expect(composerDraftFileMocks.getWrites()).toHaveLength(0);
+
+    composerDraftFileMocks.releaseRead();
+    await loading;
+    expect(appAtomRegistry.get(composerDraftsLoadedAtom)).toBe(true);
+    expect(published).toEqual([saved]);
+    expect(getComposerDraftSnapshot(key)).toEqual(saved);
+    expect(mayDefaultArm()).toBe(false);
+    setComposerDraftText("environment-1:other", "Another task");
+    await flushComposerDrafts();
+    expect(JSON.parse(composerDraftFileMocks.getDocument()).drafts[key]).toEqual(saved);
+  });
+
+  it("keeps readiness false after a failed read and publishes it on a successful retry", async () => {
+    const warning = vi.spyOn(console, "warn").mockImplementation(() => {});
+    onTestFinished(() => warning.mockRestore());
+    composerDraftFileMocks.setReadError(new Error("Draft read unavailable"));
+    await expect(waitForComposerDraftsLoaded()).rejects.toMatchObject({ operation: "read" });
+    expect(appAtomRegistry.get(composerDraftsLoadedAtom)).toBe(false);
+    composerDraftFileMocks.setReadError(null);
+    await waitForComposerDraftsLoaded();
+    expect(appAtomRegistry.get(composerDraftsLoadedAtom)).toBe(true);
+    resetComposerDraftsLoadState();
+    expect(appAtomRegistry.get(composerDraftsLoadedAtom)).toBe(false);
   });
 });

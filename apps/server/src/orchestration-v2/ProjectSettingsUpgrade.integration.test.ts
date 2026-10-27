@@ -22,6 +22,7 @@ import * as ProjectEnrichmentService from "../project/ProjectEnrichmentService.t
 import * as ProjectService from "../project/ProjectService.ts";
 import * as ProviderInstanceRegistry from "../provider/ProviderInstanceRegistry.ts";
 import * as ServerSettings from "../serverSettings.ts";
+import * as ProviderRegistryMock from "../provider/testUtils/providerRegistryMock.ts";
 import * as SourceControlProviderRegistry from "../sourceControl/SourceControlProviderRegistry.ts";
 import * as VcsDriverRegistry from "../vcs/VcsDriverRegistry.ts";
 import * as VcsProcess from "../vcs/VcsProcess.ts";
@@ -155,6 +156,7 @@ const layerRuntime = (dbPath: string) => {
     Layer.provide(layerCheckpointStore),
     Layer.provide(layerServerConfig),
     Layer.provide(ServerSettings.layerTest()),
+    Layer.provide(ProviderRegistryMock.layer()),
     Layer.provide(
       Layer.succeed(ProviderInstanceRegistry.ProviderInstanceRegistry, {
         // @effect-diagnostics-next-line effectSucceedWithVoid:off - This optional result requires undefined, not the wider void type.

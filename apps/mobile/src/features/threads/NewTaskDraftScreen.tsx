@@ -1,3 +1,5 @@
+import { resolveMobileLeadSelectionForDispatch } from "../../lib/lead";
+import { rememberQueuedTaskModelPreference } from "../../state/pending-task-editor-writes";
 import { DraftEnvironmentControl } from "./DraftEnvironmentControl";
 import { NativeScrollEdgeEffectsContext } from "../../native/NativeScrollViewMarker";
 import { DraftThreadHeader } from "./DraftThreadHeader";
@@ -54,11 +56,12 @@ import { makeTurnCommandMetadata } from "../../lib/commandMetadata";
 import {
   clearComposerDraftContent,
   getComposerDraftSnapshot,
+  getComposerDraftRollbackSnapshot,
   mergeComposerDraftContent,
   restoreComposerDraftSnapshot,
   updateComposerDraftSettings,
   scheduleUnusedComposerAttachmentCleanup,
-  type ComposerDraft,
+  type ComposerDraftRollbackSnapshot,
   waitForComposerDraftsLoaded,
 } from "../../state/use-composer-drafts";
 import { useEnvironmentServerConfig, useProjects } from "../../state/entities";
@@ -272,7 +275,7 @@ export function NewTaskDraftScreen(props: {
   const [shareImportAttempt, setShareImportAttempt] = useState(0);
   const startedShareImportKeyRef = useRef<string | null>(null);
   const cancellingShareImportKeyRef = useRef<string | null>(null);
-  const shareImportDraftBackupRef = useRef(new Map<string, ComposerDraft>());
+  const shareImportDraftBackupRef = useRef(new Map<string, ComposerDraftRollbackSnapshot>());
   const activeShareImportTokenRef = useRef<symbol | null>(null);
   const shareImportMountedRef = useRef(true);
   // The share import resumes after awaits; this reads the screen's current
@@ -590,7 +593,8 @@ export function NewTaskDraftScreen(props: {
     }
     startedShareImportKeyRef.current = importKey;
     const draftBackup =
-      shareImportDraftBackupRef.current.get(importKey) ?? getComposerDraftSnapshot(draftKey);
+      shareImportDraftBackupRef.current.get(importKey) ??
+      getComposerDraftRollbackSnapshot(draftKey);
     shareImportDraftBackupRef.current.set(importKey, draftBackup);
     const importToken = Symbol(importKey);
     let didReserveShare = false;
@@ -918,7 +922,18 @@ export function NewTaskDraftScreen(props: {
     }
     // Persist locally before clearing or leaving the draft; server setup runs on the thread.
     flow.setSubmitting(true);
-    const queued = await settlePromise(() => enqueueThreadOutboxMessage(message));
+    const queued = await settlePromise(() =>
+      enqueueThreadOutboxMessage({
+        ...message,
+        modelSelection: message.modelSelection
+          ? resolveMobileLeadSelectionForDispatch(
+              message.modelSelection,
+              appAtomRegistry.get(serverEnvironment.configValueAtom(message.environmentId)),
+              selectedProject.id,
+            )
+          : undefined,
+      }),
+    );
     flow.setSubmitting(false);
     if (AsyncResult.isFailure(queued)) {
       const error = squashAtomCommandFailure(queued);
@@ -928,6 +943,7 @@ export function NewTaskDraftScreen(props: {
       );
       return null;
     }
+    rememberQueuedTaskModelPreference(message);
     promptInputRef.current?.blur();
     navigation.dispatch(
       CommonActions.setParams(

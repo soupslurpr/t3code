@@ -68,8 +68,8 @@ const OrchestratorCapabilitiesTool = Tool.make("orchestrator_capabilities", {
 
 const DelegateTaskTool = Tool.make("delegate_task", {
   description:
-    "Start one child agent with only `task`. No parent history. Separate checkout or PR per child: `isolation:'worktree'`. Keep `taskId` for `task_status` and `task_cancel`.",
-  parameters: OrchestratorMcpDelegateTaskInput,
+    "Start one child agent with only `task`. No parent history. Separate checkout or PR per child: `isolation:'worktree'`. Keep `taskId` for `task_status` and `task_cancel`. Lead requires an explicit target provider and model; preserve that target on retries. Children inherit Lead only through an explicit eligible target.options.leadRole.",
+  parameters: Schema.toCodecJson(OrchestratorMcpDelegateTaskInput),
   success: OrchestratorMcpDelegateTaskResult,
   failure: OrchestratorMcpFailure,
   failureMode: "return",

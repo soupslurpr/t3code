@@ -31,6 +31,7 @@ import type { useComposerProviderModel } from "./useComposerProviderModel";
  * blocks that do not fit. Rendered in the expanded footer or the resting controls host.
  */
 export function ComposerControlsBar(props: {
+  leadRoleControl?: ChatComposerProps["leadRoleControl"];
   environmentId: EnvironmentId;
   routeKind: ChatComposerProps["routeKind"];
   routeThreadRef: ChatComposerProps["routeThreadRef"];
@@ -192,6 +193,7 @@ export function ComposerControlsBar(props: {
   // Its own element, so typing (which rebuilds the controls around it) leaves it cached.
   const composerModelPicker = (
     <ComposerModelPicker
+      leadRoleControl={props.leadRoleControl}
       environmentId={environmentId}
       compact={false}
       isComposerOwned

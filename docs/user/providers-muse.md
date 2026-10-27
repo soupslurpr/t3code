@@ -43,6 +43,26 @@ Muse can list models that your account cannot use. If a message fails with
 "does not exist or you lack access", pick another model, or add one your account
 can use under **Custom models** in the instance settings.
 
+## Lead and Direct roles
+
+In this fork, Muse Wonder and Wonder Full default to Max reasoning. With Wonder
+Full at Max, choose **Direct** or **Lead** under **Role** in the model picker
+(thread settings on mobile). Ordinary Wonder runs in Direct mode.
+Lead is the default at Max when the environment also offers Astra (`gpt-6-astra`)
+at Max and Sol (`gpt-6.1-sol`) at Extra High.
+New threads prefer Wonder Full at Max after your saved model choices.
+Without the required workers, Full remains available in Direct.
+The selected Muse model owns design and decisions. Astra implements, tests,
+and pushes back on the plan, and Sol reviews.
+
+Lead is applied behind the scenes on each turn; it is not added to your
+messages. Choosing Direct sticks for that thread until you choose Lead again.
+Role is available only for Wonder Full at Max with the required models.
+If those requirements become unavailable, the turn runs Direct while your saved
+Lead preference stays in place.
+If Astra or Sol is unavailable, the picker shows **Lead unavailable**, naming what
+is needed, and turns run Direct until it is back.
+
 ## Permissions and limitations
 
 Muse offers two [permission modes](./permission-modes.md): **Supervised** asks

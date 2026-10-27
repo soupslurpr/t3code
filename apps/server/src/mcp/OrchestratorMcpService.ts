@@ -1,3 +1,5 @@
+import { resolveLeadSelectionForTurn } from "../provider/lead.ts";
+import { getLeadRole, LEAD_ROLE_OPTION_ID } from "@t3tools/shared/lead";
 import {
   CommandId,
   type RunId,
@@ -2078,7 +2080,8 @@ const make = Effect.gen(function* () {
         parentThreadId: parent?.thread.id ?? null,
         inheritedProviderInstanceId: inherited?.instanceId ?? null,
         inheritedModel: inherited?.model ?? null,
-        inheritedOptions: inherited?.options ?? [],
+        inheritedOptions:
+          inherited?.options?.filter((option) => option.id !== LEAD_ROLE_OPTION_ID) ?? [],
         runtimeMode: limits.runtimeMode,
         interactionMode: limits.interactionMode,
         providers: providers.map((provider) => {
@@ -2157,12 +2160,54 @@ const make = Effect.gen(function* () {
         operation: "delegate-task",
       });
       const isRetryOfAcceptedDelegation = yield* threadManagement.hasReceipt(commandId);
+      if (
+        !isRetryOfAcceptedDelegation &&
+        getLeadRole(parentRun.modelSelection) === "lead" &&
+        (input.target?.model === undefined ||
+          (input.target.providerInstanceId === undefined && input.target.driverKind === undefined))
+      ) {
+        return yield* failure(
+          "invalid_request",
+          "Lead delegations require an explicit provider and model. Use orchestrator_capabilities, then set target.providerInstanceId (or target.driverKind) and target.model. Preserve the target when correcting a failed call.",
+        );
+      }
       const target = yield* resolveTargetRechecking({
         parent,
         target: input.target,
         providers,
         skipProjectEnablementFilter: isRetryOfAcceptedDelegation,
       });
+      // Delegated children inherit the model and effort, but not the parent's Lead role.
+      const modelSelection =
+        !input.target?.options?.some((option) => option.id === LEAD_ROLE_OPTION_ID) &&
+        target.modelSelection.options?.some((option) => option.id === LEAD_ROLE_OPTION_ID)
+          ? {
+              ...target.modelSelection,
+              options: target.modelSelection.options.filter(
+                (option) => option.id !== LEAD_ROLE_OPTION_ID,
+              ),
+            }
+          : target.modelSelection;
+      if (
+        input.target?.options?.some(
+          (option) => option.id === LEAD_ROLE_OPTION_ID && option.value === "lead",
+        )
+      ) {
+        const effective = resolveLeadSelectionForTurn(
+          modelSelection,
+          providers,
+          yield* serverSettings.getSettings.pipe(
+            Effect.mapError((error) => failure("orchestration_error", error.message)),
+          ),
+          parent.thread.projectId,
+        );
+        if (getLeadRole(effective) !== "lead") {
+          return yield* failure(
+            "invalid_request",
+            "Lead requires Wonder Full at Max and available Astra Max and Sol Extra High workers.",
+          );
+        }
+      }
       const runtimeMode = yield* resolveRuntimeMode(
         parent.thread.runtimeMode,
         input.runtimeMode,
@@ -2216,7 +2261,7 @@ const make = Effect.gen(function* () {
           parentNodeId: parentRun.rootNodeId,
           task: taskPrompt(input),
           ...(input.title === undefined ? {} : { title: input.title }),
-          modelSelection: target.modelSelection,
+          modelSelection,
           runtimeMode,
           interactionMode,
           ...(workspaceStrategy === undefined ? {} : { workspaceStrategy }),

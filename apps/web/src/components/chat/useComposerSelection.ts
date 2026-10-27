@@ -21,7 +21,7 @@ import { resolveAppModelSelectionForInstance } from "../../modelSelection";
 import { resolveNewDraftStartFromOrigin } from "../../lib/chatThreadActions";
 import { type DraftThreadEnvMode, useComposerDraftStore } from "../../composerDraftStore";
 import {
-  getStartedThreadModelChangeBlockReason,
+  getThreadModelSelectionBlockReason,
   deriveLockedProvider,
   makeModelDisabledReason,
 } from "../ChatView.logic";
@@ -140,6 +140,40 @@ export function useComposerSelection(input: ComposerSelectionInput) {
       : null,
   );
 
+  const applyComposerModelSelection = (
+    nextModelSelection: ModelSelection,
+    focusComposer = true,
+  ) => {
+    if (!activeThread) return;
+    const modelChangeBlockReason = getThreadModelSelectionBlockReason({
+      lockedProvider: supportsProviderSwitchingViaHandoff ? null : lockedProvider,
+      providers: providerStatuses,
+      hasStartedSession: activeRuntime !== null,
+      supportsProviderSwitchingViaHandoff,
+      currentModelSelection: activeThread.modelSelection,
+      currentProviderInstanceId: activeRuntime?.providerInstanceId ?? null,
+      nextModelSelection,
+    });
+    if (modelChangeBlockReason) {
+      toastManager.add({
+        type: "warning",
+        title: modelChangeBlockReason.title,
+        description: modelChangeBlockReason.description,
+      });
+      if (focusComposer) scheduleComposerFocus();
+      return;
+    }
+    setComposerDraftModelSelection(
+      scopeThreadRef(activeThread.environmentId, activeThread.id),
+      nextModelSelection,
+      { explicit: true, replaceOptions: true, fallbackSelection: activeThread.modelSelection },
+    );
+    setStickyComposerModelSelection(nextModelSelection);
+    if (focusComposer) scheduleComposerFocus();
+  };
+  const applyLeadRoleSelection = useStableCallback((selection: ModelSelection) =>
+    applyComposerModelSelection(selection, false),
+  );
   const onProviderModelSelect = (
     instanceId: ProviderInstanceId,
     model: string,
@@ -190,30 +224,7 @@ export function useComposerSelection(input: ComposerSelectionInput) {
       rememberedOptions !== undefined && rememberedOptions.length > 0
         ? { instanceId, model: resolvedModel, options: [...rememberedOptions] }
         : { instanceId, model: resolvedModel };
-    const modelChangeBlockReason = getStartedThreadModelChangeBlockReason({
-      providers: providerStatuses,
-      hasStartedSession: activeRuntime !== null,
-      supportsProviderSwitchingViaHandoff,
-      currentModelSelection: activeThread.modelSelection,
-      currentProviderInstanceId: activeRuntime?.providerInstanceId ?? null,
-      nextModelSelection,
-    });
-    if (modelChangeBlockReason) {
-      toastManager.add({
-        type: "warning",
-        title: modelChangeBlockReason.title,
-        description: modelChangeBlockReason.description,
-      });
-      if (options?.focusComposer !== false) scheduleComposerFocus();
-      return;
-    }
-    setComposerDraftModelSelection(
-      scopeThreadRef(activeThread.environmentId, activeThread.id),
-      nextModelSelection,
-      { explicit: true, replaceOptions: true },
-    );
-    setStickyComposerModelSelection(nextModelSelection);
-    if (options?.focusComposer !== false) scheduleComposerFocus();
+    applyComposerModelSelection(nextModelSelection, options?.focusComposer !== false);
   };
   const onProviderModelSelectStable = useStableCallback(onProviderModelSelect);
   const onEnvModeChange = (mode: DraftThreadEnvMode) => {
@@ -262,6 +273,7 @@ export function useComposerSelection(input: ComposerSelectionInput) {
     handleRuntimeModeChangeStable,
     onEnvModeChangeStable,
     onProviderModelSelectStable,
+    applyLeadRoleSelection,
     onStartFromOriginChange,
     openProviderSetupStable,
     toggleInteractionModeStable,

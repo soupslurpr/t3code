@@ -1,3 +1,4 @@
+import type { LeadAvailability } from "@t3tools/shared/lead";
 import { ActiveNewTaskContext } from "../../state/active-new-task";
 import * as Dialog from "../../components/ui/Dialog";
 import { resolveFilesystemReadAccess } from "@t3tools/client-runtime/state/filesystem";
@@ -39,6 +40,8 @@ import {
 import type { TurnCommandMetadata } from "../../lib/commandMetadata";
 import type { DraftComposerAttachment } from "../../lib/composerImages";
 import type { ModelOption, ProviderGroup } from "../../lib/modelOptions";
+import { defaultMobileLeadRole, resolveMobileLeadAvailability } from "../../lib/lead";
+import { useMobileLeadRole } from "./use-lead-role";
 import {
   buildModelOptions,
   groupByProvider,
@@ -74,6 +77,7 @@ import {
 import {
   capturePendingTaskEditorWriteBaseline,
   flushPendingTaskEditorWrite,
+  updatePendingTaskModelPreference,
 } from "../../state/pending-task-editor-writes";
 import {
   rememberModelOptions,
@@ -193,6 +197,10 @@ type NewTaskFlowContextValue = {
   readonly isScratchDraft: boolean;
   readonly modelOptions: ReadonlyArray<ModelOption>;
   readonly selectedModel: ModelSelection | null;
+  readonly lead: boolean;
+  readonly leadAvailability: LeadAvailability;
+  readonly removeLead: () => void;
+  readonly restoreLead: () => void;
   readonly selectedModelOption: ModelOption | null;
   readonly selectedProviderStatus: ServerProvider | null;
   readonly providerGroups: ReadonlyArray<ProviderGroup>;
@@ -443,6 +451,10 @@ export function NewTaskFlowProvider(
     [props.active, activePendingKey],
   );
   const selectedProjectDraft = useComposerDraft(selectedProjectDraftKey);
+  const leadAvailability = resolveMobileLeadAvailability(
+    selectedEnvironmentServerConfig,
+    selectedProject?.id ?? null,
+  );
   const prompt = selectedProjectDraft.text;
   const attachments = selectedProjectDraft.attachments;
   const projectGitStatus = useEnvironmentQuery(
@@ -569,6 +581,8 @@ export function NewTaskFlowProvider(
 
   const selectedModel = resolveNewTaskModelSelection({
     draftSelection: draftModelSelection,
+    leadDefaultSelection:
+      editingPendingTask === null ? (leadAvailability.wonderSelections[0] ?? null) : null,
     projectDefaultSelection: projectDefaultModelSelection,
     stickySelection: stickyModelSelection,
     modelOptions,
@@ -576,6 +590,22 @@ export function NewTaskFlowProvider(
   const selectedModelKey = selectedModel
     ? `${selectedModel.instanceId}:${selectedModel.model}`
     : null;
+  const rememberPendingModelPreference = useCallback(
+    (selection: ModelSelection) => {
+      if (editingPendingTask) updatePendingTaskModelPreference(editingPendingTask, selection);
+    },
+    [editingPendingTask],
+  );
+  const { lead, setLead } = useMobileLeadRole({
+    draftKey: selectedProjectDraftKey,
+    selection: selectedModel,
+    availability: leadAvailability,
+    enabled: selectedEnvironmentServerConfig != null,
+    defaultEnabled: selectedEnvironmentServerConfig != null && editingPendingTask === null,
+    onSelectionChange: rememberPendingModelPreference,
+  });
+  const removeLead = useCallback(() => setLead(false), [setLead]);
+  const restoreLead = useCallback(() => setLead(true), [setLead]);
 
   const selectedModelOption =
     modelOptions.find(
@@ -610,13 +640,20 @@ export function NewTaskFlowProvider(
     const provider = selectedEnvironmentServerConfig?.providers.find(
       (candidate) => candidate.instanceId === selection.instanceId,
     );
-    updateComposerDraftSettings(selectedProjectDraftKey, {
-      modelSelection: selection,
-      ...(provider?.showInteractionModeToggle === false
-        ? { interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE }
-        : {}),
-    });
-    setStickyComposerModelSelection(selection);
+    updateComposerDraftSettings(
+      selectedProjectDraftKey,
+      {
+        modelSelection: selection,
+        ...(provider?.showInteractionModeToggle === false
+          ? { interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE }
+          : {}),
+      },
+      selectedModel,
+    );
+    const appliedSelection =
+      getComposerDraftSnapshot(selectedProjectDraftKey).modelSelection ?? selection;
+    setStickyComposerModelSelection(appliedSelection);
+    rememberPendingModelPreference(appliedSelection);
   };
   const setSelectedModelOptions = (options: ReadonlyArray<ProviderOptionSelection> | undefined) => {
     if (!selectedModel || !selectedProjectDraftKey) {
@@ -633,6 +670,7 @@ export function NewTaskFlowProvider(
       modelSelection: nextSelection,
     });
     setStickyComposerModelSelection(nextSelection);
+    rememberPendingModelPreference(nextSelection);
   };
 
   const providerGroups = groupByProvider(modelOptions);
@@ -956,12 +994,16 @@ export function NewTaskFlowProvider(
     }
     const draft = getComposerDraftSnapshot(selectedProjectDraftKey);
     const text = draft.text.trim();
-    const draftModelSelection =
+    const resolvedModelSelection =
       resolveSelectableModelSelection(
         selectedEnvironmentServerConfig,
         draft.modelSelection ?? null,
         selectedProject.id,
       ) ?? selectedModel;
+    const draftModelSelection =
+      resolvedModelSelection && !editingPendingTask
+        ? defaultMobileLeadRole(resolvedModelSelection, leadAvailability)
+        : resolvedModelSelection;
     if ((text.length === 0 && draft.attachments.length === 0) || !draftModelSelection) {
       return null;
     }
@@ -1152,6 +1194,10 @@ export function NewTaskFlowProvider(
     modelOptions,
     selectedModel,
     selectedModelOption,
+    lead,
+    leadAvailability,
+    removeLead,
+    restoreLead,
     selectedProviderStatus,
     providerGroups,
     reset,

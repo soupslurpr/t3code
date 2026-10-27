@@ -1084,6 +1084,7 @@ describe("OrchestratorMcpService provider resolution", () => {
       readonly model: string;
       readonly options?: ReadonlyArray<{ readonly id: string; readonly value: unknown }>;
     } = { instanceId: codexInstanceId, model: "gpt-5.4" },
+    runModelSelection = modelSelection,
   ): OrchestrationV2ThreadProjection =>
     ({
       thread: {
@@ -1102,8 +1103,8 @@ describe("OrchestratorMcpService provider resolution", () => {
           ordinal: 1,
           status: "running",
           rootNodeId: parentNodeId,
-          providerInstanceId: codexInstanceId,
-          modelSelection,
+          providerInstanceId: runModelSelection.instanceId,
+          modelSelection: runModelSelection,
         },
       ],
       contextTransfers: [],
@@ -1899,7 +1900,10 @@ describe("OrchestratorMcpService provider resolution", () => {
         const parentModelSelection = {
           instanceId: codexInstanceId,
           model: "gpt-5.4",
-          options: [{ id: "reasoningEffort", value: "high" }],
+          options: [
+            { id: "reasoningEffort", value: "high" },
+            { id: "leadRole", value: "lead" },
+          ],
         } as const;
         const task = {
           id: taskId,
@@ -1922,6 +1926,14 @@ describe("OrchestratorMcpService provider resolution", () => {
           completedAt: null,
         };
         const cases = [
+          {
+            name: "healthy-no-target",
+            inheritedEnabled: true,
+            peerEnabled: true,
+            explicit: false,
+            selectedInstanceId: codexInstanceId,
+            candidateDriver: driver,
+          },
           {
             name: "healthy-inherited",
             inheritedEnabled: true,
@@ -2050,7 +2062,7 @@ describe("OrchestratorMcpService provider resolution", () => {
           yield* Effect.gen(function* () {
             const service = yield* OrchestratorMcpService.OrchestratorMcpService;
             const target =
-              testCase.name === "inherited-unavailable"
+              testCase.name === "inherited-unavailable" || testCase.name === "healthy-no-target"
                 ? undefined
                 : testCase.explicit
                   ? ({
@@ -2135,8 +2147,16 @@ describe("OrchestratorMcpService provider resolution", () => {
               testCase.selectedInstanceId,
               testCase.name,
             );
-            if (testCase.name === "healthy-inherited") {
-              assert.deepEqual(request.modelSelection, parentModelSelection, testCase.name);
+            if (testCase.name === "healthy-inherited" || testCase.name === "healthy-no-target") {
+              assert.deepEqual(
+                request.modelSelection,
+                { ...parentModelSelection, options: [{ id: "reasoningEffort", value: "high" }] },
+                testCase.name,
+              );
+              assert.deepEqual(parentModelSelection.options.at(-1), {
+                id: "leadRole",
+                value: "lead",
+              });
             } else {
               assert.equal(request.modelSelection.model, "codex-alt-model", testCase.name);
             }

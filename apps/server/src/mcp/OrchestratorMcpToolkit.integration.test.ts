@@ -305,9 +305,12 @@ describe("orchestrator MCP toolkit", () => {
           const delegatedCall = yield* invoke("delegate_task", {
             task: delegatedPrompt,
             target: {
+              driverKind: null,
               providerInstanceId: codexInstanceId,
               model: codexModel,
             },
+            title: null,
+            runtimeMode: null,
             mode: "async",
             clientRequestId: "delegate-codex-replay-1",
           });

@@ -146,7 +146,12 @@ export type OrchestratorMcpTerminalDelegatedTaskStatus =
 
 export const OrchestratorMcpDelegateTaskInput = Schema.Struct({
   task: OrchestratorMcpPrompt,
-  target: Schema.optional(OrchestratorMcpTarget),
+  target: Schema.optional(
+    OrchestratorMcpTarget.annotate({
+      description:
+        "Omitting target inherits the parent provider and model. Lead delegations require an explicit providerInstanceId (or driverKind) and model. Preserve this target on retries; Lead is never inherited implicitly.",
+    }),
+  ),
   title: Schema.optional(OrchestratorMcpTitle),
   role: Schema.optional(OrchestratorMcpTaskRole),
   isolation: Schema.optional(

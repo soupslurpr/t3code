@@ -25,7 +25,9 @@ describe("Muse model catalog", () => {
         defaultReasoningEffort: "high",
         reasoningEffortVariants: [{ tier: "low", description: "Quick" }],
       });
-      expect(capabilities.optionDescriptors).toEqual([
+      expect(
+        capabilities.optionDescriptors?.filter((option) => option.id === "reasoningEffort"),
+      ).toEqual([
         {
           id: "reasoningEffort",
           label: "Reasoning",
@@ -71,3 +73,21 @@ describe("Muse model catalog", () => {
     expect(resolveMuseReasoningEffort(museModelCapabilities(), undefined)).toBe("high");
   });
 });
+
+it.each(["muse-wonder-full-1.0", "muse-wonder-1.0"])(
+  "advertises Role only for Full: %s",
+  (modelId) => {
+    const role = museModelCapabilities({ modelId }).optionDescriptors?.find(
+      (option) => option.id === "leadRole",
+    );
+    if (modelId === "muse-wonder-full-1.0")
+      expect(role).toMatchObject({
+        type: "select",
+        options: [
+          { id: "direct", label: "Direct", isDefault: true },
+          { id: "lead", label: "Lead" },
+        ],
+      });
+    else expect(role).toBeUndefined();
+  },
+);

@@ -1,3 +1,4 @@
+import { useStartThreadTurn } from "../../hooks/useStartThreadTurn";
 import type { EnvironmentServerConfig } from "@t3tools/client-runtime/connection";
 import type { EnvironmentThreadShell } from "@t3tools/client-runtime/state/shell";
 import type { Dispatch } from "react";
@@ -160,9 +161,7 @@ export function useThreadLifecycle(input: ThreadLifecycleInput) {
   const updateThreadMetadata = useOrchestrationCommand(threadEnvironment.updateMetadata, {
     reportFailure: false,
   });
-  const startThreadTurn = useOrchestrationCommand(threadEnvironment.startTurn, {
-    reportFailure: false,
-  });
+  const startThreadTurn = useStartThreadTurn();
   const interruptThreadTurn = useOrchestrationCommand(threadEnvironment.interruptTurn, {
     reportFailure: false,
   });

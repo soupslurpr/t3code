@@ -1,3 +1,4 @@
+import { LEAD_MODEL_ID, LEAD_ROLE_OPTION_ID } from "@t3tools/shared/lead";
 import type { SendUserTurnOptions } from "@muse-code/sdk";
 import { ModelCapabilities, ServerProviderModel } from "@t3tools/contracts";
 import { MuseSettings } from "../settings.ts";
@@ -80,6 +81,20 @@ export function museModelCapabilities(
           };
         }),
       },
+      ...(model?.modelId === LEAD_MODEL_ID
+        ? [
+            {
+              id: LEAD_ROLE_OPTION_ID,
+              label: "Role",
+              type: "select" as const,
+              options: [
+                { id: "direct", label: "Direct", isDefault: true },
+                { id: "lead", label: "Lead" },
+              ],
+              currentValue: "direct",
+            },
+          ]
+        : []),
     ],
   });
 }

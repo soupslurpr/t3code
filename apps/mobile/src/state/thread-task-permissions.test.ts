@@ -173,6 +173,8 @@ vi.mock("../lib/commandMetadata", () => ({
 vi.mock("../lib/copyTextWithHaptic", () => ({ copyTextWithHaptic: vi.fn() }));
 vi.mock("./use-remote-environment-registry", () => ({ setPendingConnectionError: vi.fn() }));
 
+import { leadServerConfig, wonderMax } from "../features/threads/lead-test-fixtures";
+import { withMobileLeadRole } from "../lib/lead";
 import { useThreadComposerState } from "./use-thread-composer-state";
 import { useSelectedThreadRequests } from "./use-selected-thread-requests";
 
@@ -185,6 +187,7 @@ beforeEach(() => {
     providers: [{ instanceId: "codex", driver: "codex", enabled: true }],
     environment: { capabilities: {} },
   } as unknown as ServerConfig;
+  state.thread.modelSelection = { instanceId: "codex", model: "gpt-5.4" };
   state.pendingRequests = {
     approvals: [
       {
@@ -427,3 +430,25 @@ describe("mobile handoff preview and submission", () => {
     expect(state.clearDraft).toHaveBeenCalledTimes(1);
   });
 });
+
+it.each([false, true])(
+  "sends the current Role snapshot while retaining the saved preference (eligible: %s)",
+  async (eligible) => {
+    const selection = withMobileLeadRole(wonderMax, "lead");
+    const config = leadServerConfig();
+    state.serverConfig = eligible ? config : { ...config, providers: config.providers.slice(0, 2) };
+    state.grantedEnvironments.add("secondary");
+    state.thread.modelSelection = selection;
+    expect(await useThreadComposerState().onSendMessage()).toBe("message");
+    expect(state.enqueue).toHaveBeenCalledWith(
+      expect.objectContaining({
+        text: "Keep my draft",
+        modelSelection: withMobileLeadRole(wonderMax, eligible ? "lead" : "direct"),
+      }),
+    );
+    expect(state.updateSettings).toHaveBeenCalledWith("secondary:thread", {
+      modelSelection: selection,
+    });
+    expect(selection.options?.at(-1)?.value).toBe("lead");
+  },
+);

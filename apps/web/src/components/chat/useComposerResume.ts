@@ -1,3 +1,4 @@
+import { useStartThreadTurn } from "../../hooks/useStartThreadTurn";
 import {
   type EnvironmentId,
   type ProviderInteractionMode,
@@ -74,9 +75,7 @@ export function useComposerResume(input: ComposerResumeInput) {
     scrollToEnd,
     setThreadError,
   } = input;
-  const startThreadTurn = useOrchestrationCommand(threadEnvironment.startTurn, {
-    reportFailure: false,
-  });
+  const startThreadTurn = useStartThreadTurn();
   const resumeThreadQueue = useOrchestrationCommand(threadEnvironment.resumeThreadQueue, {
     reportFailure: false,
   });

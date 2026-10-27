@@ -367,6 +367,7 @@ export interface ChatComposerHandle {
 }
 
 export interface ChatComposerProps {
+  leadRoleControl?: ReactNode;
   composerDraftTarget: ScopedThreadRef | DraftId;
   environmentId: EnvironmentId;
   canOperateThread: boolean;
@@ -2534,6 +2535,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
     : expandedControlsIconOnlyBlockCount;
   const composerControls = (
     <ComposerControlsBar
+      leadRoleControl={props.leadRoleControl}
       environmentId={environmentId}
       routeKind={routeKind}
       routeThreadRef={routeThreadRef}
