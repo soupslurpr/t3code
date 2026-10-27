@@ -134,3 +134,97 @@ rollback must not overwrite newer live data with an older database.
 Fork startup reports go to [soupslurpr/t3code](https://github.com/soupslurpr/t3code/issues).
 Official upstream downloads are not recovery packages for this installation. The built-in updater
 stays disabled for Arch packages; this workflow does not enable it.
+
+### Restart from the thread doing the update
+
+When the controlling agent runs inside the app being updated, use the guarded helper instead of
+manually installing and quitting. This Linux/user-systemd workflow keeps the installed app's state
+location and resumes the existing durable thread; it does not preserve the old provider process.
+
+1. Record the selected full commit, audited package path, completed checks, and any database backup
+   in saved work notes. Keep rollback packages and never restore a database automatically.
+2. For an existing V2 installation, confirm automatic thread continuation is explicitly enabled
+   for this project and keep this turn running. The helper checks the latest V2 run, its root
+   provider thread's native resume identity, session binding, and running provider turn. Copied V1
+   session records do not qualify. For the first V1-to-V2 upgrade, prepare the migration monitor
+   described below instead; native continuation cannot bridge that migration.
+3. Resolve the current app's user systemd unit and backend listening-port owner again. The unit may
+   be a `.service` or a desktop-launcher `.scope`. Confirm the app executable, backend ASAR path,
+   and state database before supplying their identities. If GNOME moved the app after it spawned the
+   backend, their control groups differ; supply the backend's exact unit with `--backend-unit`.
+   Both units must remain active, and any service must still identify this app as its main process.
+   Preview:
+
+   ```bash
+   vp run package:desktop:arch:restart \
+     --package /absolute/path/to/audited.pkg.tar.zst \
+     --commit FULL_40_CHARACTER_COMMIT \
+     --unit CURRENT_APP.scope --backend-pid BACKEND_PID \
+     --state-db /absolute/path/to/userdata/statev2.sqlite \
+     --thread-id CURRENT_THREAD_ID
+   ```
+
+4. Repeat with `--apply` to install and queue the restart. The helper requires noninteractive sudo
+   authorization for `pacman -U` if the package is not installed yet. It verifies package hashes,
+   installed metadata, file integrity, exact process ownership and the selected continuation.
+   A copied standalone worker and private plan live under `~/.local/state/t3code-maintenance/`, so
+   relaunch does not depend on the provider, checkout, or temporary build directories surviving.
+5. Record the printed recovery-plan path and service/timer names in saved work notes and continue working.
+   Do not finish the turn before restart: an idle thread has no unfinished work to resume. The
+   independent worker starts after sixty seconds, checks that the captured turn is still running,
+   revalidates the handoff, sends only SIGTERM to the captured app, and waits for that app and backend
+   to exit before replacing itself with the installed launcher. It never forces termination or
+   starts a second app after a shutdown timeout.
+6. On continuation, inspect the restart service's journal and discover the actual new app unit,
+   backend, and port. GNOME may move the relaunched app into a fresh `.scope` even while the service
+   still reports its MainPID. Check HTTP readiness and the embedded commit against the recovery
+   plan, and confirm this same thread resumed. A queued timer or successful package installation
+   alone is not deployment completion.
+
+#### First V2 upgrade
+
+V2 copies `state.sqlite` into a separate `statev2.sqlite` only when the latter does not exist. It
+imports the conversation and pending fork monitors, but does not import V1 runs or provider
+sessions. An interrupted V1 turn therefore needs an explicit monitor to resume after this upgrade.
+
+Before step 3, use `monitor_start` in the controlling thread to create a time monitor with
+`continuation: "resume-thread"`. Choose a deadline after the planned restart and put the saved
+handoff-notes path in its label. Keep the controlling turn running through shutdown, so the monitor
+cannot be delivered early. Preview the helper with the original database and the returned monitor
+ID:
+
+```bash
+vp run package:desktop:arch:restart \
+  --package /absolute/path/to/audited.pkg.tar.zst \
+  --commit FULL_40_CHARACTER_COMMIT \
+  --unit CURRENT_APP.scope --backend-pid BACKEND_PID \
+  --state-db /absolute/path/to/userdata/state.sqlite \
+  --thread-id CURRENT_THREAD_ID --migration-monitor MONITOR_ID
+```
+
+Continue with steps 4–6. The helper requires a same-thread, undelivered, active or triggered time
+monitor and an absent `statev2.sqlite`, and repeats those checks immediately before shutdown. If
+V2 state already exists, stop and inspect it; never delete it to force another import. The imported
+monitor starts a fresh provider session in the same thread, with the imported conversation as
+handoff context. Read the saved work notes and verify the deployment from that continuation.
+
+The repository verifier prints JSON and returns a failing exit status when installation or restart
+checks fail. It reads process identities, active units, and database file descriptors without opening
+the database. The recovery plan records the source and post-restart databases separately; a first
+V2 restart must own `statev2.sqlite`. Use the actual listening port:
+
+```bash
+vp run package:desktop:arch:verify workspace /absolute/path/to/checkout
+vp run package:desktop:arch:verify installation --commit FULL_40_CHARACTER_COMMIT --hashes --port PORT
+vp run package:desktop:arch:verify restart /absolute/path/to/plan.json --port PORT --cleanup
+```
+
+Each command has a five-second deadline. `--app-dir` selects another installed desktop directory.
+Complete the restart with `--cleanup`: after all restart checks pass, it removes that recovery
+directory and the maintenance parent if empty. Failed checks preserve the recovery directory.
+Omit `--cleanup` to verify without removing it.
+
+If a guard fails, inspect the exact error and recovery plan before retrying; the helper does not
+silently bypass a failed check. Cancel an abandoned restart timer explicitly. Installations
+with custom app arguments or a backend not directly owned by the app need a separately reviewed
+restart procedure. Never reuse recorded PIDs as future restart targets or edit live T3 state.
