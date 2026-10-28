@@ -14,6 +14,7 @@ describe("QemuInput", () => {
   it("normalizes named keys and printable characters", () => {
     assert.deepEqual(resolveQemuKey("CTRL"), { qcode: "ctrl", implicitModifiers: [] });
     assert.deepEqual(resolveQemuKey("ArrowDown"), { qcode: "down", implicitModifiers: [] });
+    assert.deepEqual(resolveQemuKey("LEFT"), { qcode: "left", implicitModifiers: [] });
     assert.deepEqual(resolveQemuKey("A"), { qcode: "a", implicitModifiers: ["shift"] });
     assert.deepEqual(resolveQemuKey("?"), { qcode: "slash", implicitModifiers: ["shift"] });
     let error: unknown;
@@ -59,12 +60,18 @@ describe("QemuInput", () => {
     ]);
   });
 
-  it("builds timed text chords with a Unicode fallback", () => {
-    const chords = qemuTextChords("A’→");
+  it("builds exact ASCII text chords and rejects unsafe Unicode fallback", () => {
+    const chords = qemuTextChords("A->");
     assert.deepEqual(chords[0], ["shift", "a"]);
-    assert(chords.some((chord) => chord.join("+") === "ctrl+shift+u"));
-    assert(chords.some((chord) => chord.includes("2")));
-    assert(chords.some((chord) => chord.includes("1")));
+    assert.deepEqual(chords.slice(1), [["minus"], ["shift", "dot"]]);
+    let error: unknown;
+    try {
+      qemuTextChords("A’→");
+    } catch (cause) {
+      error = cause;
+    }
+    assert.instanceOf(error, QemuInputValidationError);
+    assert.equal(error.code, "unsupported-text");
     assert.deepEqual(qemuPressQcodes("Enter"), ["ret"]);
   });
 });

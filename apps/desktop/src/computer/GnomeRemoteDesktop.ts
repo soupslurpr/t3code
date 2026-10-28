@@ -1,6 +1,8 @@
-import type {
-  ComputerAutomationDisplayState,
-  ComputerAutomationPermission,
+import {
+  ComputerAutomationInputCleanup,
+  type ComputerAutomationAction,
+  type ComputerAutomationDisplayState,
+  type ComputerAutomationPermission,
 } from "@t3tools/contracts";
 import * as Config from "effect/Config";
 import * as Context from "effect/Context";
@@ -32,6 +34,8 @@ const HELPER_CONTROL_TIMEOUT = Duration.minutes(2);
 const MAX_SCREENSHOT_BYTES = 64 * 1_024 * 1_024;
 const MAX_SCREENSHOT_BASE64_LENGTH = Math.ceil(MAX_SCREENSHOT_BYTES / 3) * 4;
 const MAX_ACCESSIBILITY_TARGETS = 256;
+const MAX_ACCESSIBILITY_WINDOWS = 128;
+const MAX_TYPE_CODE_POINTS = 10_000;
 
 const HelperResponse = Schema.Union([
   Schema.Struct({
@@ -63,6 +67,8 @@ const HelperResponse = Schema.Union([
           "observation",
         ]),
       ),
+      actionIndex: Schema.optional(Schema.Int),
+      actionType: Schema.optional(Schema.String),
       cleanup: Schema.optional(
         Schema.Struct({
           keys: Schema.Literals(["not-needed", "released", "session-closed", "release-failed"]),
@@ -111,6 +117,13 @@ const HelperAccessibilityTarget = Schema.Struct({
   expanded: Schema.Boolean,
 });
 
+const HelperAccessibilityWindow = Schema.Struct({
+  id: Schema.String,
+  application: Schema.String,
+  name: Schema.String,
+  focused: Schema.Boolean,
+});
+
 const HelperAccessibilitySnapshot = Schema.Struct({
   available: Schema.Boolean,
   coordinateSpace: Schema.Literal("focused-window"),
@@ -123,6 +136,9 @@ const HelperAccessibilitySnapshot = Schema.Struct({
         height: Schema.Int.check(Schema.isGreaterThan(0)),
       }),
     }),
+  ),
+  windows: Schema.Array(HelperAccessibilityWindow).check(
+    Schema.isMaxLength(MAX_ACCESSIBILITY_WINDOWS),
   ),
   targets: Schema.Array(HelperAccessibilityTarget).check(
     Schema.isMaxLength(MAX_ACCESSIBILITY_TARGETS),
@@ -141,6 +157,20 @@ const HelperActivateResult = Schema.Struct({
   target: HelperAccessibilityTarget,
 });
 
+const HelperTypeResult = Schema.Struct({
+  requestedCodePoints: Schema.Int.check(
+    Schema.isBetween({ minimum: 0, maximum: MAX_TYPE_CODE_POINTS }),
+  ),
+  injectedCodePoints: Schema.Int.check(
+    Schema.isBetween({ minimum: 0, maximum: MAX_TYPE_CODE_POINTS }),
+  ),
+  confirmedCodePoints: Schema.optional(
+    Schema.Int.check(Schema.isBetween({ minimum: 0, maximum: MAX_TYPE_CODE_POINTS })),
+  ),
+  delivery: Schema.Literals(["none", "accessibility", "key-events", "mixed"]),
+  focusedEditable: Schema.Boolean,
+});
+
 const HelperMethod = Schema.Literals([
   "status",
   "snapshot",
@@ -153,8 +183,10 @@ const HelperMethod = Schema.Literals([
   "move",
   "click",
   "activate",
+  "activateWindow",
   "drag",
   "wheel",
+  "validateActions",
   "type",
   "press",
   "hotkey",
@@ -192,6 +224,8 @@ export class GnomeRemoteDesktopCommandError extends Schema.TaggedError<GnomeRemo
     received: Schema.optional(Schema.String),
     expected: Schema.optional(Schema.Array(Schema.String)),
     phase: Schema.optional(Schema.String),
+    actionIndex: Schema.optional(Schema.Int),
+    actionType: Schema.optional(Schema.String),
     cleanup: Schema.optional(Schema.Defect()),
     cause: Schema.Defect(),
   },
@@ -257,6 +291,7 @@ export interface GnomeRemoteDesktopStreamSize {
 
 export interface GnomeRemoteDesktopSnapshotInput {
   readonly includeAccessibility: boolean;
+  readonly includeAccessibilityTargets?: boolean | undefined;
   readonly displayBounds: GnomeRemoteDesktopDisplayBounds;
 }
 
@@ -291,6 +326,12 @@ export interface GnomeRemoteDesktopSnapshot {
       readonly name: string;
       readonly size: { readonly width: number; readonly height: number };
     } | null;
+    readonly windows: ReadonlyArray<{
+      readonly id: string;
+      readonly application: string;
+      readonly name: string;
+      readonly focused: boolean;
+    }>;
     readonly targets: ReadonlyArray<GnomeRemoteDesktopAccessibilityTarget>;
     readonly truncated: boolean;
     readonly detail?: string | undefined;
@@ -299,6 +340,14 @@ export interface GnomeRemoteDesktopSnapshot {
 
 export interface GnomeRemoteDesktopActivateResult {
   readonly target: GnomeRemoteDesktopAccessibilityTarget;
+}
+
+export interface GnomeRemoteDesktopTypeResult {
+  readonly requestedCodePoints: number;
+  readonly injectedCodePoints: number;
+  readonly confirmedCodePoints?: number | undefined;
+  readonly delivery: "none" | "accessibility" | "key-events" | "mixed";
+  readonly focusedEditable: boolean;
 }
 
 export interface GnomeRemoteDesktopShape {
@@ -328,6 +377,9 @@ export interface GnomeRemoteDesktopShape {
   readonly activate: (input: {
     readonly targetId: string;
   }) => Effect.Effect<GnomeRemoteDesktopActivateResult, GnomeRemoteDesktopError>;
+  readonly activateWindow: (input: {
+    readonly windowId: string;
+  }) => Effect.Effect<void, GnomeRemoteDesktopError>;
   readonly drag: (input: {
     readonly button: "left" | "right" | "middle";
     readonly x: number;
@@ -341,10 +393,13 @@ export interface GnomeRemoteDesktopShape {
     readonly deltaX: number;
     readonly deltaY: number;
   }) => Effect.Effect<void, GnomeRemoteDesktopError>;
+  readonly validateActions: (
+    actions: ReadonlyArray<ComputerAutomationAction>,
+  ) => Effect.Effect<void, GnomeRemoteDesktopError>;
   readonly type: (input: {
     readonly text: string;
     readonly intervalMs: number;
-  }) => Effect.Effect<void, GnomeRemoteDesktopError>;
+  }) => Effect.Effect<GnomeRemoteDesktopTypeResult, GnomeRemoteDesktopError>;
   readonly press: (input: {
     readonly key: string;
     readonly modifiers: ReadonlyArray<string>;
@@ -356,7 +411,7 @@ export interface GnomeRemoteDesktopShape {
     readonly key: string;
   }) => Effect.Effect<void, GnomeRemoteDesktopError>;
   readonly keyUp: (input: { readonly key: string }) => Effect.Effect<void, GnomeRemoteDesktopError>;
-  readonly releaseInputs: Effect.Effect<void, GnomeRemoteDesktopError>;
+  readonly releaseInputs: Effect.Effect<ComputerAutomationInputCleanup, GnomeRemoteDesktopError>;
   readonly stop: Effect.Effect<void, GnomeRemoteDesktopError>;
   readonly forget: Effect.Effect<void, GnomeRemoteDesktopError>;
 }
@@ -438,7 +493,13 @@ const unavailable = (reason: string): GnomeRemoteDesktopShape => {
     keyUp: Effect.fn("GnomeRemoteDesktop.keyUp")(function () {
       return fail;
     }),
-    releaseInputs: Effect.void,
+    activateWindow: Effect.fn("GnomeRemoteDesktop.activateWindow")(function () {
+      return fail;
+    }),
+    validateActions: Effect.fn("GnomeRemoteDesktop.validateActions")(function () {
+      return fail;
+    }),
+    releaseInputs: Effect.succeed({ keys: "not-needed", buttons: "not-needed" }),
     stop: Effect.void,
     forget: fail,
   });
@@ -455,6 +516,8 @@ const helperResponseError = (
     ...(error.received === undefined ? {} : { received: error.received }),
     ...(error.expected === undefined ? {} : { expected: error.expected }),
     ...(error.phase === undefined ? {} : { phase: error.phase }),
+    ...(error.actionIndex === undefined ? {} : { actionIndex: error.actionIndex }),
+    ...(error.actionType === undefined ? {} : { actionType: error.actionType }),
     ...(error.cleanup === undefined ? {} : { cleanup: error.cleanup }),
     cause: error.message,
   });
@@ -467,6 +530,8 @@ const decodeHelperStatus = Schema.decodeUnknownEffect(HelperStatus);
 const decodeHelperSnapshot = Schema.decodeUnknownEffect(HelperSnapshot);
 const decodeScreenshotData = Schema.decodeEffect(Schema.Uint8ArrayFromBase64);
 const decodeHelperActivateResult = Schema.decodeUnknownEffect(HelperActivateResult);
+const decodeHelperTypeResult = Schema.decodeUnknownEffect(HelperTypeResult);
+const decodeHelperInputCleanup = Schema.decodeUnknownEffect(ComputerAutomationInputCleanup);
 const encodeHelperCommand = Schema.encodeEffect(Schema.fromJsonString(HelperCommand));
 
 const sessionEnvironment = Config.all({
@@ -715,6 +780,16 @@ const make = Effect.gen(function* () {
   const control = <A>(operation: HelperMethod, params: A) =>
     request<void>(operation, params, HELPER_CONTROL_TIMEOUT);
 
+  const releaseInputs = request<unknown>("releaseInputs", {}, HELPER_CONTROL_TIMEOUT).pipe(
+    Effect.flatMap((response) =>
+      decodeHelperInputCleanup(response).pipe(
+        Effect.mapError(
+          (cause) => new GnomeRemoteDesktopProtocolError({ operation: "releaseInputs", cause }),
+        ),
+      ),
+    ),
+  );
+
   const requestSessionStatus = (
     operation: "view" | "start",
     params: unknown,
@@ -812,6 +887,17 @@ const make = Effect.gen(function* () {
       ),
     );
 
+  const typeText: GnomeRemoteDesktopShape["type"] = (input) =>
+    request<unknown>("type", input, HELPER_CONTROL_TIMEOUT).pipe(
+      Effect.flatMap((response) =>
+        decodeHelperTypeResult(response).pipe(
+          Effect.mapError(
+            (cause) => new GnomeRemoteDesktopProtocolError({ operation: "type", cause }),
+          ),
+        ),
+      ),
+    );
+
   const revocationEvents = yield* Queue.sliding<void>(1);
   const revoke = () => Queue.offerUnsafe(revocationEvents, undefined);
   yield* Effect.all(
@@ -868,9 +954,7 @@ const make = Effect.gen(function* () {
     wheel: Effect.fn("GnomeRemoteDesktop.wheel")(function (input) {
       return control("wheel", input);
     }),
-    type: Effect.fn("GnomeRemoteDesktop.type")(function (input) {
-      return control("type", input);
-    }),
+    type: typeText,
     press: Effect.fn("GnomeRemoteDesktop.press")(function (input) {
       return control("press", input);
     }),
@@ -883,7 +967,13 @@ const make = Effect.gen(function* () {
     keyUp: Effect.fn("GnomeRemoteDesktop.keyUp")(function (input) {
       return control("keyUp", input);
     }),
-    releaseInputs: control("releaseInputs", {}),
+    activateWindow: Effect.fn("GnomeRemoteDesktop.activateWindow")(function (input) {
+      return control("activateWindow", input);
+    }),
+    validateActions: Effect.fn("GnomeRemoteDesktop.validateActions")(function (actions) {
+      return control("validateActions", { actions });
+    }),
+    releaseInputs,
     stop,
     forget,
   });

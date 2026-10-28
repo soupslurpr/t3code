@@ -51,6 +51,7 @@ const benchmarkExpression = String.raw`(async () => {
   let failure = null;
   let release = null;
   try {
+    valueOf(await computer.requestAvailability({}), "request availability");
     valueOf(await computer.requestControl({ observation: false }), "request control");
     valueOf(
       await computer.act({
@@ -132,7 +133,8 @@ const benchmarkExpression = String.raw`(async () => {
         });
       } catch {}
     }
-    release = await computer.release({});
+    await computer.release({});
+    release = await computer.releaseAvailability({});
   }
   return { failure, iterations, release, results };
 })()`;

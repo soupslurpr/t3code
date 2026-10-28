@@ -93,7 +93,9 @@ const harness = Effect.fn("ComputerAutomationRouterTest.harness")(function* (cap
               ),
             ),
           act: (controller, _input, desktopId) =>
-            record("act", controller, desktopId).pipe(Effect.asVoid),
+            record("act", controller, desktopId).pipe(
+              Effect.as([{ index: 0, type: "press" as const }]),
+            ),
           release: (controller, desktopId) =>
             record("release", controller, desktopId).pipe(Effect.as(status)),
           forget: (controller, desktopId) => record("forget", controller, desktopId),
@@ -129,7 +131,7 @@ it.effect(
           actions: [{ type: "press", key: "Enter" }],
           observation: false,
         });
-        assert.deepEqual(acted, {});
+        assert.deepEqual(acted, { actionResults: [{ index: 0, type: "press" }] });
         yield* h.router.release(caller, target);
         yield* h.router.forget(caller, target);
         assert.deepEqual(
