@@ -332,6 +332,115 @@ export const DesktopProcessAccepted = Schema.Struct({
 });
 export type DesktopProcessAccepted = typeof DesktopProcessAccepted.Type;
 
+const MaxOutputTokens = Schema.optional(
+  Schema.Int.check(Schema.isBetween({ minimum: 1, maximum: 100_000 })),
+).annotate({
+  description:
+    "Approximate combined stdout/stderr budget, default 10000 (four UTF-8 bytes per token). Metadata and omission notices are additional. Defaults to a beginning/end preview; explicit offsets, maxBytes, or base64 request sequential output pages.",
+});
+
+/** Agent presentation options stay outside the desktop execution protocol. */
+export const UserDesktopCommandToolInput = UserDesktopCommandInput.mapFields((fields) => ({
+  ...fields,
+  maxStoredOutputBytes: fields.maxStoredOutputBytes.annotate({
+    description:
+      "Per-stream storage cap. Omitted/null keeps complete logs subject to the disk-space guard; a number retains the beginning and latest tail. Independent of returned output size.",
+  }),
+  maxOutputTokens: MaxOutputTokens,
+}));
+export type UserDesktopCommandToolInput = typeof UserDesktopCommandToolInput.Type;
+export const UserDesktopProcessToolInput = UserDesktopProcessInput.mapFields(
+  (fields) => ({ ...fields, maxOutputTokens: MaxOutputTokens }),
+  // Adding an output budget leaves the action/processId/resize checks valid.
+  { unsafePreserveChecks: true },
+);
+export type UserDesktopProcessToolInput = typeof UserDesktopProcessToolInput.Type;
+
+const DesktopToolOutputCursor = Schema.Struct({
+  offset: NonNegativeInt,
+  nextOffset: NonNegativeInt,
+  totalBytes: NonNegativeInt,
+  tailOffset: Schema.optional(NonNegativeInt),
+  tailEnd: Schema.optional(NonNegativeInt),
+  truncated: Schema.optional(Schema.Literal(true)),
+  storedBytes: Schema.optional(NonNegativeInt),
+  retainedTailOffset: Schema.optional(NonNegativeInt),
+  retainedEnd: Schema.optional(NonNegativeInt),
+});
+
+/** Compact agent results retain only state needed to act on or recover output. */
+export const UserDesktopToolProcessResult = Schema.Struct({
+  processId: Identifier,
+  status: DesktopProcess.fields.status,
+  exitCode: DesktopProcess.fields.exitCode,
+  pid: Schema.optional(NonNegativeInt),
+  terminal: Schema.optional(Schema.Literal(true)),
+  runtimeGeneration: Schema.optional(Identifier),
+  signal: Schema.optional(Schema.String),
+  timedOut: Schema.optional(Schema.Literal(true)),
+  stdinClosed: Schema.optional(Schema.Literal(true)),
+  outputError: Schema.optional(Schema.String),
+  stdout: Schema.optional(Schema.String),
+  stderr: Schema.optional(Schema.String),
+  stdoutPath: Schema.optional(Schema.String),
+  stderrPath: Schema.optional(Schema.String),
+  encoding: Schema.optional(Schema.Literal("base64")),
+  invalidUtf8: Schema.optional(Schema.Array(Schema.Literals(["stdout", "stderr"]))),
+  tailUnavailable: Schema.optional(Schema.Literal(true)),
+  cursor: Schema.optional(
+    Schema.Struct({
+      stdout: Schema.optional(DesktopToolOutputCursor),
+      stderr: Schema.optional(DesktopToolOutputCursor),
+    }),
+  ),
+});
+export type UserDesktopToolProcessResult = typeof UserDesktopToolProcessResult.Type;
+
+export const UserDesktopToolProcessAccepted = DesktopProcessAccepted.mapFields(
+  ({ desktop: _desktop, commandId: _commandId, ...fields }) => fields,
+);
+export const UserDesktopToolProcessList = Schema.Struct({
+  processes: Schema.Array(
+    Schema.Struct({
+      ...UserDesktopToolProcessResult.mapFields(
+        ({
+          processId,
+          status,
+          exitCode,
+          pid,
+          terminal,
+          stdinClosed,
+          runtimeGeneration,
+          signal,
+          timedOut,
+          outputError,
+        }) => ({
+          processId,
+          status,
+          exitCode,
+          pid,
+          terminal,
+          stdinClosed,
+          runtimeGeneration,
+          signal,
+          timedOut,
+          outputError,
+        }),
+      ).fields,
+      commandId: Identifier,
+      executable: Schema.String,
+      arguments: Schema.Array(Schema.String),
+      workingDirectory: Schema.String,
+      startedAt: IsoDateTime,
+      completedAt: Schema.optional(IsoDateTime),
+      grantId: DesktopProcess.fields.grantId,
+      timeoutMs: Schema.optional(DurationMs),
+    }),
+  ),
+  nextCursor: Schema.optional(Identifier),
+});
+export type UserDesktopToolProcessList = typeof UserDesktopToolProcessList.Type;
+
 export const UserDesktopExecutionResult = Schema.Union([
   DesktopProcessCompletionResult,
   DesktopProcessResult,

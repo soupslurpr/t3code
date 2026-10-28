@@ -49,10 +49,22 @@ and permissions from every environment. You can inspect or stop commands and cha
 permissions there even when their original server is disconnected. Remote clients show only work
 owned by the selected environment.
 
-Captured output keeps a bounded beginning and tail, with 64 MiB per stream by default. Paging shows
-byte ranges and any discarded gap; binary output is available as base64. A completion wait registered
-while authorized can deliver one status-only result after natural expiry. Its deadline ends the wait
-without stopping the command. Explicit permission removal cancels associated waits.
+Commands save complete logs on the selected desktop by default. Agents receive a compact
+beginning/end preview of large output and can read or search the saved logs without loading the
+whole log into the conversation. Copy logs to the workspace to keep them after forgetting the
+process or quitting T3 Desktop.
+
+Output capture tries to leave 512 MiB of disk space free. Low disk space or a storage failure stops
+capture for the affected stream and reports incomplete output; the command keeps running and saved
+bytes remain readable. Capture stays stopped even if space becomes available later, so it cannot
+silently join output from before and after a missing section.
+
+Agents can request a storage cap for noisy commands. A capped log retains its beginning and latest
+tail; searches then cover only those retained sections, and their line numbers can differ from the
+original log. Paging reports byte ranges and any discarded gap; binary output is available as base64.
+
+A completion wait registered while authorized can deliver one status-only result after natural
+expiry. Its deadline ends the wait without stopping the command. Explicit permission removal cancels associated waits.
 
 ## Copy Files Between Computers
 
