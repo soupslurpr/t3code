@@ -13,13 +13,17 @@ import * as SourceControlProviderRegistry from "../sourceControl/SourceControlPr
 import * as TextGeneration from "../textGeneration/TextGeneration.ts";
 import * as ProjectionStore from "./ProjectionStore.ts";
 import * as ProjectStore from "./ProjectStore.ts";
+import * as ThreadWorktrees from "./ThreadWorktreeService.ts";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 
 import * as GitWorkflow from "../git/GitWorkflowService.ts";
 import * as ProjectService from "../project/ProjectService.ts";
 
-export const layer = Layer.merge(
+export const layer = Layer.mergeAll(
+  Layer.mock(ThreadWorktrees.ThreadWorktreeService)({
+    ensure: () => Effect.succeed({ status: "local" }),
+  }),
   Layer.mock(GitWorkflow.GitWorkflowService)({
     pruneWorktrees: () => Effect.void,
     createWorktree: () => Effect.succeed({} as never),
