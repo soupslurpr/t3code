@@ -78,6 +78,7 @@ type ControlOptions = Pick<
   ComputerAutomationAccessInput,
   "returnControlToAgent" | "takeoverLeaseId"
 >;
+type ViewOptions = Pick<ComputerAutomationAccessInput, "releaseControlToView">;
 
 /** Expands a remembered control grant to the view capability it necessarily includes. */
 function effectiveRememberedAccess(
@@ -172,6 +173,7 @@ export interface ComputerUseCoordinatorShape {
   ) => Effect.Effect<ComputerAutomationStatus>;
   readonly requestView: (
     context: DesktopComputerAutomationContext,
+    options?: ViewOptions,
   ) => Effect.Effect<ComputerAutomationStatus, ComputerUse.ComputerUseError>;
   readonly requestControl: (
     context: DesktopComputerAutomationContext,
@@ -836,6 +838,45 @@ const make = Effect.gen(function* () {
     return yield* presentStatus(context);
   });
 
+  const releaseControlToView = Effect.fn("ComputerUseCoordinator.releaseControlToView")(function* (
+    input: DesktopComputerAutomationContext,
+  ) {
+    yield* expireHumanLeases().pipe(Effect.ignore);
+    const context = normalizeContext(input);
+    if (context.controllerKind !== "human") {
+      return yield* leaseConflict("only a human controller can release control to view");
+    }
+    const key = controllerKey(context);
+    const shouldReleaseInputs = yield* withLeaseState(
+      Effect.gen(function* () {
+        const current = yield* Ref.get(state);
+        if (current.activeTransitions > 0 || current.pending !== null) {
+          return yield* leaseConflict("desktop control is already changing");
+        }
+        if (current.controller?.key !== key) {
+          if (current.controller === null && current.viewers.has(key)) return false;
+          return yield* current.controller === null
+            ? leaseRequired("the human has no desktop access lease")
+            : leaseConflict("another controller holds the desktop control lease");
+        }
+        yield* Ref.set(state, {
+          ...current,
+          controller: null,
+          displacedController: null,
+          activeTransitions: current.activeTransitions + 1,
+        });
+        return true;
+      }),
+    );
+    if (shouldReleaseInputs) {
+      yield* cancelActiveAction().pipe(
+        Effect.andThen(actionSemaphore.withPermits(1)(computer.releaseInputs)),
+        Effect.ensuring(finishTransition),
+      );
+    }
+    return yield* presentStatus(context);
+  });
+
   const remember = Effect.fn("ComputerUseCoordinator.remember")(function* (
     input: DesktopComputerAutomationContext,
     access: "view" | "control",
@@ -864,8 +905,10 @@ const make = Effect.gen(function* () {
     return yield* presentStatus(context);
   });
 
-  const requestView: ComputerUseCoordinatorShape["requestView"] = (context) =>
-    acquire(context, "view");
+  const requestView: ComputerUseCoordinatorShape["requestView"] = (context, options) =>
+    options?.releaseControlToView === true
+      ? releaseControlToView(context)
+      : acquire(context, "view");
 
   const requestControl: ComputerUseCoordinatorShape["requestControl"] = (context, options) =>
     options?.returnControlToAgent === true

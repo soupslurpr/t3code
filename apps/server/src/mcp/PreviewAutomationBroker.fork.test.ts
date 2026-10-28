@@ -3,6 +3,8 @@ import * as UserDesktops from "../persistence/UserDesktops.ts";
 import { expect, it } from "@effect/vitest";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import {
+  ComputerAutomationStatus,
+  ComputerAutomationLeaseId,
   EnvironmentId,
   COMPUTER_AUTOMATION_OPERATIONS,
   SERVER_BROWSER_AUTOMATION_CLIENT_ID,
@@ -13,6 +15,7 @@ import {
   type PreviewAutomationRequest,
   type PreviewAutomationResponse,
 } from "@t3tools/contracts";
+import * as Schema from "effect/Schema";
 import * as Deferred from "effect/Deferred";
 import * as Queue from "effect/Queue";
 import * as TestClock from "effect/testing/TestClock";
@@ -591,6 +594,195 @@ it.effect.each([false, true])(
     }).pipe(Effect.scoped),
 );
 
+const humanSupervisionScope = {
+  ...scope,
+  requestNamespace: "human:session",
+  thread: {
+    ...scope.thread,
+    controllerId: "human:session",
+    controllerKind: "human" as const,
+    providerSessionId: "human:session",
+    providerInstanceId: ProviderInstanceId.make("user-desktop-human"),
+  },
+};
+const decodeSupervisionStatus = Schema.decodeSync(ComputerAutomationStatus);
+const supervisionStatus = () =>
+  decodeSupervisionStatus({
+    available: true,
+    backend: "gnome-wayland-portal",
+    permission: "granted",
+    rememberedAccess: ["view", "control"],
+    displayState: "active",
+    keepAwake: true,
+    displays: [
+      {
+        id: "screen-a",
+        label: "Selected display",
+        primary: true,
+        bounds: { x: 0, y: 0, width: 1920, height: 1080 },
+        scaleFactor: 1,
+      },
+    ],
+    cursor: { x: 25, y: 30 },
+    detail: "Native status detail",
+    lease: {
+      access: "control",
+      controller: { kind: "human", sameEnvironment: true },
+      canReturnControl: true,
+    },
+  });
+
+it.effect.each([
+  { operation: "request-view", native: "computerRequestView", flags: {} },
+  {
+    operation: "request-control",
+    native: "computerRequestControl",
+    flags: { takeoverLeaseId: ComputerAutomationLeaseId.make("takeover-confirmation") },
+  },
+  {
+    operation: "return-control",
+    native: "computerRequestControl",
+    flags: { returnControlToAgent: true },
+  },
+  {
+    operation: "release-control",
+    native: "computerRequestView",
+    flags: { releaseControlToView: true },
+  },
+] as const)(
+  "normalizes the native $operation envelope for human supervision",
+  ({ operation, native, flags }) =>
+    Effect.gen(function* () {
+      const broker = yield* PreviewAutomationBroker.PreviewAutomationBroker;
+      const status = supervisionStatus();
+      const requests = yield* serve(
+        {
+          clientId: "native-supervision",
+          environmentId,
+          supportedOperations: COMPUTER_AUTOMATION_OPERATIONS,
+          userDesktop: registration("user-supervision"),
+        },
+        { ok: true, result: { status } },
+      );
+      const result = yield* runUserDesktopHumanRequest(broker, humanSupervisionScope, {
+        request: {
+          operation,
+          desktopId: "user-supervision",
+          ...(operation === "request-control" ? { takeoverLeaseId: flags.takeoverLeaseId } : {}),
+        },
+      });
+      expect(result).toEqual(status);
+      expect(requests).toHaveLength(1);
+      expect(requests[0]).toMatchObject({
+        operation: native,
+        controllerId: "human:session",
+        controllerKind: "human",
+        input: {
+          desktop: { kind: "user", desktopId: "user-supervision" },
+          observation: false,
+          ...flags,
+        },
+      });
+    }).pipe(Effect.provide(layer), Effect.scoped),
+);
+
+it.effect.each([
+  { name: "missing envelope", result: null },
+  { name: "missing status", result: {} },
+  { name: "null status", result: { status: null } },
+  { name: "missing displays", result: { status: { available: true } } },
+  { name: "invalid display list", result: { status: { ...supervisionStatus(), displays: null } } },
+  { name: "flat status", result: supervisionStatus() },
+])("rejects a $name without fabricating human access status", ({ result }) =>
+  Effect.gen(function* () {
+    const broker = yield* PreviewAutomationBroker.PreviewAutomationBroker;
+    const requests = yield* serve(
+      {
+        clientId: "native-supervision",
+        environmentId,
+        supportedOperations: COMPUTER_AUTOMATION_OPERATIONS,
+        userDesktop: registration("user-supervision"),
+      },
+      { ok: true, result },
+    );
+    const response = yield* runUserDesktopHumanRequest(broker, humanSupervisionScope, {
+      request: { operation: "request-view", desktopId: "user-supervision" },
+    }).pipe(Effect.result);
+    expect(response._tag).toBe("Failure");
+    if (response._tag !== "Failure")
+      return yield* Effect.die("Expected invalid native status failure");
+    const error = response.failure;
+    expect(error).toMatchObject({
+      _tag: "EnvironmentDesktopAutomationError",
+      operation: "computerRequestView",
+      environmentId,
+      threadId: scope.thread.threadId,
+      providerSessionId: "human:session",
+      providerInstanceId: "user-desktop-human",
+      computerFailure: { code: "internal-error", category: "internal" },
+    });
+    expect(requests).toHaveLength(1);
+  }).pipe(Effect.provide(layer), Effect.scoped),
+);
+
+it.effect("retains the native envelope for direct agent requests", () =>
+  Effect.gen(function* () {
+    const broker = yield* PreviewAutomationBroker.PreviewAutomationBroker;
+    const envelope = { status: supervisionStatus() };
+    yield* serve(
+      {
+        clientId: "native-supervision",
+        environmentId,
+        supportedOperations: COMPUTER_AUTOMATION_OPERATIONS,
+        userDesktop: registration("user-supervision"),
+      },
+      { ok: true, result: envelope },
+    );
+    const result = yield* broker.invoke({
+      scope,
+      operation: "computerRequestView",
+      input: { desktop: { kind: "user", desktopId: "user-supervision" }, observation: false },
+    });
+    expect(result).toEqual(envelope);
+  }).pipe(Effect.provide(layer), Effect.scoped),
+);
+
+it.effect("preserves native access refusal details through human normalization", () =>
+  Effect.gen(function* () {
+    const broker = yield* PreviewAutomationBroker.PreviewAutomationBroker;
+    const failure = {
+      code: "permission-denied",
+      category: "authorization",
+      message: "Native access was denied.",
+    };
+    const requests = yield* serve(
+      {
+        clientId: "native-supervision",
+        environmentId,
+        supportedOperations: COMPUTER_AUTOMATION_OPERATIONS,
+        userDesktop: registration("user-supervision"),
+      },
+      {
+        ok: false,
+        error: {
+          _tag: "PreviewAutomationExecutionError",
+          message: "private host detail",
+          detail: { computerFailure: failure },
+        },
+      },
+    );
+    const response = yield* runUserDesktopHumanRequest(broker, humanSupervisionScope, {
+      request: { operation: "request-control", desktopId: "user-supervision" },
+    }).pipe(Effect.result);
+    expect(response._tag).toBe("Failure");
+    if (response._tag !== "Failure") return yield* Effect.die("Expected native refusal");
+    const error = response.failure;
+    expect(error).toMatchObject({ computerFailure: failure });
+    expect(error.message).toBe(failure.message);
+    expect(requests).toHaveLength(1);
+  }).pipe(Effect.provide(layer), Effect.scoped),
+);
+
 it.effect(
   "routes human remember, release and forget requests to the selected desktop with a human controller",
   () =>
@@ -620,10 +812,21 @@ it.effect(
         "release",
         "end-all-access",
         "forget",
+        "snapshot",
+        "act",
       ] as const) {
         expect(
           yield* runUserDesktopHumanRequest(broker, humanScope, {
-            request: { operation, desktopId: "user-human" },
+            request:
+              operation === "snapshot"
+                ? { operation, desktopId: "user-human", input: { screenshot: false } }
+                : operation === "act"
+                  ? {
+                      operation,
+                      desktopId: "user-human",
+                      input: { actions: [{ type: "press", key: "Escape" }], observation: false },
+                    }
+                  : { operation, desktopId: "user-human" },
           }),
         ).toBe("human-target");
       }
@@ -634,6 +837,8 @@ it.effect(
         "computerRelease",
         "computerForceRelease",
         "computerForceForgetControl",
+        "computerSnapshot",
+        "computerAct",
       ]);
       expect(target.requests.every((request) => request.controllerId === "human:session")).toBe(
         true,
@@ -730,48 +935,135 @@ it.effect(
     }).pipe(Effect.provide(layer), Effect.scoped),
 );
 
-it.effect.each(["timeout", "interruption"] as const)(
-  "cancels the exact routed request after %s",
-  (reason) =>
+it.effect.each(
+  (["timeout", "interruption", "disconnection"] as const).flatMap((reason) =>
+    (["agent", "human"] as const).map((caller) => ({ reason, caller })),
+  ),
+)("preserves $reason for the exact routed $caller access request", ({ reason, caller }) =>
+  Effect.gen(function* () {
+    const broker = yield* PreviewAutomationBroker.PreviewAutomationBroker;
+    const received = yield* Queue.unbounded<PreviewAutomationStreamEvent>();
+    const events = yield* broker.connect({
+      clientId: "cancel-host",
+      environmentId,
+      userDesktop: registration("cancel-target"),
+      supportedOperations: ["computerRequestControl"],
+    });
+    const hostFiber = yield* Stream.runForEach(events, (event) =>
+      Queue.offer(received, event),
+    ).pipe(Effect.forkScoped);
+    const connected = yield* Queue.take(received);
+    expect(connected.type).toBe("connected");
+    const invoking = yield* (
+      caller === "human"
+        ? runUserDesktopHumanRequest(broker, humanSupervisionScope, {
+            request: { operation: "request-control", desktopId: "cancel-target" },
+            timeoutMs: 1000,
+          })
+        : broker.invoke({
+            scope,
+            operation: "computerRequestControl",
+            input: { desktop: { kind: "user", desktopId: "cancel-target" } },
+            updateCurrentTab: false,
+            timeoutMs: 1000,
+          })
+    ).pipe(Effect.result, Effect.forkScoped);
+    const request = yield* Queue.take(received);
+    expect(request.type).toBe("request");
+    if (request.type !== "request") return yield* Effect.die("Expected native request");
+    if (reason === "disconnection") {
+      yield* Fiber.interrupt(hostFiber);
+      expect(yield* Fiber.join(invoking)).toMatchObject({
+        _tag: "Failure",
+        failure: { _tag: "PreviewAutomationClientDisconnectedError" },
+      });
+      return;
+    }
+    if (reason === "timeout") {
+      yield* TestClock.adjust(caller === "human" ? "2 seconds" : "1 second");
+      const result = yield* Fiber.join(invoking);
+      expect(result).toMatchObject({
+        _tag: "Failure",
+        failure: { _tag: "PreviewAutomationTimeoutError" },
+      });
+      if (caller === "human") {
+        expect((yield* broker.listUserDesktops(environmentId)).desktops).toMatchObject([
+          { desktop: { desktopId: "cancel-target" }, connectionState: "offline" },
+        ]);
+        return;
+      }
+    } else {
+      yield* Fiber.interrupt(invoking);
+    }
+    expect(yield* Queue.take(received)).toEqual({
+      type: "cancel",
+      connectionId: connected.connectionId,
+      requestId: request.request.requestId,
+    });
+  }).pipe(Effect.provide(layer)),
+);
+
+it.effect.each(["status", "snapshot"] as const)(
+  "keeps pending agent approval connected when a human %s read times out",
+  (operation) =>
     Effect.gen(function* () {
       const broker = yield* PreviewAutomationBroker.PreviewAutomationBroker;
-      const received = yield* Queue.unbounded<PreviewAutomationStreamEvent>();
-      const events = yield* broker.connect({
-        clientId: "cancel-host",
+      const events = yield* Queue.unbounded<PreviewAutomationStreamEvent>();
+      const host = {
+        clientId: "supervised-host",
         environmentId,
-        userDesktop: registration("cancel-target"),
-        supportedOperations: ["computerRequestControl"],
-      });
-      yield* Stream.runForEach(events, (event) => Queue.offer(received, event)).pipe(
+        userDesktop: registration("supervised-desktop"),
+        supportedOperations: [...COMPUTER_AUTOMATION_OPERATIONS],
+      };
+      yield* (yield* broker.connect(host)).pipe(
+        Stream.runForEach((event) => Queue.offer(events, event)),
         Effect.forkScoped,
       );
-      const connected = yield* Queue.take(received);
+      const connected = yield* Queue.take(events);
       expect(connected.type).toBe("connected");
-      const invoking = yield* broker
+      const approval = yield* broker
         .invoke({
           scope,
           operation: "computerRequestControl",
-          input: { desktop: { kind: "user", desktopId: "cancel-target" } },
-          updateCurrentTab: false,
-          timeoutMs: 1000,
+          input: { desktop: { kind: "user", desktopId: "supervised-desktop" } },
+          timeoutMs: 60_000,
         })
         .pipe(Effect.result, Effect.forkScoped);
-      const request = yield* Queue.take(received);
-      expect(request.type).toBe("request");
-      if (request.type !== "request") return yield* Effect.die("Expected native request");
-      if (reason === "timeout") {
-        yield* TestClock.adjust("1 second");
-        const result = yield* Fiber.join(invoking);
-        expect(result._tag).toBe("Failure");
-      } else {
-        yield* Fiber.interrupt(invoking);
-      }
-      expect(yield* Queue.take(received)).toEqual({
-        type: "cancel",
-        connectionId: connected.connectionId,
-        requestId: request.request.requestId,
+      const approvalRequest = yield* Queue.take(events);
+      if (approvalRequest.type !== "request") return yield* Effect.die("Expected approval request");
+      const humanScope = {
+        ...scope,
+        thread: {
+          ...scope.thread,
+          controllerId: "human:session",
+          controllerKind: "human" as const,
+        },
+      };
+      const reading = yield* runUserDesktopHumanRequest(broker, humanScope, {
+        request:
+          operation === "snapshot"
+            ? { operation, desktopId: "supervised-desktop", input: {} }
+            : { operation, desktopId: "supervised-desktop" },
+        timeoutMs: 1_000,
+      }).pipe(Effect.result, Effect.forkScoped);
+      expect((yield* Queue.take(events)).type).toBe("request");
+      yield* TestClock.adjust(2_000);
+      expect(yield* Fiber.join(reading)).toMatchObject({
+        _tag: "Failure",
+        failure: { _tag: "PreviewAutomationTimeoutError" },
       });
-    }).pipe(Effect.provide(layer)),
+      expect((yield* broker.listUserDesktops(environmentId)).desktops).toMatchObject([
+        { desktop: { desktopId: "supervised-desktop" }, connectionState: "online" },
+      ]);
+      yield* broker.respond({
+        clientId: host.clientId,
+        connectionId: connected.connectionId,
+        requestId: approvalRequest.request.requestId,
+        ok: true,
+        result: "approved",
+      });
+      expect(yield* Fiber.join(approval)).toMatchObject({ _tag: "Success", success: "approved" });
+    }).pipe(Effect.provide(layer), Effect.scoped),
 );
 
 it.effect("routes stable logical identity across provider credential restarts", () =>

@@ -138,7 +138,7 @@ const make = Effect.gen(function* () {
         : user.rememberView(context)
       : access === "control"
         ? user.requestControl(context, input)
-        : user.requestView(context);
+        : user.requestView(context, input);
   });
 
   const status: ComputerUseRouterShape["status"] = (context, input) => {

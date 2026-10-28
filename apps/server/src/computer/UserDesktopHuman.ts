@@ -1,5 +1,7 @@
 import * as ComputerObservationStore from "./ComputerObservationStore.ts";
 import {
+  ComputerAutomationStatus,
+  EnvironmentDesktopAutomationError,
   UserDesktopInventoryError,
   UserDesktopManagementError,
   type UserDesktopHumanInvokeInput,
@@ -10,6 +12,10 @@ import * as Schema from "effect/Schema";
 
 import type * as McpInvocationContext from "../mcp/McpInvocationContext.ts";
 import type * as PreviewAutomationBroker from "../mcp/PreviewAutomationBroker.ts";
+
+const decodeAccessStatus = Schema.decodeUnknownEffect(
+  Schema.Struct({ status: ComputerAutomationStatus }),
+);
 
 const isManagementError = Schema.is(UserDesktopManagementError);
 const inventoryFailure = () =>
@@ -55,15 +61,46 @@ export const runUserDesktopHumanRequest = Effect.fn("UserDesktopHuman.run")(func
       scope,
       operation,
       input: requestInput,
+      // Native consent can delay supervision reads without invalidating the host.
+      ...(operation === "computerStatus" || operation === "computerSnapshot"
+        ? { updateCurrentTab: false }
+        : {}),
       ...(input.timeoutMs === undefined ? {} : { timeoutMs: input.timeoutMs }),
     });
+  const invokeAccess = (
+    operation: "computerRequestView" | "computerRequestControl",
+    requestInput: unknown,
+  ) =>
+    invokeComputer(operation, requestInput).pipe(
+      Effect.flatMap((result) =>
+        decodeAccessStatus(result).pipe(
+          Effect.map(({ status }) => status),
+          Effect.mapError(
+            () =>
+              new EnvironmentDesktopAutomationError({
+                operation,
+                environmentId: scope.environmentId,
+                threadId: scope.thread.threadId,
+                providerSessionId: scope.thread.providerSessionId,
+                providerInstanceId: scope.thread.providerInstanceId,
+                computerFailure: {
+                  code: "internal-error",
+                  category: "internal",
+                  message:
+                    "The desktop returned an invalid access status. Refresh the selected desktop before sending input.",
+                },
+              }),
+          ),
+        ),
+      ),
+    );
   switch (request.operation) {
     case "status":
       return yield* invokeComputer("computerStatus", { desktop });
     case "request-view":
-      return yield* invokeComputer("computerRequestView", { desktop, observation: false });
+      return yield* invokeAccess("computerRequestView", { desktop, observation: false });
     case "request-control":
-      return yield* invokeComputer("computerRequestControl", {
+      return yield* invokeAccess("computerRequestControl", {
         desktop,
         observation: false,
         ...(request.takeoverLeaseId === undefined
@@ -71,10 +108,16 @@ export const runUserDesktopHumanRequest = Effect.fn("UserDesktopHuman.run")(func
           : { takeoverLeaseId: request.takeoverLeaseId }),
       });
     case "return-control":
-      return yield* invokeComputer("computerRequestControl", {
+      return yield* invokeAccess("computerRequestControl", {
         desktop,
         observation: false,
         returnControlToAgent: true,
+      });
+    case "release-control":
+      return yield* invokeAccess("computerRequestView", {
+        desktop,
+        observation: false,
+        releaseControlToView: true,
       });
     case "snapshot":
       return yield* invokeComputer("computerSnapshot", { desktop, ...request.input });

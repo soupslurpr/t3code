@@ -82,7 +82,7 @@ export async function acquireAgentDesktopKeyboardCapture(
     try {
       await enterFullscreen(fullscreenDocument);
     } catch (cause) {
-      throw new Error("T3 Code could not enter full screen for Agent desktop control.", { cause });
+      throw new Error("T3 Code could not enter full screen for desktop control.", { cause });
     }
   }
   try {
@@ -91,7 +91,7 @@ export async function acquireAgentDesktopKeyboardCapture(
     if (enteredFullscreen && fullscreenDocument.fullscreenElement !== null) {
       await fullscreenDocument.exitFullscreen().catch(() => undefined);
     }
-    throw new Error("T3 Code could not capture host shortcuts for Agent desktop control.", {
+    throw new Error("T3 Code could not capture host shortcuts for desktop control.", {
       cause,
     });
   }
@@ -105,6 +105,45 @@ export async function acquireAgentDesktopKeyboardCapture(
       if (enteredFullscreen && fullscreenDocument.fullscreenElement !== null) {
         await fullscreenDocument.exitFullscreen();
       }
+    },
+  };
+}
+
+export function createDesktopControlLease(input: {
+  readonly capture: AgentDesktopKeyboardCapture;
+  readonly takeControl: () => Promise<boolean>;
+  readonly releaseControl: () => Promise<boolean>;
+}) {
+  let closed = false;
+  let revoked = false;
+  let granted = false;
+  let captureRelease: Promise<void> | undefined;
+  let controlRelease: Promise<boolean> | undefined;
+  const release = async () => {
+    closed = true;
+    captureRelease ??= input.capture.release();
+    if (granted && !revoked) controlRelease ??= input.releaseControl();
+    await Promise.all([captureRelease, controlRelease]);
+  };
+  const ready = (async () => {
+    try {
+      granted = await input.takeControl();
+      if (closed || !granted) {
+        await release();
+        return false;
+      }
+      return true;
+    } catch (cause) {
+      await release();
+      throw cause;
+    }
+  })();
+  return {
+    ready,
+    release,
+    revoke: () => {
+      revoked = true;
+      return release();
     },
   };
 }
