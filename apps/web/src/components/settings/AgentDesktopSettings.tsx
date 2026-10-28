@@ -24,6 +24,7 @@ import {
   PauseIcon,
   PlayIcon,
   RefreshCwIcon,
+  RotateCcwIcon,
   Trash2Icon,
 } from "lucide-react";
 import {
@@ -91,11 +92,27 @@ function formatBytes(bytes: number): string {
   return `${(bytes / 1_024 ** 3).toFixed(1)} GB`;
 }
 
+/** Formats the end of a desktop's recovery window in local time. */
+function formatRecoveryDeadline(timestamp: string): string {
+  const milliseconds = Date.parse(timestamp);
+  if (!Number.isFinite(milliseconds)) return "an unknown time";
+  return new Date(milliseconds).toLocaleString(undefined, {
+    dateStyle: "medium",
+    timeStyle: "short",
+  });
+}
+
 function stateBadgeVariant(state: AgentDesktop["state"]) {
   if (state === "failed") return "error" as const;
   if (state === "active" || state === "ready") return "success" as const;
   if (state === "recoverable") return "warning" as const;
   return "secondary" as const;
+}
+
+function stateLabel(state: AgentDesktop["state"]): string {
+  if (state === "ready") return "Running";
+  if (state === "active") return "In use";
+  return `${state[0]!.toUpperCase()}${state.slice(1)}`;
 }
 
 function pointerButton(button: number): ViewerDragStart["button"] | null {
@@ -505,6 +522,8 @@ export function AgentDesktopSettings() {
   const error = mutationError ?? listed?.error ?? null;
   const loading = AsyncResult.isInitial(listing) || listing.waiting;
   const [busyDesktopId, setBusyDesktopId] = useState<AgentDesktopId | null>(null);
+  const [openingViewerId, setOpeningViewerId] = useState<AgentDesktopId | null>(null);
+  const [permanentDeleteDesktop, setPermanentDeleteDesktop] = useState<AgentDesktop | null>(null);
   const [busyEnvironmentId, setBusyEnvironmentId] = useState<EnvironmentId | null>(null);
   const [setupEnvironmentId, setSetupEnvironmentId] = useState<EnvironmentId | null>(null);
   const [viewerError, setViewerError] = useState<string | null>(null);
@@ -560,7 +579,7 @@ export function AgentDesktopSettings() {
 
   const manage = async (
     desktop: AgentDesktop,
-    operation: "resume" | "park" | "stop" | "delete" | "restore",
+    operation: "resume" | "park" | "stop" | "delete" | "restore" | "delete-permanently",
   ) => {
     setBusyDesktopId(desktop.id);
     setError(null);
@@ -582,7 +601,7 @@ export function AgentDesktopSettings() {
   };
 
   const openViewer = async (desktop: AgentDesktop) => {
-    setBusyDesktopId(desktop.id);
+    setOpeningViewerId(desktop.id);
     setError(null);
     setViewerError(null);
     try {
@@ -606,7 +625,7 @@ export function AgentDesktopSettings() {
     } catch (cause) {
       setError(failureMessage(cause));
     } finally {
-      setBusyDesktopId(null);
+      setOpeningViewerId(null);
     }
   };
 
@@ -794,8 +813,9 @@ export function AgentDesktopSettings() {
         }
       >
         <p className="px-3 pb-1 text-sm text-muted-foreground sm:px-4">
-          Independent desktops agents can use without interrupting your desktop. Resources, parking,
-          and network boundaries are managed automatically.
+          Independent desktops that agents can use without interrupting your desktop. Resources,
+          parking, retention, and network boundaries are managed automatically. Inactive desktops
+          enter a seven-day recovery window after 30 days or when host storage is low.
         </p>
         {error ? (
           <Alert variant="error">
@@ -846,84 +866,119 @@ export function AgentDesktopSettings() {
               const thread = threadById.get(desktop.owner.threadId);
               const environment = environmentById.get(desktop.owner.environmentId);
               const busy = busyDesktopId === desktop.id;
+              const openingViewer = openingViewerId === desktop.id;
               const resumable = desktop.state === "parked" || desktop.state === "stopped";
+              const recoverable = desktop.state === "recoverable";
               return (
                 <section key={desktop.id} className="rounded-xl border bg-card p-4">
                   <div className="mb-3 grid grid-cols-[1fr_auto] gap-2">
                     <h3 className="flex flex-wrap items-center gap-2 text-base font-medium">
                       {desktop.label}
-                      <Badge variant={stateBadgeVariant(desktop.state)}>{desktop.state}</Badge>
+                      <Badge variant={stateBadgeVariant(desktop.state)}>
+                        {stateLabel(desktop.state)}
+                      </Badge>
+                      {!desktop.automaticParking ? (
+                        <Badge variant="secondary">Kept running</Badge>
+                      ) : null}
+                      {desktop.retention === "preserve" ? (
+                        <Badge variant="secondary">preserved</Badge>
+                      ) : null}
                     </h3>
                     <p className="col-start-1 text-sm text-muted-foreground">
                       {thread?.title ?? "Unknown thread"} · {environment?.label ?? "Unknown device"}
                     </p>
                     <div className="col-start-2 row-start-1 row-span-2">
-                      <Button
-                        variant="outline"
-                        size="sm"
-                        disabled={busy || desktop.state === "recoverable"}
-                        onClick={() => void openViewer(desktop)}
-                      >
-                        <EyeIcon />
-                        Watch
-                      </Button>
+                      {recoverable ? null : (
+                        <Button
+                          variant="outline"
+                          size="sm"
+                          disabled={busy || openingViewer}
+                          onClick={() => void openViewer(desktop)}
+                        >
+                          <EyeIcon />
+                          {openingViewer ? (resumable ? "Resuming…" : "Opening…") : "Watch"}
+                        </Button>
+                      )}
                     </div>
                   </div>
                   <div className="flex flex-wrap items-center justify-between gap-3">
                     <div className="text-xs text-muted-foreground">
-                      {desktop.resources
-                        ? `${desktop.resources.cpuUsagePercent.toFixed(1)}% CPU · ${formatBytes(desktop.resources.memoryUsedBytes)} memory · ${desktop.resources.network.activeFlowCount} network flows`
-                        : `Last active ${formatRelativeTimeLabel(desktop.lastActiveAt)}`}
+                      <p>
+                        {recoverable && desktop.recoverableUntil !== null
+                          ? `Recoverable until ${formatRecoveryDeadline(desktop.recoverableUntil)}`
+                          : desktop.resources
+                            ? `${desktop.resources.cpuUsagePercent.toFixed(1)}% CPU · ${formatBytes(desktop.resources.memoryUsedBytes)} memory · ${desktop.resources.network.activeFlowCount} network flows`
+                            : `Last active ${formatRelativeTimeLabel(desktop.lastActiveAt)}`}
+                      </p>
+                      {desktop.detail === undefined ? null : (
+                        <p className="mt-1">{desktop.detail}</p>
+                      )}
                     </div>
                     <div className="flex flex-wrap gap-2">
-                      {desktop.state === "recoverable" ? (
-                        <Button
-                          size="xs"
-                          variant="outline"
-                          disabled={busy}
-                          onClick={() => void manage(desktop, "restore")}
-                        >
-                          <RefreshCwIcon /> Restore
-                        </Button>
-                      ) : resumable ? (
-                        <Button
-                          size="xs"
-                          variant="outline"
-                          disabled={busy}
-                          onClick={() => void manage(desktop, "resume")}
-                        >
-                          <PlayIcon />
-                          Resume
-                        </Button>
+                      {recoverable ? (
+                        <>
+                          <Button
+                            size="xs"
+                            variant="outline"
+                            disabled={busy}
+                            onClick={() => void manage(desktop, "restore")}
+                          >
+                            <RotateCcwIcon />
+                            Restore
+                          </Button>
+                          <Button
+                            size="xs"
+                            variant="destructive-outline"
+                            disabled={busy}
+                            onClick={() => setPermanentDeleteDesktop(desktop)}
+                          >
+                            <Trash2Icon />
+                            Delete permanently
+                          </Button>
+                        </>
                       ) : (
-                        <Button
-                          size="xs"
-                          variant="outline"
-                          disabled={busy}
-                          onClick={() => void manage(desktop, "park")}
-                        >
-                          <PauseIcon />
-                          Park
-                        </Button>
+                        <>
+                          {resumable ? (
+                            <Button
+                              size="xs"
+                              variant="outline"
+                              disabled={busy}
+                              onClick={() => void manage(desktop, "resume")}
+                            >
+                              <PlayIcon />
+                              Resume
+                            </Button>
+                          ) : (
+                            <Button
+                              size="xs"
+                              variant="outline"
+                              disabled={busy}
+                              onClick={() => void manage(desktop, "park")}
+                            >
+                              <PauseIcon />
+                              Park
+                            </Button>
+                          )}
+                          <Button
+                            size="xs"
+                            variant="outline"
+                            disabled={busy}
+                            onClick={() => void manage(desktop, "stop")}
+                          >
+                            <CircleStopIcon />
+                            Stop
+                          </Button>
+                          <Button
+                            size="xs"
+                            variant="destructive-outline"
+                            disabled={busy}
+                            onClick={() => void manage(desktop, "delete")}
+                          >
+                            <Trash2Icon />
+                            Delete
+                          </Button>
+                        </>
                       )}
-                      <Button
-                        size="xs"
-                        variant="outline"
-                        disabled={busy || desktop.state === "recoverable"}
-                        onClick={() => void manage(desktop, "stop")}
-                      >
-                        <CircleStopIcon />
-                        Stop
-                      </Button>
-                      <Button
-                        size="xs"
-                        variant="destructive-outline"
-                        disabled={busy || desktop.state === "recoverable"}
-                        onClick={() => void manage(desktop, "delete")}
-                      >
-                        <Trash2Icon />
-                        Delete
-                      </Button>
                     </div>
                   </div>
                 </section>
@@ -974,6 +1029,35 @@ export function AgentDesktopSettings() {
           <AlertDialogFooter>
             <AlertDialogClose render={<Button variant="outline" />}>Cancel</AlertDialogClose>
             <Button onClick={() => void setupEnvironment()}>Continue</Button>
+          </AlertDialogFooter>
+        </AlertDialogPopup>
+      </AlertDialog>
+
+      <AlertDialog
+        open={permanentDeleteDesktop !== null}
+        onOpenChange={(open) => !open && setPermanentDeleteDesktop(null)}
+      >
+        <AlertDialogPopup>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Delete this Agent desktop permanently?</AlertDialogTitle>
+            <AlertDialogDescription>
+              This permanently removes {permanentDeleteDesktop?.label ?? "this desktop"}'s virtual
+              disk and saved state. This cannot be undone. Restore it instead if you may need its
+              files or application state.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogClose render={<Button variant="outline" />}>Cancel</AlertDialogClose>
+            <Button
+              variant="destructive"
+              onClick={() => {
+                const desktop = permanentDeleteDesktop;
+                setPermanentDeleteDesktop(null);
+                if (desktop !== null) void manage(desktop, "delete-permanently");
+              }}
+            >
+              Delete permanently
+            </Button>
           </AlertDialogFooter>
         </AlertDialogPopup>
       </AlertDialog>

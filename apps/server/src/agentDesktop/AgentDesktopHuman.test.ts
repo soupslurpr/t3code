@@ -43,6 +43,7 @@ function desktop(
       controllerId: "controller-1",
     },
     state: "ready",
+    automaticParking: true,
     capabilities: ["computer"],
     graphics: {
       backend: "virtio-gpu-2d",
