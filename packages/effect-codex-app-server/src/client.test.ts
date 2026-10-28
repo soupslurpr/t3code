@@ -8,6 +8,7 @@ import * as Queue from "effect/Queue";
 import * as Ref from "effect/Ref";
 import * as References from "effect/References";
 import * as Scope from "effect/Scope";
+import * as Schema from "effect/Schema";
 import { ChildProcess, ChildProcessSpawner } from "effect/process";
 
 import * as NodeServices from "@effect/platform-node/NodeServices";
@@ -23,6 +24,34 @@ const mockPeerPath = Effect.map(Effect.service(Path.Path), (path) =>
 const mockPeerArgs = (path: string) => [path];
 
 it.layer(NodeServices.layer)("effect-codex-app-server client", (it) => {
+  it.effect("preserves cyber access programs on the wire and omits them when automatic", () =>
+    Effect.gen(function* () {
+      const { stdio, output } = yield* makeInMemoryStdio();
+      const client = yield* CodexClient.make(stdio);
+      const decodeJson = Schema.decodeEffect(Schema.fromJsonString(Schema.Unknown));
+      let id = 0;
+      for (const cyberAccessProgram of [
+        "daybreakBlue",
+        "standard",
+        "daybreakRed",
+        undefined,
+      ] as const) {
+        const params = {
+          threadId: "access-program-thread",
+          input: [],
+          model: "gpt-6-sol",
+          ...(cyberAccessProgram === undefined ? {} : { cyberAccessProgram }),
+        };
+        yield* client.request("turn/start", params).pipe(Effect.forkScoped);
+        assert.deepEqual(yield* decodeJson(yield* Queue.take(output)), {
+          id: ++id,
+          method: "turn/start",
+          params,
+        });
+      }
+    }),
+  );
+
   const makeHandle = (env?: Record<string, string>) =>
     Effect.gen(function* () {
       const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;

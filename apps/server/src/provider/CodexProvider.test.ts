@@ -16,6 +16,42 @@ import {
 
 const decodeCodexSettings = Schema.decodeEffect(CodexSettings);
 
+it.effect("does not infer access programs for unadvertised custom models", () =>
+  Effect.gen(function* () {
+    const capabilities = {
+      optionDescriptors: [
+        {
+          id: "cyberAccessProgram",
+          label: "Access program",
+          type: "select" as const,
+          currentValue: "automatic",
+          options: [
+            { id: "automatic", label: "Automatic", isDefault: true },
+            { id: "standard", label: "Standard" },
+            { id: "daybreakBlue", label: "Daybreak Blue" },
+          ],
+        },
+      ],
+    };
+    const provider = yield* checkCodexProviderStatus(
+      yield* decodeCodexSettings({ customModels: ["custom-model"] }),
+      () =>
+        Effect.succeed({
+          account: { account: { type: "apiKey" as const }, requiresOpenaiAuth: false },
+          version: "test",
+          skills: [],
+          models: [{ slug: "advertised", name: "Advertised", isCustom: false, capabilities }],
+        }),
+    );
+    const nativeOptions = provider.models.find((model) => model.slug === "advertised")?.capabilities
+      ?.optionDescriptors;
+    const customOptions = provider.models.find((model) => model.slug === "custom-model")
+      ?.capabilities?.optionDescriptors;
+    assert.ok(nativeOptions?.some((option) => option.id === "cyberAccessProgram"));
+    assert.deepEqual(customOptions, []);
+  }).pipe(Effect.provide(NodeServices.layer)),
+);
+
 it.each(["gpt-6-astra", "openai.gpt-6-astra"])(
   "defaults %s to Max only when the account supports it",
   (model) => {
@@ -414,4 +450,43 @@ for await (const line of createInterface({ input: process.stdin })) {
       undefined,
     );
   }).pipe(Effect.provide(NodeServices.layer), Effect.scoped),
+);
+
+it.each([
+  { programs: undefined, expected: [] },
+  { programs: null, expected: [] },
+  { programs: { cyber: [] }, expected: [] },
+  { programs: { cyber: ["standard"] }, expected: ["automatic", "standard"] },
+  {
+    programs: { cyber: ["standard", "daybreakBlue"] },
+    expected: ["automatic", "standard", "daybreakBlue"],
+  },
+  { programs: { cyber: ["daybreakBlue"] }, expected: ["automatic", "daybreakBlue"] },
+  {
+    programs: { cyber: ["standard", "daybreakRed"] },
+    expected: ["automatic", "standard", "daybreakRed"],
+  },
+] as const)(
+  "exposes only the account's advertised cyber access programs: $expected",
+  ({ programs, expected }) => {
+    const capabilities = mapCodexModelCapabilities({
+      id: "model-with-access-programs",
+      model: "model-with-access-programs",
+      displayName: "Model with access programs",
+      description: "Test model",
+      hidden: false,
+      isDefault: false,
+      defaultReasoningEffort: "medium",
+      supportedReasoningEfforts: [],
+      ...(programs === undefined ? {} : { availableAccessPrograms: programs }),
+    });
+    const descriptor = capabilities.optionDescriptors?.find(
+      (option) => option.id === "cyberAccessProgram",
+    );
+    assert.deepEqual(
+      descriptor?.type === "select" ? descriptor.options.map((option) => option.id) : [],
+      [...expected],
+    );
+    if (expected.length > 0) assert.equal(descriptor?.currentValue, "automatic");
+  },
 );
