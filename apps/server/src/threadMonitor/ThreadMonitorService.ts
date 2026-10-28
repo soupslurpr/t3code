@@ -33,6 +33,7 @@ export interface ThreadMonitorServiceShape {
   readonly create: (input: {
     readonly threadId: ThreadId;
     readonly monitor: ThreadMonitorStartInput;
+    readonly afterSequence?: number;
   }) => Effect.Effect<ThreadMonitor, ThreadMonitorError>;
 
   /** Creates one durable multi-region screen monitor owned by a thread. */

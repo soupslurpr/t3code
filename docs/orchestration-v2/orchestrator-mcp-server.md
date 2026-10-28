@@ -58,17 +58,10 @@ check the `orchestration` capability before reading or mutating state.
 
 ### Codex V2
 
-Codex app-server receives the remote MCP server through command-line config
-overrides:
-
-```text
--c mcp_servers.t3-code.url=http://127.0.0.1:<port>/mcp
--c mcp_servers.t3-code.bearer_token_env_var="T3_MCP_BEARER_TOKEN"
-```
-
-The provider-session token is placed in `T3_MCP_BEARER_TOKEN`. Both the
-production Codex launcher and the injectable test launcher use the same
-projection helper.
+Codex app-server receives the remote MCP URL and Authorization header in
+per-thread runtime config. These credentials are not exported to shell jobs.
+For background completion, use the narrow callback returned by `monitor_start`
+with a signal schedule instead of copying the thread's MCP credential.
 
 ### Claude Agent SDK V2
 
