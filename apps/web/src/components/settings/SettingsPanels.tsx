@@ -1936,7 +1936,7 @@ export function MaintenanceSettingsPanel() {
           {...searchableSetting("continue-threads-after-server-update")}
           serverScoped
           settingKeys={["continueThreadsAfterServerUpdate"]}
-          description="Automatically resume interrupted threads after an update, crash, or machine restart on the selected environments."
+          description="Resume interrupted threads when the selected environments start again, including after quitting, updates, crashes, or machine restarts. Threads you explicitly stop stay stopped."
           status={
             !hasServerTargets
               ? "All selected connected environments must support restart continuation."

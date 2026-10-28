@@ -15,6 +15,7 @@ import {
   UsageLimitSourceId,
 } from "@t3tools/contracts";
 import { createModelSelection } from "@t3tools/shared/model";
+import { resolveProjectSettings } from "@t3tools/shared/projectSettings";
 import { assert, it } from "@effect/vitest";
 import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
@@ -39,6 +40,14 @@ import { resolveProviderInstanceTerminalEnvironment } from "./terminal/Manager.t
 const decodeServerSettings = Schema.decodeUnknownEffect(ServerSettings);
 const decodeServerSettingsJson = Schema.decodeUnknownEffect(Schema.fromJsonString(ServerSettings));
 const decodeServerSettingsPatch = Schema.decodeUnknownEffect(ServerSettingsPatch);
+
+const decodePersistedRestartSettings = Schema.decodeEffect(
+  Schema.fromJsonString(
+    Schema.Struct({
+      continueThreadsAfterServerUpdate: Schema.optionalKey(Schema.Boolean),
+    }),
+  ),
+);
 
 const layerServerSettings = (policy?: ManagedPolicyDocument) =>
   ServerSettingsModule.layer.pipe(
@@ -102,6 +111,129 @@ const recordProviderUsage = (provider: string, instanceId: string | null = provi
   });
 
 it.layer(NodeServices.layer)("server settings", (it) => {
+  it.effect.each([
+    { name: "locked-off running policy", running: false, replacement: true, locked: true },
+    { name: "default-off running policy", running: false, replacement: true, locked: false },
+    { name: "replacement policy mismatch", running: true, replacement: false, locked: true },
+    {
+      name: "both-effective-true resolver control",
+      running: true,
+      replacement: true,
+      locked: true,
+    },
+  ])("resolves both environments for $name without authorizing a handoff", (row) =>
+    Effect.gen(function* () {
+      const projectId = ProjectId.make("handoff-project");
+      const readEffective = (enabled: boolean) =>
+        Effect.gen(function* () {
+          const config = yield* ServerConfig.ServerConfig;
+          const fs = yield* FileSystem.FileSystem;
+          yield* fs.writeFileString(
+            config.settingsPath,
+            JSON.stringify(
+              row.locked
+                ? {
+                    continueThreadsAfterServerUpdate: true,
+                    projectSettingsOverrides: {
+                      [projectId]: { continueThreadsAfterServerUpdate: true },
+                    },
+                  }
+                : {},
+            ),
+          );
+          const service = yield* ServerSettingsModule.ServerSettingsService;
+          return resolveProjectSettings(yield* service.getSettings, projectId).settings
+            .continueThreadsAfterServerUpdate;
+        }).pipe(
+          Effect.provide(
+            layerServerSettings({
+              schemaVersion: 1,
+              organization: "Isolated handoff fixture",
+              settings: {
+                continueThreadsAfterServerUpdate: { value: enabled, locked: row.locked },
+              },
+            }),
+          ),
+        );
+      const running = yield* readEffective(row.running);
+      const replacement = yield* readEffective(row.replacement);
+      assert.deepEqual(
+        { running, replacement },
+        {
+          running: row.running,
+          replacement: row.replacement,
+        },
+      );
+    }),
+  );
+
+  it.effect.each([
+    ["new environments", null, true],
+    ["existing sparse settings", "{}", true],
+    ["existing On settings", '{"continueThreadsAfterServerUpdate":true}', true],
+    ["existing Off settings", '{"continueThreadsAfterServerUpdate":false}', false],
+  ] as const)(
+    "preserves restart continuation for %s across settings writes and reloads",
+    ([_label, raw, enabled]) =>
+      Effect.gen(function* () {
+        const settings = yield* ServerSettingsModule.ServerSettingsService;
+        const config = yield* ServerConfig.ServerConfig;
+        const fs = yield* FileSystem.FileSystem;
+        if (raw !== null) yield* fs.writeFileString(config.settingsPath, raw);
+        assert.equal((yield* settings.getSettings).continueThreadsAfterServerUpdate, enabled);
+
+        yield* settings.updateSettings({ enableProviderUpdateChecks: false });
+        const persisted = yield* fs
+          .readFileString(config.settingsPath)
+          .pipe(Effect.flatMap(decodePersistedRestartSettings));
+        if (enabled) assert.notProperty(persisted, "continueThreadsAfterServerUpdate");
+        else assert.strictEqual(persisted.continueThreadsAfterServerUpdate, false);
+
+        const reloaded = yield* Effect.gen(function* () {
+          return yield* (yield* ServerSettingsModule.ServerSettingsService).getSettings;
+        }).pipe(
+          Effect.provide(
+            Layer.fresh(ServerSettingsModule.layer).pipe(Layer.provide(ManagedPolicy.layerTest())),
+          ),
+        );
+        assert.equal(reloaded.continueThreadsAfterServerUpdate, enabled);
+      }).pipe(Effect.provide(layerServerSettingsWithSecrets())),
+  );
+
+  it.effect(
+    "resetting restart continuation removes the environment value and preserves project opt-outs",
+    () =>
+      Effect.gen(function* () {
+        const settings = yield* ServerSettingsModule.ServerSettingsService;
+        const config = yield* ServerConfig.ServerConfig;
+        const fs = yield* FileSystem.FileSystem;
+        const projectId = ProjectId.make("test-project");
+        yield* settings.updateSettings({
+          continueThreadsAfterServerUpdate: false,
+          projectSettingsOverrides: { [projectId]: { continueThreadsAfterServerUpdate: false } },
+        });
+        yield* settings.updateSettings({
+          continueThreadsAfterServerUpdate:
+            DEFAULT_SERVER_SETTINGS.continueThreadsAfterServerUpdate,
+        });
+        const persisted = yield* fs
+          .readFileString(config.settingsPath)
+          .pipe(Effect.flatMap(decodePersistedRestartSettings));
+        assert.notProperty(persisted, "continueThreadsAfterServerUpdate");
+        const reloaded = yield* Effect.gen(function* () {
+          return yield* (yield* ServerSettingsModule.ServerSettingsService).getSettings;
+        }).pipe(
+          Effect.provide(
+            Layer.fresh(ServerSettingsModule.layer).pipe(Layer.provide(ManagedPolicy.layerTest())),
+          ),
+        );
+        assert.isTrue(reloaded.continueThreadsAfterServerUpdate);
+        assert.isFalse(
+          reloaded.projectSettingsOverrides[projectId]?.continueThreadsAfterServerUpdate,
+        );
+      }).pipe(Effect.provide(layerServerSettingsWithSecrets())),
+  );
+
   it.effect("serializes concurrent model preference edits without cancelling duplicate adds", () =>
     Effect.gen(function* () {
       const service = yield* ServerSettingsModule.ServerSettingsService;

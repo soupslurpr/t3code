@@ -134,3 +134,38 @@ rollback must not overwrite newer live data with an older database.
 Fork startup reports go to [soupslurpr/t3code](https://github.com/soupslurpr/t3code/issues).
 Official upstream downloads are not recovery packages for this installation. The built-in updater
 stays disabled for Arch packages; this workflow does not enable it.
+
+### Supervised restart availability
+
+`package:desktop:arch:restart` and the copied restart worker currently refuse to run. They cannot
+prove that both the running server and replacement permit continuation for the specific project
+and run. Raw settings, a missing policy file, runtime policy fingerprints, and migration preflight
+are insufficient. This also prevents replaying a saved restart plan to bypass the refusal.
+
+Use the ordinary manual package installation procedure above. Stop work before restarting and
+verify the installation afterward. This restriction does not change normal startup recovery or the
+user's and administrator's continuation settings. A future supervised handoff needs trustworthy
+effective-policy proof from both builds before it can be enabled.
+
+### Verify an installation or retained recovery plan
+
+The repository verifier reads exact process identities, active units, hashes and database file
+descriptors. It does not open the database or certify that a thread resumed. Use the actual
+listening port:
+
+```bash
+vp run package:desktop:arch:verify workspace /absolute/path/to/checkout
+vp run package:desktop:arch:verify installation --commit FULL_40_CHARACTER_COMMIT --hashes --port PORT
+vp run package:desktop:arch:verify restart /absolute/path/to/retained-plan.json --port PORT
+```
+
+The restart form inspects a retained plan from a previously supervised installation; it does not
+start a restart or establish continuation-policy proof. It distinguishes source and post-restart
+databases: a first V2 startup must own `statev2.sqlite`. Never delete that database to force another
+V1 import. A successful process/build check is not a successful thread handoff.
+
+Each command has a five-second deadline. `--app-dir` selects another installed desktop directory.
+Verification is read-only by default. Explicit `--cleanup` removes only a verified plan's recovery
+directory after all process/build checks pass; failed checks preserve it. Keep failed recovery
+files, database backups and rollback packages until recovery has been reviewed. Never reuse
+recorded PIDs as future restart targets or edit live T3 state.
