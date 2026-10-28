@@ -237,6 +237,45 @@
           ]
         }
       ]
+    },
+    {
+      "bundles": ["mobile"],
+      "license": "MIT",
+      "name": "Expo native menu touch gate",
+      "noticeFile": "apps/mobile/modules/t3-native-controls/LICENSE",
+      "sourceUrl": "https://registry.npmjs.org/expo-modules-core/58.0.11",
+      "version": "58.0.11"
+    },
+    {
+      "bundles": ["server"],
+      "includeInBundles": ["server", "desktop", "mobile", "web"],
+      "name": "GitHub GraphQL schema and documentation",
+      "license": "MIT AND CC-BY-4.0",
+      "sourceUrl": "https://github.com/github/docs/blob/bd52de7384c1d3267e5c365efd94b69e6bdc8cc3/src/graphql/data/fpt/schema.docs.graphql",
+      "noticeFiles": [
+        "packages/source-control-github/LICENSE.github-code.txt",
+        "packages/source-control-github/LICENSE.github-docs.txt"
+      ]
+    },
+    {
+      "bundles": ["mobile"],
+      "license": "Apache-2.0",
+      "name": "Remend native Markdown repair",
+      "sourceUrl": "https://github.com/pingdotgg/t3code/blob/88f611368e0166a543b294d69747eefe46fed73e/apps/mobile/deps/react-native-enriched-markdown-1.2.0-t3.16-29ddd424.tgz",
+      "generatedNotices": [
+        {
+          "licenseId": "Apache-2.0",
+          "copyrights": ["Copyright 2023 Vercel, Inc."]
+        }
+      ]
+    },
+    {
+      "bundles": ["mobile"],
+      "license": "SEE LICENSE IN third-party/notices/enriched-markdown-native-29ddd424.md",
+      "name": "enriched-markdown native parser and highlighting",
+      "noticeFile": "third-party/notices/enriched-markdown-native-29ddd424.md",
+      "sourceUrl": "https://github.com/pingdotgg/enriched-markdown/tree/29ddd424323a9b5313e01b43716a947e6ee62b69",
+      "version": "1.2.0-t3.16 (29ddd424)"
     }
   ],
   "packageOverrides": [
@@ -887,6 +926,27 @@
       "version": "1.3.3",
       "sourceUrl": "https://registry.npmjs.org/@img/sharp-libvips-linux-x64/-/sharp-libvips-linux-x64-1.3.3.tgz",
       "noticeFile": "third-party/notices/sharp-libvips-linux-x64-1.3.3.md"
+    },
+    {
+      "name": "react-native-screens",
+      "version": "5.0.0-t3.48",
+      "sourceUrl": "https://github.com/PixPMusic/react-native-screens/tree/6ce484b346dd0d51e84566696a1b1a1af4dc6225"
+    },
+    {
+      "name": "react-native-enriched-markdown",
+      "version": "1.2.0-t3.16",
+      "sourceUrl": "https://github.com/pingdotgg/enriched-markdown/tree/29ddd424323a9b5313e01b43716a947e6ee62b69",
+      "license": "MIT AND Apache-2.0"
+    },
+    {
+      "name": "expo-observe",
+      "version": "58.0.16",
+      "sourceUrl": "https://registry.npmjs.org/expo-observe/-/expo-observe-58.0.16.tgz"
+    },
+    {
+      "name": "expo-sharing",
+      "version": "58.0.19",
+      "sourceUrl": "https://registry.npmjs.org/expo-sharing/-/expo-sharing-58.0.19.tgz"
     }
   ]
 }
