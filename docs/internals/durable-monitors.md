@@ -5,6 +5,12 @@ MCP caller, and delivery uses that thread's current provider and permission
 configuration. Trigger summaries and evidence are observational data, never
 instructions. The existing conversation supplies continuation context.
 
+Shell workers use the completion-only callback returned by a signal wait.
+Its credential binds one monitor to a persistent signing key, outliving the
+provider session without granting general MCP access. Status and summaries
+must omit it. Callback results use the same signal service and Stop barrier;
+a moved listener requires an updated callback address.
+
 Monitor restoration must start after V2 recovery and legacy shell import.
 Otherwise an imported thread can look absent and its waits can be retired as
 orphans. Liveness comes from persisted outstanding rows; system notices wake

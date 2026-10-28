@@ -1,3 +1,4 @@
+import { ThreadMonitorSignalCallbacks } from "../threadMonitor/ThreadMonitorSignalCallbacks.ts";
 import { UserDesktopTransfers } from "../computer/UserDesktopTransfers.ts";
 import { ComputerObservationStore } from "../computer/ComputerObservationStore.ts";
 import { ThreadWorkspaceQuery } from "../orchestration-v2/ThreadWorkspaceQuery.ts";
@@ -57,6 +58,7 @@ const toolHandlerServices = Layer.mergeAll(
   Layer.mock(ThreadWorkspaceQuery)({}),
   Layer.mock(AgentDesktopTransferService)({}),
   Layer.mock(ThreadMonitorService)({}),
+  Layer.mock(ThreadMonitorSignalCallbacks)({}),
   Layer.mock(AgentDesktopManager)({}),
   Layer.mock(ComputerAutomationRouter)({}),
   Layer.mock(DeviceService)({}),

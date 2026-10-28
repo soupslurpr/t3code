@@ -1,3 +1,4 @@
+import * as ThreadMonitorSignalCallbacks from "../threadMonitor/ThreadMonitorSignalCallbacks.ts";
 import * as ComputerAutomationRouter from "../computer/ComputerAutomationRouter.ts";
 import { ThreadMonitorService } from "../threadMonitor/ThreadMonitorService.ts";
 import { MonitorImageToolkit, MonitorStandardToolkit } from "./toolkits/monitor/tools.ts";
@@ -1634,6 +1635,7 @@ const registerMonitorStandardTools = Effect.fn("McpHttpServer.registerMonitorSta
     const observations = yield* ComputerObservationStore.ComputerObservationStore;
     const threads = yield* ThreadManagementService.ThreadManagementService;
     const service = yield* ThreadMonitorService;
+    const callbacks = yield* ThreadMonitorSignalCallbacks.ThreadMonitorSignalCallbacks;
     const built = yield* decodeAsAdvertised(MonitorStandardToolkit);
     for (const tool of Object.values(built.tools)) {
       yield* server.addTool({
@@ -1665,6 +1667,10 @@ const registerMonitorStandardTools = Effect.fn("McpHttpServer.registerMonitorSta
               Effect.flatMap(Effect.fromOption),
               Effect.provideService(ThreadManagementService.ThreadManagementService, threads),
               Effect.provideService(ThreadMonitorService, service),
+              Effect.provideService(
+                ThreadMonitorSignalCallbacks.ThreadMonitorSignalCallbacks,
+                callbacks,
+              ),
               Effect.provideService(
                 ComputerObservationStore.ComputerObservationStore,
                 observations,

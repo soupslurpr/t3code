@@ -1147,12 +1147,16 @@ export const make = Effect.gen(function* () {
       Effect.andThen(mutex.withPermits(1)(reconcileUnlocked(threadId, monitorId, startChecks))),
     );
 
-  const create: ThreadMonitorServiceShape["create"] = ({ threadId, monitor: input }) =>
+  const create: ThreadMonitorServiceShape["create"] = ({
+    threadId,
+    monitor: input,
+    afterSequence: startedAfterSequence,
+  }) =>
     mutex.withPermits(1)(
       Effect.gen(function* () {
-        const afterSequence = yield* eventSink
-          .latestSequence()
-          .pipe(Effect.mapError(mapPersistenceError("start")));
+        const afterSequence =
+          startedAfterSequence ??
+          (yield* eventSink.latestSequence().pipe(Effect.mapError(mapPersistenceError("start"))));
         const thread = yield* snapshots
           .getThreadShellById(threadId)
           .pipe(Effect.mapError(mapPersistenceError("start")));

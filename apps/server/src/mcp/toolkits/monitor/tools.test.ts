@@ -65,11 +65,14 @@ it("exports bounded object schemas and provider-neutral lifecycle tools", () => 
   expect(Context.get(update.annotations, Tool.Destructive)).toBe(true);
 });
 
-it("advertises string evidence while runtime decoding enforces its bound", () => {
+it("advertises text or object evidence while runtime decoding enforces its bound", () => {
   const schema = advertisedJsonSchema(MonitorToolkit.tools.monitor_signal) as {
     readonly properties?: Readonly<Record<string, unknown>>;
   };
-  expect(schema.properties?.evidence).toEqual({ type: "string" });
+  expect(schema.properties?.evidence).toEqual({
+    anyOf: [{ type: "string" }, { type: "object" }],
+    description: expect.stringContaining("20,000 characters"),
+  });
 });
 
 const decode = Schema.decodeUnknownSync(
