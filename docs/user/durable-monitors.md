@@ -15,11 +15,11 @@ Durable waits support:
 - a durable area of the user desktop or a specific Agent desktop, checked for
   an exact image change or a visible condition described in plain language.
 
-When a wait triggers, T3 Code normally resumes the same thread. It uses the
-provider, model, permission mode, and interaction mode configured for that
-thread at delivery time. If another turn, approval, or user-input request is
-active, the continuation waits until the thread is available. An agent can
-also record a result without starting another turn.
+When a wait triggers, T3 Code delivers the result into the same thread's active
+turn if its provider supports live input. Otherwise, it queues a follow-up turn
+using the thread's configuration. It waits for pending approvals or user-input
+requests without dismissing them. An agent can also record a result without
+resuming the thread.
 
 Before choosing a timer intended to resume within a provider's prompt-cache
 window, an agent can ask T3 Code for the current controller model's optional

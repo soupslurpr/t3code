@@ -10,10 +10,12 @@ Otherwise an imported thread can look absent and its waits can be retired as
 orphans. Liveness comes from persisted outstanding rows; system notices wake
 projection subscribers after each lifecycle change.
 
-A continuation keeps one logical message ID and reuses an ambiguous command
-attempt after restart. Only a confirmed rejection advances the command ID.
-Check for an already accepted message before deferring for active work: that
-work may be the continuation accepted just before the server crashed.
+A continuation keeps one logical message ID across retries. Native steering
+stays pending until provider acceptance; a cancelled outbox effect after
+shutdown can retry it as a follow-up. Provider acceptance and its durable
+receipt cannot commit atomically, so delivery is at least once across a crash.
+Stable IDs prevent duplicate timeline entries. Reconcile accepted messages
+before checking current work, which may be the continuation itself.
 
 Fork migrations have a separate ledger from upstream. Recognition of released
 ID/name pairs precedes both migrators under one SQLite write transaction. An
@@ -42,11 +44,14 @@ normalizing omission to the new default would silently re-enable warnings.
 
 Monitor continuations are V2 notifications, not user-message turn items. Keep
 structured observations separate from harness facts and render the full
-provider input only at turn start. Codex uses standalone
+provider input at start or native steering. Live delivery preserves the active
+selection and waits for approvals or user-input requests. Codex uses standalone
 harness tool output and must reject unsupported protocol versions; silently
 falling back to user input would change the event's provenance. Other adapters
-receive the explicitly labelled provider-neutral text on the normal queued
-start path. The legacy message column must remain for deferred V1 import.
+receive explicitly labelled provider-neutral text. The orchestrator queues a
+follow-up when native input is unsupported or would interrupt tools. A Codex
+completion race can start another native turn in the same app attempt; Stop
+and background-work ownership must follow that replacement. The legacy message column must remain for deferred V1 import.
 
 Usage fields remain independent: input, cached input, cache-write input and
 output are reported exactly when supplied, with null for unavailable data.

@@ -1,4 +1,5 @@
 import { ProviderComputerLifecycle } from "./ProviderComputerLifecycle.ts";
+import { formatMonitorSystemEventForProvider } from "../threadMonitor/ThreadMonitorContinuation.ts";
 import { projectComposerContextForProvider } from "@t3tools/shared/composerContextReferences";
 import {
   MessageId,
@@ -39,6 +40,7 @@ export class ProviderTurnControlError extends Schema.TaggedError<ProviderTurnCon
     operation: Schema.Literals(["interrupt", "restart", "steer"]),
     providerTurnId: ProviderTurnId,
     turnCompleted: Schema.optional(Schema.Boolean),
+    monitorDeliveryDeferred: Schema.optional(Schema.Boolean),
     /** The provider never confirmed the stop; Force stop is the way out. */
     unresponsive: Schema.optional(Schema.Boolean),
     cause: Schema.optional(Schema.Defect()),
@@ -384,6 +386,18 @@ export const layer: Layer.Layer<
               cause: "The persisted steering message or target run is missing.",
             });
           }
+          if (
+            message.notification?.source.kind === "monitor" &&
+            (yield* projections.getThreadShell(input.threadId))?.pendingRuntimeRequest != null
+          ) {
+            return yield* new ProviderTurnControlError({
+              threadId: input.threadId,
+              operation: "steer",
+              providerTurnId: input.providerTurnId,
+              monitorDeliveryDeferred: true,
+              cause: "Monitor delivery is waiting for a pending user request.",
+            });
+          }
           yield* loaded.session.value
             .steerTurn({
               threadId: input.threadId,
@@ -392,13 +406,19 @@ export const layer: Layer.Layer<
               providerTurnId: loaded.providerTurn.id,
               message: {
                 messageId: message.id,
-                text: projectComposerContextForProvider({
-                  text: message.text,
-                  records: message.context?.records ?? [],
-                }),
+                text:
+                  message.notification?.systemEvent === undefined
+                    ? projectComposerContextForProvider({
+                        text: message.text,
+                        records: message.context?.records ?? [],
+                      })
+                    : formatMonitorSystemEventForProvider(message.notification.systemEvent),
                 attachments: message.attachments,
                 createdBy: message.createdBy,
                 creationSource: message.creationSource,
+                ...(message.notification?.systemEvent === undefined
+                  ? {}
+                  : { inputSource: "harness" as const }),
                 ...(message.scheduledTaskId === undefined
                   ? {}
                   : { scheduledTaskId: message.scheduledTaskId }),
