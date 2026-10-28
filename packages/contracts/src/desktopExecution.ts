@@ -127,8 +127,47 @@ export const UserDesktopExecutionAccessInput = Schema.Struct({
 });
 export type UserDesktopExecutionAccessInput = typeof UserDesktopExecutionAccessInput.Type;
 
+/** A previously authorized wait can release only this terminal metadata. */
+export const DesktopProcessCompletionReceipt = Schema.Struct({
+  processId: Identifier,
+  runtimeGeneration: Identifier,
+  status: Schema.Literals([
+    "exited",
+    "failed",
+    "lost",
+    "permission-revoked",
+    "deleted",
+    "unavailable",
+  ]),
+  exitCode: Schema.NullOr(Schema.Int),
+  signal: Schema.NullOr(Schema.String),
+  completedAt: IsoDateTime,
+});
+export type DesktopProcessCompletionReceipt = typeof DesktopProcessCompletionReceipt.Type;
+export const UserDesktopCompletionInput = Schema.Struct({
+  desktop: UserDesktopTarget,
+  action: Schema.Literals(["register", "status", "cancel", "acknowledge"]),
+  waitId: Identifier,
+  processId: Identifier,
+  runtimeGeneration: Identifier,
+});
+export type UserDesktopCompletionInput = typeof UserDesktopCompletionInput.Type;
+export const DesktopProcessCompletionResult = Schema.Struct({
+  kind: Schema.Literal("completion"),
+  protocolVersion: Schema.Literal(2),
+  desktop: UserDesktopTarget,
+  waitId: Identifier,
+  receipt: Schema.NullOr(DesktopProcessCompletionReceipt),
+});
+export type DesktopProcessCompletionResult = typeof DesktopProcessCompletionResult.Type;
+
 /** Carries the complete execution operation through a desktop host connection. */
 export const UserDesktopExecutionInput = Schema.Union([
+  Schema.Struct({
+    operation: Schema.Literal("completion"),
+    desktop: UserDesktopTarget,
+    input: UserDesktopCompletionInput,
+  }),
   Schema.Struct({ operation: Schema.Literal("cancel"), desktop: UserDesktopTarget }),
   Schema.Struct({ operation: Schema.Literal("command"), ...UserDesktopCommandInput.fields }),
   Schema.Struct({
@@ -294,6 +333,7 @@ export const DesktopProcessAccepted = Schema.Struct({
 export type DesktopProcessAccepted = typeof DesktopProcessAccepted.Type;
 
 export const UserDesktopExecutionResult = Schema.Union([
+  DesktopProcessCompletionResult,
   DesktopProcessResult,
   DesktopProcessList,
   DesktopExecutionAccess,

@@ -95,6 +95,12 @@ export function clientRpcRequiredScopes(
   input: unknown,
 ): readonly AuthEnvironmentScope[] {
   if (
+    method === WS_METHODS.agentDesktopHumanInvoke &&
+    isAgentDesktopInput(input) &&
+    input.request.operation === "process"
+  )
+    return [AuthOrchestrationOperateScope, AuthTerminalOperateScope];
+  if (
     method === WS_METHODS.userDesktopHumanInvoke &&
     isUserDesktopInput(input) &&
     input.request.operation === "execution"

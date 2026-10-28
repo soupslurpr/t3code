@@ -1,6 +1,7 @@
 import * as AgentDesktopTransfer from "./agentDesktop/AgentDesktopTransferService.ts";
 import * as DesktopExecutionAuthorizationChannel from "./computer/DesktopExecutionAuthorizationChannel.ts";
 import * as DesktopThreadLifecycle from "./computer/DesktopThreadLifecycle.ts";
+import * as ThreadMonitorProcess from "./threadMonitor/ThreadMonitorProcess.ts";
 import * as DesktopProcessActivityRecorder from "./computer/DesktopProcessActivityRecorder.ts";
 import * as ThreadDesktopActivity from "./computer/ThreadDesktopActivity.ts";
 import * as ThreadMonitorSignalCallbacks from "./threadMonitor/ThreadMonitorSignalCallbacks.ts";
@@ -780,6 +781,7 @@ const layerQemuAgentDesktop = QemuAgentDesktop.layer.pipe(
   Layer.provide(layerAgentDesktopEnvironment),
 );
 const layerAgentDesktopManager = AgentDesktopManager.layer.pipe(
+  Layer.provide(layerDesktopProcessActivity),
   Layer.provideMerge(layerQemuAgentDesktop),
   Layer.provide(layerAgentDesktopEnvironment),
 );
@@ -803,6 +805,12 @@ const layerAgentDesktopServices = ThreadDesktopActivity.layer.pipe(
 );
 
 const layerThreadMonitor = ThreadMonitor.layer.pipe(
+  Layer.provide(
+    ThreadMonitorProcess.layer.pipe(
+      Layer.provide(layerAgentDesktopManager),
+      Layer.provide(layerPreviewAutomationBroker),
+    ),
+  ),
   Layer.provide(
     ThreadMonitorComputer.layer.pipe(
       Layer.provide(Layer.merge(layerComputerAutomationRouter, layerComputerObservationStore)),

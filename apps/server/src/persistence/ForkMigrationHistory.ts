@@ -84,6 +84,23 @@ const decodeF14Condition = Schema.decodeUnknownSync(
   ),
 );
 
+// Released schema validation stays independent of future runtime condition fields.
+const decodeF16Condition = Schema.decodeSync(
+  Schema.fromJsonString(
+    Schema.Struct({
+      type: Schema.Literal("process"),
+      desktop: Schema.Struct({
+        kind: Schema.Literals(["user", "agent"]),
+        desktopId: Schema.String,
+      }),
+      processId: Schema.String,
+      runtimeGeneration: Schema.String,
+      deadlineAt: Schema.NullOr(Schema.String),
+      nextCheckAt: Schema.String,
+      released: Schema.Boolean,
+    }),
+  ),
+);
 const normalizedIndexSql = (sql: string) =>
   JSON.stringify(
     (sql.match(/'(?:''|[^'])*'|[A-Za-z0-9_$]+|[^ \t\n\f\r]/g) ?? []).flatMap((token) => {
@@ -118,6 +135,9 @@ const releasedDesktopIndexes = [
     "CREATE INDEX desktop_activity_updated_idx ON orchestration_v2_projection_turn_items(thread_id, updated_at DESC, ordinal DESC, turn_item_id DESC)",
   ],
 ] as const;
+const f16ReleaseIndex =
+  "CREATE INDEX idx_thread_monitors_process_release ON thread_monitors(wake_at) WHERE condition_type = 'process' AND json_extract(condition_json, '$.released') = 0 AND status NOT IN ('active', 'triggered')";
+
 // The caller holds the SQLite write transaction through adoption and both migrators.
 export const adoptForkMigrationHistory = Effect.fn("adoptForkMigrationHistory")(function* (
   upstreamManifest: ReadonlyArray<readonly [number, string]>,
@@ -448,6 +468,33 @@ export const adoptForkMigrationHistory = Effect.fn("adoptForkMigrationHistory")(
         );
     }
   }
+  if (fork.length >= 16) {
+    const schema = yield* sql<{
+      readonly sql: string;
+    }>`SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'thread_monitors'`;
+    if (!schema[0]?.sql.includes("'process'"))
+      return yield* invalidHistory(
+        "ProcessMonitors identity conflicts with its condition constraint",
+      );
+    const indexes = yield* sql<{
+      readonly sql: string;
+    }>`SELECT sql FROM sqlite_master WHERE type = 'index' AND name = 'idx_thread_monitors_process_release'`;
+    if (
+      indexes.length !== 1 ||
+      normalizedIndexSql(indexes[0]!.sql) !== normalizedIndexSql(f16ReleaseIndex)
+    )
+      return yield* invalidHistory("ProcessMonitors identity conflicts with its release index");
+    const rows = yield* sql<{
+      readonly condition_json: string;
+    }>`SELECT condition_json FROM thread_monitors WHERE condition_type = 'process'`;
+    yield* Effect.try({
+      try: () => {
+        for (const row of rows) decodeF16Condition(row.condition_json);
+      },
+      catch: () => invalidHistory("ProcessMonitors identity conflicts with its process condition"),
+    });
+  }
+
   yield* sql`CREATE TABLE IF NOT EXISTS effect_sql_fork_migrations (
     migration_id integer PRIMARY KEY NOT NULL,
     created_at datetime NOT NULL DEFAULT current_timestamp,

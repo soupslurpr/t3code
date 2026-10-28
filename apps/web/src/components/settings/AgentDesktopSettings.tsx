@@ -1,3 +1,4 @@
+import { AgentDesktopExecutionPanel } from "./UserDesktopExecutionPanel";
 import { useAtomValue } from "@effect/atom-react";
 import { AsyncResult } from "effect/reactivity";
 import { appAtomRegistry } from "~/rpc/atomRegistry";
@@ -1880,6 +1881,11 @@ export function AgentDesktopSettings({ thread }: { thread?: DesktopThreadScope }
                       </div>
                     ) : null}
                   </div>
+                  <AgentDesktopExecutionPanel
+                    desktopId={desktop.id}
+                    owner={desktop.owner}
+                    label={desktop.label}
+                  />
                 </section>
               );
             })}

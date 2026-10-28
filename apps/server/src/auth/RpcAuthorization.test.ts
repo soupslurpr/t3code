@@ -85,6 +85,63 @@ describe("RPC authorization scopes", () => {
       expect(calls).toBe(1);
     }).pipe(Effect.scoped),
   );
+  it.effect(
+    "requires command and task permission together for Agent desktop process supervision",
+    () =>
+      Effect.gen(function* () {
+        const group = WsRpcGroup.omit(
+          ...[...WsRpcGroup.requests.keys()].filter(
+            (
+              tag,
+            ): tag is Exclude<
+              keyof typeof RPC_REQUIRED_SCOPES,
+              typeof WS_METHODS.agentDesktopHumanInvoke
+            > => tag !== WS_METHODS.agentDesktopHumanInvoke,
+          ),
+        );
+        const input = {
+          threadId: ThreadId.make("thread"),
+          request: {
+            operation: "process",
+            owner: {
+              environmentId: EnvironmentId.make("environment"),
+              threadId: ThreadId.make("thread"),
+              controllerId: "human",
+            },
+            input: { action: "list", desktopId: "agent-desktop" },
+          },
+        } as const;
+        let calls = 0;
+        for (const scopes of [
+          [AuthOrchestrationOperateScope],
+          [AuthTerminalOperateScope],
+          [AuthOrchestrationOperateScope, AuthTerminalOperateScope],
+        ]) {
+          const client = yield* RpcTest.makeClient(group).pipe(
+            Effect.provide(
+              Layer.mergeAll(
+                group.toLayerHandler(WS_METHODS.agentDesktopHumanInvoke, () =>
+                  Effect.sync(() => {
+                    calls++;
+                    return null;
+                  }),
+                ),
+                RpcAuthorization.layer(scopes),
+              ),
+            ),
+          );
+          if (scopes.length === 1)
+            expect(
+              (yield* client[WS_METHODS.agentDesktopHumanInvoke](input).pipe(
+                Effect.asVoid,
+                Effect.flip,
+              ))._tag,
+            ).toBe("EnvironmentAuthorizationError");
+          else yield* client[WS_METHODS.agentDesktopHumanInvoke](input);
+        }
+        expect(calls).toBe(1);
+      }).pipe(Effect.scoped),
+  );
   it("allows reading monitor summaries but requires operate scope to cancel", () => {
     expect(requiredScopeForRpcMethod(WS_METHODS.threadMonitorsSubscribe)).toBe(
       AuthOrchestrationReadScope,

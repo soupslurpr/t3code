@@ -5,6 +5,7 @@ import type {
   AgentDesktop,
   AgentDesktopCommandInput,
   AgentDesktopCommandResult,
+  AgentDesktopProcessResponse,
   AgentDesktopList,
   AgentDesktopCopyInput,
   AgentDesktopPacketCapture,
@@ -70,6 +71,11 @@ const handlers = {
   agent_desktop_command: McpToolAccess.actsAsCaller((input: AgentDesktopCommandInput) =>
     invoke<AgentDesktopCommandResult>("agentDesktopCommand", (manager, owner) =>
       manager.command(owner, input),
+    ),
+  ),
+  agent_desktop_process: McpToolAccess.actsAsCaller((input) =>
+    invoke<AgentDesktopProcessResponse>("agentDesktopProcess", (manager, owner) =>
+      manager.process(owner, input),
     ),
   ),
   agent_desktop_read_file: McpToolAccess.readsAsCaller((input) =>

@@ -50,7 +50,9 @@ permissions there even when their original server is disconnected. Remote client
 owned by the selected environment.
 
 Captured output keeps a bounded beginning and tail, with 64 MiB per stream by default. Paging shows
-byte ranges and any discarded gap; binary output is available as base64.
+byte ranges and any discarded gap; binary output is available as base64. A completion wait registered
+while authorized can deliver one status-only result after natural expiry. Its deadline ends the wait
+without stopping the command. Explicit permission removal cancels associated waits.
 
 ## Copy Files Between Computers
 
@@ -440,11 +442,16 @@ request a capture with `agent_desktop_packet_capture`, specifying a duration and
 one desktop's virtual network traffic on the host and returns a private capture file, without requiring
 capture software inside the guest.
 
-Guest commands use an exact executable and argument vector over a private guest channel rather than
-an implicit shell. Bounded file reads and writes use that same channel. The default command user is
-root inside the guest, so isolation separates those privileges from the host rather than pretending
-the guest itself is unprivileged. Private QEMU control sockets and machine state are owner-only on the
-host.
+Guest commands use an exact executable and argument vector over a private guest channel, with root
+as the default user. Managed commands return a continuing process handle and keep the same identity
+when retried. They support terminal input, resize, bounded output paging, and stopping the entire
+owned job including ordinary descendants. A wait ending does not stop the command; choose a runtime
+timeout when needed. Live or uncertain jobs prevent automatic parking and maintenance. A guest
+reboot ends its command generation, so retrying an old command ID reports the old outcome rather
+than executing it again. The thread's Desktops panel and Agent desktop settings provide command
+supervision on web, desktop, and mobile. Bounded file reads and writes use the same private channel.
+Guest root privileges are separate from the host. Private QEMU sockets and machine state remain
+owner-only on the host.
 
 The current implementation targets x86-64 Arch Linux hosts with KVM, a systemd user manager, QEMU,
 UEFI firmware, and passt networking. `agent_desktop_list` reports every prerequisite separately.

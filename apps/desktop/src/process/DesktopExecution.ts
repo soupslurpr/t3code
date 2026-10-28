@@ -36,6 +36,7 @@ import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 import * as Queue from "effect/Queue";
+import * as DesktopCompletionReceipts from "./DesktopCompletionReceipts.ts";
 
 import * as DesktopEnvironment from "../app/DesktopEnvironment.ts";
 import * as UserDesktopIdentity from "../computer/UserDesktopIdentity.ts";
@@ -82,11 +83,13 @@ function executionError(cause: unknown): DesktopExecutionError {
   return cause instanceof DesktopExecutionError
     ? cause
     : new DesktopExecutionError(
-        cause instanceof DesktopGrantError ||
-          cause instanceof DesktopTransferError ||
-          cause instanceof AgentDesktopBundleError
-          ? cause.code
-          : "execution-failed",
+        isCompletionError(cause)
+          ? cause.reason
+          : cause instanceof DesktopGrantError ||
+              cause instanceof DesktopTransferError ||
+              cause instanceof AgentDesktopBundleError
+            ? cause.code
+            : "execution-failed",
         cause instanceof Error ? cause.message : "desktop execution failed",
       );
 }
@@ -113,6 +116,8 @@ interface PendingApproval extends ApprovalIntent {
   readonly result: Deferred.Deferred<DesktopExecutionAccess, DesktopExecutionError>;
 }
 
+const isCompletionError = Schema.is(DesktopCompletionReceipts.DesktopCompletionError);
+
 const requestKey = Schema.encodeSync(Schema.fromJsonString(Schema.Unknown));
 
 const make = Effect.gen(function* () {
@@ -121,6 +126,7 @@ const make = Effect.gen(function* () {
   const dialog = yield* ElectronDialog.ElectronDialog;
   const windows = yield* ElectronWindow.ElectronWindow;
   const store = yield* DesktopGrants.DesktopGrants;
+  const completions = yield* DesktopCompletionReceipts.DesktopCompletionReceipts;
   const activities = yield* DesktopProcessActivityJournal.DesktopProcessActivityJournal;
   const processChanges = yield* Queue.unbounded<DesktopProcess>();
   const hostEnvironment = yield* HostProcess.Environment;
@@ -157,6 +163,7 @@ const make = Effect.gen(function* () {
       Queue.offerUnsafe(processChanges, process);
     },
   });
+  yield* completions.resetRuntime(manager.runtimeGeneration).pipe(Effect.mapError(executionError));
   const notifyActivity = Effect.fn("DesktopExecution.notifyActivity")(function* (
     environmentId: string,
   ) {
@@ -176,7 +183,13 @@ const make = Effect.gen(function* () {
   });
   yield* Queue.take(processChanges).pipe(
     Effect.flatMap((process) =>
-      recordActivity(process, isDesktopProcessLive(process) ? "started" : "completed"),
+      completions
+        .capture(process)
+        .pipe(
+          Effect.andThen(
+            recordActivity(process, isDesktopProcessLive(process) ? "started" : "completed"),
+          ),
+        ),
     ),
     Effect.catch((cause) => Effect.logError("Could not persist command milestone", cause)),
     Effect.forever,
@@ -247,7 +260,10 @@ const make = Effect.gen(function* () {
       "Request execution permission on this desktop before running or accessing commands.",
     );
 
-  const synchronized = (owner: ProcessOwner, generation: string) => {
+  const synchronized = Effect.fn("DesktopExecution.synchronized")(function* (
+    owner: ProcessOwner,
+    generation: string,
+  ) {
     if (store.generation(owner.environmentId) !== generation) return;
     for (const prompt of approvalIntents)
       if (
@@ -256,8 +272,11 @@ const make = Effect.gen(function* () {
         prompt.generation !== generation
       )
         Deferred.doneUnsafe(prompt.cancelled, Effect.void);
-    if (deleted(owner)) cancelPending(owner, false);
-  };
+    if (deleted(owner)) {
+      cancelPending(owner, false);
+      yield* completions.removeThread(owner);
+    }
+  });
   const synchronize = Effect.fn("DesktopExecution.synchronize")(function* (
     context: DesktopComputerAutomationContext,
     owner: ProcessOwner,
@@ -265,7 +284,7 @@ const make = Effect.gen(function* () {
     if (context.lifecycle !== undefined) {
       const generation = context.connectionGeneration ?? "legacy";
       yield* store.synchronize(owner, context.lifecycle, generation);
-      synchronized(owner, generation);
+      yield* synchronized(owner, generation);
     } else yield* store.prune;
   });
 
@@ -416,6 +435,7 @@ const make = Effect.gen(function* () {
             );
           cancelPending(owner, human);
           const ids = new Set(selected.map((grant) => grant.grantId));
+          yield* completions.cancelGrants(ids);
           yield* store.replace(store.list().filter((grant) => !ids.has(grant.grantId)));
           if (input.stopProcesses !== false) {
             // Both managers capture accepted work by logical ID, including previous policy revisions.
@@ -651,7 +671,9 @@ const make = Effect.gen(function* () {
     ) {
       if (
         input.desktop.desktopId !== desktop.desktopId ||
-        ((input.operation === "access" || input.operation === "process") &&
+        ((input.operation === "access" ||
+          input.operation === "process" ||
+          input.operation === "completion") &&
           input.input.desktop.desktopId !== desktop.desktopId)
       )
         return yield* Effect.fail(
@@ -707,6 +729,53 @@ const make = Effect.gen(function* () {
         );
       if (input.operation === "access")
         return yield* access(context, owner, input.input, trustedBackend);
+      if (input.operation === "completion") {
+        const completionInput = input.input;
+        const generation =
+          (local ? store.generation(owner.environmentId) : context.connectionGeneration) ??
+          "legacy";
+        if (completionInput.action === "register") {
+          yield* store.withPermit(
+            Effect.gen(function* () {
+              if ((store.generation(owner.environmentId) ?? "legacy") !== generation)
+                return yield* Effect.fail(denied());
+              if (completions.has(owner, completionInput)) return;
+              const grant = store.select(owner, "execution");
+              if (grant === undefined) return yield* Effect.fail(denied());
+              const entry = yield* Effect.try({
+                try: () => manager.get(completionInput.processId, owner, false),
+                catch: executionError,
+              });
+              if (completionInput.runtimeGeneration !== manager.runtimeGeneration)
+                return yield* Effect.fail(
+                  new DesktopExecutionError("generation-changed", "The command runtime changed."),
+                );
+              yield* completions.invoke(owner, completionInput, [grant.grantId, entry.grantId]);
+            }),
+          );
+        }
+        const previous = yield* completions.invoke(owner, completionInput);
+        if (
+          (completionInput.action === "status" || completionInput.action === "register") &&
+          previous === null
+        ) {
+          const entry = yield* Effect.try({
+            try: () => manager.get(completionInput.processId, owner, false),
+            catch: executionError,
+          });
+          yield* completions.capture(entry.snapshot);
+        }
+        return {
+          kind: "completion" as const,
+          protocolVersion: 2 as const,
+          desktop,
+          waitId: completionInput.waitId,
+          receipt:
+            completionInput.action === "status" || completionInput.action === "register"
+              ? yield* completions.invoke(owner, { ...completionInput, action: "status" })
+              : null,
+        };
+      }
       if (
         !human &&
         input.operation === "process" &&
@@ -775,6 +844,13 @@ const make = Effect.gen(function* () {
                 ),
               }),
             };
+          if (input.input.action === "forget") {
+            const entry = yield* Effect.try({
+              try: () => manager.get(input.input.processId!, owner, human, local),
+              catch: executionError,
+            });
+            yield* completions.capture(entry.snapshot);
+          }
           return { result: manager.operate(owner, human, input.input, cancellation, local) };
         }),
       );
@@ -927,11 +1003,14 @@ const make = Effect.gen(function* () {
       }
       yield* store.synchronizeBatch(input.snapshots ?? [], input.connectionGeneration);
       for (const snapshot of input.snapshots ?? [])
-        synchronized(snapshot, input.connectionGeneration);
+        yield* synchronized(snapshot, input.connectionGeneration);
     }
     if (input.operation === "acknowledge")
       yield* activities.acknowledge(input.environmentId, input.activityIds ?? []);
-    const threadIds = new Set(store.references(input.environmentId));
+    const threadIds = new Set([
+      ...store.references(input.environmentId),
+      ...completions.references(input.environmentId),
+    ]);
     for (const process of manager.list(input.environmentId))
       if (isDesktopProcessLive(process) && process.threadId !== undefined)
         threadIds.add(process.threadId);
@@ -970,5 +1049,6 @@ const make = Effect.gen(function* () {
   });
 });
 export const layer = Layer.effect(DesktopExecution, make).pipe(
+  Layer.provide(DesktopCompletionReceipts.layer),
   Layer.provide(DesktopProcessActivityJournal.layer),
 );

@@ -1,5 +1,9 @@
+import type { DesktopProcessActivity } from "@t3tools/contracts";
 import { DesktopScreenPermissionsPanel } from "../settings/DesktopScreenPermissionsPanel";
-import { UserDesktopExecutionPanel } from "../settings/UserDesktopExecutionPanel";
+import {
+  UserDesktopExecutionPanel,
+  AgentDesktopExecutionPanel,
+} from "../settings/UserDesktopExecutionPanel";
 import { useAtomValue } from "@effect/atom-react";
 import {
   useIsFocused,
@@ -82,6 +86,7 @@ export function ThreadDesktopsRouteScreen({
   const agentInvoke = useAtomCommand(previewEnvironment.invokeAgentDesktopHuman, {
     reportFailure: false,
   });
+  const [selected, setSelected] = useState<DesktopProcessActivity | null>(null);
   const [agents, setAgents] = useState<ReadonlyArray<AgentDesktop>>([]);
   const [users, setUsers] = useState<UserDesktopList["desktops"]>([]);
   const [error, setError] = useState<string | null>(null);
@@ -224,6 +229,14 @@ export function ThreadDesktopsRouteScreen({
             />
           ))}
         <Text className="font-t3-bold">Commands and transfers</Text>
+        {agents.map((desktop) => (
+          <AgentDesktopExecutionPanel
+            key={desktop.id}
+            desktopId={desktop.id}
+            owner={desktop.owner}
+            label={desktop.label}
+          />
+        ))}
         {users
           .filter(
             (desktop) =>
@@ -257,6 +270,11 @@ export function ThreadDesktopsRouteScreen({
                 ? `Process ${command.process.phase}`
                 : `${command.tool.split("__").at(-1)} · Tool ${command.status}`}
             </Text>
+            {command.process ? (
+              <Pressable accessibilityRole="button" onPress={() => setSelected(command.process!)}>
+                <Text>Inspect process on {command.process.desktop.desktopId}</Text>
+              </Pressable>
+            ) : null}
             <Text selectable className="text-sm">
               {command.input}
             </Text>
@@ -265,6 +283,26 @@ export function ThreadDesktopsRouteScreen({
             </Text>
           </View>
         ))}
+        {selected ? (
+          selected.desktop.kind === "agent" ? (
+            <AgentDesktopExecutionPanel
+              key={selected.processId}
+              desktopId={selected.desktop.desktopId}
+              owner={{ environmentId, threadId, controllerId: "human-supervision" }}
+              label={selected.desktop.desktopId}
+              initialProcessId={selected.processId}
+            />
+          ) : (
+            <UserDesktopExecutionPanel
+              key={selected.processId}
+              environmentId={environmentId}
+              environmentLabel={environmentLabel}
+              desktop={{ kind: "user", desktopId: selected.desktop.desktopId }}
+              threadId={threadId}
+              initialProcessId={selected.processId}
+            />
+          )
+        ) : null}
         {activity.data?.commands.length === 0 && activity.data.transfers.length === 0 ? (
           <Text className="text-foreground-muted">No recent desktop activity.</Text>
         ) : null}

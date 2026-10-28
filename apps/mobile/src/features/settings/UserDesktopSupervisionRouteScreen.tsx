@@ -1,4 +1,4 @@
-import { UserDesktopExecutionPanel } from "./UserDesktopExecutionPanel";
+import { UserDesktopExecutionPanel, AgentDesktopExecutionPanel } from "./UserDesktopExecutionPanel";
 import { DesktopScreenPermissionsPanel } from "./DesktopScreenPermissionsPanel";
 import {
   AgentDesktopId,
@@ -609,7 +609,13 @@ function UserDesktopSupervisionContent({
             onPress={() => void releaseTransientAccess()}
           />
         ) : null}
-        {params.agentOwner ? null : (
+        {params.agentOwner ? (
+          <AgentDesktopExecutionPanel
+            desktopId={params.desktopId}
+            owner={params.agentOwner}
+            label={params.label}
+          />
+        ) : (
           <>
             <DesktopScreenPermissionsPanel
               environmentId={params.environmentId}
