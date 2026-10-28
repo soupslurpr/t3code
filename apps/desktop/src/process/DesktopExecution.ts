@@ -1,3 +1,4 @@
+import { permissionSourceDescription } from "../computer/permissionSourceDescription.ts";
 import * as DesktopProcessActivityJournal from "./DesktopProcessActivityJournal.ts";
 import { DESKTOP_AUTHORIZATION_CHANGED_CHANNEL } from "../ipc/channels.ts";
 /** Authorizes desktop execution independently of screen sharing and process ownership. */
@@ -234,6 +235,8 @@ const make = Effect.gen(function* () {
       (human
         ? grant.scope === "desktop" || grant.environmentId === owner.environmentId
         : grantMatches(grant, owner, store.now())));
+  const selectExecution = (owner: ProcessOwner, requireSource = true) =>
+    store.publicationUncertain() ? undefined : store.select(owner, "execution", requireSource);
   const status = (owner: ProcessOwner, human: boolean, local = false): DesktopExecutionAccess => ({
     kind: "access",
     desktop,
@@ -241,8 +244,8 @@ const make = Effect.gen(function* () {
     homeDirectory: environment.homeDirectory,
     platform: environment.platform,
     protocolVersion: 2,
-    granted: store.select(owner, "execution", !human) !== undefined,
-    selectedGrantId: store.select(owner, "execution", !human)?.grantId ?? null,
+    granted: selectExecution(owner, !human) !== undefined,
+    selectedGrantId: selectExecution(owner, !human)?.grantId ?? null,
     grants: store.list().filter((grant) => visibleGrant(grant, owner, human, local)),
     activeTransfers: human
       ? transfers.list(local ? undefined : owner.environmentId).map((entry) => ({
@@ -303,6 +306,24 @@ const make = Effect.gen(function* () {
       yield* synchronized(owner, generation);
     } else yield* store.prune;
   });
+
+  const captureRecoverySource = (
+    context: DesktopComputerAutomationContext,
+    owner: ProcessOwner,
+  ) => {
+    const generation = store.generation(owner.environmentId);
+    const source = store.source(owner);
+    return () =>
+      context.controllerKind === "local" ||
+      (generation !== undefined &&
+        generation === (context.connectionGeneration ?? "legacy") &&
+        store.generation(owner.environmentId) === generation &&
+        (context.lifecycle === undefined ||
+          (source !== undefined &&
+            context.lifecycle.environmentId === owner.environmentId &&
+            context.lifecycle.threadId === owner.threadId &&
+            store.source(owner) === source)));
+  };
 
   const proposedPolicy = (
     input: UserDesktopExecutionAccessInput,
@@ -409,6 +430,7 @@ const make = Effect.gen(function* () {
       }
       const revoked = yield* store.withPermit(
         Effect.gen(function* () {
+          if (store.publicationUncertain()) yield* store.checkStorage;
           const selected = store
             .list()
             .filter(
@@ -477,7 +499,7 @@ const make = Effect.gen(function* () {
           "Only a human can change a desktop permission policy.",
         ),
       );
-    if (input.action === "request" && store.select(owner, "execution", !human) !== undefined)
+    if (input.action === "request" && selectExecution(owner, !human) !== undefined)
       return status(owner, human, local);
     const generation =
       (local ? store.generation(owner.environmentId) : context.connectionGeneration) ?? "legacy";
@@ -512,6 +534,7 @@ const make = Effect.gen(function* () {
       result,
       description: {
         requestId,
+        ...(context.lifecycle?.source === undefined ? {} : { source: context.lifecycle.source }),
         environmentId: context.environmentId!,
         threadId: context.threadId!,
         desktop,
@@ -535,10 +558,7 @@ const make = Effect.gen(function* () {
                   "This permission request is no longer current.",
                 ),
               );
-            if (
-              input.action === "request" &&
-              store.select(owner, "execution", !human) !== undefined
-            )
+            if (input.action === "request" && selectExecution(owner, !human) !== undefined)
               return status(owner, human, local);
             const candidate = yield* Effect.try({
               try: () =>
@@ -609,7 +629,7 @@ const make = Effect.gen(function* () {
           type: "question",
           title: "Choose command permission scope",
           message: `Allow commands on ${identity.registration.defaultLabel} as ${user}?`,
-          detail: `Source environment: ${owner.environmentId}\nThread: ${owner.threadId}\nDesktop: ${desktop.desktopId}\n\nCommands and file transfers can read or change files accessible to this account. Screen permission is separate.\nRequest: ${requestId}`,
+          detail: `${permissionSourceDescription(context)}\nDesktop: ${identity.registration.defaultLabel} (${desktop.desktopId})\n\nCommands and file transfers can read or change files accessible to this account. Screen permission is separate.\nRequest: ${requestId}`,
           buttons: ["Cancel", "This thread", "This environment", "All environments"],
           defaultId: proposalScope === "thread" ? 1 : proposalScope === "environment" ? 2 : 3,
           cancelId: 0,
@@ -637,7 +657,7 @@ const make = Effect.gen(function* () {
           type: "question",
           title: "Choose command permission lifetime",
           message: `Allow execution for ${scope === "thread" ? "this thread" : scope === "environment" ? "this environment" : "all environments"}?`,
-          detail: `${automatic ? "Automatic: 15 minutes after settlement, 24 hours without task activity, and at most seven days.\n" : ""}Until a time: ${finiteDeadline}\nExpiry removes agent access; running commands continue. You can inspect and stop them in Settings → User desktops.`,
+          detail: `${permissionSourceDescription(context)}\n\n${automatic ? "Automatic: 15 minutes after settlement, 24 hours without task activity, and at most seven days.\n" : ""}Until a time: ${finiteDeadline}\nExpiry removes agent access; running commands continue. You can inspect and stop them in Settings → User desktops.`,
           buttons: choices,
           defaultId:
             automatic && proposalLifetime === "automatic"
@@ -738,7 +758,17 @@ const make = Effect.gen(function* () {
           ),
         );
       }
-      yield* synchronize(context, owner);
+      const recovery =
+        human &&
+        input.operation === "process" &&
+        ["list", "read", "signal", "forget"].includes(input.input.action);
+      const uncertainRecovery = recovery && store.publicationUncertain();
+      const currentRecovery = uncertainRecovery
+        ? captureRecoverySource(context, owner)
+        : () => !store.publicationUncertain();
+      if (uncertainRecovery) {
+        if (!currentRecovery()) return yield* Effect.fail(denied());
+      } else yield* synchronize(context, owner);
       if (!human && deleted(owner))
         return yield* Effect.fail(
           new DesktopExecutionError("thread-deleted", "This thread was deleted."),
@@ -756,7 +786,7 @@ const make = Effect.gen(function* () {
               if ((store.generation(owner.environmentId) ?? "legacy") !== generation)
                 return yield* Effect.fail(denied());
               if (completions.has(owner, completionInput)) return;
-              const grant = store.select(owner, "execution");
+              const grant = selectExecution(owner);
               if (grant === undefined) return yield* Effect.fail(denied());
               const entry = yield* Effect.try({
                 try: () => manager.get(completionInput.processId, owner, false),
@@ -799,10 +829,6 @@ const make = Effect.gen(function* () {
         input.input.threadId !== owner.threadId
       )
         return yield* Effect.fail(denied());
-      const recovery =
-        human &&
-        input.operation === "process" &&
-        ["list", "read", "signal", "forget"].includes(input.input.action);
       const cancellation = yield* Effect.abortSignal;
       if (
         recovery &&
@@ -831,7 +857,8 @@ const make = Effect.gen(function* () {
         (store.generation(owner.environmentId) ?? "legacy") === generation;
       const accepted = yield* store.withPermit(
         Effect.gen(function* () {
-          const grant = store.select(permissionOwner, "execution");
+          if (recovery && !currentRecovery()) return yield* Effect.fail(denied());
+          const grant = uncertainRecovery ? undefined : selectExecution(permissionOwner);
           if (!recovery && (grant === undefined || !currentGeneration()))
             return yield* Effect.fail(denied());
           if (input.operation === "command") {
@@ -868,6 +895,7 @@ const make = Effect.gen(function* () {
             });
             yield* completions.capture(entry.snapshot);
           }
+          if (recovery && !currentRecovery()) return yield* Effect.fail(denied());
           return { result: manager.operate(owner, human, input.input, cancellation, local) };
         }),
       );
@@ -889,11 +917,9 @@ const make = Effect.gen(function* () {
             Effect.logWarning("Could not record command input activity", cause),
           ),
         );
+      if (recovery && !currentRecovery()) return yield* Effect.fail(denied());
       // Recheck after any wait/I/O, immediately before returning fresh bytes or paths.
-      if (
-        !recovery &&
-        (!currentGeneration() || store.select(permissionOwner, "execution") === undefined)
-      ) {
+      if (!recovery && (!currentGeneration() || selectExecution(permissionOwner) === undefined)) {
         if (input.operation === "command" && result?.kind === "process")
           return {
             kind: "permission-required" as const,
@@ -956,7 +982,7 @@ const make = Effect.gen(function* () {
           : context.connectionGeneration) ?? "legacy";
       const accepted = yield* store.withPermit(
         Effect.gen(function* () {
-          const grant = store.select(owner, "execution");
+          const grant = selectExecution(owner);
           if (
             grant === undefined ||
             (store.generation(owner.environmentId) ?? "legacy") !== generation

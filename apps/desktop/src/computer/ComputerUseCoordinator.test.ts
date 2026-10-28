@@ -171,6 +171,8 @@ const withCoordinator = <A, E, R>(
             changes: Stream.empty,
             confirmShared: () => Effect.void,
             grants: () => [],
+            authorization: () => ({ protocolVersion: 2, grants: [] }),
+            invokeFromNativeBackend: () => Effect.die("unexpected native authorization"),
             retain: () => {},
             release: () => {},
             cancel: () => Effect.void,

@@ -1,4 +1,8 @@
-import { AuthSessionId } from "@t3tools/contracts";
+import {
+  AuthSessionId,
+  DesktopAuthorizationError,
+  type DesktopScreenPermissionInput,
+} from "@t3tools/contracts";
 import { DesktopExecutionAuthorizationChannel } from "../computer/DesktopExecutionAuthorizationChannel.ts";
 import * as ComputerObservationStore from "../computer/ComputerObservationStore.ts";
 import * as UserDesktops from "../persistence/UserDesktops.ts";
@@ -60,6 +64,160 @@ const registration = (desktopId: string) => ({
   platform: "linux" as const,
   capabilities: ["view" as const, "control" as const, "availability" as const],
 });
+
+it.effect.each(
+  (["native-desktop", "foreign-desktop"] as const).flatMap((desktopId) =>
+    (["permission-denied", "native-channel-unavailable"] as const).flatMap((code) =>
+      [false, true].map((hasAuthorization) => ({ desktopId, code, hasAuthorization })),
+    ),
+  ),
+)(
+  "keeps $desktopId broker status after $code with authorization=$hasAuthorization",
+  ({ desktopId, code, hasAuthorization }) =>
+    Effect.gen(function* () {
+      const broker = yield* PreviewAutomationBroker.PreviewAutomationBroker;
+      const authorization = { protocolVersion: 2, grants: [], remoteApprovalAvailable: true };
+      const status = {
+        available: true,
+        lease: { access: "view", canReturnControl: false },
+        ...(hasAuthorization ? { authorization } : {}),
+      };
+      const target = yield* serve(
+        {
+          clientId: "screen-host",
+          environmentId,
+          supportedOperations: COMPUTER_AUTOMATION_OPERATIONS,
+          userDesktop: registration(desktopId),
+        },
+        { ok: true, result: status },
+      );
+      const calls: DesktopScreenPermissionInput[] = [];
+      const error = new DesktopAuthorizationError({ code, message: "No native approval channel" });
+      const channel = {
+        invoke: () => Effect.succeedNone,
+        reserveWorktreeCleanup: Effect.succeed(false),
+        invokeScreen: (
+          session: AuthSessionId,
+          thread: ThreadId,
+          input: DesktopScreenPermissionInput,
+        ) =>
+          Effect.suspend(() => {
+            expect(session).toBe("current-client");
+            expect(thread).toBe(scope.thread.threadId);
+            expect(input.desktop.desktopId).toBe(desktopId);
+            calls.push(input);
+            return Effect.fail(error);
+          }),
+      };
+      const invoke = (request: Parameters<typeof runHumanRequest>[2]["request"]) =>
+        runHumanRequest(
+          broker,
+          { ...scope, thread: { ...scope.thread, controllerKind: "human" } },
+          { request },
+          AuthSessionId.make("current-client"),
+        ).pipe(Effect.provideService(DesktopExecutionAuthorizationChannel, channel));
+      const observed = yield* invoke({ operation: "status", desktopId });
+      expect(observed).toEqual({
+        ...status,
+        ...(hasAuthorization
+          ? { authorization: { ...authorization, remoteApprovalAvailable: false } }
+          : {}),
+      });
+      for (const action of ["approve", "deny"] as const) {
+        expect(
+          yield* invoke({
+            operation: "screen-permission",
+            action,
+            desktopId,
+            requestId: "pending",
+            policy: { scope: "thread", lifetime: "automatic", remembered: false, deadline: null },
+          }).pipe(Effect.match({ onFailure: (failure) => failure, onSuccess: () => null })),
+        ).toBe(error);
+      }
+      expect(target.map((request) => request.operation)).toEqual(["computerStatus"]);
+      expect(calls.map((input) => input.action)).toEqual(["status", "approve", "deny"]);
+    }).pipe(Effect.provide(layer), Effect.scoped),
+);
+
+it.effect.each(["native", "foreign", "revoked"] as const)(
+  "routes screen decisions through %s authority without granting fallback approval",
+  (authority) =>
+    Effect.gen(function* () {
+      const broker = yield* PreviewAutomationBroker.PreviewAutomationBroker;
+      const nativeAuthorization = {
+        protocolVersion: 2 as const,
+        grants: [],
+        pendingRequests: [],
+        remoteApprovalAvailable: true,
+      };
+      const status = { authorization: { ...nativeAuthorization, remoteApprovalAvailable: false } };
+      const target = yield* serve(
+        {
+          clientId: "screen-host",
+          environmentId,
+          supportedOperations: COMPUTER_AUTOMATION_OPERATIONS,
+          userDesktop: registration("screen-desktop"),
+        },
+        { ok: true, result: status },
+      );
+      const calls: DesktopScreenPermissionInput[] = [];
+      const sessionId = AuthSessionId.make("current-client");
+      const humanScope = {
+        ...scope,
+        thread: { ...scope.thread, controllerKind: "human" as const },
+      };
+      const channel = {
+        invoke: () => Effect.succeedNone,
+        reserveWorktreeCleanup: Effect.succeed(false),
+        invokeScreen: (
+          session: AuthSessionId,
+          thread: ThreadId,
+          input: DesktopScreenPermissionInput,
+        ) =>
+          Effect.suspend(() => {
+            expect(session).toBe(sessionId);
+            expect(thread).toBe(scope.thread.threadId);
+            expect(input.desktop.desktopId).toBe("screen-desktop");
+            calls.push(input);
+            return authority === "native"
+              ? Effect.succeedSome(nativeAuthorization)
+              : authority === "foreign"
+                ? Effect.succeedNone
+                : Effect.fail(
+                    new DesktopAuthorizationError({
+                      code: "permission-denied",
+                      message: "Revoked",
+                    }),
+                  );
+          }),
+      };
+      const invoke = (request: Parameters<typeof runHumanRequest>[2]["request"]) =>
+        runHumanRequest(broker, humanScope, { request }, sessionId).pipe(
+          Effect.provideService(DesktopExecutionAuthorizationChannel, channel),
+        );
+      expect(yield* invoke({ operation: "status", desktopId: "screen-desktop" })).toEqual(
+        authority === "native" ? { ...status, authorization: nativeAuthorization } : status,
+      );
+      for (const action of ["approve", "deny"] as const) {
+        const decision = invoke({
+          operation: "screen-permission",
+          action,
+          desktopId: "screen-desktop",
+          requestId: "request",
+          policy: { scope: "thread", lifetime: "automatic", remembered: false, deadline: null },
+        });
+        if (authority === "native") expect(yield* decision).toEqual(nativeAuthorization);
+        else
+          expect(
+            yield* decision.pipe(
+              Effect.match({ onFailure: (error) => error, onSuccess: () => null }),
+            ),
+          ).toMatchObject({ _tag: "DesktopAuthorizationError", code: "permission-denied" });
+      }
+      expect(target.map((request) => request.operation)).toEqual(["computerStatus"]);
+      expect(calls.map((input) => input.action)).toEqual(["status", "approve", "deny"]);
+    }).pipe(Effect.provide(layer), Effect.scoped),
+);
 const serveInventoryHost = Effect.fn("ForkBrokerTest.serveInventoryHost")(function* (
   host: PreviewAutomationHost,
 ) {
@@ -1501,6 +1659,7 @@ function runUserDesktopHumanRequest(
   return runHumanRequest(...args, AuthSessionId.make("test-session")).pipe(
     Effect.provideService(DesktopExecutionAuthorizationChannel, {
       invoke: () => Effect.succeedNone,
+      invokeScreen: () => Effect.succeedNone,
       reserveWorktreeCleanup: Effect.succeed(false),
     }),
   );

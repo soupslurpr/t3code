@@ -16,6 +16,7 @@ import * as Stream from "effect/Stream";
 import * as DesktopExecution from "./DesktopExecution.ts";
 import * as Host from "./DesktopExecutionAuthorizationHost.ts";
 import * as Identity from "../computer/UserDesktopIdentity.ts";
+import * as ScreenPermissions from "../computer/DesktopScreenPermissions.ts";
 
 const encode = Schema.encodeSync(Schema.fromJsonString(DesktopExecutionAuthorizationCommand));
 const decode = Schema.decodeUnknownEffect(
@@ -25,6 +26,7 @@ const desktop = { kind: "user", desktopId: "native-target" } as const;
 it.effect("binds decisions to one native child generation, source and invocation payload", () =>
   Effect.gen(function* () {
     const contexts: DesktopComputerAutomationContext[] = [];
+    const screenContexts: DesktopComputerAutomationContext[] = [];
     let cleanupLease: string | null = null;
     const environmentId = EnvironmentId.make("native-environment");
     const test = Effect.gen(function* () {
@@ -96,6 +98,29 @@ it.effect("binds decisions to one native child generation, source and invocation
       );
       const conflict = yield* Queue.take(events);
       assert.isTrue(conflict.type === "error" && conflict.code === "invocation-conflict");
+      const screen = {
+        ...command,
+        type: "screen" as const,
+        invocationId: "screen-decision",
+        input: { desktop, action: "status" as const },
+      };
+      yield* channel.handleCommandLine(encode(screen));
+      const screenReply = yield* Queue.take(events);
+      assert.equal(screenReply.type, "screen-result");
+      yield* channel.handleCommandLine(encode(screen));
+      assert.deepEqual(yield* Queue.take(events), screenReply);
+      assert.lengthOf(screenContexts, 1);
+      assert.equal(screenContexts[0]!.controllerKind, "human");
+      assert.equal(screenContexts[0]!.environmentId, environmentId);
+      yield* channel.handleCommandLine(
+        encode({
+          ...screen,
+          invocationId: "foreign-screen",
+          input: { ...screen.input, desktop: { kind: "user", desktopId: "foreign" } },
+        }),
+      );
+      assert.equal((yield* Queue.take(events)).type, "error");
+      assert.lengthOf(screenContexts, 1);
       const replacement = yield* host.open;
       const replacementEvents = yield* Queue.unbounded<DesktopExecutionAuthorizationEvent>();
       yield* replacement.events.pipe(
@@ -116,6 +141,20 @@ it.effect("binds decisions to one native child generation, source and invocation
     yield* test.pipe(
       Effect.provide(
         Host.layer.pipe(
+          Layer.provide(
+            Layer.mock(ScreenPermissions.DesktopScreenPermissions)({
+              has: () => false,
+              grants: () => [],
+              authorization: () => ({ protocolVersion: 2, grants: [] }),
+              retain: () => {},
+              release: () => {},
+              invokeFromNativeBackend: (context) =>
+                Effect.sync(() => {
+                  screenContexts.push(context);
+                  return { protocolVersion: 2 as const, grants: [], remoteApprovalAvailable: true };
+                }),
+            }),
+          ),
           Layer.provide(
             Layer.mock(Identity.UserDesktopIdentity)({
               registration: {

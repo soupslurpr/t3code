@@ -525,10 +525,21 @@ const make = Effect.gen(function* () {
       controller?.key === key &&
       leases.displacedController?.context.controllerKind === "agent" &&
       leases.viewers.has(leases.displacedController.key);
+    const authorization = permissions.authorization(context);
     return {
       ...status,
       desktop: userDesktop,
-      authorization: { protocolVersion: 2, grants: permissions.grants(context) },
+      authorization,
+      ...(authorization === undefined
+        ? {
+            detail: [
+              status.detail,
+              "Screen permissions are unavailable because permission publication could not be confirmed. Saved permissions may have changed; reload the permission store before granting access.",
+            ]
+              .filter(Boolean)
+              .join(" "),
+          }
+        : {}),
       permission,
       rememberedAccess,
       lease: {
