@@ -1,6 +1,7 @@
 import { ProviderDriverKind } from "@t3tools/contracts";
 import { MuseSettings } from "../settings.ts";
 import * as HostProcess from "@t3tools/shared/HostProcess";
+import { resolveSelfInvocation } from "@t3tools/shared/nodeRuntime";
 import * as Crypto from "effect/Crypto";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
@@ -186,6 +187,7 @@ export const MuseDriver: ProviderDriver<
       instanceId,
       settings: effectiveConfig,
       environment: processEnvironment,
+      selfInvocation: yield* resolveSelfInvocation(),
       modelCatalog,
       ...(eventLoggers.native ? { nativeEventLogger: eventLoggers.native } : {}),
       continuationRequests,
