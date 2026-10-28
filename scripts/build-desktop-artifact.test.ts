@@ -595,13 +595,16 @@ it.layer(NodeServices.layer)("build-desktop-artifact", (it) => {
     }),
   );
 
-  it.effect("keeps desktop PTY subpaths external and stages its matching patched version", () =>
+  it.effect("keeps desktop native subpaths external and stages their pinned dependencies", () =>
     Effect.gen(function* () {
       const workspace = yield* readWorkspaceConfig();
       const dependencies = selectDesktopRuntimeExternalDependencies(desktopManifest.dependencies);
       assert.isTrue(isDesktopRuntimeExternalDependency("node-pty"));
       assert.isTrue(isDesktopRuntimeExternalDependency("node-pty/lib/utils.js"));
       assert.equal(dependencies["node-pty"], desktopManifest.dependencies["node-pty"]);
+      assert.equal(dependencies["koffi"], "3.3.6");
+      assert.isTrue(isDesktopRuntimeExternalDependency("koffi/index.js"));
+      assert.isTrue(isDesktopRuntimeExternalDependency("@koromix/koffi-linux-x64"));
       const staged = createStageWorkspaceConfig({
         platform: "linux",
         arch: "x64",

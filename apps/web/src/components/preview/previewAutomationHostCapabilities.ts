@@ -6,7 +6,7 @@ import {
 } from "@t3tools/contracts";
 
 const operationsByCapability = {
-  execution: new Set(["computerExecution"]),
+  execution: new Set(["computerExecution", "computerTransfer"]),
   view: new Set(["computerRequestView", "computerRememberView", "computerSnapshot"]),
   control: new Set(["computerRequestControl", "computerRememberControl", "computerAct"]),
   availability: new Set(["computerRequestAvailability", "computerReleaseAvailability"]),
@@ -28,6 +28,7 @@ export function previewAutomationHostCapabilities(input: {
   readonly userDesktop?: UserDesktopHostRegistration;
   readonly computerInterruptAvailable?: boolean;
   readonly executionAvailable?: boolean;
+  readonly transferAvailable?: boolean;
 }): Pick<PreviewAutomationHost, "supportedOperations" | "userDesktop"> {
   const capabilities = new Set(input.computerCapabilities);
   const hasAccessCapability = capabilities.has("view") || capabilities.has("control");
@@ -48,7 +49,9 @@ export function previewAutomationHostCapabilities(input: {
             (operation) =>
               (operation === "computerExecution"
                 ? input.executionAvailable === true
-                : input.computerAvailable) &&
+                : operation === "computerTransfer"
+                  ? input.transferAvailable === true
+                  : input.computerAvailable) &&
               (operation !== "computerInterrupt" || input.computerInterruptAvailable === true) &&
               ((hasAccessCapability && sharedComputerOperations.has(operation)) ||
                 Array.from(capabilities).some((capability) =>

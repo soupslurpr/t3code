@@ -503,6 +503,23 @@ export async function packAgentDesktopBundle(
   const rawPath = `${outputPath}.${NodeCrypto.randomUUID()}.raw`;
   let ownsOutput = false;
   await NodeFSP.mkdir(NodePath.dirname(outputPath), { recursive: true });
+  if ((await NodeFSP.lstat(input.sourcePath)).isDirectory()) {
+    // A source containing its own growing archive can never produce a stable copy.
+    const sourceRoot = await NodeFSP.realpath(input.sourcePath);
+    const outputParent = await NodeFSP.realpath(NodePath.dirname(outputPath));
+    const relativeParent = NodePath.relative(sourceRoot, outputParent);
+    if (
+      relativeParent !== ".." &&
+      !relativeParent.startsWith(`..${NodePath.sep}`) &&
+      !NodePath.isAbsolute(relativeParent)
+    ) {
+      throw new AgentDesktopBundleError({
+        code: "invalid-entry",
+        message:
+          "The copied directory contains the transfer staging directory. Choose a narrower source directory or stage the archive elsewhere.",
+      });
+    }
+  }
   try {
     const summary = await writeRawBundle({
       sourcePath: input.sourcePath,
@@ -614,8 +631,14 @@ async function applyEntryTime(path: string, mtimeMs: number): Promise<void> {
 }
 
 /** Moves one staged tree into a destination, replacing conflicting merge entries. */
-async function mergeStagedDirectory(stagingPath: string, destinationPath: string): Promise<void> {
+async function mergeStagedDirectory(
+  stagingPath: string,
+  destinationPath: string,
+  signal?: AbortSignal,
+): Promise<void> {
+  throwIfAborted(signal);
   const destinationStats = await NodeFSP.lstat(destinationPath).catch(() => null);
+  throwIfAborted(signal);
   if (destinationStats === null) {
     await NodeFSP.rename(stagingPath, destinationPath);
     return;
@@ -629,21 +652,24 @@ async function mergeStagedDirectory(stagingPath: string, destinationPath: string
   const children = await NodeFSP.readdir(stagingPath);
   children.sort((left, right) => left.localeCompare(right));
   for (const child of children) {
+    throwIfAborted(signal);
     const source = NodePath.join(stagingPath, child);
     const destination = NodePath.join(destinationPath, child);
     const [sourceStats, targetStats] = await Promise.all([
       NodeFSP.lstat(source),
       NodeFSP.lstat(destination).catch(() => null),
     ]);
+    throwIfAborted(signal);
     if (
       sourceStats.isDirectory() &&
       !sourceStats.isSymbolicLink() &&
       targetStats?.isDirectory() &&
       !targetStats.isSymbolicLink()
     ) {
-      await mergeStagedDirectory(source, destination);
+      await mergeStagedDirectory(source, destination, signal);
     } else {
       if (targetStats !== null) await NodeFSP.rm(destination, { recursive: true, force: true });
+      throwIfAborted(signal);
       await NodeFSP.rename(source, destination);
     }
   }
@@ -660,6 +686,7 @@ async function installStaging(input: {
   readonly collision: AgentDesktopBundleCollision;
   readonly signal?: AbortSignal;
 }): Promise<void> {
+  throwIfAborted(input.signal);
   if (input.collision === "create") {
     try {
       await renameNoReplace({
@@ -682,6 +709,7 @@ async function installStaging(input: {
     return;
   }
   const destinationStats = await NodeFSP.lstat(input.destinationPath).catch(() => null);
+  throwIfAborted(input.signal);
   if (input.collision === "merge") {
     if (input.rootType !== "directory") {
       throw new AgentDesktopBundleError({
@@ -689,7 +717,7 @@ async function installStaging(input: {
         message: "merge requires a directory source",
       });
     }
-    await mergeStagedDirectory(input.stagingPath, input.destinationPath);
+    await mergeStagedDirectory(input.stagingPath, input.destinationPath, input.signal);
     return;
   }
   if (destinationStats === null) {
@@ -869,6 +897,7 @@ async function extractRawBundle(input: {
     }
     await archive.close();
     archiveClosed = true;
+    throwIfAborted(input.signal);
     await installStaging({
       parentIdentity,
       ...(input.loadKoffi === undefined ? {} : { loadKoffi: input.loadKoffi }),
