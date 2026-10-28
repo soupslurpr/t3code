@@ -2327,7 +2327,14 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
           id: `effect:restart-continuation:${run.id}`,
           commandId,
           threadId,
-          request: { type: "provider-runtime.continue", sourceRunId: run.id },
+          request: {
+            type: "provider-runtime.continue",
+            sourceRunId: run.id,
+            lastRunOrdinal: projection.runs.reduce(
+              (last, candidate) => Math.max(last, candidate.ordinal),
+              0,
+            ),
+          },
           availableAt: DateTime.add(yield* DateTime.now, { milliseconds: delayMs }),
         },
       ],
@@ -5428,6 +5435,9 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
             run.status !== "queued" &&
             !cancelledBeforeStart(run) &&
             runRanAfter(run, source),
+        ) ||
+        projection.runs.some(
+          (run) => run.ordinal > (command.restartContinuationLastRunOrdinal ?? source.ordinal),
         ) ||
         (yield* stopReachedRun(command, command.threadId, source.id))
       ) {
