@@ -21,6 +21,7 @@ import {
   fallbackTextGenerationModelSelection,
   modelPreferencesMigrationPatch,
   resolveModelPreferences,
+  supportsServerModelPreferences,
   isModelSelectionProviderEnabled,
   parsePersistedServerObservabilitySettings,
   resolveSourceControlWriterModelSelection,
@@ -30,6 +31,7 @@ const decodeServerSettings = Schema.decodeUnknownSync(ServerSettings);
 const decodeServerSettingsPatch = Schema.decodeUnknownSync(ServerSettingsPatch);
 
 const FOLDED_SERVER_SETTINGS = { ...DEFAULT_SERVER_SETTINGS, projectSettingsFolded: true };
+const encodeServerSettings = Schema.encodeSync(ServerSettings);
 
 describe("fallbackTextGenerationModelSelection", () => {
   it("uses Big Pickle when only OpenCode is enabled", () => {
@@ -841,6 +843,22 @@ describe("synchronized model preferences", () => {
     favorites: [{ provider, model: "sol" }],
     providerModelPreferences: { [provider]: { hiddenModels: ["astra"], modelOrder: ["sol"] } },
   };
+
+  it("uses local preferences for old wire settings but accepts advertised or already migrated servers", () => {
+    const {
+      favorites: _favorites,
+      providerModelPreferences: _preferences,
+      ...oldWireSettings
+    } = encodeServerSettings(DEFAULT_SERVER_SETTINGS);
+    const oldSettings = decodeServerSettings(oldWireSettings);
+    expect(supportsServerModelPreferences(oldSettings, {})).toBe(false);
+    expect(supportsServerModelPreferences(oldSettings, { modelPreferences: true })).toBe(true);
+    expect(supportsServerModelPreferences({ ...oldSettings, favorites: [] }, {})).toBe(true);
+    expect(
+      supportsServerModelPreferences({ ...oldSettings, providerModelPreferences: {} }, {}),
+    ).toBe(true);
+    expect(supportsServerModelPreferences(null, { modelPreferences: true })).toBe(false);
+  });
 
   it("keeps concurrent adds and removes of the same favorite idempotent", () => {
     const add = { setModelFavorites: [{ provider, model: "sol", favorite: true }] };
