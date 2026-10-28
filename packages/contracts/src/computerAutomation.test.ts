@@ -539,3 +539,32 @@ describe("computer automation contracts", () => {
     ).toThrow(/verification must agree/u);
   });
 });
+
+it("supports durable desktop regions on negative-origin displays without mixing display selectors", () => {
+  const region = {
+    coordinateSpace: "desktop-logical",
+    displayId: "left",
+    x: -100,
+    y: 0,
+    width: 50,
+    height: 40,
+  };
+  expect(
+    decodeSnapshotInput({ desktop: { kind: "user" }, screenshot: { region } }).screenshot,
+  ).toEqual({ region });
+  expect(() =>
+    decodeSnapshotInput({ desktop: { kind: "user" }, displayId: "other", screenshot: { region } }),
+  ).toThrow();
+  expect(() =>
+    decodeSnapshotInput({
+      desktop: { kind: "user" },
+      screenshot: { region: { ...region, width: 0 } },
+    }),
+  ).toThrow();
+  expect(() =>
+    decodeSnapshotInput({
+      desktop: { kind: "user" },
+      screenshot: { region: { ...region, x: -1.5 } },
+    }),
+  ).toThrow();
+});
