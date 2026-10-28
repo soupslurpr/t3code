@@ -7,6 +7,8 @@ import {
   type ComputerAutomationActInput,
   type ComputerAutomationAvailabilityInput,
   type ComputerAutomationObservation,
+  type ComputerAutomationObserveSequenceInput,
+  type ComputerAutomationTemporalSequence,
   type ComputerAutomationObservationOptions,
   type ComputerAutomationSnapshot,
   type ComputerAutomationSnapshotInput,
@@ -14,6 +16,11 @@ import {
   type ComputerAutomationTargetInput,
   type PreviewAutomationError,
 } from "@t3tools/contracts";
+import {
+  captureComputerTemporalFrame,
+  captureComputerTemporalSequence,
+} from "@t3tools/shared/computerTemporalCapture";
+import * as Clock from "effect/Clock";
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
@@ -53,6 +60,10 @@ export interface ComputerAutomationRouterShape {
     scope: McpInvocationContext.McpThreadInvocationScope,
     input: ComputerAutomationSnapshotInput,
   ) => Effect.Effect<ComputerAutomationSnapshot, PreviewAutomationError>;
+  readonly observeSequence: (
+    scope: McpInvocationContext.McpThreadInvocationScope,
+    input: ComputerAutomationObserveSequenceInput,
+  ) => Effect.Effect<ComputerAutomationTemporalSequence, PreviewAutomationError>;
   readonly act: (
     scope: McpInvocationContext.McpThreadInvocationScope,
     input: ComputerAutomationActInput,
@@ -225,25 +236,71 @@ export const make = Effect.gen(function* () {
     );
   };
 
-  const act: ComputerAutomationRouterShape["act"] = (scope, input) => {
-    if (input.desktop.kind === "user") {
-      return broker.invoke({ scope, operation: "computerAct", input, timeoutMs: 120_000 });
-    }
-    const { desktop, observation, ...actions } = input;
-    return local(
-      scope,
-      "computerAct",
-      agent.act(scope.thread.providerSessionId, actions, desktop.desktopId),
-    ).pipe(
-      Effect.flatMap((actionResults) =>
-        observeAgent({
+  const observeSequence: ComputerAutomationRouterShape["observeSequence"] = (scope, input) =>
+    captureComputerTemporalSequence({
+      capture: input,
+      snapshot: snapshot(scope, {
+        desktop: input.desktop,
+        ...(input.displayId === undefined ? {} : { displayId: input.displayId }),
+        includeAccessibility: false,
+        screenshot: input.screenshot ?? {},
+      }),
+    });
+
+  const act: ComputerAutomationRouterShape["act"] = Effect.fn("ComputerAutomationRouter.act")(
+    function* (scope, input) {
+      if (input.desktop.kind === "user") {
+        return yield* broker.invoke<ComputerAutomationObservation>({
           scope,
-          desktopId: desktop.desktopId,
-          options: observation ?? { delayMs: DEFAULT_ACTION_OBSERVATION_DELAY_MS },
-        }).pipe(Effect.map((result) => ({ ...result, actionResults }))),
-      ),
-    );
-  };
+          operation: "computerAct",
+          input,
+          timeoutMs: 120_000,
+        });
+      }
+      const { desktop, observation, temporalObservation, ...actions } = input;
+      const action = local(
+        scope,
+        "computerAct",
+        agent.act(scope.thread.providerSessionId, actions, desktop.desktopId),
+      ).pipe(
+        Effect.flatMap((actionResults) =>
+          observeAgent({
+            scope,
+            desktopId: desktop.desktopId,
+            options: observation ?? { delayMs: DEFAULT_ACTION_OBSERVATION_DELAY_MS },
+          }).pipe(Effect.map((result) => ({ ...result, actionResults }))),
+        ),
+      );
+      if (temporalObservation === undefined) return yield* action;
+      const captureInput = {
+        capture: temporalObservation,
+        snapshot: snapshot(scope, {
+          desktop,
+          ...(temporalObservation.displayId === undefined
+            ? {}
+            : { displayId: temporalObservation.displayId }),
+          includeAccessibility: false,
+          screenshot: temporalObservation.screenshot ?? {},
+        }),
+      };
+      if ((temporalObservation.start ?? "before-actions") === "after-actions") {
+        const result = yield* action;
+        const temporalSequence = yield* captureComputerTemporalSequence(captureInput);
+        return { ...result, temporalSequence };
+      }
+      const startedAtMs = yield* Clock.currentTimeMillis;
+      const firstFrame = yield* captureComputerTemporalFrame({
+        ...captureInput,
+        index: 0,
+        startedAtMs,
+      });
+      const [result, temporalSequence] = yield* Effect.all(
+        [action, captureComputerTemporalSequence({ ...captureInput, startedAtMs, firstFrame })],
+        { concurrency: "unbounded" },
+      );
+      return { ...result, temporalSequence };
+    },
+  );
 
   const release: ComputerAutomationRouterShape["release"] = (scope, input) =>
     input.desktop.kind === "user"
@@ -270,6 +327,7 @@ export const make = Effect.gen(function* () {
     requestAvailability,
     releaseAvailability,
     snapshot,
+    observeSequence,
     act,
     release,
     forget,

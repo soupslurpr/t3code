@@ -1,6 +1,6 @@
 import * as Schema from "effect/Schema";
 
-import { TrimmedNonEmptyString } from "./baseSchemas.ts";
+import { IsoDateTime, NonNegativeInt, TrimmedNonEmptyString } from "./baseSchemas.ts";
 import {
   ComputerDesktopIdentity,
   ComputerDesktopSelector,
@@ -24,6 +24,10 @@ const MAX_FAILURE_BACKEND_CODE_LENGTH = 128;
 const MAX_FAILURE_DETAIL_LENGTH = 2_000;
 const MAX_OBSERVATION_DELAY_MS = 5_000;
 const MAX_SCREENSHOT_DIMENSION = 4_096;
+const MAX_TEMPORAL_SEQUENCE_FRAMES = 24;
+const MIN_TEMPORAL_SEQUENCE_INTERVAL_MS = 100;
+const MAX_TEMPORAL_SEQUENCE_INTERVAL_MS = 5_000;
+const MAX_TEMPORAL_SEQUENCE_DURATION_MS = 30_000;
 
 /** Operations that target the host computer rather than a browser preview. */
 export const COMPUTER_AUTOMATION_OPERATIONS = [
@@ -423,6 +427,51 @@ export const ComputerAutomationObservationOptions = Schema.Struct({
   });
 export type ComputerAutomationObservationOptions = typeof ComputerAutomationObservationOptions.Type;
 
+export const ComputerAutomationTemporalCaptureOptions = Schema.Struct({
+  displayId: Schema.optional(ComputerAutomationDisplayId).annotate({
+    description: "Display to capture. Omit to capture the primary display.",
+  }),
+  screenshot: Schema.optional(ComputerAutomationScreenshotOptions).annotate({
+    description:
+      "Screenshot resolution and optional region applied to every frame in the sequence.",
+  }),
+  frameCount: Schema.Int.check(
+    Schema.isBetween({ minimum: 2, maximum: MAX_TEMPORAL_SEQUENCE_FRAMES }),
+  ).annotate({
+    description: "Number of timestamped frames to capture; range 2 through 24.",
+  }),
+  intervalMs: Schema.Int.check(
+    Schema.isBetween({
+      minimum: MIN_TEMPORAL_SEQUENCE_INTERVAL_MS,
+      maximum: MAX_TEMPORAL_SEQUENCE_INTERVAL_MS,
+    }),
+  ).annotate({
+    description: "Target delay between frame starts; range 100 through 5000 milliseconds.",
+  }),
+})
+  .check(
+    Schema.makeFilter((input) => {
+      const durationMs = (input.frameCount - 1) * input.intervalMs;
+      return (
+        durationMs <= MAX_TEMPORAL_SEQUENCE_DURATION_MS ||
+        `Temporal sequence duration must be at most ${MAX_TEMPORAL_SEQUENCE_DURATION_MS}ms.`
+      );
+    }),
+    Schema.makeFilter((input) => {
+      return (
+        input.displayId === undefined ||
+        input.screenshot?.region === undefined ||
+        "Omit displayId when screenshot.region selects its source display or frame."
+      );
+    }),
+  )
+  .annotate({
+    description:
+      "Captures a bounded, ephemeral sequence of screen images without accessibility data or persistent recording.",
+  });
+export type ComputerAutomationTemporalCaptureOptions =
+  typeof ComputerAutomationTemporalCaptureOptions.Type;
+
 const ComputerAutomationDesktopTargetField = {
   desktop: ComputerDesktopTarget,
 };
@@ -435,6 +484,33 @@ export const ComputerAutomationSnapshotInput = ComputerAutomationObservationOpti
   { unsafePreserveChecks: true },
 );
 export type ComputerAutomationSnapshotInput = typeof ComputerAutomationSnapshotInput.Type;
+
+export const ComputerAutomationObserveSequenceInput = Schema.Struct({
+  ...ComputerAutomationDesktopTargetField,
+  ...ComputerAutomationTemporalCaptureOptions.fields,
+})
+  .check(
+    Schema.makeFilter((input) => {
+      const durationMs = (input.frameCount - 1) * input.intervalMs;
+      return (
+        durationMs <= MAX_TEMPORAL_SEQUENCE_DURATION_MS ||
+        `Temporal sequence duration must be at most ${MAX_TEMPORAL_SEQUENCE_DURATION_MS}ms.`
+      );
+    }),
+    Schema.makeFilter((input) => {
+      return (
+        input.displayId === undefined ||
+        input.screenshot?.region === undefined ||
+        "Omit displayId when screenshot.region selects its source display or frame."
+      );
+    }),
+  )
+  .annotate({
+    description:
+      "Targets one desktop and captures a bounded sequence of timestamped PNG observations.",
+  });
+export type ComputerAutomationObserveSequenceInput =
+  typeof ComputerAutomationObserveSequenceInput.Type;
 
 export const ComputerAutomationAvailabilityInput = Schema.Struct({
   desktop: Schema.Struct({ kind: Schema.Literal("user") }),
@@ -504,6 +580,37 @@ export const ComputerAutomationSnapshot = Schema.Struct({
   ),
 });
 export type ComputerAutomationSnapshot = typeof ComputerAutomationSnapshot.Type;
+
+export const ComputerAutomationTemporalFrame = Schema.Struct({
+  index: Schema.Int.check(
+    Schema.isBetween({ minimum: 0, maximum: MAX_TEMPORAL_SEQUENCE_FRAMES - 1 }),
+  ),
+  elapsedMs: NonNegativeInt,
+  capturedAt: IsoDateTime,
+  snapshot: ComputerAutomationSnapshot,
+});
+export type ComputerAutomationTemporalFrame = typeof ComputerAutomationTemporalFrame.Type;
+
+export const ComputerAutomationTemporalSequence = Schema.Struct({
+  requestedFrameCount: Schema.Int.check(
+    Schema.isBetween({ minimum: 2, maximum: MAX_TEMPORAL_SEQUENCE_FRAMES }),
+  ),
+  capturedFrameCount: Schema.Int.check(
+    Schema.isBetween({ minimum: 1, maximum: MAX_TEMPORAL_SEQUENCE_FRAMES }),
+  ),
+  intervalMs: Schema.Int.check(
+    Schema.isBetween({
+      minimum: MIN_TEMPORAL_SEQUENCE_INTERVAL_MS,
+      maximum: MAX_TEMPORAL_SEQUENCE_INTERVAL_MS,
+    }),
+  ),
+  elapsedMs: NonNegativeInt,
+  frames: Schema.Array(ComputerAutomationTemporalFrame).check(
+    Schema.isMinLength(1),
+    Schema.isMaxLength(MAX_TEMPORAL_SEQUENCE_FRAMES),
+  ),
+});
+export type ComputerAutomationTemporalSequence = typeof ComputerAutomationTemporalSequence.Type;
 
 export const ComputerAutomationTypeActionResult = Schema.Struct({
   index: Schema.Int.check(Schema.isBetween({ minimum: 0, maximum: MAX_ACTION_BATCH_ACTIONS - 1 })),
@@ -632,6 +739,10 @@ export const ComputerAutomationObservation = Schema.Struct({
   ).annotate({
     description:
       "Ordered execution receipts. Text receipts distinguish backend injection from exact accessibility read-back.",
+  }),
+  temporalSequence: Schema.optional(ComputerAutomationTemporalSequence).annotate({
+    description:
+      "Timestamped ephemeral frames captured before, during, or after an action batch when requested.",
   }),
   detail: Schema.optional(Schema.String.check(Schema.isMaxLength(512))),
 }).annotate({
@@ -959,6 +1070,34 @@ export const ComputerAutomationActionBatchInput = Schema.Struct({
       description:
         "Post-action observation options. Defaults to a full-display screenshot and semantic targets; false skips capture.",
     }),
+  ),
+  temporalObservation: Schema.optional(
+    Schema.Struct({
+      ...ComputerAutomationTemporalCaptureOptions.fields,
+      start: Schema.optional(Schema.Literals(["before-actions", "after-actions"])).annotate({
+        description: "Defaults to before-actions so the sequence includes the starting state.",
+      }),
+    })
+      .check(
+        Schema.makeFilter((input) => {
+          const durationMs = (input.frameCount - 1) * input.intervalMs;
+          return (
+            durationMs <= MAX_TEMPORAL_SEQUENCE_DURATION_MS ||
+            `Temporal sequence duration must be at most ${MAX_TEMPORAL_SEQUENCE_DURATION_MS}ms.`
+          );
+        }),
+        Schema.makeFilter((input) => {
+          return (
+            input.displayId === undefined ||
+            input.screenshot?.region === undefined ||
+            "Omit displayId when screenshot.region selects its source display or frame."
+          );
+        }),
+      )
+      .annotate({
+        description:
+          "Optional bounded screen sequence captured around the action batch for temporal verification.",
+      }),
   ),
 })
   .check(

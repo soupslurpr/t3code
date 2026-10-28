@@ -9,9 +9,12 @@ import {
   ThreadId,
   type PreviewAutomationResponse,
   type PreviewAutomationRequest,
+  type ComputerAutomationSnapshot,
 } from "@t3tools/contracts";
 import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
+import * as Fiber from "effect/Fiber";
+import * as TestClock from "effect/testing/TestClock";
 import * as Layer from "effect/Layer";
 import * as Stream from "effect/Stream";
 import { McpSchema, McpServer } from "effect/ai";
@@ -47,17 +50,19 @@ const client = McpSchema.McpServerClient.of({
   },
   getClient: Effect.die("unused"),
 });
-const layer = McpHttpServer.ComputerToolkitRegistrationLive.pipe(
-  Layer.provideMerge(McpServer.McpServer.layer),
-  Layer.provideMerge(McpToolAccessTestkit.liveThreadsLayer),
-  Layer.provideMerge(
-    ComputerAutomationRouter.layer.pipe(
-      Layer.provide(Layer.mock(AgentDesktopManager.AgentDesktopManager)({})),
-      Layer.provideMerge(PreviewAutomationBroker.layer),
+const layerWithAgent = (agentLayer: Layer.Layer<AgentDesktopManager.AgentDesktopManager>) =>
+  McpHttpServer.ComputerToolkitRegistrationLive.pipe(
+    Layer.provideMerge(McpServer.McpServer.layer),
+    Layer.provideMerge(McpToolAccessTestkit.liveThreadsLayer),
+    Layer.provideMerge(
+      ComputerAutomationRouter.layer.pipe(
+        Layer.provide(agentLayer),
+        Layer.provideMerge(PreviewAutomationBroker.layer),
+      ),
     ),
-  ),
-  Layer.provideMerge(NodeServices.layer),
-);
+    Layer.provideMerge(NodeServices.layer),
+  );
+const layer = layerWithAgent(Layer.mock(AgentDesktopManager.AgentDesktopManager)({}));
 const call = Effect.fn("ComputerHttpTest.call")(
   (name: string, input: Record<string, unknown>, scope = invocation) =>
     McpServer.McpServer.pipe(
@@ -181,6 +186,7 @@ it.effect.each([
   "computer_request_view",
   "computer_request_control",
   "computer_snapshot",
+  "computer_observe_sequence",
   "computer_release",
   "computer_forget_control",
   "computer_act",
@@ -189,7 +195,11 @@ it.effect.each([
     Effect.gen(function* () {
       const result = yield* call(
         name,
-        name === "computer_act" ? { actions: [{ type: "press", key: "Meta" }] } : {},
+        name === "computer_act"
+          ? { actions: [{ type: "press", key: "Meta" }] }
+          : name === "computer_observe_sequence"
+            ? { frameCount: 2, intervalMs: 100 }
+            : {},
         {
           ...invocation,
           thread: undefined,
@@ -202,6 +212,7 @@ it.effect.each([
           "computer_request_view",
           "computer_request_control",
           "computer_snapshot",
+          "computer_observe_sequence",
           "computer_act",
         ].includes(name)
       ) {
@@ -306,4 +317,168 @@ it.effect("preserves both discrete wheel axes through the MCP request and receip
     expect(result.isError).toBe(false);
     expect(result.structuredContent).toEqual({ actionResults: [receipt] });
   }).pipe(Effect.provide(layer)),
+);
+const temporalSnapshot = (index: number): ComputerAutomationSnapshot => ({
+  display: {
+    id: "primary",
+    label: "Primary",
+    primary: true,
+    bounds: { x: 0, y: 0, width: 10, height: 5 },
+    scaleFactor: 1,
+  },
+  cursor: null,
+  captureSource: "remote-desktop-stream",
+  screenshot: {
+    mimeType: "image/png",
+    data: Buffer.from(`png-${index}`).toString("base64"),
+    width: 10,
+    height: 5,
+  },
+});
+
+it.effect("returns temporal frames once in capture order with timing outside image bytes", () =>
+  Effect.gen(function* () {
+    const firstCapture = yield* Deferred.make<void>();
+    const requests: PreviewAutomationRequest[] = [];
+    yield* serve((request) =>
+      Effect.gen(function* () {
+        requests.push(request);
+        expect(request.operation).toBe("computerSnapshot");
+        expect(request.input).toEqual({
+          desktop: { kind: "user" },
+          displayId: "primary",
+          includeAccessibility: false,
+          screenshot: { maxWidth: 100 },
+        });
+        if (requests.length === 1) yield* Deferred.succeed(firstCapture, undefined);
+        return { ok: true, result: temporalSnapshot(requests.length - 1) };
+      }),
+    );
+    const fiber = yield* call("computer_observe_sequence", {
+      desktop: { kind: "user" },
+      displayId: "primary",
+      frameCount: 2,
+      intervalMs: 100,
+      screenshot: { maxWidth: 100 },
+    }).pipe(Effect.forkScoped);
+    yield* Deferred.await(firstCapture);
+    yield* TestClock.adjust(100);
+    const result = yield* Fiber.join(fiber);
+    expect(result.isError).toBe(false);
+    expect(result.structuredContent).toMatchObject({
+      requestedFrameCount: 2,
+      capturedFrameCount: 2,
+      intervalMs: 100,
+      elapsedMs: 100,
+      frames: [
+        { index: 0, elapsedMs: 0 },
+        { index: 1, elapsedMs: 100 },
+      ],
+    });
+    expect(JSON.stringify(result.structuredContent)).not.toContain('"data"');
+    expect(result.content.filter((item) => item.type === "image")).toEqual(
+      [0, 1].map((index) => ({
+        type: "image",
+        data: new Uint8Array(Buffer.from(`png-${index}`)),
+        mimeType: "image/png",
+        _meta: {
+          "codex/imageDetail": "original",
+          "t3/temporalFrameIndex": index,
+          "t3/temporalElapsedMs": index * 100,
+        },
+      })),
+    );
+    expect(requests).toHaveLength(2);
+  }).pipe(Effect.provide(layer)),
+);
+
+it.effect("keeps native temporal action capture in one request and strips nested image bytes", () =>
+  Effect.gen(function* () {
+    const requests: PreviewAutomationRequest[] = [];
+    yield* serve((request) =>
+      Effect.sync(() => {
+        requests.push(request);
+        return {
+          ok: true,
+          result: {
+            actionResults: [{ index: 0, type: "press" }],
+            temporalSequence: {
+              requestedFrameCount: 2,
+              capturedFrameCount: 2,
+              intervalMs: 100,
+              elapsedMs: 100,
+              frames: [0, 1].map((index) => ({
+                index,
+                elapsedMs: index * 100,
+                capturedAt: "1970-01-01T00:00:00.000Z",
+                snapshot: temporalSnapshot(index),
+              })),
+            },
+          },
+        };
+      }),
+    );
+    const input = {
+      desktop: { kind: "user" },
+      actions: [{ type: "press", key: "Space" }],
+      observation: false,
+      temporalObservation: { frameCount: 2, intervalMs: 100 },
+    };
+    const result = yield* call("computer_act", input);
+    expect(result.isError).toBe(false);
+    expect(requests).toHaveLength(1);
+    expect(requests[0]).toMatchObject({ operation: "computerAct", input });
+    expect(result.structuredContent).toMatchObject({
+      actionResults: [{ index: 0, type: "press" }],
+      temporalSequence: { capturedFrameCount: 2 },
+    });
+    expect(JSON.stringify(result.structuredContent)).not.toContain('"data"');
+    expect(result.content.filter((item) => item.type === "image")).toHaveLength(2);
+  }).pipe(Effect.provide(layer)),
+);
+
+it.effect.each(["before-actions", "after-actions"] as const)(
+  "captures an explicit server Agent target %s without duplicating the action",
+  (start) =>
+    Effect.gen(function* () {
+      const firstCapture = yield* Deferred.make<void>();
+      const requests: string[] = [];
+      let captures = 0;
+      const agentLayer = Layer.mock(AgentDesktopManager.AgentDesktopManager)({
+        act: (controller, input, desktopId) =>
+          Effect.sync(() => {
+            expect(controller).toBe(invocation.thread!.providerSessionId);
+            expect(desktopId).toBe("concrete-agent");
+            expect(input).not.toHaveProperty("temporalObservation");
+            requests.push("act");
+            return [{ index: 0, type: "press" as const }];
+          }),
+        snapshot: (controller, _input, desktopId) =>
+          Effect.gen(function* () {
+            expect(controller).toBe(invocation.thread!.providerSessionId);
+            expect(desktopId).toBe("concrete-agent");
+            requests.push("snapshot");
+            if (captures === 0) yield* Deferred.succeed(firstCapture, undefined);
+            return temporalSnapshot(captures++);
+          }),
+      });
+      yield* Effect.gen(function* () {
+        const fiber = yield* call("computer_act", {
+          desktop: { kind: "agent", desktopId: "concrete-agent" },
+          actions: [{ type: "press", key: "Space" }],
+          observation: false,
+          temporalObservation: { frameCount: 2, intervalMs: 100, start },
+        }).pipe(Effect.forkScoped);
+        yield* Deferred.await(firstCapture);
+        yield* TestClock.adjust(100);
+        const result = yield* Fiber.join(fiber);
+        expect(result.isError).toBe(false);
+        expect(requests).toEqual(
+          start === "before-actions"
+            ? ["snapshot", "act", "snapshot"]
+            : ["act", "snapshot", "snapshot"],
+        );
+        expect(result.content.filter((item) => item.type === "image")).toHaveLength(2);
+      }).pipe(Effect.provide(layerWithAgent(agentLayer)));
+    }),
 );
