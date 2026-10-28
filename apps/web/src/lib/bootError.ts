@@ -84,12 +84,41 @@ function redact(text: string) {
 }
 
 export interface BootErrorEnvironment {
+  readonly forkBuild?: { readonly channel: string; readonly revision: string | null };
   readonly version: string;
   readonly channel: string;
   readonly surface: "desktop" | "web";
   readonly platform: string;
   readonly userAgent: string;
   readonly time: string;
+}
+
+export function bootRecoveryFor(environment: BootErrorEnvironment) {
+  if (environment.forkBuild) {
+    return {
+      issueUrl: "https://github.com/soupslurpr/t3code/issues/new",
+      reinstall:
+        environment.surface === "desktop" && /linux/i.test(environment.platform)
+          ? {
+              href: "https://github.com/soupslurpr/t3code/blob/main/docs/operations/local-arch-package.md#recover-a-local-fork-installation",
+              label: "Recover the local fork package",
+            }
+          : null,
+    };
+  }
+  const nightly = environment.channel === "nightly";
+  return {
+    issueUrl: ISSUE_URL,
+    reinstall:
+      environment.surface === "desktop"
+        ? {
+            href: nightly ? `${DOWNLOAD_URL}?channel=nightly` : DOWNLOAD_URL,
+            label: nightly
+              ? "Download and reinstall the latest nightly build"
+              : "Download and reinstall T3 Code",
+          }
+        : null,
+  };
 }
 
 /** Plain text that is shown and copied as-is, so users see exactly what they share. */
@@ -110,6 +139,13 @@ export function buildErrorReport(error: unknown, environment: BootErrorEnvironme
   return [
     details,
     "",
+    ...(environment.forkBuild
+      ? [
+          "Repository: soupslurpr/t3code",
+          `Fork channel: ${environment.forkBuild.channel}`,
+          `Fork revision: ${environment.forkBuild.revision ?? "development"}`,
+        ]
+      : []),
     `Version: ${environment.version}`,
     `Channel: ${environment.channel}`,
     `Surface: ${environment.surface}`,
@@ -131,6 +167,7 @@ function readEnvironment(bridge: DesktopBridge | undefined): BootErrorEnvironmen
   const version = import.meta.env.APP_VERSION;
   return {
     version,
+    forkBuild: { channel: "soupslurpr", revision: import.meta.env.T3CODE_FORK_REVISION ?? null },
     channel:
       import.meta.env.VITE_RELEASE_CHANNEL || /-(nightly|preview)\./.exec(version)?.[1] || "stable",
     surface: bridge ? "desktop" : "web",
@@ -342,7 +379,8 @@ export function showBootError(error: unknown) {
     ),
   );
 
-  const issue = new URL(ISSUE_URL);
+  const recovery = bootRecoveryFor(environment);
+  const issue = new URL(recovery.issueUrl);
   issue.searchParams.set("template", "bug_report.yml");
   issue.searchParams.set("title", "T3 Code failed to start");
   issue.searchParams.set("area", "apps/web");
@@ -350,20 +388,9 @@ export function showBootError(error: unknown) {
   issue.searchParams.set("environment", `${environment.surface}, ${environment.platform}`);
   const link = (href: string, textContent: string) =>
     element("a", { href, textContent, target: "_blank", rel: "noreferrer" });
-  const nightly = environment.channel === "nightly";
-
   const more = element("details", { open: isRepeatFailure(Date.now()) }, [
     element("summary", { textContent: "More options if it keeps failing" }),
-    ...(bridge
-      ? [
-          link(
-            nightly ? `${DOWNLOAD_URL}?channel=nightly` : DOWNLOAD_URL,
-            nightly
-              ? "Download and reinstall the latest nightly build"
-              : "Download and reinstall T3 Code",
-          ),
-        ]
-      : []),
+    ...(recovery.reinstall ? [link(recovery.reinstall.href, recovery.reinstall.label)] : []),
     element("div", {}, [
       element("p", {
         textContent:
