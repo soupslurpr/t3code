@@ -2,7 +2,7 @@ import { EnvironmentId, ThreadId, type AssetResource } from "@t3tools/contracts"
 import { AsyncResult, Atom, AtomRegistry } from "effect/reactivity";
 import { describe, expect, it } from "vite-plus/test";
 
-import { makeRevisionedAssetUrlFamily } from "./assetUrls";
+import { resolveClientAssetUrl, makeRevisionedAssetUrlFamily } from "./assetUrls";
 
 const environmentId = EnvironmentId.make("environment-1");
 const resource: AssetResource = {
@@ -103,5 +103,24 @@ describe("makeRevisionedAssetUrlFamily", () => {
     settle();
     expect(mints()).toBe(3);
     stillMinting();
+  });
+});
+describe("resolveClientAssetUrl", () => {
+  it("keeps signed assets direct in a web client", () => {
+    expect(
+      resolveClientAssetUrl("http://192.168.1.56:3773/", "/api/assets/signed-token/preview.wav"),
+    ).toBe("http://192.168.1.56:3773/api/assets/signed-token/preview.wav");
+  });
+
+  it("routes signed assets through the secure Electron origin", () => {
+    expect(
+      resolveClientAssetUrl(
+        "http://192.168.1.56:3773/",
+        "/api/assets/signed-token/preview.wav",
+        "t3code://app/thread/123",
+      ),
+    ).toBe(
+      "t3code://app/.t3/assets/proxy?url=http%3A%2F%2F192.168.1.56%3A3773%2Fapi%2Fassets%2Fsigned-token%2Fpreview.wav",
+    );
   });
 });
