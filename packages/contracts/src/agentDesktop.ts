@@ -41,7 +41,7 @@ export const ComputerDesktopSelector = Schema.Union([
     fresh: Schema.optional(
       Schema.Boolean.annotate({
         description:
-          "Create a clean desktop instead of reusing this controller's suitable prior desktop.",
+          "Create a clean desktop instead of reusing a suitable prior desktop from this thread.",
       }),
     ),
   }).check(
@@ -54,7 +54,7 @@ export const ComputerDesktopSelector = Schema.Union([
   ),
 ]).annotate({
   description:
-    "Desktop to use. An agent target without desktopId is acquired automatically for this controller.",
+    "Desktop to use. An agent target without desktopId prefers this controller's assignment, then a suitable idle desktop from the same thread.",
 });
 export type ComputerDesktopSelector = typeof ComputerDesktopSelector.Type;
 
@@ -79,7 +79,7 @@ export const ComputerDesktopIdentity = Schema.Struct({
 });
 export type ComputerDesktopIdentity = typeof ComputerDesktopIdentity.Type;
 
-/** Records the durable owner used to group an agent desktop in the UI. */
+/** Records the durable thread boundary and the controller currently claiming a desktop. */
 export const AgentDesktopOwner = Schema.Struct({
   environmentId: EnvironmentId,
   threadId: ThreadId,
@@ -197,6 +197,7 @@ export const AgentDesktop = Schema.Struct({
   label: TrimmedNonEmptyString.check(Schema.isMaxLength(256)),
   owner: AgentDesktopOwner,
   state: AgentDesktopLifecycleState,
+  automaticParking: Schema.Boolean,
   capabilities: Schema.Array(AgentDesktopCapability).check(
     Schema.isMaxLength(MAX_AGENT_DESKTOP_CAPABILITIES),
   ),
@@ -205,6 +206,7 @@ export const AgentDesktop = Schema.Struct({
   createdAt: Schema.String,
   lastActiveAt: Schema.String,
   recoverableUntil: Schema.NullOr(Schema.String),
+  retention: Schema.optional(Schema.Literals(["automatic", "preserve"])),
   graphics: AgentDesktopGraphics,
   resources: Schema.optional(AgentDesktopResourceTelemetry),
   detail: Schema.optional(Schema.String.check(Schema.isMaxLength(512))),
@@ -290,7 +292,18 @@ export const AgentDesktopRequirements = Schema.Struct({
     }),
   ),
   latency: Schema.optional(Schema.Literals(["interactive", "background"])),
-  preventParking: Schema.optional(Schema.Boolean),
+  preventParking: Schema.optional(
+    Schema.Boolean.annotate({
+      description:
+        "Keep this desktop running without a lease. This persists until a later acquisition of the same desktop explicitly sets false.",
+    }),
+  ),
+  retention: Schema.optional(
+    Schema.Literals(["automatic", "preserve"]).annotate({
+      description:
+        "Retention policy. Automatic permits recoverable retirement after prolonged inactivity or under host storage pressure; preserve requires explicit deletion.",
+    }),
+  ),
   expectedTemporaryDiskBytes: Schema.optional(
     Schema.Number.check(Schema.isBetween({ minimum: 0, maximum: 1_099_511_627_776 })),
   ),

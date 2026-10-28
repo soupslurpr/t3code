@@ -43,8 +43,7 @@ const handlers = {
           desktops: result.desktops.filter(
             (desktop) =>
               desktop.owner.environmentId === owner.environmentId &&
-              desktop.owner.threadId === owner.threadId &&
-              desktop.owner.controllerId === owner.controllerId,
+              desktop.owner.threadId === owner.threadId,
           ),
         })),
       ),

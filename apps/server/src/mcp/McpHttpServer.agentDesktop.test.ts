@@ -47,6 +47,7 @@ const desktop = (
   label: id,
   owner: { environmentId: environment, threadId: thread, controllerId },
   state: "ready",
+  automaticParking: true,
   capabilities: ["command"],
   graphics: {
     backend: "virtio-gpu-2d",
@@ -116,7 +117,7 @@ it.effect("routes an Agent desktop list directly to the environment service", ()
       expect(result.isError).toBe(false);
       expect(result.structuredContent).toMatchObject({
         available: true,
-        desktops: [{ id: "first" }],
+        desktops: [{ id: "first" }, { id: "second" }],
       });
     }),
   ).pipe(Effect.provide(layer)),
