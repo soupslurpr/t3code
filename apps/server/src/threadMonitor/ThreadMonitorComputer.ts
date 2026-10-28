@@ -603,6 +603,7 @@ export const make = Effect.gen(function* () {
       };
       return {
         condition,
+        capturedBaselineImages: captured.map(({ image }) => image),
         baselineImages: retainBaseline ? captured.map(({ image }) => image) : [],
       };
     }).pipe(
