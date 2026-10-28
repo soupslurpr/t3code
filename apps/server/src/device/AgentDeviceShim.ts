@@ -152,7 +152,12 @@ const VALUE_FLAGS: ReadonlyArray<string> = [
 // agent-device 0.21.31 refuses some bound flags per command; connect/disconnect/auth/daemon would
 // replace T3's connection; device status reads this machine's claims. It reports a sandboxed shell and a
 // dropped tunnel alike, so check first, at --daemon-base-url if given, as agent-device prefers it.
-const launcherSource = (node: string, entryPath: string, boundArgs: ReadonlyArray<string>) =>
+const launcherSource = (
+  node: string,
+  entryPath: string,
+  boundArgs: ReadonlyArray<string>,
+  clientState: string,
+) =>
   `import { spawn } from "node:child_process";
 import { existsSync, readFileSync } from "node:fs";
 import { connect } from "node:net";
@@ -211,7 +216,7 @@ if (local) {
     process.exit(1);
   }
 }
-const env = { ...process.env, ELECTRON_RUN_AS_NODE: "1" };
+const env = { ...process.env, ELECTRON_RUN_AS_NODE: "1", AGENT_DEVICE_NO_UPDATE_NOTIFIER: "1", AGENT_DEVICE_STATE_DIR: ${JSON.stringify(clientState)} };
 delete env.AGENT_DEVICE_DAEMON_BASE_URL;
 delete env.AGENT_DEVICE_DAEMON_AUTH_TOKEN;
 delete env.AGENT_DEVICE_CONFIG;
@@ -223,6 +228,7 @@ child.on("exit", code => { process.exitCode = code ?? 1; });
 /** Writes a launcher into `dir` and returns the executable agents run. */
 const writeLauncher = Effect.fn("AgentDeviceShim.writeLauncher")(function* (input: {
   readonly dir: string;
+  readonly stateDir: string;
   readonly entryPath: string;
   readonly boundArgs: ReadonlyArray<string>;
 }) {
@@ -232,7 +238,15 @@ const writeLauncher = Effect.fn("AgentDeviceShim.writeLauncher")(function* (inpu
   const node = yield* resolveNodeExecutable("Device automation");
   yield* fs.makeDirectory(input.dir, { recursive: true });
   const launcherPath = path.join(input.dir, "agent-device-launcher.mjs");
-  yield* fs.writeFileString(launcherPath, launcherSource(node, input.entryPath, input.boundArgs));
+  yield* fs.writeFileString(
+    launcherPath,
+    launcherSource(
+      node,
+      input.entryPath,
+      input.boundArgs,
+      path.join(input.stateDir, "device", "agent-client"),
+    ),
+  );
   if (platform === "win32") {
     const script = `@echo off\r\nsetlocal EnableExtensions DisableDelayedExpansion\r\nif not exist "${node}" (echo ${STALE_RUNTIME} 1>&2 & exit /b 1)\r\nset "ELECTRON_RUN_AS_NODE=1"\r\n"${node}" "${launcherPath}" %*\r\n`;
     const scriptPath = path.join(input.dir, "agent-device.cmd");
@@ -253,7 +267,12 @@ export const ensureAgentDeviceShim = Effect.fn("AgentDeviceShim.ensure")(functio
 }) {
   const path = yield* Path.Path;
   const shimDir = path.join(input.stateDir, SHIM_DIR);
-  yield* writeLauncher({ dir: shimDir, entryPath: input.entryPath, boundArgs: [] });
+  yield* writeLauncher({
+    dir: shimDir,
+    stateDir: input.stateDir,
+    entryPath: input.entryPath,
+    boundArgs: [],
+  });
   return shimDir;
 });
 
@@ -270,6 +289,7 @@ export const bindAgentDeviceLauncher = Effect.fn("AgentDeviceShim.bind")(functio
   const path = yield* Path.Path;
   return yield* writeLauncher({
     dir: path.join(input.stateDir, TARGETS_DIR, input.session),
+    stateDir: input.stateDir,
     entryPath: input.entryPath,
     boundArgs: input.targetArgs,
   });

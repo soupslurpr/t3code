@@ -64,7 +64,7 @@ describe("device tool helpers", () => {
     expect(text).not.toContain("is on PATH");
   });
 
-  it("shows a bound launcher's commands without flags and keeps device actions off simctl and ssh", () => {
+  it("shows a bound launcher's commands without flags while keeping native tools available", () => {
     const command = "/state/device/targets/t3-a/agent-device";
     const text = agentDeviceQuickStart(device, [], command);
     const examples = text.split("\n").filter((line) => line.trimStart().startsWith(command));
@@ -74,8 +74,8 @@ describe("device tool helpers", () => {
       "--pixel-density",
     );
     expect(examples.join("\n")).not.toMatch(/--(?:platform|udid|serial|config|session)\b/);
-    expect(text).not.toContain("remain available");
-    expect(text).toContain("Do not use simctl, idb, adb or ssh for those actions.");
+    expect(text).toContain("remain available");
+    expect(text).not.toContain("Do not use simctl, idb, adb or ssh for those actions.");
     expect(text).toContain("If it is missing, call device_open again.");
   });
 

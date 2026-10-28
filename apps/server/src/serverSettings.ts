@@ -645,9 +645,22 @@ const make = Effect.gen(function* () {
   const sql = yield* SqlClient.SqlClient;
   const {
     settings: managed,
+    document: managedDocument,
     providers: managedProviders,
     summary: managedPolicy,
   } = yield* ManagedPolicy.ManagedPolicy;
+  // Keep device choices, but do not turn an inherited policy default into a stored choice.
+  const persistedDefaults = {
+    ...managed.defaults,
+    enableDeviceSupport:
+      managedDocument?.settings?.enableDeviceSupport?.locked === false
+        ? managed.defaults.enableDeviceSupport
+        : undefined,
+    enableAgentDeviceAccess:
+      managedDocument?.settings?.enableAgentDeviceAccess?.locked === false
+        ? managed.defaults.enableAgentDeviceAccess
+        : undefined,
+  };
   // Locks are laid over every settings value that leaves this service, never persisted.
   const toEffective = (settings: ServerSettings) =>
     resolveTextGenerationProvider(
@@ -696,7 +709,7 @@ const make = Effect.gen(function* () {
 
   const writeSettingsAtomically = Effect.fnUntraced(
     function* (settings: ServerSettings) {
-      const stripped = stripDefaultServerSettings(settings, managed.defaults) ?? {};
+      const stripped = stripDefaultServerSettings(settings, persistedDefaults) ?? {};
       const sparseSettingsJson = yield* encodeServerSettingsJson(
         managed.keepStored === undefined
           ? stripped

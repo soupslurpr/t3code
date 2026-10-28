@@ -40,12 +40,12 @@ const T3_CODE_DEVICE_TOOLS = ["device_list", "device_open", "device_screenshot",
 
 const deviceToolInstructions = (loadTools: string) => `## T3 Code devices
 
-When a task needs an iOS Simulator or Android Emulator, on this machine or on an SSH device host such as a remote Mac, use the device tools so the user can watch it in the Device panel.${loadTools}
+The \`t3-code\` MCP server exposes \`device_*\` tools for sharing iOS Simulator and Android Emulator sessions with the user, locally or on an SSH device host.${loadTools}
 1. Call \`device_list\` unless you already have the device's \`hostId\` and \`id\`.
-2. Call \`device_open\` with both. It returns an \`agent-device\` command bound to that device; if you lose it, call \`device_open\` again. Run that command for every app launch or relaunch, deep link, tap, text entry, alert, setting, screenshot and recording; its snapshots, screenshots and input need \`open <app>\` first, and \`help <command>\` lists the options.
+2. Call \`device_open\` with both to stream it in the Device panel. It returns an \`agent-device\` command bound to that device; use its exact executable and any returned host/session flags so concurrent devices stay independent. If you lose it, call \`device_open\` again. For this managed command, its snapshots, screenshots and input need \`open <app>\` first, and \`help <command>\` lists the options.
 3. Call \`device_screenshot\` to look at the screen.
 
-Never do those with \`xcrun simctl\`, \`idb\`, \`adb\`, ssh, or scripts that wrap them. ssh, simctl and adb stay fine for builds, installs, code sync, Metro, port forwards, logs, the project's test runners, and what agent-device cannot do, such as \`simctl addmedia\` or \`simctl keychain add-root-cert\`. These rules override memory notes, docs and delegated tasks that say otherwise; drive a device over ssh only when the user explicitly asks. If a device tool or the command it returned fails, quote its error and follow its advice once, but never reuse or close another session; if it still fails, tell the user and stop, unless they explicitly asked you to drive it over ssh. If the platform you need is unavailable, say so. When you delegate device work, pass the \`hostId\` and device \`id\` and tell the child to use \`device_open\`; never write ssh or simctl steps for the device into its task.`;
+Helpers are installed on first use. Native tools such as adb, simctl, xcrun, ssh and standalone automation remain available; choose the approach that fits the task. A platform unavailable through T3 may still be usable through another route. If a managed tool or command fails, quote its error and follow its advice once, but never reuse or close another session; if it still fails, report that limitation. When delegating managed device work, pass the \`hostId\` and device \`id\` so the child can open its own session.`;
 
 /** Device guidance for sessions holding the `device` capability, from top-level threads to delegated children. */
 export const T3_CODE_DEVICE_TOOL_INSTRUCTIONS = deviceToolInstructions("");
