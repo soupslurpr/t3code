@@ -183,7 +183,11 @@ export function restartContinuationRun(
 }
 
 export const continueRestartedRun = Effect.fn("RestartContinuation.continueRestartedRun")(
-  function* (input: { readonly threadId: ThreadId; readonly sourceRunId: RunId }) {
+  function* (input: {
+    readonly threadId: ThreadId;
+    readonly sourceRunId: RunId;
+    readonly lastRunOrdinal?: number;
+  }) {
     const settings = yield* ServerSettings.ServerSettingsService;
     const enabled = yield* settings.getSettings.pipe(Effect.orElseSucceed(() => null));
     if (!enabled) return;
@@ -222,7 +226,8 @@ export const continueRestartedRun = Effect.fn("RestartContinuation.continueResta
           run.status !== "queued" &&
           !cancelledBeforeStart(run) &&
           runRanAfter(run, source),
-      )
+      ) ||
+      projection.runs.some((run) => run.ordinal > (input.lastRunOrdinal ?? source.ordinal))
     )
       return;
     if (projection.thread.providerInstanceId !== source.providerInstanceId) return;
@@ -326,6 +331,7 @@ export const continueRestartedRun = Effect.fn("RestartContinuation.continueResta
         createdBy: "agent",
         creationSource: "server",
         restartContinuationOfRunId: input.sourceRunId,
+        restartContinuationLastRunOrdinal: input.lastRunOrdinal ?? source.ordinal,
       })
       .pipe(
         // Disabled instances, and threads above a policy ceiling, cannot resume; still run success
