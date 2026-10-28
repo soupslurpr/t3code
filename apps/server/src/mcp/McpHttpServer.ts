@@ -1,3 +1,4 @@
+import * as UserDesktopCommands from "../computer/UserDesktopCommands.ts";
 import * as ThreadMonitorSignalCallbacks from "../threadMonitor/ThreadMonitorSignalCallbacks.ts";
 import * as ComputerAutomationRouter from "../computer/ComputerAutomationRouter.ts";
 import { ThreadMonitorService } from "../threadMonitor/ThreadMonitorService.ts";
@@ -1521,6 +1522,7 @@ const registerComputerTools = Effect.fn("McpHttpServer.registerComputerTools")(f
   const threads = yield* ThreadManagementService.ThreadManagementService;
   const broker = yield* PreviewAutomationBroker.PreviewAutomationBroker;
   const transfers = yield* UserDesktopTransfers;
+  const commands = yield* UserDesktopCommands.UserDesktopCommands;
   const workspace = yield* ThreadWorkspaceQuery;
   const built = yield* decodeAsAdvertised(ComputerToolkit);
   for (const tool of Object.values(built.tools)) {
@@ -1552,6 +1554,7 @@ const registerComputerTools = Effect.fn("McpHttpServer.registerComputerTools")(f
             Stream.run(Sink.last()),
             Effect.flatMap(Effect.fromOption),
             Effect.provideService(UserDesktopTransfers, transfers),
+            Effect.provideService(UserDesktopCommands.UserDesktopCommands, commands),
             Effect.provideService(ThreadWorkspaceQuery, workspace),
             Effect.provideService(ComputerAutomationRouter.ComputerAutomationRouter, computer),
             Effect.provideService(ThreadManagementService.ThreadManagementService, threads),

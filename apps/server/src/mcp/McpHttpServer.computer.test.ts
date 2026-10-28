@@ -1,4 +1,5 @@
 import { ComputerToolkit } from "./toolkits/computer/tools.ts";
+import * as UserDesktopCommands from "../computer/UserDesktopCommands.ts";
 import { UserDesktopTransfers } from "../computer/UserDesktopTransfers.ts";
 import { ThreadWorkspaceQuery } from "../orchestration-v2/ThreadWorkspaceQuery.ts";
 import * as UserDesktops from "../persistence/UserDesktops.ts";
@@ -116,6 +117,7 @@ const layerWithAgent = (
   > = managerLayer,
 ) =>
   McpHttpServer.ComputerToolkitRegistrationLive.pipe(
+    Layer.provide(UserDesktopCommands.layer),
     Layer.provide(
       Layer.mock(UserDesktopTransfers)({
         download: () => null,
@@ -1053,7 +1055,7 @@ it.effect("scopes desktop execution tools to a capable thread before routing", (
     expect(requests).toEqual([]);
     const listed = yield* call("user_desktop_process", { desktop, action: "list" });
     expect(listed.isError, JSON.stringify(listed)).toBe(false);
-    expect(listed.structuredContent).toEqual({ kind: "list", desktop, processes: [] });
+    expect(listed.structuredContent).toEqual({ processes: [] });
     expect(requests).toMatchObject([
       {
         operation: "computerExecution",
