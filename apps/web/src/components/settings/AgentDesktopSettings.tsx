@@ -2,7 +2,6 @@ import { useAtomValue } from "@effect/atom-react";
 import { AsyncResult } from "effect/reactivity";
 import { appAtomRegistry } from "~/rpc/atomRegistry";
 import { useStableCallback } from "~/hooks/useStableCallback";
-import { useEnvironmentsWithScope } from "~/state/session";
 import { agentDesktopListingAtom } from "./agentDesktopListing";
 import {
   isAgentDesktopMaintenanceActive,
@@ -24,7 +23,7 @@ import type {
   ComputerObservationUpdate,
   EnvironmentId,
 } from "@t3tools/contracts";
-import { AuthOrchestrationOperateScope, ThreadId } from "@t3tools/contracts";
+import { ThreadId } from "@t3tools/contracts";
 import {
   CircleStopIcon,
   EyeIcon,
@@ -49,7 +48,8 @@ import {
 
 import { formatRelativeTimeLabel } from "~/timestampFormat";
 import { useThreadShells } from "~/state/entities";
-import { useEnvironments } from "~/state/environments";
+import { useAgentDesktopViewerLease, type AgentViewerLease } from "./useAgentDesktopViewerLease";
+import { useDesktopEnvironments, type DesktopThreadScope } from "./useDesktopEnvironments";
 import { previewEnvironment } from "~/state/preview";
 import { useAtomCommand } from "~/state/use-atom-command";
 import { cn } from "~/lib/utils";
@@ -290,6 +290,7 @@ function AgentObservationOverlay({
 
 /** Renders shared Live, Agent lens, and full-screen control for one concrete desktop. */
 export function ComputerDesktopViewer({
+  embedded = false,
   label,
   description,
   observation,
@@ -314,6 +315,7 @@ export function ComputerDesktopViewer({
   onAction,
   inputSession,
 }: {
+  embedded?: boolean;
   label: string;
   description: ReactNode;
   observation: ComputerAutomationSnapshot | null;
@@ -740,33 +742,35 @@ export function ComputerDesktopViewer({
     setViewMode("live");
     setCaptureBusy(true);
     setCaptureError(null);
-    try {
-      if (onConfirmTakeControl !== undefined && !(await onConfirmTakeControl())) return;
-      const capture = await acquireAgentDesktopKeyboardCapture();
-      if (!mountedRef.current) {
-        await capture.release();
-        return;
+    return await (async () => {
+      try {
+        if (onConfirmTakeControl !== undefined && !(await onConfirmTakeControl())) return;
+        const capture = await acquireAgentDesktopKeyboardCapture();
+        if (!mountedRef.current) {
+          await capture.release();
+          return;
+        }
+        const lease = createDesktopControlLease({
+          capture,
+          takeControl: onTakeControl,
+          releaseControl: onRelease,
+        });
+        controlLeaseRef.current = lease;
+        const granted = await lease.ready;
+        if (!mountedRef.current || document.fullscreenElement === null || !granted) {
+          if (controlLeaseRef.current === lease) controlLeaseRef.current = null;
+          await lease.release();
+          return;
+        }
+        textInputRef.current?.focus({ preventScroll: true });
+      } catch (cause) {
+        await releaseKeyboardCapture();
+        if (mountedRef.current) setCaptureError(failureMessage(cause));
       }
-      const lease = createDesktopControlLease({
-        capture,
-        takeControl: onTakeControl,
-        releaseControl: onRelease,
-      });
-      controlLeaseRef.current = lease;
-      const granted = await lease.ready;
-      if (!mountedRef.current || document.fullscreenElement === null || !granted) {
-        if (controlLeaseRef.current === lease) controlLeaseRef.current = null;
-        await lease.release();
-        return;
-      }
-      textInputRef.current?.focus({ preventScroll: true });
-    } catch (cause) {
-      await releaseKeyboardCapture();
-      if (mountedRef.current) setCaptureError(failureMessage(cause));
-    } finally {
+    })().finally(() => {
       controlAttemptRef.current = false;
       if (mountedRef.current) setCaptureBusy(false);
-    }
+    });
   };
 
   const releaseControl = async () => {
@@ -824,13 +828,22 @@ export function ComputerDesktopViewer({
           width: `min(100%, ${liveFrame.width}px, calc(65vh * ${liveFrame.width / liveFrame.height}))`,
         };
 
+  const Popup = embedded ? InlineDesktopPopup : DialogPopup;
+  const Panel = embedded ? "div" : DialogPanel;
   return (
-    <DialogPopup size="wide" bottomStickOnMobile={false}>
-      <DialogHeader>
-        <DialogTitle>{label}</DialogTitle>
-        <DialogDescription>{description}</DialogDescription>
-      </DialogHeader>
-      <DialogPanel>
+    <Popup size="wide" bottomStickOnMobile={false}>
+      {embedded ? (
+        <header>
+          <h3 className="font-medium">{label}</h3>
+          <p className="text-sm text-muted-foreground">{description}</p>
+        </header>
+      ) : (
+        <DialogHeader>
+          <DialogTitle>{label}</DialogTitle>
+          <DialogDescription>{description}</DialogDescription>
+        </DialogHeader>
+      )}
+      <Panel>
         <div
           ref={bindSurface}
           className={cn(
@@ -1160,24 +1173,41 @@ export function ComputerDesktopViewer({
             </Button>
           )}
         </div>
-      </DialogPanel>
-    </DialogPopup>
+      </Panel>
+    </Popup>
   );
 }
 
+function InlineDesktopPopup({
+  children,
+}: {
+  children?: ReactNode;
+  size?: "wide";
+  bottomStickOnMobile?: boolean;
+}) {
+  return <section className="grid gap-3">{children}</section>;
+}
+
 /** Lists, watches, takes over, and manages isolated Agent desktops. */
-export function AgentDesktopSettings() {
-  const { environments, isReady: environmentsReady } = useEnvironments();
+export function AgentDesktopSettings({ thread }: { thread?: DesktopThreadScope } = {}) {
+  const ownerThreadId = thread?.threadId;
+  const {
+    environments,
+    isReady: environmentsReady,
+    permissionDenied,
+  } = useDesktopEnvironments("agent", thread);
   const threads = useThreadShells();
   const invoke = useAtomCommand(previewEnvironment.invokeAgentDesktopHuman, {
     reportFailure: false,
   });
-  const operable = useEnvironmentsWithScope(environments, AuthOrchestrationOperateScope);
+  const operable = environments.map((environment) => environment.environmentId);
   const listingAtom = agentDesktopListingAtom(JSON.stringify(Array.from(operable).sort()));
   const listing = useAtomValue(listingAtom);
   const [mutationError, setError] = useState<string | null>(null);
   const listed = AsyncResult.isSuccess(listing) ? listing.value : null;
-  const desktops = listed?.desktops ?? [];
+  const desktops = (listed?.desktops ?? []).filter(
+    (desktop) => ownerThreadId === undefined || desktop.owner.threadId === ownerThreadId,
+  );
   const availability = listed?.availability ?? new Map<EnvironmentId, EnvironmentAvailability>();
   const error = mutationError ?? listed?.error ?? null;
   const loading = !environmentsReady || AsyncResult.isInitial(listing) || listing.waiting;
@@ -1191,6 +1221,7 @@ export function AgentDesktopSettings() {
   const [viewerError, setViewerError] = useState<string | null>(null);
   const [viewer, setViewerState] = useState<{
     readonly desktop: AgentDesktopView;
+    readonly lease: AgentViewerLease;
     readonly observation: ComputerAutomationSnapshot;
     readonly agentObservation: ComputerObservation | null;
     readonly controlling: boolean;
@@ -1208,11 +1239,43 @@ export function AgentDesktopSettings() {
   const environmentById = (() =>
     new Map(environments.map((environment) => [environment.environmentId, environment])))();
 
-  const run = async <Value,>(environmentId: EnvironmentId, input: AgentDesktopHumanInvokeInput) => {
-    const result = await invoke({ environmentId, input });
+  const run = async <Value,>(
+    environmentId: EnvironmentId,
+    input: AgentDesktopHumanInvokeInput,
+    shouldExecute?: () => boolean,
+  ) => {
+    const result = await invoke(
+      { environmentId, input },
+      input.request.operation === "release" || shouldExecute === undefined
+        ? undefined
+        : { shouldExecute },
+    );
     if (result._tag === "Success") return result.value as Value;
     throw squashAtomCommandFailure(result);
   };
+
+  const resetViewer = useStableCallback(() => {
+    setViewer(null);
+    setViewerError(null);
+  });
+  const runLease = useStableCallback(run);
+  const {
+    open: openLease,
+    close: closeViewer,
+    request: requestLease,
+    isCurrent: isCurrentLease,
+  } = useAgentDesktopViewerLease(runLease, resetViewer, operable);
+
+  const runViewer = <Value,>(
+    lease: AgentViewerLease,
+    input: AgentDesktopHumanInvokeInput,
+    shouldExecute?: () => boolean,
+  ) =>
+    run<Value>(
+      lease.desktop.owner.environmentId,
+      input,
+      () => isCurrentLease(lease) && (shouldExecute?.() ?? true),
+    );
 
   const refresh = async () => {
     setError(null);
@@ -1225,149 +1288,111 @@ export function AgentDesktopSettings() {
     setSetupEnvironmentId(null);
     setBusyEnvironmentId(environmentId);
     setError(null);
-    try {
-      const result = await run<AgentDesktopSetupResult>(environmentId, {
-        threadId: ThreadId.make("agent-desktop-settings"),
-        request: { operation: "setup" },
-        timeoutMs: 4_560_000,
-      });
-      await refresh();
-      if (!result.completed && result.detail !== undefined) setError(result.detail);
-    } catch (cause) {
-      setError(failureMessage(cause));
-    } finally {
+    return await (async () => {
+      try {
+        const result = await run<AgentDesktopSetupResult>(environmentId, {
+          threadId: ThreadId.make("agent-desktop-settings"),
+          request: { operation: "setup" },
+          timeoutMs: 4_560_000,
+        });
+        await refresh();
+        if (!result.completed && result.detail !== undefined) setError(result.detail);
+      } catch (cause) {
+        setError(failureMessage(cause));
+      }
+    })().finally(() => {
       setBusyEnvironmentId(null);
-    }
+    });
   };
 
   const updateBaseImage = async (environmentId: EnvironmentId) => {
     setBusyEnvironmentId(environmentId);
     setError(null);
-    try {
-      await run(environmentId, {
-        threadId: ThreadId.make("agent-desktop-settings"),
-        request: { operation: "update", input: { target: { kind: "base-image" } } },
-      });
-      await refresh();
-    } catch (cause) {
-      setError(failureMessage(cause));
-    } finally {
+    return await (async () => {
+      try {
+        await run(environmentId, {
+          threadId: ThreadId.make("agent-desktop-settings"),
+          request: { operation: "update", input: { target: { kind: "base-image" } } },
+        });
+        await refresh();
+      } catch (cause) {
+        setError(failureMessage(cause));
+      }
+    })().finally(() => {
       setBusyEnvironmentId(null);
-    }
+    });
   };
 
   const updateDesktop = async (desktop: AgentDesktopView) => {
     setBusyDesktopId(desktop.id);
     setError(null);
-    try {
-      await run(desktop.owner.environmentId, {
-        threadId: desktop.owner.threadId,
-        request: {
-          operation: "update",
-          owner: desktop.owner,
-          input: { target: { kind: "desktop", desktopId: desktop.id } },
-        },
-      });
-      await refresh();
-    } catch (cause) {
-      setError(failureMessage(cause));
-    } finally {
+    return await (async () => {
+      try {
+        await run(desktop.owner.environmentId, {
+          threadId: desktop.owner.threadId,
+          request: {
+            operation: "update",
+            owner: desktop.owner,
+            input: { target: { kind: "desktop", desktopId: desktop.id } },
+          },
+        });
+        await refresh();
+      } catch (cause) {
+        setError(failureMessage(cause));
+      }
+    })().finally(() => {
       setBusyDesktopId(null);
-    }
+    });
   };
 
   const manage = async (
     desktop: AgentDesktopView,
-    operation: "resume" | "park" | "stop" | "delete" | "restore" | "delete-permanently",
+    operation:
+      | "resume"
+      | "park"
+      | "stop"
+      | "delete"
+      | "restore"
+      | "delete-permanently"
+      | "set-update-policy",
   ) => {
     setBusyDesktopId(desktop.id);
     setError(null);
-    try {
-      await run(desktop.owner.environmentId, {
-        threadId: desktop.owner.threadId,
-        request: {
-          operation: "manage",
-          owner: desktop.owner,
-          input: { operation, desktopId: desktop.id },
-        },
-      });
-      await refresh();
-    } catch (cause) {
-      setError(failureMessage(cause));
-    } finally {
+    return await (async () => {
+      try {
+        await run(desktop.owner.environmentId, {
+          threadId: desktop.owner.threadId,
+          request: {
+            operation: "manage",
+            owner: desktop.owner,
+            input: {
+              operation,
+              desktopId: desktop.id,
+              ...(operation === "set-update-policy"
+                ? { updatePolicy: desktop.updatePolicy === "manual" ? "automatic" : "manual" }
+                : {}),
+            },
+          },
+        });
+        await refresh();
+      } catch (cause) {
+        setError(failureMessage(cause));
+      }
+    })().finally(() => {
       setBusyDesktopId(null);
-    }
+    });
   };
 
   const openViewer = async (desktop: AgentDesktopView) => {
     setOpeningViewerId(desktop.id);
     setError(null);
     setViewerError(null);
-    try {
-      await run(desktop.owner.environmentId, {
-        threadId: desktop.owner.threadId,
-        request: { operation: "request-view", owner: desktop.owner, desktopId: desktop.id },
-      });
-      const observation = await run<ComputerAutomationSnapshot>(desktop.owner.environmentId, {
-        threadId: desktop.owner.threadId,
-        request: {
-          operation: "snapshot",
-          owner: desktop.owner,
-          desktopId: desktop.id,
-          input: {
-            includeAccessibility: false,
-            screenshot: { maxWidth: VIEWER_MAX_WIDTH, maxHeight: VIEWER_MAX_HEIGHT },
-          },
-        },
-      });
-      let agentObservation: ComputerObservation | null = null;
+    let lease: AgentViewerLease | null = null;
+    return await (async () => {
       try {
-        const update = await run<ComputerObservationUpdate>(desktop.owner.environmentId, {
-          threadId: desktop.owner.threadId,
-          request: {
-            operation: "observation",
-            owner: desktop.owner,
-            desktopId: desktop.id,
-          },
-        });
-        agentObservation = update.observation ?? null;
-      } catch (cause) {
-        setViewerError(`Agent lens unavailable: ${failureMessage(cause)}`);
-      }
-      setViewer({
-        desktop,
-        observation,
-        agentObservation,
-        controlling: false,
-      });
-    } catch (cause) {
-      setError(failureMessage(cause));
-    } finally {
-      setOpeningViewerId(null);
-    }
-  };
-
-  const bindViewer = useStableCallback((node: HTMLDivElement | null) => {
-    const selected = viewerRef.current;
-    if (node === null || selected === null) return;
-    const desktop = selected.desktop;
-    let cancelled = false;
-    let timeout: ReturnType<typeof setTimeout> | null = null;
-    let inFlight = false;
-
-    const schedule = () => {
-      if (!cancelled) timeout = setTimeout(poll, VIEWER_REFRESH_INTERVAL_MS);
-    };
-    const poll = async () => {
-      if (cancelled || inFlight) return;
-      if (document.visibilityState !== "visible") {
-        schedule();
-        return;
-      }
-      inFlight = true;
-      let failure: unknown = null;
-      try {
-        const observation = await run<ComputerAutomationSnapshot>(desktop.owner.environmentId, {
+        lease = await openLease(desktop);
+        if (lease === null) return;
+        const observation = await runViewer<ComputerAutomationSnapshot>(lease, {
           threadId: desktop.owner.threadId,
           request: {
             operation: "snapshot",
@@ -1379,16 +1404,86 @@ export function AgentDesktopSettings() {
             },
           },
         });
-        if (cancelled) return;
+        if (!isCurrentLease(lease)) return;
+        let agentObservation: ComputerObservation | null = null;
+        try {
+          const update = await runViewer<ComputerObservationUpdate>(lease, {
+            threadId: desktop.owner.threadId,
+            request: {
+              operation: "observation",
+              owner: desktop.owner,
+              desktopId: desktop.id,
+            },
+          });
+          agentObservation = update.observation ?? null;
+        } catch (cause) {
+          if (!isCurrentLease(lease)) return;
+          setViewerError(`Agent lens unavailable: ${failureMessage(cause)}`);
+        }
+        if (!isCurrentLease(lease)) return;
+        setViewer({
+          desktop,
+          lease,
+          observation,
+          agentObservation,
+          controlling: false,
+        });
+      } catch (cause) {
+        if (lease !== null) {
+          if (!isCurrentLease(lease)) return;
+          await closeViewer();
+        }
+        setError(failureMessage(cause));
+      }
+    })().finally(() => {
+      setOpeningViewerId(null);
+    });
+  };
+
+  const bindViewer = useStableCallback((node: HTMLDivElement | null) => {
+    const selected = viewerRef.current;
+    if (node === null || selected === null) return;
+    const desktop = selected.desktop;
+    let cancelled = false;
+    let timeout: ReturnType<typeof setTimeout> | null = null;
+    let inFlight = false;
+
+    const schedule = () => {
+      if (!cancelled && isCurrentLease(selected.lease))
+        timeout = setTimeout(poll, VIEWER_REFRESH_INTERVAL_MS);
+    };
+    const poll = async () => {
+      if (cancelled || inFlight || !isCurrentLease(selected.lease)) return;
+      if (document.visibilityState !== "visible") {
+        schedule();
+        return;
+      }
+      inFlight = true;
+      let failure: unknown = null;
+      try {
+        const observation = await runViewer<ComputerAutomationSnapshot>(selected.lease, {
+          threadId: desktop.owner.threadId,
+          request: {
+            operation: "snapshot",
+            owner: desktop.owner,
+            desktopId: desktop.id,
+            input: {
+              includeAccessibility: false,
+              screenshot: { maxWidth: VIEWER_MAX_WIDTH, maxHeight: VIEWER_MAX_HEIGHT },
+            },
+          },
+        });
+        if (cancelled || !isCurrentLease(selected.lease)) return;
         setViewer((current) =>
           current?.desktop.id === desktop.id ? { ...current, observation } : current,
         );
       } catch (cause) {
         failure = cause;
       }
+      if (cancelled || !isCurrentLease(selected.lease)) return;
       try {
         const currentObservation = viewerRef.current?.agentObservation;
-        const update = await run<ComputerObservationUpdate>(desktop.owner.environmentId, {
+        const update = await runViewer<ComputerObservationUpdate>(selected.lease, {
           threadId: desktop.owner.threadId,
           request: {
             operation: "observation",
@@ -1399,7 +1494,7 @@ export function AgentDesktopSettings() {
               : { afterId: currentObservation.id }),
           },
         });
-        if (!cancelled) {
+        if (!cancelled && isCurrentLease(selected.lease)) {
           setViewer((current) => {
             if (current?.desktop.id !== desktop.id) return current;
             if (update.latestId === null) return { ...current, agentObservation: null };
@@ -1409,9 +1504,10 @@ export function AgentDesktopSettings() {
           });
         }
       } catch (cause) {
-        failure ??= cause;
+        failure = failure ?? cause;
       }
-      if (!cancelled) setViewerError(failure === null ? null : failureMessage(failure));
+      if (!cancelled && isCurrentLease(selected.lease))
+        setViewerError(failure === null ? null : failureMessage(failure));
       inFlight = false;
       schedule();
     };
@@ -1420,13 +1516,6 @@ export function AgentDesktopSettings() {
     return () => {
       cancelled = true;
       if (timeout !== null) clearTimeout(timeout);
-      if (viewerRef.current?.desktop.id === desktop.id) {
-        viewerRef.current = null;
-        void run(desktop.owner.environmentId, {
-          threadId: desktop.owner.threadId,
-          request: { operation: "release", owner: desktop.owner, desktopId: desktop.id },
-        }).catch(() => {});
-      }
     };
   });
 
@@ -1440,14 +1529,15 @@ export function AgentDesktopSettings() {
     const execute = async (): Promise<ViewerActionOutcome> => {
       const current = viewerRef.current;
       if (
-        current?.desktop.id !== desktop.id ||
+        current?.lease !== selected.lease ||
         !current.controlling ||
+        !isCurrentLease(selected.lease) ||
         !(shouldExecute?.() ?? true)
       )
         return { status: "cancelled" };
       try {
-        const results = await run<ReadonlyArray<ComputerAutomationActionResult>>(
-          desktop.owner.environmentId,
+        const results = await runViewer<ReadonlyArray<ComputerAutomationActionResult>>(
+          selected.lease,
           {
             threadId: desktop.owner.threadId,
             request: {
@@ -1457,11 +1547,12 @@ export function AgentDesktopSettings() {
               input: { actions: [...actions], observation: false },
             },
           },
+          shouldExecute,
         );
-        setViewerError(null);
+        if (isCurrentLease(selected.lease)) setViewerError(null);
         return { status: "completed", results };
       } catch (cause) {
-        setViewerError(failureMessage(cause));
+        if (isCurrentLease(selected.lease)) setViewerError(failureMessage(cause));
         return { status: "failed", detail: failureMessage(cause) };
       }
     };
@@ -1474,61 +1565,19 @@ export function AgentDesktopSettings() {
     if (viewer === null) return false;
     setBusyDesktopId(viewer.desktop.id);
     setViewerError(null);
-    try {
-      if (controlling) {
-        await run(viewer.desktop.owner.environmentId, {
-          threadId: viewer.desktop.owner.threadId,
-          request: {
-            operation: "request-control",
-            owner: viewer.desktop.owner,
-            desktopId: viewer.desktop.id,
-          },
-        });
-      } else {
-        await run(viewer.desktop.owner.environmentId, {
-          threadId: viewer.desktop.owner.threadId,
-          request: {
-            operation: "release",
-            owner: viewer.desktop.owner,
-            desktopId: viewer.desktop.id,
-          },
-        });
-        await run(viewer.desktop.owner.environmentId, {
-          threadId: viewer.desktop.owner.threadId,
-          request: {
-            operation: "request-view",
-            owner: viewer.desktop.owner,
-            desktopId: viewer.desktop.id,
-          },
-        });
+    return await (async () => {
+      try {
+        if (!(await requestLease(viewer.lease, controlling ? "request-control" : "return-control")))
+          return false;
+        setViewer((current) => (current === null ? null : { ...current, controlling }));
+        return true;
+      } catch (cause) {
+        if (isCurrentLease(viewer.lease)) setViewerError(failureMessage(cause));
+        return false;
       }
-      setViewer((current) => (current === null ? null : { ...current, controlling }));
-      return true;
-    } catch (cause) {
-      setViewerError(failureMessage(cause));
-      return false;
-    } finally {
+    })().finally(() => {
       setBusyDesktopId(null);
-    }
-  };
-
-  const closeViewer = async () => {
-    const current = viewer;
-    setViewer(null);
-    setViewerError(null);
-    if (current === null) return;
-    try {
-      await run(current.desktop.owner.environmentId, {
-        threadId: current.desktop.owner.threadId,
-        request: {
-          operation: "release",
-          owner: current.desktop.owner,
-          desktopId: current.desktop.id,
-        },
-      });
-    } catch {
-      // Closing the viewer is best effort; the host also clears leases on disconnect.
-    }
+    });
   };
 
   const availableCount = Array.from(availability.values()).filter(
@@ -1560,8 +1609,9 @@ export function AgentDesktopSettings() {
         requirement.remedy?.automatic,
     ) === true;
 
+  const Container = thread === undefined ? SettingsPageContainer : "div";
   return (
-    <SettingsPageContainer>
+    <Container>
       <SettingsSection
         id="agent-desktops"
         title="Agent desktops"
@@ -1573,17 +1623,21 @@ export function AgentDesktopSettings() {
         }
       >
         <p className="px-3 pb-1 text-sm text-muted-foreground sm:px-4">
-          Independent desktops that agents can use without interrupting your desktop. Resources,
-          parking, retention, system updates, and network boundaries are managed automatically.
-          Inactive desktops enter a seven-day recovery window after 30 days or when host storage is
-          low.
+          {thread === undefined
+            ? "Independent desktops that agents can use without interrupting your desktop. Manage resources, retention, and automatic or manual system updates here. Inactive disposable desktops enter a seven-day recovery window after 30 days or when storage is low."
+            : "Watch this thread’s desktops, inspect the Agent lens, or take control and return it to the agent."}
         </p>
+        {permissionDenied ? (
+          <p className="text-sm text-muted-foreground">
+            Desktop supervision requires operate access to this environment.
+          </p>
+        ) : null}
         {error ? (
           <Alert variant="error">
             <AlertDescription>{error}</AlertDescription>
           </Alert>
         ) : null}
-        {environmentNotices.map(([environmentId, status]) => {
+        {(thread === undefined ? environmentNotices : []).map(([environmentId, status]) => {
           const hasAutomaticRemedy = status.requirements.some(
             (requirement) =>
               requirement.status !== "ready" && requirement.remedy?.automatic === true,
@@ -1660,7 +1714,7 @@ export function AgentDesktopSettings() {
         ) : (
           <div className="grid gap-3">
             {desktops.map((desktop) => {
-              const thread = threadById.get(desktop.owner.threadId);
+              const ownerThread = threadById.get(desktop.owner.threadId);
               const environment = environmentById.get(desktop.owner.environmentId);
               const busy = busyDesktopId === desktop.id;
               const openingViewer = openingViewerId === desktop.id;
@@ -1678,6 +1732,9 @@ export function AgentDesktopSettings() {
                       </Badge>
                       {!desktop.automaticParking ? (
                         <Badge variant="secondary">Kept running</Badge>
+                      ) : null}
+                      {desktop.updatePolicy === "manual" ? (
+                        <Badge variant="secondary">Manual updates</Badge>
                       ) : null}
                       {desktop.retention === "preserve" ? (
                         <Badge variant="secondary">preserved</Badge>
@@ -1697,7 +1754,8 @@ export function AgentDesktopSettings() {
                       )}
                     </h3>
                     <p className="col-start-1 text-sm text-muted-foreground">
-                      {thread?.title ?? "Unknown thread"} · {environment?.label ?? "Unknown device"}
+                      {ownerThread?.title ?? "Unknown thread"} ·{" "}
+                      {environment?.label ?? "Unknown device"}
                     </p>
                     <div className="col-start-2 row-start-1 row-span-2">
                       {recoverable ? null : (
@@ -1731,84 +1789,96 @@ export function AgentDesktopSettings() {
                         </p>
                       )}
                     </div>
-                    <div className="flex flex-wrap gap-2">
-                      {recoverable ? (
-                        <>
-                          <Button
-                            size="xs"
-                            variant="outline"
-                            disabled={busy}
-                            onClick={() => void manage(desktop, "restore")}
-                          >
-                            <RotateCcwIcon />
-                            Restore
-                          </Button>
-                          <Button
-                            size="xs"
-                            variant="destructive-outline"
-                            disabled={busy}
-                            onClick={() => setPermanentDeleteDesktop(desktop)}
-                          >
-                            <Trash2Icon />
-                            Delete permanently
-                          </Button>
-                        </>
-                      ) : (
-                        <>
-                          {resumable &&
-                          (maintenance?.status === "due" || maintenance?.status === "failed") ? (
+                    {thread === undefined ? (
+                      <div className="flex flex-wrap gap-2">
+                        <Button
+                          size="xs"
+                          variant="outline"
+                          disabled={busy || maintenanceActive}
+                          onClick={() => void manage(desktop, "set-update-policy")}
+                        >
+                          {desktop.updatePolicy === "manual"
+                            ? "Enable automatic updates"
+                            : "Use manual updates"}
+                        </Button>
+                        {recoverable ? (
+                          <>
                             <Button
                               size="xs"
                               variant="outline"
                               disabled={busy}
-                              onClick={() => void updateDesktop(desktop)}
+                              onClick={() => void manage(desktop, "restore")}
                             >
-                              <RefreshCwIcon />
-                              Update
+                              <RotateCcwIcon />
+                              Restore
                             </Button>
-                          ) : null}
-                          {resumable ? (
+                            <Button
+                              size="xs"
+                              variant="destructive-outline"
+                              disabled={busy}
+                              onClick={() => setPermanentDeleteDesktop(desktop)}
+                            >
+                              <Trash2Icon />
+                              Delete permanently
+                            </Button>
+                          </>
+                        ) : (
+                          <>
+                            {resumable &&
+                            (maintenance?.status === "due" || maintenance?.status === "failed") ? (
+                              <Button
+                                size="xs"
+                                variant="outline"
+                                disabled={busy}
+                                onClick={() => void updateDesktop(desktop)}
+                              >
+                                <RefreshCwIcon />
+                                Update
+                              </Button>
+                            ) : null}
+                            {resumable ? (
+                              <Button
+                                size="xs"
+                                variant="outline"
+                                disabled={busy || maintenanceActive}
+                                onClick={() => void manage(desktop, "resume")}
+                              >
+                                <PlayIcon />
+                                Resume
+                              </Button>
+                            ) : (
+                              <Button
+                                size="xs"
+                                variant="outline"
+                                disabled={busy || maintenanceActive}
+                                onClick={() => void manage(desktop, "park")}
+                              >
+                                <PauseIcon />
+                                Park
+                              </Button>
+                            )}
                             <Button
                               size="xs"
                               variant="outline"
                               disabled={busy || maintenanceActive}
-                              onClick={() => void manage(desktop, "resume")}
+                              onClick={() => void manage(desktop, "stop")}
                             >
-                              <PlayIcon />
-                              Resume
+                              <CircleStopIcon />
+                              Stop
                             </Button>
-                          ) : (
                             <Button
                               size="xs"
-                              variant="outline"
+                              variant="destructive-outline"
                               disabled={busy || maintenanceActive}
-                              onClick={() => void manage(desktop, "park")}
+                              onClick={() => void manage(desktop, "delete")}
                             >
-                              <PauseIcon />
-                              Park
+                              <Trash2Icon />
+                              Delete
                             </Button>
-                          )}
-                          <Button
-                            size="xs"
-                            variant="outline"
-                            disabled={busy || maintenanceActive}
-                            onClick={() => void manage(desktop, "stop")}
-                          >
-                            <CircleStopIcon />
-                            Stop
-                          </Button>
-                          <Button
-                            size="xs"
-                            variant="destructive-outline"
-                            disabled={busy || maintenanceActive}
-                            onClick={() => void manage(desktop, "delete")}
-                          >
-                            <Trash2Icon />
-                            Delete
-                          </Button>
-                        </>
-                      )}
-                    </div>
+                          </>
+                        )}
+                      </div>
+                    ) : null}
                   </div>
                 </section>
               );
@@ -1821,6 +1891,14 @@ export function AgentDesktopSettings() {
         {viewer ? (
           <div key={`${viewer.desktop.owner.environmentId}:${viewer.desktop.id}`} ref={bindViewer}>
             <ComputerDesktopViewer
+              embedded={thread !== undefined}
+              secondaryActions={
+                thread === undefined ? undefined : (
+                  <Button variant="outline" size="sm" onClick={() => void closeViewer()}>
+                    Close viewer
+                  </Button>
+                )
+              }
               label={viewer.desktop.label}
               description={
                 <>
@@ -1833,11 +1911,14 @@ export function AgentDesktopSettings() {
               observation={viewer.observation}
               agentObservation={viewer.agentObservation}
               controlling={viewer.controlling}
-              busy={busyDesktopId === viewer.desktop.id}
+              busy={
+                busyDesktopId === viewer.desktop.id ||
+                !operable.includes(viewer.desktop.owner.environmentId)
+              }
               error={viewerError}
               onTakeControl={() => setViewerControl(true)}
               onRelease={() => setViewerControl(false)}
-              inputSession={viewer.desktop.id}
+              inputSession={viewer.lease}
               onAction={actInViewer}
             />
           </div>
@@ -1900,6 +1981,6 @@ export function AgentDesktopSettings() {
           </AlertDialogFooter>
         </AlertDialogPopup>
       </AlertDialog>
-    </SettingsPageContainer>
+    </Container>
   );
 }

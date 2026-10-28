@@ -1,4 +1,5 @@
 import * as AgentDesktopTransfer from "./agentDesktop/AgentDesktopTransferService.ts";
+import * as ThreadDesktopActivity from "./computer/ThreadDesktopActivity.ts";
 import * as ThreadMonitorSignalCallbacks from "./threadMonitor/ThreadMonitorSignalCallbacks.ts";
 import * as MonitorSignalRoute from "./threadMonitor/signalRoute.ts";
 import * as ProviderComputerLifecycle from "./orchestration-v2/ProviderComputerLifecycle.ts";
@@ -773,6 +774,20 @@ const layerComputerAutomationRouter = ComputerAutomationRouter.layer.pipe(
   Layer.provideMerge(layerAgentDesktopManager),
 );
 
+const layerAgentDesktopServices = ThreadDesktopActivity.layer.pipe(
+  Layer.provideMerge(
+    Layer.mergeAll(
+      UserDesktopTransfers.layer.pipe(Layer.provide(layerPreviewAutomationBroker)),
+      layerAgentDesktopManager,
+      layerComputerAutomationRouter,
+      AgentDesktopTransfer.layer.pipe(
+        Layer.provide(layerAgentDesktopManager),
+        Layer.provide(layerServerEnvironment),
+      ),
+    ),
+  ),
+);
+
 const layerThreadMonitor = ThreadMonitor.layer.pipe(
   Layer.provide(
     ThreadMonitorComputer.layer.pipe(
@@ -782,6 +797,7 @@ const layerThreadMonitor = ThreadMonitor.layer.pipe(
   Layer.provide(RuntimeLayer.layerEventSink),
   Layer.provideMerge(ThreadWorkspaceQuery.layer),
   Layer.provideMerge(ProjectionStoreV2.layer),
+  Layer.provideMerge(layerAgentDesktopServices),
   Layer.provideMerge(layerRuntimeCoreDependencies),
 );
 
@@ -791,14 +807,6 @@ const layerRuntimeCoreWithAgentPower = AgentPowerReporter.layer.pipe(
 );
 
 const layerRuntimeDependencies = layerRuntimeCoreWithAgentPower.pipe(
-  Layer.provideMerge(UserDesktopTransfers.layer.pipe(Layer.provide(layerPreviewAutomationBroker))),
-  Layer.provideMerge(
-    AgentDesktopTransfer.layer.pipe(
-      Layer.provide(layerAgentDesktopManager),
-      Layer.provide(layerServerEnvironment),
-    ),
-  ),
-  Layer.provideMerge(layerComputerAutomationRouter),
   Layer.provideMerge(layerUsage),
   Layer.provideMerge(layerBackground),
   Layer.provideMerge(layerResourceDiagnostics),

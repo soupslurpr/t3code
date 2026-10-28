@@ -2,6 +2,7 @@ import {
   CLIENT_GUARDED_RPC_SCOPES,
   type DeviceListInput,
   clientRpcRequiredScopes,
+  isHumanDesktopRelease,
   authScopeRequiredResponse,
   AssetCreateUrlInput,
   AuthAccessReadScope,
@@ -115,6 +116,7 @@ export const RPC_REQUIRED_SCOPES = {
   // Delivery logs hold request bodies, so they need the same scope as the URL.
   [WS_METHODS.scheduledTasksListWebhookDeliveries]: AuthOrchestrationOperateScope,
   [WS_METHODS.scheduledTasksGetWebhookDelivery]: AuthOrchestrationOperateScope,
+  [WS_METHODS.threadDesktopActivity]: AuthOrchestrationReadScope,
   [WS_METHODS.threadMonitorsSubscribe]: AuthOrchestrationReadScope,
   [WS_METHODS.threadMonitorsCancel]: AuthOrchestrationOperateScope,
   [WS_METHODS.cloudGetRelayClientStatus]: AuthRelayReadScope,
@@ -290,7 +292,12 @@ export const layer = (
 ) =>
   Layer.succeed(RpcScopeAuthorization)((effect, { rpc, payload }) => {
     const requiredScopes = requiredScopesForRpcCall(rpc._tag, payload);
-    const requiredScope = requiredScopes.find((scope) => !scopes.includes(scope));
+    const readRelease =
+      isHumanDesktopRelease(rpc._tag, payload) && scopes.includes(AuthOrchestrationReadScope);
+    const requiredScope = requiredScopes.find(
+      (scope) =>
+        !scopes.includes(scope) && !(readRelease && scope === AuthOrchestrationOperateScope),
+    );
     if (requiredScope !== undefined) return Effect.fail(rpcAuthorizationError(requiredScope));
     return onAuthorized === undefined
       ? effect

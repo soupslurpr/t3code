@@ -10,6 +10,7 @@ import type {
   UserDesktopHumanInvokeInput,
 } from "@t3tools/contracts";
 import { retainMobileDesktopImage } from "./UserDesktopSupervisionRouteScreen.logic";
+import type { AtomCommandInvocationOptions } from "@t3tools/client-runtime/state/runtime";
 
 export interface MobileDesktopSupervisionState {
   readonly status: ComputerAutomationStatus | null;
@@ -37,7 +38,10 @@ export const emptyMobileDesktopSupervision: MobileDesktopSupervisionState = {
   error: null,
 };
 
-type Request = <Value>(input: UserDesktopHumanInvokeInput) => Promise<Value>;
+type Request = <Value>(
+  input: UserDesktopHumanInvokeInput,
+  invocation?: AtomCommandInvocationOptions,
+) => Promise<Value>;
 export function createMobileDesktopSupervision(input: {
   readonly desktopId: string;
   readonly accessQueue: { current: Promise<void> };
@@ -46,7 +50,7 @@ export function createMobileDesktopSupervision(input: {
   readonly isGestureActive: () => boolean;
   readonly foreground: boolean;
 }) {
-  const { desktopId, run } = input;
+  const { desktopId } = input;
   let state = emptyMobileDesktopSupervision;
   let disposed = false;
   let foreground = input.foreground;
@@ -55,6 +59,13 @@ export function createMobileDesktopSupervision(input: {
   let actionQueue = Promise.resolve();
   const timers = new Set<ReturnType<typeof setTimeout>>();
   const current = (token: number) => !disposed && foreground && token === generation;
+  const run: Request = (request) => {
+    const token = generation;
+    return input.run(
+      request,
+      request.request.operation === "release" ? undefined : { shouldExecute: () => current(token) },
+    );
+  };
   const update = (change: Partial<MobileDesktopSupervisionState>) => {
     if (disposed) return;
     if ("status" in change) statusRevision++;

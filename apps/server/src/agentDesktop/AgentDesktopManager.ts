@@ -721,6 +721,11 @@ export interface AgentDesktopManagerShape {
     owner: AgentDesktopOwner,
     selector: Extract<ComputerDesktopSelector, { readonly kind: "agent" }>,
   ) => Effect.Effect<ComputerAutomationStatus, AgentDesktopManagerOperationError>;
+  readonly humanStatus: (
+    owner: AgentDesktopOwner,
+    controllerId: string,
+    desktopId: AgentDesktopId,
+  ) => Effect.Effect<ComputerAutomationStatus, AgentDesktopManagerError>;
   readonly requestHumanView: (
     owner: AgentDesktopOwner,
     controllerId: string,
@@ -1535,6 +1540,20 @@ const make = Effect.gen(function* () {
         },
       ],
       captureHealth: [captureHealth],
+      lease: {
+        access: hasControl ? "control" : hasView ? "view" : "none",
+        controller:
+          lease?.controllerId == null
+            ? null
+            : {
+                kind: lease.humanLeaseExpiresAt.has(lease.controllerId) ? "human" : "agent",
+                sameEnvironment: true,
+                ...(!lease.humanLeaseExpiresAt.has(lease.controllerId)
+                  ? { threadId: desktop.owner.threadId }
+                  : {}),
+              },
+        canReturnControl: hasControl && lease?.humanLeaseExpiresAt.has(controllerId) === true,
+      },
       cursor: null,
       ...(!running ? { detail: `Agent desktop is ${desktop.state}.` } : {}),
     } satisfies ComputerAutomationStatus;
@@ -2969,6 +2988,20 @@ const make = Effect.gen(function* () {
         return yield* presentStatus(controllerId, { ...desktop, state: "active" });
       }),
     );
+  });
+
+  const humanStatus: AgentDesktopManagerShape["humanStatus"] = Effect.fn(
+    "AgentDesktopManager.humanStatus",
+  )(function* (owner, controllerId, desktopId) {
+    const desktop = yield* requireDesktopById(desktopId);
+    if (!ownersMatch(desktop.owner, owner))
+      return yield* new AgentDesktopManagerError({
+        code: "desktop-target-mismatch",
+        operation: "status",
+        detail: "the Agent desktop belongs to a different owner",
+      });
+    yield* refreshHumanLease(desktopId, controllerId);
+    return yield* presentStatus(controllerId, desktop);
   });
 
   const requestHumanView: AgentDesktopManagerShape["requestHumanView"] = (
@@ -6172,6 +6205,7 @@ const make = Effect.gen(function* () {
     capturePackets,
     requestView,
     requestControl,
+    humanStatus,
     requestHumanView,
     requestHumanControl,
     status,

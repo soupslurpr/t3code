@@ -393,7 +393,11 @@ export function SettingsUserDesktopsRouteScreen() {
                 ) : null}
                 <Pressable
                   accessibilityRole="button"
-                  disabled={!group.supportsView || group.connectionState !== "online"}
+                  disabled={
+                    !permitted.has(group.primary.environmentId) ||
+                    !group.supportsView ||
+                    group.connectionState !== "online"
+                  }
                   className="items-center rounded-[14px] bg-primary px-4 py-3 disabled:opacity-40"
                   onPress={() =>
                     navigation.navigate("UserDesktopSupervision", {

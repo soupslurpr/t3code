@@ -1,4 +1,5 @@
 import * as SecretResolver from "@t3tools/secret-provider-core/server/SecretResolver";
+import * as ThreadDesktopActivity from "./computer/ThreadDesktopActivity.ts";
 import { ThreadMonitorService } from "./threadMonitor/ThreadMonitorService.ts";
 import * as AgentDesktopManager from "./agentDesktop/AgentDesktopManager.ts";
 import * as ComputerObservationStore from "./computer/ComputerObservationStore.ts";
@@ -6,6 +7,8 @@ import * as NodeServices from "@effect/platform-node/NodeServices";
 import { assert, it } from "@effect/vitest";
 import {
   AuthSessionId,
+  AuthOrchestrationReadScope,
+  AgentDesktopId,
   EnvironmentId,
   ProjectId,
   ThreadId,
@@ -13,6 +16,7 @@ import {
   ProviderInstanceId,
   WS_METHODS,
   WsServerRefreshProvidersRpc,
+  WsRpcGroup,
   WsSubscribeServerConfigRpc,
   type OrchestrationV2StoredEvent,
   type OrchestrationV2ThreadShell,
@@ -50,6 +54,7 @@ import * as DeviceService from "./device/DeviceService.ts";
 import * as DocumentText from "./provider/DocumentText.ts";
 import * as DirectEndpoints from "./environment/DirectEndpoints.ts";
 import * as EnvironmentAuth from "./auth/EnvironmentAuth.ts";
+import * as RpcAuthorization from "./auth/RpcAuthorization.ts";
 import * as EnvironmentTheme from "./environmentTheme.ts";
 import * as GitWorkflowService from "./git/GitWorkflowService.ts";
 import * as HostResources from "./resourceTelemetry/HostResources.ts";
@@ -530,6 +535,7 @@ it.effect("shell snapshots omit idle children and older settled threads only on 
 // Build the production RPC layer; unrelated capabilities fail if this test calls them.
 const layerUnusedConfigRpcServices = Layer.mergeAll(
   ComputerObservationStore.layer,
+  Layer.mock(ThreadDesktopActivity.ThreadDesktopActivityService)({}),
   Layer.mock(DocumentText.DocumentText)({}),
   Layer.mock(ServerSecretStore.ServerSecretStore)({}),
   Layer.mock(WorkspacePaths.WorkspacePaths)({}),
@@ -620,6 +626,146 @@ const layerConfigSources = Layer.mergeAll(
     ),
   ),
   Layer.provideMerge(NodeServices.layer),
+);
+
+it.effect(
+  "full desktop release uses the authenticated human session, never a supplied controller",
+  () =>
+    Effect.gen(function* () {
+      const environmentId = EnvironmentId.make("cleanup-environment");
+      const threadId = ThreadId.make("cleanup-thread");
+      const desktopId = AgentDesktopId.make("cleanup-agent-desktop");
+      const released: unknown[] = [];
+      const status = {
+        available: true,
+        backend: "qemu-agent-desktop" as const,
+        permission: "view-only" as const,
+        rememberedAccess: [],
+        displayState: "active" as const,
+        keepAwake: false,
+        displays: [],
+        cursor: null,
+      };
+      const services = Layer.mergeAll(
+        layerUnusedConfigRpcServices,
+        Layer.mock(ExternalLauncher.ExternalLauncher)({}),
+        Layer.mock(ProviderRegistry.ProviderRegistry)({}),
+        Layer.mock(UsageLimitSources.UsageLimitSources)({}),
+        Layer.mock(RemoteOpenTargets.RemoteOpenTargets)({}),
+        Layer.mock(DirectEndpoints.DirectEndpoints)({}),
+        Layer.mock(ManagedProjectFolders.ManagedProjectFolders)({
+          namedProjectsRoot: process.cwd(),
+        }),
+        Layer.mock(ScratchThreadPromotion.ScratchThreadPromotion)({}),
+        Layer.mock(EnvironmentAuth.EnvironmentAuth)({}),
+        Layer.mock(ServerEnvironment.ServerEnvironment)({
+          getEnvironmentId: Effect.succeed(environmentId),
+        }),
+        Layer.mock(AgentDesktopManager.AgentDesktopManager)({
+          release: (controllerId, desktopId) =>
+            Effect.sync(() => {
+              released.push({ kind: "agent", controllerId, desktopId });
+              return status;
+            }),
+        }),
+        Layer.mock(PreviewAutomationBroker.PreviewAutomationBroker)({
+          invoke: <A>({
+            scope,
+            operation,
+            input,
+          }: PreviewAutomationBroker.PreviewAutomationInvokeInput) =>
+            Effect.sync(() => {
+              released.push({
+                kind: "user",
+                environmentId: scope.environmentId,
+                controllerId: scope.thread?.controllerId,
+                providerSessionId: scope.thread?.providerSessionId,
+                operation,
+                input,
+              });
+              return status as A;
+            }),
+        }),
+      );
+      const tested = [
+        WS_METHODS.agentDesktopHumanInvoke,
+        WS_METHODS.userDesktopHumanInvoke,
+      ] as const;
+      const group = WsRpcGroup.omit(
+        ...[...WsRpcGroup.requests.keys()].filter(
+          (
+            tag,
+          ): tag is Exclude<RpcGroup.Rpcs<typeof WsRpcGroup>["_tag"], (typeof tested)[number]> =>
+            !(tested as ReadonlyArray<string>).includes(tag),
+        ),
+      );
+      const responses = yield* Queue.unbounded<unknown>();
+      const server = yield* RpcServer.makeNoSerialization(group, {
+        ...WS_RPC_SERVER_OPTIONS,
+        onFromServer: (response) =>
+          response._tag === "Exit"
+            ? Queue.offer(responses, response.exit).pipe(Effect.asVoid)
+            : Effect.void,
+      }).pipe(
+        Effect.provide(
+          Layer.mergeAll(
+            layerWsRpc(
+              {
+                sessionId: AuthSessionId.make("own-session"),
+                subject: "cleanup",
+                method: "browser-session-cookie",
+                scopes: [AuthOrchestrationReadScope],
+              },
+              {},
+              yield* ServerBrowser.ServerBrowser,
+              () => Effect.void,
+            ).pipe(Layer.provide(services)),
+            RpcAuthorization.layer([AuthOrchestrationReadScope]),
+          ),
+        ),
+      );
+      const payload = {
+        threadId,
+        controllerId: "human:someone-else",
+        providerSessionId: "human:someone-else",
+        request: {
+          operation: "release" as const,
+          desktopId,
+          controllerId: "human:someone-else",
+          owner: { environmentId, threadId, controllerId: "agent-owner" },
+        },
+      };
+      for (const tag of tested) {
+        yield* server.write(0, {
+          _tag: "Request",
+          id: RpcMessage.RequestId(tag),
+          tag,
+          headers: Headers.empty,
+          payload,
+        });
+        assert.deepInclude(yield* Queue.take(responses), { _tag: "Success", value: status });
+      }
+      assert.deepEqual(released, [
+        { kind: "agent", controllerId: "human:own-session", desktopId },
+        {
+          kind: "user",
+          environmentId,
+          controllerId: "human:own-session",
+          providerSessionId: "human:own-session",
+          operation: "computerRelease",
+          input: { desktop: { kind: "user", desktopId } },
+        },
+      ]);
+    }).pipe(
+      Effect.scoped,
+      Effect.provide(
+        Layer.mergeAll(
+          Layer.fresh(layerConfigSources),
+          Layer.mock(PreviewAutomationBroker.PreviewAutomationBroker)({}),
+          Layer.mock(ServerBrowser.ServerBrowser)({}),
+        ),
+      ),
+    ),
 );
 
 it.effect.each(["pending", "cached"] as const)(

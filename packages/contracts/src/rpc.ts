@@ -1,3 +1,4 @@
+import { ThreadDesktopActivity, ThreadDesktopActivityError } from "./threadDesktop.ts";
 import { UserDesktopHumanInvokeInput } from "./previewAutomation.ts";
 import { UserDesktopInventoryError, UserDesktopManagementError } from "./userDesktop.ts";
 import {
@@ -564,6 +565,7 @@ export const WS_METHODS = {
   scheduledTasksListWebhookDeliveries: "scheduledTasks.listWebhookDeliveries",
   scheduledTasksGetWebhookDelivery: "scheduledTasks.getWebhookDelivery",
 
+  threadDesktopActivity: "threadDesktop.activity",
   threadMonitorsSubscribe: "threadMonitors.subscribe",
   threadMonitorsCancel: "threadMonitors.cancel",
 
@@ -1932,6 +1934,12 @@ const WsSubscribeServerLifecycleRpc = Rpc.make(WS_METHODS.subscribeServerLifecyc
   stream: true,
 });
 
+const WsThreadDesktopActivityRpc = Rpc.make(WS_METHODS.threadDesktopActivity, {
+  payload: Schema.Struct({ threadId: ThreadId }),
+  success: ThreadDesktopActivity,
+  error: Schema.Union([ThreadDesktopActivityError, EnvironmentAuthorizationError]),
+});
+
 const WsThreadMonitorsSubscribeRpc = Rpc.make(WS_METHODS.threadMonitorsSubscribe, {
   payload: Schema.Struct({ threadId: ThreadId }),
   success: ThreadMonitorSummaryList,
@@ -2099,6 +2107,7 @@ export const WsRpcGroup = RpcGroup.make(
   WsSecretsAnswerRequestRpc,
   WsScheduledTasksListWebhookDeliveriesRpc,
   WsScheduledTasksGetWebhookDeliveryRpc,
+  WsThreadDesktopActivityRpc,
   WsThreadMonitorsSubscribeRpc,
   WsThreadMonitorsCancelRpc,
   WsServerReportClientActivityRpc,

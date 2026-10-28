@@ -18,6 +18,7 @@ const RIGHT_PANEL_KINDS = [
   "file",
   "preview",
   "device",
+  "desktop",
   "terminal",
   "pull-request",
   "pull-requests",
@@ -46,6 +47,7 @@ export type RightPanelSurface =
       activeTerminalId: string;
       splitDirection?: "horizontal" | "vertical";
     }
+  | { id: "desktop"; kind: "desktop" }
   | { id: "diff"; kind: "diff" }
   | {
       id: "files";
@@ -217,6 +219,8 @@ const singletonSurface = (
       return { id: "pull-requests", kind };
     case "device":
       return { id: "device", kind };
+    case "desktop":
+      return { id: "desktop", kind };
   }
 };
 

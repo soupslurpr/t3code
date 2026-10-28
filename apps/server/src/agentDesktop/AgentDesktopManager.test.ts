@@ -4,6 +4,7 @@ import * as Queue from "effect/Queue";
 import type * as NodeOS from "node:os";
 import * as NodeModule from "node:module";
 import * as Option from "effect/Option";
+import { runAgentDesktopHumanRequest } from "./AgentDesktopHuman.ts";
 import {
   AgentDesktopId,
   AgentDesktopOwner,
@@ -2215,6 +2216,46 @@ describe("AgentDesktopManager", () => {
           "desktop-busy",
         );
 
+        const humanStatus = yield* manager.humanStatus(owner, humanControllerId, desktop.id);
+        assert.isTrue(humanStatus.lease?.canReturnControl);
+        assert.equal(humanStatus.lease?.controller?.kind, "human");
+        const foreign = yield* manager
+          .humanStatus(
+            { ...owner, threadId: ThreadId.make("other-thread") },
+            humanControllerId,
+            desktop.id,
+          )
+          .pipe(Effect.flip);
+        assert.equal(
+          ComputerUse.toComputerAutomationFailure(foreign).code,
+          "desktop-target-mismatch",
+        );
+        yield* runAgentDesktopHumanRequest(
+          manager,
+          {
+            environmentId: owner.environmentId,
+            thread: {
+              threadId: owner.threadId,
+              controllerId: humanControllerId,
+              providerSessionId: humanControllerId,
+              providerInstanceId: ProviderInstanceId.make("t3-human"),
+            },
+            requestNamespace: "supervision-test",
+            client: undefined,
+            capabilities: new Set(["computer"]),
+            issuedAt: 0,
+          },
+          { operation: "return-control", owner, desktopId: desktop.id },
+        );
+        const returned = yield* manager.humanStatus(owner, humanControllerId, desktop.id);
+        assert.equal(returned.permission, "view-only");
+        assert.equal(returned.lease?.controller?.kind, "agent");
+        assert.isFalse(returned.lease?.canReturnControl);
+        yield* manager.act(
+          owner.controllerId,
+          { actions: [{ type: "press", key: "Enter" }] },
+          desktop.id,
+        );
         yield* manager.release(humanControllerId, desktop.id);
         const releasedError = yield* manager
           .status(humanControllerId, desktop.id)
@@ -4165,7 +4206,7 @@ describe("F049 authority identity comparison", () => {
           );
         yield* Queue.take(admissions);
         if (mutation === "extra-viewer") yield* manager.requestHumanView(owner, human, desktop.id);
-        else if (mutation === "human-renewal") yield* manager.status(human, desktop.id);
+        else if (mutation === "human-renewal") yield* manager.humanStatus(owner, human, desktop.id);
         else yield* manager.requestControl(owner, { kind: "agent", desktopId: desktop.id });
         yield* TestClock.adjust("1 second");
         const outcome = yield* Fiber.join(pending);
@@ -4438,7 +4479,9 @@ it.effect.each(["type", "insert_text"] as const)(
 );
 
 it.effect.each([
+  ["late humanStatus", { renewal: "humanStatus", seconds: 31, expired: true }],
   ["late status", { renewal: "status", seconds: 31, expired: true }],
+  ["timely humanStatus", { renewal: "humanStatus", seconds: 29, expired: false }],
   ["timely status", { renewal: "status", seconds: 29, expired: false }],
 ] as const)(
   "F049 expiry continuity: %s cannot revive expired batch authority",
@@ -4473,7 +4516,11 @@ it.effect.each([
           .pipe(Effect.result, Effect.forkChild({ startImmediately: true }));
         yield* Deferred.await(accepted);
         yield* TestClock.adjust(Duration.seconds(seconds));
-        const heartbeat = yield* manager.status(human, desktop.id).pipe(Effect.result);
+        const heartbeat = yield* (
+          renewal === "humanStatus"
+            ? manager.humanStatus(owner, human, desktop.id)
+            : manager.status(human, desktop.id)
+        ).pipe(Effect.result);
         yield* Deferred.succeed(deliver, undefined);
         yield* TestClock.adjust("1 second");
         const result = yield* Fiber.join(pending);
@@ -4574,6 +4621,100 @@ it.effect.each((["view", "control"] as const).map((access) => [access] as const)
           access === "control" ? 1 : 0,
         );
       }).pipe(Effect.ensuring(Deferred.succeed(deliver, undefined)), Effect.provide(harness.layer));
+    }),
+);
+
+it.effect(
+  "F049 expiry continuity: a heartbeat queued before expiry checks time after state admission",
+  () =>
+    Effect.gen(function* () {
+      const accepted = yield* Deferred.make<void>();
+      const deliver = yield* Deferred.make<void>();
+      const blockPersist = yield* Ref.make(false);
+      const persistEntered = yield* Deferred.make<void>();
+      const persistRelease = yield* Deferred.make<void>();
+      const refreshEntered = yield* Queue.unbounded<void>();
+      const human = "human:queued-heartbeat";
+      const harness = yield* managerHarness("expiry-queued-heartbeat", {
+        accessibility: true,
+        afterGuestProcess: (input) =>
+          input.arguments?.includes("insert-text")
+            ? Deferred.succeed(accepted, undefined).pipe(Effect.andThen(Deferred.await(deliver)))
+            : Effect.void,
+        beforePersistContent: () =>
+          Ref.getAndSet(blockPersist, false).pipe(
+            Effect.flatMap((block) =>
+              block
+                ? Deferred.succeed(persistEntered, undefined).pipe(
+                    Effect.andThen(Deferred.await(persistRelease)),
+                  )
+                : Effect.void,
+            ),
+          ),
+      });
+      yield* Effect.gen(function* () {
+        const manager = yield* AgentDesktopManager.AgentDesktopManager;
+        const desktop = yield* manager.acquire(owner, { label: "Queued heartbeat" });
+        yield* manager.requestHumanControl(owner, human, desktop.id);
+        const pending = yield* manager
+          .act(
+            human,
+            {
+              actions: [
+                { type: "type", text: "abc" },
+                { type: "press", key: "ArrowLeft" },
+              ],
+            },
+            desktop.id,
+          )
+          .pipe(Effect.result, Effect.forkChild({ startImmediately: true }));
+        yield* Deferred.await(accepted);
+        yield* TestClock.adjust("29 seconds");
+        yield* Ref.set(blockPersist, true);
+        const viewer = yield* manager
+          .requestView(
+            { ...owner, controllerId: "queued-heartbeat-viewer" },
+            { kind: "agent", desktopId: desktop.id },
+          )
+          .pipe(Effect.result, Effect.forkChild({ startImmediately: true }));
+        yield* Deferred.await(persistEntered);
+        const tracer = Tracer.make({
+          span(options) {
+            if (options.name === "AgentDesktopManager.refreshHumanLease")
+              Queue.offerUnsafe(refreshEntered, undefined);
+            return new Tracer.NativeSpan(options);
+          },
+        });
+        const renewal = yield* manager
+          .humanStatus(owner, human, desktop.id)
+          .pipe(
+            Effect.withTracer(tracer),
+            Effect.result,
+            Effect.forkChild({ startImmediately: true }),
+          );
+        yield* Queue.take(refreshEntered);
+        yield* TestClock.adjust("2 seconds");
+        yield* Deferred.succeed(persistRelease, undefined);
+        yield* Fiber.join(viewer);
+        const heartbeat = yield* Fiber.join(renewal);
+        yield* Deferred.succeed(deliver, undefined);
+        yield* TestClock.adjust("1 second");
+        const result = yield* Fiber.join(pending);
+        const keys = (yield* Ref.get(harness.calls)).filter((call) => call.startsWith("key:"));
+        const output = process.env.F049_PROBE_OUTPUT;
+        if (output !== undefined)
+          yield* harness.files.writeFileString(
+            `${output}/expiry-queued-heartbeat.json`,
+            JSON.stringify({ heartbeat, result, keys }, null, 2),
+          );
+        assert.strictEqual(heartbeat._tag, "Failure");
+        assert.strictEqual(result._tag, "Failure");
+        assert.lengthOf(keys, 0);
+      }).pipe(
+        Effect.ensuring(Deferred.succeed(persistRelease, undefined)),
+        Effect.ensuring(Deferred.succeed(deliver, undefined)),
+        Effect.provide(harness.layer),
+      );
     }),
 );
 
@@ -4832,122 +4973,129 @@ it.effect.each((["view", "control"] as const).map((access) => [access] as const)
     }),
 );
 
-it.effect.each(["status", "input", "explicit-view", "explicit-control", "timely-control"] as const)(
-  "renewal clock boundary: %s cannot revive expired authority",
-  (mode) =>
-    Effect.gen(function* () {
-      const accepted = yield* Deferred.make<void>();
-      const deliver = yield* Deferred.make<void>();
-      const parked = yield* Queue.unbounded<void>();
-      const refreshed = yield* Queue.unbounded<void>();
-      const human = "human:review8-clock";
-      const h = yield* managerHarness(`review8-clock-${mode}`, {
-        accessibility: true,
-        afterGuestProcess: (input) =>
-          input.arguments?.includes("insert-text")
-            ? Deferred.succeed(accepted, undefined).pipe(Effect.andThen(Deferred.await(deliver)))
-            : Effect.void,
-      });
-      let continuation: (() => void) | undefined;
-      const resume = Effect.sync(() => {
-        const task = continuation;
-        continuation = undefined;
-        task?.();
-      });
-      yield* Effect.gen(function* () {
-        const manager = yield* AgentDesktopManager.AgentDesktopManager;
-        const desktop = yield* manager.acquire(owner, { label: "review8 clock sample" });
-        yield* manager.requestHumanControl(owner, human, desktop.id);
-        const old = yield* manager
-          .act(
-            human,
-            {
-              actions: [
-                { type: "type", text: "abc" },
-                { type: "press", key: "ArrowLeft" },
-              ],
+it.effect.each([
+  "humanStatus",
+  "status",
+  "input",
+  "explicit-view",
+  "explicit-control",
+  "timely-control",
+] as const)("renewal clock boundary: %s cannot revive expired authority", (mode) =>
+  Effect.gen(function* () {
+    const accepted = yield* Deferred.make<void>();
+    const deliver = yield* Deferred.make<void>();
+    const parked = yield* Queue.unbounded<void>();
+    const refreshed = yield* Queue.unbounded<void>();
+    const human = "human:review8-clock";
+    const h = yield* managerHarness(`review8-clock-${mode}`, {
+      accessibility: true,
+      afterGuestProcess: (input) =>
+        input.arguments?.includes("insert-text")
+          ? Deferred.succeed(accepted, undefined).pipe(Effect.andThen(Deferred.await(deliver)))
+          : Effect.void,
+    });
+    let continuation: (() => void) | undefined;
+    const resume = Effect.sync(() => {
+      const task = continuation;
+      continuation = undefined;
+      task?.();
+    });
+    yield* Effect.gen(function* () {
+      const manager = yield* AgentDesktopManager.AgentDesktopManager;
+      const desktop = yield* manager.acquire(owner, { label: "review8 clock sample" });
+      yield* manager.requestHumanControl(owner, human, desktop.id);
+      const old = yield* manager
+        .act(
+          human,
+          {
+            actions: [
+              { type: "type", text: "abc" },
+              { type: "press", key: "ArrowLeft" },
+            ],
+          },
+          desktop.id,
+        )
+        .pipe(Effect.result, Effect.forkChild({ startImmediately: true }));
+      yield* Deferred.await(accepted);
+      yield* TestClock.adjust("29 seconds");
+      const base = yield* Scheduler.Scheduler;
+      const clock = yield* Clock.Clock;
+      let inRefresh = false;
+      let armYield = false;
+      let yielding = false;
+      let clockBoundaryAt: number | undefined;
+      let boundaryKind: "time-read" | "service-resolution" | undefined;
+      const trace: string[] = [];
+      const scheduler: Scheduler.Scheduler = {
+        executionMode: base.executionMode,
+        shouldYield(fiber) {
+          if (armYield) {
+            armYield = false;
+            yielding = true;
+            return true;
+          }
+          return base.shouldYield(fiber);
+        },
+        makeDispatcher() {
+          const dispatcher = base.makeDispatcher();
+          return {
+            scheduleTask(task, priority) {
+              if (yielding) {
+                yielding = false;
+                continuation = () => dispatcher.scheduleTask(task, priority);
+                trace.push("park-after-clock-before-update");
+                Queue.offerUnsafe(parked, undefined);
+              } else dispatcher.scheduleTask(task, priority);
             },
-            desktop.id,
-          )
-          .pipe(Effect.result, Effect.forkChild({ startImmediately: true }));
-        yield* Deferred.await(accepted);
-        yield* TestClock.adjust("29 seconds");
-        const base = yield* Scheduler.Scheduler;
-        const clock = yield* Clock.Clock;
-        let inRefresh = false;
-        let armYield = false;
-        let yielding = false;
-        let clockBoundaryAt: number | undefined;
-        let boundaryKind: "time-read" | "service-resolution" | undefined;
-        const trace: string[] = [];
-        const scheduler: Scheduler.Scheduler = {
-          executionMode: base.executionMode,
-          shouldYield(fiber) {
-            if (armYield) {
-              armYield = false;
-              yielding = true;
-              return true;
+            flush() {
+              dispatcher.flush();
+            },
+          };
+        },
+      };
+      const tracer = Tracer.make({
+        context(primitive, fiber) {
+          const isClock =
+            ((primitive as unknown) === clock.currentTimeMillis ||
+              (primitive as unknown) === Clock.Clock) &&
+            inRefresh &&
+            clockBoundaryAt === undefined;
+          const sampled = isClock ? clock.currentTimeMillisUnsafe() : undefined;
+          const next = primitive["~effect/Effect/evaluate"](fiber);
+          if (isClock) {
+            clockBoundaryAt = sampled;
+            boundaryKind =
+              (primitive as unknown) === Clock.Clock ? "service-resolution" : "time-read";
+            armYield = true;
+            trace.push(`unchanged-clock-boundary:${boundaryKind}:${sampled}`);
+          }
+          return next;
+        },
+        span(options) {
+          if (options.name === "AgentDesktopManager.refreshHumanLease") inRefresh = true;
+          trace.push(`start:${options.name}`);
+          const span = new Tracer.NativeSpan(options),
+            end = span.end.bind(span);
+          span.end = (time, exit) => {
+            end(time, exit);
+            trace.push(`end:${options.name}:${exit._tag}`);
+            if (options.name === "AgentDesktopManager.refreshHumanLease") {
+              inRefresh = false;
+              Queue.offerUnsafe(refreshed, undefined);
             }
-            return base.shouldYield(fiber);
-          },
-          makeDispatcher() {
-            const dispatcher = base.makeDispatcher();
-            return {
-              scheduleTask(task, priority) {
-                if (yielding) {
-                  yielding = false;
-                  continuation = () => dispatcher.scheduleTask(task, priority);
-                  trace.push("park-after-clock-before-update");
-                  Queue.offerUnsafe(parked, undefined);
-                } else dispatcher.scheduleTask(task, priority);
-              },
-              flush() {
-                dispatcher.flush();
-              },
-            };
-          },
-        };
-        const tracer = Tracer.make({
-          context(primitive, fiber) {
-            const isClock =
-              ((primitive as unknown) === clock.currentTimeMillis ||
-                (primitive as unknown) === Clock.Clock) &&
-              inRefresh &&
-              clockBoundaryAt === undefined;
-            const sampled = isClock ? clock.currentTimeMillisUnsafe() : undefined;
-            const next = primitive["~effect/Effect/evaluate"](fiber);
-            if (isClock) {
-              clockBoundaryAt = sampled;
-              boundaryKind =
-                (primitive as unknown) === Clock.Clock ? "service-resolution" : "time-read";
-              armYield = true;
-              trace.push(`unchanged-clock-boundary:${boundaryKind}:${sampled}`);
-            }
-            return next;
-          },
-          span(options) {
-            if (options.name === "AgentDesktopManager.refreshHumanLease") inRefresh = true;
-            trace.push(`start:${options.name}`);
-            const span = new Tracer.NativeSpan(options),
-              end = span.end.bind(span);
-            span.end = (time, exit) => {
-              end(time, exit);
-              trace.push(`end:${options.name}:${exit._tag}`);
-              if (options.name === "AgentDesktopManager.refreshHumanLease") {
-                inRefresh = false;
-                Queue.offerUnsafe(refreshed, undefined);
-              }
-            };
-            return span;
-          },
-        });
-        const observed = <A, E, R>(effect: Effect.Effect<A, E, R>) =>
-          effect.pipe(
-            Effect.map((value): unknown => value),
-            Effect.mapError(ComputerUse.toComputerAutomationFailure),
-          );
-        const request =
-          mode === "status"
+          };
+          return span;
+        },
+      });
+      const observed = <A, E, R>(effect: Effect.Effect<A, E, R>) =>
+        effect.pipe(
+          Effect.map((value): unknown => value),
+          Effect.mapError(ComputerUse.toComputerAutomationFailure),
+        );
+      const request =
+        mode === "humanStatus"
+          ? observed(manager.humanStatus(owner, human, desktop.id))
+          : mode === "status"
             ? observed(manager.status(human, desktop.id))
             : mode === "input"
               ? observed(
@@ -4960,79 +5108,77 @@ it.effect.each(["status", "input", "explicit-view", "explicit-control", "timely-
               : mode === "explicit-view"
                 ? observed(manager.requestHumanView(owner, human, desktop.id))
                 : observed(manager.requestHumanControl(owner, human, desktop.id));
-        const renewal = yield* request.pipe(
-          Effect.provideService(Scheduler.Scheduler, scheduler),
-          Effect.withTracer(tracer),
-          Effect.result,
-          Effect.forkChild({ startImmediately: true }),
-        );
-        yield* Queue.take(parked);
-        assert.strictEqual(clockBoundaryAt, 29_000);
-        assert.isFalse(
-          trace.some((x) => x.startsWith("end:AgentDesktopManager.refreshHumanLease")),
-        );
-        yield* TestClock.adjust(mode === "timely-control" ? "500 millis" : "2 seconds");
-        const resumedAt = yield* Clock.currentTimeMillis;
-        yield* resume;
-        yield* Queue.take(refreshed);
-        yield* Deferred.succeed(deliver, undefined);
-        yield* TestClock.adjust("1 second");
-        const oldResult = yield* Fiber.join(old);
-        const renewalResult = yield* Fiber.join(renewal);
-        const keys = (yield* Ref.get(h.calls)).filter((x) => x.startsWith("key:"));
-        const output = process.env.F049_PROBE_OUTPUT;
-        if (output)
-          yield* h.files.writeFileString(
-            `${output}/clock-boundary-${mode}.json`,
-            JSON.stringify(
-              {
-                mode,
-                boundaryKind,
-                clockBoundaryAt,
-                resumedAt,
-                oldResult,
-                renewalResult,
-                keys,
-                trace,
-              },
-              null,
-              2,
-            ),
-          );
-        assert.strictEqual(oldResult._tag, mode === "timely-control" ? "Success" : "Failure");
-        assert.strictEqual(
-          keys.filter((x) => x.endsWith(":left")).length,
-          mode === "timely-control" ? 1 : 0,
-        );
-        if (mode === "status" || mode === "input") {
-          assert.strictEqual(renewalResult._tag, "Failure");
-          if (renewalResult._tag === "Failure")
-            assert.strictEqual(renewalResult.failure.code, "desktop-lease-required");
-          assert.strictEqual(keys.filter((x) => x.endsWith(":right")).length, 0);
-        } else {
-          assert.strictEqual(renewalResult._tag, "Success");
-          if (renewalResult._tag === "Success")
-            assert.strictEqual(
-              (yield* decodeEvidenceStatus(renewalResult.success)).available,
-              true,
-            );
-          const fresh = yield* manager
-            .act(human, { actions: [{ type: "press", key: "ArrowRight" }] }, desktop.id)
-            .pipe(Effect.result);
-          assert.strictEqual(fresh._tag, mode === "explicit-view" ? "Failure" : "Success");
-        }
-        if (oldResult._tag === "Failure") {
-          const failure = ComputerUse.toComputerAutomationFailure(oldResult.failure);
-          assert.strictEqual(failure.code, "request-cancelled");
-          assert.strictEqual(failure.completedActionCount, 1);
-          assert.strictEqual(failure.actionIndex, 1);
-        }
-      }).pipe(
-        Effect.ensuring(resume),
-        Effect.ensuring(Deferred.succeed(deliver, undefined)),
-        Effect.provide(h.layer),
+      const renewal = yield* request.pipe(
+        Effect.provideService(Scheduler.Scheduler, scheduler),
+        Effect.withTracer(tracer),
+        Effect.result,
+        Effect.forkChild({ startImmediately: true }),
       );
-    }),
+      yield* Queue.take(parked);
+      assert.strictEqual(clockBoundaryAt, 29_000);
+      assert.isFalse(trace.some((x) => x.startsWith("end:AgentDesktopManager.refreshHumanLease")));
+      yield* TestClock.adjust(mode === "timely-control" ? "500 millis" : "2 seconds");
+      const resumedAt = yield* Clock.currentTimeMillis;
+      yield* resume;
+      yield* Queue.take(refreshed);
+      yield* Deferred.succeed(deliver, undefined);
+      yield* TestClock.adjust("1 second");
+      const oldResult = yield* Fiber.join(old);
+      const renewalResult = yield* Fiber.join(renewal);
+      const keys = (yield* Ref.get(h.calls)).filter((x) => x.startsWith("key:"));
+      const output = process.env.F049_PROBE_OUTPUT;
+      if (output)
+        yield* h.files.writeFileString(
+          `${output}/clock-boundary-${mode}.json`,
+          JSON.stringify(
+            {
+              mode,
+              boundaryKind,
+              clockBoundaryAt,
+              resumedAt,
+              oldResult,
+              renewalResult,
+              keys,
+              trace,
+            },
+            null,
+            2,
+          ),
+        );
+      assert.strictEqual(oldResult._tag, mode === "timely-control" ? "Success" : "Failure");
+      assert.strictEqual(
+        keys.filter((x) => x.endsWith(":left")).length,
+        mode === "timely-control" ? 1 : 0,
+      );
+      if (mode === "humanStatus" || mode === "status" || mode === "input") {
+        assert.strictEqual(renewalResult._tag, "Failure");
+        if (renewalResult._tag === "Failure")
+          assert.strictEqual(renewalResult.failure.code, "desktop-lease-required");
+        assert.strictEqual(keys.filter((x) => x.endsWith(":right")).length, 0);
+      } else {
+        assert.strictEqual(renewalResult._tag, "Success");
+        if (renewalResult._tag === "Success")
+          assert.strictEqual(
+            (yield* decodeEvidenceStatus(renewalResult.success)).lease?.access,
+            mode === "explicit-view" ? "view" : "control",
+          );
+        const fresh = yield* manager
+          .act(human, { actions: [{ type: "press", key: "ArrowRight" }] }, desktop.id)
+          .pipe(Effect.result);
+        assert.strictEqual(fresh._tag, mode === "explicit-view" ? "Failure" : "Success");
+      }
+      if (oldResult._tag === "Failure") {
+        const failure = ComputerUse.toComputerAutomationFailure(oldResult.failure);
+        assert.strictEqual(failure.code, "request-cancelled");
+        assert.strictEqual(failure.completedActionCount, 1);
+        assert.strictEqual(failure.actionIndex, 1);
+      }
+    }).pipe(
+      Effect.ensuring(resume),
+      Effect.ensuring(Deferred.succeed(deliver, undefined)),
+      Effect.provide(h.layer),
+    );
+  }),
 );
 
 it.effect.each(["expired", "timely", "expired-before-clock"] as const)(

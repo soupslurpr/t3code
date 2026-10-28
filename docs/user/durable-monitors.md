@@ -100,3 +100,5 @@ callback that works after its turn ends. Cancelling the wait disables the
 callback. The wait survives restarting T3 Code, but T3 Code does not restart
 the background job itself. If that background work can stop independently, use a
 fallback deadline when missing the wake-up would matter.
+
+On mobile, open **Monitors** from the thread header to inspect or cancel its one-time waits.

@@ -1,5 +1,8 @@
 import {
   clientRpcRequiredScopes,
+  isHumanDesktopRelease,
+  AuthOrchestrationReadScope,
+  AuthOrchestrationOperateScope,
   sessionGrantsScope,
   authScopeRequiredResponse,
   EnvironmentAuthorizationError,
@@ -35,8 +38,17 @@ function makeCommandPermissions<R, E>(
       }),
     ),
   );
+  const releaseAtomsByEnvironment = Atom.family((environmentId: EnvironmentId | null) =>
+    Atom.make(
+      (get) =>
+        get(atomsByEnvironment(environmentId)(AuthOrchestrationReadScope)) ||
+        get(atomsByEnvironment(environmentId)(AuthOrchestrationOperateScope)),
+    ),
+  );
   const permissionAtom = (environmentId: EnvironmentId | null, input?: unknown) =>
-    atomsByEnvironment(environmentId)(requiredScopes(input).join(","));
+    isHumanDesktopRelease(method, input)
+      ? releaseAtomsByEnvironment(environmentId)
+      : atomsByEnvironment(environmentId)(requiredScopes(input).join(","));
   const authorize = (
     registry: AtomRegistry.AtomRegistry,
     environmentId: EnvironmentId,
@@ -55,6 +67,12 @@ function makeCommandPermissions<R, E>(
             Effect.timeoutOption(6_000),
             Effect.orElseSucceed(() => Option.none<AuthSessionState>()),
           );
+          if (
+            isHumanDesktopRelease(method, input) &&
+            Option.isSome(session) &&
+            sessionGrantsScope(session.value, AuthOrchestrationReadScope)
+          )
+            return;
           const missing = scopes.find(
             (scope) => Option.isNone(session) || !sessionGrantsScope(session.value, scope),
           );

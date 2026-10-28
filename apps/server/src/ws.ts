@@ -1,3 +1,4 @@
+import * as ThreadDesktopActivity from "./computer/ThreadDesktopActivity.ts";
 import { ThreadMonitorService } from "./threadMonitor/ThreadMonitorService.ts";
 import { runUserDesktopHumanRequest } from "./computer/UserDesktopHuman.ts";
 import * as AgentDesktopManager from "./agentDesktop/AgentDesktopManager.ts";
@@ -1326,6 +1327,7 @@ export const layerWsRpc = (
       const threadLaunch = yield* ThreadLaunchService.ThreadLaunchService;
       const commandOutputHub = yield* CommandOutputHub.CommandOutputHub;
       const providerSessionManager = yield* ProviderSessionManager.ProviderSessionManagerV2;
+      const threadDesktopActivity = yield* ThreadDesktopActivity.ThreadDesktopActivityService;
       const threadMonitors = yield* ThreadMonitorService;
       const scheduledTasks = yield* ScheduledTasks.ScheduledTaskService;
       const secretRequests = yield* SecretRequests.SecretRequests;
@@ -2204,6 +2206,7 @@ export const layerWsRpc = (
               Effect.as(commandOutputHub.subscribe(input)),
             ),
           ),
+        [WS_METHODS.threadDesktopActivity]: ({ threadId }) => threadDesktopActivity.read(threadId),
         [WS_METHODS.threadMonitorsSubscribe]: ({ threadId }) =>
           threadMonitors.subscribeSummaries(threadId),
         [WS_METHODS.threadMonitorsCancel]: ({ threadId, monitorId }) =>

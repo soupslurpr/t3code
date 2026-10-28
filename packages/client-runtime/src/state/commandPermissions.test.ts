@@ -14,6 +14,7 @@ import {
   AuthPreviewOperateScope,
   AuthSettingsWriteScope,
   AuthSourceControlWriteScope,
+  AgentDesktopId,
   ThreadId,
   EnvironmentId,
   ORCHESTRATION_V2_WS_METHODS,
@@ -67,6 +68,161 @@ const setup = Effect.gen(function* () {
 });
 
 describe("command permissions", () => {
+  it.each([WS_METHODS.agentDesktopHumanInvoke, WS_METHODS.userDesktopHumanInvoke])(
+    "rechecks read cleanup before executing the guarded %s command",
+    async (tag) => {
+      const registry = AtomRegistry.make();
+      using _registry = { [Symbol.dispose]: () => registry.dispose() };
+      const unmount = registry.mount(sessions(env));
+      using _session = { [Symbol.dispose]: unmount };
+      let calls = 0;
+      const command = createEnvironmentRpcCommand(runtime, {
+        label: "test.release",
+        tag,
+        execute: () =>
+          Effect.sync(() => {
+            calls++;
+            return null;
+          }),
+      });
+      const target = {
+        environmentId: env,
+        input: {
+          threadId: ThreadId.make("thread"),
+          request: {
+            operation: "release" as const,
+            desktopId: AgentDesktopId.make("desktop"),
+            owner: { environmentId: env, threadId: ThreadId.make("thread"), controllerId: "agent" },
+          },
+        },
+      };
+      registry.set(
+        sessions(env),
+        AsyncResult.success({
+          ...grant(false),
+          scopes: [AuthOrchestrationReadScope],
+          permissions: [AuthOrchestrationReadScope],
+        }),
+      );
+      expect((await command.run(registry, target))._tag).toBe("Success");
+      registry.set(sessions(env), AsyncResult.success(grant(false)));
+      expect((await command.run(registry, target))._tag).toBe("Failure");
+      expect(calls).toBe(1);
+    },
+  );
+  it.effect.each([WS_METHODS.agentDesktopHumanInvoke, WS_METHODS.userDesktopHumanInvoke])(
+    "allows authenticated read or operate cleanup of the exact destination for %s",
+    (method) =>
+      Effect.scoped(
+        Effect.gen(function* () {
+          const registry = yield* setup;
+          const permissions = createCommandPermissions(runtime, method);
+          const input = {
+            threadId: ThreadId.make("thread"),
+            request: {
+              operation: "release",
+              desktopId: AgentDesktopId.make("desktop"),
+              owner: {
+                environmentId: env,
+                threadId: ThreadId.make("thread"),
+                controllerId: "agent",
+              },
+            },
+          };
+          for (const scopes of [
+            [AuthOrchestrationReadScope],
+            [AuthOrchestrationOperateScope],
+            [AuthOrchestrationReadScope, AuthOrchestrationOperateScope],
+          ]) {
+            registry.set(
+              sessions(env),
+              AsyncResult.success({ ...grant(false), scopes, permissions: scopes }),
+            );
+            expect(registry.get(permissions.permissionAtom(env, input))).toBe(true);
+            yield* permissions.authorize(registry, env, input);
+            expect(registry.get(permissions.permissionAtom(env))).toBe(
+              scopes.includes(AuthOrchestrationOperateScope),
+            );
+          }
+          for (const session of [
+            grant(false),
+            {
+              ...grant(false),
+              authenticated: false,
+              scopes: [AuthOrchestrationReadScope],
+              permissions: [AuthOrchestrationReadScope],
+            },
+          ]) {
+            registry.set(sessions(env), AsyncResult.success(session));
+            expect(registry.get(permissions.permissionAtom(env, input))).toBe(false);
+            expect(
+              (yield* permissions.authorize(registry, env, input).pipe(Effect.flip))._tag,
+            ).toBe("EnvironmentAuthorizationError");
+          }
+          registry.set(
+            sessions(env),
+            AsyncResult.success({
+              ...grant(false),
+              scopes: [AuthOrchestrationReadScope],
+              permissions: [AuthOrchestrationReadScope],
+            }),
+          );
+          registry.set(sessions(other), AsyncResult.success(grant(false)));
+          expect(registry.get(permissions.permissionAtom(other, input))).toBe(false);
+          expect(
+            (yield* permissions.authorize(registry, other, input).pipe(Effect.flip))._tag,
+          ).toBe("EnvironmentAuthorizationError");
+        }),
+      ),
+  );
+
+  it.effect.each([WS_METHODS.agentDesktopHumanInvoke, WS_METHODS.userDesktopHumanInvoke])(
+    "does not extend read cleanup to other operations or malformed releases for %s",
+    (method) =>
+      Effect.scoped(
+        Effect.gen(function* () {
+          const registry = yield* setup;
+          const permissions = createCommandPermissions(runtime, method);
+          registry.set(
+            sessions(env),
+            AsyncResult.success({
+              ...grant(false),
+              scopes: [AuthOrchestrationReadScope],
+              permissions: [AuthOrchestrationReadScope],
+            }),
+          );
+          const target = {
+            desktopId: "desktop",
+            owner: { environmentId: env, threadId: ThreadId.make("thread"), controllerId: "agent" },
+          };
+          const inputs: unknown[] = [
+            undefined,
+            { request: { operation: "release" } },
+            { request: { operation: "release", desktopId: 42 } },
+          ];
+          for (const operation of [
+            "request-view",
+            "request-control",
+            "return-control",
+            "release-control",
+            "snapshot",
+            "act",
+            "manage",
+            "execution",
+            "remember-control",
+            "end-all-access",
+          ])
+            inputs.push({ threadId: ThreadId.make("thread"), request: { ...target, operation } });
+          for (const input of inputs) {
+            expect(registry.get(permissions.permissionAtom(env, input))).toBe(false);
+            expect(
+              (yield* permissions.authorize(registry, env, input).pipe(Effect.flip))._tag,
+            ).toBe("EnvironmentAuthorizationError");
+          }
+        }),
+      ),
+  );
+
   it.effect.each([
     WS_METHODS.previewClose,
     WS_METHODS.previewAutomationRespond,
