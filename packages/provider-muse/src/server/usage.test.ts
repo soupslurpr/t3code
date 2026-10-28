@@ -407,3 +407,84 @@ describe("Muse history discovery", () => {
     }).pipe(Effect.provide([NodeServices.layer, MuseUsageHome.layer])),
   );
 });
+
+it.each(["succeeded", "failed"])(
+  "counts compaction summaries once when the candidate %s",
+  (status) => {
+    const value = entry();
+    const record = {
+      ...value,
+      payload: {
+        source_run_record_id: "summary-call",
+        event: {
+          kind: "context_compaction_candidate",
+          status,
+          diagnostics: [
+            {
+              reason: "summary_call_metrics",
+              message: JSON.stringify({
+                input_tokens: 100,
+                cache_read_tokens: 60,
+                cache_write_tokens: 10,
+                output_tokens: 20,
+                reasoning_tokens: 5,
+              }),
+            },
+          ],
+        },
+      },
+    };
+    const expected = {
+      ...parse(value)[0],
+      model: "unknown",
+      dedupeKey: JSON.stringify(["muse", "summary-call"]),
+      totals: {
+        uncachedInputTokens: 30,
+        cachedInputTokens: 60,
+        cacheCreationTokens: 10,
+        outputTokens: 20,
+        reasoningTokens: 5,
+      },
+    };
+    expect(parse(record)).toEqual([expected]);
+    expect(museUsageFormat.parseProjected(record, undefined)).toEqual([expected]);
+    expect(
+      parse({ ...record, id: "copied-envelope", stream: { kind: "session", id: "child" } })[0]
+        ?.dedupeKey,
+    ).toBe(expected.dedupeKey);
+  },
+);
+
+it("ignores unavailable, malformed and unrelated compaction metrics", () => {
+  const value = entry();
+  for (const message of [
+    "{broken",
+    "null",
+    "[]",
+    "{}",
+    '{"usage_unavailable_calls":1}',
+    '{"input_tokens":"100"}',
+  ]) {
+    expect(
+      parse({
+        ...value,
+        payload: {
+          event: {
+            kind: "context_compaction_candidate",
+            diagnostics: [{ reason: "summary_call_metrics", message }],
+          },
+        },
+      }),
+    ).toEqual([]);
+  }
+  for (const kind of ["context_compaction_installed", "context_compaction_candidate"]) {
+    expect(
+      parse({
+        ...value,
+        payload: {
+          event: { kind, diagnostics: [{ reason: "other", message: '{"input_tokens":100}' }] },
+        },
+      }),
+    ).toEqual([]);
+  }
+});

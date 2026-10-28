@@ -1,6 +1,8 @@
 import { ProviderDriverKind } from "@t3tools/contracts";
 import { MuseSettings } from "../settings.ts";
 import * as HostProcess from "@t3tools/shared/HostProcess";
+import * as Crypto from "effect/Crypto";
+import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
 import * as Path from "effect/Path";
@@ -51,6 +53,7 @@ export type MuseDriverEnv =
   | ChildProcessSpawner.ChildProcessSpawner
   | FileSystem.FileSystem
   | HttpClient.HttpClient
+  | Crypto.Crypto
   | ProviderLatestVersions.ProviderLatestVersions
   | Path.Path
   | ProviderEventLoggers.ProviderEventLoggers;
@@ -77,6 +80,7 @@ export const MuseDriver: ProviderDriver<
     const fileSystem = yield* FileSystem.FileSystem;
     const path = yield* Path.Path;
     const httpClient = yield* HttpClient.HttpClient;
+    const crypto = yield* Crypto.Crypto;
     const latestVersions = yield* ProviderLatestVersions.ProviderLatestVersions;
     const host = yield* ProviderHost.ProviderHost;
     const eventLoggers = yield* ProviderEventLoggers.ProviderEventLoggers;
@@ -147,6 +151,7 @@ export const MuseDriver: ProviderDriver<
         makePendingMuseProvider(settings.provider).pipe(Effect.map(stampIdentity)),
       checkProvider: checkMuseProviderStatus(effectiveConfig, processEnvironment, cwd).pipe(
         Effect.map(stampIdentity),
+        Effect.provideService(Crypto.Crypto, crypto),
         Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, spawner),
         Effect.provideService(FileSystem.FileSystem, fileSystem),
         Effect.provideService(Path.Path, path),
@@ -184,6 +189,12 @@ export const MuseDriver: ProviderDriver<
       modelCatalog,
       ...(eventLoggers.native ? { nativeEventLogger: eventLoggers.native } : {}),
       continuationRequests,
+      onUsageLimits: Effect.fn("MuseDriver.onUsageLimits")(function* (update) {
+        yield* snapshot.applyUsageLimits({
+          ...update,
+          checkedAt: DateTime.formatIso(yield* DateTime.now),
+        });
+      }),
     });
     const textGeneration = yield* makeMuseTextGeneration(effectiveConfig, {
       environment: processEnvironment,

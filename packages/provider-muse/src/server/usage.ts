@@ -17,6 +17,17 @@ import type { MuseSettings } from "../settings.ts";
 import { makeMuseEnvironment } from "./sdk.ts";
 import * as MuseUsageHome from "./MuseUsageHome.ts";
 
+const Usage = Schema.Struct({
+  input_tokens: Schema.optional(Schema.Unknown),
+  output_tokens: Schema.optional(Schema.Unknown),
+  cached_tokens: Schema.optional(Schema.Unknown),
+  cached_input_tokens: Schema.optional(Schema.Unknown),
+  cache_read_tokens: Schema.optional(Schema.Unknown),
+  cache_write_tokens: Schema.optional(Schema.Unknown),
+  reasoning_tokens: Schema.optional(Schema.Unknown),
+});
+const decodeUsage = Schema.decodeUnknownOption(Usage);
+
 const Entry = Schema.Struct({
   schema_version: Schema.Literal(1),
   record_type: Schema.Literal("event"),
@@ -28,22 +39,20 @@ const Entry = Schema.Struct({
   stream: Schema.Struct({ kind: Schema.Literal("session"), id: Schema.NonEmptyString }),
   payload: Schema.Struct({
     source_run_record_id: Schema.optional(Schema.NonEmptyString),
-    event: Schema.Struct({
-      kind: Schema.Literals(["model_completed", "automated_review_completed"]),
-      model: Schema.Union([
-        Schema.NonEmptyString,
-        Schema.Struct({ model_id: Schema.NonEmptyString }),
-      ]),
-      usage: Schema.Struct({
-        input_tokens: Schema.optional(Schema.Unknown),
-        output_tokens: Schema.optional(Schema.Unknown),
-        cached_tokens: Schema.optional(Schema.Unknown),
-        cached_input_tokens: Schema.optional(Schema.Unknown),
-        cache_read_tokens: Schema.optional(Schema.Unknown),
-        cache_write_tokens: Schema.optional(Schema.Unknown),
-        reasoning_tokens: Schema.optional(Schema.Unknown),
+    event: Schema.Union([
+      Schema.Struct({
+        kind: Schema.Literals(["model_completed", "automated_review_completed"]),
+        model: Schema.Union([
+          Schema.NonEmptyString,
+          Schema.Struct({ model_id: Schema.NonEmptyString }),
+        ]),
+        usage: Usage,
       }),
-    }),
+      Schema.Struct({
+        kind: Schema.Literal("context_compaction_candidate"),
+        diagnostics: Schema.Array(Schema.Struct({ reason: Schema.String, message: Schema.String })),
+      }),
+    ]),
   }),
 });
 const decodeEntry = Schema.decodeUnknownOption(Entry);
@@ -54,7 +63,22 @@ function parseRecord(parsed: unknown): readonly UsageRecord[] {
   const entry = decoded.value;
   if (!Number.isSafeInteger(entry.recorded_at) || entry.recorded_at < 0) return [];
   const { event } = entry.payload;
-  const { usage } = event;
+  let usage: typeof Usage.Type;
+  if (event.kind === "context_compaction_candidate") {
+    const metrics = event.diagnostics.find(
+      (diagnostic) => diagnostic.reason === "summary_call_metrics",
+    );
+    if (metrics === undefined) return [];
+    try {
+      const decodedUsage = decodeUsage(JSON.parse(metrics.message));
+      if (Option.isNone(decodedUsage)) return [];
+      usage = decodedUsage.value;
+    } catch {
+      return [];
+    }
+  } else {
+    usage = event.usage;
+  }
   const input = tokenCount(usage.input_tokens);
   const cachedInputTokens = Math.min(
     input,
@@ -78,7 +102,13 @@ function parseRecord(parsed: unknown): readonly UsageRecord[] {
     {
       provider: "muse",
       timestampMs: Math.trunc(entry.recorded_at / 1_000),
-      model: typeof event.model === "string" ? event.model : event.model.model_id,
+      // Summary metrics omit the model; keep their tokens unpriced.
+      model:
+        event.kind === "context_compaction_candidate"
+          ? "unknown"
+          : typeof event.model === "string"
+            ? event.model
+            : event.model.model_id,
       sessionId: entry.stream.id,
       totals,
       reportedCostUsd: null,
@@ -99,9 +129,16 @@ export const museUsageFormat: TranscriptUsageFormat<unknown> = {
     id: true,
     recorded_at: true,
     stream: { kind: true, id: true },
-    payload: { source_run_record_id: true, event: { kind: true, model: true, usage: true } },
+    payload: {
+      source_run_record_id: true,
+      event: { kind: true, model: true, usage: true, diagnostics: true },
+    },
   },
-  usageMarkers: ['"model_completed"', '"automated_review_completed"'],
+  usageMarkers: [
+    '"model_completed"',
+    '"automated_review_completed"',
+    '"context_compaction_candidate"',
+  ],
   parseLine: (line) => {
     let parsed: unknown;
     try {

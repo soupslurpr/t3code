@@ -58,6 +58,35 @@ function cacheWith(entries: readonly [string, number, readonly UsageRecord[]][])
 }
 
 describe("scan cache round trip", () => {
+  describe.each(["muse", "claude"] as const)("%s cache lineages", (provider) => {
+    it.each([4, 5, 6, 7, 8, 9, 10, 11])(
+      "retains v%s history and reparses both pre-v11 lineages",
+      (version) => {
+        const original: CachedFile = {
+          size: 256,
+          mtimeMs: 100,
+          provider,
+          records: [record({ provider })],
+          tailRecords: [record({ provider, dedupeKey: "tail" })],
+          malformedRecords: 0,
+          position: position(),
+        };
+        const path = `/${provider}/session.jsonl`;
+        const encoded = JSON.parse(makeScanCacheWriter()(new Map([[path, original]]), {}));
+        const restored = decodeScanCache({ ...encoded, version }, TEST_FORMAT_MAP);
+        expect(restored.get(path)).toEqual(
+          version === 11
+            ? original
+            : {
+                ...original,
+                size: -1,
+                position: { resumeOffset: 0, guardLength: 0, guardHash: 0, state: null },
+              },
+        );
+      },
+    );
+  });
+
   it("restores cached history unchanged except for Claude local placeholders", () => {
     const original = cacheWith([
       [
