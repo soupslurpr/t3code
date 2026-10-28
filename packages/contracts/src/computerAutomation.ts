@@ -209,6 +209,26 @@ export const ComputerAutomationFailure = Schema.Struct({
 });
 export type ComputerAutomationFailure = typeof ComputerAutomationFailure.Type;
 
+export const ComputerAutomationCaptureHealthState = Schema.Literals([
+  "untested",
+  "healthy",
+  "degraded",
+]);
+export type ComputerAutomationCaptureHealthState = typeof ComputerAutomationCaptureHealthState.Type;
+
+export const ComputerAutomationCaptureHealth = Schema.Struct({
+  displayId: ComputerAutomationDisplayId,
+  state: ComputerAutomationCaptureHealthState,
+  lastSuccessfulFrameAt: Schema.NullOr(IsoDateTime),
+  lastFailedFrameAt: Schema.NullOr(IsoDateTime),
+  consecutiveFailures: NonNegativeInt,
+  lastFailure: Schema.NullOr(ComputerAutomationFailure),
+}).annotate({
+  description:
+    "Session-scoped health of actual frame capture for one display, independent of access permission.",
+});
+export type ComputerAutomationCaptureHealth = typeof ComputerAutomationCaptureHealth.Type;
+
 /** Finds a bounded, public computer-use failure in an internal error chain. */
 export function findComputerAutomationFailureKind(
   cause: unknown,
@@ -243,6 +263,13 @@ export const ComputerAutomationStatus = Schema.Struct({
       "Whether a desktop availability lease is preventing automatic locking and suspend. The lease can remain active without a view or control session.",
   }),
   displays: Schema.Array(ComputerAutomationDisplay),
+  captureHealth: Schema.optional(
+    Schema.Array(ComputerAutomationCaptureHealth).check(Schema.isMaxLength(64)),
+  ).annotate({
+    description:
+      "Per-display capture health. Absence means the connected desktop host does not report it.",
+  }),
+
   cursor: Schema.NullOr(ComputerAutomationPoint),
   detail: Schema.optional(Schema.String),
 });

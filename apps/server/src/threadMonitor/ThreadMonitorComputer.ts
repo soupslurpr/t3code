@@ -1,4 +1,5 @@
 import {
+  type ComputerAutomationFailure,
   type ComputerAutomationDesktopRegion,
   type ComputerAutomationScreenshotRegion,
   type ComputerAutomationSnapshot,
@@ -38,6 +39,7 @@ import { resolveModelEvaluation } from "./ThreadMonitorComputerPolicy.ts";
 
 const DEFAULT_INTERVAL_MS = 30_000;
 const DEFAULT_MAX_IMAGE_DIMENSION = 1_024;
+const DEFAULT_FAILURE_REVIEW_THRESHOLD = 3;
 const isThreadMonitorError = Schema.is(ThreadMonitorError);
 
 type CapturedRegion = {
@@ -46,6 +48,16 @@ type CapturedRegion = {
 };
 
 function boundedDetail(cause: unknown): string {
+  if (typeof cause === "object" && cause !== null && "computerFailure" in cause) {
+    const failure = cause.computerFailure as ComputerAutomationFailure | undefined;
+    if (failure !== undefined) {
+      const code =
+        failure.backendCode === undefined
+          ? failure.code
+          : `${failure.code} (${failure.backendCode})`;
+      return `${code}: ${failure.detail ?? failure.message}`.slice(0, 2_000);
+    }
+  }
   const detail = cause instanceof Error ? cause.message : String(cause);
   return detail.slice(0, 2_000);
 }
@@ -117,7 +129,10 @@ function normalizeReviewPolicy(
           : null
         : configured.afterEvaluations,
     consecutiveUncertain: configured.consecutiveUncertain ?? null,
-    consecutiveFailures: configured.consecutiveFailures ?? null,
+    consecutiveFailures:
+      configured.consecutiveFailures === undefined
+        ? DEFAULT_FAILURE_REVIEW_THRESHOLD
+        : configured.consecutiveFailures,
     at: configured.at ?? null,
   };
   return Object.values(policy).every((value) => value === null) ? null : policy;
@@ -375,6 +390,7 @@ export const make = Effect.gen(function* () {
     }
     if (
       input.watch.review?.at !== undefined &&
+      input.watch.review.at !== null &&
       Date.parse(input.watch.review.at) <= Date.parse(input.preparedAt)
     ) {
       return yield* watchError(

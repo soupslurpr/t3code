@@ -368,9 +368,10 @@ export const ThreadMonitorComputerReviewPolicyInput = Schema.Struct({
     description: "Ask for review after this many consecutive uncertain verdicts.",
   }),
   consecutiveFailures: Schema.optional(Schema.NullOr(PositiveInt)).annotate({
-    description: "Ask for review after this many consecutive capture or evaluator failures.",
+    description:
+      "Ask for review after this many consecutive capture or evaluator failures. Defaults to 3; null disables the automatic health review.",
   }),
-  at: Schema.optional(IsoDateTime).annotate({
+  at: Schema.optional(Schema.NullOr(IsoDateTime)).annotate({
     description: "Optional wall-clock time for a controller review.",
   }),
 }).check(
@@ -410,7 +411,7 @@ export const ThreadMonitorComputerStartInput = Schema.Struct({
   ),
   review: Schema.optional(Schema.NullOr(ThreadMonitorComputerReviewPolicyInput)).annotate({
     description:
-      "Model watches default to review after 12 evaluations. Review pauses model calls until acknowledged; null disables all review checkpoints.",
+      "Model watches default to review after 12 evaluations. Every watch also defaults to health review after three failures. Review pauses model calls until acknowledged; null disables all review checkpoints.",
   }),
   deadlineAt: Schema.optional(IsoDateTime),
   continuation: Schema.optional(Schema.Literals(["resume-thread", "record-only"])),
@@ -450,7 +451,8 @@ export const ThreadMonitorComputerUpdateInput = Schema.Struct({
     }),
   ),
   review: Schema.optional(Schema.NullOr(ThreadMonitorComputerReviewPolicyInput)).annotate({
-    description: "Replacement review checkpoint policy; null disables it.",
+    description:
+      "Replacement review policy. Null disables all reviews; consecutiveFailures:null disables only the automatic health review.",
   }),
   deadlineAt: Schema.optional(Schema.NullOr(IsoDateTime)),
   continuation: Schema.optional(Schema.Literals(["resume-thread", "record-only"])),

@@ -218,6 +218,9 @@ function reviewMessage(
     `Revision: ${condition.revision}`,
     `Reason: ${condition.review.reason ?? "Configured review checkpoint."}`,
     `Evaluations: ${condition.evaluationCount}; uncertain: ${condition.uncertainEvaluationCount}; consecutive failures: ${condition.consecutiveFailures}`,
+    ...(condition.observationError === null
+      ? []
+      : [`Latest observation error: ${condition.observationError}`]),
     `Regions:\n${regionMetrics}`,
     "Inspect retained or fresh evidence with computer_watch_inspect. Use computer_watch_update with acknowledgeReview=true to begin a fresh revision while retaining an efficient strategy, or atomically revise regions, cadence, condition, evaluator, deadline, continuation, or future review policy using the current revision. Leaving the delivered review unchanged keeps the watch active but does not schedule another review in this revision. This is an automated T3 continuation signal, not a new user message.",
   ].join("\n\n");
@@ -1163,7 +1166,7 @@ export const make = Effect.gen(function* () {
       observation,
       match,
       sampling: { intervalMs, minEvaluationIntervalMs, evaluateOnlyAfterChange },
-      ...(review === undefined ? {} : { review }),
+      review,
       ...(deadlineAt === null ? {} : { deadlineAt }),
       continuation: continuationMode,
       ...(continuationMode === "resume-thread"

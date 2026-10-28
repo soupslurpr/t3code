@@ -158,7 +158,16 @@ export const make = Effect.gen(function* () {
       } satisfies ComputerAutomationObservation;
     }
     if (input.status === undefined) return { snapshot: snapshot.value };
-    const status = statusWithObservedDisplay(input.status, snapshot.value);
+    const refreshed = yield* agentStatus(input.scope, input.desktopId).pipe(Effect.option);
+    const status = statusWithObservedDisplay(
+      {
+        ...input.status,
+        ...(refreshed._tag === "Some" && refreshed.value.captureHealth !== undefined
+          ? { captureHealth: refreshed.value.captureHealth }
+          : {}),
+      },
+      snapshot.value,
+    );
     return { status, snapshot: snapshot.value };
   });
 

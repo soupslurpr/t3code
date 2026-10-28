@@ -392,6 +392,7 @@ export function toComputerAutomationFailure(cause: unknown): ComputerAutomationF
       category: "resource",
       message: "The environment lacks the resources required for this Agent desktop operation.",
       ...common,
+      ...diagnostics,
     };
   }
   if (internalCode === "guest-disconnected") {
@@ -400,6 +401,7 @@ export function toComputerAutomationFailure(cause: unknown): ComputerAutomationF
       category: "resource",
       message: "The Agent desktop guest is not currently responding.",
       ...common,
+      ...diagnostics,
     };
   }
   if (internalCode === "guest-operation-failed") {
@@ -408,6 +410,7 @@ export function toComputerAutomationFailure(cause: unknown): ComputerAutomationF
       category: "internal",
       message: "The Agent desktop guest rejected the requested operation.",
       ...common,
+      ...diagnostics,
     };
   }
   if (internalCode === "unsupported-key" || internalCode === "duplicate-hotkey-key") {
@@ -515,6 +518,7 @@ export function toComputerAutomationFailure(cause: unknown): ComputerAutomationF
       category: "capture",
       message: "The desktop observation could not be captured.",
       ...common,
+      ...diagnostics,
     };
   }
   if (actionContext !== undefined) {

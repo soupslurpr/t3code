@@ -206,3 +206,47 @@ it.effect("reports a local follow-up observation failure after input", () =>
     assert.deepInclude(error.computerFailure, { code: "guest-disconnected", category: "resource" });
   }),
 );
+
+it.effect("returns capture health refreshed after the initial Agent observation", () =>
+  Effect.gen(function* () {
+    let captured = false;
+    const currentStatus = () => ({
+      ...status,
+      captureHealth: [
+        {
+          displayId: "display-0",
+          state: captured ? ("healthy" as const) : ("untested" as const),
+          lastSuccessfulFrameAt: captured ? "2026-10-27T00:00:00.000Z" : null,
+          lastFailedFrameAt: null,
+          consecutiveFailures: 0,
+          lastFailure: null,
+        },
+      ],
+    });
+    const router = yield* ComputerAutomationRouter.make.pipe(
+      Effect.provide(
+        Layer.mergeAll(
+          Layer.mock(AgentDesktopManager.AgentDesktopManager)({
+            requestView: () => Effect.sync(currentStatus),
+            status: () => Effect.sync(currentStatus),
+            snapshot: () =>
+              Effect.sync(() => {
+                captured = true;
+                return snapshot;
+              }),
+          }),
+          Layer.mock(PreviewAutomationBroker.PreviewAutomationBroker)({}),
+        ),
+      ),
+    );
+    const observed = yield* router.requestView(scope, {
+      desktop: { kind: "agent", desktopId: "agent-one" },
+    });
+    assert.equal(observed.status?.captureHealth?.[0]?.state, "healthy");
+    assert.equal(
+      observed.status?.captureHealth?.[0]?.lastSuccessfulFrameAt,
+      "2026-10-27T00:00:00.000Z",
+    );
+    assert.deepEqual(observed.snapshot, snapshot);
+  }),
+);
