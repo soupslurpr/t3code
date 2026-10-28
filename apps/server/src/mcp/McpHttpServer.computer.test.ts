@@ -8,6 +8,7 @@ import {
   ProviderInstanceId,
   ThreadId,
   type PreviewAutomationResponse,
+  type PreviewAutomationRequest,
 } from "@t3tools/contracts";
 import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
@@ -69,7 +70,11 @@ const call = Effect.fn("ComputerHttpTest.call")(
 );
 
 const serve = Effect.fn("ComputerHttpTest.serve")(function* (
-  response: Pick<PreviewAutomationResponse, "ok" | "result" | "error">,
+  response:
+    | Pick<PreviewAutomationResponse, "ok" | "result" | "error">
+    | ((
+        request: PreviewAutomationRequest,
+      ) => Effect.Effect<Pick<PreviewAutomationResponse, "ok" | "result" | "error">>),
 ) {
   const broker = yield* PreviewAutomationBroker.PreviewAutomationBroker;
   const connected = yield* Deferred.make<void>();
@@ -81,12 +86,16 @@ const serve = Effect.fn("ComputerHttpTest.serve")(function* (
   yield* Stream.runForEach(events, (event) =>
     event.type === "connected"
       ? Deferred.succeed(connected, undefined)
-      : broker.respond({
-          clientId: "native-host",
-          connectionId: event.connectionId,
-          requestId: event.request.requestId,
-          ...response,
-        }),
+      : (typeof response === "function" ? response(event.request) : Effect.succeed(response)).pipe(
+          Effect.flatMap((result) =>
+            broker.respond({
+              clientId: "native-host",
+              connectionId: event.connectionId,
+              requestId: event.request.requestId,
+              ...result,
+            }),
+          ),
+        ),
   ).pipe(Effect.forkScoped);
   yield* Deferred.await(connected);
 });
@@ -237,4 +246,64 @@ it.effect("rejects a missing desktop before requesting native access", () =>
       });
     }),
   ).pipe(Effect.provide(layer)),
+);
+
+it.effect("returns bounded action validation details in visible tool content", () =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      const result = yield* call("computer_act", {
+        actions: [{ type: "wait", durationMs: 60_001 }],
+      });
+      expect(result.isError).toBe(true);
+      expect(result.structuredContent).toMatchObject({
+        error: {
+          code: "invalid-action",
+          actionIndex: 0,
+          completedActionCount: 0,
+          field: "actions[0].durationMs",
+          phase: "validation",
+        },
+      });
+      expect(result.content).toEqual([
+        { type: "text", text: expect.stringContaining('"field":"actions[0].durationMs"') },
+      ]);
+    }),
+  ).pipe(Effect.provide(layer)),
+);
+
+it.effect("keeps action receipts when the native observation is omitted", () =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      const actionResults = [{ index: 0, type: "activate_window" }];
+      yield* serve({ ok: true, result: { actionResults } });
+      const result = yield* call("computer_act", {
+        actions: [{ type: "activate_window", windowId: "window-1" }],
+        observation: false,
+      });
+      expect(result.isError).toBe(false);
+      expect(result.structuredContent).toEqual({ actionResults });
+      expect(result.content.filter((content) => content.type === "image")).toEqual([]);
+    }),
+  ).pipe(Effect.provide(layer)),
+);
+
+it.effect("preserves both discrete wheel axes through the MCP request and receipt", () =>
+  Effect.gen(function* () {
+    const action = { type: "wheel", horizontalTicks: -4, verticalTicks: 3 };
+    const receipt = { index: 0, ...action };
+    yield* serve((request) =>
+      Effect.sync(() => {
+        expect(request.operation).toBe("computerAct");
+        expect(request.input).toEqual({
+          desktop: { kind: "user" },
+          actions: [action],
+          observation: false,
+        });
+        return { ok: true, result: { actionResults: [receipt] } };
+      }),
+    );
+    const result = yield* call("computer_act", { actions: [action], observation: false });
+    expect(result.isError).toBe(false);
+    expect(result.structuredContent).toEqual({ actionResults: [receipt] });
+  }).pipe(Effect.provide(layer)),
 );

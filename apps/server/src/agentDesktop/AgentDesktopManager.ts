@@ -25,6 +25,7 @@ import {
   type AgentDesktopWriteFileResult,
   type ComputerAutomationActionBatchInput,
   type ComputerAutomationAction,
+  type ComputerAutomationActionResult,
   type ComputerAutomationAccessibilitySnapshot,
   type ComputerAutomationFrame,
   type ComputerAutomationSnapshot,
@@ -70,7 +71,14 @@ const DEFAULT_DISPLAY_HEIGHT = 900;
 const DEFAULT_SCREENSHOT_WIDTH = 1600;
 const DEFAULT_SCREENSHOT_HEIGHT = 900;
 const DEFAULT_HOVER_SETTLE_MS = 250;
+const POINTER_BUTTON_HOLD_TIME_MS = 10;
+const POINTER_BUTTON_RELEASE_SETTLE_MS = 10;
+const WINDOW_SWITCH_SETTLE_MS = 100;
+const DEFAULT_TYPE_SETTLE_MS = 250;
 const DEFAULT_SUBMIT_SETTLE_MS = 250;
+const DEFAULT_CHANGE_POLL_INTERVAL_MS = 250;
+const CHANGE_DETECTION_MAX_WIDTH = 480;
+const CHANGE_DETECTION_MAX_HEIGHT = 270;
 const GUEST_TEXT_SELECTION_SETTLE_MS = 25;
 const TRANSIENT_KEY_ID = "t3:transient-key-chord";
 const MAX_STORED_FRAMES = 32;
@@ -90,12 +98,24 @@ const DEFAULT_COMMAND_OUTPUT_BYTES = 1024 * 1024;
 const DEFAULT_FILE_READ_BYTES = 1024 * 1024;
 const MAX_NETWORK_CONNECTIONS = 256;
 const GUEST_ACCESSIBILITY_RESOURCE = "agent-desktop/accessibility.js";
+const GUEST_INPUT_RESOURCE = "agent-desktop/input-helper.py";
+const GUEST_INPUT_DIRECTORY = "/run/t3-agent-input";
+const GUEST_INPUT_PATH = `${GUEST_INPUT_DIRECTORY}/input-helper.py`;
+const GUEST_INPUT_SERVICE_PATH = "/run/systemd/system/t3-agent-input.service";
 const GUEST_ACCESSIBILITY_DIRECTORY = "/run/t3-agent-desktop";
 const GUEST_ACCESSIBILITY_PATH = `${GUEST_ACCESSIBILITY_DIRECTORY}/accessibility.js`;
 const GUEST_DESKTOP_USER_PATH = "/etc/t3-agent-desktop-user";
 const GUEST_INTEGRATION_TIMEOUT_MS = 10_000;
 const GUEST_ACCESSIBILITY_OUTPUT_BYTES = 2 * 1024 * 1024;
-const MAX_SEMANTIC_TEXT_SEGMENTS = 32;
+const GUEST_INPUT_SERVICE = `[Unit]
+Description=T3 Agent desktop input bridge
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/python ${GUEST_INPUT_PATH} serve
+Restart=on-failure
+RestartSec=100ms
+`;
 
 /** Validates padded RFC 4648 base64 without using the JavaScript regex stack. */
 function isCanonicalBase64(value: string): boolean {
@@ -191,7 +211,12 @@ const GuestAccessibilityBounds = Schema.Struct({
 
 const GuestAccessibilityLocator = Schema.Struct({
   application: Schema.String.check(Schema.isMaxLength(256)),
-  window: Schema.String.check(Schema.isMaxLength(512)),
+  processId: Schema.Int.check(Schema.isGreaterThan(0)),
+  objectPath: Schema.String.check(
+    Schema.isNonEmpty(),
+    Schema.isMaxLength(1_024),
+    Schema.isPattern(/^\//),
+  ),
   path: Schema.Array(Schema.Int).check(Schema.isMaxLength(128)),
   role: Schema.String.check(Schema.isMaxLength(128)),
   name: Schema.String.check(Schema.isMaxLength(512)),
@@ -217,6 +242,26 @@ const GuestAccessibilityTarget = Schema.Struct({
   locator: GuestAccessibilityLocator,
 });
 
+const GuestAccessibilityWindowLocator = Schema.Struct({
+  application: Schema.String.check(Schema.isMaxLength(256)),
+  processId: Schema.Int.check(Schema.isGreaterThan(0)),
+  objectPath: Schema.String.check(
+    Schema.isNonEmpty(),
+    Schema.isMaxLength(1_024),
+    Schema.isPattern(/^\//),
+  ),
+});
+type GuestAccessibilityWindowLocator = typeof GuestAccessibilityWindowLocator.Type;
+
+const GuestAccessibilityWindow = Schema.Struct({
+  window: Schema.Struct({
+    application: Schema.String.check(Schema.isMaxLength(256)),
+    name: Schema.String.check(Schema.isMaxLength(512)),
+    focused: Schema.Boolean,
+  }),
+  locator: GuestAccessibilityWindowLocator,
+});
+
 const GuestAccessibilitySnapshot = Schema.Struct({
   available: Schema.Boolean,
   coordinateSpace: Schema.Literal("focused-window"),
@@ -230,12 +275,14 @@ const GuestAccessibilitySnapshot = Schema.Struct({
       }),
     }),
   ),
+  windows: Schema.Array(GuestAccessibilityWindow).check(Schema.isMaxLength(128)),
   targets: Schema.Array(GuestAccessibilityTarget).check(Schema.isMaxLength(256)),
   truncated: Schema.Boolean,
   detail: Schema.optional(Schema.String.check(Schema.isMaxLength(512))),
 });
 
 const GuestAccessibilityActivation = Schema.Struct({ keyboard: Schema.Boolean });
+const GuestAccessibilityWindowActivation = Schema.Struct({ activated: Schema.Boolean });
 const GuestAccessibilityProbe = Schema.Struct({ available: Schema.Literal(true) });
 const GuestTextInsertionInput = Schema.Struct({
   text: Schema.String.check(Schema.isMaxLength(20_000)),
@@ -243,7 +290,14 @@ const GuestTextInsertionInput = Schema.Struct({
 });
 const GuestTextInsertionResult = Schema.Struct({
   status: Schema.Literals(["inserted", "replace-selection", "unavailable"]),
+  injectedCodePoints: Schema.optional(
+    Schema.Int.check(Schema.isBetween({ minimum: 0, maximum: 10_000 })),
+  ),
+  confirmedCodePoints: Schema.optional(
+    Schema.Int.check(Schema.isBetween({ minimum: 0, maximum: 10_000 })),
+  ),
 });
+type GuestTextInsertionResult = typeof GuestTextInsertionResult.Type;
 const GuestAccessibilityResponse = Schema.Union([
   Schema.Struct({ ok: Schema.Literal(true), result: Schema.Unknown }),
   Schema.Struct({
@@ -258,11 +312,17 @@ const decodeGuestAccessibilityResponse = Schema.decodeEffect(
 const encodeGuestAccessibilityLocator = Schema.encodeEffect(
   Schema.fromJsonString(GuestAccessibilityLocator),
 );
+const encodeGuestAccessibilityWindowLocator = Schema.encodeEffect(
+  Schema.fromJsonString(GuestAccessibilityWindowLocator),
+);
 const encodeGuestTextInsertionInput = Schema.encodeEffect(
   Schema.fromJsonString(GuestTextInsertionInput),
 );
 const decodeGuestAccessibilitySnapshot = Schema.decodeUnknownEffect(GuestAccessibilitySnapshot);
 const decodeGuestAccessibilityActivation = Schema.decodeUnknownEffect(GuestAccessibilityActivation);
+const decodeGuestAccessibilityWindowActivation = Schema.decodeUnknownEffect(
+  GuestAccessibilityWindowActivation,
+);
 const decodeGuestAccessibilityProbe = Schema.decodeUnknownEffect(GuestAccessibilityProbe);
 const decodeGuestTextInsertionResult = Schema.decodeUnknownEffect(GuestTextInsertionResult);
 
@@ -322,6 +382,16 @@ interface StoredFrame {
   readonly displayHeight: number;
 }
 
+interface ResolvedChangeRegion {
+  readonly frameId: string;
+  readonly x: number;
+  readonly y: number;
+  readonly width: number;
+  readonly height: number;
+  readonly displayWidth: number;
+  readonly displayHeight: number;
+}
+
 interface FrameState {
   readonly nextId: number;
   readonly frames: ReadonlyMap<string, StoredFrame>;
@@ -340,7 +410,9 @@ interface RuntimeState {
   readonly accessibilitySemaphore: Semaphore.Semaphore;
   readonly accessibilityGeneration: Ref.Ref<number>;
   readonly accessibilityTargets: Ref.Ref<ReadonlyMap<string, GuestAccessibilityLocator>>;
+  readonly accessibilityWindows: Ref.Ref<ReadonlyMap<string, GuestAccessibilityWindowLocator>>;
   readonly guestIntegration: Ref.Ref<GuestDesktopIdentity | null>;
+  readonly guestInputPrepared: Ref.Ref<boolean>;
 }
 
 interface GuestDesktopIdentity {
@@ -354,6 +426,15 @@ interface AccountingSample {
   readonly cpuUsageNanoseconds: number;
   readonly receivedBytes: number;
   readonly transmittedBytes: number;
+}
+
+/** Compares two deterministic Agent desktop bitmaps without allocating copies. */
+function equalBitmaps(first: Uint8Array, second: Uint8Array): boolean {
+  if (first.length !== second.length) return false;
+  for (let offset = 0; offset < first.length; offset += 1) {
+    if (first[offset] !== second[offset]) return false;
+  }
+  return true;
 }
 
 interface ManagerState {
@@ -441,7 +522,10 @@ export interface AgentDesktopManagerShape {
     controllerId: string,
     input: ComputerAutomationActionBatchInput,
     desktopId?: AgentDesktopId,
-  ) => Effect.Effect<void, AgentDesktopManagerOperationError>;
+  ) => Effect.Effect<
+    ReadonlyArray<ComputerAutomationActionResult>,
+    AgentDesktopManagerOperationError
+  >;
   readonly release: (
     controllerId: string,
     desktopId?: AgentDesktopId,
@@ -735,6 +819,13 @@ const make = Effect.gen(function* () {
     }
     return null;
   });
+  const guestInputSource = yield* Effect.gen(function* () {
+    for (const candidate of environment.resolveResourcePathCandidates(GUEST_INPUT_RESOURCE)) {
+      const source = yield* fileSystem.readFileString(candidate).pipe(Effect.option);
+      if (Option.isSome(source)) return source.value;
+    }
+    return null;
+  });
 
   const makeRuntime = Effect.fn("AgentDesktopManager.makeRuntime")(function* () {
     return {
@@ -755,7 +846,11 @@ const make = Effect.gen(function* () {
       accessibilityTargets: yield* Ref.make<ReadonlyMap<string, GuestAccessibilityLocator>>(
         new Map(),
       ),
+      accessibilityWindows: yield* Ref.make<ReadonlyMap<string, GuestAccessibilityWindowLocator>>(
+        new Map(),
+      ),
       guestIntegration: yield* Ref.make<GuestDesktopIdentity | null>(null),
+      guestInputPrepared: yield* Ref.make(false),
     } satisfies RuntimeState;
   });
 
@@ -1086,6 +1181,80 @@ const make = Effect.gen(function* () {
     });
   });
 
+  const validatedQemuInput = <A>(evaluate: () => A, operation: string) =>
+    Effect.try({
+      try: evaluate,
+      catch: (cause) =>
+        isQemuInputValidationError(cause)
+          ? cause
+          : new AgentDesktopManagerError({
+              code: "invalid-action",
+              operation,
+              detail: String(cause).slice(0, 256),
+            }),
+    });
+
+  const preflightAction = Effect.fn("AgentDesktopManager.preflightAction")(function* (
+    runtime: RuntimeState,
+    action: ComputerAutomationAction,
+    simulatedHeldKeys: Map<string, ReadonlyArray<string>>,
+  ) {
+    switch (action.type) {
+      case "click":
+      case "move":
+        yield* resolvePoint(runtime, action.frameId, action.x, action.y);
+        break;
+      case "drag":
+        yield* resolvePoint(runtime, action.frameId, action.startX, action.startY);
+        yield* resolvePoint(runtime, action.frameId, action.endX, action.endY);
+        break;
+      case "wheel":
+        if (action.frameId !== undefined) {
+          yield* resolvePoint(runtime, action.frameId, action.x!, action.y!);
+        }
+        break;
+      case "wait_for_change":
+        yield* resolveChangeRegion(runtime, action);
+        break;
+      case "press":
+        yield* validatedQemuInput(
+          () => QemuInput.qemuPressQcodes(action.key, action.modifiers ?? []),
+          action.type,
+        );
+        break;
+      case "hotkey":
+        yield* validatedQemuInput(() => QemuInput.qemuHotkeyQcodes(action.keys), action.type);
+        break;
+      case "key_down": {
+        const logicalKey = yield* validatedQemuInput(
+          () => QemuInput.qemuLogicalKeyId(action.key),
+          action.type,
+        );
+        if (simulatedHeldKeys.has(logicalKey)) {
+          return yield* new AgentDesktopManagerError({
+            code: "key-already-held",
+            operation: action.type,
+            detail: `key ${action.key} is already held`,
+          });
+        }
+        const transition = yield* validatedQemuInput(
+          () => QemuInput.qemuKeyDownEvents(action.key),
+          action.type,
+        );
+        simulatedHeldKeys.set(logicalKey, transition.heldQcodes);
+        break;
+      }
+      case "key_up": {
+        const logicalKey = yield* validatedQemuInput(
+          () => QemuInput.qemuLogicalKeyId(action.key),
+          action.type,
+        );
+        simulatedHeldKeys.delete(logicalKey);
+        break;
+      }
+    }
+  });
+
   const revokeDesktopLease = Effect.fn("AgentDesktopManager.revokeDesktopLease")(function* (
     desktop: PersistedDesktop,
     runtime: RuntimeState,
@@ -1286,6 +1455,82 @@ const make = Effect.gen(function* () {
           }),
         );
 
+  const runGuestInputProcess = (
+    desktop: PersistedDesktop,
+    executable: string,
+    argumentsValue: ReadonlyArray<string>,
+  ) =>
+    qemu
+      .executeGuestProcess(desktop.id, {
+        executable,
+        arguments: argumentsValue,
+        timeoutMs: GUEST_INTEGRATION_TIMEOUT_MS,
+        maxOutputBytes: 4_096,
+      })
+      .pipe(Effect.flatMap((result) => requireGuestProcessSuccess("guest-input", result)));
+
+  const prepareGuestInput = Effect.fn("AgentDesktopManager.prepareGuestInput")(function* (
+    desktop: PersistedDesktop,
+    runtime: RuntimeState,
+  ) {
+    if (yield* Ref.get(runtime.guestInputPrepared)) return;
+    if (guestInputSource === null) {
+      return yield* new AgentDesktopManagerError({
+        code: "unsupported-operation",
+        operation: "guest-input-install",
+        detail: "the bundled Agent desktop input helper is missing",
+      });
+    }
+    yield* runGuestInputProcess(desktop, "/usr/bin/install", [
+      "-d",
+      "-m",
+      "0700",
+      GUEST_INPUT_DIRECTORY,
+    ]);
+    yield* qemu.writeGuestFile(
+      desktop.id,
+      GUEST_INPUT_PATH,
+      new TextEncoder().encode(guestInputSource),
+      "overwrite",
+    );
+    yield* qemu.writeGuestFile(
+      desktop.id,
+      GUEST_INPUT_SERVICE_PATH,
+      new TextEncoder().encode(GUEST_INPUT_SERVICE),
+      "overwrite",
+    );
+    yield* runGuestInputProcess(desktop, "/usr/bin/chmod", ["0700", GUEST_INPUT_PATH]);
+    yield* runGuestInputProcess(desktop, "/usr/bin/chmod", ["0644", GUEST_INPUT_SERVICE_PATH]);
+    yield* runGuestInputProcess(desktop, "/usr/bin/modprobe", ["uinput"]);
+    yield* runGuestInputProcess(desktop, "/usr/bin/systemctl", ["daemon-reload"]);
+    yield* runGuestInputProcess(desktop, "/usr/bin/systemctl", [
+      "restart",
+      "t3-agent-input.service",
+    ]);
+    yield* runGuestInputProcess(desktop, "/usr/bin/python", [GUEST_INPUT_PATH, "wheel", "0", "0"]);
+    yield* Ref.set(runtime.guestInputPrepared, true);
+  });
+
+  const sendGuestWheel = Effect.fn("AgentDesktopManager.sendGuestWheel")(function* (
+    desktop: PersistedDesktop,
+    runtime: RuntimeState,
+    horizontalTicks: number,
+    verticalTicks: number,
+  ) {
+    yield* prepareGuestInput(desktop, runtime);
+    // An acknowledgement can be lost after injection. Repair the bridge on the
+    // next explicit action, never replay the current non-idempotent input.
+    yield* runGuestInputProcess(desktop, "/usr/bin/python", [
+      GUEST_INPUT_PATH,
+      "wheel",
+      String(horizontalTicks),
+      String(verticalTicks),
+    ]).pipe(
+      Effect.tapError(() => Ref.set(runtime.guestInputPrepared, false)),
+      Effect.asVoid,
+    );
+  });
+
   const runGuestSessionProcess = (
     desktop: PersistedDesktop,
     identity: GuestDesktopIdentity,
@@ -1354,7 +1599,7 @@ const make = Effect.gen(function* () {
   )(function* (
     desktop: PersistedDesktop,
     identity: GuestDesktopIdentity,
-    operation: "probe" | "snapshot" | "activate" | "insert-text",
+    operation: "probe" | "snapshot" | "activate" | "activate-window" | "insert-text",
     encodedArgument?: string,
     timeoutMs = GUEST_INTEGRATION_TIMEOUT_MS,
   ) {
@@ -1400,6 +1645,34 @@ const make = Effect.gen(function* () {
           ).toString("base64");
     return yield* runGuestAccessibilityProcess(desktop, identity, operation, encodedLocator);
   });
+
+  const runGuestWindowActivation = Effect.fn("AgentDesktopManager.runGuestWindowActivation")(
+    function* (
+      desktop: PersistedDesktop,
+      identity: GuestDesktopIdentity,
+      locator: GuestAccessibilityWindowLocator,
+    ) {
+      const encodedLocator = Buffer.from(
+        yield* encodeGuestAccessibilityWindowLocator(locator).pipe(
+          Effect.mapError(
+            (cause) =>
+              new AgentDesktopManagerError({
+                code: "internal-error",
+                operation: "guest-accessibility-window-encode",
+                detail: String(cause).slice(0, 256),
+              }),
+          ),
+        ),
+        "utf8",
+      ).toString("base64");
+      return yield* runGuestAccessibilityProcess(
+        desktop,
+        identity,
+        "activate-window",
+        encodedLocator,
+      );
+    },
+  );
 
   const runGuestTextInsertion = Effect.fn("AgentDesktopManager.runGuestTextInsertion")(function* (
     desktop: PersistedDesktop,
@@ -2102,6 +2375,7 @@ const make = Effect.gen(function* () {
     available: false,
     coordinateSpace: "focused-window",
     window: null,
+    windows: [],
     targets: [],
     truncated: false,
     detail: detail.slice(0, 512),
@@ -2116,6 +2390,7 @@ const make = Effect.gen(function* () {
             (current) => current + 1,
           );
           yield* Ref.set(runtime.accessibilityTargets, new Map());
+          yield* Ref.set(runtime.accessibilityWindows, new Map());
           const identity = yield* prepareGuestIntegration(desktop, runtime);
           const rawSnapshot = yield* runGuestAccessibility(desktop, identity, "snapshot");
           const captured = yield* decodeGuestAccessibilitySnapshot(rawSnapshot).pipe(
@@ -2134,11 +2409,19 @@ const make = Effect.gen(function* () {
             targets.set(id, entry.locator);
             return { id, ...entry.target };
           });
+          const windows = new Map<string, GuestAccessibilityWindowLocator>();
+          const publicWindows = captured.windows.map((entry, index) => {
+            const id = `window-agent-${generation}-${index + 1}`;
+            windows.set(id, entry.locator);
+            return { id, ...entry.window };
+          });
           yield* Ref.set(runtime.accessibilityTargets, targets);
+          yield* Ref.set(runtime.accessibilityWindows, windows);
           return {
             available: captured.available,
             coordinateSpace: captured.coordinateSpace,
             window: captured.window,
+            windows: publicWindows,
             targets: publicTargets,
             truncated: captured.truncated,
             ...(captured.detail === undefined ? {} : { detail: captured.detail }),
@@ -2210,8 +2493,85 @@ const make = Effect.gen(function* () {
             yield* sendTransientKey(desktop, runtime, QemuInput.qemuPressQcodes("Enter"));
           }
           yield* Ref.set(runtime.accessibilityTargets, new Map());
+          yield* Ref.set(runtime.accessibilityWindows, new Map());
         }),
       ),
+  );
+
+  const activateGuestAccessibilityWindow = Effect.fn(
+    "AgentDesktopManager.activateGuestAccessibilityWindow",
+  )((desktop: PersistedDesktop, runtime: RuntimeState, windowId: string) =>
+    runtime.accessibilitySemaphore.withPermits(1)(
+      Effect.gen(function* () {
+        const windows = yield* Ref.get(runtime.accessibilityWindows);
+        const locator = windows.get(windowId);
+        if (locator === undefined) {
+          return yield* new AgentDesktopManagerError({
+            code: "stale-accessibility-target",
+            operation: "activate-window",
+            detail: "the semantic window is stale; capture a new Agent desktop observation",
+            field: "windowId",
+            received: windowId,
+            expected: ["window id from the latest unused Agent desktop observation"],
+            phase: "validation",
+          });
+        }
+        const identity = yield* prepareGuestIntegration(desktop, runtime);
+        const activate = () =>
+          runGuestWindowActivation(desktop, identity, locator).pipe(
+            Effect.mapError((cause) =>
+              isAgentDesktopManagerError(cause) &&
+              (cause.code === "stale-accessibility-target" ||
+                cause.code === "accessibility-activation-failed")
+                ? new AgentDesktopManagerError({
+                    code: cause.code,
+                    operation: cause.operation,
+                    detail: cause.detail,
+                    field: "windowId",
+                    received: windowId,
+                    expected: ["unchanged window from the latest unused observation"],
+                    phase: cause.code === "stale-accessibility-target" ? "validation" : "execution",
+                  })
+                : cause,
+            ),
+            Effect.flatMap((rawActivation) =>
+              decodeGuestAccessibilityWindowActivation(rawActivation).pipe(
+                Effect.mapError(
+                  (cause) =>
+                    new AgentDesktopManagerError({
+                      code: "internal-error",
+                      operation: "guest-accessibility-activate-window",
+                      detail: `guest accessibility returned an invalid window activation: ${String(cause).slice(0, 256)}`,
+                    }),
+                ),
+              ),
+            ),
+          );
+        let activation = yield* activate();
+        for (
+          let switchIndex = 0;
+          !activation.activated && switchIndex < windows.size;
+          switchIndex += 1
+        ) {
+          yield* sendTransientKey(desktop, runtime, QemuInput.qemuHotkeyQcodes(["Alt", "Escape"]));
+          yield* Effect.sleep(Duration.millis(WINDOW_SWITCH_SETTLE_MS));
+          activation = yield* activate();
+        }
+        if (!activation.activated) {
+          return yield* new AgentDesktopManagerError({
+            code: "accessibility-activation-failed",
+            operation: "activate-window",
+            detail: "the application rejected semantic window activation",
+            field: "windowId",
+            received: windowId,
+            expected: ["window reachable through the guest window switcher"],
+            phase: "execution",
+          });
+        }
+        yield* Ref.set(runtime.accessibilityTargets, new Map());
+        yield* Ref.set(runtime.accessibilityWindows, new Map());
+      }),
+    ),
   );
 
   const insertGuestText = Effect.fn("AgentDesktopManager.insertGuestText")(
@@ -2219,7 +2579,7 @@ const make = Effect.gen(function* () {
       runtime.accessibilitySemaphore.withPermits(1)(
         Effect.gen(function* () {
           const identity = yield* prepareGuestIntegration(desktop, runtime).pipe(Effect.option);
-          if (Option.isNone(identity)) return false;
+          if (Option.isNone(identity)) return { status: "unavailable" } as const;
           const insert = () =>
             runGuestTextInsertion(desktop, identity.value, text, intervalMs).pipe(
               Effect.mapError((cause) =>
@@ -2248,7 +2608,7 @@ const make = Effect.gen(function* () {
               detail: "the active text selection could not be replaced",
             });
           }
-          return result.status === "inserted";
+          return result satisfies GuestTextInsertionResult;
         }),
       ),
   );
@@ -2265,7 +2625,6 @@ const make = Effect.gen(function* () {
         input.includeAccessibility === false
           ? undefined
           : yield* captureGuestAccessibility(desktop, runtime);
-      if (accessibility === undefined) yield* Ref.set(runtime.accessibilityTargets, new Map());
       const screenshotOptions = input.screenshot === false ? null : (input.screenshot ?? {});
       if (screenshotOptions === null) {
         const displaySize = yield* Ref.get(runtime.displaySize);
@@ -2451,6 +2810,141 @@ const make = Effect.gen(function* () {
     };
   });
 
+  const resolveChangeRegion = Effect.fn("AgentDesktopManager.resolveChangeRegion")(function* (
+    runtime: RuntimeState,
+    input: {
+      readonly frameId: string;
+      readonly x: number;
+      readonly y: number;
+      readonly width: number;
+      readonly height: number;
+    },
+  ) {
+    const stored = (yield* Ref.get(runtime.frames)).frames.get(input.frameId);
+    if (stored === undefined) {
+      return yield* new ComputerUse.ComputerUseFrameNotFoundError({ frameId: input.frameId });
+    }
+    const frame = stored.frame;
+    if (input.x + input.width > frame.width || input.y + input.height > frame.height) {
+      const invalidHorizontal = input.x + input.width > frame.width;
+      const invalidOrigin = invalidHorizontal ? input.x >= frame.width : input.y >= frame.height;
+      const field = invalidHorizontal
+        ? invalidOrigin
+          ? "x"
+          : "width"
+        : invalidOrigin
+          ? "y"
+          : "height";
+      const received = invalidHorizontal
+        ? invalidOrigin
+          ? input.x
+          : input.width
+        : invalidOrigin
+          ? input.y
+          : input.height;
+      const max = invalidHorizontal
+        ? invalidOrigin
+          ? frame.width - 1
+          : frame.width - input.x
+        : invalidOrigin
+          ? frame.height - 1
+          : frame.height - input.y;
+      return yield* new ComputerUse.ComputerUseRegionOutOfBoundsError({
+        ...input,
+        frameWidth: frame.width,
+        frameHeight: frame.height,
+        field,
+        received: String(received),
+        expected: [`integer from ${invalidOrigin ? 0 : 1} through ${max}`],
+      });
+    }
+    return {
+      frameId: input.frameId,
+      x: frame.toDesktopLogical.offsetX + input.x * frame.toDesktopLogical.scaleX,
+      y: frame.toDesktopLogical.offsetY + input.y * frame.toDesktopLogical.scaleY,
+      width: input.width * frame.toDesktopLogical.scaleX,
+      height: input.height * frame.toDesktopLogical.scaleY,
+      displayWidth: stored.displayWidth,
+      displayHeight: stored.displayHeight,
+    };
+  });
+
+  const captureChangeBitmap = Effect.fn("AgentDesktopManager.captureChangeBitmap")(function* (
+    desktop: PersistedDesktop,
+    region: ResolvedChangeRegion,
+  ) {
+    const capture = yield* qemu.capture(desktop.id);
+    const sourceImage = yield* Effect.tryPromise({
+      try: () => decodeAgentDesktopCapture(capture),
+      catch: (cause) =>
+        new AgentDesktopManagerError({
+          code: "internal-error",
+          operation: "wait-for-change",
+          detail: String(cause).slice(0, 256),
+        }),
+    });
+    const sourceSize = sourceImage.getSize();
+    if (sourceSize.width !== region.displayWidth || sourceSize.height !== region.displayHeight) {
+      return yield* new ComputerUse.ComputerUseFrameNotFoundError({ frameId: region.frameId });
+    }
+    const cropX = Math.max(0, Math.floor(region.x));
+    const cropY = Math.max(0, Math.floor(region.y));
+    const cropRight = Math.min(sourceSize.width, Math.ceil(region.x + region.width));
+    const cropBottom = Math.min(sourceSize.height, Math.ceil(region.y + region.height));
+    const width = cropRight - cropX;
+    const height = cropBottom - cropY;
+    if (width <= 0 || height <= 0) {
+      return yield* new AgentDesktopManagerError({
+        code: "invalid-action",
+        operation: "wait-for-change",
+        detail: "the visual change region resolved to an empty image",
+      });
+    }
+    const scale = Math.max(
+      1,
+      width / CHANGE_DETECTION_MAX_WIDTH,
+      height / CHANGE_DETECTION_MAX_HEIGHT,
+    );
+    const fitted = {
+      width: Math.max(1, Math.round(width / scale)),
+      height: Math.max(1, Math.round(height / scale)),
+    };
+    const image = yield* Effect.tryPromise({
+      try: () => cropAgentDesktopImage(sourceImage, { x: cropX, y: cropY, width, height }, fitted),
+      catch: (cause) =>
+        new AgentDesktopManagerError({
+          code: "internal-error",
+          operation: "wait-for-change",
+          detail: String(cause).slice(0, 256),
+        }),
+    });
+    return image.toBitmap();
+  });
+
+  const waitForVisualChange = Effect.fn("AgentDesktopManager.waitForVisualChange")(function* (
+    desktop: PersistedDesktop,
+    region: ResolvedChangeRegion,
+    timeoutMs: number,
+    pollIntervalMs: number,
+  ) {
+    const startedAt = yield* Clock.currentTimeMillis;
+    const baseline = yield* captureChangeBitmap(desktop, region);
+    let samples = 1;
+    while (true) {
+      const beforeWait = yield* Clock.currentTimeMillis;
+      const elapsedBeforeWait = beforeWait - startedAt;
+      if (elapsedBeforeWait >= timeoutMs) {
+        return { changed: false, elapsedMs: timeoutMs, samples };
+      }
+      yield* Effect.sleep(Duration.millis(Math.min(pollIntervalMs, timeoutMs - elapsedBeforeWait)));
+      const current = yield* captureChangeBitmap(desktop, region);
+      samples += 1;
+      const elapsedMs = Math.min(timeoutMs, (yield* Clock.currentTimeMillis) - startedAt);
+      if (!equalBitmaps(baseline, current)) return { changed: true, elapsedMs, samples };
+      if (elapsedMs >= timeoutMs) return { changed: false, elapsedMs, samples };
+    }
+  });
+
   const movePointer = Effect.fn("AgentDesktopManager.movePointer")(function* (
     desktop: PersistedDesktop,
     runtime: RuntimeState,
@@ -2496,42 +2990,45 @@ const make = Effect.gen(function* () {
     desktop: PersistedDesktop,
     runtime: RuntimeState,
     action: ComputerAutomationAction,
-  ) {
-    const validatedInput = <A>(evaluate: () => A) =>
-      Effect.try({
-        try: evaluate,
-        catch: (cause) =>
-          isQemuInputValidationError(cause)
-            ? cause
-            : new AgentDesktopManagerError({
-                code: "invalid-action",
-                operation: action.type,
-                detail: String(cause).slice(0, 256),
-              }),
-      });
+    actionIndex: number,
+  ): Effect.fn.Return<ComputerAutomationActionResult, AgentDesktopManagerOperationError> {
+    const validatedInput = <A>(evaluate: () => A) => validatedQemuInput(evaluate, action.type);
     const buttonEvent = (button: string, down: boolean): QemuAgentDesktop.QemuInputEvent => ({
       type: "btn",
       data: { down, button },
     });
     switch (action.type) {
-      case "activate":
-        return yield* activateGuestAccessibility(desktop, runtime, action.targetId);
+      case "activate": {
+        yield* activateGuestAccessibility(desktop, runtime, action.targetId);
+        return { index: actionIndex, type: action.type };
+      }
+      case "activate_window": {
+        yield* activateGuestAccessibilityWindow(desktop, runtime, action.windowId);
+        return { index: actionIndex, type: action.type };
+      }
       case "move": {
         const point = yield* resolvePoint(runtime, action.frameId, action.x, action.y);
         yield* movePointer(desktop, runtime, point, action.durationMs ?? 0);
         yield* Effect.sleep(Duration.millis(action.settleMs ?? DEFAULT_HOVER_SETTLE_MS));
-        return;
+        return { index: actionIndex, type: action.type };
       }
       case "click": {
         const point = yield* resolvePoint(runtime, action.frameId, action.x, action.y);
         yield* movePointer(desktop, runtime, point, 0);
         const button = action.button ?? "left";
-        const events: QemuAgentDesktop.QemuInputEvent[] = [];
         for (let count = 0; count < (action.count ?? 1); count += 1) {
-          events.push(buttonEvent(button, true), buttonEvent(button, false));
+          yield* Ref.update(runtime.heldButtons, (current) => new Set(current).add(button));
+          yield* qemu.sendInput(desktop.id, [buttonEvent(button, true)]);
+          yield* Effect.sleep(Duration.millis(POINTER_BUTTON_HOLD_TIME_MS));
+          yield* qemu.sendInput(desktop.id, [buttonEvent(button, false)]);
+          yield* Ref.update(runtime.heldButtons, (current) => {
+            const next = new Set(current);
+            next.delete(button);
+            return next;
+          });
+          yield* Effect.sleep(Duration.millis(POINTER_BUTTON_RELEASE_SETTLE_MS));
         }
-        yield* qemu.sendInput(desktop.id, events);
-        return;
+        return { index: actionIndex, type: action.type };
       }
       case "drag": {
         const start = yield* resolvePoint(runtime, action.frameId, action.startX, action.startY);
@@ -2547,7 +3044,7 @@ const make = Effect.gen(function* () {
           next.delete(button);
           return next;
         });
-        return;
+        return { index: actionIndex, type: action.type };
       }
       case "wheel": {
         if (action.frameId !== undefined) {
@@ -2561,39 +3058,81 @@ const make = Effect.gen(function* () {
             events.push(buttonEvent(button, true), buttonEvent(button, false));
           }
         };
-        addTicks(action.deltaY ?? 0, "wheel-up", "wheel-down");
-        addTicks(action.deltaX ?? 0, "wheel-left", "wheel-right");
-        yield* qemu.sendInput(desktop.id, events);
-        return;
+        const horizontalTicks = action.horizontalTicks ?? 0;
+        const verticalTicks = action.verticalTicks ?? 0;
+        if (horizontalTicks === 0) {
+          addTicks(verticalTicks, "wheel-up", "wheel-down");
+          yield* qemu.sendInput(desktop.id, events);
+        } else {
+          yield* sendGuestWheel(desktop, runtime, horizontalTicks, verticalTicks);
+        }
+        return { index: actionIndex, type: action.type, horizontalTicks, verticalTicks };
       }
       case "type": {
         const intervalMs = action.intervalMs ?? 0;
         const normalizedText = action.text.replaceAll(/\r\n|\r/gu, "\n");
-        const segments = normalizedText.match(/[^\t]+|\t/gu) ?? [];
-        const useSemanticInsertion =
-          segments.filter((segment) => segment !== "\t").length <= MAX_SEMANTIC_TEXT_SEGMENTS;
-        const sendQemuText = Effect.fn("AgentDesktopManager.sendQemuText")(function* (
-          text: string,
-        ) {
-          for (const chord of QemuInput.qemuTextChords(text)) {
+        const insertion =
+          normalizedText.length === 0
+            ? ({ status: "unavailable" } as const)
+            : yield* insertGuestText(desktop, runtime, normalizedText, intervalMs);
+        let acceptedCodePoints = 0;
+        let confirmedCodePoints = 0;
+        const usedAccessibility = insertion.status === "inserted";
+        let usedKeyEvents = false;
+        if (insertion.status === "inserted") {
+          if (
+            insertion.injectedCodePoints === undefined ||
+            insertion.confirmedCodePoints === undefined
+          ) {
+            return yield* new AgentDesktopManagerError({
+              code: "internal-error",
+              operation: "guest-text-insertion",
+              detail: "guest accessibility omitted exact text confirmation",
+            });
+          }
+          acceptedCodePoints = insertion.injectedCodePoints;
+          confirmedCodePoints = insertion.confirmedCodePoints;
+        } else {
+          // Validate the whole literal before any key can submit or move focus.
+          const chords = yield* validatedInput(() => QemuInput.qemuTextChords(normalizedText));
+          for (const chord of chords) {
             yield* sendTransientKey(desktop, runtime, chord);
             if (intervalMs > 0) yield* Effect.sleep(Duration.millis(intervalMs));
           }
-        });
-        for (const segment of segments) {
-          const inserted =
-            useSemanticInsertion && segment !== "\t"
-              ? yield* insertGuestText(desktop, runtime, segment, intervalMs)
-              : false;
-          if (!inserted) {
-            yield* sendQemuText(segment);
-          }
+          acceptedCodePoints = Array.from(normalizedText).length;
+          usedKeyEvents = acceptedCodePoints > 0;
+        }
+        if (acceptedCodePoints > 0) {
+          yield* Effect.sleep(Duration.millis(DEFAULT_TYPE_SETTLE_MS));
         }
         if (action.submit === true) {
           yield* sendTransientKey(desktop, runtime, QemuInput.qemuPressQcodes("Enter"));
         }
         if (action.submit === true) yield* Effect.sleep(Duration.millis(DEFAULT_SUBMIT_SETTLE_MS));
-        return;
+        const delivery =
+          usedAccessibility && usedKeyEvents
+            ? "mixed"
+            : usedAccessibility
+              ? "accessibility"
+              : usedKeyEvents
+                ? "key-events"
+                : "none";
+        const verification =
+          delivery === "accessibility" || delivery === "none"
+            ? "exact"
+            : delivery === "mixed"
+              ? "partial"
+              : "unavailable";
+        return {
+          index: actionIndex,
+          type: action.type,
+          requestedCodePoints: Array.from(normalizedText).length,
+          acceptedCodePoints,
+          confirmedCodePoints,
+          verification,
+          delivery,
+          focusedEditable: usedAccessibility,
+        };
       }
       case "press":
         yield* sendTransientKey(
@@ -2603,14 +3142,14 @@ const make = Effect.gen(function* () {
             QemuInput.qemuPressQcodes(action.key, action.modifiers ?? []),
           ),
         );
-        return;
+        return { index: actionIndex, type: action.type };
       case "hotkey":
         yield* sendTransientKey(
           desktop,
           runtime,
           yield* validatedInput(() => QemuInput.qemuHotkeyQcodes(action.keys)),
         );
-        return;
+        return { index: actionIndex, type: action.type };
       case "key_down": {
         const held = yield* Ref.get(runtime.heldKeys);
         const logicalKey = yield* validatedInput(() => QemuInput.qemuLogicalKeyId(action.key));
@@ -2631,13 +3170,13 @@ const make = Effect.gen(function* () {
           new Map(current).set(logicalKey, transition.heldQcodes),
         );
         if (events.length > 0) yield* qemu.sendInput(desktop.id, events);
-        return;
+        return { index: actionIndex, type: action.type };
       }
       case "key_up": {
         const held = yield* Ref.get(runtime.heldKeys);
         const logicalKey = yield* validatedInput(() => QemuInput.qemuLogicalKeyId(action.key));
         const qcodes = held.get(logicalKey);
-        if (qcodes === undefined) return;
+        if (qcodes === undefined) return { index: actionIndex, type: action.type };
         const next = new Map(held);
         next.delete(logicalKey);
         const retainedQcodes = new Set(Array.from(next.values()).flat());
@@ -2645,10 +3184,22 @@ const make = Effect.gen(function* () {
         const events = QemuInput.qemuKeyUpEvents(releasedQcodes);
         if (events.length > 0) yield* qemu.sendInput(desktop.id, events);
         yield* Ref.set(runtime.heldKeys, next);
-        return;
+        return { index: actionIndex, type: action.type };
       }
-      case "wait":
+      case "wait": {
         yield* Effect.sleep(Duration.millis(action.durationMs));
+        return { index: actionIndex, type: action.type };
+      }
+      case "wait_for_change": {
+        const region = yield* resolveChangeRegion(runtime, action);
+        const result = yield* waitForVisualChange(
+          desktop,
+          region,
+          action.timeoutMs,
+          action.pollIntervalMs ?? DEFAULT_CHANGE_POLL_INTERVAL_MS,
+        );
+        return { index: actionIndex, type: action.type, ...result };
+      }
     }
   });
 
@@ -2691,13 +3242,46 @@ const make = Effect.gen(function* () {
         return Effect.void;
       });
     });
-    yield* runtime.inputSemaphore.withPermits(1)(
+    const actionResults = yield* runtime.inputSemaphore.withPermits(1)(
       Effect.gen(function* () {
         yield* assertAdmitted;
         return yield* Effect.gen(function* () {
+          const results: ComputerAutomationActionResult[] = [];
+          const simulatedHeldKeys = new Map(yield* Ref.get(runtime.heldKeys));
           for (const [index, action] of input.actions.entries()) {
-            yield* assertAdmitted.pipe(
-              Effect.andThen(executeAction(desktop, runtime, action)),
+            yield* preflightAction(runtime, action, simulatedHeldKeys).pipe(
+              Effect.catch((cause) =>
+                Effect.gen(function* () {
+                  const keysHeld = (yield* Ref.get(runtime.heldKeys)).size > 0;
+                  const buttonsHeld = (yield* Ref.get(runtime.heldButtons)).size > 0;
+                  const cleanup = yield* releaseInputs(desktop, runtime).pipe(
+                    Effect.match({
+                      onFailure: () => ({
+                        keys: keysHeld ? ("release-failed" as const) : ("not-needed" as const),
+                        buttons: buttonsHeld
+                          ? ("release-failed" as const)
+                          : ("not-needed" as const),
+                      }),
+                      onSuccess: () => ({
+                        keys: keysHeld ? ("released" as const) : ("not-needed" as const),
+                        buttons: buttonsHeld ? ("released" as const) : ("not-needed" as const),
+                      }),
+                    }),
+                  );
+                  return yield* new ComputerUse.ComputerUseActionError({
+                    actionIndex: index,
+                    completedActionCount: 0,
+                    actionType: action.type,
+                    cause,
+                    cleanup,
+                  });
+                }),
+              ),
+            );
+          }
+          for (const [index, action] of input.actions.entries()) {
+            const result = yield* assertAdmitted.pipe(
+              Effect.andThen(executeAction(desktop, runtime, action, index)),
               Effect.catch((cause) =>
                 Effect.gen(function* () {
                   const keysHeld = (yield* Ref.get(runtime.heldKeys)).size > 0;
@@ -2720,19 +3304,28 @@ const make = Effect.gen(function* () {
                     actionIndex: index,
                     completedActionCount: index,
                     actionType: action.type,
-                    cause: { cause, cleanup },
+                    cause,
+                    cleanup,
                   });
                 }),
               ),
             );
+            results.push(result);
           }
+          return results;
         }).pipe(
           Effect.onInterrupt(() => releaseInputs(desktop, runtime).pipe(Effect.ignore)),
-          Effect.ensuring(Ref.set(runtime.accessibilityTargets, new Map())),
+          Effect.ensuring(
+            Effect.all([
+              Ref.set(runtime.accessibilityTargets, new Map()),
+              Ref.set(runtime.accessibilityWindows, new Map()),
+            ]),
+          ),
         );
       }),
     );
     yield* touchDesktop(desktop);
+    return actionResults;
   });
 
   const release: AgentDesktopManagerShape["release"] = (controllerId, desktopId) =>

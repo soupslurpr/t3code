@@ -1,5 +1,6 @@
 import type {
   ComputerAutomationActionBatchInput,
+  ComputerAutomationActionResult,
   ComputerAutomationSnapshot,
   ComputerAutomationObservationOptions,
   ComputerAutomationStatus,
@@ -55,7 +56,7 @@ export interface ComputerUseCoordinatorShape {
   readonly act: (
     controllerId: string,
     input: ComputerAutomationActionBatchInput,
-  ) => Effect.Effect<void, ComputerUse.ComputerUseError>;
+  ) => Effect.Effect<ReadonlyArray<ComputerAutomationActionResult>, ComputerUse.ComputerUseError>;
   readonly release: (
     controllerId: string,
   ) => Effect.Effect<ComputerAutomationStatus, ComputerUse.ComputerUseError>;

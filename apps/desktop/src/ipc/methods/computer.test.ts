@@ -1,6 +1,8 @@
 import { assert, describe, it } from "@effect/vitest";
 import {
   AgentDesktopId,
+  ComputerAutomationObservation,
+  makeDesktopComputerAutomationResultSchema,
   EnvironmentId,
   ThreadId,
   type ComputerAutomationSnapshotInput,
@@ -11,12 +13,17 @@ import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
 import * as Fiber from "effect/Fiber";
 import * as Layer from "effect/Layer";
+import * as Schema from "effect/Schema";
 import * as TestClock from "effect/testing/TestClock";
 
 import * as ComputerUse from "../../computer/ComputerUse.ts";
 import * as ComputerUseRouter from "../../computer/ComputerUseRouter.ts";
 import * as GnomeRemoteDesktop from "../../computer/GnomeRemoteDesktop.ts";
 import { act, releaseAvailability, requestAvailability, requestView } from "./computer.ts";
+
+const decodeComputerObservationResult = Schema.decodeUnknownSync(
+  makeDesktopComputerAutomationResultSchema(ComputerAutomationObservation),
+);
 
 const status = {
   available: true,
@@ -287,6 +294,7 @@ describe("computer IPC methods", () => {
   ])("applies post-action settling with $name", ({ observation, expectedDelay }) =>
     Effect.gen(function* () {
       const actions = [{ type: "press" as const, key: "Meta" }];
+      const actionResults = [{ index: 0, type: "press" as const }];
       const desktop = {
         kind: "agent" as const,
         desktopId: AgentDesktopId.make("agent-desktop"),
@@ -300,6 +308,7 @@ describe("computer IPC methods", () => {
               act: (input) =>
                 Effect.sync(() => {
                   assert.deepEqual(input, { desktop, actions, observation });
+                  return actionResults;
                 }),
               snapshot: (input) =>
                 Effect.gen(function* () {
@@ -318,7 +327,7 @@ describe("computer IPC methods", () => {
 
       assert.deepEqual(yield* Fiber.join(resultFiber), {
         ok: true,
-        value: { snapshot },
+        value: { snapshot, actionResults },
       });
     }),
   );
@@ -327,7 +336,7 @@ describe("computer IPC methods", () => {
     Effect.gen(function* () {
       const computer = makeComputer({
         requestView: Effect.succeed(status),
-        act: () => Effect.void,
+        act: () => Effect.succeed([{ index: 0, type: "press" }]),
       });
 
       const accessResult = yield* requestView
@@ -344,7 +353,10 @@ describe("computer IPC methods", () => {
         .pipe(Effect.provide(computerRouterLayer(computer)));
 
       assert.deepEqual(accessResult, { ok: true, value: { status } });
-      assert.deepEqual(actResult, { ok: true, value: {} });
+      assert.deepEqual(actResult, {
+        ok: true,
+        value: { actionResults: [{ index: 0, type: "press" }] },
+      });
     }),
   );
 
@@ -371,7 +383,7 @@ describe("computer IPC methods", () => {
     );
   });
 
-  it.effect("replaces private unrecognized failures across IPC", () => {
+  it.effect("returns bounded unrecognized backend diagnostics across IPC", () => {
     const error = new GnomeRemoteDesktop.GnomeRemoteDesktopCommandError({
       operation: "view",
       code: "private-portal-error",
@@ -387,10 +399,35 @@ describe("computer IPC methods", () => {
               code: "internal-error",
               category: "internal",
               message: "The desktop computer-use operation failed.",
+              backendCode: "private-portal-error",
+              detail: "private portal diagnostic",
             },
           });
         }),
       ),
     );
   });
+});
+
+it.effect("preserves both signed wheel axes across the native IPC boundary", () => {
+  const action = { type: "wheel" as const, horizontalTicks: -2, verticalTicks: 5 };
+  const receipt = { index: 0, ...action };
+  const computer = makeComputer({
+    requestView: Effect.die("unused"),
+    act: (input) => {
+      assert.deepEqual(input.actions, [action]);
+      return Effect.succeed([receipt]);
+    },
+  });
+  return act
+    .handler({ input: { desktop: { kind: "user" }, actions: [action], observation: false } })
+    .pipe(
+      Effect.provide(computerRouterLayer(computer)),
+      Effect.tap((result) =>
+        Effect.sync(() => {
+          const decoded = decodeComputerObservationResult(result);
+          assert.deepEqual(decoded, { ok: true, value: { actionResults: [receipt] } });
+        }),
+      ),
+    );
 });

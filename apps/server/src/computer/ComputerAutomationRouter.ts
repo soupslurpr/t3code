@@ -235,12 +235,12 @@ export const make = Effect.gen(function* () {
       "computerAct",
       agent.act(scope.thread.providerSessionId, actions, desktop.desktopId),
     ).pipe(
-      Effect.flatMap(() =>
+      Effect.flatMap((actionResults) =>
         observeAgent({
           scope,
           desktopId: desktop.desktopId,
           options: observation ?? { delayMs: DEFAULT_ACTION_OBSERVATION_DELAY_MS },
-        }),
+        }).pipe(Effect.map((result) => ({ ...result, actionResults }))),
       ),
     );
   };

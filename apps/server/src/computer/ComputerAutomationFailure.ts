@@ -1,4 +1,9 @@
-import type { ComputerAutomationAction, ComputerAutomationFailure } from "@t3tools/contracts";
+/** Normalizes server-local computer-use failures for the public MCP contract. */
+import {
+  ComputerAutomationInputCleanup,
+  type ComputerAutomationAction,
+  type ComputerAutomationFailure,
+} from "@t3tools/contracts";
 import * as Schema from "effect/Schema";
 
 const ComputerUseOperation = Schema.Literals([
@@ -86,6 +91,7 @@ export class ComputerUseActionError extends Schema.TaggedError<ComputerUseAction
     completedActionCount: Schema.Int,
     actionType: Schema.String,
     cause: Schema.Defect(),
+    cleanup: Schema.optional(ComputerAutomationInputCleanup),
   },
 ) {
   override get message(): string {
@@ -144,12 +150,23 @@ const EXECUTION_PHASES = new Set([
   "execution",
   "observation",
 ]);
-
+const MAX_FAILURE_BACKEND_CODE_LENGTH = 128;
+const MAX_FAILURE_DETAIL_LENGTH = 2_000;
 /** Narrows an unknown value to an object record. */
 const asRecord = (value: unknown): Readonly<Record<string, unknown>> | undefined =>
   typeof value === "object" && value !== null
     ? (value as Readonly<Record<string, unknown>>)
     : undefined;
+
+/** Returns one bounded backend diagnostic without exposing exception stacks. */
+function boundedDiagnostic(value: unknown): string | undefined {
+  const text =
+    typeof value === "string" ? value : value instanceof Error ? value.message : undefined;
+  const trimmed = text?.trim();
+  return trimmed === undefined || trimmed.length === 0
+    ? undefined
+    : trimmed.slice(0, MAX_FAILURE_DETAIL_LENGTH);
+}
 
 /** Accepts only public key and button cleanup states. */
 function boundedCleanup(value: unknown): ComputerAutomationFailure["cleanup"] | undefined {
@@ -191,6 +208,8 @@ export function toComputerAutomationFailure(cause: unknown): ComputerAutomationF
         completedActionCount: record.completedActionCount,
         actionType: record.actionType as ComputerAutomationAction["type"],
       };
+      const actionCleanup = boundedCleanup(record.cleanup);
+      if (actionCleanup !== undefined) cleanupContext = actionCleanup;
       current = record.cause;
       continue;
     }
@@ -220,9 +239,18 @@ export function toComputerAutomationFailure(cause: unknown): ComputerAutomationF
   const internalCode = typeof error.code === "string" ? error.code : undefined;
   const operation =
     operationContext ?? (typeof error.operation === "string" ? error.operation : undefined);
+  const backendCode = internalCode?.trim().slice(0, MAX_FAILURE_BACKEND_CODE_LENGTH);
+  const detail =
+    boundedDiagnostic(error.detail) ??
+    boundedDiagnostic(error.cause) ??
+    boundedDiagnostic(error.message);
   const actionField = (field: string) =>
     actionContext === undefined ? field : `actions[${actionContext.actionIndex}].${field}`;
   const cleanup = cleanupContext ?? boundedCleanup(error.cleanup);
+  const diagnostics = {
+    ...(backendCode === undefined || backendCode.length === 0 ? {} : { backendCode }),
+    ...(detail === undefined ? {} : { detail }),
+  };
   const common = {
     ...(actionContext === undefined
       ? {}
@@ -251,6 +279,7 @@ export function toComputerAutomationFailure(cause: unknown): ComputerAutomationF
     actionContext === undefined || cleanup !== undefined
       ? {}
       : { cleanup: { keys: "not-needed" as const, buttons: "not-needed" as const } };
+  const semanticField = actionContext?.actionType === "activate_window" ? "windowId" : "targetId";
 
   if (tag === "ComputerUseFrameNotFoundError") {
     return {
@@ -297,8 +326,12 @@ export function toComputerAutomationFailure(cause: unknown): ComputerAutomationF
     return {
       code: "timed-out",
       category: "timeout",
-      message: "The desktop operation timed out.",
+      message:
+        operation === "guest-exec"
+          ? "The Agent desktop command timed out."
+          : "The desktop operation timed out.",
       ...common,
+      ...diagnostics,
     };
   }
   if (internalCode === "display-inactive" || internalCode === "display-locked") {
@@ -385,6 +418,15 @@ export function toComputerAutomationFailure(cause: unknown): ComputerAutomationF
       ...common,
     };
   }
+  if (internalCode === "unsupported-text" || internalCode === "exact-text-unavailable") {
+    return {
+      code: "exact-text-unavailable",
+      category: "unsupported-operation",
+      message:
+        "Exact text is unavailable in the focused control; focus an accessible editable field or use ASCII text.",
+      ...common,
+    };
+  }
   if (
     internalCode === "invalid-action" ||
     internalCode === "invalid-wheel" ||
@@ -403,18 +445,18 @@ export function toComputerAutomationFailure(cause: unknown): ComputerAutomationF
     return {
       code: "stale-semantic-target",
       category: "stale-target",
-      message: "The semantic target is stale; capture a new observation.",
+      message: "The semantic target or window is stale; capture a new observation.",
       ...common,
-      field: actionContext === undefined ? "targetId" : actionField("targetId"),
+      field: actionContext === undefined ? semanticField : actionField(semanticField),
     };
   }
   if (internalCode === "accessibility-activation-failed") {
     return {
       code: "semantic-activation-failed",
       category: "input-injection",
-      message: "The application rejected semantic activation of the selected target.",
+      message: "The application rejected semantic activation of the selected target or window.",
       ...common,
-      field: actionContext === undefined ? "targetId" : actionField("targetId"),
+      field: actionContext === undefined ? semanticField : actionField(semanticField),
     };
   }
   if (internalCode === "accessibility-insertion-failed") {
@@ -481,6 +523,7 @@ export function toComputerAutomationFailure(cause: unknown): ComputerAutomationF
       category: "input-injection",
       message: "The desktop backend could not inject the requested input.",
       ...common,
+      ...diagnostics,
     };
   }
   return {
@@ -488,5 +531,6 @@ export function toComputerAutomationFailure(cause: unknown): ComputerAutomationF
     category: "internal",
     message: "The desktop computer-use operation failed.",
     ...common,
+    ...diagnostics,
   };
 }

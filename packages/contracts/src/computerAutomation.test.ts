@@ -10,6 +10,7 @@ import {
   ComputerAutomationAccessInput,
   ComputerAutomationHotkeyInput,
   ComputerAutomationKeyInput,
+  ComputerAutomationObservation,
   ComputerAutomationWheelInput,
   ComputerAutomationSnapshot,
   ComputerAutomationSnapshotInput,
@@ -28,6 +29,7 @@ const decodeAct = Schema.decodeUnknownSync(ComputerAutomationActionBatchInput);
 const decodeWheel = Schema.decodeUnknownSync(ComputerAutomationWheelInput);
 const decodeHotkey = Schema.decodeUnknownSync(ComputerAutomationHotkeyInput);
 const decodeFailure = Schema.decodeUnknownSync(ComputerAutomationFailure);
+const decodeObservation = Schema.decodeUnknownSync(ComputerAutomationObservation);
 const decodeSnapshot = Schema.decodeUnknownSync(ComputerAutomationSnapshot);
 const decodeSnapshotInput = Schema.decodeUnknownSync(ComputerAutomationSnapshotInput);
 const decodeStatus = Schema.decodeUnknownSync(ComputerAutomationStatus);
@@ -90,19 +92,28 @@ describe("computer automation contracts", () => {
     expect(() => decodeClick({ frameId: "frame-1", x: 120, y: 80, count: 4 })).toThrow();
   });
 
-  it("requires a complete optional wheel target and at least one tick delta", () => {
-    expect(decodeWheel({ deltaY: 3, unit: "ticks" })).toEqual({ deltaY: 3, unit: "ticks" });
-    expect(decodeWheel({ frameId: "frame-1", x: 100, y: 200, deltaX: -10, deltaY: 50 })).toEqual({
+  it("accepts bounded discrete wheel ticks with complete optional targets", () => {
+    expect(decodeWheel({ verticalTicks: 3 })).toEqual({ verticalTicks: 3 });
+    expect(
+      decodeWheel({
+        frameId: "frame-1",
+        x: 100,
+        y: 200,
+        horizontalTicks: -10,
+        verticalTicks: 50,
+      }),
+    ).toEqual({
       frameId: "frame-1",
       x: 100,
       y: 200,
-      deltaX: -10,
-      deltaY: 50,
+      horizontalTicks: -10,
+      verticalTicks: 50,
     });
 
-    expect(() => decodeWheel({ frameId: "frame-1", x: 100, deltaY: 50 })).toThrow();
-    expect(() => decodeWheel({ deltaY: 0.5 })).toThrow();
-    expect(() => decodeWheel({ deltaY: 101 })).toThrow();
+    expect(() => decodeWheel({ frameId: "frame-1", x: 100, verticalTicks: 50 })).toThrow();
+    expect(() => decodeWheel({ verticalTicks: 0.5 })).toThrow();
+    expect(() => decodeWheel({ verticalTicks: 101 })).toThrow();
+    expect(() => decodeWheel({ deltaY: 3, unit: "pixels" })).toThrow();
     expect(() => decodeWheel({})).toThrow();
   });
 
@@ -141,6 +152,14 @@ describe("computer automation contracts", () => {
             name: "Calculator",
             size: { width: 400, height: 500 },
           },
+          windows: [
+            {
+              id: "window-2-1",
+              application: "Calculator",
+              name: "Calculator",
+              focused: true,
+            },
+          ],
           targets: [
             {
               id: "a11y-2-3",
@@ -184,6 +203,7 @@ describe("computer automation contracts", () => {
           available: true,
           coordinateSpace: "focused-window",
           window: null,
+          windows: [],
           targets: [],
           truncated: false,
         },
@@ -329,7 +349,7 @@ describe("computer automation contracts", () => {
     expect(decodeType({ text: "That’s exact → and ASCII ->" })).toEqual({
       text: "That’s exact → and ASCII ->",
     });
-    expect(() => decodeType({ text: "’\n".repeat(601) })).toThrow();
+    expect(decodeType({ text: "’\n".repeat(601) }).text).toHaveLength(1_202);
   });
 
   it("accepts bounded action batches and protects semantic target lifetime", () => {
@@ -359,6 +379,46 @@ describe("computer automation contracts", () => {
         ],
       }),
     ).toThrow();
+    expect(
+      decodeAct({
+        actions: [
+          { type: "activate_window", windowId: "window-1-2" },
+          {
+            type: "wait_for_change",
+            frameId: "frame-1",
+            x: 0,
+            y: 0,
+            width: 320,
+            height: 180,
+            timeoutMs: 30_000,
+            pollIntervalMs: 250,
+          },
+        ],
+      }),
+    ).toMatchObject({ actions: [{ type: "activate_window" }, { type: "wait_for_change" }] });
+    expect(() =>
+      decodeAct({
+        actions: [
+          { type: "press", key: "Tab" },
+          { type: "activate_window", windowId: "window-1-2" },
+        ],
+      }),
+    ).toThrow();
+    expect(() =>
+      decodeAct({
+        actions: [
+          {
+            type: "wait_for_change",
+            frameId: "frame-1",
+            x: 0,
+            y: 0,
+            width: 320,
+            height: 180,
+            timeoutMs: 60_001,
+          },
+        ],
+      }),
+    ).toThrow();
     expect(() =>
       decodeAct({
         actions: [
@@ -367,9 +427,22 @@ describe("computer automation contracts", () => {
         ],
       }),
     ).toThrow();
-    expect(() => decodeAct({ actions: [{ type: "wait", durationMs: 5_001 }] })).toThrow();
+    expect(decodeAct({ actions: [{ type: "wait", durationMs: 60_000 }] })).toMatchObject({
+      actions: [{ type: "wait", durationMs: 60_000 }],
+    });
     expect(() =>
-      decodeAct({ actions: [{ type: "wheel", frameId: "frame-1", x: 100, deltaY: 3 }] }),
+      decodeAct({
+        actions: [
+          { type: "wait", durationMs: 60_000 },
+          { type: "wait", durationMs: 1 },
+        ],
+      }),
+    ).toThrow();
+    expect(() => decodeAct({ actions: [{ type: "wait", durationMs: 60_001 }] })).toThrow();
+    expect(() =>
+      decodeAct({
+        actions: [{ type: "wheel", frameId: "frame-1", x: 100, verticalTicks: 3 }],
+      }),
     ).toThrow();
     expect(() => decodeAct({ actions: [{ type: "wheel" }] })).toThrow();
     expect(() =>
@@ -417,5 +490,52 @@ describe("computer automation contracts", () => {
         phase: "execution",
       }),
     ).toMatchObject({ code: "semantic-activation-failed", phase: "execution" });
+  });
+
+  it("reports exact text delivery separately from visual observation", () => {
+    expect(
+      decodeObservation({
+        actionResults: [
+          {
+            index: 0,
+            type: "type",
+            requestedCodePoints: 18,
+            acceptedCodePoints: 18,
+            confirmedCodePoints: 18,
+            verification: "exact",
+            delivery: "accessibility",
+            focusedEditable: true,
+          },
+          {
+            index: 1,
+            type: "wait_for_change",
+            changed: false,
+            elapsedMs: 5_000,
+            samples: 21,
+          },
+        ],
+      }),
+    ).toMatchObject({
+      actionResults: [
+        { type: "type", confirmedCodePoints: 18 },
+        { type: "wait_for_change", changed: false },
+      ],
+    });
+    expect(() =>
+      decodeObservation({
+        actionResults: [
+          {
+            index: 0,
+            type: "type",
+            requestedCodePoints: 18,
+            acceptedCodePoints: 18,
+            confirmedCodePoints: 0,
+            verification: "exact",
+            delivery: "key-events",
+            focusedEditable: false,
+          },
+        ],
+      }),
+    ).toThrow(/verification must agree/u);
   });
 });
