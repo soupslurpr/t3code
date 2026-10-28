@@ -134,7 +134,7 @@ export function PullRequestGuideTab({
           {running ? (
             "Rewriting this guide. You will be told when the new one is ready."
           ) : failure === null ? (
-            "Written before the latest push."
+            "Written before the latest push. Rewrite the guide to see code excerpts."
           ) : (
             <>
               {`Could not rewrite this guide. ${FAILURE_HINT}`}
@@ -152,6 +152,7 @@ export function PullRequestGuideTab({
         environmentId={environmentId}
         reference={reference}
         guide={guide}
+        stale={stale}
         banner={banner}
         active={active}
         commenting={commenting}
