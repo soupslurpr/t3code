@@ -83,6 +83,7 @@
         "src/compileCache.ts!",
         "src/serverCompileCache.ts!",
         "src/main.ts!",
+        "src/process/DesktopProcessSupervisor.ts!",
         "src/preload.ts!",
         "src/preview-pick-preload.ts!",
         "src/preview-pip-preload.ts!",

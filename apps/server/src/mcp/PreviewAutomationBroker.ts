@@ -118,6 +118,7 @@ export class PreviewAutomationBroker extends Context.Service<
     ) => Effect.Effect<void>;
     readonly listUserDesktops: (
       environmentId: PreviewAutomationHost["environmentId"],
+      options?: { readonly includeExecution: boolean },
     ) => Effect.Effect<UserDesktopList, UserDesktops.UserDesktopRepositoryError>;
     readonly renameUserDesktop: (
       input: UserDesktopRenameInput,
@@ -428,6 +429,7 @@ function unavailableHostDiagnostics(
 function requiredUserDesktopCapability(
   operation: PreviewAutomationOperation,
 ): UserDesktopCapability {
+  if (operation === "computerExecution") return "execution";
   if (operation === "computerRequestAvailability" || operation === "computerReleaseAvailability") {
     return "availability";
   }
@@ -953,7 +955,7 @@ export const make = Effect.gen(function* PreviewAutomationBrokerMake() {
 
   const listUserDesktops: PreviewAutomationBroker["Service"]["listUserDesktops"] = Effect.fn(
     "PreviewAutomationBroker.listUserDesktops",
-  )(function* (environmentId) {
+  )(function* (environmentId, options) {
     const [records, current, hostRemoved] = yield* Effect.all([
       userDesktops.list(),
       SynchronizedRef.get(state),
@@ -1008,7 +1010,9 @@ export const make = Effect.gen(function* PreviewAutomationBrokerMake() {
         label: record.customLabel ?? liveHost?.defaultLabel ?? record.defaultLabel,
         defaultLabel: liveHost?.defaultLabel ?? record.defaultLabel,
         platform: liveHost?.platform ?? record.platform,
-        capabilities: liveHost?.capabilities ?? record.capabilities,
+        capabilities: (liveHost?.capabilities ?? record.capabilities).filter(
+          (capability) => capability !== "execution" || options?.includeExecution === true,
+        ),
         connectionState:
           matches.length > 1
             ? ("identity-conflict" as const)

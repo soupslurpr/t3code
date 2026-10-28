@@ -1,6 +1,37 @@
 import { expect, it } from "vite-plus/test";
 import { previewAutomationHostCapabilities } from "./previewAutomationHostCapabilities";
 
+it("advertises execution independently of the graphical bridge", () => {
+  expect(
+    previewAutomationHostCapabilities({
+      computerAvailable: false,
+      executionAvailable: true,
+      computerCapabilities: ["execution"],
+    }).supportedOperations,
+  ).toEqual(["computerExecution"]);
+});
+
+it("keeps registration compatible with environments without execution", () => {
+  const userDesktop = {
+    protocolVersion: 1,
+    desktopId: "test-desktop",
+    defaultLabel: "Desktop",
+    platform: "linux",
+    capabilities: ["view", "control", "availability", "execution"],
+  } as const;
+  const host = previewAutomationHostCapabilities({
+    computerAvailable: true,
+    computerInterruptAvailable: true,
+    computerCapabilities: userDesktop.capabilities,
+    userDesktop,
+    executionAvailable: false,
+  });
+  expect(host.userDesktop?.capabilities).toEqual(["view", "control", "availability"]);
+  expect(host.supportedOperations).not.toContain("computerExecution");
+  expect(host.supportedOperations).toContain("computerAct");
+  expect(userDesktop.capabilities).toContain("execution");
+});
+
 it("advertises native access and both availability directions without claiming browser operations", () => {
   const operations = previewAutomationHostCapabilities({
     computerAvailable: true,
