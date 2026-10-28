@@ -1,5 +1,5 @@
 import { runAtomCommand, squashAtomCommandFailure } from "@t3tools/client-runtime/state/runtime";
-import { AgentDesktopList, EnvironmentId, ThreadId, type AgentDesktop } from "@t3tools/contracts";
+import { EnvironmentId, ThreadId } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
 import { Atom } from "effect/reactivity";
@@ -8,11 +8,17 @@ import { appAtomRegistry } from "~/rpc/atomRegistry";
 import { previewEnvironment } from "~/state/preview";
 
 const decodeEnvironmentIds = Schema.decodeSync(Schema.fromJsonString(Schema.Array(EnvironmentId)));
-const decodeListing = Schema.decodeUnknownSync(AgentDesktopList);
+
+import {
+  decodeAgentDesktopListing,
+  isAgentDesktopMaintenanceActive,
+  type AgentDesktopView,
+  type EnvironmentAvailability,
+} from "./agentDesktopListingState";
 
 export const agentDesktopListingAtom = Atom.family((environmentIds: string) =>
-  Atom.make(
-    Effect.promise(async () => {
+  Atom.make((get) => {
+    return Effect.promise(async () => {
       const results = await Promise.all(
         decodeEnvironmentIds(environmentIds).map(async (environmentId) => {
           try {
@@ -29,21 +35,25 @@ export const agentDesktopListingAtom = Atom.family((environmentIds: string) =>
               { reportFailure: false },
             );
             if (result._tag === "Failure") throw squashAtomCommandFailure(result);
-            return { environmentId, value: decodeListing(result.value) } as const;
+            return { environmentId, value: decodeAgentDesktopListing(result.value) } as const;
           } catch (cause) {
             return { environmentId, cause } as const;
           }
         }),
       );
-      const desktops: AgentDesktop[] = [];
-      const availability = new Map<EnvironmentId, Omit<AgentDesktopList, "desktops">>();
+      const desktops: AgentDesktopView[] = [];
+      const availability = new Map<EnvironmentId, EnvironmentAvailability>();
       let error: string | null = null;
       for (const result of results) {
         if ("value" in result) {
           availability.set(result.environmentId, result.value);
           desktops.push(...result.value.desktops);
         } else {
-          availability.set(result.environmentId, { available: false, requirements: [] });
+          availability.set(result.environmentId, {
+            available: false,
+            requirements: [],
+            maintenanceSupported: false,
+          });
           error ??=
             result.cause instanceof Error
               ? result.cause.message
@@ -52,6 +62,19 @@ export const agentDesktopListingAtom = Atom.family((environmentIds: string) =>
       }
       desktops.sort((left, right) => right.lastActiveAt.localeCompare(left.lastActiveAt));
       return { desktops, availability, error };
-    }),
-  ).pipe(Atom.setIdleTTL(0)),
+    }).pipe(
+      Effect.tap(({ desktops, availability }) =>
+        desktops.some((desktop) => isAgentDesktopMaintenanceActive(desktop.maintenance)) ||
+        Array.from(availability.values()).some((status) =>
+          isAgentDesktopMaintenanceActive(status.baseImage?.maintenance),
+        )
+          ? Effect.sleep("2 seconds").pipe(
+              Effect.andThen(Effect.sync(() => get.refreshSelf())),
+              Effect.forkScoped,
+              Effect.asVoid,
+            )
+          : Effect.void,
+      ),
+    );
+  }).pipe(Atom.setIdleTTL(0)),
 );

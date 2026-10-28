@@ -6,6 +6,7 @@ import * as NodeURL from "node:url";
 import { main } from "../resources/agent-desktop/image-builder.mjs";
 
 export {
+  AGENT_DESKTOP_PROFILE_VERSION,
   AgentDesktopImageArgumentError,
   AgentDesktopImageDownloadError,
   PINNED_ARCH_IMAGE,

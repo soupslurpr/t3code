@@ -1,6 +1,13 @@
+import * as NodeFS from "node:fs";
+
 import { assert, describe, it } from "vite-plus/test";
 
 import {
+  AGENT_DESKTOP_PROFILE_VERSION as MAINTENANCE_PROFILE_VERSION,
+  AGENT_DESKTOP_SOURCE_RELEASE,
+} from "../src/agentDesktop/AgentDesktopMaintenance.ts";
+import {
+  AGENT_DESKTOP_PROFILE_VERSION,
   AgentDesktopImageArgumentError,
   AgentDesktopImageDownloadError,
   PINNED_ARCH_IMAGE,
@@ -8,6 +15,11 @@ import {
   parseAgentDesktopImageArguments,
   pinnedImageDownloadPlan,
 } from "./agent-desktop-image.mjs";
+
+const maintenanceScript = NodeFS.readFileSync(
+  new URL("../resources/agent-desktop/maintenance.sh", import.meta.url),
+  "utf8",
+);
 
 describe("Agent desktop image builder", () => {
   it("resolves explicit build inputs", () => {
@@ -47,9 +59,9 @@ describe("Agent desktop image builder", () => {
     assert.equal(options.source, undefined);
     assert.equal(options.downloadPinned, true);
     assert.equal(options.cleanOnFailure, true);
-    assert.match(PINNED_ARCH_IMAGE.url, /\/images\/v20260801\.566320\//u);
+    assert.match(PINNED_ARCH_IMAGE.url, /\/images\/v20261101\.620452\//u);
     assert.equal(PINNED_ARCH_IMAGE.sha256.length, 64);
-    assert.equal(PINNED_ARCH_IMAGE.sizeBytes, 556_424_192);
+    assert.equal(PINNED_ARCH_IMAGE.sizeBytes, 576_697_856);
   });
 
   it("requires a source and a bounded QEMU disk size", () => {
@@ -73,9 +85,31 @@ describe("Agent desktop image builder", () => {
     assert.match(config, /path: \/etc\/gdm\/custom\.conf[\s\S]*defer: true/u);
     assert.match(config, /AutomaticLogin=t3agent/u);
     assert.match(config, /toolkit-accessibility=true/u);
+    assert.match(
+      config,
+      new RegExp(`/etc/t3-agent-desktop-profile[\\s\\S]*${AGENT_DESKTOP_PROFILE_VERSION}`, "u"),
+    );
     assert.match(config, /mask, sshd\.service, sshd\.socket/u);
     assert.notMatch(config, /ssh_authorized_keys/u);
     assert.match(config, /T3 Agent desktop image provisioned/u);
+  });
+
+  it("keeps image and in-place maintenance profiles aligned", () => {
+    const configPackages = Array.from(
+      agentDesktopCloudConfig().matchAll(/^  - ([a-z0-9-]+)$/gmu),
+      (match) => match[1],
+    ).sort();
+    const maintenancePackages = Array.from(
+      maintenanceScript.matchAll(/^  ([a-z0-9-]+)(?: \\)?$/gmu),
+      (match) => match[1],
+    ).sort();
+
+    assert.deepEqual(maintenancePackages, configPackages);
+    assert.equal(AGENT_DESKTOP_PROFILE_VERSION, MAINTENANCE_PROFILE_VERSION);
+    assert.equal(PINNED_ARCH_IMAGE.release, AGENT_DESKTOP_SOURCE_RELEASE);
+    assert.match(maintenanceScript, /pacman -Syu --needed --noconfirm/u);
+    assert.match(maintenanceScript, /\/etc\/t3-agent-desktop-profile/u);
+    assert.match(maintenanceScript, /mask sshd\.service sshd\.socket/u);
   });
 
   it("validates complete and resumable official image responses", () => {
