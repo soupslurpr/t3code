@@ -1,4 +1,5 @@
 import * as Effect from "effect/Effect";
+import * as Option from "effect/Option";
 import { Argument, Command } from "effect/cli";
 
 import { runAcpMcpCliFastPath } from "../mcp/AcpMcpStdioBridge.ts";
@@ -18,5 +19,15 @@ export const acpMcpCallCommand = Command.make("acp-mcp-call", {
   Command.unlisted,
   Command.withHandler(({ tool, argumentsJson }) =>
     Effect.promise(() => runAcpMcpCliFastPath("acp-mcp-call", [tool, argumentsJson])),
+  ),
+);
+
+export const acpMcpListCommand = Command.make("acp-mcp-list", {
+  filter: Argument.String("filter").pipe(Argument.optional),
+}).pipe(
+  Command.withDescription("List T3 Code MCP tools and their input schemas from an agent terminal."),
+  Command.unlisted,
+  Command.withHandler(({ filter }) =>
+    Effect.promise(() => runAcpMcpCliFastPath("acp-mcp-list", Option.toArray(filter))),
   ),
 );
