@@ -59,6 +59,7 @@ function makeComputer(calls: string[]): ComputerUse.ComputerUseShape {
     snapshot: () => record("snapshot").pipe(Effect.as(snapshot)),
     act: () => record("act").pipe(Effect.as([])),
     releaseInputs: record("releaseInputs"),
+    cancelPendingAccess: record("cancelPendingAccess"),
     release: record("release"),
     forget: record("forget"),
   };
@@ -77,6 +78,16 @@ function makePendingComputer(
       yield* Deferred.succeed(started, undefined);
       yield* Deferred.await(authorization);
       return nativeStatus;
+    }),
+    cancelPendingAccess: Effect.gen(function* () {
+      calls.push("cancelPendingAccess");
+      yield* Deferred.fail(
+        authorization,
+        new ComputerUse.ComputerUseLeaseError({
+          code: "request-cancelled",
+          cause: "authorization cancelled",
+        }),
+      );
     }),
     release: Effect.gen(function* () {
       calls.push("release");
@@ -346,3 +357,133 @@ describe("ComputerUseCoordinator", () => {
     }),
   );
 });
+
+it.effect("Stop cancels input while retaining the controller and watch views", () =>
+  Effect.gen(function* () {
+    const calls: string[] = [];
+    const started = yield* Deferred.make<void>();
+    const finished = yield* Deferred.make<void>();
+    const computer = {
+      ...makeComputer(calls),
+      act: () =>
+        Deferred.succeed(started, undefined).pipe(
+          Effect.andThen(Effect.never),
+          Effect.ensuring(Deferred.succeed(finished, undefined)),
+        ),
+    };
+    yield* withCoordinator(
+      Effect.gen(function* () {
+        const coordinator = yield* ComputerUseCoordinator.ComputerUseCoordinator;
+        yield* coordinator.requestControl("controller");
+        yield* coordinator.requestView("watch");
+        const acting = yield* coordinator
+          .act("controller", { actions: [{ type: "press", key: "A" }] })
+          .pipe(Effect.forkChild);
+        yield* Deferred.await(started);
+        yield* coordinator.interrupt("controller");
+        yield* Deferred.await(finished);
+        const failure = yield* Effect.flip(Fiber.join(acting));
+        assert.strictEqual(
+          ComputerUse.toComputerAutomationFailure(failure).code,
+          "request-cancelled",
+        );
+        assert.strictEqual((yield* coordinator.status("controller")).permission, "view-only");
+        yield* coordinator.snapshot("controller", {});
+        yield* coordinator.snapshot("watch", {});
+        yield* Effect.flip(
+          coordinator.act("controller", { actions: [{ type: "press", key: "B" }] }),
+        );
+        assert.deepEqual(calls, [
+          "requestControl",
+          "requestView",
+          "releaseInputs",
+          "snapshot",
+          "snapshot",
+        ]);
+      }),
+      computer,
+    );
+  }),
+);
+
+it.effect("Stop dismisses pending access without releasing desktop availability", () =>
+  Effect.gen(function* () {
+    const calls: string[] = [];
+    const started = yield* Deferred.make<void>();
+    const authorization = yield* Deferred.make<void, ComputerUse.ComputerUseError>();
+    yield* withCoordinator(
+      Effect.gen(function* () {
+        const coordinator = yield* ComputerUseCoordinator.ComputerUseCoordinator;
+        const pending = yield* coordinator.requestControl("controller").pipe(Effect.forkChild);
+        yield* Deferred.await(started);
+        yield* coordinator.interrupt("controller");
+        yield* Effect.flip(Fiber.join(pending));
+        assert.deepEqual(calls, ["requestControl", "cancelPendingAccess"]);
+        assert.isTrue((yield* coordinator.status("controller")).keepAwake);
+      }),
+      makePendingComputer(calls, started, authorization),
+    );
+  }),
+);
+
+it.effect("Stop cannot release an unrelated logical controller", () => {
+  const calls: string[] = [];
+  return withCoordinator(
+    Effect.gen(function* () {
+      const coordinator = yield* ComputerUseCoordinator.ComputerUseCoordinator;
+      yield* coordinator.requestControl("owner");
+      yield* coordinator.interrupt("unrelated");
+      yield* coordinator.act("owner", { actions: [{ type: "press", key: "A" }] });
+      assert.deepEqual(calls, ["requestControl", "act"]);
+    }),
+    makeComputer(calls),
+  );
+});
+
+it.effect("rejects queued input on Stop even when the same controller reacquires access", () =>
+  Effect.gen(function* () {
+    const calls: string[] = [];
+    const started = yield* Deferred.make<void>();
+    let actionCount = 0;
+    const computer = {
+      ...makeComputer(calls),
+      act: () =>
+        Effect.gen(function* () {
+          actionCount += 1;
+          if (actionCount === 1) {
+            yield* Deferred.succeed(started, undefined);
+            return yield* Effect.never;
+          }
+          return [];
+        }),
+    };
+    yield* withCoordinator(
+      Effect.gen(function* () {
+        const coordinator = yield* ComputerUseCoordinator.ComputerUseCoordinator;
+        const controller = "controller";
+        yield* coordinator.requestControl(controller);
+        const active = yield* Effect.forkChild(
+          coordinator.act(controller, { actions: [{ type: "wait", durationMs: 60_000 }] }),
+        );
+        yield* Deferred.await(started);
+        const queued = yield* Effect.forkChild(
+          coordinator.act(controller, { actions: [{ type: "press", key: "A" }] }),
+          { startImmediately: true },
+        );
+        yield* coordinator.interrupt(controller);
+        yield* coordinator.requestControl(controller);
+        for (const action of [active, queued]) {
+          const cancelled = yield* Effect.flip(Fiber.join(action));
+          assert.strictEqual(
+            ComputerUse.toComputerAutomationFailure(cancelled).code,
+            "request-cancelled",
+          );
+        }
+        assert.strictEqual(actionCount, 1);
+        yield* coordinator.act(controller, { actions: [{ type: "press", key: "B" }] });
+        assert.strictEqual(actionCount, 2);
+      }),
+      computer,
+    );
+  }),
+);

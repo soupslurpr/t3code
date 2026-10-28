@@ -242,3 +242,28 @@ it.effect("issues a computer-only credential without browser access", () =>
     ]);
   }),
 );
+
+it.effect("keeps the logical controller stable across provider restarts", () =>
+  Effect.gen(function* () {
+    const registry = yield* makeRegistry(() => 1_000);
+    const threadId = ThreadId.make("thread-restarted");
+    const first = yield* registry.issue({
+      threadId,
+      providerInstanceId: ProviderInstanceId.make("codex"),
+      capabilities: new Set(["computer"]),
+    });
+    const second = yield* registry.issue({
+      threadId,
+      providerInstanceId: ProviderInstanceId.make("codex"),
+      capabilities: new Set(["computer"]),
+    });
+    const firstToken = first.config.authorizationHeader.replace(/^Bearer\s+/, "");
+    const secondToken = second.config.authorizationHeader.replace(/^Bearer\s+/, "");
+    const firstScope = yield* registry.resolve(firstToken);
+    const secondScope = yield* registry.resolve(secondToken);
+
+    expect(firstScope?.thread?.providerSessionId).not.toBe(secondScope?.thread?.providerSessionId);
+    expect(firstScope?.thread?.controllerId).toBe(secondScope?.thread?.controllerId);
+    expect(firstScope?.thread?.controllerId).toMatch(/^thread-[0-9a-f]{64}$/);
+  }),
+);

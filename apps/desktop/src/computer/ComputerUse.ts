@@ -661,6 +661,7 @@ export interface ComputerUseShape {
     input: ComputerAutomationActionBatchInput,
   ) => Effect.Effect<ReadonlyArray<ComputerAutomationActionResult>, ComputerUseError>;
   readonly releaseInputs: Effect.Effect<void, ComputerUseError>;
+  readonly cancelPendingAccess: Effect.Effect<void, ComputerUseError>;
   readonly release: Effect.Effect<void, ComputerUseError>;
   readonly forget: Effect.Effect<void, ComputerUseError>;
 }
@@ -1862,6 +1863,10 @@ export const makeWithOptions = Effect.fn("ComputerUse.makeWithOptions")(function
     Effect.mapError(mapOperationError("release")),
   );
 
+  const cancelPendingAccess = controller.cancelPendingAccess.pipe(
+    Effect.mapError(mapOperationError("release")),
+  );
+
   const requestControl = inputSemaphore.withPermits(1)(
     controller.start.pipe(
       Effect.tap(() => Ref.set(captureHealth, new Map())),
@@ -1920,6 +1925,7 @@ export const makeWithOptions = Effect.fn("ComputerUse.makeWithOptions")(function
     snapshot,
     act,
     releaseInputs,
+    cancelPendingAccess,
     release,
     forget,
   });

@@ -402,6 +402,7 @@ const make = Effect.gen(function* () {
     environmentId: hereId,
     requestNamespace: `remote-task:${parent.threadId}`,
     thread: {
+      controllerId: `remote-task:${parent.threadId}`,
       threadId: parent.threadId,
       providerSessionId: `remote-task:${remote.threadId}`,
       providerInstanceId: parent.providerInstanceId,

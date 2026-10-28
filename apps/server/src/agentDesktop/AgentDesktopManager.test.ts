@@ -3877,6 +3877,7 @@ it.effect.each(["cancel", "timeout", "scope-close"] as const)(
           thread: {
             threadId: owner.threadId,
             providerSessionId: owner.controllerId,
+            controllerId: owner.controllerId,
             providerInstanceId: receiptProviderId,
           },
           requestNamespace: "accepted-receipt",

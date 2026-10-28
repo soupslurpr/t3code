@@ -116,6 +116,7 @@ const scope: McpInvocationContext.McpInvocationScope = {
   environmentId: laptop.environmentId,
   requestNamespace: "provider-session:laptop",
   thread: {
+    controllerId: "peer-link-test",
     threadId,
     providerSessionId: "provider-session:laptop",
     providerInstanceId: instanceId,

@@ -54,6 +54,7 @@ it.effect("preview_open navigates the opened tab to a dev server in one tool cal
       });
       yield* Stream.runForEach(events, (event) => {
         if (event.type === "connected") return Deferred.succeed(connected, undefined);
+        if (event.type === "cancel") return Effect.void;
         requests.push(event.request);
         return broker.respond({
           clientId: "client-1",
@@ -88,6 +89,7 @@ it.effect("preview_open navigates the opened tab to a dev server in one tool cal
         requestNamespace: "provider-session-1",
         thread: {
           threadId: ThreadId.make("thread-1"),
+          controllerId: "controller-1",
           providerSessionId: "provider-session-1",
           providerInstanceId: ProviderInstanceId.make("codex"),
         },

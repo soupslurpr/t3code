@@ -213,6 +213,7 @@ let screenStreams = [];
 let pointerPosition = null;
 let permission = "prompt-required";
 let accessGeneration = 0;
+let accessRequestGeneration = 0;
 let accessibilityInitialized = false;
 let accessibilityGeneration = 0;
 let accessibilityTargets = new Map();
@@ -1659,6 +1660,7 @@ async function closeSession() {
 
 /** Cancels authorization and closes the active view or control session. */
 async function releaseAccess() {
+  accessRequestGeneration += 1;
   accessGeneration += 1;
   permission = inactivePermission();
   invalidateAccessibilityTargets();
@@ -1676,6 +1678,15 @@ async function releaseAccess() {
           ? "view-only"
           : inactivePermission();
     throw error;
+  }
+}
+
+/** Cancels an unfinished access request without closing an already granted session. */
+async function cancelPendingAccess() {
+  if (permission === "pending") {
+    await releaseAccess();
+  } else {
+    accessRequestGeneration += 1;
   }
 }
 
@@ -1961,7 +1972,9 @@ async function ensureSession(
   preventSleep = powerProtectionEnabled,
   remember = false,
 ) {
+  const requestGeneration = accessRequestGeneration;
   await retainDesktopAvailability(preventSleep);
+  if (requestGeneration !== accessRequestGeneration) throw portalCancellationError();
   if (
     sessionHandle !== null &&
     (sessionAccess === "control" || sessionAccess === requestedAccess) &&
@@ -3156,6 +3169,10 @@ async function handleCommand(message) {
       await releaseAccess();
       return null;
     }
+    case "cancelPendingAccess": {
+      await cancelPendingAccess();
+      return null;
+    }
     case "forget": {
       await releaseAccess();
       await releaseDesktopAvailability();
@@ -3308,6 +3325,7 @@ function dispatchCommand(message) {
   if (
     message.method === "stop" ||
     message.method === "forget" ||
+    message.method === "cancelPendingAccess" ||
     message.method === "configurePower" ||
     message.method === "releaseAvailability"
   ) {

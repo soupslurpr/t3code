@@ -329,6 +329,7 @@ const makeLaptop = Effect.gen(function* () {
     environmentId: laptop.environmentId,
     requestNamespace: `provider-session:${caller}`,
     thread: {
+      controllerId: "test-controller",
       threadId: ThreadId.make(caller),
       providerSessionId: `provider-session:${caller}`,
       providerInstanceId: ProviderInstanceId.make("codex"),

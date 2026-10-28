@@ -96,6 +96,10 @@ const makeWithOptions = Effect.fn("McpSessionRegistry.make")(function* (
     function* (request) {
       const issuedAt = yield* currentTimeMillis;
       const providerSessionId = yield* crypto.randomUUIDv4().pipe(Effect.orDie);
+      const controllerId = yield* McpInvocationContext.threadComputerControllerId(
+        environmentId,
+        request.threadId,
+      ).pipe(Effect.provideService(Crypto.Crypto, crypto));
       const rawToken = yield* crypto.randomBytes(32).pipe(Effect.map(tokenFromBytes), Effect.orDie);
       const tokenHash = yield* hashToken(rawToken);
       const browserToolsAvailable = request.browserToolsAvailable ?? true;
@@ -103,6 +107,7 @@ const makeWithOptions = Effect.fn("McpSessionRegistry.make")(function* (
         environmentId,
         requestNamespace: providerSessionId,
         thread: {
+          controllerId,
           threadId: ThreadId.make(request.threadId),
           providerSessionId,
           providerInstanceId: ProviderInstanceId.make(request.providerInstanceId),
