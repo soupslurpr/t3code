@@ -662,21 +662,28 @@ const make = Effect.gen(function* () {
         : undefined,
   };
   // Locks are laid over every settings value that leaves this service, never persisted.
-  const toEffective = (settings: ServerSettings) =>
-    resolveTextGenerationProvider(
+  const toEffective = (settings: ServerSettings, settingsFileTrusted = true) => {
+    const effective = resolveTextGenerationProvider(
       managedProviders.applyLimits(managed.applyLocks(settings)),
       managedProviders.isDriverAllowed,
     );
+    // A policy lock must not re-enable automatic recovery after a failed settings read.
+    return settingsFileTrusted ? effective : { ...effective, autoResumeLimitedThreads: false };
+  };
+  type LoadedSettings = {
+    readonly settings: ServerSettings;
+    readonly parseFailure: Option.Option<unknown>;
+  };
   const writeSemaphore = yield* Semaphore.make(1);
   const cacheKey = "settings" as const;
-  const changesPubSub = yield* PubSub.unbounded<ServerSettings>();
+  const changesPubSub = yield* PubSub.unbounded<LoadedSettings>();
   const startedRef = yield* Ref.make(false);
   const startedDeferred = yield* Deferred.make<void, ServerSettingsError>();
   const watcherScope = yield* Scope.make("sequential");
   yield* Effect.addFinalizer(() => Scope.close(watcherScope, Exit.void));
 
-  const emitChange = (settings: ServerSettings) =>
-    PubSub.publish(changesPubSub, settings).pipe(Effect.asVoid);
+  const emitChange = (settings: ServerSettings, parseFailure = Option.none<unknown>()) =>
+    PubSub.publish(changesPubSub, { settings, parseFailure }).pipe(Effect.asVoid);
 
   const readConfigExists = fs.exists(settingsPath).pipe(
     Effect.mapError(
@@ -789,7 +796,11 @@ const make = Effect.gen(function* () {
       if (decoded._tag === "Failure" || legacySettings._tag === "Failure") {
         const failure = decoded._tag === "Failure" ? decoded : legacySettings;
         // The file may hold an opt-out we can no longer read; never resume threads on a guess.
-        settings = { ...managed.defaults, continueThreadsAfterServerUpdate: false };
+        settings = {
+          ...managed.defaults,
+          continueThreadsAfterServerUpdate: false,
+          autoResumeLimitedThreads: false,
+        };
         if (failure._tag === "Failure") {
           parseFailure = Option.some(Cause.squash(failure.cause));
           yield* Effect.logWarning("failed to parse settings.json, using defaults", {
@@ -914,9 +925,6 @@ const make = Effect.gen(function* () {
     timeToLive: (exit) => (Exit.isSuccess(exit) ? Duration.infinity : Duration.zero),
   });
 
-  const getSettingsFromCache = Cache.get(settingsCache, cacheKey).pipe(
-    Effect.map((loaded) => loaded.settings),
-  );
   const reloadSettings = Cache.invalidate(settingsCache, cacheKey).pipe(
     Effect.andThen(Cache.get(settingsCache, cacheKey)),
   );
@@ -967,12 +975,12 @@ const make = Effect.gen(function* () {
     secretWriteGeneration++;
     materialized = null;
   });
-  const getMaterializedSettings = getSettingsFromCache.pipe(
-    Effect.flatMap((source) => {
+  const getMaterializedSettings = Cache.get(settingsCache, cacheKey).pipe(
+    Effect.flatMap(({ settings: source, parseFailure }) => {
       if (materialized?.source === source) return Effect.succeed(materialized.value);
       const generation = secretWriteGeneration;
       return materializeSettingsSecrets(source).pipe(
-        Effect.map(toEffective),
+        Effect.map((settings) => toEffective(settings, Option.isNone(parseFailure))),
         Effect.tap((value) =>
           Effect.sync(() => {
             if (generation === secretWriteGeneration) materialized = { source, value };
@@ -982,9 +990,9 @@ const make = Effect.gen(function* () {
     }),
   );
 
-  const materializeChanges = (changes: Stream.Stream<ServerSettings>) =>
+  const materializeChanges = (changes: Stream.Stream<LoadedSettings>) =>
     changes.pipe(
-      Stream.mapEffect((settings) =>
+      Stream.mapEffect(({ settings, parseFailure }) =>
         materializeSettingsSecrets(settings).pipe(
           Effect.catch((error: ServerSettingsError) =>
             Effect.logWarning("failed to materialize settings secrets", {
@@ -994,9 +1002,9 @@ const make = Effect.gen(function* () {
               cause: error.cause,
             }).pipe(Effect.as(settings)),
           ),
+          Effect.map((materialized) => toEffective(materialized, Option.isNone(parseFailure))),
         ),
       ),
-      Stream.map(toEffective),
     );
 
   type SecretChange = {
@@ -1216,8 +1224,8 @@ const make = Effect.gen(function* () {
 
   const revalidateAndEmit = writeSemaphore.withPermits(1)(
     Effect.gen(function* () {
-      const { settings } = yield* reloadSettings;
-      yield* emitChange(settings);
+      const { settings, parseFailure } = yield* reloadSettings;
+      yield* emitChange(settings, parseFailure);
     }),
   );
 

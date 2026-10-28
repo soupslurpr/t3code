@@ -10,6 +10,8 @@ import {
   ProviderInstanceId,
   resolveProviderInstanceEnabled,
   SecretProviderId,
+  RunId,
+  ThreadId,
   ServerSettings,
   ServerSettingsPatch,
   UsageLimitSourceId,
@@ -17,6 +19,7 @@ import {
 import { createModelSelection } from "@t3tools/shared/model";
 import { resolveProjectSettings } from "@t3tools/shared/projectSettings";
 import { assert, it } from "@effect/vitest";
+import * as DateTime from "effect/DateTime";
 import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
@@ -24,9 +27,11 @@ import * as Fiber from "effect/Fiber";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Path from "effect/Path";
+import * as PubSub from "effect/PubSub";
 import * as PlatformError from "effect/PlatformError";
 import * as Schema from "effect/Schema";
 import * as Stream from "effect/Stream";
+import * as TestClock from "effect/testing/TestClock";
 import * as SqlClient from "effect/sql/SqlClient";
 import * as ServerSecretStore from "./auth/ServerSecretStore.ts";
 import { sourceControlHostSecretName } from "./sourceControl/sourceControlHostSecrets.ts";
@@ -35,6 +40,7 @@ import * as SqlitePersistence from "./persistence/Sqlite.ts";
 import { writeFileStringAtomically } from "@t3tools/shared/atomicWrite";
 import * as ServerSettingsModule from "./serverSettings.ts";
 import * as ManagedPolicy from "./policy/ManagedPolicy.ts";
+import { limitRecoveryCommand } from "./orchestration-v2/UsageLimitRecoveryWorker.ts";
 import { resolveProviderInstanceTerminalEnvironment } from "./terminal/Manager.ts";
 
 const decodeServerSettings = Schema.decodeUnknownEffect(ServerSettings);
@@ -2881,3 +2887,221 @@ it.layer(NodeServices.layer)("server settings under a runtime mode ceiling", (it
     }).pipe(Effect.provide(layerServerSettings(policy))),
   );
 });
+
+it.effect("keeps a usage-limit recovery opt-out across writes and fresh reads", () =>
+  Effect.gen(function* () {
+    const service = yield* ServerSettingsModule.ServerSettingsService;
+    assert.isTrue((yield* service.getSettings).autoResumeLimitedThreads);
+    yield* service.updateSettings({ autoResumeLimitedThreads: false });
+    yield* service.updateSettings({ enableProviderUpdateChecks: false });
+    const persisted = yield* Effect.gen(function* () {
+      return yield* (yield* ServerSettingsModule.ServerSettingsService).getSettings;
+    }).pipe(
+      Effect.provide(
+        Layer.fresh(ServerSettingsModule.layer.pipe(Layer.provide(ManagedPolicy.layerTest()))),
+      ),
+    );
+    assert.isFalse(persisted.autoResumeLimitedThreads);
+    yield* service.updateSettings({ autoResumeLimitedThreads: true });
+    assert.isTrue((yield* service.getSettings).autoResumeLimitedThreads);
+  }).pipe(
+    Effect.provide(layerServerSettingsWithSecrets().pipe(Layer.provideMerge(NodeServices.layer))),
+  ),
+);
+
+it.effect.each([false, true])(
+  "honors a managed usage-limit recovery opt-out (locked: %s)",
+  (locked) =>
+    Effect.gen(function* () {
+      const service = yield* ServerSettingsModule.ServerSettingsService;
+      assert.isFalse((yield* service.getSettings).autoResumeLimitedThreads);
+      yield* service.updateSettings({ enableProviderUpdateChecks: false });
+      assert.isFalse((yield* service.getSettings).autoResumeLimitedThreads);
+
+      const enable = service.updateSettings({ autoResumeLimitedThreads: true });
+      if (locked) {
+        const rejected = yield* enable.pipe(Effect.flip);
+        assert.equal(rejected.managedSetting, "autoResumeLimitedThreads");
+        assert.isFalse((yield* service.getSettings).autoResumeLimitedThreads);
+      } else {
+        yield* enable;
+        assert.isTrue((yield* service.getSettings).autoResumeLimitedThreads);
+      }
+      assert.isFalse((yield* service.getSettings).snoozeLimitedThreads);
+    }).pipe(
+      Effect.provide(
+        layerServerSettings({
+          schemaVersion: 1,
+          organization: "Example Corp",
+          settings: { autoResumeLimitedThreads: { value: false, locked } },
+        }).pipe(Layer.provideMerge(NodeServices.layer)),
+      ),
+    ),
+);
+
+it.layer(NodeServices.layer)("usage-limit recovery settings fallback", (it) => {
+  it.effect.each([
+    ["missing file", undefined, undefined, true],
+    ["valid sparse file", "{}", undefined, true],
+    ["valid opt-out", '{"autoResumeLimitedThreads":false}', undefined, false],
+    ["valid opt-in", '{"autoResumeLimitedThreads":true}', undefined, true],
+    [
+      "schema failure with opt-out",
+      '{"autoResumeLimitedThreads":false,"responseStreamingMode":42}',
+      undefined,
+      false,
+    ],
+    ["parse failure with opt-out", '{"autoResumeLimitedThreads":false,', undefined, false],
+    [
+      "schema failure with managed default-on",
+      '{"autoResumeLimitedThreads":false,"responseStreamingMode":42}',
+      { value: true, locked: false },
+      false,
+    ],
+    [
+      "parse failure with managed locked-on",
+      '{"autoResumeLimitedThreads":false,',
+      { value: true, locked: true },
+      false,
+    ],
+    [
+      "schema failure with managed default-off",
+      '{"responseStreamingMode":42}',
+      { value: false, locked: false },
+      false,
+    ],
+    [
+      "parse failure with managed locked-off",
+      '{"autoResumeLimitedThreads":true,',
+      { value: false, locked: true },
+      false,
+    ],
+    [
+      "valid opt-out with managed default-on",
+      '{"autoResumeLimitedThreads":false}',
+      { value: true, locked: false },
+      false,
+    ],
+    [
+      "valid file with managed locked-on",
+      '{"autoResumeLimitedThreads":false}',
+      { value: true, locked: true },
+      true,
+    ],
+  ] as const)("%s", ([name, raw, managed, recoveryEnabled]) =>
+    Effect.gen(function* () {
+      const config = yield* ServerConfig.ServerConfig;
+      const fs = yield* FileSystem.FileSystem;
+      const service = yield* ServerSettingsModule.ServerSettingsService;
+      if (raw !== undefined) yield* fs.writeFileString(config.settingsPath, raw);
+
+      const settings = yield* service.getSettings;
+      assert.equal(settings.autoResumeLimitedThreads, recoveryEnabled);
+      const completedAt = DateTime.makeUnsafe("2026-11-01T10:00:00.000Z");
+      const candidate: Parameters<typeof limitRecoveryCommand>[0] = {
+        id: ThreadId.make("limited-thread"),
+        status: "failed",
+        lastErrorClass: "usage_limit",
+        latestRunId: RunId.make("limited-run"),
+        latestRunCompletedAt: completedAt,
+        updatedAt: completedAt,
+        usageLimitResetAt: "2026-11-01T11:00:00.000Z",
+        archivedAt: null,
+        settledOverride: null,
+        pendingRuntimeRequest: null,
+        limitRecovery: null,
+        snoozedUntil: null,
+      };
+      assert.equal(
+        limitRecoveryCommand(
+          candidate,
+          settings.autoResumeLimitedThreads,
+          Date.parse("2026-11-01T12:00:00.000Z"),
+          settings.snoozeLimitedThreads,
+        )?.type ?? null,
+        recoveryEnabled ? "thread.metadata.update" : null,
+      );
+      if (name.includes("failure")) {
+        assert.isFalse(settings.continueThreadsAfterServerUpdate);
+        assert.equal(yield* fs.readFileString(config.settingsPath), raw);
+        const rejected = yield* service
+          .updateSettings({ enableProviderUpdateChecks: false })
+          .pipe(Effect.flip);
+        assert.equal(rejected.operation, "read-file");
+        assert.equal(yield* fs.readFileString(config.settingsPath), raw);
+      }
+    }).pipe(
+      Effect.provide(
+        layerServerSettings(
+          managed === undefined
+            ? undefined
+            : {
+                schemaVersion: 1,
+                organization: "Example Corp",
+                settings: { autoResumeLimitedThreads: managed },
+              },
+        ),
+      ),
+    ),
+  );
+});
+
+it.effect("keeps invalid-file recovery off in notifications and restores policy after repair", () =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      const events = yield* PubSub.unbounded<FileSystem.WatchEvent>();
+      const watching = yield* Deferred.make<void>();
+      let subscriptions = 0;
+      const watch = Stream.unwrap(
+        PubSub.subscribe(events).pipe(
+          Effect.tap(() => {
+            subscriptions++;
+            return subscriptions === 2 ? Deferred.succeed(watching, undefined) : Effect.void;
+          }),
+          Effect.map(Stream.fromSubscription),
+        ),
+      );
+      yield* Effect.gen(function* () {
+        const config = yield* ServerConfig.ServerConfig;
+        const service = yield* ServerSettingsModule.ServerSettingsService;
+        yield* service.start;
+        yield* Deferred.await(watching);
+        const changes = yield* service.subscribeChanges;
+        assert.isTrue((yield* service.getSettings).autoResumeLimitedThreads);
+
+        const broken = '{"autoResumeLimitedThreads":false,';
+        yield* fs.writeFileString(config.settingsPath, broken);
+        yield* PubSub.publish<FileSystem.WatchEvent>(events, {
+          _tag: "Update",
+          path: config.settingsPath,
+        });
+        yield* TestClock.adjust("100 millis");
+        const invalid = Option.getOrThrow(yield* Stream.runHead(changes));
+        assert.isFalse(invalid.autoResumeLimitedThreads);
+        assert.isFalse((yield* service.getSettings).autoResumeLimitedThreads);
+        assert.equal(yield* fs.readFileString(config.settingsPath), broken);
+
+        yield* fs.writeFileString(config.settingsPath, "{}");
+        yield* PubSub.publish<FileSystem.WatchEvent>(events, {
+          _tag: "Update",
+          path: config.settingsPath,
+        });
+        yield* TestClock.adjust("100 millis");
+        const repaired = Option.getOrThrow(yield* Stream.runHead(changes));
+        assert.isTrue(repaired.autoResumeLimitedThreads);
+        assert.isTrue((yield* service.getSettings).autoResumeLimitedThreads);
+      }).pipe(
+        Effect.provide(
+          layerServerSettings({
+            schemaVersion: 1,
+            organization: "Example Corp",
+            settings: { autoResumeLimitedThreads: { value: true, locked: true } },
+          }).pipe(
+            Layer.provide(Layer.succeed(FileSystem.FileSystem, { ...fs, watch: () => watch })),
+          ),
+        ),
+      );
+    }),
+  ).pipe(Effect.provide(NodeServices.layer)),
+);
