@@ -12,6 +12,7 @@ import type {
   AgentDesktopReadFileResult,
   AgentDesktopSetupResult,
   AgentDesktopTransferTargetInput,
+  AgentDesktopUpdateResult,
   AgentDesktopWriteFileResult,
   EnvironmentDesktopAutomationError,
 } from "@t3tools/contracts";
@@ -54,6 +55,11 @@ const handlers = {
   ),
   agent_desktop_setup: McpToolAccess.actsAsCaller(() =>
     invoke<AgentDesktopSetupResult>("agentDesktopSetup", (manager) => manager.setup),
+  ),
+  agent_desktop_update: McpToolAccess.actsAsCaller((input) =>
+    invoke<AgentDesktopUpdateResult>("agentDesktopUpdate", (manager, owner) =>
+      manager.update(owner, input),
+    ),
   ),
   agent_desktop_acquire: McpToolAccess.actsAsCaller((input) =>
     invoke<AgentDesktop>("agentDesktopAcquire", (manager, owner) => manager.acquire(owner, input)),

@@ -4,12 +4,16 @@ import { appAtomRegistry } from "~/rpc/atomRegistry";
 import { useStableCallback } from "~/hooks/useStableCallback";
 import { useEnvironmentsWithScope } from "~/state/session";
 import { agentDesktopListingAtom } from "./agentDesktopListing";
+import {
+  isAgentDesktopMaintenanceActive,
+  type AgentDesktopView,
+  type EnvironmentAvailability,
+} from "./agentDesktopListingState";
 import { squashAtomCommandFailure } from "@t3tools/client-runtime/state/runtime";
 import type {
   AgentDesktop,
   AgentDesktopHumanInvokeInput,
   AgentDesktopId,
-  AgentDesktopList,
   AgentDesktopSetupResult,
   ComputerAutomationAction,
   ComputerAutomationSnapshot,
@@ -130,6 +134,14 @@ function stateLabel(state: AgentDesktop["state"]): string {
   if (state === "ready") return "Running";
   if (state === "active") return "In use";
   return `${state[0]!.toUpperCase()}${state.slice(1)}`;
+}
+
+function maintenanceLabel(status: AgentDesktop["maintenance"]["status"]): string {
+  if (status === "current") return "Up to date";
+  if (status === "due") return "Update due";
+  if (status === "failed") return "Update failed";
+  if (status === "rolling-back") return "Rolling back";
+  return `${status[0]!.toUpperCase()}${status.slice(1)}`;
 }
 
 function pointerButton(button: number): ViewerDragStart["button"] | null {
@@ -277,7 +289,7 @@ function DesktopViewer({
   onRelease,
   onAction,
 }: {
-  desktop: AgentDesktop;
+  desktop: AgentDesktopView;
   observation: ComputerAutomationSnapshot | null;
   agentObservation: ComputerObservation | null;
   controlling: boolean;
@@ -807,7 +819,7 @@ function DesktopViewer({
 
 /** Lists, watches, takes over, and manages isolated Agent desktops. */
 export function AgentDesktopSettings() {
-  const { environments } = useEnvironments();
+  const { environments, isReady: environmentsReady } = useEnvironments();
   const threads = useThreadShells();
   const invoke = useAtomCommand(previewEnvironment.invokeAgentDesktopHuman, {
     reportFailure: false,
@@ -818,18 +830,19 @@ export function AgentDesktopSettings() {
   const [mutationError, setError] = useState<string | null>(null);
   const listed = AsyncResult.isSuccess(listing) ? listing.value : null;
   const desktops = listed?.desktops ?? [];
-  const availability =
-    listed?.availability ?? new Map<EnvironmentId, Omit<AgentDesktopList, "desktops">>();
+  const availability = listed?.availability ?? new Map<EnvironmentId, EnvironmentAvailability>();
   const error = mutationError ?? listed?.error ?? null;
-  const loading = AsyncResult.isInitial(listing) || listing.waiting;
+  const loading = !environmentsReady || AsyncResult.isInitial(listing) || listing.waiting;
   const [busyDesktopId, setBusyDesktopId] = useState<AgentDesktopId | null>(null);
   const [openingViewerId, setOpeningViewerId] = useState<AgentDesktopId | null>(null);
-  const [permanentDeleteDesktop, setPermanentDeleteDesktop] = useState<AgentDesktop | null>(null);
+  const [permanentDeleteDesktop, setPermanentDeleteDesktop] = useState<AgentDesktopView | null>(
+    null,
+  );
   const [busyEnvironmentId, setBusyEnvironmentId] = useState<EnvironmentId | null>(null);
   const [setupEnvironmentId, setSetupEnvironmentId] = useState<EnvironmentId | null>(null);
   const [viewerError, setViewerError] = useState<string | null>(null);
   const [viewer, setViewerState] = useState<{
-    readonly desktop: AgentDesktop;
+    readonly desktop: AgentDesktopView;
     readonly observation: ComputerAutomationSnapshot;
     readonly agentObservation: ComputerObservation | null;
     readonly controlling: boolean;
@@ -879,8 +892,44 @@ export function AgentDesktopSettings() {
     }
   };
 
+  const updateBaseImage = async (environmentId: EnvironmentId) => {
+    setBusyEnvironmentId(environmentId);
+    setError(null);
+    try {
+      await run(environmentId, {
+        threadId: ThreadId.make("agent-desktop-settings"),
+        request: { operation: "update", input: { target: { kind: "base-image" } } },
+      });
+      await refresh();
+    } catch (cause) {
+      setError(failureMessage(cause));
+    } finally {
+      setBusyEnvironmentId(null);
+    }
+  };
+
+  const updateDesktop = async (desktop: AgentDesktopView) => {
+    setBusyDesktopId(desktop.id);
+    setError(null);
+    try {
+      await run(desktop.owner.environmentId, {
+        threadId: desktop.owner.threadId,
+        request: {
+          operation: "update",
+          owner: desktop.owner,
+          input: { target: { kind: "desktop", desktopId: desktop.id } },
+        },
+      });
+      await refresh();
+    } catch (cause) {
+      setError(failureMessage(cause));
+    } finally {
+      setBusyDesktopId(null);
+    }
+  };
+
   const manage = async (
-    desktop: AgentDesktop,
+    desktop: AgentDesktopView,
     operation: "resume" | "park" | "stop" | "delete" | "restore" | "delete-permanently",
   ) => {
     setBusyDesktopId(desktop.id);
@@ -902,7 +951,7 @@ export function AgentDesktopSettings() {
     }
   };
 
-  const openViewer = async (desktop: AgentDesktop) => {
+  const openViewer = async (desktop: AgentDesktopView) => {
     setOpeningViewerId(desktop.id);
     setError(null);
     setViewerError(null);
@@ -1125,7 +1174,11 @@ export function AgentDesktopSettings() {
     (status) => status.available,
   ).length;
   const environmentNotices = Array.from(availability).filter(
-    ([, status]) => !status.available || status.detail !== undefined,
+    ([, status]) =>
+      !status.available ||
+      !status.maintenanceSupported ||
+      status.detail !== undefined ||
+      (status.baseImage !== undefined && status.baseImage.maintenance.status !== "current"),
   );
   const setupStatus =
     setupEnvironmentId === null ? undefined : availability.get(setupEnvironmentId);
@@ -1160,8 +1213,9 @@ export function AgentDesktopSettings() {
       >
         <p className="px-3 pb-1 text-sm text-muted-foreground sm:px-4">
           Independent desktops that agents can use without interrupting your desktop. Resources,
-          parking, retention, and network boundaries are managed automatically. Inactive desktops
-          enter a seven-day recovery window after 30 days or when host storage is low.
+          parking, retention, system updates, and network boundaries are managed automatically.
+          Inactive desktops enter a seven-day recovery window after 30 days or when host storage is
+          low.
         </p>
         {error ? (
           <Alert variant="error">
@@ -1173,14 +1227,34 @@ export function AgentDesktopSettings() {
             (requirement) =>
               requirement.status !== "ready" && requirement.remedy?.automatic === true,
           );
+          const baseMaintenance = status.baseImage?.maintenance;
+          const canUpdateBase =
+            status.available &&
+            status.maintenanceSupported &&
+            status.baseImage?.managed === true &&
+            (baseMaintenance?.status === "due" || baseMaintenance?.status === "failed");
+          const notice = !status.available
+            ? (status.detail ?? "Agent desktop support is unavailable.")
+            : !status.maintenanceSupported
+              ? "Update this environment's T3 Code server to manage Agent desktop system updates."
+              : baseMaintenance === undefined
+                ? (status.detail ?? "Agent desktop system update status is unavailable.")
+                : status.baseImage?.managed === false
+                  ? "Base image is managed outside T3 Code."
+                  : baseMaintenance.status === "current"
+                    ? (status.detail ?? "Agent desktop support is available.")
+                    : `Base image: ${maintenanceLabel(baseMaintenance.status)}${baseMaintenance.detail === undefined ? "" : ` · ${baseMaintenance.detail}`}`;
           return (
             <Alert
               key={environmentId}
-              variant={status.available || hasAutomaticRemedy ? "warning" : "error"}
+              variant={
+                (!status.available && !hasAutomaticRemedy) || baseMaintenance?.status === "failed"
+                  ? "error"
+                  : "warning"
+              }
             >
               <AlertDescription>
-                {environmentById.get(environmentId)?.label ?? "Unknown device"}:{" "}
-                {status.detail ?? "Agent desktop support is unavailable."}
+                {environmentById.get(environmentId)?.label ?? "Unknown device"}: {notice}
               </AlertDescription>
               {hasAutomaticRemedy ? (
                 <AlertAction>
@@ -1192,11 +1266,27 @@ export function AgentDesktopSettings() {
                     {busyEnvironmentId === environmentId ? "Setting up…" : "Set up"}
                   </Button>
                 </AlertAction>
+              ) : canUpdateBase ? (
+                <AlertAction>
+                  <Button
+                    size="xs"
+                    disabled={busyEnvironmentId !== null}
+                    onClick={() => void updateBaseImage(environmentId)}
+                  >
+                    <RefreshCwIcon />
+                    {busyEnvironmentId === environmentId ? "Queuing…" : "Update"}
+                  </Button>
+                </AlertAction>
               ) : null}
             </Alert>
           );
         })}
-        {desktops.length === 0 ? (
+        {loading && desktops.length === 0 ? (
+          <div role="status" className="rounded-xl border border-dashed px-5 py-10 text-center">
+            <RefreshCwIcon className="mx-auto mb-3 size-6 text-muted-foreground" />
+            <p className="font-medium">Loading Agent desktops…</p>
+          </div>
+        ) : desktops.length === 0 ? (
           <div className="rounded-xl border border-dashed px-5 py-10 text-center">
             <MonitorIcon className="mx-auto mb-3 size-6 text-muted-foreground" />
             <p className="font-medium">No Agent desktops yet</p>
@@ -1215,6 +1305,8 @@ export function AgentDesktopSettings() {
               const openingViewer = openingViewerId === desktop.id;
               const resumable = desktop.state === "parked" || desktop.state === "stopped";
               const recoverable = desktop.state === "recoverable";
+              const maintenance = desktop.maintenance;
+              const maintenanceActive = isAgentDesktopMaintenanceActive(maintenance);
               return (
                 <section key={desktop.id} className="rounded-xl border bg-card p-4">
                   <div className="mb-3 grid grid-cols-[1fr_auto] gap-2">
@@ -1229,6 +1321,19 @@ export function AgentDesktopSettings() {
                       {desktop.retention === "preserve" ? (
                         <Badge variant="secondary">preserved</Badge>
                       ) : null}
+                      {maintenance === undefined || maintenance.status === "current" ? null : (
+                        <Badge
+                          variant={
+                            maintenance.status === "failed"
+                              ? "error"
+                              : maintenance.status === "due"
+                                ? "warning"
+                                : "secondary"
+                          }
+                        >
+                          {maintenanceLabel(maintenance.status)}
+                        </Badge>
+                      )}
                     </h3>
                     <p className="col-start-1 text-sm text-muted-foreground">
                       {thread?.title ?? "Unknown thread"} · {environment?.label ?? "Unknown device"}
@@ -1238,7 +1343,7 @@ export function AgentDesktopSettings() {
                         <Button
                           variant="outline"
                           size="sm"
-                          disabled={busy || openingViewer}
+                          disabled={busy || openingViewer || maintenanceActive}
                           onClick={() => void openViewer(desktop)}
                         >
                           <EyeIcon />
@@ -1258,6 +1363,11 @@ export function AgentDesktopSettings() {
                       </p>
                       {desktop.detail === undefined ? null : (
                         <p className="mt-1">{desktop.detail}</p>
+                      )}
+                      {maintenance === undefined || maintenance.status === "current" ? null : (
+                        <p className="mt-1">
+                          {maintenance.detail ?? `System maintenance is ${maintenance.status}.`}
+                        </p>
                       )}
                     </div>
                     <div className="flex flex-wrap gap-2">
@@ -1284,11 +1394,23 @@ export function AgentDesktopSettings() {
                         </>
                       ) : (
                         <>
-                          {resumable ? (
+                          {resumable &&
+                          (maintenance?.status === "due" || maintenance?.status === "failed") ? (
                             <Button
                               size="xs"
                               variant="outline"
                               disabled={busy}
+                              onClick={() => void updateDesktop(desktop)}
+                            >
+                              <RefreshCwIcon />
+                              Update
+                            </Button>
+                          ) : null}
+                          {resumable ? (
+                            <Button
+                              size="xs"
+                              variant="outline"
+                              disabled={busy || maintenanceActive}
                               onClick={() => void manage(desktop, "resume")}
                             >
                               <PlayIcon />
@@ -1298,7 +1420,7 @@ export function AgentDesktopSettings() {
                             <Button
                               size="xs"
                               variant="outline"
-                              disabled={busy}
+                              disabled={busy || maintenanceActive}
                               onClick={() => void manage(desktop, "park")}
                             >
                               <PauseIcon />
@@ -1308,7 +1430,7 @@ export function AgentDesktopSettings() {
                           <Button
                             size="xs"
                             variant="outline"
-                            disabled={busy}
+                            disabled={busy || maintenanceActive}
                             onClick={() => void manage(desktop, "stop")}
                           >
                             <CircleStopIcon />
@@ -1317,7 +1439,7 @@ export function AgentDesktopSettings() {
                           <Button
                             size="xs"
                             variant="destructive-outline"
-                            disabled={busy}
+                            disabled={busy || maintenanceActive}
                             onClick={() => void manage(desktop, "delete")}
                           >
                             <Trash2Icon />

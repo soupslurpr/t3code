@@ -13,6 +13,22 @@ import type * as McpInvocationContext from "../mcp/McpInvocationContext.ts";
 import * as AgentDesktopHuman from "./AgentDesktopHuman.ts";
 import * as AgentDesktopManager from "./AgentDesktopManager.ts";
 
+const maintenance = {
+  status: "due" as const,
+  targetProfileVersion: "arch-gnome-v1",
+  appliedProfileVersion: null,
+  lastUpdatedAt: null,
+  startedAt: null,
+  completedAt: null,
+};
+const baseImage = {
+  managed: true,
+  generation: null,
+  sourceRelease: null,
+  builtAt: null,
+  maintenance,
+};
+
 const environmentId = EnvironmentId.make("environment-human-test");
 const settingsThreadId = ThreadId.make("agent-desktop-settings");
 const scope: McpInvocationContext.McpThreadInvocationScope = {
@@ -44,6 +60,15 @@ function desktop(
     },
     state: "ready",
     automaticParking: true,
+    baseGeneration: "arch-gnome-v1-1",
+    maintenance: {
+      status: "current",
+      targetProfileVersion: "arch-gnome-v1",
+      appliedProfileVersion: "arch-gnome-v1",
+      lastUpdatedAt: "2026-08-18T00:00:00.000Z",
+      startedAt: null,
+      completedAt: "2026-08-18T00:00:00.000Z",
+    },
     capabilities: ["computer"],
     graphics: {
       backend: "virtio-gpu-2d",
@@ -74,6 +99,13 @@ describe("AgentDesktopHuman", () => {
           Layer.mock(AgentDesktopManager.AgentDesktopManager)({
             list: Effect.succeed({
               available: true,
+              baseImage: {
+                managed: true,
+                generation: "arch-gnome-v1-1",
+                sourceRelease: "20260801.566320",
+                builtAt: "2026-08-18T00:00:00.000Z",
+                maintenance: first.maintenance,
+              },
               desktops: [first, second, remote],
               requirements: [],
             }),
@@ -89,6 +121,43 @@ describe("AgentDesktopHuman", () => {
         result.desktops.map((entry) => entry.id),
         [first.id, second.id],
       );
+    }),
+  );
+
+  it.effect("routes base-image updates through the selected environment", () =>
+    Effect.gen(function* () {
+      const maintenance = {
+        status: "queued" as const,
+        targetProfileVersion: "arch-gnome-v1",
+        appliedProfileVersion: "arch-gnome-v1",
+        lastUpdatedAt: "2026-08-18T00:00:00.000Z",
+        startedAt: "2026-08-19T00:00:00.000Z",
+        completedAt: null,
+      };
+      const manager = yield* AgentDesktopManager.AgentDesktopManager.pipe(
+        Effect.provide(
+          Layer.mock(AgentDesktopManager.AgentDesktopManager)({
+            update: (updateOwner, input) =>
+              Effect.sync(() => {
+                assert.equal(updateOwner.environmentId, scope.environmentId);
+                assert.equal(updateOwner.threadId, scope.thread.threadId);
+                assert.equal(updateOwner.controllerId, scope.thread.providerSessionId);
+                assert.deepEqual(input.target, { kind: "base-image" });
+                return { accepted: true, target: input.target, maintenance };
+              }),
+          }),
+        ),
+      );
+
+      const result = yield* AgentDesktopHuman.runAgentDesktopHumanRequest(manager, scope, {
+        operation: "update",
+        input: { target: { kind: "base-image" } },
+      });
+      assert.deepEqual(result, {
+        accepted: true,
+        target: { kind: "base-image" },
+        maintenance,
+      });
     }),
   );
 });
@@ -113,6 +182,26 @@ it.effect.each(["environment", "thread"] as const)(
     }),
 );
 
+it.effect.each(["environment", "thread"] as const)(
+  "rejects human updates across %s boundaries before reaching the manager",
+  (boundary) =>
+    Effect.gen(function* () {
+      const manager = yield* AgentDesktopManager.AgentDesktopManager.pipe(
+        Effect.provide(Layer.mock(AgentDesktopManager.AgentDesktopManager)({})),
+      );
+      const error = yield* AgentDesktopHuman.runAgentDesktopHumanRequest(manager, scope, {
+        operation: "update",
+        owner: {
+          environmentId: boundary === "environment" ? EnvironmentId.make("other") : environmentId,
+          threadId: boundary === "thread" ? ThreadId.make("other") : settingsThreadId,
+          controllerId: "controller-1",
+        },
+        input: { target: { kind: "desktop", desktopId: "agent-one" } },
+      }).pipe(Effect.flip);
+      assert.deepInclude(error, { code: "desktop-target-mismatch" });
+    }),
+);
+
 it.effect("returns human-approved setup readiness without a desktop owner", () =>
   Effect.gen(function* () {
     const manager = yield* AgentDesktopManager.AgentDesktopManager.pipe(
@@ -123,7 +212,7 @@ it.effect("returns human-approved setup readiness without a desktop owner", () =
             completed: true,
             packages: ["passt"],
             imageProvisioned: false,
-            status: { available: true, desktops: [], requirements: [] },
+            status: { available: true, baseImage, desktops: [], requirements: [] },
           }),
         }),
       ),
@@ -133,7 +222,7 @@ it.effect("returns human-approved setup readiness without a desktop owner", () =
     });
     assert.deepInclude(result, {
       completed: true,
-      status: { available: true, desktops: [], requirements: [] },
+      status: { available: true, baseImage, desktops: [], requirements: [] },
     });
   }),
 );

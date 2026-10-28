@@ -31,12 +31,13 @@ const scriptDirectory = NodePath.dirname(NodeURL.fileURLToPath(import.meta.url))
 const repositoryRoot = NodePath.resolve(scriptDirectory, "../../../..");
 
 export const PINNED_ARCH_IMAGE = Object.freeze({
-  release: "20260801.566320",
-  fileName: "Arch-Linux-x86_64-cloudimg-20260801.566320.qcow2",
-  url: "https://geo.mirror.pkgbuild.com/images/v20260801.566320/Arch-Linux-x86_64-cloudimg-20260801.566320.qcow2",
-  sha256: "9ca8d4b0a60e53b8aa1ac2317166ecffc4e9eae8d0b28b7ca0e3d333578f9a07",
-  sizeBytes: 556_424_192,
+  release: "20261101.620452",
+  fileName: "Arch-Linux-x86_64-cloudimg-20261101.620452.qcow2",
+  url: "https://geo.mirror.pkgbuild.com/images/v20261101.620452/Arch-Linux-x86_64-cloudimg-20261101.620452.qcow2",
+  sha256: "794eb4889b39e1f0ed7d5ae998b2a1ed2137db8cf8c3476cf2962c7437ecb003",
+  sizeBytes: 576_697_856,
 });
+export const AGENT_DESKTOP_PROFILE_VERSION = "arch-gnome-v1";
 
 const cloudConfig = `#cloud-config
 hostname: t3-agent-desktop
@@ -93,6 +94,10 @@ packages:
   - xdg-user-dirs
   - xorg-xwayland
 write_files:
+  - path: /etc/t3-agent-desktop-profile
+    permissions: "0644"
+    content: |
+      ${AGENT_DESKTOP_PROFILE_VERSION}
   - path: /etc/gdm/custom.conf
     permissions: "0644"
     defer: true
