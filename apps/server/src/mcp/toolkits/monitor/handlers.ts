@@ -6,6 +6,22 @@ import * as McpInvocationContext from "../../McpInvocationContext.ts";
 import { MonitorToolkit } from "./tools.ts";
 
 const handlers = {
+  computer_watch_start: McpToolAccess.actsAsCaller((monitor) =>
+    Effect.gen(function* () {
+      const {
+        thread: { threadId },
+      } = yield* McpInvocationContext.requireThreadMcpCapability("computer");
+      const service = yield* ThreadMonitorService;
+      return yield* service.createComputer({ threadId, monitor });
+    }),
+  ),
+  computer_watch_capabilities: McpToolAccess.reads(() =>
+    Effect.gen(function* () {
+      yield* McpInvocationContext.requireMcpCapability("computer");
+      const service = yield* ThreadMonitorService;
+      return yield* service.computerCapabilities;
+    }),
+  ),
   monitor_start: McpToolAccess.actsAsCaller((monitor) =>
     Effect.gen(function* () {
       const scope = yield* McpInvocationContext.McpInvocationContext;

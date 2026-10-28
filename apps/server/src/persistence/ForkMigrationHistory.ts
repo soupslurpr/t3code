@@ -161,6 +161,21 @@ export const adoptForkMigrationHistory = Effect.fn("adoptForkMigrationHistory")(
     if (Math.max(fork.length, legacy.length) >= 2) {
       required.push("delivery_group_id", "delivery_retry_at", "delivery_failure_count");
     }
+    if (Math.max(fork.length, legacy.length) >= 3) {
+      required.push("condition_json");
+      const evidence = yield* sql<{
+        name: string;
+      }>`PRAGMA table_info(thread_monitor_computer_evidence)`;
+      if (
+        !["monitor_id", "baseline_png_base64", "terminal_png_base64"].every((name) =>
+          evidence.some((column) => column.name === name),
+        )
+      ) {
+        return yield* invalidHistory(
+          "ComputerThreadMonitors identity conflicts with its evidence schema",
+        );
+      }
+    }
     if (required.some((name) => !names.has(name))) {
       return yield* invalidHistory("ThreadMonitors identity conflicts with its schema");
     }
