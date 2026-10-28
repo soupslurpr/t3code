@@ -1,6 +1,8 @@
 import {
   ComputerAutomationStatus,
   UserDesktopList,
+  UserDesktopAuditLog,
+  type UserDesktopAuditEvent,
   type EnvironmentId,
   type UserDesktopView,
 } from "@t3tools/contracts";
@@ -12,8 +14,14 @@ export interface UserDesktopEntry {
   readonly status: ComputerAutomationStatus | null;
 }
 
+export interface UserDesktopAuditEntry {
+  readonly environmentId: EnvironmentId;
+  readonly event: UserDesktopAuditEvent;
+}
+
 export interface UserDesktopGroup {
   readonly desktopId: string;
+  readonly audit: ReadonlyArray<UserDesktopAuditEntry>;
   readonly routes: ReadonlyArray<UserDesktopEntry>;
   readonly primary: UserDesktopEntry;
   readonly connectionState: UserDesktopView["connectionState"];
@@ -25,6 +33,7 @@ export interface UserDesktopGroup {
 /** Groups environment-scoped routes that lead to one physical desktop identity. */
 export function groupEntries(
   entries: ReadonlyArray<UserDesktopEntry>,
+  audit: ReadonlyArray<UserDesktopAuditEntry> = [],
 ): ReadonlyArray<UserDesktopGroup> {
   const routesByDesktop = new Map<string, Array<UserDesktopEntry>>();
   for (const entry of entries) {
@@ -46,6 +55,17 @@ export function groupEntries(
     );
     groups.push({
       desktopId,
+      audit: audit
+        .filter(
+          (item) =>
+            item.event.desktopId === desktopId &&
+            routes.some((route) => route.environmentId === item.environmentId),
+        )
+        .toSorted(
+          (left, right) =>
+            right.event.occurredAt.localeCompare(left.event.occurredAt) ||
+            right.event.sequence - left.event.sequence,
+        ),
       routes,
       primary,
       connectionState: routes.some((entry) => entry.desktop.connectionState === "online")
@@ -65,3 +85,5 @@ export function groupEntries(
 
 export const decodeUserDesktopList = Schema.decodeUnknownSync(UserDesktopList);
 export const decodeComputerStatus = Schema.decodeUnknownSync(ComputerAutomationStatus);
+
+export const decodeUserDesktopAuditLog = Schema.decodeUnknownSync(UserDesktopAuditLog);

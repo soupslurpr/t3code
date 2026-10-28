@@ -1,5 +1,7 @@
 import {
   IsoDateTime,
+  UserDesktopAuditEvent,
+  type UserDesktopAuditLog,
   UserDesktopCapability,
   UserDesktopHostRegistration,
   UserDesktopId,
@@ -19,6 +21,9 @@ import * as SqlSchema from "effect/sql/SqlSchema";
 import { PersistenceDecodeError, PersistenceSqlError } from "./Errors.ts";
 
 export type UserDesktopRepositoryError = PersistenceSqlError | PersistenceDecodeError;
+
+/** Supplies one successful metadata-only access transition for durable recording. */
+export type UserDesktopAuditWrite = Omit<UserDesktopAuditEvent, "sequence">;
 
 /** Stores one durable user desktop independently of its live connection. */
 export const UserDesktopRecord = Schema.Struct({
@@ -72,6 +77,12 @@ export class UserDesktopRepository extends Context.Service<
       desktopId: UserDesktopId,
       lastActiveAt: IsoDateTime,
     ) => Effect.Effect<void, UserDesktopRepositoryError>;
+    readonly recordAudit: (
+      event: UserDesktopAuditWrite,
+    ) => Effect.Effect<void, UserDesktopRepositoryError>;
+    readonly listAudit: (
+      desktopId: UserDesktopId,
+    ) => Effect.Effect<UserDesktopAuditLog, UserDesktopRepositoryError>;
   }
 >()("t3/persistence/UserDesktops/UserDesktopRepository") {}
 
@@ -82,6 +93,8 @@ function repositoryError(operation: string) {
       ? PersistenceDecodeError.fromSchemaError(`${operation}:decode`, cause)
       : new PersistenceSqlError({ operation, cause });
 }
+
+const decodeAuditEvent = Schema.decodeUnknownEffect(UserDesktopAuditEvent);
 
 /** Creates the SQL-backed user-desktop repository. */
 const make = Effect.gen(function* () {
@@ -145,10 +158,19 @@ const make = Effect.gen(function* () {
 
   const removeRow = SqlSchema.void({
     Request: Schema.Struct({ desktopId: UserDesktopId }),
-    execute: ({ desktopId }) => sql`
-      DELETE FROM user_desktops
-      WHERE desktop_id = ${desktopId}
-    `,
+    execute: ({ desktopId }) =>
+      sql.withTransaction(
+        Effect.gen(function* () {
+          yield* sql`
+            DELETE FROM user_desktop_access_audit
+            WHERE desktop_id = ${desktopId}
+          `;
+          yield* sql`
+            DELETE FROM user_desktops
+            WHERE desktop_id = ${desktopId}
+          `;
+        }),
+      ),
   });
 
   const markActiveRow = SqlSchema.void({
@@ -159,6 +181,77 @@ const make = Effect.gen(function* () {
       WHERE desktop_id = ${desktopId}
     `,
   });
+
+  const writeAudit = SqlSchema.void({
+    Request: Schema.Struct({
+      desktopId: UserDesktopAuditEvent.fields.desktopId,
+      occurredAt: UserDesktopAuditEvent.fields.occurredAt,
+      actorKind: UserDesktopAuditEvent.fields.actorKind,
+      action: UserDesktopAuditEvent.fields.action,
+      threadId: UserDesktopAuditEvent.fields.threadId,
+      actorLabel: UserDesktopAuditEvent.fields.actorLabel,
+      takeover: UserDesktopAuditEvent.fields.takeover,
+    }),
+    execute: (event) => sql`
+      INSERT INTO user_desktop_access_audit (
+        desktop_id,
+        occurred_at,
+        actor_kind,
+        action,
+        thread_id,
+        actor_label,
+        takeover
+      )
+      VALUES (
+        ${event.desktopId},
+        ${event.occurredAt},
+        ${event.actorKind},
+        ${event.action},
+        ${event.threadId ?? null},
+        ${event.actorLabel ?? null},
+        ${event.takeover ? 1 : 0}
+      )
+    `,
+  });
+
+  const RawAuditDbRow = Schema.Struct({
+    sequence: Schema.Unknown,
+    desktopId: Schema.Unknown,
+    occurredAt: Schema.Unknown,
+    actorKind: Schema.Unknown,
+    action: Schema.Unknown,
+    threadId: Schema.Unknown,
+    actorLabel: Schema.Unknown,
+    takeover: Schema.Unknown,
+  });
+  const readAuditRows = SqlSchema.findAll({
+    Request: Schema.Struct({ desktopId: UserDesktopId }),
+    Result: RawAuditDbRow,
+    execute: ({ desktopId }) => sql`
+      SELECT
+        sequence,
+        desktop_id AS "desktopId",
+        occurred_at AS "occurredAt",
+        actor_kind AS "actorKind",
+        action,
+        thread_id AS "threadId",
+        actor_label AS "actorLabel",
+        takeover
+      FROM user_desktop_access_audit
+      WHERE desktop_id = ${desktopId}
+      ORDER BY sequence DESC
+      LIMIT 50
+    `,
+  });
+  const decodeAuditRow = (row: typeof RawAuditDbRow.Type) => {
+    const { threadId, actorLabel, ...event } = row;
+    return decodeAuditEvent({
+      ...event,
+      takeover: event.takeover === 1,
+      ...(threadId === null ? {} : { threadId }),
+      ...(actorLabel === null ? {} : { actorLabel }),
+    });
+  };
 
   return UserDesktopRepository.of({
     upsertHost: Effect.fn("UserDesktopRepository.upsertHost")((host, lastSeenAt) =>
@@ -185,6 +278,16 @@ const make = Effect.gen(function* () {
         Effect.mapError(repositoryError("UserDesktopRepository.markActive")),
       ),
     ),
+    recordAudit: Effect.fn("UserDesktopRepository.recordAudit")((event) =>
+      writeAudit(event).pipe(Effect.mapError(repositoryError("UserDesktopRepository.recordAudit"))),
+    ),
+    listAudit: Effect.fn("UserDesktopRepository.listAudit")((desktopId) =>
+      readAuditRows({ desktopId }).pipe(
+        Effect.flatMap((rows) => Effect.forEach(rows, decodeAuditRow)),
+        Effect.map((events) => ({ events })),
+        Effect.mapError(repositoryError("UserDesktopRepository.listAudit")),
+      ),
+    ),
   });
 });
 
@@ -193,6 +296,10 @@ export const layer = Layer.effect(UserDesktopRepository, make);
 /** Creates an isolated in-memory inventory for focused tests and tools. */
 const makeMemory = Effect.gen(function* () {
   const records = yield* SynchronizedRef.make(new Map<UserDesktopId, UserDesktopRecord>());
+  const audit = yield* SynchronizedRef.make({
+    sequence: 0,
+    events: [] as Array<UserDesktopAuditEvent>,
+  });
 
   return UserDesktopRepository.of({
     upsertHost: Effect.fn("UserDesktopRepository.upsertHost")((host, lastSeenAt) =>
@@ -224,12 +331,21 @@ const makeMemory = Effect.gen(function* () {
       }),
     ),
     remove: Effect.fn("UserDesktopRepository.remove")((desktopId) =>
-      SynchronizedRef.update(records, (current) => {
-        if (!current.has(desktopId)) return current;
-        const next = new Map(current);
-        next.delete(desktopId);
-        return next;
-      }),
+      Effect.all(
+        [
+          SynchronizedRef.update(records, (current) => {
+            if (!current.has(desktopId)) return current;
+            const next = new Map(current);
+            next.delete(desktopId);
+            return next;
+          }),
+          SynchronizedRef.update(audit, (current) => ({
+            ...current,
+            events: current.events.filter((event) => event.desktopId !== desktopId),
+          })),
+        ],
+        { discard: true },
+      ),
     ),
     markActive: Effect.fn("UserDesktopRepository.markActive")((desktopId, lastActiveAt) =>
       SynchronizedRef.update(records, (current) => {
@@ -239,6 +355,22 @@ const makeMemory = Effect.gen(function* () {
         next.set(desktopId, { ...prior, lastActiveAt });
         return next;
       }),
+    ),
+    recordAudit: Effect.fn("UserDesktopRepository.recordAudit")((event) =>
+      SynchronizedRef.update(audit, (current) => {
+        const sequence = current.sequence + 1;
+        return { sequence, events: [...current.events, { ...event, sequence }] };
+      }),
+    ),
+    listAudit: Effect.fn("UserDesktopRepository.listAudit")((desktopId) =>
+      SynchronizedRef.get(audit).pipe(
+        Effect.map((current) => ({
+          events: current.events
+            .filter((event) => event.desktopId === desktopId)
+            .toReversed()
+            .slice(0, 50),
+        })),
+      ),
     ),
   });
 });

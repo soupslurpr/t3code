@@ -1,5 +1,13 @@
+import { relativeTime } from "../../lib/time";
 import { squashAtomCommandFailure } from "@t3tools/client-runtime/state/runtime";
-import type { EnvironmentId, UserDesktopList, UserDesktopView } from "@t3tools/contracts";
+import type {
+  EnvironmentId,
+  UserDesktopList,
+  UserDesktopView,
+  UserDesktopAuditAction,
+  UserDesktopAuditEvent,
+  UserDesktopAuditLog,
+} from "@t3tools/contracts";
 import { useFocusEffect, useNavigation } from "@react-navigation/native";
 import { useState } from "react";
 import {
@@ -30,6 +38,13 @@ interface UserDesktopRoute {
   readonly environmentId: EnvironmentId;
   readonly environmentLabel: string;
   readonly desktop: UserDesktopView;
+  readonly audit: UserDesktopAuditLog["events"];
+}
+
+interface UserDesktopAuditEntry {
+  readonly environmentId: EnvironmentId;
+  readonly environmentLabel: string;
+  readonly event: UserDesktopAuditEvent;
 }
 
 interface UserDesktopGroup {
@@ -39,6 +54,7 @@ interface UserDesktopGroup {
   readonly connectionState: UserDesktopView["connectionState"];
   readonly supportsView: boolean;
   readonly supportsControl: boolean;
+  readonly audit: ReadonlyArray<UserDesktopAuditEntry>;
 }
 
 /** Groups environment routes by the stable identity of one physical desktop. */
@@ -81,12 +97,49 @@ export function groupMobileUserDesktops(
           route.desktop.connectionState === "online" &&
           route.desktop.capabilities.includes("control"),
       ),
+      audit: desktopRoutes
+        .flatMap((route) =>
+          route.audit.map((event) => ({
+            environmentId: route.environmentId,
+            environmentLabel: route.environmentLabel,
+            event,
+          })),
+        )
+        .sort(
+          (left, right) =>
+            right.event.occurredAt.localeCompare(left.event.occurredAt) ||
+            right.event.sequence - left.event.sequence,
+        ),
     };
   }).sort((left, right) => {
     const connectionOrder =
       Number(right.connectionState === "online") - Number(left.connectionState === "online");
     return connectionOrder || left.primary.desktop.label.localeCompare(right.primary.desktop.label);
   });
+}
+
+/** Formats one durable access transition for a compact mobile history row. */
+export function mobileAuditActionLabel(action: UserDesktopAuditAction): string {
+  switch (action) {
+    case "view-granted":
+      return "Started viewing";
+    case "control-granted":
+      return "Took control";
+    case "control-released":
+      return "Released control";
+    case "control-returned-to-agent":
+      return "Returned control to agent";
+    case "access-released":
+      return "Ended own access";
+    case "all-access-ended":
+      return "Ended all access";
+    case "view-remembered":
+      return "Remembered view approval";
+    case "control-remembered":
+      return "Remembered control approval";
+    case "approval-forgotten":
+      return "Forgot approval";
+  }
 }
 
 async function readMobileUserDesktopInventory(
@@ -97,6 +150,9 @@ async function readMobileUserDesktopInventory(
   }>,
   permitted: ReadonlySet<EnvironmentId>,
   list: (environmentId: EnvironmentId) => Promise<UserDesktopList>,
+  readAudit: (environmentId: EnvironmentId, desktopId: string) => Promise<UserDesktopAuditLog>,
+  previous: ReadonlyArray<UserDesktopRoute>,
+  includeAudit: boolean,
 ) {
   const routes: UserDesktopRoute[] = [];
   const failures: string[] = [];
@@ -109,12 +165,27 @@ async function readMobileUserDesktopInventory(
       .map(async (environment) => {
         try {
           const result = await list(environment.environmentId);
-          for (const desktop of result.desktops)
-            routes.push({
-              environmentId: environment.environmentId,
-              environmentLabel: environment.environmentLabel,
-              desktop,
-            });
+          await Promise.all(
+            result.desktops.map(async (desktop) => {
+              const prior = previous.find(
+                (route) =>
+                  route.environmentId === environment.environmentId &&
+                  route.desktop.desktop.desktopId === desktop.desktop.desktopId,
+              );
+              const audit =
+                includeAudit || prior === undefined
+                  ? await readAudit(environment.environmentId, desktop.desktop.desktopId)
+                      .then((log) => log.events)
+                      .catch(() => prior?.audit ?? [])
+                  : prior.audit;
+              routes.push({
+                environmentId: environment.environmentId,
+                environmentLabel: environment.environmentLabel,
+                desktop,
+                audit,
+              });
+            }),
+          );
         } catch (cause) {
           failures.push(cause instanceof Error ? cause.message : "Could not load User desktops.");
         }
@@ -142,6 +213,8 @@ export function SettingsUserDesktopsRouteScreen() {
   useFocusEffect(() => {
     void refreshKey;
     let disposed = false;
+    let previous: ReadonlyArray<UserDesktopRoute> = [];
+    let includeAudit = true;
     let timer: ReturnType<typeof setTimeout> | undefined;
     const load = async () => {
       const result = await readMobileUserDesktopInventory(
@@ -152,8 +225,20 @@ export function SettingsUserDesktopsRouteScreen() {
           if (result._tag !== "Success") throw squashAtomCommandFailure(result);
           return result.value as UserDesktopList;
         },
+        async (environmentId, desktopId) => {
+          const result = await invoke({
+            environmentId,
+            input: { request: { operation: "audit", desktopId } },
+          });
+          if (result._tag !== "Success") throw squashAtomCommandFailure(result);
+          return result.value as UserDesktopAuditLog;
+        },
+        previous,
+        includeAudit,
       );
       if (disposed) return;
+      previous = result.routes;
+      includeAudit = false;
       setRoutes(result.routes);
       setError(result.error);
       setLoading(false);
@@ -213,6 +298,7 @@ export function SettingsUserDesktopsRouteScreen() {
             const environmentLabels = [
               ...new Set(group.routes.map((route) => route.environmentLabel)),
             ];
+            const recentAudit = group.audit.slice(0, 2);
             return (
               <View key={group.desktopId} className="gap-3 rounded-[24px] bg-card p-4">
                 <View className="flex-row items-start gap-3">
@@ -246,6 +332,35 @@ export function SettingsUserDesktopsRouteScreen() {
                     </Text>
                   </View>
                 </View>
+                {recentAudit.length > 0 ? (
+                  <View
+                    accessibilityLabel={`Recent access for ${desktop.label}`}
+                    className="gap-2 rounded-[16px] bg-subtle p-3"
+                  >
+                    <Text className="text-xs font-t3-bold text-foreground">Recent access</Text>
+                    {recentAudit.map(({ environmentId, environmentLabel, event }) => {
+                      const actorLabel =
+                        event.actorLabel ?? (event.actorKind === "human" ? "Human" : "Agent");
+                      return (
+                        <View key={`${environmentId}:${event.sequence}`} className="gap-0.5">
+                          <Text className="text-sm font-t3-medium text-foreground">
+                            {mobileAuditActionLabel(event.action)}
+                            {event.takeover ? " · Takeover" : ""}
+                          </Text>
+                          <Text
+                            className="text-xs leading-normal text-foreground-muted"
+                            numberOfLines={2}
+                          >
+                            {[actorLabel, event.threadId, environmentLabel]
+                              .filter((label) => label !== undefined)
+                              .join(" · ")}{" "}
+                            · {relativeTime(event.occurredAt)} ago
+                          </Text>
+                        </View>
+                      );
+                    })}
+                  </View>
+                ) : null}
                 {group.connectionState === "online" && !group.supportsView ? (
                   <Text className="text-sm leading-normal text-foreground-muted">
                     This desktop does not expose screen viewing on its current platform.
