@@ -1,8 +1,6 @@
-import {
-  GitCommandError,
-  OrchestrationV2AppThreadJson,
-  OrchestrationV2ProviderSessionJson,
-} from "@t3tools/contracts";
+import * as DesktopExecutionAuthorizationChannel from "./computer/DesktopExecutionAuthorizationChannel.ts";
+import { withIdleWorkspaceTransfers } from "./workspace/workspaceTransferLease.ts";
+import { GitCommandError, OrchestrationV2AppThreadJson } from "@t3tools/contracts";
 import * as Schema from "effect/Schema";
 import * as SqlClient from "effect/sql/SqlClient";
 import type {
@@ -40,7 +38,7 @@ import * as ProjectStore from "./orchestration-v2/ProjectStore.ts";
 import * as Orchestrator from "./orchestration-v2/Orchestrator.ts";
 import * as ProjectionStore from "./orchestration-v2/ProjectionStore.ts";
 import * as ProviderSessionManager from "./orchestration-v2/ProviderSessionManager.ts";
-import { threadHasQueuedTurnStart } from "./orchestration-v2/ThreadSettlementService.ts";
+import { storageCleanupThreadIdle, worktreeOwner } from "./workspace/worktreeOwnership.ts";
 import { forkParked } from "./serverActivation.ts";
 import * as Settings from "./serverSettings.ts";
 import * as TerminalManager from "./terminal/Manager.ts";
@@ -54,9 +52,6 @@ import { isNetworkPath } from "@t3tools/shared/path";
 
 const decodeCleanupThread = Schema.decodeUnknownEffect(
   Schema.fromJsonString(OrchestrationV2AppThreadJson),
-);
-const decodeCleanupSession = Schema.decodeUnknownEffect(
-  Schema.fromJsonString(OrchestrationV2ProviderSessionJson),
 );
 // pnpm 11 writes this file as JSON, older versions as YAML.
 const decodePnpmModulesManifest = Schema.decodeUnknownEffect(
@@ -115,62 +110,6 @@ function sameProjectWorktreePolicies(left: ServerSettings, right: ServerSettings
   );
 }
 
-type LimitRecoverySettings = Pick<
-  ServerSettings,
-  "autoResumeLimitedThreads" | "snoozeLimitedThreads"
->;
-
-export function storageCleanupThreadIdle(
-  thread: OrchestrationV2ThreadShell,
-  now: number,
-  settings: LimitRecoverySettings,
-): boolean {
-  return (
-    thread.worktreePath !== null &&
-    thread.activeRunId === null &&
-    (thread.status === "idle" ||
-      thread.status === "completed" ||
-      thread.status === "interrupted" ||
-      thread.status === "failed" ||
-      thread.status === "cancelled" ||
-      thread.status === "rolled_back") &&
-    (thread.pendingBackgroundTasks?.length ?? 0) === 0 &&
-    thread.pendingRuntimeRequest === null &&
-    !threadHasQueuedTurnStart(thread, now) &&
-    !heldForLimitRecovery(thread, now, settings)
-  );
-}
-
-// A run held for its usage-limit reset has its work still ahead of it, and a
-// fresh worktree would otherwise look unchanged and be removed before it runs.
-function heldForLimitRecovery(
-  thread: OrchestrationV2ThreadShell,
-  now: number,
-  settings: LimitRecoverySettings,
-): boolean {
-  if (
-    thread.status !== "failed" ||
-    thread.lastErrorClass !== "usage_limit" ||
-    !thread.usageLimitResetAt ||
-    thread.archivedAt !== null ||
-    thread.settledOverride === "settled"
-  )
-    return false;
-  const resetMs = Date.parse(thread.usageLimitResetAt);
-  const recovery = thread.limitRecovery;
-  if (recovery?.runId === thread.latestRunId && recovery.resetAt === thread.usageLimitResetAt)
-    // An auto-resume holds until its continuation replaces the failed run.
-    return recovery.autoResume || (recovery.snooze === true && resetMs > now);
-  // The recovery worker arms this failure on a later tick; hold it until then.
-  // Like the worker, skip a reset that had already passed when the run ended.
-  if (
-    !Number.isFinite(resetMs) ||
-    resetMs <= DateTime.toEpochMillis(thread.latestRunCompletedAt ?? thread.updatedAt)
-  )
-    return false;
-  return settings.autoResumeLimitedThreads || (settings.snoozeLimitedThreads && resetMs > now);
-}
-
 /** PR metadata refreshes must not reset the inactivity clock. */
 export function storageCleanupActivityAt(thread: OrchestrationV2ThreadShell): number {
   return Math.max(
@@ -182,35 +121,6 @@ export function storageCleanupActivityAt(thread: OrchestrationV2ThreadShell): nu
       thread.latestRunCompletedAt,
     ].flatMap((value) => (value == null ? [] : [DateTime.toEpochMillis(value)])),
   );
-}
-
-/** Only a complete subagent or side chat chain within this worktree shares ownership. */
-function worktreeOwner<T extends Pick<OrchestrationV2ThreadShell, "id" | "lineage">>(
-  threads: ReadonlyArray<T>,
-) {
-  if (threads.length === 1) return threads[0];
-  const byId = new Map(threads.map((thread) => [thread.id, thread]));
-  const tops = threads.filter((thread) => !byId.has(thread.lineage.parentThreadId!));
-  if (tops.length !== 1) return undefined;
-  const owner = tops[0]!;
-  for (const thread of threads) {
-    let current = thread;
-    const seen = new Set<string>();
-    while (current.id !== owner.id) {
-      if (
-        seen.has(current.id) ||
-        (current.lineage.relationshipToParent !== "subagent" &&
-          current.lineage.sideChat !== true) ||
-        current.lineage.rootThreadId !== owner.lineage.rootThreadId
-      )
-        return undefined;
-      seen.add(current.id);
-      const parent = byId.get(current.lineage.parentThreadId!);
-      if (parent === undefined) return undefined;
-      current = parent;
-    }
-  }
-  return owner;
 }
 
 /** Squash/rebase merges require the merged PR to name this exact head commit. */
@@ -256,6 +166,8 @@ const make = Effect.gen(function* () {
   const git = yield* GitVcsDriver.GitVcsDriver;
   const gitManager = yield* GitManager.GitManager;
   const terminals = yield* TerminalManager.TerminalManager;
+  const nativeDesktop =
+    yield* DesktopExecutionAuthorizationChannel.DesktopExecutionAuthorizationChannel;
   const fs = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
   const liveTerminals = new Map<string, Map<string, TerminalSummary>>();
@@ -545,7 +457,8 @@ const make = Effect.gen(function* () {
         );
       if (result === null) return null;
       if (result.exitCode === 0 || result.exitCode === allowedExitCode) return result;
-      if (result.stderr.toLowerCase().includes("not a git repository")) return null;
+      if (/not a git repository|gitfile does not point to a valid repository/i.test(result.stderr))
+        return null;
       return yield* failure(
         result.stderr.trim().split(/\r?\n/)[0]?.slice(0, 1000) || "command failed",
       );
@@ -1016,22 +929,22 @@ const make = Effect.gen(function* () {
             })
           )
             return waitForStop("thread activity or shared worktree changed since check");
-          // Sessions can outlive their run and can be shared across app threads.
-          const sessionRows = yield* sql<{ payload_json: string }>`
-            SELECT payload_json FROM orchestration_v2_projection_provider_sessions
-            WHERE status != 'stopped'
-          `.pipe(NodeSqliteClient.readOnly);
-          const sessions = yield* Effect.forEach(sessionRows, (row) =>
-            decodeCleanupSession(row.payload_json),
-          );
-          // Ready persisted sessions may have released their runtime; only live sessions protect the path.
-          for (const session of sessions) {
-            const cwd = path.resolve(session.cwd);
-            if (
-              (pathKey(cwd) === pathKey(worktreePath) || inside(worktreePath, cwd)) &&
-              (yield* providerSessions.isLive(session.id))
-            )
-              return waitForStop("provider session is still open");
+          // Stored ready sessions can outlive a confirmed release. Only the
+          // inventory owns workspaces, including opening/closing generations
+          // and native threads whose cwd differs from their shared process.
+          for (const session of yield* providerSessions.listWorkspaceSessions()) {
+            for (const workspace of [
+              session.cwd,
+              ...session.threadWorkspaces.map((thread) => thread.cwd),
+            ]) {
+              if (workspace === null) continue;
+              const cwd = path.resolve(workspace);
+              if (pathKey(cwd) === pathKey(worktreePath) || inside(worktreePath, cwd))
+                return waitForStop("provider session is still open");
+              const realCwd = yield* fs.realPath(cwd).pipe(Effect.orElseSucceed(() => cwd));
+              if (pathKey(realCwd) === pathKey(realPath) || inside(realPath, realCwd))
+                return waitForStop("provider session is still open");
+            }
           }
           return null;
         });
@@ -1060,29 +973,37 @@ const make = Effect.gen(function* () {
           )
         )
           return keep("settings changed since check");
-        // Clean only untracked files. Ordinary worktrees retain Git's final tracked-edit check.
-        if (settings.worktreeKeepWhen === "tracked-changes")
-          yield* cleanupGit(worktreePath, ["clean", "-ffdx"], "git clean");
-        const submodules = yield* submoduleRemoval(worktreePath, settings);
-        if (submodules.reason !== null) return keep(submodules.reason);
-        if (submodules.force) {
-          const changes = yield* localChangesReason(worktreePath, settings);
-          if (changes !== null) return keep(changes);
-        }
-        yield* removeLinkedWorktree({
-          operation: "StorageCleanup.cleanupGit",
-          cwd: project.workspaceRoot,
-          worktreePath,
-          // Git requires force for submodules; recursive checks above cannot make removal atomic.
-          force: submodules.force,
-          execute: git.execute,
-          run: (args) => cleanupGit(project.workspaceRoot, [...args], "git worktree remove"),
-        });
-        entries.push({ ...entry, outcome: "removed", reason: sentence(removalReason), bytes });
-        yield* gitManager.invalidateStatus(project.workspaceRoot);
-        // Preserve branch/path so ProviderTurnStartService can recreate the checkout on resume.
-        yield* Effect.logInfo("storage cleanup removed worktree", { threadId: thread.id });
+        const admitted = yield* withIdleWorkspaceTransfers(
+          Effect.gen(function* () {
+            if (!(yield* nativeDesktop.reserveWorktreeCleanup))
+              return keep("native desktop is busy or cannot confirm it is idle");
+            // Clean only untracked files. Ordinary worktrees retain Git's final tracked-edit check.
+            if (settings.worktreeKeepWhen === "tracked-changes")
+              yield* cleanupGit(worktreePath, ["clean", "-ffdx"], "git clean");
+            const submodules = yield* submoduleRemoval(worktreePath, settings);
+            if (submodules.reason !== null) return keep(submodules.reason);
+            if (submodules.force) {
+              const changes = yield* localChangesReason(worktreePath, settings);
+              if (changes !== null) return keep(changes);
+            }
+            yield* removeLinkedWorktree({
+              operation: "StorageCleanup.cleanupGit",
+              cwd: project.workspaceRoot,
+              worktreePath,
+              // Git requires force for submodules; recursive checks above cannot make removal atomic.
+              force: submodules.force,
+              execute: git.execute,
+              run: (args) => cleanupGit(project.workspaceRoot, [...args], "git worktree remove"),
+            });
+            entries.push({ ...entry, outcome: "removed", reason: sentence(removalReason), bytes });
+            yield* gitManager.invalidateStatus(project.workspaceRoot);
+            // Preserve branch/path so ProviderTurnStartService can recreate the checkout on resume.
+            yield* Effect.logInfo("storage cleanup removed worktree", { threadId: thread.id });
+          }),
+        );
+        if (!admitted) keep("a workspace transfer is still active");
       }).pipe(
+        Effect.scoped,
         (effect) => withWorkspaceLease(worktreePath, effect),
         Effect.catch((error) =>
           Effect.gen(function* () {

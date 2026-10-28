@@ -1501,6 +1501,7 @@ function runUserDesktopHumanRequest(
   return runHumanRequest(...args, AuthSessionId.make("test-session")).pipe(
     Effect.provideService(DesktopExecutionAuthorizationChannel, {
       invoke: () => Effect.succeedNone,
+      reserveWorktreeCleanup: Effect.succeed(false),
     }),
   );
 }

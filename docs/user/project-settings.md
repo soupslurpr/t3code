@@ -212,12 +212,17 @@ captures and log retention remain machine-wide.
 Worktrees can be removed after a chosen number of inactive days, after a thread settles, after
 merging, or when they have no commits beyond the default branch. Set settled retention to 0 days
 to remove a worktree at the next cleanup after settlement. Only T3-managed worktrees are eligible.
-Active sessions and shared worktrees prevent removal. **Keep worktrees with local changes** defaults
-to **Any local files**, which protects tracked edits and untracked files, plus ignored files other
-than `node_modules`. **Uncommitted changes** protects tracked edits and untracked files but allows
-ignored files such as `.env` and build output to be deleted. **Edited tracked files** protects only
-tracked edits and allows untracked and ignored files to be deleted. Branches and thread history
-stay; starting another turn recreates the checkout.
+Active sessions and shared worktrees prevent removal. Automatic removal also waits until the
+native desktop host can confirm that its managed commands and transfers have finished. A
+standalone server or disconnected desktop keeps worktrees when it cannot confirm this.
+**Keep worktrees with local changes** defaults to **Any local files**, which protects tracked
+edits and untracked files, plus ignored files other than `node_modules`. **Uncommitted changes**
+protects tracked edits and untracked files but allows ignored files such as `.env` and build output
+to be deleted. **Edited tracked files** protects only tracked edits and allows untracked and
+ignored files to be deleted. Branches and thread history stay; starting another turn recreates the
+checkout, provided the branch still exists. Dependencies and local setup may need to be installed
+again. For manual cleanup and recovery, use the
+[per-thread worktree actions](./thread-sidebar.md#clean-up-a-worktree).
 Merge cleanup requires a merged pull request whose commits are included in the remote default
 branch. A squash or rebase merge on GitHub also counts when the pull request targeted the default
 branch and the worktree is still at the pull request's last commit.

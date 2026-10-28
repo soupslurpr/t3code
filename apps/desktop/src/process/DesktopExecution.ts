@@ -60,6 +60,9 @@ import {
 export class DesktopExecution extends Context.Service<
   DesktopExecution,
   {
+    /** Private native-child cleanup admission; never expose through renderer or remote IPC. */
+    readonly reserveWorktreeCleanup: (leaseId: string) => Effect.Effect<boolean>;
+    readonly releaseWorktreeCleanup: (leaseId: string) => Effect.Effect<void>;
     readonly authorization: (
       input: DesktopAuthorizationSyncInput,
     ) => Effect.Effect<DesktopAuthorizationReferences, DesktopExecutionError>;
@@ -121,6 +124,19 @@ const isCompletionError = Schema.is(DesktopCompletionReceipts.DesktopCompletionE
 const requestKey = Schema.encodeSync(Schema.fromJsonString(Schema.Unknown));
 
 const make = Effect.gen(function* () {
+  // An uncertain/disconnected cleanup keeps this barrier until release or host restart.
+  // Expiring it could admit a command while a child Git process still deletes its cwd.
+  let cleanupLease: string | null = null;
+  const checkCleanup = Effect.suspend(() =>
+    cleanupLease === null
+      ? Effect.void
+      : Effect.fail(
+          new DesktopExecutionError(
+            "worktree-cleanup",
+            "The native desktop is removing an unused worktree. Retry shortly.",
+          ),
+        ),
+  );
   const environment = yield* DesktopEnvironment.DesktopEnvironment;
   const identity = yield* UserDesktopIdentity.UserDesktopIdentity;
   const dialog = yield* ElectronDialog.ElectronDialog;
@@ -819,6 +835,7 @@ const make = Effect.gen(function* () {
           if (!recovery && (grant === undefined || !currentGeneration()))
             return yield* Effect.fail(denied());
           if (input.operation === "command") {
+            yield* checkCleanup;
             if (grant === undefined) return yield* Effect.fail(denied());
             return {
               result: manager.start(owner, grant.grantId, input, cancellation, grant.revision),
@@ -945,6 +962,7 @@ const make = Effect.gen(function* () {
             (store.generation(owner.environmentId) ?? "legacy") !== generation
           )
             return yield* Effect.fail(denied());
+          yield* checkCleanup;
           return { result: transfers.run(owner, grant.grantId, input) };
         }),
       );
@@ -1020,6 +1038,24 @@ const make = Effect.gen(function* () {
     return { threadIds: [...threadIds], activities: activities.pending(input.environmentId) };
   }, Effect.mapError(executionError));
   return DesktopExecution.of({
+    reserveWorktreeCleanup: Effect.fn("DesktopExecution.reserveWorktreeCleanup")((leaseId) =>
+      store.withPermit(
+        Effect.sync(() => {
+          if (cleanupLease === leaseId) return true;
+          if (cleanupLease !== null || manager.hasLiveProcesses() || transfers.list().length > 0)
+            return false;
+          cleanupLease = leaseId;
+          return true;
+        }),
+      ),
+    ),
+    releaseWorktreeCleanup: Effect.fn("DesktopExecution.releaseWorktreeCleanup")((leaseId) =>
+      store.withPermit(
+        Effect.sync(() => {
+          if (cleanupLease === leaseId) cleanupLease = null;
+        }),
+      ),
+    ),
     invoke,
     transfer,
     authorization,

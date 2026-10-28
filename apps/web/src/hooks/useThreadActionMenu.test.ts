@@ -120,8 +120,10 @@ vi.mock("./useSettings", () => ({
 }));
 vi.mock("./useThreadActions", () => ({
   canTurnThreadIntoProject: () => false,
-  useThreadActions: () =>
-    Object.fromEntries(
+  useThreadActions: () => ({
+    worktreeMenuState: () => undefined,
+    changeThreadWorktree: async () => {},
+    ...Object.fromEntries(
       [
         "markThreadUnread",
         "settleThread",
@@ -140,6 +142,7 @@ vi.mock("./useThreadActions", () => ({
         },
       ]),
     ),
+  }),
 }));
 
 import { useThreadActionMenu } from "./useThreadActionMenu";

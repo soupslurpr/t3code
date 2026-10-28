@@ -280,6 +280,14 @@ export function createVcsEnvironmentAtoms<R, E>(
     });
 
   return {
+    removeThreadWorktree: createEnvironmentRpcCommand(runtime, {
+      label: "environment-data:thread-worktree:remove",
+      tag: WS_METHODS.threadWorktreeRemove,
+    }),
+    detachThreadWorktree: createEnvironmentRpcCommand(runtime, {
+      label: "environment-data:thread-worktree:detach",
+      tag: WS_METHODS.threadWorktreeDetach,
+    }),
     listRefs,
     // An uncached read for decisions that must match the repository now, not
     // the persisted list a picker renders from.

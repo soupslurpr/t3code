@@ -41,6 +41,7 @@ import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 
 import * as ServerConfig from "../config.ts";
+import { withWorkspaceTransfer } from "../workspace/workspaceTransferLease.ts";
 import type { McpThreadInvocationScope } from "../mcp/McpInvocationContext.ts";
 import { PreviewAutomationBroker } from "../mcp/PreviewAutomationBroker.ts";
 import { ThreadWorkspaceQuery } from "../orchestration-v2/ThreadWorkspaceQuery.ts";
@@ -314,7 +315,22 @@ export const make = Effect.gen(function* () {
       yield* finish(record, "completed", null);
     });
     yield* Effect.uninterruptibleMask((restore) =>
-      restore(operation.pipe(Effect.timeout(input.timeoutMs ?? 3_600_000))).pipe(
+      restore(
+        withWorkspaceTransfer(
+          operation.pipe(
+            // Hold the checkout until every owned I/O promise has drained.
+            Effect.ensuring(
+              Effect.gen(function* () {
+                yield* record.cancel;
+                yield* Effect.promise(async () => {
+                  await Promise.allSettled(record.io);
+                  await NodeFSP.rm(record.archivePath, { force: true });
+                });
+              }),
+            ),
+          ),
+        ).pipe(Effect.timeout(input.timeoutMs ?? 3_600_000)),
+      ).pipe(
         Effect.catchCause((cause) => {
           const phase = terminal(record.snapshot.state)
             ? "transferring"
@@ -335,15 +351,6 @@ export const make = Effect.gen(function* () {
               : { ...error, detail: installationCancellation.detail },
           );
         }),
-        Effect.ensuring(
-          Effect.gen(function* () {
-            yield* record.cancel;
-            yield* Effect.promise(async () => {
-              await Promise.allSettled(record.io);
-              await NodeFSP.rm(record.archivePath, { force: true });
-            });
-          }),
-        ),
       ),
     );
   });
@@ -461,6 +468,12 @@ export const make = Effect.gen(function* () {
     if (!terminal(record.snapshot.state)) {
       yield* record.cancel;
       if (record.fiber !== null) yield* Fiber.interrupt(record.fiber);
+      // Cancellation before the worker's first evaluation cannot run its hooks.
+      yield* finish(record, "cancelled", {
+        code: "cancelled",
+        phase: "transferring",
+        detail: "The transfer was cancelled. Inspect the destination if installation had started.",
+      });
     }
     return record.snapshot;
   });

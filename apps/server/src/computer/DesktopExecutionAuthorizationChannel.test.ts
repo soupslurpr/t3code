@@ -25,6 +25,8 @@ it("binds the native desktop, rejects reverse access and stale sessions, and rel
   let errors = "";
   let control = "";
   let invocations = 0;
+  let cleanupAcquires = 0;
+  const cleanupLeases = new Set<string>();
   const commands: string[] = [];
   child.stdout?.on("data", (chunk: Buffer) => {
     output += chunk.toString();
@@ -41,6 +43,22 @@ it("binds the native desktop, rejects reverse access and stale sessions, and rel
       control = control.slice(end + 1);
       const command = decodeCommand(line);
       commands.push(command.type);
+      if (command.type === "cleanup-release") {
+        expect(cleanupLeases.delete(command.invocationId)).toBe(true);
+        continue;
+      }
+      if (command.type === "cleanup-acquire") {
+        cleanupAcquires++;
+        cleanupLeases.add(command.invocationId);
+        const stream = child.stdio[3];
+        if (!stream || !("write" in stream)) throw new Error("Missing native reply descriptor");
+        if (cleanupAcquires === 5) stream.end();
+        else
+          stream.write(
+            `${JSON.stringify({ type: "cleanup-result", invocationId: command.invocationId, acquired: cleanupAcquires !== 4 })}\n`,
+          );
+        continue;
+      }
       const response =
         command.type === "hello"
           ? {
@@ -82,7 +100,13 @@ it("binds the native desktop, rejects reverse access and stale sessions, and rel
     expect(errors).not.toContain("Error");
     expect(output).toContain("verified");
     expect(invocations).toBe(1);
-    expect(commands).toEqual(["hello", "invoke"]);
+    expect(cleanupAcquires).toBe(5);
+    expect(cleanupLeases.size).toBe(0);
+    expect(commands).toEqual([
+      "hello",
+      "invoke",
+      ...Array.from({ length: 5 }, () => ["cleanup-acquire", "cleanup-release"]).flat(),
+    ]);
     expect(result).toEqual({ code: 0, signal: null });
   } finally {
     clearTimeout(watchdog);

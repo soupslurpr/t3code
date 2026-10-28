@@ -75,6 +75,8 @@ export function useThreadActionMenu(input: {
     primaryEnvironmentId,
   });
   const {
+    changeThreadWorktree,
+    worktreeMenuState,
     settleThread,
     unsettleThread,
     snoozeThread,
@@ -133,6 +135,7 @@ export function useThreadActionMenu(input: {
       const isRegeneratingTitle = thread.titleRegeneration != null;
       const snoozePresets = resolveSnoozePresets(now, timestampFormat, threadRef.environmentId);
       const items = buildThreadActionMenuItems({
+        worktree: worktreeMenuState(threadRef),
         canOperate: readEnvironmentScope(threadRef.environmentId, AuthOrchestrationOperateScope),
         canFind: onFind !== undefined,
         branch: thread.branch ?? null,
@@ -191,6 +194,10 @@ export function useThreadActionMenu(input: {
       switch (action) {
         case "find":
           onFind?.(threadRef);
+          return;
+        case "remove-worktree":
+        case "detach-worktree":
+          await changeThreadWorktree(threadRef, action === "remove-worktree" ? "remove" : "detach");
           return;
         case "project-settings": {
           const project = projects.find(

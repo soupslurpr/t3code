@@ -1,3 +1,4 @@
+import { useThreadWorktreeActions } from "./useThreadWorktreeActions";
 import {
   parseScopedThreadKey,
   scopeProjectRef,
@@ -264,6 +265,7 @@ function threadOperationFailure(target: ScopedThreadRef) {
 }
 
 export function useThreadActions() {
+  const worktreeActions = useThreadWorktreeActions();
   const archiveThreadMutation = useOrchestrationCommand(threadEnvironment.archive, {
     reportFailure: false,
   });
@@ -939,6 +941,7 @@ export function useThreadActions() {
   };
 
   return {
+    ...worktreeActions,
     archiveThread,
     unarchiveThread,
     deleteThread,

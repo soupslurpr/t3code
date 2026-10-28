@@ -84,3 +84,5 @@ export * from "./clientRpcPermissions.ts";
 export * from "./orchestrationSystemEvent.ts";
 
 export * from "./desktopProcessActivity.ts";
+
+export * from "./threadWorktree.ts";
