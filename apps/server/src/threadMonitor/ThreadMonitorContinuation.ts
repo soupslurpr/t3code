@@ -137,7 +137,7 @@ export function formatMonitorSystemEventForProvider(event: OrchestrationSystemEv
       ...(usage === undefined
         ? []
         : [
-            `Cumulative evaluator usage: ${usage.inputTokens ?? "unavailable"} input tokens; ${usage.cachedInputTokens ?? "unavailable"} cached input tokens; ${usage.outputTokens ?? "unavailable"} output tokens`,
+            `Cumulative evaluator usage: ${usage.inputTokens ?? "unavailable"} input tokens; ${usage.cachedInputTokens ?? "unavailable"} cached input tokens; ${usage.cacheWriteInputTokens ?? "unavailable"} cache-write input tokens; ${usage.outputTokens ?? "unavailable"} output tokens`,
           ]),
       ...(event.observation.error === null
         ? []

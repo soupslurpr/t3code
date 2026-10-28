@@ -4408,6 +4408,7 @@ it("makes a paused model evaluator explicit", () => {
         totalUsage: {
           inputTokens: 50_000,
           cachedInputTokens: 45_000,
+          cacheWriteInputTokens: 0,
           outputTokens: 500,
         },
         regions: [

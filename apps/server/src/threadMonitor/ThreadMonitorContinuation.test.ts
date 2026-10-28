@@ -50,6 +50,7 @@ it("renders review events with explicit provenance and trust boundaries", () => 
       totalUsage: {
         inputTokens: 42_000,
         cachedInputTokens: 38_000,
+        cacheWriteInputTokens: 0,
         outputTokens: 500,
       },
       regions: [
