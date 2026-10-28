@@ -206,12 +206,17 @@ export function qemuTextChords(text: string): ReadonlyArray<ReadonlyArray<string
     throw new QemuInputValidationError({
       code: "unsupported-text",
       field: "text",
-      received: "text requiring an accessible editable control",
-      expected: ["printable ASCII or a focused accessible editable control"],
+      received: "text requiring semantic insertion",
+      expected: ["printable ASCII without newline or tab", "focused accessible editable control"],
       phase: "validation",
     });
   }
   return chords;
+}
+
+/** Reports whether physical QEMU key events preserve every requested code point. */
+export function canTypeExactlyWithQemu(text: string): boolean {
+  return /^[\x20-\x7e]*$/u.test(text);
 }
 
 /** Builds a key transition and the qcodes that must be retained for release. */

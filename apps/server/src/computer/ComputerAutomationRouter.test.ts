@@ -250,3 +250,14 @@ it.effect("returns capture health refreshed after the initial Agent observation"
     assert.deepEqual(observed.snapshot, snapshot);
   }),
 );
+
+it("serializes long guest failures without violating the public message bound", () => {
+  const detail = "guest diagnostic ".repeat(200);
+  const error = ComputerAutomationRouter.environmentDesktopFailure(scope, "computerAct", {
+    code: "guest-operation-failed",
+    detail,
+  });
+  assert.strictEqual(error.computerFailure?.code, "guest-operation-failed");
+  assert.isAtMost(error.computerFailure!.message.length, 512);
+  assert.strictEqual(error.computerFailure?.detail, detail.trim().slice(0, 2_000));
+});

@@ -27,6 +27,8 @@ const smokeExpression = String.raw`(async () => {
     windowActivation: false,
     keyboardSelectionActivation: false,
     invalidKeyFailure: null,
+    multilineFallbackFailure: null,
+    multilineFallbackKeyEvents: 0,
     staleTargetFailure: null,
     focusRestored: false,
     transform: null,
@@ -308,6 +310,39 @@ const smokeExpression = String.raw`(async () => {
     if (!clipboardUnchangedAfterAscii) throw new Error("ASCII typing changed the clipboard");
     removeFixture();
 
+    const recordUnsafeKeyEvent = () => {
+      state.multilineFallbackKeyEvents += 1;
+    };
+    window.addEventListener("keydown", recordUnsafeKeyEvent);
+    let unsafeMultiline;
+    try {
+      unsafeMultiline = await computer.act({
+        actions: [
+          {
+            type: "type",
+            text: "must not submit a prefix\nor leave a suffix",
+            submit: true,
+            verification: "required",
+          },
+        ],
+        observation: false,
+      });
+    } finally {
+      window.removeEventListener("keydown", recordUnsafeKeyEvent);
+    }
+    if (unsafeMultiline.ok) {
+      throw new Error("multiline fallback was unexpectedly accepted without an editable target");
+    }
+    state.multilineFallbackFailure = unsafeMultiline.error;
+    if (
+      unsafeMultiline.error.code !== "exact-text-unavailable" ||
+      unsafeMultiline.error.actionIndex !== 0 ||
+      unsafeMultiline.error.field !== "actions[0].text" ||
+      state.multilineFallbackKeyEvents !== 0
+    ) {
+      throw new Error("multiline fallback was not rejected before keyboard input");
+    }
+
     const invalidKey = await computer.act({
       actions: [{ type: "hotkey", keys: ["Control", "Ctrl", "N"] }],
       observation: false,
@@ -510,9 +545,9 @@ const smokeExpression = String.raw`(async () => {
       (target) => calculatorApplications.includes(target.application) && target.name === "Close",
     );
     if (closeTarget === undefined) throw new Error("Calculator did not expose semantic Close");
-    const refreshedCalculator = valueOf(
+    valueOf(
       await computer.snapshot({ screenshot: false, includeAccessibility: true }),
-      "refresh Calculator semantics",
+      "invalidate Calculator semantics",
     );
     const staleActivation = await computer.act({
       actions: [{ type: "activate", targetId: closeTarget.id }],
@@ -527,6 +562,10 @@ const smokeExpression = String.raw`(async () => {
     ) {
       throw new Error("stale semantic activation did not return precise target details");
     }
+    const refreshedCalculator = valueOf(
+      await computer.snapshot({ screenshot: false, includeAccessibility: true }),
+      "refresh Calculator semantics",
+    );
     const freshCloseTarget = refreshedCalculator.accessibility?.targets.find(
       (target) => calculatorApplications.includes(target.application) && target.name === "Close",
     );
@@ -832,6 +871,8 @@ async function main() {
         windowActivation: result.windowActivation,
         keyboardSelectionActivation: result.keyboardSelectionActivation,
         invalidKeyFailure: result.invalidKeyFailure,
+        multilineFallbackFailure: result.multilineFallbackFailure,
+        multilineFallbackKeyEvents: result.multilineFallbackKeyEvents,
         staleTargetFailure: result.staleTargetFailure,
         focusRestored: result.focusRestored,
         transform: result.transform,
