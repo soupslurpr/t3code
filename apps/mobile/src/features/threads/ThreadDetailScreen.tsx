@@ -786,9 +786,12 @@ function ThreadDetailBody(
       return {
         kind: "background",
         label: pendingBackgroundWork.title,
-        accessibilityLabel: `${pendingBackgroundWork.title}: ${pendingBackgroundWork.items
-          .map((item) => item.label)
-          .join(", ")}`,
+        accessibilityLabel:
+          pendingBackgroundWork.items.length === 1
+            ? pendingBackgroundWork.title
+            : `${pendingBackgroundWork.title}: ${pendingBackgroundWork.items
+                .map((item) => item.label)
+                .join(", ")}`,
         waiting: pendingBackgroundWork.waiting,
         onPress: () => {
           Keyboard.dismiss();

@@ -47,7 +47,8 @@ import * as Schema from "effect/Schema";
 import * as Rpc from "effect/rpc/Rpc";
 import * as RpcGroup from "effect/rpc/RpcGroup";
 import * as RpcMiddleware from "effect/rpc/RpcMiddleware";
-import { NonNegativeInt, TrimmedNonEmptyString } from "./baseSchemas.ts";
+import { NonNegativeInt, ThreadId, ThreadMonitorId, TrimmedNonEmptyString } from "./baseSchemas.ts";
+import { ThreadMonitorError, ThreadMonitorSummaryList } from "./threadMonitor.ts";
 import {
   ProviderAuthCancelInput,
   ProviderAuthCompleteInput,
@@ -562,6 +563,9 @@ export const WS_METHODS = {
   guestShareCreate: "guestShare.create",
   scheduledTasksListWebhookDeliveries: "scheduledTasks.listWebhookDeliveries",
   scheduledTasksGetWebhookDelivery: "scheduledTasks.getWebhookDelivery",
+
+  threadMonitorsSubscribe: "threadMonitors.subscribe",
+  threadMonitorsCancel: "threadMonitors.cancel",
 
   cloudGetRelayClientStatus: "cloud.getRelayClientStatus",
   cloudInstallRelayClient: "cloud.installRelayClient",
@@ -1928,6 +1932,19 @@ const WsSubscribeServerLifecycleRpc = Rpc.make(WS_METHODS.subscribeServerLifecyc
   stream: true,
 });
 
+const WsThreadMonitorsSubscribeRpc = Rpc.make(WS_METHODS.threadMonitorsSubscribe, {
+  payload: Schema.Struct({ threadId: ThreadId }),
+  success: ThreadMonitorSummaryList,
+  error: Schema.Union([ThreadMonitorError, EnvironmentAuthorizationError]),
+  stream: true,
+});
+
+const WsThreadMonitorsCancelRpc = Rpc.make(WS_METHODS.threadMonitorsCancel, {
+  payload: Schema.Struct({ threadId: ThreadId, monitorId: ThreadMonitorId }),
+  success: Schema.Void,
+  error: Schema.Union([ThreadMonitorError, EnvironmentAuthorizationError]),
+});
+
 const WsScheduledTasksSubscribeRpc = Rpc.make(WS_METHODS.scheduledTasksSubscribe, {
   payload: ScheduledTaskListInput,
   success: ScheduledTaskListResult,
@@ -2082,6 +2099,8 @@ export const WsRpcGroup = RpcGroup.make(
   WsSecretsAnswerRequestRpc,
   WsScheduledTasksListWebhookDeliveriesRpc,
   WsScheduledTasksGetWebhookDeliveryRpc,
+  WsThreadMonitorsSubscribeRpc,
+  WsThreadMonitorsCancelRpc,
   WsServerReportClientActivityRpc,
   WsCloudGetRelayClientStatusRpc,
   WsCloudInstallRelayClientRpc,

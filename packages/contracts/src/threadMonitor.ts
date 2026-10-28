@@ -22,6 +22,8 @@ import { PromptCacheTiming } from "./model.ts";
 import { ModelSelection } from "./modelSelection.ts";
 import { ProviderInstanceId } from "./providerInstance.ts";
 
+export const THREAD_MONITOR_REMAINDER_TASK_ID = "thread-monitors:remainder";
+
 const MonitorLabel = TrimmedNonEmptyString.check(Schema.isMaxLength(500));
 const MonitorResultSummary = TrimmedNonEmptyString.check(Schema.isMaxLength(2_000));
 const MonitorDeliveryGroupId = TrimmedNonEmptyString.check(Schema.isMaxLength(100));
@@ -316,6 +318,26 @@ export const ThreadMonitor = Schema.Struct({
   deliveryFailureCount: NonNegativeInt,
 });
 export type ThreadMonitor = typeof ThreadMonitor.Type;
+
+/** Lightweight client rows; screen regions, samples, and evidence stay on the server. */
+export const ThreadMonitorSummary = Schema.Struct({
+  id: ThreadMonitorId,
+  label: MonitorLabel,
+  status: ThreadMonitorStatus,
+  condition: Schema.Literals(["time", "signal", "image-change", "model"]),
+  criterion: Schema.NullOr(ComputerWatchCriterion),
+  nextCheckAt: Schema.NullOr(IsoDateTime),
+  deadlineAt: Schema.NullOr(IsoDateTime),
+  continuation: ThreadMonitorContinuation,
+  reviewRequired: Schema.Boolean,
+  lastError: Schema.NullOr(Schema.String),
+});
+export type ThreadMonitorSummary = typeof ThreadMonitorSummary.Type;
+
+export const ThreadMonitorSummaryList = Schema.Struct({
+  monitors: Schema.Array(ThreadMonitorSummary).check(Schema.isMaxLength(100)),
+});
+export type ThreadMonitorSummaryList = typeof ThreadMonitorSummaryList.Type;
 
 export const ThreadMonitorStartInput = Schema.Struct({
   label: MonitorLabel.annotate({
