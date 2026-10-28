@@ -47,3 +47,8 @@ harness tool output and must reject unsupported protocol versions; silently
 falling back to user input would change the event's provenance. Other adapters
 receive the explicitly labelled provider-neutral text on the normal queued
 start path. The legacy message column must remain for deferred V1 import.
+
+Usage fields remain independent: input, cached input, cache-write input and
+output are reported exactly when supplied, with null for unavailable data.
+Migration must not reset a retained cache-write count or rebucket other
+counts. Older append-only review events may lack the cache-write field.

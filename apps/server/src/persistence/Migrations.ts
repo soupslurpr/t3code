@@ -88,6 +88,8 @@ import Migration0074 from "./Migrations/074_ExcludeAttachmentPlaceholdersFromSea
 import Migration0075 from "./Migrations/075_SubagentDeliveryState.ts";
 import Migration0076 from "./Migrations/076_ProjectionProjectsPinArchive.ts";
 
+import ComputerMonitorCacheWriteUsageMigration from "./Migrations/062_ComputerMonitorCacheWriteUsage.ts";
+
 const migrationEntries = [
   [1, "OrchestrationEvents", Migration0001],
   [2, "OrchestrationCommandReceipts", Migration0002],
@@ -176,6 +178,7 @@ export const forkMigrationEntries = [
   [5, "AdaptiveComputerMonitors", ForkMigration0005],
   [6, "ComputerMonitorImageEncoding", ForkMigration0006],
   [7, "ProjectionThreadMessageSystemEvents", ForkMigration0007],
+  [8, "ComputerMonitorCacheWriteUsage", ComputerMonitorCacheWriteUsageMigration],
 ] as const;
 export const forkMigrationManifest = forkMigrationEntries.map(([id, name]) => [id, name] as const);
 

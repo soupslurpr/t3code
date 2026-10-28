@@ -1,3 +1,4 @@
+import CacheWriteUsage from "./062_ComputerMonitorCacheWriteUsage.ts";
 import SystemEvents from "./061_ProjectionThreadMessageSystemEvents.ts";
 import * as NodeEvents from "node:events";
 import * as NodeWorkerThreads from "node:worker_threads";
@@ -58,6 +59,7 @@ const seedLegacy = Effect.fn("ForkMigrationTest.seedLegacy")(function* (
   if (count >= 5) yield* AdaptiveComputerMonitors;
   if (count >= 6) yield* ImageEncoding;
   if (count >= 7) yield* SystemEvents;
+  if (count >= 8) yield* CacheWriteUsage;
   yield* sql`INSERT INTO thread_monitors (monitor_id, thread_id, label, condition_type,
     continuation_mode, status, created_at, updated_at)
     VALUES ('preserved', 'thread', 'Preserved signal', 'signal', 'record-only', 'active', ${createdAt}, ${createdAt})`;
@@ -132,7 +134,7 @@ describe("fork migration ledger adoption", () => {
     Effect.gen(function* () {
       const sql = yield* SqlClient.SqlClient;
       const executed = yield* runMigrations();
-      assert.deepEqual(executed.at(-1), [7, "ProjectionThreadMessageSystemEvents"]);
+      assert.deepEqual(executed.at(-1), [8, "ComputerMonitorCacheWriteUsage"]);
       yield* assertCurrentUpstream;
       assert.deepEqual(
         (yield* forkHistory).map(({ migration_id, name }) => ({ migration_id, name })),
@@ -144,6 +146,7 @@ describe("fork migration ledger adoption", () => {
           { migration_id: 5, name: "AdaptiveComputerMonitors" },
           { migration_id: 6, name: "ComputerMonitorImageEncoding" },
           { migration_id: 7, name: "ProjectionThreadMessageSystemEvents" },
+          { migration_id: 8, name: "ComputerMonitorCacheWriteUsage" },
         ],
       );
       assert.deepEqual(yield* runMigrations(), []);
@@ -260,7 +263,7 @@ describe("fork migration ledger adoption", () => {
           assert.deepEqual(yield* forkHistory, beforeFork);
         } else {
           yield* assertCurrentUpstream;
-          assert.lengthOf(yield* forkHistory, 7);
+          assert.lengthOf(yield* forkHistory, 8);
         }
       }).pipe(Effect.provide(memory)),
   );
@@ -368,7 +371,7 @@ describe("fork migration ledger adoption", () => {
               NodeEvents.EventEmitter.once(second, "message"),
             ]);
             first.postMessage("release", []);
-            assert.deepEqual(await completed, [[83], [0]]);
+            assert.deepEqual(await completed, [[84], [0]]);
           } finally {
             await Promise.all([first.terminate(), second.terminate()]);
           }

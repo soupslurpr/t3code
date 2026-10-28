@@ -47,6 +47,7 @@ export const OrchestrationMonitorReviewEvent = Schema.Struct({
       Schema.Struct({
         inputTokens: Schema.NullOr(NonNegativeInt),
         cachedInputTokens: Schema.NullOr(NonNegativeInt),
+        cacheWriteInputTokens: Schema.optional(Schema.NullOr(NonNegativeInt)),
         outputTokens: Schema.NullOr(NonNegativeInt),
       }),
     ),
