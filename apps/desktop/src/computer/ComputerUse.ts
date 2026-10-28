@@ -1,6 +1,7 @@
 import {
   ComputerAutomationInputCleanup,
   type ComputerAutomationAccessibilitySnapshot,
+  type ComputerAutomationCaptureHealth,
   type ComputerAutomationAction,
   type ComputerAutomationActionResult,
   type ComputerAutomationActionBatchInput,
@@ -15,6 +16,7 @@ import {
 import * as Clock from "effect/Clock";
 import * as Context from "effect/Context";
 import * as Duration from "effect/Duration";
+import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Ref from "effect/Ref";
@@ -182,6 +184,7 @@ const EXECUTION_PHASES = new Set([
 ]);
 const MAX_FAILURE_BACKEND_CODE_LENGTH = 128;
 const MAX_FAILURE_DETAIL_LENGTH = 2_000;
+
 /** Narrows an unknown value to an object record. */
 const asRecord = (value: unknown): Readonly<Record<string, unknown>> | undefined =>
   typeof value === "object" && value !== null
@@ -440,6 +443,7 @@ export function toComputerAutomationFailure(cause: unknown): ComputerAutomationF
       category: "resource",
       message: "The environment lacks the resources required for this Agent desktop operation.",
       ...common,
+      ...diagnostics,
     };
   }
   if (internalCode === "guest-disconnected") {
@@ -448,6 +452,7 @@ export function toComputerAutomationFailure(cause: unknown): ComputerAutomationF
       category: "resource",
       message: "The Agent desktop guest is not currently responding.",
       ...common,
+      ...diagnostics,
     };
   }
   if (internalCode === "guest-operation-failed") {
@@ -456,6 +461,7 @@ export function toComputerAutomationFailure(cause: unknown): ComputerAutomationF
       category: "internal",
       message: "The Agent desktop guest rejected the requested operation.",
       ...common,
+      ...diagnostics,
     };
   }
   if (internalCode === "unsupported-key" || internalCode === "duplicate-hotkey-key") {
@@ -563,6 +569,7 @@ export function toComputerAutomationFailure(cause: unknown): ComputerAutomationF
       category: "capture",
       message: "The desktop observation could not be captured.",
       ...common,
+      ...diagnostics,
     };
   }
   if (actionContext !== undefined) {
@@ -963,6 +970,53 @@ export const makeWithOptions = Effect.fn("ComputerUse.makeWithOptions")(function
   const inputSemaphore = yield* Semaphore.make(1);
   const lastPointer = yield* Ref.make<LastCommandedPointer | null>(null);
   const frameState = yield* Ref.make<FrameState>({ nextId: 1, frames: new Map() });
+  const captureHealth = yield* Ref.make<ReadonlyMap<string, ComputerAutomationCaptureHealth>>(
+    new Map(),
+  );
+
+  const untestedCaptureHealth = (displayId: string): ComputerAutomationCaptureHealth => ({
+    displayId,
+    state: "untested",
+    lastSuccessfulFrameAt: null,
+    lastFailedFrameAt: null,
+    consecutiveFailures: 0,
+    lastFailure: null,
+  });
+
+  const recordCaptureSuccess = Effect.fn("ComputerUse.recordCaptureSuccess")(function* (
+    displayId: string,
+  ) {
+    const capturedAt = DateTime.formatIso(DateTime.makeUnsafe(yield* Clock.currentTimeMillis));
+    yield* Ref.update(captureHealth, (current) => {
+      const previous = current.get(displayId) ?? untestedCaptureHealth(displayId);
+      return new Map(current).set(displayId, {
+        ...previous,
+        state: "healthy",
+        lastSuccessfulFrameAt: capturedAt,
+        consecutiveFailures: 0,
+      });
+    });
+  });
+
+  const recordCaptureFailure = Effect.fn("ComputerUse.recordCaptureFailure")(function* (
+    displayId: string,
+    cause: unknown,
+  ) {
+    const failedAt = DateTime.formatIso(DateTime.makeUnsafe(yield* Clock.currentTimeMillis));
+    const lastFailure = toComputerAutomationFailure(
+      new ComputerUseOperationError({ operation: "snapshot", cause }),
+    );
+    yield* Ref.update(captureHealth, (current) => {
+      const previous = current.get(displayId) ?? untestedCaptureHealth(displayId);
+      return new Map(current).set(displayId, {
+        ...previous,
+        state: "degraded",
+        lastFailedFrameAt: failedAt,
+        consecutiveFailures: previous.consecutiveFailures + 1,
+        lastFailure,
+      });
+    });
+  });
 
   const storeFrame = (
     input: Omit<StoredFrame, "frame"> & { readonly frame: Omit<ComputerAutomationFrame, "id"> },
@@ -986,6 +1040,7 @@ export const makeWithOptions = Effect.fn("ComputerUse.makeWithOptions")(function
     [
       Ref.set(lastPointer, null),
       Ref.update(frameState, (current) => ({ ...current, frames: new Map() })),
+      Ref.set(captureHealth, new Map()),
     ],
     { discard: true },
   );
@@ -1007,8 +1062,9 @@ export const makeWithOptions = Effect.fn("ComputerUse.makeWithOptions")(function
   const status = Effect.all({
     controller: controller.status,
     displayState: readDisplays("status"),
+    captureHealth: Ref.get(captureHealth),
   }).pipe(
-    Effect.map(({ controller: controllerStatus, displayState }) => {
+    Effect.map(({ controller: controllerStatus, displayState, captureHealth: currentHealth }) => {
       const detail =
         controllerStatus.detail ??
         (displayState.displays.length === 0 ? "Electron reported no desktop displays." : undefined);
@@ -1020,6 +1076,9 @@ export const makeWithOptions = Effect.fn("ComputerUse.makeWithOptions")(function
         displayState: controllerStatus.displayState,
         keepAwake: controllerStatus.keepAwake,
         displays: displayState.contracts,
+        captureHealth: displayState.contracts.map(
+          (display) => currentHealth.get(display.id) ?? untestedCaptureHealth(display.id),
+        ),
         cursor: null,
         ...(detail === undefined ? {} : { detail }),
       };
@@ -1033,6 +1092,7 @@ export const makeWithOptions = Effect.fn("ComputerUse.makeWithOptions")(function
         displayState: "unknown" as const,
         keepAwake: false,
         displays: [],
+        captureHealth: [],
         cursor: null,
         detail: error.message,
       }),
@@ -1200,11 +1260,17 @@ export const makeWithOptions = Effect.fn("ComputerUse.makeWithOptions")(function
       // Read one frame from the monitor stream selected for this display.
       const includeAccessibility = input.includeAccessibility ?? true;
       const accessibilitySupported = displays.length === 1;
-      const capture = yield* controller.snapshot({
-        includeAccessibility,
-        ...(accessibilitySupported ? {} : { includeAccessibilityTargets: false }),
-        displayBounds: display.bounds,
-      });
+      const selectedDisplayId = displayId(display);
+      const capture = yield* controller
+        .snapshot({
+          includeAccessibility,
+          ...(accessibilitySupported ? {} : { includeAccessibilityTargets: false }),
+          displayBounds: display.bounds,
+        })
+        .pipe(
+          Effect.tap(() => recordCaptureSuccess(selectedDisplayId)),
+          Effect.tapError((cause) => recordCaptureFailure(selectedDisplayId, cause)),
+        );
       const accessibility: ComputerAutomationAccessibilitySnapshot | undefined =
         !includeAccessibility
           ? undefined
@@ -1371,10 +1437,16 @@ export const makeWithOptions = Effect.fn("ComputerUse.makeWithOptions")(function
   const captureChangeBitmap = Effect.fn("ComputerUse.captureChangeBitmap")(function* (
     resolved: ResolvedChangeRegion,
   ) {
-    const capture = yield* controller.snapshot({
-      includeAccessibility: false,
-      displayBounds: resolved.display.bounds,
-    });
+    const selectedDisplayId = displayId(resolved.display);
+    const capture = yield* controller
+      .snapshot({
+        includeAccessibility: false,
+        displayBounds: resolved.display.bounds,
+      })
+      .pipe(
+        Effect.tap(() => recordCaptureSuccess(selectedDisplayId)),
+        Effect.tapError((cause) => recordCaptureFailure(selectedDisplayId, cause)),
+      );
     return yield* Effect.try({
       try: () => {
         const sourceImage = platform.decodePng(capture.data);
@@ -1738,13 +1810,18 @@ export const makeWithOptions = Effect.fn("ComputerUse.makeWithOptions")(function
 
   const requestControl = inputSemaphore.withPermits(1)(
     controller.start.pipe(
+      Effect.tap(() => Ref.set(captureHealth, new Map())),
       Effect.andThen(status),
       Effect.mapError(mapOperationError("requestControl")),
     ),
   );
 
   const requestView = inputSemaphore.withPermits(1)(
-    controller.view.pipe(Effect.andThen(status), Effect.mapError(mapOperationError("requestView"))),
+    controller.view.pipe(
+      Effect.tap(() => Ref.set(captureHealth, new Map())),
+      Effect.andThen(status),
+      Effect.mapError(mapOperationError("requestView")),
+    ),
   );
 
   const requestAvailability = controller.requestAvailability.pipe(

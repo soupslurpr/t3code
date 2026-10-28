@@ -35,3 +35,7 @@ same transaction. The controller supplies the expected revision; the evaluator
 only reports facts and cannot alter strategy. Reviews keep the monitor active
 and use a separate, revision-bound delivery identity. Recover an accepted review
 before checking whether its resulting run now makes the thread busy.
+
+The default health-review policy applies to new watches only. Preserve a stored
+null policy or explicitly disabled failure threshold when revising a watch;
+normalizing omission to the new default would silently re-enable warnings.

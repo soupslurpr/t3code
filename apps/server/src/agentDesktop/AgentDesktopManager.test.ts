@@ -76,6 +76,7 @@ const makeQemu = (
     const inputReleaseFailed = yield* Ref.make(false);
     const sendKeyFailed = yield* Ref.make(false);
     const wheelAcknowledgementLost = yield* Ref.make(false);
+    const captureEnabled = yield* Ref.make(captureAvailable);
     let windowActivationAttemptCount = 0;
     const record = (call: string) => Ref.update(calls, (current) => [...current, call]);
     const service = QemuAgentDesktop.QemuAgentDesktop.of({
@@ -128,15 +129,23 @@ const makeQemu = (
         record(`checkpoint:${id}:${saveMemoryState ? "memory" : "disk"}`),
       remove: (id) => record(`remove:${id}`),
       capture: () =>
-        captureAvailable
-          ? Effect.succeed({
-              kind: "bitmap" as const,
-              path: "/capture.raw",
-              data: new Uint8Array(100 * 100 * 4).fill(255),
-              width: 100,
-              height: 100,
-            })
-          : Effect.die("capture is not expected"),
+        Ref.get(captureEnabled).pipe(
+          Effect.flatMap((enabled) =>
+            enabled
+              ? Effect.succeed({
+                  kind: "bitmap" as const,
+                  path: "/capture.raw",
+                  data: new Uint8Array(100 * 100 * 4).fill(255),
+                  width: 100,
+                  height: 100,
+                })
+              : new QemuAgentDesktop.QemuAgentDesktopError({
+                  code: "guest-disconnected",
+                  operation: "capture",
+                  detail: "the test virtual display disconnected",
+                }),
+          ),
+        ),
       sendInput: (id, events) =>
         Effect.gen(function* () {
           yield* record(`input:${id}:${events.length}`);
@@ -292,6 +301,7 @@ const makeQemu = (
     return {
       calls,
       wheelAcknowledgementLost,
+      captureEnabled,
       commandEnvironment,
       commandStarted,
       desktopParked,
@@ -372,6 +382,7 @@ const managerHarness = (
     return {
       calls: qemu.calls,
       wheelAcknowledgementLost: qemu.wheelAcknowledgementLost,
+      captureEnabled: qemu.captureEnabled,
       commandEnvironment: qemu.commandEnvironment,
       commandStarted: qemu.commandStarted,
       desktopParked: qemu.desktopParked,
@@ -785,6 +796,50 @@ describe("AgentDesktopManager", () => {
           ).length,
           7,
         );
+      }).pipe(Effect.provide(harness.layer));
+    }),
+  );
+
+  it.effect("reports and recovers Agent desktop capture health", () =>
+    Effect.gen(function* () {
+      const harness = yield* managerHarness("capture-health", { captureAvailable: true });
+      yield* Effect.gen(function* () {
+        const manager = yield* AgentDesktopManager.AgentDesktopManager;
+        const desktop = yield* manager.acquire(owner, { label: "Capture health" });
+        yield* manager.requestView(owner, { kind: "agent", desktopId: desktop.id });
+
+        assert.equal(
+          (yield* manager.status(owner.controllerId, desktop.id)).captureHealth?.[0]?.state,
+          "untested",
+        );
+        yield* manager.snapshot(owner.controllerId, { includeAccessibility: false }, desktop.id);
+        assert.equal(
+          (yield* manager.status(owner.controllerId, desktop.id)).captureHealth?.[0]?.state,
+          "healthy",
+        );
+
+        yield* Ref.set(harness.captureEnabled, false);
+        yield* manager
+          .snapshot(owner.controllerId, { includeAccessibility: false }, desktop.id)
+          .pipe(Effect.flip);
+        const degraded = yield* manager.status(owner.controllerId, desktop.id);
+        assert.deepInclude(degraded.captureHealth?.[0], {
+          state: "degraded",
+          consecutiveFailures: 1,
+          lastFailure: {
+            code: "guest-disconnected",
+            category: "resource",
+            message: "The Agent desktop guest is not currently responding.",
+            backendCode: "guest-disconnected",
+            detail: "the test virtual display disconnected",
+          },
+        });
+
+        yield* Ref.set(harness.captureEnabled, true);
+        yield* manager.snapshot(owner.controllerId, { includeAccessibility: false }, desktop.id);
+        const recovered = yield* manager.status(owner.controllerId, desktop.id);
+        assert.equal(recovered.captureHealth?.[0]?.state, "healthy");
+        assert.equal(recovered.captureHealth?.[0]?.consecutiveFailures, 0);
       }).pipe(Effect.provide(harness.layer));
     }),
   );

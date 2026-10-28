@@ -1,6 +1,7 @@
 import { assert, describe, it } from "@effect/vitest";
 import {
   AgentDesktopId,
+  type ComputerAutomationCaptureHealth,
   ComputerAutomationObservation,
   makeDesktopComputerAutomationResultSchema,
   EnvironmentId,
@@ -51,6 +52,7 @@ const snapshot = {
 
 /** Creates the narrow fake computer service needed by the IPC tests. */
 function makeComputer(options: {
+  readonly status?: ComputerUse.ComputerUseShape["status"];
   readonly requestView: ComputerUse.ComputerUseShape["requestView"];
   readonly snapshot?: (
     input: ComputerAutomationSnapshotInput,
@@ -61,7 +63,7 @@ function makeComputer(options: {
 }) {
   const unexpected = Effect.die("unexpected computer operation");
   return {
-    status: Effect.succeed(status),
+    status: options.status ?? Effect.succeed(status),
     requestAvailability: Effect.succeed(status),
     releaseAvailability: Effect.succeed(status),
     requestView: options.requestView,
@@ -152,6 +154,61 @@ describe("computer IPC methods", () => {
         ok: true,
         value: { status, snapshot },
       });
+    }),
+  );
+
+  it.effect("refreshes capture health after an initial access observation", () =>
+    Effect.gen(function* () {
+      const untestedHealth = {
+        displayId: "7",
+        state: "untested",
+        lastSuccessfulFrameAt: null,
+        lastFailedFrameAt: null,
+        consecutiveFailures: 0,
+        lastFailure: null,
+      } satisfies ComputerAutomationCaptureHealth;
+      const untested = {
+        ...status,
+        captureHealth: [untestedHealth],
+      };
+      let captured = false;
+      const result = decodeComputerObservationResult(
+        yield* requestView.handler({ input: { desktop: { kind: "user" } } }).pipe(
+          Effect.provide(
+            computerRouterLayer(
+              makeComputer({
+                status: Effect.sync(() =>
+                  captured
+                    ? {
+                        ...untested,
+                        captureHealth: [
+                          {
+                            ...untestedHealth,
+                            state: "healthy",
+                            lastSuccessfulFrameAt: "2026-08-14T12:00:00.000Z",
+                          },
+                        ],
+                      }
+                    : untested,
+                ),
+                requestView: Effect.succeed(untested),
+                snapshot: () =>
+                  Effect.sync(() => {
+                    captured = true;
+                    return snapshot;
+                  }),
+              }),
+            ),
+          ),
+        ),
+      );
+
+      assert.isTrue(result.ok);
+      if (!result.ok) return;
+      assert.equal(result.value.status?.captureHealth?.[0]?.displayId, "7");
+      assert.equal(result.value.status?.captureHealth?.[0]?.state, "healthy");
+      assert.equal(result.value.status?.captureHealth?.[0]?.consecutiveFailures, 0);
+      assert.isDefined(result.value.snapshot);
     }),
   );
 
