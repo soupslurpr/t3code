@@ -6,6 +6,7 @@ import {
   VcsProcessExitError,
   type VcsListRefsResult,
   type VcsStatusResult,
+  type VcsListRefsInput,
 } from "@t3tools/contracts";
 import { describe, expect, it } from "@effect/vitest";
 import * as Deferred from "effect/Deferred";
@@ -41,6 +42,7 @@ import {
   createVcsEnvironmentAtoms,
   makeCachedVcsRefsChanges,
   resolveQuickAction,
+  vcsRefPageInput,
 } from "./vcs.ts";
 import {
   invalidateCachedVcsRefs,
@@ -633,6 +635,150 @@ describe("cached VCS refs", () => {
         yield* SubscriptionRef.set(liveSession, Option.some(session(client)));
         expect(yield* Fiber.join(refs)).toEqual([CACHED_REFS, LIVE_REFS]);
         expect(yield* Ref.get(calls)).toBe(3);
+      }),
+    ),
+  );
+
+  it.effect(
+    "refreshes picker openings while search and later pages retain their ref snapshot",
+    () =>
+      Effect.gen(function* () {
+        let repository = ["main"];
+        let snapshot = [...repository];
+        const client = {
+          [WS_METHODS.vcsListRefs]: (input: VcsListRefsInput) =>
+            Effect.sync(() => {
+              if (input.refresh) snapshot = [...repository];
+              const refs = snapshot
+                .filter((name) => name.includes(input.query ?? ""))
+                .slice(input.cursor ?? 0);
+              return {
+                ...CACHED_REFS,
+                refs: refs.map((name) => ({
+                  name,
+                  current: name === "main",
+                  isDefault: name === "main",
+                  worktreePath: null,
+                })),
+                totalCount: refs.length,
+              };
+            }),
+        } as unknown as WsRpcProtocolClient;
+        const supervisor = EnvironmentSupervisor.EnvironmentSupervisor.of({
+          target: TARGET,
+          state: yield* SubscriptionRef.make(CONNECTED_CONNECTION_STATE),
+          session: yield* SubscriptionRef.make(Option.some(session(client))),
+          prepared: yield* SubscriptionRef.make(Option.none<PreparedConnection>()),
+          connect: Effect.void,
+          disconnect: Effect.void,
+          retryNow: Effect.void,
+        });
+        const read = (query: string, cursor: number | undefined = undefined) =>
+          Stream.unwrap(
+            makeCachedVcsRefsChanges(vcsRefPageInput("/repo", query, cursor, 100)).pipe(
+              Effect.provideService(EnvironmentSupervisor.EnvironmentSupervisor, supervisor),
+              Effect.provideService(
+                Persistence.EnvironmentCacheStore,
+                cacheWithRefs(Option.none()),
+              ),
+            ),
+          ).pipe(
+            Stream.runHead,
+            Effect.map((result) => Option.getOrThrow(result).refs.map((ref) => ref.name)),
+          );
+        expect(yield* read("")).toEqual(["main"]);
+        repository = ["main", "release"];
+        expect(yield* read("")).toEqual(["main", "release"]);
+        repository = ["main", "release", "feature"];
+        expect(yield* read("release")).toEqual(["release"]);
+        expect(yield* read("", 1)).toEqual(["release"]);
+        expect(yield* read("")).toEqual(["main", "release", "feature"]);
+      }).pipe(Effect.scoped),
+  );
+
+  it.effect("keeps reopened picker pages and searches in the new snapshot", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        let repository = [
+          "main",
+          ...Array.from({ length: 100 }, (_, i) => `branch${String(i + 1).padStart(3, "0")}`),
+        ];
+        let snapshot = [...repository];
+        const calls: VcsListRefsInput[] = [];
+        const client = {
+          [WS_METHODS.vcsListRefs]: (input: VcsListRefsInput) =>
+            Effect.sync(() => {
+              calls.push(input);
+              if (input.refresh) snapshot = [...repository];
+              const matching = snapshot.filter((name) => name.includes(input.query ?? ""));
+              const offset = input.cursor ?? 0;
+              const limit = input.limit ?? 100;
+              return {
+                ...CACHED_REFS,
+                refs: matching.slice(offset, offset + limit).map((name) => ({
+                  name,
+                  current: name === "main",
+                  isDefault: name === "main",
+                  worktreePath: null,
+                })),
+                nextCursor: offset + limit < matching.length ? offset + limit : null,
+                totalCount: matching.length,
+              };
+            }),
+        } as unknown as WsRpcProtocolClient;
+        const supervisor = EnvironmentSupervisor.EnvironmentSupervisor.of({
+          target: TARGET,
+          state: yield* SubscriptionRef.make(CONNECTED_CONNECTION_STATE),
+          session: yield* SubscriptionRef.make(Option.some(session(client))),
+          prepared: yield* SubscriptionRef.make(Option.none<PreparedConnection>()),
+          connect: Effect.void,
+          disconnect: Effect.void,
+          retryNow: Effect.void,
+        });
+        const environmentRegistry = EnvironmentRegistry.EnvironmentRegistry.of({
+          followStream: (_id, stream) =>
+            Stream.provideService(stream, EnvironmentSupervisor.EnvironmentSupervisor, supervisor),
+        } as EnvironmentRegistry.EnvironmentRegistry["Service"]);
+        const runtime = Atom.runtime(
+          Layer.merge(
+            Layer.succeed(EnvironmentRegistry.EnvironmentRegistry, environmentRegistry),
+            Layer.succeed(Persistence.EnvironmentCacheStore, cacheWithRefs(Option.none())),
+          ),
+        );
+        const atoms = createVcsEnvironmentAtoms(runtime);
+        const registry = yield* Effect.acquireRelease(Effect.sync(AtomRegistry.make), (registry) =>
+          Effect.sync(() => registry.dispose()),
+        );
+        const page = (cacheKey: string, query = "", cursor?: number) =>
+          atoms.listRefs({
+            environmentId: TARGET.environmentId,
+            input: vcsRefPageInput("/repo", query, cursor, 100),
+            cacheKey,
+          });
+        const first = page("opening-1");
+        const later = page("opening-1", "", 100);
+        const search = page("opening-1", "branch100");
+        const read = (atom: typeof first) =>
+          AtomRegistry.getResult(registry, atom, { suspendOnWaiting: false });
+        expect((yield* read(first)).refs).toHaveLength(100);
+        expect((yield* read(later)).refs.map((ref) => ref.name)).toEqual(["branch100"]);
+        expect((yield* read(search)).refs.map((ref) => ref.name)).toEqual(["branch100"]);
+        repository = ["main", "new-branch", ...repository.slice(1, 100)];
+        const reopened = yield* read(page("opening-2"));
+        const reopenedLater = yield* read(page("opening-2", "", 100));
+        const reopenedSearch = yield* read(page("opening-2", "branch100"));
+        expect(reopened.refs[1]?.name).toBe("new-branch");
+        expect(reopenedLater.refs.map((ref) => ref.name)).toEqual(["branch099"]);
+        expect(reopenedSearch.refs).toEqual([]);
+        expect([...reopened.refs, ...reopenedLater.refs].map((ref) => ref.name)).toEqual(
+          repository,
+        );
+        expect(calls.filter((input) => input.refresh)).toHaveLength(2);
+        expect(
+          calls
+            .filter((input) => input.cursor !== undefined || input.query !== undefined)
+            .every((input) => input.refresh === undefined),
+        ).toBe(true);
       }),
     ),
   );

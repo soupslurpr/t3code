@@ -6,7 +6,7 @@ import {
 import { resolveFilesystemReadAccess } from "@t3tools/client-runtime/state/filesystem";
 import { environmentSession } from "./session";
 import { useEnvironmentPresentation } from "./presentation";
-import type { VcsRefTarget } from "@t3tools/client-runtime/state/vcs";
+import { vcsRefPageInput, type VcsRefTarget } from "@t3tools/client-runtime/state/vcs";
 import type {
   EnvironmentId,
   OrchestrationV2ProjectedTurnItem,
@@ -31,7 +31,7 @@ import * as Cause from "effect/Cause";
 import { turnItemDetailRevision } from "@t3tools/client-runtime/work-log/item-detail";
 import * as Option from "effect/Option";
 import { AsyncResult, Atom } from "effect/reactivity";
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useId, useMemo, useState } from "react";
 
 import { appAtomRegistry } from "./atom-registry";
 import { orchestrationEnvironment } from "./orchestration";
@@ -286,10 +286,13 @@ export function useBranches(input: {
 }
 
 export function usePaginatedBranches(target: VcsRefTarget) {
+  const pickerId = useId();
+  const [opening, setOpening] = useState(0);
+  const cacheKey = `${pickerId}:${opening}`;
   const query = target.query?.trim() ?? "";
   const targetKey =
     target.environmentId !== null && target.cwd !== null
-      ? JSON.stringify([target.environmentId, target.cwd, query])
+      ? JSON.stringify([target.environmentId, target.cwd, query, cacheKey])
       : null;
   const [pagination, setPagination] = useState<{
     readonly targetKey: string | null;
@@ -305,16 +308,12 @@ export function usePaginatedBranches(target: VcsRefTarget) {
         ? cursors.map((cursor) =>
             vcsEnvironment.listRefs({
               environmentId: target.environmentId!,
-              input: {
-                cwd: target.cwd!,
-                ...(query.length > 0 ? { query } : {}),
-                ...(cursor === undefined ? {} : { cursor }),
-                limit: VCS_REF_LIST_LIMIT,
-              },
+              input: vcsRefPageInput(target.cwd!, query, cursor, VCS_REF_LIST_LIMIT),
+              cacheKey,
             }),
           )
         : [],
-    [target.environmentId, target.cwd, query, cursors],
+    [target.environmentId, target.cwd, query, cursors, cacheKey],
   );
   const pagesAtom = useMemo(
     () =>
@@ -361,13 +360,7 @@ export function usePaginatedBranches(target: VcsRefTarget) {
             : "Failed to load refs.";
         })()
       : null;
-  const refresh = () => {
-    const firstPage = pageAtoms[0];
-    setPagination({ targetKey, cursors: INITIAL_BRANCH_CURSORS });
-    if (firstPage !== undefined) {
-      appAtomRegistry.refresh(firstPage);
-    }
-  };
+  const refresh = () => setOpening((current) => current + 1);
   const loadNext = () => {
     if (targetKey === null || data?.nextCursor === null || data?.nextCursor === undefined) {
       return;

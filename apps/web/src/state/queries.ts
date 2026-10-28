@@ -14,7 +14,7 @@ import {
 } from "@t3tools/client-runtime/state/thread-search";
 import { THREAD_SEARCH_QUERY_MAX_LENGTH } from "@t3tools/contracts";
 import { messageSearchTokens } from "@t3tools/shared/paletteSearch";
-import { type VcsRefTarget } from "@t3tools/client-runtime/state/vcs";
+import { vcsRefPageInput, type VcsRefTarget } from "@t3tools/client-runtime/state/vcs";
 import type {
   EnvironmentId,
   OrchestrationV2GetTurnItemResult,
@@ -28,7 +28,7 @@ import type {
 } from "@t3tools/contracts";
 import * as Cause from "effect/Cause";
 import { AsyncResult, Atom } from "effect/reactivity";
-import { useEffect, useState } from "react";
+import { useEffect, useId, useState } from "react";
 
 import { appAtomRegistry } from "../rpc/atomRegistry";
 import { useFilesystemReadAccess } from "./filesystem";
@@ -164,15 +164,16 @@ export function useThreadSearch(
 }
 
 function vcsRefPageAtom(targetKey: string, cursor: number | undefined) {
-  const [environmentId, cwd, query] = JSON.parse(targetKey) as [EnvironmentId, string, string];
+  const [environmentId, cwd, query, cacheKey] = JSON.parse(targetKey) as [
+    EnvironmentId,
+    string,
+    string,
+    string,
+  ];
   return vcsEnvironment.listRefs({
     environmentId,
-    input: {
-      cwd,
-      ...(query.length > 0 ? { query } : {}),
-      ...(cursor === undefined ? {} : { cursor }),
-      limit: VCS_REF_LIST_LIMIT,
-    },
+    input: vcsRefPageInput(cwd, query, cursor, VCS_REF_LIST_LIMIT),
+    cacheKey,
   });
 }
 
@@ -189,6 +190,9 @@ const vcsRefPagesAtom = Atom.family((pagesKey: string) => {
 });
 
 export function usePaginatedBranches(target: VcsRefTarget) {
+  const pickerId = useId();
+  const [opening, setOpening] = useState(0);
+  const cacheKey = `${pickerId}:${opening}`;
   // Leave unkeyed; mismatches already reset cursors, and a seeded key would break caching across the hook.
   const [pagination, setPagination] = useState<{
     readonly targetKey: string | null;
@@ -200,7 +204,9 @@ export function usePaginatedBranches(target: VcsRefTarget) {
   const { environmentId, cwd } = target;
   const query = target.query?.trim() ?? "";
   const targetKey =
-    environmentId !== null && cwd !== null ? JSON.stringify([environmentId, cwd, query]) : null;
+    environmentId !== null && cwd !== null
+      ? JSON.stringify([environmentId, cwd, query, cacheKey])
+      : null;
   const cursors = pagination.targetKey === targetKey ? pagination.cursors : INITIAL_BRANCH_CURSORS;
   const pagesKey = targetKey === null ? null : JSON.stringify([targetKey, cursors]);
   const results = useAtomValue(
@@ -239,12 +245,7 @@ export function usePaginatedBranches(target: VcsRefTarget) {
             : "Failed to load refs.";
         })()
       : null;
-  const refresh = () => {
-    setPagination({ targetKey, cursors: INITIAL_BRANCH_CURSORS });
-    if (targetKey !== null) {
-      appAtomRegistry.refresh(vcsRefPageAtom(targetKey, undefined));
-    }
-  };
+  const refresh = () => setOpening((current) => current + 1);
   const nextCursor = data?.nextCursor;
   const loadNext = () => {
     if (targetKey === null || nextCursor === null || nextCursor === undefined) {

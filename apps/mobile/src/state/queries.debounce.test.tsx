@@ -135,10 +135,12 @@ it("keeps compiled branch results stable and resets pagination for a new target 
     ({
       environmentId,
       input,
+      cacheKey,
     }: {
       environmentId: EnvironmentId;
       input: { cwd: string; cursor?: number };
-    }) => pages(JSON.stringify([environmentId, input.cwd, input.cursor ?? null])),
+      cacheKey: string;
+    }) => pages(JSON.stringify([environmentId, input.cwd, input.cursor ?? null, cacheKey])),
   );
   mocks.refresh.mockClear();
   const root = createRoot(document.createElement("div"));
@@ -173,7 +175,14 @@ it("keeps compiled branch results stable and resets pagination for a new target 
   expect(current!.loadNext).toBe(first.loadNext);
   act(() =>
     registry.set(
-      pages(JSON.stringify([target.environmentId, "/repo", null])),
+      pages(
+        JSON.stringify([
+          target.environmentId,
+          "/repo",
+          null,
+          mocks.listRefs.mock.calls.at(-1)![0].cacheKey,
+        ]),
+      ),
       AsyncResult.success({
         ...first.data!,
         refs: [{ name: "/repo-0", current: true, isDefault: false, worktreePath: null }],
@@ -185,9 +194,7 @@ it("keeps compiled branch results stable and resets pagination for a new target 
   expect(current!.refs.map((ref) => ref.name)).toEqual(["/repo-0", "/repo-100"]);
   act(() => current!.refresh());
   expect(current!.refs.map((ref) => ref.name)).toEqual(["/repo-0"]);
-  expect(mocks.refresh).toHaveBeenCalledExactlyOnceWith(
-    pages(JSON.stringify([target.environmentId, "/repo", null])),
-  );
+  expect(current!.refs[0]?.current).toBe(false);
   act(() => current!.loadNext());
   render("/other");
   expect(current!.refs.map((ref) => ref.name)).toEqual(["/other-0"]);
