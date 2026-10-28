@@ -7,17 +7,21 @@ import {
   ComputerAutomationActionBatchInput,
   ComputerAutomationClickInput,
   ComputerAutomationFailure,
+  ComputerAutomationAccessInput,
   ComputerAutomationHotkeyInput,
   ComputerAutomationKeyInput,
   ComputerAutomationWheelInput,
   ComputerAutomationSnapshot,
   ComputerAutomationSnapshotInput,
   ComputerAutomationStatus,
+  ComputerAutomationTargetInput,
   ComputerAutomationTypeInput,
   findComputerAutomationFailureKind,
 } from "./computerAutomation.ts";
 
+const decodeRoutedAct = Schema.decodeUnknownSync(ComputerAutomationActInput);
 const decodeClick = Schema.decodeUnknownSync(ComputerAutomationClickInput);
+const decodeAccess = Schema.decodeUnknownSync(ComputerAutomationAccessInput);
 const decodeKey = Schema.decodeUnknownSync(ComputerAutomationKeyInput);
 const decodeActivate = Schema.decodeUnknownSync(ComputerAutomationActivateInput);
 const decodeAct = Schema.decodeUnknownSync(ComputerAutomationActionBatchInput);
@@ -27,6 +31,7 @@ const decodeFailure = Schema.decodeUnknownSync(ComputerAutomationFailure);
 const decodeSnapshot = Schema.decodeUnknownSync(ComputerAutomationSnapshot);
 const decodeSnapshotInput = Schema.decodeUnknownSync(ComputerAutomationSnapshotInput);
 const decodeStatus = Schema.decodeUnknownSync(ComputerAutomationStatus);
+const decodeTarget = Schema.decodeUnknownSync(ComputerAutomationTargetInput);
 const decodeType = Schema.decodeUnknownSync(ComputerAutomationTypeInput);
 
 describe("computer automation contracts", () => {
@@ -46,6 +51,28 @@ describe("computer automation contracts", () => {
         ],
       }),
     ).toThrow();
+  });
+  it("selects user or independently managed agent desktops", () => {
+    expect(decodeAccess({ desktop: { kind: "user" }, observation: false })).toEqual({
+      desktop: { kind: "user" },
+      observation: false,
+    });
+    expect(decodeAccess({ desktop: { kind: "agent" } })).toEqual({
+      desktop: { kind: "agent" },
+    });
+    expect(decodeAccess({ desktop: { kind: "agent", desktopId: "desktop-1" } })).toEqual({
+      desktop: { kind: "agent", desktopId: "desktop-1" },
+    });
+    expect(() => decodeAccess({ desktop: { kind: "agent", desktopId: "" } })).toThrow();
+    expect(() =>
+      decodeAccess({
+        desktop: { kind: "agent", desktopId: "desktop-1", fresh: true },
+      }),
+    ).toThrow();
+    expect(decodeTarget({ desktop: { kind: "agent", desktopId: "desktop-1" } })).toEqual({
+      desktop: { kind: "agent", desktopId: "desktop-1" },
+    });
+    expect(() => decodeTarget({ desktop: { kind: "agent" } })).toThrow();
   });
 
   it("accepts display-relative coordinates and bounded click options", () => {
@@ -176,6 +203,13 @@ describe("computer automation contracts", () => {
     ).toThrow();
     expect(
       decodeSnapshotInput({
+        desktop: { kind: "agent", desktopId: "desktop-1" },
+        screenshot: false,
+      }),
+    ).toEqual({ desktop: { kind: "agent", desktopId: "desktop-1" }, screenshot: false });
+    expect(() => decodeSnapshotInput({ includeAccessibility: false, screenshot: false })).toThrow();
+    expect(
+      decodeSnapshotInput({
         desktop: { kind: "user" },
         screenshot: {
           region: { frameId: "frame-1", x: 10, y: 20, width: 100, height: 80 },
@@ -300,7 +334,8 @@ describe("computer automation contracts", () => {
 
   it("accepts bounded action batches and protects semantic target lifetime", () => {
     expect(
-      decodeAct({
+      decodeRoutedAct({
+        desktop: { kind: "agent", desktopId: "desktop-1" },
         actions: [
           { type: "press", key: "Meta" },
           { type: "type", text: "Calculator", submit: true },
@@ -308,6 +343,7 @@ describe("computer automation contracts", () => {
         ],
       }),
     ).toEqual({
+      desktop: { kind: "agent", desktopId: "desktop-1" },
       actions: [
         { type: "press", key: "Meta" },
         { type: "type", text: "Calculator", submit: true },
@@ -371,5 +407,15 @@ describe("computer automation contracts", () => {
         cleanup: { keys: "released", buttons: "not-needed" },
       }),
     ).toMatchObject({ code: "invalid-key-name", actionIndex: 0 });
+    expect(
+      decodeFailure({
+        code: "semantic-activation-failed",
+        category: "input-injection",
+        message: "The application rejected semantic activation.",
+        field: "actions[0].targetId",
+        received: "a11y-1-1",
+        phase: "execution",
+      }),
+    ).toMatchObject({ code: "semantic-activation-failed", phase: "execution" });
   });
 });

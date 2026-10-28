@@ -3,15 +3,17 @@ import type { PreviewCaptureFailureEncoded } from "./previewCapture.ts";
 
 import {
   ComputerAutomationAccessInput,
+  ComputerAutomationAvailabilityInput,
   ComputerAutomationActInput,
   ComputerAutomationFailure,
   ComputerAutomationObservation,
   ComputerAutomationSnapshot,
   ComputerAutomationSnapshotInput,
   ComputerAutomationStatus,
+  ComputerAutomationTargetInput,
 } from "./computerAutomation.ts";
 import { SnapShotSource } from "./chatAttachment.ts";
-import { EnvironmentId, TrimmedNonEmptyString } from "./baseSchemas.ts";
+import { EnvironmentId, ThreadId, TrimmedNonEmptyString } from "./baseSchemas.ts";
 import { BrowserProfileId } from "./browserProfile.ts";
 import type {
   BrowserImportResult,
@@ -1034,14 +1036,42 @@ export const DesktopPreviewRecordingSaveInputSchema = Schema.Struct({
 export const SystemSettingsPaneSchema = Schema.Literals(["full-disk-access"]);
 export type SystemSettingsPane = typeof SystemSettingsPaneSchema.Type;
 
-export const DesktopComputerAutomationActInputSchema = ComputerAutomationActInput;
+export const DesktopComputerAutomationContextSchema = Schema.Struct({
+  controllerId: Schema.String.check(Schema.isTrimmed()).check(Schema.isNonEmpty()),
+  environmentId: Schema.optionalKey(EnvironmentId),
+  threadId: Schema.optionalKey(ThreadId),
+});
+
+export const DesktopComputerAutomationAccessRequestSchema = Schema.Struct({
+  input: ComputerAutomationAccessInput,
+  context: Schema.optional(DesktopComputerAutomationContextSchema),
+});
+
+export const DesktopComputerAutomationAvailabilityRequestSchema = Schema.Struct({
+  input: ComputerAutomationAvailabilityInput,
+  context: Schema.optional(DesktopComputerAutomationContextSchema),
+});
+
+export const DesktopComputerAutomationTargetRequestSchema = Schema.Struct({
+  input: ComputerAutomationTargetInput,
+  context: Schema.optional(DesktopComputerAutomationContextSchema),
+});
+
+export const DesktopComputerAutomationSnapshotRequestSchema = Schema.Struct({
+  input: ComputerAutomationSnapshotInput,
+  context: Schema.optional(DesktopComputerAutomationContextSchema),
+});
+
+export const DesktopComputerAutomationActRequestSchema = Schema.Struct({
+  input: ComputerAutomationActInput,
+  context: Schema.optional(DesktopComputerAutomationContextSchema),
+});
 
 const DesktopComputerAutomationFailureSchema = Schema.Struct({
   ok: Schema.Literal(false),
   error: ComputerAutomationFailure,
 });
 
-/** Creates the local IPC envelope for a fallible computer-use operation. */
 export const makeDesktopComputerAutomationResultSchema = <Value extends Schema.Top>(value: Value) =>
   Schema.Union([
     Schema.Struct({
@@ -1185,26 +1215,52 @@ export interface DesktopBridge {
   preview: DesktopPreviewBridge;
   /** Host-computer capture and input. Present only in desktop builds that expose it. */
   computer?: DesktopComputerAutomationBridge;
+  /** Environment-local isolated Agent desktop management. */
 }
 
 export interface DesktopComputerAutomationBridge {
-  requestAvailability: () => Promise<DesktopComputerAutomationResult<ComputerAutomationStatus>>;
-  releaseAvailability: () => Promise<DesktopComputerAutomationResult<ComputerAutomationStatus>>;
-  status: () => Promise<ComputerAutomationStatus>;
+  status: (
+    input: ComputerAutomationTargetInput,
+    context?: DesktopComputerAutomationContext,
+  ) => Promise<DesktopComputerAutomationResult<ComputerAutomationStatus>>;
+  requestAvailability: (
+    input: ComputerAutomationAvailabilityInput,
+    context?: DesktopComputerAutomationContext,
+  ) => Promise<DesktopComputerAutomationResult<ComputerAutomationStatus>>;
+  releaseAvailability: (
+    input: ComputerAutomationAvailabilityInput,
+    context?: DesktopComputerAutomationContext,
+  ) => Promise<DesktopComputerAutomationResult<ComputerAutomationStatus>>;
   requestView: (
     input: ComputerAutomationAccessInput,
+    context?: DesktopComputerAutomationContext,
   ) => Promise<DesktopComputerAutomationResult<ComputerAutomationObservation>>;
   requestControl: (
     input: ComputerAutomationAccessInput,
+    context?: DesktopComputerAutomationContext,
   ) => Promise<DesktopComputerAutomationResult<ComputerAutomationObservation>>;
   snapshot: (
     input: ComputerAutomationSnapshotInput,
+    context?: DesktopComputerAutomationContext,
   ) => Promise<DesktopComputerAutomationResult<ComputerAutomationSnapshot>>;
   act: (
     input: ComputerAutomationActInput,
+    context?: DesktopComputerAutomationContext,
   ) => Promise<DesktopComputerAutomationResult<ComputerAutomationObservation>>;
-  release: () => Promise<DesktopComputerAutomationResult<ComputerAutomationStatus>>;
-  forgetControl: () => Promise<DesktopComputerAutomationResult<void>>;
+  release: (
+    input: ComputerAutomationTargetInput,
+    context?: DesktopComputerAutomationContext,
+  ) => Promise<DesktopComputerAutomationResult<ComputerAutomationStatus>>;
+  forgetControl: (
+    input: ComputerAutomationTargetInput,
+    context?: DesktopComputerAutomationContext,
+  ) => Promise<DesktopComputerAutomationResult<void>>;
+}
+
+export interface DesktopComputerAutomationContext {
+  readonly controllerId: string;
+  readonly environmentId?: EnvironmentId;
+  readonly threadId?: ThreadId;
 }
 
 /** Renderer callback invoked by Electron with a fresh user gesture before display-media capture. */

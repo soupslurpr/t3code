@@ -2,6 +2,8 @@ import { useAtomValue } from "@effect/atom-react";
 import { runAtomCommand } from "@t3tools/client-runtime/state/runtime";
 import {
   AuthPreviewOperateScope,
+  ComputerAutomationTargetInput,
+  ComputerAutomationAvailabilityInput,
   type ComputerAutomationAccessInput,
   type ComputerAutomationActInput,
   type ComputerAutomationSnapshotInput,
@@ -23,40 +25,63 @@ import {
 } from "./previewAutomationErrors";
 import { previewAutomationHostCapabilities } from "./previewAutomationHostCapabilities";
 
-async function handleComputerRequest(request: PreviewAutomationRequest): Promise<unknown> {
+async function handleComputerRequest(
+  environmentId: EnvironmentId,
+  request: PreviewAutomationRequest,
+): Promise<unknown> {
   const computer = window.desktopBridge?.computer;
   if (computer === undefined)
     throw new Error("Computer automation is unavailable on this desktop.");
+  const computerContext = {
+    controllerId: request.controllerId ?? `legacy:${request.threadId}`,
+    environmentId,
+    threadId: request.threadId,
+  };
   switch (request.operation) {
     case "computerStatus":
-      return computer.status();
+      return await resolveDesktopComputerAutomation(
+        computer?.status(request.input as ComputerAutomationTargetInput, computerContext),
+      );
     case "computerRequestAvailability":
-      return resolveDesktopComputerAutomation(computer.requestAvailability());
+      return await resolveDesktopComputerAutomation(
+        computer?.requestAvailability(
+          request.input as ComputerAutomationAvailabilityInput,
+          computerContext,
+        ),
+      );
     case "computerReleaseAvailability":
-      return resolveDesktopComputerAutomation(computer.releaseAvailability());
+      return await resolveDesktopComputerAutomation(
+        computer?.releaseAvailability(
+          request.input as ComputerAutomationAvailabilityInput,
+          computerContext,
+        ),
+      );
     case "computerRequestView":
-      return resolveDesktopComputerAutomation(
-        computer.requestView(request.input as ComputerAutomationAccessInput),
+      return await resolveDesktopComputerAutomation(
+        computer?.requestView(request.input as ComputerAutomationAccessInput, computerContext),
       );
     case "computerRequestControl":
-      return resolveDesktopComputerAutomation(
-        computer.requestControl(request.input as ComputerAutomationAccessInput),
+      return await resolveDesktopComputerAutomation(
+        computer?.requestControl(request.input as ComputerAutomationAccessInput, computerContext),
       );
     case "computerSnapshot":
-      return resolveDesktopComputerAutomation(
-        computer.snapshot(request.input as ComputerAutomationSnapshotInput),
+      return await resolveDesktopComputerAutomation(
+        computer?.snapshot(request.input as ComputerAutomationSnapshotInput, computerContext),
       );
     case "computerAct":
-      return resolveDesktopComputerAutomation(
-        computer.act(request.input as ComputerAutomationActInput),
+      return await resolveDesktopComputerAutomation(
+        computer?.act(request.input as ComputerAutomationActInput, computerContext),
       );
     case "computerRelease":
-      return resolveDesktopComputerAutomation(computer.release());
+      return await resolveDesktopComputerAutomation(
+        computer?.release(request.input as ComputerAutomationTargetInput, computerContext),
+      );
     case "computerForgetControl":
-      return resolveDesktopComputerAutomation(computer.forgetControl());
-    default:
-      throw new Error("This desktop host only supports computer automation.");
+      return await resolveDesktopComputerAutomation(
+        computer?.forgetControl(request.input as ComputerAutomationTargetInput, computerContext),
+      );
   }
+  throw new Error("This desktop host only supports user desktop automation.");
 }
 
 const computerHostAtom = Atom.family((environmentId: EnvironmentId) =>
@@ -67,7 +92,9 @@ const computerHostAtom = Atom.family((environmentId: EnvironmentId) =>
       input: {
         clientId,
         environmentId,
-        ...previewAutomationHostCapabilities({ computerAvailable: true }),
+        ...previewAutomationHostCapabilities({
+          computerAvailable: true,
+        }),
       },
     });
     let disposed = false;
@@ -138,7 +165,7 @@ const computerHostAtom = Atom.family((environmentId: EnvironmentId) =>
           { reportFailure: false },
         );
       };
-      void handleComputerRequest(event.request).then(
+      void handleComputerRequest(environmentId, event.request).then(
         (value) => answer({ ok: true, result: value }),
         (error: unknown) => answer({ ok: false, error: serializeComputerAutomationError(error) }),
       );

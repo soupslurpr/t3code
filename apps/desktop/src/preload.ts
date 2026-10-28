@@ -325,20 +325,42 @@ contextBridge.exposeInMainWorld("desktopBridge", {
     },
   },
   computer: {
-    requestAvailability: () =>
-      ipcRenderer.invoke(IpcChannels.COMPUTER_AUTOMATION_REQUEST_AVAILABILITY_CHANNEL),
-    releaseAvailability: () =>
-      ipcRenderer.invoke(IpcChannels.COMPUTER_AUTOMATION_RELEASE_AVAILABILITY_CHANNEL),
-    status: () => ipcRenderer.invoke(IpcChannels.COMPUTER_AUTOMATION_STATUS_CHANNEL),
-    requestView: (input) =>
-      ipcRenderer.invoke(IpcChannels.COMPUTER_AUTOMATION_REQUEST_VIEW_CHANNEL, input),
-    requestControl: (input) =>
-      ipcRenderer.invoke(IpcChannels.COMPUTER_AUTOMATION_REQUEST_CONTROL_CHANNEL, input),
-    snapshot: (input) =>
-      ipcRenderer.invoke(IpcChannels.COMPUTER_AUTOMATION_SNAPSHOT_CHANNEL, input),
-    act: (input) => ipcRenderer.invoke(IpcChannels.COMPUTER_AUTOMATION_ACT_CHANNEL, input),
-    release: () => ipcRenderer.invoke(IpcChannels.COMPUTER_AUTOMATION_RELEASE_CHANNEL),
-    forgetControl: () => ipcRenderer.invoke(IpcChannels.COMPUTER_AUTOMATION_FORGET_CONTROL_CHANNEL),
+    status: (input, context) =>
+      ipcRenderer.invoke(IpcChannels.COMPUTER_AUTOMATION_STATUS_CHANNEL, { input, context }),
+    requestAvailability: (input, context) =>
+      ipcRenderer.invoke(IpcChannels.COMPUTER_AUTOMATION_REQUEST_AVAILABILITY_CHANNEL, {
+        input,
+        context,
+      }),
+    releaseAvailability: (input, context) =>
+      ipcRenderer.invoke(IpcChannels.COMPUTER_AUTOMATION_RELEASE_AVAILABILITY_CHANNEL, {
+        input,
+        context,
+      }),
+    requestView: (input, context) =>
+      ipcRenderer.invoke(IpcChannels.COMPUTER_AUTOMATION_REQUEST_VIEW_CHANNEL, {
+        input,
+        context,
+      }),
+    requestControl: (input, context) =>
+      ipcRenderer.invoke(IpcChannels.COMPUTER_AUTOMATION_REQUEST_CONTROL_CHANNEL, {
+        input,
+        context,
+      }),
+    snapshot: (input, context) =>
+      ipcRenderer.invoke(IpcChannels.COMPUTER_AUTOMATION_SNAPSHOT_CHANNEL, {
+        input,
+        context,
+      }),
+    act: (input, context) =>
+      ipcRenderer.invoke(IpcChannels.COMPUTER_AUTOMATION_ACT_CHANNEL, { input, context }),
+    release: (input, context) =>
+      ipcRenderer.invoke(IpcChannels.COMPUTER_AUTOMATION_RELEASE_CHANNEL, { input, context }),
+    forgetControl: (input, context) =>
+      ipcRenderer.invoke(IpcChannels.COMPUTER_AUTOMATION_FORGET_CONTROL_CHANNEL, {
+        input,
+        context,
+      }),
   },
   preview: {
     setForwardedShortcuts: (shortcuts) =>

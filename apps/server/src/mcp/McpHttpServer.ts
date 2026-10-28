@@ -1,3 +1,6 @@
+import * as ComputerAutomationRouter from "../computer/ComputerAutomationRouter.ts";
+import { AgentDesktopToolkitHandlersLive } from "./toolkits/agentDesktop/handlers.ts";
+import { AgentDesktopToolkit } from "./toolkits/agentDesktop/tools.ts";
 import * as Cause from "effect/Cause";
 import * as Clock from "effect/Clock";
 import * as Context from "effect/Context";
@@ -979,7 +982,7 @@ const computerImageResult = (encodedResult: unknown) => {
 const registerComputerImageTools = Effect.fn("McpHttpServer.registerComputerImageTools")(
   function* () {
     const server = yield* McpServer.McpServer;
-    const broker = yield* PreviewAutomationBroker.PreviewAutomationBroker;
+    const router = yield* ComputerAutomationRouter.ComputerAutomationRouter;
     const threads = yield* ThreadManagementService.ThreadManagementService;
     const built = yield* decodeAsAdvertised(ComputerImageToolkit);
     for (const tool of Object.values(built.tools)) {
@@ -1010,7 +1013,7 @@ const registerComputerImageTools = Effect.fn("McpHttpServer.registerComputerImag
               Stream.unwrap,
               Stream.run(Sink.last()),
               Effect.flatMap(Effect.fromOption),
-              Effect.provideService(PreviewAutomationBroker.PreviewAutomationBroker, broker),
+              Effect.provideService(ComputerAutomationRouter.ComputerAutomationRouter, router),
               Effect.provideService(ThreadManagementService.ThreadManagementService, threads),
               Effect.provideService(McpInvocationContext.McpInvocationContext, invocation),
               Effect.matchCauseEffect({
@@ -1398,6 +1401,11 @@ const ComputerImageRegistrationLive = imageToolRegistration(
   ComputerImageToolkitHandlersLive,
 );
 
+export const AgentDesktopToolkitRegistrationLive = toolkitRegistration(
+  AgentDesktopToolkit,
+  AgentDesktopToolkitHandlersLive,
+);
+
 export const ComputerToolkitRegistrationLive = Layer.mergeAll(
   ComputerStandardToolkitRegistrationLive,
   ComputerImageRegistrationLive,
@@ -1425,6 +1433,7 @@ export const layerTools = Layer.mergeAll(
   layerDeviceToolkit,
   layerHtmlToolkit,
   ComputerToolkitRegistrationLive,
+  AgentDesktopToolkitRegistrationLive,
 );
 
 export const layer = layerTools.pipe(Layer.provideMerge(layerMcpTransport));

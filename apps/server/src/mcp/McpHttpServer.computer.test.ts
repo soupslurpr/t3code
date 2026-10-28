@@ -1,3 +1,5 @@
+import * as AgentDesktopManager from "../agentDesktop/AgentDesktopManager.ts";
+import * as ComputerAutomationRouter from "../computer/ComputerAutomationRouter.ts";
 import { expect, it } from "@effect/vitest";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import {
@@ -47,7 +49,12 @@ const client = McpSchema.McpServerClient.of({
 const layer = McpHttpServer.ComputerToolkitRegistrationLive.pipe(
   Layer.provideMerge(McpServer.McpServer.layer),
   Layer.provideMerge(McpToolAccessTestkit.liveThreadsLayer),
-  Layer.provideMerge(PreviewAutomationBroker.layer),
+  Layer.provideMerge(
+    ComputerAutomationRouter.layer.pipe(
+      Layer.provide(Layer.mock(AgentDesktopManager.AgentDesktopManager)({})),
+      Layer.provideMerge(PreviewAutomationBroker.layer),
+    ),
+  ),
   Layer.provideMerge(NodeServices.layer),
 );
 const call = Effect.fn("ComputerHttpTest.call")(

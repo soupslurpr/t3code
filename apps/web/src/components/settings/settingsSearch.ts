@@ -37,6 +37,7 @@ export type SettingsPath =
   | "/settings/maintenance"
   | "/settings/labs"
   | "/settings/about"
+  | "/settings/agent-desktops"
   | "/settings/archived";
 
 export type SettingsSearchScope =
@@ -107,6 +108,7 @@ export const SETTINGS_SECTION_LABELS: Readonly<Record<SettingsPath, string>> = {
   "/settings/maintenance": "Maintenance",
   "/settings/labs": "Labs",
   "/settings/about": "About",
+  "/settings/agent-desktops": "Agent desktops",
   "/settings/archived": "Archive",
 };
 
@@ -292,6 +294,11 @@ export const SETTINGS_SEARCH_ITEMS = [
     searchTerms: [
       "new thread default runtime mode supervised approvals auto accept edits full access",
     ],
+  },
+  {
+    id: "agent-desktops",
+    title: "Agent desktops",
+    to: "/settings/agent-desktops",
   },
   {
     id: "color-scheme",
@@ -1210,6 +1217,7 @@ const SETTINGS_CATEGORY_SCOPES: Readonly<Record<SettingsPath, SettingsSearchScop
   "/settings/connections": "connections",
   "/settings/access": "connections",
   "/settings/secrets": null,
+  "/settings/agent-desktops": null,
   "/settings/scheduled-tasks": null,
   "/settings/maintenance": null,
   "/settings/labs": null,

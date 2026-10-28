@@ -1,61 +1,72 @@
-import type {
-  ComputerAutomationObservation,
-  ComputerAutomationSnapshot,
-  ComputerAutomationStatus,
-  PreviewAutomationOperation,
-} from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
-
+import * as ComputerAutomationRouter from "../../../computer/ComputerAutomationRouter.ts";
 import * as McpInvocationContext from "../../McpInvocationContext.ts";
 import * as McpToolAccess from "../../McpToolAccess.ts";
-import * as PreviewAutomationBroker from "../../PreviewAutomationBroker.ts";
 import { ComputerImageToolkit, ComputerStandardToolkit, ComputerToolkit } from "./tools.ts";
-
-const STATUS_TIMEOUT_MS = 5_000;
-const SNAPSHOT_TIMEOUT_MS = 30_000;
-const CONTROL_TIMEOUT_MS = 120_000;
-
-const invoke = Effect.fn("ComputerToolkit.invoke")(function* <A>(
-  operation: PreviewAutomationOperation,
-  input: unknown,
-  timeoutMs: number,
-): Effect.fn.Return<
-  A,
-  import("@t3tools/contracts").PreviewAutomationError,
-  McpInvocationContext.McpInvocationContext | PreviewAutomationBroker.PreviewAutomationBroker
-> {
-  const scope = yield* McpInvocationContext.requireThreadMcpCapability("computer");
-  const broker = yield* PreviewAutomationBroker.PreviewAutomationBroker;
-  return yield* broker.invoke<A>({ scope, operation, input, timeoutMs });
-});
 
 const handlers = {
   computer_status: McpToolAccess.readsAsCaller((input) =>
-    invoke<ComputerAutomationStatus>("computerStatus", input, STATUS_TIMEOUT_MS),
+    Effect.gen(function* () {
+      const scope = yield* McpInvocationContext.requireThreadMcpCapability("computer");
+      const router = yield* ComputerAutomationRouter.ComputerAutomationRouter;
+      return yield* router.status(scope, input);
+    }),
   ),
   computer_request_availability: McpToolAccess.actsAsCaller((input) =>
-    invoke<ComputerAutomationStatus>("computerRequestAvailability", input, CONTROL_TIMEOUT_MS),
+    Effect.gen(function* () {
+      const scope = yield* McpInvocationContext.requireThreadMcpCapability("computer");
+      const router = yield* ComputerAutomationRouter.ComputerAutomationRouter;
+      return yield* router.requestAvailability(scope, input);
+    }),
   ),
   computer_release_availability: McpToolAccess.actsAsCaller((input) =>
-    invoke<ComputerAutomationStatus>("computerReleaseAvailability", input, CONTROL_TIMEOUT_MS),
+    Effect.gen(function* () {
+      const scope = yield* McpInvocationContext.requireThreadMcpCapability("computer");
+      const router = yield* ComputerAutomationRouter.ComputerAutomationRouter;
+      return yield* router.releaseAvailability(scope, input);
+    }),
   ),
   computer_request_view: McpToolAccess.actsAsCaller((input) =>
-    invoke<ComputerAutomationObservation>("computerRequestView", input, CONTROL_TIMEOUT_MS),
+    Effect.gen(function* () {
+      const scope = yield* McpInvocationContext.requireThreadMcpCapability("computer");
+      const router = yield* ComputerAutomationRouter.ComputerAutomationRouter;
+      return yield* router.requestView(scope, input);
+    }),
   ),
   computer_request_control: McpToolAccess.actsAsCaller((input) =>
-    invoke<ComputerAutomationObservation>("computerRequestControl", input, CONTROL_TIMEOUT_MS),
+    Effect.gen(function* () {
+      const scope = yield* McpInvocationContext.requireThreadMcpCapability("computer");
+      const router = yield* ComputerAutomationRouter.ComputerAutomationRouter;
+      return yield* router.requestControl(scope, input);
+    }),
   ),
   computer_snapshot: McpToolAccess.readsAsCaller((input) =>
-    invoke<ComputerAutomationSnapshot>("computerSnapshot", input, SNAPSHOT_TIMEOUT_MS),
+    Effect.gen(function* () {
+      const scope = yield* McpInvocationContext.requireThreadMcpCapability("computer");
+      const router = yield* ComputerAutomationRouter.ComputerAutomationRouter;
+      return yield* router.snapshot(scope, input);
+    }),
   ),
   computer_act: McpToolAccess.actsAsCaller((input) =>
-    invoke<ComputerAutomationObservation>("computerAct", input, CONTROL_TIMEOUT_MS),
+    Effect.gen(function* () {
+      const scope = yield* McpInvocationContext.requireThreadMcpCapability("computer");
+      const router = yield* ComputerAutomationRouter.ComputerAutomationRouter;
+      return yield* router.act(scope, input);
+    }),
   ),
   computer_release: McpToolAccess.actsAsCaller((input) =>
-    invoke<ComputerAutomationStatus>("computerRelease", input, CONTROL_TIMEOUT_MS),
+    Effect.gen(function* () {
+      const scope = yield* McpInvocationContext.requireThreadMcpCapability("computer");
+      const router = yield* ComputerAutomationRouter.ComputerAutomationRouter;
+      return yield* router.release(scope, input);
+    }),
   ),
   computer_forget_control: McpToolAccess.actsAsCaller((input) =>
-    invoke<void>("computerForgetControl", input, CONTROL_TIMEOUT_MS).pipe(Effect.as(null)),
+    Effect.gen(function* () {
+      const scope = yield* McpInvocationContext.requireThreadMcpCapability("computer");
+      const router = yield* ComputerAutomationRouter.ComputerAutomationRouter;
+      return yield* router.forget(scope, input).pipe(Effect.as(null));
+    }),
   ),
 } satisfies McpToolAccess.Handlers<typeof ComputerToolkit.tools>;
 
