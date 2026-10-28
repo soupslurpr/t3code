@@ -1,6 +1,7 @@
 import type * as NodeOS from "node:os";
 import * as NodeModule from "node:module";
 import * as Option from "effect/Option";
+import { runAgentDesktopHumanRequest } from "./AgentDesktopHuman.ts";
 import {
   AgentDesktopId,
   AgentDesktopOwner,
@@ -2200,6 +2201,46 @@ describe("AgentDesktopManager", () => {
           "desktop-busy",
         );
 
+        const humanStatus = yield* manager.humanStatus(owner, humanControllerId, desktop.id);
+        assert.isTrue(humanStatus.lease?.canReturnControl);
+        assert.equal(humanStatus.lease?.controller?.kind, "human");
+        const foreign = yield* manager
+          .humanStatus(
+            { ...owner, threadId: ThreadId.make("other-thread") },
+            humanControllerId,
+            desktop.id,
+          )
+          .pipe(Effect.flip);
+        assert.equal(
+          ComputerUse.toComputerAutomationFailure(foreign).code,
+          "desktop-target-mismatch",
+        );
+        yield* runAgentDesktopHumanRequest(
+          manager,
+          {
+            environmentId: owner.environmentId,
+            thread: {
+              threadId: owner.threadId,
+              controllerId: humanControllerId,
+              providerSessionId: humanControllerId,
+              providerInstanceId: ProviderInstanceId.make("t3-human"),
+            },
+            requestNamespace: "supervision-test",
+            client: undefined,
+            capabilities: new Set(["computer"]),
+            issuedAt: 0,
+          },
+          { operation: "return-control", owner, desktopId: desktop.id },
+        );
+        const returned = yield* manager.humanStatus(owner, humanControllerId, desktop.id);
+        assert.equal(returned.permission, "view-only");
+        assert.equal(returned.lease?.controller?.kind, "agent");
+        assert.isFalse(returned.lease?.canReturnControl);
+        yield* manager.act(
+          owner.controllerId,
+          { actions: [{ type: "press", key: "Enter" }] },
+          desktop.id,
+        );
         yield* manager.release(humanControllerId, desktop.id);
         const releasedError = yield* manager
           .status(humanControllerId, desktop.id)

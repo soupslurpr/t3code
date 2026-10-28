@@ -9,6 +9,8 @@ import {
   ProviderInstanceId,
   SecretProviderId,
   ThreadId,
+  AgentDesktopId,
+  EnvironmentId,
   ThreadMonitorId,
   AuthOrchestrationOperateScope,
   AuthOrchestrationReadScope,
@@ -138,6 +140,99 @@ describe("RPC scope middleware", () => {
         requiredPermission: missing,
       });
       expect(handled).toEqual([]);
+    }).pipe(Effect.scoped),
+  );
+});
+
+describe("human desktop cleanup authorization", () => {
+  const tested = [WS_METHODS.agentDesktopHumanInvoke, WS_METHODS.userDesktopHumanInvoke] as const;
+  const group = WsRpcGroup.omit(
+    ...[...WsRpcGroup.requests.keys()].filter(
+      (tag): tag is Exclude<keyof typeof RPC_REQUIRED_SCOPES, (typeof tested)[number]> =>
+        !(tested as ReadonlyArray<string>).includes(tag),
+    ),
+  );
+  it.effect.each([
+    { scopes: [AuthOrchestrationReadScope] },
+    { scopes: [AuthOrchestrationOperateScope] },
+    { scopes: [AuthOrchestrationReadScope, AuthOrchestrationOperateScope] },
+    { scopes: [] },
+  ])("allows only full release under read-only scope $scopes", ({ scopes }) =>
+    Effect.gen(function* () {
+      const handled: string[] = [];
+      const client = yield* RpcTest.makeClient(group).pipe(
+        Effect.provide(
+          Layer.mergeAll(
+            group.toLayerHandler(WS_METHODS.agentDesktopHumanInvoke, ({ request }) =>
+              Effect.sync(() => {
+                handled.push(`agent:${request.operation}`);
+                return null;
+              }),
+            ),
+            group.toLayerHandler(WS_METHODS.userDesktopHumanInvoke, ({ request }) =>
+              Effect.sync(() => {
+                handled.push(`user:${request.operation}`);
+                return null;
+              }),
+            ),
+            RpcAuthorization.layer(scopes),
+          ),
+        ),
+      );
+      const owner = {
+        environmentId: EnvironmentId.make("environment"),
+        threadId: ThreadId.make("thread"),
+        controllerId: "agent",
+      };
+      for (const operation of [
+        "release",
+        "request-view",
+        "request-control",
+        "return-control",
+        "status",
+      ] as const) {
+        for (const call of [
+          client[WS_METHODS.agentDesktopHumanInvoke]({
+            threadId: owner.threadId,
+            request: { operation, owner, desktopId: AgentDesktopId.make("desktop") },
+          }),
+          client[WS_METHODS.userDesktopHumanInvoke]({
+            request: { operation, desktopId: "desktop" },
+          }),
+        ]) {
+          const allowed =
+            scopes.includes(AuthOrchestrationOperateScope) ||
+            (operation === "release" && scopes.includes(AuthOrchestrationReadScope));
+          if (allowed) expect(yield* call).toBeNull();
+          else
+            expect(
+              yield* call.pipe(
+                Effect.match({ onSuccess: () => null, onFailure: (error) => error }),
+              ),
+            ).toMatchObject({
+              _tag: "EnvironmentAuthorizationError",
+              requiredPermission: AuthOrchestrationOperateScope,
+            });
+        }
+      }
+      expect(handled).toEqual(
+        scopes.includes(AuthOrchestrationOperateScope)
+          ? [
+              "agent:release",
+              "user:release",
+              "agent:request-view",
+              "user:request-view",
+              "agent:request-control",
+              "user:request-control",
+              "agent:return-control",
+              "user:return-control",
+              "agent:status",
+              "user:status",
+            ]
+          : scopes.includes(AuthOrchestrationReadScope)
+            ? ["agent:release", "user:release"]
+            : [],
+      );
     }).pipe(Effect.scoped),
   );
 });
@@ -447,6 +542,46 @@ it.effect("requires operate permission before a monitor cancellation handler run
       else
         expect(yield* request.pipe(Effect.flip)).toMatchObject({
           requiredPermission: AuthOrchestrationOperateScope,
+        });
+    }
+    expect(handled).toBe(1);
+  }).pipe(Effect.scoped),
+);
+
+it.effect("authorizes desktop activity reads before invoking the thread service", () =>
+  Effect.gen(function* () {
+    const group = WsRpcGroup.omit(
+      ...[...WsRpcGroup.requests.keys()].filter(
+        (
+          tag,
+        ): tag is Exclude<
+          keyof typeof RPC_REQUIRED_SCOPES,
+          typeof WS_METHODS.threadDesktopActivity
+        > => tag !== WS_METHODS.threadDesktopActivity,
+      ),
+    );
+    let handled = 0;
+    for (const allowed of [false, true]) {
+      const client = yield* RpcTest.makeClient(group).pipe(
+        Effect.provide(
+          Layer.mergeAll(
+            group.toLayerHandler(WS_METHODS.threadDesktopActivity, () =>
+              Effect.sync(() => {
+                handled++;
+                return { commands: [], transfers: [] };
+              }),
+            ),
+            RpcAuthorization.layer(allowed ? [AuthOrchestrationReadScope] : []),
+          ),
+        ),
+      );
+      const request = client[WS_METHODS.threadDesktopActivity]({
+        threadId: ThreadId.make("owner"),
+      });
+      if (allowed) yield* request;
+      else
+        expect(yield* request.pipe(Effect.flip)).toMatchObject({
+          requiredPermission: AuthOrchestrationReadScope,
         });
     }
     expect(handled).toBe(1);

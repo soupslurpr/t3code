@@ -1,3 +1,7 @@
+import { createRuntimeCommand, type AtomCommand } from "@t3tools/client-runtime/state/runtime";
+import { Effect, Layer } from "effect";
+import { userDesktopHumanConcurrencyKey } from "@t3tools/client-runtime/state/preview";
+import { RegistryContext } from "@effect/atom-react";
 import {
   EnvironmentId,
   ThreadId,
@@ -5,17 +9,20 @@ import {
   ComputerObservation,
   type UserDesktopHumanInvokeInput,
 } from "@t3tools/contracts";
-import { Atom, AsyncResult } from "effect/reactivity";
+import { Atom, AtomRegistry, AsyncResult } from "effect/reactivity";
 import * as Schema from "effect/Schema";
 import { StrictMode, useState, type ReactNode } from "react";
 import { expect, it, vi } from "vite-plus/test";
 import { page, userEvent } from "vite-plus/test/browser";
-import { act, render, stubGlobal } from "../../../test/render";
+import { act, fakeTimers, render, stubGlobal } from "../../../test/render";
+
+type Invocation = { environmentId: EnvironmentId; input: UserDesktopHumanInvokeInput };
 
 const state = vi.hoisted(() => ({
+  command: null as AtomCommand<Invocation, unknown, never> | null,
   listing: null as Atom.Atom<unknown> | null,
   audit: null as Atom.Atom<unknown> | null,
-  allowed: null as Atom.Atom<boolean> | null,
+  allowed: null as Atom.Writable<boolean> | null,
   releaseCapture: vi.fn(async () => undefined),
   invoke: vi.fn<
     (input: { environmentId: EnvironmentId; input: UserDesktopHumanInvokeInput }) => Promise<{
@@ -38,11 +45,15 @@ vi.mock("~/state/session", () => ({ useEnvironmentsWithScope: () => ["environmen
 vi.mock("~/state/entities", () => ({ useThreadShells: () => [] }));
 vi.mock("~/state/preview", () => ({
   previewEnvironment: {
-    invokeUserDesktopHuman: { permissionAtom: () => state.allowed },
+    invokeUserDesktopHuman: {
+      label: "test.user",
+      permissionAtom: () => state.allowed,
+      run: (...args: Parameters<NonNullable<typeof state.command>["run"]>) =>
+        state.command!.run(...args),
+    },
     invokeAgentDesktopHuman: { permissionAtom: () => state.allowed },
   },
 }));
-vi.mock("~/state/use-atom-command", () => ({ useAtomCommand: () => state.invoke }));
 vi.mock("./settingsLayout", () => ({
   SettingsPageContainer: ({ children }: { children: ReactNode }) => children,
   SettingsSection: ({ children }: { children: ReactNode }) => children,
@@ -75,6 +86,11 @@ const status: ComputerAutomationStatus = {
 };
 
 function setup() {
+  state.command = createRuntimeCommand(Atom.runtime(Layer.empty), {
+    label: "test.user-viewer",
+    concurrency: { mode: "serial", key: userDesktopHumanConcurrencyKey },
+    execute: (input: Invocation) => Effect.promise(async () => (await state.invoke(input)).value),
+  });
   state.releaseCapture.mockReset().mockResolvedValue(undefined);
   state.allowed = Atom.make(true);
   state.listing = Atom.make(
@@ -106,6 +122,131 @@ function setup() {
     value: input.request.operation === "observation-list" ? { observations: [] } : status,
   }));
 }
+
+it("closes the live User viewer on permission loss and requires fresh supervision after restoration", async () => {
+  setup();
+  const registry = AtomRegistry.make();
+  using _registry = { [Symbol.dispose]: () => registry.dispose() };
+  const allowed = state.allowed!;
+  state.invoke.mockImplementation(async ({ input }) => {
+    if (!registry.get(allowed) && input.request.operation !== "release")
+      throw new Error("Operate permission withdrawn");
+    return {
+      _tag: "Success",
+      value:
+        input.request.operation === "observation-list"
+          ? { observations: [] }
+          : input.request.operation === "snapshot"
+            ? {
+                display: { id: "primary" },
+                screenshot: { state: "unavailable", detail: "Synthetic capture" },
+              }
+            : status,
+    };
+  });
+  await using screen = await render(
+    <RegistryContext.Provider value={registry}>
+      <UserDesktopSettings />
+    </RegistryContext.Provider>,
+  );
+  using _timers = fakeTimers();
+  await userEvent.click(screen.getByRole("button", { name: "Supervise" }));
+  await userEvent.click(page.getByRole("button", { name: "Start Live", exact: true }));
+  await vi.waitFor(() =>
+    expect(
+      state.invoke.mock.calls.some(([call]) => call.input.request.operation === "snapshot"),
+    ).toBe(true),
+  );
+  await act(async () => registry.set(allowed, false));
+  await act(() => vi.advanceTimersByTimeAsync(2_000));
+  await expect.element(page.getByRole("dialog")).not.toBeInTheDocument();
+  expect(
+    state.invoke.mock.calls
+      .filter(([call]) => call.input.request.operation === "release")
+      .map(([call]) => call),
+  ).toContainEqual({
+    environmentId,
+    input: { request: { operation: "release", desktopId: "selected" } },
+  });
+  const calls = state.invoke.mock.calls.length;
+  await act(async () => registry.set(allowed, true));
+  await act(() => vi.advanceTimersByTimeAsync(2_000));
+  expect(state.invoke).toHaveBeenCalledTimes(calls);
+  await userEvent.click(screen.getByRole("button", { name: "Supervise" }));
+  await userEvent.click(page.getByRole("button", { name: "Start Live", exact: true }));
+  expect(
+    state.invoke.mock.calls.slice(calls).map(([call]) => call.input.request.operation),
+  ).toContain("snapshot");
+});
+
+it.each(["request-view", "request-control", "return-control"] as const)(
+  "releases a late User %s after permission loss without reviving the viewer",
+  async (operation) => {
+    setup();
+    const registry = AtomRegistry.make();
+    using _registry = { [Symbol.dispose]: () => registry.dispose() };
+    const allowed = state.allowed!;
+    const host = superviseLocalDesktop();
+    const invoke = state.invoke.getMockImplementation()!;
+    let finish!: () => void;
+    const pending = new Promise<void>((resolve) => {
+      finish = resolve;
+    });
+    state.invoke.mockImplementation(async (call) => {
+      if (call.input.request.operation !== operation) return invoke(call);
+      if (operation === "return-control") {
+        const result = await invoke(call);
+        await pending;
+        return result;
+      }
+      await pending;
+      return invoke(call);
+    });
+    using _desktop = stubGlobal(
+      "desktopBridge",
+      operation === "request-view"
+        ? undefined
+        : { getUserDesktopHost: () => ({ desktopId: "selected" }) },
+    );
+    await using screen = await render(
+      <RegistryContext.Provider value={registry}>
+        <UserDesktopSettings />
+      </RegistryContext.Provider>,
+    );
+    using _timers = fakeTimers();
+    await userEvent.click(screen.getByRole("button", { name: "Supervise" }));
+    await userEvent.click(
+      page.getByRole("button", {
+        name: operation === "request-view" ? "Start Live" : "Stop agent control",
+        exact: true,
+      }),
+    );
+    if (operation === "return-control")
+      await userEvent.click(
+        page.getByRole("button", { name: "Return control to agent", exact: true }),
+      );
+    await vi.waitFor(() =>
+      expect(
+        state.invoke.mock.calls.some(([call]) => call.input.request.operation === operation),
+      ).toBe(true),
+    );
+    await act(async () => registry.set(allowed, false));
+    await act(async () => registry.set(allowed, true));
+    await act(async () => finish());
+    await act(() => vi.advanceTimersByTimeAsync(2_000));
+    await expect.element(page.getByRole("dialog")).not.toBeInTheDocument();
+    expect(state.invoke.mock.calls.at(-1)?.[0]).toEqual({
+      environmentId,
+      input: { request: { operation: "release", desktopId: "selected" } },
+    });
+    expect(host.status.lease?.access).toBe("none");
+    const calls = state.invoke.mock.calls.length;
+    await act(async () => registry.set(allowed, true));
+    await act(() => vi.advanceTimersByTimeAsync(2_000));
+    expect(state.invoke).toHaveBeenCalledTimes(calls);
+    await expect.element(page.getByRole("dialog")).not.toBeInTheDocument();
+  },
+);
 
 it("starts Live after the supervision ref remount and releases a late grant on unmount", async () => {
   setup();
@@ -141,11 +282,34 @@ it("starts Live after the supervision ref remount and releases a late grant on u
   await vi.waitFor(() =>
     expect(
       state.invoke.mock.calls.filter(([call]) => call.input.request.operation === "release"),
-    ).toHaveLength(released + 1),
+    ).toHaveLength(released + 2),
   );
   expect(
     state.invoke.mock.calls.some(([call]) => call.input.request.operation === "snapshot"),
   ).toBe(false);
+});
+
+it("keeps the User viewer closed if no authenticated cleanup request is available", async () => {
+  setup();
+  const registry = AtomRegistry.make();
+  using _registry = { [Symbol.dispose]: () => registry.dispose() };
+  const allowed = state.allowed!;
+  await using screen = await render(
+    <RegistryContext.Provider value={registry}>
+      <UserDesktopSettings />
+    </RegistryContext.Provider>,
+  );
+  using _timers = fakeTimers();
+  await userEvent.click(screen.getByRole("button", { name: "Supervise" }));
+  state.invoke.mockRejectedValue(new Error("Connection no longer authenticated"));
+  await act(async () => registry.set(allowed, false));
+  await act(() => vi.advanceTimersByTimeAsync(2_000));
+  await expect.element(page.getByRole("dialog")).not.toBeInTheDocument();
+  expect(state.invoke.mock.calls.at(-1)?.[0].input.request.operation).toBe("release");
+  const calls = state.invoke.mock.calls.length;
+  await act(async () => registry.set(allowed, true));
+  await act(() => vi.advanceTimersByTimeAsync(2_000));
+  expect(state.invoke).toHaveBeenCalledTimes(calls);
 });
 
 function superviseLocalDesktop() {
@@ -308,7 +472,7 @@ it.each(["close", "hide", "unmount"] as const)(
     await vi.waitFor(() =>
       expect(
         state.invoke.mock.calls.filter(([call]) => call.input.request.operation === "release"),
-      ).toHaveLength(released + 1),
+      ).toHaveLength(released + 2),
     );
     expect(host.status.lease?.controller).toBeNull();
     expect(host.status.lease?.canReturnControl).toBe(false);
@@ -669,3 +833,92 @@ it.each([
   expect(show).not.toHaveBeenCalled();
   expect(state.invoke).not.toHaveBeenCalled();
 });
+
+it.each(["act", "snapshot", "request-view", "request-control", "return-control"] as const)(
+  "cancels queued User %s after permission restoration while keeping cleanup runnable",
+  async (operation) => {
+    const registry = AtomRegistry.make();
+    using _registry = { [Symbol.dispose]: () => registry.dispose() };
+    setup();
+    const allowed = state.allowed!;
+    superviseLocalDesktop();
+    const native = state.invoke.getMockImplementation()!;
+    state.invoke.mockImplementation(async (call) =>
+      call.input.request.operation === "snapshot"
+        ? {
+            _tag: "Success",
+            value: {
+              display: { id: "primary" },
+              screenshot: { state: "unavailable", detail: "Synthetic capture" },
+            },
+          }
+        : native(call),
+    );
+    await using screen = await render(
+      <RegistryContext.Provider value={registry}>
+        <UserDesktopSettings />
+      </RegistryContext.Provider>,
+    );
+    using _timers = fakeTimers();
+    using _fullscreen = vi
+      .spyOn(document, "fullscreenElement", "get")
+      .mockReturnValue(document.documentElement);
+    await userEvent.click(screen.getByRole("button", { name: "Supervise", exact: true }));
+    if (operation !== "request-view")
+      await userEvent.click(page.getByRole("button", { name: "Start Live", exact: true }));
+    if (operation === "act" || operation === "return-control")
+      await userEvent.click(page.getByRole("button", { name: "Take control", exact: true }));
+    let finish!: () => void;
+    const pending = new Promise<void>((resolve) => {
+      finish = resolve;
+    });
+    using _pending = { [Symbol.dispose]: () => finish() };
+    const invoke = state.invoke.getMockImplementation()!;
+    state.invoke.mockImplementation(async (call) => {
+      if (call.input.request.operation === "status") await pending;
+      return invoke(call);
+    });
+    const held = state.command!.run(registry, {
+      environmentId,
+      input: { request: { operation: "status", desktopId: "selected" } },
+    });
+    using scheduled = vi.spyOn(state.command!, "run");
+    if (operation === "act")
+      await act(() =>
+        page
+          .getByRole("application")
+          .element()
+          .dispatchEvent(new KeyboardEvent("keydown", { key: "a", code: "KeyA", bubbles: true })),
+      );
+    else if (operation === "request-view")
+      await userEvent.click(page.getByRole("button", { name: "Start Live", exact: true }));
+    else if (operation === "snapshot") await act(() => vi.advanceTimersByTimeAsync(750));
+    else
+      await userEvent.click(
+        page.getByRole("button", {
+          name: operation === "request-control" ? "Take control" : "Return control to agent",
+          exact: true,
+        }),
+      );
+    await vi.waitFor(() =>
+      expect(
+        scheduled.mock.calls.some(([, call]) => call.input.request.operation === operation),
+      ).toBe(true),
+    );
+    const before = state.invoke.mock.calls.length;
+    await act(async () => registry.set(allowed, false));
+    await act(async () => registry.set(allowed, true));
+    await act(async () => {
+      finish();
+      await held;
+    });
+    await vi.waitFor(() =>
+      expect(state.invoke.mock.calls.at(-1)?.[0].input.request.operation).toBe("release"),
+    );
+    const dispatched = state.invoke.mock.calls
+      .slice(before)
+      .map(([call]) => call.input.request.operation);
+    expect(dispatched).not.toContain(operation);
+    await expect.element(page.getByRole("dialog")).not.toBeInTheDocument();
+  },
+);

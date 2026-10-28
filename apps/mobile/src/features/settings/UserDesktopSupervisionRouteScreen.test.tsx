@@ -1,3 +1,8 @@
+import { RegistryContext } from "@effect/atom-react";
+import { createRuntimeCommand, type AtomCommand } from "@t3tools/client-runtime/state/runtime";
+import { userDesktopHumanConcurrencyKey } from "@t3tools/client-runtime/state/preview";
+import { Effect, Layer } from "effect";
+import { Atom, AtomRegistry } from "effect/reactivity";
 import {
   NavigationContext,
   type NavigationProp,
@@ -5,6 +10,7 @@ import {
 } from "@react-navigation/native";
 import {
   EnvironmentId,
+  ThreadId,
   UserDesktopId,
   type UserDesktopView,
   type UserDesktopAuditEvent,
@@ -15,7 +21,11 @@ import { Alert } from "react-native";
 import { createRoot } from "react-dom/client";
 import { expect, it, vi } from "vite-plus/test";
 
+type Invocation = { environmentId: EnvironmentId; input: UserDesktopHumanInvokeInput };
+
 const state = vi.hoisted(() => ({
+  userCommand: null as AtomCommand<Invocation, unknown, never> | null,
+  agentCommand: null as AtomCommand<Invocation, unknown, never> | null,
   invoke: vi.fn(),
   connected: true,
   permitted: true,
@@ -43,7 +53,8 @@ vi.mock("@react-navigation/native", async () => {
   }: typeof import("@react-navigation/native") = nativeRequire("@react-navigation/core");
   return { NavigationContext, useFocusEffect, useNavigation };
 });
-vi.mock("@effect/atom-react", () => ({
+vi.mock("@effect/atom-react", async (original) => ({
+  RegistryContext: (await original<typeof import("@effect/atom-react")>()).RegistryContext,
   useAtomValue: (atom: string) => (atom === "connected" ? state.connected : state.permitted),
 }));
 vi.mock("../../state/use-remote-environment-registry", () => ({
@@ -96,9 +107,21 @@ vi.mock("../../components/ui/ErrorBanner", () => ({ ErrorBanner: () => null }));
 vi.mock("../../native/StackHeader", () => ({ NativeStackScreenOptions: () => null }));
 vi.mock("../../state/entities", () => ({ useThreadShells: () => [] }));
 vi.mock("../../state/preview", () => ({
-  previewEnvironment: { invokeUserDesktopHuman: { permissionAtom: () => "permission" } },
+  previewEnvironment: {
+    invokeUserDesktopHuman: {
+      label: "test.user",
+      permissionAtom: () => "permission",
+      run: (...args: Parameters<NonNullable<typeof state.userCommand>["run"]>) =>
+        state.userCommand!.run(...args),
+    },
+    invokeAgentDesktopHuman: {
+      label: "test.agent",
+      permissionAtom: () => "permission",
+      run: (...args: Parameters<NonNullable<typeof state.agentCommand>["run"]>) =>
+        state.agentCommand!.run(...args),
+    },
+  },
 }));
-vi.mock("../../state/use-atom-command", () => ({ useAtomCommand: () => state.invoke }));
 import { SettingsUserDesktopsRouteScreen } from "./SettingsUserDesktopsRouteScreen";
 import { UserDesktopSupervisionRouteScreen } from "./UserDesktopSupervisionRouteScreen";
 
@@ -110,6 +133,26 @@ function deferred() {
   return { promise, resolve };
 }
 function setup() {
+  const registry = AtomRegistry.make();
+  const runtime = Atom.runtime(Layer.empty);
+  const command = (kind: "user" | "agent") =>
+    createRuntimeCommand(runtime, {
+      label: `test.${kind}`,
+      concurrency: {
+        mode: "serial",
+        key:
+          kind === "user"
+            ? userDesktopHumanConcurrencyKey
+            : ({ environmentId, input }: Invocation) =>
+                JSON.stringify([environmentId, "threadId" in input ? input.threadId : undefined]),
+      },
+      execute: (input: Invocation) =>
+        Effect.promise(async () => (await state.invoke(input)).value as unknown),
+    });
+  state.userCommand = command("user");
+  state.agentCommand = command("agent");
+  const userScheduled = vi.spyOn(state.userCommand, "run");
+  const agentScheduled = vi.spyOn(state.agentCommand, "run");
   (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
   vi.mocked(Alert.alert).mockReset();
   state.connected = true;
@@ -207,7 +250,9 @@ function setup() {
                   : [],
               }
             : request.operation === "observation"
-              ? { latestId: observation.id, observation }
+              ? retainedObservation
+                ? { latestId: observation.id, observation }
+                : { latestId: null, observation: null }
               : request.operation === "snapshot"
                 ? {
                     display: { id: "primary" },
@@ -237,18 +282,7 @@ function setup() {
                   };
     return { _tag: "Success", value };
   };
-  let rpcQueue = Promise.resolve();
-  state.invoke.mockReset().mockImplementation((input: Parameters<typeof invoke>[0]) => {
-    const next = rpcQueue.then(
-      () => invoke(input),
-      () => invoke(input),
-    );
-    rpcQueue = next.then(
-      () => undefined,
-      () => undefined,
-    );
-    return next;
-  });
+  state.invoke.mockReset().mockImplementation(invoke);
   const container = document.createElement("div");
   const root = createRoot(container);
   let mounted = true;
@@ -256,6 +290,10 @@ function setup() {
     state.invoke.mock.calls.map(([call]) => call.input.request.operation as string);
   return {
     operations,
+    scheduled: () =>
+      [...userScheduled.mock.calls, ...agentScheduled.mock.calls].map(
+        ([, call]) => call.input.request.operation,
+      ),
     access,
     controllers,
     displaced,
@@ -271,31 +309,50 @@ function setup() {
       blocked.set(operation, pending);
       return pending;
     },
-    async render(desktopId = "desktop", environmentId = "remote") {
+    async render(
+      desktopId = "desktop",
+      environmentId = "remote",
+      kind: "user" | "agent" = "user",
+      threadId?: string,
+    ) {
       await act(async () =>
         root.render(
-          <NavigationContext.Provider value={navigation}>
-            <UserDesktopSupervisionRouteScreen
-              route={{
-                params: {
-                  environmentId: EnvironmentId.make(environmentId),
-                  environmentLabel: "Remote",
-                  desktopId: UserDesktopId.make(desktopId),
-                  label: "Desktop",
-                  supportsControl: true,
-                },
-              }}
-            />
-          </NavigationContext.Provider>,
+          <RegistryContext.Provider value={registry}>
+            <NavigationContext.Provider value={navigation}>
+              <UserDesktopSupervisionRouteScreen
+                route={{
+                  params: {
+                    environmentId: EnvironmentId.make(environmentId),
+                    environmentLabel: "Remote",
+                    desktopId: UserDesktopId.make(desktopId),
+                    label: "Desktop",
+                    supportsControl: true,
+                    ...(threadId === undefined ? {} : { threadId: ThreadId.make(threadId) }),
+                    ...(kind === "agent"
+                      ? {
+                          agentOwner: {
+                            environmentId: EnvironmentId.make(environmentId),
+                            threadId: ThreadId.make(threadId ?? "owner"),
+                            controllerId: "agent",
+                          },
+                        }
+                      : {}),
+                  },
+                }}
+              />
+            </NavigationContext.Provider>
+          </RegistryContext.Provider>,
         ),
       );
     },
     async inventory() {
       await act(async () =>
         root.render(
-          <NavigationContext.Provider value={navigation}>
-            <SettingsUserDesktopsRouteScreen />
-          </NavigationContext.Provider>,
+          <RegistryContext.Provider value={registry}>
+            <NavigationContext.Provider value={navigation}>
+              <SettingsUserDesktopsRouteScreen />
+            </NavigationContext.Provider>
+          </RegistryContext.Provider>,
         ),
       );
     },
@@ -326,6 +383,9 @@ function setup() {
     },
     async [Symbol.asyncDispose]() {
       if (mounted) await act(async () => root.unmount());
+      registry.dispose();
+      userScheduled.mockRestore();
+      agentScheduled.mockRestore();
     },
   };
 }
@@ -353,6 +413,7 @@ it("stays passive across rerenders and releases on blur, target changes and unmo
   await screen.unmount();
   expect(screen.access.get("remote:second")).toBe("none");
   expect(state.listeners.size).toBe(0);
+  await act(async () => vi.advanceTimersByTimeAsync(0));
   expect(vi.getTimerCount()).toBe(0);
 });
 
@@ -443,6 +504,7 @@ it("refreshes inventory while focused and never captures or loops on a listing r
   await screen.focus(true);
   expect(screen.operations()).toEqual(["list", "list", "list"]);
   await screen.unmount();
+  await act(async () => vi.advanceTimersByTimeAsync(0));
   expect(vi.getTimerCount()).toBe(0);
 });
 
@@ -601,4 +663,135 @@ it("shows recent access on inventory refresh without fetching audit on each poll
   state.allowed = new Set();
   await screen.inventory();
   expect(screen.text()).not.toContain("codex");
+});
+
+for (const operation of ["request-view", "request-control", "return-control"] as const) {
+  it.each(["unmount", "background", "blur", "target"] as const)(
+    `releases a late Agent ${operation} on %s`,
+    async (how) => {
+      await using screen = setup();
+      await screen.render("desktop", "remote", "agent", "owner");
+      if (operation !== "request-view") await screen.press("Start Live");
+      if (operation === "return-control") await screen.press("Take control");
+      const pending = screen.block(operation);
+      await screen.press(
+        operation === "request-view"
+          ? "Start Live"
+          : operation === "request-control"
+            ? "Take control"
+            : "Return to agent",
+      );
+      await pending.started.promise;
+      const captures = screen.operations().filter((op) => op === "snapshot").length;
+      if (how === "unmount") await screen.unmount();
+      else if (how === "background") await screen.background("background");
+      else if (how === "blur") await screen.focus(false);
+      else await screen.render("replacement", "remote", "agent", "owner");
+      await act(async () => pending.finish.resolve());
+      expect(screen.access.get("remote:desktop")).toBe("none");
+      expect(screen.operations().filter((op) => op === "snapshot")).toHaveLength(captures);
+    },
+  );
+}
+it("keeps Agent supervision stable on rerenders and passive after focus and connection recovery", async () => {
+  await using screen = setup();
+  await screen.render("desktop", "remote", "agent", "owner");
+  const initial = [...screen.operations()];
+  await screen.render("desktop", "remote", "agent", "owner");
+  expect(screen.operations()).toEqual(initial);
+  await screen.press("Start Live");
+  await screen.press("Take control");
+  await screen.press("Return to agent");
+  expect(screen.access.get("remote:desktop")).toBe("view");
+  await screen.focus(false);
+  expect(screen.access.get("remote:desktop")).toBe("none");
+  await screen.focus(true);
+  state.connected = false;
+  await screen.render("desktop", "remote", "agent", "owner");
+  state.connected = true;
+  await screen.render("desktop", "remote", "agent", "owner");
+  expect(screen.operations().filter((op) => op === "request-view")).toHaveLength(1);
+  expect(screen.text()).not.toContain("End all access");
+});
+
+it.each(["user", "agent"] as const)(
+  "cancels a queued mobile %s acquisition after permission restoration",
+  async (kind) => {
+    vi.useFakeTimers();
+    using _timers = { [Symbol.dispose]: () => vi.useRealTimers() };
+    await using screen = setup();
+    await screen.render("desktop", "remote", kind, "owner");
+    const pending = screen.block("status");
+    using _pending = { [Symbol.dispose]: () => pending.finish.resolve() };
+    await act(async () => vi.advanceTimersByTimeAsync(2000));
+    await pending.started.promise;
+    await screen.press("Start Live");
+    expect(screen.scheduled()).toContain("request-view");
+    expect(screen.operations()).not.toContain("request-view");
+    state.permitted = false;
+    await screen.render("desktop", "remote", kind, "owner");
+    state.permitted = true;
+    await screen.render("desktop", "remote", kind, "owner");
+    await act(async () => pending.finish.resolve());
+    expect(screen.operations()).not.toContain("request-view");
+    expect(screen.operations()).not.toContain("snapshot");
+    expect(screen.access.get("remote:desktop")).toBe("none");
+  },
+);
+
+for (const kind of ["user", "agent"] as const) {
+  it.each(["permission", "blur", "background", "target", "unmount"] as const)(
+    `cancels queued mobile ${kind} input on %s before the real command lane dispatches it`,
+    async (transition) => {
+      vi.useFakeTimers();
+      using _timers = { [Symbol.dispose]: () => vi.useRealTimers() };
+      await using screen = setup();
+      await screen.render("desktop", "remote", kind, "owner");
+      await screen.press("Start Live");
+      await screen.press("Take control");
+      const pending = screen.block("snapshot");
+      using _pending = { [Symbol.dispose]: () => pending.finish.resolve() };
+      await act(async () => vi.advanceTimersByTimeAsync(750));
+      await pending.started.promise;
+      await screen.press("Enter");
+      expect(screen.scheduled()).toContain("act");
+      expect(screen.operations()).not.toContain("act");
+      if (transition === "permission") {
+        state.permitted = false;
+        await screen.render("desktop", "remote", kind, "owner");
+        state.permitted = true;
+        await screen.render("desktop", "remote", kind, "owner");
+      } else if (transition === "blur") {
+        await screen.focus(false);
+        await screen.focus(true);
+      } else if (transition === "background") {
+        await screen.background("background");
+        await screen.background("active");
+      } else if (transition === "target") {
+        await screen.render("replacement", "remote", kind, "owner");
+      } else await screen.unmount();
+      await act(async () => pending.finish.resolve());
+      expect(screen.operations()).not.toContain("act");
+      expect(screen.access.get("remote:desktop")).toBe("none");
+      expect(screen.hasLiveImage()).toBe(false);
+      expect(screen.operations().filter((op) => op === "request-view")).toHaveLength(1);
+    },
+  );
+}
+
+it("does not reacquire Agent view when Release control finishes after backgrounding", async () => {
+  await using screen = setup();
+  await screen.render("desktop", "remote", "agent", "owner");
+  await screen.press("Start Live");
+  await screen.press("Take control");
+  const pending = screen.block("release");
+  using _pending = { [Symbol.dispose]: () => pending.finish.resolve() };
+  await screen.press("Release control");
+  await pending.started.promise;
+  await screen.background("background");
+  await screen.background("active");
+  await act(async () => pending.finish.resolve());
+  expect(screen.operations().filter((operation) => operation === "request-view")).toHaveLength(1);
+  expect(screen.access.get("remote:desktop")).toBe("none");
+  expect(screen.hasLiveImage()).toBe(false);
 });

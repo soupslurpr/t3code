@@ -37,6 +37,7 @@ import { horizontalListSortingStrategy, SortableContext, useSortable } from "@dn
 import { CSS } from "@dnd-kit/utilities";
 import {
   Smartphone,
+  Monitor,
   ChevronDown,
   ChevronLeft,
   ChevronRight,
@@ -143,6 +144,7 @@ export interface RightPanelTabsProps {
   onAddDevice: () => void;
   /** Absent where side chats are not offered. */
   onAddSideChat?: (() => void) | undefined;
+  onAddDesktop?: (() => void) | undefined;
   browserAvailable: boolean;
   terminalAvailable: boolean;
   diffAvailable: boolean;
@@ -324,6 +326,7 @@ function RightPanelEmptyState(props: {
   onAddDevice: () => void;
   /** Absent where side chats are not offered. */
   onAddSideChat?: (() => void) | undefined;
+  onAddDesktop?: (() => void) | undefined;
   browserAvailable: boolean;
   terminalAvailable: boolean;
   diffAvailable: boolean;
@@ -384,6 +387,14 @@ function RightPanelEmptyState(props: {
       available: props.pullRequestsAvailable,
       disabledReason: SURFACE_UNAVAILABLE_HINTS.pullRequests,
       onClick: props.onAddPullRequests,
+    },
+    {
+      label: "Desktop",
+      icon: Monitor,
+      shortcut: "C",
+      available: props.onAddDesktop !== undefined,
+      disabledReason: "Open a thread to supervise its desktops.",
+      onClick: () => props.onAddDesktop?.(),
     },
     {
       label: "Device",
@@ -590,6 +601,8 @@ function surfaceTitle(
       return `#${surface.number}`;
     case "pull-requests":
       return "Pull requests";
+    case "desktop":
+      return "Desktop";
     case "device":
       return surface.title ?? surface.target?.name ?? "Device";
     case "side-chat":
@@ -684,6 +697,8 @@ function SurfaceIcon({
       return <PullRequestGlyph.link className="size-3 shrink-0" />;
     case "side-chat":
       return <SideChatTabIcon environmentId={environmentId} threadId={surface.threadId} />;
+    case "desktop":
+      return <Monitor className="size-3 shrink-0" />;
     case "device":
       return surface.target?.platform === "ios" ? (
         <AppleIcon className="size-3 shrink-0" />
@@ -1140,6 +1155,14 @@ export function RightPanelTabs(props: RightPanelTabsProps) {
       onClick: props.onAddPullRequests,
     },
     {
+      label: "Desktop",
+      icon: Monitor,
+      shortcut: "C",
+      available: props.onAddDesktop !== undefined,
+      disabledReason: "Open a thread to supervise its desktops.",
+      onClick: () => props.onAddDesktop?.(),
+    },
+    {
       label: "Device",
       icon: Smartphone,
       shortcut: "M",
@@ -1532,6 +1555,7 @@ export function RightPanelTabs(props: RightPanelTabsProps) {
             onAddFiles={props.onAddFiles}
             onAddPullRequest={props.onAddPullRequest}
             onAddPullRequests={props.onAddPullRequests}
+            onAddDesktop={props.onAddDesktop}
             onAddDevice={props.onAddDevice}
             onAddSideChat={props.onAddSideChat}
             browserAvailable={props.browserAvailable}

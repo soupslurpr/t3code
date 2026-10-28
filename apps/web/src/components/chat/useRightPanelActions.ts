@@ -152,6 +152,9 @@ export function useRightPanelActions(input: RightPanelActionsInput) {
     useRightPanelStore.getState().open(activeThreadRef, "pull-requests");
   };
   const addPullRequestsSurfaceStable = useStableCallback(addPullRequestsSurface);
+  const addDesktopSurfaceStable = useStableCallback(() => {
+    if (activeThreadRef) useRightPanelStore.getState().open(activeThreadRef, "desktop");
+  });
   const addDeviceSurface = () => {
     if (!activeThreadRef) return;
     if (deviceState.hostStatus === "disabled") {
@@ -343,6 +346,7 @@ export function useRightPanelActions(input: RightPanelActionsInput) {
   return {
     shortcuts,
     activateRightPanelSurfaceStable,
+    addDesktopSurfaceStable,
     addDeviceSurfaceStable,
     addDiffSurfaceStable,
     addFilesSurfaceStable,

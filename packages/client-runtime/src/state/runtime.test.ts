@@ -44,6 +44,8 @@ import {
   selectEnvironmentQueryData,
   createEnvironmentSubscriptionAtomFamily,
   createRuntimeCommand,
+  runAtomCommand,
+  isAtomCommandInterrupted,
   environmentSessionGenerationAtom,
   scheduleAtomCommandEffect,
   executeAtomQuery,
@@ -1061,6 +1063,83 @@ describe("executeAtomQuery", () => {
 });
 
 describe("runtime command runner", () => {
+  it.each(["direct", "reported"] as const)(
+    "drops obsolete queued work through the %s runner without losing submitted results or cleanup",
+    async (runner) => {
+      const held = Latch.makeUnsafe();
+      const started = Promise.withResolvers<void>();
+      const executed: string[] = [];
+      const reported: string[] = [];
+      let generation = 0;
+      const runtime = Atom.runtime(Layer.empty);
+      const registry = AtomRegistry.make();
+      using _registry = { [Symbol.dispose]: () => registry.dispose() };
+      const command = createRuntimeCommand(runtime, {
+        label: "test.viewer-lifetime",
+        concurrency: {
+          mode: "serial",
+          key: (input: { target: string; name: string }) => input.target,
+        },
+        execute: ({ name }) => {
+          executed.push(name);
+          return name === "submitted"
+            ? Effect.sync(() => started.resolve()).pipe(
+                Effect.andThen(held.await),
+                Effect.as("accepted receipt"),
+              )
+            : Effect.succeed(name);
+        },
+      });
+      const run = (target: string, name: string, token?: number) => {
+        const options = token === undefined ? {} : { shouldExecute: () => generation === token };
+        return runner === "direct"
+          ? command.run(registry, { target, name }, options)
+          : runAtomCommand(registry, command, { target, name }, options, {
+              warn: () => reported.push("warn"),
+              error: () => reported.push("error"),
+            });
+      };
+      const submitted = run("old", "submitted", 0);
+      await started.promise;
+      const obsolete = run("old", "obsolete", 0);
+      generation++;
+      const cleanup = run("old", "release");
+      expect(await run("other", "independent", generation)).toMatchObject({ _tag: "Success" });
+      held.openUnsafe();
+      expect(await submitted).toMatchObject({ _tag: "Success", value: "accepted receipt" });
+      expect(isAtomCommandInterrupted(await obsolete)).toBe(true);
+      expect(await cleanup).toMatchObject({ _tag: "Success", value: "release" });
+      expect(await run("old", "fresh", generation)).toMatchObject({
+        _tag: "Success",
+        value: "fresh",
+      });
+      expect(executed).toEqual(["submitted", "independent", "release", "fresh"]);
+      expect(reported).toEqual([]);
+    },
+  );
+
+  it("settles a failing dispatch predicate without starting the handler or blocking the lane", async () => {
+    const runtime = Atom.runtime(Layer.empty);
+    const registry = AtomRegistry.make();
+    using _registry = { [Symbol.dispose]: () => registry.dispose() };
+    const executed: string[] = [];
+    const defect = new Error("invalid viewer predicate");
+    const command = createRuntimeCommand(runtime, {
+      label: "test.viewer-predicate",
+      concurrency: { mode: "serial", key: () => "same" },
+      execute: (name: string) => Effect.sync(() => executed.push(name)),
+    });
+    const result = await command.run(registry, "obsolete", {
+      shouldExecute: () => {
+        throw defect;
+      },
+    });
+    expect(result._tag).toBe("Failure");
+    if (result._tag === "Failure") expect(Cause.squash(result.cause)).toBe(defect);
+    expect(await command.run(registry, "release")).toMatchObject({ _tag: "Success" });
+    expect(executed).toEqual(["release"]);
+  });
+
   it("settles generated command scheduler defects from direct callers", async () => {
     const defect = new Error("invalid command key");
     const runtime = Atom.runtime(Layer.empty);

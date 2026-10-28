@@ -137,6 +137,11 @@ export interface AtomCommandOptions {
   readonly reportDefect?: boolean;
 }
 
+export interface AtomCommandInvocationOptions {
+  /** Checked when queued work starts; submitted results remain intact. */
+  readonly shouldExecute?: () => boolean;
+}
+
 export interface AtomCommandReporter {
   readonly warn: (message: string, cause: Cause.Cause<unknown>) => void;
   readonly error: (message: string, cause: Cause.Cause<unknown>) => void;
@@ -144,7 +149,11 @@ export interface AtomCommandReporter {
 
 export interface AtomCommand<W, A, E> {
   readonly label: string;
-  readonly run: (registry: AtomRegistry.AtomRegistry, input: W) => Promise<AtomCommandResult<A, E>>;
+  readonly run: (
+    registry: AtomRegistry.AtomRegistry,
+    input: W,
+    options?: AtomCommandInvocationOptions,
+  ) => Promise<AtomCommandResult<A, E>>;
 }
 
 export type AtomCommandConcurrency<W> =
@@ -336,10 +345,10 @@ export async function runAtomCommand<W, A, E>(
   registry: AtomRegistry.AtomRegistry,
   command: AtomCommand<W, A, E>,
   input: W,
-  options: AtomCommandOptions = {},
+  options: AtomCommandOptions & AtomCommandInvocationOptions = {},
   reporter: AtomCommandReporter = console,
 ): Promise<AtomCommandResult<A, E>> {
-  const result = await settleAtomCommandResult(() => command.run(registry, input));
+  const result = await settleAtomCommandResult(() => command.run(registry, input, options));
   reportAtomCommandResult(result, { ...options, label: options.label ?? command.label }, reporter);
   return result;
 }
@@ -435,9 +444,11 @@ export function createRuntimeCommand<R, ER, W, A, E>(
   const concurrency = options.concurrency ?? { mode: "parallel" as const };
   return {
     label: options.label,
-    run: (registry, input) =>
+    run: (registry, input, invocation) =>
       settleAtomCommandResult(() =>
         scheduler.schedule(registry, concurrency, input, () => {
+          if (invocation?.shouldExecute?.() === false)
+            return Promise.resolve(AsyncResult.failure(Cause.interrupt()));
           const atom = runtime
             .atom(options.execute(input, registry))
             .pipe(Atom.withLabel(options.label));

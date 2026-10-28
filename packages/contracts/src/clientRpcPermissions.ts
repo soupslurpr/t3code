@@ -12,6 +12,7 @@ import {
 } from "./auth.ts";
 import { ORCHESTRATION_V2_WS_METHODS } from "./orchestrationV2.ts";
 import { WS_METHODS } from "./rpc.ts";
+import { AgentDesktopHumanInvokeInput, UserDesktopHumanInvokeInput } from "./previewAutomation.ts";
 
 /** Incremental client enforcement; the server still authorizes every request. */
 export const CLIENT_GUARDED_RPC_SCOPES = {
@@ -78,6 +79,16 @@ export type ClientGuardedRpcTag = keyof typeof CLIENT_GUARDED_RPC_SCOPES;
 
 const decodePrepareThread = Schema.decodeUnknownSync(GitPreparePullRequestThreadInput);
 const decodeStackedAction = Schema.decodeUnknownSync(GitRunStackedActionInput);
+const isAgentDesktopInput = Schema.is(AgentDesktopHumanInvokeInput);
+const isUserDesktopInput = Schema.is(UserDesktopHumanInvokeInput);
+
+export function isHumanDesktopRelease(method: string, input: unknown): boolean {
+  if (method === WS_METHODS.agentDesktopHumanInvoke)
+    return isAgentDesktopInput(input) && input.request.operation === "release";
+  if (method === WS_METHODS.userDesktopHumanInvoke)
+    return isUserDesktopInput(input) && input.request.operation === "release";
+  return false;
+}
 
 export function clientRpcRequiredScopes(
   method: string,
