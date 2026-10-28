@@ -1,3 +1,4 @@
+import * as AgentDesktopTransfer from "./agentDesktop/AgentDesktopTransferService.ts";
 import * as AgentDesktopEnvironment from "./agentDesktop/AgentDesktopEnvironment.ts";
 import * as AgentDesktopManager from "./agentDesktop/AgentDesktopManager.ts";
 import * as QemuAgentDesktop from "./agentDesktop/QemuAgentDesktop.ts";
@@ -768,6 +769,12 @@ const layerRuntimeCoreWithAgentPower = AgentPowerReporter.layer.pipe(
 );
 
 const layerRuntimeDependencies = layerRuntimeCoreWithAgentPower.pipe(
+  Layer.provideMerge(
+    AgentDesktopTransfer.layer.pipe(
+      Layer.provide(layerAgentDesktopManager),
+      Layer.provide(layerServerEnvironment),
+    ),
+  ),
   Layer.provideMerge(layerComputerAutomationRouter),
   Layer.provideMerge(layerUsage),
   Layer.provideMerge(layerBackground),

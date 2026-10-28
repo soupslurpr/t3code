@@ -1,3 +1,5 @@
+import { ThreadWorkspaceQuery } from "../orchestration-v2/ThreadWorkspaceQuery.ts";
+import { AgentDesktopTransferService } from "../agentDesktop/AgentDesktopTransferService.ts";
 import { ThreadMonitorService } from "../threadMonitor/ThreadMonitorService.ts";
 import { AgentDesktopManager } from "../agentDesktop/AgentDesktopManager.ts";
 import { ComputerAutomationRouter } from "../computer/ComputerAutomationRouter.ts";
@@ -49,6 +51,8 @@ import budget from "./agentContextBudget.json" with { type: "json" };
 
 // Registration only stores tool definitions, so the handlers' services are never called.
 const toolHandlerServices = Layer.mergeAll(
+  Layer.mock(ThreadWorkspaceQuery)({}),
+  Layer.mock(AgentDesktopTransferService)({}),
   Layer.mock(ThreadMonitorService)({}),
   Layer.mock(AgentDesktopManager)({}),
   Layer.mock(ComputerAutomationRouter)({}),

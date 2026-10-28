@@ -1,6 +1,16 @@
-import { AgentDesktopId, AgentDesktopOwner, EnvironmentId, ThreadId } from "@t3tools/contracts";
+import {
+  AgentDesktopId,
+  AgentDesktopOwner,
+  EnvironmentId,
+  ThreadId,
+  ProjectId,
+  ProviderInstanceId,
+} from "@t3tools/contracts";
 import * as NodeServices from "@effect/platform-node/NodeServices";
-import { assert, describe, it } from "@effect/vitest";
+import { assert, describe, it, vi } from "@effect/vitest";
+import * as Scope from "effect/Scope";
+import * as Exit from "effect/Exit";
+import * as Context from "effect/Context";
 import * as Deferred from "effect/Deferred";
 import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
@@ -11,20 +21,13 @@ import * as Path from "effect/Path";
 import * as Ref from "effect/Ref";
 import * as Schema from "effect/Schema";
 import * as TestClock from "effect/testing/TestClock";
-import { vi } from "vite-plus/test";
 
-const { nativeImage } = vi.hoisted(() => {
-  const image = {
-    isEmpty: () => false,
-    getSize: () => ({ width: 100, height: 100 }),
-    crop: () => image,
-    resize: () => image,
-    toPNG: () => Buffer.from([1]),
-  };
-  return { nativeImage: { createFromBitmap: vi.fn(() => image) } };
-});
-
-vi.mock("electron", () => ({ nativeImage }));
+import * as Bundle from "@t3tools/shared/agentDesktopBundle";
+import * as AgentDesktopTransfer from "./AgentDesktopTransferService.ts";
+import * as ServerConfig from "../config.ts";
+import * as ServerEnvironment from "../environment/ServerEnvironment.ts";
+import { ThreadWorkspaceQuery } from "../orchestration-v2/ThreadWorkspaceQuery.ts";
+import type { McpThreadInvocationScope } from "../mcp/McpInvocationContext.ts";
 
 import * as AgentDesktopEnvironment from "./AgentDesktopEnvironment.ts";
 import * as ComputerUse from "../computer/ComputerAutomationFailure.ts";
@@ -69,6 +72,11 @@ const makeQemu = (
       ReadonlyArray<ReadonlyArray<QemuAgentDesktop.QemuInputEvent>>
     >([]);
     const running = yield* Ref.make<ReadonlySet<AgentDesktopId>>(new Set());
+    const transferStarted = yield* Deferred.make<void>();
+    const importReceiptReturned = yield* Ref.make(false);
+    const releaseTransfer = yield* Deferred.make<void>();
+    const blockTransfer = yield* Ref.make(false);
+    const transferFailure = yield* Ref.make<"none" | "disconnected" | "exit" | "invalid">("none");
     const commandEnvironment = yield* Ref.make<ReadonlyArray<string>>([]);
     const commandStarted = yield* Deferred.make<void>();
     const releaseCommand = yield* Deferred.make<void>();
@@ -235,10 +243,21 @@ const makeQemu = (
                 : argumentsValue.includes("activate")
                   ? activationResponse
                   : undefined;
+        const isTransfer = argumentsValue[0]?.endsWith("/transfer-helper.py") === true;
         const result = {
           exitCode: 0,
-          stdout:
-            input.executable === "/usr/bin/getent"
+          stdout: isTransfer
+            ? JSON.stringify({
+                rootType: "file",
+                fileCount: 1,
+                directoryCount: 0,
+                symlinkCount: 0,
+                logicalBytes: 5,
+                wireBytes: 5,
+                compression: "none",
+                sha256: "a".repeat(64),
+              })
+            : input.executable === "/usr/bin/getent"
               ? "t3test:x:1000:1000::/home/t3test:/bin/bash\n"
               : accessibilityOutput !== undefined
                 ? accessibilityOutput
@@ -274,7 +293,47 @@ const makeQemu = (
                 )
               : Effect.void,
           ),
-          Effect.as(result),
+          Effect.andThen(
+            isTransfer
+              ? Ref.get(blockTransfer).pipe(
+                  Effect.flatMap((blocked) =>
+                    blocked
+                      ? Deferred.succeed(transferStarted, undefined).pipe(
+                          Effect.andThen(Deferred.await(releaseTransfer)),
+                        )
+                      : Effect.void,
+                  ),
+                )
+              : Effect.void,
+          ),
+          Effect.andThen(
+            isTransfer
+              ? Ref.get(transferFailure).pipe(
+                  Effect.flatMap((failure) => {
+                    if (failure === "disconnected")
+                      return Effect.fail(
+                        new QemuAgentDesktop.QemuAgentDesktopError({
+                          code: "guest-disconnected",
+                          operation: "guest-exec-status",
+                          detail: "lost guest receipt",
+                        }),
+                      );
+                    return Effect.succeed(
+                      failure === "exit"
+                        ? { ...result, exitCode: 143, stdout: "" }
+                        : failure === "invalid"
+                          ? { ...result, stdout: "incomplete receipt" }
+                          : result,
+                    );
+                  }),
+                )
+              : Effect.succeed(result),
+          ),
+          Effect.tap(() =>
+            isTransfer && argumentsValue.includes("extract")
+              ? Ref.set(importReceiptReturned, true)
+              : Effect.void,
+          ),
         );
       },
       readGuestFile: (_id, path) =>
@@ -304,6 +363,11 @@ const makeQemu = (
       captureEnabled,
       commandEnvironment,
       commandStarted,
+      transferStarted,
+      importReceiptReturned,
+      releaseTransfer,
+      blockTransfer,
+      transferFailure,
       desktopParked,
       inputEvents,
       releaseCommand,
@@ -323,6 +387,7 @@ const managerHarness = (
     readonly textInsertionResponse?: string;
     readonly activationResponse?: string;
     readonly initialDocument?: string;
+    readonly beforePersist?: Effect.Effect<void>;
     readonly captureAvailable?: boolean;
     readonly windowActivationRequiresSwitch?: boolean;
   },
@@ -351,6 +416,8 @@ const managerHarness = (
     }
     const accessibilityResource = `${agentDesktopsDir}/agent-desktop-accessibility.js`;
     if (accessibility) yield* fileSystem.writeFileString(accessibilityResource, "test helper");
+    const transferResource = `${agentDesktopsDir}/transfer-helper.py`;
+    yield* fileSystem.writeFileString(transferResource, "test transfer helper");
     const inputHelperResource = `${agentDesktopsDir}/input-helper.py`;
     if (options?.inputHelper === true) {
       yield* fileSystem.writeFileString(inputHelperResource, "test input helper");
@@ -370,7 +437,9 @@ const managerHarness = (
               ? [accessibilityResource]
               : resource === "agent-desktop/input-helper.py" && options?.inputHelper === true
                 ? [inputHelperResource]
-                : [],
+                : resource === "agent-desktop/transfer-helper.py"
+                  ? [transferResource]
+                  : [],
         } as unknown as AgentDesktopEnvironment.AgentDesktopEnvironment["Service"]);
       }),
     ).pipe(Layer.provide(NodeServices.layer));
@@ -380,15 +449,39 @@ const managerHarness = (
       Layer.succeed(QemuAgentDesktop.QemuAgentDesktop, qemu.service),
     );
     return {
+      files: fileSystem,
+      directory: agentDesktopsDir,
       calls: qemu.calls,
       wheelAcknowledgementLost: qemu.wheelAcknowledgementLost,
       captureEnabled: qemu.captureEnabled,
       commandEnvironment: qemu.commandEnvironment,
       commandStarted: qemu.commandStarted,
+      transferStarted: qemu.transferStarted,
+      blockTransfer: qemu.blockTransfer,
+      transferFailure: qemu.transferFailure,
       desktopParked: qemu.desktopParked,
       inputEvents: qemu.inputEvents,
       releaseCommand: qemu.releaseCommand,
-      layer: AgentDesktopManager.layer.pipe(Layer.provide(dependencies)),
+      layer: AgentDesktopManager.layer.pipe(
+        Layer.provide(
+          Layer.succeed(
+            FileSystem.FileSystem,
+            FileSystem.FileSystem.of({
+              ...fileSystem,
+              writeFileString: (path, content, optionsValue) =>
+                (path === `${agentDesktopsDir}/desktops.json.tmp`
+                  ? Ref.get(qemu.importReceiptReturned).pipe(
+                      Effect.flatMap((returned) =>
+                        returned ? (options?.beforePersist ?? Effect.void) : Effect.void,
+                      ),
+                    )
+                  : Effect.void
+                ).pipe(Effect.andThen(fileSystem.writeFileString(path, content, optionsValue))),
+            }),
+          ),
+        ),
+        Layer.provide(dependencies),
+      ),
     };
   }).pipe(Effect.provide(NodeServices.layer));
 
@@ -2063,6 +2156,123 @@ describe("shared Agent observation lifecycle", () => {
   );
 });
 
+it.effect.each(["import", "export"] as const)(
+  "transfers exact chunks in both directions and enforces %s cancellation ownership",
+  (operation) =>
+    Effect.gen(function* () {
+      const h = yield* managerHarness("transfer", { accessibility: true });
+      const archivePath = `${h.directory}/archive.bundle`;
+      yield* h.files.writeFileString(archivePath, "hello");
+      const progress: Array<readonly [number, number]> = [];
+      yield* Effect.gen(function* () {
+        const manager = yield* AgentDesktopManager.AgentDesktopManager;
+        const desktop = yield* manager.acquire(owner, {});
+        const imported = yield* manager.transfer(owner, {
+          operation: "import",
+          transferId: "import-one",
+          desktopId: desktop.id,
+          archivePath,
+          guestPath: "~/imported",
+          compression: "none",
+          collision: "create",
+          onProgress: (bytes, total) =>
+            Effect.sync(() => {
+              progress.push([bytes, total]);
+            }),
+          sizeBytes: 5,
+          sha256: "a".repeat(64),
+        });
+        assert.equal(imported.transferId, "import-one");
+        assert.equal(imported.wireBytes, 5);
+        const exported = yield* manager.transfer(owner, {
+          operation: "export",
+          transferId: "export-one",
+          desktopId: desktop.id,
+          archivePath,
+          guestPath: "~/source",
+          compression: "none",
+        });
+        assert.equal(exported.transferId, "export-one");
+        assert.equal(yield* h.files.readFileString(archivePath), "hello");
+        assert.deepEqual(progress, [[5, 5]]);
+        const calls = yield* Ref.get(h.calls);
+        assert.isTrue(
+          calls.some(
+            (call) =>
+              call.includes("--destination /home/t3test/imported") &&
+              call.includes("--owner-uid 1000 --owner-gid 1000"),
+          ),
+        );
+        yield* Ref.set(h.blockTransfer, true);
+        const active = yield* manager
+          .transfer(owner, {
+            ...(operation === "import"
+              ? { operation, collision: "create" as const, sizeBytes: 5, sha256: "a".repeat(64) }
+              : { operation }),
+            transferId: "cancel-one",
+            desktopId: desktop.id,
+            archivePath,
+            guestPath: "~/source",
+            compression: "none",
+          })
+          .pipe(Effect.forkChild);
+        yield* Deferred.await(h.transferStarted);
+        const cleanupCount = (yield* Ref.get(h.calls)).filter((call) =>
+          call.endsWith("/usr/bin/rm:-f -- /run/t3-agent-desktop/transfers/cancel-one.bundle"),
+        ).length;
+        const denied = yield* manager
+          .cancelTransfer(
+            { ...owner, controllerId: "foreign" },
+            { transferId: "cancel-one", desktopId: desktop.id },
+          )
+          .pipe(Effect.flip);
+        assert.deepInclude(denied, { code: "desktop-target-mismatch" });
+        yield* manager.cancelTransfer(owner, { transferId: "cancel-one", desktopId: desktop.id });
+        const cancelled = yield* Fiber.join(active).pipe(Effect.flip);
+        assert.deepInclude(cancelled, { operation: "transfer-cancelled" });
+        if (operation === "import")
+          assert.match(cancelled.message, /publication outcome is unconfirmed/i);
+        yield* manager.cancelTransfer(owner, { transferId: "cancel-one", desktopId: desktop.id });
+        assert.equal(
+          (yield* Ref.get(h.calls)).filter((call) =>
+            call.endsWith("/usr/bin/rm:-f -- /run/t3-agent-desktop/transfers/cancel-one.bundle"),
+          ).length,
+          cleanupCount + (operation === "import" ? 0 : 1),
+        );
+      }).pipe(Effect.provide(h.layer));
+    }),
+);
+
+it.effect.each(["disconnected", "exit", "invalid"] as const)(
+  "reports an unconfirmed import after a %s guest receipt",
+  (failure) =>
+    Effect.gen(function* () {
+      const h = yield* managerHarness("transfer-receipt", { accessibility: true });
+      const archivePath = `${h.directory}/archive.bundle`;
+      yield* h.files.writeFileString(archivePath, "hello");
+      yield* Effect.gen(function* () {
+        const manager = yield* AgentDesktopManager.AgentDesktopManager;
+        const desktop = yield* manager.acquire(owner, {});
+        yield* Ref.set(h.transferFailure, failure);
+        const result = yield* manager
+          .transfer(owner, {
+            operation: "import",
+            transferId: "uncertain-import",
+            desktopId: desktop.id,
+            archivePath,
+            guestPath: "~/imported",
+            compression: "none",
+            collision: "create",
+            sizeBytes: 5,
+            sha256: "a".repeat(64),
+          })
+          .pipe(Effect.flip);
+        assert.match(result.message, /publication outcome is unconfirmed/i);
+        assert.match(result.message, /inspect the destination before retrying/i);
+      }).pipe(Effect.provide(h.layer));
+    }),
+);
+
 it.effect(
   "normalizes object and entry-list environments into the same exact guest invocation",
   () =>
@@ -2090,5 +2300,161 @@ it.effect(
           ]);
         }
       }).pipe(Effect.provide(harness.layer));
+    }),
+);
+
+const receiptProjectId = ProjectId.make("receipt-project");
+const receiptProviderId = ProviderInstanceId.make("receipt-provider");
+const receiptNow = "2026-08-14T00:00:00.000Z";
+const receiptSelection = { instanceId: receiptProviderId, model: "test-model" } as const;
+function receiptProjectionLayer(workspaceRoot: string, worktreePath: string | null = null) {
+  return Layer.mock(ThreadWorkspaceQuery)({
+    getThreadShellById: () =>
+      Effect.succeedSome({
+        id: owner.threadId,
+        projectId: receiptProjectId,
+        title: "Transfer test",
+        pullRequests: [],
+        modelSelection: receiptSelection,
+        runtimeMode: "full-access",
+        interactionMode: "default",
+        branch: null,
+        worktreePath,
+        activeRunId: null,
+        pendingRuntimeRequest: null,
+        createdAt: receiptNow,
+        updatedAt: receiptNow,
+        archivedAt: null,
+        settledOverride: null,
+        settledAt: null,
+        session: null,
+        latestUserMessageAt: null,
+        hasPendingApprovals: false,
+        hasPendingUserInput: false,
+        hasActionableProposedPlan: false,
+      }),
+    getProjectShellById: () =>
+      Effect.succeedSome({
+        id: receiptProjectId,
+        title: "Transfer test",
+        workspaceRoot,
+        defaultModelSelection: receiptSelection,
+        scripts: [],
+        createdAt: receiptNow,
+        updatedAt: receiptNow,
+      }),
+  });
+}
+
+it.effect.each(["cancel", "timeout", "scope-close"] as const)(
+  "keeps an accepted guest import through service %s before activity persistence",
+  (scenario) =>
+    Effect.gen(function* () {
+      const armed = yield* Ref.make(false);
+      const persisting = yield* Deferred.make<void>();
+      const releasePersist = yield* Deferred.make<void>();
+      const h = yield* managerHarness("accepted-service-receipt", {
+        beforePersist: Ref.get(armed).pipe(
+          Effect.flatMap((value) =>
+            value
+              ? Deferred.succeed(persisting, undefined).pipe(
+                  Effect.andThen(Deferred.await(releasePersist)),
+                )
+              : Effect.void,
+          ),
+        ),
+      });
+      const tree = {
+        rootType: "file" as const,
+        fileCount: 1,
+        directoryCount: 0,
+        symlinkCount: 0,
+        logicalBytes: 5,
+      };
+      using _pack = vi.spyOn(Bundle, "packAgentDesktopBundle").mockImplementation(async (input) => {
+        await import("node:fs/promises").then((fs) => fs.writeFile(input.outputPath, "hello"));
+        return {
+          ...tree,
+          archiveBytes: 5,
+          wireBytes: 5,
+          sha256: "a".repeat(64),
+          compression: "none" as const,
+        };
+      });
+      yield* h.files.writeFileString(`${h.directory}/source`, "hello");
+      yield* Effect.gen(function* () {
+        const manager = yield* AgentDesktopManager.AgentDesktopManager;
+        const desktop = yield* manager.acquire(owner, {});
+        yield* manager.command(owner, { desktopId: desktop.id, executable: "/usr/bin/true" });
+        yield* Ref.set(armed, true);
+        const serviceLayer = AgentDesktopTransfer.layer.pipe(
+          Layer.provide(Layer.succeed(AgentDesktopManager.AgentDesktopManager, manager)),
+          Layer.provide(ServerConfig.layerTest(h.directory, { prefix: "t3-accepted-transfer-" })),
+          Layer.provide(NodeServices.layer),
+          Layer.provide(
+            Layer.mock(ServerEnvironment.ServerEnvironment)({
+              getEnvironmentId: Effect.succeed(owner.environmentId),
+            }),
+          ),
+        );
+        const scope: McpThreadInvocationScope = {
+          environmentId: owner.environmentId,
+          thread: {
+            threadId: owner.threadId,
+            providerSessionId: owner.controllerId,
+            providerInstanceId: receiptProviderId,
+          },
+          requestNamespace: "accepted-receipt",
+          client: undefined,
+          capabilities: new Set(["computer"]),
+          issuedAt: 0,
+        };
+        const serviceScope = yield* Scope.make();
+        const context = yield* Layer.buildWithScope(serviceLayer, serviceScope);
+        const service = Context.get(context, AgentDesktopTransfer.AgentDesktopTransferService);
+        yield* Effect.addFinalizer(() =>
+          Deferred.succeed(releasePersist, undefined).pipe(
+            Effect.andThen(Scope.close(serviceScope, Exit.void)),
+          ),
+        );
+        const transfer = yield* service
+          .start(scope, {
+            source: { kind: "workspace", path: "source" },
+            destination: { kind: "agent", desktopId: desktop.id, path: "~/received" },
+            compression: "none",
+            waitMs: 0,
+            timeoutMs: 1000,
+          })
+          .pipe(Effect.provide(receiptProjectionLayer(h.directory)));
+        const id = transfer.id;
+        yield* Effect.raceFirst(
+          Deferred.await(persisting),
+          service
+            .status(scope, { transferId: id, waitMs: 60_000 })
+            .pipe(
+              Effect.flatMap((result) =>
+                Effect.die(`Transfer finished before receipt barrier: ${JSON.stringify(result)}`),
+              ),
+            ),
+        );
+        try {
+          assert.isTrue(
+            (yield* Ref.get(h.calls)).some((call) => call.includes("transfer-helper.py extract")),
+            JSON.stringify(yield* Ref.get(h.calls)),
+          );
+          if (scenario === "cancel") yield* service.cancel(scope, { transferId: id });
+          else if (scenario === "timeout") yield* TestClock.adjust("1 second");
+          else yield* Scope.close(serviceScope, Exit.void);
+          const result = yield* service.status(scope, { transferId: id });
+          assert.equal(result.state, "completed", result.error?.detail);
+          assert.isNull(result.error);
+          assert.equal(result.sha256, "a".repeat(64));
+          assert.deepInclude(result.destination, { desktopId: desktop.id });
+        } finally {
+          yield* Deferred.succeed(releasePersist, undefined);
+          yield* Ref.set(armed, false);
+        }
+        yield* Scope.close(serviceScope, Exit.void);
+      }).pipe(Effect.provide(h.layer));
     }),
 );

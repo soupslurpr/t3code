@@ -1,9 +1,19 @@
 // @effect-diagnostics nodeBuiltinImport:off - The smoke harness owns isolated host files.
 /** Verifies the server-owned Agent desktop runtime against an isolated state directory. */
+import * as NodeFSP from "node:fs/promises";
 import * as NodePath from "node:path";
 
 import * as NodeServices from "@effect/platform-node/NodeServices";
-import { EnvironmentId, ProviderInstanceId, ThreadId } from "@t3tools/contracts";
+import {
+  AgentDesktopTransferId,
+  EnvironmentId,
+  ProviderInstanceId,
+  ThreadId,
+} from "@t3tools/contracts";
+import {
+  extractAgentDesktopBundle,
+  packAgentDesktopBundle,
+} from "@t3tools/shared/agentDesktopBundle";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 
@@ -66,6 +76,12 @@ const owner = {
   threadId: scope.thread.threadId,
   controllerId: scope.thread.providerSessionId,
 };
+const sourceDirectory = NodePath.join(runtimeRoot, "transfer-source");
+const importedArchive = NodePath.join(runtimeRoot, "import.bundle");
+const exportedArchive = NodePath.join(runtimeRoot, "export.bundle");
+const extractedDirectory = NodePath.join(runtimeRoot, "transfer-result");
+const message = "environment server transfer: exact Unicode ’ →\n";
+
 const program = Effect.scoped(
   Effect.gen(function* () {
     const manager = yield* AgentDesktopManager.AgentDesktopManager;
@@ -97,13 +113,58 @@ const program = Effect.scoped(
         observation: false,
       });
 
+      yield* Effect.promise(async () => {
+        await NodeFSP.mkdir(sourceDirectory, { recursive: true });
+        await NodeFSP.writeFile(NodePath.join(sourceDirectory, "message.txt"), message);
+      });
+      const packed = yield* Effect.promise(() =>
+        packAgentDesktopBundle({
+          sourcePath: sourceDirectory,
+          outputPath: importedArchive,
+          compression: "gzip",
+        }),
+      );
+      const imported = yield* manager.transfer(owner, {
+        operation: "import",
+        transferId: AgentDesktopTransferId.make("transfer-server-smoke-import"),
+        desktopId: desktop.id,
+        archivePath: importedArchive,
+        guestPath: "~/server-runtime-smoke",
+        collision: "replace",
+        compression: packed.compression,
+        sizeBytes: packed.wireBytes,
+        sha256: packed.sha256,
+      });
       const verified = yield* manager.command(owner, {
         desktopId: desktop.id,
-        executable: "/usr/bin/printf",
-        arguments: ["%s", "agent-runtime-ok"],
+        executable: "/usr/bin/cat",
+        arguments: ["/home/t3agent/server-runtime-smoke/message.txt"],
       });
-      if (verified.exitCode !== 0 || verified.stdout !== "agent-runtime-ok")
-        throw new Error("guest command failed");
+      if (verified.exitCode !== 0 || verified.stdout !== message) {
+        throw new Error(`guest import verification failed: ${verified.stderr}`);
+      }
+
+      const exported = yield* manager.transfer(owner, {
+        operation: "export",
+        transferId: AgentDesktopTransferId.make("transfer-server-smoke-export"),
+        desktopId: desktop.id,
+        archivePath: exportedArchive,
+        guestPath: "~/server-runtime-smoke",
+        compression: "gzip",
+      });
+      const extracted = yield* Effect.promise(() =>
+        extractAgentDesktopBundle({
+          archivePath: exportedArchive,
+          destinationPath: extractedDirectory,
+          compression: exported.compression,
+          collision: "create",
+        }),
+      );
+      const roundTripMessage = yield* Effect.promise(() =>
+        NodeFSP.readFile(NodePath.join(extractedDirectory, "message.txt"), "utf8"),
+      );
+      if (roundTripMessage !== message) throw new Error("guest export changed file contents");
+
       const released = yield* computer.release(scope, {
         desktop: { kind: "agent", desktopId: desktop.id },
       });
@@ -119,6 +180,17 @@ const program = Effect.scoped(
         },
         actionObservation: actions,
         released: released.permission,
+        imported: {
+          wireBytes: imported.wireBytes,
+          sha256: imported.sha256,
+          tree: imported.tree,
+        },
+        exported: {
+          wireBytes: exported.wireBytes,
+          sha256: exported.sha256,
+          tree: exported.tree,
+        },
+        extracted,
       };
     }).pipe(
       Effect.ensuring(
