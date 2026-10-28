@@ -13,6 +13,7 @@ const reactTests = [
   "src/features/threads/ThreadMonitorsRouteScreen.test.tsx",
   "src/features/threads/ThreadDesktopsRouteScreen.test.tsx",
   "src/features/settings/UserDesktopSupervisionRouteScreen.test.tsx",
+  "src/features/settings/DesktopScreenPermissionsPanel.test.tsx",
   "src/features/threads/MonitorSystemEventCard.test.tsx",
   "src/lib/useMediaVideoPlayback.test.tsx",
   "src/features/pull-requests/usePullRequestEnvironmentFallback.test.tsx",

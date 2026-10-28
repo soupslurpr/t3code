@@ -46,6 +46,16 @@ it.effect(
       yield* append("message.updated", { role: "user", createdBy: "user", createdAt: initial });
       const first = yield* service.read(environmentId, threadId);
       assert.equal(first.activityAt, initial);
+      assert.equal(first.source?.threadTitle, "Thread");
+      assert.isString(first.source?.environmentLabel);
+      assert.isNull(first.source?.projectName);
+      const sql = yield* SqlClient.SqlClient;
+      yield* sql`INSERT INTO projection_projects (project_id, title, workspace_root, scripts_json, created_at, updated_at) VALUES ('project', 'T3 Code', '/workspace', '[]', ${initial}, ${initial})`;
+      yield* sql`UPDATE orchestration_v2_projection_threads SET title = 'Named thread' WHERE thread_id = ${threadId}`;
+      const named = yield* service.read(environmentId, threadId);
+      assert.equal(named.source?.threadTitle, "Named thread");
+      assert.equal(named.source?.projectName, "T3 Code");
+      assert.equal(named.activityRevision, first.activityRevision);
       yield* append("thread.visited", { updatedAt: later });
       yield* append("message.updated", {
         role: "assistant",

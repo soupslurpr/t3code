@@ -5,12 +5,16 @@ import {
   type DesktopComputerAutomationContext,
   type DesktopGrantPolicy,
   type DesktopScreenPermissionRevision,
+  type DesktopScreenPendingApproval,
+  type DesktopScreenPermissionRequest,
+  type DesktopScreenAuthorization,
 } from "@t3tools/contracts";
 import * as Context from "effect/Context";
 import * as Crypto from "effect/Crypto";
 import * as DateTime from "effect/DateTime";
 import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
+import * as Exit from "effect/Exit";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
@@ -18,14 +22,33 @@ import * as DesktopGrants from "./DesktopGrants.ts";
 import * as UserDesktopIdentity from "./UserDesktopIdentity.ts";
 import * as ElectronDialog from "../electron/ElectronDialog.ts";
 import * as ElectronWindow from "../electron/ElectronWindow.ts";
-import { approveGrant, grantKey, GRANT_IDLE_MS } from "./DesktopGrantPolicy.ts";
+import { approveGrant, grantExpired, grantKey, GRANT_IDLE_MS } from "./DesktopGrantPolicy.ts";
 import { ComputerUseLeaseError } from "./ComputerUse.ts";
+import { permissionSourceDescription } from "./permissionSourceDescription.ts";
 
 type Capability = "view" | "control";
+interface PendingScreenApproval {
+  ownerKey: string;
+  context: DesktopComputerAutomationContext;
+  result: Deferred.Deferred<void, ComputerUseLeaseError>;
+  receipt: Deferred.Deferred<void, ComputerUseLeaseError>;
+  publishing?: boolean;
+  publicationFailed?: boolean;
+  decision: Deferred.Deferred<DesktopGrantPolicy, ComputerUseLeaseError>;
+  cancelled: boolean;
+  decided?: boolean;
+  description?: DesktopScreenPendingApproval;
+}
 const denied = () =>
   new ComputerUseLeaseError({
     code: "permission-denied",
     cause: "Screen permission is required on the selected desktop.",
+  });
+const publicationUnconfirmed = () =>
+  new ComputerUseLeaseError({
+    code: "permission-denied",
+    cause:
+      "Screen permission publication could not be confirmed. It may have been saved; inspect saved permissions after storage recovers before retrying.",
   });
 const encode = Schema.encodeSync(Schema.fromJsonString(Schema.Unknown));
 
@@ -35,16 +58,14 @@ const make = Effect.gen(function* () {
   const dialog = yield* ElectronDialog.ElectronDialog;
   const windows = yield* ElectronWindow.ElectronWindow;
   const crypto = yield* Crypto.Crypto;
-  const pending = new Map<
-    string,
-    { ownerKey: string; result: Deferred.Deferred<void, ComputerUseLeaseError>; cancelled: boolean }
-  >();
+  const pending = new Map<string, PendingScreenApproval>();
   const owner = (context: DesktopComputerAutomationContext) => ({
     environmentId:
       context.environmentId ?? EnvironmentId.make(`local:${identity.registration.desktopId}`),
     threadId: context.threadId ?? ThreadId.make("local-desktop-settings"),
   });
   const has = (context: DesktopComputerAutomationContext, capability: Capability) => {
+    if (store.publicationUncertain()) return false;
     const principal = owner(context);
     const sourceRequired = context.controllerKind !== "local" && context.controllerKind !== "human";
     return (
@@ -75,6 +96,7 @@ const make = Effect.gen(function* () {
     capability: Capability,
     proposal?: DesktopGrantPolicy,
     permission?: DesktopScreenPermissionRevision,
+    trustedBackend = false,
   ) {
     const human = context.controllerKind === "local" || context.controllerKind === "human";
     const edit = human && (proposal !== undefined || permission !== undefined);
@@ -82,165 +104,286 @@ const make = Effect.gen(function* () {
     const generation = context.connectionGeneration ?? "legacy";
     const key = encode([principal, generation, capability, edit ? proposal : null, permission]);
     const prior = pending.get(key);
-    if (prior !== undefined) return yield* Deferred.await(prior.result);
+    if (prior !== undefined)
+      return yield* Deferred.await(trustedBackend ? prior.receipt : prior.result);
+    const existing =
+      permission === undefined
+        ? undefined
+        : store.list().find((grant) => grant.grantId === permission.grantId);
+    const grantOwner = existing?.environmentId
+      ? { environmentId: existing.environmentId, threadId: existing.threadId ?? principal.threadId }
+      : principal;
+    const observedGrantSource = store.source(grantOwner);
+    const observedGrantGeneration = store.generation(grantOwner.environmentId);
     const result = yield* Deferred.make<void, ComputerUseLeaseError>();
-    const approval = { ownerKey: encode(principal), result, cancelled: false };
+    const approval: PendingScreenApproval = {
+      ownerKey: encode(principal),
+      context,
+      result,
+      receipt: yield* Deferred.make<void, ComputerUseLeaseError>(),
+      decision: yield* Deferred.make<DesktopGrantPolicy, ComputerUseLeaseError>(),
+      cancelled: false,
+    };
     pending.set(key, approval);
-    return yield* Effect.gen(function* () {
-      yield* sync(context);
-      if (approval.cancelled) return yield* denied();
-      const existing =
-        permission === undefined
-          ? undefined
-          : store.list().find((grant) => grant.grantId === permission.grantId);
-      if (
-        permission !== undefined &&
-        (!human ||
-          existing === undefined ||
-          existing.revision !== permission.revision ||
-          existing.capability !== capability ||
-          (context.controllerKind !== "local" &&
-            existing.scope !== "desktop" &&
-            existing.environmentId !== owner(context).environmentId))
-      )
-        return yield* denied();
-      if (has(context, capability) && !edit) return;
-      const stamp = encode(
-        store
-          .list()
-          .filter((grant) => grant.capability === capability)
-          .map((grant) => [grant.grantId, grant.revision]),
-      );
-      const requestId = yield* crypto.randomUUIDv4().pipe(Effect.orDie);
-      const expires = store.now() + 300_000;
-      const window = yield* windows.currentMainOrFirst;
-      if (Option.isSome(window)) yield* windows.reveal(window.value);
-      if (approval.cancelled) return yield* denied();
-      const signal = yield* Effect.abortSignal;
-      const selected =
-        existing === undefined
-          ? yield* dialog.showMessageBox(
-              {
-                type: "question",
-                title: "Choose screen permission scope",
-                message: `Allow ${capability === "control" ? "screen viewing and control" : "screen viewing"} on ${identity.registration.defaultLabel}?`,
-                detail: `Environment: ${principal.environmentId}\nThread: ${principal.threadId}\nDesktop: ${identity.registration.desktopId}\nT3 permission is separate from remembered operating-system consent.`,
-                buttons: ["Cancel", "This thread", "This environment", "All environments"],
-                defaultId: 1,
-                cancelId: 0,
-                signal,
-              },
-              Option.getOrUndefined(window),
-            )
-          : {
-              response: existing.scope === "thread" ? 1 : existing.scope === "environment" ? 2 : 3,
-            };
-      if (selected.response === 0 || approval.cancelled) return yield* denied();
-      const scope =
-        selected.response === 1 ? "thread" : selected.response === 2 ? "environment" : "desktop";
-      const automatic = scope === "thread" && store.source(principal) !== undefined;
-      const deadline =
-        proposal?.deadline ?? DateTime.formatIso(DateTime.makeUnsafe(store.now() + GRANT_IDLE_MS));
-      const choices = automatic
-        ? ["Cancel", "Automatic temporary access", "Until the stated time", "Until revoked"]
-        : ["Cancel", "Until the stated time", "Until revoked"];
-      const lifetime = yield* dialog.showMessageBox(
-        {
-          type: "question",
-          title: "Choose screen permission lifetime",
-          message: `Allow ${capability} for ${scope === "desktop" ? "all environments" : `this ${scope}`}?`,
-          detail: `${automatic ? "Automatic: 15 minutes after settlement, 24 hours without task activity, and at most seven days.\n" : ""}Until a time: ${deadline}\nPermission expiry releases this source’s screen access. It does not erase operating-system consent or release other authorized viewers.`,
-          buttons: choices,
-          defaultId: 1,
-          cancelId: 0,
-          checkboxLabel: "Remember T3 permission across restart",
-          checkboxChecked: proposal?.remembered ?? false,
-          signal,
-        },
-        Option.getOrUndefined(window),
-      );
-      if (lifetime.response === 0) return yield* denied();
-      const policy: DesktopGrantPolicy = {
-        scope,
-        remembered: lifetime.checkboxChecked,
-        lifetime:
-          lifetime.response === choices.length - 1
-            ? "until-revoked"
-            : automatic && lifetime.response === 1
-              ? "automatic"
-              : "until-time",
-        deadline:
-          lifetime.response === choices.length - 1 || (automatic && lifetime.response === 1)
-            ? (proposal?.deadline ?? null)
-            : deadline,
-      };
-      yield* store.withPermit(
-        Effect.gen(function* () {
-          const currentStamp = encode(
-            store
-              .list()
-              .filter((grant) => grant.capability === capability)
-              .map((grant) => [grant.grantId, grant.revision]),
-          );
-          if (
-            approval.cancelled ||
-            signal.aborted ||
-            store.now() >= expires ||
-            stamp !== currentStamp ||
-            store.source(principal)?.state === "deleted" ||
-            (context.lifecycle !== undefined &&
-              store.generation(principal.environmentId) !== generation)
-          )
-            return yield* denied();
-          if (has(context, capability) && !edit) return;
-          if (
-            existing !== undefined &&
-            store.list().find((grant) => grant.grantId === existing.grantId)?.revision !==
-              existing.revision
-          )
-            return yield* denied();
-          const candidate = yield* Effect.try({
-            try: () =>
-              approveGrant({
-                grantId: requestId,
-                capability,
-                owner: existing?.threadId
-                  ? { environmentId: existing.environmentId!, threadId: existing.threadId }
-                  : principal,
-                source: store.source(
-                  existing?.threadId
-                    ? { environmentId: existing.environmentId!, threadId: existing.threadId }
-                    : principal,
-                ),
-                now: store.now(),
-                policy,
-              }),
-            catch: () => denied(),
-          });
-          const previous = store.list().find((grant) => grantKey(grant) === grantKey(candidate));
-          const next = previous
-            ? { ...candidate, grantId: previous.grantId, revision: previous.revision + 1 }
-            : candidate;
-          yield* store
-            .replace([...store.list().filter((grant) => grantKey(grant) !== grantKey(next)), next])
-            .pipe(Effect.mapError(() => denied()));
-        }),
-      );
-    }).pipe(
-      (prompt) => Effect.raceFirst(prompt, Deferred.await(result)),
-      Effect.timeoutOrElse({ duration: "5 minutes", orElse: () => Effect.fail(denied()) }),
-      Effect.mapError(() => denied()),
-      Effect.scoped,
-      Effect.onExit((exit) =>
-        Deferred.done(result, exit).pipe(
-          Effect.andThen(
-            Effect.sync(() => {
-              if (pending.get(key) === approval) pending.delete(key);
+    const outcome = yield* Effect.exit(
+      Effect.gen(function* () {
+        yield* sync(context);
+        if (approval.cancelled) return yield* denied();
+        if (
+          permission !== undefined &&
+          (!human ||
+            existing === undefined ||
+            existing.revision !== permission.revision ||
+            store.list().find((grant) => grant.grantId === permission.grantId)?.revision !==
+              permission.revision ||
+            existing.capability !== capability ||
+            (context.controllerKind !== "local" &&
+              existing.scope !== "desktop" &&
+              existing.environmentId !== owner(context).environmentId))
+        )
+          return yield* denied();
+        if (has(context, capability) && !edit) return;
+        const stamp = encode(
+          store
+            .list()
+            .filter((grant) => grant.capability === capability)
+            .map((grant) => [grant.grantId, grant.revision]),
+        );
+        const requestId = yield* crypto.randomUUIDv4().pipe(Effect.orDie);
+        const expires = store.now() + 300_000;
+        const signal = yield* Effect.abortSignal;
+        const commit = (policy: DesktopGrantPolicy) =>
+          store.withPermit(
+            Effect.gen(function* () {
+              if (approval.decided) return;
+              const currentStamp = encode(
+                store
+                  .list()
+                  .filter((grant) => grant.capability === capability)
+                  .map((grant) => [grant.grantId, grant.revision]),
+              );
+              const source = store.source(principal);
+              const connectionGeneration = store.generation(principal.environmentId);
+              const grantSource = store.source(grantOwner);
+              const grantGeneration = store.generation(grantOwner.environmentId);
+              if (
+                approval.cancelled ||
+                signal.aborted ||
+                store.now() >= expires ||
+                stamp !== currentStamp ||
+                (observedGrantSource !== undefined &&
+                  (grantSource === undefined || grantGeneration !== observedGrantGeneration)) ||
+                source?.state === "deleted" ||
+                (context.lifecycle !== undefined &&
+                  (source === undefined || connectionGeneration !== generation))
+              )
+                return yield* denied();
+              if (has(context, capability) && !edit) return;
+              if (
+                existing !== undefined &&
+                (policy.scope !== existing.scope ||
+                  store.list().find((grant) => grant.grantId === existing.grantId)?.revision !==
+                    existing.revision)
+              )
+                return yield* denied();
+              const candidate = yield* Effect.try({
+                try: () =>
+                  approveGrant({
+                    grantId: requestId,
+                    capability,
+                    owner: grantOwner,
+                    source: grantSource,
+                    now: store.now(),
+                    policy,
+                  }),
+                catch: () => denied(),
+              });
+              const previous = store
+                .list()
+                .find((grant) => grantKey(grant) === grantKey(candidate));
+              if (trustedBackend && previous !== undefined && existing === undefined)
+                return yield* denied();
+              const next = previous
+                ? { ...candidate, grantId: previous.grantId, revision: previous.revision + 1 }
+                : candidate;
+              const before = store.list();
+              yield* store
+                .replace([...before.filter((grant) => grantKey(grant) !== grantKey(next)), next], {
+                  claim: () => {
+                    if (
+                      approval.cancelled ||
+                      signal.aborted ||
+                      store.now() >= expires ||
+                      grantExpired(next, store.now()) ||
+                      store.source(principal) !== source ||
+                      store.generation(principal.environmentId) !== connectionGeneration ||
+                      store.source(grantOwner) !== grantSource ||
+                      store.generation(grantOwner.environmentId) !== grantGeneration ||
+                      stamp !==
+                        encode(
+                          store
+                            .list()
+                            .filter((grant) => grant.capability === capability)
+                            .map((grant) => [grant.grantId, grant.revision]),
+                        ) ||
+                      (existing !== undefined &&
+                        (policy.scope !== existing.scope ||
+                          store.list().find((grant) => grant.grantId === existing.grantId)
+                            ?.revision !== existing.revision))
+                    )
+                      return false;
+                    approval.publishing = true;
+                    return true;
+                  },
+                  accepted: () => {
+                    approval.decided = true;
+                    Deferred.doneUnsafe(approval.receipt, Effect.void);
+                  },
+                  failed: () => {
+                    approval.publicationFailed = true;
+                  },
+                })
+                .pipe(
+                  Effect.mapError(() => {
+                    return approval.publicationFailed ? publicationUnconfirmed() : denied();
+                  }),
+                );
             }),
+          );
+        const proposedPolicy = proposal ?? {
+          scope: "thread" as const,
+          lifetime:
+            store.source(principal) === undefined
+              ? ("until-time" as const)
+              : ("automatic" as const),
+          remembered: false,
+          deadline:
+            store.source(principal) === undefined
+              ? DateTime.formatIso(DateTime.makeUnsafe(store.now() + GRANT_IDLE_MS))
+              : null,
+        };
+        approval.description = {
+          requestId,
+          ...principal,
+          capability,
+          ...(context.lifecycle?.source === undefined ? {} : { source: context.lifecycle.source }),
+          expiresAt: DateTime.formatIso(DateTime.makeUnsafe(expires)),
+          proposedPolicy,
+          requiresLocalApproval: existing?.scope === "desktop",
+        };
+        if (trustedBackend) {
+          if (
+            !human ||
+            proposal === undefined ||
+            proposal.scope === "desktop" ||
+            existing?.scope === "desktop"
+          )
+            return yield* denied();
+          yield* commit(proposal);
+          return;
+        }
+        const localPolicy = Effect.gen(function* () {
+          const dialogSignal = yield* Effect.abortSignal;
+          const window = yield* windows.currentMainOrFirst;
+          if (Option.isSome(window)) yield* windows.reveal(window.value);
+          if (approval.cancelled) return yield* denied();
+          const selected =
+            existing === undefined
+              ? yield* dialog.showMessageBox(
+                  {
+                    type: "question",
+                    title: "Choose screen permission scope",
+                    message: `Allow ${capability === "control" ? "screen viewing and control" : "screen viewing"} on ${identity.registration.defaultLabel}?`,
+                    detail: `${permissionSourceDescription(context)}\nDesktop: ${identity.registration.defaultLabel} (${identity.registration.desktopId})\nT3 permission is separate from remembered operating-system consent.`,
+                    buttons: ["Cancel", "This thread", "This environment", "All environments"],
+                    defaultId: 1,
+                    cancelId: 0,
+                    signal: dialogSignal,
+                  },
+                  Option.getOrUndefined(window),
+                )
+              : {
+                  response:
+                    existing.scope === "thread" ? 1 : existing.scope === "environment" ? 2 : 3,
+                };
+          if (selected.response === 0 || approval.cancelled) return yield* denied();
+          const scope =
+            selected.response === 1
+              ? "thread"
+              : selected.response === 2
+                ? "environment"
+                : "desktop";
+          const automatic = scope === "thread" && store.source(principal) !== undefined;
+          const deadline =
+            proposal?.deadline ??
+            DateTime.formatIso(DateTime.makeUnsafe(store.now() + GRANT_IDLE_MS));
+          const choices = automatic
+            ? ["Cancel", "Automatic temporary access", "Until the stated time", "Until revoked"]
+            : ["Cancel", "Until the stated time", "Until revoked"];
+          const lifetime = yield* dialog.showMessageBox(
+            {
+              type: "question",
+              title: "Choose screen permission lifetime",
+              message: `Allow ${capability} for ${scope === "desktop" ? "all environments" : `this ${scope}`}?`,
+              detail: `${permissionSourceDescription(context)}\n\n${automatic ? "Automatic: 15 minutes after settlement, 24 hours without task activity, and at most seven days.\n" : ""}Until a time: ${deadline}\nPermission expiry releases this source’s screen access. It does not erase operating-system consent or release other authorized viewers.`,
+              buttons: choices,
+              defaultId: 1,
+              cancelId: 0,
+              checkboxLabel: "Remember T3 permission across restart",
+              checkboxChecked: proposal?.remembered ?? false,
+              signal: dialogSignal,
+            },
+            Option.getOrUndefined(window),
+          );
+          if (lifetime.response === 0) return yield* denied();
+          const policy: DesktopGrantPolicy = {
+            scope,
+            remembered: lifetime.checkboxChecked,
+            lifetime:
+              lifetime.response === choices.length - 1
+                ? "until-revoked"
+                : automatic && lifetime.response === 1
+                  ? "automatic"
+                  : "until-time",
+            deadline:
+              lifetime.response === choices.length - 1 || (automatic && lifetime.response === 1)
+                ? (proposal?.deadline ?? null)
+                : deadline,
+          };
+          return policy;
+        }).pipe(Effect.scoped);
+        // Keep persistence owned by the request so release or interruption cancels it too.
+        const policy = yield* Effect.raceFirst(localPolicy, Deferred.await(approval.decision));
+        yield* commit(policy);
+      }).pipe(
+        (prompt) => Effect.raceFirst(prompt, Deferred.await(result)),
+        Effect.timeoutOrElse({ duration: "5 minutes", orElse: () => Effect.fail(denied()) }),
+        Effect.mapError(() => (approval.publicationFailed ? publicationUnconfirmed() : denied())),
+        Effect.scoped,
+        Effect.onExit((exit) =>
+          (approval.decided || Exit.isSuccess(exit)
+            ? Deferred.succeed(result, undefined)
+            : Deferred.fail(result, denied())
+          ).pipe(
+            Effect.andThen(
+              approval.decided || Exit.isSuccess(exit)
+                ? Deferred.succeed(approval.receipt, undefined)
+                : Deferred.fail(
+                    approval.receipt,
+                    approval.publicationFailed ? publicationUnconfirmed() : denied(),
+                  ),
+            ),
+            Effect.andThen(
+              Effect.sync(() => {
+                if (pending.get(key) === approval) pending.delete(key);
+              }),
+            ),
           ),
         ),
       ),
     );
+    if (trustedBackend) return yield* Deferred.await(approval.receipt);
+    return yield* outcome;
   });
   const cancelPending = Effect.fn("DesktopScreenPermissions.cancelPending")(function* (
     ownerKey?: string,
@@ -250,6 +393,8 @@ const make = Effect.gen(function* () {
     );
     for (const [key, approval] of cancelled) {
       approval.cancelled = true;
+      if (!approval.publishing && !approval.decided)
+        Deferred.doneUnsafe(approval.receipt, Effect.fail(denied()));
       pending.delete(key);
     }
     yield* Effect.forEach(cancelled, ([, approval]) => Deferred.fail(approval.result, denied()), {
@@ -274,6 +419,152 @@ const make = Effect.gen(function* () {
     Effect.asVoid,
     Effect.mapError(() => denied()),
   );
+  const grants = (context: DesktopComputerAutomationContext) =>
+    store
+      .list()
+      .filter(
+        (grant) =>
+          grant.capability !== "execution" &&
+          (context.controllerKind === "local" ||
+            (context.controllerKind === "human" &&
+              grant.environmentId === owner(context).environmentId) ||
+            grant.scope === "desktop" ||
+            (grant.environmentId === owner(context).environmentId &&
+              (grant.scope === "environment" || grant.threadId === owner(context).threadId))),
+      );
+  const revoke = Effect.fn("DesktopScreenPermissions.revoke")(
+    function* (
+      context: DesktopComputerAutomationContext,
+      permission: DesktopScreenPermissionRevision,
+      trustedBackend = false,
+    ) {
+      const grant = store.list().find((entry) => entry.grantId === permission.grantId);
+      if (context.controllerKind !== "local" && context.controllerKind !== "human")
+        return yield* denied();
+      if (
+        grant === undefined ||
+        grant.capability === "execution" ||
+        grant.revision !== permission.revision ||
+        (context.controllerKind !== "local" &&
+          grant.scope !== "desktop" &&
+          grant.environmentId !== owner(context).environmentId)
+      )
+        return yield* denied();
+      if (
+        trustedBackend &&
+        (context.controllerKind !== "human" ||
+          grant.scope === "desktop" ||
+          grant.environmentId !== context.environmentId)
+      )
+        return yield* denied();
+      const decision = trustedBackend
+        ? { response: 1 }
+        : yield* dialog.showMessageBox({
+            type: "question",
+            title: "Remove screen permission?",
+            message: `Remove ${grant.capability} access for ${grant.scope === "desktop" ? "all environments" : (grant.source?.threadTitle ?? grant.threadId ?? grant.source?.environmentLabel ?? grant.environmentId)}?`,
+            detail:
+              "This removes the selected T3 permission. Independent permissions, operating-system consent and availability remain in effect.",
+            buttons: ["Cancel", "Remove permission"],
+            defaultId: 0,
+            cancelId: 0,
+          });
+      if (decision.response !== 1) return yield* denied();
+      yield* store.withPermit(
+        Effect.gen(function* () {
+          if (
+            store.list().find((entry) => entry.grantId === grant.grantId)?.revision !==
+            permission.revision
+          )
+            return yield* denied();
+          yield* store.replace(store.list().filter((entry) => entry.grantId !== grant.grantId));
+        }),
+      );
+    },
+    Effect.asVoid,
+    Effect.mapError(() => denied()),
+  );
+  const authorization = (
+    context: DesktopComputerAutomationContext,
+  ): DesktopScreenAuthorization | undefined =>
+    store.publicationUncertain()
+      ? undefined
+      : {
+          protocolVersion: 2,
+          grants: grants(context),
+          pendingRequests:
+            context.controllerKind === "human" || context.controllerKind === "local"
+              ? [...pending.values()].flatMap((entry) =>
+                  entry.cancelled ||
+                  entry.decided ||
+                  entry.description === undefined ||
+                  (context.controllerKind !== "local" &&
+                    entry.description.environmentId !== context.environmentId)
+                    ? []
+                    : [entry.description],
+                )
+              : [],
+        };
+  const invokeFromNativeBackend = Effect.fn("DesktopScreenPermissions.invokeFromNativeBackend")(
+    function* (
+      nativeContext: DesktopComputerAutomationContext,
+      input: DesktopScreenPermissionRequest,
+    ) {
+      if (nativeContext.controllerKind !== "human") return yield* denied();
+      // The private approval channel shares the automation connection's grant lifecycle.
+      const context = {
+        ...nativeContext,
+        connectionGeneration:
+          store.generation(owner(nativeContext).environmentId) ??
+          nativeContext.connectionGeneration ??
+          "legacy",
+      };
+      if (input.action !== "deny") yield* store.prune;
+      if (input.action === "approve" || input.action === "deny") {
+        const entry = [...pending.values()].find(
+          (candidate) => candidate.description?.requestId === input.requestId,
+        );
+        if (
+          entry === undefined ||
+          entry.cancelled ||
+          entry.decided ||
+          entry.description === undefined ||
+          entry.description.requiresLocalApproval ||
+          entry.description.environmentId !== context.environmentId ||
+          entry.description.threadId !== context.threadId
+        )
+          return yield* denied();
+        if (input.action === "deny") {
+          if (entry.publishing) return yield* denied();
+          entry.cancelled = true;
+          yield* Deferred.fail(entry.result, denied());
+        } else {
+          if (input.policy === undefined || input.policy.scope === "desktop")
+            return yield* denied();
+          yield* sync(context);
+          if (!(yield* Deferred.succeed(entry.decision, input.policy))) return yield* denied();
+          yield* Deferred.await(entry.receipt);
+        }
+      } else if (input.action === "remove") {
+        if (input.permission === undefined) return yield* denied();
+        yield* revoke(context, input.permission, true);
+      } else if (input.action !== "status") {
+        if (
+          input.capability === undefined ||
+          input.policy === undefined ||
+          (input.action === "edit" && input.permission === undefined)
+        )
+          return yield* denied();
+        yield* request(context, input.capability, input.policy, input.permission, true);
+      }
+      const current = authorization(context);
+      if (current === undefined) {
+        yield* store.checkStorage;
+        return yield* denied();
+      }
+      return { ...current, remoteApprovalAvailable: true };
+    },
+  );
   return {
     has,
     admit,
@@ -283,64 +574,13 @@ const make = Effect.gen(function* () {
     confirmShared,
     cancel: (context: DesktopComputerAutomationContext) => cancelPending(encode(owner(context))),
     cancelAll: cancelPending(),
-    grants: (context: DesktopComputerAutomationContext) =>
-      store
-        .list()
-        .filter(
-          (grant) =>
-            grant.capability !== "execution" &&
-            (context.controllerKind === "local" ||
-              (context.controllerKind === "human" &&
-                grant.environmentId === owner(context).environmentId) ||
-              grant.scope === "desktop" ||
-              (grant.environmentId === owner(context).environmentId &&
-                (grant.scope === "environment" || grant.threadId === owner(context).threadId))),
-        ),
+    grants,
+    authorization,
+    invokeFromNativeBackend,
     retain: (key: string, context: DesktopComputerAutomationContext) =>
       store.retain(`screen:${key}`, owner(context)),
     release: (key: string) => store.releaseReference(`screen:${key}`),
-    revoke: Effect.fn("DesktopScreenPermissions.revoke")(
-      function* (
-        context: DesktopComputerAutomationContext,
-        permission: DesktopScreenPermissionRevision,
-      ) {
-        const grant = store.list().find((entry) => entry.grantId === permission.grantId);
-        if (context.controllerKind !== "local" && context.controllerKind !== "human")
-          return yield* denied();
-        if (
-          grant === undefined ||
-          grant.capability === "execution" ||
-          grant.revision !== permission.revision ||
-          (context.controllerKind !== "local" &&
-            grant.scope !== "desktop" &&
-            grant.environmentId !== owner(context).environmentId)
-        )
-          return yield* denied();
-        const decision = yield* dialog.showMessageBox({
-          type: "question",
-          title: "Remove screen permission?",
-          message: `Remove ${grant.capability} access for ${grant.scope === "desktop" ? "all environments" : (grant.threadId ?? grant.environmentId)}?`,
-          detail:
-            "This removes the selected T3 permission. Independent permissions, operating-system consent and availability remain in effect.",
-          buttons: ["Cancel", "Remove permission"],
-          defaultId: 0,
-          cancelId: 0,
-        });
-        if (decision.response !== 1) return yield* denied();
-        yield* store.withPermit(
-          Effect.gen(function* () {
-            if (
-              store.list().find((entry) => entry.grantId === grant.grantId)?.revision !==
-              permission.revision
-            )
-              return yield* denied();
-            yield* store.replace(store.list().filter((entry) => entry.grantId !== grant.grantId));
-          }),
-        );
-      },
-      Effect.asVoid,
-      Effect.mapError(() => denied()),
-    ),
+    revoke,
     revokeOwn: (context: DesktopComputerAutomationContext) =>
       store
         .withPermit(

@@ -620,6 +620,7 @@ function UserDesktopSupervisionContent({
             <DesktopScreenPermissionsPanel
               environmentId={params.environmentId}
               desktopId={params.desktopId}
+              desktopLabel={params.label}
               threadId={params.threadId}
             />
             <UserDesktopExecutionPanel

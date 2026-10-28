@@ -6,6 +6,7 @@ import {
   type ApplicationStoredEvent,
 } from "@t3tools/contracts";
 import * as Context from "effect/Context";
+import * as HostProcess from "@t3tools/shared/HostProcess";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
@@ -56,16 +57,25 @@ const decode = Schema.decodeUnknownEffect(DesktopThreadLifecycle);
 const make = Effect.gen(function* () {
   const sql = yield* SqlClient.SqlClient;
   const events = yield* OrchestrationEventStore.OrchestrationEventStore;
+  const environmentLabel = (yield* HostProcess.Hostname).slice(0, 256);
   const read = Effect.fn("DesktopThreadLifecycle.read")(
     function* (environmentId: EnvironmentId, threadId: ThreadId) {
       const serverNow = DateTime.formatIso(yield* DateTime.now);
       return yield* sql.withTransaction(
         Effect.gen(function* () {
-          const rows = yield* sql<{ state: string; settledAt: string | null; revision: number }>`
+          const rows = yield* sql<{
+            state: string;
+            settledAt: string | null;
+            revision: number;
+            threadTitle: string;
+            projectName: string | null;
+          }>`
         SELECT CASE WHEN deleted_at IS NOT NULL THEN 'deleted'
                     WHEN json_extract(payload_json, '$.settledAt') IS NOT NULL THEN 'settled'
                     ELSE 'active' END AS state,
           json_extract(payload_json, '$.settledAt') AS "settledAt",
+          title AS "threadTitle",
+          (SELECT title FROM projection_projects p WHERE p.project_id = orchestration_v2_projection_threads.project_id) AS "projectName",
           (SELECT COALESCE(MAX(sequence), 0) FROM orchestration_events
            WHERE aggregate_kind = 'thread' AND stream_id = ${threadId}) AS revision
         FROM orchestration_v2_projection_threads WHERE thread_id = ${threadId}
@@ -89,6 +99,11 @@ const make = Effect.gen(function* () {
             threadId,
             serverNow,
             ...rows[0],
+            source: {
+              environmentLabel,
+              threadTitle: rows[0].threadTitle.slice(0, 256),
+              projectName: rows[0].projectName?.slice(0, 256) ?? null,
+            },
             activityRevision: activity[0]?.activityRevision ?? 0,
             activityAt: activity[0]?.activityAt ?? null,
           });

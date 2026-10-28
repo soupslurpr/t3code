@@ -8,6 +8,9 @@ import * as NodeServices from "@effect/platform-node/NodeServices";
 import { assert, describe, it } from "@effect/vitest";
 import {
   EnvironmentId,
+  AuthSessionId,
+  DesktopExecutionAuthorizationCommand,
+  DesktopExecutionAuthorizationEvent,
   ThreadId,
   type DesktopComputerAutomationContext,
   type DesktopExecutionGrant,
@@ -19,6 +22,10 @@ import * as Effect from "effect/Effect";
 import * as Fiber from "effect/Fiber";
 import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
+import * as Queue from "effect/Queue";
+import * as Schema from "effect/Schema";
+import * as Stream from "effect/Stream";
+import * as NativeAuthorizationHost from "./DesktopExecutionAuthorizationHost.ts";
 import * as Path from "effect/Path";
 import { vi } from "vite-plus/test";
 
@@ -29,9 +36,10 @@ import * as ElectronDialog from "../electron/ElectronDialog.ts";
 import * as ElectronWindow from "../electron/ElectronWindow.ts";
 import * as DesktopExecution from "./DesktopExecution.ts";
 import * as DesktopGrants from "../computer/DesktopGrants.ts";
+import * as DesktopScreenPermissions from "../computer/DesktopScreenPermissions.ts";
 import * as DesktopCompletionReceipts from "./DesktopCompletionReceipts.ts";
 import { approveGrant } from "../computer/DesktopGrantPolicy.ts";
-import { DesktopProcessManager } from "./DesktopProcessManager.ts";
+import { DesktopProcessManager, type DesktopExecutionError } from "./DesktopProcessManager.ts";
 import { DesktopTransferManager } from "./DesktopTransferManager.ts";
 
 const context: DesktopComputerAutomationContext = {
@@ -58,6 +66,7 @@ function withExecution<A, E, R>(
   run: Effect.Effect<A, E, R>,
   approve: ElectronDialog.ElectronDialog["Service"]["showMessageBox"] = () =>
     Effect.succeed({ response: 1, checkboxChecked: false }),
+  wrapFs?: (fs: FileSystem.FileSystem) => FileSystem.FileSystem,
 ) {
   return Effect.gen(function* () {
     const fs = yield* FileSystem.FileSystem;
@@ -110,15 +119,1056 @@ function withExecution<A, E, R>(
     );
     return yield* run.pipe(
       Effect.provide(
-        DesktopExecution.layer.pipe(
-          Layer.provideMerge(DesktopGrants.layer.pipe(Layer.provideMerge(foundation))),
+        Layer.mergeAll(
+          DesktopExecution.layer,
+          DesktopScreenPermissions.layer,
+          DesktopCompletionReceipts.layer,
+        ).pipe(
+          Layer.provideMerge(
+            DesktopGrants.layer.pipe(
+              Layer.provide(Layer.succeed(FileSystem.FileSystem, wrapFs ? wrapFs(fs) : fs)),
+              Layer.provideMerge(foundation),
+            ),
+          ),
         ),
       ),
     );
   }).pipe(Effect.provide(NodeServices.layer), Effect.scoped);
 }
 
+function withPublication<A, E, R>(
+  run: (
+    fixture: Effect.Success<ReturnType<typeof makePublicationFixture>>,
+  ) => Effect.Effect<A, E, R>,
+  prompt?: ElectronDialog.ElectronDialog["Service"]["showMessageBox"],
+) {
+  let armed = false;
+  let uncertain = false;
+  let writes = 0;
+  return withExecution(
+    makePublicationFixture(
+      () => {
+        armed = true;
+      },
+      () => {
+        armed = false;
+      },
+      () => ({ uncertain, writes }),
+    ).pipe(Effect.flatMap(run)),
+    prompt,
+    (fs) => ({
+      ...fs,
+      writeFileString: (file, contents, options) =>
+        Effect.suspend(() => {
+          if (file.includes("desktop-execution-grants.json.")) writes++;
+          return fs.writeFileString(file, contents, options);
+        }),
+      rename: (from, to) =>
+        Effect.suspend(() => {
+          if (!armed || !from.includes("desktop-execution-grants.json."))
+            return fs.rename(from, to);
+          return fs.rename(from, to).pipe(
+            Effect.andThen(
+              Effect.sync(() => {
+                uncertain = true;
+              }),
+            ),
+            Effect.andThen(fs.rename(`${from}.missing`, to)),
+          );
+        }),
+    }),
+  );
+}
+
+const makePublicationFixture = Effect.fn("test.makePublicationFixture")(function* (
+  arm: () => void,
+  disarm: () => void,
+  storage: () => { uncertain: boolean; writes: number },
+) {
+  const store = yield* DesktopGrants.DesktopGrants;
+  const permissions = yield* DesktopScreenPermissions.DesktopScreenPermissions;
+  const execution = yield* DesktopExecution.DesktopExecution;
+  const identity = yield* UserDesktopIdentity.UserDesktopIdentity;
+  const environment = yield* DesktopEnvironment.DesktopEnvironment;
+  const fs = yield* FileSystem.FileSystem;
+  const owner = { environmentId: context.environmentId!, threadId: context.threadId! };
+  yield* store.synchronize(owner, context.lifecycle!, context.connectionGeneration!);
+  const control = approveGrant({
+    grantId: "control",
+    capability: "control",
+    owner,
+    source: context.lifecycle,
+    now: store.now(),
+    policy: { scope: "thread", lifetime: "until-revoked", remembered: true, deadline: null },
+  });
+  const executionGrant = { ...control, grantId: "execution", capability: "execution" as const };
+  yield* store.withPermit(store.replace([control, executionGrant]));
+  const select = store.select;
+  let selections = 0;
+  store.select = (...args) => {
+    if (storage().uncertain) selections++;
+    return select(...args);
+  };
+  const human = { ...context, controllerId: "human:test", controllerKind: "human" as const };
+  const desktop = { kind: "user", desktopId: identity.registration.desktopId } as const;
+  const fault = Effect.gen(function* () {
+    arm();
+    const result = yield* permissions
+      .invokeFromNativeBackend(human, {
+        action: "edit",
+        capability: "control",
+        permission: { grantId: control.grantId, revision: control.revision },
+        policy: { scope: "thread", lifetime: "until-revoked", remembered: false, deadline: null },
+      })
+      .pipe(Effect.result, Effect.ensuring(Effect.sync(disarm)));
+    assert.equal(result._tag, "Failure");
+    assert.isTrue(storage().uncertain);
+  });
+  const file = environment.path.join(environment.stateDir, "desktop-execution-grants.json");
+  return {
+    store,
+    permissions,
+    execution,
+    fs,
+    environment,
+    owner,
+    desktop,
+    human,
+    control,
+    executionGrant,
+    fault,
+    file,
+    storage,
+    selections: () => selections,
+  };
+});
+
 describe("desktop execution permission", () => {
+  it.live.each(
+    (["request", "edit", "completion", "transfer"] as const).flatMap((operation) =>
+      [false, true].map((fault) => ({ operation, fault })),
+    ),
+  )("rechecks $operation admission after publication uncertainty=$fault", ({ operation, fault }) =>
+    withPublication((fixture) =>
+      Effect.gen(function* () {
+        const { execution, desktop, store, human, fs, file } = fixture;
+        let processId: string | undefined;
+        let runtimeGeneration: string | undefined;
+        if (operation === "completion") {
+          const started = yield* execution.invoke(context, {
+            operation: "command",
+            desktop,
+            commandId: "completion-gate",
+            executable: process.execPath,
+            arguments: ["-e", "process.stdout.write('ready');process.stdin.resume()"],
+            inheritEnvironment: false,
+            keepStdinOpen: true,
+            waitMs: 0,
+          });
+          if (started.kind !== "process") return assert.fail("missing process");
+          processId = started.process.processId;
+          runtimeGeneration = started.process.runtimeGeneration;
+          yield* execution.invoke(context, {
+            operation: "process",
+            desktop,
+            input: { action: "read", desktop, processId, waitMs: 30_000 },
+          });
+        }
+        const held = yield* Deferred.make<void>();
+        const resume = yield* Deferred.make<void>();
+        const permit = store.withPermit;
+        let first = true;
+        store.withPermit = (effect) =>
+          Effect.suspend(() => {
+            if (!first) return permit(effect);
+            first = false;
+            return Deferred.succeed(held, undefined).pipe(
+              Effect.andThen(Deferred.await(resume)),
+              Effect.andThen(permit(effect)),
+            );
+          });
+        let transferAdmissions = 0;
+        const transfer = vi
+          .spyOn(DesktopTransferManager.prototype, "run")
+          .mockImplementation(async (_owner, _grantId, input) => {
+            transferAdmissions++;
+            return { transferId: input.transferId, cancelled: false };
+          });
+        yield* Effect.gen(function* () {
+          const requesting = {
+            ...human,
+            threadId: ThreadId.make("new-request"),
+            lifecycle: { ...context.lifecycle!, threadId: ThreadId.make("new-request") },
+          };
+          const work: Effect.Effect<unknown, DesktopExecutionError> =
+            operation === "request" || operation === "edit"
+              ? execution.invokeFromNativeBackend(operation === "request" ? requesting : human, {
+                  operation: "access",
+                  desktop,
+                  input: {
+                    action: operation,
+                    desktop,
+                    grantId: "execution",
+                    revision: 1,
+                    scope: "thread",
+                    lifetime: "until-revoked",
+                    remembered: false,
+                  },
+                })
+              : operation === "completion"
+                ? execution.invoke(context, {
+                    operation: "completion",
+                    desktop,
+                    input: {
+                      action: "register",
+                      desktop,
+                      processId: processId!,
+                      runtimeGeneration: runtimeGeneration!,
+                      waitId: "queued-completion",
+                    },
+                  })
+                : execution.transfer(context, {
+                    operation: "run",
+                    desktop,
+                    transferId: "queued-transfer",
+                    direction: "from-desktop",
+                    desktopPath: fixture.environment.homeDirectory,
+                    collision: "create",
+                    compression: "none",
+                    timeoutMs: 1000,
+                    url: "http://127.0.0.1:1/never",
+                    token: "0".repeat(64),
+                  });
+          const pending = yield* work.pipe(Effect.result, Effect.forkChild);
+          yield* Deferred.await(held);
+          if (fault) yield* fixture.fault;
+          const before = yield* fs.readFileString(file);
+          const memory = store.list();
+          const writes = fixture.storage().writes;
+          yield* Deferred.succeed(resume, undefined);
+          const result = yield* Fiber.join(pending);
+          assert.equal(result._tag, fault ? "Failure" : "Success");
+          assert.equal(fixture.selections(), 0);
+          assert.equal(transferAdmissions, operation === "transfer" && !fault ? 1 : 0);
+          if (fault) {
+            assert.equal(fixture.storage().writes, writes);
+            assert.equal(yield* fs.readFileString(file), before);
+            assert.deepEqual(store.list(), memory);
+          }
+        }).pipe(
+          Effect.ensuring(
+            Effect.sync(() => {
+              store.withPermit = permit;
+              transfer.mockRestore();
+            }).pipe(Effect.andThen(Deferred.succeed(resume, undefined))),
+          ),
+        );
+        if (processId !== undefined)
+          yield* execution.invoke(human, {
+            operation: "process",
+            desktop,
+            input: { action: "signal", desktop, processId, signal: "SIGKILL" },
+          });
+      }),
+    ),
+  );
+  it.live.each([false, true])(
+    "revalidates recovery before forgetting captured output: sourceLoss=%s",
+    (loss) =>
+      withPublication((fixture) =>
+        Effect.gen(function* () {
+          const { execution, desktop, human, store, fs, file } = fixture;
+          const completions = yield* DesktopCompletionReceipts.DesktopCompletionReceipts;
+          const started = yield* execution.invoke(context, {
+            operation: "command",
+            desktop,
+            commandId: "forget-source",
+            executable: process.execPath,
+            arguments: ["-e", "process.stdout.write('preserved');process.stdin.resume()"],
+            inheritEnvironment: false,
+            keepStdinOpen: true,
+            waitMs: 0,
+          });
+          if (started.kind !== "process") return assert.fail("missing process");
+          const processId = started.process.processId;
+          const ready = yield* execution.invoke(context, {
+            operation: "process",
+            desktop,
+            input: { action: "read", desktop, processId, waitMs: 30_000 },
+          });
+          if (ready.kind !== "process") return assert.fail("missing output");
+          assert.equal(ready.stdout.data, "preserved");
+          yield* fixture.fault;
+          yield* execution.invoke(human, {
+            operation: "process",
+            desktop,
+            input: { action: "signal", desktop, processId, signal: "SIGKILL" },
+          });
+          const ended = yield* execution.invoke(human, {
+            operation: "process",
+            desktop,
+            input: {
+              action: "read",
+              desktop,
+              processId,
+              stdoutOffset: ready.stdout.nextOffset,
+              waitMs: 30_000,
+            },
+          });
+          if (ended.kind !== "process") return assert.fail("missing terminal result");
+          assert.equal(ended.process.status, "exited");
+          const before = yield* fs.readFileString(file);
+          const memory = store.list();
+          const held = yield* Deferred.make<void>();
+          const resume = yield* Deferred.make<void>();
+          const capture = completions.capture;
+          completions.capture = (process) =>
+            Deferred.succeed(held, undefined).pipe(
+              Effect.andThen(Deferred.await(resume)),
+              Effect.andThen(capture(process)),
+            );
+          yield* Effect.gen(function* () {
+            const forgetting = yield* execution
+              .invoke(human, {
+                operation: "process",
+                desktop,
+                input: { action: "forget", desktop, processId },
+              })
+              .pipe(Effect.result, Effect.forkChild);
+            yield* Deferred.await(held);
+            if (loss)
+              store.invalidate(fixture.owner.environmentId, context.connectionGeneration!, [
+                fixture.owner.threadId,
+              ]);
+            yield* Deferred.succeed(resume, undefined);
+            assert.equal((yield* Fiber.join(forgetting))._tag, loss ? "Failure" : "Success");
+          }).pipe(
+            Effect.ensuring(
+              Effect.sync(() => {
+                completions.capture = capture;
+              }).pipe(Effect.andThen(Deferred.succeed(resume, undefined))),
+            ),
+          );
+          const local = { ...human, controllerKind: "local" as const };
+          const after = yield* execution
+            .invoke(local, {
+              operation: "process",
+              desktop,
+              input: { action: "read", desktop, processId },
+            })
+            .pipe(Effect.result);
+          assert.equal(after._tag, loss ? "Success" : "Failure");
+          if (after._tag === "Success" && after.success.kind === "process") {
+            assert.equal(after.success.stdout.data, "preserved");
+            yield* execution.invoke(local, {
+              operation: "process",
+              desktop,
+              input: { action: "forget", desktop, processId },
+            });
+          }
+          assert.equal(fixture.selections(), 0);
+          assert.equal(yield* fs.readFileString(file), before);
+          assert.deepEqual(store.list(), memory);
+        }),
+      ),
+  );
+
+  it.effect.each(["human", "local"] as const)(
+    "does not treat startup corruption as runtime %s recovery",
+    (kind) =>
+      withPublication((fixture) =>
+        Effect.gen(function* () {
+          yield* fixture.fs.writeFileString(fixture.file, "{broken");
+          yield* Effect.gen(function* () {
+            const store = yield* DesktopGrants.DesktopGrants;
+            const execution = yield* DesktopExecution.DesktopExecution;
+            const permissions = yield* DesktopScreenPermissions.DesktopScreenPermissions;
+            const caller = { ...fixture.human, controllerKind: kind };
+            assert.isFalse(store.publicationUncertain());
+            assert.equal(
+              (yield* execution
+                .invoke(caller, {
+                  operation: "process",
+                  desktop: fixture.desktop,
+                  input: { action: "list", desktop: fixture.desktop },
+                })
+                .pipe(Effect.result))._tag,
+              "Failure",
+            );
+            assert.equal(
+              (yield* permissions
+                .invokeFromNativeBackend(fixture.human, { action: "status" })
+                .pipe(Effect.result))._tag,
+              "Failure",
+            );
+            assert.equal(yield* fixture.fs.readFileString(fixture.file), "{broken");
+          }).pipe(
+            Effect.provide(
+              Layer.fresh(
+                Layer.merge(DesktopExecution.layer, DesktopScreenPermissions.layer).pipe(
+                  Layer.provideMerge(DesktopGrants.layer),
+                ),
+              ),
+            ),
+          );
+        }),
+      ),
+  );
+  it.effect.each([false, true])(
+    "preserves native accepted receipts and cancellation across publication uncertainty=%s",
+    (fault) =>
+      withPublication((fixture) =>
+        Effect.gen(function* () {
+          const host = yield* NativeAuthorizationHost.DesktopExecutionAuthorizationHost;
+          const channel = yield* host.open;
+          const events = yield* Queue.unbounded<DesktopExecutionAuthorizationEvent>();
+          const encode = Schema.encodeEffect(
+            Schema.fromJsonString(DesktopExecutionAuthorizationCommand),
+          );
+          const decode = Schema.decodeUnknownEffect(
+            Schema.fromJsonString(DesktopExecutionAuthorizationEvent),
+          );
+          yield* channel.events.pipe(
+            Stream.decodeText(),
+            Stream.splitLines,
+            Stream.mapEffect((line) => decode(line)),
+            Stream.runForEach((event) => Queue.offer(events, event)),
+            Effect.forkScoped,
+          );
+          yield* channel.handleCommandLine(
+            yield* encode({ type: "hello", environmentId: context.environmentId! }),
+          );
+          const ready = yield* Queue.take(events);
+          if (ready.type !== "ready") return assert.fail("missing ready");
+          const acceptedCommand = {
+            type: "screen",
+            invocationId: "saved-view",
+            generation: ready.generation,
+            sessionId: AuthSessionId.make("human"),
+            threadId: context.threadId!,
+            lifecycle: context.lifecycle!,
+            input: {
+              desktop: fixture.desktop,
+              action: "request",
+              capability: "view",
+              policy: {
+                scope: "thread",
+                lifetime: "until-revoked",
+                remembered: true,
+                deadline: null,
+              },
+            },
+          } as const;
+          yield* channel.handleCommandLine(yield* encode(acceptedCommand));
+          const receipt = yield* Queue.take(events);
+          assert.equal(receipt.type, "screen-result");
+          if (receipt.type === "screen-result")
+            assert.isTrue(receipt.value.grants.some((grant) => grant.capability === "view"));
+          if (fault) yield* fixture.fault;
+          const before = yield* fixture.fs.readFileString(fixture.file);
+          const memory = fixture.store.list();
+          const writes = fixture.storage().writes;
+          yield* channel.handleCommandLine(yield* encode(acceptedCommand));
+          assert.deepEqual(yield* Queue.take(events), receipt);
+          const command = {
+            type: "invoke",
+            invocationId: "cancel",
+            generation: ready.generation,
+            sessionId: AuthSessionId.make("human"),
+            threadId: context.threadId!,
+            input: { operation: "cancel", desktop: fixture.desktop },
+          } as const;
+          yield* channel.handleCommandLine(yield* encode(command));
+          const cancellation = yield* Queue.take(events);
+          assert.equal(cancellation.type, "result");
+          if (cancellation.type === "result" && cancellation.value.kind === "access") {
+            assert.equal(cancellation.value.granted, !fault);
+            assert.equal(cancellation.value.selectedGrantId, fault ? null : "execution");
+          }
+          yield* channel.handleCommandLine(yield* encode(command));
+          assert.deepEqual(yield* Queue.take(events), cancellation);
+          yield* channel.handleCommandLine(yield* encode({ ...command, generation: "retired" }));
+          const stale = yield* Queue.take(events);
+          assert.equal(stale.type, "error");
+          yield* channel.handleCommandLine(
+            yield* encode({
+              ...acceptedCommand,
+              invocationId: "status",
+              input: { desktop: fixture.desktop, action: "status" },
+            }),
+          );
+          assert.equal((yield* Queue.take(events)).type, fault ? "error" : "screen-result");
+          assert.equal(fixture.selections(), 0);
+          assert.equal(fixture.storage().writes, writes);
+          assert.equal(yield* fixture.fs.readFileString(fixture.file), before);
+          assert.deepEqual(fixture.store.list(), memory);
+        }).pipe(Effect.provide(NativeAuthorizationHost.layer)),
+      ),
+  );
+  it.live.each(
+    (["human", "agent"] as const).flatMap((kind) =>
+      (["admission", "result"] as const).flatMap((seam) =>
+        [false, true].map((fault) => ({ kind, seam, fault })),
+      ),
+    ),
+  )(
+    "withholds $kind output crossing publication uncertainty at $seam: $fault",
+    ({ kind, seam, fault }) =>
+      withPublication((fixture) =>
+        Effect.gen(function* () {
+          const { execution, desktop, store, human } = fixture;
+          const started = yield* execution.invoke(context, {
+            operation: "command",
+            desktop,
+            commandId: "transition",
+            executable: process.execPath,
+            arguments: ["-e", "process.stdout.write('ready');process.stdin.resume()"],
+            inheritEnvironment: false,
+            keepStdinOpen: true,
+            waitMs: 0,
+          });
+          if (started.kind !== "process") return assert.fail("missing process");
+          const processId = started.process.processId;
+          const ready = yield* execution.invoke(context, {
+            operation: "process",
+            desktop,
+            input: { action: "read", desktop, processId, waitMs: 30_000 },
+          });
+          if (ready.kind !== "process") return assert.fail("missing output");
+          assert.equal(ready.stdout.data, "ready");
+          const held = yield* Deferred.make<void>();
+          const resume = yield* Deferred.make<void>();
+          const permit = store.withPermit;
+          let hold = seam === "admission";
+          store.withPermit = (effect) =>
+            Effect.suspend(() => {
+              if (!hold) return permit(effect);
+              hold = false;
+              return Deferred.succeed(held, undefined).pipe(
+                Effect.andThen(Deferred.await(resume)),
+                Effect.andThen(permit(effect)),
+              );
+            });
+          const resultGate = Promise.withResolvers<void>();
+          const operate = DesktopProcessManager.prototype.operate;
+          const spy = vi
+            .spyOn(DesktopProcessManager.prototype, "operate")
+            .mockImplementation(function (this: DesktopProcessManager, ...args) {
+              const result = operate.apply(this, args);
+              if (seam !== "result" || args[2].action !== "read") return result;
+              return result.then(async (value) => {
+                Deferred.doneUnsafe(held, Effect.void);
+                await resultGate.promise;
+                return value;
+              });
+            });
+          yield* Effect.gen(function* () {
+            const read = yield* execution
+              .invoke(kind === "human" ? human : context, {
+                operation: "process",
+                desktop,
+                input: { action: "read", desktop, processId },
+              })
+              .pipe(Effect.result, Effect.forkChild);
+            yield* Deferred.await(held);
+            if (fault) yield* fixture.fault;
+            yield* Deferred.succeed(resume, undefined);
+            resultGate.resolve();
+            const result = yield* Fiber.join(read);
+            assert.equal(result._tag, fault ? "Failure" : "Success");
+            if (result._tag === "Success") {
+              assert.equal(result.success.kind, "process");
+              if (result.success.kind === "process")
+                assert.equal(result.success.stdout.data, "ready");
+            }
+            assert.equal(fixture.selections(), 0);
+          }).pipe(
+            Effect.ensuring(
+              Effect.sync(() => {
+                store.withPermit = permit;
+                spy.mockRestore();
+                resultGate.resolve();
+              }).pipe(Effect.andThen(Deferred.succeed(resume, undefined))),
+            ),
+          );
+          yield* execution.invoke(human, {
+            operation: "process",
+            desktop,
+            input: { action: "signal", desktop, processId, signal: "SIGKILL" },
+          });
+        }),
+      ),
+  );
+
+  it.effect.each([
+    "current",
+    "invalidated",
+    "generation",
+    "disconnected",
+    "deleted",
+    "local",
+  ] as const)("validates $0 source again when uncertain recovery reaches admission", (change) =>
+    Effect.gen(function* () {
+      const held = yield* Deferred.make<void>();
+      const resume = yield* Deferred.make<void>();
+      yield* withPublication((fixture) =>
+        Effect.gen(function* () {
+          const { execution, store, human, desktop, owner } = fixture;
+          const deleted = {
+            ...human,
+            threadId: ThreadId.make("deleted"),
+            lifecycle: {
+              ...context.lifecycle!,
+              threadId: ThreadId.make("deleted"),
+              state: "deleted" as const,
+              revision: 2,
+            },
+          };
+          if (change === "deleted")
+            yield* store.synchronize(
+              { environmentId: deleted.environmentId!, threadId: deleted.threadId },
+              deleted.lifecycle,
+              context.connectionGeneration!,
+            );
+          yield* fixture.fault;
+          const permit = store.withPermit;
+          let first = true;
+          store.withPermit = (effect) =>
+            Effect.suspend(() => {
+              if (!first) return permit(effect);
+              first = false;
+              return Deferred.succeed(held, undefined).pipe(
+                Effect.andThen(Deferred.await(resume)),
+                Effect.andThen(permit(effect)),
+              );
+            });
+          yield* Effect.gen(function* () {
+            const caller =
+              change === "local"
+                ? {
+                    controllerKind: "local" as const,
+                    controllerId: "settings",
+                    environmentId: EnvironmentId.make("local"),
+                    threadId: ThreadId.make("settings"),
+                  }
+                : change === "deleted"
+                  ? deleted
+                  : human;
+            const pending = yield* execution
+              .invoke(caller, { operation: "process", desktop, input: { action: "list", desktop } })
+              .pipe(Effect.result, Effect.forkChild);
+            yield* Deferred.await(held);
+            if (change === "invalidated" || change === "local")
+              store.invalidate(owner.environmentId, context.connectionGeneration!, [
+                owner.threadId,
+              ]);
+            if (change === "disconnected")
+              store.disconnect(owner.environmentId, context.connectionGeneration!);
+            if (change === "generation") store.connect(owner.environmentId, "replacement");
+            yield* Deferred.succeed(resume, undefined);
+            assert.equal(
+              (yield* Fiber.join(pending))._tag,
+              ["current", "local", "deleted"].includes(change) ? "Success" : "Failure",
+            );
+            assert.equal(fixture.selections(), 0);
+          }).pipe(
+            Effect.ensuring(
+              Effect.sync(() => {
+                store.withPermit = permit;
+              }).pipe(Effect.andThen(Deferred.succeed(resume, undefined))),
+            ),
+          );
+        }),
+      );
+    }),
+  );
+
+  it.live.each([
+    { seam: "prompt", fault: false, stop: false },
+    { seam: "prompt", fault: true, stop: false },
+    { seam: "admission", fault: false, stop: false },
+    { seam: "admission", fault: true, stop: false },
+    { seam: "admission", fault: true, stop: true },
+  ] as const)(
+    "refuses obsolete revoke before completion mutation at $seam: fault=$fault stop=$stop",
+    (spec) =>
+      Effect.gen(function* () {
+        const held = yield* Deferred.make<void>();
+        const resume = yield* Deferred.make<void>();
+        yield* withPublication(
+          (fixture) =>
+            Effect.gen(function* () {
+              const { execution, desktop, human, store, fs, file } = fixture;
+              const completions = yield* DesktopCompletionReceipts.DesktopCompletionReceipts;
+              const started = yield* execution.invoke(context, {
+                operation: "command",
+                desktop,
+                commandId: "revoke",
+                executable: process.execPath,
+                arguments: ["-e", "process.stdout.write('ready');process.stdin.resume()"],
+                inheritEnvironment: false,
+                keepStdinOpen: true,
+                waitMs: 0,
+              });
+              if (started.kind !== "process") return assert.fail("missing process");
+              const processId = started.process.processId;
+              yield* execution.invoke(context, {
+                operation: "process",
+                desktop,
+                input: { action: "read", desktop, processId, waitMs: 30_000 },
+              });
+              const wait = {
+                desktop,
+                processId,
+                waitId: "before-revoke",
+                runtimeGeneration: started.process.runtimeGeneration!,
+              };
+              yield* execution.invoke(context, {
+                operation: "completion",
+                desktop,
+                input: { ...wait, action: "register" },
+              });
+              const permit = store.withPermit;
+              let hold = spec.seam === "admission";
+              store.withPermit = (effect) =>
+                Effect.suspend(() => {
+                  if (!hold) return permit(effect);
+                  hold = false;
+                  return Deferred.succeed(held, undefined).pipe(
+                    Effect.andThen(Deferred.await(resume)),
+                    Effect.andThen(permit(effect)),
+                  );
+                });
+              yield* Effect.gen(function* () {
+                const pending = yield* execution
+                  .invoke(
+                    { ...human, controllerKind: "local" },
+                    {
+                      operation: "access",
+                      desktop,
+                      input: {
+                        action: "revoke",
+                        desktop,
+                        grantId: "execution",
+                        revision: 1,
+                        localPrompt: spec.seam === "prompt",
+                        stopProcesses: spec.stop,
+                      },
+                    },
+                  )
+                  .pipe(Effect.result, Effect.forkChild);
+                yield* Deferred.await(held);
+                if (spec.fault) yield* fixture.fault;
+                const before = yield* fs.readFileString(file);
+                const memory = store.list();
+                const writes = fixture.storage().writes;
+                const completionFile = fixture.environment.path.join(
+                  fixture.environment.stateDir,
+                  "desktop-completion-receipts.json",
+                );
+                const completionBefore = yield* fs.readFileString(completionFile);
+                yield* Deferred.succeed(resume, undefined);
+                assert.equal((yield* Fiber.join(pending))._tag, spec.fault ? "Failure" : "Success");
+                const receipt = yield* completions.invoke(fixture.owner, {
+                  ...wait,
+                  action: "status",
+                });
+                if (spec.fault) {
+                  assert.isNull(receipt);
+                  assert.equal(fixture.storage().writes, writes);
+                  assert.equal(yield* fs.readFileString(file), before);
+                  assert.equal(yield* fs.readFileString(completionFile), completionBefore);
+                  assert.deepEqual(store.list(), memory);
+                } else assert.equal(receipt?.status, "permission-revoked");
+                yield* Effect.gen(function* () {
+                  const freshGrants = yield* DesktopGrants.DesktopGrants;
+                  const freshReceipts = yield* DesktopCompletionReceipts.DesktopCompletionReceipts;
+                  assert.equal(
+                    freshGrants.list().some((grant) => grant.grantId === "execution"),
+                    spec.fault,
+                  );
+                  assert.deepEqual(
+                    yield* freshReceipts.invoke(fixture.owner, { ...wait, action: "status" }),
+                    receipt,
+                  );
+                }).pipe(
+                  Effect.provide(
+                    Layer.fresh(Layer.merge(DesktopGrants.layer, DesktopCompletionReceipts.layer)),
+                  ),
+                );
+                const live = yield* execution.invoke(human, {
+                  operation: "process",
+                  desktop,
+                  input: { action: "read", desktop, processId },
+                });
+                if (live.kind !== "process") return assert.fail("missing process");
+                assert.equal(live.process.status, "running");
+              }).pipe(
+                Effect.ensuring(
+                  Effect.sync(() => {
+                    store.withPermit = permit;
+                  }).pipe(Effect.andThen(Deferred.succeed(resume, undefined))),
+                ),
+              );
+              yield* execution.invoke(human, {
+                operation: "process",
+                desktop,
+                input: { action: "signal", desktop, processId, signal: "SIGKILL" },
+              });
+            }),
+          (options) =>
+            options.title === "Remove command permission?" && spec.seam === "prompt"
+              ? Deferred.succeed(held, undefined).pipe(
+                  Effect.andThen(Deferred.await(resume)),
+                  Effect.as({ response: 1, checkboxChecked: false }),
+                )
+              : Effect.succeed({ response: 1, checkboxChecked: false }),
+        );
+      }),
+  );
+  it.effect.each([false, true])(
+    "cancels pending execution without selecting uncertain authority: %s",
+    (fault) =>
+      Effect.gen(function* () {
+        const prompted = yield* Deferred.make<void>();
+        yield* withPublication(
+          (fixture) =>
+            Effect.gen(function* () {
+              const { execution, desktop, store, fs, file } = fixture;
+              const waiting = {
+                ...context,
+                threadId: ThreadId.make("waiting"),
+                controllerId: "waiting",
+                lifecycle: { ...context.lifecycle!, threadId: ThreadId.make("waiting") },
+              };
+              const pending = yield* execution
+                .invoke(waiting, {
+                  operation: "access",
+                  desktop,
+                  input: { desktop, action: "request" },
+                })
+                .pipe(Effect.result, Effect.forkChild);
+              yield* Deferred.await(prompted);
+              if (fault) yield* fixture.fault;
+              const before = yield* fs.readFileString(file);
+              const memory = store.list();
+              const writes = fixture.storage().writes;
+              const result = yield* execution.invoke(waiting, { operation: "cancel", desktop });
+              assert.equal((yield* Fiber.join(pending))._tag, "Failure");
+              assert.equal(result.kind, "access");
+              if (result.kind === "access") {
+                assert.isFalse(result.granted);
+                assert.isNull(result.selectedGrantId);
+              }
+              assert.equal(fixture.selections(), 0);
+              assert.equal(fixture.storage().writes, writes);
+              assert.equal(yield* fs.readFileString(file), before);
+              assert.deepEqual(store.list(), memory);
+            }),
+          () => Deferred.succeed(prompted, undefined).pipe(Effect.andThen(Effect.never)),
+        );
+      }),
+  );
+
+  it.live.each([false, true])(
+    "keeps exact-process human recovery without grant writes during uncertainty=%s",
+    (fault) =>
+      withPublication((fixture) =>
+        Effect.gen(function* () {
+          const { execution, desktop, human, store, fs, file, environment } = fixture;
+          const processes = [];
+          for (const signal of ["SIGTERM", "SIGKILL"] as const) {
+            const started = yield* execution.invoke(context, {
+              operation: "command",
+              desktop,
+              commandId: signal,
+              executable: process.execPath,
+              arguments: ["-e", "process.stdout.write('ready');process.stdin.resume()"],
+              inheritEnvironment: false,
+              keepStdinOpen: true,
+              waitMs: 0,
+            });
+            if (started.kind !== "process") return assert.fail("missing process");
+            const ready = yield* execution.invoke(context, {
+              operation: "process",
+              desktop,
+              input: {
+                action: "read",
+                desktop,
+                processId: started.process.processId,
+                waitMs: 30_000,
+              },
+            });
+            if (ready.kind !== "process") return assert.fail("missing output");
+            assert.equal(ready.stdout.data, "ready");
+            processes.push({ signal, process: ready.process, offset: ready.stdout.nextOffset });
+          }
+          if (fault) yield* fixture.fault;
+          const before = yield* fs.readFileString(file);
+          const memory = store.list();
+          const writes = fixture.storage().writes;
+          const local = {
+            controllerKind: "local" as const,
+            controllerId: "local-settings",
+            environmentId: EnvironmentId.make("local-environment"),
+            threadId: ThreadId.make("settings"),
+          };
+          for (const [i, entry] of processes.entries()) {
+            const caller = i === 0 ? human : local;
+            const processId = entry.process.processId;
+            const list = yield* execution.invoke(caller, {
+              operation: "process",
+              desktop,
+              input: { action: "list", desktop },
+            });
+            assert.equal(list.kind, "list");
+            if (list.kind === "list")
+              assert.include(
+                list.processes.map((item) => item.processId),
+                processId,
+              );
+            const read = yield* execution.invoke(caller, {
+              operation: "process",
+              desktop,
+              input: { action: "read", desktop, processId },
+            });
+            if (read.kind !== "process") return assert.fail("missing recovery output");
+            assert.equal(read.stdout.data, "ready");
+            assert.equal(read.process.status, "running");
+            assert.equal(
+              (yield* execution
+                .invoke(caller, {
+                  operation: "process",
+                  desktop,
+                  input: { action: "forget", desktop, processId },
+                })
+                .pipe(Effect.flip)).code,
+              "process-running",
+            );
+            if (fault) {
+              for (const excluded of [human, local, context]) {
+                const blocked: ReadonlyArray<Effect.Effect<unknown, DesktopExecutionError>> = [
+                  execution.invoke(excluded, {
+                    operation: "command",
+                    desktop,
+                    commandId: "blocked",
+                    executable: process.execPath,
+                    arguments: ["-e", "throw Error('must not start')"],
+                    inheritEnvironment: false,
+                  }),
+                  execution.invoke(excluded, {
+                    operation: "process",
+                    desktop,
+                    input: { action: "write", desktop, processId, data: "blocked" },
+                  }),
+                  execution.invoke(excluded, {
+                    operation: "process",
+                    desktop,
+                    input: { action: "resize", desktop, processId, columns: 80, rows: 24 },
+                  }),
+                  execution.invoke(excluded, {
+                    operation: "process",
+                    desktop,
+                    input: { action: "signal", desktop, processId, signal: "SIGINT" },
+                  }),
+                  execution.invoke(excluded, {
+                    operation: "completion",
+                    desktop,
+                    input: {
+                      action: "register",
+                      desktop,
+                      processId,
+                      waitId: "blocked",
+                      runtimeGeneration: entry.process.runtimeGeneration!,
+                    },
+                  }),
+                  ...(["request", "edit", "revoke"] as const).map((action) =>
+                    execution.invoke(excluded, {
+                      operation: "access",
+                      desktop,
+                      input: {
+                        action,
+                        desktop,
+                        grantId: "execution",
+                        revision: 1,
+                        scope: "thread",
+                        lifetime: "until-revoked",
+                      },
+                    }),
+                  ),
+                  execution.transfer(excluded, {
+                    operation: "run",
+                    desktop,
+                    transferId: "blocked",
+                    direction: "from-desktop",
+                    desktopPath: environment.homeDirectory,
+                    collision: "create",
+                    compression: "none",
+                    timeoutMs: 1000,
+                    url: "http://127.0.0.1:1/never",
+                    token: "0".repeat(64),
+                  }),
+                ];
+                for (const attempt of blocked)
+                  assert.equal((yield* attempt.pipe(Effect.result))._tag, "Failure");
+              }
+              for (const rejected of [
+                context,
+                { ...human, connectionGeneration: "retired" },
+                { ...human, environmentId: EnvironmentId.make("foreign") },
+              ])
+                assert.equal(
+                  (yield* execution
+                    .invoke(rejected, {
+                      operation: "process",
+                      desktop,
+                      input: { action: "read", desktop, processId },
+                    })
+                    .pipe(Effect.result))._tag,
+                  "Failure",
+                );
+              assert.equal(
+                (yield* execution
+                  .invoke(human, {
+                    operation: "process",
+                    desktop,
+                    input: { action: "read", desktop, processId: "unknown" },
+                  })
+                  .pipe(Effect.flip)).code,
+                "process-not-found",
+              );
+            }
+            yield* execution.invoke(caller, {
+              operation: "process",
+              desktop,
+              input: { action: "signal", desktop, processId, signal: entry.signal },
+            });
+            const ended = yield* execution.invoke(caller, {
+              operation: "process",
+              desktop,
+              input: {
+                action: "read",
+                desktop,
+                processId,
+                stdoutOffset: entry.offset,
+                waitMs: 30_000,
+              },
+            });
+            if (ended.kind !== "process") return assert.fail("missing terminal result");
+            assert.equal(ended.process.status, "exited");
+            yield* execution.invoke(caller, {
+              operation: "process",
+              desktop,
+              input: { action: "forget", desktop, processId },
+            });
+          }
+          assert.equal(fixture.selections(), 0);
+          assert.equal(fixture.storage().writes, writes);
+          assert.equal(yield* fs.readFileString(file), before);
+          assert.deepEqual(store.list(), memory);
+        }),
+      ),
+  );
   it.live("keeps native cleanup blocked until a transfer drains after cancellation", () =>
     withExecution(
       Effect.gen(function* () {

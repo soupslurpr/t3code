@@ -81,6 +81,7 @@ const make = Effect.gen(function* () {
   let grants: ReadonlyArray<DesktopCapabilityGrant> = [];
   let migratedAt: string | null = null;
   let loadError: DesktopGrantError | null = null;
+  let publicationError: DesktopGrantError | null = null;
   let changed = yield* Deferred.make<void>();
   // Reconciliation is connection-local. Saved authority is not usable merely because it decoded.
   const sources = new Map<string, { generation: string; snapshot: DesktopThreadLifecycle }>();
@@ -125,7 +126,15 @@ const make = Effect.gen(function* () {
   };
 
   const replace = Effect.fn("DesktopGrants.replace")(
-    function* (next: ReadonlyArray<DesktopCapabilityGrant>) {
+    function* (
+      next: ReadonlyArray<DesktopCapabilityGrant>,
+      publication?: {
+        readonly claim: () => boolean;
+        readonly accepted: () => void;
+        readonly failed: () => void;
+      },
+    ) {
+      if (publicationError !== null) return yield* Effect.fail(publicationError);
       const encoded = yield* encode({
         version: 2,
         desktopId: identity.registration.desktopId,
@@ -135,16 +144,44 @@ const make = Effect.gen(function* () {
       });
       const temporary = `${file}.${yield* crypto.randomUUIDv4()}.tmp`;
       yield* fs.makeDirectory(environment.stateDir, { recursive: true });
-      yield* fs.writeFileString(temporary, encoded, { mode: 0o600 });
-      yield* fs
-        .rename(temporary, file)
-        .pipe(Effect.ensuring(fs.remove(temporary).pipe(Effect.ignore)));
-      grants = next;
-      const previous = changed;
-      changed = yield* Deferred.make<void>();
-      yield* Deferred.succeed(previous, undefined);
-      yield* PubSub.publish(changes, undefined);
+      yield* fs.writeFileString(temporary, encoded, { mode: 0o600 }).pipe(
+        Effect.andThen(
+          Effect.gen(function* () {
+            if (publication !== undefined && !publication.claim())
+              return yield* Effect.fail(
+                new DesktopGrantError(
+                  "grant-publication-cancelled",
+                  "Permission publication was cancelled before its commit claim.",
+                ),
+              );
+            yield* fs.rename(temporary, file).pipe(
+              Effect.tapError(() =>
+                publication === undefined
+                  ? Effect.void
+                  : Effect.sync(() => {
+                      loadError = new DesktopGrantError(
+                        "grant-storage-failed",
+                        "Permission publication could not be confirmed. Saved permission may have changed; screen and execution admission is disabled until the store is reloaded successfully.",
+                      );
+                      publicationError = loadError;
+                      publication.failed();
+                      PubSub.publishUnsafe(changes, undefined);
+                    }),
+              ),
+            );
+            grants = next;
+            publication?.accepted();
+            const previous = changed;
+            changed = yield* Deferred.make<void>();
+            yield* Deferred.succeed(previous, undefined);
+            yield* PubSub.publish(changes, undefined);
+          }).pipe(Effect.uninterruptible),
+        ),
+        // Once renamed, disk and memory must agree even if the caller is interrupted.
+        Effect.ensuring(fs.remove(temporary).pipe(Effect.ignore)),
+      );
     },
+    Effect.asVoid,
     Effect.mapError((cause) => new DesktopGrantError("grant-storage-failed", String(cause))),
   );
 
@@ -348,6 +385,7 @@ const make = Effect.gen(function* () {
     ],
     prune: lock.withPermit(prune),
     checkStorage,
+    publicationUncertain: () => publicationError !== null,
     /** Call replace and accept work inside this permit; never hold it across a process wait. */
     withPermit: lock.withPermit,
     replace,
