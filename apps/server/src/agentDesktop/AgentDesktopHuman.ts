@@ -10,7 +10,7 @@ import * as AgentDesktopManager from "./AgentDesktopManager.ts";
 
 /** Selects the public operation used to report one human supervision failure. */
 export function humanRequestOperation(
-  request: AgentDesktopHumanRequest,
+  request: Exclude<AgentDesktopHumanRequest, { readonly operation: "observation" }>,
 ): EnvironmentDesktopAutomationError["operation"] {
   switch (request.operation) {
     case "list":
@@ -38,7 +38,7 @@ export function humanRequestOperation(
 export const runAgentDesktopHumanRequest = Effect.fn("AgentDesktopHuman.run")(function* (
   manager: AgentDesktopManager.AgentDesktopManagerShape,
   scope: McpInvocationContext.McpThreadInvocationScope,
-  request: AgentDesktopHumanRequest,
+  request: Exclude<AgentDesktopHumanRequest, { readonly operation: "observation" }>,
 ) {
   if (request.operation === "list") {
     return yield* manager.list.pipe(

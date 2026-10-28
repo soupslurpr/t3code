@@ -200,6 +200,7 @@ import * as ServerBrowser from "./preview/ServerBrowser.ts";
 import * as PreviewAutomationBroker from "./mcp/PreviewAutomationBroker.ts";
 import * as DeviceService from "./device/DeviceService.ts";
 import { remoteSshDeviceHosts } from "./device/localSshDeviceHost.ts";
+import * as ComputerObservationStore from "./computer/ComputerObservationStore.ts";
 import * as PreviewManager from "./preview/Manager.ts";
 import { issueAssetUrl } from "./assets/AssetAccess.ts";
 import {
@@ -1398,6 +1399,7 @@ export const layerWsRpc = (
       const workspaceFileSystem = yield* WorkspaceFileSystem.WorkspaceFileSystem;
       const serverEnvironment = yield* ServerEnvironment.ServerEnvironment;
       const agentDesktopManager = yield* AgentDesktopManager.AgentDesktopManager;
+      const computerObservations = yield* ComputerObservationStore.ComputerObservationStore;
       const backgroundPolicy = yield* BackgroundPolicy.BackgroundPolicy;
       const rpcClientIds = yield* Ref.make(new Set<RpcClientId>());
       yield* Effect.addFinalizer(() =>
@@ -3109,6 +3111,19 @@ export const layerWsRpc = (
         [WS_METHODS.agentDesktopHumanInvoke]: Effect.fn("ws.agentDesktopHumanInvoke")(
           function* (input) {
             const environmentId = yield* serverEnvironment.getEnvironmentId.pipe(Effect.orDie);
+            if (input.request.operation === "observation") {
+              if (
+                input.request.owner.environmentId !== environmentId ||
+                input.request.owner.threadId !== input.threadId
+              )
+                return { latestId: null };
+              return yield* computerObservations.read({
+                environmentId,
+                threadId: input.threadId,
+                desktopId: input.request.desktopId,
+                ...(input.request.afterId === undefined ? {} : { afterId: input.request.afterId }),
+              });
+            }
             const scope = {
               environmentId,
               requestNamespace: `human:${currentSessionId}`,
@@ -3121,15 +3136,12 @@ export const layerWsRpc = (
               capabilities: new Set(["computer" as const]),
               issuedAt: yield* Clock.currentTimeMillis,
             };
+            const operation = humanRequestOperation(input.request);
             return yield* runAgentDesktopHumanRequest(
               agentDesktopManager,
               scope,
               input.request,
-            ).pipe(
-              Effect.mapError((cause) =>
-                environmentDesktopFailure(scope, humanRequestOperation(input.request), cause),
-              ),
-            );
+            ).pipe(Effect.mapError((cause) => environmentDesktopFailure(scope, operation, cause)));
           },
         ),
         [WS_METHODS.subscribePreviewEvents]: (_input) => previewManager.events,

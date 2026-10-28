@@ -1,5 +1,6 @@
 import * as AgentDesktopManager from "../agentDesktop/AgentDesktopManager.ts";
 import * as ComputerAutomationRouter from "../computer/ComputerAutomationRouter.ts";
+import * as ComputerObservationStore from "../computer/ComputerObservationStore.ts";
 import { expect, it } from "@effect/vitest";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import {
@@ -53,6 +54,7 @@ const client = McpSchema.McpServerClient.of({
 });
 const layerWithAgent = (agentLayer: Layer.Layer<AgentDesktopManager.AgentDesktopManager>) =>
   McpHttpServer.ComputerToolkitRegistrationLive.pipe(
+    Layer.provideMerge(ComputerObservationStore.layer),
     Layer.provideMerge(McpServer.McpServer.layer),
     Layer.provideMerge(McpToolAccessTestkit.liveThreadsLayer),
     Layer.provideMerge(
@@ -699,4 +701,65 @@ it.effect("retains temporal ordering and roles for overview and detail images", 
       ]),
     );
   }).pipe(Effect.provide(layer)),
+);
+it.effect("retains the exact Agent screenshot delivered through MCP for its owner", () =>
+  Effect.gen(function* () {
+    const desktopId = "agent-observed";
+    const screenshot: ComputerAutomationSnapshot = {
+      display: {
+        id: "primary",
+        label: "Primary",
+        primary: true,
+        bounds: { x: 0, y: 0, width: 10, height: 5 },
+        scaleFactor: 1,
+      },
+      cursor: null,
+      captureSource: "virtual-display",
+      frame: {
+        id: "exact-frame",
+        displayId: "primary",
+        coordinateSpace: "image-pixels",
+        width: 10,
+        height: 5,
+        toDesktopLogical: { offsetX: 0, offsetY: 0, scaleX: 1, scaleY: 1 },
+      },
+      screenshot: {
+        state: "image",
+        contentHash,
+        mimeType: "image/png",
+        data: Buffer.from("exact bytes").toString("base64"),
+        sizeBytes: 11,
+        encoding: { format: "png" },
+        width: 10,
+        height: 5,
+      },
+    };
+    yield* Effect.gen(function* () {
+      const store = yield* ComputerObservationStore.ComputerObservationStore;
+      const result = yield* call("computer_snapshot", { desktop: { kind: "agent", desktopId } });
+      expect(result.isError).toBe(false);
+      const retained = yield* store.read({ environmentId, threadId, desktopId });
+      expect(retained.observation?.images[0]?.screenshot).toEqual(screenshot.screenshot);
+      expect(retained.observation?.images[0]?.frame).toEqual(screenshot.frame);
+      expect(retained.observation?.recipient).toEqual({
+        kind: "controller",
+        instanceId: invocation.thread!.providerInstanceId,
+      });
+      const image = result.content.find((content) => content.type === "image");
+      expect(image?.type === "image" ? image.data : null).toEqual(
+        new Uint8Array(Buffer.from("exact bytes")),
+      );
+      expect(
+        yield* store.read({ environmentId, threadId, desktopId, afterId: retained.latestId! }),
+      ).toEqual({ latestId: retained.latestId });
+    }).pipe(
+      Effect.provide(
+        layerWithAgent(
+          Layer.mock(AgentDesktopManager.AgentDesktopManager)({
+            snapshot: () => Effect.succeed(screenshot),
+          }),
+        ),
+      ),
+    );
+  }).pipe(Effect.scoped),
 );

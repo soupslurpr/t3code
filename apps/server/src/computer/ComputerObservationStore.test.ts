@@ -1,0 +1,251 @@
+import { it } from "@effect/vitest";
+import {
+  EnvironmentId,
+  ProviderInstanceId,
+  ThreadId,
+  type ComputerAutomationObservation,
+  type ThreadMonitorComputerEvidenceImage,
+  type ThreadMonitorComputerRegionState,
+} from "@t3tools/contracts";
+import { createModelSelection } from "@t3tools/shared/model";
+import * as Effect from "effect/Effect";
+import * as TestClock from "effect/testing/TestClock";
+import { describe, expect } from "vite-plus/test";
+
+import * as ComputerObservationStore from "./ComputerObservationStore.ts";
+
+const environmentId = EnvironmentId.make("environment-observation-test");
+const threadId = ThreadId.make("thread-observation-test");
+const instanceId = ProviderInstanceId.make("codex");
+const desktopId = "agent-observation-test";
+const hash = "sha256-bgra8-v2:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA";
+
+/** Creates one exact direct screenshot observation. */
+function controllerObservation(): ComputerAutomationObservation {
+  return {
+    snapshot: {
+      display: {
+        id: "display-0",
+        label: "Agent desktop",
+        primary: true,
+        bounds: { x: 0, y: 0, width: 1_280, height: 800 },
+        scaleFactor: 1,
+      },
+      cursor: null,
+      frame: {
+        id: "frame-overview",
+        displayId: "display-0",
+        coordinateSpace: "image-pixels",
+        width: 640,
+        height: 400,
+        toDesktopLogical: { scaleX: 2, scaleY: 2, offsetX: 0, offsetY: 0 },
+      },
+      captureSource: "virtual-display",
+      screenshot: {
+        state: "image",
+        contentHash: hash,
+        mimeType: "image/webp",
+        data: "exact-image",
+        width: 640,
+        height: 400,
+        sizeBytes: 11,
+        encoding: { format: "webp", mode: "lossless" },
+      },
+      accessibility: {
+        available: true,
+        coordinateSpace: "focused-window",
+        window: { application: "Files", name: "Downloads", size: { width: 800, height: 600 } },
+        windows: [],
+        targets: [],
+        truncated: false,
+      },
+    },
+  };
+}
+
+/** Creates one watch region state with stable desktop coordinates. */
+function watchRegion(): ThreadMonitorComputerRegionState {
+  return {
+    id: "status",
+    role: "trigger",
+    purpose: "Build status",
+    region: {
+      coordinateSpace: "desktop-logical",
+      displayId: "display-0",
+      x: 100,
+      y: 200,
+      width: 300,
+      height: 100,
+    },
+    maxWidth: 600,
+    maxHeight: 200,
+    encoding: { format: "webp", mode: "lossless" },
+    baselineHash: hash,
+    lastSampleHash: hash,
+    baselineStored: true,
+    sampleCount: 2,
+    changedSampleCount: 1,
+    unchangedSampleCount: 1,
+    lastCapturedAt: "2026-08-17T10:00:00.000Z",
+    lastChangedAt: "2026-08-17T10:00:00.000Z",
+  };
+}
+
+/** Creates one retained evaluator image generation. */
+function watchEvidence(
+  kind: ThreadMonitorComputerEvidenceImage["kind"],
+  dataBase64: string,
+): ThreadMonitorComputerEvidenceImage {
+  return {
+    id: `${kind}:status`,
+    kind,
+    regionId: "status",
+    capturedAt: "2026-08-17T10:00:00.000Z",
+    hash,
+    width: 600,
+    height: 200,
+    frameIndex: null,
+    elapsedMs: null,
+    mimeType: "image/webp",
+    dataBase64,
+    sizeBytes: dataBase64.length,
+    encoding: { format: "webp", mode: "lossless" },
+  };
+}
+
+describe("ComputerObservationStore", () => {
+  it.effect("returns exact controller bytes only when the observation changes", () =>
+    Effect.gen(function* () {
+      const store = yield* ComputerObservationStore.make;
+      yield* store.publishController({
+        environmentId,
+        threadId,
+        instanceId,
+        desktopId,
+        source: "snapshot",
+        observation: controllerObservation(),
+      });
+
+      const first = yield* store.read({ environmentId, threadId, desktopId });
+      expect(first.observation?.images[0]?.screenshot).toMatchObject({
+        state: "image",
+        data: "exact-image",
+        sizeBytes: 11,
+      });
+      expect(first.observation?.accessibility?.available).toBe(true);
+
+      const unchanged = yield* store.read({
+        environmentId,
+        threadId,
+        desktopId,
+        afterId: first.latestId!,
+      });
+      expect(unchanged).toEqual({ latestId: first.latestId });
+
+      const wrongThread = yield* store.read({
+        environmentId,
+        threadId: ThreadId.make("different-thread"),
+        desktopId,
+      });
+      expect(wrongThread).toEqual({ latestId: null });
+      expect(
+        yield* store.read({ environmentId: EnvironmentId.make("foreign"), threadId, desktopId }),
+      ).toEqual({ latestId: null });
+      expect(yield* store.read({ environmentId, threadId, desktopId: "foreign" })).toEqual({
+        latestId: null,
+      });
+    }),
+  );
+
+  it.effect("distinguishes baseline and current watch evaluator inputs", () =>
+    Effect.gen(function* () {
+      const store = yield* ComputerObservationStore.make;
+      yield* store.publishWatchEvaluation({
+        environmentId,
+        threadId,
+        desktopId,
+        monitorId: "monitor-observation-test",
+        label: "Wait for completion",
+        modelSelection: createModelSelection(instanceId, "gpt-5.6-luna"),
+        images: [
+          {
+            state: watchRegion(),
+            baseline: watchEvidence("baseline", "baseline-image"),
+            current: watchEvidence("current", "current-image"),
+          },
+        ],
+      });
+
+      const result = yield* store.read({ environmentId, threadId, desktopId });
+      expect(result.observation?.recipient).toMatchObject({
+        kind: "watch-evaluator",
+        monitorId: "monitor-observation-test",
+        modelSelection: { model: "gpt-5.6-luna" },
+      });
+      expect(result.observation?.images.map((image) => image.generation)).toEqual([
+        "baseline",
+        "current",
+      ]);
+      expect(result.observation?.images[1]?.region).toMatchObject({ x: 100, width: 300 });
+    }),
+  );
+
+  it.effect("expires observations without persistent storage", () =>
+    Effect.gen(function* () {
+      const store = yield* ComputerObservationStore.make;
+      yield* store.publishController({
+        environmentId,
+        threadId,
+        instanceId,
+        desktopId,
+        source: "snapshot",
+        observation: controllerObservation(),
+      });
+      yield* TestClock.adjust("31 minutes");
+      expect(yield* store.read({ environmentId, threadId, desktopId })).toEqual({ latestId: null });
+    }),
+  );
+});
+
+it.effect("evicts older desktops under count and image bounds while retaining the newest", () =>
+  Effect.gen(function* () {
+    const store = yield* ComputerObservationStore.make;
+    for (let index = 0; index < 33; index += 1) {
+      yield* store.publishController({
+        environmentId,
+        threadId,
+        instanceId,
+        desktopId: `desktop-${index}`,
+        source: "snapshot",
+        observation: controllerObservation(),
+      });
+    }
+    expect(yield* store.read({ environmentId, threadId, desktopId: "desktop-0" })).toEqual({
+      latestId: null,
+    });
+    expect(
+      (yield* store.read({ environmentId, threadId, desktopId: "desktop-1" })).latestId,
+    ).not.toBeNull();
+    const observation = controllerObservation();
+    const screenshot = observation.snapshot!.screenshot!;
+    if (screenshot.state !== "image") throw new Error("Image fixture required");
+    yield* store.publishController({
+      environmentId,
+      threadId,
+      instanceId,
+      desktopId,
+      source: "snapshot",
+      observation: {
+        snapshot: {
+          ...observation.snapshot!,
+          screenshot: { ...screenshot, sizeBytes: 129 * 1_024 * 1_024 },
+        },
+      },
+    });
+    expect(yield* store.read({ environmentId, threadId, desktopId: "desktop-32" })).toEqual({
+      latestId: null,
+    });
+    const newest = yield* store.read({ environmentId, threadId, desktopId });
+    expect(newest.observation?.images[0]?.screenshot).toMatchObject({ data: "exact-image" });
+  }),
+);

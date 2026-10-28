@@ -73,6 +73,7 @@ import * as McpSessionRegistry from "./McpSessionRegistry.ts";
 import * as PreviewAutomationBroker from "./PreviewAutomationBroker.ts";
 import * as OrchestratorHandlers from "./toolkits/orchestrator/handlers.ts";
 import { OrchestratorToolkit } from "./toolkits/orchestrator/tools.ts";
+import * as ComputerObservationStore from "../computer/ComputerObservationStore.ts";
 import * as PreviewHandlers from "./toolkits/preview/handlers.ts";
 import {
   PreviewSnapshotTool,
@@ -1394,6 +1395,7 @@ const computerWatchInspectionResult = (encodedResult: unknown) => {
 const registerComputerImageTools = Effect.fn("McpHttpServer.registerComputerImageTools")(
   function* () {
     const server = yield* McpServer.McpServer;
+    const observations = yield* ComputerObservationStore.ComputerObservationStore;
     const router = yield* ComputerAutomationRouter.ComputerAutomationRouter;
     const threads = yield* ThreadManagementService.ThreadManagementService;
     const built = yield* decodeAsAdvertised(ComputerImageToolkit);
@@ -1426,6 +1428,10 @@ const registerComputerImageTools = Effect.fn("McpHttpServer.registerComputerImag
               Stream.run(Sink.last()),
               Effect.flatMap(Effect.fromOption),
               Effect.provideService(ComputerAutomationRouter.ComputerAutomationRouter, router),
+              Effect.provideService(
+                ComputerObservationStore.ComputerObservationStore,
+                observations,
+              ),
               Effect.provideService(ThreadManagementService.ThreadManagementService, threads),
               Effect.provideService(McpInvocationContext.McpInvocationContext, invocation),
               Effect.matchCauseEffect({
@@ -1443,6 +1449,7 @@ const registerComputerImageTools = Effect.fn("McpHttpServer.registerComputerImag
 const registerMonitorImageTools = Effect.fn("McpHttpServer.registerMonitorImageTools")(
   function* () {
     const server = yield* McpServer.McpServer;
+    const observations = yield* ComputerObservationStore.ComputerObservationStore;
     const service = yield* ThreadMonitorService;
     const management = yield* ThreadManagementService.ThreadManagementService;
     const built = yield* decodeAsAdvertised(MonitorImageToolkit);
@@ -1477,6 +1484,10 @@ const registerMonitorImageTools = Effect.fn("McpHttpServer.registerMonitorImageT
               Effect.provideService(ThreadMonitorService, service),
               Effect.provideService(ThreadManagementService.ThreadManagementService, management),
               Effect.provideService(McpInvocationContext.McpInvocationContext, invocation),
+              Effect.provideService(
+                ComputerObservationStore.ComputerObservationStore,
+                observations,
+              ),
               Effect.matchCauseEffect({
                 onFailure: (cause) => monitorToolFailure(tool.name, cause),
                 onSuccess: ({ encodedResult }) =>
@@ -1495,6 +1506,7 @@ const isDeviceToolError = Schema.is(DeviceToolError);
 const registerMonitorStandardTools = Effect.fn("McpHttpServer.registerMonitorStandardTools")(
   function* () {
     const server = yield* McpServer.McpServer;
+    const observations = yield* ComputerObservationStore.ComputerObservationStore;
     const threads = yield* ThreadManagementService.ThreadManagementService;
     const service = yield* ThreadMonitorService;
     const built = yield* decodeAsAdvertised(MonitorStandardToolkit);
@@ -1528,6 +1540,10 @@ const registerMonitorStandardTools = Effect.fn("McpHttpServer.registerMonitorSta
               Effect.flatMap(Effect.fromOption),
               Effect.provideService(ThreadManagementService.ThreadManagementService, threads),
               Effect.provideService(ThreadMonitorService, service),
+              Effect.provideService(
+                ComputerObservationStore.ComputerObservationStore,
+                observations,
+              ),
               Effect.provideService(McpInvocationContext.McpInvocationContext, invocation),
               Effect.matchCauseEffect({
                 onFailure: (cause) => monitorToolFailure(tool.name, cause),
