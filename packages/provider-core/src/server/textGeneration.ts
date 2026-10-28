@@ -96,6 +96,33 @@ export type ReviewGuideGenerationResult = Omit<
   PullRequestReviewGuide,
   "headSha" | "generatedAt" | "modelSelection"
 >;
+export interface ImageConditionEvaluationInput {
+  cwd: string;
+  criterion: string;
+  images: ReadonlyArray<{
+    id: string;
+    purpose?: string | undefined;
+    currentPngBase64: string;
+    baselinePngBase64?: string | undefined;
+  }>;
+  /** What model and provider instance to use for evaluation. */
+  modelSelection: ModelSelection;
+}
+
+export interface ImageConditionEvaluationResult {
+  verdict: "matched" | "not-matched" | "uncertain";
+  summary: string;
+  visibleFacts: ReadonlyArray<string>;
+  evidence: ReadonlyArray<{
+    readonly imageId: string;
+    readonly description: string;
+  }>;
+  usage: {
+    readonly inputTokens: number | null;
+    readonly cachedInputTokens: number | null;
+    readonly outputTokens: number | null;
+  };
+}
 
 export interface ProviderTextGeneration {
   readonly generateCommitMessage: (
@@ -117,4 +144,8 @@ export interface ProviderTextGeneration {
   readonly generateReviewGuide: (
     input: ReviewGuideGenerationInput,
   ) => Effect.Effect<ReviewGuideGenerationResult, TextGenerationError>;
+  /** Evaluates a read-only screen condition when the provider supports images. */
+  readonly evaluateImageCondition?: (
+    input: ImageConditionEvaluationInput,
+  ) => Effect.Effect<ImageConditionEvaluationResult, TextGenerationError>;
 }

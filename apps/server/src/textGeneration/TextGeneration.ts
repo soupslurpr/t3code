@@ -23,6 +23,8 @@ import * as SourceControlProviderRegistry from "../sourceControl/SourceControlPr
 import * as ThreadTitleLinks from "./ThreadTitleLinks.ts";
 
 export type {
+  ImageConditionEvaluationInput,
+  ImageConditionEvaluationResult,
   BranchNameGenerationInput,
   BranchNameGenerationResult,
   CommitMessageGenerationInput,
@@ -44,7 +46,8 @@ type TextGenerationOp =
   | "generatePrContent"
   | "generateBranchName"
   | "generateThreadTitle"
-  | "generateReviewGuide";
+  | "generateReviewGuide"
+  | "evaluateImageCondition";
 
 const resolveInstance = (
   registry: ProviderInstanceRegistry.ProviderInstanceRegistry["Service"],
@@ -53,12 +56,15 @@ const resolveInstance = (
 ): Effect.Effect<ProviderInstance["textGeneration"], TextGenerationError> =>
   registry.getInstance(instanceId).pipe(
     Effect.flatMap((instance) =>
-      instance
+      instance && (operation !== "evaluateImageCondition" || instance.enabled)
         ? Effect.succeed(instance.textGeneration)
         : Effect.fail(
             new TextGenerationError({
               operation,
-              detail: `No provider instance registered for id '${instanceId}'.`,
+              detail:
+                instance?.enabled === false
+                  ? `Provider instance '${instanceId}' is disabled.`
+                  : `No provider instance registered for id '${instanceId}'.`,
             }),
           ),
     ),
@@ -167,6 +173,24 @@ export const make = Effect.gen(function* () {
               modelSelection,
             });
           }),
+      );
+    }),
+    evaluateImageCondition: Effect.fn("TextGeneration.evaluateImageCondition")(function (input) {
+      return resolveInstance(
+        registry,
+        "evaluateImageCondition",
+        input.modelSelection.instanceId,
+      ).pipe(
+        Effect.flatMap((textGeneration) =>
+          textGeneration.evaluateImageCondition === undefined
+            ? Effect.fail(
+                new TextGenerationError({
+                  operation: "evaluateImageCondition",
+                  detail: `Provider instance '${input.modelSelection.instanceId}' does not support image-condition evaluation.`,
+                }),
+              )
+            : textGeneration.evaluateImageCondition(input),
+        ),
       );
     }),
   });
