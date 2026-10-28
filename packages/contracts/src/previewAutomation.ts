@@ -1,5 +1,9 @@
+import { DesktopScreenPermissionRevision } from "./computerAutomation.ts";
+import { DesktopGrantPolicy } from "./desktopAuthorization.ts";
+import { DesktopProcessActivity } from "./desktopProcessActivity.ts";
 import { Schema } from "effect";
 import { UserDesktopExecutionInput } from "./desktopExecution.ts";
+import { DesktopThreadLifecycle } from "./desktopAuthorization.ts";
 
 import { EnvironmentId, ThreadId, TrimmedNonEmptyString } from "./baseSchemas.ts";
 import {
@@ -150,6 +154,21 @@ const UserDesktopHumanTarget = { desktopId: UserDesktopId };
 /** Describes one authenticated human request for User desktop management and supervision. */
 export const UserDesktopHumanRequest = Schema.Union([
   Schema.Struct({
+    operation: Schema.Literal("screen-permission"),
+    ...UserDesktopHumanTarget,
+    action: Schema.Literals(["request", "edit", "remove"]),
+    capability: Schema.Literals(["view", "control"]),
+    permission: Schema.optional(DesktopScreenPermissionRevision),
+    policy: Schema.optional(DesktopGrantPolicy),
+  }).check(
+    Schema.makeFilter(
+      (input) =>
+        input.action === "request" ||
+        input.permission !== undefined ||
+        "Select the current permission revision.",
+    ),
+  ),
+  Schema.Struct({
     operation: Schema.Literal("execution"),
     ...UserDesktopHumanTarget,
     input: UserDesktopExecutionInput,
@@ -197,6 +216,7 @@ export type UserDesktopHumanRequest = typeof UserDesktopHumanRequest.Type;
 
 /** Carries one User desktop management or supervision request through an environment server. */
 export const UserDesktopHumanInvokeInput = Schema.Struct({
+  threadId: Schema.optional(ThreadId),
   request: UserDesktopHumanRequest,
   timeoutMs: Schema.optional(
     Schema.Int.check(Schema.isBetween({ minimum: 1_000, maximum: 120_000 })),
@@ -735,6 +755,7 @@ export const PreviewAutomationHostIdentity = Schema.Struct({
 export type PreviewAutomationHostIdentity = typeof PreviewAutomationHostIdentity.Type;
 
 export const PreviewAutomationHost = Schema.Struct({
+  authorizationVersion: Schema.optional(Schema.Literal(2)),
   ...PreviewAutomationHostIdentity.fields,
   userDesktop: Schema.optional(UserDesktopHostRegistration),
   /** Missing means the V1 operation set from before capability negotiation. */
@@ -743,9 +764,13 @@ export const PreviewAutomationHost = Schema.Struct({
 export type PreviewAutomationHost = typeof PreviewAutomationHost.Type;
 
 export const PreviewAutomationHostFocus = Schema.Struct({
+  processActivities: Schema.optional(
+    Schema.Array(DesktopProcessActivity).check(Schema.isMaxLength(256)),
+  ),
   ...PreviewAutomationHostIdentity.fields,
   connectionId: PreviewAutomationConnectionId,
   focused: Schema.Boolean,
+  authorizationThreads: Schema.optional(Schema.Array(ThreadId).check(Schema.isMaxLength(4096))),
   liveTabs: Schema.optional(
     Schema.Array(
       Schema.Struct({
@@ -764,6 +789,8 @@ export const PreviewAutomationRequest = Schema.Struct({
   /** Stable owner for exclusive computer-control and Agent desktop assignment. */
   controllerId: Schema.optional(AgentDesktopControllerId),
   controllerKind: Schema.optional(ComputerAutomationControllerKind),
+  lifecycle: Schema.optional(DesktopThreadLifecycle),
+  connectionGeneration: Schema.optional(PreviewAutomationConnectionId),
   tabId: Schema.optional(PreviewTabId),
   tabIdExplicit: Schema.optional(Schema.Boolean),
   /** Supplied by the broker from authenticated scope, never from tool input. */
@@ -775,6 +802,13 @@ export const PreviewAutomationRequest = Schema.Struct({
 export type PreviewAutomationRequest = typeof PreviewAutomationRequest.Type;
 
 export const PreviewAutomationStreamEvent = Schema.Union([
+  Schema.Struct({
+    type: Schema.Literal("lifecycle"),
+    connectionId: PreviewAutomationConnectionId,
+    snapshots: Schema.Array(DesktopThreadLifecycle),
+    unavailableThreadIds: Schema.optional(Schema.Array(ThreadId)),
+    unavailable: Schema.optional(Schema.Boolean),
+  }),
   Schema.Struct({
     type: Schema.Literal("connected"),
     connectionId: PreviewAutomationConnectionId,

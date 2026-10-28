@@ -94,6 +94,12 @@ export function clientRpcRequiredScopes(
   method: string,
   input: unknown,
 ): readonly AuthEnvironmentScope[] {
+  if (
+    method === WS_METHODS.userDesktopHumanInvoke &&
+    isUserDesktopInput(input) &&
+    input.request.operation === "execution"
+  )
+    return [AuthOrchestrationOperateScope, AuthTerminalOperateScope];
   if (method === WS_METHODS.gitPreparePullRequestThread && input !== undefined) {
     const payload = decodePrepareThread(input);
     if (payload.mode === "worktree" && payload.threadId !== undefined)

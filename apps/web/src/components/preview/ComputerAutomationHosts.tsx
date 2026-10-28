@@ -1,3 +1,5 @@
+import { createDesktopAuthorizationSync } from "./desktopAuthorizationSync";
+import { squashAtomCommandFailure } from "@t3tools/client-runtime/state/runtime";
 import { useAtomValue } from "@effect/atom-react";
 import { runAtomCommand } from "@t3tools/client-runtime/state/runtime";
 import {
@@ -52,6 +54,10 @@ async function handleComputerRequest(
     controllerKind: request.controllerKind ?? ("agent" as const),
     environmentId,
     threadId: request.threadId,
+    ...(request.lifecycle === undefined ? {} : { lifecycle: request.lifecycle }),
+    ...(request.connectionGeneration === undefined
+      ? {}
+      : { connectionGeneration: request.connectionGeneration }),
   };
   switch (request.operation) {
     case "computerTransfer": {
@@ -165,7 +171,10 @@ async function cancelComputerRequest(
   }
   if (request.operation === "computerExecution") {
     const input = request.input as UserDesktopExecutionInput;
-    if (input.operation === "access" && input.input.action === "request") {
+    if (
+      input.operation === "access" &&
+      (input.input.action === "request" || input.input.action === "edit")
+    ) {
       await window.desktopBridge?.execution?.(
         { operation: "cancel", desktop: input.desktop },
         context,
@@ -219,6 +228,9 @@ export const computerHostAtom = Atom.family((environmentId: EnvironmentId) =>
       input: {
         clientId,
         environmentId,
+        ...(window.desktopBridge?.authorization === undefined
+          ? {}
+          : { authorizationVersion: 2 as const }),
         ...previewAutomationHostCapabilities({
           executionAvailable,
           transferAvailable,
@@ -231,6 +243,34 @@ export const computerHostAtom = Atom.family((environmentId: EnvironmentId) =>
       },
     });
     const connectionAtom = Atom.make<string | null>(null);
+    const authorization = createDesktopAuthorizationSync({
+      environmentId,
+      clientId,
+      focused: () => document.hasFocus() && document.visibilityState === "visible",
+      authorize: async (input) =>
+        window.desktopBridge?.authorization === undefined
+          ? undefined
+          : resolveDesktopComputerAutomation(window.desktopBridge.authorization(input)),
+      report: async (input) => {
+        const result = await runAtomCommand(
+          get.registry,
+          previewEnvironment.focusAutomationHost,
+          { environmentId, input },
+          { reportFailure: false },
+        );
+        if (result._tag === "Failure") throw squashAtomCommandFailure(result);
+      },
+    });
+    const unsubscribeAuthorization = window.desktopBridge?.onDesktopAuthorizationChanged?.(
+      (source) => {
+        if (source === environmentId) void authorization.flush();
+      },
+    );
+    get.subscribe(connectionAtom, (generation) => authorization.connect(generation));
+    get.addFinalizer(() => {
+      unsubscribeAuthorization?.();
+      authorization.dispose();
+    });
     let lastFocusReport: string | null = null;
     const reportFocus = () => {
       const connectionId = get.once(connectionAtom);
@@ -273,8 +313,29 @@ export const computerHostAtom = Atom.family((environmentId: EnvironmentId) =>
         connectionAtom,
         environmentId,
         requestHandlerAtom: Atom.make({
-          handle: (request: PreviewAutomationRequest) =>
-            handleComputerRequest(environmentId, request),
+          handle: async (request: PreviewAutomationRequest, signal: AbortSignal) => {
+            signal.throwIfAborted();
+            const generation = request.connectionGeneration;
+            if (generation !== undefined && window.desktopBridge?.authorization !== undefined) {
+              await resolveDesktopComputerAutomation(
+                window.desktopBridge.authorization({
+                  operation: "connected",
+                  environmentId,
+                  connectionGeneration: generation,
+                }),
+              );
+            }
+            signal.throwIfAborted();
+            const running = handleComputerRequest(environmentId, request);
+            if (generation !== undefined && request.operation === "computerExecution")
+              void authorization.refresh(generation).catch(() => authorization.flush());
+            try {
+              return await running;
+            } finally {
+              if (generation !== undefined)
+                void authorization.refresh(generation).catch(() => authorization.flush());
+            }
+          },
           cancel: (request: PreviewAutomationRequest) =>
             cancelComputerRequest(environmentId, request),
         }),
@@ -285,6 +346,7 @@ export const computerHostAtom = Atom.family((environmentId: EnvironmentId) =>
             { environmentId, input },
             { reportFailure: false },
           ),
+        lifecycle: authorization.lifecycle,
         label: `computer-requests:${environmentId}`,
       }),
     );

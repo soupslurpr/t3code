@@ -84,6 +84,33 @@ const decodeF14Condition = Schema.decodeUnknownSync(
   ),
 );
 
+const normalizedIndexSql = (sql: string) => sql.replace(/\s+/g, "").toLowerCase();
+const f15ActivityExpression = `CASE
+  WHEN event_type = 'message.updated'
+    AND ((json_extract(payload_json, '$.createdBy') = 'user'
+      AND json_extract(payload_json, '$.role') = 'user'
+      AND json_extract(payload_json, '$.notification') IS NULL)
+      OR json_extract(payload_json, '$.delegatedCompletion') IS NOT NULL)
+    THEN json_extract(payload_json, '$.createdAt')
+  WHEN event_type = 'run.updated'
+    THEN COALESCE(json_extract(payload_json, '$.completedAt'), json_extract(payload_json, '$.startedAt'))
+  WHEN event_type = 'subagent.updated'
+    THEN json_extract(payload_json, '$.completedAt')
+  WHEN event_type = 'turn-item.updated'
+    AND json_extract(payload_json, '$.type') = 'system_notice'
+    AND json_extract(payload_json, '$.desktopProcess.phase') IN ('started', 'input', 'completed')
+    THEN json_extract(payload_json, '$.completedAt')
+END`;
+const releasedDesktopIndexes = [
+  [
+    "desktop_authorization_activity_idx",
+    `CREATE INDEX desktop_authorization_activity_idx ON orchestration_events(stream_id, (${f15ActivityExpression}) DESC, sequence ASC) WHERE aggregate_kind = 'thread' AND (${f15ActivityExpression}) IS NOT NULL`,
+  ],
+  [
+    "desktop_activity_updated_idx",
+    "CREATE INDEX desktop_activity_updated_idx ON orchestration_v2_projection_turn_items(thread_id, updated_at DESC, ordinal DESC, turn_item_id DESC)",
+  ],
+] as const;
 // The caller holds the SQLite write transaction through adoption and both migrators.
 export const adoptForkMigrationHistory = Effect.fn("adoptForkMigrationHistory")(function* (
   upstreamManifest: ReadonlyArray<readonly [number, string]>,
@@ -400,6 +427,20 @@ export const adoptForkMigrationHistory = Effect.fn("adoptForkMigrationHistory")(
     });
   }
 
+  if (fork.length >= 15) {
+    for (const [name, expected] of releasedDesktopIndexes) {
+      const indexes = yield* sql<{
+        readonly sql: string;
+      }>`SELECT sql FROM sqlite_master WHERE type = 'index' AND name = ${name}`;
+      if (
+        indexes.length !== 1 ||
+        normalizedIndexSql(indexes[0]!.sql) !== normalizedIndexSql(expected)
+      )
+        return yield* invalidHistory(
+          "DesktopAuthorizationActivity identity conflicts with its indexes",
+        );
+    }
+  }
   yield* sql`CREATE TABLE IF NOT EXISTS effect_sql_fork_migrations (
     migration_id integer PRIMARY KEY NOT NULL,
     created_at datetime NOT NULL DEFAULT current_timestamp,

@@ -1,3 +1,4 @@
+import { DesktopProcessActivity } from "./desktopProcessActivity.ts";
 import * as Schema from "effect/Schema";
 import { IsoDateTime } from "./baseSchemas.ts";
 
@@ -9,6 +10,7 @@ export const ThreadDesktopCommand = Schema.Struct({
   updatedAt: IsoDateTime,
   input: Schema.String,
   output: Schema.String,
+  process: Schema.optional(DesktopProcessActivity),
 });
 export const ThreadDesktopActivity = Schema.Struct({
   commands: Schema.Array(ThreadDesktopCommand),

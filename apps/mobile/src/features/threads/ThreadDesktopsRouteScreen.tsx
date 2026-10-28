@@ -1,3 +1,5 @@
+import { DesktopScreenPermissionsPanel } from "../settings/DesktopScreenPermissionsPanel";
+import { UserDesktopExecutionPanel } from "../settings/UserDesktopExecutionPanel";
 import { useAtomValue } from "@effect/atom-react";
 import {
   useIsFocused,
@@ -101,7 +103,10 @@ export function ThreadDesktopsRouteScreen({
         threadId,
         () =>
           allowed
-            ? userInvoke({ environmentId, input: { request: { operation: "list" } } })
+            ? userInvoke({
+                environmentId,
+                input: { request: { operation: "list", includeExecution: true } },
+              })
             : Promise.resolve(null),
         () =>
           agentAllowed
@@ -205,7 +210,34 @@ export function ThreadDesktopsRouteScreen({
             <Text>{desktop.connectionState} · Supervise</Text>
           </Pressable>
         ))}
+        {users
+          .filter(
+            (desktop) =>
+              desktop.connectionState === "online" && desktop.capabilities.includes("view"),
+          )
+          .map((desktop) => (
+            <DesktopScreenPermissionsPanel
+              key={`screen:${desktop.desktop.desktopId}`}
+              environmentId={environmentId}
+              desktopId={desktop.desktop.desktopId}
+              threadId={threadId}
+            />
+          ))}
         <Text className="font-t3-bold">Commands and transfers</Text>
+        {users
+          .filter(
+            (desktop) =>
+              desktop.connectionState === "online" && desktop.capabilities.includes("execution"),
+          )
+          .map((desktop) => (
+            <UserDesktopExecutionPanel
+              key={desktop.desktop.desktopId}
+              environmentId={environmentId}
+              environmentLabel={environmentLabel}
+              desktop={desktop.desktop}
+              threadId={threadId}
+            />
+          ))}
         {activity.data?.transfers.map((transfer) => (
           <View key={transfer.id} className="gap-1 rounded-2xl bg-subtle p-4">
             <Text>
@@ -221,7 +253,9 @@ export function ThreadDesktopsRouteScreen({
         {activity.data?.commands.map((command) => (
           <View key={command.id} className="gap-2 rounded-2xl bg-subtle p-4">
             <Text className="font-t3-bold">
-              {command.tool.split("__").at(-1)} · {command.status}
+              {command.process
+                ? `Process ${command.process.phase}`
+                : `${command.tool.split("__").at(-1)} · Tool ${command.status}`}
             </Text>
             <Text selectable className="text-sm">
               {command.input}

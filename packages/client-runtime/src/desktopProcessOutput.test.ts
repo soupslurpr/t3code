@@ -157,4 +157,59 @@ describe("desktop output paging", () => {
       false,
     );
   });
+
+  it.each(["stdout", "stderr"] as const)(
+    "keeps the unread retained %s tail reachable across a discarded gap",
+    (channel) => {
+      const tail = {
+        ...stream("x".repeat(32 * 1024), 458_769, 262_144),
+        totalBytes: 524_305,
+        tailOffset: 458_769,
+        retainedEnd: 524_305,
+        truncated: true,
+      };
+      const result = response();
+      const exited = {
+        ...result,
+        process: { ...result.process, status: "exited" as const, exitCode: 1 },
+        [channel]: tail,
+      };
+
+      expect(hasMoreDesktopProcessOutput(exited)).toBe(true);
+      const last = {
+        ...tail,
+        ...stream("THE FINAL FAILURE", 524_288, tail.storedBytes),
+        totalBytes: tail.totalBytes,
+        truncated: true,
+      };
+      expect(hasMoreDesktopProcessOutput({ ...exited, [channel]: last })).toBe(false);
+    },
+  );
+
+  it.each(["stdout", "stderr"] as const)(
+    "advances from the %s prefix to a later retained tail",
+    (channel) => {
+      const prefix = {
+        ...stream("prefix", 196_602, 262_144),
+        totalBytes: 524_305,
+        tailOffset: 458_769,
+        retainedEnd: 524_305,
+        truncated: true,
+      };
+
+      expect(hasMoreDesktopProcessOutput({ ...response(), [channel]: prefix })).toBe(true);
+    },
+  );
+
+  it.each(["stdout", "stderr"] as const)(
+    "respects an explicit zero retained end for %s",
+    (channel) => {
+      expect(
+        hasMoreDesktopProcessOutput({
+          ...response(),
+          [channel]: { ...stream("", 0, 4), retainedEnd: 0 },
+        }),
+      ).toBe(false);
+    },
+  );
 });

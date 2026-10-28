@@ -408,6 +408,9 @@ export class SessionStore extends Context.Service<
       ReadonlyArray<AuthClientSession>,
       SessionCredentialInternalError
     >;
+    readonly current: (
+      sessionId: AuthSessionId,
+    ) => Effect.Effect<Option.Option<AuthClientSession>, SessionCredentialVerificationError>;
     readonly streamChanges: Stream.Stream<SessionCredentialChange>;
     /** Completes when a live socket's session is revoked or expires without a renewal for its DPoP key. */
     readonly awaitInvalidation: (
@@ -1107,6 +1110,11 @@ const make = Effect.gen(function* () {
     issueWebSocketToken,
     verifyWebSocketToken,
     listActive,
+    current: Effect.fn("SessionStore.current")((sessionId) =>
+      loadActiveSession(sessionId).pipe(
+        Effect.mapError((cause) => new SessionCredentialVerificationError({ sessionId, cause })),
+      ),
+    ),
     awaitInvalidation,
     get streamChanges() {
       return Stream.fromPubSub(changesPubSub);

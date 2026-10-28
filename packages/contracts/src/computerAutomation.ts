@@ -1,4 +1,5 @@
 import * as Schema from "effect/Schema";
+import { DesktopCapabilityGrant, DesktopGrantPolicy } from "./desktopAuthorization.ts";
 
 import { IsoDateTime, NonNegativeInt, ThreadId, TrimmedNonEmptyString } from "./baseSchemas.ts";
 import {
@@ -292,6 +293,12 @@ export function findComputerAutomationFailureKind(
 }
 
 export const ComputerAutomationStatus = Schema.Struct({
+  authorization: Schema.optional(
+    Schema.Struct({
+      protocolVersion: Schema.Literal(2),
+      grants: Schema.Array(DesktopCapabilityGrant),
+    }),
+  ),
   desktop: Schema.optional(ComputerDesktopIdentity).annotate({
     description: "Concrete user or agent desktop represented by this status.",
   }),
@@ -631,7 +638,19 @@ const ComputerAutomationDesktopTargetField = {
       "Existing desktop to use. For a user desktop, pass an exact target returned by user_desktop_list. For an Agent desktop, pass its desktopId.",
   }),
 };
-export const ComputerAutomationTargetInput = Schema.Struct(ComputerAutomationDesktopTargetField);
+
+export const DesktopScreenPermissionRevision = Schema.Struct({
+  grantId: TrimmedNonEmptyString,
+  revision: NonNegativeInt,
+});
+export type DesktopScreenPermissionRevision = typeof DesktopScreenPermissionRevision.Type;
+export const ComputerAutomationTargetInput = Schema.Struct({
+  ...ComputerAutomationDesktopTargetField,
+  permission: Schema.optional(DesktopScreenPermissionRevision),
+}).annotate({
+  description:
+    "Targets an existing user or Agent desktop without relying on shared implicit selection.",
+});
 export type ComputerAutomationTargetInput = typeof ComputerAutomationTargetInput.Type;
 
 // Adding a target leaves the observation refinements' fields unchanged.
@@ -680,7 +699,15 @@ export const ComputerAutomationAvailabilityInput = Schema.Struct({
 export type ComputerAutomationAvailabilityInput = typeof ComputerAutomationAvailabilityInput.Type;
 
 export const ComputerAutomationAccessInput = Schema.Struct({
-  desktop: ComputerDesktopSelector,
+  permission: Schema.optional(DesktopScreenPermissionRevision),
+  permissionPolicy: Schema.optional(DesktopGrantPolicy).annotate({
+    description:
+      "Suggested T3 screen policy. Only a human request can edit existing authority; the destination's native prompt makes the decision.",
+  }),
+  desktop: ComputerDesktopSelector.annotate({
+    description:
+      "Desktop to use. Agent access returns a desktopId to pass on every later operation.",
+  }),
   observation: Schema.optional(
     Schema.Union([Schema.Literal(false), ComputerAutomationObservationOptions]).annotate({
       description:

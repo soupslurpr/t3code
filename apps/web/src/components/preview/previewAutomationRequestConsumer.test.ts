@@ -6,7 +6,7 @@ import {
   type PreviewAutomationStreamEvent,
 } from "@t3tools/contracts";
 import { AsyncResult, Atom, AtomRegistry } from "effect/reactivity";
-import { expect, it } from "vite-plus/test";
+import { expect, it, vi } from "vite-plus/test";
 import { createPreviewAutomationRequestConsumerAtom } from "./previewAutomationRequestConsumer";
 
 const deferred = <A>() => {
@@ -224,4 +224,46 @@ it("suppresses a stopped request while preserving access for acknowledged cleanu
   expect(h.responses.map((response) => response.requestId)).toEqual(["cleanup"]);
   h.unmount();
   expect(h.cancelled).toEqual([]);
+});
+
+it("routes lifecycle snapshots separately and discards a replaced connection's late snapshot", () => {
+  const connectionId = "one";
+  const clientId = "native";
+  const environmentId = EnvironmentId.make("environment");
+  const requestsAtom = Atom.make<AsyncResult.AsyncResult<PreviewAutomationStreamEvent, Error>>(
+    AsyncResult.success<PreviewAutomationStreamEvent, Error>({ type: "connected", connectionId }),
+  );
+  const lifecycle = vi.fn(async () => undefined);
+  const handle = vi.fn(async () => undefined);
+  const respond = vi.fn(async () => undefined);
+  const registry = AtomRegistry.make();
+  registry.mount(
+    createPreviewAutomationRequestConsumerAtom({
+      requestsAtom,
+      clientId,
+      environmentId,
+      connectionAtom: Atom.make<string | null>(null),
+      requestHandlerAtom: Atom.make({ handle }),
+      respond,
+      lifecycle,
+      label: "test:lifecycle",
+    }),
+  );
+  registry.set(
+    requestsAtom,
+    AsyncResult.success({ type: "lifecycle", connectionId, snapshots: [] }),
+  );
+  expect(lifecycle).toHaveBeenCalledTimes(1);
+  registry.set(
+    requestsAtom,
+    AsyncResult.success({ type: "connected", connectionId: "replacement" }),
+  );
+  registry.set(
+    requestsAtom,
+    AsyncResult.success({ type: "lifecycle", connectionId, snapshots: [] }),
+  );
+  expect(lifecycle).toHaveBeenCalledTimes(1);
+  expect(handle).not.toHaveBeenCalled();
+  expect(respond).not.toHaveBeenCalled();
+  registry.dispose();
 });

@@ -17,6 +17,7 @@ const state = vi.hoisted(() => ({
   allowed: true,
   currentState: "active",
   listeners: new Set<(state: string) => void>(),
+  atomListeners: new Set<() => void>(),
   environments: [{ environmentId: "remote", label: "Remote" }],
 }));
 vi.mock("@react-navigation/native", async () => {
@@ -34,9 +35,19 @@ vi.mock("@react-navigation/native", async () => {
   }: typeof import("@react-navigation/native") = nativeRequire("@react-navigation/core");
   return { NavigationContext, useIsFocused, useFocusEffect, useNavigation };
 });
-vi.mock("@effect/atom-react", () => ({
-  useAtomValue: (key: string) => (key === "connection" ? state.connected : state.allowed),
-}));
+vi.mock("@effect/atom-react", async () => {
+  const { useSyncExternalStore } = await import("react");
+  return {
+    useAtomValue: (key: string) =>
+      useSyncExternalStore(
+        (listener) => {
+          state.atomListeners.add(listener);
+          return () => state.atomListeners.delete(listener);
+        },
+        () => (key === "connection" ? state.connected : state.allowed),
+      ),
+  };
+});
 vi.mock("../../state/environments", () => ({
   useEnvironments: () => ({ environments: state.environments }),
 }));
@@ -142,6 +153,7 @@ function setup() {
   state.allowed = true;
   state.currentState = "active";
   state.listeners.clear();
+  state.atomListeners.clear();
   state.navigate.mockReset();
   state.refresh.mockReset();
   state.user.mockReset().mockResolvedValue({
@@ -169,13 +181,14 @@ function setup() {
       return container.textContent;
     },
     async render(threadId = "owner") {
-      await act(async () =>
+      await act(async () => {
+        for (const listener of state.atomListeners) listener();
         root.render(
           <NavigationContext.Provider value={navigation}>
             <ThreadDesktopsRouteScreen route={{ params: { environmentId: "remote", threadId } }} />
           </NavigationContext.Provider>,
-        ),
-      );
+        );
+      });
     },
     async focus(next: boolean) {
       focused = next;
