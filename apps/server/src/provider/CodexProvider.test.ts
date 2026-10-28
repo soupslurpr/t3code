@@ -287,7 +287,7 @@ it.each([
   { programs: undefined, expected: [] },
   { programs: null, expected: [] },
   { programs: { cyber: [] }, expected: [] },
-  { programs: { cyber: ["standard"] }, expected: [] },
+  { programs: { cyber: ["standard"] }, expected: ["automatic", "standard"] },
   {
     programs: { cyber: ["standard", "daybreakBlue"] },
     expected: ["automatic", "standard", "daybreakBlue"],

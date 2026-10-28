@@ -56,9 +56,14 @@ export const decodeCodexCyberAccessProgram = Schema.decodeUnknownEffect(
 export function codexAccessProgramOptionDescriptors(
   programs: ReadonlyArray<string> | null | undefined,
 ): ReadonlyArray<ProviderOptionDescriptor> {
-  if (!programs?.some((program) => program === "daybreakBlue" || program === "daybreakRed")) {
-    return [];
-  }
+  // Upstream treats an explicit "standard" differently from omitting the
+  // program, so standard-only models need the choice too.
+  const available = [
+    { id: "standard", label: "Standard" },
+    { id: "daybreakBlue", label: "Daybreak Blue" },
+    { id: "daybreakRed", label: "Daybreak Red" },
+  ].filter((option) => programs?.includes(option.id));
+  if (available.length === 0) return [];
   return [
     {
       id: "cyberAccessProgram",
@@ -72,11 +77,7 @@ export function codexAccessProgramOptionDescriptors(
           description: "Let Codex choose based on your account and model.",
           isDefault: true,
         },
-        ...[
-          { id: "standard", label: "Standard" },
-          { id: "daybreakBlue", label: "Daybreak Blue" },
-          { id: "daybreakRed", label: "Daybreak Red" },
-        ].filter((option) => programs.includes(option.id)),
+        ...available,
       ],
     },
   ];

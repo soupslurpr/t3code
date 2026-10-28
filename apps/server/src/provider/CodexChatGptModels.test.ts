@@ -139,7 +139,7 @@ it.effect("uses fresh account access programs instead of cached native entitleme
       [
         ["blue", ["automatic", "standard", "daybreakBlue"]],
         ["red", ["automatic", "daybreakRed"]],
-        ["standard", []],
+        ["standard", ["automatic", "standard"]],
         ["missing", []],
         ["null", []],
       ],
