@@ -2,6 +2,7 @@
 export const SETTINGS_PAGE_TARGETS = [
   "SettingsEnvironments",
   "SettingsNotifications",
+  "SettingsUserDesktops",
   "SettingsThreads",
   "SettingsAbout",
   "SettingsArchive",
