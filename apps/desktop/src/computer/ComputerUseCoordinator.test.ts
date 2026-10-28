@@ -1121,6 +1121,96 @@ describe("ComputerUseCoordinator", () => {
     );
   });
 
+  it.effect("releases human control to an unowned desktop while retaining view", () => {
+    const calls: string[] = [];
+    return withCoordinator(
+      Effect.gen(function* () {
+        const coordinator = yield* ComputerUseCoordinator.ComputerUseCoordinator;
+        const agentController = agent("release-agent");
+        const supervisor = human("release-supervisor");
+        yield* coordinator.requestControl(agentController);
+        yield* coordinator.requestControl(supervisor);
+
+        const watching = yield* coordinator.requestView(supervisor, {
+          releaseControlToView: true,
+        });
+        assert.strictEqual(watching.lease?.access, "view");
+        assert.strictEqual(watching.lease?.controller, null);
+        assert.strictEqual(watching.lease?.canReturnControl, false);
+
+        const reacquired = yield* coordinator.requestControl(agentController);
+        assert.strictEqual(reacquired.lease?.access, "control");
+        assert.deepEqual(calls, [
+          "requestControl",
+          "releaseInputs",
+          "releaseInputs",
+          "requestControl",
+        ]);
+      }),
+      makeComputer(calls),
+    );
+  });
+
+  it.effect(
+    "releases the transition guard when release-to-view is cancelled during input cleanup",
+    () =>
+      Effect.gen(function* () {
+        const calls: string[] = [];
+        const started = yield* Deferred.make<void>();
+        const cleaning = yield* Deferred.make<void>();
+        const allowCleanup = yield* Deferred.make<void>();
+        const native = makeComputer(calls);
+        let actions = 0;
+        yield* withCoordinator(
+          Effect.gen(function* () {
+            const coordinator = yield* ComputerUseCoordinator.ComputerUseCoordinator;
+            const displaced = agent("displaced");
+            const supervisor = human("supervisor");
+            yield* coordinator.requestControl(displaced);
+            yield* coordinator.requestControl(supervisor);
+            const action = yield* Effect.forkChild(
+              Effect.exit(
+                coordinator.act(supervisor, { actions: [{ type: "key_down", key: "Shift" }] }),
+              ),
+            );
+            yield* Deferred.await(started);
+            const releasing = yield* Effect.forkChild(
+              coordinator.requestView(supervisor, { releaseControlToView: true }),
+            );
+            yield* Deferred.await(cleaning);
+            yield* Fiber.interrupt(releasing);
+            yield* Deferred.succeed(allowCleanup, undefined);
+            assert.isTrue(Exit.isFailure(yield* Fiber.join(action)));
+            const watching = yield* coordinator.status(supervisor);
+            assert.strictEqual(watching.lease?.access, "view");
+            assert.strictEqual(watching.lease?.controller, null);
+            assert.isFalse(watching.lease?.canReturnControl);
+            yield* coordinator.snapshot(displaced, {});
+            yield* coordinator.requestControl(displaced);
+            yield* coordinator.act(displaced, { actions: [{ type: "press", key: "A" }] });
+            assert.strictEqual(calls.at(-1), "act");
+          }).pipe(Effect.ensuring(Deferred.succeed(allowCleanup, undefined))),
+          {
+            ...native,
+            act: (input) =>
+              Effect.suspend(() => {
+                actions += 1;
+                return actions > 1
+                  ? native.act(input)
+                  : Deferred.succeed(started, undefined).pipe(
+                      Effect.andThen(Effect.never),
+                      Effect.onInterrupt(() =>
+                        Deferred.succeed(cleaning, undefined).pipe(
+                          Effect.andThen(Deferred.await(allowCleanup)),
+                        ),
+                      ),
+                    );
+              }),
+          },
+        );
+      }),
+  );
+
   it.effect("invalidates queued agent actions before a human takeover releases inputs", () =>
     Effect.gen(function* () {
       const calls: string[] = [];

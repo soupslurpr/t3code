@@ -191,6 +191,7 @@ const HelperMethod = Schema.Literals([
   "wheel",
   "validateActions",
   "type",
+  "insertText",
   "press",
   "hotkey",
   "keyDown",
@@ -354,6 +355,37 @@ export interface GnomeRemoteDesktopTypeResult {
   readonly focusedEditable: boolean;
 }
 
+export const decodeCommittedTextResult = (text: string, response: unknown) =>
+  decodeHelperTypeResult(response).pipe(
+    Effect.flatMap((result) => {
+      const requested = Array.from(text.replace(/\r\n?/gu, "\n")).length;
+      const confirmed = result.confirmedCodePoints ?? 0;
+      if (
+        result.requestedCodePoints !== requested ||
+        result.injectedCodePoints !== requested ||
+        confirmed > requested ||
+        ((confirmed > 0 || result.delivery === "accessibility") && !result.focusedEditable) ||
+        (requested === 0
+          ? result.delivery !== "none"
+          : result.delivery !== "accessibility" && result.delivery !== "input-method")
+      ) {
+        return Effect.fail(
+          new GnomeRemoteDesktopProtocolError({
+            operation: "insertText",
+            cause:
+              "The strict text receipt is inconsistent; insertion may have occurred and must not be retried automatically.",
+          }),
+        );
+      }
+      return Effect.succeed(result);
+    }),
+    Effect.mapError((cause) =>
+      cause._tag === "GnomeRemoteDesktopProtocolError"
+        ? cause
+        : new GnomeRemoteDesktopProtocolError({ operation: "insertText", cause }),
+    ),
+  );
+
 export interface GnomeRemoteDesktopShape {
   readonly status: Effect.Effect<GnomeRemoteDesktopStatus>;
   readonly snapshot: (
@@ -406,6 +438,7 @@ export interface GnomeRemoteDesktopShape {
     readonly text: string;
     readonly intervalMs: number;
   }) => Effect.Effect<GnomeRemoteDesktopTypeResult, GnomeRemoteDesktopError>;
+  readonly insertText?: GnomeRemoteDesktopShape["type"];
   readonly press: (input: {
     readonly key: string;
     readonly modifiers: ReadonlyArray<string>;
@@ -986,6 +1019,11 @@ const make = Effect.gen(function* () {
       return control("wheel", input);
     }),
     type: typeText,
+    insertText: Effect.fn("GnomeRemoteDesktop.insertText")((input) =>
+      request<unknown>("insertText", input, HELPER_CONTROL_TIMEOUT).pipe(
+        Effect.flatMap((response) => decodeCommittedTextResult(input.text, response)),
+      ),
+    ),
     press: Effect.fn("GnomeRemoteDesktop.press")(function (input) {
       return control("press", input);
     }),

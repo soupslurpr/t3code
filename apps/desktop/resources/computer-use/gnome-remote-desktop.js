@@ -191,6 +191,7 @@ const INPUT_METHODS = new Set([
   "drag",
   "wheel",
   "type",
+  "insertText",
   "press",
   "hotkey",
   "keyDown",
@@ -3156,7 +3157,9 @@ async function handleCommand(message) {
       validateActionInputs(message.params.actions);
       return null;
     }
-    case "type": {
+    case "type":
+    case "insertText": {
+      const textOnly = message.method === "insertText";
       await runInputPhase("authorization", () => ensureSession("control"));
       const normalizedText = message.params.text.replace(/\r\n|\r/gu, "\n");
       let injectedCodePoints = 0;
@@ -3171,6 +3174,8 @@ async function handleCommand(message) {
           : await runInputPhase("execution", () =>
               insertFocusedAccessibilityText(normalizedText, message.params.intervalMs),
             );
+      if (textOnly && insertion.status === "replace-selection")
+        insertion = { status: "unavailable" };
       if (insertion.status === "replace-selection") {
         await runInputPhase("key-press", () =>
           tapKeysym(NAMED_KEYSYMS.backspace, { field: "text" }),
@@ -3187,8 +3192,11 @@ async function handleCommand(message) {
           { field: "text", phase: "execution" },
         );
       }
-      if (insertion.status === "unavailable") {
-        const fallback = exactTextFallback(normalizedText);
+      if (insertion.status === "unavailable" && (!textOnly || normalizedText.length > 0)) {
+        const fallback =
+          textOnly && !/[\n\t]/u.test(normalizedText)
+            ? "input-method"
+            : exactTextFallback(normalizedText);
         if (fallback === "semantic-required") {
           throw accessibilityError(
             "exact-text-unavailable",
@@ -3226,7 +3234,21 @@ async function handleCommand(message) {
             readAccessibilityTextRange,
           );
         }
-      } else {
+      } else if (insertion.status === "inserted") {
+        if (
+          textOnly &&
+          (!Number.isInteger(insertion.injectedCodePoints) ||
+            insertion.injectedCodePoints !== Array.from(normalizedText).length ||
+            !Number.isInteger(insertion.confirmedCodePoints) ||
+            insertion.confirmedCodePoints < 0 ||
+            insertion.confirmedCodePoints > insertion.injectedCodePoints)
+        ) {
+          throw accessibilityError(
+            "accessibility-insertion-failed",
+            "the accessibility insertion did not account for the full text; some text may already be inserted and was not retried",
+            { field: "text", phase: "execution" },
+          );
+        }
         injectedCodePoints = insertion.injectedCodePoints;
         confirmedCodePoints = insertion.confirmedCodePoints;
         usedAccessibility = true;

@@ -16,7 +16,9 @@ import type {
   AgentDesktopId,
   AgentDesktopSetupResult,
   ComputerAutomationAction,
+  ComputerAutomationActionResult,
   ComputerAutomationSnapshot,
+  ComputerAutomationStatus,
   ComputerObservation,
   ComputerObservationImage,
   ComputerObservationUpdate,
@@ -38,7 +40,9 @@ import {
 import {
   type KeyboardEvent as ReactKeyboardEvent,
   type PointerEvent as ReactPointerEvent,
+  type ReactNode,
   type WheelEvent as ReactWheelEvent,
+  useLayoutEffect,
   useRef,
   useState,
 } from "react";
@@ -73,7 +77,7 @@ import {
 import { SettingsPageContainer, SettingsSection } from "./settingsLayout";
 import {
   acquireAgentDesktopKeyboardCapture,
-  type AgentDesktopKeyboardCapture,
+  createDesktopControlLease,
 } from "./agentDesktopKeyboardCapture";
 
 import {
@@ -87,6 +91,12 @@ const VIEWER_HOVER_DELAY_MS = 100;
 const VIEWER_DRAG_THRESHOLD_PX = 4;
 const VIEWER_MAX_WIDTH = 1_280;
 const VIEWER_MAX_HEIGHT = 720;
+
+export type ViewerActionOutcome =
+  | { status: "completed"; results: ReadonlyArray<ComputerAutomationActionResult> }
+  | { status: "cancelled" }
+  | { status: "failed"; detail: string };
+const VIEWER_SHORTCUT_POLICY: "physical" | "host-logical" = "physical";
 
 interface ViewerPoint {
   readonly x: number;
@@ -278,33 +288,72 @@ function AgentObservationOverlay({
   );
 }
 
-function DesktopViewer({
-  desktop,
+/** Renders shared Live, Agent lens, and full-screen control for one concrete desktop. */
+export function ComputerDesktopViewer({
+  label,
+  description,
   observation,
   agentObservation,
   controlling,
+  controlPaused = false,
   busy,
   error,
+  liveStarted = true,
+  liveDisabledReason = null,
+  controlDisabledReason = null,
+  liveDisplays = [],
+  selectedDisplayId = null,
+  lensControls,
+  secondaryActions,
+  onStartLive,
+  onSelectDisplay,
+  onShowInLive,
+  onConfirmTakeControl,
   onTakeControl,
   onRelease,
   onAction,
+  inputSession,
 }: {
-  desktop: AgentDesktopView;
+  label: string;
+  description: ReactNode;
   observation: ComputerAutomationSnapshot | null;
   agentObservation: ComputerObservation | null;
   controlling: boolean;
+  controlPaused?: boolean;
   busy: boolean;
   error: string | null;
+  liveStarted?: boolean;
+  liveDisabledReason?: string | null;
+  controlDisabledReason?: string | null;
+  liveDisplays?: ComputerAutomationStatus["displays"];
+  selectedDisplayId?: string | null;
+  lensControls?: ReactNode;
+  secondaryActions?: ReactNode;
+  onStartLive?: () => Promise<void>;
+  onSelectDisplay?: (displayId: string) => Promise<void>;
+  onShowInLive?: (displayId: string) => Promise<void>;
+  onConfirmTakeControl?: () => Promise<boolean>;
   onTakeControl: () => Promise<boolean>;
   onRelease: () => Promise<boolean>;
-  onAction: (actions: ReadonlyArray<ComputerAutomationAction>) => Promise<void>;
+  inputSession?: unknown;
+  onAction: (
+    actions: ReadonlyArray<ComputerAutomationAction>,
+    shouldExecute?: () => boolean,
+  ) => Promise<ViewerActionOutcome | void>;
 }) {
   const surfaceRef = useRef<HTMLDivElement>(null);
   const imageRef = useRef<HTMLImageElement>(null);
   const dragStartRef = useRef<ViewerDragStart | null>(null);
-  const heldKeysRef = useRef(new Set<string>());
+  const heldKeysRef = useRef(new Map<string, string>());
+  const keyOwnersRef = useRef(new Map<string, number>());
+  const heldInputSessionRef = useRef<unknown>(inputSession);
+  const textInputRef = useRef<HTMLTextAreaElement | null>(null);
+  const inputEpochRef = useRef(0);
+  const textRequestRef = useRef(0);
+  const compositionRef = useRef<{ epoch: number } | null>(null);
+  const [textReceipt, setTextReceipt] = useState<string | null>(null);
   const hoverTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const keyboardCaptureRef = useRef<AgentDesktopKeyboardCapture | null>(null);
+  const controlLeaseRef = useRef<ReturnType<typeof createDesktopControlLease> | null>(null);
   const controlAttemptRef = useRef(false);
   const mountedRef = useRef(true);
   const [captureBusy, setCaptureBusy] = useState(false);
@@ -312,22 +361,25 @@ function DesktopViewer({
 
   const [lens, setLens] = useState<{
     observationId: string | null;
+    liveStarted: boolean;
     viewMode: "live" | "lens";
     selectedObservationViewId: string | null;
     inspectPixels: boolean;
     inspectSemantics: boolean;
   }>({
     observationId: agentObservation?.id ?? null,
-    viewMode: "live",
+    liveStarted,
+    viewMode: !liveStarted && agentObservation !== null ? "lens" : "live",
     selectedObservationViewId: null,
     inspectPixels: false,
     inspectSemantics: false,
   });
-  if (lens.observationId !== (agentObservation?.id ?? null)) {
+  if (lens.observationId !== (agentObservation?.id ?? null) || lens.liveStarted !== liveStarted) {
     setLens({
       ...lens,
       observationId: agentObservation?.id ?? null,
-      viewMode: agentObservation === null ? "live" : lens.viewMode,
+      liveStarted,
+      viewMode: agentObservation === null ? "live" : !liveStarted ? "lens" : lens.viewMode,
       selectedObservationViewId: null,
       inspectPixels: false,
       inspectSemantics: false,
@@ -386,7 +438,7 @@ function DesktopViewer({
     const point = framePoint(event.clientX, event.clientY);
     if (button === null || point === null) return;
     event.preventDefault();
-    event.currentTarget.focus({ preventScroll: true });
+    textInputRef.current?.focus({ preventScroll: true });
     event.currentTarget.setPointerCapture(event.pointerId);
     cancelHover();
     dragStartRef.current = {
@@ -487,40 +539,168 @@ function DesktopViewer({
     scroller.scrollTop = next.top;
   };
 
-  const handleKeyDown = (event: ReactKeyboardEvent<HTMLDivElement>) => {
-    if (!controlling) return;
-    const key = keyboardKey(event);
-    if (key === null) return;
-    event.preventDefault();
-    event.stopPropagation();
-    if (event.repeat || heldKeysRef.current.has(key)) return;
-    heldKeysRef.current.add(key);
-    void onAction([{ type: "key_down", key }]);
+  const isInputSessionCurrent = useStableCallback((session: unknown) => session === inputSession);
+  const submitViewerActions = (
+    actions: ReadonlyArray<ComputerAutomationAction>,
+    text?: string,
+    owner?: { session: unknown },
+  ) => {
+    const epoch = inputEpochRef.current;
+    const current = () =>
+      mountedRef.current &&
+      inputEpochRef.current === epoch &&
+      controlling &&
+      (owner === undefined || isInputSessionCurrent(owner.session));
+    const textRequest = text === undefined ? undefined : ++textRequestRef.current;
+    if (textRequest !== undefined) {
+      setCaptureError(null);
+      setTextReceipt("Text insertion requested; awaiting a result.");
+    }
+    void onAction(actions, current).then(
+      (outcome) => {
+        if (!current() || text === undefined || textRequestRef.current !== textRequest) return;
+        setTextReceipt(null);
+        if (outcome?.status === "cancelled") {
+          setTextReceipt(
+            "Text request cancelled; insertion is not confirmed. It has not been retried.",
+          );
+          return;
+        }
+        if (outcome?.status === "failed") {
+          setCaptureError(outcome.detail);
+          return;
+        }
+        if (outcome?.status !== "completed") {
+          setCaptureError("Text outcome is unavailable or partial. It has not been retried.");
+          return;
+        }
+        const receipt = outcome.results.find((result) => result.type === "insert_text");
+        const expected = Array.from(text.replace(/\r\n|\r/gu, "\n")).length;
+        if (
+          receipt?.type !== "insert_text" ||
+          receipt.requestedCodePoints !== expected ||
+          receipt.acceptedCodePoints !== expected ||
+          (receipt.delivery !== "accessibility" &&
+            receipt.delivery !== "input-method" &&
+            expected !== 0)
+        ) {
+          setCaptureError("Text outcome is unavailable or partial. It has not been retried.");
+          return;
+        }
+        setCaptureError(null);
+        setTextReceipt(
+          receipt.confirmedCodePoints === expected
+            ? "Text insertion confirmed by application readback."
+            : receipt.confirmedCodePoints > 0
+              ? "Text accepted; only part was confirmed by application readback. It has not been retried."
+              : "Text accepted; application readback is unavailable. It has not been retried.",
+        );
+      },
+      (cause) => {
+        if (current() && (textRequest === undefined || textRequestRef.current === textRequest)) {
+          if (textRequest !== undefined) setTextReceipt(null);
+          setCaptureError(failureMessage(cause));
+        }
+      },
+    );
   };
 
-  const handleKeyUp = (event: ReactKeyboardEvent<HTMLDivElement>) => {
-    if (!controlling) return;
-    const key = keyboardKey(event);
-    if (key === null) return;
-    event.preventDefault();
-    event.stopPropagation();
-    heldKeysRef.current.delete(key);
-    void onAction([{ type: "key_up", key }]);
-  };
-
-  const releaseHeldKeys = () => {
-    if (heldKeysRef.current.size === 0) return;
-    const actions = Array.from(heldKeysRef.current, (key) => ({
+  const releaseHeldKeys = useStableCallback(() => {
+    const actions = Array.from(keyOwnersRef.current.keys(), (key) => ({
       type: "key_up" as const,
       key,
     }));
     heldKeysRef.current.clear();
-    void onAction(actions);
+    keyOwnersRef.current.clear();
+    compositionRef.current = null;
+    inputEpochRef.current += 1;
+    textRequestRef.current += 1;
+    setTextReceipt(null);
+    if (textInputRef.current !== null) textInputRef.current.value = "";
+    if (actions.length > 0)
+      submitViewerActions(actions, undefined, { session: heldInputSessionRef.current });
+  });
+
+  const bindTextInput = useStableCallback((node: HTMLTextAreaElement | null) => {
+    if (node === null) return;
+    textInputRef.current = node;
+    return () => {
+      releaseHeldKeys();
+      textInputRef.current = null;
+    };
+  });
+
+  // oxlint-disable-next-line react/exhaustive-effect-dependencies, t3code/no-unreasoned-state-sync -- native held keys and pending composition must end when control or session identity changes
+  useLayoutEffect(() => () => releaseHeldKeys(), [controlling, inputSession, releaseHeldKeys]);
+
+  const handleKeyDown = (event: ReactKeyboardEvent<HTMLDivElement>) => {
+    if (!controlling) return;
+    if (
+      event.nativeEvent.isComposing ||
+      compositionRef.current !== null ||
+      event.key === "Dead" ||
+      event.key === "Process"
+    )
+      return;
+    const altGraph = event.getModifierState("AltGraph");
+    const shortcut = !altGraph && (event.ctrlKey || event.metaKey || event.altKey);
+    if (!shortcut && Array.from(event.key).length === 1) return;
+    let key = keyboardKey(event);
+    if (shortcut && (event.ctrlKey || event.metaKey) && VIEWER_SHORTCUT_POLICY === "host-logical") {
+      const namedKey =
+        key !== null &&
+        key.length > 1 &&
+        key !== "Space" &&
+        (event.key === key ||
+          (/^(?:Alt|Control|Meta|Shift)(?:Left|Right)$/u.test(key) &&
+            event.key === key.replace(/(?:Left|Right)$/u, "")));
+      if (/^[A-Za-z]$/u.test(event.key)) key = event.key.toLowerCase();
+      else if (!namedKey) {
+        event.preventDefault();
+        setCaptureError(
+          "This host-logical shortcut cannot be represented without guessing a remote key.",
+        );
+        return;
+      }
+    }
+    if (key === null) return;
+    event.preventDefault();
+    event.stopPropagation();
+    const identity = event.code;
+    if (identity.length === 0) return;
+    if (event.repeat || heldKeysRef.current.has(identity)) return;
+    if (keyOwnersRef.current.size === 0) heldInputSessionRef.current = inputSession;
+    heldKeysRef.current.set(identity, key);
+    const owners = keyOwnersRef.current.get(key) ?? 0;
+    keyOwnersRef.current.set(key, owners + 1);
+    if (owners === 0) submitViewerActions([{ type: "key_down", key }]);
+  };
+
+  const handleKeyUp = (event: ReactKeyboardEvent<HTMLDivElement>) => {
+    const identity = event.code;
+    if (identity.length === 0) return;
+    const key = heldKeysRef.current.get(identity);
+    if (key === undefined) return;
+    event.preventDefault();
+    event.stopPropagation();
+    heldKeysRef.current.delete(identity);
+    const owners = (keyOwnersRef.current.get(key) ?? 1) - 1;
+    if (owners > 0) keyOwnersRef.current.set(key, owners);
+    else {
+      keyOwnersRef.current.delete(key);
+      if (controlling) submitViewerActions([{ type: "key_up", key }]);
+    }
+  };
+
+  const commitText = (node: HTMLTextAreaElement, text: string) => {
+    node.value = "";
+    if (!controlling || text.length === 0) return;
+    submitViewerActions([{ type: "insert_text", text }], text);
   };
 
   const releaseKeyboardCapture = async () => {
-    const capture = keyboardCaptureRef.current;
-    keyboardCaptureRef.current = null;
+    const capture = controlLeaseRef.current;
+    controlLeaseRef.current = null;
     if (capture === null) return;
     try {
       await capture.release();
@@ -529,34 +709,57 @@ function DesktopViewer({
     }
   };
 
+  const startLive = async () => {
+    setViewMode("live");
+    if (liveStarted || onStartLive === undefined) return;
+    setCaptureError(null);
+    try {
+      await onStartLive();
+    } catch (cause) {
+      if (mountedRef.current) setCaptureError(failureMessage(cause));
+    }
+  };
+
+  const showInLive = async (displayId: string) => {
+    setViewMode("live");
+    setCaptureError(null);
+    try {
+      await onShowInLive?.(displayId);
+    } catch (cause) {
+      if (mountedRef.current) setCaptureError(failureMessage(cause));
+    }
+  };
+
   const takeControl = async () => {
     if (controlAttemptRef.current) return;
+    if (!liveStarted) {
+      setCaptureError("Start Live before taking control.");
+      return;
+    }
     controlAttemptRef.current = true;
     setViewMode("live");
     setCaptureBusy(true);
     setCaptureError(null);
     try {
+      if (onConfirmTakeControl !== undefined && !(await onConfirmTakeControl())) return;
       const capture = await acquireAgentDesktopKeyboardCapture();
       if (!mountedRef.current) {
         await capture.release();
         return;
       }
-      keyboardCaptureRef.current = capture;
-      const granted = await onTakeControl();
-      if (!mountedRef.current) {
-        if (granted) await onRelease();
-        await capture.release();
+      const lease = createDesktopControlLease({
+        capture,
+        takeControl: onTakeControl,
+        releaseControl: onRelease,
+      });
+      controlLeaseRef.current = lease;
+      const granted = await lease.ready;
+      if (!mountedRef.current || document.fullscreenElement === null || !granted) {
+        if (controlLeaseRef.current === lease) controlLeaseRef.current = null;
+        await lease.release();
         return;
       }
-      const ownsCapture = keyboardCaptureRef.current === capture;
-      if (granted && ownsCapture) surfaceRef.current?.focus({ preventScroll: true });
-      if (!granted || !ownsCapture || document.fullscreenElement === null) {
-        if (granted && ownsCapture) await onRelease();
-        if (ownsCapture) await releaseKeyboardCapture();
-        if (granted) {
-          setCaptureError("Full screen ended before Agent desktop control became active.");
-        }
-      }
+      textInputRef.current?.focus({ preventScroll: true });
     } catch (cause) {
       await releaseKeyboardCapture();
       if (mountedRef.current) setCaptureError(failureMessage(cause));
@@ -568,12 +771,24 @@ function DesktopViewer({
 
   const releaseControl = async () => {
     releaseHeldKeys();
-    await onRelease();
-    await releaseKeyboardCapture();
+    if (controlLeaseRef.current === null) {
+      if (controlling) await onRelease();
+    } else {
+      await releaseKeyboardCapture();
+    }
   };
 
+  const bindControl = useStableCallback((node: HTMLButtonElement | null) => {
+    if (node === null) return;
+    return () => {
+      const lease = controlLeaseRef.current;
+      controlLeaseRef.current = null;
+      void lease?.revoke().catch(() => undefined);
+    };
+  });
+
   const fullscreenChanged = useStableCallback(() => {
-    if (document.fullscreenElement !== null || keyboardCaptureRef.current === null) return;
+    if (document.fullscreenElement !== null || controlLeaseRef.current === null) return;
     void releaseControl();
   });
   const bindSurface = useStableCallback((node: HTMLDivElement | null) => {
@@ -586,8 +801,8 @@ function DesktopViewer({
       surfaceRef.current = null;
       cancelHover();
       document.removeEventListener("fullscreenchange", fullscreenChanged);
-      const capture = keyboardCaptureRef.current;
-      keyboardCaptureRef.current = null;
+      const capture = controlLeaseRef.current;
+      controlLeaseRef.current = null;
       if (capture !== null) void capture.release();
     };
   });
@@ -595,6 +810,11 @@ function DesktopViewer({
   const liveFrame = observation?.frame;
   const lensActive = viewMode === "lens" && agentObservation !== null;
   const selectedImages = selectedObservationView?.images ?? [];
+  const selectedDisplayableImage = selectedImages.find(
+    (image) => image.screenshot.state === "image",
+  );
+  const lensDisplayId =
+    selectedDisplayableImage?.frame?.displayId ?? selectedDisplayableImage?.region?.displayId;
   const hasSelectedPixels = selectedImages.some((image) => image.screenshot.state === "image");
   const liveSurfaceStyle =
     liveFrame === undefined
@@ -607,12 +827,8 @@ function DesktopViewer({
   return (
     <DialogPopup size="wide" bottomStickOnMobile={false}>
       <DialogHeader>
-        <DialogTitle>{desktop.label}</DialogTitle>
-        <DialogDescription>
-          Live supervision for this isolated Agent desktop. Taking control safely releases input
-          held by its agent and enters full screen so host shortcuts go only to the remote desktop.
-          GNOME may ask once to inhibit shortcuts; Super+Escape always restores them.
-        </DialogDescription>
+        <DialogTitle>{label}</DialogTitle>
+        <DialogDescription>{description}</DialogDescription>
       </DialogHeader>
       <DialogPanel>
         <div
@@ -624,8 +840,10 @@ function DesktopViewer({
           )}
           tabIndex={controlling ? 0 : -1}
           role="application"
-          aria-label={`${desktop.label} remote screen`}
-          onBlur={releaseHeldKeys}
+          aria-label={`${label} remote screen`}
+          onBlur={(event) => {
+            if (!event.currentTarget.contains(event.relatedTarget)) releaseHeldKeys();
+          }}
           onContextMenu={(event) => controlling && event.preventDefault()}
           onKeyDown={handleKeyDown}
           onKeyUp={handleKeyUp}
@@ -637,22 +855,99 @@ function DesktopViewer({
           onPointerUp={handlePointerUp}
           onWheel={handleWheel}
         >
-          {observation?.screenshot?.state === "image" && liveFrame !== undefined ? (
+          <textarea
+            ref={bindTextInput}
+            aria-label={`${label} remote text input`}
+            className="absolute size-px opacity-0"
+            tabIndex={controlling ? 0 : -1}
+            readOnly={!controlling}
+            autoComplete="off"
+            autoCorrect="off"
+            autoCapitalize="off"
+            spellCheck={false}
+            onCompositionStart={() => {
+              if (controlling) compositionRef.current = { epoch: inputEpochRef.current };
+            }}
+            onCompositionEnd={(event) => {
+              const composition = compositionRef.current;
+              compositionRef.current = null;
+              if (
+                !controlling ||
+                composition?.epoch !== inputEpochRef.current ||
+                event.data.length === 0
+              ) {
+                event.currentTarget.value = "";
+                return;
+              }
+              const text = event.currentTarget.value;
+              if (text !== event.data) {
+                event.currentTarget.value = "";
+                setCaptureError("Composition text could not be identified. No text was sent.");
+                return;
+              }
+              commitText(event.currentTarget, text);
+            }}
+            onInput={(event) => {
+              if ((event.nativeEvent as InputEvent).isComposing || compositionRef.current !== null)
+                return;
+              commitText(event.currentTarget, event.currentTarget.value);
+            }}
+          />
+          {viewMode === "live" &&
+          liveStarted &&
+          observation?.screenshot?.state === "image" &&
+          liveFrame !== undefined ? (
             <div className="relative mx-auto" style={liveSurfaceStyle}>
               <img
                 ref={imageRef}
                 src={`data:${observation.screenshot.mimeType};base64,${observation.screenshot.data}`}
-                alt={`${desktop.label} screen`}
+                alt={`${label} screen`}
                 draggable={false}
                 className="size-full touch-none select-none object-fill"
               />
-              {lensActive && selectedObservationView !== null ? (
-                <AgentObservationOverlay liveFrame={liveFrame} images={selectedImages} />
-              ) : null}
+            </div>
+          ) : lensActive &&
+            liveStarted &&
+            observation?.screenshot?.state === "image" &&
+            liveFrame !== undefined ? (
+            <div className="relative mx-auto" style={liveSurfaceStyle}>
+              <img
+                src={`data:${observation.screenshot.mimeType};base64,${observation.screenshot.data}`}
+                alt={`${label} screen with Agent lens overlay`}
+                draggable={false}
+                className="size-full select-none object-fill"
+              />
+              <AgentObservationOverlay liveFrame={liveFrame} images={selectedImages} />
+            </div>
+          ) : lensActive && selectedDisplayableImage?.screenshot.state === "image" ? (
+            <div
+              className="relative mx-auto"
+              style={{
+                aspectRatio: `${selectedDisplayableImage.screenshot.width} / ${selectedDisplayableImage.screenshot.height}`,
+                width: `min(100%, ${selectedDisplayableImage.screenshot.width}px, calc(65vh * ${selectedDisplayableImage.screenshot.width / selectedDisplayableImage.screenshot.height}))`,
+              }}
+            >
+              <img
+                src={`data:${selectedDisplayableImage.screenshot.mimeType};base64,${selectedDisplayableImage.screenshot.data}`}
+                alt={`${label} Agent lens observation`}
+                draggable={false}
+                className="size-full select-none object-fill"
+              />
+              <div className="pointer-events-none absolute inset-0 border-2 border-ring shadow-inner" />
             </div>
           ) : (
-            <div className="flex aspect-video items-center justify-center text-sm text-white/60">
-              No screen frame is available.
+            <div className="flex aspect-video flex-col items-center justify-center gap-3 px-6 text-center text-sm text-white/60">
+              <p>
+                {viewMode === "live" && !liveStarted
+                  ? (liveDisabledReason ?? "Start Live to request a current screen frame.")
+                  : "No screen frame is available."}
+              </p>
+              {viewMode === "live" && !liveStarted && liveDisabledReason === null ? (
+                <Button variant="secondary" disabled={busy} onClick={() => void startLive()}>
+                  <EyeIcon />
+                  Start Live
+                </Button>
+              ) : null}
             </div>
           )}
         </div>
@@ -662,7 +957,8 @@ function DesktopViewer({
               size="xs"
               variant={viewMode === "live" ? "secondary" : "ghost"}
               aria-pressed={viewMode === "live"}
-              onClick={() => setViewMode("live")}
+              disabled={liveDisabledReason !== null}
+              onClick={() => void startLive()}
             >
               Live
             </Button>
@@ -687,6 +983,24 @@ function DesktopViewer({
             </div>
           ) : null}
         </div>
+        {liveStarted && liveDisplays.length > 1 ? (
+          <div className="mt-2 flex flex-wrap items-center gap-1.5">
+            <span className="mr-1 text-2xs text-muted-foreground">Display</span>
+            {liveDisplays.map((display) => (
+              <Button
+                key={display.id}
+                size="xs"
+                variant={selectedDisplayId === display.id ? "secondary" : "outline"}
+                aria-pressed={selectedDisplayId === display.id}
+                disabled={busy || onSelectDisplay === undefined}
+                onClick={() => void onSelectDisplay?.(display.id)}
+              >
+                {display.label || (display.primary ? "Primary" : display.id)}
+              </Button>
+            ))}
+          </div>
+        ) : null}
+        {lensActive ? lensControls : null}
         {lensActive && agentObservation !== null ? (
           <div className="mt-2 rounded-lg border bg-muted/20 p-2.5">
             <div className="flex flex-wrap items-center gap-1.5">
@@ -721,6 +1035,16 @@ function DesktopViewer({
                   onClick={() => setInspectSemantics((current) => !current)}
                 >
                   {agentObservation.accessibility.targets.length} semantic targets
+                </Button>
+              ) : null}
+              {lensDisplayId !== undefined && onShowInLive !== undefined ? (
+                <Button
+                  size="xs"
+                  variant="outline"
+                  disabled={busy || liveDisabledReason !== null}
+                  onClick={() => void showInLive(lensDisplayId)}
+                >
+                  Show in Live
                 </Button>
               ) : null}
             </div>
@@ -790,23 +1114,47 @@ function DesktopViewer({
           </div>
         ) : null}
         <div className="mt-3 min-h-5 text-xs text-muted-foreground">
-          {error ??
-            captureError ??
-            (controlling
-              ? "Full-screen input control is active. Click the screen to focus its keyboard."
-              : "Watching live. Taking control captures host shortcuts in full screen.")}
+          {(error ?? captureError) !== null ? <div>{error ?? captureError}</div> : null}
+          {textReceipt !== null ? (
+            <div>{textReceipt}</div>
+          ) : (error ?? captureError) !== null ? null : (
+            (controlDisabledReason ??
+            (controlPaused
+              ? "Agent input is paused while you hold control."
+              : controlling
+                ? "Full-screen input control is active. Click the screen to focus its keyboard."
+                : liveStarted
+                  ? "Watching live. Taking control captures host shortcuts in full screen."
+                  : "Live viewing is off. Agent lens data does not start a new screen capture."))
+          )}
         </div>
         <div className="mt-2 flex flex-wrap justify-end gap-2">
-          {controlling ? (
+          {secondaryActions}
+          {controlPaused ? (
+            <Button variant="outline" disabled={busy} onClick={() => void onRelease()}>
+              Release control
+            </Button>
+          ) : controlling ? (
             <Button
               variant="outline"
               disabled={busy || captureBusy}
+              ref={bindControl}
               onClick={() => void releaseControl()}
             >
               Release control
             </Button>
           ) : (
-            <Button disabled={busy || captureBusy} onClick={() => void takeControl()}>
+            <Button
+              disabled={
+                busy ||
+                captureBusy ||
+                !liveStarted ||
+                liveDisabledReason !== null ||
+                controlDisabledReason !== null
+              }
+              title={controlDisabledReason ?? undefined}
+              onClick={() => void takeControl()}
+            >
               <HandIcon />
               {captureBusy ? "Taking control…" : "Take control"}
             </Button>
@@ -848,7 +1196,7 @@ export function AgentDesktopSettings() {
     readonly controlling: boolean;
   } | null>(null);
   const viewerRef = useRef(viewer);
-  const viewerActionQueueRef = useRef<Promise<void>>(Promise.resolve());
+  const viewerActionQueueRef = useRef<Promise<unknown>>(Promise.resolve());
 
   const setViewer = (next: typeof viewer | ((current: typeof viewer) => typeof viewer)) => {
     const value = typeof next === "function" ? next(viewerRef.current) : next;
@@ -1082,26 +1430,39 @@ export function AgentDesktopSettings() {
     };
   });
 
-  const actInViewer = (actions: ReadonlyArray<ComputerAutomationAction>): Promise<void> => {
+  const actInViewer = (
+    actions: ReadonlyArray<ComputerAutomationAction>,
+    shouldExecute?: () => boolean,
+  ): Promise<ViewerActionOutcome> => {
     const selected = viewerRef.current;
-    if (selected === null || !selected.controlling) return Promise.resolve();
+    if (selected === null || !selected.controlling) return Promise.resolve({ status: "cancelled" });
     const desktop = selected.desktop;
-    const execute = async () => {
+    const execute = async (): Promise<ViewerActionOutcome> => {
       const current = viewerRef.current;
-      if (current?.desktop.id !== desktop.id || !current.controlling) return;
+      if (
+        current?.desktop.id !== desktop.id ||
+        !current.controlling ||
+        !(shouldExecute?.() ?? true)
+      )
+        return { status: "cancelled" };
       try {
-        await run(desktop.owner.environmentId, {
-          threadId: desktop.owner.threadId,
-          request: {
-            operation: "act",
-            owner: desktop.owner,
-            desktopId: desktop.id,
-            input: { actions: [...actions], observation: false },
+        const results = await run<ReadonlyArray<ComputerAutomationActionResult>>(
+          desktop.owner.environmentId,
+          {
+            threadId: desktop.owner.threadId,
+            request: {
+              operation: "act",
+              owner: desktop.owner,
+              desktopId: desktop.id,
+              input: { actions: [...actions], observation: false },
+            },
           },
-        });
+        );
         setViewerError(null);
+        return { status: "completed", results };
       } catch (cause) {
         setViewerError(failureMessage(cause));
+        return { status: "failed", detail: failureMessage(cause) };
       }
     };
     const queued = viewerActionQueueRef.current.then(execute, execute);
@@ -1459,8 +1820,16 @@ export function AgentDesktopSettings() {
       <Dialog open={viewer !== null} onOpenChange={(open) => !open && void closeViewer()}>
         {viewer ? (
           <div key={`${viewer.desktop.owner.environmentId}:${viewer.desktop.id}`} ref={bindViewer}>
-            <DesktopViewer
-              desktop={viewer.desktop}
+            <ComputerDesktopViewer
+              label={viewer.desktop.label}
+              description={
+                <>
+                  Live supervision for this isolated Agent desktop. Taking control safely releases
+                  input held by its agent and enters full screen so host shortcuts go only to the
+                  remote desktop. GNOME may ask once to inhibit shortcuts; Super+Escape always
+                  restores them.
+                </>
+              }
               observation={viewer.observation}
               agentObservation={viewer.agentObservation}
               controlling={viewer.controlling}
@@ -1468,6 +1837,7 @@ export function AgentDesktopSettings() {
               error={viewerError}
               onTakeControl={() => setViewerControl(true)}
               onRelease={() => setViewerControl(false)}
+              inputSession={viewer.desktop.id}
               onAction={actInViewer}
             />
           </div>

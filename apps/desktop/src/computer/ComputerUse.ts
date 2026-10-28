@@ -1620,6 +1620,16 @@ export const makeWithOptions = Effect.fn("ComputerUse.makeWithOptions")(function
         for (const [index, action] of input.actions.entries()) {
           yield* Effect.gen(function* () {
             switch (action.type) {
+              case "insert_text":
+                if (controller.insertText === undefined) {
+                  return yield* new GnomeRemoteDesktop.GnomeRemoteDesktopCommandError({
+                    operation: "insertText",
+                    code: "unsupported-method",
+                    cause:
+                      "This desktop backend does not support committed text without physical fallback.",
+                  });
+                }
+                break;
               case "click":
               case "move":
                 resolvedPoints.set(index, yield* resolveFramePoint(frames, displays, action));
@@ -1755,6 +1765,43 @@ export const makeWithOptions = Effect.fn("ComputerUse.makeWithOptions")(function
                   deltaY: verticalTicks,
                 });
                 return { index, type: action.type, horizontalTicks, verticalTicks };
+              }
+              case "insert_text": {
+                if (controller.insertText === undefined) {
+                  return yield* new GnomeRemoteDesktop.GnomeRemoteDesktopCommandError({
+                    operation: "insertText",
+                    code: "unsupported-method",
+                    cause:
+                      "This desktop backend does not support committed text without physical fallback.",
+                  });
+                }
+                const raw = yield* controller.insertText({
+                  text: action.text,
+                  intervalMs: action.intervalMs ?? 0,
+                });
+                const result = yield* GnomeRemoteDesktop.decodeCommittedTextResult(
+                  action.text,
+                  raw,
+                );
+                if (result.injectedCodePoints > 0)
+                  yield* Effect.sleep(Duration.millis(DEFAULT_TYPE_SETTLE_MS));
+                const confirmedCodePoints = result.confirmedCodePoints ?? 0;
+                return {
+                  index,
+                  type: action.type,
+                  requestedCodePoints: result.requestedCodePoints,
+                  acceptedCodePoints: result.injectedCodePoints,
+                  confirmedCodePoints,
+                  verification:
+                    confirmedCodePoints === result.requestedCodePoints
+                      ? ("exact" as const)
+                      : confirmedCodePoints > 0
+                        ? ("partial" as const)
+                        : ("unavailable" as const),
+                  delivery: result.delivery,
+                  focusedEditable: result.focusedEditable,
+                  submission: "not-requested" as const,
+                };
               }
               case "type": {
                 const result = yield* controller.type({

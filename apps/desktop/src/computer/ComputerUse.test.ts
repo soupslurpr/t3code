@@ -1,4 +1,17 @@
-import { ComputerAutomationFailure } from "@t3tools/contracts";
+import * as NodePath from "@effect/platform-node/NodePath";
+import * as ConfigProvider from "effect/ConfigProvider";
+import * as FileSystem from "effect/FileSystem";
+import * as Layer from "effect/Layer";
+import * as Option from "effect/Option";
+import * as Queue from "effect/Queue";
+import * as Sink from "effect/Sink";
+import * as Stream from "effect/Stream";
+import * as ChildProcessSpawner from "effect/process/ChildProcessSpawner";
+import * as DesktopEnvironment from "../app/DesktopEnvironment.ts";
+import * as DesktopAssets from "../app/DesktopAssets.ts";
+import * as DesktopAppSettings from "../settings/DesktopAppSettings.ts";
+import * as ElectronPowerMonitor from "../electron/ElectronPowerMonitor.ts";
+import { ComputerAutomationFailure, ComputerAutomationTypeActionResult } from "@t3tools/contracts";
 import * as Schema from "effect/Schema";
 import { assert, describe, it } from "@effect/vitest";
 import * as Deferred from "effect/Deferred";
@@ -1877,4 +1890,722 @@ it("serializes long guest failures without violating the public message bound", 
   assert.strictEqual(failure.code, "guest-operation-failed");
   assert.isAtMost(failure.message.length, 512);
   assert.strictEqual(failure.detail, detail.trim().slice(0, 2_000));
+});
+
+const decodeTextReceipt = Schema.decodeUnknownEffect(ComputerAutomationTypeActionResult);
+
+describe("strict committed text native boundary", () => {
+  const text = "human_g5_v4 oO ;: é🦀";
+  const requested = Array.from(text).length;
+  const accepted = {
+    requestedCodePoints: requested,
+    injectedCodePoints: requested,
+    confirmedCodePoints: requested,
+    delivery: "accessibility" as const,
+    focusedEditable: true,
+  };
+
+  it.effect.each([
+    ["accessible exact", accepted, requested, "exact"],
+    [
+      "IBus accepted only",
+      {
+        ...accepted,
+        confirmedCodePoints: undefined,
+        delivery: "input-method",
+        focusedEditable: false,
+      },
+      0,
+      "unavailable",
+    ],
+    ["partial readback", { ...accepted, confirmedCodePoints: 2 }, 2, "partial"],
+  ] as const)(
+    "preserves %s without submitting or ordinary typing",
+    ([_name, receipt, confirmed, verification]) =>
+      Effect.gen(function* () {
+        const records: Array<InputRecord> = [];
+        const controller = {
+          ...makeController(records),
+          insertText: (input: { text: string; intervalMs: number }) =>
+            Effect.sync(() => {
+              records.push({ operation: "insertText", input });
+              return receipt;
+            }),
+        };
+        const computer = yield* ComputerUse.makeWithOptions(makePlatform(), controller);
+        const fiber = yield* computer
+          .act({ actions: [{ type: "insert_text", text }] })
+          .pipe(Effect.forkChild);
+        // The result itself is the red milestone on the frozen missing route.
+        yield* TestClock.adjust("1 second");
+        const result = yield* Fiber.join(fiber);
+        assert.deepEqual(
+          records.filter((r) => ["insertText", "type", "press"].includes(r.operation)),
+          [{ operation: "insertText", input: { text, intervalMs: 0 } }],
+        );
+        assert.deepEqual(result[0], {
+          index: 0,
+          type: "insert_text",
+          requestedCodePoints: requested,
+          acceptedCodePoints: requested,
+          confirmedCodePoints: confirmed,
+          verification,
+          delivery: receipt.delivery,
+          focusedEditable: receipt.focusedEditable,
+          submission: "not-requested",
+        });
+        yield* decodeTextReceipt(result[0]);
+      }),
+  );
+
+  it.effect("missing strict capability refuses before any earlier batch input", () =>
+    Effect.gen(function* () {
+      const records: Array<InputRecord> = [];
+      const computer = yield* ComputerUse.makeWithOptions(makePlatform(), makeController(records));
+      const outcome = yield* computer
+        .act({
+          actions: [
+            { type: "key_down", key: "ShiftLeft" },
+            { type: "insert_text", text },
+          ],
+        })
+        .pipe(Effect.result);
+      assert.strictEqual(outcome._tag, "Failure");
+      assert.deepEqual(
+        records.map((r) => r.operation),
+        ["releaseInputs"],
+      );
+      if (outcome._tag === "Failure") {
+        const failure = ComputerUse.toComputerAutomationFailure(outcome.failure);
+        assert.strictEqual(failure.category, "unsupported-operation");
+        assert.strictEqual(failure.actionIndex, 1);
+        assert.strictEqual(failure.completedActionCount, 0);
+      }
+    }),
+  );
+
+  it.effect.each([
+    ["partial acceptance", { ...accepted, injectedCodePoints: requested - 1 }],
+    [
+      "wrong request",
+      {
+        ...accepted,
+        requestedCodePoints: requested - 1,
+        injectedCodePoints: requested - 1,
+        confirmedCodePoints: requested - 1,
+      },
+    ],
+    ["over-confirmation", { ...accepted, confirmedCodePoints: requested + 1 }],
+    ["fractional count", { ...accepted, injectedCodePoints: 0.5 }],
+    ["negative confirmation", { ...accepted, confirmedCodePoints: -1 }],
+    ["physical delivery", { ...accepted, delivery: "key-events" }],
+    ["mixed delivery", { ...accepted, delivery: "mixed" }],
+    ["nonempty none", { ...accepted, delivery: "none" }],
+    ["unfocused accessibility", { ...accepted, focusedEditable: false }],
+    ["unfocused readback", { ...accepted, delivery: "input-method", focusedEditable: false }],
+  ] as const)("rejects %s without fallback or automatic retry", ([_name, receipt]) =>
+    Effect.gen(function* () {
+      const records: Array<InputRecord> = [];
+      const controller = {
+        ...makeController(records),
+        insertText: () =>
+          Effect.sync(() => {
+            records.push({ operation: "insertText" });
+            return receipt;
+          }),
+      };
+      const computer = yield* ComputerUse.makeWithOptions(makePlatform(), controller);
+      const fiber = yield* computer
+        .act({ actions: [{ type: "insert_text", text }] })
+        .pipe(Effect.result, Effect.forkChild);
+      yield* TestClock.adjust("1 second");
+      const outcome = yield* Fiber.join(fiber);
+      assert.strictEqual(outcome._tag, "Failure");
+      assert.deepEqual(
+        records.map((r) => r.operation),
+        ["start", "insertText", "releaseInputs"],
+      );
+    }),
+  );
+
+  it.effect("normalizes code point counts and permits an honest empty receipt", () =>
+    Effect.gen(function* () {
+      const records: Array<InputRecord> = [];
+      const controller = {
+        ...makeController(records),
+        insertText: (input: { text: string; intervalMs: number }) => {
+          const count = Array.from(input.text.replace(/\r\n?/gu, "\n")).length;
+          records.push({ operation: "insertText", input });
+          return Effect.succeed({
+            requestedCodePoints: count,
+            injectedCodePoints: count,
+            confirmedCodePoints: count,
+            delivery: count === 0 ? ("none" as const) : ("accessibility" as const),
+            focusedEditable: count > 0,
+          });
+        },
+      };
+      const computer = yield* ComputerUse.makeWithOptions(makePlatform(), controller);
+      const fiber = yield* computer
+        .act({
+          actions: [
+            { type: "insert_text", text: "🦀\r\na\r" },
+            { type: "insert_text", text: "" },
+          ],
+        })
+        .pipe(Effect.forkChild);
+      yield* TestClock.adjust("1 second");
+      const results = yield* Fiber.join(fiber);
+      const receipts = yield* Effect.forEach(results, (result) => decodeTextReceipt(result));
+      assert.deepEqual(
+        receipts.map((r) => r.requestedCodePoints),
+        [4, 0],
+      );
+      assert.deepEqual(
+        records.map((r) => r.operation),
+        ["start", "insertText", "insertText"],
+      );
+    }),
+  );
+
+  it.effect.each([
+    "unsupported-method",
+    "exact-text-unavailable",
+    "request-cancelled",
+    "input-method-failed",
+  ])("retains %s and releases held input without retry", (code) =>
+    Effect.gen(function* () {
+      const records: Array<InputRecord> = [];
+      const controller = {
+        ...makeController(records),
+        insertText: () =>
+          Effect.gen(function* () {
+            records.push({ operation: "insertText" });
+            return yield* new GnomeRemoteDesktop.GnomeRemoteDesktopCommandError({
+              operation: "insertText",
+              code,
+              cause: "native receipt",
+              phase: "execution",
+            });
+          }),
+      };
+      const computer = yield* ComputerUse.makeWithOptions(makePlatform(), controller);
+      const outcome = yield* computer
+        .act({
+          actions: [
+            { type: "key_down", key: "ControlLeft" },
+            { type: "insert_text", text },
+          ],
+        })
+        .pipe(Effect.result);
+      assert.strictEqual(outcome._tag, "Failure");
+      assert.deepEqual(
+        records.map((r) => r.operation),
+        ["start", "keyDown", "insertText", "releaseInputs"],
+      );
+      if (outcome._tag === "Failure") {
+        const failure = ComputerUse.toComputerAutomationFailure(outcome.failure);
+        assert.strictEqual(
+          code === "unsupported-method"
+            ? failure.code
+            : code === "request-cancelled"
+              ? failure.code
+              : failure.backendCode,
+          code === "unsupported-method" ? "unsupported-operation" : code,
+        );
+        assert.strictEqual(failure.actionIndex, 1);
+        assert.strictEqual(failure.completedActionCount, 1);
+      }
+    }),
+  );
+});
+
+const nativeCommand = Schema.Struct({
+  id: Schema.String,
+  method: Schema.String,
+  params: Schema.Unknown,
+});
+type NativeCommand = typeof nativeCommand.Type;
+type NativeReply =
+  | { ok: true; result: unknown }
+  | { ok: false; error: { code: string; message: string; phase?: "execution" } };
+const nativeStatus = {
+  permission: "granted",
+  devices: 3,
+  rememberedAccess: [],
+  displayState: "active",
+  keepAwake: false,
+};
+const defaultNativeReply = (command: NativeCommand): NativeReply => ({
+  ok: true,
+  result: ["status", "start", "view"].includes(command.method)
+    ? nativeStatus
+    : command.method === "releaseInputs"
+      ? { keys: "released", buttons: "not-needed" }
+      : null,
+});
+
+const withNativeTextWire = <A, E, R>(
+  run: (
+    controller: GnomeRemoteDesktop.GnomeRemoteDesktopShape,
+    requests: Array<NativeCommand>,
+    respond: (id: string, reply: NativeReply) => Effect.Effect<void>,
+  ) => Effect.Effect<A, E, R>,
+  reply: (command: NativeCommand) => Effect.Effect<NativeReply | undefined> = (command) =>
+    Effect.succeed(defaultNativeReply(command)),
+) =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      const responses = yield* Queue.unbounded<Uint8Array>();
+      const requests: Array<NativeCommand> = [];
+      const encoder = new TextEncoder();
+      const respond = (id: string, response: NativeReply) =>
+        Queue.offer(responses, encoder.encode(`${JSON.stringify({ id, ...response })}\n`)).pipe(
+          Effect.asVoid,
+        );
+      const stdin = Sink.forEach((chunk: Uint8Array) =>
+        Effect.gen(function* () {
+          const command = yield* Schema.decodeEffect(Schema.fromJsonString(nativeCommand))(
+            new TextDecoder().decode(chunk).trim(),
+          ).pipe(Effect.orDie);
+          requests.push(command);
+          const response = yield* reply(command);
+          if (response !== undefined) yield* respond(command.id, response);
+        }),
+      );
+      const stdout = Stream.fromQueue(responses);
+      const handle = ChildProcessSpawner.makeHandle({
+        pid: ChildProcessSpawner.ProcessId(123),
+        stdout,
+        stderr: Stream.never,
+        all: stdout,
+        exitCode: Effect.never,
+        isRunning: Effect.succeed(true),
+        kill: () => Effect.void,
+        stdin,
+        getInputFd: () => stdin,
+        getOutputFd: () => Stream.empty,
+        unref: Effect.succeed(Effect.void),
+      });
+      const environment = DesktopEnvironment.layer({
+        dirname: "/isolated/repo/apps/desktop/dist-electron",
+        homeDirectory: "/isolated/home",
+        platform: "linux",
+        processArch: "x64",
+        appVersion: "0.1.7",
+        appPath: "/isolated/app",
+        isPackaged: true,
+        resourcesPath: "/isolated/resources",
+        runningUnderArm64Translation: false,
+      }).pipe(Layer.provide(NodePath.layerPosix));
+      const dependencies = Layer.mergeAll(
+        environment,
+        DesktopAppSettings.layerTest(),
+        FileSystem.layerNoop({ exists: () => Effect.succeed(true) }),
+        Layer.succeed(
+          ChildProcessSpawner.ChildProcessSpawner,
+          ChildProcessSpawner.make(() => Effect.succeed(handle)),
+        ),
+        Layer.succeed(DesktopAssets.DesktopAssets, {
+          iconPaths: Effect.succeed({
+            ico: Option.none(),
+            icns: Option.none(),
+            png: Option.none(),
+          }),
+          resolveResourcePath: () => Effect.succeedSome("/isolated/helper.js"),
+        }),
+        Layer.succeed(ElectronPowerMonitor.ElectronPowerMonitor, {
+          isOnBatteryPower: Effect.succeed(false),
+          getSystemIdleTime: Effect.succeed(0),
+          getSystemIdleState: () => Effect.succeed("active"),
+          getCurrentThermalState: Effect.succeed("nominal" as const),
+          onSimpleEvent: () => Effect.void,
+          onThermalStateChange: () => Effect.void,
+          onSpeedLimitChange: () => Effect.void,
+        }),
+      );
+      const layer = GnomeRemoteDesktop.layer.pipe(
+        Layer.provide(dependencies),
+        Layer.provide(
+          ConfigProvider.layer(
+            ConfigProvider.fromEnv({
+              env: { XDG_CURRENT_DESKTOP: "GNOME", XDG_SESSION_TYPE: "wayland" },
+            }),
+          ),
+        ),
+      );
+      return yield* GnomeRemoteDesktop.GnomeRemoteDesktop.pipe(
+        Effect.flatMap((controller) => run(controller, requests, respond)),
+        Effect.provide(layer),
+      );
+    }),
+  );
+
+const strictNative = (controller: GnomeRemoteDesktop.GnomeRemoteDesktopShape) => {
+  assert.isDefined(controller.insertText, "native service must expose the distinct strict route");
+  if (controller.insertText === undefined) throw new Error("strict native route absent");
+  return controller.insertText;
+};
+
+const completeNativeText = {
+  requestedCodePoints: 3,
+  injectedCodePoints: 3,
+  confirmedCodePoints: 3,
+  delivery: "accessibility",
+  focusedEditable: true,
+};
+
+describe("strict committed text actual native wire", () => {
+  it.effect("sends one distinct command and preserves accepted-only IBus receipt", () =>
+    withNativeTextWire(
+      (controller, requests) =>
+        Effect.gen(function* () {
+          const result = yield* strictNative(controller)({ text: "é🦀x", intervalMs: 0 });
+          assert.deepEqual(result, {
+            requestedCodePoints: 3,
+            injectedCodePoints: 3,
+            delivery: "input-method",
+            focusedEditable: false,
+          });
+          assert.deepEqual(
+            requests.map(({ method, params }) => ({ method, params })),
+            [
+              { method: "status", params: {} },
+              { method: "insertText", params: { text: "é🦀x", intervalMs: 0 } },
+            ],
+          );
+        }),
+      (command) =>
+        Effect.succeed(
+          command.method === "insertText"
+            ? {
+                ok: true,
+                result: {
+                  ...completeNativeText,
+                  confirmedCodePoints: undefined,
+                  delivery: "input-method",
+                  focusedEditable: false,
+                },
+              }
+            : defaultNativeReply(command),
+        ),
+    ),
+  );
+
+  it.effect.each([
+    ["missing result", undefined],
+    ["missing count", { injectedCodePoints: 3 }],
+    ["partial acceptance", { ...completeNativeText, injectedCodePoints: 2 }],
+    [
+      "foreign request",
+      {
+        ...completeNativeText,
+        requestedCodePoints: 2,
+        injectedCodePoints: 2,
+        confirmedCodePoints: 2,
+      },
+    ],
+    ["physical fallback", { ...completeNativeText, delivery: "key-events" }],
+    ["overconfirmed", { ...completeNativeText, confirmedCodePoints: 4 }],
+    ["unfocused readback", { ...completeNativeText, focusedEditable: false }],
+  ] as const)("rejects %s at the native response decoder", ([_name, response]) =>
+    withNativeTextWire(
+      (controller, requests) =>
+        Effect.gen(function* () {
+          const result = yield* strictNative(controller)({ text: "é🦀x", intervalMs: 0 }).pipe(
+            Effect.result,
+          );
+          assert.strictEqual(result._tag, "Failure");
+          if (result._tag === "Failure")
+            assert.strictEqual(result.failure._tag, "GnomeRemoteDesktopProtocolError");
+          assert.deepEqual(
+            requests.map((r) => r.method),
+            ["status", "insertText"],
+          );
+        }),
+      (command) =>
+        Effect.succeed(
+          command.method === "insertText"
+            ? { ok: true, result: response ?? null }
+            : defaultNativeReply(command),
+        ),
+    ),
+  );
+
+  it.effect.each([
+    "unsupported-method",
+    "exact-text-unavailable",
+    "request-cancelled",
+    "input-method-failed",
+  ])("preserves %s through real ComputerUse and the native wire", (code) =>
+    withNativeTextWire(
+      (controller, requests) =>
+        Effect.gen(function* () {
+          strictNative(controller);
+          const computer = yield* ComputerUse.makeWithOptions(makePlatform(), controller);
+          const result = yield* computer
+            .act({
+              actions: [
+                { type: "key_down", key: "ControlLeft" },
+                { type: "insert_text", text: "é🦀x" },
+              ],
+            })
+            .pipe(Effect.result);
+          assert.strictEqual(result._tag, "Failure");
+          if (result._tag === "Failure") {
+            const failure = ComputerUse.toComputerAutomationFailure(result.failure);
+            assert.strictEqual(failure.actionIndex, 1);
+            assert.strictEqual(failure.completedActionCount, 1);
+            assert.deepEqual(failure.cleanup, { keys: "released", buttons: "not-needed" });
+            assert.strictEqual(
+              code === "unsupported-method"
+                ? failure.code
+                : code === "request-cancelled"
+                  ? failure.code
+                  : failure.backendCode,
+              code === "unsupported-method" ? "unsupported-operation" : code,
+            );
+          }
+          assert.deepEqual(
+            requests.map((r) => r.method),
+            [
+              "status",
+              "validateActions",
+              "status",
+              "start",
+              "keyDown",
+              "insertText",
+              "releaseInputs",
+            ],
+          );
+        }),
+      (command) =>
+        Effect.succeed(
+          command.method === "insertText"
+            ? { ok: false, error: { code, message: "native refusal", phase: "execution" } }
+            : defaultNativeReply(command),
+        ),
+    ),
+  );
+
+  it.effect(
+    "retains success through real ComputerUse without turning acceptance into confirmation",
+    () =>
+      withNativeTextWire(
+        (controller, requests) =>
+          Effect.gen(function* () {
+            strictNative(controller);
+            const computer = yield* ComputerUse.makeWithOptions(makePlatform(), controller);
+            const fiber = yield* computer
+              .act({ actions: [{ type: "insert_text", text: "é🦀x" }] })
+              .pipe(Effect.forkChild);
+            yield* TestClock.adjust("1 second");
+            const result = yield* Fiber.join(fiber);
+            const receipt = yield* decodeTextReceipt(result[0]);
+            assert.strictEqual(receipt.verification, "unavailable");
+            assert.strictEqual(receipt.acceptedCodePoints, 3);
+            assert.strictEqual(receipt.confirmedCodePoints, 0);
+            assert.strictEqual(receipt.submission, "not-requested");
+            assert.deepEqual(
+              requests.map((r) => r.method),
+              ["status", "validateActions", "status", "start", "insertText"],
+            );
+          }),
+        (command) =>
+          Effect.succeed(
+            command.method === "insertText"
+              ? {
+                  ok: true,
+                  result: {
+                    ...completeNativeText,
+                    confirmedCodePoints: 0,
+                    focusedEditable: false,
+                    delivery: "input-method",
+                  },
+                }
+              : defaultNativeReply(command),
+          ),
+      ),
+  );
+});
+
+describe("strict committed text native cancellation seams", () => {
+  it.effect(
+    "interrupted submitted text releases input and ignores a late receipt for the next request",
+    () =>
+      Effect.gen(function* () {
+        const dispatched = yield* Deferred.make<NativeCommand>();
+        let textCalls = 0;
+        yield* withNativeTextWire(
+          (controller, requests, respond) =>
+            Effect.gen(function* () {
+              strictNative(controller);
+              const computer = yield* ComputerUse.makeWithOptions(makePlatform(), controller);
+              const first = yield* computer
+                .act({
+                  actions: [
+                    { type: "key_down", key: "ShiftLeft" },
+                    { type: "insert_text", text: "é🦀x" },
+                  ],
+                })
+                .pipe(Effect.forkChild);
+              const original = yield* Deferred.await(dispatched);
+              yield* Fiber.interrupt(first);
+              assert.deepEqual(
+                requests.map((r) => r.method),
+                [
+                  "status",
+                  "validateActions",
+                  "status",
+                  "start",
+                  "keyDown",
+                  "insertText",
+                  "releaseInputs",
+                ],
+              );
+              yield* respond(original.id, { ok: true, result: completeNativeText });
+              const next = yield* strictNative(controller)({ text: "é🦀x", intervalMs: 0 });
+              assert.strictEqual(next.confirmedCodePoints, 0);
+              assert.strictEqual(next.delivery, "input-method");
+              assert.strictEqual(textCalls, 2);
+              const ids = requests.filter((r) => r.method === "insertText").map((r) => r.id);
+              assert.strictEqual(new Set(ids).size, 2);
+            }),
+          (command) =>
+            Effect.gen(function* () {
+              if (command.method !== "insertText") return defaultNativeReply(command);
+              textCalls += 1;
+              if (textCalls === 1) {
+                yield* Deferred.succeed(dispatched, command);
+                return undefined;
+              }
+              return {
+                ok: true,
+                result: {
+                  ...completeNativeText,
+                  confirmedCodePoints: 0,
+                  focusedEditable: false,
+                  delivery: "input-method",
+                },
+              };
+            }),
+        );
+      }),
+  );
+
+  it.effect("Release during native authorization does not dispatch pending strict text", () =>
+    Effect.gen(function* () {
+      const started = yield* Deferred.make<NativeCommand>();
+      const stopDispatched = yield* Deferred.make<NativeCommand>();
+      yield* withNativeTextWire(
+        (controller, requests, respond) =>
+          Effect.gen(function* () {
+            strictNative(controller);
+            const computer = yield* ComputerUse.makeWithOptions(makePlatform(), controller);
+            const action = yield* computer
+              .act({ actions: [{ type: "insert_text", text: "é🦀x" }] })
+              .pipe(Effect.result, Effect.forkChild);
+            const authorization = yield* Deferred.await(started);
+            const released = yield* computer.release.pipe(Effect.forkChild);
+            yield* Deferred.await(stopDispatched);
+            yield* respond(authorization.id, {
+              ok: false,
+              error: {
+                code: "request-cancelled",
+                message: "released while pending",
+                phase: "execution",
+              },
+            });
+            yield* Fiber.join(released);
+            const result = yield* Fiber.join(action);
+            assert.strictEqual(result._tag, "Failure");
+            assert.deepEqual(
+              requests.map((r) => r.method),
+              ["status", "validateActions", "status", "start", "stop", "releaseInputs"],
+            );
+          }),
+        (command) =>
+          Effect.gen(function* () {
+            if (command.method === "start") {
+              yield* Deferred.succeed(started, command);
+              return undefined;
+            }
+            if (command.method === "stop") yield* Deferred.succeed(stopDispatched, command);
+            return defaultNativeReply(command);
+          }),
+      );
+    }),
+  );
+
+  it.effect("existing bounded request timeout preserves uncertainty and never retries", () =>
+    Effect.gen(function* () {
+      const dispatched = yield* Deferred.make<void>();
+      yield* withNativeTextWire(
+        (controller, requests) =>
+          Effect.gen(function* () {
+            strictNative(controller);
+            const computer = yield* ComputerUse.makeWithOptions(makePlatform(), controller);
+            const fiber = yield* computer
+              .act({ actions: [{ type: "insert_text", text: "é🦀x" }] })
+              .pipe(Effect.result, Effect.forkChild);
+            yield* Deferred.await(dispatched);
+            yield* TestClock.adjust("2 minutes");
+            const result = yield* Fiber.join(fiber);
+            assert.strictEqual(result._tag, "Failure");
+            if (result._tag === "Failure")
+              assert.strictEqual(
+                ComputerUse.toComputerAutomationFailure(result.failure).category,
+                "timeout",
+              );
+            assert.deepEqual(
+              requests.map((r) => r.method),
+              ["status", "validateActions", "status", "start", "insertText", "releaseInputs"],
+            );
+          }),
+        (command) =>
+          Effect.gen(function* () {
+            if (command.method === "insertText") {
+              yield* Deferred.succeed(dispatched, undefined);
+              return undefined;
+            }
+            return defaultNativeReply(command);
+          }),
+      );
+    }),
+  );
+
+  it.effect("successful native acceptance is kept when Release follows its dispatch", () =>
+    Effect.gen(function* () {
+      const dispatched = yield* Deferred.make<NativeCommand>();
+      yield* withNativeTextWire(
+        (controller, requests, respond) =>
+          Effect.gen(function* () {
+            strictNative(controller);
+            const computer = yield* ComputerUse.makeWithOptions(makePlatform(), controller);
+            const fiber = yield* computer
+              .act({ actions: [{ type: "insert_text", text: "é🦀x" }] })
+              .pipe(Effect.forkChild);
+            const request = yield* Deferred.await(dispatched);
+            yield* computer.release;
+            yield* respond(request.id, { ok: true, result: completeNativeText });
+            yield* TestClock.adjust("1 second");
+            const result = yield* Fiber.join(fiber);
+            const receipt = yield* decodeTextReceipt(result[0]);
+            assert.strictEqual(receipt.acceptedCodePoints, 3);
+            assert.deepEqual(
+              requests.map((r) => r.method),
+              ["status", "validateActions", "status", "start", "insertText", "stop"],
+            );
+          }),
+        (command) =>
+          Effect.gen(function* () {
+            if (command.method === "insertText") {
+              yield* Deferred.succeed(dispatched, command);
+              return undefined;
+            }
+            return defaultNativeReply(command);
+          }),
+      );
+    }),
+  );
 });

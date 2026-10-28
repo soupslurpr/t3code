@@ -3241,7 +3241,13 @@ const make = Effect.gen(function* () {
   );
 
   const insertGuestText = Effect.fn("AgentDesktopManager.insertGuestText")(
-    (desktop: PersistedDesktop, runtime: RuntimeState, text: string, intervalMs: number) =>
+    (
+      desktop: PersistedDesktop,
+      runtime: RuntimeState,
+      text: string,
+      intervalMs: number,
+      textOnly = false,
+    ) =>
       runtime.accessibilitySemaphore.withPermits(1)(
         Effect.gen(function* () {
           const identity = yield* prepareGuestIntegration(desktop, runtime).pipe(Effect.option);
@@ -3262,6 +3268,8 @@ const make = Effect.gen(function* () {
               ),
             );
           let result = yield* insert();
+          if (textOnly && result.status === "replace-selection")
+            return { status: "unavailable" } as const;
           if (result.status === "replace-selection") {
             yield* sendTransientKey(desktop, runtime, QemuInput.qemuPressQcodes("Backspace"));
             yield* Effect.sleep(Duration.millis(GUEST_TEXT_SELECTION_SETTLE_MS));
@@ -3836,7 +3844,9 @@ const make = Effect.gen(function* () {
         }
         return { index: actionIndex, type: action.type, horizontalTicks, verticalTicks };
       }
-      case "type": {
+      case "type":
+      case "insert_text": {
+        const textOnly = action.type === "insert_text";
         const intervalMs = action.intervalMs ?? 0;
         const normalizedText = action.text.replaceAll(/\r\n|\r/gu, "\n");
         const sendQemuText = Effect.fn("AgentDesktopManager.sendQemuText")(function* (
@@ -3857,7 +3867,7 @@ const make = Effect.gen(function* () {
         const insertion =
           normalizedText.length === 0
             ? ({ status: "unavailable" } as const)
-            : yield* insertGuestText(desktop, runtime, normalizedText, intervalMs);
+            : yield* insertGuestText(desktop, runtime, normalizedText, intervalMs, textOnly);
         if (insertion.status === "inserted") {
           if (
             insertion.injectedCodePoints === undefined ||
@@ -3867,6 +3877,20 @@ const make = Effect.gen(function* () {
               code: "internal-error",
               operation: "guest-text-insertion",
               detail: "guest accessibility omitted exact text confirmation",
+            });
+          }
+          if (
+            textOnly &&
+            (insertion.injectedCodePoints !== Array.from(normalizedText).length ||
+              insertion.confirmedCodePoints > insertion.injectedCodePoints)
+          ) {
+            return yield* new AgentDesktopManagerError({
+              code: "accessibility-insertion-failed",
+              operation: "guest-text-insertion",
+              detail:
+                "the accessibility insertion did not account for the full text; some text may already be inserted and was not retried",
+              field: "text",
+              phase: "execution",
             });
           }
           acceptedCodePoints = insertion.injectedCodePoints;
@@ -3885,10 +3909,10 @@ const make = Effect.gen(function* () {
             ],
             phase: "execution",
           });
-        } else if (QemuInput.canTypeExactlyWithQemu(normalizedText)) {
+        } else if (!textOnly && QemuInput.canTypeExactlyWithQemu(normalizedText)) {
           acceptedCodePoints = yield* sendQemuText(normalizedText);
           usedKeyEvents = normalizedText.length > 0;
-        } else {
+        } else if (normalizedText.length > 0) {
           const identity = yield* prepareGuestIbus(desktop, runtime);
           acceptedCodePoints = yield* runGuestIbusCommit(
             desktop,
@@ -3908,11 +3932,15 @@ const make = Effect.gen(function* () {
               ? "partial"
               : "unavailable";
         const withholdSubmission =
-          action.submit === true && action.verification === "required" && verification !== "exact";
-        if (action.submit === true && !withholdSubmission) {
+          "submit" in action &&
+          action.submit === true &&
+          "verification" in action &&
+          action.verification === "required" &&
+          verification !== "exact";
+        if ("submit" in action && action.submit === true && !withholdSubmission) {
           yield* sendTransientKey(desktop, runtime, QemuInput.qemuPressQcodes("Enter"));
         }
-        if (action.submit === true && !withholdSubmission) {
+        if ("submit" in action && action.submit === true && !withholdSubmission) {
           yield* Effect.sleep(Duration.millis(DEFAULT_SUBMIT_SETTLE_MS));
         }
         const deliveryMethods =
@@ -3937,7 +3965,7 @@ const make = Effect.gen(function* () {
           delivery,
           focusedEditable: usedAccessibility,
           submission:
-            action.submit !== true
+            !("submit" in action) || action.submit !== true
               ? "not-requested"
               : withholdSubmission
                 ? "withheld-unverified"

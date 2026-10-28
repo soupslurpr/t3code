@@ -3951,7 +3951,7 @@ it.effect(
 
 describe("F049 evidence Agent queued input ownership", () => {
   it.effect.each(
-    (["type"] as const).map(
+    (["type", "insert_text"] as const).map(
       (type) =>
         [
           `${type} queued before takeover cannot inject after the human owns control`,
@@ -4347,7 +4347,7 @@ it.effect(
     }),
 );
 
-it.effect.each(["type"] as const)(
+it.effect.each(["type", "insert_text"] as const)(
   "F049 authority accepted %s prefix keeps its completed count when the remaining batch is fenced",
   (type) =>
     Effect.gen(function* () {
@@ -5461,3 +5461,161 @@ it.effect.each(["cancel", "timeout", "scope-close"] as const)(
       }).pipe(Effect.provide(h.layer));
     }),
 );
+
+describe("strict committed text transport", () => {
+  it.effect.each(
+    ["human_g5_v4", "oO;:!@", "雪😀"].flatMap((text) =>
+      (["accessibility", "ibus", "unavailable"] as const).map(
+        (mode) => [`${mode} preserves committed character intent ${text}`, { text, mode }] as const,
+      ),
+    ),
+  )("%s", ([_title, { text, mode }]) =>
+    Effect.gen(function* () {
+      const harness = yield* managerHarness("strict-layout", {
+        accessibility: mode !== "unavailable",
+        ibus: mode === "ibus",
+        ...(mode === "ibus"
+          ? { textInsertionResponse: '{"ok":true,"result":{"status":"unavailable"}}' }
+          : {}),
+      });
+      yield* Effect.gen(function* () {
+        const manager = yield* AgentDesktopManager.AgentDesktopManager;
+        const desktop = yield* manager.acquire(owner, { label: "Strict text" });
+        yield* manager.requestControl(owner, { kind: "agent", desktopId: desktop.id });
+        const pending = yield* manager
+          .act(owner.controllerId, { actions: [{ type: "insert_text", text }] }, desktop.id)
+          .pipe(Effect.result, Effect.forkChild);
+        yield* TestClock.adjust(Duration.millis(500));
+        const result = yield* Fiber.join(pending);
+        if (mode === "unavailable") {
+          assert.equal(result._tag, "Failure");
+          if (result._tag === "Failure")
+            assert.equal(
+              ComputerUse.toComputerAutomationFailure(result.failure).code,
+              "exact-text-unavailable",
+            );
+        } else {
+          assert.equal(result._tag, "Success");
+          if (result._tag === "Success")
+            assert.deepInclude(yield* decodeEvidenceActionResult(result.success[0]), {
+              type: "insert_text",
+              requestedCodePoints: Array.from(text).length,
+              acceptedCodePoints: Array.from(text).length,
+              confirmedCodePoints: mode === "accessibility" ? Array.from(text).length : 0,
+              verification: mode === "accessibility" ? "exact" : "unavailable",
+              delivery: mode === "accessibility" ? "accessibility" : "input-method",
+              submission: "not-requested",
+            });
+        }
+        const calls = yield* Ref.get(harness.calls);
+        assert.isFalse(calls.some((c) => c.startsWith("key:") || c.startsWith("input:")));
+        assert.equal(
+          calls.filter(
+            (c) =>
+              c.includes("/usr/bin/python /run/t3-agent-desktop/ibus-commit.py ") &&
+              c.startsWith("exec:"),
+          ).length,
+          mode === "ibus" ? 1 : 0,
+        );
+      }).pipe(Effect.provide(harness.layer));
+    }),
+  );
+  it.effect.each(
+    (["replace-selection", "uncertain", "partial", "partial-readback", "empty"] as const).map(
+      (mode) => [`${mode} never uses a physical retry or invents confirmation`, { mode }] as const,
+    ),
+  )("%s", ([_title, { mode }]) =>
+    Effect.gen(function* () {
+      const response =
+        mode === "replace-selection"
+          ? '{"ok":true,"result":{"status":"replace-selection"}}'
+          : mode === "uncertain"
+            ? '{"ok":false,"code":"accessibility-insertion-failed","detail":"prefix may be inserted"}'
+            : mode === "partial-readback"
+              ? '{"ok":true,"result":{"status":"inserted","injectedCodePoints":3,"confirmedCodePoints":1}}'
+              : '{"ok":true,"result":{"status":"inserted","injectedCodePoints":1,"confirmedCodePoints":1}}';
+      const harness = yield* managerHarness("strict-boundary", {
+        accessibility: mode !== "empty",
+        ibus: mode === "replace-selection",
+        textInsertionResponse: response,
+      });
+      yield* Effect.gen(function* () {
+        const manager = yield* AgentDesktopManager.AgentDesktopManager;
+        const desktop = yield* manager.acquire(owner, { label: "Strict boundary" });
+        yield* manager.requestControl(owner, { kind: "agent", desktopId: desktop.id });
+        const pending = yield* manager
+          .act(
+            owner.controllerId,
+            { actions: [{ type: "insert_text", text: mode === "empty" ? "" : "abc" }] },
+            desktop.id,
+          )
+          .pipe(Effect.result, Effect.forkChild);
+        yield* TestClock.adjust(Duration.millis(500));
+        const result = yield* Fiber.join(pending);
+        if (mode === "replace-selection" || mode === "empty") {
+          assert.equal(result._tag, "Success");
+          if (result._tag === "Success")
+            assert.deepInclude(yield* decodeEvidenceActionResult(result.success[0]), {
+              type: "insert_text",
+              acceptedCodePoints: mode === "empty" ? 0 : 3,
+              submission: "not-requested",
+            });
+        } else if (mode === "partial-readback") {
+          assert.equal(result._tag, "Success");
+          if (result._tag === "Success")
+            assert.deepInclude(yield* decodeEvidenceActionResult(result.success[0]), {
+              type: "insert_text",
+              requestedCodePoints: 3,
+              acceptedCodePoints: 3,
+              confirmedCodePoints: 1,
+              verification: "partial",
+              submission: "not-requested",
+            });
+        } else assert.equal(result._tag, "Failure");
+        const calls = yield* Ref.get(harness.calls);
+        assert.isFalse(calls.some((c) => c.startsWith("key:") || c.startsWith("input:")));
+        assert.equal(
+          calls.filter((c) => c.includes("/usr/bin/gjs") && c.includes("insert-text")).length,
+          mode === "empty" ? 0 : 1,
+        );
+        assert.equal(
+          calls.filter(
+            (c) =>
+              c.includes("/usr/bin/python /run/t3-agent-desktop/ibus-commit.py ") &&
+              c.startsWith("exec:"),
+          ).length,
+          mode === "replace-selection" ? 1 : 0,
+        );
+      }).pipe(Effect.provide(harness.layer));
+    }),
+  );
+  it.effect(
+    "retains explicitly held Shift across committed text and releases it on full Release",
+    () =>
+      Effect.gen(function* () {
+        const harness = yield* managerHarness("strict-held", { accessibility: true });
+        yield* Effect.gen(function* () {
+          const manager = yield* AgentDesktopManager.AgentDesktopManager;
+          const desktop = yield* manager.acquire(owner, { label: "Held text" });
+          yield* manager.requestControl(owner, { kind: "agent", desktopId: desktop.id });
+          yield* manager.act(
+            owner.controllerId,
+            { actions: [{ type: "key_down", key: "ShiftLeft" }] },
+            desktop.id,
+          );
+          const before = yield* Ref.get(harness.inputEvents);
+          const pending = yield* manager
+            .act(owner.controllerId, { actions: [{ type: "insert_text", text: "a!" }] }, desktop.id)
+            .pipe(Effect.forkChild);
+          yield* TestClock.adjust(Duration.millis(500));
+          const results = yield* Fiber.join(pending);
+          assert.equal(results[0]?.type, "insert_text");
+          assert.deepEqual(yield* Ref.get(harness.inputEvents), before);
+          yield* manager.release(owner.controllerId, desktop.id);
+          const after = yield* Ref.get(harness.inputEvents);
+          assert.isAbove(after.length, before.length);
+          assert.isFalse((yield* Ref.get(harness.calls)).some((c) => c.startsWith("key:")));
+        }).pipe(Effect.provide(harness.layer));
+      }),
+  );
+});

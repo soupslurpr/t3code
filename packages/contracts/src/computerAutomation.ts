@@ -691,13 +691,17 @@ export const ComputerAutomationAccessInput = Schema.Struct({
   returnControlToAgent: Schema.optional(Schema.Literal(true)).annotate({
     description: "Returns control to the still-viewing agent displaced by this human controller.",
   }),
+  releaseControlToView: Schema.optional(Schema.Literal(true)).annotate({
+    description: "Releases human control while retaining its existing view lease.",
+  }),
 }).check(
-  Schema.makeFilter(
-    (input) =>
-      input.takeoverLeaseId === undefined ||
-      input.returnControlToAgent !== true ||
-      "takeoverLeaseId and returnControlToAgent cannot be combined.",
-  ),
+  Schema.makeFilter((input) => {
+    const exclusiveOptionCount =
+      Number(input.takeoverLeaseId !== undefined) +
+      Number(input.returnControlToAgent === true) +
+      Number(input.releaseControlToView === true);
+    return exclusiveOptionCount <= 1 || "Desktop control transition options cannot be combined.";
+  }),
 );
 export type ComputerAutomationAccessInput = typeof ComputerAutomationAccessInput.Type;
 
@@ -814,7 +818,7 @@ export type ComputerAutomationTemporalSequence = typeof ComputerAutomationTempor
 
 export const ComputerAutomationTypeActionResult = Schema.Struct({
   index: Schema.Int.check(Schema.isBetween({ minimum: 0, maximum: MAX_ACTION_BATCH_ACTIONS - 1 })),
-  type: Schema.Literal("type"),
+  type: Schema.Literals(["type", "insert_text"]),
   requestedCodePoints: Schema.Int.check(
     Schema.isBetween({ minimum: 0, maximum: MAX_ACTION_BATCH_TEXT_LENGTH }),
   ).annotate({
@@ -1229,6 +1233,14 @@ export const ComputerAutomationAction = Schema.Union([
   Schema.Struct({ type: Schema.Literal("type"), ...ComputerAutomationTypeInput.fields }).annotate({
     description: "Inject exact text and optionally submit it.",
   }),
+  Schema.Struct({
+    type: Schema.Literal("insert_text"),
+    text: ComputerAutomationTypeInput.fields.text,
+    intervalMs: ComputerAutomationTypeInput.fields.intervalMs,
+  }).annotate({
+    description:
+      "Commit text without physical-key fallback or submission. Older receivers must reject this distinct action.",
+  }),
   Schema.Struct({ type: Schema.Literal("press"), ...ComputerAutomationPressInput.fields }).annotate(
     {
       description: "Press and release one key with optional compatibility modifiers.",
@@ -1350,12 +1362,13 @@ export const ComputerAutomationActionBatchInput = Schema.Struct({
             break;
           }
           case "type":
+          case "insert_text":
             {
               const actionTextLength = Array.from(action.text).length;
               textLength += actionTextLength;
               durationMs +=
                 actionTextLength * (action.intervalMs ?? 0) +
-                (action.submit === true ? SUBMIT_SETTLE_MS : 0);
+                ("submit" in action && action.submit === true ? SUBMIT_SETTLE_MS : 0);
             }
             break;
           case "wait":

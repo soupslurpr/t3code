@@ -102,6 +102,9 @@ describe("computer automation contracts", () => {
     expect(decodeAccess({ ...userDesktop, returnControlToAgent: true })).toMatchObject({
       returnControlToAgent: true,
     });
+    expect(decodeAccess({ ...userDesktop, releaseControlToView: true })).toMatchObject({
+      releaseControlToView: true,
+    });
     expect(() =>
       decodeAccess({
         ...userDesktop,

@@ -181,6 +181,27 @@ Super reach only the guest. GNOME may show a first-use prompt to allow shortcut 
 emergency Super+Escape chord immediately restores host shortcuts, and leaving full screen releases
 the human control lease.
 
+## Supervise a User Desktop
+
+In **Settings → User desktops**, choose **Supervise** to inspect the exact
+images delivered to an agent. Opening supervision does not start screen
+sharing. Choose **Start Live** for the current display, or select an Agent
+lens observation to inspect its original pixels and semantic information.
+Live viewing is disabled for the desktop hosting the current window to
+avoid capturing the viewer inside itself.
+
+**Take control** enters full screen and captures host shortcuts. A conflicting
+human or foreign-environment controller requires confirmation. **Release
+control** keeps live viewing; **Return control** explicitly resumes a
+displaced agent when available. Closing supervision or hiding the client
+releases its access. Leaving full screen releases human input control.
+
+On the desktop running T3, **Stop agent control** pauses agent input while
+keeping the agent's view available. The pause lasts until you choose
+**Return control to agent** or end human control. **Release control** ends
+the pause without restoring the agent; closing or hiding supervision does
+the same. An agent must request control again after those releases.
+
 ## Agent Tools
 
 The desktop host exposes tools for:
