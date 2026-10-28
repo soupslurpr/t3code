@@ -2,7 +2,6 @@ import {
   IsoDateTime,
   UserDesktopAuditEvent,
   type UserDesktopAuditLog,
-  UserDesktopCapability,
   UserDesktopHostRegistration,
   UserDesktopId,
   UserDesktopLabel,
@@ -31,7 +30,7 @@ export const UserDesktopRecord = Schema.Struct({
   defaultLabel: UserDesktopLabel,
   customLabel: Schema.NullOr(UserDesktopLabel),
   platform: UserDesktopPlatform,
-  capabilities: Schema.Array(UserDesktopCapability).check(Schema.isMaxLength(3)),
+  capabilities: UserDesktopHostRegistration.fields.capabilities,
   lastSeenAt: IsoDateTime,
   lastActiveAt: Schema.NullOr(IsoDateTime),
 });
@@ -39,9 +38,7 @@ export type UserDesktopRecord = typeof UserDesktopRecord.Type;
 
 const UserDesktopDbRow = UserDesktopRecord.mapFields(
   Struct.assign({
-    capabilities: Schema.fromJsonString(
-      Schema.Array(UserDesktopCapability).check(Schema.isMaxLength(3)),
-    ),
+    capabilities: Schema.fromJsonString(UserDesktopHostRegistration.fields.capabilities),
   }),
 );
 
