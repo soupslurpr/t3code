@@ -25,12 +25,21 @@ import {
   toJsonSchemaObject,
 } from "@t3tools/provider-core/server/textGenerationUtils";
 import { codexModelFamily, getModelSelectionStringOptionValue } from "@t3tools/shared/model";
-import { getCodexServiceTierOptionValue } from "../codexModelOptions.ts";
+import {
+  getCodexServiceTierOptionValue,
+  decodeCodexCyberAccessProgram,
+  resolveCodexModelSettings,
+} from "../codexModelOptions.ts";
 import * as HostProcess from "@t3tools/shared/HostProcess";
 import { makeCodexImageConditionEvaluator } from "./CodexImageConditionEvaluator.ts";
 
 const CODEX_TIMEOUT_MS = 180_000;
 const CODEX_MCP_LIST_TIMEOUT_MS = 10_000;
+const CODEX_CLI_ACCESS_PROGRAMS = {
+  standard: "standard",
+  daybreakBlue: "daybreak_blue",
+  daybreakRed: "daybreak_red",
+} as const;
 // Plugins/apps add MCP servers; use trailing config overrides because --disable loses to user -c flags.
 const CODEX_NO_PLUGIN_ARGS = [
   "--config",
@@ -308,6 +317,13 @@ export const makeCodexTextGeneration = Effect.fn("makeCodexTextGeneration")(func
         getModelSelectionStringOptionValue(modelSelection, "reasoningEffort") ??
         DEFAULT_TEXT_GENERATION_REASONING_EFFORT;
       const serviceTier = resolved ? undefined : getCodexServiceTierOptionValue(modelSelection);
+      const cyberAccessProgram = yield* decodeCodexCyberAccessProgram(
+        resolveCodexModelSettings(modelSelection).cyberAccessProgram,
+      ).pipe(
+        Effect.mapError(
+          () => new TextGenerationError({ operation, detail: "Invalid Codex access program." }),
+        ),
+      );
       const binary = effectiveConfig.binaryPath || "codex";
       const env = {
         ...effectiveEnvironment,
@@ -345,6 +361,9 @@ export const makeCodexTextGeneration = Effect.fn("makeCodexTextGeneration")(func
           "--config",
           `model_reasoning_effort="${reasoningEffort}"`,
           ...(serviceTier ? ["--config", `service_tier="${serviceTier}"`] : []),
+          ...(cyberAccessProgram
+            ? ["--cyber-access-program", CODEX_CLI_ACCESS_PROGRAMS[cyberAccessProgram]]
+            : []),
           "--output-schema",
           schemaPath,
           "--output-last-message",

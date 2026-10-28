@@ -3,6 +3,7 @@ import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
 import { HttpClient, HttpClientRequest } from "effect/http";
 import { mapCodexModelCapabilities } from "./CodexProvider.ts";
+import { codexAccessProgramOptionDescriptors } from "../codexModelOptions.ts";
 
 export class ChatGptCatalogError extends Schema.TaggedError<ChatGptCatalogError>()(
   "ChatGptCatalogError",
@@ -15,6 +16,9 @@ const Catalog = Schema.Struct({
       slug: Schema.NonEmptyString,
       display_name: Schema.NonEmptyString,
       visibility: Schema.String,
+      available_access_programs: Schema.optional(
+        Schema.NullOr(Schema.Struct({ cyber: Schema.Array(Schema.String) })),
+      ),
       default_reasoning_level: Schema.optionalKey(Schema.NullOr(Schema.NonEmptyString)),
       supported_reasoning_levels: Schema.optionalKey(
         Schema.NullOr(
@@ -63,9 +67,31 @@ export const chatGptModels = Effect.fn("chatGptModels")(function* (
               })),
             })
           : null;
+      const capabilities = native?.capabilities ?? catalogCapabilities;
+      const accessPrograms = codexAccessProgramOptionDescriptors(
+        model.available_access_programs?.cyber.map((program) =>
+          program === "daybreak_blue"
+            ? "daybreakBlue"
+            : program === "daybreak_red"
+              ? "daybreakRed"
+              : program,
+        ),
+      );
       return {
         ...native,
-        capabilities: native?.capabilities ?? catalogCapabilities,
+        capabilities:
+          capabilities || accessPrograms.length > 0
+            ? {
+                ...capabilities,
+                // The fresh account catalog owns entitlements, even if native metadata is cached.
+                optionDescriptors: [
+                  ...(capabilities?.optionDescriptors ?? []).filter(
+                    (option) => option.id !== "cyberAccessProgram",
+                  ),
+                  ...accessPrograms,
+                ],
+              }
+            : null,
         slug: model.slug,
         name: model.display_name,
         isCustom: false,

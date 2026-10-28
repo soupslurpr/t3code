@@ -4,6 +4,7 @@ import { ProviderInstanceId, type ModelCapabilities } from "@t3tools/contracts";
 import { createModelSelection } from "@t3tools/shared/model";
 
 import {
+  codexAccessProgramOptionDescriptors,
   resolveCodexModelSettings,
   getCodexReasoningEffortOptionValue,
   getCodexServiceTierOptionValue,
@@ -73,6 +74,7 @@ it("resolves explicit resets without rewriting qualified wire model ids", () => 
     model: "gpt-6-astra",
     effort: "max",
     serviceTier: null,
+    cyberAccessProgram: null,
   });
   for (const model of ["gpt-6-astra", "openai.gpt-6-astra"]) {
     const selection = createModelSelection(ProviderInstanceId.make("account"), model, [
@@ -83,18 +85,20 @@ it("resolves explicit resets without rewriting qualified wire model ids", () => 
       model,
       effort: "low",
       serviceTier: "fast",
+      cyberAccessProgram: null,
     });
     assert.deepEqual(resolveCodexModelSettings(createModelSelection(selection.instanceId, model)), {
       model,
       effort: "max",
       serviceTier: null,
+      cyberAccessProgram: null,
     });
   }
   assert.deepEqual(
     resolveCodexModelSettings(
       createModelSelection(ProviderInstanceId.make("account"), "custom-gpt-6-astra"),
     ),
-    { model: "custom-gpt-6-astra", effort: null, serviceTier: null },
+    { model: "custom-gpt-6-astra", effort: null, serviceTier: null, cyberAccessProgram: null },
   );
 });
 
@@ -105,6 +109,25 @@ it("preserves selected custom model ids that collide with legacy aliases", () =>
       model,
       effort: null,
       serviceTier: null,
+      cyberAccessProgram: null,
     });
   }
+});
+
+it("exposes an explicit standard choice for standard-only models", () => {
+  const optionIds = (programs: Parameters<typeof codexAccessProgramOptionDescriptors>[0]) => {
+    const [descriptor] = codexAccessProgramOptionDescriptors(programs);
+    return descriptor?.type === "select" ? descriptor.options.map((option) => option.id) : [];
+  };
+  assert.deepEqual(optionIds(["standard"]), ["automatic", "standard"]);
+  assert.deepEqual(optionIds(["standard", "daybreakBlue"]), [
+    "automatic",
+    "standard",
+    "daybreakBlue",
+  ]);
+  assert.deepEqual(optionIds(["daybreakRed"]), ["automatic", "daybreakRed"]);
+  assert.deepEqual(optionIds([]), []);
+  assert.deepEqual(optionIds(null), []);
+  assert.deepEqual(optionIds(undefined), []);
+  assert.deepEqual(optionIds(["unknown-program"]), []);
 });

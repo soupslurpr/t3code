@@ -113,3 +113,102 @@ it.effect("does not present a cached catalog as account entitlements when discov
     assert.strictEqual(error._tag, "ChatGptCatalogError");
   }),
 );
+
+it.effect("uses fresh account access programs instead of cached native entitlements", () =>
+  Effect.gen(function* () {
+    const http = HttpClient.make((request) =>
+      Effect.succeed(
+        HttpClientResponse.fromWeb(
+          request,
+          new Response(
+            JSON.stringify({
+              models: [
+                {
+                  slug: "blue",
+                  display_name: "Blue eligible",
+                  visibility: "list",
+                  available_access_programs: { cyber: ["standard", "daybreak_blue"] },
+                },
+                {
+                  slug: "red",
+                  display_name: "Red eligible",
+                  visibility: "list",
+                  available_access_programs: { cyber: ["daybreak_red"] },
+                  default_reasoning_level: "low",
+                  supported_reasoning_levels: [
+                    { effort: "low", description: "Fast" },
+                    { effort: "high", description: "Deep" },
+                  ],
+                },
+                {
+                  slug: "standard",
+                  display_name: "Standard only",
+                  visibility: "list",
+                  available_access_programs: { cyber: ["standard"] },
+                },
+                { slug: "missing", display_name: "Unspecified", visibility: "list" },
+                {
+                  slug: "null",
+                  display_name: "Null",
+                  visibility: "list",
+                  available_access_programs: null,
+                },
+              ],
+            }),
+          ),
+        ),
+      ),
+    );
+    const cached = ["blue", "standard", "missing", "null"].map((slug) => ({
+      slug,
+      name: slug,
+      isCustom: false,
+      capabilities: {
+        optionDescriptors: [
+          {
+            id: "cyberAccessProgram",
+            label: "Access program",
+            type: "select" as const,
+            currentValue: "automatic",
+            options: [
+              { id: "automatic", label: "Automatic", isDefault: true },
+              { id: "standard", label: "Standard" },
+              { id: "daybreakRed", label: "Daybreak Red" },
+            ],
+          },
+        ],
+        promptCache: { minimumLifetimeMs: 300_000, source: "provider-documented" as const },
+      },
+    }));
+    const models = yield* chatGptModels("account", cached).pipe(
+      Effect.provideService(HttpClient.HttpClient, http),
+    );
+    assert.deepEqual(
+      models.map((model) => {
+        const descriptor = model.capabilities?.optionDescriptors?.find(
+          (option) => option.id === "cyberAccessProgram",
+        );
+        return [
+          model.slug,
+          descriptor?.type === "select" ? descriptor.options.map((choice) => choice.id) : [],
+        ];
+      }),
+      [
+        ["blue", ["automatic", "standard", "daybreakBlue"]],
+        ["red", ["automatic", "daybreakRed"]],
+        ["standard", ["automatic", "standard"]],
+        ["missing", []],
+        ["null", []],
+      ],
+    );
+    assert.deepEqual(models[0]?.capabilities?.promptCache, cached[0]?.capabilities.promptCache);
+    const reasoning = models[1]?.capabilities?.optionDescriptors?.find(
+      (option) => option.id === "reasoningEffort",
+    );
+    assert.equal(reasoning?.currentValue, "low");
+    assert.deepEqual(
+      reasoning?.type === "select" ? reasoning.options.map((choice) => choice.id) : [],
+      ["low", "high"],
+    );
+  }),
+);
