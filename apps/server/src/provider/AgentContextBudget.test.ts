@@ -1,3 +1,4 @@
+import { ComputerObservationStore } from "../computer/ComputerObservationStore.ts";
 import { ThreadWorkspaceQuery } from "../orchestration-v2/ThreadWorkspaceQuery.ts";
 import { AgentDesktopTransferService } from "../agentDesktop/AgentDesktopTransferService.ts";
 import { ThreadMonitorService } from "../threadMonitor/ThreadMonitorService.ts";
@@ -66,6 +67,7 @@ const toolHandlerServices = Layer.mergeAll(
   Layer.mock(PeerForwarding)({}),
   Layer.mock(PeerLinkRequests)({}),
   Layer.mock(PeerLinks)({}),
+  Layer.mock(ComputerObservationStore)({}),
   Layer.mock(PreviewAutomationBroker)({}),
   Layer.mock(PreviewBrowser)({}),
   Layer.mock(PreviewManager)({}),

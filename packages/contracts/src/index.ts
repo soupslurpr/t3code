@@ -62,6 +62,7 @@ export * from "./preview.ts";
 export * from "./previewAutomation.ts";
 export * from "./previewCapture.ts";
 export * from "./computerAutomation.ts";
+export * from "./computerObservation.ts";
 export * from "./agentDesktop.ts";
 export * from "./threadMonitor.ts";
 export * from "./usage.ts";
