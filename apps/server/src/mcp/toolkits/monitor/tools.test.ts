@@ -4,7 +4,7 @@ import * as Context from "effect/Context";
 import { advertisedJsonSchema } from "../../advertisedJsonSchema.ts";
 import { Tool } from "effect/ai";
 
-import { MonitorToolkit } from "./tools.ts";
+import { MonitorImageToolkit, MonitorStandardToolkit, MonitorToolkit } from "./tools.ts";
 
 it("exports bounded object schemas and provider-neutral lifecycle tools", () => {
   const names = Object.keys(MonitorToolkit.tools);
@@ -19,6 +19,13 @@ it("exports bounded object schemas and provider-neutral lifecycle tools", () => 
     "computer_watch_inspect",
     "computer_watch_update",
   ]);
+  expect(Object.keys(MonitorImageToolkit.tools)).toEqual([
+    "computer_watch_start",
+    "computer_watch_inspect",
+    "computer_watch_update",
+  ]);
+  expect(Object.keys(MonitorStandardToolkit.tools)).not.toContain("computer_watch_start");
+  expect(Object.keys(MonitorStandardToolkit.tools)).not.toContain("computer_watch_update");
 
   for (const tool of Object.values(MonitorToolkit.tools)) {
     const schema = Tool.getJsonSchema(tool) as {
