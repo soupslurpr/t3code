@@ -19,7 +19,7 @@ import {
   sanitizeThreadTitle,
 } from "./textGenerationUtils.ts";
 
-export type Operation = keyof ProviderTextGeneration;
+export type Operation = Exclude<keyof ProviderTextGeneration, "evaluateImageCondition">;
 
 export interface Request<S extends Schema.Top> {
   readonly operation: Operation;
