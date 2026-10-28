@@ -539,3 +539,43 @@ describe("presentPendingBackgroundWork", () => {
     expect(presentation?.items[0]?.label).toBe("mv a.ts b.ts\ncat > b.ts <<'EOF'\nexport {};\nEOF");
   });
 });
+
+it("names one monitor and counts multiple conditions without losing their labels", () => {
+  const tasks = [
+    { taskId: "build", kind: "monitor" as const, description: "Build finishes" },
+    { taskId: "checks", kind: "monitor" as const, description: "PR checks pass" },
+  ];
+  expect(presentPendingBackgroundWork(tasks.slice(0, 1))?.title).toBe("Monitoring: Build finishes");
+  const presentation = presentPendingBackgroundWork([...tasks, ...tasks]);
+  expect(presentation?.title).toBe("Monitoring 2 conditions");
+  expect(presentation?.items.map((item) => item.label)).toEqual([
+    "Build finishes",
+    "PR checks pass",
+  ]);
+});
+
+it("does not count the monitor remainder as one condition in monitor-only or mixed work", () => {
+  const monitors = [
+    { taskId: "first", kind: "monitor" as const, description: "Build finishes" },
+    {
+      taskId: "thread-monitors:remainder",
+      kind: "monitor" as const,
+      description: "2 more monitors",
+    },
+  ];
+  const only = presentPendingBackgroundWork(monitors);
+  expect(only?.title).toBe("Monitoring");
+  expect(only?.items.map((item) => item.label)).toEqual(["Build finishes", "2 more monitors"]);
+  expect(
+    presentPendingBackgroundWork([
+      ...monitors,
+      { taskId: "build", kind: "command", awaited: true, description: "Build" },
+    ])?.title,
+  ).toBe("Waiting on background work");
+  expect(
+    presentPendingBackgroundWork([
+      ...monitors,
+      { taskId: "watch", kind: "command", description: "Watch" },
+    ])?.title,
+  ).toBe("Running background work");
+});

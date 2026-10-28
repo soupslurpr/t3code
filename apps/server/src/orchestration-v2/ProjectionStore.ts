@@ -1,4 +1,4 @@
-import { pendingGuestMessageCount } from "@t3tools/contracts";
+import { pendingGuestMessageCount, THREAD_MONITOR_REMAINDER_TASK_ID } from "@t3tools/contracts";
 import { applyThreadPullRequestLinkUpdate } from "../sourceControl/threadPullRequests.ts";
 import { projectTurnItemForWire } from "./WireProjection.ts";
 import * as Stream from "effect/Stream";
@@ -53,6 +53,7 @@ import {
   OrchestrationV2ContextTransferJson as OrchestrationV2ContextTransferJsonSchema,
   OrchestrationV2ConversationMessageJson as OrchestrationV2ConversationMessageJsonSchema,
   OrchestrationV2ExecutionNodeJson as OrchestrationV2ExecutionNodeJsonSchema,
+  OrchestrationV2PendingBackgroundTask,
   OrchestrationV2PlanArtifact as OrchestrationV2PlanArtifactSchema,
   OrchestrationV2ProviderSessionJson as OrchestrationV2ProviderSessionJsonSchema,
   OrchestrationV2ProviderThreadJson as OrchestrationV2ProviderThreadJsonSchema,
@@ -953,7 +954,8 @@ type ShellPendingTurnItemRow = PayloadRow & {
 };
 
 type ShellThreadRow = {
-  readonly has_active_monitors: number;
+  readonly active_monitors_json: string;
+  readonly active_monitor_count: number;
   readonly thread_id: string;
   readonly payload_json: string;
   readonly forked_from_run_source_thread_id: string | null;
@@ -1080,6 +1082,9 @@ const encodeContextTransferPayload = Schema.encodeEffect(
 
 const decodeThreadPayload = Schema.decodeUnknownEffect(
   Schema.fromJsonString(OrchestrationV2AppThreadJsonSchema),
+);
+const decodeMonitorTasks = Schema.decodeUnknownEffect(
+  Schema.fromJsonString(Schema.Array(OrchestrationV2PendingBackgroundTask)),
 );
 const decodeRunPayload = Schema.decodeUnknownEffect(
   Schema.fromJsonString(OrchestrationV2RunJsonSchema),
@@ -1823,17 +1828,7 @@ function shellFromState(input: {
     latestUserMessageAt: input.state.latestUserMessageAt,
     latestUserAuthoredMessageAt: input.state.latestUserAuthoredMessageAt,
     hasActionableProposedPlan: input.state.hasActionableProposedPlan,
-    pendingBackgroundTasks:
-      input.state.backgroundLiveness === "monitoring" && input.state.activeRunId === null
-        ? [
-            ...(input.state.pendingBackgroundTasks ?? []),
-            {
-              taskId: `thread-monitors:${input.state.thread.id}`,
-              kind: "monitor",
-              description: "Durable monitors",
-            },
-          ]
-        : input.state.pendingBackgroundTasks,
+    pendingBackgroundTasks: input.state.pendingBackgroundTasks,
     backgroundLiveness: input.state.backgroundLiveness ?? null,
     providerInstanceHistory: input.state.providerInstanceHistory,
     goal: input.state.goal,
@@ -5907,10 +5902,22 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
     ) =>
       sql<ShellThreadRow>`
             SELECT
-              EXISTS (
-                SELECT 1 FROM thread_monitors m
+              CASE WHEN active.run_id IS NULL THEN (
+                SELECT json_group_array(json_object(
+                  'taskId', 'thread-monitor:' || m.monitor_id,
+                  'kind', 'monitor',
+                  'description', m.label
+                ) ORDER BY m.created_at, m.monitor_id)
+                FROM (
+                  SELECT monitor_id, label, created_at FROM thread_monitors
+                  WHERE thread_id = t.thread_id AND status IN ('active', 'triggered')
+                  ORDER BY created_at, monitor_id LIMIT 100
+                ) m
+              ) ELSE '[]' END AS active_monitors_json,
+              (
+                SELECT COUNT(*) FROM thread_monitors m
                 WHERE m.thread_id = t.thread_id AND m.status IN ('active', 'triggered')
-              ) AS has_active_monitors,
+              ) AS active_monitor_count,
               t.thread_id,
               t.payload_json,
               CASE
@@ -6567,6 +6574,15 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
                 : DateTime.makeUnsafe(row.blocking_run_completed_at);
           }
         }
+        const monitorTasks = [...(yield* decodeMonitorTasks(row.active_monitors_json))];
+        const remainingMonitors = row.active_monitor_count - monitorTasks.length;
+        if (row.active_run_id === null && remainingMonitors > 0) {
+          monitorTasks.push({
+            taskId: THREAD_MONITOR_REMAINDER_TASK_ID,
+            kind: "monitor",
+            description: `${remainingMonitors} more ${remainingMonitors === 1 ? "monitor" : "monitors"}`,
+          });
+        }
         const pendingBackgroundTasks = [
           ...derivePendingBackgroundWork({
             latestRun:
@@ -6583,6 +6599,7 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
             hasActiveRun: row.active_run_id !== null,
             pullRequests: thread.pullRequests,
           }),
+          ...(row.active_run_id === null ? monitorTasks : []),
         ];
         return {
           thread,
@@ -6625,7 +6642,7 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
               ? null
               : DateTime.makeUnsafe(row.latest_user_authored_message_at),
           hasActionableProposedPlan: row.has_actionable_proposed_plan === 1,
-          backgroundLiveness: row.has_active_monitors === 1 ? "monitoring" : null,
+          backgroundLiveness: row.active_monitor_count > 0 ? "monitoring" : null,
           pendingBackgroundTasks,
           providerInstanceHistory: providerInstanceHistoryForShell({
             threadId: thread.id,
@@ -6851,6 +6868,11 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
               SELECT 1 FROM orchestration_v2_projection_provider_threads provider_thread
               WHERE provider_thread.thread_id = t.thread_id
                 AND json_array_length(provider_thread.payload_json, '$.pendingBackgroundTasks') > 0
+            )
+            OR EXISTS (
+              SELECT 1 FROM thread_monitors monitor
+              WHERE monitor.thread_id = t.thread_id
+                AND monitor.status IN ('active', 'triggered')
             )
             OR EXISTS (
               SELECT 1 FROM json_each(t.payload_json, '$.pullRequests') link

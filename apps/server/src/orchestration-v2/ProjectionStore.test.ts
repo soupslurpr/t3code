@@ -6915,6 +6915,189 @@ it.layer(layerTest)("ProjectionStoreV2", (it) => {
     }),
   );
 
+  it.effect(
+    "projects each outstanding monitor by name across snapshots and live shell updates",
+    () =>
+      Effect.gen(function* () {
+        const store = yield* ProjectionStore.ProjectionStoreV2;
+        const sql = yield* SqlClient.SqlClient;
+        const threadId = ThreadId.make("thread:monitor-labels");
+        const now = yield* DateTime.now;
+        const nowIso = DateTime.formatIso(now);
+        yield* store.apply({
+          id: EventId.make("event:monitor-labels:thread"),
+          type: "thread.created",
+          threadId,
+          occurredAt: now,
+          payload: {
+            createdBy: "user",
+            creationSource: "web",
+            id: threadId,
+            projectId: ProjectId.make("project:monitor-labels"),
+            title: "Watch the build",
+            providerInstanceId,
+            modelSelection,
+            runtimeMode: "full-access",
+            interactionMode: "default",
+            branch: null,
+            worktreePath: null,
+            activeProviderThreadId: null,
+            lineage: {
+              parentThreadId: ThreadId.make("thread:monitor-parent"),
+              relationshipToParent: "subagent",
+              rootThreadId: ThreadId.make("thread:monitor-parent"),
+            },
+            forkedFrom: null,
+            createdAt: now,
+            updatedAt: now,
+            archivedAt: null,
+            settledOverride: null,
+            settledAt: null,
+            lastVisitedAt: null,
+            deletedAt: null,
+          },
+        });
+        for (const [id, status, label] of [
+          ["a-build", "active", 'Build "release" finishes'],
+          ["b-checks", "triggered", "PR checks pass"],
+          ["c-cancelled", "cancelled", "Old wait"],
+          ["d-delivered", "delivered", "Finished wait"],
+          ["e-failed", "failed", "Failed wait"],
+        ]) {
+          yield* sql`
+          INSERT INTO thread_monitors (
+            monitor_id, thread_id, label, condition_type, continuation_mode,
+            status, created_at, updated_at
+          ) VALUES (${id}, ${threadId}, ${label}, 'signal', 'record-only',
+            ${status}, ${nowIso}, ${nowIso})
+        `;
+          yield* assertShellIndexCoversShells();
+          assert.isTrue(
+            (yield* store.listActiveShellIndex()).find((row) => row.id === threadId)?.mayBeLive,
+          );
+        }
+        const expected = [
+          {
+            taskId: "thread-monitor:a-build",
+            kind: "monitor" as const,
+            description: 'Build "release" finishes',
+          },
+          {
+            taskId: "thread-monitor:b-checks",
+            kind: "monitor" as const,
+            description: "PR checks pass",
+          },
+        ];
+        const snapshot = (yield* store.getShellSnapshot()).threads.find((t) => t.id === threadId);
+        const live = yield* store.getThreadShell(threadId);
+        assert.deepEqual(snapshot?.pendingBackgroundTasks, expected);
+        assert.deepEqual(live?.pendingBackgroundTasks, expected);
+        assert.equal(live?.backgroundLiveness, "monitoring");
+
+        const runId = RunId.make("run:monitor-labels");
+        yield* store.apply({
+          id: EventId.make("event:monitor-labels:run"),
+          type: "run.created",
+          threadId,
+          runId,
+          driver,
+          providerInstanceId,
+          occurredAt: now,
+          payload: {
+            id: runId,
+            threadId,
+            ordinal: 1,
+            providerInstanceId,
+            modelSelection,
+            providerThreadId: null,
+            userMessageId: MessageId.make("message:monitor-labels"),
+            rootNodeId: null,
+            activeAttemptId: null,
+            status: "running",
+            requestedAt: now,
+            startedAt: now,
+            completedAt: null,
+            checkpointId: null,
+            contextHandoffId: null,
+          },
+        });
+        const working = yield* store.getThreadShell(threadId);
+        assert.deepEqual(working?.pendingBackgroundTasks, []);
+        assert.equal(working?.backgroundLiveness, "monitoring");
+
+        const activeRun = (yield* store.getThreadProjection(threadId)).runs[0]!;
+        yield* store.apply({
+          id: EventId.make("event:monitor-labels:completed"),
+          type: "run.updated",
+          threadId,
+          runId,
+          occurredAt: now,
+          payload: { ...activeRun, status: "completed", completedAt: now },
+        });
+        yield* sql`UPDATE thread_monitors SET status = 'cancelled'
+        WHERE monitor_id = 'a-build'`;
+        const remaining = yield* store.getThreadShell(threadId);
+        assert.deepEqual(remaining?.pendingBackgroundTasks, expected.slice(1));
+        yield* assertShellIndexCoversShells();
+        assert.isTrue(
+          (yield* store.listActiveShellIndex()).find((row) => row.id === threadId)?.mayBeLive,
+        );
+        yield* sql`UPDATE thread_monitors SET status = 'delivered'
+        WHERE monitor_id = 'b-checks'`;
+        const finished = yield* store.getThreadShell(threadId);
+        assert.deepEqual(finished?.pendingBackgroundTasks, []);
+        assert.equal(finished?.backgroundLiveness, null);
+        yield* assertShellIndexCoversShells();
+        assert.isFalse(
+          (yield* store.listActiveShellIndex()).find((row) => row.id === threadId)?.mayBeLive,
+        );
+
+        for (let index = 0; index < 102; index += 1) {
+          const id = `bounded:${String(index).padStart(3, "0")}`;
+          yield* sql`
+            INSERT INTO thread_monitors (
+              monitor_id, thread_id, label, condition_type, continuation_mode,
+              status, created_at, updated_at
+            ) VALUES (${id}, ${threadId}, ${id + "x".repeat(480)}, 'signal', 'record-only',
+              'active', ${nowIso}, ${nowIso})
+          `;
+        }
+        const bounded = yield* store.getThreadShell(threadId);
+        const boundedTasks = bounded?.pendingBackgroundTasks ?? [];
+        assert.lengthOf(boundedTasks, 101);
+        assert.equal(boundedTasks[0]?.taskId, "thread-monitor:bounded:000");
+        assert.equal(boundedTasks[99]?.taskId, "thread-monitor:bounded:099");
+        assert.deepEqual(boundedTasks[100], {
+          taskId: "thread-monitors:remainder",
+          kind: "monitor",
+          description: "2 more monitors",
+        });
+        assert.equal(bounded?.backgroundLiveness, "monitoring");
+        assert.deepEqual(
+          (yield* store.getShellSnapshot()).threads.find((t) => t.id === threadId)
+            ?.pendingBackgroundTasks,
+          bounded?.pendingBackgroundTasks,
+        );
+        yield* assertShellIndexCoversShells();
+
+        yield* sql`UPDATE thread_monitors SET status = 'cancelled'
+          WHERE monitor_id IN ('bounded:000', 'bounded:001')`;
+        const uncapped = yield* store.getThreadShell(threadId);
+        const uncappedTasks = uncapped?.pendingBackgroundTasks ?? [];
+        assert.lengthOf(uncappedTasks, 100);
+        assert.equal(uncappedTasks[0]?.taskId, "thread-monitor:bounded:002");
+        assert.equal(uncappedTasks[99]?.taskId, "thread-monitor:bounded:101");
+        yield* sql`UPDATE thread_monitors SET status = 'delivered' WHERE thread_id = ${threadId}`;
+        const allFinished = yield* store.getThreadShell(threadId);
+        assert.deepEqual(allFinished?.pendingBackgroundTasks, []);
+        assert.equal(allFinished?.backgroundLiveness, null);
+        yield* assertShellIndexCoversShells();
+        assert.isFalse(
+          (yield* store.listActiveShellIndex()).find((row) => row.id === threadId)?.mayBeLive,
+        );
+      }),
+  );
+
   it.effect("dates a completion released by held background work at the release", () =>
     Effect.gen(function* () {
       const store = yield* ProjectionStore.ProjectionStoreV2;
