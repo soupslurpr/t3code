@@ -202,6 +202,13 @@ keeping the agent's view available. The pause lasts until you choose
 the pause without restoring the agent; closing or hiding supervision does
 the same. An agent must request control again after those releases.
 
+On mobile, open **Settings → User Desktops → Supervise**. Live supports
+touch input and a text field after taking control. Leaving the screen,
+backgrounding the app, or losing the environment connection releases
+transient access. Reopening supervision starts passively again. Taking control
+pauses agent input; **Return to agent** explicitly restores it when available.
+**Release control** ends human control without restoring the agent.
+
 ## Agent Tools
 
 The desktop host exposes tools for:

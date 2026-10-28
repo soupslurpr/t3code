@@ -116,6 +116,8 @@ import {
   ScheduledTaskBranchPickerRouteScreen,
 } from "./features/settings/ScheduledTaskPickerScreens";
 import { SettingsKeyboardRouteScreen } from "./features/settings/SettingsKeyboardRouteScreen";
+import { SettingsUserDesktopsRouteScreen } from "./features/settings/SettingsUserDesktopsRouteScreen";
+import { UserDesktopSupervisionRouteScreen } from "./features/settings/UserDesktopSupervisionRouteScreen";
 import { SettingsLegalRouteScreen } from "./features/settings/SettingsLegalRouteScreen";
 import { SettingsMicrophoneRouteScreen } from "./features/settings/SettingsMicrophoneRouteScreen";
 import {
@@ -306,6 +308,11 @@ const SETTINGS_SCREENS = {
     screen: SettingsAboutRouteScreen,
     linking: "settings/about",
     options: { ...SETTINGS_PAGE_OPTIONS, title: "About" },
+  }),
+  SettingsUserDesktops: createNativeStackScreen({
+    screen: SettingsUserDesktopsRouteScreen,
+    linking: "settings/user-desktops",
+    options: { ...SETTINGS_PAGE_OPTIONS, title: "User desktops" },
   }),
   SettingsEnvironmentNew: createNativeStackScreen({
     screen: ConnectionsNewRouteScreen,
@@ -961,6 +968,10 @@ const RootStackConfig = createWorkspaceStackNavigator({
       },
     }),
     ...SETTINGS_SCREENS,
+    UserDesktopSupervision: createNativeStackScreen({
+      screen: UserDesktopSupervisionRouteScreen,
+      options: { ...SOLID_HEADER_OPTIONS, presentation: "fullScreenModal", title: "User Desktop" },
+    }),
     SettingsLegal: createNativeStackScreen({
       screen: SettingsLegalRouteScreen,
       linking: "settings/legal",
