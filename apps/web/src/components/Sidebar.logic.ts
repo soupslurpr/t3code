@@ -670,6 +670,7 @@ export interface ThreadStatusPill {
     | "Failed"
     | "Pending Approval"
     | "Awaiting Input"
+    | "Monitoring"
     | "Guest Request"
     | "Waiting"
     | "Plan Ready";
@@ -692,6 +693,7 @@ type ThreadStatusInput = Pick<
   lastVisitedAt?: string | null | undefined;
   pendingBackgroundTasks?: SidebarThreadSummary["pendingBackgroundTasks"] | undefined;
   blockedOnThreadWait?: boolean | undefined;
+  backgroundLiveness?: SidebarThreadSummary["backgroundLiveness"];
 };
 
 /**
@@ -842,6 +844,7 @@ export type SidebarThreadStatus =
   | "input"
   | "request"
   | "working"
+  | "monitoring"
   | "waiting"
   | "failed"
   | "limited"
@@ -862,7 +865,8 @@ export function shouldRecedeSidebarThread(input: {
   ) {
     return false;
   }
-  if (input.status === "working" || input.status === "waiting") return true;
+  if (input.status === "working" || input.status === "waiting" || input.status === "monitoring")
+    return true;
   if (input.status === "ready" || input.status === "approval") {
     return !input.isUnread && !input.isWoke;
   }
@@ -877,6 +881,7 @@ type SidebarThreadStatusInput = Pick<
   | "pendingGuestMessageCount"
   | "runtime"
   | "blockedOnThreadWait"
+  | "backgroundLiveness"
 >;
 
 export function resolveSidebarThreadStatus(thread: SidebarThreadStatusInput): SidebarThreadStatus {
@@ -899,12 +904,11 @@ export function resolveSidebarThreadStatus(thread: SidebarThreadStatusInput): Si
   ) {
     return "working";
   }
-  if (thread.runtime?.status === "idle") {
-    return "waiting";
-  }
   if (thread.runtime?.status === "failed") {
     return thread.runtime.lastErrorClass === "usage_limit" ? "limited" : "failed";
   }
+  if (thread.backgroundLiveness === "monitoring") return "monitoring";
+  if (thread.runtime?.status === "idle") return "waiting";
   return "ready";
 }
 
@@ -991,6 +995,7 @@ export type SidebarV2TopStatusKind =
   | "limited"
   | "input"
   | "request"
+  | "monitoring"
   | "waiting"
   | "woke"
   | "working";
@@ -1183,6 +1188,13 @@ export function resolveThreadStatusPill(input: {
       pulse: false,
     };
   }
+  if (thread.backgroundLiveness === "monitoring")
+    return {
+      label: "Monitoring",
+      colorClass: "text-sidebar-muted-foreground",
+      dotClass: "bg-sidebar-muted-foreground",
+      pulse: false,
+    };
 
   const hasPlanReadyPrompt =
     !thread.hasPendingUserInput &&

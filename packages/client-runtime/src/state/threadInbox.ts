@@ -6,9 +6,11 @@ import { effectiveSnoozed } from "./threadSettled.ts";
 type WorkingThreadInput = Pick<
   EnvironmentThreadShell,
   | "hasActionableProposedPlan"
+  | "backgroundLiveness"
   | "hasPendingApprovals"
   | "hasPendingUserInput"
   | "pendingSubagentRequest"
+  | "pendingGuestMessageCount"
   | "interactionMode"
   | "latestRun"
   | "runtime"
@@ -16,8 +18,16 @@ type WorkingThreadInput = Pick<
 
 export function isThreadWorking(thread: WorkingThreadInput): boolean {
   if (thread.hasPendingApprovals || thread.hasPendingUserInput) return false;
-  if (thread.pendingSubagentRequest != null) return false;
-  if (!threadRuntimeIsActive(thread.runtime) && thread.runtime?.status !== "idle") return false;
+  if (thread.pendingSubagentRequest != null || (thread.pendingGuestMessageCount ?? 0) > 0)
+    return false;
+  if (thread.runtime?.status === "failed") return false;
+  if (
+    !threadRuntimeIsActive(thread.runtime) &&
+    thread.runtime?.status !== "idle" &&
+    thread.backgroundLiveness !== "monitoring"
+  )
+    return false;
+  // A plan prompt outranks lingering background work: the user has to act on it.
   const run = thread.latestRun;
   const runSettled =
     run !== null &&
