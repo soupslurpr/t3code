@@ -85,10 +85,14 @@ port. Visibility determines whether the host bind is loopback, the active Tailsc
 interfaces. Routes persist with the desktop and are restored on start. Packet capture is a separate,
 bounded operation that returns a private artifact only after an explicit request.
 
-## Verification
+## Transfers
 
-Focused unit tests cover contracts, admission, routing, input conversion, private framebuffer
-decoding, prerequisite remedies, pinned download validation, and image generation. The retained
-AppImage smoke test can require fresh image provisioning and then exercises prerequisite reporting,
-guest commands, exact Unicode files, network access, screenshots, semantic targets, graphical input,
-human takeover, checkpoint, live clone, park/resume, and cleanup against a real KVM guest.
+Transfer control and bytes remain inside the environment server. Workspace paths
+resolve through that environment's V2 thread worktree; a remote renderer cannot
+substitute its own workspace. Server-owned transfer fibers outlive an MCP request
+but end with the service scope. Cancellation removes temporary archives.
+
+Node and the packaged Python helper share a versioned bundle format. Both validate
+paths and link targets before installation. The manager streams bounded chunks
+between a private local archive and the guest channel, and verifies the completed
+archive before installation.

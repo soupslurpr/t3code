@@ -1,3 +1,5 @@
+// @effect-diagnostics nodeBuiltinImport:off - QEMU transfers require positioned Node file I/O.
+import * as NodeFSP from "node:fs/promises";
 import {
   AgentDesktop,
   type AgentDesktopAcquireInput,
@@ -5,6 +7,7 @@ import {
   type AgentDesktopCommandResult,
   type AgentDesktopCreatePortRouteInput,
   type AgentDesktopId,
+  type AgentDesktopTransfer,
   type AgentDesktopInspectInput,
   AgentDesktopLifecycleState,
   type AgentDesktopList,
@@ -38,6 +41,7 @@ import * as Clock from "effect/Clock";
 import * as Context from "effect/Context";
 import * as Crypto from "effect/Crypto";
 import * as DateTime from "effect/DateTime";
+import * as Deferred from "effect/Deferred";
 import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
@@ -103,7 +107,14 @@ const GUEST_INPUT_RESOURCE = "agent-desktop/input-helper.py";
 const GUEST_INPUT_DIRECTORY = "/run/t3-agent-input";
 const GUEST_INPUT_PATH = `${GUEST_INPUT_DIRECTORY}/input-helper.py`;
 const GUEST_INPUT_SERVICE_PATH = "/run/systemd/system/t3-agent-input.service";
+const GUEST_TRANSFER_RESOURCE = "agent-desktop/transfer-helper.py";
+const GUEST_TRANSFER_DIRECTORY = "/run/t3-agent-desktop/transfers";
+const GUEST_TRANSFER_CHUNK_BYTES = 8 * 1024 * 1024;
+const GUEST_TRANSFER_TIMEOUT_MS = 6 * 60 * 60 * 1_000;
+const GUEST_TRANSFER_OUTPUT_BYTES = 64 * 1024;
+
 const GUEST_ACCESSIBILITY_DIRECTORY = "/run/t3-agent-desktop";
+const GUEST_TRANSFER_HELPER_PATH = `${GUEST_ACCESSIBILITY_DIRECTORY}/transfer-helper.py`;
 const GUEST_ACCESSIBILITY_PATH = `${GUEST_ACCESSIBILITY_DIRECTORY}/accessibility.js`;
 const GUEST_DESKTOP_USER_PATH = "/etc/t3-agent-desktop-user";
 const GUEST_INTEGRATION_TIMEOUT_MS = 10_000;
@@ -118,7 +129,24 @@ Restart=on-failure
 RestartSec=100ms
 `;
 
-/** Validates padded RFC 4648 base64 without using the JavaScript regex stack. */
+/** Formats a short causal chain for private transport diagnostics. */
+function transferCauseDetail(cause: unknown): string {
+  const details: string[] = [];
+  const seen = new Set<unknown>();
+  let current = cause;
+  while (current !== undefined && current !== null && !seen.has(current) && details.length < 4) {
+    seen.add(current);
+    details.push(
+      current instanceof Error ? `${current.name}: ${current.message}` : String(current),
+    );
+    current =
+      typeof current === "object" && "cause" in current
+        ? (current as { readonly cause?: unknown }).cause
+        : undefined;
+  }
+  return details.join(": ").slice(0, 512);
+}
+
 function isCanonicalBase64(value: string): boolean {
   if (value.length % 4 !== 0) return false;
   const paddingLength = value.endsWith("==") ? 2 : value.endsWith("=") ? 1 : 0;
@@ -328,6 +356,34 @@ const decodeGuestAccessibilityProbe = Schema.decodeUnknownEffect(GuestAccessibil
 const decodeGuestTextInsertionResult = Schema.decodeUnknownEffect(GuestTextInsertionResult);
 
 /** Reports a manager-level targeting, admission, or lifecycle failure. */
+const GuestTransferTree = Schema.Struct({
+  rootType: Schema.Literals(["file", "directory", "symlink"]),
+  fileCount: Schema.Int.check(Schema.isGreaterThanOrEqualTo(0)),
+  directoryCount: Schema.Int.check(Schema.isGreaterThanOrEqualTo(0)),
+  symlinkCount: Schema.Int.check(Schema.isGreaterThanOrEqualTo(0)),
+  logicalBytes: Schema.Number.check(Schema.isGreaterThanOrEqualTo(0)),
+});
+const GuestTransferResult = Schema.Struct({
+  ...GuestTransferTree.fields,
+  wireBytes: Schema.Number.check(Schema.isGreaterThanOrEqualTo(0)),
+  compression: Schema.Literals(["none", "gzip"]),
+  sha256: Schema.String.check(Schema.isPattern(/^[a-f0-9]{64}$/)),
+});
+const decodeGuestTransferResult = Schema.decodeEffect(Schema.fromJsonString(GuestTransferResult));
+const GuestTransferFailure = Schema.Struct({
+  code: Schema.Literals([
+    "source-unavailable",
+    "invalid-destination",
+    "destination-exists",
+    "destination-type-mismatch",
+    "unsupported-entry",
+    "integrity-failed",
+    "resource-exhausted",
+  ]),
+  detail: Schema.String.check(Schema.isMaxLength(1_024)),
+});
+const decodeGuestTransferFailure = Schema.decodeEffect(Schema.fromJsonString(GuestTransferFailure));
+
 export class AgentDesktopManagerError extends Schema.TaggedError<AgentDesktopManagerError>()(
   "AgentDesktopManagerError",
   {
@@ -344,6 +400,12 @@ export class AgentDesktopManagerError extends Schema.TaggedError<AgentDesktopMan
       "stale-accessibility-target",
       "accessibility-activation-failed",
       "accessibility-insertion-failed",
+      "source-unavailable",
+      "invalid-destination",
+      "destination-exists",
+      "destination-type-mismatch",
+      "unsupported-entry",
+      "integrity-failed",
       "internal-error",
     ]),
     operation: Schema.String,
@@ -401,6 +463,7 @@ interface FrameState {
 interface RuntimeState {
   readonly inputAuthority: Ref.Ref<symbol | null>;
   readonly inputSemaphore: Semaphore.Semaphore;
+  readonly transferSemaphore: Semaphore.Semaphore;
   readonly frames: Ref.Ref<FrameState>;
   readonly heldKeys: Ref.Ref<ReadonlyMap<string, ReadonlyArray<string>>>;
   readonly heldButtons: Ref.Ref<ReadonlySet<string>>;
@@ -420,6 +483,7 @@ interface RuntimeState {
 interface GuestDesktopIdentity {
   readonly username: string;
   readonly uid: number;
+  readonly gid: number;
   readonly homeDirectory: string;
 }
 
@@ -447,11 +511,58 @@ interface ManagerState {
   readonly loadDetail?: string;
 }
 
+interface ActiveTransfer {
+  readonly owner: AgentDesktopOwner;
+  readonly desktopId: AgentDesktopId;
+  readonly cancellation: Deferred.Deferred<void>;
+}
+
 export interface HostResourceSnapshot {
   readonly totalMemoryBytes: number;
   readonly freeMemoryBytes: number;
   readonly cpuCount: number;
   readonly runningDesktopCount: number;
+}
+
+interface AgentDesktopManagerTransferBase {
+  readonly transferId: AgentDesktopTransfer["id"];
+  readonly desktopId?: AgentDesktopId;
+  readonly archivePath: string;
+  readonly guestPath: string;
+  readonly onProgress?: (transferredBytes: number, totalBytes: number) => Effect.Effect<void>;
+}
+
+/** Describes one server-local transfer between a host archive and an Agent desktop. */
+export type AgentDesktopManagerTransferInput =
+  | (AgentDesktopManagerTransferBase & {
+      readonly operation: "import";
+      readonly collision: "create" | "replace" | "merge";
+      readonly compression: "none" | "gzip";
+      readonly sizeBytes: number;
+      readonly sha256: string;
+      readonly onImportAccepted?: (
+        result: AgentDesktopManagerTransferResult,
+      ) => Effect.Effect<void>;
+    })
+  | (AgentDesktopManagerTransferBase & {
+      readonly operation: "export";
+      readonly compression: "auto" | "none" | "gzip";
+    });
+
+/** Selects one active server-local transfer for cancellation. */
+export interface AgentDesktopManagerTransferCancelInput {
+  readonly transferId: AgentDesktopTransfer["id"];
+  readonly desktopId?: AgentDesktopId;
+}
+
+/** Reports the exact portable archive imported or exported by an Agent desktop. */
+export interface AgentDesktopManagerTransferResult {
+  readonly desktopId: AgentDesktopId;
+  readonly transferId: AgentDesktopTransfer["id"];
+  readonly compression: "none" | "gzip";
+  readonly wireBytes: number;
+  readonly sha256: string;
+  readonly tree: NonNullable<AgentDesktopTransfer["tree"]>;
 }
 
 export interface AgentDesktopManagerShape {
@@ -477,6 +588,14 @@ export interface AgentDesktopManagerShape {
     owner: AgentDesktopOwner,
     input: AgentDesktopWriteFileInput,
   ) => Effect.Effect<AgentDesktopWriteFileResult, AgentDesktopManagerOperationError>;
+  readonly transfer: (
+    owner: AgentDesktopOwner,
+    input: AgentDesktopManagerTransferInput,
+  ) => Effect.Effect<AgentDesktopManagerTransferResult, AgentDesktopManagerOperationError>;
+  readonly cancelTransfer: (
+    owner: AgentDesktopOwner,
+    input: AgentDesktopManagerTransferCancelInput,
+  ) => Effect.Effect<void, AgentDesktopManagerOperationError>;
   readonly inspect: (
     owner: AgentDesktopOwner,
     input: AgentDesktopInspectInput,
@@ -820,6 +939,7 @@ const make = Effect.gen(function* () {
   const stateSemaphore = yield* Semaphore.make(1);
   const lifecycleSemaphore = yield* Semaphore.make(1);
   const leaseSemaphore = yield* Semaphore.make(1);
+  const activeTransfers = yield* Ref.make<ReadonlyMap<string, ActiveTransfer>>(new Map());
   const nextStorageCheckAt = yield* Ref.make(0);
   const guestAccessibilitySource = yield* Effect.gen(function* () {
     for (const candidate of environment.resolveResourcePathCandidates(
@@ -838,10 +958,19 @@ const make = Effect.gen(function* () {
     return null;
   });
 
+  const guestTransferSource = yield* Effect.gen(function* () {
+    for (const candidate of environment.resolveResourcePathCandidates(GUEST_TRANSFER_RESOURCE)) {
+      const source = yield* fileSystem.readFileString(candidate).pipe(Effect.option);
+      if (Option.isSome(source)) return source.value;
+    }
+    return null;
+  });
+
   const makeRuntime = Effect.fn("AgentDesktopManager.makeRuntime")(function* () {
     return {
       inputAuthority: yield* Ref.make<symbol | null>(Symbol()),
       inputSemaphore: yield* Semaphore.make(1),
+      transferSemaphore: yield* Semaphore.make(1),
       frames: yield* Ref.make<FrameState>({ nextId: 1, frames: new Map() }),
       heldKeys: yield* Ref.make<ReadonlyMap<string, ReadonlyArray<string>>>(new Map()),
       heldButtons: yield* Ref.make<ReadonlySet<string>>(new Set()),
@@ -1463,6 +1592,7 @@ const make = Effect.gen(function* () {
       const fields = lookup.stdout.trim().split(":");
       const username = fields[0] ?? "";
       const uid = Number(fields[2]);
+      const gid = Number(fields[3]);
       const homeDirectory = fields[5] ?? "";
       if (
         lookup.exitCode !== 0 ||
@@ -1470,6 +1600,9 @@ const make = Effect.gen(function* () {
         !Number.isInteger(uid) ||
         uid < 1_000 ||
         uid > 60_000 ||
+        !Number.isInteger(gid) ||
+        gid < 1_000 ||
+        gid > 60_000 ||
         !homeDirectory.startsWith("/") ||
         homeDirectory.length > 1_024
       ) {
@@ -1479,7 +1612,7 @@ const make = Effect.gen(function* () {
           detail: "the Agent desktop image does not define a non-root graphical user",
         });
       }
-      return { username, uid, homeDirectory } satisfies GuestDesktopIdentity;
+      return { username, uid, gid, homeDirectory } satisfies GuestDesktopIdentity;
     },
   );
 
@@ -3774,6 +3907,465 @@ const make = Effect.gen(function* () {
       }),
     );
 
+  const guestTransferPath = Effect.fn("AgentDesktopManager.guestTransferPath")(function* (
+    identity: GuestDesktopIdentity,
+    value: string,
+  ) {
+    if (value.includes("\0")) {
+      return yield* new AgentDesktopManagerError({
+        code: "invalid-action",
+        operation: "transfer-path",
+        detail: "guest transfer paths cannot contain a null byte",
+      });
+    }
+    const homeRelative = value === "~" || value.startsWith("~/") || !value.startsWith("/");
+    const absolute =
+      value === "~"
+        ? identity.homeDirectory
+        : value.startsWith("~/")
+          ? `${identity.homeDirectory}/${value.slice(2)}`
+          : value.startsWith("/")
+            ? value
+            : `${identity.homeDirectory}/${value}`;
+    const segments: string[] = [];
+    for (const segment of absolute.split("/")) {
+      if (segment.length === 0 || segment === ".") continue;
+      if (segment === "..") segments.pop();
+      else segments.push(segment);
+    }
+    const normalized = `/${segments.join("/")}`;
+    if (
+      homeRelative &&
+      normalized !== identity.homeDirectory &&
+      !normalized.startsWith(`${identity.homeDirectory}/`)
+    ) {
+      return yield* new AgentDesktopManagerError({
+        code: "invalid-action",
+        operation: "transfer-path",
+        detail: "a relative guest transfer path cannot leave the graphical user's home",
+      });
+    }
+    return normalized;
+  });
+
+  const prepareGuestTransfer = Effect.fn("AgentDesktopManager.prepareGuestTransfer")(function* (
+    desktop: PersistedDesktop,
+  ) {
+    if (guestTransferSource === null) {
+      return yield* new AgentDesktopManagerError({
+        code: "unsupported-operation",
+        operation: "guest-transfer-install",
+        detail: "the bundled Agent desktop transfer helper is missing",
+      });
+    }
+    yield* qemu
+      .executeGuestProcess(desktop.id, {
+        executable: "/usr/bin/mkdir",
+        arguments: ["-p", GUEST_TRANSFER_DIRECTORY],
+        timeoutMs: GUEST_INTEGRATION_TIMEOUT_MS,
+        maxOutputBytes: 4_096,
+      })
+      .pipe(Effect.flatMap((result) => requireGuestProcessSuccess("guest-transfer-mkdir", result)));
+    yield* qemu.writeGuestFile(
+      desktop.id,
+      GUEST_TRANSFER_HELPER_PATH,
+      new TextEncoder().encode(guestTransferSource),
+      "overwrite",
+    );
+    yield* qemu
+      .executeGuestProcess(desktop.id, {
+        executable: "/usr/bin/chmod",
+        arguments: ["0700", GUEST_TRANSFER_HELPER_PATH],
+        timeoutMs: GUEST_INTEGRATION_TIMEOUT_MS,
+        maxOutputBytes: 4_096,
+      })
+      .pipe(Effect.flatMap((result) => requireGuestProcessSuccess("guest-transfer-chmod", result)));
+  });
+
+  const runGuestTransferHelper = Effect.fn("AgentDesktopManager.runGuestTransferHelper")(function* (
+    desktop: PersistedDesktop,
+    argumentsValue: ReadonlyArray<string>,
+    onResult?: (
+      result: typeof GuestTransferResult.Type,
+    ) => Effect.Effect<void, AgentDesktopManagerError>,
+    onProcessExit?: Effect.Effect<void>,
+  ) {
+    return yield* Effect.uninterruptibleMask((restore) =>
+      Effect.gen(function* () {
+        const result = yield* restore(
+          qemu
+            .executeGuestProcess(desktop.id, {
+              executable: "/usr/bin/python",
+              arguments: [GUEST_TRANSFER_HELPER_PATH, ...argumentsValue],
+              timeoutMs: GUEST_TRANSFER_TIMEOUT_MS,
+              maxOutputBytes: GUEST_TRANSFER_OUTPUT_BYTES,
+            })
+            .pipe(
+              Effect.mapError((cause) =>
+                argumentsValue[0] === "extract"
+                  ? new QemuAgentDesktop.QemuAgentDesktopError({
+                      code: cause.code,
+                      operation: cause.operation,
+                      detail: `Guest publication outcome is unconfirmed; inspect the destination before retrying. Guest archive: ${argumentsValue[argumentsValue.indexOf("--archive") + 1] ?? "unknown"}. ${cause.detail}`,
+                    })
+                  : cause,
+              ),
+            ),
+        );
+        if (onProcessExit !== undefined) yield* onProcessExit;
+        if (result.exitCode !== 0) {
+          const failure = yield* decodeGuestTransferFailure(result.stderr.trim()).pipe(
+            Effect.option,
+          );
+          if (Option.isSome(failure)) {
+            return yield* new AgentDesktopManagerError({
+              code: failure.value.code,
+              operation: "guest-transfer-helper",
+              detail: failure.value.detail,
+            });
+          }
+        }
+        const successful = yield* requireGuestProcessSuccess("guest-transfer-helper", result).pipe(
+          Effect.mapError((cause: AgentDesktopManagerError) =>
+            argumentsValue[0] === "extract"
+              ? new AgentDesktopManagerError({
+                  code: cause.code,
+                  operation: cause.operation,
+                  detail: `Guest publication outcome is unconfirmed; inspect the destination before retrying. Guest archive: ${argumentsValue[argumentsValue.indexOf("--archive") + 1] ?? "unknown"}. ${cause.detail}`,
+                })
+              : cause,
+          ),
+        );
+        const decoded = yield* decodeGuestTransferResult(successful.stdout).pipe(
+          Effect.mapError(
+            (cause) =>
+              new AgentDesktopManagerError({
+                code: "internal-error",
+                operation: "guest-transfer-decode",
+                detail:
+                  argumentsValue[0] === "extract"
+                    ? `Guest publication outcome is unconfirmed; inspect the destination before retrying. Guest archive: ${argumentsValue[argumentsValue.indexOf("--archive") + 1] ?? "unknown"}. ${transferCauseDetail(cause)}`
+                    : transferCauseDetail(cause),
+              }),
+          ),
+        );
+        if (onResult !== undefined) yield* onResult(decoded);
+        return decoded;
+      }),
+    );
+  });
+
+  const removeGuestTransferArchive = (
+    desktop: PersistedDesktop,
+    archivePath: string,
+  ): Effect.Effect<void> =>
+    qemu
+      .executeGuestProcess(desktop.id, {
+        executable: "/usr/bin/rm",
+        arguments: ["-f", "--", archivePath],
+        timeoutMs: GUEST_INTEGRATION_TIMEOUT_MS,
+        maxOutputBytes: 4_096,
+      })
+      .pipe(Effect.ignore);
+
+  const readHostTransferChunk = Effect.fn("AgentDesktopManager.readHostTransferChunk")(function* (
+    path: string,
+    offset: number,
+    length: number,
+  ) {
+    return yield* Effect.tryPromise({
+      try: async () => {
+        const handle = await NodeFSP.open(path, "r");
+        try {
+          const buffer = Buffer.allocUnsafe(length);
+          const { bytesRead } = await handle.read(buffer, 0, length, offset);
+          return new Uint8Array(buffer.buffer, buffer.byteOffset, bytesRead);
+        } finally {
+          await handle.close();
+        }
+      },
+      catch: (cause) =>
+        new AgentDesktopManagerError({
+          code: "internal-error",
+          operation: "transfer-host-read",
+          detail: transferCauseDetail(cause),
+        }),
+    });
+  });
+
+  const resetHostTransferArchive = (path: string) =>
+    Effect.tryPromise({
+      try: () => NodeFSP.writeFile(path, new Uint8Array(), { mode: 0o600 }),
+      catch: (cause) =>
+        new AgentDesktopManagerError({
+          code: "internal-error",
+          operation: "transfer-host-create",
+          detail: transferCauseDetail(cause),
+        }),
+    });
+
+  const appendHostTransferChunk = (path: string, data: Uint8Array) =>
+    Effect.tryPromise({
+      try: () => NodeFSP.appendFile(path, data),
+      catch: (cause) =>
+        new AgentDesktopManagerError({
+          code: "internal-error",
+          operation: "transfer-host-write",
+          detail: transferCauseDetail(cause),
+        }),
+    });
+
+  const reportTransferProgress = (
+    input: AgentDesktopManagerTransferInput,
+    transferredBytes: number,
+    totalBytes: number,
+  ) => input.onProgress?.(transferredBytes, totalBytes) ?? Effect.void;
+
+  const transferTree = (result: typeof GuestTransferResult.Type) => ({
+    rootType: result.rootType,
+    fileCount: result.fileCount,
+    directoryCount: result.directoryCount,
+    symlinkCount: result.symlinkCount,
+    logicalBytes: result.logicalBytes,
+  });
+
+  const importTransfer = Effect.fn("AgentDesktopManager.importTransfer")(function* (
+    desktop: PersistedDesktop,
+    identity: GuestDesktopIdentity,
+    input: Extract<AgentDesktopManagerTransferInput, { readonly operation: "import" }>,
+    receipt: Ref.Ref<AgentDesktopManagerTransferResult | null>,
+    guestImportPending: Ref.Ref<boolean>,
+  ) {
+    const destination = yield* guestTransferPath(identity, input.guestPath);
+    const desktopUserOwnsDestination =
+      destination === identity.homeDirectory ||
+      destination.startsWith(`${identity.homeDirectory}/`);
+    const archivePath = `${GUEST_TRANSFER_DIRECTORY}/${input.transferId}.bundle`;
+    yield* removeGuestTransferArchive(desktop, archivePath);
+    let offset = 0;
+    while (offset < input.sizeBytes) {
+      const expectedBytes = Math.min(GUEST_TRANSFER_CHUNK_BYTES, input.sizeBytes - offset);
+      const data = yield* readHostTransferChunk(input.archivePath, offset, expectedBytes);
+      if (data.byteLength !== expectedBytes) {
+        return yield* new AgentDesktopManagerError({
+          code: "internal-error",
+          operation: "transfer-host-read",
+          detail: "the host transfer archive ended before its declared size",
+        });
+      }
+      const bytesWritten = yield* qemu.writeGuestFile(
+        desktop.id,
+        archivePath,
+        data,
+        offset === 0 ? "overwrite" : "append",
+      );
+      if (bytesWritten !== data.byteLength) {
+        return yield* new AgentDesktopManagerError({
+          code: "internal-error",
+          operation: "transfer-guest-write",
+          detail: "QEMU reported a partial guest transfer write",
+        });
+      }
+      offset += bytesWritten;
+      yield* reportTransferProgress(input, offset, input.sizeBytes);
+    }
+    yield* Ref.set(guestImportPending, true);
+    yield* runGuestTransferHelper(
+      desktop,
+      [
+        "extract",
+        "--archive",
+        archivePath,
+        "--destination",
+        destination,
+        "--compression",
+        input.compression,
+        "--collision",
+        input.collision,
+        "--sha256",
+        input.sha256,
+        ...(desktopUserOwnsDestination
+          ? ["--owner-uid", String(identity.uid), "--owner-gid", String(identity.gid)]
+          : []),
+      ],
+      Effect.fn("AgentDesktopManager.acceptImport")(function* (
+        result: typeof GuestTransferResult.Type,
+      ) {
+        if (
+          result.wireBytes !== input.sizeBytes ||
+          result.sha256 !== input.sha256 ||
+          result.compression !== input.compression
+        ) {
+          return yield* new AgentDesktopManagerError({
+            code: "internal-error",
+            operation: "transfer-integrity",
+            detail: "the guest transfer helper returned different bundle metadata",
+          });
+        }
+        const accepted = {
+          desktopId: desktop.id,
+          transferId: input.transferId,
+          compression: result.compression,
+          wireBytes: result.wireBytes,
+          sha256: result.sha256,
+          tree: transferTree(result),
+        } satisfies AgentDesktopManagerTransferResult;
+        yield* Ref.set(receipt, accepted);
+        yield* input.onImportAccepted?.(accepted) ?? Effect.void;
+      }),
+      Ref.set(guestImportPending, false),
+    );
+    const accepted = yield* Ref.get(receipt);
+    if (accepted === null) return yield* Effect.die("guest import returned without a receipt");
+    return accepted;
+  });
+
+  const exportTransfer = Effect.fn("AgentDesktopManager.exportTransfer")(function* (
+    desktop: PersistedDesktop,
+    identity: GuestDesktopIdentity,
+    input: Extract<AgentDesktopManagerTransferInput, { readonly operation: "export" }>,
+  ) {
+    const source = yield* guestTransferPath(identity, input.guestPath);
+    const archivePath = `${GUEST_TRANSFER_DIRECTORY}/${input.transferId}.bundle`;
+    yield* removeGuestTransferArchive(desktop, archivePath);
+    const result = yield* runGuestTransferHelper(desktop, [
+      "pack",
+      "--source",
+      source,
+      "--output",
+      archivePath,
+      "--compression",
+      input.compression,
+    ]);
+    yield* resetHostTransferArchive(input.archivePath);
+    let offset = 0;
+    while (offset < result.wireBytes) {
+      const read = yield* qemu.readGuestFile(
+        desktop.id,
+        archivePath,
+        offset,
+        Math.min(GUEST_TRANSFER_CHUNK_BYTES, result.wireBytes - offset),
+      );
+      if (read.data.byteLength === 0) {
+        return yield* new AgentDesktopManagerError({
+          code: "internal-error",
+          operation: "transfer-guest-read",
+          detail: "the guest transfer archive ended before its declared size",
+        });
+      }
+      yield* appendHostTransferChunk(input.archivePath, read.data);
+      offset += read.data.byteLength;
+      yield* reportTransferProgress(input, offset, result.wireBytes);
+    }
+    return {
+      desktopId: desktop.id,
+      transferId: input.transferId,
+      compression: result.compression,
+      wireBytes: result.wireBytes,
+      sha256: result.sha256,
+      tree: transferTree(result),
+    } satisfies AgentDesktopManagerTransferResult;
+  });
+
+  const transfer: AgentDesktopManagerShape["transfer"] = (owner, input) =>
+    useOperationalDesktop(owner, input.desktopId, (desktop, runtime) =>
+      Effect.gen(function* () {
+        const cancellation = yield* Deferred.make<void>();
+        const registered = yield* Ref.modify(activeTransfers, (current) => {
+          if (current.has(input.transferId)) return [false, current] as const;
+          return [
+            true,
+            new Map(current).set(input.transferId, {
+              owner,
+              desktopId: desktop.id,
+              cancellation,
+            }),
+          ] as const;
+        });
+        if (!registered) {
+          return yield* new AgentDesktopManagerError({
+            code: "desktop-busy",
+            operation: "transfer",
+            detail: "the transfer id is already active in this environment runtime",
+          });
+        }
+        const archivePath = `${GUEST_TRANSFER_DIRECTORY}/${input.transferId}.bundle`;
+        const receipt = yield* Ref.make<AgentDesktopManagerTransferResult | null>(null);
+        const guestImportPending = yield* Ref.make(false);
+        const operation = Effect.gen(function* () {
+          yield* prepareGuestTransfer(desktop);
+          const identity = yield* resolveGuestDesktopIdentity(desktop);
+          const result =
+            input.operation === "import"
+              ? yield* importTransfer(desktop, identity, input, receipt, guestImportPending)
+              : yield* exportTransfer(desktop, identity, input);
+          yield* touchDesktop(desktop);
+          return result;
+        });
+        const cancelled = Deferred.await(cancellation).pipe(
+          Effect.andThen(
+            Effect.fail(
+              new AgentDesktopManagerError({
+                code: "internal-error",
+                operation: "transfer-cancelled",
+                detail:
+                  input.operation === "import"
+                    ? `Cancellation requested; guest publication outcome is unconfirmed. The helper may still be running; inspect the destination before retrying. Guest archive retained if exit is unconfirmed: ${archivePath}`
+                    : "the Agent desktop transfer was cancelled",
+              }),
+            ),
+          ),
+        );
+        return yield* Effect.raceFirst(
+          runtime.transferSemaphore.withPermits(1)(operation),
+          cancelled,
+        ).pipe(
+          Effect.catchCause((cause) =>
+            Ref.get(receipt).pipe(
+              Effect.filterOrElse(
+                (accepted) => accepted !== null,
+                () => Effect.failCause(cause),
+              ),
+            ),
+          ),
+          Effect.ensuring(
+            Ref.get(guestImportPending).pipe(
+              Effect.flatMap((pending) =>
+                pending ? Effect.void : removeGuestTransferArchive(desktop, archivePath),
+              ),
+            ),
+          ),
+          Effect.ensuring(
+            Ref.update(activeTransfers, (current) => {
+              const active = current.get(input.transferId);
+              if (active?.cancellation !== cancellation) return current;
+              const next = new Map(current);
+              next.delete(input.transferId);
+              return next;
+            }),
+          ),
+        );
+      }),
+    );
+
+  const cancelTransfer: AgentDesktopManagerShape["cancelTransfer"] = Effect.fn(
+    "AgentDesktopManager.cancelTransfer",
+  )(function* (...[owner, input]: Parameters<AgentDesktopManagerShape["cancelTransfer"]>) {
+    const active = (yield* Ref.get(activeTransfers)).get(input.transferId);
+    if (active === undefined) return;
+    if (
+      !ownersMatch(active.owner, owner) ||
+      (input.desktopId !== undefined && active.desktopId !== input.desktopId)
+    ) {
+      return yield* new AgentDesktopManagerError({
+        code: "desktop-target-mismatch",
+        operation: "transfer-cancel",
+        detail: "the active transfer belongs to a different Agent desktop owner",
+      });
+    }
+    yield* Deferred.succeed(active.cancellation, undefined);
+  });
+
   const networkCounters = (value: unknown) => {
     let receivedBytes = 0;
     let transmittedBytes = 0;
@@ -4233,6 +4825,8 @@ const make = Effect.gen(function* () {
     command,
     readFile,
     writeFile,
+    transfer,
+    cancelTransfer,
     inspect,
     createPortRoute,
     removePortRoute,

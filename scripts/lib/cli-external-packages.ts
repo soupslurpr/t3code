@@ -10,6 +10,8 @@ const CLI_RUNTIME_EXTERNAL_PREFIXES = [
   "@img/",
   "detect-libc",
   "semver",
+  "koffi",
+  "@koromix/koffi-",
   "ffi-rs",
   "@yuuang/",
   "@ff-labs/",

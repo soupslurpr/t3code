@@ -1,14 +1,17 @@
 import * as AgentDesktopManager from "../../../agentDesktop/AgentDesktopManager.ts";
 import { environmentDesktopFailure } from "../../../computer/ComputerAutomationRouter.ts";
+import * as AgentDesktopTransferService from "../../../agentDesktop/AgentDesktopTransferService.ts";
 import type {
   AgentDesktop,
   AgentDesktopCommandInput,
   AgentDesktopCommandResult,
   AgentDesktopList,
+  AgentDesktopCopyInput,
   AgentDesktopPacketCapture,
   AgentDesktopPortRoute,
   AgentDesktopReadFileResult,
   AgentDesktopSetupResult,
+  AgentDesktopTransferTargetInput,
   AgentDesktopWriteFileResult,
   EnvironmentDesktopAutomationError,
 } from "@t3tools/contracts";
@@ -72,6 +75,29 @@ const handlers = {
     invoke<AgentDesktopWriteFileResult>("agentDesktopWriteFile", (manager, owner) =>
       manager.writeFile(owner, input),
     ),
+  ),
+  agent_desktop_copy: McpToolAccess.actsAsCaller((input: AgentDesktopCopyInput) =>
+    Effect.gen(function* () {
+      const scope = yield* McpInvocationContext.requireThreadMcpCapability("computer");
+      const transfers = yield* AgentDesktopTransferService.AgentDesktopTransferService;
+      return yield* transfers.start(scope, input);
+    }),
+  ),
+  agent_desktop_transfer_status: McpToolAccess.readsAsCaller(
+    (input: AgentDesktopTransferTargetInput) =>
+      Effect.gen(function* () {
+        const scope = yield* McpInvocationContext.requireThreadMcpCapability("computer");
+        const transfers = yield* AgentDesktopTransferService.AgentDesktopTransferService;
+        return yield* transfers.status(scope, input);
+      }),
+  ),
+  agent_desktop_transfer_cancel: McpToolAccess.actsAsCaller(
+    (input: AgentDesktopTransferTargetInput) =>
+      Effect.gen(function* () {
+        const scope = yield* McpInvocationContext.requireThreadMcpCapability("computer");
+        const transfers = yield* AgentDesktopTransferService.AgentDesktopTransferService;
+        return yield* transfers.cancel(scope, input);
+      }),
   ),
   agent_desktop_inspect: McpToolAccess.readsAsCaller((input) =>
     invoke<AgentDesktop>("agentDesktopInspect", (manager, owner) => manager.inspect(owner, input)),

@@ -55,6 +55,10 @@
       "types": "./src/agentAwareness.ts",
       "import": "./src/agentAwareness.ts"
     },
+    "./agentDesktopBundle": {
+      "types": "./src/agentDesktopBundle.ts",
+      "import": "./src/agentDesktopBundle.ts"
+    },
     "./git": {
       "types": "./src/git.ts",
       "import": "./src/git.ts"
@@ -539,6 +543,7 @@
     "effect": "catalog:",
     "ffi-rs": "1.3.2",
     "jose": "catalog:",
+    "koffi": "3.3.6",
     "mdast-util-directive": "catalog:",
     "mdast-util-to-hast": "^13.2.1",
     "micromark-extension-directive": "catalog:",
