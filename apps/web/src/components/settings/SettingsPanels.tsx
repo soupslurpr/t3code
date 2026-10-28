@@ -1,4 +1,5 @@
 import { useAtomValue } from "@effect/atom-react";
+import { DesktopPowerSettingsRow } from "./DesktopPowerSettingsRow";
 import { NotificationSettings } from "./NotificationSettings";
 import { PRIVACY_POLICY_URL } from "../../legalLinks";
 import { CheckIcon } from "lucide-react";
@@ -1971,6 +1972,7 @@ export function MaintenanceSettingsPanel() {
       </SettingsSection>
 
       <SettingsSection id="background" title="Background activity">
+        <DesktopPowerSettingsRow />
         <BackgroundActivitySettingsRow />
       </SettingsSection>
 

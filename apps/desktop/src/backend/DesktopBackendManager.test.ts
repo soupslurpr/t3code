@@ -163,6 +163,8 @@ function makeTestInstance(input: MakeInstanceInput) {
       latest: Effect.succeedNone,
       changes: Stream.empty,
       encoded: input.desktopTelemetryStream ?? Stream.empty,
+      agentWorking: Effect.succeed(false),
+      subscribeAgentWorking: Effect.succeed({ latest: false, changes: Stream.empty }),
       handleControlForSource: () => Effect.void,
       removeControlSource: () => Effect.void,
       publishUpdateReport: () => Effect.void,

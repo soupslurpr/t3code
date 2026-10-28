@@ -11,6 +11,11 @@ import {
 } from "./preview.ts";
 import { ProviderInstanceId } from "./providerInstance.ts";
 import { BrowserProfileId } from "./browserProfile.ts";
+import {
+  COMPUTER_AUTOMATION_OPERATIONS,
+  ComputerAutomationFailure,
+  ComputerAutomationFailureKind,
+} from "./computerAutomation.ts";
 
 const BoundedUrl = Schema.String.check(Schema.isTrimmed())
   .check(Schema.isNonEmpty())
@@ -52,7 +57,13 @@ export const PREVIEW_AUTOMATION_SERVER_OPERATIONS = [
   "select",
   "drag",
 ] as const;
-export const PreviewAutomationOperation = Schema.Literals(PREVIEW_AUTOMATION_SERVER_OPERATIONS);
+/** Operations routed through an attached desktop automation host. */
+const DESKTOP_AUTOMATION_OPERATIONS = [
+  ...PREVIEW_AUTOMATION_SERVER_OPERATIONS,
+  ...COMPUTER_AUTOMATION_OPERATIONS,
+] as const;
+
+export const PreviewAutomationOperation = Schema.Literals(DESKTOP_AUTOMATION_OPERATIONS);
 export type PreviewAutomationOperation = typeof PreviewAutomationOperation.Type;
 
 const PreviewAutomationTabTargetFields = {
@@ -660,11 +671,13 @@ const McpCapabilityErrorFields = {
 export class PreviewAutomationUnavailableError extends Schema.TaggedError<PreviewAutomationUnavailableError>()(
   "PreviewAutomationUnavailableError",
   {
-    capability: Schema.Literal("preview"),
+    capability: Schema.Literals(["preview", "computer"]),
     ...McpCapabilityErrorFields,
   },
 ) {
   override get message(): string {
+    if (this.capability === "computer")
+      return "MCP credential does not grant the computer capability.";
     return `MCP credential does not grant the ${this.capability} capability: browser preview tools are off for this thread. Do not retry them. To check a page, use a headless browser from the shell, such as Playwright, or curl. The user can turn on "Agent browser access" in Settings; it applies when the agent session next starts.`;
   }
 }
@@ -817,6 +830,8 @@ export class PreviewAutomationExecutionError extends Schema.TaggedError<PreviewA
     ...PreviewAutomationRequestErrorFields,
     ...PreviewAutomationRemoteDiagnosticFields,
     reason: Schema.optional(Schema.String),
+    remoteFailureKind: Schema.optional(ComputerAutomationFailureKind),
+    computerFailure: Schema.optional(ComputerAutomationFailure),
   },
 ) {
   override get message(): string {

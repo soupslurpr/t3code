@@ -61,6 +61,59 @@ function layerElectronApp(
 }
 
 describe("DesktopTelemetryPublisher", () => {
+  it.effect("keeps the wake lease until every working backend ends or disconnects", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const publisher = yield* DesktopTelemetryPublisher.make();
+        const subscription = yield* publisher.subscribeAgentWorking;
+        assert.isFalse(subscription.latest);
+        yield* publisher.handleControlForSource("first", {
+          version: 1,
+          type: "setAgentWorking",
+          enabled: true,
+        });
+        yield* publisher.handleControlForSource("second", {
+          version: 1,
+          type: "setAgentWorking",
+          enabled: true,
+        });
+        yield* publisher.handleControlForSource("first", {
+          version: 1,
+          type: "setAgentWorking",
+          enabled: false,
+        });
+        assert.isTrue(yield* publisher.agentWorking);
+        yield* publisher.removeControlSource("second");
+        assert.isFalse(yield* publisher.agentWorking);
+        assert.deepEqual(yield* subscription.changes.pipe(Stream.take(2), Stream.runCollect), [
+          true,
+          false,
+        ]);
+      }).pipe(
+        Effect.provide(
+          Layer.mergeAll(
+            layerElectronApp([]),
+            layerHistory,
+            Layer.succeed(DesktopShellEnvironment.DesktopShellEnvironment, {
+              installIntoProcess: Effect.succeed(true),
+              awaitDiscovery: Effect.succeed(true),
+              updates: Stream.empty,
+            }),
+            Layer.succeed(ElectronPowerMonitor.ElectronPowerMonitor, {
+              isOnBatteryPower: Effect.succeed(false),
+              getSystemIdleTime: Effect.succeed(0),
+              getSystemIdleState: () => Effect.succeed("active"),
+              getCurrentThermalState: Effect.succeed("nominal" as const),
+              onSimpleEvent: () => Effect.void,
+              onThermalStateChange: () => Effect.void,
+              onSpeedLimitChange: () => Effect.void,
+            }),
+          ),
+        ),
+      ),
+    ),
+  );
+
   it.effect(
     "forwards shell discovery while a telemetry sample is pending and stops on scope close",
     () =>

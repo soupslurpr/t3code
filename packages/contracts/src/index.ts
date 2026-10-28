@@ -61,6 +61,7 @@ export * from "./device.ts";
 export * from "./preview.ts";
 export * from "./previewAutomation.ts";
 export * from "./previewCapture.ts";
+export * from "./computerAutomation.ts";
 export * from "./usage.ts";
 export * from "./scheduledTask.ts";
 export * from "./worktreeMcp.ts";

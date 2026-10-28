@@ -92,3 +92,18 @@ describe("Codex device context", () => {
 function runtimeInstructions(runtime: Parameters<typeof buildCodexAdditionalContext>[0]) {
   return buildCodexAdditionalContext(runtime).t3_code_runtime!.value;
 }
+
+it("advertises availability and control only when the native tool capability is present", () => {
+  const available = buildCodexAdditionalContext(
+    { model: "gpt-6-astra" },
+    { browser: false, device: false },
+  );
+  const unavailable = buildCodexAdditionalContext(
+    { model: "gpt-6-astra" },
+    { browser: false, device: true },
+    false,
+  );
+  NodeAssert.match(available.t3_code_desktop!.value, /computer_request_availability/);
+  NodeAssert.match(available.t3_code_desktop!.value, /computer_release_availability/);
+  NodeAssert.equal(unavailable.t3_code_desktop, undefined);
+});

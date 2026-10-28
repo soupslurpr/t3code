@@ -1,4 +1,6 @@
 import {
+  ComputerAutomationFailure,
+  isComputerAutomationFailureKind,
   PREVIEW_AUTOMATION_V1_OPERATIONS,
   PreviewAutomationClientDisconnectedError,
   PreviewAutomationControlInterruptedError,
@@ -42,6 +44,7 @@ import * as SynchronizedRef from "effect/SynchronizedRef";
 import * as McpInvocationContext from "./McpInvocationContext.ts";
 
 const HOST_RESPONSE_GRACE_MS = 1_000;
+const isComputerAutomationFailure = Schema.is(ComputerAutomationFailure);
 
 export interface PreviewAutomationInvokeInput {
   readonly scope: McpInvocationContext.McpThreadInvocationScope;
@@ -335,14 +338,27 @@ const classifyResponseError = (
         ...context,
         ...remoteDiagnostics,
       });
-    default:
+    default: {
+      const detail =
+        typeof error.detail === "object" && error.detail !== null ? error.detail : undefined;
+      const remoteFailureKind =
+        detail && "failureKind" in detail && isComputerAutomationFailureKind(detail.failureKind)
+          ? detail.failureKind
+          : undefined;
+      const computerFailure =
+        detail && "computerFailure" in detail && isComputerAutomationFailure(detail.computerFailure)
+          ? detail.computerFailure
+          : undefined;
       return new PreviewAutomationExecutionError({
         ...context,
         ...remoteDiagnostics,
         ...(context.clientId === SERVER_BROWSER_AUTOMATION_CLIENT_ID
           ? { reason: error.message.slice(0, MAX_REASON_CHARS) }
           : {}),
+        ...(remoteFailureKind === undefined ? {} : { remoteFailureKind }),
+        ...(computerFailure === undefined ? {} : { computerFailure }),
       });
+    }
   }
 };
 

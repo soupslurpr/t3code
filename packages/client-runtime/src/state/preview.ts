@@ -1,13 +1,15 @@
-import { WS_METHODS } from "@t3tools/contracts";
+import { WS_METHODS, type PreviewAutomationHost } from "@t3tools/contracts";
 import * as Stream from "effect/Stream";
 import { Atom } from "effect/reactivity";
 
 import type { EnvironmentRegistry } from "../connection/registry.ts";
+import { subscribe } from "../rpc/client.ts";
 import {
   createAtomCommandScheduler,
   createEnvironmentRpcCommand,
   createEnvironmentRpcQueryAtomFamily,
   createEnvironmentRpcSubscriptionAtomFamily,
+  createEnvironmentSubscriptionAtomFamily,
 } from "./runtime.ts";
 
 export function createPreviewEnvironmentAtoms<R, E>(
@@ -38,6 +40,28 @@ export function createPreviewEnvironmentAtoms<R, E>(
       // Configured URLs are part of this atom's key. Dispose immediately so
       // unmounted projects stop contributing probe candidates on the server.
       idleTtlMs: 0,
+    }),
+    automationRequests: createEnvironmentSubscriptionAtomFamily(runtime, {
+      label: "environment-data:computer:automation-requests",
+      // Timeout eviction ends this registration, not the underlying WebSocket.
+      subscribe: (input: PreviewAutomationHost) =>
+        subscribe(WS_METHODS.previewAutomationConnect, input, {
+          resubscribeOnCompletionAfter: "1 second",
+        }).pipe(Stream.rechunk(1)),
+      // A host disconnect must close its stream and fail pending desktop requests.
+      idleTtlMs: 0,
+    }),
+    respondToAutomation: createEnvironmentRpcCommand(runtime, {
+      label: "environment-data:computer:automation-respond",
+      tag: WS_METHODS.previewAutomationRespond,
+    }),
+    focusAutomationHost: createEnvironmentRpcCommand(runtime, {
+      label: "environment-data:computer:automation-focus",
+      tag: WS_METHODS.previewAutomationFocusHost,
+      concurrency: {
+        mode: "latest",
+        key: ({ environmentId, input }) => `${environmentId}:${input.clientId}`,
+      },
     }),
     open: createEnvironmentRpcCommand(runtime, {
       label: "environment-data:preview:open",

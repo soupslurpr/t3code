@@ -205,6 +205,9 @@ export class DesktopTelemetryReceiver extends Context.Service<
       never,
       Scope.Scope
     >;
+    readonly setAgentWorking: (
+      enabled: boolean,
+    ) => Effect.Effect<void, DesktopTelemetryControlError>;
   }
 >()("t3/resourceTelemetry/DesktopTelemetryReceiver") {}
 
@@ -481,6 +484,12 @@ export const make = Effect.fn("resourceTelemetry.desktopTelemetryReceiver.make")
       type: "setDiagnosticsDemand",
       enabled,
     });
+  const setAgentWorking: DesktopTelemetryReceiver["Service"]["setAgentWorking"] = (enabled) =>
+    sendControlMessage({
+      version: 1,
+      type: "setAgentWorking",
+      enabled,
+    });
 
   const sendHostPowerIntervals = (
     settings: Parameters<typeof resolveServerBackgroundActivitySettings>[0],
@@ -717,6 +726,7 @@ export const make = Effect.fn("resourceTelemetry.desktopTelemetryReceiver.make")
     health: Ref.get(health),
     subscribeHealth: subscribeBeforeSnapshotWithoutMutex(healthChanges, Ref.get(health)),
     setDiagnosticsDemand,
+    setAgentWorking,
     requestDesktopUpdate: Effect.fn("DesktopTelemetryReceiver.requestDesktopUpdate")(
       function (requestId, trackSwitch) {
         return sendControlMessage({
@@ -784,6 +794,9 @@ export const layerTest = (
             changes: Stream.empty,
           })),
         ),
+      setAgentWorking: Effect.fn("DesktopTelemetryReceiver.setAgentWorking")(function () {
+        return Effect.void;
+      }),
       setDiagnosticsDemand: Effect.fn("DesktopTelemetryReceiver.setDiagnosticsDemand")(function () {
         return Effect.void;
       }),

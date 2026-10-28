@@ -11,6 +11,7 @@ import * as DesktopEnvironment from "../app/DesktopEnvironment.ts";
 import * as DesktopAppSettings from "./DesktopAppSettings.ts";
 
 const DesktopSettingsPatch = Schema.Struct({
+  keepAwakeWhileAgentsWork: Schema.optionalKey(Schema.Boolean),
   linuxPasswordStore: Schema.optionalKey(
     Schema.Literals(["auto", "gnome-libsecret", "kwallet", "kwallet5", "kwallet6"]),
   ),
@@ -122,6 +123,19 @@ describe("DesktopSettings", () => {
     }),
   );
 
+  it.effect("defaults to wake protection and persists both directions of the policy", () =>
+    withSettings(
+      Effect.gen(function* () {
+        const settings = yield* DesktopAppSettings.DesktopAppSettings;
+        assert.isTrue((yield* settings.get).keepAwakeWhileAgentsWork);
+        yield* settings.setKeepAwakeWhileAgentsWork(false);
+        assert.isFalse((yield* settings.load).keepAwakeWhileAgentsWork);
+        yield* settings.setKeepAwakeWhileAgentsWork(true);
+        assert.isTrue((yield* settings.load).keepAwakeWhileAgentsWork);
+      }),
+    ),
+  );
+
   it.effect(
     "persists disabling and re-enabling local execution without clearing backend settings",
     () =>
@@ -174,6 +188,7 @@ describe("DesktopSettings", () => {
         );
 
         assert.deepEqual(yield* settings.load, {
+          keepAwakeWhileAgentsWork: true,
           linuxPasswordStore: "auto",
           localEnvironmentEnabled: true,
           mainWindowBounds: { x: 120, y: 80, width: 1280, height: 900 },
@@ -269,6 +284,7 @@ describe("DesktopSettings", () => {
         });
 
         assert.deepEqual(yield* settings.load, {
+          keepAwakeWhileAgentsWork: true,
           linuxPasswordStore: "auto",
           localEnvironmentEnabled: true,
           mainWindowBounds: null,
@@ -298,6 +314,7 @@ describe("DesktopSettings", () => {
         });
 
         assert.deepEqual(yield* settings.load, {
+          keepAwakeWhileAgentsWork: true,
           linuxPasswordStore: "auto",
           localEnvironmentEnabled: true,
           mainWindowBounds: null,
