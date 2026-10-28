@@ -2,10 +2,23 @@ import sharp from "sharp";
 import { describe, expect, it } from "vite-plus/test";
 
 import {
-  encodeComputerScreenshot,
+  renderComputerScreenshot as renderScreenshot,
   resolveComputerScreenshotEncoding,
   type ComputerScreenshotImage,
 } from "./ComputerScreenshotEncoding.ts";
+
+const defaultSource = {
+  desktopId: "user",
+  displayId: "display-1",
+  toDesktopLogical: { offsetX: 0, offsetY: 0, scaleX: 1, scaleY: 1 },
+};
+const renderComputerScreenshot = (
+  image: Parameters<typeof renderScreenshot>[0],
+  pointer: Parameters<typeof renderScreenshot>[1],
+  encoding: Parameters<typeof renderScreenshot>[2],
+  knownHash?: Parameters<typeof renderScreenshot>[3],
+  source = defaultSource,
+) => renderScreenshot(image, pointer, encoding, knownHash, source);
 
 /** Builds an Electron-compatible image around one immutable BGRA bitmap. */
 function image(width: number, height: number, bitmap: Uint8Array): ComputerScreenshotImage {
@@ -26,7 +39,9 @@ describe("ComputerScreenshotEncoding", () => {
       30, 20, 10, 255, 60, 50, 40, 255, 90, 80, 70, 255, 120, 110, 100, 255,
     ]);
 
-    const encoded = await encodeComputerScreenshot(image(2, 2, bitmap), null, undefined);
+    const encoded = await renderComputerScreenshot(image(2, 2, bitmap), null, undefined);
+    expect(encoded.state).toBe("image");
+    if (encoded.state !== "image") throw new Error("expected encoded screenshot bytes");
     const decoded = await decodeRgba(encoded.data);
 
     expect(encoded.mimeType).toBe("image/webp");
@@ -42,9 +57,11 @@ describe("ComputerScreenshotEncoding", () => {
   it("supports an explicit PNG compatibility encoding", async () => {
     const bitmap = Buffer.from([30, 20, 10, 255]);
 
-    const encoded = await encodeComputerScreenshot(image(1, 1, bitmap), null, {
+    const encoded = await renderComputerScreenshot(image(1, 1, bitmap), null, {
       format: "png",
     });
+    expect(encoded.state).toBe("image");
+    if (encoded.state !== "image") throw new Error("expected encoded screenshot bytes");
     const decoded = await decodeRgba(encoded.data);
 
     expect(encoded.mimeType).toBe("image/png");
@@ -59,11 +76,12 @@ describe("ComputerScreenshotEncoding", () => {
     "encodes a decodable %s WebP frame",
     async (mode) => {
       const bitmap = Buffer.alloc(16 * 16 * 4, 255);
-      const encoded = await encodeComputerScreenshot(image(16, 16, bitmap), null, {
+      const encoded = await renderComputerScreenshot(image(16, 16, bitmap), null, {
         format: "webp",
         mode,
         quality: 72,
       });
+      if (encoded.state !== "image") throw new Error("expected encoded screenshot bytes");
       const decoded = await decodeRgba(encoded.data);
       expect(encoded.encoding).toEqual({ format: "webp", mode, quality: 72 });
       expect(decoded.info).toMatchObject({ width: 16, height: 16, channels: 4 });
@@ -92,7 +110,7 @@ describe("ComputerScreenshotEncoding", () => {
     const bitmap = Buffer.alloc(dimension * dimension * 4, 0);
     for (let offset = 3; offset < bitmap.length; offset += 4) bitmap[offset] = 255;
 
-    const encoded = await encodeComputerScreenshot(
+    const encoded = await renderComputerScreenshot(
       image(dimension, dimension, bitmap),
       {
         x: 12,
@@ -100,6 +118,8 @@ describe("ComputerScreenshotEncoding", () => {
       },
       undefined,
     );
+    expect(encoded.state).toBe("image");
+    if (encoded.state !== "image") throw new Error("expected encoded screenshot bytes");
     const decoded = await decodeRgba(encoded.data);
     const centerOffset = (12 * dimension + 12) * 4;
     const ringOffset = (12 * dimension + 22) * 4;
@@ -110,7 +130,89 @@ describe("ComputerScreenshotEncoding", () => {
 
   it("rejects malformed native bitmaps before encoding", async () => {
     await expect(
-      encodeComputerScreenshot(image(2, 2, Buffer.alloc(4)), null, undefined),
+      renderComputerScreenshot(image(2, 2, Buffer.alloc(4)), null, undefined),
     ).rejects.toThrow("bitmap size does not match");
+  });
+
+  it("omits encoding only when the exact bounded pixels match", async () => {
+    const initialBitmap = Buffer.from([
+      30, 20, 10, 255, 60, 50, 40, 255, 90, 80, 70, 255, 120, 110, 100, 255,
+    ]);
+    const initial = await renderComputerScreenshot(image(2, 2, initialBitmap), null, undefined);
+    expect(initial.state).toBe("image");
+
+    const unchanged = await renderComputerScreenshot(
+      image(2, 2, initialBitmap),
+      null,
+      undefined,
+      initial.contentHash,
+    );
+    const changedBitmap = Buffer.from(initialBitmap);
+    changedBitmap[0] = 31;
+    const changed = await renderComputerScreenshot(
+      image(2, 2, changedBitmap),
+      null,
+      undefined,
+      initial.contentHash,
+    );
+    const resized = await renderComputerScreenshot(
+      image(1, 4, initialBitmap),
+      null,
+      undefined,
+      initial.contentHash,
+    );
+
+    expect(initial.contentHash).toMatch(/^sha256-bgra8-v2:[A-Za-z0-9_-]{43}$/);
+    expect(unchanged).toEqual({ state: "unchanged", contentHash: initial.contentHash });
+    expect(changed.state).toBe("image");
+    expect(changed.contentHash).not.toBe(initial.contentHash);
+    expect(resized.state).toBe("image");
+    expect(resized.contentHash).not.toBe(initial.contentHash);
+  });
+
+  it("does not omit bytes after changing the requested encoding", async () => {
+    const pixels = image(1, 1, Buffer.from([30, 20, 10, 255]));
+    const initial = await renderComputerScreenshot(pixels, null, undefined);
+    const png = await renderComputerScreenshot(
+      pixels,
+      null,
+      { format: "png" },
+      initial.contentHash,
+    );
+    expect(png.state).toBe("image");
+    const lossy = await renderComputerScreenshot(
+      pixels,
+      null,
+      { format: "webp", mode: "lossy", quality: 60 },
+      initial.contentHash,
+    );
+    expect(lossy.state).toBe("image");
+    const sharper = await renderComputerScreenshot(
+      pixels,
+      null,
+      { format: "webp", mode: "lossy", quality: 90 },
+      lossy.contentHash,
+    );
+    expect(sharper.state).toBe("image");
+  });
+
+  it("does not omit identical pixels from a different crop or display", async () => {
+    const pixels = image(1, 1, Buffer.from([30, 20, 10, 255]));
+    const source = {
+      desktopId: "user",
+      displayId: "display-1",
+      toDesktopLogical: { offsetX: 0, offsetY: 0, scaleX: 1, scaleY: 1 },
+    };
+    const initial = await renderComputerScreenshot(pixels, null, undefined, undefined, source);
+    const moved = await renderComputerScreenshot(pixels, null, undefined, initial.contentHash, {
+      ...source,
+      toDesktopLogical: { ...source.toDesktopLogical, offsetX: 20 },
+    });
+    expect(moved.state).toBe("image");
+    const display = await renderComputerScreenshot(pixels, null, undefined, initial.contentHash, {
+      ...source,
+      displayId: "display-2",
+    });
+    expect(display.state).toBe("image");
   });
 });
