@@ -10,6 +10,7 @@ import {
   type ThreadId,
 } from "@t3tools/contracts";
 import * as Context from "effect/Context";
+import * as Crypto from "effect/Crypto";
 import * as Effect from "effect/Effect";
 import * as Fiber from "effect/Fiber";
 import { formatThreadLink } from "@t3tools/shared/threadLinks";
@@ -25,6 +26,8 @@ const ALL_MCP_CAPABILITIES = [
 export type McpCapability = (typeof ALL_MCP_CAPABILITIES)[number];
 
 export interface McpThreadCaller {
+  readonly controllerId: string;
+  readonly controllerKind?: "agent" | "human";
   readonly threadId: ThreadId;
   readonly providerSessionId: string;
   readonly providerInstanceId: ProviderInstanceId;
@@ -169,6 +172,16 @@ export const hiddenWhileLinksOff = (): boolean => {
   const scope = fiber && Context.getOrUndefined(fiber.context, McpInvocationContext);
   return scope?.linkedEnvironments !== false;
 };
+export const threadComputerControllerId = Effect.fn("mcp.threadComputerControllerId")(function* (
+  environmentId: EnvironmentId,
+  threadId: ThreadId,
+) {
+  const crypto = yield* Crypto.Crypto;
+  const digest = yield* crypto
+    .digest("SHA-256", new TextEncoder().encode(`${environmentId}\u0000${threadId}`))
+    .pipe(Effect.orDie);
+  return `thread-${Array.from(digest, (byte) => byte.toString(16).padStart(2, "0")).join("")}`;
+});
 
 export type McpCapabilityError<C extends McpCapability> = C extends "preview" | "computer"
   ? PreviewAutomationUnavailableError

@@ -45,6 +45,10 @@ export interface ComputerUseRouterShape {
     context: DesktopComputerAutomationContext,
     input: ComputerAutomationTargetInput,
   ) => Effect.Effect<ComputerAutomationStatus, ComputerUseRouterError>;
+  readonly interrupt: (
+    context: DesktopComputerAutomationContext,
+    input: ComputerAutomationTargetInput,
+  ) => Effect.Effect<ComputerAutomationStatus, ComputerUseRouterError>;
   readonly forceForget: (
     context: DesktopComputerAutomationContext,
     input: ComputerAutomationTargetInput,
@@ -161,6 +165,11 @@ const make = Effect.gen(function* () {
       Effect.andThen(user.forceRelease(context.controllerId)),
     );
 
+  const interrupt: ComputerUseRouterShape["interrupt"] = (context, input) =>
+    requireLocalUserDesktop(input.desktop, "release").pipe(
+      Effect.andThen(user.interrupt(context.controllerId)),
+    );
+
   const forceForget: ComputerUseRouterShape["forceForget"] = (context, input) =>
     requireLocalUserDesktop(input.desktop, "forget").pipe(
       Effect.andThen(user.forceForget(context.controllerId)),
@@ -211,6 +220,7 @@ const make = Effect.gen(function* () {
     rememberView,
     rememberControl,
     forceRelease,
+    interrupt,
     forceForget,
     requestAvailability,
     releaseAvailability,

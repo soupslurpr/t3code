@@ -1,4 +1,5 @@
 import * as AgentDesktopTransfer from "./agentDesktop/AgentDesktopTransferService.ts";
+import * as ProviderComputerLifecycle from "./orchestration-v2/ProviderComputerLifecycle.ts";
 import * as UserDesktops from "./persistence/UserDesktops.ts";
 import * as AgentDesktopEnvironment from "./agentDesktop/AgentDesktopEnvironment.ts";
 import * as AgentDesktopManager from "./agentDesktop/AgentDesktopManager.ts";
@@ -572,6 +573,7 @@ const layerScheduledTaskWebhookOrigin = Layer.effect(
 );
 
 const layerOrchestrationV2Runtime = RuntimeLayer.layerProduction.pipe(
+  Layer.provide(ProviderComputerLifecycle.layer.pipe(Layer.provide(layerPreviewAutomationBroker))),
   Layer.provide(layerScheduledTaskWebhookOrigin),
   Layer.provide(ProviderEventIngestor.layerAnalytics),
   Layer.provide(layerCheckpointStore),

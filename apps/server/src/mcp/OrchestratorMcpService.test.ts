@@ -178,6 +178,7 @@ describe("OrchestratorMcpService", () => {
         requestNamespace: "provider-session:mcp-ack",
         thread: {
           threadId: parentThreadId,
+          controllerId: "provider-session:mcp-ack",
           providerSessionId: "provider-session:mcp-ack",
           providerInstanceId: ProviderInstanceId.make("codex"),
         },
@@ -279,6 +280,7 @@ describe("OrchestratorMcpService", () => {
         requestNamespace: "provider-session:mcp-restart",
         thread: {
           threadId: parentThreadId,
+          controllerId: "provider-session:mcp-restart",
           providerSessionId: "provider-session:mcp-restart",
           providerInstanceId: ProviderInstanceId.make("codex"),
         },
@@ -380,6 +382,7 @@ describe("OrchestratorMcpService", () => {
         requestNamespace: "provider-session:mcp-next",
         thread: {
           threadId: parentThreadId,
+          controllerId: "provider-session:mcp-next",
           providerSessionId: "provider-session:mcp-next",
           providerInstanceId: ProviderInstanceId.make("codex"),
         },
@@ -473,6 +476,7 @@ describe("OrchestratorMcpService", () => {
         requestNamespace: "provider-session:mcp-cancel",
         thread: {
           threadId: parentThreadId,
+          controllerId: "provider-session:mcp-cancel",
           providerSessionId: "provider-session:mcp-cancel",
           providerInstanceId: ProviderInstanceId.make("codex"),
         },
@@ -570,6 +574,7 @@ describe("OrchestratorMcpService", () => {
           requestNamespace: "provider-session:mcp-orphan",
           thread: {
             threadId: parentThreadId,
+            controllerId: "provider-session:mcp-orphan",
             providerSessionId: "provider-session:mcp-orphan",
             providerInstanceId: ProviderInstanceId.make("codex"),
           },
@@ -662,6 +667,7 @@ describe("OrchestratorMcpService", () => {
         requestNamespace: "provider-session:mcp-cancel-failed",
         thread: {
           threadId: parentThreadId,
+          controllerId: "provider-session:mcp-cancel-failed",
           providerSessionId: "provider-session:mcp-cancel-failed",
           providerInstanceId: ProviderInstanceId.make("codex"),
         },
@@ -748,6 +754,7 @@ describe("OrchestratorMcpService", () => {
         requestNamespace: "provider-session:mcp-cancel-dispose-failed",
         thread: {
           threadId: parentThreadId,
+          controllerId: "provider-session:mcp-cancel-dispose-failed",
           providerSessionId: "provider-session:mcp-cancel-dispose-failed",
           providerInstanceId: ProviderInstanceId.make("codex"),
         },
@@ -835,6 +842,7 @@ describe("OrchestratorMcpService", () => {
         requestNamespace: "provider-session:mcp-cancel-dispose-failed",
         thread: {
           threadId: parentThreadId,
+          controllerId: "provider-session:mcp-cancel-dispose-failed",
           providerSessionId: "provider-session:mcp-cancel-dispose-failed",
           providerInstanceId: ProviderInstanceId.make("codex"),
         },
@@ -969,6 +977,7 @@ describe("OrchestratorMcpService", () => {
         requestNamespace: "provider-session:mcp-cancel-grandchild",
         thread: {
           threadId: parentThreadId,
+          controllerId: "provider-session:mcp-cancel-grandchild",
           providerSessionId: "provider-session:mcp-cancel-grandchild",
           providerInstanceId: ProviderInstanceId.make("codex"),
         },
@@ -1034,6 +1043,7 @@ describe("OrchestratorMcpService provider resolution", () => {
     requestNamespace: "provider-session:mcp-providers",
     thread: {
       threadId: parentThreadId,
+      controllerId: "provider-session:mcp-providers",
       providerSessionId: "provider-session:mcp-providers",
       providerInstanceId: codexInstanceId,
     },
@@ -2442,6 +2452,7 @@ describe("OrchestratorMcpService provider resolution", () => {
                 requestNamespace: "provider:scheduled-ended",
                 thread: {
                   threadId: callerId,
+                  controllerId: "provider:scheduled-ended",
                   providerSessionId: "provider:scheduled-ended",
                   providerInstanceId: shell.providerInstanceId,
                 },
@@ -3208,6 +3219,7 @@ describe("OrchestratorMcpService thread lookup", () => {
             ...client,
             thread: {
               threadId: launched.id,
+              controllerId: "controller:wait-self",
               providerSessionId: "provider-session:wait-self",
               providerInstanceId: ProviderInstanceId.make("codex"),
             },

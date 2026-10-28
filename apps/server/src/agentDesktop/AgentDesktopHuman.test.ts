@@ -35,6 +35,7 @@ const scope: McpInvocationContext.McpThreadInvocationScope = {
   environmentId,
   thread: {
     threadId: settingsThreadId,
+    controllerId: "human:session-1",
     providerSessionId: "human:session-1",
     providerInstanceId: ProviderInstanceId.make("t3-human"),
   },

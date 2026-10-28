@@ -47,6 +47,7 @@ const makeScope = (
   requestNamespace: "provider-session-worktree-test",
   thread: {
     threadId,
+    controllerId: "provider-session-worktree-test",
     providerSessionId: "provider-session-worktree-test",
     providerInstanceId: ProviderInstanceId.make("claudeAgent"),
   },

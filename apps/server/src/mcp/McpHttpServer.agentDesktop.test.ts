@@ -36,6 +36,7 @@ const invocation: McpInvocationContext.McpInvocationScope = {
   requestNamespace: "computer-http-session",
   thread: {
     threadId,
+    controllerId: "computer-http-session",
     providerSessionId: "computer-http-session",
     providerInstanceId: ProviderInstanceId.make("codex"),
   },

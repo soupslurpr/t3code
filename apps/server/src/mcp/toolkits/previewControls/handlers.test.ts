@@ -45,6 +45,7 @@ it.effect.each([
         requestNamespace: "preview-controls-provider-session",
         thread: {
           threadId,
+          controllerId: "preview-controls-provider-session",
           providerSessionId: "preview-controls-provider-session",
           providerInstanceId: ProviderInstanceId.make("codex"),
         },

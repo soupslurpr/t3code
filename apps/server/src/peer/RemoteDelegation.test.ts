@@ -632,6 +632,7 @@ const parentScope: McpInvocationContext.McpInvocationScope = {
   environmentId: laptop.environmentId,
   requestNamespace: "provider-session:laptop-parent",
   thread: {
+    controllerId: "test-controller",
     threadId: parentThreadId,
     providerSessionId: "provider-session:laptop-parent",
     providerInstanceId: instanceId,

@@ -272,6 +272,7 @@ it.effect.each([
             requestNamespace: "provider-session:task-cancel-limit",
             thread: {
               threadId: parentThreadId,
+              controllerId: "controller:task-cancel-limit",
               providerSessionId: "provider-session:task-cancel-limit",
               providerInstanceId: instanceId,
             },

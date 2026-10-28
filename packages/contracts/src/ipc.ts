@@ -1250,6 +1250,11 @@ export interface DesktopComputerAutomationBridge {
     input: ComputerAutomationAccessInput,
     context?: DesktopComputerAutomationContext,
   ) => Promise<DesktopComputerAutomationResult<ComputerAutomationObservation>>;
+  /** Cancels agent input and authorization while retaining existing viewing and availability. */
+  interrupt?: (
+    input: ComputerAutomationTargetInput,
+    context?: DesktopComputerAutomationContext,
+  ) => Promise<DesktopComputerAutomationResult<ComputerAutomationStatus>>;
   forceRelease: (
     input: ComputerAutomationTargetInput,
     context?: DesktopComputerAutomationContext,

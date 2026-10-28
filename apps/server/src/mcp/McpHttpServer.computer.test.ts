@@ -38,6 +38,7 @@ const invocation: McpInvocationContext.McpInvocationScope = {
   requestNamespace: "computer-http-session",
   thread: {
     threadId,
+    controllerId: "computer-http-session",
     providerSessionId: "computer-http-session",
     providerInstanceId: ProviderInstanceId.make("codex"),
   },
@@ -184,16 +185,21 @@ const serve = Effect.fn("ComputerHttpTest.serve")(function* (
   yield* Stream.runForEach(events, (event) =>
     event.type === "connected"
       ? Deferred.succeed(connected, undefined)
-      : (typeof response === "function" ? response(event.request) : Effect.succeed(response)).pipe(
-          Effect.flatMap((result) =>
-            broker.respond({
-              clientId: "native-host",
-              connectionId: event.connectionId,
-              requestId: event.request.requestId,
-              ...result,
-            }),
+      : event.type === "cancel"
+        ? Effect.void
+        : (typeof response === "function"
+            ? response(event.request)
+            : Effect.succeed(response)
+          ).pipe(
+            Effect.flatMap((answer) =>
+              broker.respond({
+                clientId: "native-host",
+                connectionId: event.connectionId,
+                requestId: event.request.requestId,
+                ...answer,
+              }),
+            ),
           ),
-        ),
   ).pipe(Effect.forkScoped);
   yield* Deferred.await(connected);
 });

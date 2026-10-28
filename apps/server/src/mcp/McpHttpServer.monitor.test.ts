@@ -28,6 +28,7 @@ const invocation: McpInvocationContext.McpInvocationScope = {
   requestNamespace: "monitor-session",
   thread: {
     threadId: MonitorTestkit.threadId,
+    controllerId: "session",
     providerSessionId: "session",
     providerInstanceId: ProviderInstanceId.make("codex"),
   },

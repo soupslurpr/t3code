@@ -73,6 +73,7 @@ const threadCaller = (threadId: ThreadId): McpInvocationContext.McpInvocationSco
   requestNamespace: `provider:${threadId}`,
   thread: {
     threadId,
+    controllerId: `provider:${threadId}`,
     providerSessionId: `provider:${threadId}`,
     providerInstanceId: ProviderInstanceId.make("codex"),
   },

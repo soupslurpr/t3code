@@ -800,6 +800,7 @@ export const makeDeviceTools = Effect.fn("evaluateMcpToolUse.makeDeviceTools")(f
     environmentId: EnvironmentId.make("00000000-0000-4000-8000-0000000000e0"),
     requestNamespace: "mcp-tool-use-eval",
     thread: {
+      controllerId: "mcp-tool-use-eval",
       threadId: ThreadId.make("mcp-tool-use-eval"),
       providerSessionId: "mcp-tool-use-eval",
       providerInstanceId: ProviderInstanceId.make("codex"),

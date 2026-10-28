@@ -74,6 +74,7 @@ function makeComputer(options: {
     snapshot: options.snapshot ?? (() => unexpected),
     act: options.act ?? (() => unexpected),
     releaseInputs: unexpected,
+    cancelPendingAccess: unexpected,
     release: unexpected,
     forget: unexpected,
   };
@@ -95,6 +96,7 @@ const computerRouterLayer = (computer: ReturnType<typeof makeComputer>) =>
       releaseAvailability: () => computer.releaseAvailability,
       snapshot: (_context, input) => computer.snapshot(input),
       act: (_context, input) => computer.act(input),
+      interrupt: () => Effect.die("unexpected interrupt"),
       release: () => computer.release.pipe(Effect.andThen(computer.status)),
       forget: () => computer.forget,
     }),
@@ -128,6 +130,7 @@ describe("computer IPC methods", () => {
         forceForget: () => Effect.die("unexpected force forget"),
         snapshot: () => Effect.die("unexpected snapshot"),
         act: () => Effect.die("unexpected act"),
+        interrupt: () => Effect.die("unexpected interrupt"),
         release: () => Effect.die("unexpected access release"),
         forget: () => Effect.die("unexpected forget"),
       });
@@ -255,6 +258,7 @@ describe("computer IPC methods", () => {
         releaseAvailability: () => Effect.die("unexpected release availability"),
         snapshot: () => Effect.die("unexpected snapshot"),
         act: () => Effect.die("unexpected act"),
+        interrupt: () => Effect.die("unexpected interrupt"),
         release: () => Effect.die("unexpected release"),
         forget: () => Effect.die("unexpected forget"),
       });
