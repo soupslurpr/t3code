@@ -2430,6 +2430,7 @@ it.layer(McpProviderSessions.layer)("OpenCode2 adapter", (it) => {
           url: "http://127.0.0.1:3773/mcp",
           headers: { Authorization: "Bearer thread-credential" },
           oauth: false,
+          timeout: { execution: 3_900_000 },
         },
       });
       const turn = [
@@ -2501,6 +2502,7 @@ it.layer(McpProviderSessions.layer)("OpenCode2 adapter", (it) => {
             url: "http://127.0.0.1:3773/mcp",
             headers: { Authorization: "Bearer thread-credential" },
             oauth: false,
+            timeout: { execution: 3_900_000 },
           },
         }),
         reply("mcp.add", null),

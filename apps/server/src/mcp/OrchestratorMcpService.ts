@@ -117,13 +117,12 @@ import {
   runtimeModeRank,
   taskPrompt,
 } from "./delegatedTaskModes.ts";
+import { resolveMcpWaitTimeoutMs } from "./mcpWaitTimeout.ts";
 import { isLiveCallerShell, threadNotFound } from "./threadAccess.ts";
 import * as SecretRequests from "../secrets/SecretRequests.ts";
 import * as PeerForwarding from "../peer/PeerForwarding.ts";
 import * as RemoteDelegation from "../peer/RemoteDelegation.ts";
 
-const DEFAULT_WAIT_TIMEOUT_MS = 10 * 60 * 1_000;
-const MAX_WAIT_TIMEOUT_MS = 60 * 60 * 1_000;
 const TASK_WAKE_EVENTS = [
   { thread: "parent", eventType: "subagent.updated" },
   { thread: "child", eventType: "run.updated" },
@@ -1656,10 +1655,7 @@ const make = Effect.gen(function* () {
     taskId: NodeId,
     requestedTimeoutMs: number | undefined,
   ): Effect.fn.Return<OrchestratorMcpDelegateTaskResult, OrchestratorMcpFailure> {
-    const timeoutMs = Math.min(
-      MAX_WAIT_TIMEOUT_MS,
-      Math.max(1, requestedTimeoutMs ?? DEFAULT_WAIT_TIMEOUT_MS),
-    );
+    const timeoutMs = yield* resolveMcpWaitTimeoutMs(providerRegistry, scope, requestedTimeoutMs);
     const waited = yield* waitForTask(scope, taskId, timeoutMs);
     if (Option.isSome(waited)) return waited.value;
     // As for a local task: once the blocking wait ends, a later result wakes the parent.
@@ -2109,6 +2105,7 @@ const make = Effect.gen(function* () {
       }
       const runId = run.id;
       const nodeId = run.rootNodeId;
+      const timeoutMs = yield* resolveMcpWaitTimeoutMs(providerRegistry, scope, input.timeoutMs);
       const key = yield* requestKey(input.clientRequestId);
       const turnItemId = TurnItemId.make(
         `turn-item:secret-request:${stablePart(threadId)}:${stablePart(key)}`,
@@ -2140,7 +2137,6 @@ const make = Effect.gen(function* () {
               ),
             ),
           );
-      yield* record("pending");
       // Only this call can hand the agent its ref, so the card must not
       // outlive it: a timeout, a failed wait or an aborted call closes it as
       // cancelled.
@@ -2150,44 +2146,45 @@ const make = Effect.gen(function* () {
         ),
       );
 
-      const answered = yield* Effect.gen(function* () {
-        while (true) {
-          const projection = yield* threadManagement
-            .getThreadRecords(threadId, ["runs", "turnItems"], {
-              turnItemTypes: ["secret_request"],
-              messageRoles: [],
-            })
-            .pipe(
-              Effect.mapError((error) =>
-                failure(
-                  "orchestration_error",
-                  `Unable to read the secret request: ${errorMessage(error)}`,
-                ),
-              ),
-            );
-          const item = projection.turnItems.find((candidate) => candidate.id === turnItemId);
-          if (item?.type === "secret_request" && item.secretStatus !== "pending") {
-            return item.secretStatus;
-          }
-          const current = projection.runs.find((candidate) => candidate.id === runId);
-          if (
-            current === undefined ||
-            ThreadManagementService.isTerminalRunStatus(current.status)
-          ) {
-            yield* record("cancelled");
-            return "cancelled" as const;
-          }
-          yield* Effect.sleep(Duration.millis(SECRET_REQUEST_POLL_INTERVAL_MS));
-        }
-      }).pipe(
-        Effect.timeoutOption(
-          Duration.millis(
-            Math.min(input.timeoutMs ?? DEFAULT_WAIT_TIMEOUT_MS, MAX_WAIT_TIMEOUT_MS),
-          ),
-        ),
-        Effect.onExit((exit) => (Exit.isSuccess(exit) ? Effect.void : closeCard)),
+      const answered = yield* Effect.uninterruptibleMask((restore) =>
+        Effect.gen(function* () {
+          yield* record("pending");
+          const result = yield* restore(
+            Effect.gen(function* () {
+              while (true) {
+                const projection = yield* threadManagement
+                  .getThreadRecords(threadId, ["runs", "turnItems"], {
+                    turnItemTypes: ["secret_request"],
+                    messageRoles: [],
+                  })
+                  .pipe(
+                    Effect.mapError((error) =>
+                      failure(
+                        "orchestration_error",
+                        `Unable to read the secret request: ${errorMessage(error)}`,
+                      ),
+                    ),
+                  );
+                const item = projection.turnItems.find((candidate) => candidate.id === turnItemId);
+                if (item?.type === "secret_request" && item.secretStatus !== "pending") {
+                  return item.secretStatus;
+                }
+                const current = projection.runs.find((candidate) => candidate.id === runId);
+                if (
+                  current === undefined ||
+                  ThreadManagementService.isTerminalRunStatus(current.status)
+                ) {
+                  yield* record("cancelled");
+                  return "cancelled" as const;
+                }
+                yield* Effect.sleep(Duration.millis(SECRET_REQUEST_POLL_INTERVAL_MS));
+              }
+            }).pipe(Effect.timeoutOption(Duration.millis(timeoutMs))),
+          ).pipe(Effect.onExit((exit) => (Exit.isSuccess(exit) ? Effect.void : closeCard)));
+          if (Option.isNone(result)) yield* closeCard;
+          return result;
+        }),
       );
-      if (Option.isNone(answered)) yield* closeCard;
       const status = Option.isSome(answered)
         ? answered.value
         : yield* threadManagement
@@ -2456,10 +2453,7 @@ const make = Effect.gen(function* () {
       if (input.mode !== "wait") {
         return yield* readTask(scope, taskId, false, true);
       }
-      const timeoutMs = Math.min(
-        MAX_WAIT_TIMEOUT_MS,
-        Math.max(1, input.timeoutMs ?? DEFAULT_WAIT_TIMEOUT_MS),
-      );
+      const timeoutMs = yield* resolveMcpWaitTimeoutMs(providerRegistry, scope, input.timeoutMs);
       const waited = yield* waitForTask(scope, taskId, timeoutMs);
       if (Option.isSome(waited) && isTerminalTaskStatus(waited.value.status)) {
         return waited.value;
@@ -3108,10 +3102,7 @@ const make = Effect.gen(function* () {
           projectId: target.thread.projectId,
           threadId: input.threadId,
           ...(input.runId === undefined ? {} : { runId: input.runId }),
-          timeoutMs: Math.min(
-            MAX_WAIT_TIMEOUT_MS,
-            Math.max(1, input.timeoutMs ?? DEFAULT_WAIT_TIMEOUT_MS),
-          ),
+          timeoutMs: yield* resolveMcpWaitTimeoutMs(providerRegistry, scope, input.timeoutMs),
           ...(input.untilDelegatedWorkSettled === true ? { untilDelegatedWorkSettled: true } : {}),
         })
         .pipe(Effect.mapError(threadManagementFailure));

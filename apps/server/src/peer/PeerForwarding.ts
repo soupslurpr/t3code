@@ -18,6 +18,8 @@ import * as Layer from "effect/Layer";
 import * as Schema from "effect/Schema";
 import type * as Tool from "effect/ai/Tool";
 
+import { resolveMcpWaitTimeoutMs } from "../mcp/mcpWaitTimeout.ts";
+import * as ProviderRegistry from "../provider/ProviderRegistry.ts";
 import { assertNotLinked } from "../mcp/linkOrigin.ts";
 import * as McpInvocationContext from "../mcp/McpInvocationContext.ts";
 import { readCaller, unavailable } from "../mcp/threadAccess.ts";
@@ -31,8 +33,6 @@ import * as PeerMcpClient from "./PeerMcpClient.ts";
  * forwarded wait goes out in pieces no longer than this.
  */
 export const FORWARDED_WAIT_CHUNK_MS = 50_000;
-const DEFAULT_WAIT_TIMEOUT_MS = 10 * 60 * 1_000;
-const MAX_WAIT_TIMEOUT_MS = 60 * 60 * 1_000;
 
 type Scope = McpInvocationContext.McpInvocationScope;
 
@@ -93,6 +93,7 @@ export const remoteTarget = (scope: Scope, environmentId: EnvironmentId | undefi
 
 const make = Effect.gen(function* () {
   const peers = yield* PeerMcpClient.PeerMcpClient;
+  const providers = yield* ProviderRegistry.ProviderRegistry;
   const links = yield* PeerLinks.PeerLinks;
   const crypto = yield* Crypto.Crypto;
   const threads = yield* ThreadManagement.ThreadManagementService;
@@ -182,10 +183,7 @@ const make = Effect.gen(function* () {
   const waitForThread: PeerForwarding["Service"]["waitForThread"] = Effect.fn(
     "PeerForwarding.waitForThread",
   )(function* (scope, environmentId, input) {
-    let remaining = Math.min(
-      MAX_WAIT_TIMEOUT_MS,
-      Math.max(1, input.timeoutMs ?? DEFAULT_WAIT_TIMEOUT_MS),
-    );
+    let remaining = yield* resolveMcpWaitTimeoutMs(providers, scope, input.timeoutMs);
     let runId = input.runId;
     while (true) {
       const chunk = Math.min(remaining, FORWARDED_WAIT_CHUNK_MS);
