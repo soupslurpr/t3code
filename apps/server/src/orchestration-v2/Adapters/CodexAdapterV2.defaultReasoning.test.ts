@@ -24,7 +24,11 @@ it.effect(
           assert.equal(params.effort, explicit ?? "max");
           assert.deepEqual(params.collaborationMode, {
             mode: interactionMode,
-            settings: { model: "openai.gpt-6-astra", reasoning_effort: explicit ?? "max" },
+            settings: {
+              model: "openai.gpt-6-astra",
+              reasoning_effort: explicit ?? "max",
+              developer_instructions: null,
+            },
           });
           assert.equal(params.approvalPolicy, "untrusted");
           assert.deepEqual(params.sandboxPolicy, { type: "readOnly" });
@@ -58,5 +62,22 @@ it.effect("uses the current account's supported default when its descriptor excl
     });
     assert.equal(params.effort, "high");
     assert.equal(params.collaborationMode?.settings.reasoning_effort, "high");
+  }),
+);
+
+it.effect("clears inherited effort, tier and mode instructions with explicit nulls", () =>
+  Effect.gen(function* () {
+    const params = yield* buildCodexTurnStartParams({
+      nativeThreadId: "reset-thread",
+      codexInput: [{ type: "text", text: "continue" }],
+      runtimePolicy: { runtimeMode: "full-access", interactionMode: "default", cwd: null },
+      modelSelection: { instanceId: ProviderInstanceId.make("codex"), model: "gpt-5.4" },
+    });
+    assert.propertyVal(params, "effort", null);
+    assert.propertyVal(params, "serviceTier", null);
+    assert.deepEqual(params.collaborationMode, {
+      mode: "default",
+      settings: { model: "gpt-5.4", reasoning_effort: null, developer_instructions: null },
+    });
   }),
 );

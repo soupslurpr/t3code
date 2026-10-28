@@ -4,18 +4,18 @@ import { T3_CODE_DEVICE_TOOL_INSTRUCTIONS } from "@t3tools/provider-core/server/
 import { describe, it } from "vite-plus/test";
 
 import {
-  buildCodexAdditionalContext,
+  buildCodexApplicationContext,
   CODEX_ADDITIONAL_CONTEXT_VALUE_MAX_BYTES,
 } from "./CodexDeveloperInstructions.ts";
 
-describe("buildCodexAdditionalContext", () => {
+describe("buildCodexApplicationContext", () => {
   describe.each([
     { model: "custom-model", modelName: "Custom 🦊 Model", reasoningEffort: "xhigh" },
   ])("with runtime $model", (runtime) => {
     it.each([undefined, { browser: true, device: true }])(
       "keeps every entry within Codex's per-entry cap with tools %j",
       (availability) => {
-        const context = buildCodexAdditionalContext(runtime, availability);
+        const context = buildCodexApplicationContext(runtime, availability);
 
         for (const [key, entry] of Object.entries(context)) {
           // Codex counts ceil(UTF-8 bytes / 4) tokens, excluding keys and wrappers.
@@ -58,7 +58,7 @@ describe("Codex runtime context", () => {
 
 describe("Codex orchestration context", () => {
   it("routes subagents native first, delegate_task for the rest", () => {
-    const orchestration = Object.entries(buildCodexAdditionalContext({ model: "gpt-6.1-sol" }))
+    const orchestration = Object.entries(buildCodexApplicationContext({ model: "gpt-6.1-sol" }))
       .filter(([key]) => key.startsWith("t3_code_orchestration_"))
       .map(([, entry]) => entry.value)
       .join("\n");
@@ -80,25 +80,25 @@ describe("Codex orchestration context", () => {
 describe("Codex device context", () => {
   it("adds the shared device block only when the session holds device access", () => {
     const tools = (device: boolean) =>
-      buildCodexAdditionalContext({ model: "gpt-6.1-sol" }, { browser: true, device }).t3_code_tools
-        ?.value ?? "";
+      buildCodexApplicationContext({ model: "gpt-6.1-sol" }, { browser: true, device })
+        .t3_code_devices?.value ?? "";
 
-    NodeAssert.ok(tools(true).includes(T3_CODE_DEVICE_TOOL_INSTRUCTIONS));
+    NodeAssert.ok(tools(true).includes(T3_CODE_DEVICE_TOOL_INSTRUCTIONS.trim()));
     NodeAssert.ok(!tools(true).includes("ToolSearch"));
     NodeAssert.ok(!tools(false).includes("## T3 Code devices"));
   });
 });
 
-function runtimeInstructions(runtime: Parameters<typeof buildCodexAdditionalContext>[0]) {
-  return buildCodexAdditionalContext(runtime).t3_code_runtime!.value;
+function runtimeInstructions(runtime: Parameters<typeof buildCodexApplicationContext>[0]) {
+  return buildCodexApplicationContext(runtime).t3_code_runtime!.value;
 }
 
 it("advertises availability and control only when the native tool capability is present", () => {
-  const available = buildCodexAdditionalContext(
+  const available = buildCodexApplicationContext(
     { model: "gpt-6-astra" },
     { browser: false, device: false },
   );
-  const unavailable = buildCodexAdditionalContext(
+  const unavailable = buildCodexApplicationContext(
     { model: "gpt-6-astra" },
     { browser: false, device: true },
     false,
@@ -117,4 +117,32 @@ it("advertises availability and control only when the native tool capability is 
     /otherwise do not schedule a cache-driven review/,
   );
   NodeAssert.equal(unavailable.t3_code_desktop, undefined);
+});
+
+it("keeps application fragments independent from Codex mode defaults and gates each tool surface", () => {
+  for (const browser of [false, true])
+    for (const device of [false, true])
+      for (const computer of [false, true]) {
+        const context = buildCodexApplicationContext(
+          { model: "gpt-6-astra", reasoningEffort: "low" },
+          { browser, device },
+          computer,
+        );
+        NodeAssert.equal(context.t3_code_browser !== undefined, browser);
+        NodeAssert.equal(context.t3_code_devices !== undefined, device);
+        NodeAssert.equal(context.t3_code_desktop !== undefined, computer);
+        NodeAssert.equal(context.t3_code_desktop_actions !== undefined, computer);
+        NodeAssert.match(
+          context.t3_code_runtime!.value,
+          /as gpt-6-astra with low reasoning effort/,
+        );
+        for (const [key, entry] of Object.entries(context)) {
+          NodeAssert.equal(entry.kind, "application");
+          NodeAssert.ok(
+            Buffer.byteLength(entry.value, "utf8") <= CODEX_ADDITIONAL_CONTEXT_VALUE_MAX_BYTES,
+            key,
+          );
+          NodeAssert.doesNotMatch(entry.value, /<collaboration_mode>/);
+        }
+      }
 });
