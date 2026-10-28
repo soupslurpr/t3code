@@ -9,6 +9,8 @@ import {
   type SourceControlCloneRepositoryInput,
   ProjectId,
   ProviderInstanceId,
+  ProviderDriverKind,
+  type ServerProvider,
   RunId,
   ThreadId,
 } from "@t3tools/contracts";
@@ -75,7 +77,7 @@ const usersThread = ThreadId.make("thread:box-users-own");
  * started, whose run finishes on the third wait, and the box user's own.
  * Every send and wait is recorded.
  */
-const boxThreads = (seen: Ref.Ref<Seen>, linkSession: Ref.Ref<string>) => {
+const boxThreads = (seen: Ref.Ref<Seen>, linkSession: Ref.Ref<string>, completeAfter = 3) => {
   const base = { ...liveThreadShell(boxThread, { runtimeMode: "auto" }), projectId: boxProject };
   const linked = Ref.get(linkSession).pipe(
     Effect.map((sessionId) => ({ ...base, linkOrigin: { sessionId, label: "T3 Code · Laptop" } })),
@@ -134,8 +136,8 @@ const boxThreads = (seen: Ref.Ref<Seen>, linkSession: Ref.Ref<string>) => {
       Ref.updateAndGet(seen, (current) => ({ ...current, waits: [...current.waits, input] })).pipe(
         Effect.map(({ waits }) => ({
           threadId: input.threadId,
-          run: run(waits.length < 3 ? "running" : "completed"),
-          timedOut: waits.length < 3,
+          run: run(waits.length < completeAfter ? "running" : "completed"),
+          timedOut: waits.length < completeAfter,
         })),
       ),
   });
@@ -201,7 +203,7 @@ const boxProjects = (seen: Ref.Ref<Seen>) =>
  * OAuth. `linkSession` is filled in once A links, so B's fixture thread reads
  * as one that link started.
  */
-const serveBox = (seen: Ref.Ref<Seen>, linkSession: Ref.Ref<string>) =>
+const serveBox = (seen: Ref.Ref<Seen>, linkSession: Ref.Ref<string>, completeAfter = 3) =>
   servePeer(
     box,
     Layer.mergeAll(
@@ -211,7 +213,7 @@ const serveBox = (seen: Ref.Ref<Seen>, linkSession: Ref.Ref<string>) =>
     ).pipe(
       Layer.provide(DocumentText.layer.pipe(Layer.provideMerge(NodeServices.layer))),
       Layer.provide(NodeCrypto.layer),
-      Layer.provide(boxThreads(seen, linkSession)),
+      Layer.provide(boxThreads(seen, linkSession, completeAfter)),
       Layer.provide(Layer.mock(ThreadSearch.ThreadSearch)({})),
       Layer.provide(boxLaunches(seen)),
       Layer.provide(
@@ -257,104 +259,147 @@ const mcpClient = McpSchema.McpServerClient.of({
  * Environment A: its own orchestrator toolkit with forwarding, and a thread
  * caller whose modes the test picks. Its local threads never matter here.
  */
-const makeLaptop = Effect.gen(function* () {
-  const linking = yield* layerLinkingEnvironment(laptop).pipe(Layer.build);
-  const layerHere = Layer.mergeAll(
-    McpHttpServer.layerOrchestratorToolkit,
-    McpHttpServer.layerProjectRegistration,
-    McpHttpServer.layerThreadToolkit,
-  ).pipe(
-    Layer.provide(DocumentText.layer.pipe(Layer.provideMerge(NodeServices.layer))),
-    Layer.provideMerge(McpServer.McpServer.layer),
-    Layer.provide(Layer.mock(ThreadSearch.ThreadSearch)({})),
-    Layer.provide(Layer.mock(ThreadLaunch.ThreadLaunchService)({})),
-    Layer.provide(
-      Layer.mock(ManagedProjectFolders.ManagedProjectFolders)({ namedProjectsRoot: "/projects" }),
-    ),
-    Layer.provide(Layer.mock(GitVcsDriver.GitVcsDriver)({})),
-    Layer.provide(Layer.mock(SourceControlRepositoryService.SourceControlRepositoryService)({})),
-    Layer.provide(
-      ServerConfig.layerTest(process.cwd(), { prefix: "t3-peer-forwarding-laptop-" }).pipe(
-        Layer.provide(NodeServices.layer),
+const makeLaptopWithDriver = (driver: ProviderDriverKind) =>
+  Effect.gen(function* () {
+    const linking = yield* layerLinkingEnvironment(laptop).pipe(Layer.build);
+    const layerHere = Layer.mergeAll(
+      McpHttpServer.layerOrchestratorToolkit,
+      McpHttpServer.layerProjectRegistration,
+      McpHttpServer.layerThreadToolkit,
+    ).pipe(
+      Layer.provide(DocumentText.layer.pipe(Layer.provideMerge(NodeServices.layer))),
+      Layer.provideMerge(McpServer.McpServer.layer),
+      Layer.provide(Layer.mock(ThreadSearch.ThreadSearch)({})),
+      Layer.provide(Layer.mock(ThreadLaunch.ThreadLaunchService)({})),
+      Layer.provide(
+        Layer.mock(ManagedProjectFolders.ManagedProjectFolders)({ namedProjectsRoot: "/projects" }),
       ),
-    ),
-    Layer.provide(NodeServices.layer),
-    Layer.provide(PeerForwarding.layer),
-    Layer.provide(Layer.succeedContext(linking)),
-    Layer.provide(NodeCrypto.layer),
-    Layer.provideMerge(
-      Layer.mock(ThreadManagement.ThreadManagementService)({
-        getThreadShell: (threadId) =>
-          Effect.succeed(
-            threadId === ThreadId.make("thread:laptop-from-desk")
-              ? {
-                  ...liveThreadShell(threadId, { runtimeMode: "full-access" }),
-                  // Work another environment's link started on this laptop.
-                  linkOrigin: { sessionId: "session:desk", label: "T3 Code · Desk" },
-                }
-              : liveThreadShell(
-                  threadId,
-                  threadId === ThreadId.make("thread:laptop-plan")
-                    ? { runtimeMode: "full-access", interactionMode: "plan" }
-                    : { runtimeMode: "full-access" },
-                ),
-          ),
-        getProjectThreadRecords: ({ threadId }) =>
-          Effect.succeed({
-            thread: liveThreadShell(threadId, { runtimeMode: "full-access" }),
-          } as never),
-      }),
-    ),
-    Layer.provide(
-      Layer.mergeAll(
-        Layer.mock(ProviderRegistry.ProviderRegistry)({}),
-        Layer.mock(ProviderAdapterRegistry.ProviderAdapterRegistryV2)({}),
-        Layer.mock(ScheduledTaskService.ScheduledTaskService)({}),
-        Layer.mock(ProjectService.ProjectService)({}),
-        Layer.mock(ProjectCloneTracker.ProjectCloneTracker)({}),
-        Layer.mock(SecretRequests.SecretRequests)({}),
-        ServerSettings.layerTest(),
-        Layer.mock(RemoteDelegation.RemoteDelegation)({}),
-        Layer.mock(PeerLinkRequests.PeerLinkRequests)({}),
-      ),
-    ),
-    Layer.fresh,
-  );
-  const here = yield* Layer.build(layerHere);
-  const server = Context.get(here, McpServer.McpServer);
-  const scopeOf = (
-    caller: string,
-    capabilities: ReadonlySet<McpInvocationContext.McpCapability> = new Set(["orchestration"]),
-  ): McpInvocationContext.McpInvocationScope => ({
-    environmentId: laptop.environmentId,
-    requestNamespace: `provider-session:${caller}`,
-    thread: {
-      controllerId: "test-controller",
-      threadId: ThreadId.make(caller),
-      providerSessionId: `provider-session:${caller}`,
-      providerInstanceId: ProviderInstanceId.make("codex"),
-    },
-    client: undefined,
-    capabilities,
-    issuedAt: 1,
-  });
-  const call = (
-    caller: string,
-    name: string,
-    args: Record<string, unknown>,
-    capabilities?: ReadonlySet<McpInvocationContext.McpCapability>,
-  ) =>
-    server
-      .callTool({ name, arguments: args })
-      .pipe(
-        Effect.provideService(
-          McpInvocationContext.McpInvocationContext,
-          scopeOf(caller, capabilities),
+      Layer.provide(Layer.mock(GitVcsDriver.GitVcsDriver)({})),
+      Layer.provide(Layer.mock(SourceControlRepositoryService.SourceControlRepositoryService)({})),
+      Layer.provide(
+        ServerConfig.layerTest(process.cwd(), { prefix: "t3-peer-forwarding-laptop-" }).pipe(
+          Layer.provide(NodeServices.layer),
         ),
-        Effect.provideService(McpSchema.McpServerClient, mcpClient),
-      );
-  return { links: Context.get(linking, PeerLinks.PeerLinks), call };
-});
+      ),
+      Layer.provide(NodeServices.layer),
+      Layer.provide(PeerForwarding.layer),
+      Layer.provide(Layer.succeedContext(linking)),
+      Layer.provide(NodeCrypto.layer),
+      Layer.provideMerge(
+        Layer.mock(ThreadManagement.ThreadManagementService)({
+          getThreadShell: (threadId) =>
+            Effect.succeed(
+              threadId === ThreadId.make("thread:laptop-from-desk")
+                ? {
+                    ...liveThreadShell(threadId, { runtimeMode: "full-access" }),
+                    // Work another environment's link started on this laptop.
+                    linkOrigin: { sessionId: "session:desk", label: "T3 Code · Desk" },
+                  }
+                : liveThreadShell(
+                    threadId,
+                    threadId === ThreadId.make("thread:laptop-plan")
+                      ? { runtimeMode: "full-access", interactionMode: "plan" }
+                      : { runtimeMode: "full-access" },
+                  ),
+            ),
+          getProjectThreadRecords: ({ threadId }) =>
+            Effect.succeed({
+              thread: liveThreadShell(threadId, { runtimeMode: "full-access" }),
+            } as never),
+        }),
+      ),
+      Layer.provide(
+        Layer.mergeAll(
+          Layer.mock(ProviderRegistry.ProviderRegistry)({
+            getProviders: Effect.succeed([
+              { instanceId: ProviderInstanceId.make("codex"), driver } as ServerProvider,
+            ]),
+          }),
+          Layer.mock(ProviderAdapterRegistry.ProviderAdapterRegistryV2)({}),
+          Layer.mock(ScheduledTaskService.ScheduledTaskService)({}),
+          Layer.mock(ProjectService.ProjectService)({}),
+          Layer.mock(ProjectCloneTracker.ProjectCloneTracker)({}),
+          Layer.mock(SecretRequests.SecretRequests)({}),
+          ServerSettings.layerTest(),
+          Layer.mock(RemoteDelegation.RemoteDelegation)({}),
+          Layer.mock(PeerLinkRequests.PeerLinkRequests)({}),
+        ),
+      ),
+      Layer.fresh,
+    );
+    const here = yield* Layer.build(layerHere);
+    const server = Context.get(here, McpServer.McpServer);
+    const scopeOf = (
+      caller: string,
+      capabilities: ReadonlySet<McpInvocationContext.McpCapability> = new Set(["orchestration"]),
+    ): McpInvocationContext.McpInvocationScope => ({
+      environmentId: laptop.environmentId,
+      requestNamespace: `provider-session:${caller}`,
+      thread: {
+        controllerId: "test-controller",
+        threadId: ThreadId.make(caller),
+        providerSessionId: `provider-session:${caller}`,
+        providerInstanceId: ProviderInstanceId.make("codex"),
+      },
+      client: undefined,
+      capabilities,
+      issuedAt: 1,
+    });
+    const call = (
+      caller: string,
+      name: string,
+      args: Record<string, unknown>,
+      capabilities?: ReadonlySet<McpInvocationContext.McpCapability>,
+    ) =>
+      server
+        .callTool({ name, arguments: args })
+        .pipe(
+          Effect.provideService(
+            McpInvocationContext.McpInvocationContext,
+            scopeOf(caller, capabilities),
+          ),
+          Effect.provideService(McpSchema.McpServerClient, mcpClient),
+        );
+    return { links: Context.get(linking, PeerLinks.PeerLinks), call };
+  });
+const makeLaptop = makeLaptopWithDriver(ProviderDriverKind.make("codex"));
+
+it.effect.each([
+  { driver: "muse", timeoutMs: 600_000, expected: 240_000 },
+  { driver: "codex", timeoutMs: 600_000, expected: 600_000 },
+  { driver: "muse", timeoutMs: 17_000, expected: 17_000 },
+])(
+  "caps linked wait chunks at the $driver caller budget ($timeoutMs)",
+  ({ driver, timeoutMs, expected }) =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const seen = yield* Ref.make<Seen>(nothingSeen);
+        const linkSession = yield* Ref.make("");
+        const b = yield* serveBox(seen, linkSession, Infinity);
+        const a = yield* makeLaptopWithDriver(ProviderDriverKind.make(driver));
+        yield* linkTo(a.links, b, "auto");
+        yield* Ref.set(linkSession, (yield* b.linkedSessions)[0]!.sessionId);
+        const waited = yield* a.call("thread:laptop-full", "t3_thread_wait", {
+          environmentId: box.environmentId,
+          threadId: boxThread,
+          timeoutMs,
+        });
+        expect(waited.isError).toBe(false);
+        expect(waited.structuredContent).toMatchObject({
+          threadId: boxThread,
+          runId: boxRun,
+          timedOut: true,
+        });
+        const waits = (yield* Ref.get(seen)).waits;
+        expect(waits.reduce((sum, value) => sum + value.timeoutMs, 0)).toBe(expected);
+        expect(
+          waits.every((value) => value.timeoutMs <= PeerForwarding.FORWARDED_WAIT_CHUNK_MS),
+        ).toBe(true);
+        expect(waits[0]?.runId).toBeUndefined();
+        expect(waits.slice(1).every((value) => value.runId === boxRun)).toBe(true);
+      }),
+    ).pipe(Effect.provide(NodeHttpServer.layerTest)),
+);
 
 const failureOf = (result: McpSchema.CallToolResult) => {
   const text = result.content[0];
