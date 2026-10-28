@@ -656,6 +656,10 @@ it.effect.each([
     const layerTest = ThreadManagementService.layer.pipe(
       Layer.provide(
         Layer.mock(ProviderSessionManager.ProviderSessionManagerV2)({
+          get: () =>
+            Effect.succeedSome({
+              providerSessionId,
+            } as ProviderAdapter.ProviderAdapterV2SessionRuntime),
           isLive: () => Effect.succeed(true),
           otherWorkingThreads: () => Effect.succeed(others.map((id) => ThreadId.make(id))),
           releaseUnlessBusy: () =>
