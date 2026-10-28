@@ -47,6 +47,13 @@ const handlers = {
       return yield* router.snapshot(scope, input);
     }),
   ),
+  computer_observe_sequence: McpToolAccess.readsAsCaller((input) =>
+    Effect.gen(function* () {
+      const scope = yield* McpInvocationContext.requireThreadMcpCapability("computer");
+      const router = yield* ComputerAutomationRouter.ComputerAutomationRouter;
+      return yield* router.observeSequence(scope, input);
+    }),
+  ),
   computer_act: McpToolAccess.actsAsCaller((input) =>
     Effect.gen(function* () {
       const scope = yield* McpInvocationContext.requireThreadMcpCapability("computer");
@@ -74,12 +81,14 @@ const {
   computer_request_view,
   computer_request_control,
   computer_snapshot,
+  computer_observe_sequence,
   computer_act,
   ...standardHandlers
 } = handlers;
 
 const imageHandlers = {
   computer_snapshot,
+  computer_observe_sequence,
   computer_request_view,
   computer_request_control,
   computer_act,
