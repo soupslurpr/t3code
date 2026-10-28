@@ -6,6 +6,7 @@ import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Path from "effect/Path";
+import * as Predicate from "effect/Predicate";
 import * as Result from "effect/Result";
 import * as Schema from "effect/Schema";
 import * as Schedule from "effect/Schedule";
@@ -98,6 +99,7 @@ export interface CodexAppServerProviderSnapshot {
   readonly version: string | undefined;
   readonly models: ReadonlyArray<ServerProviderModel> | undefined;
   readonly serviceTier?: string | undefined;
+  readonly config?: CodexSchema.V2ConfigReadResponse__Config | undefined;
   readonly skills: ReadonlyArray<ServerProviderSkill>;
 }
 
@@ -113,6 +115,16 @@ const REASONING_EFFORT_LABELS: Readonly<Record<string, string>> = {
 };
 
 const DEFAULT_SERVICE_TIER_ID = "default";
+// https://developers.openai.com/api/docs/guides/prompt-caching#cache-lifetime
+const CODEX_PROMPT_CACHE_MINIMUM_LIFETIME_MS = 30 * 60 * 1_000;
+/** Matches the documented GPT-5.6-and-later minimum, leaving other model families unknown. */
+function hasDocumentedPromptCacheMinimum(model: string): boolean {
+  const version = /^gpt-(\d+)(?:\.(\d+))?(?:-|$)/u.exec(codexModelFamily(model));
+  if (version === null) return false;
+  const major = Number(version[1]);
+  const minor = Number(version[2] ?? 0);
+  return major > 5 || (major === 5 && minor >= 6);
+}
 
 const SERVICE_TIER_DESCRIPTIONS: Readonly<Record<string, string>> = {
   ultrafast: "Even faster, more expensive",
@@ -251,6 +263,14 @@ export function mapCodexModelCapabilities(
 
   return createModelCapabilities({
     optionDescriptors,
+    ...(hasDocumentedPromptCacheMinimum(model.model)
+      ? {
+          promptCache: {
+            minimumLifetimeMs: CODEX_PROMPT_CACHE_MINIMUM_LIFETIME_MS,
+            source: "provider-documented" as const,
+          },
+        }
+      : {}),
   });
 }
 
@@ -327,7 +347,12 @@ function appendCustomCodexModels(
   models: ReadonlyArray<ServerProviderModel>,
   customModels: ReadonlyArray<CustomModelSetting>,
 ): ReadonlyArray<ServerProviderModel> {
-  const fallbackCapabilities = models.find((model) => model.capabilities)?.capabilities ?? null;
+  const fallbackModelCapabilities = models.find((model) => model.capabilities)?.capabilities;
+  const fallbackCapabilities = fallbackModelCapabilities
+    ? createModelCapabilities({
+        optionDescriptors: fallbackModelCapabilities.optionDescriptors ?? [],
+      })
+    : null;
   return providerModelsFromSettings(models, customModels, fallbackCapabilities);
 }
 
@@ -558,7 +583,7 @@ const probeCodexAppServerProvider = Effect.fn("probeCodexAppServerProvider")(fun
 
   // Optional discovery must finish before the outer timeout can discard the account result.
   const deadlineMs = spawnedAtMs + CODEX_AUTH_PROBE_TIMEOUT_MS - CODEX_DISCOVERY_MARGIN_MS;
-  const [skillsResponse, models, serviceTier, rateLimits] = yield* Effect.all(
+  const [skillsResponse, models, config, rateLimits] = yield* Effect.all(
     [
       withCodexDiscoveryDeadline(client.request("skills/list", { cwds: [input.cwd] }), deadlineMs),
       accountResponse.account?.type === "chatgpt"
@@ -575,7 +600,7 @@ const probeCodexAppServerProvider = Effect.fn("probeCodexAppServerProvider")(fun
         deadlineMs,
         CODEX_CONFIG_PROBE_TIMEOUT_MS,
       ).pipe(
-        Effect.map((response) => response?.config.service_tier ?? undefined),
+        Effect.map((response) => response?.config),
         Effect.catch(() => Effect.logDebug("Codex config read failed.").pipe(Effect.as(undefined))),
       ),
       // Usage is an enrichment: a failure or a slow answer degrades to "no
@@ -613,7 +638,8 @@ const probeCodexAppServerProvider = Effect.fn("probeCodexAppServerProvider")(fun
     ...(rateLimits ? { rateLimits } : {}),
     version,
     models,
-    serviceTier,
+    config,
+    serviceTier: config?.service_tier ?? undefined,
     skills: skillsResponse ? parseCodexSkillsListResponse(skillsResponse, input.cwd) : [],
   } satisfies CodexAppServerProviderSnapshot;
 });
@@ -738,6 +764,44 @@ function accountProbeStatus({ account, rateLimits }: CodexAppServerProviderSnaps
   }
 
   return { status: "ready", auth };
+}
+
+function hasOpenAiCacheProvenance(
+  snapshot: CodexAppServerProviderSnapshot,
+  environment: NodeJS.ProcessEnv,
+  managed: boolean,
+): boolean {
+  const config = snapshot.config;
+  if (!config || environment.OPENAI_BASE_URL?.trim() || config.chatgpt_base_url != null)
+    return false;
+  const provider = config.model_provider ?? "openai";
+  if (managed && provider === "openai_token_sharing") {
+    const providers = config.model_providers;
+    if (!Predicate.isObject(providers)) return false;
+    const definition = providers.openai_token_sharing;
+    return (
+      Predicate.isObject(definition) &&
+      definition.base_url === "https://api.openai.com/v1" &&
+      definition.wire_api === "responses"
+    );
+  }
+  const account = snapshot.account.account;
+  return provider === "openai" && (account?.type === "apiKey" || account?.type === "chatgpt");
+}
+
+function codexModelsWithVerifiedCacheTiming(
+  snapshot: CodexAppServerProviderSnapshot,
+  environment: NodeJS.ProcessEnv,
+  managed: boolean,
+): ReadonlyArray<ServerProviderModel> {
+  const models = snapshot.models ?? [];
+  if (hasOpenAiCacheProvenance(snapshot, environment, managed)) return models;
+  // Catalog model names do not establish a gateway's documented cache contract.
+  return models.map((model) => {
+    if (model.capabilities?.promptCache?.source !== "provider-documented") return model;
+    const { promptCache: _promptCache, ...capabilities } = model.capabilities;
+    return { ...model, capabilities };
+  });
 }
 
 export const checkCodexProviderStatus = Effect.fn("checkCodexProviderStatus")(function* (
@@ -871,7 +935,14 @@ export const checkCodexProviderStatus = Effect.fn("checkCodexProviderStatus")(fu
     enabled: codexSettings.enabled,
     checkedAt,
     models: pipe(
-      appendCustomCodexModels(snapshot.models ?? [], codexSettings.customModels),
+      appendCustomCodexModels(
+        codexModelsWithVerifiedCacheTiming(
+          snapshot,
+          resolvedEnvironment,
+          managedAuth !== undefined,
+        ),
+        codexSettings.customModels,
+      ),
       applyPreferredCodexDefaultModel,
       (models) => applyConfiguredCodexServiceTier(models, snapshot.serviceTier),
     ),

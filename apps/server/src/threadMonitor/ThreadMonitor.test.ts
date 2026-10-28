@@ -925,7 +925,9 @@ const workingComputerLayer = Layer.effect(
         Effect.flatten(Ref.get(probe.beforeRelease)).pipe(
           Effect.andThen(Ref.update(probe.releases, (count) => count + 1)),
         ),
-      capabilities: Effect.succeed({ evaluators: [], deterministicMatches: ["image-change"] }),
+      monitorCapabilities: () => Effect.succeed({}),
+      computerCapabilities: () =>
+        Effect.succeed({ evaluators: [], deterministicMatches: ["image-change"] }),
     } satisfies ThreadMonitorComputerService["Service"];
   }),
 );

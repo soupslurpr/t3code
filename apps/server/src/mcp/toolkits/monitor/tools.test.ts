@@ -10,6 +10,7 @@ it("exports bounded object schemas and provider-neutral lifecycle tools", () => 
   const names = Object.keys(MonitorToolkit.tools);
   expect(names).toEqual([
     "monitor_start",
+    "monitor_capabilities",
     "monitor_status",
     "monitor_signal",
     "monitor_cancel",
@@ -49,8 +50,12 @@ it("exports bounded object schemas and provider-neutral lifecycle tools", () => 
   expect(Context.get(start.annotations, Tool.Destructive)).toBe(true);
   expect(Context.get(start.annotations, Tool.OpenWorld)).toBe(true);
 
-  const capabilities = MonitorToolkit.tools.computer_watch_capabilities;
-  expect(Context.get(capabilities.annotations, Tool.Readonly)).toBe(true);
+  const monitorCapabilities = MonitorToolkit.tools.monitor_capabilities;
+  expect(Context.get(monitorCapabilities.annotations, Tool.Readonly)).toBe(true);
+  expect(Context.get(monitorCapabilities.annotations, Tool.Idempotent)).toBe(true);
+
+  const computerCapabilities = MonitorToolkit.tools.computer_watch_capabilities;
+  expect(Context.get(computerCapabilities.annotations, Tool.Readonly)).toBe(true);
 
   const inspect = MonitorToolkit.tools.computer_watch_inspect;
   expect(Context.get(inspect.annotations, Tool.Readonly)).toBe(false);
