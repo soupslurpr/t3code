@@ -45,7 +45,7 @@ import { ServerSettingsService } from "../serverSettings.ts";
 import { SourceControlRepositoryService } from "../sourceControl/SourceControlRepositoryService.ts";
 import { GitVcsDriver } from "../vcs/GitVcsDriver.ts";
 import { VcsStatusBroadcaster } from "../vcs/VcsStatusBroadcaster.ts";
-import { buildCodexAdditionalContext } from "./CodexDeveloperInstructions.ts";
+import { buildCodexApplicationContext } from "./CodexDeveloperInstructions.ts";
 import { DocumentText } from "./DocumentText.ts";
 import { ProviderRegistry } from "./ProviderRegistry.ts";
 import budget from "./agentContextBudget.json" with { type: "json" };
@@ -109,7 +109,7 @@ const claudeSystemAppend = () => {
 
 const codexAdditionalContext = () =>
   Object.values(
-    buildCodexAdditionalContext(
+    buildCodexApplicationContext(
       { model: "gpt-6.1-sol", modelName: "GPT-6.1 Sol", reasoningEffort: "high" },
       { browser: true, device: true },
     ),
