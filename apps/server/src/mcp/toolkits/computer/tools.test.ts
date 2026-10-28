@@ -14,6 +14,7 @@ it("exports bounded object schemas and accurate safety annotations", () => {
   for (const [name, tool] of Object.entries(ComputerToolkit.tools)) {
     const schema = schemas[name] as {
       readonly type?: unknown;
+      readonly required?: unknown;
       readonly anyOf?: unknown;
       readonly oneOf?: unknown;
     };
@@ -24,6 +25,11 @@ it("exports bounded object schemas and accurate safety annotations", () => {
     expect(schema.type, `${tool.name} must export a top-level object schema`).toBe("object");
     expect(schema.anyOf, `${tool.name} must not export a root anyOf`).toBeUndefined();
     expect(schema.oneOf, `${tool.name} must not export a root oneOf`).toBeUndefined();
+    if (name === "user_desktop_list") {
+      expect(schema.required, `${tool.name} must not require a desktop`).toBeUndefined();
+    } else {
+      expect(schema.required, `${tool.name} must require an explicit desktop`).toContain("desktop");
+    }
     expect(Context.get(tool.annotations, Tool.OpenWorld)).toBe(true);
   }
 

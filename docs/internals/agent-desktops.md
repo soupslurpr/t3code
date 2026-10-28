@@ -14,11 +14,17 @@ claiming each desktop. A replacement controller in the same thread can atomicall
 desktop after a provider or harness restart, while active operations and control leases prevent a
 takeover. Cross-thread access still requires an explicit handoff.
 
-Computer requests select either the user desktop or an Agent desktop. Omitting an Agent desktop id
-lets the manager prefer the controller's suitable assignment, reclaim the most recent suitable idle
-desktop from the same thread, or acquire a new machine. The computer
-router keeps the two backends behind one current request shape; there is no legacy host-only IPC
-request path.
+Computer requests select either a concrete user desktop or an Agent desktop. User desktop clients
+register a durable opaque desktop identity, and the environment keeps an offline inventory with
+editable labels. The preview-automation broker routes user-desktop operations only to the connected
+host claiming the requested identity; focus is metadata for selection, never a routing fallback.
+Duplicate live identity claims block routing. Omitting an Agent desktop id during acquisition lets the
+manager prefer the controller's suitable assignment, reclaim the most recent suitable idle desktop
+from the same thread, or acquire a new machine. The computer router keeps the two backends behind one
+current request shape: user-desktop requests use the preview-automation broker, while Agent-desktop
+requests execute directly on the environment server. There is no Agent-desktop Electron IPC or
+automation-host routing path. Every later operation names a concrete user or Agent desktop; no target
+is inherited or inferred.
 
 ## Machine Boundary
 

@@ -75,6 +75,8 @@ function makeController(records: Array<InputRecord>, onStart: () => void = () =>
       records.push({ operation: "start" });
       onStart();
     }),
+    rememberView: record("rememberView"),
+    rememberControl: record("rememberControl"),
     configurePowerProtection: (enabled) => record("configurePowerProtection", enabled),
     setAgentWorking: (active) => record("setAgentWorking", active),
     requestAvailability: record("requestAvailability"),

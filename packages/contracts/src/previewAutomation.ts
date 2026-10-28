@@ -28,6 +28,7 @@ import {
   AgentDesktopOwner,
   AgentDesktopUpdateInput,
 } from "./agentDesktop.ts";
+import { UserDesktopHostRegistration } from "./userDesktop.ts";
 
 const BoundedUrl = Schema.String.check(Schema.isTrimmed())
   .check(Schema.isNonEmpty())
@@ -666,6 +667,7 @@ export type PreviewAutomationHostIdentity = typeof PreviewAutomationHostIdentity
 
 export const PreviewAutomationHost = Schema.Struct({
   ...PreviewAutomationHostIdentity.fields,
+  userDesktop: Schema.optional(UserDesktopHostRegistration),
   /** Missing means the V1 operation set from before capability negotiation. */
   supportedOperations: Schema.optional(Schema.Array(PreviewAutomationOperation)),
 });
@@ -832,10 +834,12 @@ export class PreviewAutomationNoAvailableHostError extends Schema.TaggedError<Pr
     requestId: Schema.optional(TrimmedNonEmptyString),
     tabId: Schema.optional(PreviewTabId),
     timeoutMs: Schema.optional(Schema.Int.check(Schema.isGreaterThan(0))),
+    computerFailure: Schema.optional(ComputerAutomationFailure),
     ...PreviewAutomationOptionalRemoteDiagnosticFields,
   },
 ) {
   override get message(): string {
+    if (this.computerFailure !== undefined) return this.computerFailure.message;
     return `No preview automation host is available for ${this.operation} in environment ${this.environmentId}. The server-owned browser may be starting or reconnecting. Retry preview_status, then call preview_open if no tab is available. If it remains unavailable, report the browser connection failure.`;
   }
 }

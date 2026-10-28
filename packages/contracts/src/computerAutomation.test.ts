@@ -2,6 +2,7 @@ import { Schema } from "effect";
 import { describe, expect, it } from "vite-plus/test";
 
 import {
+  ComputerAutomationAvailabilityInput,
   ComputerAutomationActivateInput,
   ComputerAutomationActInput,
   ComputerAutomationActionBatchInput,
@@ -21,6 +22,7 @@ import {
   findComputerAutomationFailureKind,
 } from "./computerAutomation.ts";
 
+const decodeAvailability = Schema.decodeUnknownSync(ComputerAutomationAvailabilityInput);
 const decodeRoutedAct = Schema.decodeUnknownSync(ComputerAutomationActInput);
 const decodeClick = Schema.decodeUnknownSync(ComputerAutomationClickInput);
 const decodeAccess = Schema.decodeUnknownSync(ComputerAutomationAccessInput);
@@ -45,11 +47,15 @@ describe("computer automation contracts", () => {
     const actions = [{ type: "press", key: "A" }];
     expect(() => decode({ actions })).toThrow();
     expect(() => decode({ desktop: { kind: "agent" }, actions })).toThrow();
-    expect(decode({ desktop: { kind: "user" }, actions }).actions).toEqual(actions);
-    expect(() => decode({ desktop: { kind: "user" }, actions: [] })).toThrow();
+    expect(
+      decode({ desktop: { kind: "user", desktopId: "user-desktop-1" }, actions }).actions,
+    ).toEqual(actions);
+    expect(() =>
+      decode({ desktop: { kind: "user", desktopId: "user-desktop-1" }, actions: [] }),
+    ).toThrow();
     expect(() =>
       decode({
-        desktop: { kind: "user" },
+        desktop: { kind: "user", desktopId: "user-desktop-1" },
         actions: [
           { type: "wait", durationMs: 5000 },
           { type: "activate", targetId: "target" },
@@ -58,8 +64,16 @@ describe("computer automation contracts", () => {
     ).toThrow();
   });
   it("selects user or independently managed agent desktops", () => {
-    expect(decodeAccess({ desktop: { kind: "user" }, observation: false })).toEqual({
-      desktop: { kind: "user" },
+    expect(() => decodeAvailability({})).toThrow();
+    expect(() => decodeAccess({})).toThrow();
+    expect(decodeAvailability({ desktop: { kind: "user", desktopId: "user-desktop-1" } })).toEqual({
+      desktop: { kind: "user", desktopId: "user-desktop-1" },
+    });
+    expect(() => decodeAvailability({ desktop: { kind: "agent" } })).toThrow();
+    expect(
+      decodeAccess({ desktop: { kind: "user", desktopId: "user-desktop-1" }, observation: false }),
+    ).toEqual({
+      desktop: { kind: "user", desktopId: "user-desktop-1" },
       observation: false,
     });
     expect(decodeAccess({ desktop: { kind: "agent" } })).toEqual({
@@ -105,14 +119,22 @@ describe("computer automation contracts", () => {
       }),
     ).toMatchObject({ frameCount: 6, intervalMs: 250 });
     expect(() =>
-      decodeObserveSequence({ desktop: { kind: "user" }, frameCount: 1, intervalMs: 250 }),
-    ).toThrow();
-    expect(() =>
-      decodeObserveSequence({ desktop: { kind: "user" }, frameCount: 24, intervalMs: 5_000 }),
+      decodeObserveSequence({
+        desktop: { kind: "user", desktopId: "user-desktop-1" },
+        frameCount: 1,
+        intervalMs: 250,
+      }),
     ).toThrow();
     expect(() =>
       decodeObserveSequence({
-        desktop: { kind: "user" },
+        desktop: { kind: "user", desktopId: "user-desktop-1" },
+        frameCount: 24,
+        intervalMs: 5_000,
+      }),
+    ).toThrow();
+    expect(() =>
+      decodeObserveSequence({
+        desktop: { kind: "user", desktopId: "user-desktop-1" },
         displayId: "display-0",
         frameCount: 2,
         intervalMs: 100,
@@ -243,13 +265,18 @@ describe("computer automation contracts", () => {
         captureSource: "remote-desktop-stream",
       }).screenshot,
     ).toBeUndefined();
-    expect(decodeSnapshotInput({ desktop: { kind: "user" }, screenshot: false })).toEqual({
-      desktop: { kind: "user" },
+    expect(
+      decodeSnapshotInput({
+        desktop: { kind: "user", desktopId: "user-desktop-1" },
+        screenshot: false,
+      }),
+    ).toEqual({
+      desktop: { kind: "user", desktopId: "user-desktop-1" },
       screenshot: false,
     });
     expect(() =>
       decodeSnapshotInput({
-        desktop: { kind: "user" },
+        desktop: { kind: "user", desktopId: "user-desktop-1" },
         includeAccessibility: false,
         screenshot: false,
       }),
@@ -263,7 +290,7 @@ describe("computer automation contracts", () => {
     expect(() => decodeSnapshotInput({ includeAccessibility: false, screenshot: false })).toThrow();
     expect(
       decodeSnapshotInput({
-        desktop: { kind: "user" },
+        desktop: { kind: "user", desktopId: "user-desktop-1" },
         screenshot: {
           region: { frameId: "frame-1", x: 10, y: 20, width: 100, height: 80 },
           maxWidth: 1_200,
@@ -282,7 +309,7 @@ describe("computer automation contracts", () => {
     });
     expect(
       decodeSnapshotInput({
-        desktop: { kind: "user" },
+        desktop: { kind: "user", desktopId: "user-desktop-1" },
         screenshot: { encoding: { format: "png" } },
       }),
     ).toMatchObject({
@@ -290,13 +317,13 @@ describe("computer automation contracts", () => {
     });
     expect(
       decodeSnapshotInput({
-        desktop: { kind: "user" },
+        desktop: { kind: "user", desktopId: "user-desktop-1" },
         screenshot: { unchangedIfContentHash: contentHash },
       }),
     ).toMatchObject({ screenshot: { unchangedIfContentHash: contentHash } });
     expect(() =>
       decodeSnapshotInput({
-        desktop: { kind: "user" },
+        desktop: { kind: "user", desktopId: "user-desktop-1" },
         screenshot: { unchangedIfContentHash: "sha256:invalid" },
       }),
     ).toThrow();
@@ -321,19 +348,19 @@ describe("computer automation contracts", () => {
     ).toEqual({ state: "unchanged", contentHash, width: 800, height: 600 });
     expect(() =>
       decodeSnapshotInput({
-        desktop: { kind: "user" },
+        desktop: { kind: "user", desktopId: "user-desktop-1" },
         screenshot: { encoding: { format: "webp", mode: "lossy", quality: 0 } },
       }),
     ).toThrow();
     expect(() =>
       decodeSnapshotInput({
-        desktop: { kind: "user" },
+        desktop: { kind: "user", desktopId: "user-desktop-1" },
         screenshot: { encoding: { format: "webp", mode: "lossless", quality: 90 } },
       }),
     ).toThrow();
     expect(() =>
       decodeSnapshotInput({
-        desktop: { kind: "user" },
+        desktop: { kind: "user", desktopId: "user-desktop-1" },
         displayId: "42",
         screenshot: { region: { frameId: "frame-1", x: 0, y: 0, width: 10, height: 10 } },
       }),
@@ -343,7 +370,7 @@ describe("computer automation contracts", () => {
   it("accepts bounded same-capture detail screenshots", () => {
     expect(
       decodeSnapshotInput({
-        desktop: { kind: "user" },
+        desktop: { kind: "user", desktopId: "user-desktop-1" },
         includeAccessibility: false,
         screenshot: false,
         detailScreenshots: [
@@ -369,13 +396,13 @@ describe("computer automation contracts", () => {
     });
     expect(() =>
       decodeSnapshotInput({
-        desktop: { kind: "user" },
+        desktop: { kind: "user", desktopId: "user-desktop-1" },
         detailScreenshots: [{ id: "duplicate" }, { id: "duplicate" }],
       }),
     ).toThrow();
     expect(() =>
       decodeSnapshotInput({
-        desktop: { kind: "user" },
+        desktop: { kind: "user", desktopId: "user-desktop-1" },
         displayId: "42",
         detailScreenshots: [
           {
@@ -764,20 +791,27 @@ it("supports durable desktop regions on negative-origin displays without mixing 
     height: 40,
   };
   expect(
-    decodeSnapshotInput({ desktop: { kind: "user" }, screenshot: { region } }).screenshot,
+    decodeSnapshotInput({
+      desktop: { kind: "user", desktopId: "user-desktop-1" },
+      screenshot: { region },
+    }).screenshot,
   ).toEqual({ region });
   expect(() =>
-    decodeSnapshotInput({ desktop: { kind: "user" }, displayId: "other", screenshot: { region } }),
+    decodeSnapshotInput({
+      desktop: { kind: "user", desktopId: "user-desktop-1" },
+      displayId: "other",
+      screenshot: { region },
+    }),
   ).toThrow();
   expect(() =>
     decodeSnapshotInput({
-      desktop: { kind: "user" },
+      desktop: { kind: "user", desktopId: "user-desktop-1" },
       screenshot: { region: { ...region, width: 0 } },
     }),
   ).toThrow();
   expect(() =>
     decodeSnapshotInput({
-      desktop: { kind: "user" },
+      desktop: { kind: "user", desktopId: "user-desktop-1" },
       screenshot: { region: { ...region, x: -1.5 } },
     }),
   ).toThrow();

@@ -90,6 +90,8 @@ import Migration0076 from "./Migrations/076_ProjectionProjectsPinArchive.ts";
 
 import ComputerMonitorCacheWriteUsageMigration from "./Migrations/062_ComputerMonitorCacheWriteUsage.ts";
 
+import UserDesktopsMigration from "./Migrations/063_UserDesktops.ts";
+
 const migrationEntries = [
   [1, "OrchestrationEvents", Migration0001],
   [2, "OrchestrationCommandReceipts", Migration0002],
@@ -179,6 +181,7 @@ export const forkMigrationEntries = [
   [6, "ComputerMonitorImageEncoding", ForkMigration0006],
   [7, "ProjectionThreadMessageSystemEvents", ForkMigration0007],
   [8, "ComputerMonitorCacheWriteUsage", ComputerMonitorCacheWriteUsageMigration],
+  [9, "UserDesktops", UserDesktopsMigration],
 ] as const;
 export const forkMigrationManifest = forkMigrationEntries.map(([id, name]) => [id, name] as const);
 

@@ -26,9 +26,10 @@ const decodeComputerObservationResult = Schema.decodeUnknownSync(
   makeDesktopComputerAutomationResultSchema(ComputerAutomationObservation),
 );
 
-const userDesktop = { kind: "user" as const };
+const userDesktop = { kind: "user" as const, desktopId: "user-desktop-1" };
 
 const status = {
+  desktop: { id: "user-desktop-1", kind: "user" as const, label: "Test desktop" },
   available: true,
   backend: "gnome-wayland-portal" as const,
   permission: "remembered" as const,
@@ -68,6 +69,8 @@ function makeComputer(options: {
     releaseAvailability: Effect.succeed(status),
     requestView: options.requestView,
     requestControl: unexpected,
+    rememberView: unexpected,
+    rememberControl: unexpected,
     snapshot: options.snapshot ?? (() => unexpected),
     act: options.act ?? (() => unexpected),
     releaseInputs: unexpected,
@@ -84,6 +87,10 @@ const computerRouterLayer = (computer: ReturnType<typeof makeComputer>) =>
       status: () => computer.status,
       requestView: () => computer.requestView,
       requestControl: () => computer.requestControl,
+      rememberView: () => computer.rememberView,
+      rememberControl: () => computer.rememberControl,
+      forceRelease: () => computer.release.pipe(Effect.andThen(computer.status)),
+      forceForget: () => computer.forget,
       requestAvailability: () => computer.requestAvailability,
       releaseAvailability: () => computer.releaseAvailability,
       snapshot: (_context, input) => computer.snapshot(input),
@@ -102,19 +109,23 @@ describe("computer IPC methods", () => {
         requestAvailability: (context, input) =>
           Effect.sync(() => {
             assert.strictEqual(context.controllerId, "local-renderer");
-            assert.deepEqual(input, { desktop: { kind: "user" } });
+            assert.deepEqual(input, { desktop: { kind: "user", desktopId: "user-desktop-1" } });
             calls.push("request");
             return { ...status, keepAwake: true };
           }),
         releaseAvailability: (context, input) =>
           Effect.sync(() => {
             assert.strictEqual(context.controllerId, "local-renderer");
-            assert.deepEqual(input, { desktop: { kind: "user" } });
+            assert.deepEqual(input, { desktop: { kind: "user", desktopId: "user-desktop-1" } });
             calls.push("release");
             return status;
           }),
         requestView: () => Effect.die("unexpected request view"),
         requestControl: () => Effect.die("unexpected request control"),
+        rememberView: () => Effect.die("unexpected remember view"),
+        rememberControl: () => Effect.die("unexpected remember control"),
+        forceRelease: () => Effect.die("unexpected force release"),
+        forceForget: () => Effect.die("unexpected force forget"),
         snapshot: () => Effect.die("unexpected snapshot"),
         act: () => Effect.die("unexpected act"),
         release: () => Effect.die("unexpected access release"),
@@ -123,10 +134,10 @@ describe("computer IPC methods", () => {
       const layer = Layer.succeed(ComputerUseRouter.ComputerUseRouter, computer);
 
       const requested = yield* requestAvailability
-        .handler({ input: { desktop: { kind: "user" } } })
+        .handler({ input: { desktop: { kind: "user", desktopId: "user-desktop-1" } } })
         .pipe(Effect.provide(layer));
       const released = yield* releaseAvailability
-        .handler({ input: { desktop: { kind: "user" } } })
+        .handler({ input: { desktop: { kind: "user", desktopId: "user-desktop-1" } } })
         .pipe(Effect.provide(layer));
 
       assert.deepEqual(requested, { ok: true, value: { ...status, keepAwake: true } });
@@ -137,17 +148,19 @@ describe("computer IPC methods", () => {
 
   it.effect("returns access status and its initial observation in one IPC envelope", () =>
     Effect.gen(function* () {
-      const resultFiber = yield* requestView.handler({ input: { desktop: { kind: "user" } } }).pipe(
-        Effect.provide(
-          computerRouterLayer(
-            makeComputer({
-              requestView: Effect.succeed(status),
-              snapshot: () => Effect.succeed(snapshot),
-            }),
+      const resultFiber = yield* requestView
+        .handler({ input: { desktop: { kind: "user", desktopId: "user-desktop-1" } } })
+        .pipe(
+          Effect.provide(
+            computerRouterLayer(
+              makeComputer({
+                requestView: Effect.succeed(status),
+                snapshot: () => Effect.succeed(snapshot),
+              }),
+            ),
           ),
-        ),
-        Effect.forkChild,
-      );
+          Effect.forkChild,
+        );
       yield* TestClock.adjust("1 millis");
 
       assert.deepEqual(yield* Fiber.join(resultFiber), {
@@ -173,34 +186,36 @@ describe("computer IPC methods", () => {
       };
       let captured = false;
       const result = decodeComputerObservationResult(
-        yield* requestView.handler({ input: { desktop: { kind: "user" } } }).pipe(
-          Effect.provide(
-            computerRouterLayer(
-              makeComputer({
-                status: Effect.sync(() =>
-                  captured
-                    ? {
-                        ...untested,
-                        captureHealth: [
-                          {
-                            ...untestedHealth,
-                            state: "healthy",
-                            lastSuccessfulFrameAt: "2026-08-14T12:00:00.000Z",
-                          },
-                        ],
-                      }
-                    : untested,
-                ),
-                requestView: Effect.succeed(untested),
-                snapshot: () =>
-                  Effect.sync(() => {
-                    captured = true;
-                    return snapshot;
-                  }),
-              }),
+        yield* requestView
+          .handler({ input: { desktop: { kind: "user", desktopId: "user-desktop-1" } } })
+          .pipe(
+            Effect.provide(
+              computerRouterLayer(
+                makeComputer({
+                  status: Effect.sync(() =>
+                    captured
+                      ? {
+                          ...untested,
+                          captureHealth: [
+                            {
+                              ...untestedHealth,
+                              state: "healthy",
+                              lastSuccessfulFrameAt: "2026-08-14T12:00:00.000Z",
+                            },
+                          ],
+                        }
+                      : untested,
+                  ),
+                  requestView: Effect.succeed(untested),
+                  snapshot: () =>
+                    Effect.sync(() => {
+                      captured = true;
+                      return snapshot;
+                    }),
+                }),
+              ),
             ),
           ),
-        ),
       );
 
       assert.isTrue(result.ok);
@@ -232,6 +247,10 @@ describe("computer IPC methods", () => {
             return status;
           }),
         requestControl: () => Effect.die("unexpected request control"),
+        rememberView: () => Effect.die("unexpected remember view"),
+        rememberControl: () => Effect.die("unexpected remember control"),
+        forceRelease: () => Effect.die("unexpected force release"),
+        forceForget: () => Effect.die("unexpected force forget"),
         requestAvailability: () => Effect.die("unexpected request availability"),
         releaseAvailability: () => Effect.die("unexpected release availability"),
         snapshot: () => Effect.die("unexpected snapshot"),
@@ -304,23 +323,25 @@ describe("computer IPC methods", () => {
 
   it.effect("retains successful access when the initial observation fails", () =>
     Effect.gen(function* () {
-      const resultFiber = yield* requestView.handler({ input: { desktop: { kind: "user" } } }).pipe(
-        Effect.provide(
-          computerRouterLayer(
-            makeComputer({
-              requestView: Effect.succeed(status),
-              snapshot: () =>
-                Effect.fail(
-                  new ComputerUse.ComputerUseOperationError({
-                    operation: "snapshot",
-                    cause: "capture failed",
-                  }),
-                ),
-            }),
+      const resultFiber = yield* requestView
+        .handler({ input: { desktop: { kind: "user", desktopId: "user-desktop-1" } } })
+        .pipe(
+          Effect.provide(
+            computerRouterLayer(
+              makeComputer({
+                requestView: Effect.succeed(status),
+                snapshot: () =>
+                  Effect.fail(
+                    new ComputerUse.ComputerUseOperationError({
+                      operation: "snapshot",
+                      cause: "capture failed",
+                    }),
+                  ),
+              }),
+            ),
           ),
-        ),
-        Effect.forkChild,
-      );
+          Effect.forkChild,
+        );
       yield* TestClock.adjust("1 millis");
 
       assert.deepEqual(yield* Fiber.join(resultFiber), {
@@ -399,12 +420,14 @@ describe("computer IPC methods", () => {
       });
 
       const accessResult = yield* requestView
-        .handler({ input: { desktop: { kind: "user" }, observation: false } })
+        .handler({
+          input: { desktop: { kind: "user", desktopId: "user-desktop-1" }, observation: false },
+        })
         .pipe(Effect.provide(computerRouterLayer(computer)));
       const actResult = yield* act
         .handler({
           input: {
-            desktop: { kind: "user" },
+            desktop: { kind: "user", desktopId: "user-desktop-1" },
             actions: [{ type: "press", key: "Meta" }],
             observation: false,
           },
@@ -518,21 +541,23 @@ describe("computer IPC methods", () => {
       code: "display-locked",
       cause: "private lock diagnostic",
     });
-    return requestView.handler({ input: { desktop: { kind: "user" } } }).pipe(
-      Effect.provide(computerRouterLayer(makeComputer({ requestView: Effect.fail(error) }))),
-      Effect.tap((result) =>
-        Effect.sync(() => {
-          assert.deepEqual(result, {
-            ok: false,
-            error: {
-              code: "display-locked",
-              category: "authorization",
-              message: "The desktop is locked and must be unlocked by the user.",
-            },
-          });
-        }),
-      ),
-    );
+    return requestView
+      .handler({ input: { desktop: { kind: "user", desktopId: "user-desktop-1" } } })
+      .pipe(
+        Effect.provide(computerRouterLayer(makeComputer({ requestView: Effect.fail(error) }))),
+        Effect.tap((result) =>
+          Effect.sync(() => {
+            assert.deepEqual(result, {
+              ok: false,
+              error: {
+                code: "display-locked",
+                category: "authorization",
+                message: "The desktop is locked and must be unlocked by the user.",
+              },
+            });
+          }),
+        ),
+      );
   });
 
   it.effect("returns bounded unrecognized backend diagnostics across IPC", () => {
@@ -541,23 +566,25 @@ describe("computer IPC methods", () => {
       code: "private-portal-error",
       cause: "private portal diagnostic",
     });
-    return requestView.handler({ input: { desktop: { kind: "user" } } }).pipe(
-      Effect.provide(computerRouterLayer(makeComputer({ requestView: Effect.fail(error) }))),
-      Effect.tap((result) =>
-        Effect.sync(() => {
-          assert.deepEqual(result, {
-            ok: false,
-            error: {
-              code: "internal-error",
-              category: "internal",
-              message: "The desktop computer-use operation failed.",
-              backendCode: "private-portal-error",
-              detail: "private portal diagnostic",
-            },
-          });
-        }),
-      ),
-    );
+    return requestView
+      .handler({ input: { desktop: { kind: "user", desktopId: "user-desktop-1" } } })
+      .pipe(
+        Effect.provide(computerRouterLayer(makeComputer({ requestView: Effect.fail(error) }))),
+        Effect.tap((result) =>
+          Effect.sync(() => {
+            assert.deepEqual(result, {
+              ok: false,
+              error: {
+                code: "internal-error",
+                category: "internal",
+                message: "The desktop computer-use operation failed.",
+                backendCode: "private-portal-error",
+                detail: "private portal diagnostic",
+              },
+            });
+          }),
+        ),
+      );
   });
 });
 
@@ -572,7 +599,13 @@ it.effect("preserves both signed wheel axes across the native IPC boundary", () 
     },
   });
   return act
-    .handler({ input: { desktop: { kind: "user" }, actions: [action], observation: false } })
+    .handler({
+      input: {
+        desktop: { kind: "user", desktopId: "user-desktop-1" },
+        actions: [action],
+        observation: false,
+      },
+    })
     .pipe(
       Effect.provide(computerRouterLayer(computer)),
       Effect.tap((result) =>

@@ -1,4 +1,5 @@
 import * as AgentDesktopTransfer from "./agentDesktop/AgentDesktopTransferService.ts";
+import * as UserDesktops from "./persistence/UserDesktops.ts";
 import * as AgentDesktopEnvironment from "./agentDesktop/AgentDesktopEnvironment.ts";
 import * as AgentDesktopManager from "./agentDesktop/AgentDesktopManager.ts";
 import * as QemuAgentDesktop from "./agentDesktop/QemuAgentDesktop.ts";
@@ -231,6 +232,11 @@ const HTTP_ROUTER_CONFIG = {
 // Skip Effect's default 20 s grace; WebSocket scope finalizers already close connections gracefully.
 const HTTP_PREEMPTIVE_SHUTDOWN_GRACE_MS = 0;
 const layerComputerObservationStore = ComputerObservationStore.layer;
+const layerPersistence = Layer.empty.pipe(Layer.provideMerge(SqlitePersistence.layerConfig));
+const layerPreviewAutomationBroker = PreviewAutomationBroker.layer.pipe(
+  Layer.provide(UserDesktops.layer),
+  Layer.provide(layerPersistence),
+);
 const layerResourceAttribution = ResourceAttribution.layer;
 const layerApplicationObservability = EventLoopMonitor.layer.pipe(
   Layer.provideMerge(Observability.layer),
@@ -383,8 +389,6 @@ const layerHttpServer = Layer.unwrap(
 ).pipe(Layer.provide(ManagedPolicy.layer));
 
 const layerPlatformServices = DocumentText.layer.pipe(Layer.provideMerge(NodeServices.layer));
-
-const layerPersistence = Layer.empty.pipe(Layer.provideMerge(SqlitePersistence.layerConfig));
 
 const layerVcsDriverRegistry = VcsDriverRegistry.layer.pipe(Layer.provide(VcsProjectConfig.layer));
 
@@ -753,7 +757,7 @@ const layerAgentDesktopManager = AgentDesktopManager.layer.pipe(
   Layer.provide(layerAgentDesktopEnvironment),
 );
 const layerComputerAutomationRouter = ComputerAutomationRouter.layer.pipe(
-  Layer.provide(PreviewAutomationBroker.layer),
+  Layer.provide(layerPreviewAutomationBroker),
   Layer.provideMerge(layerAgentDesktopManager),
 );
 
@@ -858,7 +862,7 @@ const layerMakeRoutes = Layer.mergeAll(
       Layer.provideMerge(PeerLinks.layer),
     ),
   ),
-  Layer.provide(PreviewAutomationBroker.layer),
+  Layer.provide(layerPreviewAutomationBroker),
   Layer.provide(ServerSelfUpdate.layer.pipe(Layer.provide(layerDesktopAppUpdate))),
   Layer.provide(layerCommandReadiness),
   Layer.provide(ServerHttp.layerBrowserApiCors),

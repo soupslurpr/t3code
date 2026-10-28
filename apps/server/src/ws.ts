@@ -1,3 +1,4 @@
+import { runUserDesktopHumanRequest } from "./computer/UserDesktopHuman.ts";
 import * as AgentDesktopManager from "./agentDesktop/AgentDesktopManager.ts";
 import {
   humanRequestOperation,
@@ -281,6 +282,8 @@ import * as AgentSessionImporter from "./project/AgentSessionImporter.ts";
 import * as UsageLimitSources from "./usage/UsageLimitSources.ts";
 
 const AGENT_DESKTOP_HUMAN_PROVIDER_INSTANCE_ID = ProviderInstanceId.make("agent-desktop-human");
+const USER_DESKTOP_HUMAN_PROVIDER_INSTANCE_ID = ProviderInstanceId.make("user-desktop-human");
+const USER_DESKTOP_SETTINGS_THREAD_ID = ThreadId.make("user-desktop-settings");
 
 const CONFIG_DISCOVERY_TIMEOUT = Duration.seconds(5);
 const isProviderUploadFeedbackError = Schema.is(ProviderUploadFeedbackError);
@@ -3142,6 +3145,27 @@ export const layerWsRpc = (
               scope,
               input.request,
             ).pipe(Effect.mapError((cause) => environmentDesktopFailure(scope, operation, cause)));
+          },
+        ),
+        [WS_METHODS.userDesktopHumanInvoke]: Effect.fn("ws.userDesktopHumanInvoke")(
+          function* (input) {
+            const environmentId = yield* serverEnvironment.getEnvironmentId.pipe(Effect.orDie);
+            return yield* runUserDesktopHumanRequest(
+              previewAutomationBroker,
+              {
+                environmentId,
+                requestNamespace: `human:${currentSessionId}`,
+                client: undefined,
+                thread: {
+                  threadId: USER_DESKTOP_SETTINGS_THREAD_ID,
+                  providerSessionId: `human:${currentSessionId}`,
+                  providerInstanceId: USER_DESKTOP_HUMAN_PROVIDER_INSTANCE_ID,
+                },
+                capabilities: new Set(["computer" as const]),
+                issuedAt: yield* Clock.currentTimeMillis,
+              },
+              input,
+            );
           },
         ),
         [WS_METHODS.subscribePreviewEvents]: (_input) => previewManager.events,

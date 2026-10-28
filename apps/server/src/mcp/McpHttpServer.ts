@@ -95,14 +95,19 @@ import {
 import * as HtmlHandlers from "./toolkits/html/handlers.ts";
 import { HtmlPreviewTool, HtmlPreviewToolkit, HtmlRenderToolkit } from "./toolkits/html/tools.ts";
 
-import {
-  ComputerImageToolkitHandlersLive,
-  ComputerStandardToolkitHandlersLive,
-} from "./toolkits/computer/handlers.ts";
-import { ComputerImageToolkit, ComputerStandardToolkit } from "./toolkits/computer/tools.ts";
+import { ComputerToolkitHandlersLive } from "./toolkits/computer/handlers.ts";
+import { ComputerToolkit } from "./toolkits/computer/tools.ts";
 
 const MAX_VALIDATION_EXPECTATION_LENGTH = 128;
 const MAX_VALIDATION_FIELD_LENGTH = 128;
+const COMPUTER_AVAILABILITY_TOOL_NAMES = new Set([
+  "computer_request_availability",
+  "computer_release_availability",
+]);
+const COMPUTER_ACCESS_TOOL_NAMES = new Set(["computer_request_view", "computer_request_control"]);
+const EXPLICIT_DESKTOP_TARGET_TOOL_NAMES = new Set(
+  Object.keys(ComputerToolkit.tools).filter((name) => name !== "user_desktop_list"),
+);
 
 const mcpResourceMetadataUrl = (request: HttpServerRequest.HttpServerRequest) =>
   HttpServerRequest.toURL(request).pipe(
@@ -858,9 +863,10 @@ function computerFailureText(failure: unknown, fallback: string): string {
   return JSON.stringify({ error: failure });
 }
 
-const computerImageFailure = Effect.fn("computerImageFailure")(<E>(
+const computerToolFailure = Effect.fn("computerToolFailure")(<E>(
   toolName: string,
   cause: Cause.Cause<E>,
+  payload?: unknown,
 ) => {
   if (Cause.hasInterrupts(cause) || cause.reasons.some(Cause.isDieReason)) {
     return Effect.failCause(cause).pipe(Effect.orDie);
@@ -942,22 +948,65 @@ const computerImageFailure = Effect.fn("computerImageFailure")(<E>(
         : validationFieldFromMessage(validationDescription);
   const actionIndex = actionIndexFromField(schemaField);
   const invalidInput = schemaIssues !== undefined || toolParameterValidation !== undefined;
+  const desktop =
+    typeof payload === "object" && payload !== null && "desktop" in payload
+      ? payload.desktop
+      : undefined;
+  const desktopKind =
+    typeof desktop === "object" && desktop !== null && "kind" in desktop ? desktop.kind : undefined;
+  const desktopId =
+    typeof desktop === "object" && desktop !== null && "desktopId" in desktop
+      ? desktop.desktopId
+      : undefined;
+  const missingConcreteDesktopId =
+    desktopKind === "user" ||
+    (desktopKind === "agent" && !COMPUTER_ACCESS_TOOL_NAMES.has(toolName));
+  const desktopTargetMissing =
+    invalidInput &&
+    EXPLICIT_DESKTOP_TARGET_TOOL_NAMES.has(toolName) &&
+    (desktop === undefined || (missingConcreteDesktopId && desktopId === undefined));
+  const expectedDesktopTargets = COMPUTER_AVAILABILITY_TOOL_NAMES.has(toolName)
+    ? ['{"kind":"user","desktopId":"<id from user_desktop_list>"}']
+    : COMPUTER_ACCESS_TOOL_NAMES.has(toolName)
+      ? [
+          '{"kind":"user","desktopId":"<id from user_desktop_list>"}',
+          '{"kind":"agent"}',
+          '{"kind":"agent","desktopId":"..."}',
+        ]
+      : [
+          '{"kind":"user","desktopId":"<id from user_desktop_list>"}',
+          '{"kind":"agent","desktopId":"..."}',
+        ];
   const computerFailure = !invalidInput
     ? (remoteComputerFailure ?? directFailure)
     : {
-        code: "invalid-action",
+        code: desktopTargetMissing ? "desktop-target-required" : "invalid-action",
         category: "invalid-input",
-        message: "The computer-use request is invalid.",
+        message: desktopTargetMissing
+          ? missingConcreteDesktopId
+            ? "A concrete desktop id is required."
+            : "An explicit desktop target is required."
+          : "The computer-use request is invalid.",
         ...(actionIndex === undefined ? {} : { actionIndex }),
         completedActionCount: 0,
         cleanup: { keys: "not-needed", buttons: "not-needed" },
-        ...(schemaField === undefined || schemaField.length === 0 ? {} : { field: schemaField }),
-        ...(firstSchemaIssue === undefined
+        ...(desktopTargetMissing
+          ? {
+              field: missingConcreteDesktopId ? "desktop.desktopId" : "desktop",
+              received: "missing",
+              expected: expectedDesktopTargets,
+            }
+          : schemaField === undefined || schemaField.length === 0
+            ? {}
+            : { field: schemaField }),
+        ...(desktopTargetMissing || firstSchemaIssue === undefined
           ? {}
           : {
               expected: [validationExpectation(firstSchemaIssue.message)],
             }),
-        ...(firstSchemaIssue === undefined && toolParameterValidation !== undefined
+        ...(!desktopTargetMissing &&
+        firstSchemaIssue === undefined &&
+        toolParameterValidation !== undefined
           ? { expected: [validationExpectation(toolParameterValidation)] }
           : {}),
         phase: "validation",
@@ -977,11 +1026,13 @@ const computerImageFailure = Effect.fn("computerImageFailure")(<E>(
         type: "text",
         text: computerFailureText(
           computerFailure,
-          toolName === "computer_snapshot"
-            ? "Computer snapshot failed."
-            : toolName.startsWith("computer_watch_")
-              ? "Computer watch failed."
-              : "Computer use failed.",
+          isOrchestratorMcpFailure(firstFailure)
+            ? firstFailure.message
+            : toolName === "computer_snapshot"
+              ? "Computer snapshot failed."
+              : toolName.startsWith("computer_watch_")
+                ? "Computer watch failed."
+                : "Computer use failed.",
         ),
       },
     ],
@@ -1252,7 +1303,13 @@ function isComputerTemporalSequenceResult(value: unknown): value is ComputerTemp
   );
 }
 
-const computerImageResult = (encodedResult: unknown) => {
+const computerResult = (encodedResult: unknown) => {
+  if (typeof encodedResult !== "object" || encodedResult === null) {
+    return new McpSchema.CallToolResult({
+      isError: false,
+      content: [{ type: "text", text: JSON.stringify(encodedResult) }],
+    });
+  }
   const original = encodedResult as ComputerImageResult;
   const directSequence = isComputerTemporalSequenceResult(encodedResult)
     ? encodedResult
@@ -1443,59 +1500,55 @@ const encodeComputerWatchRevisionResult = (encodedResult: unknown) => {
   });
 };
 
-const registerComputerImageTools = Effect.fn("McpHttpServer.registerComputerImageTools")(
-  function* () {
-    const server = yield* McpServer.McpServer;
-    const observations = yield* ComputerObservationStore.ComputerObservationStore;
-    const router = yield* ComputerAutomationRouter.ComputerAutomationRouter;
-    const threads = yield* ThreadManagementService.ThreadManagementService;
-    const built = yield* decodeAsAdvertised(ComputerImageToolkit);
-    for (const tool of Object.values(built.tools)) {
-      yield* server.addTool({
-        tool: new McpSchema.Tool({
-          name: tool.name,
-          description: Tool.getDescription(tool),
-          inputSchema: advertisedJsonSchema(tool),
-          annotations: {
-            ...Context.getOption(tool.annotations, Tool.Title).pipe(
-              Option.map((title) => ({ title })),
-              Option.getOrUndefined,
-            ),
-            readOnlyHint: Context.get(tool.annotations, Tool.Readonly),
-            destructiveHint: Context.get(tool.annotations, Tool.Destructive),
-            idempotentHint: Context.get(tool.annotations, Tool.Idempotent),
-            openWorldHint: Context.get(tool.annotations, Tool.OpenWorld),
-          },
+const registerComputerTools = Effect.fn("McpHttpServer.registerComputerTools")(function* () {
+  const server = yield* McpServer.McpServer;
+  const observations = yield* ComputerObservationStore.ComputerObservationStore;
+  const computer = yield* ComputerAutomationRouter.ComputerAutomationRouter;
+  const threads = yield* ThreadManagementService.ThreadManagementService;
+  const broker = yield* PreviewAutomationBroker.PreviewAutomationBroker;
+  const built = yield* decodeAsAdvertised(ComputerToolkit);
+  for (const tool of Object.values(built.tools)) {
+    yield* server.addTool({
+      tool: new McpSchema.Tool({
+        name: tool.name,
+        description: Tool.getDescription(tool),
+        inputSchema: advertisedJsonSchema(tool),
+        annotations: {
+          ...Context.getOption(tool.annotations, Tool.Title).pipe(
+            Option.map((title) => ({ title })),
+            Option.getOrUndefined,
+          ),
+          readOnlyHint: Context.get(tool.annotations, Tool.Readonly),
+          destructiveHint: Context.get(tool.annotations, Tool.Destructive),
+          idempotentHint: Context.get(tool.annotations, Tool.Idempotent),
+          openWorldHint: Context.get(tool.annotations, Tool.OpenWorld),
+        },
+      }),
+      annotations: tool.annotations,
+      handle: (payload) =>
+        Effect.withFiber((fiber) => {
+          const invocation = Context.getUnsafe(
+            fiber.context,
+            McpInvocationContext.McpInvocationContext,
+          );
+          return built.handle(tool.name, payload).pipe(
+            Stream.unwrap,
+            Stream.run(Sink.last()),
+            Effect.flatMap(Effect.fromOption),
+            Effect.provideService(ComputerAutomationRouter.ComputerAutomationRouter, computer),
+            Effect.provideService(ThreadManagementService.ThreadManagementService, threads),
+            Effect.provideService(McpInvocationContext.McpInvocationContext, invocation),
+            Effect.provideService(ComputerObservationStore.ComputerObservationStore, observations),
+            Effect.provideService(PreviewAutomationBroker.PreviewAutomationBroker, broker),
+            Effect.matchCauseEffect({
+              onFailure: (cause) => computerToolFailure(tool.name, cause, payload),
+              onSuccess: ({ encodedResult }) => Effect.succeed(computerResult(encodedResult)),
+            }),
+          );
         }),
-        annotations: tool.annotations,
-        handle: (payload) =>
-          Effect.withFiber((fiber) => {
-            const invocation = Context.getUnsafe(
-              fiber.context,
-              McpInvocationContext.McpInvocationContext,
-            );
-            return built.handle(tool.name, payload).pipe(
-              Stream.unwrap,
-              Stream.run(Sink.last()),
-              Effect.flatMap(Effect.fromOption),
-              Effect.provideService(ComputerAutomationRouter.ComputerAutomationRouter, router),
-              Effect.provideService(
-                ComputerObservationStore.ComputerObservationStore,
-                observations,
-              ),
-              Effect.provideService(ThreadManagementService.ThreadManagementService, threads),
-              Effect.provideService(McpInvocationContext.McpInvocationContext, invocation),
-              Effect.matchCauseEffect({
-                onFailure: (cause) => computerImageFailure(tool.name, cause),
-                onSuccess: ({ encodedResult }) =>
-                  Effect.succeed(computerImageResult(encodedResult)),
-              }),
-            );
-          }),
-      });
-    }
-  },
-);
+    });
+  }
+});
 
 const registerMonitorImageTools = Effect.fn("McpHttpServer.registerMonitorImageTools")(
   function* () {
@@ -1979,24 +2032,14 @@ export const layerDeviceToolkit = Layer.mergeAll(
   layerDeviceScreenshotRegistration,
 );
 
-const ComputerStandardToolkitRegistrationLive = toolkitRegistration(
-  ComputerStandardToolkit,
-  ComputerStandardToolkitHandlersLive,
-);
-
-const ComputerImageRegistrationLive = imageToolRegistration(
-  registerComputerImageTools(),
-  ComputerImageToolkitHandlersLive,
-);
-
 export const AgentDesktopToolkitRegistrationLive = toolkitRegistration(
   AgentDesktopToolkit,
   AgentDesktopToolkitHandlersLive,
 );
 
-export const ComputerToolkitRegistrationLive = Layer.mergeAll(
-  ComputerStandardToolkitRegistrationLive,
-  ComputerImageRegistrationLive,
+export const ComputerToolkitRegistrationLive = imageToolRegistration(
+  registerComputerTools(),
+  ComputerToolkitHandlersLive,
 );
 
 export const MonitorToolkitRegistrationLive = Layer.mergeAll(

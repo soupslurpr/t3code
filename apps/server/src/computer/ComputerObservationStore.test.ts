@@ -16,6 +16,7 @@ import { describe, expect } from "vite-plus/test";
 import * as ComputerObservationStore from "./ComputerObservationStore.ts";
 
 const environmentId = EnvironmentId.make("environment-observation-test");
+const differentEnvironmentId = EnvironmentId.make("different-environment");
 const threadId = ThreadId.make("thread-observation-test");
 const instanceId = ProviderInstanceId.make("codex");
 const desktopId = "agent-observation-test";
@@ -191,6 +192,66 @@ describe("ComputerObservationStore", () => {
     }),
   );
 
+  it.effect("lists retained recipients and scopes exact reads to one environment and desktop", () =>
+    Effect.gen(function* () {
+      const store = yield* ComputerObservationStore.make;
+      const secondThreadId = ThreadId.make("thread-observation-second");
+      yield* store.publishController({
+        environmentId,
+        threadId,
+        instanceId,
+        desktopId,
+        source: "snapshot",
+        observation: controllerObservation(),
+      });
+      yield* store.publishController({
+        environmentId,
+        threadId: secondThreadId,
+        instanceId,
+        desktopId,
+        source: "act",
+        observation: controllerObservation(),
+      });
+
+      expect(yield* store.read({ environmentId, desktopId, threadId })).toMatchObject({
+        observation: { threadId },
+      });
+
+      const list = yield* store.list({ environmentId, desktopId });
+      expect(list.observations).toHaveLength(2);
+      expect(list.observations.map((summary) => summary.threadId)).toEqual([
+        secondThreadId,
+        threadId,
+      ]);
+      expect(list.observations[0]).toMatchObject({
+        source: "act",
+        imageCount: 1,
+        hasAccessibility: true,
+      });
+      expect(list.observations[0]).not.toHaveProperty("images");
+
+      const observationId = list.observations[0]!.id;
+      expect(yield* store.readById({ environmentId, desktopId, observationId })).toMatchObject({
+        latestId: observationId,
+        observation: { threadId: secondThreadId },
+      });
+      expect(
+        yield* store.readById({
+          environmentId: differentEnvironmentId,
+          desktopId,
+          observationId,
+        }),
+      ).toEqual({ latestId: null });
+      expect(
+        yield* store.readById({
+          environmentId,
+          desktopId: "different-desktop",
+          observationId,
+        }),
+      ).toEqual({ latestId: null });
+    }),
+  );
+
   it.effect("publishes the exact baseline returned to the controller", () =>
     Effect.gen(function* () {
       const store = yield* ComputerObservationStore.make;
@@ -284,7 +345,7 @@ describe("ComputerObservationStore", () => {
 it.effect("evicts older desktops under count and image bounds while retaining the newest", () =>
   Effect.gen(function* () {
     const store = yield* ComputerObservationStore.make;
-    for (let index = 0; index < 33; index += 1) {
+    for (let index = 0; index < 129; index += 1) {
       yield* store.publishController({
         environmentId,
         threadId,
@@ -316,7 +377,7 @@ it.effect("evicts older desktops under count and image bounds while retaining th
         },
       },
     });
-    expect(yield* store.read({ environmentId, threadId, desktopId: "desktop-32" })).toEqual({
+    expect(yield* store.read({ environmentId, threadId, desktopId: "desktop-128" })).toEqual({
       latestId: null,
     });
     const newest = yield* store.read({ environmentId, threadId, desktopId });
