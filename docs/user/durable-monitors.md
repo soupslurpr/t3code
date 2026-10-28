@@ -21,6 +21,13 @@ thread at delivery time. If another turn, approval, or user-input request is
 active, the continuation waits until the thread is available. An agent can
 also record a result without starting another turn.
 
+An automated continuation appears as a **Monitor triggered** or **Monitor review**
+event. Expand it to inspect the trigger, observation, and evidence. The agent
+resumes using the existing conversation, without a separate handoff prompt.
+The event does not grant new authorization. Codex monitor
+continuations require Codex CLI 0.151.0 or later; update Codex if delivery
+reports that the installed version does not support automated input.
+
 Waits survive a T3 server restart. T3 Code does not run timers in a hosted
 service while the environment is offline; an overdue wait is reconciled the
 next time that server starts. Deleting a thread cancels its outstanding waits.
@@ -48,6 +55,13 @@ omitted minimum.
 Evaluator availability, token reporting, and explicit prompt-cache refresh are
 adapter capabilities. T3 Code reports unsupported capabilities instead of
 creating synthetic keepalive turns or hidden conversation messages.
+
+A model-backed screen watch pauses evaluation after 12 evaluations by default and
+requests a controller review. Capture and hash comparison continue, but no more
+evaluator tokens are used until the controller inspects the watch and
+acknowledges, revises, or cancels it. The review reports evaluation counts,
+change rates, and available token usage. An agent can choose another evaluation
+checkpoint or explicitly disable it for a genuinely high-frequency condition.
 
 Ordinary screen samples are discarded after comparison. T3 Code stores hashes
 and bounded status details with the monitor, can optionally retain the initial
