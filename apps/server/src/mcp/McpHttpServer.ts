@@ -1,7 +1,10 @@
 import * as ComputerAutomationRouter from "../computer/ComputerAutomationRouter.ts";
 import { ThreadMonitorService } from "../threadMonitor/ThreadMonitorService.ts";
-import { MonitorToolkit } from "./toolkits/monitor/tools.ts";
-import { MonitorToolkitHandlersLive } from "./toolkits/monitor/handlers.ts";
+import { MonitorImageToolkit, MonitorStandardToolkit } from "./toolkits/monitor/tools.ts";
+import {
+  MonitorImageToolkitHandlersLive,
+  MonitorStandardToolkitHandlersLive,
+} from "./toolkits/monitor/handlers.ts";
 import { AgentDesktopToolkitHandlersLive } from "./toolkits/agentDesktop/handlers.ts";
 import { AgentDesktopToolkit } from "./toolkits/agentDesktop/tools.ts";
 import * as Cause from "effect/Cause";
@@ -903,6 +906,21 @@ const computerImageFailure = Effect.fn("computerImageFailure")(<E>(
     firstFailure.computerFailure !== null
       ? firstFailure.computerFailure
       : undefined;
+  const directFailure =
+    typeof firstFailure === "object" &&
+    firstFailure !== null &&
+    "code" in firstFailure &&
+    typeof firstFailure.code === "string" &&
+    "detail" in firstFailure &&
+    typeof firstFailure.detail === "string"
+      ? {
+          code: firstFailure.code,
+          message: firstFailure.detail,
+          ...("monitorId" in firstFailure && typeof firstFailure.monitorId === "string"
+            ? { monitorId: firstFailure.monitorId }
+            : {}),
+        }
+      : undefined;
   const firstSchemaIssue = schemaIssues?.[0];
   const formattedSchemaField = firstSchemaIssue?.path
     ?.map((segment, index) =>
@@ -920,7 +938,7 @@ const computerImageFailure = Effect.fn("computerImageFailure")(<E>(
   const actionIndex = actionIndexFromField(schemaField);
   const invalidInput = schemaIssues !== undefined || toolParameterValidation !== undefined;
   const computerFailure = !invalidInput
-    ? remoteComputerFailure
+    ? (remoteComputerFailure ?? directFailure)
     : {
         code: "invalid-action",
         category: "invalid-input",
@@ -954,7 +972,11 @@ const computerImageFailure = Effect.fn("computerImageFailure")(<E>(
         type: "text",
         text: computerFailureText(
           computerFailure,
-          toolName === "computer_snapshot" ? "Computer snapshot failed." : "Computer use failed.",
+          toolName === "computer_snapshot"
+            ? "Computer snapshot failed."
+            : toolName.startsWith("computer_watch_")
+              ? "Computer watch failed."
+              : "Computer use failed.",
         ),
       },
     ],
@@ -1209,6 +1231,60 @@ const computerImageResult = (encodedResult: unknown) => {
   });
 };
 
+type ComputerWatchInspectionResult = {
+  readonly images: ReadonlyArray<{
+    readonly id: string;
+    readonly kind: string;
+    readonly regionId: string;
+    readonly capturedAt: string;
+    readonly hash: string;
+    readonly width: number;
+    readonly height: number;
+    readonly frameIndex: number | null;
+    readonly elapsedMs: number | null;
+    readonly pngBase64: string;
+    readonly [key: string]: unknown;
+  }>;
+  readonly [key: string]: unknown;
+};
+
+/** Converts retained monitor PNG data into ordered MCP image content. */
+const computerWatchInspectionResult = (encodedResult: unknown) => {
+  const inspection = encodedResult as ComputerWatchInspectionResult;
+  const images = inspection.images.map((image) => ({
+    id: image.id,
+    kind: image.kind,
+    regionId: image.regionId,
+    capturedAt: image.capturedAt,
+    hash: image.hash,
+    width: image.width,
+    height: image.height,
+    frameIndex: image.frameIndex,
+    elapsedMs: image.elapsedMs,
+  }));
+  const metadata = { ...inspection, images };
+  return new McpSchema.CallToolResult({
+    isError: false,
+    structuredContent: metadata,
+    content: [
+      { type: "text", text: JSON.stringify(metadata) },
+      ...inspection.images.map((image) => ({
+        type: "image" as const,
+        data: new Uint8Array(Buffer.from(image.pngBase64, "base64")),
+        mimeType: "image/png" as const,
+        _meta: {
+          "codex/imageDetail": "original",
+          "t3/computerWatchImageId": image.id,
+          "t3/computerWatchImageKind": image.kind,
+          "t3/computerWatchRegionId": image.regionId,
+          ...(image.frameIndex === null ? {} : { "t3/temporalFrameIndex": image.frameIndex }),
+          ...(image.elapsedMs === null ? {} : { "t3/temporalElapsedMs": image.elapsedMs }),
+        },
+      })),
+    ],
+  });
+};
+
 const registerComputerImageTools = Effect.fn("McpHttpServer.registerComputerImageTools")(
   function* () {
     const server = yield* McpServer.McpServer;
@@ -1258,6 +1334,55 @@ const registerComputerImageTools = Effect.fn("McpHttpServer.registerComputerImag
   },
 );
 
+const registerMonitorImageTools = Effect.fn("McpHttpServer.registerMonitorImageTools")(
+  function* () {
+    const server = yield* McpServer.McpServer;
+    const service = yield* ThreadMonitorService;
+    const management = yield* ThreadManagementService.ThreadManagementService;
+    const built = yield* decodeAsAdvertised(MonitorImageToolkit);
+    for (const tool of Object.values(built.tools)) {
+      yield* server.addTool({
+        tool: new McpSchema.Tool({
+          name: tool.name,
+          description: Tool.getDescription(tool),
+          inputSchema: advertisedJsonSchema(tool),
+          annotations: {
+            ...Context.getOption(tool.annotations, Tool.Title).pipe(
+              Option.map((title) => ({ title })),
+              Option.getOrUndefined,
+            ),
+            readOnlyHint: Context.get(tool.annotations, Tool.Readonly),
+            destructiveHint: Context.get(tool.annotations, Tool.Destructive),
+            idempotentHint: Context.get(tool.annotations, Tool.Idempotent),
+            openWorldHint: Context.get(tool.annotations, Tool.OpenWorld),
+          },
+        }),
+        annotations: tool.annotations,
+        handle: (payload) =>
+          Effect.withFiber((fiber) => {
+            const invocation = Context.getUnsafe(
+              fiber.context,
+              McpInvocationContext.McpInvocationContext,
+            );
+            return built.handle(tool.name, payload).pipe(
+              Stream.unwrap,
+              Stream.run(Sink.last()),
+              Effect.flatMap(Effect.fromOption),
+              Effect.provideService(ThreadMonitorService, service),
+              Effect.provideService(ThreadManagementService.ThreadManagementService, management),
+              Effect.provideService(McpInvocationContext.McpInvocationContext, invocation),
+              Effect.matchCauseEffect({
+                onFailure: (cause) => monitorToolFailure(tool.name, cause),
+                onSuccess: ({ encodedResult }) =>
+                  Effect.succeed(computerWatchInspectionResult(encodedResult)),
+              }),
+            );
+          }),
+      });
+    }
+  },
+);
+
 const isOrchestratorMcpFailure = Schema.is(OrchestratorMcpFailure);
 const isDeviceToolError = Schema.is(DeviceToolError);
 
@@ -1266,7 +1391,7 @@ const registerMonitorStandardTools = Effect.fn("McpHttpServer.registerMonitorSta
     const server = yield* McpServer.McpServer;
     const threads = yield* ThreadManagementService.ThreadManagementService;
     const service = yield* ThreadMonitorService;
-    const built = yield* decodeAsAdvertised(MonitorToolkit);
+    const built = yield* decodeAsAdvertised(MonitorStandardToolkit);
     for (const tool of Object.values(built.tools)) {
       yield* server.addTool({
         tool: new McpSchema.Tool({
@@ -1697,9 +1822,9 @@ export const ComputerToolkitRegistrationLive = Layer.mergeAll(
   ComputerImageRegistrationLive,
 );
 
-export const MonitorToolkitRegistrationLive = imageToolRegistration(
-  registerMonitorStandardTools(),
-  MonitorToolkitHandlersLive,
+export const MonitorToolkitRegistrationLive = Layer.mergeAll(
+  imageToolRegistration(registerMonitorStandardTools(), MonitorStandardToolkitHandlersLive),
+  imageToolRegistration(registerMonitorImageTools(), MonitorImageToolkitHandlersLive),
 );
 
 export const layerMcpTransport = McpServer.layerHttp({

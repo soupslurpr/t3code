@@ -4,6 +4,7 @@ import {
   ThreadId,
   ThreadMonitor,
   ThreadMonitorComputerCondition,
+  ThreadMonitorComputerEvidenceImage,
   ThreadMonitorId,
   ThreadMonitorStatus,
 } from "@t3tools/contracts";
@@ -17,31 +18,27 @@ import * as SqlSchema from "effect/sql/SqlSchema";
 
 import { toPersistenceSqlError, type ProjectionRepositoryError } from "./Errors.ts";
 export interface ThreadMonitorRepositoryShape {
-  readonly upsertComputer: (input: {
-    readonly monitor: ThreadMonitor;
-    readonly baselinePngBase64?: string | undefined;
-  }) => Effect.Effect<void, ProjectionRepositoryError>;
-
   readonly deleteById: (
     monitorId: ThreadMonitorId,
   ) => Effect.Effect<void, ProjectionRepositoryError>;
 
   readonly getComputerEvidence: (monitorId: ThreadMonitorId) => Effect.Effect<
     Option.Option<{
-      readonly baselinePngBase64: string | null;
-      readonly terminalPngBase64: string | null;
+      readonly baselineImages: ReadonlyArray<ThreadMonitorComputerEvidenceImage>;
+      readonly previousImages: ReadonlyArray<ThreadMonitorComputerEvidenceImage>;
+      readonly currentImages: ReadonlyArray<ThreadMonitorComputerEvidenceImage>;
+      readonly terminalImages: ReadonlyArray<ThreadMonitorComputerEvidenceImage>;
     }>,
     ProjectionRepositoryError
   >;
 
-  readonly putComputerBaseline: (input: {
-    readonly monitorId: ThreadMonitorId;
-    readonly pngBase64: string;
-  }) => Effect.Effect<void, ProjectionRepositoryError>;
-
-  readonly putComputerTerminal: (input: {
-    readonly monitorId: ThreadMonitorId;
-    readonly pngBase64: string;
+  /** Atomically writes one computer-monitor revision and all bounded evidence. */
+  readonly upsertComputerRevision: (input: {
+    readonly monitor: ThreadMonitor;
+    readonly baselineImages: ReadonlyArray<ThreadMonitorComputerEvidenceImage>;
+    readonly previousImages: ReadonlyArray<ThreadMonitorComputerEvidenceImage>;
+    readonly currentImages: ReadonlyArray<ThreadMonitorComputerEvidenceImage>;
+    readonly terminalImages: ReadonlyArray<ThreadMonitorComputerEvidenceImage>;
   }) => Effect.Effect<void, ProjectionRepositoryError>;
   readonly upsertMany: (
     monitors: ReadonlyArray<ThreadMonitor>,
@@ -99,10 +96,17 @@ const ThreadMonitorRow = Schema.Struct({
 type ThreadMonitorRow = typeof ThreadMonitorRow.Type;
 
 const ComputerEvidenceRow = Schema.Struct({
-  baselinePngBase64: Schema.NullOr(Schema.String),
-  terminalPngBase64: Schema.NullOr(Schema.String),
+  baselineImagesJson: Schema.String,
+  previousImagesJson: Schema.String,
+  currentImagesJson: Schema.String,
+  terminalImagesJson: Schema.String,
 });
 const decodeComputerCondition = Schema.decodeUnknownSync(ThreadMonitorComputerCondition);
+const ComputerEvidenceImagesJson = Schema.fromJsonString(
+  Schema.Array(ThreadMonitorComputerEvidenceImage),
+);
+const decodeComputerEvidenceImages = Schema.decodeUnknownSync(ComputerEvidenceImagesJson);
+const encodeComputerEvidenceImages = Schema.encodeSync(ComputerEvidenceImagesJson);
 
 const toRow = (monitor: ThreadMonitor): ThreadMonitorRow => ({
   monitorId: monitor.id,
@@ -413,31 +417,49 @@ const make = Effect.gen(function* () {
     Result: ComputerEvidenceRow,
     execute: ({ monitorId }) => sql`
       SELECT
-        baseline_png_base64 AS "baselinePngBase64",
-        terminal_png_base64 AS "terminalPngBase64"
+        baseline_images_json AS "baselineImagesJson",
+        previous_images_json AS "previousImagesJson",
+        current_images_json AS "currentImagesJson",
+        terminal_images_json AS "terminalImagesJson"
       FROM thread_monitor_computer_evidence
       WHERE monitor_id = ${monitorId}
       LIMIT 1
     `,
   });
 
-  const putComputerBaselineRow = SqlSchema.void({
-    Request: Schema.Struct({ monitorId: ThreadMonitorId, pngBase64: Schema.String }),
-    execute: ({ monitorId, pngBase64 }) => sql`
-      INSERT INTO thread_monitor_computer_evidence (monitor_id, baseline_png_base64)
-      VALUES (${monitorId}, ${pngBase64})
+  const putComputerEvidenceRow = SqlSchema.void({
+    Request: Schema.Struct({
+      monitorId: ThreadMonitorId,
+      baselineImagesJson: Schema.String,
+      previousImagesJson: Schema.String,
+      currentImagesJson: Schema.String,
+      terminalImagesJson: Schema.String,
+    }),
+    execute: ({
+      monitorId,
+      baselineImagesJson,
+      previousImagesJson,
+      currentImagesJson,
+      terminalImagesJson,
+    }) => sql`
+      INSERT INTO thread_monitor_computer_evidence (
+        monitor_id,
+        baseline_images_json,
+        previous_images_json,
+        current_images_json,
+        terminal_images_json
+      ) VALUES (
+        ${monitorId},
+        ${baselineImagesJson},
+        ${previousImagesJson},
+        ${currentImagesJson},
+        ${terminalImagesJson}
+      )
       ON CONFLICT (monitor_id) DO UPDATE SET
-        baseline_png_base64 = excluded.baseline_png_base64
-    `,
-  });
-
-  const putComputerTerminalRow = SqlSchema.void({
-    Request: Schema.Struct({ monitorId: ThreadMonitorId, pngBase64: Schema.String }),
-    execute: ({ monitorId, pngBase64 }) => sql`
-      INSERT INTO thread_monitor_computer_evidence (monitor_id, terminal_png_base64)
-      VALUES (${monitorId}, ${pngBase64})
-      ON CONFLICT (monitor_id) DO UPDATE SET
-        terminal_png_base64 = excluded.terminal_png_base64
+        baseline_images_json = excluded.baseline_images_json,
+        previous_images_json = excluded.previous_images_json,
+        current_images_json = excluded.current_images_json,
+        terminal_images_json = excluded.terminal_images_json
     `,
   });
 
@@ -456,20 +478,6 @@ const make = Effect.gen(function* () {
 
   return {
     upsert,
-    upsertComputer: ({ monitor, baselinePngBase64 }) =>
-      sql
-        .withTransaction(
-          upsertRow(toRow(monitor)).pipe(
-            Effect.andThen(
-              baselinePngBase64 === undefined
-                ? Effect.void
-                : putComputerBaselineRow({ monitorId: monitor.id, pngBase64: baselinePngBase64 }),
-            ),
-          ),
-        )
-        .pipe(
-          Effect.mapError(toPersistenceSqlError("ThreadMonitorRepository.upsertComputer:query")),
-        ),
     upsertMany: (monitors) =>
       sql
         .withTransaction(
@@ -504,16 +512,38 @@ const make = Effect.gen(function* () {
       ),
     getComputerEvidence: (monitorId) =>
       getComputerEvidenceRow({ monitorId }).pipe(
+        Effect.flatMap((row) =>
+          Effect.try(() =>
+            Option.map(row, (row) => ({
+              baselineImages: decodeComputerEvidenceImages(row.baselineImagesJson),
+              previousImages: decodeComputerEvidenceImages(row.previousImagesJson),
+              currentImages: decodeComputerEvidenceImages(row.currentImagesJson),
+              terminalImages: decodeComputerEvidenceImages(row.terminalImagesJson),
+            })),
+          ),
+        ),
         Effect.mapError(toPersistenceSqlError("ThreadMonitorRepository.getComputerEvidence:query")),
       ),
-    putComputerBaseline: (input) =>
-      putComputerBaselineRow(input).pipe(
-        Effect.mapError(toPersistenceSqlError("ThreadMonitorRepository.putComputerBaseline:query")),
-      ),
-    putComputerTerminal: (input) =>
-      putComputerTerminalRow(input).pipe(
-        Effect.mapError(toPersistenceSqlError("ThreadMonitorRepository.putComputerTerminal:query")),
-      ),
+    upsertComputerRevision: (input) =>
+      sql
+        .withTransaction(
+          upsertRow(toRow(input.monitor)).pipe(
+            Effect.flatMap(() =>
+              putComputerEvidenceRow({
+                monitorId: input.monitor.id,
+                baselineImagesJson: encodeComputerEvidenceImages(input.baselineImages),
+                previousImagesJson: encodeComputerEvidenceImages(input.previousImages),
+                currentImagesJson: encodeComputerEvidenceImages(input.currentImages),
+                terminalImagesJson: encodeComputerEvidenceImages(input.terminalImages),
+              }),
+            ),
+          ),
+        )
+        .pipe(
+          Effect.mapError(
+            toPersistenceSqlError("ThreadMonitorRepository.upsertComputerRevision:query"),
+          ),
+        ),
   } satisfies ThreadMonitorRepositoryShape;
 });
 

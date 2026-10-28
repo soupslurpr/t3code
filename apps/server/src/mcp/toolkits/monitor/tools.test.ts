@@ -1,3 +1,4 @@
+import * as Schema from "effect/Schema";
 import { expect, it } from "@effect/vitest";
 import * as Context from "effect/Context";
 import { advertisedJsonSchema } from "../../advertisedJsonSchema.ts";
@@ -15,6 +16,8 @@ it("exports bounded object schemas and provider-neutral lifecycle tools", () => 
     "monitor_check_now",
     "computer_watch_start",
     "computer_watch_capabilities",
+    "computer_watch_inspect",
+    "computer_watch_update",
   ]);
 
   for (const tool of Object.values(MonitorToolkit.tools)) {
@@ -41,6 +44,13 @@ it("exports bounded object schemas and provider-neutral lifecycle tools", () => 
 
   const capabilities = MonitorToolkit.tools.computer_watch_capabilities;
   expect(Context.get(capabilities.annotations, Tool.Readonly)).toBe(true);
+
+  const inspect = MonitorToolkit.tools.computer_watch_inspect;
+  expect(Context.get(inspect.annotations, Tool.Readonly)).toBe(false);
+  expect(Context.get(inspect.annotations, Tool.Idempotent)).toBe(false);
+
+  const update = MonitorToolkit.tools.computer_watch_update;
+  expect(Context.get(update.annotations, Tool.Destructive)).toBe(true);
 });
 
 it("advertises string evidence while runtime decoding enforces its bound", () => {
@@ -48,4 +58,29 @@ it("advertises string evidence while runtime decoding enforces its bound", () =>
     readonly properties?: Readonly<Record<string, unknown>>;
   };
   expect(schema.properties?.evidence).toEqual({ type: "string" });
+});
+
+const decode = Schema.decodeUnknownSync(
+  Schema.toCodecJson(MonitorToolkit.tools.computer_watch_update.parametersSchema),
+);
+
+it("decodes JSON defaults without erasing explicit watch resets or validation", () => {
+  const updated = decode({
+    monitorId: "monitor-1",
+    expectedRevision: 1,
+    label: null,
+    sampling: { intervalMs: null, minEvaluationIntervalMs: null },
+    review: { afterEvaluations: null, consecutiveFailures: null },
+    deadlineAt: null,
+  });
+  expect(updated.label).toBeUndefined();
+  expect(updated.sampling?.intervalMs).toBeUndefined();
+  expect(updated.sampling?.minEvaluationIntervalMs).toBeNull();
+  expect(updated.review).toEqual({ afterEvaluations: null, consecutiveFailures: null });
+  expect(updated.deadlineAt).toBeNull();
+  expect(decode({ monitorId: "monitor-1", expectedRevision: 1, review: null }).review).toBeNull();
+  expect(() =>
+    decode({ monitorId: "monitor-1", expectedRevision: 1, label: "x".repeat(1_000) }),
+  ).toThrow();
+  expect(() => decode({ monitorId: null, expectedRevision: 1, review: null })).toThrow();
 });

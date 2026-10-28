@@ -24,6 +24,20 @@ export interface ComputerMonitorRetryPolicyInput {
   readonly consecutiveFailures: number;
 }
 
+export interface ControllerReviewPolicyInput {
+  readonly policy: {
+    readonly afterEvaluations: number | null;
+    readonly consecutiveUncertain: number | null;
+    readonly consecutiveFailures: number | null;
+    readonly at: string | null;
+  } | null;
+  readonly state: "idle" | "pending" | "delivered";
+  readonly evaluationCount: number;
+  readonly consecutiveUncertain: number;
+  readonly consecutiveFailures: number;
+  readonly nowMs: number;
+}
+
 /** Coalesces requested evaluations until the configured rate limit permits one. */
 export function resolveModelEvaluation(
   input: ModelEvaluationPolicyInput,
@@ -48,4 +62,31 @@ export function resolveComputerMonitorRetryDelay(input: ComputerMonitorRetryPoli
       2 ** Math.min(MAX_RETRY_EXPONENT, input.consecutiveFailures),
   );
   return Math.max(input.minEvaluationIntervalMs ?? 0, exponentialDelay);
+}
+
+/** Returns the deterministic reason for requesting controller review once per revision. */
+export function resolveControllerReview(input: ControllerReviewPolicyInput): string | null {
+  if (input.policy === null || input.state !== "idle") return null;
+  if (input.policy.at !== null && Date.parse(input.policy.at) <= input.nowMs) {
+    return `The scheduled controller review time ${input.policy.at} was reached.`;
+  }
+  if (
+    input.policy.consecutiveFailures !== null &&
+    input.consecutiveFailures >= input.policy.consecutiveFailures
+  ) {
+    return `The watch reached ${input.consecutiveFailures} consecutive failures.`;
+  }
+  if (
+    input.policy.consecutiveUncertain !== null &&
+    input.consecutiveUncertain >= input.policy.consecutiveUncertain
+  ) {
+    return `The evaluator returned ${input.consecutiveUncertain} consecutive uncertain verdicts.`;
+  }
+  if (
+    input.policy.afterEvaluations !== null &&
+    input.evaluationCount >= input.policy.afterEvaluations
+  ) {
+    return `The watch completed ${input.evaluationCount} evaluations in this revision.`;
+  }
+  return null;
 }

@@ -3,7 +3,7 @@ import * as Effect from "effect/Effect";
 import { ThreadMonitorService } from "../../../threadMonitor/ThreadMonitorService.ts";
 import * as McpToolAccess from "../../McpToolAccess.ts";
 import * as McpInvocationContext from "../../McpInvocationContext.ts";
-import { MonitorToolkit } from "./tools.ts";
+import { MonitorToolkit, MonitorImageToolkit, MonitorStandardToolkit } from "./tools.ts";
 
 const handlers = {
   computer_watch_start: McpToolAccess.actsAsCaller((monitor) =>
@@ -20,6 +20,24 @@ const handlers = {
       yield* McpInvocationContext.requireMcpCapability("computer");
       const service = yield* ThreadMonitorService;
       return yield* service.computerCapabilities;
+    }),
+  ),
+  computer_watch_inspect: McpToolAccess.actsAsCaller((inspect) =>
+    Effect.gen(function* () {
+      const {
+        thread: { threadId },
+      } = yield* McpInvocationContext.requireThreadMcpCapability("computer");
+      const service = yield* ThreadMonitorService;
+      return yield* service.inspectComputer({ threadId, inspect });
+    }),
+  ),
+  computer_watch_update: McpToolAccess.actsAsCaller((update) =>
+    Effect.gen(function* () {
+      const {
+        thread: { threadId },
+      } = yield* McpInvocationContext.requireThreadMcpCapability("computer");
+      const service = yield* ThreadMonitorService;
+      return yield* service.updateComputer({ threadId, update });
     }),
   ),
   monitor_start: McpToolAccess.actsAsCaller((monitor) =>
@@ -74,4 +92,11 @@ const handlers = {
   ),
 } satisfies McpToolAccess.Handlers<typeof MonitorToolkit.tools>;
 
-export const MonitorToolkitHandlersLive = McpToolAccess.toLayer(MonitorToolkit, handlers);
+const { computer_watch_inspect, ...standardHandlers } = handlers;
+export const MonitorStandardToolkitHandlersLive = McpToolAccess.toLayer(
+  MonitorStandardToolkit,
+  standardHandlers,
+);
+export const MonitorImageToolkitHandlersLive = McpToolAccess.toLayer(MonitorImageToolkit, {
+  computer_watch_inspect,
+});

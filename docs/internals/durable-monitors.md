@@ -29,3 +29,9 @@ unavailable provider or model degrades the watch without substitution.
 Throttling coalesces observations, not images. Persist a pending evaluation
 when a change occurs inside the budget window; an unchanged later sample
 still needs evaluation when that window expires, including after restart.
+
+A region plan and its baseline images form one revision and must commit in the
+same transaction. The controller supplies the expected revision; the evaluator
+only reports facts and cannot alter strategy. Reviews keep the monitor active
+and use a separate, revision-bound delivery identity. Recover an accepted review
+before checking whether its resulting run now makes the thread busy.
