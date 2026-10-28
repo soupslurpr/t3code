@@ -325,6 +325,9 @@ export const make = Effect.fn("SshDeviceHost.make")(function* (
                 Effect.map((availability) => availability.available),
               ),
         ),
+        iosAvailable: Effect.sync(() =>
+          summary.platforms.some((p) => p.platform === "ios" && p.available),
+        ),
       }),
       ...(remote.daemonPort !== undefined &&
       remote.token !== undefined &&

@@ -657,11 +657,11 @@ export const makeWithHosts = Effect.fn("DeviceService.makeWithHosts")(function* 
 
   const configure: DeviceService["Service"]["configure"] = Effect.fn("DeviceService.configure")(
     function* (input) {
-      const currentSettings = yield* readDeviceSettings;
-      const nextEnabled = input.enabled ?? currentSettings.enabled;
-      const nextAgentAccess = input.agentAccessEnabled ?? currentSettings.agentAccessEnabled;
       yield* lifecycleLock.withPermit(
         Effect.gen(function* () {
+          const currentSettings = yield* readDeviceSettings;
+          const nextEnabled = input.enabled ?? currentSettings.enabled;
+          const nextAgentAccess = input.agentAccessEnabled ?? currentSettings.agentAccessEnabled;
           yield* settings
             .updateSettings({
               ...(input.enabled === undefined ? {} : { enableDeviceSupport: input.enabled }),
@@ -689,9 +689,14 @@ export const makeWithHosts = Effect.fn("DeviceService.makeWithHosts")(function* 
           }
           yield* publish((state) => ({
             ...state,
-            hostStatus: nextEnabled ? "idle" : "disabled",
-            hostStatusDetail: undefined,
-            hostStatuses: {},
+            hostStatus: !nextEnabled
+              ? "disabled"
+              : currentSettings.enabled
+                ? state.hostStatus
+                : "idle",
+            ...(nextEnabled === currentSettings.enabled
+              ? {}
+              : { hostStatusDetail: undefined, hostStatuses: {} }),
             devices: nextEnabled ? state.devices : [],
             sessions: nextEnabled ? state.sessions : [],
             bootingDevices: nextEnabled ? state.bootingDevices : [],
@@ -700,10 +705,7 @@ export const makeWithHosts = Effect.fn("DeviceService.makeWithHosts")(function* 
           }));
         }),
       );
-      if (nextEnabled && nextAgentAccess && input.agentAccessEnabled === true) {
-        yield* agentReadinessIfSupported();
-      }
-      return yield* list;
+      return (yield* SynchronizedRef.get(stateRef)).state;
     },
   );
 

@@ -194,6 +194,22 @@ Please report any errors or omissions via
 https://github.com/lovell/sharp-libvips/issues/new
 ```
 
+## Device helper dependency manifests
+
+Source: [expo-device-hub 0.19.1](https://registry.npmjs.org/expo-device-hub/0.19.1),
+[agent-device 0.21.31](https://registry.npmjs.org/agent-device/0.21.31).
+
+- `apps/server/src/device/toolchain/expo-device-hub.lock.json`: adapted; generated npm dependency metadata, with exact registry locations and integrity hashes.
+- `apps/server/src/device/toolchain/agent-device.lock.json`: adapted; generated npm dependency metadata, with exact registry locations and integrity hashes.
+
+Source: [node-datachannel 0.33.6](https://registry.npmjs.org/node-datachannel/0.33.6) and its exact-version `@node-datachannel/` optional packages.
+License: MPL-2.0.
+
+- `apps/server/src/device/toolchain/node-datachannel.assets.json`: adapted; platform package versions and native binary SHA-256 digests, verified from the integrity-pinned npm archives before loading.
+
+These files contain dependency metadata. Downloaded packages retain their own
+license files and notices; third-party source is not copied into these manifests.
+
 ## Legend List 3.3.5
 
 Source: [Legend List 3.3.5](https://registry.npmjs.org/@legendapp/list/-/list-3.3.5.tgz)

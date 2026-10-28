@@ -49,6 +49,12 @@ const decodePersistedRestartSettings = Schema.decodeEffect(
   ),
 );
 
+const decodeDeviceChoices = Schema.decodeEffect(
+  Schema.fromJsonString(
+    Schema.Struct({ enableDeviceSupport: Schema.Boolean, enableAgentDeviceAccess: Schema.Boolean }),
+  ),
+);
+
 const layerServerSettings = (policy?: ManagedPolicyDocument) =>
   ServerSettingsModule.layer.pipe(
     Layer.provide(ServerSecretStore.layer),
@@ -232,6 +238,112 @@ it.layer(NodeServices.layer)("server settings", (it) => {
           reloaded.projectSettingsOverrides[projectId]?.continueThreadsAfterServerUpdate,
         );
       }).pipe(Effect.provide(layerServerSettingsWithSecrets())),
+  );
+
+  it.effect("new environments enable lazy device access and persist both choices", () =>
+    Effect.gen(function* () {
+      const settings = yield* ServerSettingsModule.ServerSettingsService;
+      const config = yield* ServerConfig.ServerConfig;
+      const fs = yield* FileSystem.FileSystem;
+      const initial = yield* settings.getSettings;
+      assert.isTrue(initial.enableDeviceSupport);
+      assert.isTrue(initial.enableAgentDeviceAccess);
+      yield* settings.updateSettings({ enableDeviceSupport: false });
+      const saved = yield* fs
+        .readFileString(config.settingsPath)
+        .pipe(Effect.flatMap(decodeDeviceChoices));
+      assert.deepEqual(saved, { enableDeviceSupport: false, enableAgentDeviceAccess: true });
+      const reloaded = yield* Effect.gen(function* () {
+        return yield* (yield* ServerSettingsModule.ServerSettingsService).getSettings;
+      }).pipe(
+        Effect.provide(
+          Layer.fresh(ServerSettingsModule.layer).pipe(Layer.provide(ManagedPolicy.layerTest())),
+        ),
+      );
+      assert.isFalse(reloaded.enableDeviceSupport);
+      assert.isTrue(reloaded.enableAgentDeviceAccess);
+    }).pipe(Effect.provide(layerServerSettingsWithSecrets())),
+  );
+
+  it.effect.each([
+    ["an existing file without device settings", "{}", true, true],
+    ["explicit opt-ins", '{"enableDeviceSupport":true,"enableAgentDeviceAccess":true}', true, true],
+    [
+      "explicit opt-outs",
+      '{"enableDeviceSupport":false,"enableAgentDeviceAccess":false}',
+      false,
+      false,
+    ],
+    ["only the hub disabled", '{"enableDeviceSupport":false}', false, true],
+    ["only agent access disabled", '{"enableAgentDeviceAccess":false}', true, false],
+    ["malformed settings", "{invalid json", true, true],
+  ] as const)("loads and persists device defaults for %s", ([_label, raw, enabled, agentAccess]) =>
+    Effect.gen(function* () {
+      const settings = yield* ServerSettingsModule.ServerSettingsService;
+      const config = yield* ServerConfig.ServerConfig;
+      const fs = yield* FileSystem.FileSystem;
+      yield* fs.writeFileString(config.settingsPath, raw);
+      const loaded = yield* settings.getSettings;
+      assert.equal(loaded.enableDeviceSupport, enabled);
+      assert.equal(loaded.enableAgentDeviceAccess, agentAccess);
+      if (raw === "{invalid json") {
+        const failure = yield* settings
+          .updateSettings({ deviceOnboardingCompleted: true })
+          .pipe(Effect.flip);
+        assert.equal(failure.operation, "read-file");
+        assert.equal(yield* fs.readFileString(config.settingsPath), raw);
+        return;
+      }
+      yield* settings.updateSettings({ deviceOnboardingCompleted: true });
+      const saved = yield* fs
+        .readFileString(config.settingsPath)
+        .pipe(Effect.flatMap(decodeDeviceChoices));
+      assert.deepEqual(saved, {
+        enableDeviceSupport: enabled,
+        enableAgentDeviceAccess: agentAccess,
+      });
+    }).pipe(Effect.provide(layerServerSettingsWithSecrets())),
+  );
+
+  it.effect.each([
+    ["enableDeviceSupport", undefined],
+    ["enableAgentDeviceAccess", undefined],
+    ["enableDeviceSupport", false],
+    ["enableAgentDeviceAccess", false],
+  ] as const)("keeps policy device defaults separate from stored choices: %s/%s", ([key, stored]) =>
+    Effect.gen(function* () {
+      const service = yield* ServerSettingsModule.ServerSettingsService;
+      const config = yield* ServerConfig.ServerConfig;
+      const fs = yield* FileSystem.FileSystem;
+      yield* fs.writeFileString(
+        config.settingsPath,
+        JSON.stringify(stored === undefined ? {} : { [key]: stored }),
+      );
+      assert.isFalse((yield* service.getSettings)[key]);
+      yield* service.updateSettings({ deviceOnboardingCompleted: true });
+      const persisted = yield* fs.readFileString(config.settingsPath);
+      if (stored === undefined) assert.notInclude(persisted, key);
+      else assert.include(persisted, `"${key}": false`);
+      const reloaded = yield* Effect.gen(function* () {
+        return yield* (yield* ServerSettingsModule.ServerSettingsService).getSettings;
+      }).pipe(
+        Effect.provide(
+          Layer.fresh(ServerSettingsModule.layer).pipe(
+            Layer.provide(ManagedPolicy.layerTest()),
+            Layer.provide(ServerSecretStore.layer),
+          ),
+        ),
+      );
+      assert.equal(reloaded[key], stored ?? true);
+    }).pipe(
+      Effect.provide(
+        layerServerSettings({
+          schemaVersion: 1,
+          organization: "test",
+          settings: { [key]: { value: false, locked: false } },
+        }),
+      ),
+    ),
   );
 
   it.effect("serializes concurrent model preference edits without cancelling duplicate adds", () =>

@@ -8,14 +8,11 @@ Device panel work over Tailscale and T3 Connect, including when an SSH host runs
 ## Two external tools, one seam
 
 [expo-device-hub](../../apps/server/src/device/LocalDeviceHost.ts) streams and
-[agent-device](../../apps/server/src/device/AgentDeviceShim.ts) drives. Each is
-npm-installed at a pinned version into the T3 home after its matching Device
-panel consent step. Manual setup installs and starts only expo-device-hub;
-agent-device remains absent and stopped until agent access is granted. Both run
-with the server's Node; `npx` would make the first `device_open` after a reboot
-depend on the registry. The hub is a supervised child rather than an imported
-middleware because serve-sim loads private CoreSimulator frameworks through a
-native addon, and a crash there must not take the server down.
+[agent-device](../../apps/server/src/device/AgentDeviceShim.ts) drives. Helpers
+are prepared when devices are used so ordinary agent sessions incur no device
+setup or process overhead. The hub runs in a supervised child because serve-sim
+loads private CoreSimulator frameworks through a native addon, and a crash there
+must not take the server down.
 
 Everything platform-specific sits behind
 [`DeviceHost`](../../apps/server/src/device/DeviceHost.ts). The service lists,
@@ -97,20 +94,12 @@ it reads back. The proxy allowlist grows only with read routes (accessibility
 tree, foreground app, event log) and refuses non-GET methods everywhere except
 screenshot capture and stream tuning.
 
-## Agents drive through the CLI
+## Agent access
 
-The `device_*` toolkit is deliberately four tools: list, open, screenshot, and
-close. Driving happens through the `agent-device` CLI, which has the semantic
-snapshot model agents need and stays current with its own releases. T3 prepends
-a shim directory to the provider's PATH. The CLI installs on the environment
-server even when that server cannot run simulators. Hosts start on demand.
-
-That environment is fixed when the provider subprocess spawns, so
-[`prepareMcpSession`](../../apps/server/src/orchestration-v2/ProviderSessionManager.ts)
-starts agent-device only when device support and agent access have both been
-enabled, the session has the `device` capability, and the machine can run at
-least one platform. Starting it later from `device_open` would leave the
-already-running agent without the CLI.
+Agents can use T3's managed CLI or their existing device tools. `device_open`
+returns an explicit launcher, leaving the provider's PATH unchanged so installed
+tools remain usable. Platform readiness belongs to the selected device host,
+allowing environments without local simulator support to use remote hosts.
 
 How to drive a device is returned from `device_open`, not kept in an
 always-loaded prompt or skill: it costs nothing in threads that never open a
@@ -126,9 +115,8 @@ its agent-device session, which quits the app that session opened and releases t
 Agents choose between these tools and ssh before they open anything, so
 sessions that hold `device` get a short block from
 [`orchestrationInstructions.ts`](../../packages/provider-core/src/server/orchestrationInstructions.ts)
-through their adapter's instruction channel. It points simulator and emulator UI
-work on local and SSH hosts at the tools; `simctl`, `adb` and ssh stay
-available for what the tools do not cover. Pi and Muse do not send it yet.
+through their adapter's instruction channel. It describes the managed commands on local and SSH hosts while leaving
+`simctl`, `adb`, ssh and standalone automation available. Pi and Muse do not send it yet.
 Claude's native subagents never see the session's system prompt, so a
 `SubagentStart` hook passes them the block, where the runtime runs hooks and the
 subagent's context is not isolated.
