@@ -2642,3 +2642,94 @@ describe("mobile composer drafts", () => {
     expect(composerAttachmentCleanupMocks.remove).not.toHaveBeenCalled();
   });
 });
+
+describe("concurrent cloud draft restore", () => {
+  it.each([{ options: [] }, { options: [{ id: "reasoningEffort", value: "max" }] }])(
+    "keeps explicit options in an otherwise empty legacy task (%j)",
+    ({ options }) => {
+      const modelSelection = { instanceId: "codex", model: "gpt-6-astra", options };
+      const decoded = decodePersistedComposerState({
+        schemaVersion: 1,
+        drafts: {
+          "new-task:environment-1:project-1": { text: "", attachments: [], modelSelection },
+        },
+      });
+      expect(Object.values(decoded.drafts)[0]?.modelSelection).toEqual(modelSelection);
+    },
+  );
+
+  it("reads the current archive after outbox loading and preserves other accounts", async () => {
+    vi.useFakeTimers();
+    await waitForComposerDraftsLoaded();
+    const queued = {
+      environmentId: EnvironmentId.make("environment-1"),
+      threadId: ThreadId.make("thread-1"),
+      messageId: MessageId.make("restored-message"),
+      commandId: CommandId.make("restore-command"),
+      text: "Already delivered",
+      attachments: [],
+      createdAt: "2026-10-27T00:00:00.000Z",
+    };
+    appAtomRegistry.set(composerCloudDraftsAtom, {
+      accountId: null,
+      signedOut: {
+        account: {
+          drafts: { saved: { text: "Old text", attachments: [] } },
+          queuedMessages: [queued],
+        },
+      },
+    });
+    const loading = Promise.withResolvers<void>();
+    const loaded = Promise.withResolvers<boolean>();
+    using _load = vi.spyOn(threadOutboxManager, "load").mockImplementation(() => {
+      loading.resolve();
+      return loaded.promise;
+    });
+    using enqueue = vi.spyOn(threadOutboxManager, "enqueue").mockResolvedValue(undefined);
+    const restore = restoreCloudComposerDrafts("account");
+    await loading.promise;
+    const otherAccount = {
+      drafts: { other: { text: "Other account edit", attachments: [] } },
+      queuedMessages: [],
+    };
+    appAtomRegistry.set(composerCloudDraftsAtom, {
+      accountId: null,
+      signedOut: {
+        account: { drafts: { saved: { text: "Fresh text", attachments: [] } }, queuedMessages: [] },
+        other: otherAccount,
+      },
+    });
+    loaded.resolve(true);
+    await restore;
+    expect(enqueue).not.toHaveBeenCalled();
+    expect(getComposerDraftSnapshot("saved").text).toBe("Fresh text");
+    expect(appAtomRegistry.get(composerCloudDraftsAtom).signedOut).toEqual({ other: otherAccount });
+  });
+
+  it("rechecks each archived message after enqueueing the previous message", async () => {
+    vi.useFakeTimers();
+    await waitForComposerDraftsLoaded();
+    const messages = ["first", "delivered"].map((id) => ({
+      environmentId: EnvironmentId.make("environment-1"),
+      threadId: ThreadId.make("thread-1"),
+      messageId: MessageId.make(id),
+      commandId: CommandId.make(id),
+      text: id,
+      attachments: [],
+      createdAt: "2026-10-27T00:00:00.000Z",
+    }));
+    appAtomRegistry.set(composerCloudDraftsAtom, {
+      accountId: null,
+      signedOut: { account: { drafts: {}, queuedMessages: messages } },
+    });
+    using _load = vi.spyOn(threadOutboxManager, "load").mockResolvedValue(true);
+    using enqueue = vi.spyOn(threadOutboxManager, "enqueue").mockImplementation(async () => {
+      appAtomRegistry.set(composerCloudDraftsAtom, {
+        accountId: null,
+        signedOut: { account: { drafts: {}, queuedMessages: [messages[0]!] } },
+      });
+    });
+    await restoreCloudComposerDrafts("account");
+    expect(enqueue.mock.calls.map(([message]) => message.messageId)).toEqual(["first"]);
+  });
+});

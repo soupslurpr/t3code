@@ -41,23 +41,44 @@ export async function editPendingThreadMessage(message: QueuedThreadMessage): Pr
     if (!(await confirmThreadOutboxMessageQueued(message))) return false;
     const revision = threadOutboxRevision(message.messageId);
     await waitForComposerDraftsLoaded();
+    if (
+      !(await confirmThreadOutboxMessageQueued(message)) ||
+      threadOutboxRevision(message.messageId) !== revision
+    )
+      return false;
     const snapshot = getComposerDraftSnapshot(draftKey);
     const attachmentIds = new Set(snapshot.attachments.map((attachment) => attachment.id));
     for (const attachment of message.attachments) attachmentIds.add(attachment.id);
     if (attachmentIds.size > PROVIDER_SEND_TURN_MAX_ATTACHMENTS) {
       throw new Error("Remove attachments from the composer before editing this message.");
     }
-    try {
-      await mergeComposerDraftContent(draftKey, message);
-    } finally {
-      rollback = { snapshot, merged: getComposerDraftSnapshot(draftKey) };
-    }
-    updateComposerDraftSettings(draftKey, {
-      ...(message.modelSelection ? { modelSelection: message.modelSelection } : {}),
-      ...(message.runtimeMode ? { runtimeMode: message.runtimeMode } : {}),
-      ...(message.interactionMode ? { interactionMode: message.interactionMode } : {}),
+    const merge = { snapshot, merged: snapshot };
+    await mergeComposerDraftContent(draftKey, message, {
+      onMerge: (snapshot, merged) => {
+        merge.snapshot = snapshot;
+        merge.merged = merged;
+        rollback = merge;
+      },
     });
-    rollback = { snapshot, merged: getComposerDraftSnapshot(draftKey) };
+    if (
+      !(await confirmThreadOutboxMessageQueued(message)) ||
+      threadOutboxRevision(message.messageId) !== revision
+    )
+      return false;
+    const current = getComposerDraftSnapshot(draftKey);
+    const settings = {
+      ...(current.modelSelection === merge.merged.modelSelection && message.modelSelection
+        ? { modelSelection: message.modelSelection }
+        : {}),
+      ...(current.runtimeMode === merge.merged.runtimeMode && message.runtimeMode
+        ? { runtimeMode: message.runtimeMode }
+        : {}),
+      ...(current.interactionMode === merge.merged.interactionMode && message.interactionMode
+        ? { interactionMode: message.interactionMode }
+        : {}),
+    };
+    updateComposerDraftSettings(draftKey, settings);
+    rollback = { snapshot: merge.snapshot, merged: { ...merge.merged, ...settings } };
     await flushComposerDrafts();
     if (!(await removeThreadOutboxMessage(message, revision))) return false;
     rollback = null;

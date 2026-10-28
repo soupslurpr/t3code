@@ -672,6 +672,7 @@ export function decodePersistedComposerState(value: unknown): {
             key,
             isNewTaskDraftKey(key) &&
               draft.modelSelection &&
+              draft.modelSelection.options === undefined &&
               draft.text.length === 0 &&
               draft.attachments.length === 0 &&
               draft.runtimeMode === undefined &&
@@ -1213,11 +1214,12 @@ export async function removeDeliveredCloudQueuedMessage(
 
 export async function restoreCloudComposerDrafts(accountId: string): Promise<void> {
   await waitForComposerDraftsLoaded();
-  const cloud = appAtomRegistry.get(composerCloudDraftsAtom);
-  const saved = cloud.signedOut[accountId];
-  if (saved) {
+  const readSaved = () => appAtomRegistry.get(composerCloudDraftsAtom).signedOut[accountId];
+  if (readSaved()) {
     if (!(await threadOutboxManager.load())) throw new Error("Could not restore queued messages.");
-    for (const message of saved.queuedMessages) {
+    for (const { messageId } of readSaved()?.queuedMessages ?? []) {
+      const message = readSaved()?.queuedMessages.find((row) => row.messageId === messageId);
+      if (!message) continue;
       const alreadyQueued = Object.values(
         appAtomRegistry.get(threadOutboxManager.queuedMessagesByThreadKeyAtom),
       )
@@ -1227,7 +1229,7 @@ export async function restoreCloudComposerDrafts(accountId: string): Promise<voi
     }
     updateComposerDrafts((current) => {
       const restored = { ...current };
-      for (const [key, draft] of Object.entries(saved.drafts)) {
+      for (const [key, draft] of Object.entries(readSaved()?.drafts ?? {})) {
         const existing = current[key];
         const attachmentIds = new Set(existing?.attachments.map((attachment) => attachment.id));
         restored[key] = existing
@@ -1257,7 +1259,7 @@ export async function restoreCloudComposerDrafts(accountId: string): Promise<voi
       return restored;
     });
   }
-  const signedOut = { ...cloud.signedOut };
+  const signedOut = { ...appAtomRegistry.get(composerCloudDraftsAtom).signedOut };
   delete signedOut[accountId];
   appAtomRegistry.set(composerCloudDraftsAtom, { accountId, signedOut });
   schedulePersistComposerState();
@@ -1695,6 +1697,9 @@ export function mergeComposerDraftContentState(
 export async function mergeComposerDraftContent(
   draftKey: string,
   content: ComposerDraftContent,
+  options?: {
+    readonly onMerge?: (snapshot: ComposerDraft, merged: ComposerDraft) => void;
+  },
 ): Promise<{ readonly skippedAttachmentCount: number }> {
   ensureComposerDraftsLoaded();
   if (loadPromise !== null) {
@@ -1716,6 +1721,8 @@ export async function mergeComposerDraftContent(
     (attachment) =>
       !currentAttachmentIds.has(attachment.id) && !nextAttachmentIds.has(attachment.id),
   ).length;
+  // Capture rollback ownership before publication can trigger concurrent editor changes.
+  options?.onMerge?.(normalizeDraft(current[draftKey]), normalizeDraft(next[draftKey]));
   // Publish content and receipt before awaiting disk; concurrent typing then preserves the receipt in later serialized writes.
   if (next !== current) {
     appAtomRegistry.set(composerDraftsAtom, next);
