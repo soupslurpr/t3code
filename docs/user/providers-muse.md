@@ -32,6 +32,11 @@ share its Muse login; give an instance its own `META_API_KEY` to bill it
 separately. Existing conversations retain their instance when its model catalog
 becomes unavailable.
 
+T3 Code uses per-launch overrides to turn off automatic goal and skill reminders
+and set a 500,000-token context budget without changing global Muse settings.
+Older Muse versions may not support these overrides; T3 Code retries without
+settings the host refuses.
+
 ## Models
 
 Models and reasoning choices come from Muse on the selected host. After changing

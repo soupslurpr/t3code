@@ -8,9 +8,13 @@ import { assert, describe, expect, it } from "@effect/vitest";
 import { AgentScope } from "@t3tools/shared/AgentScope";
 import * as HostProcess from "@t3tools/shared/HostProcess";
 import * as Effect from "effect/Effect";
+import * as Fiber from "effect/Fiber";
+import * as Queue from "effect/Queue";
+import * as TestClock from "effect/testing/TestClock";
 import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
 import * as Logger from "effect/Logger";
+import * as PlatformError from "effect/PlatformError";
 import { ChildProcess, ChildProcessSpawner } from "effect/process";
 
 import * as ServerConfig from "../config.ts";
@@ -50,12 +54,18 @@ const withFakeSystemd = <A, E>(
     readonly calls: ReadonlyArray<ReadonlyArray<string>>;
     readonly stateDir: string;
     readonly cgroupRoot: string;
+    readonly cgroupReads: Queue.Queue<string>;
   }) => Effect.Effect<A, E>,
   // A user manager older than systemd 253 rejects OOMPolicy on scopes.
   {
     oomPolicy = true,
     stopFails = false,
-  }: { readonly oomPolicy?: boolean; readonly stopFails?: boolean } = {},
+    showResult,
+  }: {
+    readonly oomPolicy?: boolean;
+    readonly stopFails?: boolean;
+    readonly showResult?: (unit: string) => Partial<ProcessRunner.ProcessRunOutput> | undefined;
+  } = {},
 ) =>
   Effect.gen(function* () {
     const bin = NodeFS.mkdtempSync(NodePath.join(NodeOS.tmpdir(), "t3-agent-scope-"));
@@ -64,6 +74,7 @@ const withFakeSystemd = <A, E>(
     }
     const cgroupRoot = NodePath.join(bin, "cgroup");
     const units = new Map<string, FakeUnit>();
+    const cgroupReads = yield* Queue.unbounded<string>();
     const calls: Array<ReadonlyArray<string>> = [];
     const output = (stdout: string, code = 0): ProcessRunner.ProcessRunOutput => ({
       stdout,
@@ -92,10 +103,12 @@ const withFakeSystemd = <A, E>(
           }
           if (verb === "reset-failed") units.delete(unit);
           if (verb !== "show") return output("");
+          const override = showResult?.(unit);
+          if (override) return { ...output(""), ...override };
           const state = units.get(unit);
           return output(
             state === undefined
-              ? "LoadState=not-found\nActiveState=inactive\nResult=success\n"
+              ? "LoadState=not-found\nActiveState=inactive\nResult=success\nControlGroup=\n"
               : `LoadState=loaded\nActiveState=${state.activeState}\nResult=${state.result}\n` +
                   `ControlGroup=${state.controlGroup ?? ""}\n`,
           );
@@ -108,14 +121,32 @@ const withFakeSystemd = <A, E>(
       Effect.provideService(HostProcess.Environment, { PATH: bin, XDG_RUNTIME_DIR: "/run/user/1" }),
       Effect.provideService(FileSystem.FileSystem, {
         ...fileSystem,
+        // Fake kernel reads stay synchronous so TestClock owns poll scheduling.
         readFileString: (path, encoding) =>
-          fileSystem.readFileString(path.replace("/sys/fs/cgroup", cgroupRoot), encoding),
+          (path.startsWith("/sys/fs/cgroup/")
+            ? Effect.try({
+                try: () => NodeFS.readFileSync(path.replace("/sys/fs/cgroup", cgroupRoot), "utf8"),
+                catch: (cause) =>
+                  PlatformError.systemError({
+                    _tag: "Unknown",
+                    module: "FileSystem",
+                    method: "readFileString",
+                    pathOrDescriptor: path,
+                    cause,
+                  }),
+              })
+            : fileSystem.readFileString(path, encoding)
+          ).pipe(
+            Effect.tap(() =>
+              path.endsWith("/cgroup.events") ? Queue.offer(cgroupReads, path) : Effect.void,
+            ),
+          ),
         writeFileString: (path, data, options) =>
           fileSystem.writeFileString(path.replace("/sys/fs/cgroup", cgroupRoot), data, options),
       }),
     );
     const { stateDir } = yield* ServerConfig.ServerConfig;
-    return yield* body({ scope, units, calls, stateDir, cgroupRoot }).pipe(
+    return yield* body({ scope, units, calls, stateDir, cgroupRoot, cgroupReads }).pipe(
       Effect.ensuring(Effect.sync(() => NodeFS.rmSync(bin, { recursive: true, force: true }))),
     );
   }).pipe(
@@ -402,6 +433,142 @@ describe("AgentScope service", () => {
       { stopFails: true },
     );
   });
+
+  it.effect("confirms only the supplied empty scope without touching its replacement", () =>
+    withFakeSystemd(({ scope, units, calls, cgroupRoot, cgroupReads }) =>
+      Effect.gen(function* () {
+        assert.isFunction(scope.confirmStopped);
+        const first = unitOf(
+          yield* scope.wrap({ command: "agent", args: [], name: "t", threadId: "a" }),
+        );
+        exitedAgent(units, cgroupRoot, first, { populated: true, oomKills: 0 });
+        const replacement = unitOf(
+          yield* scope.wrap({ command: "agent", args: [], name: "t", threadId: "a" }),
+        );
+        exitedAgent(units, cgroupRoot, replacement, { populated: true, oomKills: 0 });
+        yield* scope.stop(first);
+        yield* Queue.clear(cgroupReads);
+        const confirming = yield* scope.confirmStopped!(first).pipe(Effect.forkChild);
+        expect(yield* Queue.take(cgroupReads)).toContain(first);
+        expect(confirming.pollUnsafe()).toBeUndefined();
+        exitedAgent(units, cgroupRoot, first, { populated: false, oomKills: 0 });
+        yield* TestClock.adjust("100 millis");
+        expect(yield* Fiber.join(confirming)).toBe(true);
+        expect(units.get(replacement)?.activeState).toBe("active");
+        expect(stopsOf(calls)).toEqual([["--user", "stop", "--no-block", first]]);
+        expect(calls.filter(([, verb]) => verb === "reset-failed")).toEqual([]);
+      }),
+    ),
+  );
+
+  it.effect("confirms a valid absent unit but never a foreign unit", () =>
+    withFakeSystemd(({ scope, calls }) =>
+      Effect.gen(function* () {
+        assert.isFunction(scope.confirmStopped);
+        const unit = unitOf(yield* scope.wrap({ command: "agent", args: [], name: "muse:v2" }));
+        expect(yield* scope.confirmStopped!(unit)).toBe(true);
+        const before = calls.length;
+        expect(yield* scope.confirmStopped!("session-2.scope")).toBe(false);
+        expect(calls).toHaveLength(before);
+      }),
+    ),
+  );
+
+  it.effect.each([
+    { name: "failed status", result: { code: ChildProcessSpawner.ExitCode(5) } },
+    { name: "empty status", result: { stdout: "" } },
+    {
+      name: "duplicate status",
+      result: {
+        stdout: "LoadState=loaded\nLoadState=not-found\nActiveState=inactive\nControlGroup=\n",
+      },
+    },
+    {
+      name: "timed out status",
+      result: {
+        stdout: "LoadState=not-found\nActiveState=inactive\nControlGroup=\n",
+        timedOut: true,
+      },
+    },
+    {
+      name: "missing cgroup field",
+      result: { stdout: "LoadState=not-found\nActiveState=inactive\n" },
+    },
+    {
+      name: "contradictory absent state",
+      result: { stdout: "LoadState=not-found\nActiveState=active\nControlGroup=\n" },
+    },
+    {
+      name: "failed unit without cgroup proof",
+      result: { stdout: "LoadState=loaded\nActiveState=failed\nControlGroup=\n" },
+    },
+    {
+      name: "truncated status",
+      result: {
+        stdout: "LoadState=not-found\nActiveState=inactive\nControlGroup=\n",
+        stdoutTruncated: true,
+      },
+    },
+    {
+      name: "invalid status encoding",
+      result: {
+        stdout: "LoadState=not-found\nActiveState=inactive\nControlGroup=\n",
+        stdoutInvalidUtf8: true,
+      },
+    },
+  ])("refuses cleanup confirmation for $name", ({ result }) =>
+    withFakeSystemd(
+      ({ scope }) =>
+        Effect.gen(function* () {
+          assert.isFunction(scope.confirmStopped);
+          const unit = unitOf(yield* scope.wrap({ command: "agent", args: [], name: "t" }));
+          expect(yield* scope.confirmStopped!(unit)).toBe(false);
+        }),
+      { showResult: (unit) => (unit.startsWith("t3code-t-") ? result : undefined) },
+    ),
+  );
+
+  it.effect.each(["unreadable", "invalid counter", "duplicate counter", "populated"] as const)(
+    "refuses cleanup confirmation with %s cgroup evidence",
+    (kind) =>
+      withFakeSystemd(
+        ({ scope, units, cgroupRoot, cgroupReads }) =>
+          Effect.gen(function* () {
+            assert.isFunction(scope.confirmStopped);
+            const unit = unitOf(yield* scope.wrap({ command: "agent", args: [], name: "t" }));
+            exitedAgent(units, cgroupRoot, unit, { populated: true, oomKills: 0 });
+            yield* scope.stop(unit);
+            const file = NodePath.join(cgroupRoot, unit, "cgroup.events");
+            if (kind === "unreadable") NodeFS.unlinkSync(file);
+            if (kind === "invalid counter") NodeFS.writeFileSync(file, "populated 2\n");
+            if (kind === "duplicate counter")
+              NodeFS.writeFileSync(file, "populated 0\npopulated 1\n");
+            yield* Queue.clear(cgroupReads);
+            const confirming = yield* scope.confirmStopped!(unit).pipe(Effect.forkChild);
+            if (kind === "populated") yield* Queue.take(cgroupReads);
+            yield* TestClock.adjust("2 seconds");
+            assert.isDefined(confirming.pollUnsafe());
+            expect(yield* Fiber.join(confirming)).toBe(false);
+          }),
+        { stopFails: true },
+      ),
+  );
+
+  it.effect("confirms empty OOM scopes without clearing their diagnosis", () =>
+    withFakeSystemd(({ scope, units, calls, cgroupRoot }) =>
+      Effect.gen(function* () {
+        assert.isFunction(scope.confirmStopped);
+        const unit = unitOf(
+          yield* scope.wrap({ command: "agent", args: [], name: "t", threadId: "a" }),
+        );
+        exitedAgent(units, cgroupRoot, unit, { populated: false, oomKills: 1 });
+        units.get(unit)!.result = "oom-kill";
+        expect(yield* scope.confirmStopped!(unit)).toBe(true);
+        expect(calls.filter(([, verb]) => verb === "stop" || verb === "reset-failed")).toEqual([]);
+        expect(yield* scope.oomKilled("a")).toBe(true);
+      }),
+    ),
+  );
 
   it.effect("leaves a quiet slice alone", () =>
     withFakeSystemd(({ scope, calls }) =>

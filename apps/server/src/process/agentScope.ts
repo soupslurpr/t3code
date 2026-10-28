@@ -342,6 +342,61 @@ export const make = Effect.gen(function* () {
     }
   });
 
+  const confirmStopped = Effect.fn("AgentScope.confirmStopped")(
+    function* (unit: string) {
+      if (!unit.startsWith("t3code-") || !unit.endsWith(".scope")) return false;
+      const scope = yield* systemd;
+      if (scope === undefined) return false;
+      for (let attempt = 0; attempt < STOPPING_POLL_ATTEMPTS; attempt++) {
+        const shown = yield* run(scope.systemctl, [
+          "--user",
+          "show",
+          unit,
+          "--property=LoadState,ActiveState,ControlGroup",
+        ]);
+        if (
+          shown._tag === "None" ||
+          shown.value.code !== 0 ||
+          shown.value.timedOut ||
+          shown.value.stdoutTruncated ||
+          shown.value.stdoutInvalidUtf8
+        )
+          return false;
+        const values = parseKeyValues(shown.value.stdout);
+        const lines = shown.value.stdout.split("\n");
+        if (
+          ["LoadState", "ActiveState", "ControlGroup"].some(
+            (key) => lines.filter((line) => line.startsWith(`${key}=`)).length !== 1,
+          )
+        )
+          return false;
+        const load = values.get("LoadState");
+        const active = values.get("ActiveState");
+        const group = values.get("ControlGroup");
+        if (load === "not-found") return active === "inactive" && group === "";
+        if (
+          load !== "loaded" ||
+          !["active", "activating", "deactivating", "inactive", "failed"].includes(active ?? "") ||
+          group === undefined ||
+          !path.isAbsolute(group) ||
+          path.normalize(group) !== group ||
+          path.basename(group) !== unit
+        )
+          return false;
+        const counters = (yield* readCgroupFile(group, "cgroup.events"))
+          .split("\n")
+          .filter((line) => line.startsWith("populated "));
+        if (counters.length !== 1) return false;
+        if (counters[0] === "populated 0") return true;
+        if (counters[0] !== "populated 1") return false;
+        yield* Effect.sleep(STOPPING_POLL_INTERVAL);
+      }
+      return false;
+    },
+    Effect.timeoutOption("13 seconds"),
+    Effect.map((result) => result._tag === "Some" && result.value),
+  );
+
   const kill: AgentScopeShape["kill"] = Effect.fn("AgentScope.kill")(function* (threadId) {
     const tracked = scopeByThread.get(threadId);
     if (tracked === undefined || tracked.shared) return false;
@@ -422,6 +477,7 @@ export const make = Effect.gen(function* () {
     }),
     oomKilled,
     stop,
+    confirmStopped,
     kill,
     clear,
   } satisfies AgentScopeShape;

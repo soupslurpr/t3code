@@ -4,7 +4,7 @@ import * as NodeFSP from "node:fs/promises";
 import { vi } from "vite-plus/test";
 import { assert, describe, it } from "@effect/vitest";
 import * as NodeServices from "@effect/platform-node/NodeServices";
-import { MspError } from "@muse-code/sdk";
+import { MspError, spawnMspConnection } from "@muse-code/sdk";
 import {
   MUSE_DEFAULT_MODEL,
   EnvironmentId,
@@ -26,6 +26,7 @@ import * as HostProcess from "@t3tools/shared/HostProcess";
 import { AgentScope } from "@t3tools/shared/AgentScope";
 import { MuseSettings } from "../settings.ts";
 import * as DateTime from "effect/DateTime";
+import * as Cause from "effect/Cause";
 import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
 import * as Option from "effect/Option";
@@ -40,7 +41,7 @@ import * as TestClock from "effect/testing/TestClock";
 import * as TestProviderHost from "@t3tools/provider-testing/TestProviderHost";
 import * as McpProviderSessions from "@t3tools/provider-core/server/McpProviderSessions";
 import type { MuseItem, MuseSubscriptionUsage } from "./protocol.ts";
-import type { MuseSdkHost, MuseSdkHostOptions } from "./sdk.ts";
+import { createMuseSdkHost, type MuseSdkHost, type MuseSdkHostOptions } from "./sdk.ts";
 import * as IdAllocator from "@t3tools/provider-core/server/IdAllocator";
 import * as ProviderAdapter from "@t3tools/provider-core/server/ProviderAdapter";
 import type * as ProviderContinuationRequests from "@t3tools/provider-core/server/ProviderContinuationRequests";
@@ -220,8 +221,19 @@ const makeHarness = Effect.fnUntraced(function* (
     createHost: async (options) => {
       assert.deepStrictEqual(options.environment, { PATH: "/fake/bin" });
       const selected = hostCount++ === 0 ? fake : (replacement ?? fake);
-      selected.observeProcessExit(options.onProcessExit);
-      return selected.host;
+      const attempt = await options.prepareAttempt?.(options.launch!);
+      const processExited = pendingPromise<Awaited<MuseSdkHost["exited"]>>();
+      selected.observeProcessExit((exit) => {
+        processExited.resolve(exit);
+        attempt?.onProcessExit(exit);
+        options.onProcessExit?.(exit);
+      });
+      let closing: Promise<void> | undefined;
+      return {
+        ...selected.host,
+        processExited: processExited.promise,
+        close: () => (closing ??= selected.host.close().finally(() => attempt?.close())),
+      };
     },
     ...overrides,
   });
@@ -387,6 +399,393 @@ const approval = (turnId: string) => ({
 vi.mock("node:fs/promises", { spy: true });
 
 describe("MuseAdapterV2", () => {
+  it.live.each([
+    { scoped: false, refusals: 1, inheritedStdio: false },
+    { scoped: false, refusals: 2, inheritedStdio: false },
+    { scoped: false, refusals: 3, inheritedStdio: false },
+    { scoped: true, refusals: 1, inheritedStdio: false },
+    { scoped: true, refusals: 2, inheritedStdio: false },
+    { scoped: true, refusals: 3, inheritedStdio: false },
+    { scoped: true, refusals: 1, inheritedStdio: true },
+  ])(
+    "keeps the selected native host usable after $refusals refusals, scoped=$scoped, inheritedStdio=$inheritedStdio",
+    ({ scoped, refusals, inheritedStdio }) =>
+      Effect.gen(function* () {
+        if (inheritedStdio && (yield* HostProcess.Platform) === "win32") return;
+        const fake = yield* makeFakeMuse();
+        const lifecycle: string[] = [];
+        const rawExits: Array<NonNullable<MuseSdkHostOptions["onProcessExit"]>> = [];
+        const holderReady = pendingPromise<number>();
+        let holderPid: number | undefined;
+        let holderRecorded = false;
+        let stderr = "";
+        let selectedHost: MuseSdkHost | undefined;
+        let wraps = 0;
+        let spawns = 0;
+        const reapHolder = () => {
+          if (holderPid === undefined) return;
+          try {
+            process.kill(holderPid, "SIGKILL");
+          } catch (error) {
+            if ((error as NodeJS.ErrnoException).code !== "ESRCH") throw error;
+          }
+          holderPid = undefined;
+        };
+        const fixture = `
+        const keys = ['runtime_capabilities.plugin:tbh-reminders:reminder:goal-reminder.enabled',
+          'runtime_capabilities.plugin:tbh-reminders:reminder:skill-reminder.enabled',
+          'context_compaction.provider_context_limit_tokens'].slice(0, ${refusals});
+        const refused = keys.find(key => process.argv.some(arg => arg.startsWith(key + '=')));
+        if (refused) {
+          const exit = () => process.stderr.write('muse serve: -c ' + refused + ': refusing run: unknown key\\n', () => process.exit(3));
+          if (${inheritedStdio}) {
+            const holder = require('node:child_process').spawn(process.execPath, ['-e',
+              'process.send("ready", () => { Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0); });'],
+              {detached: true, stdio: ['ignore', 1, 2, 'ipc']});
+            holder.once('message', () => process.stderr.write('t3-holder:' + holder.pid + '\\n', exit));
+          } else exit();
+        } else {
+          require('node:readline').createInterface({input: process.stdin}).on('line', line => {
+            const frame = JSON.parse(line);
+            if (frame.id === undefined) return;
+            if (frame.method === 'fixture/exit') { process.stderr.write('selected-host-stderr\\n', () => process.exit(23)); return; }
+            let result = {};
+            if (frame.method === 'initialize') result = {schema: {version: 1, fingerprint: 't3-native-retry'}, grantedCapabilities: []};
+            if (frame.method === 'session/start') result = {session: {sessionId: frame.params.sessionId, modelId: ${JSON.stringify(MODEL)}, activeTurnId: null}, history: {items: []}};
+            if (frame.method === 'turn/start') result = {turnId: frame.params.commandId};
+            process.stdout.write(JSON.stringify({jsonrpc: '2.0', id: frame.id, result}) + '\\n');
+          });
+        }`;
+        yield* Effect.gen(function* () {
+          const harness = yield* makeHarness(
+            fake,
+            INSTANCE_ID,
+            undefined,
+            undefined,
+            undefined,
+            runtimePolicy,
+            {
+              createHost: async (options) => {
+                const host = await createMuseSdkHost(options, (spawnOptions) => {
+                  const attempt = ++spawns;
+                  lifecycle.push(`spawn:${attempt}`);
+                  rawExits.push(spawnOptions.onProcessExit!);
+                  const native = spawnMspConnection({
+                    ...spawnOptions,
+                    onStderr: (chunk) => {
+                      stderr += chunk;
+                      const pid = /t3-holder:(\d+)\n/.exec(stderr)?.[1];
+                      if (pid && !holderRecorded) {
+                        holderRecorded = true;
+                        holderPid = Number(pid);
+                        holderReady.resolve(holderPid);
+                      }
+                    },
+                  });
+                  const close = native.close.bind(native);
+                  native.close = async () => {
+                    const exit = await close();
+                    lifecycle.push(`closed:${attempt}`);
+                    return exit;
+                  };
+                  return native;
+                });
+                selectedHost = host;
+                return host;
+              },
+            },
+          );
+          for (const oldExit of rawExits.slice(0, -1)) oldExit({ code: 99, signal: null });
+          yield* Effect.promise(() => selectedHost!.connection.request("fixture/barrier", {}));
+          yield* harness.runtime.startTurn(yield* turnInput(harness.providerThread));
+          yield* harness.takeEvent(
+            "provider_turn.updated",
+            (event) => event.providerTurn.status === "running",
+          );
+          assert.strictEqual(wraps, refusals + 1);
+          assert.strictEqual(spawns, refusals + 1);
+          for (let attempt = 1; attempt <= refusals; attempt++) {
+            assert.include(lifecycle, `closed:${attempt}`);
+            assert.isBelow(
+              lifecycle.indexOf(`closed:${attempt}`),
+              lifecycle.indexOf(`spawn:${attempt + 1}`),
+            );
+            if (scoped) {
+              assert.include(lifecycle, `stopped:${attempt}`);
+              assert.isBelow(
+                lifecycle.indexOf(`stopped:${attempt}`),
+                lifecycle.indexOf(`spawn:${attempt + 1}`),
+              );
+            }
+          }
+          assert.isFalse(
+            harness.allEvents.some(
+              (event) =>
+                event.type === "provider_session.updated" &&
+                event.providerSession.status === "error",
+            ),
+          );
+          assert.isFalse(lifecycle.includes(`closed:${refusals + 1}`));
+          assert.isFalse(lifecycle.includes(`stopped:${refusals + 1}`));
+          yield* Effect.promise(() =>
+            selectedHost!.connection.request("fixture/exit", {}).catch(() => {}),
+          );
+          const terminal = yield* harness.takeEvent("turn.terminal");
+          assert.strictEqual(terminal.status, "failed");
+          assert.include(JSON.stringify(terminal.failure), "23");
+          assert.include(JSON.stringify(terminal.failure), "selected-host-stderr");
+          yield* Deferred.await(harness.eventsEnded);
+          assert.strictEqual(
+            harness.allEvents.filter((event) => event.type === "turn.terminal").length,
+            1,
+          );
+        }).pipe(
+          Effect.scoped,
+          Effect.provideService(AgentScope, {
+            ...AgentScope.defaultValue(),
+            wrap: () =>
+              Effect.sync(() => {
+                wraps++;
+                return {
+                  command: process.execPath,
+                  args: ["-e", fixture, "--"],
+                  ...(scoped ? { unit: `retry-${wraps}` } : {}),
+                };
+              }),
+            confirmStopped: (unit) =>
+              Effect.sync(() => lifecycle.includes(`stopped:${unit.slice(6)}`)),
+            stop: (unit) =>
+              Effect.gen(function* () {
+                if (inheritedStdio && unit === "retry-1") {
+                  yield* Effect.promise(() => holderReady.promise);
+                  reapHolder();
+                }
+                lifecycle.push(`stopped:${unit.slice(6)}`);
+              }),
+          }),
+          Effect.ensuring(Effect.sync(reapHolder)),
+        );
+        assert.strictEqual(
+          lifecycle.filter((event) => event.startsWith("closed:")).length,
+          refusals + 1,
+        );
+        assert.strictEqual(
+          lifecycle.filter((event) => event.startsWith("stopped:")).length,
+          scoped ? refusals + 1 : 0,
+        );
+      }).pipe(Effect.provide(testLayer)),
+  );
+
+  it.live.each([false, true])(
+    "relaunches a broken native host with fresh attempt identities, scoped=%s",
+    (scoped) =>
+      Effect.gen(function* () {
+        const fake = yield* makeFakeMuse();
+        const confirming = yield* Deferred.make<void>();
+        const confirmed = yield* Deferred.make<void>();
+        const scopes: string[] = [];
+        const stopped: string[] = [];
+        const closedAttempts: number[] = [];
+        const rawExits: Array<NonNullable<MuseSdkHostOptions["onProcessExit"]>> = [];
+        let selected: MuseSdkHost | undefined;
+        let spawns = 0;
+        const fixture = String.raw`
+        if (process.argv.includes('runtime_capabilities.plugin:tbh-reminders:reminder:goal-reminder.enabled=false')) {
+          process.stderr.write('muse serve: -c runtime_capabilities.plugin:tbh-reminders:reminder:goal-reminder.enabled: refusing run: unknown key\n', () => process.exit(3));
+        } else {
+          let sessionId, turnId;
+          const send = frame => process.stdout.write(JSON.stringify(frame)+'\n');
+          require('node:readline').createInterface({input:process.stdin}).on('line', line => {
+            const frame = JSON.parse(line); if (frame.id === undefined) return;
+            if (frame.method === 'fixture/exit') { process.stderr.write('first-selected-host\n', () => process.exit(41)); return; }
+            let result = {};
+            if (frame.method === 'initialize') result = {schema:{version:1,fingerprint:'t3-relaunch'},grantedCapabilities:[]};
+            if (frame.method === 'session/start' || frame.method === 'session/resume') {
+              sessionId = frame.params.sessionId;
+              result = {session:{sessionId,modelId:'muse-spark-1.3-contributor',activeTurnId:null},history:{items:[]}};
+            }
+            if (frame.method === 'turn/start') { turnId = frame.params.commandId; result = {turnId}; }
+            send({jsonrpc:'2.0',id:frame.id,result});
+            if (frame.method === 'fixture/complete') send({jsonrpc:'2.0',method:'turn/completed',params:{sessionId,turnId,terminal:'completed'}});
+          });
+        }`;
+        yield* Effect.gen(function* () {
+          const opening = yield* makeHarness(
+            fake,
+            INSTANCE_ID,
+            undefined,
+            undefined,
+            undefined,
+            runtimePolicy,
+            {
+              createHost: async (options) => {
+                const host = await createMuseSdkHost(options, (input) => {
+                  const id = ++spawns;
+                  rawExits.push(input.onProcessExit!);
+                  const native = spawnMspConnection(input);
+                  const close = native.close.bind(native);
+                  native.close = async () => {
+                    const result = await close();
+                    closedAttempts.push(id);
+                    return result;
+                  };
+                  return native;
+                });
+                selected = host;
+                return host;
+              },
+            },
+          ).pipe(Effect.forkChild({ startImmediately: true }));
+          if (scoped) {
+            yield* Effect.raceFirst(
+              Deferred.await(confirming),
+              Fiber.join(opening).pipe(
+                Effect.andThen(Effect.die("Retried before scope confirmation")),
+              ),
+            );
+            assert.strictEqual(spawns, 1);
+            assert.deepStrictEqual(closedAttempts, [1]);
+            assert.deepStrictEqual(stopped, ["relaunch-1"]);
+            yield* Deferred.succeed(confirmed, undefined);
+          }
+          const harness = yield* Fiber.join(opening);
+          assert.strictEqual(spawns, 2);
+          yield* Effect.promise(() =>
+            selected!.connection.request("fixture/exit", {}).catch(() => {}),
+          );
+          const failure = yield* harness.takeEvent(
+            "provider_session.updated",
+            (event) => event.providerSession.status === "error",
+          );
+          assert.include(failure.providerSession.lastError!, "41");
+          assert.include(failure.providerSession.lastError!, "first-selected-host");
+          yield* Effect.promise(() => selected!.close());
+          assert.deepStrictEqual(closedAttempts, [1, 2]);
+          const renewed = yield* harness.runtime.ensureThread({
+            threadId: THREAD_ID,
+            modelSelection: modelSelection(),
+            runtimePolicy,
+            existingProviderThread: harness.providerThread,
+          });
+          assert.strictEqual(spawns, 4);
+          assert.strictEqual(scopes.length, 4);
+          assert.strictEqual(new Set(scopes).size, 4);
+          for (const exit of rawExits.slice(0, -1)) exit({ code: 99, signal: null });
+          yield* Effect.promise(() => selected!.connection.request("fixture/barrier", {}));
+          yield* harness.runtime.startTurn(yield* turnInput(renewed));
+          yield* harness.takeEvent(
+            "provider_turn.updated",
+            (event) => event.providerTurn.status === "running",
+          );
+          assert.strictEqual(spawns, 4);
+          assert.isFalse(closedAttempts.includes(4));
+          assert.isFalse(stopped.includes("relaunch-4"));
+          assert.strictEqual(
+            harness.allEvents.filter(
+              (event) =>
+                event.type === "provider_session.updated" &&
+                event.providerSession.status === "error",
+            ).length,
+            1,
+          );
+          yield* Effect.promise(() => selected!.connection.request("fixture/complete", {}));
+          assert.strictEqual((yield* harness.takeEvent("turn.terminal")).status, "completed");
+        }).pipe(
+          Effect.ensuring(Deferred.succeed(confirmed, undefined)),
+          Effect.scoped,
+          Effect.provideService(AgentScope, {
+            ...AgentScope.defaultValue(),
+            wrap: () =>
+              Effect.sync(() => {
+                const unit = `relaunch-${scopes.length + 1}`;
+                scopes.push(unit);
+                return {
+                  command: process.execPath,
+                  args: ["-e", fixture, "--"],
+                  ...(scoped ? { unit } : {}),
+                };
+              }),
+            stop: (unit) =>
+              Effect.sync(() => {
+                stopped.push(unit);
+              }),
+            confirmStopped: (unit) =>
+              Effect.gen(function* () {
+                if (unit === "relaunch-1") {
+                  yield* Deferred.succeed(confirming, undefined);
+                  yield* Deferred.await(confirmed);
+                }
+                return stopped.includes(unit);
+              }),
+          }),
+        );
+        assert.deepStrictEqual(closedAttempts, [1, 2, 3, 4]);
+        assert.deepStrictEqual(
+          stopped,
+          scoped ? ["relaunch-1", "relaunch-2", "relaunch-3", "relaunch-4"] : [],
+        );
+      }).pipe(Effect.provide(testLayer)),
+  );
+
+  it.live.each(["missing", "false"] as const)(
+    "refuses scoped retry with %s cleanup confirmation",
+    (confirmation) =>
+      Effect.gen(function* () {
+        const fake = yield* makeFakeMuse();
+        let spawns = 0;
+        let stops = 0;
+        const fixture = String.raw`
+          const refused = process.argv.includes('runtime_capabilities.plugin:tbh-reminders:reminder:goal-reminder.enabled=false');
+          if (refused) process.stderr.write('muse serve: -c runtime_capabilities.plugin:tbh-reminders:reminder:goal-reminder.enabled: refusing run: unknown key\n', () => process.exit(3));
+          else require('node:readline').createInterface({input:process.stdin}).on('line', line => {
+            const frame = JSON.parse(line); if (frame.id === undefined) return;
+            const result = frame.method === 'initialize' ? {schema:{version:1,fingerprint:'t3-confirmation'},grantedCapabilities:[]} : frame.method === 'session/start' ? {session:{sessionId:frame.params.sessionId,modelId:'muse-spark-1.3-contributor',activeTurnId:null},history:{items:[]}} : {};
+            process.stdout.write(JSON.stringify({jsonrpc:'2.0',id:frame.id,result})+'\n');
+          });`;
+        const result = yield* makeHarness(
+          fake,
+          INSTANCE_ID,
+          undefined,
+          undefined,
+          undefined,
+          runtimePolicy,
+          {
+            createHost: (options) =>
+              createMuseSdkHost(options, (input) => {
+                spawns++;
+                return spawnMspConnection(input);
+              }),
+          },
+        ).pipe(
+          Effect.scoped,
+          Effect.provideService(AgentScope, {
+            ...AgentScope.defaultValue(),
+            wrap: () =>
+              Effect.succeed({
+                command: process.execPath,
+                args: ["-e", fixture, "--"],
+                unit: "t3code-muse-unconfirmed.scope",
+              }),
+            stop: () =>
+              Effect.sync(() => {
+                stops++;
+              }),
+            ...(confirmation === "false" ? { confirmStopped: () => Effect.succeed(false) } : {}),
+          }),
+          Effect.exit,
+        );
+        assert.strictEqual(result._tag, "Failure");
+        if (result._tag === "Failure")
+          assert.nestedPropertyVal(
+            Cause.squash(result.cause),
+            "cause.message",
+            "connection reached EOF",
+          );
+        assert.strictEqual(spawns, 1);
+        assert.strictEqual(stops, 1);
+      }).pipe(Effect.provide(testLayer)),
+  );
+
   describe.each(["muse-wonder-full-1.0", "muse-wonder-1.0"])("%s defaults", (modelId) => {
     it.effect.each([
       { name: "advertised XHigh", variants: ["high", "xhigh", "max"], expected: "xhigh" },
@@ -1632,6 +2031,83 @@ describe("MuseAdapterV2", () => {
       yield* Fiber.join(stopping);
       assert.strictEqual((yield* harness.takeEvent("turn.terminal")).status, "interrupted");
     }).pipe(Effect.scoped, Effect.provide(testLayer)),
+  );
+
+  it.live.each(["true", "false", "missing"] as const)(
+    "preserves native compaction interruption with cleanup confirmation=%s",
+    (confirmation) =>
+      Effect.gen(function* () {
+        const fake = yield* makeFakeMuse();
+        let nativeCloses = 0;
+        let stops = 0;
+        const fixture = String.raw`
+          require('node:readline').createInterface({input:process.stdin}).on('line', line => {
+            const frame = JSON.parse(line);
+            if (frame.id === undefined) return;
+            const result = frame.method === 'initialize'
+              ? {schema:{version:1,fingerprint:'t3-compaction'},grantedCapabilities:[]}
+              : frame.method === 'session/start'
+                ? {session:{sessionId:frame.params.sessionId,modelId:'muse-spark-1.3-contributor',activeTurnId:null},history:{items:[]}}
+                : frame.method === 'session/compact' ? {status:'accepted'} : {};
+            process.stdout.write(JSON.stringify({jsonrpc:'2.0',id:frame.id,result})+'\n');
+          });`;
+        yield* Effect.gen(function* () {
+          const harness = yield* makeHarness(
+            fake,
+            INSTANCE_ID,
+            undefined,
+            undefined,
+            undefined,
+            runtimePolicy,
+            {
+              createHost: (options) =>
+                createMuseSdkHost(options, (input) => {
+                  const native = spawnMspConnection(input);
+                  const close = native.close.bind(native);
+                  native.close = async () => {
+                    const exit = await close();
+                    nativeCloses++;
+                    return exit;
+                  };
+                  return native;
+                }),
+            },
+          );
+          yield* harness.runtime.compactThread!(yield* turnInput(harness.providerThread));
+          const running = yield* harness.takeEvent("provider_turn.updated");
+          const result = yield* harness.runtime
+            .interruptTurn({
+              providerThread: harness.providerThread,
+              providerTurnId: running.providerTurn.id,
+            })
+            .pipe(Effect.exit);
+          const terminal = yield* harness.takeEvent("turn.terminal");
+          assert.strictEqual(nativeCloses, 1);
+          assert.strictEqual(stops, 1);
+          assert.strictEqual(result._tag, "Success");
+          assert.strictEqual(terminal.status, "interrupted");
+          yield* Deferred.await(harness.eventsEnded);
+          assert.strictEqual(
+            harness.allEvents.filter((event) => event.type === "turn.terminal").length,
+            1,
+          );
+        }).pipe(
+          Effect.scoped,
+          Effect.provideService(AgentScope, {
+            ...AgentScope.defaultValue(),
+            wrap: () =>
+              Effect.succeed({
+                command: process.execPath,
+                args: ["-e", fixture, "--"],
+                unit: "t3code-native-compaction.scope",
+              }),
+            stop: () => Effect.sync(() => void stops++),
+            ...(confirmation === "missing"
+              ? {}
+              : { confirmStopped: () => Effect.succeed(confirmation === "true") }),
+          }),
+        );
+      }).pipe(Effect.provide(testLayer)),
   );
 
   it.effect("keeps an intentionally interrupted compaction closed on ensureThread", () =>
