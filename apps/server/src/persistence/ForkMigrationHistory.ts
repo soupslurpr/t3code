@@ -181,6 +181,18 @@ export const adoptForkMigrationHistory = Effect.fn("adoptForkMigrationHistory")(
     }
   }
 
+  if (Math.max(fork.length, legacy.length) >= 4) {
+    const invalid = yield* sql`SELECT monitor_id FROM thread_monitors
+      WHERE condition_type = 'computer' AND CASE WHEN json_valid(condition_json) THEN
+        COALESCE(json_type(condition_json, '$.sampling.minEvaluationIntervalMs') NOT IN ('null', 'integer'), 1)
+        OR COALESCE(json_type(condition_json, '$.evaluationPending') NOT IN ('true', 'false'), 1)
+      ELSE 1 END LIMIT 1`;
+    if (invalid.length > 0)
+      return yield* invalidHistory(
+        "ComputerMonitorEvaluationThrottle identity conflicts with its condition schema",
+      );
+  }
+
   yield* sql`CREATE TABLE IF NOT EXISTS effect_sql_fork_migrations (
     migration_id integer PRIMARY KEY NOT NULL,
     created_at datetime NOT NULL DEFAULT current_timestamp,
