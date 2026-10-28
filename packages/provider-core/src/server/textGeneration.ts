@@ -157,4 +157,6 @@ export interface ProviderTextGeneration {
   readonly evaluateImageCondition?: (
     input: ImageConditionEvaluationInput,
   ) => Effect.Effect<ImageConditionEvaluationResult, TextGenerationError>;
+  /** Declares whether image-condition evaluation reports exact token counts. */
+  readonly imageConditionTokenUsage?: "exact";
 }
