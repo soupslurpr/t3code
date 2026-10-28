@@ -75,6 +75,8 @@ import * as DesktopBrowserHost from "./preview/DesktopBrowserHost.ts";
 import * as PreviewManager from "./preview/Manager.ts";
 import * as PreviewPasskeys from "./preview/Passkeys.ts";
 import * as ComputerUse from "./computer/ComputerUse.ts";
+import * as ComputerUseCoordinator from "./computer/ComputerUseCoordinator.ts";
+import * as ComputerUseRouter from "./computer/ComputerUseRouter.ts";
 import * as GnomeRemoteDesktop from "./computer/GnomeRemoteDesktop.ts";
 import * as DesktopWindow from "./window/DesktopWindow.ts";
 import * as DesktopWslBackend from "./wsl/DesktopWslBackend.ts";
@@ -179,10 +181,18 @@ const layerDesktopComputerUse = ComputerUse.layer.pipe(
   Layer.provideMerge(GnomeRemoteDesktop.layer.pipe(Layer.provideMerge(layerDesktopFoundation))),
 );
 
+const layerDesktopComputerUseCoordinator = ComputerUseCoordinator.layer.pipe(
+  Layer.provideMerge(layerDesktopComputerUse),
+);
+
+const layerDesktopComputerUseRouter = ComputerUseRouter.layer.pipe(
+  Layer.provideMerge(layerDesktopComputerUseCoordinator),
+);
+
 const layerDesktopWindow = DesktopWindow.layer.pipe(
   Layer.provideMerge(layerDesktopServerExposure),
   Layer.provideMerge(layerDesktopPreview),
-  Layer.provideMerge(layerDesktopComputerUse),
+  Layer.provideMerge(layerDesktopComputerUseRouter),
 );
 
 const layerDesktopSnapShot = DesktopSnapShot.layer.pipe(

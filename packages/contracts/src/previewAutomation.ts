@@ -13,9 +13,19 @@ import { ProviderInstanceId } from "./providerInstance.ts";
 import { BrowserProfileId } from "./browserProfile.ts";
 import {
   COMPUTER_AUTOMATION_OPERATIONS,
+  ComputerAutomationActionBatchInput,
   ComputerAutomationFailure,
   ComputerAutomationFailureKind,
+  ComputerAutomationObservationOptions,
 } from "./computerAutomation.ts";
+import {
+  AGENT_DESKTOP_OPERATIONS,
+  AgentDesktopControllerId,
+  AgentDesktopId,
+  AgentDesktopInspectInput,
+  AgentDesktopManageInput,
+  AgentDesktopOwner,
+} from "./agentDesktop.ts";
 
 const BoundedUrl = Schema.String.check(Schema.isTrimmed())
   .check(Schema.isNonEmpty())
@@ -57,6 +67,7 @@ export const PREVIEW_AUTOMATION_SERVER_OPERATIONS = [
   "select",
   "drag",
 ] as const;
+
 /** Operations routed through an attached desktop automation host. */
 const DESKTOP_AUTOMATION_OPERATIONS = [
   ...PREVIEW_AUTOMATION_SERVER_OPERATIONS,
@@ -65,6 +76,51 @@ const DESKTOP_AUTOMATION_OPERATIONS = [
 
 export const PreviewAutomationOperation = Schema.Literals(DESKTOP_AUTOMATION_OPERATIONS);
 export type PreviewAutomationOperation = typeof PreviewAutomationOperation.Type;
+
+const AgentDesktopHumanTarget = {
+  owner: AgentDesktopOwner,
+  desktopId: AgentDesktopId,
+};
+
+/** Describes one authenticated human supervision request. */
+export const AgentDesktopHumanRequest = Schema.Union([
+  Schema.Struct({ operation: Schema.Literal("list") }),
+  Schema.Struct({ operation: Schema.Literal("setup") }),
+  Schema.Struct({
+    operation: Schema.Literal("manage"),
+    owner: AgentDesktopOwner,
+    input: AgentDesktopManageInput,
+  }),
+  Schema.Struct({
+    operation: Schema.Literal("inspect"),
+    owner: AgentDesktopOwner,
+    input: AgentDesktopInspectInput,
+  }),
+  Schema.Struct({ operation: Schema.Literal("request-view"), ...AgentDesktopHumanTarget }),
+  Schema.Struct({ operation: Schema.Literal("request-control"), ...AgentDesktopHumanTarget }),
+  Schema.Struct({
+    operation: Schema.Literal("snapshot"),
+    ...AgentDesktopHumanTarget,
+    input: ComputerAutomationObservationOptions,
+  }),
+  Schema.Struct({
+    operation: Schema.Literal("act"),
+    ...AgentDesktopHumanTarget,
+    input: ComputerAutomationActionBatchInput,
+  }),
+  Schema.Struct({ operation: Schema.Literal("release"), ...AgentDesktopHumanTarget }),
+]);
+export type AgentDesktopHumanRequest = typeof AgentDesktopHumanRequest.Type;
+
+/** Carries one human supervision request through the environment server. */
+export const AgentDesktopHumanInvokeInput = Schema.Struct({
+  threadId: ThreadId,
+  request: AgentDesktopHumanRequest,
+  timeoutMs: Schema.optional(
+    Schema.Int.check(Schema.isBetween({ minimum: 1_000, maximum: 4_560_000 })),
+  ),
+});
+export type AgentDesktopHumanInvokeInput = typeof AgentDesktopHumanInvokeInput.Type;
 
 const PreviewAutomationTabTargetFields = {
   tabId: Schema.optional(PreviewTabId),
@@ -622,6 +678,8 @@ export type PreviewAutomationHostFocus = typeof PreviewAutomationHostFocus.Type;
 export const PreviewAutomationRequest = Schema.Struct({
   requestId: TrimmedNonEmptyString,
   threadId: ThreadId,
+  /** Stable owner for exclusive computer-control and Agent desktop assignment. */
+  controllerId: Schema.optional(AgentDesktopControllerId),
   tabId: Schema.optional(PreviewTabId),
   tabIdExplicit: Schema.optional(Schema.Boolean),
   /** Supplied by the broker from authenticated scope, never from tool input. */
@@ -704,6 +762,28 @@ const PreviewAutomationScopeErrorFields = {
 
 export const SERVER_BROWSER_AUTOMATION_CLIENT_ID = "server-browser";
 
+const EnvironmentDesktopAutomationOperation = Schema.Literals([
+  ...COMPUTER_AUTOMATION_OPERATIONS,
+  ...AGENT_DESKTOP_OPERATIONS,
+]);
+
+/** Reports a server-owned desktop operation failure without inventing a remote host. */
+export class EnvironmentDesktopAutomationError extends Schema.TaggedError<EnvironmentDesktopAutomationError>()(
+  "EnvironmentDesktopAutomationError",
+  {
+    operation: EnvironmentDesktopAutomationOperation,
+    environmentId: EnvironmentId,
+    threadId: ThreadId,
+    providerSessionId: TrimmedNonEmptyString,
+    providerInstanceId: ProviderInstanceId,
+    computerFailure: ComputerAutomationFailure,
+  },
+) {
+  override get message(): string {
+    return this.computerFailure.message;
+  }
+}
+
 const PreviewAutomationRequestErrorFields = {
   ...PreviewAutomationScopeErrorFields,
   clientId: TrimmedNonEmptyString,
@@ -745,6 +825,18 @@ export class PreviewAutomationNoAvailableHostError extends Schema.TaggedError<Pr
 ) {
   override get message(): string {
     return `No preview automation host is available for ${this.operation} in environment ${this.environmentId}. The server-owned browser may be starting or reconnecting. Retry preview_status, then call preview_open if no tab is available. If it remains unavailable, report the browser connection failure.`;
+  }
+}
+
+export class PreviewAutomationDesktopTargetRequiredError extends Schema.TaggedError<PreviewAutomationDesktopTargetRequiredError>()(
+  "PreviewAutomationDesktopTargetRequiredError",
+  {
+    ...PreviewAutomationScopeErrorFields,
+    computerFailure: ComputerAutomationFailure,
+  },
+) {
+  override get message(): string {
+    return this.computerFailure.message;
   }
 }
 
@@ -982,6 +1074,8 @@ export const PreviewAutomationError = Schema.Union([
   PreviewAutomationRecordingTooLargeError,
   PreviewAutomationRecordingDeadlineExpiredError,
   PreviewAutomationUnavailableError,
+  EnvironmentDesktopAutomationError,
+  PreviewAutomationDesktopTargetRequiredError,
   PreviewAutomationNoAvailableHostError,
   PreviewAutomationUnsupportedClientError,
   PreviewAutomationTabNotFoundError,

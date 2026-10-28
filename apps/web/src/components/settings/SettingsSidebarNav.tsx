@@ -23,6 +23,7 @@ import {
   PanelsTopLeftIcon,
   KeyboardIcon,
   KeyRoundIcon,
+  MonitorCogIcon,
   PaletteIcon,
   SearchIcon,
   ServerIcon,
@@ -107,6 +108,7 @@ const SETTINGS_SECTION_ICONS: Readonly<
   "/settings/maintenance": WrenchIcon,
   "/settings/labs": FlaskConicalIcon,
   "/settings/about": InfoIcon,
+  "/settings/agent-desktops": MonitorCogIcon,
   "/settings/archived": ArchiveIcon,
 };
 

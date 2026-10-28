@@ -1,4 +1,5 @@
 import {
+  COMPUTER_AUTOMATION_OPERATIONS,
   ComputerAutomationFailure,
   isComputerAutomationFailureKind,
   PREVIEW_AUTOMATION_V1_OPERATIONS,
@@ -10,6 +11,7 @@ import {
   PreviewAutomationInvalidSelectorError,
   PreviewAutomationMalformedResponseError,
   PreviewAutomationNoAvailableHostError,
+  PreviewAutomationDesktopTargetRequiredError,
   PreviewAutomationRemoteUnavailableError,
   PreviewAutomationRecordingTransferError,
   PreviewAutomationRecordingDesktopUpdateRequiredError,
@@ -166,8 +168,14 @@ const selectorDiagnosticsFromInput = (
 };
 
 /** Codex/OpenCode share sessions across threads; include thread id to isolate tabs and ownership. */
-const hostAssignmentKey = (scope: McpInvocationContext.McpThreadInvocationScope): string =>
-  `${scope.environmentId}\u0000${scope.thread.providerSessionId}\u0000${scope.thread.threadId}`;
+const computerOperations = new Set<string>(COMPUTER_AUTOMATION_OPERATIONS);
+const isComputerOperation = (operation: PreviewAutomationOperation) =>
+  computerOperations.has(operation);
+const hostAssignmentKey = (
+  scope: McpInvocationContext.McpThreadInvocationScope,
+  operation: PreviewAutomationOperation,
+): string =>
+  `${scope.environmentId}\u0000${scope.thread.providerSessionId}\u0000${scope.thread.threadId}\u0000${isComputerOperation(operation) ? "computer" : "preview"}`;
 
 const isPreviewTabId = Schema.is(PreviewTabId);
 const decodeControlReason = Schema.decodeUnknownOption(PreviewAutomationControlReason);
@@ -520,6 +528,35 @@ export const make = Effect.gen(function* PreviewAutomationBrokerMake() {
   const invoke = Effect.fn("PreviewAutomationBroker.invoke")(function* <A = unknown>(
     input: Parameters<PreviewAutomationBroker["Service"]["invoke"]>[0],
   ): Effect.fn.Return<A, PreviewAutomationError> {
+    if (isComputerOperation(input.operation)) {
+      const target =
+        typeof input.input === "object" && input.input !== null && "desktop" in input.input
+          ? input.input.desktop
+          : undefined;
+      if (
+        typeof target !== "object" ||
+        target === null ||
+        !("kind" in target) ||
+        target.kind !== "user"
+      ) {
+        return yield* new PreviewAutomationDesktopTargetRequiredError({
+          operation: input.operation,
+          environmentId: input.scope.environmentId,
+          threadId: input.scope.thread.threadId,
+          providerSessionId: input.scope.thread.providerSessionId,
+          providerInstanceId: input.scope.thread.providerInstanceId,
+          computerFailure: {
+            code: "invalid-action",
+            category: "invalid-input",
+            message: "The attached native host requires an explicit user desktop target.",
+            field: "desktop",
+            phase: "validation",
+            completedActionCount: 0,
+            cleanup: { keys: "not-needed", buttons: "not-needed" },
+          },
+        });
+      }
+    }
     const deferred = yield* Deferred.make<unknown, PreviewAutomationError>();
     const route = yield* SynchronizedRef.modify(state, (current) => {
       const assignments = new Map(
@@ -531,7 +568,7 @@ export const make = Effect.gen(function* PreviewAutomationBrokerMake() {
           );
         }),
       );
-      const assignmentKey = hostAssignmentKey(input.scope);
+      const assignmentKey = hostAssignmentKey(input.scope, input.operation);
       const assigned = assignments.get(assignmentKey);
       const assignedConnection = assigned ? current.clients.get(assigned.clientId) : undefined;
       const hasLiveAssignment = assignedConnection?.environmentId === input.scope.environmentId;
@@ -642,9 +679,12 @@ export const make = Effect.gen(function* PreviewAutomationBrokerMake() {
           request: {
             requestId,
             threadId: input.scope.thread.threadId,
+            ...(isComputerOperation(input.operation)
+              ? { controllerId: input.scope.thread.providerSessionId }
+              : {}),
             tabId: requestContext.tabId,
             tabIdExplicit: input.tabId !== undefined,
-            agentSessionId: hostAssignmentKey(input.scope),
+            agentSessionId: hostAssignmentKey(input.scope, input.operation),
             operation: input.operation,
             input: input.input,
             timeoutMs,
@@ -679,7 +719,7 @@ export const make = Effect.gen(function* PreviewAutomationBrokerMake() {
     const responseTabId = readResultTabId(result);
     const resultTabId = responseTabId === undefined ? input.tabId : responseTabId;
     if (resultTabId === undefined) return result;
-    const assignmentKey = hostAssignmentKey(input.scope);
+    const assignmentKey = hostAssignmentKey(input.scope, input.operation);
     yield* SynchronizedRef.update(state, (current) => {
       const assignment = current.assignments.get(assignmentKey);
       if (

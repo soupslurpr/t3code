@@ -1,3 +1,7 @@
+import * as AgentDesktopEnvironment from "./agentDesktop/AgentDesktopEnvironment.ts";
+import * as AgentDesktopManager from "./agentDesktop/AgentDesktopManager.ts";
+import * as QemuAgentDesktop from "./agentDesktop/QemuAgentDesktop.ts";
+import * as ComputerAutomationRouter from "./computer/ComputerAutomationRouter.ts";
 import * as ProviderEventLoggers from "@t3tools/provider-core/server/ProviderEventLoggers";
 import type { RelayManagedEndpointRuntimeConfig } from "@t3tools/contracts/relay";
 import * as Random from "effect/Random";
@@ -734,12 +738,26 @@ const layerRuntimeCoreDependencies = layerRuntimeCoreDependenciesBase.pipe(
   ),
 );
 
+const layerAgentDesktopEnvironment = AgentDesktopEnvironment.layer;
+const layerQemuAgentDesktop = QemuAgentDesktop.layer.pipe(
+  Layer.provide(layerAgentDesktopEnvironment),
+);
+const layerAgentDesktopManager = AgentDesktopManager.layer.pipe(
+  Layer.provideMerge(layerQemuAgentDesktop),
+  Layer.provide(layerAgentDesktopEnvironment),
+);
+const layerComputerAutomationRouter = ComputerAutomationRouter.layer.pipe(
+  Layer.provide(PreviewAutomationBroker.layer),
+  Layer.provideMerge(layerAgentDesktopManager),
+);
+
 const layerRuntimeCoreWithAgentPower = AgentPowerReporter.layer.pipe(
   Layer.provideMerge(layerRuntimeCoreDependencies),
   Layer.provideMerge(layerDesktopTelemetryReceiver),
 );
 
 const layerRuntimeDependencies = layerRuntimeCoreWithAgentPower.pipe(
+  Layer.provideMerge(layerComputerAutomationRouter),
   Layer.provideMerge(layerUsage),
   Layer.provideMerge(layerBackground),
   Layer.provideMerge(layerResourceDiagnostics),

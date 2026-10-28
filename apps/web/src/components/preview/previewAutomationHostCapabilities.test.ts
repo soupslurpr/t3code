@@ -19,3 +19,9 @@ it("does not advertise native operations in clients without the computer bridge"
     previewAutomationHostCapabilities({ computerAvailable: false }).supportedOperations,
   ).toEqual([]);
 });
+
+it("leaves Agent desktop operations to the environment server", () => {
+  expect(
+    previewAutomationHostCapabilities({ computerAvailable: true }).supportedOperations,
+  ).not.toContain("agentDesktopList");
+});

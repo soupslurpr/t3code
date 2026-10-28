@@ -1,3 +1,11 @@
+import * as AgentDesktopManager from "./agentDesktop/AgentDesktopManager.ts";
+import {
+  humanRequestOperation,
+  runAgentDesktopHumanRequest,
+} from "./agentDesktop/AgentDesktopHuman.ts";
+import { environmentDesktopFailure } from "./computer/ComputerAutomationRouter.ts";
+import { ProviderInstanceId } from "@t3tools/contracts";
+import * as Clock from "effect/Clock";
 import { OrchestrationDispatchCommandError } from "@t3tools/contracts";
 import * as Context from "effect/Context";
 import * as Crypto from "effect/Crypto";
@@ -93,7 +101,6 @@ import {
   EnvironmentAuthorizationError,
   type ProjectId,
   type ProviderDriverKind,
-  type ProviderInstanceId,
   ThreadId,
   type TerminalMetadataStreamEvent,
   type PullRequestRef,
@@ -271,6 +278,8 @@ import {
 import * as AgentSessionScanner from "./project/AgentSessionScanner.ts";
 import * as AgentSessionImporter from "./project/AgentSessionImporter.ts";
 import * as UsageLimitSources from "./usage/UsageLimitSources.ts";
+
+const AGENT_DESKTOP_HUMAN_PROVIDER_INSTANCE_ID = ProviderInstanceId.make("agent-desktop-human");
 
 const CONFIG_DISCOVERY_TIMEOUT = Duration.seconds(5);
 const isProviderUploadFeedbackError = Schema.is(ProviderUploadFeedbackError);
@@ -1388,6 +1397,7 @@ export const layerWsRpc = (
       const workspaceEntries = yield* WorkspaceEntries.WorkspaceEntries;
       const workspaceFileSystem = yield* WorkspaceFileSystem.WorkspaceFileSystem;
       const serverEnvironment = yield* ServerEnvironment.ServerEnvironment;
+      const agentDesktopManager = yield* AgentDesktopManager.AgentDesktopManager;
       const backgroundPolicy = yield* BackgroundPolicy.BackgroundPolicy;
       const rpcClientIds = yield* Ref.make(new Set<RpcClientId>());
       yield* Effect.addFinalizer(() =>
@@ -3096,6 +3106,32 @@ export const layerWsRpc = (
         [WS_METHODS.previewAutomationRespond]: (input) => previewAutomationBroker.respond(input),
         [WS_METHODS.previewAutomationFocusHost]: (input) =>
           previewAutomationBroker.focusHost(input),
+        [WS_METHODS.agentDesktopHumanInvoke]: Effect.fn("ws.agentDesktopHumanInvoke")(
+          function* (input) {
+            const environmentId = yield* serverEnvironment.getEnvironmentId.pipe(Effect.orDie);
+            const scope = {
+              environmentId,
+              requestNamespace: `human:${currentSessionId}`,
+              client: undefined,
+              thread: {
+                threadId: input.threadId,
+                providerSessionId: `human:${currentSessionId}`,
+                providerInstanceId: AGENT_DESKTOP_HUMAN_PROVIDER_INSTANCE_ID,
+              },
+              capabilities: new Set(["computer" as const]),
+              issuedAt: yield* Clock.currentTimeMillis,
+            };
+            return yield* runAgentDesktopHumanRequest(
+              agentDesktopManager,
+              scope,
+              input.request,
+            ).pipe(
+              Effect.mapError((cause) =>
+                environmentDesktopFailure(scope, humanRequestOperation(input.request), cause),
+              ),
+            );
+          },
+        ),
         [WS_METHODS.subscribePreviewEvents]: (_input) => previewManager.events,
         [WS_METHODS.deviceConfigure]: (input) => deviceService.configure(input),
         [WS_METHODS.deviceTestHost]: (input) => deviceService.testHost(input),
