@@ -2031,6 +2031,28 @@ it.effect("captures a durable Agent desktop region without a source frame", () =
           offsetY: 20,
         },
       });
+      assert.equal(snapshot.screenshot?.mimeType, "image/webp");
+      assert.deepEqual(snapshot.screenshot?.encoding, {
+        format: "webp",
+        mode: "lossless",
+      });
+      assert.equal(
+        Buffer.from(snapshot.screenshot?.data ?? "", "base64")
+          .subarray(0, 4)
+          .toString("ascii"),
+        "RIFF",
+      );
+
+      const pngSnapshot = yield* manager.snapshot(
+        owner.controllerId,
+        {
+          includeAccessibility: false,
+          screenshot: { encoding: { format: "png" } },
+        },
+        desktop.id,
+      );
+      assert.equal(pngSnapshot.screenshot?.mimeType, "image/png");
+      assert.deepEqual(pngSnapshot.screenshot?.encoding, { format: "png" });
     }).pipe(Effect.provide(harness.layer));
   }),
 );
