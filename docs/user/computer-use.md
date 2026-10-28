@@ -209,6 +209,11 @@ transient access. Reopening supervision starts passively again. Taking control
 pauses agent input; **Return to agent** explicitly restores it when available.
 **Release control** ends human control without restoring the agent.
 
+User desktop cards show recent access events from each connected environment,
+including grants, release, takeover and remembered approval changes. The history
+records time, action and actor metadata. It does not retain screenshots, typed
+text or approval tokens. Refresh the inventory to reload recent history.
+
 ## Agent Tools
 
 The desktop host exposes tools for:

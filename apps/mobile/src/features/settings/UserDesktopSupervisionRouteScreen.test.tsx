@@ -3,7 +3,13 @@ import {
   type NavigationProp,
   type ParamListBase,
 } from "@react-navigation/native";
-import { EnvironmentId, UserDesktopId, type UserDesktopHumanInvokeInput } from "@t3tools/contracts";
+import {
+  EnvironmentId,
+  UserDesktopId,
+  type UserDesktopView,
+  type UserDesktopAuditEvent,
+  type UserDesktopHumanInvokeInput,
+} from "@t3tools/contracts";
 import { act, type ReactNode } from "react";
 import { Alert } from "react-native";
 import { createRoot } from "react-dom/client";
@@ -19,6 +25,8 @@ const state = vi.hoisted(() => ({
     { environmentId: "remote", environmentLabel: "Remote", connectionState: "connected" },
   ],
   allowed: new Set(["remote"]),
+  desktops: [] as UserDesktopView[],
+  audit: [] as UserDesktopAuditEvent[],
 }));
 vi.mock("@react-navigation/native", async () => {
   const { createRequire } = await import("node:module");
@@ -111,6 +119,8 @@ function setup() {
     { environmentId: "remote", environmentLabel: "Remote", connectionState: "connected" },
   ];
   state.allowed = new Set(["remote"]);
+  state.desktops = [];
+  state.audit = [];
   state.listeners.clear();
   const listeners = { focus: new Set<() => void>(), blur: new Set<() => void>() };
   let focused = true;
@@ -186,41 +196,45 @@ function setup() {
     if (request.operation === "snapshot" && access.get(key) === "none")
       throw new Error("desktop-lease-required");
     const value =
-      request.operation === "observation-list"
-        ? {
-            observations: retainedObservation
-              ? [{ ...observation, imageCount: 0, hasAccessibility: false }]
-              : [],
-          }
-        : request.operation === "observation"
-          ? { latestId: observation.id, observation }
-          : request.operation === "snapshot"
+      request.operation === "list"
+        ? { desktops: state.desktops, incompatibleClientCount: 0 }
+        : request.operation === "audit"
+          ? { events: state.audit }
+          : request.operation === "observation-list"
             ? {
-                display: { id: "primary" },
-                screenshot: {
-                  state: "image",
-                  mimeType: "image/png",
-                  data: "dGVzdA==",
-                  width: 1,
-                  height: 1,
-                  contentHash: `sha256-bgra8-v2:${"A".repeat(43)}`,
-                },
+                observations: retainedObservation
+                  ? [{ ...observation, imageCount: 0, hasAccessibility: false }]
+                  : [],
               }
-            : {
-                displays: [],
-                lease: {
-                  access: access.get(key) ?? "none",
-                  controller:
-                    controllers.get(key) === null
-                      ? null
-                      : {
-                          kind: controllers.get(key),
-                          sameEnvironment: true,
-                          ...(controllers.get(key) === "agent" ? { threadId: "agent" } : {}),
-                        },
-                  canReturnControl: controllers.get(key) === "human" && displaced.has(key),
-                },
-              };
+            : request.operation === "observation"
+              ? { latestId: observation.id, observation }
+              : request.operation === "snapshot"
+                ? {
+                    display: { id: "primary" },
+                    screenshot: {
+                      state: "image",
+                      mimeType: "image/png",
+                      data: "dGVzdA==",
+                      width: 1,
+                      height: 1,
+                      contentHash: `sha256-bgra8-v2:${"A".repeat(43)}`,
+                    },
+                  }
+                : {
+                    displays: [],
+                    lease: {
+                      access: access.get(key) ?? "none",
+                      controller:
+                        controllers.get(key) === null
+                          ? null
+                          : {
+                              kind: controllers.get(key),
+                              sameEnvironment: true,
+                              ...(controllers.get(key) === "agent" ? { threadId: "agent" } : {}),
+                            },
+                      canReturnControl: controllers.get(key) === "human" && displaced.has(key),
+                    },
+                  };
     return { _tag: "Success", value };
   };
   let rpcQueue = Promise.resolve();
@@ -544,4 +558,47 @@ it("End all access ends mobile supervision without restoring the displaced agent
   expect(screen.controllers.get("remote:desktop")).toBeNull();
   expect(screen.hasButton("Return to agent")).toBe(false);
   expect(screen.operations()).not.toContain("return-control");
+});
+
+it("shows recent access on inventory refresh without fetching audit on each poll", async () => {
+  vi.useFakeTimers();
+  using _timers = { [Symbol.dispose]: () => vi.useRealTimers() };
+  await using screen = setup();
+  state.desktops = [
+    {
+      desktop: { kind: "user", desktopId: "workstation" },
+      label: "Workstation",
+      defaultLabel: "Workstation",
+      platform: "linux",
+      capabilities: ["view", "control"],
+      connectionState: "online",
+      lastSeenAt: "2026-01-01T00:00:00.000Z",
+      lastActiveAt: null,
+      t3Focused: false,
+    },
+  ];
+  state.audit = [
+    {
+      sequence: 1,
+      desktopId: "workstation",
+      occurredAt: "2026-01-01T00:00:00.000Z",
+      actorKind: "agent",
+      action: "control-granted",
+      actorLabel: "codex",
+      takeover: true,
+    },
+  ];
+  await screen.inventory();
+  expect(screen.operations()).toEqual(["list", "audit"]);
+  expect(screen.text()).toContain("Recent access");
+  expect(screen.text()).toContain("Took control");
+  expect(screen.text()).toContain("codex");
+  await act(async () => vi.advanceTimersByTimeAsync(5000));
+  expect(screen.operations()).toEqual(["list", "audit", "list"]);
+  await screen.focus(false);
+  await screen.focus(true);
+  expect(screen.operations().slice(-2)).toEqual(["list", "audit"]);
+  state.allowed = new Set();
+  await screen.inventory();
+  expect(screen.text()).not.toContain("codex");
 });
