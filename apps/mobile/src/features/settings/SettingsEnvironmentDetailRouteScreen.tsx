@@ -243,6 +243,12 @@ function EnvironmentDetail({ environmentId }: { readonly environmentId: Environm
                     {updatesDenial ? (
                       <Text className="text-sm text-foreground-muted">{updatesDenial}</Text>
                     ) : null}
+                    {config.environment.forkBuild ? (
+                      <Text className="text-sm text-foreground-muted">
+                        {config.environment.forkBuild.channel} ·{" "}
+                        {config.environment.forkBuild.revision?.slice(0, 12) ?? "development"}
+                      </Text>
+                    ) : null}
                     {running ? (
                       <Text className="text-sm text-foreground-muted">
                         {updateState.stage === "resuming"

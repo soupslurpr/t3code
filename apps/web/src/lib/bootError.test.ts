@@ -4,6 +4,7 @@ import { describe, expect, it, vi } from "vite-plus/test";
 import {
   type BootErrorEnvironment,
   buildErrorReport,
+  bootRecoveryFor,
   resolveTriageCommand,
   updateActionFor,
 } from "./bootError";
@@ -68,6 +69,16 @@ const environment: BootErrorEnvironment = {
 };
 
 describe("buildErrorReport", () => {
+  it("identifies the fork and exact revision in startup reports", () => {
+    const report = buildErrorReport(new Error("boot failed"), {
+      ...environment,
+      forkBuild: { channel: "soupslurpr", revision: "a".repeat(40) },
+    });
+    expect(report).toContain("Repository: soupslurpr/t3code");
+    expect(report).toContain("Fork channel: soupslurpr");
+    expect(report).toContain(`Fork revision: ${"a".repeat(40)}`);
+  });
+
   it("drops hosts and tokens from URLs in the error", () => {
     const error = new TypeError(
       "Failed to fetch dynamically imported module: http://studio.tail1234.ts.net:3773/assets/a.js?pair=SECRET#token=SECRET",
@@ -129,5 +140,47 @@ describe("updateActionFor", () => {
       expect(updateActionFor(state(status))).toBeNull();
     }
     expect(updateActionFor(undefined)).toBeNull();
+  });
+});
+
+describe("bootRecoveryFor", () => {
+  it("routes Linux fork recovery and reports to this fork", () => {
+    const recovery = bootRecoveryFor({
+      ...environment,
+      surface: "desktop",
+      platform: "linux",
+      forkBuild: { channel: "soupslurpr", revision: null },
+    });
+    expect(recovery.issueUrl).toBe("https://github.com/soupslurpr/t3code/issues/new");
+    expect(recovery.reinstall?.href).toContain(
+      "soupslurpr/t3code/blob/main/docs/operations/local-arch-package.md#recover-a-local-fork-installation",
+    );
+    expect(recovery.reinstall?.label).toBe("Recover the local fork package");
+  });
+  it("omits unsupported download recovery for other fork surfaces", () => {
+    for (const [surface, platform] of [
+      ["desktop", "darwin"],
+      ["desktop", "win32"],
+      ["web", "Linux x86_64"],
+    ] as const) {
+      const recovery = bootRecoveryFor({
+        ...environment,
+        surface,
+        platform,
+        forkBuild: { channel: "soupslurpr", revision: null },
+      });
+      expect(recovery.reinstall).toBeNull();
+      expect(recovery.issueUrl).toBe("https://github.com/soupslurpr/t3code/issues/new");
+    }
+  });
+  it("retains upstream recovery when no fork identity is supplied", () => {
+    expect(bootRecoveryFor({ ...environment, surface: "desktop" })).toEqual({
+      issueUrl: "https://github.com/pingdotgg/t3code/issues/new",
+      reinstall: {
+        href: "https://t3.codes/download?channel=nightly",
+        label: "Download and reinstall the latest nightly build",
+      },
+    });
+    expect(bootRecoveryFor(environment).reinstall).toBeNull();
   });
 });
