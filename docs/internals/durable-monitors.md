@@ -25,3 +25,7 @@ Their stable monitor controller owns only a view lease; release must not
 depend on reading a thread that deletion has already removed. Restart checks
 reacquire that same view identity. Exact evaluator selection is persisted; an
 unavailable provider or model degrades the watch without substitution.
+
+Throttling coalesces observations, not images. Persist a pending evaluation
+when a change occurs inside the budget window; an unchanged later sample
+still needs evaluation when that window expires, including after restart.

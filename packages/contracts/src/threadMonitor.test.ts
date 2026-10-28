@@ -67,3 +67,45 @@ it("requires an explicit watched desktop", () => {
     decodeWatch({ desktop: { kind: "agent" }, label: "Wait", match: { type: "image-change" } }),
   ).toThrow();
 });
+
+const decodeComputerWatch = Schema.decodeUnknownSync(ThreadMonitorComputerStartInput);
+const modelMatch = {
+  type: "model" as const,
+  criterion: "A result is visible",
+  modelSelection: { instanceId: "provider", model: "image-evaluator" },
+};
+
+describe("thread monitor contracts", () => {
+  it("accepts independent capture and model evaluation intervals", () => {
+    expect(
+      decodeComputerWatch({
+        desktop: { kind: "user" },
+        label: "Wait for a result",
+        match: modelMatch,
+        sampling: {
+          intervalMs: 1_000,
+          minEvaluationIntervalMs: 30_000,
+        },
+      }).sampling,
+    ).toEqual({ intervalMs: 1_000, minEvaluationIntervalMs: 30_000 });
+  });
+
+  it("bounds the minimum model evaluation interval", () => {
+    expect(() =>
+      decodeComputerWatch({
+        desktop: { kind: "user" },
+        label: "Wait for a result",
+        match: modelMatch,
+        sampling: { minEvaluationIntervalMs: 999 },
+      }),
+    ).toThrow();
+    expect(() =>
+      decodeComputerWatch({
+        desktop: { kind: "user" },
+        label: "Wait for a result",
+        match: modelMatch,
+        sampling: { minEvaluationIntervalMs: 24 * 60 * 60 * 1_000 + 1 },
+      }),
+    ).toThrow();
+  });
+});
