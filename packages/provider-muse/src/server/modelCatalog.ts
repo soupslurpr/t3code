@@ -24,6 +24,7 @@ const isMuseReasoningEffort = (tier: string): tier is MuseReasoningEffort =>
 
 const FALLBACK_EFFORTS = ["low", "medium", "high", "xhigh", "max"];
 const FALLBACK_DEFAULT_EFFORT = "high";
+const WONDER_DEFAULT_EFFORTS = ["xhigh", "high", "medium", "low", "minimal", "none"] as const;
 
 const ModelCatalogEntry = Schema.Struct({
   modelId: Schema.NonEmptyString,
@@ -43,23 +44,28 @@ const decodeModelList = Schema.decodeUnknownEffect(
 );
 
 export function museModelCapabilities(
-  model?: Pick<
-    typeof ModelCatalogEntry.Type,
-    "variants" | "defaultReasoningEffort" | "reasoningEffortVariants"
+  model?: Partial<
+    Pick<
+      typeof ModelCatalogEntry.Type,
+      "modelId" | "variants" | "defaultReasoningEffort" | "reasoningEffortVariants"
+    >
   >,
 ): ModelCapabilities {
   const reported = model?.variants !== undefined && model.variants !== "unknown";
   const efforts = (reported ? model.variants : FALLBACK_EFFORTS).filter(isMuseReasoningEffort);
   const preferredDefault = reported ? model?.defaultReasoningEffort : FALLBACK_DEFAULT_EFFORT;
-  const defaultValue = efforts.find((tier) => tier === preferredDefault) ?? efforts[0];
-  if (!defaultValue) return createModelCapabilities({ optionDescriptors: [] });
+  const defaultValue =
+    reported && (model.modelId === "muse-wonder-full-1.0" || model.modelId === "muse-wonder-1.0")
+      ? WONDER_DEFAULT_EFFORTS.find((tier) => efforts.includes(tier))
+      : (efforts.find((tier) => tier === preferredDefault) ?? efforts[0]);
+  if (efforts.length === 0) return createModelCapabilities({ optionDescriptors: [] });
   return createModelCapabilities({
     optionDescriptors: [
       {
         id: "reasoningEffort",
         label: "Reasoning",
         type: "select",
-        currentValue: defaultValue,
+        ...(defaultValue === undefined ? {} : { currentValue: defaultValue }),
         options: efforts.map((id) => {
           const description = model?.reasoningEffortVariants?.find(
             (variant) => variant.tier === id,

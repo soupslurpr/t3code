@@ -1,3 +1,4 @@
+import { museModelCapabilities } from "./modelCatalog.ts";
 // @effect-diagnostics-next-line nodeBuiltinImport:off -- Mock native realpath to exercise macOS case correction on every platform.
 import * as NodeFSP from "node:fs/promises";
 import { vi } from "vite-plus/test";
@@ -386,6 +387,74 @@ const approval = (turnId: string) => ({
 vi.mock("node:fs/promises", { spy: true });
 
 describe("MuseAdapterV2", () => {
+  describe.each(["muse-wonder-full-1.0", "muse-wonder-1.0"])("%s defaults", (modelId) => {
+    it.effect.each([
+      { name: "advertised XHigh", variants: ["high", "xhigh", "max"], expected: "xhigh" },
+      { name: "lower High", variants: ["high", "max"], expected: "high" },
+      { name: "above-only unset", variants: ["max", "ultra"], expected: undefined },
+      { name: "large lower drop", variants: ["low", "max"], expected: "low" },
+      { name: "saved Max", variants: ["high", "xhigh", "max"], saved: "max", expected: "max" },
+      { name: "saved Ultra", variants: ["max", "ultra"], saved: "ultra", expected: "ultra" },
+      { name: "unknown capabilities", variants: "unknown" as const, expected: "high" },
+      { name: "missing discovery", missing: true, expected: "high" },
+      {
+        name: "account default model",
+        variants: ["high", "xhigh", "max"],
+        useDefault: true,
+        expected: "xhigh",
+      },
+    ])(`sends the approved ${modelId} effort for $name`, (row) =>
+      Effect.gen(function* () {
+        const fake = yield* makeFakeMuse();
+        const harness = yield* makeHarness(
+          fake,
+          INSTANCE_ID,
+          undefined,
+          undefined,
+          undefined,
+          runtimePolicy,
+          {
+            modelCatalog: Effect.succeed(
+              row.missing
+                ? []
+                : [
+                    {
+                      slug: modelId,
+                      name: modelId,
+                      isCustom: false,
+                      isDefault: true,
+                      capabilities: museModelCapabilities({
+                        modelId,
+                        variants: row.variants,
+                        defaultReasoningEffort: "max",
+                      }),
+                    },
+                  ],
+            ),
+          },
+        );
+        const input = yield* turnInput(harness.providerThread);
+        const selection = {
+          instanceId: INSTANCE_ID,
+          model: row.useDefault ? MUSE_DEFAULT_MODEL : modelId,
+          options: row.saved === undefined ? [] : [{ id: "reasoningEffort", value: row.saved }],
+        };
+        yield* harness.runtime.startTurn({
+          ...input,
+          modelSelection: selection,
+          appThread: { ...input.appThread, modelSelection: selection },
+        });
+        const call = yield* fake.takeCall("turn/start");
+        assert.strictEqual(call.params.reasoningEffort, row.expected);
+        assert.strictEqual(
+          Object.hasOwn(call.params, "reasoningEffort"),
+          row.expected !== undefined,
+        );
+        yield* fake.emit("turn/completed", { turnId: call.commandId, terminal: "completed" });
+        yield* harness.takeEvent("turn.terminal");
+      }).pipe(Effect.scoped, Effect.provide(testLayer)),
+    );
+  });
   it.effect("connects the thread's MCP credential on native start and resume", () =>
     Effect.gen(function* () {
       yield* (yield* McpProviderSessions.McpProviderSessions).set({
