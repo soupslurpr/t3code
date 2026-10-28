@@ -1808,7 +1808,9 @@ export default function ChatView(props: ChatViewProps) {
   };
   const focusComposerStable = useStableCallback(focusComposer);
   const canInterruptRunningThread =
-    canOperateThread && deriveCanInterruptRunningThread(activeThread !== undefined, activeRuntime);
+    canOperateThread &&
+    (activeThread?.backgroundLiveness === "monitoring" ||
+      deriveCanInterruptRunningThread(activeThread !== undefined, activeRuntime));
   const onInterrupt = async () => {
     if (
       !activeThread ||
@@ -1817,7 +1819,10 @@ export default function ChatView(props: ChatViewProps) {
       return;
     const result = await interruptThreadTurn({
       environmentId,
-      input: { threadId: activeThread.id },
+      input: {
+        threadId: activeThread.id,
+        cancelMonitors: activeThread.backgroundLiveness === "monitoring",
+      },
     });
     if (result._tag === "Failure" && !isAtomCommandInterrupted(result)) {
       const error = squashAtomCommandFailure(result);
