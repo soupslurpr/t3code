@@ -1,8 +1,12 @@
-/** Encodes 8-bit desktop bitmaps into provider-ready WebP or PNG images. */
+/** Fingerprints and encodes 8-bit desktop bitmaps for computer observations. */
 import type {
+  ComputerAutomationContentHash,
+  ComputerAutomationFrame,
   ComputerAutomationScreenshotEncoding,
   ComputerAutomationScreenshotMimeType,
 } from "@t3tools/contracts";
+// @effect-diagnostics-next-line nodeBuiltinImport:off - Streaming native bitmap hashing avoids an extra pixel copy.
+import * as NodeCrypto from "node:crypto";
 import sharp from "sharp";
 
 const POINTER_MARKER_RADIUS = 10;
@@ -13,6 +17,13 @@ const DEFAULT_WEBP_LOSSY_QUALITY = 82;
 const DEFAULT_WEBP_NEAR_LOSSLESS_QUALITY = 90;
 const WEBP_ENCODING_EFFORT = 1;
 const PNG_COMPRESSION_LEVEL = 6;
+const CONTENT_HASH_PREFIX = "sha256-bgra8-v2:";
+const CONTENT_HASH_DOMAIN = Buffer.from("t3-computer-bgra8-v2\0", "ascii");
+
+export type ComputerScreenshotSource = Pick<
+  ComputerAutomationFrame,
+  "displayId" | "toDesktopLogical"
+> & { readonly desktopId: string };
 
 export type ResolvedComputerScreenshotEncoding =
   | { readonly format: "webp"; readonly mode: "lossless" }
@@ -25,11 +36,18 @@ export interface ComputerScreenshotImage {
   readonly toBitmap: () => Uint8Array;
 }
 
-export interface EncodedComputerScreenshot {
-  readonly data: Buffer;
-  readonly mimeType: ComputerAutomationScreenshotMimeType;
-  readonly encoding: ResolvedComputerScreenshotEncoding;
-}
+export type RenderedComputerScreenshot =
+  | {
+      readonly state: "image";
+      readonly contentHash: ComputerAutomationContentHash;
+      readonly data: Buffer;
+      readonly mimeType: ComputerAutomationScreenshotMimeType;
+      readonly encoding: ResolvedComputerScreenshotEncoding;
+    }
+  | {
+      readonly state: "unchanged";
+      readonly contentHash: ComputerAutomationContentHash;
+    };
 
 /** Resolves optional public encoding settings into explicit encoder parameters. */
 export function resolveComputerScreenshotEncoding(
@@ -87,12 +105,46 @@ function convertBgraToRgba(bitmap: Uint8Array): void {
   }
 }
 
-/** Encodes one Electron-compatible 8-bit image without an intermediate PNG conversion. */
-export async function encodeComputerScreenshot(
+/** Hashes one bounded BGRA8 bitmap without copying its pixels. */
+function hashComputerScreenshot(
+  bitmap: Uint8Array,
+  width: number,
+  height: number,
+  encoding: ResolvedComputerScreenshotEncoding,
+  source: ComputerScreenshotSource,
+): ComputerAutomationContentHash {
+  const dimensions = Buffer.allocUnsafe(8);
+  dimensions.writeUInt32BE(width, 0);
+  dimensions.writeUInt32BE(height, 4);
+  const digest = NodeCrypto.createHash("sha256")
+    .update(CONTENT_HASH_DOMAIN)
+    .update(
+      JSON.stringify([
+        source.desktopId,
+        source.displayId,
+        source.toDesktopLogical.offsetX,
+        source.toDesktopLogical.offsetY,
+        source.toDesktopLogical.scaleX,
+        source.toDesktopLogical.scaleY,
+        encoding.format,
+        encoding.format === "webp" ? encoding.mode : null,
+        "quality" in encoding ? encoding.quality : null,
+      ]),
+    )
+    .update(dimensions)
+    .update(bitmap)
+    .digest("base64url");
+  return `${CONTENT_HASH_PREFIX}${digest}`;
+}
+
+/** Fingerprints and conditionally encodes one Electron-compatible 8-bit image. */
+export async function renderComputerScreenshot(
   image: ComputerScreenshotImage,
   pointer: { readonly x: number; readonly y: number } | null,
   requestedEncoding: ComputerAutomationScreenshotEncoding | undefined,
-): Promise<EncodedComputerScreenshot> {
+  unchangedIfContentHash: ComputerAutomationContentHash | undefined,
+  source: ComputerScreenshotSource,
+): Promise<RenderedComputerScreenshot> {
   const size = image.getSize();
   if (
     !Number.isInteger(size.width) ||
@@ -108,8 +160,12 @@ export async function encodeComputerScreenshot(
     throw new Error("desktop screenshot bitmap size does not match its dimensions");
   }
   if (pointer !== null) drawPointerMarker(bitmap, size.width, size.height, pointer);
-  convertBgraToRgba(bitmap);
   const encoding = resolveComputerScreenshotEncoding(requestedEncoding);
+  const contentHash = hashComputerScreenshot(bitmap, size.width, size.height, encoding, source);
+  if (contentHash === unchangedIfContentHash) {
+    return { state: "unchanged", contentHash };
+  }
+  convertBgraToRgba(bitmap);
   const pixels = Buffer.from(bitmap.buffer, bitmap.byteOffset, bitmap.byteLength);
   const encoder = sharp(pixels, {
     raw: { width: size.width, height: size.height, channels: PIXEL_CHANNEL_COUNT },
@@ -118,11 +174,11 @@ export async function encodeComputerScreenshot(
     const data = await encoder
       .png({ compressionLevel: PNG_COMPRESSION_LEVEL, adaptiveFiltering: true })
       .toBuffer();
-    return { data, mimeType: "image/png", encoding };
+    return { state: "image", contentHash, data, mimeType: "image/png", encoding };
   }
   if (encoding.mode === "lossless") {
     const data = await encoder.webp({ lossless: true, effort: WEBP_ENCODING_EFFORT }).toBuffer();
-    return { data, mimeType: "image/webp", encoding };
+    return { state: "image", contentHash, data, mimeType: "image/webp", encoding };
   }
   const data = await encoder
     .webp({
@@ -132,5 +188,5 @@ export async function encodeComputerScreenshot(
       effort: WEBP_ENCODING_EFFORT,
     })
     .toBuffer();
-  return { data, mimeType: "image/webp", encoding };
+  return { state: "image", contentHash, data, mimeType: "image/webp", encoding };
 }

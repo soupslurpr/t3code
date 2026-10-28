@@ -1,4 +1,5 @@
 import {
+  ComputerAutomationContentHash,
   type ComputerAutomationFailure,
   type ComputerAutomationDesktopRegion,
   type ComputerAutomationScreenshotRegion,
@@ -16,7 +17,6 @@ import {
   type ThreadMonitorComputerEvidenceImage,
 } from "@t3tools/contracts";
 import * as Clock from "effect/Clock";
-import * as Crypto from "effect/Crypto";
 import * as DateTime from "effect/DateTime";
 import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
@@ -44,8 +44,18 @@ const isThreadMonitorError = Schema.is(ThreadMonitorError);
 
 type CapturedRegion = {
   readonly state: ThreadMonitorComputerCondition["observation"]["regions"][number];
+  readonly image: ThreadMonitorComputerEvidenceImage | null;
+};
+type MaterializedRegion = CapturedRegion & {
   readonly image: ThreadMonitorComputerEvidenceImage;
 };
+type RetainedEvidence = {
+  readonly baselineImages: ReadonlyArray<ThreadMonitorComputerEvidenceImage>;
+  readonly previousImages: ReadonlyArray<ThreadMonitorComputerEvidenceImage>;
+  readonly currentImages: ReadonlyArray<ThreadMonitorComputerEvidenceImage>;
+  readonly terminalImages: ReadonlyArray<ThreadMonitorComputerEvidenceImage>;
+};
+const isCurrentContentHash = Schema.is(ComputerAutomationContentHash);
 
 function boundedDetail(cause: unknown): string {
   if (typeof cause === "object" && cause !== null && "computerFailure" in cause) {
@@ -160,13 +170,20 @@ function accumulateUsage(
 function imageWithKind(
   image: ThreadMonitorComputerEvidenceImage,
   kind: ThreadMonitorComputerEvidenceImage["kind"],
+  capturedAt: string = image.capturedAt,
 ): ThreadMonitorComputerEvidenceImage {
-  return { ...image, id: `${kind}:${image.regionId}`, kind, frameIndex: null, elapsedMs: null };
+  return {
+    ...image,
+    id: `${kind}:${image.regionId}`,
+    kind,
+    capturedAt,
+    frameIndex: null,
+    elapsedMs: null,
+  };
 }
 
 export const make = Effect.gen(function* () {
   const computer = yield* ComputerAutomationRouter.ComputerAutomationRouter;
-  const crypto = yield* Crypto.Crypto;
   const environment = yield* ServerEnvironment.ServerEnvironment;
   const snapshots = yield* ThreadWorkspaceQuery;
   const registry = yield* ProviderInstanceRegistry.ProviderInstanceRegistry;
@@ -189,11 +206,6 @@ export const make = Effect.gen(function* () {
       issuedAt: yield* Clock.currentTimeMillis,
     } satisfies McpInvocationContext.McpThreadInvocationScope;
   });
-
-  const hashImage = (dataBase64: string) =>
-    crypto
-      .digest("SHA-256", Buffer.from(dataBase64, "base64"))
-      .pipe(Effect.map((bytes) => Buffer.from(bytes).toString("hex")));
 
   const readThreadContext = Effect.fn("ThreadMonitorComputer.readThreadContext")(function* (
     threadId: ThreadId,
@@ -220,6 +232,7 @@ export const make = Effect.gen(function* () {
     readonly maxWidth: number;
     readonly maxHeight: number;
     readonly encoding?: ThreadMonitorComputerObservationRegionInput["encoding"];
+    readonly unchangedIfContentHash?: ComputerAutomationContentHash;
   }) {
     return yield* computer.snapshot(input.scope, {
       desktop: input.desktop,
@@ -230,6 +243,9 @@ export const make = Effect.gen(function* () {
         maxWidth: input.maxWidth,
         maxHeight: input.maxHeight,
         ...(input.encoding === undefined ? {} : { encoding: input.encoding }),
+        ...(input.unchangedIfContentHash === undefined
+          ? {}
+          : { unchangedIfContentHash: input.unchangedIfContentHash }),
       },
     });
   });
@@ -253,15 +269,47 @@ export const make = Effect.gen(function* () {
         maxHeight,
         ...(input.region.encoding === undefined ? {} : { encoding: input.region.encoding }),
       });
-      const screenshot = snapshot.screenshot;
-      const normalizedRegion = durableRegion(snapshot);
-      if (screenshot === undefined || normalizedRegion === null) {
+      let screenshot = snapshot.screenshot;
+      const capturedRegion = durableRegion(snapshot);
+      if (screenshot === undefined || screenshot.state !== "image" || capturedRegion === null) {
         return yield* watchError(
           "computer-watch-start",
           `The initial capture for region '${input.region.id}' or its coordinate frame was empty.`,
         );
       }
-      const hash = yield* hashImage(screenshot.data);
+      const requestedRegion = input.region.region;
+      const suppliedDurableRegion =
+        requestedRegion !== undefined && "coordinateSpace" in requestedRegion
+          ? requestedRegion
+          : undefined;
+      const normalizedRegion = suppliedDurableRegion ?? capturedRegion;
+      const frame = snapshot.frame!;
+      // Fractional source crops round outward for durable storage. Establish the
+      // baseline with that exact request so the next sample has the same identity.
+      if (
+        suppliedDurableRegion === undefined &&
+        (frame.toDesktopLogical.offsetX !== normalizedRegion.x ||
+          frame.toDesktopLogical.offsetY !== normalizedRegion.y ||
+          frame.width * frame.toDesktopLogical.scaleX !== normalizedRegion.width ||
+          frame.height * frame.toDesktopLogical.scaleY !== normalizedRegion.height)
+      ) {
+        const durable = yield* capture({
+          scope: input.scope,
+          desktop: input.desktop,
+          region: normalizedRegion,
+          maxWidth,
+          maxHeight,
+          encoding: screenshot.encoding,
+        });
+        if (durable.screenshot?.state !== "image") {
+          return yield* watchError(
+            "computer-watch-start",
+            `The durable baseline for region '${input.region.id}' omitted its image bytes.`,
+          );
+        }
+        screenshot = durable.screenshot;
+      }
+      const hash = screenshot.contentHash;
       return {
         state: {
           id: input.region.id,
@@ -308,6 +356,7 @@ export const make = Effect.gen(function* () {
       readonly kind: ThreadMonitorComputerEvidenceImage["kind"];
       readonly frameIndex?: number | undefined;
       readonly elapsedMs?: number | undefined;
+      readonly forceImage?: boolean | undefined;
     }) {
       const snapshot = yield* capture({
         scope: input.scope,
@@ -316,6 +365,9 @@ export const make = Effect.gen(function* () {
         maxWidth: input.region.maxWidth,
         maxHeight: input.region.maxHeight,
         encoding: input.region.encoding,
+        ...(input.forceImage === true
+          ? {}
+          : { unchangedIfContentHash: input.region.lastSampleHash }),
       });
       const screenshot = snapshot.screenshot;
       if (screenshot === undefined) {
@@ -324,7 +376,13 @@ export const make = Effect.gen(function* () {
           `The capture for region '${input.region.id}' was empty.`,
         );
       }
-      const hash = yield* hashImage(screenshot.data);
+      if (input.forceImage === true && screenshot.state !== "image") {
+        return yield* watchError(
+          "computer-watch-check",
+          `The unconditional capture for region '${input.region.id}' omitted its image bytes.`,
+        );
+      }
+      const hash = screenshot.contentHash;
       const changed = hash !== input.region.lastSampleHash;
       return {
         state: {
@@ -336,25 +394,81 @@ export const make = Effect.gen(function* () {
           lastCapturedAt: input.capturedAt,
           lastChangedAt: changed ? input.capturedAt : input.region.lastChangedAt,
         },
-        image: {
-          id:
-            input.kind === "fresh"
-              ? `fresh:${input.frameIndex ?? 0}:${input.region.id}`
-              : `${input.kind}:${input.region.id}`,
-          kind: input.kind,
-          regionId: input.region.id,
-          capturedAt: input.capturedAt,
-          hash,
-          width: screenshot.width,
-          height: screenshot.height,
-          frameIndex: input.frameIndex ?? null,
-          elapsedMs: input.elapsedMs ?? null,
-          mimeType: screenshot.mimeType,
-          dataBase64: screenshot.data,
-          sizeBytes: screenshot.sizeBytes,
-          encoding: screenshot.encoding,
-        },
+        image:
+          screenshot.state === "unchanged"
+            ? null
+            : {
+                id:
+                  input.kind === "fresh"
+                    ? `fresh:${input.frameIndex ?? 0}:${input.region.id}`
+                    : `${input.kind}:${input.region.id}`,
+                kind: input.kind,
+                regionId: input.region.id,
+                capturedAt: input.capturedAt,
+                hash,
+                width: screenshot.width,
+                height: screenshot.height,
+                frameIndex: input.frameIndex ?? null,
+                elapsedMs: input.elapsedMs ?? null,
+                mimeType: screenshot.mimeType,
+                dataBase64: screenshot.data,
+                sizeBytes: screenshot.sizeBytes,
+                encoding: screenshot.encoding,
+              },
       } satisfies CapturedRegion;
+    },
+  );
+
+  /** Finds retained bytes for one exact region fingerprint. */
+  const findRetainedImage = (
+    evidence: RetainedEvidence,
+    regionId: string,
+    contentHash: string,
+  ): ThreadMonitorComputerEvidenceImage | undefined =>
+    [
+      ...evidence.currentImages,
+      ...evidence.previousImages,
+      ...evidence.baselineImages,
+      ...evidence.terminalImages,
+    ].find((image) => image.regionId === regionId && image.hash === contentHash);
+
+  /** Resolves omitted bytes from retained evidence or repeats one unconditional capture. */
+  const materializeCurrentRegion = Effect.fn("ThreadMonitorComputer.materializeCurrentRegion")(
+    function* (input: {
+      readonly scope: McpInvocationContext.McpThreadInvocationScope;
+      readonly desktop: ComputerDesktopTarget;
+      readonly region: ThreadMonitorComputerCondition["observation"]["regions"][number];
+      readonly captured: CapturedRegion;
+      readonly capturedAt: string;
+      readonly evidence: RetainedEvidence;
+    }) {
+      if (input.captured.image !== null) return input.captured as MaterializedRegion;
+      const retained = findRetainedImage(
+        input.evidence,
+        input.region.id,
+        input.captured.state.lastSampleHash,
+      );
+      if (retained !== undefined) {
+        return {
+          ...input.captured,
+          image: imageWithKind(retained, "current", input.capturedAt),
+        } satisfies MaterializedRegion;
+      }
+      const repeated = yield* captureConfiguredRegion({
+        scope: input.scope,
+        desktop: input.desktop,
+        region: input.region,
+        capturedAt: input.capturedAt,
+        kind: "current",
+        forceImage: true,
+      });
+      if (repeated.image === null) {
+        return yield* watchError(
+          "computer-watch-check",
+          `The repeated capture for region '${input.region.id}' omitted its image bytes.`,
+        );
+      }
+      return repeated as MaterializedRegion;
     },
   );
 
@@ -555,6 +669,18 @@ export const make = Effect.gen(function* () {
         );
       }
       const condition = monitor.condition;
+      const incompatibleRegion = condition.observation.regions.find(
+        (region) =>
+          !isCurrentContentHash(region.baselineHash) ||
+          !isCurrentContentHash(region.lastSampleHash),
+      );
+      if (incompatibleRegion !== undefined) {
+        return yield* watchError(
+          "computer-watch-check",
+          `Computer watch region '${incompatibleRegion.id}' uses an older screenshot fingerprint. Restart this monitor after upgrading T3 Code.`,
+          "COMPUTER_FINGERPRINT_UNSUPPORTED",
+        );
+      }
       const thread = yield* readThreadContext(monitor.threadId);
       const providerInstanceId =
         condition.match.type === "model"
@@ -606,11 +732,33 @@ export const make = Effect.gen(function* () {
         const matched = capturedTriggers.some(
           ({ state }) => state.baselineHash !== state.lastSampleHash,
         );
+        const materialized = matched
+          ? yield* Effect.forEach(capturedTriggers, (captured) =>
+              materializeCurrentRegion({
+                scope,
+                desktop: condition.desktop,
+                region: condition.observation.regions.find(
+                  (region) => region.id === captured.state.id,
+                )!,
+                captured,
+                capturedAt: checkedAt,
+                evidence,
+              }),
+            )
+          : [];
+        const materializedById = new Map(
+          materialized.map((captured) => [captured.state.id, captured]),
+        );
         const summary = matched
           ? "At least one trigger region changed from its revision baseline."
           : "Every trigger region still matches its revision baseline.";
         const evaluated: ThreadMonitorComputerCondition = {
           ...sampled,
+          observation: {
+            regions: sampled.observation.regions.map(
+              (region) => materializedById.get(region.id)?.state ?? region,
+            ),
+          },
           lastEvaluatedAt: checkedAt,
           lastEvaluationDurationMs: 0,
           lastVerdict: matched ? "matched" : "not-matched",
@@ -619,7 +767,7 @@ export const make = Effect.gen(function* () {
           evaluationCount: condition.evaluationCount + 1,
           consecutiveUncertain: 0,
         };
-        const currentImages = capturedTriggers.map(({ image }) => image);
+        const currentImages = materialized.map(({ image }) => image);
         return {
           condition: evaluated,
           observedImages: currentImages,
@@ -630,7 +778,7 @@ export const make = Effect.gen(function* () {
                   .filter(({ state }) => state.baselineHash !== state.lastSampleHash)
                   .map(
                     ({ state }) =>
-                      `${state.id}: initialSha256=${state.baselineHash}; currentSha256=${state.lastSampleHash}`,
+                      `${state.id}: initialContentHash=${state.baselineHash}; currentContentHash=${state.lastSampleHash}`,
                   )
                   .join("\n"),
                 terminalImages: currentImages,
@@ -676,7 +824,27 @@ export const make = Effect.gen(function* () {
           kind: "current",
         }),
       );
-      const allCaptured = [...capturedTriggers, ...capturedContext];
+      const materializedTriggers = yield* Effect.forEach(capturedTriggers, (captured) =>
+        materializeCurrentRegion({
+          scope,
+          desktop: condition.desktop,
+          region: condition.observation.regions.find((region) => region.id === captured.state.id)!,
+          captured,
+          capturedAt: checkedAt,
+          evidence,
+        }),
+      );
+      const materializedContext = yield* Effect.forEach(capturedContext, (captured) =>
+        materializeCurrentRegion({
+          scope,
+          desktop: condition.desktop,
+          region: condition.observation.regions.find((region) => region.id === captured.state.id)!,
+          captured,
+          capturedAt: checkedAt,
+          evidence,
+        }),
+      );
+      const allCaptured = [...materializedTriggers, ...materializedContext];
       const allById = new Map(allCaptured.map((captured) => [captured.state.id, captured]));
       const fullySampled: ThreadMonitorComputerCondition = {
         ...scheduled,
@@ -840,9 +1008,18 @@ export const make = Effect.gen(function* () {
             kind: "fresh",
             frameIndex,
             elapsedMs,
+            forceImage: true,
           }),
         );
-        images.push(...captured.map(({ image }) => image));
+        for (const region of captured) {
+          if (region.image === null) {
+            return yield* watchError(
+              "computer-watch-inspect",
+              `The fresh capture for region '${region.state.id}' omitted its image bytes.`,
+            );
+          }
+          images.push(region.image);
+        }
       }
       return images;
     },

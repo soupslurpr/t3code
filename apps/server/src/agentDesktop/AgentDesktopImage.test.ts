@@ -1,4 +1,4 @@
-import { encodeComputerScreenshot } from "../computer/ComputerScreenshotEncoding.ts";
+import { renderComputerScreenshot } from "../computer/ComputerScreenshotEncoding.ts";
 import { expect, it } from "@effect/vitest";
 import sharp from "sharp";
 
@@ -20,7 +20,13 @@ it("owns captured bytes and encodes cropped BGRA pixels with their original colo
     { x: 1, y: 0, width: 1, height: 1 },
     { width: 1, height: 1 },
   );
-  const { data: png } = await encodeComputerScreenshot(crop, null, { format: "png" });
+  const rendered = await renderComputerScreenshot(crop, null, { format: "png" }, undefined, {
+    desktopId: "test-desktop",
+    displayId: "display-0",
+    toDesktopLogical: { offsetX: 0, offsetY: 0, scaleX: 1, scaleY: 1 },
+  });
+  if (rendered.state !== "image") throw new Error("Expected encoded image");
+  const png = rendered.data;
   const decoded = await sharp(png).ensureAlpha().raw().toBuffer({ resolveWithObject: true });
   expect(decoded.info.width).toBe(1);
   expect(decoded.info.height).toBe(1);

@@ -104,7 +104,7 @@ const program = Effect.scoped(
         includeAccessibility: false,
         screenshot: { maxWidth: 800, maxHeight: 450 },
       });
-      if (snapshot.screenshot === undefined) {
+      if (snapshot.screenshot?.state !== "image") {
         throw new Error("Agent desktop snapshot did not return an image");
       }
       const actions = yield* computer.act(scope, {

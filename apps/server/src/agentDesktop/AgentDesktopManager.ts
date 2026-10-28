@@ -56,7 +56,7 @@ import { cropAgentDesktopImage, decodeAgentDesktopCapture } from "./AgentDesktop
 
 import * as AgentDesktopEnvironment from "./AgentDesktopEnvironment.ts";
 import * as ComputerUse from "../computer/ComputerAutomationFailure.ts";
-import { encodeComputerScreenshot } from "../computer/ComputerScreenshotEncoding.ts";
+import { renderComputerScreenshot } from "../computer/ComputerScreenshotEncoding.ts";
 import * as QemuAgentDesktop from "./QemuAgentDesktop.ts";
 import * as QemuInput from "./QemuInput.ts";
 
@@ -2984,12 +2984,14 @@ const make = Effect.gen(function* () {
         pointerPosition.y >= 0 &&
         pointerPosition.x < size.width &&
         pointerPosition.y < size.height;
-      const encoded = yield* Effect.tryPromise({
+      const rendered = yield* Effect.tryPromise({
         try: () =>
-          encodeComputerScreenshot(
+          renderComputerScreenshot(
             image,
             pointerVisible ? pointerPosition : null,
             screenshotOptions.encoding,
+            screenshotOptions.unchangedIfContentHash,
+            { ...frame, desktopId: desktop.id },
           ),
         catch: (cause) =>
           new AgentDesktopManagerError({
@@ -3017,14 +3019,24 @@ const make = Effect.gen(function* () {
         frame,
         ...(accessibility === undefined ? {} : { accessibility }),
         captureSource: "virtual-display",
-        screenshot: {
-          mimeType: encoded.mimeType,
-          data: encoded.data.toString("base64"),
-          sizeBytes: encoded.data.byteLength,
-          encoding: encoded.encoding,
-          width: size.width,
-          height: size.height,
-        },
+        screenshot:
+          rendered.state === "unchanged"
+            ? {
+                state: rendered.state,
+                contentHash: rendered.contentHash,
+                width: size.width,
+                height: size.height,
+              }
+            : {
+                state: rendered.state,
+                contentHash: rendered.contentHash,
+                mimeType: rendered.mimeType,
+                data: rendered.data.toString("base64"),
+                sizeBytes: rendered.data.byteLength,
+                encoding: rendered.encoding,
+                width: size.width,
+                height: size.height,
+              },
       };
     },
   );
