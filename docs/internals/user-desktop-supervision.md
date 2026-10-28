@@ -6,6 +6,12 @@ The host owns the active native permission and logical leases: two environment s
 both grant exclusive control independently. Duplicate live identities fail routing explicitly;
 client focus never substitutes for the requested desktop.
 
+A desktop-managed backend receives its host's stable registration in the private bootstrap
+envelope. Primary and desktop-local WSL backends share that physical owner. The inventory
+returns it as `environmentHost` even while offline; focus, labels and connection recency never
+establish ownership. Standalone environments return unidentified, and an absent field from an
+older server also means unidentified. A remote client's desktop remains a separate target.
+
 The environment authenticates human requests independently of any active agent turn. The broker
 supplies controller kind from that authenticated scope; callers cannot choose it in an action.
 The host keys holders by controller kind, environment and logical controller. Agent controller

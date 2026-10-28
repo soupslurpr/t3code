@@ -6,12 +6,14 @@ import {
   ComputerAutomationTargetInput,
 } from "./computerAutomation.ts";
 import {
+  UserDesktopList,
   UserDesktopAuditEvent,
   UserDesktopAuditLog,
   UserDesktopHostRegistration,
 } from "./userDesktop.ts";
 import { UserDesktopHumanInvokeInput } from "./previewAutomation.ts";
 
+const decodeDesktopList = Schema.decodeUnknownSync(UserDesktopList);
 const decodeRegistration = Schema.decodeUnknownSync(UserDesktopHostRegistration);
 const decodeHumanRequest = Schema.decodeUnknownSync(UserDesktopHumanInvokeInput);
 const decodeTargets = [
@@ -82,5 +84,33 @@ describe("user desktop contracts", () => {
         events: Array.from({ length: 51 }, (_, offset) => auditEvent(offset + 1)),
       }),
     ).toThrow(/at most 50/u);
+  });
+
+  it("keeps the environment host optional for older servers", () => {
+    expect(
+      decodeDesktopList({
+        desktops: [],
+        incompatibleClientCount: 0,
+      }),
+    ).toEqual({
+      desktops: [],
+      incompatibleClientCount: 0,
+    });
+  });
+
+  it("decodes an identified environment host", () => {
+    expect(
+      decodeDesktopList({
+        desktops: [],
+        incompatibleClientCount: 0,
+        environmentHost: {
+          status: "identified",
+          desktop: { kind: "user", desktopId: "user-desktop-1" },
+        },
+      }).environmentHost,
+    ).toEqual({
+      status: "identified",
+      desktop: { kind: "user", desktopId: "user-desktop-1" },
+    });
   });
 });
