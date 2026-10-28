@@ -47,6 +47,7 @@ import { AgentScope } from "@t3tools/shared/AgentScope";
 import * as Clock from "effect/Clock";
 import * as Context from "effect/Context";
 import * as DateTime from "effect/DateTime";
+import * as Deferred from "effect/Deferred";
 import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
 import * as Fiber from "effect/Fiber";
@@ -549,6 +550,18 @@ export function latestActiveRun(
   return projection.runs
     .filter(isActiveRun)
     .toSorted((left, right) => right.ordinal - left.ordinal)[0];
+}
+
+function forceStopTarget(projection: Pick<OrchestrationV2ThreadProjection, "runs">) {
+  return (
+    latestActiveRun(projection) ??
+    projection.runs
+      .filter((run) => run.status !== "queued")
+      .reduce<OrchestrationV2Run | undefined>(
+        (current, run) => (current === undefined || run.ordinal > current.ordinal ? run : current),
+        undefined,
+      )
+  );
 }
 
 function latestSteerableRun(
@@ -1130,7 +1143,7 @@ const make = Effect.gen(function* () {
     function* (input) {
       // Under the thread lock no new run can be created between the check and the kill. The
       // settlement below dispatches, which takes that lock itself, so it runs after release.
-      const { records, target, killed } = yield* threadDispatch.withLock(
+      const { records, target, killed, liveSessions } = yield* threadDispatch.withLock(
         input.threadId,
         Effect.gen(function* () {
           const records = yield* orchestrator.getThreadRecords(input.threadId, [
@@ -1140,15 +1153,7 @@ const make = Effect.gen(function* () {
           ]);
           // The run Force stop acts on: the active one, else the latest that started. Queued
           // follow-ups never ran, so they neither count as targets nor supersede the request.
-          const target =
-            latestActiveRun(records) ??
-            records.runs
-              .filter((run) => run.status !== "queued")
-              .reduce<OrchestrationV2Run | undefined>(
-                (current, run) =>
-                  current === undefined || run.ordinal > current.ordinal ? run : current,
-                undefined,
-              );
+          const target = forceStopTarget(records);
           if (input.runId !== undefined && input.runId !== target?.id) {
             return yield* new OrchestrationV2ForceStopThreadError({
               threadId: input.threadId,
@@ -1156,17 +1161,63 @@ const make = Effect.gen(function* () {
             });
           }
           // Shared scopes are never tracked per thread, so this only kills the thread's own agent.
+          const liveSessions = new Map(
+            (yield* Effect.forEach(
+              [
+                ...new Set(
+                  records.providerThreads.flatMap((thread) =>
+                    thread.appThreadId === input.threadId && thread.providerSessionId !== null
+                      ? [thread.providerSessionId]
+                      : [],
+                  ),
+                ),
+              ],
+              (id) =>
+                sessions
+                  .get(id, { touchActivity: false })
+                  .pipe(
+                    Effect.map((runtime) =>
+                      Option.toArray(Option.map(runtime, (value) => [id, value] as const)),
+                    ),
+                  ),
+            )).flat(),
+          );
           const killed = yield* agentScope.kill(input.threadId);
-          return { records, target, killed };
+          return { records, target, killed, liveSessions };
         }),
       );
-      const sessionIds = new Set(
-        records.providerThreads.flatMap((providerThread) =>
-          providerThread.appThreadId === input.threadId && providerThread.providerSessionId !== null
-            ? [providerThread.providerSessionId]
-            : [],
-        ),
-      );
+      let superseded = false;
+      const claimFor = (providerSessionId: ProviderSessionId) => ({
+        runtime: liveSessions.get(providerSessionId)!,
+        guard: <A>(claim: Effect.Effect<A>) =>
+          threadDispatch
+            .withLock(
+              input.threadId,
+              Effect.gen(function* () {
+                const current = forceStopTarget(
+                  yield* orchestrator.getThreadRecords(input.threadId, ["runs"]),
+                );
+                if (
+                  current?.id !== target?.id ||
+                  current?.activeAttemptId !== target?.activeAttemptId
+                ) {
+                  superseded = true;
+                  return Option.none<A>();
+                }
+                return Option.some(yield* claim);
+              }),
+            )
+            .pipe(
+              Effect.mapError(
+                (cause) =>
+                  new ProviderSessionManager.ProviderSessionReleaseError({
+                    providerSessionId,
+                    reason: "manual_shutdown",
+                    cause,
+                  }),
+              ),
+            ),
+      });
       // A run that already ended may still hold background work; settling it is a no-op otherwise.
       const run = target;
       if (run !== undefined) {
@@ -1197,12 +1248,29 @@ const make = Effect.gen(function* () {
                 reason: FORCE_STOP_REASON,
               });
       }
-      const ownProviderThreadIds = records.providerThreads.flatMap((providerThread) =>
-        providerThread.appThreadId === input.threadId ? [providerThread.id] : [],
+      const ownTurns = records.providerThreads.flatMap((thread) =>
+        thread.appThreadId === input.threadId
+          ? records.runs
+              .filter((run) => run.status !== "queued")
+              .map((run) => ({ providerThreadId: thread.id, runOrdinal: run.ordinal }))
+          : [],
       );
-      const detach = (providerSessionId: ProviderSessionId) =>
-        sessions
-          .detach({ providerSessionId, threadId: input.threadId, detail: FORCE_STOP_REASON })
+      const detach = Effect.fn("ThreadManagementService.forceStopDetach")(function* (
+        providerSessionId: ProviderSessionId,
+      ) {
+        const claimed = yield* Deferred.make<void>();
+        const claim = claimFor(providerSessionId);
+        yield* sessions
+          .detach({
+            providerSessionId,
+            threadId: input.threadId,
+            detail: FORCE_STOP_REASON,
+            claim: {
+              ...claim,
+              guard: (effect) =>
+                claim.guard(effect).pipe(Effect.ensuring(Deferred.succeed(claimed, undefined))),
+            },
+          })
           .pipe(
             Effect.catchCause((cause) =>
               Effect.logWarning("orchestration-v2.force-stop-detach-failed", {
@@ -1210,15 +1278,18 @@ const make = Effect.gen(function* () {
                 cause,
               }),
             ),
+            Effect.ensuring(Deferred.succeed(claimed, undefined)),
             Effect.forkIn(layerScope),
           );
+        yield* Deferred.await(claimed);
+      });
       let shared = false;
       const sharedWith = new Set<ThreadId>();
       const releases: Array<{
         readonly providerSessionId: ProviderSessionId;
         readonly fiber: Fiber.Fiber<boolean, ProviderSessionManager.ProviderSessionManagerV2Error>;
       }> = [];
-      for (const providerSessionId of sessionIds) {
+      for (const providerSessionId of liveSessions.keys()) {
         if (!(yield* sessions.isLive(providerSessionId))) continue;
         // Decided just before teardown, so the reply matches what happens to the process.
         const others = yield* sessions.otherWorkingThreads({
@@ -1236,7 +1307,8 @@ const make = Effect.gen(function* () {
         const fiber = yield* sessions
           .releaseUnlessBusy({
             providerSessionId,
-            ownProviderThreadIds,
+            ownTurns,
+            claim: claimFor(providerSessionId),
             reason: "manual_shutdown",
             detail: FORCE_STOP_REASON,
           })
@@ -1256,6 +1328,11 @@ const make = Effect.gen(function* () {
           yield* detach(release.providerSessionId);
         }
       }
+      if (superseded)
+        return yield* new OrchestrationV2ForceStopThreadError({
+          threadId: input.threadId,
+          reason: "superseded",
+        });
       return {
         outcome: killed ? "killed" : shared ? "shared" : releasing ? "releasing" : "released",
         sharedWithThreadIds: [...sharedWith],
