@@ -1,6 +1,7 @@
 import type * as NodeOS from "node:os";
 import * as NodeModule from "node:module";
 import * as Option from "effect/Option";
+import { AgentDesktopCommandInput, DesktopProcess } from "@t3tools/contracts";
 import { runAgentDesktopHumanRequest } from "./AgentDesktopHuman.ts";
 import {
   AgentDesktopId,
@@ -62,6 +63,17 @@ const decodeRecordedAccessibilityLocator = Schema.decodeSync(
 );
 
 /** Creates a deterministic in-memory hypervisor and its recorded calls. */
+const decodeCommandRequest = Schema.decodeSync(
+  Schema.fromJsonString(
+    Schema.Struct({
+      action: Schema.String,
+      process: Schema.optional(DesktopProcess),
+      processId: Schema.optional(Schema.String),
+      input: Schema.optional(AgentDesktopCommandInput),
+    }),
+  ),
+);
+
 const makeQemu = (
   accessibility: boolean,
   acceleratedGraphicsAvailable: boolean,
@@ -100,6 +112,8 @@ const makeQemu = (
     const transferFailure = yield* Ref.make<"none" | "disconnected" | "exit" | "invalid">("none");
     const commandEnvironment = yield* Ref.make<ReadonlyArray<string>>([]);
     const commandStarted = yield* Deferred.make<void>();
+    const fileReadStarted = yield* Deferred.make<void>();
+    const releaseFileRead = yield* Deferred.make<void>();
     const releaseCommand = yield* Deferred.make<void>();
     const maintenanceStarted = yield* Deferred.make<void>();
     const releaseMaintenance = yield* Deferred.make<void>();
@@ -109,6 +123,7 @@ const makeQemu = (
     const sendKeyFailed = yield* Ref.make(false);
     const wheelAcknowledgementLost = yield* Ref.make(false);
     const captureEnabled = yield* Ref.make(captureAvailable);
+    const commandReceipts = new Map<string, DesktopProcess>();
     let windowActivationAttemptCount = 0;
     const record = (call: string) => Ref.update(calls, (current) => [...current, call]);
     const failUpdateStep = (step: "start" | "prepare" | "install" | "repark") =>
@@ -285,6 +300,68 @@ const makeQemu = (
           : Effect.die("unexpected guest command"),
       executeGuestProcess: (id, input) => {
         const argumentsValue = input.arguments ?? [];
+        if (argumentsValue[0]?.includes("/command-helper-")) {
+          const request = decodeCommandRequest(new TextDecoder().decode(input.stdin));
+          return Effect.gen(function* () {
+            if (request.action === "start" && request.process !== undefined) {
+              const environment = request.input?.environment ?? {};
+              yield* Ref.set(
+                commandEnvironment,
+                Array.isArray(environment)
+                  ? environment.map(({ name, value }) => `${name}=${value}`)
+                  : Object.entries(environment).map(([name, value]) => `${name}=${value}`),
+              );
+              if (request.input?.executable === "/usr/bin/t3-block") {
+                yield* Deferred.succeed(commandStarted, undefined);
+                yield* Deferred.await(releaseCommand);
+              }
+              commandReceipts.set(request.process.processId, {
+                ...request.process,
+                status: "exited",
+                exitCode: 0,
+                stdinClosed: true,
+                completedAt: DateTime.formatIso(yield* DateTime.now),
+              });
+            }
+            const process = commandReceipts.get(
+              request.processId ?? request.process?.processId ?? "",
+            );
+            const output = {
+              data: "ok\n",
+              encoding: "utf8",
+              offset: 0,
+              nextOffset: 3,
+              totalBytes: 3,
+              storedBytes: 3,
+              truncated: false,
+              invalidUtf8: false,
+            };
+            return {
+              exitCode: 0,
+              stderr: "",
+              stdoutTruncated: false,
+              stderrTruncated: false,
+              stdout: encodeUnknownJson(
+                request.action === "capabilities"
+                  ? { version: 2, generation: "guest-test", cgroup: 2, systemdVersion: "262" }
+                  : process === undefined
+                    ? { version: 2, error: "receipt-missing" }
+                    : {
+                        version: 2,
+                        process,
+                        stdout: output,
+                        stderr: {
+                          ...output,
+                          data: "",
+                          nextOffset: 0,
+                          totalBytes: 0,
+                          storedBytes: 0,
+                        },
+                      },
+              ),
+            };
+          });
+        }
         const encodedTextInput = argumentsValue.at(-1);
         const successfulTextInsertion = () => {
           if (typeof encodedTextInput !== "string") {
@@ -449,7 +526,16 @@ const makeQemu = (
                 : "hello",
           ),
           eof: true,
-        }),
+        }).pipe(
+          Effect.andThen((result) =>
+            path === "/blocked-read"
+              ? Deferred.succeed(fileReadStarted, undefined).pipe(
+                  Effect.andThen(Deferred.await(releaseFileRead)),
+                  Effect.as(result),
+                )
+              : Effect.succeed(result),
+          ),
+        ),
       writeGuestFile: (id, path, data, mode) =>
         record(`write:${id}:${path}:${data.byteLength}:${mode}`).pipe(Effect.as(data.byteLength)),
       addRoute: () => Effect.die("route is not expected"),
@@ -472,6 +558,8 @@ const makeQemu = (
       captureEnabled,
       commandEnvironment,
       commandStarted,
+      fileReadStarted,
+      releaseFileRead,
       transferStarted,
       importReceiptReturned,
       releaseTransfer,
@@ -596,6 +684,8 @@ const managerHarness = (
       captureEnabled: qemu.captureEnabled,
       commandEnvironment: qemu.commandEnvironment,
       commandStarted: qemu.commandStarted,
+      fileReadStarted: qemu.fileReadStarted,
+      releaseFileRead: qemu.releaseFileRead,
       transferStarted: qemu.transferStarted,
       blockTransfer: qemu.blockTransfer,
       transferFailure: qemu.transferFailure,
@@ -2282,7 +2372,7 @@ describe("AgentDesktopManager", () => {
           arguments: ["ok"],
         });
         assert.equal(command.stdout, "ok\n");
-        assert.equal(command.exitCode, 0);
+        assert.equal("exitCode" in command && command.exitCode, 0);
 
         const file = yield* manager.readFile(owner, {
           desktopId: desktop.id,
@@ -3018,15 +3108,15 @@ describe("AgentDesktopManager", () => {
             fresh: true,
             requirements: { retention: "preserve", updatePolicy },
           });
-          const command =
+          const read =
             kind === "idle-auto"
               ? undefined
               : yield* manager
-                  .command(owner, { desktopId: desktop.id, executable: "/usr/bin/t3-block" })
+                  .readFile(owner, { desktopId: desktop.id, path: "/blocked-read" })
                   .pipe(Effect.forkChild);
-          if (command !== undefined) yield* Deferred.await(harness.commandStarted);
+          if (read !== undefined) yield* Deferred.await(harness.fileReadStarted);
           yield* manager.manage(owner, { desktopId: desktop.id, operation: "stop" });
-          if (command !== undefined) {
+          if (read !== undefined) {
             const refused = yield* manager
               .update(owner, { target: { kind: "desktop", desktopId: desktop.id } })
               .pipe(Effect.flip);
@@ -3043,9 +3133,9 @@ describe("AgentDesktopManager", () => {
             before?.maintenance.status === "queued" || before?.maintenance.status === "installing";
           if (admitted) yield* Deferred.await(harness.maintenanceStarted);
           const calls = yield* Ref.get(harness.calls);
-          if (command !== undefined) {
-            yield* Deferred.succeed(harness.releaseCommand, undefined);
-            yield* Fiber.join(command);
+          if (read !== undefined) {
+            yield* Deferred.succeed(harness.releaseFileRead, undefined);
+            yield* Fiber.join(read);
           }
           if (admitted) {
             yield* Deferred.succeed(harness.releaseMaintenance, undefined);
@@ -3099,17 +3189,17 @@ describe("AgentDesktopManager", () => {
           fresh: true,
           requirements: { retention: "preserve" },
         });
-        const command = yield* manager
-          .command(owner, { desktopId: busy.id, executable: "/usr/bin/t3-block" })
+        const read = yield* manager
+          .readFile(owner, { desktopId: busy.id, path: "/blocked-read" })
           .pipe(Effect.forkChild);
-        yield* Deferred.await(harness.commandStarted);
+        yield* Deferred.await(harness.fileReadStarted);
         yield* manager.manage(owner, { desktopId: busy.id, operation: "stop" });
         yield* manager.manage(owner, { desktopId: idle.id, operation: "stop" });
         yield* TestClock.adjust(Duration.minutes(1));
         yield* Deferred.await(harness.maintenanceStarted);
         const calls = yield* Ref.get(harness.calls);
-        yield* Deferred.succeed(harness.releaseCommand, undefined);
-        yield* Fiber.join(command);
+        yield* Deferred.succeed(harness.releaseFileRead, undefined);
+        yield* Fiber.join(read);
         yield* Deferred.succeed(harness.releaseMaintenance, undefined);
         yield* manager.awaitUpdate(owner, { target: { kind: "desktop", desktopId: busy.id } });
         yield* manager.awaitUpdate(owner, { target: { kind: "desktop", desktopId: idle.id } });

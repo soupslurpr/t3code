@@ -278,7 +278,7 @@ const program = Effect.scoped(
         executable: "/usr/bin/cat",
         arguments: ["/home/t3agent/server-runtime-smoke/message.txt"],
       });
-      if (verified.exitCode !== 0 || verified.stdout !== message) {
+      if (!("exitCode" in verified) || verified.exitCode !== 0 || verified.stdout !== message) {
         throw new Error(`guest import verification failed: ${verified.stderr}`);
       }
 

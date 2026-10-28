@@ -9,9 +9,11 @@ import {
 } from "@t3tools/client-runtime/desktop-process-output";
 import { squashAtomCommandFailure } from "@t3tools/client-runtime/state/runtime";
 import {
+  AgentDesktopProcessResponse,
   UserDesktopExecutionResult,
   isDesktopProcessLive,
   hasDesktopProcessInputGrant,
+  type AgentDesktopOwner,
   type DesktopExecutionAccess,
   type DesktopProcess,
   type DesktopExecutionGrant,
@@ -31,8 +33,11 @@ import { AppText as Text } from "../../components/ui/AppText";
 import { DesktopExecutionPermissions } from "./DesktopExecutionPermissions";
 
 const decodeUser = Schema.decodeUnknownSync(UserDesktopExecutionResult);
+const decodeAgent = Schema.decodeUnknownSync(AgentDesktopProcessResponse);
 type ProcessInput = Omit<UserDesktopProcessInput, "desktop">;
-type Target = UserDesktopTarget;
+type Target =
+  | UserDesktopTarget
+  | { readonly kind: "agent"; readonly desktopId: string; readonly owner: AgentDesktopOwner };
 
 export function UserDesktopExecutionPanel(props: {
   environmentId: EnvironmentId;
@@ -48,6 +53,29 @@ export function UserDesktopExecutionPanel(props: {
     />
   );
 }
+export function AgentDesktopExecutionPanel({
+  desktopId,
+  owner,
+  label,
+  initialProcessId,
+}: {
+  desktopId: string;
+  owner: AgentDesktopOwner;
+  label: string;
+  initialProcessId?: string | undefined;
+}) {
+  return (
+    <DesktopProcessPanel
+      key={JSON.stringify([owner.environmentId, desktopId, owner.threadId, owner.controllerId])}
+      environmentId={owner.environmentId}
+      environmentLabel={label}
+      desktop={{ kind: "agent", desktopId, owner }}
+      threadId={owner.threadId}
+      initialProcessId={initialProcessId}
+    />
+  );
+}
+
 function DesktopProcessPanel({
   environmentId,
   environmentLabel,
@@ -62,14 +90,25 @@ function DesktopProcessPanel({
   initialProcessId?: string | undefined;
 }) {
   const user = useAtomCommand(previewEnvironment.invokeUserDesktopHuman, { reportFailure: false });
+  const agent = useAtomCommand(previewEnvironment.invokeAgentDesktopHuman, {
+    reportFailure: false,
+  });
   const allowed = useAtomValue(
-    previewEnvironment.invokeUserDesktopHuman.permissionAtom(environmentId, {
-      request: {
-        operation: "execution",
-        desktopId: desktop.desktopId,
-        input: { operation: "access", desktop, input: { action: "status", desktop } },
-      },
-    }),
+    desktop.kind === "user"
+      ? previewEnvironment.invokeUserDesktopHuman.permissionAtom(environmentId, {
+          request: {
+            operation: "execution",
+            desktopId: desktop.desktopId,
+            input: { operation: "access", desktop, input: { action: "status", desktop } },
+          },
+        })
+      : previewEnvironment.invokeAgentDesktopHuman.permissionAtom(environmentId, {
+          request: {
+            operation: "process",
+            owner: desktop.owner,
+            input: { action: "list", desktopId: desktop.desktopId },
+          },
+        }),
   );
   const [expanded, setExpanded] = useState(initialProcessId !== undefined);
   const [access, setAccess] = useState<DesktopExecutionAccess | null>(null);
@@ -84,24 +123,44 @@ function DesktopProcessPanel({
   const connected = useAtomValue(environmentConnectedAtom(environmentId));
   const desktopId = desktop.desktopId;
   const kind = desktop.kind;
+  const ownerEnvironmentId = desktop.kind === "agent" ? desktop.owner.environmentId : undefined;
+  const ownerThreadId = desktop.kind === "agent" ? desktop.owner.threadId : undefined;
+  const ownerControllerId = desktop.kind === "agent" ? desktop.owner.controllerId : undefined;
   const process = async (input: ProcessInput) => {
-    const result = await user({
-      environmentId,
-      input: {
-        ...(threadId ? { threadId } : {}),
-        request: {
-          operation: "execution",
-          desktopId,
-          input: {
-            operation: "process",
-            desktop: { kind: "user", desktopId },
-            input: { ...input, desktop: { kind: "user", desktopId } },
-          },
-        },
-      },
-    });
+    const result =
+      kind === "user"
+        ? await user({
+            environmentId,
+            input: {
+              ...(threadId ? { threadId } : {}),
+              request: {
+                operation: "execution",
+                desktopId,
+                input: {
+                  operation: "process",
+                  desktop: { kind: "user", desktopId },
+                  input: { ...input, desktop: { kind: "user", desktopId } },
+                },
+              },
+            },
+          })
+        : await agent({
+            environmentId,
+            input: {
+              threadId: ownerThreadId!,
+              request: {
+                operation: "process",
+                owner: {
+                  environmentId: ownerEnvironmentId!,
+                  threadId: ownerThreadId!,
+                  controllerId: ownerControllerId!,
+                },
+                input: { ...input, desktopId },
+              },
+            },
+          });
     if (result._tag !== "Success") throw squashAtomCommandFailure(result);
-    const value = decodeUser(result.value);
+    const value = kind === "user" ? decodeUser(result.value) : decodeAgent(result.value);
     if (value.kind !== "list" && value.kind !== "process")
       throw new Error("Process supervision requires a compatible desktop.");
     return value;
@@ -325,7 +384,7 @@ function DesktopProcessPanel({
                 <ProcessInputControls
                   process={job}
                   busy={busy}
-                  inputAllowed={hasDesktopProcessInputGrant(access, job)}
+                  inputAllowed={kind === "agent" || hasDesktopProcessInputGrant(access, job)}
                   send={(input) => perform({ ...input, processId: job.processId })}
                 />
               ) : null}

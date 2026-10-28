@@ -29,6 +29,7 @@ import * as ElectronDialog from "../electron/ElectronDialog.ts";
 import * as ElectronWindow from "../electron/ElectronWindow.ts";
 import * as DesktopExecution from "./DesktopExecution.ts";
 import * as DesktopGrants from "../computer/DesktopGrants.ts";
+import * as DesktopCompletionReceipts from "./DesktopCompletionReceipts.ts";
 import { approveGrant } from "../computer/DesktopGrantPolicy.ts";
 import { DesktopProcessManager } from "./DesktopProcessManager.ts";
 import { DesktopTransferManager } from "./DesktopTransferManager.ts";
@@ -118,6 +119,86 @@ function withExecution<A, E, R>(
 }
 
 describe("desktop execution permission", () => {
+  it.live.each(["retired", "current"] as const)(
+    "checks the %s connection at completion-registration admission",
+    (connection) =>
+      withExecution(
+        Effect.gen(function* () {
+          const execution = yield* DesktopExecution.DesktopExecution;
+          const store = yield* DesktopGrants.DesktopGrants;
+          const identity = yield* UserDesktopIdentity.UserDesktopIdentity;
+          const desktop = { kind: "user", desktopId: identity.registration.desktopId } as const;
+          yield* execution.invoke(context, {
+            operation: "access",
+            desktop,
+            input: { action: "request", desktop },
+          });
+          const command = yield* execution.invoke(context, {
+            operation: "command",
+            desktop,
+            commandId: "registration-generation",
+            executable: process.execPath,
+            arguments: ["-e", "process.stdout.write('done')"],
+            waitMs: 30_000,
+          });
+          if (command.kind !== "process") return assert.fail("missing process");
+          const entered = yield* Deferred.make<void>();
+          const proceed = yield* Deferred.make<void>();
+          let pause = true;
+          const synchronize = store.synchronize;
+          using _synchronize = vi.spyOn(store, "synchronize").mockImplementation((...args) =>
+            synchronize(...args).pipe(
+              Effect.tap(() => {
+                if (!pause) return Effect.void;
+                pause = false;
+                return Deferred.succeed(entered, undefined).pipe(
+                  Effect.andThen(Deferred.await(proceed)),
+                );
+              }),
+            ),
+          );
+          const registration = yield* execution
+            .invoke(context, {
+              operation: "completion",
+              desktop,
+              input: {
+                action: "register",
+                desktop,
+                waitId: "generation-wait",
+                processId: command.process.processId,
+                runtimeGeneration: command.process.runtimeGeneration!,
+              },
+            })
+            .pipe(Effect.result, Effect.forkChild);
+          yield* Deferred.await(entered);
+          if (connection === "retired") {
+            yield* execution.authorization({
+              operation: "connected",
+              environmentId: context.environmentId!,
+              connectionGeneration: "replacement",
+            });
+            yield* execution.invoke(
+              { ...context, connectionGeneration: "replacement" },
+              {
+                operation: "access",
+                desktop,
+                input: { action: "request", desktop },
+              },
+            );
+          }
+          yield* Deferred.succeed(proceed, undefined);
+          const result = yield* Fiber.join(registration);
+          assert.equal(result._tag, connection === "retired" ? "Failure" : "Success");
+          if (result._tag === "Failure") assert.equal(result.failure.code, "permission-denied");
+          else {
+            assert.equal(result.success.kind, "completion");
+            if (result.success.kind === "completion")
+              assert.equal(result.success.receipt?.status, "exited");
+          }
+        }),
+      ),
+  );
+
   it.effect.each(["later-thread", "other-thread"] as const)(
     "fences an entire reconciliation batch after %s becomes unavailable",
     (target) =>
@@ -1080,6 +1161,170 @@ describe("desktop execution permission", () => {
       }),
     ),
   );
+  it.effect(
+    "delivers only a preauthorized terminal receipt after expiry and retains it across native restart",
+    () =>
+      withExecution(
+        Effect.gen(function* () {
+          const execution = yield* DesktopExecution.DesktopExecution;
+          const identity = yield* UserDesktopIdentity.UserDesktopIdentity;
+          const desktop = { kind: "user", desktopId: identity.registration.desktopId } as const;
+          yield* execution.invoke(context, {
+            operation: "access",
+            desktop,
+            input: { action: "request", desktop },
+          });
+          const started = yield* execution.invoke(context, {
+            operation: "command",
+            desktop,
+            commandId: "wait-expiry",
+            executable: process.execPath,
+            arguments: ["-e", "process.stdin.resume()"],
+            keepStdinOpen: true,
+            waitMs: 0,
+          });
+          if (started.kind !== "process") return assert.fail("missing process");
+          const input = {
+            desktop,
+            waitId: "preauthorized-wait",
+            processId: started.process.processId,
+            runtimeGeneration: started.process.runtimeGeneration!,
+          };
+          const pending = yield* execution.invoke(context, {
+            operation: "completion",
+            desktop,
+            input: { ...input, action: "register" },
+          });
+          assert.equal(pending.kind, "completion");
+          yield* TestClock.adjust("24 hours");
+          const rejected = yield* execution
+            .invoke(context, {
+              operation: "completion",
+              desktop,
+              input: { ...input, waitId: "late-wait", action: "register" },
+            })
+            .pipe(Effect.flip);
+          assert.equal(rejected.code, "permission-denied");
+          const human = { ...context, controllerKind: "human" as const };
+          yield* execution.invoke(human, {
+            operation: "process",
+            desktop,
+            input: { desktop, action: "signal", processId: input.processId, signal: "SIGKILL" },
+          });
+          yield* execution.invoke(human, {
+            operation: "process",
+            desktop,
+            input: { desktop, action: "read", processId: input.processId, waitMs: 30_000 },
+          });
+          const terminal = yield* execution.invoke(context, {
+            operation: "completion",
+            desktop,
+            input: { ...input, action: "status" },
+          });
+          if (terminal.kind !== "completion" || terminal.receipt === null)
+            return assert.fail("missing completion");
+          assert.equal(terminal.receipt.status, "exited");
+          assert.sameMembers(Object.keys(terminal.receipt), [
+            "processId",
+            "runtimeGeneration",
+            "status",
+            "exitCode",
+            "signal",
+            "completedAt",
+          ]);
+          assert.notProperty(terminal, "stdout");
+          yield* Effect.gen(function* () {
+            const restored = yield* DesktopCompletionReceipts.DesktopCompletionReceipts;
+            yield* restored.resetRuntime("new-native-runtime");
+            const receipt = yield* restored.invoke(
+              { environmentId: context.environmentId!, threadId: context.threadId! },
+              { ...input, action: "status" },
+            );
+            assert.deepEqual(receipt, terminal.receipt);
+          }).pipe(Effect.provide(DesktopCompletionReceipts.layer));
+        }),
+      ),
+  );
+
+  it.effect("explicit keep-work revocation cancels waits while leaving the process running", () =>
+    withExecution(
+      Effect.gen(function* () {
+        const execution = yield* DesktopExecution.DesktopExecution;
+        const identity = yield* UserDesktopIdentity.UserDesktopIdentity;
+        const desktop = { kind: "user", desktopId: identity.registration.desktopId } as const;
+        const access = yield* execution.invoke(context, {
+          operation: "access",
+          desktop,
+          input: { action: "request", desktop },
+        });
+        if (access.kind !== "access") return assert.fail("missing access");
+        const started = yield* execution.invoke(context, {
+          operation: "command",
+          desktop,
+          commandId: "wait-revoked",
+          executable: process.execPath,
+          arguments: ["-e", "process.stdin.resume()"],
+          keepStdinOpen: true,
+          waitMs: 0,
+        });
+        if (started.kind !== "process") return assert.fail("missing process");
+        const input = {
+          desktop,
+          waitId: "revoked-wait",
+          processId: started.process.processId,
+          runtimeGeneration: started.process.runtimeGeneration!,
+        };
+        yield* execution.invoke(context, {
+          operation: "completion",
+          desktop,
+          input: { ...input, action: "register" },
+        });
+        const human = { ...context, controllerKind: "human" as const };
+        const grant = access.grants[0]!;
+        yield* execution.invokeFromNativeBackend(human, {
+          operation: "access",
+          desktop,
+          input: {
+            action: "revoke",
+            desktop,
+            grantId: grant.grantId,
+            revision: grant.revision,
+            stopProcesses: false,
+          },
+        });
+        const receipt = yield* execution.invoke(context, {
+          operation: "completion",
+          desktop,
+          input: { ...input, action: "status" },
+        });
+        assert.equal(
+          receipt.kind === "completion" && receipt.receipt?.status,
+          "permission-revoked",
+        );
+        const list = yield* execution.invoke(human, {
+          operation: "process",
+          desktop,
+          input: { desktop, action: "list" },
+        });
+        assert.equal(list.kind === "list" && list.processes[0]?.status, "running");
+        const deleted = {
+          ...context,
+          lifecycle: { ...context.lifecycle!, revision: 2, state: "deleted" as const },
+        };
+        assert.equal(
+          (yield* execution
+            .invoke(deleted, {
+              operation: "completion",
+              desktop,
+              input: { ...input, action: "status" },
+            })
+            .pipe(Effect.flip)).code,
+          "thread-deleted",
+        );
+      }),
+    ),
+  );
+
   it.effect("requires execution permission and exact target identity for file transfers", () =>
     withExecution(
       Effect.gen(function* () {

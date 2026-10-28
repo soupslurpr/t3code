@@ -1,10 +1,18 @@
+import type { DesktopProcessActivity } from "@t3tools/contracts";
+import { Button } from "../ui/button";
 import { useEffect } from "react";
 import { serverEnvironment } from "~/state/server";
 import { useEnvironmentQuery } from "~/state/query";
 import type { DesktopThreadScope } from "../settings/useDesktopEnvironments";
 
 /** Refreshes only while this conversation's Desktop panel is visible. */
-export function ThreadDesktopActivity({ thread }: { thread: DesktopThreadScope }) {
+export function ThreadDesktopActivity({
+  thread,
+  openProcess,
+}: {
+  thread: DesktopThreadScope;
+  openProcess: (activity: DesktopProcessActivity) => void;
+}) {
   const query = useEnvironmentQuery(
     serverEnvironment.threadDesktopActivity({
       environmentId: thread.environmentId,
@@ -43,6 +51,11 @@ export function ThreadDesktopActivity({ thread }: { thread: DesktopThreadScope }
               ? `Process ${command.process.phase}`
               : `${command.tool.split("__").at(-1)} · Tool ${command.status}`}
           </summary>
+          {command.process ? (
+            <Button size="xs" variant="outline" onClick={() => openProcess(command.process!)}>
+              Inspect process on {command.process.desktop.desktopId}
+            </Button>
+          ) : null}
           <pre className="mt-2 max-h-40 overflow-auto whitespace-pre-wrap break-all">
             {command.input}
           </pre>

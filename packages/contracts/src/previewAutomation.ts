@@ -32,6 +32,7 @@ import {
   AgentDesktopId,
   AgentDesktopInspectInput,
   AgentDesktopManageInput,
+  AgentDesktopProcessInput,
   AgentDesktopOwner,
   AgentDesktopUpdateInput,
 } from "./agentDesktop.ts";
@@ -99,6 +100,11 @@ const AgentDesktopHumanTarget = {
 
 /** Describes one authenticated human supervision request. */
 export const AgentDesktopHumanRequest = Schema.Union([
+  Schema.Struct({
+    operation: Schema.Literal("process"),
+    owner: AgentDesktopOwner,
+    input: AgentDesktopProcessInput,
+  }),
   Schema.Struct({ operation: Schema.Literal("list") }),
   Schema.Struct({ operation: Schema.Literal("setup") }),
   Schema.Struct({

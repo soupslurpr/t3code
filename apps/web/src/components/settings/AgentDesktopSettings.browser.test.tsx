@@ -38,6 +38,7 @@ vi.mock("~/state/environments", () => ({
 vi.mock("~/state/entities", () => ({ useThreadShells: () => [] }));
 vi.mock("~/state/preview", () => ({
   previewEnvironment: {
+    invokeUserDesktopHuman: { label: "test.unused-user" },
     invokeAgentDesktopHuman: {
       label: "test.agent",
       permissionAtom: () => state.allowed,

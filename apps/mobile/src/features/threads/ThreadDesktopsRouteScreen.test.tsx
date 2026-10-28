@@ -254,3 +254,40 @@ it("refreshes only while focused, preserves its selected target, and never loops
   expect(screen.text).toContain("Agent other");
   expect(state.agent.mock.calls.every(([call]) => call.environmentId === "remote")).toBe(true);
 });
+
+it("keeps command refresh stable across inventory updates, focus and connection changes", async () => {
+  await using screen = setup();
+  state.agent.mockImplementation(async ({ input }) => ({
+    _tag: "Success",
+    value:
+      input.request.operation === "process"
+        ? { kind: "list", protocolVersion: 2, desktopId: "agent-owner", processes: [] }
+        : { desktops: [agent("owner"), agent("other")] },
+  }));
+  const reads = () =>
+    state.agent.mock.calls.filter(([call]) => call.input.request.operation === "process");
+  await screen.render();
+  await screen.press("Show commands · Agent owner");
+  expect(reads()).toHaveLength(1);
+  expect(screen.text).toContain("No commands for this source.");
+  await screen.render();
+  expect(reads()).toHaveLength(1);
+  await screen.advance();
+  expect(reads()).toHaveLength(2);
+  await screen.focus(false);
+  await screen.advance();
+  expect(reads()).toHaveLength(2);
+  await screen.focus(true);
+  expect(reads()).toHaveLength(3);
+  state.connected = false;
+  await screen.render();
+  await screen.advance();
+  expect(reads()).toHaveLength(3);
+  state.connected = true;
+  await screen.render();
+  expect(reads()).toHaveLength(4);
+  await screen.press("Hide commands · Agent owner");
+  await screen.advance();
+  expect(reads()).toHaveLength(4);
+  expect(reads().every(([call]) => call.input.threadId === "owner")).toBe(true);
+});
