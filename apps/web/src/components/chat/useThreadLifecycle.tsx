@@ -430,7 +430,10 @@ export function useThreadLifecycle(input: ThreadLifecycleInput) {
     setBackgroundWorkStops((current) => ({ ...current, [request.threadKey]: request }));
     const result = await interruptThreadTurn({
       environmentId,
-      input: { threadId: activeThread.id },
+      input: {
+        threadId: activeThread.id,
+        cancelMonitors: activeThread.backgroundLiveness === "monitoring",
+      },
     });
     setBackgroundWorkStops((current) =>
       current[request.threadKey] !== request

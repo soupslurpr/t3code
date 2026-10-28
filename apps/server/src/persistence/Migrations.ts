@@ -1,5 +1,6 @@
 import { migrationManifest, upstreamMigrationIdentities } from "./MigrationIdentities.ts";
 export { migrationManifest } from "./MigrationIdentities.ts";
+import ThreadMonitorCancellation from "./Migrations/069_ThreadMonitorCancellation.ts";
 import UserDesktopAccessAuditMigration from "./Migrations/064_UserDesktopAccessAudit.ts";
 import RetiredPreviewSessionsMigration from "./Migrations/065_PreviewSessions.ts";
 import RetiredToolRunsMigration from "./Migrations/066_ToolRuns.ts";
@@ -190,6 +191,7 @@ export const forkMigrationEntries = [
   [10, "UserDesktopAccessAudit", UserDesktopAccessAuditMigration],
   [11, "PreviewSessions", RetiredPreviewSessionsMigration],
   [12, "ToolRuns", RetiredToolRunsMigration],
+  [13, "ThreadMonitorCancellation", ThreadMonitorCancellation],
 ] as const;
 export const forkMigrationManifest = forkMigrationEntries.map(([id, name]) => [id, name] as const);
 

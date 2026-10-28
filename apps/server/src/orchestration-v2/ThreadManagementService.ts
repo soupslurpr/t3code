@@ -106,6 +106,7 @@ function existingThreadIdsForCommand(
     // while a thread is open, so keeping them off the import path matters.
     case "thread.visit":
     case "thread.mark-unread":
+    case "thread.monitors.cancel":
       return [];
     case "thread.fork":
       return [command.sourceThreadId];
@@ -198,6 +199,10 @@ export type ThreadManagementInterruptResult =
       readonly dispatch: Orchestrator.OrchestratorV2DispatchResult;
     }
   | { readonly type: "no_active_run" }
+  | {
+      readonly type: "monitors_cancel_requested";
+      readonly dispatch: Orchestrator.OrchestratorV2DispatchResult;
+    }
   | {
       readonly type: "already_terminal";
       readonly run: OrchestrationV2Run & { readonly status: ThreadManagementTerminalRunStatus };
@@ -1085,6 +1090,17 @@ const make = Effect.gen(function* () {
     const interruptibleRun = latestActiveRun(target);
     if (interruptibleRun === undefined) {
       if (input.runId === undefined) {
+        const shell = yield* orchestrator.getThreadShell(input.threadId);
+        if (shell?.backgroundLiveness === "monitoring") {
+          return {
+            type: "monitors_cancel_requested",
+            dispatch: yield* orchestrator.dispatch({
+              type: "thread.monitors.cancel",
+              commandId: input.commandId,
+              threadId: input.threadId,
+            }),
+          } as const;
+        }
         return { type: "no_active_run" } as const;
       }
       return yield* new ThreadManagementThreadNotInterruptibleError({
