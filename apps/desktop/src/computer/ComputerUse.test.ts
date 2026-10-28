@@ -1,3 +1,5 @@
+import { ComputerAutomationFailure } from "@t3tools/contracts";
+import * as Schema from "effect/Schema";
 import { assert, describe, it } from "@effect/vitest";
 import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
@@ -184,6 +186,40 @@ describe("ComputerUse", () => {
     );
   });
 
+  it("preserves allowlisted Agent desktop transfer diagnostics", () => {
+    assert.deepEqual(
+      ComputerUse.toComputerAutomationFailure({
+        code: "destination-exists",
+        operation: "guest-transfer-helper",
+        detail: "destination already exists",
+      }),
+      {
+        code: "guest-operation-failed",
+        category: "conflict",
+        message: "The Agent desktop destination already exists.",
+        backendCode: "destination-exists",
+        detail: "destination already exists",
+      },
+    );
+  });
+
+  it("includes bounded guest diagnostics in the visible message", () => {
+    assert.deepEqual(
+      ComputerUse.toComputerAutomationFailure({
+        code: "guest-operation-failed",
+        operation: "guest-file-open",
+        detail: "invalid mode 'wbx'",
+      }),
+      {
+        code: "guest-operation-failed",
+        category: "internal",
+        message: "The Agent desktop guest rejected the requested operation: invalid mode 'wbx'",
+        backendCode: "guest-operation-failed",
+        detail: "invalid mode 'wbx'",
+      },
+    );
+  });
+
   it("preserves bounded timeout diagnostics", () => {
     assert.deepEqual(
       ComputerUse.toComputerAutomationFailure({
@@ -201,21 +237,49 @@ describe("ComputerUse", () => {
     );
   });
 
-  it("preserves allowlisted Agent desktop transfer diagnostics", () => {
+  it("preserves exact-text backend failures and action context", () => {
+    const detail = "the transient IBus engine could not be activated";
     assert.deepEqual(
-      ComputerUse.toComputerAutomationFailure({
-        code: "destination-exists",
-        operation: "guest-transfer-helper",
-        detail: "destination already exists",
-      }),
+      ComputerUse.toComputerAutomationFailure(
+        new ComputerUse.ComputerUseActionError({
+          actionIndex: 1,
+          completedActionCount: 1,
+          actionType: "type",
+          cause: new GnomeRemoteDesktop.GnomeRemoteDesktopCommandError({
+            operation: "type",
+            code: "exact-text-unavailable",
+            field: "text",
+            phase: "execution",
+            cause: detail,
+          }),
+        }),
+      ),
       {
-        code: "guest-operation-failed",
-        category: "conflict",
-        message: "The Agent desktop file transfer was rejected.",
-        backendCode: "destination-exists",
-        detail: "destination already exists",
+        code: "exact-text-unavailable",
+        category: "unsupported-operation",
+        message: "Exact text could not be entered into the focused control.",
+        actionIndex: 1,
+        completedActionCount: 1,
+        field: "actions[1].text",
+        phase: "execution",
+        backendCode: "exact-text-unavailable",
+        detail,
       },
     );
+  });
+
+  it("bounds unsupported-text diagnostics without exposing exception stacks", () => {
+    const diagnosticLimit = 2_000;
+    const detail = "unsupported text control ".repeat(100);
+    const failure = ComputerUse.toComputerAutomationFailure({
+      code: "unsupported-text",
+      message: detail,
+      stack: "private backend stack",
+    });
+
+    assert.strictEqual(failure.backendCode, "unsupported-text");
+    assert.strictEqual(failure.detail, detail.slice(0, diagnosticLimit));
+    assert.notProperty(failure, "stack");
   });
 
   it.effect("controls desktop availability without opening access", () =>
@@ -914,6 +978,7 @@ describe("ComputerUse", () => {
           verification: "unavailable",
           delivery: "key-events",
           focusedEditable: false,
+          submission: "submitted",
         },
         { index: 2, type: "wait" },
       ]);
@@ -945,6 +1010,7 @@ describe("ComputerUse", () => {
         type: "type",
         requestedCodePoints: Array.from("That’s right →\nASCII -> done").length,
         delivery: "key-events",
+        submission: "not-requested",
       });
 
       assert.deepEqual(inputRecords, [
@@ -953,6 +1019,84 @@ describe("ComputerUse", () => {
           operation: "type",
           input: { text: "That’s right →\nASCII -> done", intervalMs: 0 },
         },
+      ]);
+    }),
+  );
+
+  it.effect("withholds submission when exact application verification is required", () =>
+    Effect.gen(function* () {
+      const records: Array<InputRecord> = [];
+      const computer = yield* ComputerUse.makeWithOptions(makePlatform(), makeController(records));
+
+      const typing = yield* computer
+        .act({
+          actions: [
+            {
+              type: "type",
+              text: "That’s exact →",
+              submit: true,
+              verification: "required",
+            },
+          ],
+        })
+        .pipe(Effect.forkChild);
+      yield* TestClock.adjust("500 millis");
+      const results = yield* Fiber.join(typing);
+
+      assert.deepInclude(results[0], {
+        type: "type",
+        verification: "unavailable",
+        submission: "withheld-unverified",
+      });
+      assert.deepEqual(records, [
+        { operation: "start" },
+        { operation: "type", input: { text: "That’s exact →", intervalMs: 0 } },
+      ]);
+    }),
+  );
+
+  it.effect("submits verified text when exact verification is required", () =>
+    Effect.gen(function* () {
+      const records: Array<InputRecord> = [];
+      const controller = GnomeRemoteDesktop.GnomeRemoteDesktop.of({
+        ...makeController(records),
+        type: (input) =>
+          Effect.sync(() => records.push({ operation: "type", input })).pipe(
+            Effect.as({
+              requestedCodePoints: Array.from(input.text).length,
+              injectedCodePoints: Array.from(input.text).length,
+              confirmedCodePoints: Array.from(input.text).length,
+              delivery: "accessibility" as const,
+              focusedEditable: true,
+            }),
+          ),
+      });
+      const computer = yield* ComputerUse.makeWithOptions(makePlatform(), controller);
+
+      const typing = yield* computer
+        .act({
+          actions: [
+            {
+              type: "type",
+              text: "That’s exact →",
+              submit: true,
+              verification: "required",
+            },
+          ],
+        })
+        .pipe(Effect.forkChild);
+      yield* TestClock.adjust("500 millis");
+      const results = yield* Fiber.join(typing);
+
+      assert.deepInclude(results[0], {
+        type: "type",
+        verification: "exact",
+        submission: "submitted",
+      });
+      assert.deepEqual(records, [
+        { operation: "start" },
+        { operation: "type", input: { text: "That’s exact →", intervalMs: 0 } },
+        { operation: "press", input: { key: "Enter", modifiers: [] } },
       ]);
     }),
   );
@@ -1721,4 +1865,16 @@ describe("ComputerUse", () => {
       assert.deepEqual(records, [{ operation: "stop" }, { operation: "releaseInputs" }]);
     }),
   );
+});
+
+const decodePublicFailure = Schema.decodeUnknownSync(ComputerAutomationFailure);
+
+it("serializes long guest failures without violating the public message bound", () => {
+  const detail = "guest diagnostic ".repeat(200);
+  const failure = decodePublicFailure(
+    ComputerUse.toComputerAutomationFailure({ code: "guest-operation-failed", detail }),
+  );
+  assert.strictEqual(failure.code, "guest-operation-failed");
+  assert.isAtMost(failure.message.length, 512);
+  assert.strictEqual(failure.detail, detail.trim().slice(0, 2_000));
 });
