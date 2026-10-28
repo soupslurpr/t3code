@@ -376,6 +376,7 @@ export async function connectMuseTransport(input: {
   return {
     connection,
     initializeResult: {
+      museHome: typeof result.museHome === "string" ? result.museHome : "",
       grantedCapabilities: Array.isArray(granted)
         ? granted.filter((capability) => typeof capability === "string")
         : [],

@@ -53,21 +53,37 @@ export function applyUsageLimitsUpdate(input: {
   readonly checkedAt: string;
 }): ServerProviderUsageLimits | undefined {
   const { previous, update } = input;
-  if (update.windows.length === 0 || previous?.unavailable?.reason === "unsupported") {
+  if (
+    (update.windows.length === 0 && update.complete !== true) ||
+    previous?.unavailable?.reason === "unsupported"
+  ) {
     return previous;
   }
   const merged = new Map(previous?.windows.map((window) => [window.id, window] as const));
   // Codex repeats unchanged limits on token ticks; avoid allocating snapshots for no-ops.
   let changed = false;
+  if (update.complete === true) {
+    const currentIds = new Set(update.windows.map((window) => window.id));
+    for (const id of merged.keys()) {
+      if (!currentIds.has(id)) {
+        merged.delete(id);
+        changed = true;
+      }
+    }
+  }
   for (const window of update.windows) {
     const existing = merged.get(window.id);
     const next: ServerProviderUsageWindow = {
       ...window,
       usedPercent: clampPercent(window.usedPercent),
-      ...(window.resetsAt === undefined && existing?.resetsAt !== undefined
+      ...(update.complete !== true &&
+      window.resetsAt === undefined &&
+      existing?.resetsAt !== undefined
         ? { resetsAt: existing.resetsAt }
         : {}),
-      ...(window.windowDurationMins === undefined && existing?.windowDurationMins !== undefined
+      ...(update.complete !== true &&
+      window.windowDurationMins === undefined &&
+      existing?.windowDurationMins !== undefined
         ? { windowDurationMins: existing.windowDurationMins }
         : {}),
     };
@@ -76,15 +92,40 @@ export function applyUsageLimitsUpdate(input: {
       changed = true;
     }
   }
-  if (!changed && previous !== undefined) {
+  if (
+    !changed &&
+    previous !== undefined &&
+    (update.complete !== true || previous.unavailable === undefined)
+  ) {
+    // A window-only tick does not refresh credits, whose freshness is compared
+    // by checkedAt across sources. Credit-bearing providers refresh via probes.
+    if (previous.unavailable !== undefined || previous.resetCredits !== undefined) return previous;
+    // Refresh unchanged windows at most once a minute to prevent widget expiry
+    // while keeping frequent token-usage ticks from republishing every time.
+    const previousCheckedAtMs = Date.parse(previous.checkedAt);
+    const checkedAtMs = Date.parse(input.checkedAt);
+    if (
+      Number.isFinite(previousCheckedAtMs) &&
+      Number.isFinite(checkedAtMs) &&
+      checkedAtMs - previousCheckedAtMs >= 60_000
+    ) {
+      return { ...previous, checkedAt: input.checkedAt };
+    }
     return previous;
   }
   const unavailable =
-    previous === undefined ? { reason: "probeFailed" as const } : previous.unavailable;
+    update.complete === true
+      ? undefined
+      : previous === undefined
+        ? { reason: "probeFailed" as const }
+        : previous.unavailable;
   return {
     ...makeUsageLimits({ checkedAt: input.checkedAt, windows: merged.values() }),
     ...(previous?.resetCredits !== undefined ? { resetCredits: previous.resetCredits } : {}),
     ...(unavailable !== undefined ? { unavailable } : {}),
+    ...(previous?.credentialFingerprint !== undefined
+      ? { credentialFingerprint: previous.credentialFingerprint }
+      : {}),
   };
 }
 

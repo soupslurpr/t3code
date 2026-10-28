@@ -869,6 +869,10 @@ describe("pooled account columns", () => {
     ["codex", "14:00", 100, "14:00", 100],
     ["claudeAgent", "15:00", 100, "15:00", 100],
     ["codex", "15:00", 40, "14:00", 60],
+    ["muse", "13:00", 40, "14:00", 100],
+    ["muse", "14:00", 100, "14:00", 100],
+    ["muse", "15:00", 100, "15:00", 100],
+    ["muse", "15:00", 40, "14:00", 60],
   ] as const)(
     "%s session resetting at %s with %i percent spent becomes usable at %s with %i percent restored",
     (driver, sessionReset, usedPercent, usableAt, restoresPercent) => {
@@ -877,13 +881,13 @@ describe("pooled account columns", () => {
         ...account("a", [
           {
             ...window,
-            id: driver === "codex" ? "primary" : window.id,
+            id: driver === "codex" ? "primary" : driver === "muse" ? "window" : window.id,
             usedPercent,
             resetsAt: at(sessionReset),
           },
           {
             ...weekly,
-            id: driver === "codex" ? "secondary" : weekly.id,
+            id: driver === "codex" ? "secondary" : driver === "muse" ? "weekly" : weekly.id,
             usedPercent: 100,
             resetsAt: at("14:00"),
           },
@@ -920,6 +924,77 @@ describe("pooled account columns", () => {
     expect.soft(cursor?.windows.map((row) => row.remainingPercent)).toEqual([60, 0, 80]);
     expect(accounts).toEqual(snapshot);
   });
+
+  it("excludes weekly-blocked Muse capacity and restores it only on a fresh report", () => {
+    const muse = (key: string, usedPercent: number): LimitAccount => ({
+      ...account(key, [
+        { ...window, id: "window", usedPercent: 20, resetsAt: "2026-09-03T13:00:00.000Z" },
+        { ...weekly, id: "weekly", usedPercent, resetsAt: "2026-09-04T12:00:00.000Z" },
+      ]),
+      driver: ProviderDriverKind.make("muse"),
+    });
+    const blocked = muse("blocked", 100);
+    const available = muse("available", 20);
+    const accounts = [blocked, available];
+    const snapshot = structuredClone(accounts);
+    const [pool] = collectLimitPools(accounts, now);
+    expect(pool?.windows[0]?.remainingPercent).toBe(40);
+    expect(
+      pool?.windows[0]?.members.find((member) => member.account.key === "blocked"),
+    ).toMatchObject({
+      window: {
+        usedPercent: 100,
+        resetsAt: "2026-09-04T12:00:00.000Z",
+        windowDurationMins: undefined,
+      },
+      refillPercent: 100,
+    });
+    const [refreshed] = collectLimitPools([muse("blocked", 10), available], now);
+    expect(refreshed?.windows[0]?.remainingPercent).toBe(80);
+    expect(refreshed?.windows[0]?.resets.map((reset) => reset.at)).toEqual([
+      Date.parse("2026-09-03T13:00:00.000Z"),
+      Date.parse("2026-09-03T13:00:00.000Z"),
+    ]);
+    expect(accounts).toEqual(snapshot);
+  });
+
+  it("leaves unrelated Muse allowances and other drivers unchanged", () => {
+    for (const [driver, id] of [
+      ["muse", "other-weekly"],
+      ["cursor", "weekly"],
+    ] as const) {
+      const a = {
+        ...account("a", [
+          { ...window, id: "window", usedPercent: 20 },
+          { ...weekly, id, usedPercent: 100 },
+        ]),
+        driver: ProviderDriverKind.make(driver),
+      };
+      expect(collectLimitPools([a], now)[0]?.windows[0]?.remainingPercent).toBe(80);
+    }
+  });
+
+  it.each([undefined, "invalid", "2026-09-03T11:30:00.000Z"])(
+    "does not predict a blocked Muse refill from a missing or stale clock (%s)",
+    (resetsAt) => {
+      const accounts = [
+        account("session-clock", [
+          { ...window, id: "window", resetsAt },
+          { ...weekly, id: "weekly", usedPercent: 100 },
+        ]),
+        account("weekly-clock", [
+          { ...window, id: "window" },
+          { ...weekly, id: "weekly", usedPercent: 100, resetsAt },
+        ]),
+      ].map((account) => ({ ...account, driver: ProviderDriverKind.make("muse") }));
+      const [pool] = collectLimitPools(accounts, now);
+      expect(pool?.windows[0]).toMatchObject({ remainingPercent: 0, pace: null, resets: [] });
+      expect(pool?.windows[0]?.columns.map((column) => column.window?.resetsAt)).toEqual([
+        undefined,
+        undefined,
+      ]);
+    },
+  );
 
   it("keeps session columns across rows with opposite reset and usage orders", () => {
     const accounts = [
