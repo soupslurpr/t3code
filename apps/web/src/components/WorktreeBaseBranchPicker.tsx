@@ -70,7 +70,8 @@ export function WorktreeBaseBranchPicker({
           : null);
   const handleOpenChange = (next: boolean) => {
     setOpen(next);
-    if (!next) setQuery("");
+    if (next) branches.refresh();
+    else setQuery("");
   };
   return (
     <BranchPicker
@@ -89,7 +90,11 @@ export function WorktreeBaseBranchPicker({
       isFetchingNextPage={branches.isFetchingNextPage}
       onLoadNext={branches.loadNext}
       statusText={statusText}
-      originControl={{ checked: startFromOrigin, onCheckedChange: onStartFromOriginChange }}
+      originControl={
+        branches.data?.hasPrimaryRemote === true
+          ? { checked: startFromOrigin, onCheckedChange: onStartFromOriginChange }
+          : undefined
+      }
       popupProps={{ align: "start", side: "bottom", className: "flex w-80 flex-col" }}
       renderItem={(name, index) => {
         const branch = branchByName.get(name);

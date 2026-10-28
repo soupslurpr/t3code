@@ -268,7 +268,8 @@ export function createVcsEnvironmentAtoms<R, E>(
   const listRefs = (target: {
     readonly environmentId: EnvironmentId;
     readonly input: VcsListRefsInput;
-  }) => listRefsFamily(JSON.stringify([target.environmentId, target.input]));
+    readonly cacheKey?: string;
+  }) => listRefsFamily(JSON.stringify([target.environmentId, target.input, target.cacheKey]));
   const invalidateRefs = (
     target: { readonly environmentId: EnvironmentId; readonly input: { readonly cwd: string } },
     registry: AtomRegistry.AtomRegistry,
