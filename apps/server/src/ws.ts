@@ -240,6 +240,7 @@ import * as RemoteOpenTargets from "./environment/RemoteOpenTargets.ts";
 import * as DefectReporter from "./observability/DefectReporter.ts";
 import * as EventLoopMonitor from "./observability/EventLoopMonitor.ts";
 import * as BackgroundPolicy from "./background/BackgroundPolicy.ts";
+import * as DesktopExecutionAuthorizationChannel from "./computer/DesktopExecutionAuthorizationChannel.ts";
 import * as EnvironmentAuth from "./auth/EnvironmentAuth.ts";
 import { requiredScopeForDeviceList, rpcAuthorizationError } from "./auth/RpcAuthorization.ts";
 import * as RpcAuthorization from "./auth/RpcAuthorization.ts";
@@ -1281,6 +1282,7 @@ export const layerWsRpc = (
   clientAnalyticsProps: Readonly<Record<string, unknown>>,
   serverBrowser: ServerBrowser.ServerBrowser["Service"],
   reportProfiles: ServerBrowser.ProfileReporter,
+  desktopAuthorization: DesktopExecutionAuthorizationChannel.DesktopExecutionAuthorizationChannel["Service"],
 ) =>
   Layer.effectContext(
     Effect.gen(function* () {
@@ -3170,7 +3172,7 @@ export const layerWsRpc = (
                 thread: {
                   controllerId: `human:${currentSessionId}`,
                   controllerKind: "human" as const,
-                  threadId: USER_DESKTOP_SETTINGS_THREAD_ID,
+                  threadId: input.threadId ?? USER_DESKTOP_SETTINGS_THREAD_ID,
                   providerSessionId: `human:${currentSessionId}`,
                   providerInstanceId: USER_DESKTOP_HUMAN_PROVIDER_INSTANCE_ID,
                 },
@@ -3178,6 +3180,12 @@ export const layerWsRpc = (
                 issuedAt: yield* Clock.currentTimeMillis,
               },
               input,
+              currentSessionId,
+            ).pipe(
+              Effect.provideService(
+                DesktopExecutionAuthorizationChannel.DesktopExecutionAuthorizationChannel,
+                desktopAuthorization,
+              ),
             );
           },
         ),
@@ -3428,6 +3436,8 @@ export const layer = Layer.unwrap(
   Effect.gen(function* () {
     const serverBrowser = yield* ServerBrowser.ServerBrowser;
     const previewAutomationBroker = yield* PreviewAutomationBroker.PreviewAutomationBroker;
+    const desktopAuthorization =
+      yield* DesktopExecutionAuthorizationChannel.DesktopExecutionAuthorizationChannel;
     const serverSelfUpdate = yield* ServerSelfUpdate.ServerSelfUpdate;
     const npmRelease = yield* NpmRelease.NpmRelease;
     const pullRequests = yield* PullRequestService.PullRequestService;
@@ -3497,7 +3507,13 @@ export const layer = Layer.unwrap(
           return httpEffect;
         }).pipe(
           Effect.provide(
-            layerWsRpc(session, clientAnalyticsProps, serverBrowser, reportProfiles).pipe(
+            layerWsRpc(
+              session,
+              clientAnalyticsProps,
+              serverBrowser,
+              reportProfiles,
+              desktopAuthorization,
+            ).pipe(
               Layer.provideMerge(RpcSerialization.layerJson),
               // Handler-context reporters see only request defects, not server-wide defects.
               Layer.provide(DefectReporter.layer),

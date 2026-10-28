@@ -1,4 +1,5 @@
 import * as SecretResolver from "@t3tools/secret-provider-core/server/SecretResolver";
+import { DesktopExecutionAuthorizationChannel } from "./computer/DesktopExecutionAuthorizationChannel.ts";
 import * as ThreadDesktopActivity from "./computer/ThreadDesktopActivity.ts";
 import { ThreadMonitorService } from "./threadMonitor/ThreadMonitorService.ts";
 import * as AgentDesktopManager from "./agentDesktop/AgentDesktopManager.ts";
@@ -719,6 +720,7 @@ it.effect(
               {},
               yield* ServerBrowser.ServerBrowser,
               () => Effect.void,
+              yield* DesktopExecutionAuthorizationChannel,
             ).pipe(Layer.provide(services)),
             RpcAuthorization.layer([AuthOrchestrationReadScope]),
           ),
@@ -763,6 +765,7 @@ it.effect(
           Layer.fresh(layerConfigSources),
           Layer.mock(PreviewAutomationBroker.PreviewAutomationBroker)({}),
           Layer.mock(ServerBrowser.ServerBrowser)({}),
+          Layer.mock(DesktopExecutionAuthorizationChannel)({}),
         ),
       ),
     ),
@@ -874,6 +877,7 @@ it.effect.each(["pending", "cached"] as const)(
             {},
             yield* ServerBrowser.ServerBrowser,
             () => Effect.void,
+            yield* DesktopExecutionAuthorizationChannel,
           ).pipe(Layer.provide(configRpcServices)),
         ),
       );
@@ -952,6 +956,7 @@ it.effect.each(["pending", "cached"] as const)(
           Layer.fresh(layerConfigSources),
           Layer.mock(PreviewAutomationBroker.PreviewAutomationBroker)({}),
           Layer.mock(ServerBrowser.ServerBrowser)({}),
+          Layer.mock(DesktopExecutionAuthorizationChannel)({}),
         ),
       ),
       Effect.scoped,
@@ -1058,6 +1063,7 @@ it.effect("on-demand clients get provider config without workspace snapshots", (
           {},
           yield* ServerBrowser.ServerBrowser,
           () => Effect.void,
+          yield* DesktopExecutionAuthorizationChannel,
         ).pipe(Layer.provide(configRpcServices)),
       ),
     );
@@ -1109,6 +1115,7 @@ it.effect("on-demand clients get provider config without workspace snapshots", (
         Layer.fresh(layerConfigSources),
         Layer.mock(PreviewAutomationBroker.PreviewAutomationBroker)({}),
         Layer.mock(ServerBrowser.ServerBrowser)({}),
+        Layer.mock(DesktopExecutionAuthorizationChannel)({}),
       ),
     ),
     Effect.scoped,

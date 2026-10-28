@@ -39,7 +39,9 @@ export function ThreadDesktopActivity({ thread }: { thread: DesktopThreadScope }
       {query.data?.commands.map((command) => (
         <details key={command.id} className="rounded-lg border p-3 text-sm">
           <summary>
-            {command.tool.split("__").at(-1)} · {command.status}
+            {command.process
+              ? `Process ${command.process.phase}`
+              : `${command.tool.split("__").at(-1)} · Tool ${command.status}`}
           </summary>
           <pre className="mt-2 max-h-40 overflow-auto whitespace-pre-wrap break-all">
             {command.input}

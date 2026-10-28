@@ -1191,6 +1191,54 @@ describe("ComputerUse", () => {
     }),
   );
 
+  it.effect("stops the remaining queued input and releases held keys when authority is lost", () =>
+    Effect.gen(function* () {
+      const records: Array<InputRecord> = [];
+      const controller = makeController(records);
+      let authorized = true;
+      const computer = yield* ComputerUse.makeWithOptions(makePlatform(), {
+        ...controller,
+        keyDown: (input) =>
+          controller.keyDown(input).pipe(
+            Effect.tap(() =>
+              Effect.sync(() => {
+                authorized = false;
+              }),
+            ),
+          ),
+      });
+      const failure = yield* computer
+        .act(
+          {
+            actions: [
+              { type: "key_down", key: "Shift" },
+              { type: "press", key: "A" },
+            ],
+          },
+          Effect.suspend(() =>
+            authorized
+              ? Effect.void
+              : Effect.fail(
+                  new ComputerUse.ComputerUseLeaseError({
+                    code: "permission-denied",
+                    cause: "Permission expired",
+                  }),
+                ),
+          ),
+        )
+        .pipe(Effect.flip);
+      assert.deepEqual(
+        records.map((record) => record.operation),
+        ["start", "keyDown", "releaseInputs"],
+      );
+      assert.deepInclude(ComputerUse.toComputerAutomationFailure(failure), {
+        completedActionCount: 1,
+        actionIndex: 1,
+        code: "permission-denied",
+      });
+    }),
+  );
+
   it.effect("identifies a drag failure while moving to its start point", () =>
     Effect.gen(function* () {
       const records: Array<InputRecord> = [];
@@ -2535,6 +2583,42 @@ describe("strict committed text native cancellation seams", () => {
           }),
       );
     }),
+  );
+
+  it.effect(
+    "authority loss at the action boundary dispatches zero strict input and clears held keys",
+    () =>
+      withNativeTextWire((controller, requests) =>
+        Effect.gen(function* () {
+          strictNative(controller);
+          const computer = yield* ComputerUse.makeWithOptions(makePlatform(), controller);
+          let checks = 0;
+          const check = Effect.gen(function* () {
+            checks += 1;
+            if (checks > 1)
+              return yield* new ComputerUse.ComputerUseLeaseError({
+                code: "permission-denied",
+                cause: "viewer generation ended",
+              });
+          });
+          const outcome = yield* computer
+            .act(
+              {
+                actions: [
+                  { type: "key_down", key: "ControlRight" },
+                  { type: "insert_text", text: "é🦀x" },
+                ],
+              },
+              check,
+            )
+            .pipe(Effect.result);
+          assert.strictEqual(outcome._tag, "Failure");
+          assert.deepEqual(
+            requests.map((r) => r.method),
+            ["status", "validateActions", "status", "start", "keyDown", "releaseInputs"],
+          );
+        }),
+      ),
   );
 
   it.effect("existing bounded request timeout preserves uncertainty and never retries", () =>

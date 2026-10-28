@@ -16,8 +16,8 @@ export type DesktopProcessOutputNavigation = "first" | "previous" | "next";
 /** Reports whether either captured stream has unread stored bytes. */
 export function hasMoreDesktopProcessOutput(result: DesktopProcessResult): boolean {
   return (
-    result.stdout.nextOffset < result.stdout.storedBytes ||
-    result.stderr.nextOffset < result.stderr.storedBytes
+    result.stdout.nextOffset < (result.stdout.retainedEnd ?? result.stdout.storedBytes) ||
+    result.stderr.nextOffset < (result.stderr.retainedEnd ?? result.stderr.storedBytes)
   );
 }
 

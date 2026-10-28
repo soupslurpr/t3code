@@ -20,6 +20,9 @@ export function createPreviewAutomationRequestConsumerAtom<E>(options: {
     readonly cancel?: (request: PreviewAutomationRequest) => Promise<void>;
   }>;
   readonly respond: (response: PreviewAutomationResponse) => Promise<unknown>;
+  readonly lifecycle?: (
+    event: Extract<PreviewAutomationStreamEvent, { type: "lifecycle" }>,
+  ) => Promise<void>;
   readonly label: string;
 }): Atom.Atom<void> {
   return Atom.make((get) => {
@@ -85,6 +88,10 @@ export function createPreviewAutomationRequestConsumerAtom<E>(options: {
       }
       if (event.type === "cancel") {
         cancelRequest(event.requestId, event.preserveDesktopAccess);
+        return;
+      }
+      if (event.type === "lifecycle") {
+        void options.lifecycle?.(event).catch(() => undefined);
         return;
       }
       const request = event.request;

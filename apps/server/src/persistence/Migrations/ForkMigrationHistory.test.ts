@@ -16,6 +16,7 @@ import * as Migrator from "effect/sql/Migrator";
 import * as SqlClient from "effect/sql/SqlClient";
 
 import { runMigrations } from "../Migrations.ts";
+import { desktopAuthorizationActivitySql } from "../desktopAuthorizationActivity.ts";
 import OrchestrationV2 from "./055_OrchestrationV2.ts";
 import ThreadMonitors from "./055_ThreadMonitors.ts";
 import ImageEncoding from "./060_ComputerMonitorImageEncoding.ts";
@@ -140,7 +141,7 @@ describe("fork migration ledger adoption", () => {
     Effect.gen(function* () {
       const sql = yield* SqlClient.SqlClient;
       const executed = yield* runMigrations();
-      assert.deepEqual(executed.at(-1), [14, "ThreadRunMonitors"]);
+      assert.deepEqual(executed.at(-1), [15, "DesktopAuthorizationActivity"]);
       yield* assertCurrentUpstream;
       assert.deepEqual(
         (yield* forkHistory).map(({ migration_id, name }) => ({ migration_id, name })),
@@ -159,10 +160,196 @@ describe("fork migration ledger adoption", () => {
           { migration_id: 12, name: "ToolRuns" },
           { migration_id: 13, name: "ThreadMonitorCancellation" },
           { migration_id: 14, name: "ThreadRunMonitors" },
+          { migration_id: 15, name: "DesktopAuthorizationActivity" },
         ],
       );
       assert.deepEqual(yield* runMigrations(), []);
       assert.deepEqual(yield* sql`PRAGMA foreign_key_check`, []);
+    }).pipe(Effect.provide(memory)),
+  );
+
+  it.effect.each([
+    "keyword-format",
+    "whitespace-format",
+    "json-path-case",
+    "json-path-space",
+    "literal-case",
+    "literal-space",
+    "literal-newline",
+    "escaped-literal",
+    "missing-index",
+    "secondary-direction",
+    "secondary-format",
+    "extra-index",
+  ] as const)("validates released F15 index semantics: %s", (variant) =>
+    Effect.gen(function* () {
+      const sql = yield* SqlClient.SqlClient;
+      yield* runMigrations();
+      const secondary = variant === "secondary-direction" || variant === "secondary-format";
+      const name = secondary
+        ? "desktop_activity_updated_idx"
+        : "desktop_authorization_activity_idx";
+      const rows = yield* sql<{ readonly sql: string }>`
+        SELECT sql FROM sqlite_master WHERE type = 'index' AND name = ${name}`;
+      const original = rows[0]!.sql;
+      let replacement = original;
+      switch (variant) {
+        case "keyword-format":
+          replacement = original.replace("CREATE INDEX", "create index").replace(" ON ", " on ");
+          break;
+        case "whitespace-format":
+          replacement = original.replace(" ON ", "\n\tON   ");
+          break;
+        case "json-path-case":
+          replacement = original.replace("$.createdBy", "$.createdby");
+          break;
+        case "json-path-space":
+          replacement = original.replace("'$.createdBy'", "'$.createdBy '");
+          break;
+        case "literal-case":
+          replacement = original.replace("'thread'", "'THREAD'");
+          break;
+        case "literal-space":
+          replacement = original.replace("'user'", "'user '");
+          break;
+        case "literal-newline":
+          replacement = original.replace("'user'", "'user\n'");
+          break;
+        case "escaped-literal":
+          replacement = original.replace("'user'", "'user''x'");
+          break;
+        case "secondary-direction":
+          replacement = original.replace("updated_at DESC", "updated_at ASC");
+          break;
+        case "secondary-format":
+          replacement = original.replace("CREATE INDEX", "create index").replace(" ON ", "\n on ");
+          break;
+        case "missing-index":
+        case "extra-index":
+          break;
+      }
+      if (variant === "extra-index") {
+        yield* sql`CREATE INDEX extra_thread_activity_idx ON orchestration_events(stream_id, sequence)`;
+      } else {
+        yield* sql`DROP INDEX ${sql(name)}`;
+        if (variant !== "missing-index") {
+          assert.notEqual(replacement, original);
+          yield* sql.unsafe(replacement);
+        }
+      }
+      const beforeHistory = yield* history;
+      const beforeFork = yield* forkHistory;
+      const beforeSchema = yield* tableNames;
+      const outcome = yield* runMigrations().pipe(Effect.exit);
+      const healthy =
+        variant === "keyword-format" ||
+        variant === "whitespace-format" ||
+        variant === "secondary-format" ||
+        variant === "extra-index";
+      if (healthy) {
+        assert.isTrue(Exit.isSuccess(outcome));
+        const plan = yield* sql<{ readonly detail: string }>`EXPLAIN QUERY PLAN
+          SELECT sequence, ${sql.unsafe(desktopAuthorizationActivitySql)} AS activityAt
+          FROM orchestration_events WHERE aggregate_kind = 'thread' AND stream_id = 'fixture-thread'
+            AND (${sql.unsafe(desktopAuthorizationActivitySql)}) IS NOT NULL
+          ORDER BY (${sql.unsafe(desktopAuthorizationActivitySql)}) DESC, sequence ASC LIMIT 1`;
+        assert.isTrue(
+          plan.some((row) => row.detail.includes("desktop_authorization_activity_idx")),
+        );
+      } else {
+        assert.isTrue(Exit.isFailure(outcome), "incompatible claimed F15 index must be refused");
+      }
+      assert.deepEqual(yield* history, beforeHistory);
+      assert.deepEqual(yield* forkHistory, beforeFork);
+      assert.deepEqual(yield* tableNames, beforeSchema);
+    }).pipe(Effect.provide(memory)),
+  );
+
+  it.effect.each([
+    "nbsp-identifier",
+    "thin-space-identifier",
+    "bom-identifier",
+    "joined-ascending-key",
+    "joined-descending-key",
+    "healthy-extra-column",
+    "null-operator-alias",
+    "space-format",
+    "tab-format",
+    "newline-format",
+    "form-feed-format",
+    "return-format",
+    "expanded-punctuation",
+    "compact-punctuation",
+  ] as const)("preserves released F15 SQL token identity: %s", (variant) =>
+    Effect.gen(function* () {
+      const sql = yield* SqlClient.SqlClient;
+      yield* runMigrations();
+      const secondary = variant === "joined-descending-key";
+      const name = secondary
+        ? "desktop_activity_updated_idx"
+        : "desktop_authorization_activity_idx";
+      const table = secondary ? "orchestration_v2_projection_turn_items" : "orchestration_events";
+      const original = (yield* sql<{ readonly sql: string }>`
+        SELECT sql FROM sqlite_master WHERE type = 'index' AND name = ${name}`)[0]!.sql;
+      let replacement = original;
+      const incompatible = variant.endsWith("-identifier") || variant.startsWith("joined-");
+      if (variant.endsWith("-identifier") || variant === "healthy-extra-column") {
+        const character =
+          variant === "thin-space-identifier"
+            ? "\u2009"
+            : variant === "bom-identifier"
+              ? "\ufeff"
+              : "\u00a0";
+        const column = `stream_${character}id`;
+        yield* sql`ALTER TABLE ${sql(table)} ADD COLUMN ${sql(column)} TEXT`;
+        if (incompatible) replacement = original.replace("stream_id,", `${column},`);
+      } else if (variant.startsWith("joined-")) {
+        const expression = secondary ? "updated_at DESC" : "sequence ASC";
+        const column = secondary ? "updated_atDESC" : "sequenceASC";
+        yield* sql`ALTER TABLE ${sql(table)} ADD COLUMN ${sql(column)} TEXT`;
+        replacement = original.replace(expression, column);
+      } else if (variant === "null-operator-alias") {
+        replacement = original.replaceAll(" IS NULL", " ISNULL");
+      } else if (variant === "expanded-punctuation") {
+        replacement = original.replace(/[(),]/g, " $& ");
+      } else if (variant === "compact-punctuation") {
+        replacement = original.replace(/[ \t\n\f\r]*([(),])[ \t\n\f\r]*/g, "$1");
+      } else {
+        const whitespace =
+          variant === "space-format"
+            ? "  "
+            : variant === "tab-format"
+              ? "\t"
+              : variant === "newline-format"
+                ? "\n"
+                : variant === "form-feed-format"
+                  ? "\f"
+                  : "\r";
+        replacement = original.replace(" ON ", `${whitespace}ON${whitespace}`);
+      }
+      if (variant !== "healthy-extra-column") {
+        assert.notEqual(replacement, original);
+        yield* sql`DROP INDEX ${sql(name)}`;
+        yield* sql.unsafe(replacement);
+      }
+      const beforeHistory = yield* history;
+      const beforeFork = yield* forkHistory;
+      const beforeSchema = yield* tableNames;
+      const outcome = yield* runMigrations().pipe(Effect.exit);
+      assert.equal(Exit.isFailure(outcome), incompatible);
+      if (!incompatible) {
+        const plan = yield* sql<{ readonly detail: string }>`EXPLAIN QUERY PLAN
+          SELECT sequence, ${sql.unsafe(desktopAuthorizationActivitySql)} AS activityAt
+          FROM orchestration_events WHERE aggregate_kind = 'thread' AND stream_id = 'fixture-thread'
+            AND (${sql.unsafe(desktopAuthorizationActivitySql)}) IS NOT NULL
+          ORDER BY (${sql.unsafe(desktopAuthorizationActivitySql)}) DESC, sequence ASC LIMIT 1`;
+        assert.isTrue(
+          plan.some((row) => row.detail.includes("desktop_authorization_activity_idx")),
+        );
+      }
+      assert.deepEqual(yield* history, beforeHistory);
+      assert.deepEqual(yield* forkHistory, beforeFork);
+      assert.deepEqual(yield* tableNames, beforeSchema);
     }).pipe(Effect.provide(memory)),
   );
 
@@ -195,8 +382,8 @@ describe("fork migration ledger adoption", () => {
       yield* seedLegacy(66, 13);
       yield* runMigrations();
       yield* sql`INSERT INTO effect_sql_fork_migrations ${sql.insert(
-        forkNames.slice(14).map((name, index) => ({
-          migration_id: index + 15,
+        forkNames.slice(15).map((name, index) => ({
+          migration_id: index + 16,
           name,
           created_at: createdAt,
         })),
@@ -275,7 +462,7 @@ describe("fork migration ledger adoption", () => {
           assert.deepEqual(yield* forkHistory, beforeFork);
         } else {
           yield* assertCurrentUpstream;
-          assert.lengthOf(yield* forkHistory, 14);
+          assert.lengthOf(yield* forkHistory, 15);
         }
       }).pipe(Effect.provide(memory)),
   );
@@ -323,7 +510,7 @@ describe("fork migration ledger adoption", () => {
       yield* sql`DROP TRIGGER reject_upgrade`;
       yield* runMigrations();
       yield* assertCurrentUpstream;
-      assert.lengthOf(yield* forkHistory, 14);
+      assert.lengthOf(yield* forkHistory, 15);
     }).pipe(Effect.provide(memory)),
   );
 
@@ -383,7 +570,7 @@ describe("fork migration ledger adoption", () => {
               NodeEvents.EventEmitter.once(second, "message"),
             ]);
             first.postMessage("release", []);
-            assert.deepEqual(await completed, [[90], [0]]);
+            assert.deepEqual(await completed, [[91], [0]]);
           } finally {
             await Promise.all([first.terminate(), second.terminate()]);
           }
