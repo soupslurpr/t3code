@@ -257,7 +257,11 @@ export const layerExecutor: Layer.Layer<
                       { messageIds: [effect.request.messageId] },
                     );
                     const message = projection.messages.find((row) => row.id === messageId);
-                    if (message?.delegatedCompletion === undefined) return;
+                    if (
+                      message?.delegatedCompletion === undefined &&
+                      message?.notificationDelivery !== "pending"
+                    )
+                      return;
                     yield* threads.dispatch({
                       type: "notification.delivery.accept",
                       commandId: CommandId.make(`command:mailbox-accepted:${effect.id}`),
@@ -269,8 +273,9 @@ export const layerExecutor: Layer.Layer<
                 Effect.catch((error) =>
                   Effect.gen(function* () {
                     if (
-                      !("turnCompleted" in error) ||
-                      !error.turnCompleted ||
+                      ((!("turnCompleted" in error) || !error.turnCompleted) &&
+                        (!("monitorDeliveryDeferred" in error) ||
+                          !error.monitorDeliveryDeferred)) ||
                       effect.request.type !== "provider-turn.steer"
                     ) {
                       return yield* error;
@@ -294,12 +299,16 @@ export const layerExecutor: Layer.Layer<
                         text: message.text,
                         ...(message.context ? { context: message.context } : {}),
                         attachments: message.attachments,
+                        ...("monitorDeliveryDeferred" in error && error.monitorDeliveryDeferred
+                          ? { deferMonitorFromRunId: run.id }
+                          : {}),
                         ...(message.delegatedCompletion === undefined
                           ? {}
                           : { modelSelection: run.modelSelection }),
                         dispatchMode: {
                           type:
-                            message.delegatedCompletion === undefined
+                            message.delegatedCompletion === undefined &&
+                            message.notification === undefined
                               ? "start_immediately"
                               : "queue_after_active",
                         },

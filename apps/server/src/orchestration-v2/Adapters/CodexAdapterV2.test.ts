@@ -1374,6 +1374,1225 @@ describe("CodexAdapterV2 post-settle continuation", () => {
       ),
   );
 
+  it.effect.each(
+    (["failed", "completed"] as const).flatMap((predecessorStatus) =>
+      [true, false].map((accepted) => ({ predecessorStatus, accepted })),
+    ),
+  )(
+    "preserves predecessor child wakes for $predecessorStatus with monitor accepted=$accepted",
+    ({ predecessorStatus, accepted }) =>
+      Effect.gen(function* () {
+        const nextId = "monitor-child-replacement";
+        const replacementStarted = yield* Deferred.make<void>();
+        const predecessorHandled = yield* Deferred.make<void>();
+        const monitorSettled = yield* Deferred.make<void>();
+        const replacementCompleted = yield* Deferred.make<void>();
+        const text = "Build complete";
+        const spawned = lateChildPrefix().spawned;
+        const spawn = spawned.find(
+          (entry) =>
+            entry.type === "emit_inbound" &&
+            entry.label === "item/completed/subAgentActivity-started",
+        );
+        if (
+          spawn?.type !== "emit_inbound" ||
+          !Predicate.isObject(spawn.frame) ||
+          !("params" in spawn.frame) ||
+          !Predicate.isObject(spawn.frame.params)
+        )
+          throw new Error("Missing native child spawn fixture");
+        const transcript = makeCodexReplayTranscript({
+          scenario: `monitor-child-${predecessorStatus}`,
+          entries: [
+            ...codexReplayPreamble({
+              nativeThreadId: RESUME_NATIVE_THREAD,
+              nativeTurnId: RESUME_NATIVE_TURN,
+              prompt: RESUME_PROMPT,
+            }),
+            spawn,
+            childTurnStarted(RESUME_CHILD_TURN_1),
+            {
+              type: "expect_outbound",
+              frame: {
+                id: 4,
+                method: "turn/start",
+                params: {
+                  threadId: RESUME_NATIVE_THREAD,
+                  input: [],
+                  toolOutput: {
+                    namespace: "t3_code",
+                    name: "monitor",
+                    output: [{ type: "input_text", text }],
+                  },
+                },
+              },
+            },
+            {
+              type: "emit_inbound",
+              label: "predecessor ends",
+              frame: {
+                method: "turn/completed",
+                params: {
+                  threadId: RESUME_NATIVE_THREAD,
+                  turn: {
+                    ...makeCodexReplayTurn({ id: RESUME_NATIVE_TURN, status: predecessorStatus }),
+                    error:
+                      predecessorStatus === "failed"
+                        ? {
+                            message: "Earlier request failed",
+                            codexErrorInfo: "internalServerError",
+                          }
+                        : null,
+                  },
+                },
+              },
+            },
+            ...(accepted
+              ? ([
+                  {
+                    type: "emit_inbound",
+                    label: "replacement starts",
+                    frame: {
+                      method: "turn/started",
+                      params: {
+                        threadId: RESUME_NATIVE_THREAD,
+                        turn: makeCodexReplayTurn({ id: nextId, status: "inProgress" }),
+                      },
+                    },
+                  },
+                  {
+                    type: "emit_inbound",
+                    label: "monitor reply",
+                    frame: {
+                      id: 4,
+                      result: { turn: makeCodexReplayTurn({ id: nextId, status: "inProgress" }) },
+                    },
+                  },
+                  {
+                    type: "emit_inbound",
+                    label: "replacement ends",
+                    frame: {
+                      method: "turn/completed",
+                      params: {
+                        threadId: RESUME_NATIVE_THREAD,
+                        turn: makeCodexReplayTurn({ id: nextId, status: "completed" }),
+                      },
+                    },
+                  },
+                ] as const)
+              : ([
+                  {
+                    type: "emit_inbound",
+                    label: "monitor rejected",
+                    frame: { id: 4, error: { code: -32602, message: "Monitor rejected" } },
+                  },
+                ] as const)),
+            childAgentMessage({
+              id: "replacement-child-result",
+              text: "REPLACEMENT_CHILD_DONE",
+              turnId: RESUME_CHILD_TURN_1,
+              completedAtMs: 1782622480000,
+            }),
+            childTurnCompleted(RESUME_CHILD_TURN_1),
+          ],
+        });
+        const harness = yield* makeCodexReplayHarness(
+          transcript,
+          (event) => {
+            if (
+              event.type === "provider_turn.updated" &&
+              event.providerTurn.nativeTurnRef?.nativeId === nextId &&
+              event.providerTurn.status === "running"
+            )
+              return Deferred.succeed(replacementStarted, undefined);
+            if (
+              event.type === "provider_turn.updated" &&
+              event.providerTurn.nativeTurnRef?.nativeId === RESUME_NATIVE_TURN &&
+              event.providerTurn.status === predecessorStatus
+            )
+              return Deferred.succeed(predecessorHandled, undefined);
+            if (event.type === "turn.terminal")
+              return Deferred.succeed(replacementCompleted, undefined);
+            return Effect.void;
+          },
+          () => Effect.void,
+          undefined,
+          (entry) =>
+            entry.label === "replacement starts" || entry.label === "monitor rejected"
+              ? Deferred.await(predecessorHandled)
+              : entry.label === "monitor reply"
+                ? Deferred.await(replacementStarted)
+                : entry.label === "replacement ends"
+                  ? Deferred.await(monitorSettled)
+                  : entry.label === "item/completed/replacement-child-result"
+                    ? Deferred.await(accepted ? replacementCompleted : monitorSettled)
+                    : Effect.void,
+        );
+        const first = makeCodexTestTurnInput({
+          threadId: harness.threadId,
+          providerThread: harness.providerThread,
+          now: yield* DateTime.now,
+          attemptId: RunAttemptId.make("child-attempt"),
+          text: RESUME_PROMPT,
+        });
+        yield* harness.runtime.startTurn(first);
+        const delivery = yield* harness.runtime
+          .steerTurn({
+            threadId: harness.threadId,
+            runId: first.runId,
+            providerThread: harness.providerThread,
+            providerTurnId: (yield* IdAllocator.IdAllocatorV2).derive.providerTurn({
+              driver: CodexAdapterV2.CODEX_DRIVER_KIND,
+              nativeTurnId: RESUME_NATIVE_TURN,
+            }),
+            message: {
+              ...first.message,
+              messageId: MessageId.make("child-monitor"),
+              text,
+              inputSource: "harness",
+              createdBy: "system",
+              creationSource: "server",
+            },
+          })
+          .pipe(Effect.result);
+        assert.equal(delivery._tag, accepted ? "Success" : "Failure");
+        yield* Deferred.succeed(monitorSettled, undefined);
+        yield* harness.until(
+          () => harness.subagentUpdates().at(-1)?.subagent.status === "completed",
+        );
+        yield* harness.firstTerminal;
+        assert.equal(
+          harness.terminalEvents()[0]?.status,
+          accepted ? "completed" : predecessorStatus,
+        );
+        assert.lengthOf(
+          harness.continuationRequests,
+          accepted || predecessorStatus === "completed" ? 1 : 0,
+          "only a completed app run may wake for the predecessor child result",
+        );
+      }).pipe(
+        Effect.scoped,
+        Effect.provide(
+          Layer.mergeAll(IdAllocator.layer, McpProviderSessions.layer, NodeServices.layer),
+        ),
+      ),
+  );
+
+  it.effect.each(
+    (["failed", "completed"] as const).flatMap((predecessorStatus) =>
+      (
+        [
+          "replacement",
+          "same turn",
+          "finished replacement",
+          "failed replacement",
+          "interrupted replacement",
+          "refused",
+        ] as const
+      ).map((acceptance) => ({ predecessorStatus, acceptance })),
+    ),
+  )(
+    "keeps pending monitor ownership for $predecessorStatus with $acceptance",
+    ({ predecessorStatus, acceptance }) =>
+      Effect.gen(function* () {
+        const accepted = acceptance !== "refused";
+        const replacement = acceptance !== "same turn" && acceptance !== "refused";
+        const finishedReplacement = replacement && acceptance !== "replacement";
+        const replacementStatus =
+          acceptance === "failed replacement"
+            ? "failed"
+            : acceptance === "interrupted replacement"
+              ? "interrupted"
+              : "completed";
+        const nextId = "monitor-child-replacement";
+        const childCompleted = yield* Deferred.make<void>();
+        const replacementStarted = yield* Deferred.make<void>();
+        const predecessorHandled = yield* Deferred.make<void>();
+        const monitorSettled = yield* Deferred.make<void>();
+        const replacementEnded = yield* Deferred.make<void>();
+        const text = "Build complete";
+        const spawned = lateChildPrefix().spawned;
+        const spawn = spawned.find(
+          (entry) =>
+            entry.type === "emit_inbound" &&
+            entry.label === "item/completed/subAgentActivity-started",
+        );
+        if (
+          spawn?.type !== "emit_inbound" ||
+          !Predicate.isObject(spawn.frame) ||
+          !("params" in spawn.frame) ||
+          !Predicate.isObject(spawn.frame.params)
+        )
+          throw new Error("Missing native child spawn fixture");
+        const replacementStart: CodexReplay.CodexAppServerReplayEntry = {
+          type: "emit_inbound",
+          label: "replacement starts",
+          frame: {
+            method: "turn/started",
+            params: {
+              threadId: RESUME_NATIVE_THREAD,
+              turn: makeCodexReplayTurn({ id: nextId, status: "inProgress" }),
+            },
+          },
+        };
+        const replacementEnd: CodexReplay.CodexAppServerReplayEntry = {
+          type: "emit_inbound",
+          label: "replacement ends",
+          frame: {
+            method: "turn/completed",
+            params: {
+              threadId: RESUME_NATIVE_THREAD,
+              turn: makeCodexReplayTurn({ id: nextId, status: replacementStatus }),
+            },
+          },
+        };
+        const transcript = makeCodexReplayTranscript({
+          scenario: `monitor-child-${predecessorStatus}`,
+          entries: [
+            ...codexReplayPreamble({
+              nativeThreadId: RESUME_NATIVE_THREAD,
+              nativeTurnId: RESUME_NATIVE_TURN,
+              prompt: RESUME_PROMPT,
+            }),
+            spawn,
+            childTurnStarted(RESUME_CHILD_TURN_1),
+            {
+              type: "expect_outbound",
+              frame: {
+                id: 4,
+                method: "turn/start",
+                params: {
+                  threadId: RESUME_NATIVE_THREAD,
+                  input: [],
+                  toolOutput: {
+                    namespace: "t3_code",
+                    name: "monitor",
+                    output: [{ type: "input_text", text }],
+                  },
+                },
+              },
+            },
+            {
+              type: "emit_inbound",
+              label: "predecessor ends",
+              frame: {
+                method: "turn/completed",
+                params: {
+                  threadId: RESUME_NATIVE_THREAD,
+                  turn: {
+                    ...makeCodexReplayTurn({ id: RESUME_NATIVE_TURN, status: predecessorStatus }),
+                    error:
+                      predecessorStatus === "failed"
+                        ? {
+                            message: "Earlier request failed",
+                            codexErrorInfo: "internalServerError",
+                          }
+                        : null,
+                  },
+                },
+              },
+            },
+            ...(finishedReplacement ? [replacementStart, replacementEnd] : []),
+            childAgentMessage({
+              id: "replacement-child-result",
+              text: "REPLACEMENT_CHILD_DONE",
+              turnId: RESUME_CHILD_TURN_1,
+              completedAtMs: 1782622480000,
+            }),
+            childTurnCompleted(RESUME_CHILD_TURN_1),
+            ...(replacement && !finishedReplacement ? [replacementStart] : []),
+            ...(accepted
+              ? [
+                  {
+                    type: "emit_inbound" as const,
+                    label: "monitor reply",
+                    frame: {
+                      id: 4,
+                      result: {
+                        turn: makeCodexReplayTurn({
+                          id: replacement ? nextId : RESUME_NATIVE_TURN,
+                          status: "inProgress",
+                        }),
+                      },
+                    },
+                  },
+                ]
+              : [
+                  {
+                    type: "emit_inbound" as const,
+                    label: "monitor rejected",
+                    frame: { id: 4, error: { code: -32602, message: "Monitor rejected" } },
+                  },
+                ]),
+            ...(replacement && !finishedReplacement ? [replacementEnd] : []),
+          ],
+        });
+        const harness = yield* makeCodexReplayHarness(
+          transcript,
+          (event) => {
+            if (
+              event.type === "provider_turn.updated" &&
+              event.providerTurn.nativeTurnRef?.nativeId === nextId &&
+              event.providerTurn.status === "running"
+            )
+              return Deferred.succeed(replacementStarted, undefined);
+            if (
+              event.type === "provider_turn.updated" &&
+              event.providerTurn.nativeTurnRef?.nativeId === RESUME_NATIVE_TURN &&
+              event.providerTurn.status === predecessorStatus
+            )
+              return Deferred.succeed(predecessorHandled, undefined);
+            if (event.type === "subagent.updated" && event.subagent.status === "completed")
+              return Deferred.succeed(childCompleted, undefined);
+            if (
+              event.type === "provider_turn.updated" &&
+              event.providerTurn.nativeTurnRef?.nativeId === nextId &&
+              event.providerTurn.status === replacementStatus
+            )
+              return Deferred.succeed(replacementEnded, undefined);
+            return Effect.void;
+          },
+          () => Effect.void,
+          undefined,
+          (entry) =>
+            entry.label === "replacement starts"
+              ? Deferred.await(finishedReplacement ? predecessorHandled : childCompleted)
+              : entry.label === "monitor rejected"
+                ? Deferred.await(childCompleted)
+                : entry.label === "monitor reply"
+                  ? Deferred.await(
+                      replacement && !finishedReplacement ? replacementStarted : childCompleted,
+                    )
+                  : entry.label === "replacement ends"
+                    ? Deferred.await(finishedReplacement ? replacementStarted : monitorSettled)
+                    : entry.label === "item/completed/replacement-child-result"
+                      ? Deferred.await(finishedReplacement ? replacementEnded : predecessorHandled)
+                      : Effect.void,
+        );
+        const first = makeCodexTestTurnInput({
+          threadId: harness.threadId,
+          providerThread: harness.providerThread,
+          now: yield* DateTime.now,
+          attemptId: RunAttemptId.make("child-attempt"),
+          text: RESUME_PROMPT,
+        });
+        yield* harness.runtime.startTurn(first);
+        const delivery = yield* harness.runtime
+          .steerTurn({
+            threadId: harness.threadId,
+            runId: first.runId,
+            providerThread: harness.providerThread,
+            providerTurnId: (yield* IdAllocator.IdAllocatorV2).derive.providerTurn({
+              driver: CodexAdapterV2.CODEX_DRIVER_KIND,
+              nativeTurnId: RESUME_NATIVE_TURN,
+            }),
+            message: {
+              ...first.message,
+              messageId: MessageId.make("child-monitor"),
+              text,
+              inputSource: "harness",
+              createdBy: "system",
+              creationSource: "server",
+            },
+          })
+          .pipe(Effect.result);
+        assert.equal(delivery._tag, accepted ? "Success" : "Failure");
+        yield* Deferred.succeed(monitorSettled, undefined);
+        yield* harness.firstTerminal;
+        assert.equal(
+          harness.terminalEvents()[0]?.status,
+          replacement ? replacementStatus : predecessorStatus,
+        );
+        assert.lengthOf(
+          harness.continuationRequests,
+          (finishedReplacement && replacementStatus === "completed") ||
+            (!replacement && predecessorStatus === "completed")
+            ? 1
+            : 0,
+          "only a successor starting after the child result can consume the held wake",
+        );
+      }).pipe(
+        Effect.scoped,
+        Effect.provide(
+          Layer.mergeAll(IdAllocator.layer, McpProviderSessions.layer, NodeServices.layer),
+        ),
+      ),
+  );
+
+  it.effect.each(["after", "before", "after backoff"] as const)(
+    "does not retry a predecessor that fails %s monitor replacement",
+    (timing) =>
+      Effect.gen(function* () {
+        const nativeThreadId = "monitor-capacity-race";
+        const firstId = "monitor-original";
+        const nextId = "monitor-replacement";
+        const replacementStarted = yield* Deferred.make<void>();
+        const allowAcceptance = yield* Deferred.make<void>();
+        const holdUnexpectedStart = yield* Deferred.make<void>();
+        const originalHandled = yield* Deferred.make<void>();
+        const letReplacementComplete = yield* Deferred.make<void>();
+        const text = "Build complete";
+        const requests: string[] = [];
+        const replacementStart: CodexReplay.CodexAppServerReplayEntry = {
+          type: "emit_inbound",
+          label: "replacement started",
+          frame: {
+            method: "turn/started",
+            params: {
+              threadId: nativeThreadId,
+              turn: makeCodexReplayTurn({ id: nextId, status: "inProgress" }),
+            },
+          },
+        };
+        const predecessorFailure: CodexReplay.CodexAppServerReplayEntry = {
+          type: "emit_inbound",
+          label: "predecessor fails",
+          frame: {
+            method: "turn/completed",
+            params: {
+              threadId: nativeThreadId,
+              turn: {
+                ...makeCodexReplayTurn({ id: firstId, status: "failed" }),
+                error: { message: "At capacity", codexErrorInfo: "serverOverloaded" },
+              },
+            },
+          },
+        };
+        const transcript = makeCodexReplayTranscript({
+          scenario: nativeThreadId,
+          entries: [
+            ...codexReplayPreamble({ nativeThreadId, nativeTurnId: firstId, prompt: "Work" }),
+            {
+              type: "expect_outbound",
+              frame: {
+                id: 4,
+                method: "turn/start",
+                params: {
+                  threadId: nativeThreadId,
+                  input: [],
+                  toolOutput: {
+                    namespace: "t3_code",
+                    name: "monitor",
+                    output: [{ type: "input_text", text }],
+                  },
+                },
+              },
+            },
+            ...(timing === "after"
+              ? [replacementStart, predecessorFailure]
+              : [predecessorFailure, replacementStart]),
+            {
+              type: "emit_inbound",
+              label: "monitor accepted",
+              frame: {
+                id: 4,
+                result: { turn: makeCodexReplayTurn({ id: nextId, status: "inProgress" }) },
+              },
+            },
+            {
+              type: "expect_outbound",
+              frame: {
+                id: 5,
+                method: "turn/steer",
+                params: {
+                  threadId: nativeThreadId,
+                  expectedTurnId: nextId,
+                  input: [{ type: "text", text: "Keep working" }],
+                },
+              },
+            },
+            { type: "emit_inbound", frame: { id: 5, result: { turnId: nextId } } },
+            {
+              type: "emit_inbound",
+              label: "replacement completes",
+              frame: {
+                method: "turn/completed",
+                params: {
+                  threadId: nativeThreadId,
+                  turn: makeCodexReplayTurn({ id: nextId, status: "completed" }),
+                },
+              },
+            },
+          ],
+        });
+        const harness = yield* makeCodexReplayHarness(
+          transcript,
+          (event) => {
+            if (
+              event.type === "provider_turn.updated" &&
+              event.providerTurn.nativeTurnRef?.nativeId === nextId &&
+              event.providerTurn.status === "running"
+            )
+              return Deferred.succeed(replacementStarted, undefined);
+            if (
+              (event.type === "provider_turn.updated" &&
+                event.providerTurn.nativeTurnRef?.nativeId === firstId &&
+                event.providerTurn.status === "failed") ||
+              (event.type === "turn_item.updated" &&
+                event.turnItem.type === "error" &&
+                event.turnItem.status === "running")
+            )
+              return Deferred.succeed(originalHandled, undefined);
+            return Effect.void;
+          },
+          (method) =>
+            Effect.gen(function* () {
+              requests.push(method);
+              if (
+                method === "turn/start" &&
+                requests.filter((request) => request === "turn/start").length > 2
+              )
+                yield* Deferred.await(holdUnexpectedStart);
+            }),
+          undefined,
+          (entry) =>
+            entry.label === "predecessor fails" && timing === "after"
+              ? Deferred.await(replacementStarted)
+              : entry.label === "replacement started" && timing === "after backoff"
+                ? Deferred.await(allowAcceptance)
+                : entry.label === "replacement started" && timing === "before"
+                  ? Deferred.await(originalHandled)
+                  : entry.label === "monitor accepted"
+                    ? Deferred.await(originalHandled)
+                    : entry.label === "replacement completes"
+                      ? Deferred.await(letReplacementComplete)
+                      : Effect.void,
+        );
+        const first = makeCodexTestTurnInput({
+          threadId: harness.threadId,
+          providerThread: harness.providerThread,
+          now: yield* DateTime.now,
+          attemptId: RunAttemptId.make("capacity-race-attempt"),
+          text: "Work",
+        });
+        yield* harness.runtime.startTurn(first);
+        const delivery = yield* harness.runtime
+          .steerTurn({
+            threadId: harness.threadId,
+            runId: first.runId,
+            providerThread: harness.providerThread,
+            providerTurnId: (yield* IdAllocator.IdAllocatorV2).derive.providerTurn({
+              driver: CodexAdapterV2.CODEX_DRIVER_KIND,
+              nativeTurnId: firstId,
+            }),
+            message: {
+              ...first.message,
+              messageId: MessageId.make("capacity-race-monitor"),
+              text,
+              inputSource: "harness",
+              createdBy: "system",
+              creationSource: "server",
+            },
+          })
+          .pipe(Effect.forkScoped);
+        yield* Deferred.await(originalHandled);
+        if (timing === "after backoff") {
+          yield* TestClock.adjust("2 seconds");
+          assert.equal(
+            requests.filter((method) => method === "turn/start").length,
+            2,
+            "pending monitor delivery must settle before capacity recovery claims a turn",
+          );
+          yield* Deferred.succeed(allowAcceptance, undefined);
+        }
+        yield* Fiber.join(delivery);
+        if (timing !== "after backoff") yield* TestClock.adjust("2 seconds");
+        yield* harness.runtime.steerTurn({
+          threadId: harness.threadId,
+          runId: first.runId,
+          providerThread: harness.providerThread,
+          providerTurnId: (yield* IdAllocator.IdAllocatorV2).derive.providerTurn({
+            driver: CodexAdapterV2.CODEX_DRIVER_KIND,
+            nativeTurnId: firstId,
+          }),
+          message: { ...first.message, text: "Keep working" },
+        });
+        assert.equal(requests.filter((method) => method === "turn/start").length, 2);
+        if (timing === "after")
+          assert.isEmpty(
+            harness.events.filter(
+              (event) =>
+                event.type === "turn_item.updated" &&
+                event.turnItem.type === "error" &&
+                event.turnItem.status === "running",
+            ),
+            "accepted replacement must own capacity recovery",
+          );
+        yield* Deferred.succeed(letReplacementComplete, undefined);
+        yield* harness.firstTerminal;
+        assert.deepEqual(
+          harness.terminalEvents().map((event) => [event.providerTurnId, event.status]),
+          [
+            [
+              (yield* IdAllocator.IdAllocatorV2).derive.providerTurn({
+                driver: CodexAdapterV2.CODEX_DRIVER_KIND,
+                nativeTurnId: nextId,
+              }),
+              "completed",
+            ],
+          ],
+        );
+      }).pipe(
+        Effect.scoped,
+        Effect.provide(
+          Layer.mergeAll(IdAllocator.layer, McpProviderSessions.layer, NodeServices.layer),
+        ),
+      ),
+  );
+
+  it.effect.each(["before backoff", "after backoff"] as const)(
+    "recovers capacity after monitor refusal %s",
+    (timing) =>
+      Effect.gen(function* () {
+        const nativeThreadId = "monitor-refusal-capacity";
+        const firstId = "refusal-original";
+        const retryId = "refusal-retry";
+        const predecessorHandled = yield* Deferred.make<void>();
+        const allowRefusal = yield* Deferred.make<void>();
+        const holdUnexpectedStart = yield* Deferred.make<void>();
+        let refusalReleased = false;
+        const requests: Array<{ method: string; params: unknown }> = [];
+        const retry = codexReplayPreamble({ nativeThreadId, nativeTurnId: retryId, prompt: "Work" })
+          .slice(-3)
+          .map((entry) => {
+            if (
+              entry.type === "expect_outbound" &&
+              Predicate.isObject(entry.frame) &&
+              "params" in entry.frame &&
+              Predicate.isObject(entry.frame.params)
+            )
+              return {
+                ...entry,
+                frame: { ...entry.frame, id: 5, params: { ...entry.frame.params, input: [] } },
+              };
+            return entry.type === "emit_inbound" && entry.label === "turn/start"
+              ? withReplayRequestId(entry, 5)
+              : entry;
+          });
+        const harness = yield* makeCodexReplayHarness(
+          makeCodexReplayTranscript({
+            scenario: "refusal-capacity",
+            entries: [
+              ...codexReplayPreamble({ nativeThreadId, nativeTurnId: firstId, prompt: "Work" }),
+              {
+                type: "expect_outbound",
+                frame: {
+                  id: 4,
+                  method: "turn/start",
+                  params: {
+                    threadId: nativeThreadId,
+                    input: [],
+                    toolOutput: {
+                      namespace: "t3_code",
+                      name: "monitor",
+                      output: [{ type: "input_text", text: "Build complete" }],
+                    },
+                  },
+                },
+              },
+              {
+                type: "emit_inbound",
+                label: "predecessor fails",
+                frame: {
+                  method: "turn/completed",
+                  params: {
+                    threadId: nativeThreadId,
+                    turn: {
+                      ...makeCodexReplayTurn({ id: firstId, status: "failed" }),
+                      error: { message: "At capacity", codexErrorInfo: "serverOverloaded" },
+                    },
+                  },
+                },
+              },
+              {
+                type: "emit_inbound",
+                label: "monitor refused",
+                frame: { id: 4, error: { code: -32602, message: "Monitor refused" } },
+              },
+              ...retry,
+              {
+                type: "emit_inbound",
+                label: "retry completed",
+                frame: {
+                  method: "turn/completed",
+                  params: {
+                    threadId: nativeThreadId,
+                    turn: makeCodexReplayTurn({ id: retryId, status: "completed" }),
+                  },
+                },
+              },
+            ],
+          }),
+          (event) =>
+            event.type === "turn_item.updated" &&
+            event.turnItem.type === "error" &&
+            event.turnItem.status === "running"
+              ? Deferred.succeed(predecessorHandled, undefined)
+              : Effect.void,
+          (method, params) =>
+            Effect.gen(function* () {
+              requests.push({ method, params });
+              if (
+                method === "turn/start" &&
+                requests.filter((request) => request.method === "turn/start").length > 2 &&
+                !refusalReleased
+              )
+                yield* Deferred.await(holdUnexpectedStart);
+            }),
+          undefined,
+          (entry) =>
+            entry.label === "monitor refused" ? Deferred.await(allowRefusal) : Effect.void,
+        );
+        const first = makeCodexTestTurnInput({
+          threadId: harness.threadId,
+          providerThread: harness.providerThread,
+          now: yield* DateTime.now,
+          attemptId: RunAttemptId.make("refusal-capacity"),
+          text: "Work",
+        });
+        yield* harness.runtime.startTurn(first);
+        const delivery = yield* harness.runtime
+          .steerTurn({
+            threadId: harness.threadId,
+            runId: first.runId,
+            providerThread: harness.providerThread,
+            providerTurnId: (yield* IdAllocator.IdAllocatorV2).derive.providerTurn({
+              driver: CodexAdapterV2.CODEX_DRIVER_KIND,
+              nativeTurnId: firstId,
+            }),
+            message: {
+              ...first.message,
+              messageId: MessageId.make("refused-monitor"),
+              text: "Build complete",
+              inputSource: "harness",
+              createdBy: "system",
+              creationSource: "server",
+            },
+          })
+          .pipe(Effect.result, Effect.forkScoped);
+        yield* Deferred.await(predecessorHandled);
+        if (timing === "after backoff") yield* TestClock.adjust("2 seconds");
+        assert.equal(requests.filter((request) => request.method === "turn/start").length, 2);
+        refusalReleased = true;
+        yield* Deferred.succeed(allowRefusal, undefined);
+        assert.equal((yield* Fiber.join(delivery))._tag, "Failure");
+        if (timing === "before backoff") yield* TestClock.adjust("2 seconds");
+        yield* harness.firstTerminal;
+        assert.equal(requests.filter((request) => request.method === "turn/start").length, 3);
+        assert.deepEqual(
+          harness.terminalEvents().map((event) => [event.providerTurnId, event.status]),
+          [
+            [
+              (yield* IdAllocator.IdAllocatorV2).derive.providerTurn({
+                driver: CodexAdapterV2.CODEX_DRIVER_KIND,
+                nativeTurnId: retryId,
+              }),
+              "completed",
+            ],
+          ],
+        );
+      }).pipe(
+        Effect.scoped,
+        Effect.provide(
+          Layer.mergeAll(IdAllocator.layer, McpProviderSessions.layer, NodeServices.layer),
+        ),
+      ),
+  );
+
+  it.effect.each(["failed", "completed"] as const)(
+    "preserves replacement child wakes after predecessor %s",
+    (predecessorStatus) =>
+      Effect.gen(function* () {
+        const nextId = "monitor-child-replacement";
+        const replacementStarted = yield* Deferred.make<void>();
+        const predecessorHandled = yield* Deferred.make<void>();
+        const monitorSettled = yield* Deferred.make<void>();
+        const replacementCompleted = yield* Deferred.make<void>();
+        const text = "Build complete";
+        const spawned = lateChildPrefix().spawned;
+        const spawn = spawned.find(
+          (entry) =>
+            entry.type === "emit_inbound" &&
+            entry.label === "item/completed/subAgentActivity-started",
+        );
+        if (
+          spawn?.type !== "emit_inbound" ||
+          !Predicate.isObject(spawn.frame) ||
+          !("params" in spawn.frame) ||
+          !Predicate.isObject(spawn.frame.params)
+        )
+          throw new Error("Missing native child spawn fixture");
+        const transcript = makeCodexReplayTranscript({
+          scenario: `monitor-child-${predecessorStatus}`,
+          entries: [
+            ...codexReplayPreamble({
+              nativeThreadId: RESUME_NATIVE_THREAD,
+              nativeTurnId: RESUME_NATIVE_TURN,
+              prompt: RESUME_PROMPT,
+            }),
+            {
+              type: "expect_outbound",
+              frame: {
+                id: 4,
+                method: "turn/start",
+                params: {
+                  threadId: RESUME_NATIVE_THREAD,
+                  input: [],
+                  toolOutput: {
+                    namespace: "t3_code",
+                    name: "monitor",
+                    output: [{ type: "input_text", text }],
+                  },
+                },
+              },
+            },
+            {
+              type: "emit_inbound",
+              label: "replacement starts",
+              frame: {
+                method: "turn/started",
+                params: {
+                  threadId: RESUME_NATIVE_THREAD,
+                  turn: makeCodexReplayTurn({ id: nextId, status: "inProgress" }),
+                },
+              },
+            },
+            {
+              ...spawn,
+              frame: { ...spawn.frame, params: { ...spawn.frame.params, turnId: nextId } },
+            },
+            childTurnStarted(RESUME_CHILD_TURN_1),
+            {
+              type: "emit_inbound",
+              label: "predecessor ends",
+              frame: {
+                method: "turn/completed",
+                params: {
+                  threadId: RESUME_NATIVE_THREAD,
+                  turn: {
+                    ...makeCodexReplayTurn({ id: RESUME_NATIVE_TURN, status: predecessorStatus }),
+                    error:
+                      predecessorStatus === "failed"
+                        ? {
+                            message: "Earlier request failed",
+                            codexErrorInfo: "internalServerError",
+                          }
+                        : null,
+                  },
+                },
+              },
+            },
+            {
+              type: "emit_inbound",
+              label: "monitor reply",
+              frame: {
+                id: 4,
+                result: { turn: makeCodexReplayTurn({ id: nextId, status: "inProgress" }) },
+              },
+            },
+            {
+              type: "emit_inbound",
+              label: "replacement ends",
+              frame: {
+                method: "turn/completed",
+                params: {
+                  threadId: RESUME_NATIVE_THREAD,
+                  turn: makeCodexReplayTurn({ id: nextId, status: "completed" }),
+                },
+              },
+            },
+            childAgentMessage({
+              id: "replacement-child-result",
+              text: "REPLACEMENT_CHILD_DONE",
+              turnId: RESUME_CHILD_TURN_1,
+              completedAtMs: 1782622480000,
+            }),
+            childTurnCompleted(RESUME_CHILD_TURN_1),
+          ],
+        });
+        const harness = yield* makeCodexReplayHarness(
+          transcript,
+          (event) => {
+            if (
+              event.type === "provider_turn.updated" &&
+              event.providerTurn.nativeTurnRef?.nativeId === nextId &&
+              event.providerTurn.status === "running"
+            )
+              return Deferred.succeed(replacementStarted, undefined);
+            if (
+              event.type === "provider_turn.updated" &&
+              event.providerTurn.nativeTurnRef?.nativeId === RESUME_NATIVE_TURN &&
+              event.providerTurn.status === predecessorStatus
+            )
+              return Deferred.succeed(predecessorHandled, undefined);
+            if (event.type === "turn.terminal")
+              return Deferred.succeed(replacementCompleted, undefined);
+            return Effect.void;
+          },
+          () => Effect.void,
+          undefined,
+          (entry) =>
+            entry.label === "predecessor ends"
+              ? Deferred.await(replacementStarted)
+              : entry.label === "monitor reply"
+                ? Deferred.await(predecessorHandled)
+                : entry.label === "replacement ends"
+                  ? Deferred.await(monitorSettled)
+                  : entry.label === "item/completed/replacement-child-result"
+                    ? Deferred.await(replacementCompleted)
+                    : Effect.void,
+        );
+        const first = makeCodexTestTurnInput({
+          threadId: harness.threadId,
+          providerThread: harness.providerThread,
+          now: yield* DateTime.now,
+          attemptId: RunAttemptId.make("child-attempt"),
+          text: RESUME_PROMPT,
+        });
+        yield* harness.runtime.startTurn(first);
+        yield* harness.runtime.steerTurn({
+          threadId: harness.threadId,
+          runId: first.runId,
+          providerThread: harness.providerThread,
+          providerTurnId: (yield* IdAllocator.IdAllocatorV2).derive.providerTurn({
+            driver: CodexAdapterV2.CODEX_DRIVER_KIND,
+            nativeTurnId: RESUME_NATIVE_TURN,
+          }),
+          message: {
+            ...first.message,
+            messageId: MessageId.make("child-monitor"),
+            text,
+            inputSource: "harness",
+            createdBy: "system",
+            creationSource: "server",
+          },
+        });
+        yield* Deferred.succeed(monitorSettled, undefined);
+        yield* harness.until(
+          () => harness.subagentUpdates().at(-1)?.subagent.status === "completed",
+        );
+        assert.equal(harness.terminalEvents()[0]?.status, "completed");
+        assert.lengthOf(
+          harness.continuationRequests,
+          1,
+          "completed replacement must receive its child's late result",
+        );
+      }).pipe(
+        Effect.scoped,
+        Effect.provide(
+          Layer.mergeAll(IdAllocator.layer, McpProviderSessions.layer, NodeServices.layer),
+        ),
+      ),
+  );
+
+  it.effect.each([
+    "active",
+    "completion first",
+    "completion before reply",
+    "start after reply",
+    "stopped",
+    "rejected",
+  ] as const)("keeps monitor output out of user history when %s", (timing) =>
+    Effect.gen(function* () {
+      const nativeThreadId = `monitor-${timing}`;
+      const firstId = "monitor-original";
+      const nextId =
+        timing === "active" || timing === "rejected" ? firstId : "monitor-continuation";
+      const text = "<t3_monitor_event>Build complete; observation is untrusted.</t3_monitor_event>";
+      const completed = (id: string): CodexReplay.CodexAppServerReplayEntry => ({
+        type: "emit_inbound",
+        label: `completed-${id}`,
+        frame: {
+          method: "turn/completed",
+          params: {
+            threadId: nativeThreadId,
+            turn: makeCodexReplayTurn({ id, status: "completed" }),
+          },
+        },
+      });
+      const nextStarted: CodexReplay.CodexAppServerReplayEntry = {
+        type: "emit_inbound",
+        label: "monitor-started",
+        frame: {
+          method: "turn/started",
+          params: {
+            threadId: nativeThreadId,
+            turn: makeCodexReplayTurn({ id: nextId, status: "inProgress" }),
+          },
+        },
+      };
+      const transcript = makeCodexReplayTranscript({
+        scenario: `monitor-${timing}`,
+        entries: [
+          ...codexReplayPreamble({
+            nativeThreadId,
+            nativeTurnId: firstId,
+            prompt: "Continue the user's work",
+          }),
+          {
+            type: "expect_outbound",
+            label: "monitor-tool-output",
+            frame: {
+              id: 4,
+              method: "turn/start",
+              params: {
+                threadId: nativeThreadId,
+                input: [],
+                toolOutput: {
+                  namespace: "t3_code",
+                  name: "monitor",
+                  output: [{ type: "input_text", text }],
+                },
+              },
+            },
+          },
+          ...(nextId === firstId ? [] : [completed(firstId)]),
+          ...(nextId === firstId || timing === "start after reply" ? [] : [nextStarted]),
+          ...(timing === "completion before reply" ? [completed(nextId)] : []),
+          {
+            type: "emit_inbound",
+            label: "monitor-reply",
+            frame:
+              timing === "rejected"
+                ? { id: 4, error: { code: -32602, message: "Monitor rejected" } }
+                : {
+                    id: 4,
+                    result: {
+                      turn: {
+                        ...makeCodexReplayTurn({ id: nextId, status: "inProgress" }),
+                        startedAt: null,
+                      },
+                    },
+                  },
+          },
+          ...(timing === "start after reply" ? [nextStarted] : []),
+          ...(timing === "stopped"
+            ? [
+                {
+                  type: "expect_outbound" as const,
+                  label: "stop-continuation",
+                  frame: {
+                    id: 5,
+                    method: "turn/interrupt",
+                    params: { threadId: nativeThreadId, turnId: nextId },
+                  },
+                },
+                {
+                  type: "emit_inbound" as const,
+                  label: "stop-reply",
+                  frame: { id: 5, result: {} },
+                },
+                {
+                  type: "emit_inbound" as const,
+                  label: "stopped",
+                  frame: {
+                    method: "turn/completed",
+                    params: {
+                      threadId: nativeThreadId,
+                      turn: makeCodexReplayTurn({ id: nextId, status: "interrupted" }),
+                    },
+                  },
+                },
+              ]
+            : timing === "completion before reply"
+              ? []
+              : [completed(nextId)]),
+        ],
+      });
+      const requests: Array<{ method: string; params: unknown }> = [];
+      const harness = yield* makeCodexReplayHarness(
+        transcript,
+        () => Effect.void,
+        (method, params) =>
+          Effect.sync(() => {
+            requests.push({ method, params });
+          }),
+      );
+      const first = makeCodexTestTurnInput({
+        threadId: harness.threadId,
+        providerThread: harness.providerThread,
+        now: yield* DateTime.now,
+        attemptId: RunAttemptId.make("monitor-attempt"),
+        text: "Continue the user's work",
+      });
+      yield* harness.runtime.startTurn(first);
+      const idAllocator = yield* IdAllocator.IdAllocatorV2;
+      const result = yield* harness.runtime
+        .steerTurn({
+          threadId: harness.threadId,
+          runId: first.runId,
+          providerThread: harness.providerThread,
+          providerTurnId: idAllocator.derive.providerTurn({
+            driver: CodexAdapterV2.CODEX_DRIVER_KIND,
+            nativeTurnId: firstId,
+          }),
+          message: {
+            ...first.message,
+            messageId: MessageId.make("monitor-message"),
+            text,
+            inputSource: "harness",
+            createdBy: "system",
+            creationSource: "server",
+          },
+        })
+        .pipe(Effect.result);
+      assert.equal(result._tag, timing === "rejected" ? "Failure" : "Success");
+      if (timing === "stopped") {
+        yield* harness.runtime.interruptTurn({
+          providerThread: harness.providerThread,
+          providerTurnId: idAllocator.derive.providerTurn({
+            driver: CodexAdapterV2.CODEX_DRIVER_KIND,
+            nativeTurnId: firstId,
+          }),
+          requestRuntimeRestart: true,
+        });
+      }
+      yield* harness.firstTerminal;
+      assert.equal(
+        harness.terminalEvents()[0]?.status,
+        timing === "stopped" ? "interrupted" : "completed",
+      );
+      assert.equal(harness.terminalEvents().length, 1);
+      assert.equal(
+        harness.terminalEvents()[0]?.providerTurnId,
+        idAllocator.derive.providerTurn({
+          driver: CodexAdapterV2.CODEX_DRIVER_KIND,
+          nativeTurnId: nextId,
+        }),
+      );
+      const starts = harness.events.filter(
+        (event) =>
+          event.type === "provider_turn.updated" && event.providerTurn.status === "running",
+      );
+      assert.equal(starts.length, nextId === firstId ? 1 : 2);
+      assert.isTrue(
+        starts.every(
+          (event) =>
+            event.type === "provider_turn.updated" &&
+            event.providerTurn.runAttemptId === first.attemptId,
+        ),
+      );
+      assert.notInclude(
+        requests.map((request) => request.method),
+        "turn/steer",
+      );
+      assert.equal(requests.filter((request) => request.method === "turn/start").length, 2);
+      assert.isFalse(
+        harness.events.some(
+          (event) =>
+            event.type === "message.updated" &&
+            event.message.role === "user" &&
+            event.message.text.includes("Build complete"),
+        ),
+      );
+    }).pipe(
+      Effect.scoped,
+      Effect.provide(
+        Layer.mergeAll(IdAllocator.layer, McpProviderSessions.layer, NodeServices.layer),
+      ),
+    ),
+  );
+
   it.effect.each(["paginated", "legacy", "repeated"] as const)(
     "reads %s history through the snapshot adapter",
     (mode) =>
@@ -2365,7 +3584,7 @@ describe("CodexAdapterV2 post-settle continuation", () => {
     ),
   );
 
-  it.effect("preserves T3 context on the wire and restores it after compaction", () =>
+  it.effect("restores app context after compaction without retaining monitor output", () =>
     Effect.scoped(
       Effect.gen(function* () {
         const nativeThreadId = "context-thread";
@@ -2393,6 +3612,32 @@ describe("CodexAdapterV2 post-settle continuation", () => {
             },
             ...entries.slice(6),
             {
+              type: "expect_outbound",
+              label: "monitor-output",
+              frame: {
+                id: 4,
+                method: "turn/start",
+                params: {
+                  threadId: nativeThreadId,
+                  input: [],
+                  additionalContext: params.additionalContext,
+                  toolOutput: {
+                    namespace: "t3_code",
+                    name: "monitor",
+                    output: [{ type: "input_text", text: "Ephemeral monitor observation" }],
+                  },
+                },
+              },
+            },
+            {
+              type: "emit_inbound",
+              label: "monitor-accepted",
+              frame: {
+                id: 4,
+                result: { turn: makeCodexReplayTurn({ id: nativeTurnId, status: "inProgress" }) },
+              },
+            },
+            {
               type: "emit_inbound",
               label: "compacted",
               frame: {
@@ -2408,7 +3653,7 @@ describe("CodexAdapterV2 post-settle continuation", () => {
               type: "expect_outbound",
               label: "restore context",
               frame: {
-                id: 4,
+                id: 5,
                 method: "thread/inject_items",
                 params: {
                   threadId: nativeThreadId,
@@ -2420,7 +3665,7 @@ describe("CodexAdapterV2 post-settle continuation", () => {
                 },
               },
             },
-            { type: "emit_inbound", label: "restored", frame: { id: 4, result: {} } },
+            { type: "emit_inbound", label: "restored", frame: { id: 5, result: {} } },
             {
               type: "emit_inbound",
               label: "done",
@@ -2453,6 +3698,23 @@ describe("CodexAdapterV2 post-settle continuation", () => {
             text: "work",
           }),
         );
+        yield* harness.runtime.steerTurn({
+          threadId: harness.threadId,
+          runId: RunId.make("run-unused"),
+          providerThread: harness.providerThread,
+          providerTurnId: (yield* IdAllocator.IdAllocatorV2).derive.providerTurn({
+            driver: CodexAdapterV2.CODEX_DRIVER_KIND,
+            nativeTurnId,
+          }),
+          message: {
+            messageId: MessageId.make("monitor-context-message"),
+            text: "Ephemeral monitor observation",
+            attachments: [],
+            inputSource: "harness",
+            createdBy: "system",
+            creationSource: "server",
+          },
+        });
         yield* harness.firstTerminal;
         assert.equal(harness.terminalEvents()[0]?.status, "completed");
       }).pipe(
@@ -2856,6 +4118,165 @@ describe("CodexAdapterV2 post-settle continuation", () => {
         Effect.provide(
           Layer.mergeAll(IdAllocator.layer, McpProviderSessions.layer, NodeServices.layer),
         ),
+      ),
+    ),
+  );
+
+  it.effect("preserves capacity retry attempts across a monitor replacement", () =>
+    Effect.gen(function* () {
+      const nativeThreadId = "capacity-monitor";
+      const prompt = "Continue the task.";
+      const firstId = "capacity-monitor-first";
+      const retryId = "capacity-monitor-retry";
+      const replacementId = "capacity-monitor-replacement";
+      const failure = (id: string): CodexReplay.CodexAppServerReplayEntry => ({
+        type: "emit_inbound",
+        frame: {
+          method: "turn/completed",
+          params: {
+            threadId: nativeThreadId,
+            turn: {
+              ...makeCodexReplayTurn({ id, status: "failed" }),
+              error: { message: "At capacity", codexErrorInfo: "serverOverloaded" },
+            },
+          },
+        },
+      });
+      const retry = codexReplayPreamble({ nativeThreadId, nativeTurnId: retryId, prompt })
+        .slice(-3)
+        .map((entry): CodexReplay.CodexAppServerReplayEntry => {
+          if (
+            entry.type === "expect_outbound" &&
+            Predicate.isObject(entry.frame) &&
+            "params" in entry.frame &&
+            Predicate.isObject(entry.frame.params) &&
+            "method" in entry.frame &&
+            entry.frame.method === "turn/start"
+          ) {
+            return {
+              ...entry,
+              frame: {
+                ...entry.frame,
+                id: 4,
+                params: {
+                  ...entry.frame.params,
+                  input: [],
+                },
+              },
+            };
+          }
+          return entry.type === "emit_inbound" && entry.label === "turn/start"
+            ? withReplayRequestId(entry, 4)
+            : entry;
+        });
+      const retries = yield* Queue.unbounded<ProviderAdapter.ProviderAdapterV2Event>();
+      const harness = yield* makeCodexReplayHarness(
+        makeCodexReplayTranscript({
+          scenario: "capacity-monitor",
+          entries: [
+            ...codexReplayPreamble({ nativeThreadId, nativeTurnId: firstId, prompt }),
+            failure(firstId),
+            ...retry,
+            {
+              type: "expect_outbound",
+              frame: {
+                id: 5,
+                method: "turn/start",
+                params: {
+                  threadId: nativeThreadId,
+                  input: [],
+                  toolOutput: {
+                    namespace: "t3_code",
+                    name: "monitor",
+                    output: [{ type: "input_text", text: "Build complete" }],
+                  },
+                },
+              },
+            },
+            {
+              type: "emit_inbound",
+              frame: {
+                method: "turn/completed",
+                params: {
+                  threadId: nativeThreadId,
+                  turn: makeCodexReplayTurn({ id: retryId, status: "completed" }),
+                },
+              },
+            },
+            {
+              type: "emit_inbound",
+              frame: {
+                method: "turn/started",
+                params: {
+                  threadId: nativeThreadId,
+                  turn: makeCodexReplayTurn({ id: replacementId, status: "inProgress" }),
+                },
+              },
+            },
+            {
+              type: "emit_inbound",
+              frame: {
+                id: 5,
+                result: {
+                  turn: makeCodexReplayTurn({ id: replacementId, status: "inProgress" }),
+                },
+              },
+            },
+            failure(replacementId),
+          ],
+        }),
+        (event) =>
+          event.type === "turn_item.updated" &&
+          event.turnItem.type === "error" &&
+          event.turnItem.status === "running"
+            ? Queue.offer(retries, event)
+            : Effect.void,
+      );
+      const first = makeCodexTestTurnInput({
+        threadId: harness.threadId,
+        providerThread: harness.providerThread,
+        now: yield* DateTime.now,
+        attemptId: RunAttemptId.make("capacity-monitor"),
+        text: prompt,
+      });
+      yield* harness.runtime.startTurn(first);
+      const initial = yield* Queue.take(retries);
+      assert.equal(initial.type, "turn_item.updated");
+      if (initial.type !== "turn_item.updated" || initial.turnItem.type !== "error") return;
+      assert.equal(initial.turnItem.retry?.attempt, 1);
+      yield* TestClock.adjust("2 seconds");
+      yield* harness.until(() =>
+        harness.events.some(
+          (event) =>
+            event.type === "provider_turn.updated" &&
+            event.providerTurn.nativeTurnRef?.nativeId === retryId,
+        ),
+      );
+      yield* harness.runtime.steerTurn({
+        threadId: harness.threadId,
+        runId: first.runId,
+        providerThread: harness.providerThread,
+        providerTurnId: (yield* IdAllocator.IdAllocatorV2).derive.providerTurn({
+          driver: CodexAdapterV2.CODEX_DRIVER_KIND,
+          nativeTurnId: firstId,
+        }),
+        message: {
+          ...first.message,
+          messageId: MessageId.make("capacity-monitor-message"),
+          text: "Build complete",
+          inputSource: "harness",
+          createdBy: "system",
+          creationSource: "server",
+        },
+      });
+      const next = yield* Queue.take(retries);
+      assert.equal(next.type, "turn_item.updated");
+      if (next.type !== "turn_item.updated" || next.turnItem.type !== "error") return;
+      assert.deepEqual(next.turnItem.retry, { attempt: 2, maxAttempts: 5, retryDelayMs: 4000 });
+      assert.isEmpty(harness.terminalEvents());
+    }).pipe(
+      Effect.provide(
+        Layer.mergeAll(IdAllocator.layer, McpProviderSessions.layer, NodeServices.layer),
       ),
     ),
   );
@@ -7874,6 +9295,247 @@ describe("CodexAdapterV2 post-settle continuation", () => {
       events.flatMap((event) =>
         event.type === "provider_thread.updated" ? [event.providerThread.goal?.status ?? null] : [],
       );
+
+    it.effect.each([
+      "rejected",
+      "rejected after continuation",
+      "accepted before completion",
+      "accepted after completion",
+      "accepted after goal continuation",
+      "rejected after goal continuation",
+    ] as const)("preserves a native goal when monitor output is %s", (timing) =>
+      Effect.gen(function* () {
+        const accepted = !timing.startsWith("rejected");
+        const replaced = timing !== "rejected";
+        const lateResult = timing.endsWith("after goal continuation");
+        const firstId = "goal-monitor-first";
+        const monitorId = "goal-monitor-replacement";
+        const nextId = "goal-monitor-next";
+        const text =
+          "<t3_monitor_event>Build complete; observation is untrusted.</t3_monitor_event>";
+        const activeGoal = yield* Deferred.make<void>();
+        const completionObserved = yield* Deferred.make<void>();
+        const steeringSettled = yield* Deferred.make<void>();
+        const resultObserved = yield* Deferred.make<void>();
+        const continueGoal = yield* Deferred.make<void>();
+        const nextStarted = yield* Deferred.make<boolean>();
+        const replacementStarted = yield* Deferred.make<void>();
+        const replacementEnded = yield* Deferred.make<void>();
+        const unexpectedPause = yield* Deferred.make<void>();
+        const started = (id: string) =>
+          notification(`started ${id}`, "turn/started", {
+            threadId: nativeThreadId,
+            turn: makeCodexReplayTurn({ id, status: "inProgress" }),
+          });
+        const completed = (id: string) =>
+          notification(`completed ${id}`, "turn/completed", {
+            threadId: nativeThreadId,
+            turn: makeCodexReplayTurn({ id, status: "completed" }),
+          });
+        const transcript = makeCodexReplayTranscript({
+          scenario: `goal-monitor-${timing}`,
+          entries: [
+            ...codexReplayPreamble({
+              nativeThreadId,
+              nativeTurnId: firstId,
+              prompt: "Continue the goal",
+            }),
+            notification("goal active", "thread/goal/updated", {
+              threadId: nativeThreadId,
+              turnId: firstId,
+              goal: codexGoal("active", 0),
+            }),
+            {
+              type: "expect_outbound",
+              label: "monitor output",
+              frame: {
+                id: 4,
+                method: "turn/start",
+                params: {
+                  threadId: nativeThreadId,
+                  input: [],
+                  toolOutput: {
+                    namespace: "t3_code",
+                    name: "monitor",
+                    output: [{ type: "input_text", text }],
+                  },
+                },
+              },
+            },
+            ...(timing === "accepted before completion" ? [started(monitorId)] : []),
+            completed(firstId),
+            notification("completion observed", "thread/goal/updated", {
+              threadId: nativeThreadId,
+              turnId: firstId,
+              goal: codexGoal("active", 1),
+            }),
+            ...(timing === "accepted after completion" ||
+            timing === "rejected after continuation" ||
+            lateResult
+              ? [started(monitorId)]
+              : []),
+            ...(lateResult
+              ? [
+                  completed(monitorId),
+                  notification("replacement ended", "thread/goal/updated", {
+                    threadId: nativeThreadId,
+                    turnId: monitorId,
+                    goal: codexGoal("active", 4),
+                  }),
+                  started(nextId),
+                ]
+              : []),
+            {
+              type: "emit_inbound",
+              label: "monitor result",
+              frame: accepted
+                ? {
+                    id: 4,
+                    result: { turn: makeCodexReplayTurn({ id: monitorId, status: "inProgress" }) },
+                  }
+                : { id: 4, error: { code: -32602, message: "Monitor rejected" } },
+            },
+            notification("result observed", "thread/goal/updated", {
+              threadId: nativeThreadId,
+              turnId: replaced ? monitorId : firstId,
+              goal: codexGoal("active", 2),
+            }),
+            ...(replaced && !lateResult ? [completed(monitorId)] : []),
+            ...(!lateResult ? [started(nextId)] : []),
+            ...request(
+              5,
+              "turn/steer",
+              {
+                threadId: nativeThreadId,
+                expectedTurnId: nextId,
+                input: [{ type: "text", text: "Keep going" }],
+              },
+              { turnId: nextId },
+            ),
+            notification("goal complete", "thread/goal/updated", {
+              threadId: nativeThreadId,
+              turnId: nextId,
+              goal: codexGoal("complete", 3),
+            }),
+            completed(nextId),
+          ],
+        });
+        const harness = yield* makeCodexReplayHarness(
+          transcript,
+          (event) => {
+            if (
+              event.type === "provider_turn.updated" &&
+              event.providerTurn.nativeTurnRef?.nativeId === nextId &&
+              event.providerTurn.status === "running"
+            )
+              return Deferred.succeed(nextStarted, true);
+            if (
+              event.type === "provider_turn.updated" &&
+              event.providerTurn.nativeTurnRef?.nativeId === monitorId &&
+              event.providerTurn.status === "running"
+            )
+              return Deferred.succeed(replacementStarted, undefined);
+            if (event.type !== "provider_thread.updated") return Effect.void;
+            const tokens = event.providerThread.goal?.tokensUsed;
+            return tokens === 0
+              ? Deferred.succeed(activeGoal, undefined)
+              : tokens === 1
+                ? Deferred.succeed(completionObserved, undefined)
+                : tokens === 2
+                  ? Deferred.succeed(resultObserved, undefined)
+                  : tokens === 4
+                    ? Deferred.succeed(replacementEnded, undefined)
+                    : Effect.void;
+          },
+          (method) =>
+            method === "thread/goal/set"
+              ? Deferred.succeed(nextStarted, false).pipe(
+                  Effect.andThen(Deferred.await(unexpectedPause)),
+                )
+              : Effect.void,
+          undefined,
+          (entry) =>
+            lateResult && entry.label === `started ${monitorId}`
+              ? Deferred.await(completionObserved)
+              : lateResult && entry.label === `completed ${monitorId}`
+                ? Deferred.await(replacementStarted)
+                : lateResult && entry.label === `started ${nextId}`
+                  ? Deferred.await(replacementEnded)
+                  : lateResult && entry.label === "monitor result"
+                    ? Deferred.await(nextStarted)
+                    : entry.label === "monitor result"
+                      ? Deferred.await(completionObserved)
+                      : entry.label === "result observed"
+                        ? Deferred.await(steeringSettled)
+                        : entry.label === `started ${nextId}` ||
+                            entry.label === `completed ${monitorId}`
+                          ? Deferred.await(continueGoal)
+                          : Effect.void,
+        );
+        const first = yield* goalTurnInput(harness, "Continue the goal");
+        yield* harness.runtime.startTurn(first);
+        yield* Deferred.await(activeGoal);
+        const idAllocator = yield* IdAllocator.IdAllocatorV2;
+        const providerTurnId = (nativeTurnId: string) =>
+          idAllocator.derive.providerTurn({
+            driver: CodexAdapterV2.CODEX_DRIVER_KIND,
+            nativeTurnId,
+          });
+        const result = yield* harness.runtime
+          .steerTurn({
+            threadId: harness.threadId,
+            runId: first.runId,
+            providerThread: harness.providerThread,
+            providerTurnId: providerTurnId(firstId),
+            message: {
+              ...first.message,
+              text,
+              inputSource: "harness",
+              createdBy: "system",
+              creationSource: "server",
+            },
+          })
+          .pipe(Effect.result);
+        assert.equal(result._tag, accepted ? "Success" : "Failure");
+        yield* Deferred.succeed(steeringSettled, undefined);
+        yield* Deferred.await(resultObserved);
+        assert.isEmpty(harness.terminalEvents(), "monitor resolution must keep the goal run open");
+        if (replaced) {
+          const predecessor = harness.events.findLast(
+            (event) =>
+              event.type === "provider_turn.updated" &&
+              event.providerTurn.id === providerTurnId(firstId),
+          );
+          assert.equal(
+            predecessor?.type === "provider_turn.updated" && predecessor.providerTurn.status,
+            "completed",
+          );
+        }
+        yield* Deferred.succeed(continueGoal, undefined);
+        assert.isTrue(
+          yield* Deferred.await(nextStarted),
+          "the goal successor must keep its run before monitor acknowledgement",
+        );
+        yield* harness.runtime.steerTurn({
+          threadId: harness.threadId,
+          runId: first.runId,
+          providerThread: harness.providerThread,
+          providerTurnId: providerTurnId(firstId),
+          message: { ...first.message, text: "Keep going" },
+        });
+        yield* harness.firstTerminal;
+        assert.deepEqual(
+          harness.terminalEvents().map((event) => [event.providerTurnId, event.status]),
+          [[providerTurnId(nextId), "completed"]],
+        );
+        assert.equal(providerGoals(harness.events).at(-1), "complete");
+      }).pipe(
+        Effect.scoped,
+        Effect.provide(
+          Layer.mergeAll(IdAllocator.layer, McpProviderSessions.layer, NodeServices.layer),
+        ),
+      ),
+    );
 
     it.effect("keeps a /goal run open across the turns Codex continues on its own", () =>
       Effect.gen(function* () {

@@ -1284,6 +1284,8 @@ export type OrchestrationV2IdleCompaction = typeof OrchestrationV2IdleCompaction
 
 export const OrchestrationV2ConversationMessage = Schema.Struct({
   notification: Schema.optional(OrchestrationV2Notification),
+  /** A monitor steer stays pending until the provider accepts it or it becomes a queued turn. */
+  notificationDelivery: Schema.optional(Schema.Literals(["pending", "accepted"])),
   ...OrchestrationV2CreationFields,
   scheduledTaskId: Schema.optional(ScheduledTaskId),
   senderThreadId: Schema.optional(ThreadId),
@@ -3148,6 +3150,8 @@ export const OrchestrationV2Command = Schema.Union([
     manualContinuationOfRunId: Schema.optional(RunId),
     usageLimitRecoveryRequestId: Schema.optional(CommandId),
     deliveryIntent: Schema.optional(Schema.Literals(["auto", "steer", "restart"])),
+    /** Requeue this run's unaccepted monitor input after a late user request. */
+    deferMonitorFromRunId: Schema.optional(RunId),
     delegatedCompletion: Schema.optional(
       Schema.Struct({
         parentRunId: RunId,

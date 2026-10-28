@@ -11,6 +11,8 @@ import {
   ProviderTurnId,
   ThreadId,
   TurnItemId,
+  ThreadMonitorId,
+  RuntimeRequestId,
   type ModelSelection,
   type OrchestrationV2DomainEvent,
 } from "@t3tools/contracts";
@@ -18,6 +20,10 @@ import * as DateTime from "effect/DateTime";
 import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
 import * as Fiber from "effect/Fiber";
+import * as Layer from "effect/Layer";
+import * as SqlitePersistence from "../persistence/Sqlite.ts";
+import * as ThreadMonitorRepositoryLayer from "../persistence/ThreadMonitors.ts";
+import { ThreadMonitorRepository } from "../persistence/ThreadMonitors.ts";
 import * as Queue from "effect/Queue";
 import * as Stream from "effect/Stream";
 import { CodexProviderCapabilitiesV2 } from "./Adapters/CodexAdapterV2.ts";
@@ -33,8 +39,53 @@ const driver = ProviderDriverKind.make("codex");
 const instanceId = ProviderInstanceId.make("codex");
 const modelSelection = { instanceId, model: "test-model" };
 
-it.effect.each(
-  (
+const monitorNotification = {
+  source: { kind: "monitor" as const },
+  outcome: "updated" as const,
+  summary: "Build finished",
+  systemEvent: {
+    type: "monitor.continuation" as const,
+    deliveryGroupId: "build-group",
+    monitors: [
+      {
+        monitorId: ThreadMonitorId.make("build-monitor"),
+        triggeredAt: "2026-01-01T00:00:00.000Z",
+        triggerReason: "signal" as const,
+        observation: { label: "Wait for build", summary: "Build finished", evidence: "exitCode=0" },
+      },
+    ],
+    observationTrust: "untrusted" as const,
+    grantsAuthorization: false as const,
+  },
+};
+
+const seedMonitor = (threadId: ThreadId) =>
+  Effect.gen(function* () {
+    const repository = yield* ThreadMonitorRepository;
+    const now = DateTime.formatIso(yield* DateTime.now);
+    yield* repository.upsert({
+      id: ThreadMonitorId.make("build-monitor"),
+      threadId,
+      label: "Wait for build",
+      condition: { type: "signal", deadlineAt: null },
+      continuation: { mode: "resume-thread" },
+      status: "triggered",
+      trigger: { reason: "signal", summary: "Build finished", evidence: "exitCode=0" },
+      createdAt: now,
+      updatedAt: now,
+      triggeredAt: now,
+      deliveredAt: null,
+      cancelledAt: null,
+      lastError: null,
+      deliveryAttempts: 1,
+      deliveryGroupId: "build-group",
+      deliveryRetryAt: null,
+      deliveryFailureCount: 0,
+    });
+  });
+
+it.effect.each([
+  ...(
     [
       [false, "during delivery"],
       [false, "before dispatch"],
@@ -46,10 +97,19 @@ it.effect.each(
     ] as const
   ).map(([mailbox, timing]) => ({
     mailbox,
+    monitor: false,
     timing,
     label: mailbox ? "mailbox notification" : "steering",
   })),
-)("delivers $label when completion wins $timing", ({ mailbox, timing }) =>
+  ...[
+    "before delivery",
+    "during delivery",
+    "after delivery",
+    "before dispatch",
+    "without native steering",
+    "with interrupting native steering",
+  ].map((timing) => ({ mailbox: false, monitor: true, timing, label: "monitor" })),
+])("delivers $label when completion wins $timing", ({ mailbox, monitor, timing }) =>
   Effect.scoped(
     Effect.gen(function* () {
       const cwd = yield* checkpointWorkspace(`steering-completion-${timing.replaceAll(" ", "-")}`);
@@ -136,6 +196,10 @@ it.effect.each(
               steerTurn: (turn) =>
                 Effect.gen(function* () {
                   steerCalls += 1;
+                  if (monitor) {
+                    assert.equal(turn.message.inputSource, "harness");
+                    assert.include(turn.message.text, "exitCode=0");
+                  }
                   if (timing === "after delivery" || timing === "during continuation") return;
                   yield* Deferred.succeed(steerEntered, undefined);
                   yield* Deferred.await(rejectSteer);
@@ -254,6 +318,7 @@ it.effect.each(
             ],
           });
         }
+        if (monitor) yield* seedMonitor(threadId);
         const dispatchSteer = orchestrator.dispatch({
           type: "message.dispatch",
           commandId: CommandId.make("steer"),
@@ -269,11 +334,13 @@ it.effect.each(
               sizeBytes: 10,
             },
           ],
-          dispatchMode: mailbox
-            ? { type: "queue_after_active" }
-            : { type: "steer_active", targetRunId: first.runId },
-          createdBy: mailbox ? "agent" : "user",
-          creationSource: mailbox ? "server" : "web",
+          dispatchMode:
+            mailbox || monitor
+              ? { type: "queue_after_active" }
+              : { type: "steer_active", targetRunId: first.runId },
+          createdBy: monitor ? "system" : mailbox ? "agent" : "user",
+          creationSource: mailbox || monitor ? "server" : "web",
+          ...(monitor ? { notification: monitorNotification } : {}),
           ...(mailbox
             ? {
                 delegatedCompletion: {
@@ -340,12 +407,18 @@ it.effect.each(
           yield* Deferred.succeed(rejectSteer, undefined);
           yield* Fiber.join(delivery);
           const requeued = yield* orchestrator.getThreadProjection(threadId);
-          const item = requeued.turnItems.find(
-            (item) => item.type === "user_message" && item.messageId === messageId,
-          );
-          assert.equal(item?.status, "pending");
-          assert.isNull(item?.startedAt);
-          assert.isNull(item?.completedAt);
+          if (monitor) {
+            const message = requeued.messages.find((message) => message.id === messageId);
+            assert.equal(message?.notification?.source.kind, "monitor");
+            assert.equal(requeued.runs.find((run) => run.id === message?.runId)?.status, "queued");
+          } else {
+            const item = requeued.turnItems.find(
+              (item) => item.type === "user_message" && item.messageId === messageId,
+            );
+            assert.equal(item?.status, "pending");
+            assert.isNull(item?.startedAt);
+            assert.isNull(item?.completedAt);
+          }
         }
         if (timing === "before dispatch") yield* dispatchSteer;
         yield* worker.drain();
@@ -354,6 +427,31 @@ it.effect.each(
         if (timing === "after delivery") {
           assert.equal(steerCalls, 1);
           assert.equal(started.length, 1);
+          if (monitor) {
+            const delivered = yield* orchestrator.getThreadProjection(threadId);
+            assert.equal(
+              delivered.messages.find((message) => message.id === messageId)?.notificationDelivery,
+              "accepted",
+            );
+            assert.equal(
+              delivered.turnItems.filter((item) => item.type === "notification").length,
+              1,
+            );
+            yield* orchestrator.dispatch({
+              type: "message.dispatch",
+              commandId: CommandId.make("monitor-retry"),
+              threadId,
+              messageId,
+              text: "Build finished",
+              attachments: [],
+              notification: monitorNotification,
+              createdBy: "system",
+              creationSource: "server",
+              dispatchMode: { type: "queue_after_active" },
+            });
+            yield* worker.drain();
+            assert.equal(started.length, 1);
+          }
           if (mailbox) {
             const delivered = yield* orchestrator.getThreadProjection(threadId);
             assert.equal(delivered.subagents[0]?.completionDelivery?.state, "delivered");
@@ -386,7 +484,10 @@ it.effect.each(
         assert.equal(started.length, 2);
         assert.equal(started[1]?.message.messageId, messageId);
         if (mailbox) assert.include(started[1]?.message.text ?? "", String(taskId));
-        else assert.equal(started[1]?.message.text, "fix the popover");
+        else if (monitor) {
+          assert.equal(started[1]?.message.inputSource, "harness");
+          assert.include(started[1]?.message.text ?? "", "exitCode=0");
+        } else assert.equal(started[1]?.message.text, "fix the popover");
         assert.deepEqual(started[1]?.message.attachments, [
           {
             type: "image",
@@ -400,8 +501,10 @@ it.effect.each(
         const final = yield* orchestrator.getThreadProjection(threadId);
         if (!mailbox) {
           assert.equal(
-            final.turnItems.find(
-              (item) => item.type === "user_message" && item.messageId === messageId,
+            final.turnItems.find((item) =>
+              monitor
+                ? item.type === "notification"
+                : item.type === "user_message" && item.messageId === messageId,
             )?.status,
             "completed",
           );
@@ -413,7 +516,7 @@ it.effect.each(
         );
         assert.equal(
           final.turnItems.filter((item) =>
-            mailbox
+            mailbox || monitor
               ? item.type === "notification"
               : item.type === "user_message" && item.messageId === messageId,
           ).length,
@@ -423,10 +526,13 @@ it.effect.each(
         assert.equal(started.length, 2);
       }).pipe(
         Effect.provide(
-          ProviderReplayHarness.layerWithRegistry(
-            { name: `steering-completion-${timing}` },
-            ProviderAdapterRegistry.layerSingle(adapter),
-            { runEffectWorker: false },
+          Layer.merge(
+            ProviderReplayHarness.layerWithRegistry(
+              { name: `steering-completion-${timing}` },
+              ProviderAdapterRegistry.layerSingle(adapter),
+              { runEffectWorker: false },
+            ),
+            ThreadMonitorRepositoryLayer.layer.pipe(Layer.provide(SqlitePersistence.layerMemory)),
           ),
         ),
       );
@@ -1681,4 +1787,328 @@ it.effect("a side chat that opens with /goal gets its context on the next questi
       }).pipe(Effect.provide(layer));
     }),
   ),
+);
+
+it.effect.each(["none", "command", "user_input", "environment_link"] as const)(
+  "keeps monitor delivery on the active selection with pending request %s",
+  (requestKind) =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const { started, steered, layer, startFirstTurn } =
+          yield* nextTurnSelectionHarness("monitor-selection");
+        yield* Effect.gen(function* () {
+          const orchestrator = yield* Orchestrator.OrchestratorV2;
+          const worker = yield* EffectWorker.OrchestrationEffectWorkerV2;
+          const threadId = yield* startFirstTurn;
+          yield* seedMonitor(threadId);
+          yield* orchestrator.dispatch({
+            type: "thread.model-selection.set",
+            commandId: CommandId.make("next-selection"),
+            threadId,
+            modelSelection: composerSelection,
+          });
+          if (requestKind === "environment_link") {
+            yield* orchestrator.dispatch({
+              type: "link_request.record",
+              commandId: CommandId.make("pending-link"),
+              threadId,
+              runId: started[0]!.runId,
+              nodeId: started[0]!.rootNodeId,
+              turnItemId: TurnItemId.make("pending-link"),
+              reason: "Use the requested test machine",
+              linkStatus: "pending",
+            });
+          } else if (requestKind !== "none") {
+            const projection = yield* orchestrator.getThreadProjection(threadId);
+            const turn = projection.providerTurns[0]!;
+            const now = yield* DateTime.now;
+            yield* (yield* EventSink.EventSinkV2).write({
+              events: [
+                {
+                  id: EventId.make("pending-request"),
+                  type: "runtime-request.updated",
+                  threadId,
+                  runId: started[0]!.runId,
+                  occurredAt: now,
+                  payload: {
+                    id: RuntimeRequestId.make("approval"),
+                    nodeId: started[0]!.rootNodeId,
+                    providerTurnId: turn.id,
+                    nativeRequestRef: null,
+                    kind: requestKind,
+                    status: "pending",
+                    responseCapability: { type: "message" },
+                    createdAt: now,
+                    resolvedAt: null,
+                  },
+                },
+              ],
+            });
+          }
+          yield* orchestrator.dispatch({
+            type: "message.dispatch",
+            commandId: CommandId.make("monitor-dispatch"),
+            threadId,
+            messageId: MessageId.make("monitor-selection-message"),
+            text: "Build finished",
+            attachments: [],
+            notification: monitorNotification,
+            createdBy: "system",
+            creationSource: "server",
+            dispatchMode: { type: "queue_after_active" },
+          });
+          yield* worker.drain();
+          const final = yield* orchestrator.getThreadProjection(threadId);
+          assert.deepEqual(final.thread.modelSelection, composerSelection);
+          assert.deepEqual(final.runs[0]?.modelSelection, runSelection);
+          assert.equal(started.length, 1);
+          assert.equal(steered.length, requestKind === "none" ? 1 : 0);
+          if (requestKind !== "none") {
+            if (requestKind === "environment_link") {
+              assert.equal(
+                final.turnItems.find((item) => item.type === "link_request")?.status,
+                "waiting",
+              );
+            } else assert.equal(final.runtimeRequests[0]?.status, "pending");
+            assert.equal(final.runs.at(-1)?.status, "queued");
+          }
+        }).pipe(
+          Effect.provide(
+            Layer.merge(
+              layer,
+              ThreadMonitorRepositoryLayer.layer.pipe(Layer.provide(SqlitePersistence.layerMemory)),
+            ),
+          ),
+        );
+      }),
+    ),
+);
+
+it.effect.each(["none", "command", "user_input", "environment_link", "secret"] as const)(
+  "defers native monitor delivery for a late pending request %s",
+  (requestKind) =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const { events, started, steered, layer, startFirstTurn } =
+          yield* nextTurnSelectionHarness("monitor-selection");
+        yield* Effect.gen(function* () {
+          const orchestrator = yield* Orchestrator.OrchestratorV2;
+          const worker = yield* EffectWorker.OrchestrationEffectWorkerV2;
+          const threadId = yield* startFirstTurn;
+          yield* seedMonitor(threadId);
+          yield* orchestrator.dispatch({
+            type: "thread.model-selection.set",
+            commandId: CommandId.make("next-selection"),
+            threadId,
+            modelSelection: composerSelection,
+          });
+          yield* orchestrator.dispatch({
+            type: "message.dispatch",
+            commandId: CommandId.make("monitor-dispatch"),
+            threadId,
+            messageId: MessageId.make("monitor-selection-message"),
+            text: "Build finished",
+            attachments: [],
+            notification: monitorNotification,
+            createdBy: "system",
+            creationSource: "server",
+            dispatchMode: { type: "queue_after_active" },
+          });
+          if (requestKind === "environment_link") {
+            yield* orchestrator.dispatch({
+              type: "link_request.record",
+              commandId: CommandId.make("pending-link"),
+              threadId,
+              runId: started[0]!.runId,
+              nodeId: started[0]!.rootNodeId,
+              turnItemId: TurnItemId.make("pending-link"),
+              reason: "Use the requested test machine",
+              linkStatus: "pending",
+            });
+          } else if (requestKind === "secret") {
+            yield* orchestrator.dispatch({
+              type: "secret_request.record",
+              commandId: CommandId.make("pending-secret"),
+              threadId,
+              runId: started[0]!.runId,
+              nodeId: started[0]!.rootNodeId,
+              turnItemId: TurnItemId.make("pending-secret"),
+              label: "Fixture secret",
+              reason: "Synthetic request; no credential read",
+              secretStatus: "pending",
+            });
+          } else if (requestKind !== "none") {
+            const projection = yield* orchestrator.getThreadProjection(threadId);
+            const turn = projection.providerTurns[0]!;
+            const now = yield* DateTime.now;
+            yield* (yield* EventSink.EventSinkV2).write({
+              events: [
+                {
+                  id: EventId.make("pending-request"),
+                  type: "runtime-request.updated",
+                  threadId,
+                  runId: started[0]!.runId,
+                  occurredAt: now,
+                  payload: {
+                    id: RuntimeRequestId.make("approval"),
+                    nodeId: started[0]!.rootNodeId,
+                    providerTurnId: turn.id,
+                    nativeRequestRef: null,
+                    kind: requestKind,
+                    status: "pending",
+                    responseCapability: { type: "message" },
+                    createdAt: now,
+                    resolvedAt: null,
+                  },
+                },
+              ],
+            });
+          }
+          yield* worker.drain();
+          const final = yield* orchestrator.getThreadProjection(threadId);
+          assert.deepEqual(final.thread.modelSelection, composerSelection);
+          assert.deepEqual(final.runs[0]?.modelSelection, runSelection);
+          assert.equal(started.length, 1);
+          assert.equal(steered.length, requestKind === "none" ? 1 : 0);
+          if (requestKind === "none") {
+            const accepted = final.messages.find((row) => row.id === "monitor-selection-message")!;
+            assert.equal(accepted.notificationDelivery, "accepted");
+            yield* orchestrator.dispatch({
+              type: "message.dispatch",
+              commandId: CommandId.make("stale-accepted-deferral"),
+              threadId,
+              messageId: accepted.id,
+              text: accepted.text,
+              attachments: [],
+              notification: monitorNotification,
+              createdBy: "system",
+              creationSource: "server",
+              dispatchMode: { type: "queue_after_active" },
+              deferMonitorFromRunId: started[0]!.runId,
+            });
+            yield* worker.drain();
+            assert.equal((yield* orchestrator.getThreadProjection(threadId)).runs.length, 1);
+            assert.equal(steered.length, 1);
+          }
+          if (requestKind !== "none") {
+            if (requestKind === "environment_link") {
+              assert.equal(
+                final.turnItems.find((item) => item.type === "link_request")?.status,
+                "waiting",
+              );
+            } else if (requestKind === "secret") {
+              assert.equal(
+                final.turnItems.find((item) => item.type === "secret_request")?.status,
+                "waiting",
+              );
+            } else assert.equal(final.runtimeRequests[0]?.status, "pending");
+            assert.equal(final.runs.at(-1)?.status, "queued");
+            const queued = final.runs.find(
+              (run) => run.userMessageId === "monitor-selection-message",
+            )!;
+            const message = final.messages.find((row) => row.id === "monitor-selection-message")!;
+            assert.equal(message.runId, queued.id);
+            assert.notEqual(message.notificationDelivery, "accepted");
+            const now = yield* DateTime.now;
+            yield* (yield* EventSink.EventSinkV2).write({
+              events: [
+                ...final.runtimeRequests
+                  .filter((request) => request.status === "pending")
+                  .map((request) => ({
+                    id: EventId.make("resolved-request"),
+                    type: "runtime-request.updated" as const,
+                    threadId,
+                    runId: started[0]!.runId,
+                    occurredAt: now,
+                    payload: { ...request, status: "cancelled" as const, resolvedAt: now },
+                  })),
+                ...final.turnItems
+                  .filter((item) => item.type === "link_request" || item.type === "secret_request")
+                  .map((item) => ({
+                    id: EventId.make("resolved-card"),
+                    type: "turn-item.updated" as const,
+                    threadId,
+                    runId: started[0]!.runId,
+                    occurredAt: now,
+                    payload: {
+                      ...item,
+                      status: "cancelled" as const,
+                      completedAt: now,
+                      updatedAt: now,
+                      ...(item.type === "link_request"
+                        ? { linkStatus: "cancelled" as const }
+                        : { secretStatus: "cancelled" as const }),
+                    },
+                  })),
+              ],
+            });
+            yield* orchestrator.dispatch({
+              type: "message.dispatch",
+              commandId: CommandId.make("stale-deferral"),
+              threadId,
+              messageId: message.id,
+              text: message.text,
+              attachments: [],
+              notification: monitorNotification,
+              createdBy: "system",
+              creationSource: "server",
+              dispatchMode: { type: "queue_after_active" },
+              deferMonitorFromRunId: started[0]!.runId,
+            });
+            assert.equal((yield* orchestrator.getThreadProjection(threadId)).runs.length, 2);
+            const first = started[0]!;
+            const settled = yield* orchestrator.streamDomainEvents.pipe(
+              Stream.filter(
+                (event) =>
+                  event.type === "run.updated" &&
+                  event.payload.id === first.runId &&
+                  event.payload.status === "waiting",
+              ),
+              Stream.take(1),
+              Stream.runDrain,
+              Effect.forkScoped,
+            );
+            const turn = final.providerTurns[0]!;
+            yield* Queue.offer(events, {
+              type: "provider_turn.updated",
+              driver,
+              providerTurn: { ...turn, status: "completed", completedAt: now },
+            });
+            yield* Queue.offer(events, {
+              type: "turn.terminal",
+              driver,
+              providerThreadId: turn.providerThreadId,
+              providerTurnId: turn.id,
+              runOrdinal: first.runOrdinal,
+              status: "completed",
+              failure: null,
+              threadDisposition: "reusable",
+            });
+            yield* Fiber.join(settled);
+            yield* worker.drain();
+            yield* orchestrator.resumeQueuedRuns;
+            yield* worker.drain();
+            assert.equal(started.length, 2);
+            assert.equal(started[1]?.runId, queued.id);
+            assert.equal(started[1]?.message.messageId, message.id);
+            assert.equal(started[1]?.message.inputSource, "harness");
+            assert.deepEqual(started[1]?.modelSelection, composerSelection);
+            assert.deepEqual(steered, []);
+            assert.lengthOf(
+              (yield* orchestrator.getThreadProjection(threadId)).messages.filter(
+                (row) => row.id === message.id,
+              ),
+              1,
+            );
+          }
+        }).pipe(
+          Effect.provide(
+            Layer.merge(
+              layer,
+              ThreadMonitorRepositoryLayer.layer.pipe(Layer.provide(SqlitePersistence.layerMemory)),
+            ),
+          ),
+        );
+      }),
+    ),
 );

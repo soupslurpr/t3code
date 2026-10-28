@@ -1,3 +1,4 @@
+import * as EffectOutbox from "../orchestration-v2/EffectOutbox.ts";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import {
   CommandId,
@@ -93,6 +94,7 @@ export const layerForDatabase = (
       }),
     ),
     Layer.provideMerge(ThreadMonitors.layer),
+    Layer.provideMerge(EffectOutbox.layer),
     Layer.provideMerge(ThreadWorkspaceQuery.layer),
     Layer.provideMerge(management),
     Layer.provideMerge(ProjectionStore.layer),
