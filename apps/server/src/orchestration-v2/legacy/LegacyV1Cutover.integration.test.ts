@@ -16,6 +16,7 @@ import {
 import * as NodeSqliteClient from "@t3tools/shared/nodeSqliteClient";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
+import * as Exit from "effect/Exit";
 import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
 import * as Logger from "effect/Logger";
@@ -28,6 +29,7 @@ import * as SqlClient from "effect/sql/SqlClient";
 
 import { runMigrations } from "../../persistence/Migrations.ts";
 import * as SqlitePersistence from "../../persistence/Sqlite.ts";
+import Migration0041 from "../../persistence/Migrations/041_AuthSessionClientConnection.ts";
 import Migration0042 from "../../persistence/Migrations/042_ProjectionThreadLinkedPullRequest.ts";
 import Migration0043 from "../../persistence/Migrations/043_ProjectionThreadsUnsettledAt.ts";
 import Migration0044 from "../../persistence/Migrations/044_ClearAutomaticProjectModelDefaults.ts";
@@ -80,7 +82,6 @@ const codexModelSelection = {
   model: "gpt-5.4",
 };
 
-/** Slot 41 models site-local migrations sharing production ids; the V2 runner applies only ids above the recorded maximum. */
 const seedV1Database = (fixturePath: string, workspace: string) =>
   Effect.scoped(
     Effect.gen(function* () {
@@ -89,9 +90,10 @@ const seedV1Database = (fixturePath: string, workspace: string) =>
       yield* sql`PRAGMA foreign_keys = ON;`;
       yield* sql`PRAGMA journal_mode = WAL;`;
       yield* runMigrations({ toMigrationInclusive: 40 });
+      yield* Migration0041;
       yield* sql`
         INSERT INTO effect_sql_migrations (migration_id, name)
-        VALUES (41, 'ThreadSummaryTimeline')
+        VALUES (41, 'AuthSessionClientConnection')
       `;
       yield* sql`
         CREATE TABLE thread_summary_timeline_entries (
@@ -652,6 +654,38 @@ const messageOrdinals = (projection: OrchestrationV2ThreadProjection) =>
     .map((item) => [String(item.messageId), item.ordinal, item.status] as const);
 
 describe("orchestration v2 legacy v1 cutover", () => {
+  it.effect(
+    "rejects an unrelated site-local migration identity without modifying its database",
+    () =>
+      Effect.gen(function* () {
+        const sql = yield* SqlClient.SqlClient;
+        yield* runMigrations({ toMigrationInclusive: 40 });
+        yield* sql`
+        INSERT INTO effect_sql_migrations (migration_id, name)
+        VALUES (41, 'ThreadSummaryTimeline')
+      `;
+        yield* sql`CREATE TABLE thread_summary_timeline_entries (payload_json TEXT NOT NULL)`;
+        yield* sql`INSERT INTO thread_summary_timeline_entries VALUES ('{"summary":"preserve me"}')`;
+        const history = yield* sql`SELECT * FROM effect_sql_migrations ORDER BY migration_id`;
+        const schema = yield* sql`SELECT * FROM sqlite_master ORDER BY name`;
+        const summaries = yield* sql`SELECT * FROM thread_summary_timeline_entries`;
+        const result = yield* Effect.exit(runMigrations());
+        assert.isTrue(Exit.isFailure(result));
+        if (Exit.isFailure(result)) {
+          assert.include(String(result.cause), "Cannot adopt migration history");
+        }
+        assert.deepStrictEqual(
+          yield* sql`SELECT * FROM effect_sql_migrations ORDER BY migration_id`,
+          history,
+        );
+        assert.deepStrictEqual(yield* sql`SELECT * FROM sqlite_master ORDER BY name`, schema);
+        assert.deepStrictEqual(
+          yield* sql`SELECT * FROM thread_summary_timeline_entries`,
+          summaries,
+        );
+      }).pipe(Effect.provide(NodeSqliteClient.layer({ filename: ":memory:" }))),
+  );
+
   it.live(
     "migrates an untouched v1 database copy through shell import, lazy transcripts, continuation and restart",
     () =>
@@ -918,13 +952,11 @@ describe("orchestration v2 legacy v1 cutover", () => {
           const divergenceLog = boot1Logs.find((log) =>
             String(log.message).includes("migration history diverges"),
           );
-          assert.deepStrictEqual(divergenceLog?.annotations.divergent, [
-            "41:ThreadSummaryTimeline (this build: AuthSessionClientConnection)",
-          ]);
-          assert.equal(firstBoot.migration41Name, "ThreadSummaryTimeline");
+          assert.isUndefined(divergenceLog);
+          assert.equal(firstBoot.migration41Name, "AuthSessionClientConnection");
 
-          assert.notInclude(firstBoot.authSessionColumnNames, "client_surface");
-          assert.notInclude(firstBoot.authSessionColumnNames, "client_app_version");
+          assert.include(firstBoot.authSessionColumnNames, "client_surface");
+          assert.include(firstBoot.authSessionColumnNames, "client_app_version");
 
           assert.equal(firstBoot.importRows.length, ALL_THREADS.length);
           const unhydratedRows = firstBoot.importRows.filter(
@@ -1016,7 +1048,7 @@ describe("orchestration v2 legacy v1 cutover", () => {
             ),
           );
 
-          assert.isTrue(
+          assert.isFalse(
             boot2Logs.some((log) => String(log.message).includes("migration history diverges")),
           );
         }).pipe(Effect.provide(NodeServices.layer)),

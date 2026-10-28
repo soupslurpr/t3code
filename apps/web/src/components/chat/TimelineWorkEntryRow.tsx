@@ -1,4 +1,5 @@
 import { TimelinePendingApprovalRow } from "./TimelinePendingApprovalRow";
+import { MonitorSystemEventTimelineRow } from "./MonitorSystemEventTimelineRow";
 import { WorkLogDetails, WorkLogRow } from "./WorkLog";
 import {
   getQuestionAnswerPreview,
@@ -206,6 +207,17 @@ function WorkEntryLogRow(props: WorkEntryRowProps) {
       ? ctx.pendingApprovals.get(failureItem.requestId)
       : undefined;
   if (pendingApproval) return <TimelinePendingApprovalRow approval={pendingApproval} />;
+  if (failureItem?.type === "notification" && failureItem.systemEvent !== undefined) {
+    return (
+      <MonitorSystemEventTimelineRow
+        event={failureItem.systemEvent}
+        createdAt={workEntry.createdAt}
+        timestampFormat={timestampFormat}
+        onToggle={props.onToggleEntry}
+      />
+    );
+  }
+
   if (failureItem?.type === "error" && failureItem.status === "failed") {
     const warning = failureItem.failure.class === "usage_limit";
     const resetAt = failureItem.failure.resetAt;

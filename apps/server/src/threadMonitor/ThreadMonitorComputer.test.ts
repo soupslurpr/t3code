@@ -1202,7 +1202,13 @@ it.effect(
       );
       const records = yield* projections.getThreadRecords(Testkit.threadId, ["messages"]);
       assert.lengthOf(records.messages, 1);
-      assert.include(records.messages[0]!.text, "computer_watch_update");
+      const event = records.messages[0]!.notification?.systemEvent;
+      assert.equal(event?.type, "monitor.review");
+      if (event?.type !== "monitor.review") return yield* Effect.die("Expected typed review");
+      assert.equal(event.monitorId, monitor.id);
+      assert.isFalse(event.grantsAuthorization);
+      assert.equal(event.metrics.evaluationCount, 1);
+      assert.equal(event.metrics.uncertainEvaluationCount, 1);
       // Restore the pre-acknowledgement row while keeping the accepted V2 message.
       yield* repository.upsert(pending);
       const restarted = yield* ThreadMonitorService.make.pipe(
@@ -1330,6 +1336,9 @@ it.effect(
     Effect.gen(function* () {
       yield* Testkit.seedThread();
       const h = yield* harness();
+      h.state.tokenUsage = "exact";
+      h.state.usage = { inputTokens: 100, cachedInputTokens: 80, outputTokens: 10 };
+      const projections = yield* ProjectionStoreV2;
       const service = yield* ThreadMonitorService.make.pipe(
         Effect.provideService(ThreadMonitorComputerService, h.service),
       );
@@ -1351,6 +1360,16 @@ it.effect(
         paused.condition.type === "computer" && paused.condition.review.state,
         "delivered",
       );
+      const records = yield* projections.getThreadRecords(Testkit.threadId, ["messages"]);
+      assert.lengthOf(records.messages, 1);
+      const event = records.messages[0]?.notification?.systemEvent;
+      assert.equal(event?.type === "monitor.review" && event.evaluatorPaused, true);
+      assert.equal(event?.type === "monitor.review" && event.metrics.evaluationCount, 12);
+      assert.deepEqual(event?.type === "monitor.review" && event.metrics.totalUsage, {
+        inputTokens: 1200,
+        cachedInputTokens: 960,
+        outputTokens: 120,
+      });
       const resumed = yield* service.updateComputer({
         threadId: Testkit.threadId,
         update: {
@@ -1378,6 +1397,17 @@ it.effect(
       });
       yield* TestClock.adjust(1_000);
       yield* service.checkNow({ threadId: Testkit.threadId, check: { monitorId: monitor.id } });
+      const activity = yield* projections.getThreadRecords(Testkit.threadId, ["turnItems"]);
+      const pauses = activity.turnItems.filter(
+        (item) => item.type === "system_notice" && item.id.includes(":review-paused:"),
+      );
+      assert.lengthOf(pauses, 2);
+      assert.lengthOf(new Set(pauses.map((item) => item.id)), 2);
+      assert.isTrue(
+        pauses.every(
+          (item) => item.type === "system_notice" && item.message.includes("evaluator paused"),
+        ),
+      );
       yield* service.cancel({ threadId: Testkit.threadId, cancel: { monitorId: monitor.id } });
     }).pipe(Effect.provide(Layer.merge(Testkit.layer, NodeServices.layer))),
 );
@@ -1418,9 +1448,11 @@ it.effect("warns once on default capture degradation and resumes healthy samplin
     assert.equal(degraded.condition.review.state, "delivered");
     const records = yield* projections.getThreadRecords(Testkit.threadId, ["messages"]);
     assert.lengthOf(records.messages, 1);
-    assert.include(records.messages[0]!.text, "Latest observation error");
-    assert.include(records.messages[0]!.text, "stream-capture-failed");
-    assert.include(records.messages[0]!.text, "PipeWire");
+    const event = records.messages[0]!.notification?.systemEvent;
+    if (event?.type !== "monitor.review") return yield* Effect.die("Expected degraded review");
+    assert.equal(event.metrics.consecutiveFailures, 3);
+    assert.include(event.observation.error ?? "", "stream-capture-failed");
+    assert.include(event.observation.error ?? "", "PipeWire");
     h.state.captureFails = false;
     yield* TestClock.adjust(4_000);
     const healthy = (yield* check()).monitors[0]!;

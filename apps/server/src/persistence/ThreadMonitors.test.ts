@@ -3,6 +3,7 @@ import { ThreadId, ThreadMonitorId, type ThreadMonitor } from "@t3tools/contract
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
+import * as SqlClient from "effect/sql/SqlClient";
 import * as Sqlite from "./Sqlite.ts";
 import * as ThreadMonitors from "./ThreadMonitors.ts";
 
@@ -11,7 +12,7 @@ const fixture: ThreadMonitor = {
   threadId: ThreadId.make("owner"),
   label: "Exact Unicode 🥣",
   condition: { type: "signal", deadlineAt: "2026-10-27T00:00:00.000Z" },
-  continuation: { mode: "resume-thread", prompt: "Continue" },
+  continuation: { mode: "resume-thread" },
   status: "active",
   trigger: null,
   createdAt: "2026-10-26T00:00:00.000Z",
@@ -101,4 +102,22 @@ it.effect("persists complete groups atomically and includes completed members in
     yield* repository.deleteByThread(fixture.threadId);
     assert.deepEqual(yield* repository.listByDeliveryGroupId("group"), []);
   }).pipe(Effect.provide(layer)),
+);
+
+it.effect(
+  "loads old prompt-bearing rows and saves prompt-free monitors with existing constraints",
+  () =>
+    Effect.gen(function* () {
+      const repository = yield* ThreadMonitors.ThreadMonitorRepository;
+      const sql = yield* SqlClient.SqlClient;
+      yield* repository.upsert(fixture);
+      yield* sql`UPDATE thread_monitors SET resume_prompt = 'Old handoff' WHERE monitor_id = ${fixture.id}`;
+      const stored = Option.getOrThrow(yield* repository.getById(fixture.id));
+      assert.deepEqual(stored.continuation, { mode: "resume-thread" });
+      yield* repository.upsert({ ...stored, label: "Updated build watch" });
+      const rows = yield* sql<{
+        resume_prompt: string;
+      }>`SELECT resume_prompt FROM thread_monitors WHERE monitor_id = ${fixture.id}`;
+      assert.strictEqual(rows[0]?.resume_prompt, "Updated build watch");
+    }).pipe(Effect.provide(ThreadMonitors.layer.pipe(Layer.provideMerge(Sqlite.layerMemory)))),
 );

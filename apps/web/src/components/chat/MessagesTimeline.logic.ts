@@ -1,3 +1,4 @@
+import type { OrchestrationSystemEvent } from "@t3tools/contracts";
 import { worktreeSetupAgentStarted } from "@t3tools/client-runtime/worktree-setup";
 import { resolveUserMessagePresentation } from "@t3tools/client-runtime/user-message";
 import { isLiveSubagentTurnItem } from "@t3tools/client-runtime/state/subagentRuntime";
@@ -2566,4 +2567,27 @@ export function sameRowsInput(
     return false;
   }
   return Object.keys(left).length === Object.keys(right).length;
+}
+
+export function resolveMonitorSystemEventPresentation(event: OrchestrationSystemEvent): {
+  readonly title: string;
+  readonly summary: string;
+} {
+  if (event.type === "monitor.review") {
+    return {
+      title: event.evaluatorPaused === true ? "Monitor evaluator paused" : "Monitor review",
+      summary: event.reason,
+    };
+  }
+  if (event.monitors.length === 1) {
+    const monitor = event.monitors[0]!;
+    return {
+      title: "Monitor triggered",
+      summary: monitor.observation.summary ?? monitor.observation.label,
+    };
+  }
+  return {
+    title: `${event.monitors.length} monitors triggered`,
+    summary: event.monitors.map((monitor) => monitor.observation.label).join(" · "),
+  };
 }

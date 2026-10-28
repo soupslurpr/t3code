@@ -157,6 +157,26 @@ export const adoptForkMigrationHistory = Effect.fn("adoptForkMigrationHistory")(
       );
     }
   }
+  if (Math.max(fork.length, legacy.length) >= 7) {
+    const columns = yield* sql<{
+      readonly name: string;
+      readonly notnull: number;
+      readonly type: string;
+    }>`PRAGMA table_info(projection_thread_messages)`;
+    if (
+      !columns.some(
+        (column) =>
+          column.name === "system_event_json" &&
+          column.notnull === 0 &&
+          column.type.toUpperCase() === "TEXT",
+      )
+    ) {
+      return yield* invalidHistory(
+        "ProjectionThreadMessageSystemEvents identity conflicts with its message schema",
+      );
+    }
+  }
+
   for (const [index, row] of legacy.entries()) {
     const adopted = fork[index];
     if (
