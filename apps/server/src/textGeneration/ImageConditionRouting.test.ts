@@ -107,7 +107,7 @@ describe("image condition routing", () => {
       const result = yield* textGeneration.evaluateImageCondition!({
         cwd: process.cwd(),
         criterion: "A completion dialog is visible.",
-        images: [{ id: "main", currentPngBase64: "aW1hZ2U=" }],
+        images: [{ id: "main", current: { mimeType: "image/webp", dataBase64: "aW1hZ2U=" } }],
         modelSelection: createModelSelection(selectedId, "gpt-5.4-mini"),
       });
 
@@ -126,7 +126,7 @@ describe("image condition routing", () => {
       const result = yield* textGeneration.evaluateImageCondition!({
         cwd: process.cwd(),
         criterion: "A completion dialog is visible.",
-        images: [{ id: "main", currentPngBase64: "aW1hZ2U=" }],
+        images: [{ id: "main", current: { mimeType: "image/webp", dataBase64: "aW1hZ2U=" } }],
         modelSelection: createModelSelection(instanceId, "text-model"),
       }).pipe(Effect.result);
 
@@ -160,7 +160,7 @@ it.effect.each(["missing", "disabled"] as const)(
       const error = yield* textGeneration.evaluateImageCondition!({
         cwd: process.cwd(),
         criterion: "Visible",
-        images: [{ id: "main", currentPngBase64: "aW1hZ2U=" }],
+        images: [{ id: "main", current: { mimeType: "image/webp", dataBase64: "aW1hZ2U=" } }],
         modelSelection: createModelSelection(selectedId, "exact-model"),
       }).pipe(Effect.flip);
       expect(error.operation).toBe("evaluateImageCondition");

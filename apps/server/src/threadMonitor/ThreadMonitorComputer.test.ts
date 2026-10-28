@@ -14,6 +14,7 @@ import {
   PreviewAutomationExecutionError,
   PreviewAutomationNoAvailableHostError,
   type ComputerAutomationSnapshot,
+  type ComputerAutomationScreenshotEncoding,
   type ThreadMonitor,
   type ThreadMonitorComputerStartInput,
   type ThreadMonitorComputerEvidenceImage,
@@ -58,7 +59,10 @@ const modelSelection = {
 };
 const createdAt = "2026-10-26T00:00:00.000Z";
 const png = (text: string) => Buffer.from(text).toString("base64");
-const snapshot = (text: string): ComputerAutomationSnapshot => ({
+const snapshot = (
+  text: string,
+  encoding: ComputerAutomationScreenshotEncoding = { format: "webp", mode: "lossless" },
+): ComputerAutomationSnapshot => ({
   display: {
     id: "left",
     label: "Left display",
@@ -76,7 +80,14 @@ const snapshot = (text: string): ComputerAutomationSnapshot => ({
     toDesktopLogical: { offsetX: -200.5, offsetY: 50.5, scaleX: 0.5, scaleY: 0.5 },
   },
   captureSource: "virtual-display",
-  screenshot: { mimeType: "image/png", data: png(text), width: 200, height: 100 },
+  screenshot: {
+    mimeType: encoding.format === "png" ? "image/png" : "image/webp",
+    data: png(text),
+    width: 200,
+    height: 100,
+    sizeBytes: Buffer.byteLength(text),
+    encoding,
+  },
 });
 const makeMonitor = (condition: ThreadMonitor["condition"]): ThreadMonitor => ({
   id: ThreadMonitorId.make("watch"),
@@ -241,7 +252,12 @@ const harness = Effect.fn("ComputerWatchTest.harness")(function* (
       }
       return (
         input.operation === "computerSnapshot"
-          ? (state.snapshotFor?.(input.input) ?? snapshot(state.pixels))
+          ? (state.snapshotFor?.(input.input) ??
+            snapshot(
+              state.pixels,
+              (input.input as { screenshot?: { encoding?: ComputerAutomationScreenshotEncoding } })
+                .screenshot?.encoding,
+            ))
           : {}
       ) as A;
     });
@@ -323,7 +339,7 @@ describe("durable computer adapter", () => {
           width: 101,
           height: 51,
         });
-        assert.equal(prepared.baselineImages[0]?.pngBase64, png("initial"));
+        assert.equal(prepared.baselineImages[0]?.dataBase64, png("initial"));
         assert.equal(h.calls[0]?.scope.thread.providerSessionId, "thread-monitor:watch");
         assert.equal(h.calls[0]?.scope.thread.threadId, Testkit.threadId);
         assert.equal(h.calls[0]?.scope.requestNamespace, "thread-monitor:watch");
@@ -343,7 +359,7 @@ describe("durable computer adapter", () => {
           evidence: retainedEvidence(prepared.baselineImages),
           checkedAt: createdAt,
         });
-        assert.equal(checked.match?.terminalImages[0]?.pngBase64, png("changed"));
+        assert.equal(checked.match?.terminalImages[0]?.dataBase64, png("changed"));
         assert.equal(checked.match?.summary, "Result");
         assert.deepEqual(h.evaluations, [
           {
@@ -351,7 +367,11 @@ describe("durable computer adapter", () => {
             criterion: "The task is complete.",
             modelSelection,
             images: [
-              { id: "screen", currentPngBase64: png("changed"), baselinePngBase64: png("initial") },
+              {
+                id: "screen",
+                current: { mimeType: "image/webp", dataBase64: png("changed") },
+                baseline: { mimeType: "image/webp", dataBase64: png("initial") },
+              },
             ],
           },
         ]);
@@ -364,6 +384,7 @@ describe("durable computer adapter", () => {
               region: prepared.condition.observation.regions[0]?.region,
               maxWidth: 200,
               maxHeight: 100,
+              encoding: { format: "webp", mode: "lossless" },
             },
           },
         );
@@ -385,7 +406,7 @@ describe("durable computer adapter", () => {
           label: "Pixels",
           match: { type: "image-change" },
         });
-        assert.equal(prepared.baselineImages[0]?.pngBase64, png("initial"));
+        assert.equal(prepared.baselineImages[0]?.dataBase64, png("initial"));
         const stable = yield* h.service.check({
           monitor: makeMonitor(prepared.condition),
           evidence: retainedEvidence(prepared.baselineImages),
@@ -497,7 +518,7 @@ it.effect(
         monitor: modelWatch,
       });
       const initialEvidence = Option.getOrThrow(yield* repository.getComputerEvidence(first.id));
-      assert.equal(initialEvidence.baselineImages[0]?.pngBase64, png("initial"));
+      assert.equal(initialEvidence.baselineImages[0]?.dataBase64, png("initial"));
       assert.deepEqual(initialEvidence.terminalImages, []);
       const restarted = yield* ThreadMonitorService.make.pipe(
         Effect.provideService(ThreadMonitorComputerService, h.service),
@@ -516,8 +537,8 @@ it.effect(
         "released",
       );
       const terminalEvidence = Option.getOrThrow(yield* repository.getComputerEvidence(first.id));
-      assert.equal(terminalEvidence.baselineImages[0]?.pngBase64, png("initial"));
-      assert.equal(terminalEvidence.terminalImages[0]?.pngBase64, png("changed"));
+      assert.equal(terminalEvidence.baselineImages[0]?.dataBase64, png("initial"));
+      assert.equal(terminalEvidence.terminalImages[0]?.dataBase64, png("changed"));
       const pending = yield* service.createComputer({
         threadId: Testkit.threadId,
         monitor: modelWatch,
@@ -634,7 +655,10 @@ it.effect("rolls back watch and baseline together and rejects corrupted conditio
         ...image,
         id: "terminal:screen",
         kind: "terminal" as const,
-        pngBase64: png("terminal"),
+        dataBase64: png("terminal"),
+        mimeType: "image/webp" as const,
+        sizeBytes: 8,
+        encoding: { format: "webp" as const, mode: "lossless" as const },
       })),
     };
     yield* repository.upsertComputerRevision({ monitor, ...evidence });
@@ -764,7 +788,7 @@ it.effect(
           check: { monitorId: pending.id },
         })).monitors[0]!;
         assert.equal(h.evaluations.length, 2);
-        assert.equal(h.evaluations[1]?.images[0]?.currentPngBase64, png("latest change"));
+        assert.equal(h.evaluations[1]?.images[0]?.current.dataBase64, png("latest change"));
         assert.equal(
           result.condition.type === "computer" && result.condition.evaluationPending,
           false,
@@ -842,8 +866,18 @@ it.effect(
       const h = yield* harness();
       h.state.usage = { inputTokens: 20, cachedInputTokens: 16, outputTokens: 5 };
       h.state.snapshotFor = (input) => {
-        const x = (input as { screenshot: { region: { x: number } } }).screenshot.region.x;
-        const current = snapshot(x === -400 ? `context:${h.state.pixels}` : h.state.pixels);
+        const {
+          region: { x },
+          encoding,
+        } = (
+          input as {
+            screenshot: { region: { x: number }; encoding: ComputerAutomationScreenshotEncoding };
+          }
+        ).screenshot;
+        const current = snapshot(
+          x === -400 ? `context:${h.state.pixels}` : h.state.pixels,
+          encoding,
+        );
         return {
           ...current,
           frame: {
@@ -870,7 +904,13 @@ it.effect(
       const prepared = yield* h.prepare({
         ...modelWatch,
         observation: {
-          regions: [region("status", "trigger", -800), region("details", "context", -400)],
+          regions: [
+            {
+              ...region("status", "trigger", -800),
+              encoding: { format: "webp", mode: "near-lossless", quality: 88 },
+            },
+            { ...region("details", "context", -400), encoding: { format: "png" } },
+          ],
         },
       });
       const captures = () =>
@@ -880,6 +920,10 @@ it.effect(
             (call) => (call.input as { screenshot: { region: { x: number } } }).screenshot.region.x,
           );
       assert.deepEqual(captures(), [-800, -400]);
+      assert.deepEqual(
+        prepared.condition.observation.regions.map(({ encoding }) => encoding),
+        [{ format: "webp", mode: "near-lossless", quality: 88 }, { format: "png" }],
+      );
       const evidence = retainedEvidence(prepared.baselineImages);
       const first = yield* h.service.check({
         monitor: makeMonitor(prepared.condition),
@@ -900,14 +944,14 @@ it.effect(
         {
           id: "status",
           purpose: "status",
-          currentPngBase64: png("changed"),
-          baselinePngBase64: png("initial"),
+          current: { mimeType: "image/webp", dataBase64: png("changed") },
+          baseline: { mimeType: "image/webp", dataBase64: png("initial") },
         },
         {
           id: "details",
           purpose: "details",
-          currentPngBase64: png("context:changed"),
-          baselinePngBase64: png("context:initial"),
+          current: { mimeType: "image/png", dataBase64: png("context:changed") },
+          baseline: { mimeType: "image/png", dataBase64: png("context:initial") },
         },
       ]);
       assert.deepEqual(second.condition.totalUsage, h.state.usage);
@@ -1010,7 +1054,13 @@ it.effect(
                 acknowledgeReview: true,
                 observation: {
                   regions: [
-                    { id: "result", role: "trigger", maxWidth: 300, maxHeight: 42 },
+                    {
+                      id: "result",
+                      role: "trigger",
+                      maxWidth: 300,
+                      maxHeight: 42,
+                      encoding: { format: "webp", mode: "lossy", quality: 75 },
+                    },
                     { id: "context", role: "context", maxWidth: 100 },
                   ],
                 },
@@ -1026,14 +1076,19 @@ it.effect(
       if (revised.condition.type !== "computer")
         return yield* Effect.die("Expected computer watch");
       assert.equal(revised.condition.revision, 2);
+      assert.deepEqual(revised.condition.observation.regions[0]?.encoding, {
+        format: "webp",
+        mode: "lossy",
+        quality: 75,
+      });
       assert.equal(revised.condition.evaluationCount, 0);
       assert.isNull(revised.condition.review.policy);
       const after = Option.getOrThrow(yield* repository.getComputerEvidence(monitor.id));
       assert.deepEqual(
-        after.baselineImages.map(({ regionId, pngBase64 }) => ({ regionId, pngBase64 })),
+        after.baselineImages.map(({ regionId, dataBase64 }) => ({ regionId, dataBase64 })),
         [
-          { regionId: "result", pngBase64: png("replacement") },
-          { regionId: "context", pngBase64: png("replacement") },
+          { regionId: "result", dataBase64: png("replacement") },
+          { regionId: "context", dataBase64: png("replacement") },
         ],
       );
       assert.deepEqual(after.currentImages, []);
@@ -1041,6 +1096,11 @@ it.effect(
         threadId: Testkit.threadId,
         update: { monitorId: monitor.id, expectedRevision: 2, review: { afterEvaluations: 3 } },
       });
+      assert.deepEqual(
+        restored.condition.type === "computer" &&
+          restored.condition.observation.regions[0]?.encoding,
+        { format: "webp", mode: "lossy", quality: 75 },
+      );
       assert.equal(
         restored.condition.type === "computer" &&
           restored.condition.review.policy?.afterEvaluations,
@@ -1138,6 +1198,10 @@ it.effect(
       if (revised.condition.type !== "computer")
         return yield* Effect.die("Expected computer watch");
       assert.equal(revised.condition.revision, 2);
+      assert.deepEqual(revised.condition.observation.regions[0]?.encoding, {
+        format: "webp",
+        mode: "lossless",
+      });
       assert.equal(revised.condition.review.state, "idle");
       assert.equal(revised.condition.review.policy?.consecutiveUncertain, 1);
       assert.equal(revised.condition.evaluationCount, 0);

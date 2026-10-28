@@ -1,8 +1,4 @@
 import { assert, it } from "@effect/vitest";
-import {
-  ThreadMonitorComputerCondition,
-  ThreadMonitorComputerEvidenceImage,
-} from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
 import * as Schema from "effect/Schema";
@@ -13,10 +9,22 @@ import * as NodeSqliteClient from "@t3tools/shared/nodeSqliteClient";
 
 const encodeJson = Schema.encodeSync(Schema.fromJsonString(Schema.Unknown));
 const decodeCondition = Schema.decodeUnknownSync(
-  Schema.fromJsonString(ThreadMonitorComputerCondition),
+  Schema.fromJsonString(
+    Schema.Struct({
+      revision: Schema.Int,
+      observation: Schema.Struct({
+        regions: Schema.Array(
+          Schema.Struct({ id: Schema.String, role: Schema.String, changedSampleCount: Schema.Int }),
+        ),
+      }),
+      review: Schema.Struct({ policy: Schema.Unknown }),
+    }),
+  ),
 );
 const decodeImages = Schema.decodeUnknownSync(
-  Schema.fromJsonString(Schema.Array(ThreadMonitorComputerEvidenceImage)),
+  Schema.fromJsonString(
+    Schema.Array(Schema.Struct({ kind: Schema.String, pngBase64: Schema.String })),
+  ),
 );
 
 it.effect.each([false, true])(

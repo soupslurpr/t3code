@@ -1,6 +1,5 @@
 /** Decodes and transforms owned QEMU display bitmaps. */
 
-import sharp from "sharp";
 import type { QemuAgentDesktopCapture } from "./QemuAgentDesktop.ts";
 
 const PIXEL_CHANNEL_COUNT = 4;
@@ -121,16 +120,4 @@ export function cropAgentDesktopImage(
   const resized = targetSize.width !== region.width || targetSize.height !== region.height;
   const bitmap = resized ? resizeBitmap(source, region, targetSize) : cropBitmap(source, region);
   return Promise.resolve(makeImage(bitmap, targetSize.width, targetSize.height));
-}
-
-export async function encodeAgentDesktopPng(image: AgentDesktopImage): Promise<Buffer> {
-  const pixels = image.toBitmap();
-  for (let offset = 0; offset < pixels.length; offset += 4) {
-    const blue = pixels[offset]!;
-    pixels[offset] = pixels[offset + 2]!;
-    pixels[offset + 2] = blue;
-  }
-  return sharp(pixels, { raw: { width: image.width, height: image.height, channels: 4 } })
-    .png({ compressionLevel: 6 })
-    .toBuffer();
 }

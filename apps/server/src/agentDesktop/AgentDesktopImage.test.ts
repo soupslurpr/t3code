@@ -1,11 +1,8 @@
+import { encodeComputerScreenshot } from "../computer/ComputerScreenshotEncoding.ts";
 import { expect, it } from "@effect/vitest";
 import sharp from "sharp";
 
-import {
-  cropAgentDesktopImage,
-  decodeAgentDesktopCapture,
-  encodeAgentDesktopPng,
-} from "./AgentDesktopImage.ts";
+import { cropAgentDesktopImage, decodeAgentDesktopCapture } from "./AgentDesktopImage.ts";
 
 it("owns captured bytes and encodes cropped BGRA pixels with their original colors", async () => {
   const data = new Uint8Array([0, 0, 255, 255, 255, 0, 0, 255]);
@@ -23,7 +20,7 @@ it("owns captured bytes and encodes cropped BGRA pixels with their original colo
     { x: 1, y: 0, width: 1, height: 1 },
     { width: 1, height: 1 },
   );
-  const png = await encodeAgentDesktopPng(crop);
+  const { data: png } = await encodeComputerScreenshot(crop, null, { format: "png" });
   const decoded = await sharp(png).ensureAlpha().raw().toBuffer({ resolveWithObject: true });
   expect(decoded.info.width).toBe(1);
   expect(decoded.info.height).toBe(1);
