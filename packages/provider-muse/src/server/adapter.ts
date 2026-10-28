@@ -1,4 +1,9 @@
-import { MspError, type ProcessExit, type SendUserTurnOptions } from "@muse-code/sdk";
+import {
+  MspError,
+  ProtocolError,
+  type ProcessExit,
+  type SendUserTurnOptions,
+} from "@muse-code/sdk";
 import {
   MUSE_DEFAULT_MODEL,
   ProviderDriverKind,
@@ -63,6 +68,7 @@ import {
 import { isMuseUsageLimitFailure, museUsageLimitResetAt } from "./usageLimits.ts";
 import {
   createMuseSdkHostEffect,
+  MuseScopeCleanupUnconfirmedError,
   museApprovalMode,
   museCanonicalPath,
   musePermissionProfile,
@@ -1667,32 +1673,56 @@ export const makeMuseAdapterV2 = Effect.fn("makeMuseAdapterV2")(function* (
       );
       const launchHost = Effect.fnUntraced(function* () {
         const epoch = ++hostEpoch;
-        const launch = yield* agentScope.wrap({
-          command: options.settings.binaryPath || "muse",
-          args: [],
-          name: "muse",
-          threadId: input.threadId,
-          env: options.environment,
-        });
-        // Finalizers run in reverse order: reap detached work after closing the host.
-        const scopeUnit = launch.unit;
-        const stopScope =
-          scopeUnit === undefined ? Effect.void : yield* Effect.cached(agentScope.stop(scopeUnit));
-        yield* Scope.addFinalizer(scope, stopScope);
-        const processExited = yield* Deferred.make<ProcessExit>();
-        // Observe raw exit before acquisition: inherited stdout can also block startup cleanup.
-        yield* Deferred.await(processExited).pipe(Effect.andThen(stopScope), Effect.forkIn(scope));
+        const runPromise = Effect.runPromiseWith(yield* Effect.context<never>());
+        let scopeUnit: string | undefined;
         const created = yield* Effect.acquireRelease(
           createMuseSdkHostEffect(
             {
-              binaryPath: launch.command,
-              launchArgs: launch.args,
+              binaryPath: options.settings.binaryPath || "muse",
               cwd,
               environment: options.environment,
               runtimeMode: input.runtimePolicy.runtimeMode,
-              onProcessExit: (exit) => {
-                Deferred.doneUnsafe(processExited, Effect.succeed(exit));
-              },
+              prepareAttempt: (launch) =>
+                runPromise(
+                  Effect.gen(function* () {
+                    const wrapped = yield* agentScope.wrap({
+                      ...launch,
+                      name: "muse",
+                      threadId: input.threadId,
+                      env: options.environment,
+                    });
+                    scopeUnit = wrapped.unit;
+                    const unit = wrapped.unit;
+                    const stopScope =
+                      unit === undefined
+                        ? Effect.void
+                        : yield* Effect.cached(agentScope.stop(unit));
+                    const confirmScope = yield* Effect.cached(
+                      unit === undefined
+                        ? Effect.succeed(true)
+                        : (agentScope.confirmStopped?.(unit) ?? Effect.succeed(false)),
+                    );
+                    // Finalizers run after host close, including interrupted acquisition.
+                    yield* Scope.addFinalizer(scope, stopScope);
+                    const exited = yield* Deferred.make<ProcessExit>();
+                    // Raw exit reaps inherited stdio holders even before initialize completes.
+                    yield* Deferred.await(exited).pipe(
+                      Effect.andThen(stopScope),
+                      Effect.forkIn(scope),
+                    );
+                    return {
+                      launch: wrapped,
+                      onProcessExit: (exit: ProcessExit) => {
+                        Deferred.doneUnsafe(exited, Effect.succeed(exit));
+                      },
+                      close: async (requireConfirmation = false) => {
+                        await runPromise(stopScope);
+                        if (requireConfirmation && !(await runPromise(confirmScope)))
+                          throw new MuseScopeCleanupUnconfirmedError();
+                      },
+                    };
+                  }),
+                ),
             },
             options.createHost,
           ).pipe(
@@ -1732,20 +1762,19 @@ export const makeMuseAdapterV2 = Effect.fn("makeMuseAdapterV2")(function* (
           });
         });
         created.connection.onProtocolError((cause) => {
+          // EOF can precede Node's exit event; native shutdown supplies that host's diagnosis.
+          if (
+            cause instanceof ProtocolError &&
+            cause.line === undefined &&
+            cause.message === "connection reached EOF"
+          )
+            return;
           Queue.offerUnsafe(inbox, { type: "failure", cause, epoch });
         });
         created.connection.onServerRequest(async (request) => {
           if (request.method === "approval/request" || request.method === "userInput/request")
             return {};
           throw new Error(`Unsupported Muse server request: ${request.method}`);
-        });
-        void created.connection.closed.then(() => {
-          if (!closed && epoch === hostEpoch)
-            Queue.offerUnsafe(inbox, {
-              type: "failure",
-              cause: new Error("Muse connection closed unexpectedly"),
-              epoch,
-            });
         });
         const reportExit = (exit: ProcessExit) => {
           if (!closed && epoch === hostEpoch) {
@@ -1762,11 +1791,21 @@ export const makeMuseAdapterV2 = Effect.fn("makeMuseAdapterV2")(function* (
             });
           }
         };
-        void created.exited.then(reportExit);
-        yield* Deferred.await(processExited).pipe(
-          Effect.tap((exit) => Effect.sync(() => reportExit(exit))),
-          Effect.forkIn(scope),
-        );
+        const reportFailure = (cause: unknown) => {
+          if (!closed && epoch === hostEpoch)
+            Queue.offerUnsafe(inbox, { type: "failure", cause, epoch });
+        };
+        void created.connection.closed.then(async () => {
+          if (closed || epoch !== hostEpoch) return;
+          try {
+            await created.close();
+            reportExit(await created.exited);
+          } catch (cause) {
+            reportFailure(cause);
+          }
+        }, reportFailure);
+        void created.exited.then(reportExit, reportFailure);
+        void created.processExited?.then(reportExit, reportFailure);
       });
       yield* Effect.addFinalizer(() =>
         Effect.gen(function* () {

@@ -22,6 +22,8 @@ export interface AgentScopeShape {
    * descendants outside its process group. Preserves systemd OOM diagnosis.
    */
   readonly stop: (unit: string) => Effect.Effect<void>;
+  /** Positive exact-unit cleanup evidence; a submitted stop is not confirmation. */
+  readonly confirmStopped?: ((unit: string) => Effect.Effect<boolean>) | undefined;
   /**
    * SIGKILLs every process in the thread's own scope, which works even while
    * the kernel throttles them. Shared scopes serve other threads and are never
