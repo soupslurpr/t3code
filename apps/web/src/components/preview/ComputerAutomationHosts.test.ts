@@ -30,7 +30,10 @@ vi.mock("~/state/preview", () => ({
   },
 }));
 vi.mock("~/state/environments", () => ({ useEnvironments: vi.fn() }));
-vi.mock("~/state/session", () => ({ useEnvironmentsWithScope: vi.fn() }));
+vi.mock("~/state/session", () => ({
+  useEnvironmentsWithScope: vi.fn(),
+  readPreparedConnection: () => ({ httpBaseUrl: "https://isolated.example.test" }),
+}));
 vi.mock("@t3tools/client-runtime/state/runtime", () => ({ runAtomCommand: mocks.runAtomCommand }));
 
 import { computerHostAtom } from "./ComputerAutomationHosts";
@@ -48,8 +51,10 @@ function setup() {
   let nextId = 0;
   const freshId = () => `${expect.getState().currentTestName}:${++nextId}`;
   mocks.randomUUID.mockImplementation(freshId);
-  const config = (enabled = true, providerStatus = "initial") => ({
-    environment: { capabilities: { userDesktopExecution: enabled } },
+  const config = (enabled = true, providerStatus = "initial", transfersEnabled = true) => ({
+    environment: {
+      capabilities: { userDesktopExecution: enabled, userDesktopTransfers: transfersEnabled },
+    },
     providerStatus,
   });
   const configs = new Map<EnvironmentId, Atom.Writable<ReturnType<typeof config>>>();
@@ -120,6 +125,12 @@ function setup() {
         capabilities: ["view", "control", "execution"],
       }),
       execution: handle,
+      transfer: async (input: { operation: string }, context: { controllerId: string }) => {
+        if (input.operation !== "cancel") return handle(input, context);
+        cancelled.push(context.controllerId);
+        pending.get(context.controllerId)?.cancelled.resolve();
+        return { ok: true, value: { cancelled: true } };
+      },
       computer: {
         requestControl: handle,
         act: handle,
@@ -155,7 +166,7 @@ function setup() {
   };
   const request = (
     environmentId: EnvironmentId,
-    operation: "computerRequestControl" | "computerAct",
+    operation: "computerRequestControl" | "computerAct" | "computerTransfer",
     connectionId = "one",
   ) => {
     const id = freshId();
@@ -171,14 +182,31 @@ function setup() {
       controllerId: id,
       threadId: ThreadId.make("isolated-thread"),
       operation,
-      input: { desktop: { kind: "user", desktopId: "selected" } },
+      input:
+        operation === "computerTransfer"
+          ? {
+              operation: "run",
+              desktop: { kind: "user", desktopId: "selected" },
+              transferId: id,
+              direction: "to-desktop",
+              desktopPath: "received",
+              collision: "create",
+              compression: "auto",
+              timeoutMs: 1000,
+              token: "a".repeat(64),
+              url: `/api/user-desktop-transfers/${id}`,
+            }
+          : { desktop: { kind: "user", desktopId: "selected" } },
       timeoutMs: 1000,
     };
     send(environmentId, { type: "request", connectionId, request: input });
     return { id, ...call };
   };
-  const refresh = (environmentId: EnvironmentId, enabled = true) => {
-    registry.set(configs.get(environmentId)!, config(enabled, "provider-refreshed"));
+  const refresh = (environmentId: EnvironmentId, enabled = true, transfersEnabled = true) => {
+    registry.set(
+      configs.get(environmentId)!,
+      config(enabled, "provider-refreshed", transfersEnabled),
+    );
     registry.get(computerHostAtom(environmentId));
     flush();
   };
@@ -202,7 +230,7 @@ function setup() {
   };
 }
 
-it.each(["computerRequestControl", "computerAct"] as const)(
+it.each(["computerRequestControl", "computerAct", "computerTransfer"] as const)(
   "preserves %s across an unrelated provider refresh",
   async (operation) => {
     using h = setup();
@@ -279,4 +307,26 @@ it("unmounting a removed environment scope cancels only its pending native work"
       input: expect.objectContaining({ requestId: retained.id }),
     }),
   ]);
+});
+
+it("cancels transfer work when its capability is removed while retaining execution", async () => {
+  using h = setup();
+  const host = h.mount();
+  const old = h.request(host.environmentId, "computerTransfer");
+  await old.began.promise;
+  h.refresh(host.environmentId, true, false);
+  await old.cancelled.promise;
+  expect(h.registrations).toHaveLength(2);
+  expect(h.registration(host.environmentId).input.supportedOperations).toContain(
+    "computerExecution",
+  );
+  expect(h.registration(host.environmentId).input.supportedOperations).not.toContain(
+    "computerTransfer",
+  );
+  old.result.resolve({ ok: true, value: "stale transfer result" });
+  const current = h.request(host.environmentId, "computerAct");
+  await current.began.promise;
+  current.result.resolve({ ok: true, value: "current" });
+  await current.replied.promise;
+  expect(h.responses.map(({ input }) => input.requestId)).toEqual([current.id]);
 });

@@ -51,6 +51,14 @@ fs.lstat = async (path, ...args) => {
     throw error;
   }
 };
+const rename = fs.rename;
+fs.rename = async (source, destination, ...args) => {
+  await rename(source, destination, ...args);
+  if (options.failure === "cancel-merge" && destination === pathModule.join(destinationPath, options.abortAfterRelativePath)) {
+    await claim();
+    controller.abort(Object.assign(new Error("cancel after one merged entry"), { code: "TEST_CANCELLED" }));
+  }
+};
 const open = fs.open;
 fs.open = async (path, ...args) => {
   const handle = await open(path, ...args);
@@ -139,12 +147,14 @@ function createWorker(
   destinationPath: string,
   options: {
     collision?: "create" | "replace" | "merge";
+    abortAfterRelativePath?: string;
     allowExternalSymlinks?: boolean;
     pauseAfterCommit?: boolean;
     failure?:
       | "cancel-staging"
       | "cancel-before"
       | "cancel-after"
+      | "cancel-merge"
       | "post-commit-error"
       | "lost-receipt"
       | "cleanup"
@@ -247,6 +257,65 @@ async function createArchiveFixture(
 }
 
 describe("Agent desktop bundle", () => {
+  it.live.each([".", "nested"])(
+    "stops a merge after the accepted entry when cancelled: %s",
+    (subdirectory) =>
+      withTempDirectory(async (directory) => {
+        const source = NodePath.join(directory, "source");
+        const destination = NodePath.join(directory, "destination");
+        const archive = NodePath.join(directory, "bundle");
+        await NodeFSP.mkdir(NodePath.join(source, subdirectory), { recursive: true });
+        await NodeFSP.mkdir(NodePath.join(destination, subdirectory), { recursive: true });
+        for (const name of ["a", "b", "c"]) {
+          await NodeFSP.writeFile(NodePath.join(source, subdirectory, name), `new ${name}`);
+          await NodeFSP.writeFile(NodePath.join(destination, subdirectory, name), `old ${name}`);
+        }
+        await NodeFSP.writeFile(NodePath.join(destination, "keep"), "retained");
+        await packAgentDesktopBundle({
+          sourcePath: source,
+          outputPath: archive,
+          compression: "none",
+        });
+        await using worker = createWorker(archive, destination, {
+          collision: "merge",
+          failure: "cancel-merge",
+          abortAfterRelativePath: NodePath.join(subdirectory, "a"),
+        });
+        await worker.ready;
+        expect(await NodeFSP.readFile(NodePath.join(destination, subdirectory, "a"), "utf8")).toBe(
+          "new a",
+        );
+        worker.resume();
+        const result = await worker.result;
+        expect(await NodeFSP.readFile(NodePath.join(destination, subdirectory, "b"), "utf8")).toBe(
+          "old b",
+        );
+        expect(await NodeFSP.readFile(NodePath.join(destination, subdirectory, "c"), "utf8")).toBe(
+          "old c",
+        );
+        expect(result).toMatchObject({ status: "rejected", code: "TEST_CANCELLED" });
+        expect(await NodeFSP.readFile(NodePath.join(destination, "keep"), "utf8")).toBe("retained");
+        expect(
+          (await NodeFSP.readdir(directory)).filter((path) => path.includes(".t3-transfer-")),
+        ).toEqual([]);
+      }),
+  );
+
+  it.live("refuses to include its own growing archive in the copied tree", () =>
+    withTempDirectory(async (directory) => {
+      const source = NodePath.join(directory, "source");
+      await NodeFSP.mkdir(source);
+      await NodeFSP.writeFile(NodePath.join(source, "keep"), "unchanged");
+      await expect(
+        packAgentDesktopBundle({
+          sourcePath: source,
+          outputPath: NodePath.join(source, "archive.bundle"),
+        }),
+      ).rejects.toMatchObject({ code: "invalid-entry" });
+      assert.deepEqual(await NodeFSP.readdir(source), ["keep"]);
+    }),
+  );
+
   it.live.each([false, true])(
     "preserves the native receipt through handle close failure, collision=%s",
     (collision) =>

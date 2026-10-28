@@ -37,6 +37,8 @@ import * as BackgroundPolicy from "./background/BackgroundPolicy.ts";
 import * as AgentPowerReporter from "./background/AgentPowerReporter.ts";
 import * as HostPowerMonitor from "./background/HostPowerMonitor.ts";
 import * as ServerConfig from "./config.ts";
+import * as UserDesktopTransfers from "./computer/UserDesktopTransfers.ts";
+import { userDesktopTransferRouteLayer } from "./computer/userDesktopTransferHttp.ts";
 import { withUntracedRequests } from "./http.ts";
 import * as ServerHttp from "./http.ts";
 import {
@@ -787,6 +789,7 @@ const layerRuntimeCoreWithAgentPower = AgentPowerReporter.layer.pipe(
 );
 
 const layerRuntimeDependencies = layerRuntimeCoreWithAgentPower.pipe(
+  Layer.provideMerge(UserDesktopTransfers.layer.pipe(Layer.provide(layerPreviewAutomationBroker))),
   Layer.provideMerge(
     AgentDesktopTransfer.layer.pipe(
       Layer.provide(layerAgentDesktopManager),
@@ -829,6 +832,7 @@ const layerMakeRoutes = Layer.mergeAll(
       Layer.provide(WebhookRoute.layer.pipe(Layer.provide(RelayDeliveryProof.layer))),
       Layer.provide(AuthHttp.layerAuthenticatedAuth),
     ),
+    userDesktopTransferRouteLayer,
     ServerHttp.layerOtlpTracesProxyRoute,
     ServerHttp.layerAssetRoute,
     ServerHttp.layerAttachmentUploadRoute,

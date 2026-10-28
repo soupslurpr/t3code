@@ -5,6 +5,8 @@ const DESKTOP_RUNTIME_EXTERNAL_PREFIXES = [
   "@clerk/electron-passkeys",
   "electron-webauthn",
   "ffi-rs",
+  "koffi",
+  "@koromix/koffi-",
   "node-pty",
   "sharp",
   "@yuuang/",
