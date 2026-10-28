@@ -112,7 +112,6 @@ const smokeExpression = String.raw`(async () => {
   };
 
   try {
-    valueOf(await computer.requestAvailability({}), "request availability");
     const wasMaximized =
       window.outerWidth >= window.screen.availWidth - 2 &&
       window.outerHeight >= window.screen.availHeight - 2;

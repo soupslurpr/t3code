@@ -5,6 +5,7 @@ import {
   ComputerAutomationAccessInput,
   ComputerAutomationAvailabilityInput,
   ComputerAutomationActInput,
+  ComputerAutomationControllerKind,
   ComputerAutomationFailure,
   ComputerAutomationObservation,
   ComputerAutomationSnapshot,
@@ -1039,6 +1040,7 @@ export type SystemSettingsPane = typeof SystemSettingsPaneSchema.Type;
 
 export const DesktopComputerAutomationContextSchema = Schema.Struct({
   controllerId: Schema.String.check(Schema.isTrimmed()).check(Schema.isNonEmpty()),
+  controllerKind: Schema.optionalKey(ComputerAutomationControllerKind),
   environmentId: Schema.optionalKey(EnvironmentId),
   threadId: Schema.optionalKey(ThreadId),
 });
@@ -1283,6 +1285,7 @@ export interface DesktopComputerAutomationBridge {
 
 export interface DesktopComputerAutomationContext {
   readonly controllerId: string;
+  readonly controllerKind?: ComputerAutomationControllerKind;
   readonly environmentId?: EnvironmentId;
   readonly threadId?: ThreadId;
 }

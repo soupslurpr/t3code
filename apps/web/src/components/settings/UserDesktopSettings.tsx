@@ -50,7 +50,7 @@ interface PendingRequest {
   readonly environmentId: EnvironmentId;
   readonly desktopId: string;
   readonly label: string;
-  readonly operation: "remember-view" | "remember-control" | "release" | "forget";
+  readonly operation: "remember-view" | "remember-control" | "end-all-access" | "forget";
 }
 
 /** Converts an RPC failure into bounded user-facing prose. */
@@ -209,7 +209,7 @@ export function UserDesktopSettings() {
             <AlertDescription>
               {pending.operation === "remember-view" || pending.operation === "remember-control"
                 ? `Waiting for approval on ${pending.label}. Complete the GNOME sharing prompt on that desktop. This explicit Settings action asks GNOME to remember the selected access.`
-                : pending.operation === "release"
+                : pending.operation === "end-all-access"
                   ? `Ending active computer access on ${pending.label}…`
                   : `Forgetting remembered computer-use approval on ${pending.label}…`}
             </AlertDescription>
@@ -379,9 +379,10 @@ export function UserDesktopSettings() {
                           size="sm"
                           variant="outline"
                           disabled={busy}
-                          onClick={() => void performAccessAction(group, "release")}
+                          onClick={() => void performAccessAction(group, "end-all-access")}
                         >
-                          {pending?.desktopId === group.desktopId && pending.operation === "release"
+                          {pending?.desktopId === group.desktopId &&
+                          pending.operation === "end-all-access"
                             ? "Ending access…"
                             : "End all access"}
                         </Button>

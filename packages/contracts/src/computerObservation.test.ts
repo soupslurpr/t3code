@@ -1,4 +1,4 @@
-import { UserDesktopHumanRequest } from "./userDesktop.ts";
+import { UserDesktopHumanRequest } from "./previewAutomation.ts";
 import { Schema } from "effect";
 import { describe, expect, it } from "vite-plus/test";
 

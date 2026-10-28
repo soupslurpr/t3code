@@ -30,6 +30,14 @@ Terms whose meaning matters across T3 Code. Architecture and lifecycle constrain
 | Effect worker           | The worker that runs outbox effects after commit and feeds their results back as commands.                                                                   |
 | Durable monitor         | A persisted timer or external condition owned by a thread that can record a result or request a continuation. See [durable monitors](./durable-monitors.md). |
 
+## Computer use
+
+| Term              | Meaning                                                                                                                                                           |
+| ----------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| User desktop      | A physical graphical session with stable identity across environment routes and host-owned view/control leases. See [supervision](./user-desktop-supervision.md). |
+| Agent desktop     | An environment-owned QEMU/KVM machine for isolated graphical agent work. See [Agent desktops](./agent-desktops.md).                                               |
+| Supervision lease | A transient human view or control claim. View is shared; control is exclusive. Release or expiry ends the claim.                                                  |
+
 ## Providers and checkpoints
 
 | Term                | Meaning                                                                                                      |

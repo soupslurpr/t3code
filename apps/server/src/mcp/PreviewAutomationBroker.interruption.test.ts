@@ -167,6 +167,7 @@ it.effect("cancels only the normal thread controller and resumes without restori
       expect(interruption.request).toMatchObject({
         operation: "computerInterrupt",
         controllerId: scope.thread.controllerId,
+        controllerKind: "agent",
         threadId: thread.threadId,
         input: { desktop },
       });

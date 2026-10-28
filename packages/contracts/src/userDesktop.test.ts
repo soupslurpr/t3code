@@ -5,7 +5,8 @@ import {
   ComputerAutomationAvailabilityInput,
   ComputerAutomationTargetInput,
 } from "./computerAutomation.ts";
-import { UserDesktopHostRegistration, UserDesktopHumanInvokeInput } from "./userDesktop.ts";
+import { UserDesktopHostRegistration } from "./userDesktop.ts";
+import { UserDesktopHumanInvokeInput } from "./previewAutomation.ts";
 
 const decodeRegistration = Schema.decodeUnknownSync(UserDesktopHostRegistration);
 const decodeHumanRequest = Schema.decodeUnknownSync(UserDesktopHumanInvokeInput);
