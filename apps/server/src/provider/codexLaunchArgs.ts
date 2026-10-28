@@ -2,6 +2,9 @@ import { tokenizeCliArgs } from "@t3tools/shared/cliArgs";
 
 const T3CODE_CODEX_LAUNCH_ARGS_ENV = "T3CODE_CODEX_LAUNCH_ARGS";
 
+// Codex plugins depend on first-party host capabilities that T3 Code does not expose.
+const DISABLE_CODEX_PLUGINS_ARGS = ["--disable", "plugins"] as const;
+
 export const resolveCodexLaunchArgs = (
   launchArgs?: string,
   environment: NodeJS.ProcessEnv = process.env,
@@ -11,12 +14,13 @@ const codexLaunchArgv = (launchArgs?: string): ReadonlyArray<string> => tokenize
 
 export const codexAppServerArgs = (launchArgs?: string) => [
   "app-server",
+  ...DISABLE_CODEX_PLUGINS_ARGS,
   ...codexLaunchArgv(launchArgs),
 ];
 
 export const codexExecLaunchArgs = (launchArgs?: string) => {
   const args = codexLaunchArgv(launchArgs);
-  const execArgs: Array<string> = [];
+  const execArgs: Array<string> = [...DISABLE_CODEX_PLUGINS_ARGS];
 
   for (let index = 0; index < args.length; index++) {
     const arg = args[index];
