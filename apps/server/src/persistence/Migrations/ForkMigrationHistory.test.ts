@@ -140,7 +140,7 @@ describe("fork migration ledger adoption", () => {
     Effect.gen(function* () {
       const sql = yield* SqlClient.SqlClient;
       const executed = yield* runMigrations();
-      assert.deepEqual(executed.at(-1), [13, "ThreadMonitorCancellation"]);
+      assert.deepEqual(executed.at(-1), [14, "ThreadRunMonitors"]);
       yield* assertCurrentUpstream;
       assert.deepEqual(
         (yield* forkHistory).map(({ migration_id, name }) => ({ migration_id, name })),
@@ -158,6 +158,7 @@ describe("fork migration ledger adoption", () => {
           { migration_id: 11, name: "PreviewSessions" },
           { migration_id: 12, name: "ToolRuns" },
           { migration_id: 13, name: "ThreadMonitorCancellation" },
+          { migration_id: 14, name: "ThreadRunMonitors" },
         ],
       );
       assert.deepEqual(yield* runMigrations(), []);
@@ -194,8 +195,8 @@ describe("fork migration ledger adoption", () => {
       yield* seedLegacy(66, 13);
       yield* runMigrations();
       yield* sql`INSERT INTO effect_sql_fork_migrations ${sql.insert(
-        forkNames.slice(13).map((name, index) => ({
-          migration_id: index + 14,
+        forkNames.slice(14).map((name, index) => ({
+          migration_id: index + 15,
           name,
           created_at: createdAt,
         })),
@@ -274,7 +275,7 @@ describe("fork migration ledger adoption", () => {
           assert.deepEqual(yield* forkHistory, beforeFork);
         } else {
           yield* assertCurrentUpstream;
-          assert.lengthOf(yield* forkHistory, 13);
+          assert.lengthOf(yield* forkHistory, 14);
         }
       }).pipe(Effect.provide(memory)),
   );
@@ -322,7 +323,7 @@ describe("fork migration ledger adoption", () => {
       yield* sql`DROP TRIGGER reject_upgrade`;
       yield* runMigrations();
       yield* assertCurrentUpstream;
-      assert.lengthOf(yield* forkHistory, 13);
+      assert.lengthOf(yield* forkHistory, 14);
     }).pipe(Effect.provide(memory)),
   );
 
@@ -382,7 +383,7 @@ describe("fork migration ledger adoption", () => {
               NodeEvents.EventEmitter.once(second, "message"),
             ]);
             first.postMessage("release", []);
-            assert.deepEqual(await completed, [[89], [0]]);
+            assert.deepEqual(await completed, [[90], [0]]);
           } finally {
             await Promise.all([first.terminate(), second.terminate()]);
           }

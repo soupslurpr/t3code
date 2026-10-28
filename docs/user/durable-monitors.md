@@ -12,6 +12,8 @@ Durable waits support:
 - a specific future time;
 - a signal from background work or automation, optionally with a fallback
   deadline;
+- the completion, failure, or stopping of an exact run or the next run of a
+  selected thread in this environment, optionally with a fallback deadline;
 - a durable area of the user desktop or a specific Agent desktop, checked for
   an exact image change or a visible condition described in plain language.
 
@@ -34,6 +36,10 @@ resumes using the existing conversation, without a separate handoff prompt.
 The event does not grant new authorization. Codex monitor
 continuations require Codex CLI 0.151.0 or later; update Codex if delivery
 reports that the installed version does not support automated input.
+
+A native thread wait uses the app's run events. Ask the agent to wait for
+an exact run or the next run. The result says whether that run completed,
+failed, or stopped; completion does not establish broader task success.
 
 Waits survive a T3 server restart. T3 Code does not run timers in a hosted
 service while the environment is offline; an overdue wait is reconciled the
@@ -83,7 +89,10 @@ and does not repeat the warning within the same revision. An agent can disable t
 retaining other review checkpoints, or disable reviews entirely when silence is intentional.
 
 On web and desktop, open thread details and find **Automations** to inspect
-outstanding monitors and cancel an individual wait. You can also ask the agent
+outstanding monitors and cancel an individual wait without an active
+provider. Details include the condition, deadline or next check, delivery
+blockers, errors, review checkpoints, and available evaluator usage.
+You can also ask the agent
 to list or cancel its waits from any client. Signal-based monitoring
 usually combines a durable wait with background work that reports when its
 condition is satisfied. The agent can give a background job a private completion

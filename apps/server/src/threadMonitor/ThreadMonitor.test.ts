@@ -1,3 +1,5 @@
+import { RunId, type OrchestrationV2RunStatus } from "@t3tools/contracts";
+import { PersistenceSqlError } from "../persistence/Errors.ts";
 import * as SignalCallbackHttpServer from "effect/http/HttpServer";
 import * as SignalCallbackNetAddress from "effect/net/NetAddress";
 import * as PlatformError from "effect/PlatformError";
@@ -37,6 +39,7 @@ import { ThreadManagementService } from "../orchestration-v2/ThreadManagementSer
 import { OrchestratorDispatchError, OrchestratorV2 } from "../orchestration-v2/Orchestrator.ts";
 import { ProjectionStoreV2 } from "../orchestration-v2/ProjectionStore.ts";
 import * as Sqlite from "../persistence/Sqlite.ts";
+import { runMigrations } from "../persistence/Migrations.ts";
 import { ThreadMonitorRepository } from "../persistence/ThreadMonitors.ts";
 import { EventSinkV2 } from "../orchestration-v2/EventSink.ts";
 import { ServerActivation } from "../serverActivation.ts";
@@ -72,6 +75,8 @@ describe("durable V2 monitors", () => {
           deadlineAt: null,
           continuation: { mode: "resume-thread" },
           reviewRequired: false,
+          result: null,
+          blockedReason: null,
           lastError: null,
         },
       ]);
@@ -2110,3 +2115,669 @@ it.effect("keeps failed signal-key preparation from creating an orphan wait", ()
     ),
   ),
 );
+
+const startNativeRun = Effect.fn("NativeMonitorTest.startRun")(function* (name: string) {
+  yield* (yield* OrchestratorV2).dispatch({
+    type: "message.dispatch",
+    commandId: CommandId.make(name),
+    threadId,
+    messageId: MessageId.make(name),
+    text: name,
+    attachments: [],
+    createdBy: "user",
+    creationSource: "web",
+    dispatchMode: { type: "queue_after_active" },
+  });
+  const runs = (yield* (yield* ProjectionStoreV2).getThreadProjection(threadId)).runs;
+  return runs.reduce((latest, run) => (run.ordinal > latest.ordinal ? run : latest));
+});
+const finishNativeRun = Effect.fn("NativeMonitorTest.finishRun")(function* (
+  run: Effect.Success<ReturnType<typeof startNativeRun>>,
+  status: OrchestrationV2RunStatus,
+) {
+  const now = yield* DateTime.now;
+  yield* (yield* EventSinkV2).write({
+    events: [
+      {
+        type: "run.updated",
+        id: EventId.make(`finish:${run.id}:${status}`),
+        threadId,
+        occurredAt: now,
+        payload: { ...run, status, completedAt: now },
+      },
+    ],
+  });
+});
+describe("native run waits", () => {
+  it.effect.each(["completed", "failed", "interrupted", "cancelled", "rolled_back"] as const)(
+    "persists an exact run and records %s separately from task success",
+    (status) =>
+      Effect.gen(function* () {
+        yield* seedThread();
+        const run = yield* startNativeRun("exact");
+        const service = yield* ThreadMonitorService;
+        const monitor = yield* service.create({
+          threadId,
+          monitor: {
+            label: "Exact",
+            continuation: "record-only",
+            schedule: { type: "thread-run", threadId, run: { type: "exact", runId: run.id } },
+          },
+        });
+        assert.deepEqual(
+          Option.getOrThrow(yield* (yield* ThreadMonitorRepository).getById(monitor.id)).condition,
+          monitor.condition,
+        );
+        assert.equal(
+          (yield* service.checkNow({ threadId, check: { monitorId: monitor.id } })).monitors[0]
+            ?.status,
+          "active",
+        );
+        yield* finishNativeRun(run, status);
+        const result = (yield* service.checkNow({ threadId, check: { monitorId: monitor.id } }))
+          .monitors[0]!;
+        assert.equal(result.status, "delivered");
+        assert.equal(result.trigger?.reason, "condition");
+        assert.include(
+          result.trigger?.evidence,
+          `Outcome: ${status === "completed" || status === "failed" ? status : "stopped"}`,
+        );
+        assert.include(result.trigger?.summary, "Verify the broader task separately");
+        assert.deepEqual(
+          (yield* (yield* ProjectionStoreV2).getThreadRecords(threadId, ["messages"])).messages.map(
+            (message) => message.text,
+          ),
+          ["exact"],
+        );
+      }).pipe(Effect.provide(layer)),
+  );
+  it.effect("anchors the next run after existing work and never retargets it", () =>
+    Effect.gen(function* () {
+      yield* seedThread();
+      const prior = yield* startNativeRun("prior");
+      yield* finishNativeRun(prior, "completed");
+      const service = yield* ThreadMonitorService;
+      const repository = yield* ThreadMonitorRepository;
+      const monitor = yield* service.create({
+        threadId,
+        monitor: {
+          label: "Next",
+          continuation: "record-only",
+          schedule: { type: "thread-run", threadId, run: { type: "next" } },
+        },
+      });
+      assert.equal(
+        (yield* service.checkNow({ threadId, check: { monitorId: monitor.id } })).monitors[0]
+          ?.status,
+        "active",
+      );
+      const next = yield* startNativeRun("next");
+      const later = yield* startNativeRun("later");
+      if (monitor.condition.type !== "thread-run") throw new Error("wrong condition");
+      assert.equal(
+        Option.getOrThrow(yield* repository.getTargetRun(monitor.condition)).id,
+        next.id,
+      );
+      yield* finishNativeRun(later, "failed");
+      assert.equal(
+        (yield* service.checkNow({ threadId, check: { monitorId: monitor.id } })).monitors[0]
+          ?.status,
+        "active",
+      );
+      yield* finishNativeRun(next, "completed");
+      assert.include(
+        (yield* service.checkNow({ threadId, check: { monitorId: monitor.id } })).monitors[0]
+          ?.trigger?.evidence,
+        `Run: ${next.id}`,
+      );
+    }).pipe(Effect.provide(layer)),
+  );
+  it.effect("rejects unavailable threads, foreign runs and expired deadlines", () =>
+    Effect.gen(function* () {
+      yield* seedThread();
+      const service = yield* ThreadMonitorService;
+      for (const [schedule, code] of [
+        [
+          { type: "thread-run", threadId, run: { type: "exact", runId: RunId.make("unknown") } },
+          "INVALID_SCHEDULE",
+        ],
+        [
+          { type: "thread-run", threadId: ThreadId.make("foreign"), run: { type: "next" } },
+          "THREAD_UNAVAILABLE",
+        ],
+        [
+          {
+            type: "thread-run",
+            threadId,
+            run: { type: "next" },
+            deadlineAt: "1969-12-31T00:00:00.000Z",
+          },
+          "INVALID_SCHEDULE",
+        ],
+      ] as const)
+        assert.equal(
+          (yield* service
+            .create({ threadId, monitor: { label: "Invalid", schedule } })
+            .pipe(Effect.flip)).code,
+          code,
+        );
+    }).pipe(Effect.provide(layer)),
+  );
+  it.effect("honors the deadline and cancellation without a future run", () =>
+    Effect.gen(function* () {
+      yield* seedThread();
+      const service = yield* ThreadMonitorService;
+      const now = yield* DateTime.now;
+      const monitor = yield* service.create({
+        threadId,
+        monitor: {
+          label: "Deadline",
+          continuation: "record-only",
+          schedule: {
+            type: "thread-run",
+            threadId,
+            run: { type: "next" },
+            deadlineAt: DateTime.formatIso(DateTime.add(now, { minutes: 1 })),
+          },
+        },
+      });
+      const cancelled = yield* service.create({
+        threadId,
+        monitor: {
+          label: "Cancelled",
+          schedule: { type: "thread-run", threadId, run: { type: "next" } },
+        },
+      });
+      yield* service.cancel({ threadId, cancel: { monitorId: cancelled.id } });
+      yield* TestClock.adjust("1 minute");
+      const result = yield* service.checkNow({ threadId, check: { monitorId: monitor.id } });
+      assert.equal(result.monitors[0]?.status, "delivered");
+      assert.equal(result.monitors[0]?.trigger?.reason, "deadline");
+      const run = yield* startNativeRun("after-cancel");
+      yield* finishNativeRun(run, "completed");
+      assert.equal(
+        (yield* service.checkNow({ threadId, check: { monitorId: cancelled.id } })).monitors[0]
+          ?.status,
+        "cancelled",
+      );
+    }).pipe(Effect.provide(layer)),
+  );
+});
+
+it.effect("wakes a native run wait from the persisted completion event", () =>
+  Effect.gen(function* () {
+    yield* seedThread();
+    const run = yield* startNativeRun("event-driven");
+    const repository = yield* ThreadMonitorRepository;
+    const delivered = yield* Deferred.make<void>();
+    const service = yield* ThreadMonitor.make.pipe(
+      Effect.provideService(ThreadMonitorRepository, {
+        ...repository,
+        tryAdvanceRun: (monitor) =>
+          repository
+            .tryAdvanceRun(monitor)
+            .pipe(
+              Effect.tap((accepted) =>
+                accepted && monitor.status === "delivered"
+                  ? Deferred.succeed(delivered, undefined)
+                  : Effect.void,
+              ),
+            ),
+      }),
+      Effect.provideService(ServerActivation, Effect.void),
+      Effect.provide(NodeServices.layer),
+    );
+    const monitor = yield* service.create({
+      threadId,
+      monitor: {
+        label: "Event",
+        continuation: "record-only",
+        schedule: { type: "thread-run", threadId, run: { type: "exact", runId: run.id } },
+      },
+    });
+    yield* service.start;
+    yield* TestClock.adjust("750 millis");
+    yield* finishNativeRun(run, "completed");
+    yield* Deferred.await(delivered);
+    assert.equal(
+      (yield* service.status({ threadId, query: { monitorId: monitor.id } })).monitors[0]?.status,
+      "delivered",
+    );
+  }).pipe(Effect.provide(layer)),
+);
+
+it.effect.each(["exact", "next"] as const)(
+  "restores a native %s wait completed while the service was stopped",
+  (mode) =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const path = yield* Path.Path;
+        const directory = yield* fs.makeTempDirectoryScoped({ prefix: "native-wait-restart-" });
+        const filename = path.join(directory, "statev2.sqlite");
+        const database = Sqlite.layerFromPath(filename).pipe(Layer.provide(NodeServices.layer));
+        const runtime = () => Layer.fresh(layerForDatabase(database));
+        const monitor = yield* Effect.gen(function* () {
+          yield* seedThread();
+          const run = mode === "exact" ? yield* startNativeRun("restart-exact") : undefined;
+          return yield* (yield* ThreadMonitorService).create({
+            threadId,
+            monitor: {
+              label: "Restart",
+              continuation: "record-only",
+              schedule: {
+                type: "thread-run",
+                threadId,
+                run: run === undefined ? { type: "next" } : { type: "exact", runId: run.id },
+              },
+            },
+          });
+        }).pipe(Effect.provide(runtime()));
+        yield* Effect.gen(function* () {
+          const run =
+            mode === "next"
+              ? yield* startNativeRun("restart-next")
+              : (yield* (yield* ProjectionStoreV2).getThreadProjection(threadId)).runs[0]!;
+          yield* finishNativeRun(run, "completed");
+        }).pipe(Effect.provide(runtime()));
+        yield* Effect.gen(function* () {
+          const service = yield* ThreadMonitorService;
+          const restored = (yield* service.checkNow({ threadId, check: { monitorId: monitor.id } }))
+            .monitors[0]!;
+          assert.deepEqual(restored.condition, monitor.condition);
+          assert.equal(restored.status, "delivered");
+          assert.include(restored.trigger?.evidence, "Outcome: completed");
+        }).pipe(Effect.provide(runtime()));
+      }),
+    ).pipe(Effect.provide(NodeServices.layer)),
+);
+
+it.effect("scopes changed monitor reads and retains the final cancellation update", () =>
+  Effect.gen(function* () {
+    yield* seedThread();
+    const repository = yield* ThreadMonitorRepository;
+    const reads = new Map<ThreadId, number>();
+    const service = yield* ThreadMonitor.make.pipe(
+      Effect.provideService(ThreadMonitorRepository, {
+        ...repository,
+        listByThread: (input) =>
+          Effect.sync(() => reads.set(input.threadId, (reads.get(input.threadId) ?? 0) + 1)).pipe(
+            Effect.andThen(repository.listByThread(input)),
+          ),
+      }),
+      Effect.provide(NodeServices.layer),
+    );
+    const own = yield* Queue.unbounded<ThreadMonitorSummaryList>();
+    const other = yield* Queue.unbounded<ThreadMonitorSummaryList>();
+    const otherId = ThreadId.make("unrelated");
+    yield* service.subscribeSummaries(threadId).pipe(
+      Stream.runForEach((value) => Queue.offer(own, value)),
+      Effect.forkScoped,
+    );
+    yield* service.subscribeSummaries(otherId).pipe(
+      Stream.runForEach((value) => Queue.offer(other, value)),
+      Effect.forkScoped,
+    );
+    assert.deepEqual(yield* Queue.take(own), { monitors: [] });
+    assert.deepEqual(yield* Queue.take(other), { monitors: [] });
+    const monitor = yield* service.create({
+      threadId,
+      monitor: { label: "Scoped", schedule: { type: "signal" } },
+    });
+    assert.equal((yield* Queue.take(own)).monitors[0]?.id, monitor.id);
+    yield* service.cancel({ threadId, cancel: { monitorId: monitor.id } });
+    // The subscription shapes updates to one per second.
+    yield* TestClock.adjust("1 second");
+    assert.deepEqual(yield* Queue.take(own), { monitors: [] });
+    assert.equal(reads.get(otherId), 1);
+  }).pipe(Effect.provide(layer)),
+);
+
+it.effect("retries a failed scheduling read without another external event", () =>
+  Effect.gen(function* () {
+    yield* seedThread();
+    const repository = yield* ThreadMonitorRepository;
+    const failed = yield* Deferred.make<void>();
+    const retried = yield* Deferred.make<void>();
+    const delivered = yield* Deferred.make<void>();
+    let reads = 0;
+    const service = yield* ThreadMonitor.make.pipe(
+      Effect.provideService(ThreadMonitorRepository, {
+        ...repository,
+        listOutstanding: () =>
+          Effect.suspend(() => {
+            reads++;
+            // The fifth read schedules after startup reconciliation and its queued wake.
+            if (reads === 5)
+              return Deferred.succeed(failed, undefined).pipe(
+                Effect.andThen(
+                  Effect.fail(new PersistenceSqlError({ operation: "schedule-test" })),
+                ),
+              );
+            return repository
+              .listOutstanding()
+              .pipe(
+                Effect.tap(() => (reads > 5 ? Deferred.succeed(retried, undefined) : Effect.void)),
+              );
+          }),
+        upsert: (monitor, creation) =>
+          repository
+            .upsert(monitor, creation)
+            .pipe(
+              Effect.tap(() =>
+                monitor.status === "delivered"
+                  ? Deferred.succeed(delivered, undefined)
+                  : Effect.void,
+              ),
+            ),
+      }),
+      Effect.provideService(ServerActivation, Effect.void),
+      Effect.provide(NodeServices.layer),
+    );
+    const monitor = yield* service.create({
+      threadId,
+      monitor: {
+        label: "Retry",
+        continuation: "record-only",
+        schedule: { type: "after", durationMs: 60000 },
+      },
+    });
+    yield* service.start;
+    yield* TestClock.adjust("750 millis");
+    yield* Deferred.await(failed);
+    yield* TestClock.adjust("1 second");
+    yield* Deferred.await(retried);
+    yield* TestClock.adjust("1 minute");
+    yield* Deferred.await(delivered);
+    assert.equal(
+      (yield* service.status({ threadId, query: { monitorId: monitor.id } })).monitors[0]?.status,
+      "delivered",
+    );
+  }).pipe(Effect.provide(layer)),
+);
+
+it.effect("reports an archived delivery blocker and removes it on unarchive", () =>
+  Effect.gen(function* () {
+    yield* seedThread();
+    const service = yield* ThreadMonitorService;
+    const engine = yield* OrchestratorV2;
+    const monitor = yield* service.create({
+      threadId,
+      monitor: { label: "Blocked", schedule: { type: "signal" } },
+    });
+    yield* engine.dispatch({
+      type: "thread.archive",
+      commandId: CommandId.make("block-archive"),
+      threadId,
+    });
+    yield* service.signal({ threadId, signal: { monitorId: monitor.id, summary: "Ready" } });
+    const updates = yield* Queue.unbounded<ThreadMonitorSummaryList>();
+    yield* service.subscribeSummaries(threadId).pipe(
+      Stream.runForEach((value) => Queue.offer(updates, value)),
+      Effect.forkScoped,
+    );
+    assert.equal(
+      (yield* Queue.take(updates)).monitors[0]?.blockedReason,
+      "The thread is archived.",
+    );
+    yield* engine.dispatch({
+      type: "thread.unarchive",
+      commandId: CommandId.make("block-unarchive"),
+      threadId,
+    });
+    yield* TestClock.adjust("750 millis");
+    const result = yield* service.checkNow({ threadId, check: { monitorId: monitor.id } });
+    assert.equal(result.monitors[0]?.status, "delivered");
+    const snapshot = Option.getOrThrow(
+      yield* service.subscribeSummaries(threadId).pipe(Stream.runHead),
+    );
+    assert.isFalse(snapshot.monitors.some((monitor) => monitor.blockedReason !== null));
+  }).pipe(Effect.provide(layer)),
+);
+
+describe("native run cancellation and deadline boundaries", () => {
+  it.effect("restores a retained malformed deadline without stalling other timers", () =>
+    Effect.gen(function* () {
+      yield* seedThread();
+      const previous = yield* ThreadMonitorService;
+      const repository = yield* ThreadMonitorRepository;
+      const native = yield* previous.create({
+        threadId,
+        monitor: {
+          label: "Retained native wait",
+          continuation: "record-only",
+          schedule: { type: "thread-run", threadId, run: { type: "next" } },
+        },
+      });
+      if (native.condition.type !== "thread-run") return yield* Effect.die("Expected native wait");
+      const condition = { ...native.condition, deadlineAt: "not-a-date" };
+      yield* repository.upsert({ ...native, condition });
+      const timer = yield* previous.create({
+        threadId,
+        monitor: {
+          label: "Timer beside retained wait",
+          continuation: "record-only",
+          schedule: { type: "after", durationMs: 60_000 },
+        },
+      });
+      const sql = yield* SqlClient.SqlClient;
+      const before = yield* sql`SELECT condition_json FROM thread_monitors
+        WHERE monitor_id = ${native.id}`;
+      assert.deepEqual(yield* runMigrations(), []);
+      const service = yield* ThreadMonitor.make.pipe(
+        Effect.provideService(ServerActivation, Effect.void),
+        Effect.provide(NodeServices.layer),
+      );
+      yield* service.start;
+      yield* TestClock.adjust("2 minutes");
+      assert.equal(
+        (yield* service.status({ threadId, query: { monitorId: timer.id } })).monitors[0]?.status,
+        "delivered",
+      );
+      const retained = Option.getOrThrow(yield* repository.getById(native.id));
+      assert.equal(retained.status, "active");
+      assert.deepEqual(retained.condition, condition);
+      assert.deepEqual(
+        yield* sql`SELECT condition_json FROM thread_monitors WHERE monitor_id = ${native.id}`,
+        before,
+      );
+      const run = yield* startNativeRun("retained-deadline-outcome");
+      yield* finishNativeRun(run, "completed");
+      const result = (yield* service.checkNow({ threadId, check: { monitorId: native.id } }))
+        .monitors[0]!;
+      assert.equal(result.status, "delivered");
+      assert.equal(result.trigger?.reason, "condition");
+      assert.include(result.trigger?.evidence, `Run: ${run.id}`);
+    }).pipe(Effect.provide(layer)),
+  );
+
+  it.effect("keeps a retained malformed native wait cancellable after migration validation", () =>
+    Effect.gen(function* () {
+      yield* seedThread();
+      const service = yield* ThreadMonitorService;
+      const repository = yield* ThreadMonitorRepository;
+      const native = yield* service.create({
+        threadId,
+        monitor: {
+          label: "Cancel retained wait",
+          schedule: { type: "thread-run", threadId, run: { type: "next" } },
+        },
+      });
+      if (native.condition.type !== "thread-run") return yield* Effect.die("Expected native wait");
+      yield* repository.upsert({
+        ...native,
+        condition: { ...native.condition, deadlineAt: "not-a-date" },
+      });
+      assert.deepEqual(yield* runMigrations(), []);
+      const restored = yield* ThreadMonitor.make.pipe(Effect.provide(NodeServices.layer));
+      const summary = Option.getOrThrow(
+        yield* restored.subscribeSummaries(threadId).pipe(Stream.runHead),
+      ).monitors[0]!;
+      assert.equal(summary.id, native.id);
+      assert.equal(summary.deadlineAt, "not-a-date");
+      yield* restored.cancel({ threadId, cancel: { monitorId: summary.id } });
+      assert.equal(Option.getOrThrow(yield* repository.getById(native.id)).status, "cancelled");
+      assert.isEmpty(yield* repository.listOutstanding());
+    }).pipe(Effect.provide(layer)),
+  );
+
+  it.effect.each([
+    ["lookup", "record-only"],
+    ["lookup", "resume-thread"],
+    ["triggered-activity", "record-only"],
+    ["triggered-activity", "resume-thread"],
+  ] as const)("retains committed Stop during %s for %s", ([boundary, continuation]) =>
+    Effect.gen(function* () {
+      yield* seedThread();
+      const run = yield* startNativeRun("native-stop-boundary");
+      const repository = yield* ThreadMonitorRepository;
+      const sink = yield* EventSinkV2;
+      const entered = yield* Deferred.make<void>();
+      const proceed = yield* Deferred.make<void>();
+      let armed = false;
+      const pause = Deferred.succeed(entered, undefined).pipe(
+        Effect.andThen(Deferred.await(proceed)),
+      );
+      const service = yield* ThreadMonitor.make.pipe(
+        Effect.provideService(ThreadMonitorRepository, {
+          ...repository,
+          getTargetRun: (condition) =>
+            repository
+              .getTargetRun(condition)
+              .pipe(Effect.tap(() => (armed && boundary === "lookup" ? pause : Effect.void))),
+        }),
+        Effect.provideService(EventSinkV2, {
+          ...sink,
+          write: (input) =>
+            sink
+              .write(input)
+              .pipe(
+                Effect.tap(() =>
+                  armed &&
+                  boundary === "triggered-activity" &&
+                  input.events.some((event) => event.id.endsWith(":activity:triggered"))
+                    ? pause
+                    : Effect.void,
+                ),
+              ),
+        }),
+        Effect.provide(NodeServices.layer),
+      );
+      const monitor = yield* service.create({
+        threadId,
+        monitor: {
+          label: "Stop native result",
+          continuation,
+          schedule: { type: "thread-run", threadId, run: { type: "exact", runId: run.id } },
+        },
+      });
+      yield* finishNativeRun(run, "completed");
+      armed = true;
+      const checking = yield* service
+        .checkNow({ threadId, check: { monitorId: monitor.id } })
+        .pipe(Effect.forkScoped);
+      yield* Deferred.await(entered);
+      yield* (yield* OrchestratorV2).dispatch({
+        type: "thread.stop",
+        commandId: CommandId.make("stop-native-boundary"),
+        threadId,
+      });
+      assert.deepEqual(yield* repository.listCancellationRequests(), [
+        { threadId, monitorId: monitor.id },
+      ]);
+      yield* Deferred.succeed(proceed, undefined);
+      const stopped = (yield* Fiber.join(checking)).monitors[0]!;
+      assert.equal(stopped.status, "cancelled");
+      assert.isNull(stopped.deliveredAt);
+      assert.isEmpty(yield* repository.listCancellationRequests());
+      const projection = yield* (yield* ProjectionStoreV2).getThreadProjection(threadId);
+      assert.lengthOf(projection.runs, 1);
+      assert.isFalse(projection.messages.some((message) => message.notification !== undefined));
+      const sql = yield* SqlClient.SqlClient;
+      assert.deepEqual(
+        yield* sql`SELECT turn_item_id FROM orchestration_v2_projection_turn_items
+          WHERE turn_item_id = ${`thread-monitor:${monitor.id}:activity:recorded`}`,
+        [],
+      );
+      if (boundary === "lookup") assert.isNull(stopped.trigger);
+    }).pipe(Effect.provide(layer)),
+  );
+
+  it.effect.each(["not-a-date", "", "2026-13-01T00:00:00.000Z"])(
+    "rejects malformed native deadline %s without persisting a wait",
+    (deadlineAt) =>
+      Effect.gen(function* () {
+        yield* seedThread();
+        const result = yield* (yield* ThreadMonitorService)
+          .create({
+            threadId,
+            monitor: {
+              label: "Invalid deadline",
+              schedule: { type: "thread-run", threadId, run: { type: "next" }, deadlineAt },
+            },
+          })
+          .pipe(Effect.result);
+        assert.equal(result._tag, "Failure");
+        if (result._tag === "Failure") assert.equal(result.failure.code, "INVALID_SCHEDULE");
+        assert.isEmpty(yield* (yield* ThreadMonitorRepository).listOutstanding());
+      }).pipe(Effect.provide(layer)),
+  );
+
+  it.effect("normalizes a valid future native deadline", () =>
+    Effect.gen(function* () {
+      yield* seedThread();
+      const monitor = yield* (yield* ThreadMonitorService).create({
+        threadId,
+        monitor: {
+          label: "Offset deadline",
+          schedule: {
+            type: "thread-run",
+            threadId,
+            run: { type: "next" },
+            deadlineAt: "1970-01-01T01:01:00.000+01:00",
+          },
+        },
+      });
+      assert.equal(monitor.condition.type, "thread-run");
+      if (monitor.condition.type === "thread-run")
+        assert.equal(monitor.condition.deadlineAt, "1970-01-01T00:01:00.000Z");
+    }).pipe(Effect.provide(layer)),
+  );
+
+  it.effect("keeps unrelated timers scheduled after malformed native input", () =>
+    Effect.gen(function* () {
+      yield* seedThread();
+      const service = yield* ThreadMonitor.make.pipe(
+        Effect.provideService(ServerActivation, Effect.void),
+        Effect.provide(NodeServices.layer),
+      );
+      yield* service
+        .create({
+          threadId,
+          monitor: {
+            label: "Invalid deadline",
+            continuation: "record-only",
+            schedule: {
+              type: "thread-run",
+              threadId,
+              run: { type: "next" },
+              deadlineAt: "not-a-date",
+            },
+          },
+        })
+        .pipe(Effect.exit);
+      const timer = yield* service.create({
+        threadId,
+        monitor: {
+          label: "Unrelated timer",
+          continuation: "record-only",
+          schedule: { type: "after", durationMs: 60_000 },
+        },
+      });
+      yield* service.start;
+      yield* TestClock.adjust("2 minutes");
+      const result = yield* service.status({ threadId, query: { monitorId: timer.id } });
+      assert.equal(result.monitors[0]?.status, "delivered");
+    }).pipe(Effect.provide(layer)),
+  );
+});

@@ -174,3 +174,15 @@ it("shows loading until the monitor list is known", async () => {
     .element(fixture.screen.getByRole("heading", { name: "Automations" }))
     .not.toBeInTheDocument();
 });
+
+it("rejects retained monitor cancellation after revocation and allows regrant", async () => {
+  await using fixture = await setup();
+  state.monitors = [monitor];
+  await fixture.renderPanel();
+  state.allowed = false;
+  await act(async () => fixture.byLabel("Cancel Build finishes").click());
+  expect(state.cancel).not.toHaveBeenCalled();
+  state.allowed = true;
+  await act(async () => fixture.byLabel("Cancel Build finishes").click());
+  expect(state.cancel).toHaveBeenCalledOnce();
+});
