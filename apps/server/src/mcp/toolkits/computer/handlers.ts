@@ -1,21 +1,23 @@
+import * as PreviewAutomationBroker from "../../PreviewAutomationBroker.ts";
 import type {
-  AgentDesktopId,
+  ComputerObservationDesktopId,
   ComputerAutomationObservation,
   ComputerDesktopSelector,
 } from "@t3tools/contracts";
+import { UserDesktopInventoryError } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
 import * as ComputerAutomationRouter from "../../../computer/ComputerAutomationRouter.ts";
 import * as McpInvocationContext from "../../McpInvocationContext.ts";
 import * as McpToolAccess from "../../McpToolAccess.ts";
-import { ComputerImageToolkit, ComputerStandardToolkit, ComputerToolkit } from "./tools.ts";
+import { ComputerToolkit } from "./tools.ts";
 
 import * as ComputerObservationStore from "../../../computer/ComputerObservationStore.ts";
-/** Resolves the concrete Agent desktop selected by an access request. */
-function observedAgentDesktopId(
+/** Resolves the concrete desktop selected by an access request. */
+function observedDesktopId(
   desktop: ComputerDesktopSelector,
   observation: ComputerAutomationObservation,
-): AgentDesktopId | undefined {
-  if (desktop.kind !== "agent") return undefined;
+): ComputerObservationDesktopId | undefined {
+  if (desktop.kind === "user") return desktop.desktopId;
   if (desktop.desktopId !== undefined) return desktop.desktopId;
   const selected = observation.status?.desktop;
   return selected?.kind === "agent" ? selected.id : undefined;
@@ -24,7 +26,7 @@ function observedAgentDesktopId(
 /** Retains one direct observation only after the computer tool produced it successfully. */
 const publishControllerObservation = Effect.fn("ComputerToolkit.publishControllerObservation")(
   function* (input: {
-    readonly desktopId: AgentDesktopId | undefined;
+    readonly desktopId: ComputerObservationDesktopId | undefined;
     readonly source: "request-view" | "request-control" | "snapshot" | "act" | "sequence";
     readonly observation: ComputerAutomationObservation;
   }) {
@@ -43,6 +45,22 @@ const publishControllerObservation = Effect.fn("ComputerToolkit.publishControlle
 );
 
 const handlers = {
+  user_desktop_list: McpToolAccess.readsAsCaller(() =>
+    Effect.gen(function* () {
+      const scope = yield* McpInvocationContext.requireThreadMcpCapability("computer");
+      const broker = yield* PreviewAutomationBroker.PreviewAutomationBroker;
+      return yield* broker.listUserDesktops(scope.environmentId).pipe(
+        Effect.mapError(
+          () =>
+            new UserDesktopInventoryError({
+              code: "user-desktop-inventory-unavailable",
+              detail: "The user-desktop inventory is temporarily unavailable.",
+            }),
+        ),
+      );
+    }),
+  ),
+
   computer_status: McpToolAccess.readsAsCaller((input) =>
     Effect.gen(function* () {
       const scope = yield* McpInvocationContext.requireThreadMcpCapability("computer");
@@ -71,7 +89,7 @@ const handlers = {
       return yield* router.requestView(scope, input).pipe(
         Effect.tap((observation) =>
           publishControllerObservation({
-            desktopId: observedAgentDesktopId(input.desktop, observation),
+            desktopId: observedDesktopId(input.desktop, observation),
             source: "request-view",
             observation: observation,
           }),
@@ -86,7 +104,7 @@ const handlers = {
       return yield* router.requestControl(scope, input).pipe(
         Effect.tap((observation) =>
           publishControllerObservation({
-            desktopId: observedAgentDesktopId(input.desktop, observation),
+            desktopId: observedDesktopId(input.desktop, observation),
             source: "request-control",
             observation: observation,
           }),
@@ -101,7 +119,7 @@ const handlers = {
       return yield* router.snapshot(scope, input).pipe(
         Effect.tap((observation) =>
           publishControllerObservation({
-            desktopId: observedAgentDesktopId(input.desktop, { snapshot: observation }),
+            desktopId: observedDesktopId(input.desktop, { snapshot: observation }),
             source: "snapshot",
             observation: { snapshot: observation },
           }),
@@ -116,7 +134,7 @@ const handlers = {
       return yield* router.observeSequence(scope, input).pipe(
         Effect.tap((observation) =>
           publishControllerObservation({
-            desktopId: observedAgentDesktopId(input.desktop, { temporalSequence: observation }),
+            desktopId: observedDesktopId(input.desktop, { temporalSequence: observation }),
             source: "sequence",
             observation: { temporalSequence: observation },
           }),
@@ -131,7 +149,7 @@ const handlers = {
       return yield* router.act(scope, input).pipe(
         Effect.tap((observation) =>
           publishControllerObservation({
-            desktopId: observedAgentDesktopId(input.desktop, observation),
+            desktopId: observedDesktopId(input.desktop, observation),
             source: "act",
             observation: observation,
           }),
@@ -154,32 +172,5 @@ const handlers = {
     }),
   ),
 } satisfies McpToolAccess.Handlers<typeof ComputerToolkit.tools>;
-
-const {
-  computer_request_view,
-  computer_request_control,
-  computer_snapshot,
-  computer_observe_sequence,
-  computer_act,
-  ...standardHandlers
-} = handlers;
-
-const imageHandlers = {
-  computer_snapshot,
-  computer_observe_sequence,
-  computer_request_view,
-  computer_request_control,
-  computer_act,
-};
-
-export const ComputerStandardToolkitHandlersLive = McpToolAccess.toLayer(
-  ComputerStandardToolkit,
-  standardHandlers,
-);
-
-export const ComputerImageToolkitHandlersLive = McpToolAccess.toLayer(
-  ComputerImageToolkit,
-  imageHandlers,
-);
 
 export const ComputerToolkitHandlersLive = McpToolAccess.toLayer(ComputerToolkit, handlers);

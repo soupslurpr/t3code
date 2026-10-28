@@ -27,7 +27,11 @@ describe("durable monitor input", () => {
 
 const decodeWatch = Schema.decodeUnknownSync(ThreadMonitorComputerStartInput);
 it("bounds computer sampling and rejects ambiguous crops and continuations", () => {
-  const base = { desktop: { kind: "user" }, label: "Completion", match: { type: "image-change" } };
+  const base = {
+    desktop: { kind: "user", desktopId: "user-desktop-1" },
+    label: "Completion",
+    match: { type: "image-change" },
+  };
   for (const input of [
     { ...base, sampling: { intervalMs: 999 } },
     { ...base, observation: { regions: [{ id: "screen", role: "trigger", maxWidth: 4_097 }] } },
@@ -82,12 +86,15 @@ const modelMatch = {
   criterion: "A result is visible",
   modelSelection: { instanceId: "provider", model: "image-evaluator" },
 };
-
 describe("thread monitor contracts", () => {
   it("discards retired prompts when decoding existing monitor calls and state", () => {
     const start = { label: "Wait for the build", schedule: { type: "signal" } };
     expect(decodeStart({ ...start, resumePrompt: "Old handoff" })).toEqual(start);
-    const watch = { desktop: { kind: "user" }, label: "Wait for the build", match: modelMatch };
+    const watch = {
+      desktop: { kind: "user", desktopId: "user-desktop-1" },
+      label: "Wait for the build",
+      match: modelMatch,
+    };
     expect(decodeComputerWatch({ ...watch, resumePrompt: "Old handoff" })).toEqual(watch);
     expect(
       decodeContinuation({
@@ -100,7 +107,7 @@ describe("thread monitor contracts", () => {
   it("accepts independent capture and model evaluation intervals", () => {
     expect(
       decodeComputerWatch({
-        desktop: { kind: "user" },
+        desktop: { kind: "user", desktopId: "user-desktop-1" },
         label: "Wait for a result",
         match: modelMatch,
         sampling: {
@@ -114,7 +121,7 @@ describe("thread monitor contracts", () => {
   it("allows controller health reviews to be disabled explicitly", () => {
     expect(
       decodeComputerWatch({
-        desktop: { kind: "user" },
+        desktop: { kind: "user", desktopId: "user-desktop-1" },
         label: "Watch silently",
         match: { type: "image-change" },
         review: null,
@@ -122,7 +129,7 @@ describe("thread monitor contracts", () => {
     ).toBeNull();
     expect(
       decodeComputerWatch({
-        desktop: { kind: "user" },
+        desktop: { kind: "user", desktopId: "user-desktop-1" },
         label: "Review by time only",
         match: { type: "image-change" },
         review: {
@@ -143,7 +150,7 @@ describe("thread monitor contracts", () => {
   it("bounds the minimum model evaluation interval", () => {
     expect(() =>
       decodeComputerWatch({
-        desktop: { kind: "user" },
+        desktop: { kind: "user", desktopId: "user-desktop-1" },
         label: "Wait for a result",
         match: modelMatch,
         sampling: { minEvaluationIntervalMs: 999 },
@@ -151,7 +158,7 @@ describe("thread monitor contracts", () => {
     ).toThrow();
     expect(() =>
       decodeComputerWatch({
-        desktop: { kind: "user" },
+        desktop: { kind: "user", desktopId: "user-desktop-1" },
         label: "Wait for a result",
         match: modelMatch,
         sampling: { minEvaluationIntervalMs: 24 * 60 * 60 * 1_000 + 1 },
@@ -161,7 +168,7 @@ describe("thread monitor contracts", () => {
 
   it("accepts named regions with independent resolutions and encodings", () => {
     const decoded = decodeComputerWatch({
-      desktop: { kind: "user" },
+      desktop: { kind: "user", desktopId: "user-desktop-1" },
       label: "Wait for a result",
       match: modelMatch,
       observation: {
@@ -196,7 +203,7 @@ describe("thread monitor contracts", () => {
   it("accepts exact small region resolutions", () => {
     expect(
       decodeComputerWatch({
-        desktop: { kind: "user" },
+        desktop: { kind: "user", desktopId: "user-desktop-1" },
         label: "Watch a compact status line",
         match: { type: "image-change" },
         observation: {
@@ -206,7 +213,7 @@ describe("thread monitor contracts", () => {
     ).toBe(42);
     expect(() =>
       decodeComputerWatch({
-        desktop: { kind: "user" },
+        desktop: { kind: "user", desktopId: "user-desktop-1" },
         label: "Reject an empty image",
         match: { type: "image-change" },
         observation: {
@@ -219,7 +226,7 @@ describe("thread monitor contracts", () => {
   it("rejects duplicate region ids and context-only plans", () => {
     expect(() =>
       decodeComputerWatch({
-        desktop: { kind: "user" },
+        desktop: { kind: "user", desktopId: "user-desktop-1" },
         label: "Duplicate regions",
         match: modelMatch,
         observation: {
@@ -232,7 +239,7 @@ describe("thread monitor contracts", () => {
     ).toThrow(/unique/u);
     expect(() =>
       decodeComputerWatch({
-        desktop: { kind: "user" },
+        desktop: { kind: "user", desktopId: "user-desktop-1" },
         label: "No trigger",
         match: modelMatch,
         observation: { regions: [{ id: "screen", role: "context" }] },
@@ -262,7 +269,7 @@ describe("thread monitor contracts", () => {
     };
     expect(
       decodeComputerWatch({
-        desktop: { kind: "user" },
+        desktop: { kind: "user", desktopId: "user-desktop-1" },
         label: "Wait for a result",
         match: { type: "image-change" },
         baselineObservation,
@@ -277,7 +284,7 @@ describe("thread monitor contracts", () => {
     ).toEqual({});
     expect(() =>
       decodeComputerWatch({
-        desktop: { kind: "user" },
+        desktop: { kind: "user", desktopId: "user-desktop-1" },
         label: "Reject duplicate known hashes",
         match: { type: "image-change" },
         baselineObservation: {

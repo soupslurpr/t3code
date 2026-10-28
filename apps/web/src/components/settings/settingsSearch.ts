@@ -37,6 +37,7 @@ export type SettingsPath =
   | "/settings/maintenance"
   | "/settings/labs"
   | "/settings/about"
+  | "/settings/user-desktops"
   | "/settings/agent-desktops"
   | "/settings/archived";
 
@@ -109,6 +110,7 @@ export const SETTINGS_SECTION_LABELS: Readonly<Record<SettingsPath, string>> = {
   "/settings/labs": "Labs",
   "/settings/about": "About",
   "/settings/agent-desktops": "Agent desktops",
+  "/settings/user-desktops": "User desktops",
   "/settings/archived": "Archive",
 };
 
@@ -135,6 +137,8 @@ export const SETTINGS_NAV_GROUPS: ReadonlyArray<{
       "/settings/threads",
       "/settings/browser",
       "/settings/devices",
+      "/settings/user-desktops",
+      "/settings/agent-desktops",
       "/settings/scheduled-tasks",
     ],
   },
@@ -294,6 +298,11 @@ export const SETTINGS_SEARCH_ITEMS = [
     searchTerms: [
       "new thread default runtime mode supervised approvals auto accept edits full access",
     ],
+  },
+  {
+    id: "user-desktops",
+    title: "User desktops",
+    to: "/settings/user-desktops",
   },
   {
     id: "agent-desktops",
@@ -1212,6 +1221,7 @@ const SETTINGS_CATEGORY_SCOPES: Readonly<Record<SettingsPath, SettingsSearchScop
   "/settings/threads": null,
   "/settings/browser": null,
   "/settings/devices": null,
+  "/settings/user-desktops": null,
   "/settings/source-control": "environment-defaults",
   "/settings/worktrees": "project-defaults",
   "/settings/connections": "connections",

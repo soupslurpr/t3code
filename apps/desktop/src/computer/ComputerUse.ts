@@ -38,6 +38,8 @@ const ComputerUseOperation = Schema.Literals([
   "status",
   "requestView",
   "requestControl",
+  "rememberView",
+  "rememberControl",
   "requestAvailability",
   "releaseAvailability",
   "snapshot",
@@ -167,7 +169,12 @@ export class ComputerUseOperationError extends Schema.TaggedError<ComputerUseOpe
 export class ComputerUseLeaseError extends Schema.TaggedError<ComputerUseLeaseError>()(
   "ComputerUseLeaseError",
   {
-    code: Schema.Literals(["desktop-busy", "desktop-lease-required", "request-cancelled"]),
+    code: Schema.Literals([
+      "desktop-busy",
+      "desktop-lease-required",
+      "desktop-target-mismatch",
+      "request-cancelled",
+    ]),
     cause: Schema.String,
   },
 ) {
@@ -465,7 +472,7 @@ export function toComputerAutomationFailure(cause: unknown): ComputerAutomationF
     return {
       code: "desktop-target-mismatch",
       category: "stale-target",
-      message: "The requested Agent desktop is unavailable to this controller.",
+      message: "The requested desktop does not match the connected desktop host.",
       ...common,
     };
   }
@@ -643,6 +650,8 @@ export interface ComputerUseShape {
   readonly status: Effect.Effect<ComputerAutomationStatus>;
   readonly requestView: Effect.Effect<ComputerAutomationStatus, ComputerUseError>;
   readonly requestControl: Effect.Effect<ComputerAutomationStatus, ComputerUseError>;
+  readonly rememberView: Effect.Effect<ComputerAutomationStatus, ComputerUseError>;
+  readonly rememberControl: Effect.Effect<ComputerAutomationStatus, ComputerUseError>;
   readonly requestAvailability: Effect.Effect<ComputerAutomationStatus, ComputerUseError>;
   readonly releaseAvailability: Effect.Effect<ComputerAutomationStatus, ComputerUseError>;
   readonly snapshot: (
@@ -1869,6 +1878,22 @@ export const makeWithOptions = Effect.fn("ComputerUse.makeWithOptions")(function
     ),
   );
 
+  const rememberControl = inputSemaphore.withPermits(1)(
+    controller.rememberControl.pipe(
+      Effect.tap(() => Ref.set(captureHealth, new Map())),
+      Effect.andThen(status),
+      Effect.mapError(mapOperationError("rememberControl")),
+    ),
+  );
+
+  const rememberView = inputSemaphore.withPermits(1)(
+    controller.rememberView.pipe(
+      Effect.tap(() => Ref.set(captureHealth, new Map())),
+      Effect.andThen(status),
+      Effect.mapError(mapOperationError("rememberView")),
+    ),
+  );
+
   const requestAvailability = controller.requestAvailability.pipe(
     Effect.andThen(status),
     Effect.mapError(mapOperationError("requestAvailability")),
@@ -1888,6 +1913,8 @@ export const makeWithOptions = Effect.fn("ComputerUse.makeWithOptions")(function
     status,
     requestView,
     requestControl,
+    rememberView,
+    rememberControl,
     requestAvailability,
     releaseAvailability,
     snapshot,

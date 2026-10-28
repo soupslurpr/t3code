@@ -20,6 +20,7 @@ import { previewEnvironment } from "~/state/preview";
 import { useEnvironmentsWithScope } from "~/state/session";
 
 import {
+  PreviewAutomationComputerControllerRequiredError,
   resolveDesktopComputerAutomation,
   serializeComputerAutomationError,
 } from "./previewAutomationErrors";
@@ -32,8 +33,15 @@ async function handleComputerRequest(
   const computer = window.desktopBridge?.computer;
   if (computer === undefined)
     throw new Error("Computer automation is unavailable on this desktop.");
+  if (request.controllerId === undefined) {
+    throw new PreviewAutomationComputerControllerRequiredError({
+      requestId: request.requestId,
+      environmentId,
+      threadId: request.threadId,
+    });
+  }
   const computerContext = {
-    controllerId: request.controllerId ?? `legacy:${request.threadId}`,
+    controllerId: request.controllerId,
     environmentId,
     threadId: request.threadId,
   };
@@ -64,6 +72,25 @@ async function handleComputerRequest(
       return await resolveDesktopComputerAutomation(
         computer?.requestControl(request.input as ComputerAutomationAccessInput, computerContext),
       );
+    case "computerRememberView":
+      return await resolveDesktopComputerAutomation(
+        computer.rememberView(request.input as ComputerAutomationAccessInput, computerContext),
+      );
+    case "computerRememberControl":
+      return await resolveDesktopComputerAutomation(
+        computer.rememberControl(request.input as ComputerAutomationAccessInput, computerContext),
+      );
+    case "computerForceRelease":
+      return await resolveDesktopComputerAutomation(
+        computer.forceRelease(request.input as ComputerAutomationTargetInput, computerContext),
+      );
+    case "computerForceForgetControl":
+      return await resolveDesktopComputerAutomation(
+        computer.forceForgetControl(
+          request.input as ComputerAutomationTargetInput,
+          computerContext,
+        ),
+      );
     case "computerSnapshot":
       return await resolveDesktopComputerAutomation(
         computer?.snapshot(request.input as ComputerAutomationSnapshotInput, computerContext),
@@ -87,13 +114,15 @@ async function handleComputerRequest(
 const computerHostAtom = Atom.family((environmentId: EnvironmentId) =>
   Atom.make((get) => {
     const clientId = randomUUID();
+    const userDesktop = window.desktopBridge?.getUserDesktopHost?.();
     const requestsAtom = previewEnvironment.automationRequests({
       environmentId,
       input: {
         clientId,
         environmentId,
+        ...(userDesktop === undefined ? {} : { userDesktop }),
         ...previewAutomationHostCapabilities({
-          computerAvailable: true,
+          computerAvailable: userDesktop === undefined || userDesktop.capabilities.includes("view"),
         }),
       },
     });

@@ -19,6 +19,7 @@ import {
   parseThreadSegmentFromAttachmentId,
 } from "../../../attachmentStore.ts";
 import * as ServerConfig from "../../../config.ts";
+import * as UserDesktops from "../../../persistence/UserDesktops.ts";
 import * as McpInvocationContext from "../../McpInvocationContext.ts";
 import * as McpToolAccess from "../../McpToolAccess.ts";
 import { liveThreadsLayer } from "../../McpToolAccess.testkit.ts";
@@ -96,6 +97,7 @@ it.effect("preview_open navigates the opened tab to a dev server in one tool cal
       }),
       Effect.provide(
         Layer.mergeAll(PreviewAutomationBroker.layer, liveThreadsLayer).pipe(
+          Layer.provide(UserDesktops.layerMemory),
           Layer.provide(NodeServices.layer),
         ),
       ),

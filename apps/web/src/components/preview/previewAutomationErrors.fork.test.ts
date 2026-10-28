@@ -1,8 +1,23 @@
 import { expect, it } from "vite-plus/test";
 import {
+  PreviewAutomationComputerControllerRequiredError,
   resolveDesktopComputerAutomation,
   serializeComputerAutomationError,
 } from "./previewAutomationErrors.ts";
+import { EnvironmentId, ThreadId } from "@t3tools/contracts";
+
+it("reports a missing controller as an incompatible server before native access", () => {
+  const error = new PreviewAutomationComputerControllerRequiredError({
+    requestId: "request",
+    environmentId: EnvironmentId.make("environment"),
+    threadId: ThreadId.make("thread"),
+  });
+  expect(serializeComputerAutomationError(error)).toEqual({
+    _tag: "PreviewAutomationUnsupportedClientError",
+    message: error.message,
+    detail: { requestId: "request", environmentId: "environment", threadId: "thread" },
+  });
+});
 
 it("retains structured guest failures without exposing unrelated renderer errors", async () => {
   const failure = {
