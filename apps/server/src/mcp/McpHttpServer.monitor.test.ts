@@ -83,6 +83,42 @@ it.effect("enforces live, writable thread callers and hides foreign monitor stat
     assert.isTrue(
       (yield* call("monitor_start", input, { ...invocation, thread: undefined })).isError,
     );
+    const watch = {
+      desktop: { kind: "user" },
+      label: "Visible completion",
+      match: { type: "image-change" },
+      continuation: "record-only",
+    };
+    assert.isTrue((yield* call("computer_watch_start", watch)).isError);
+    assert.isTrue(
+      (yield* call("computer_watch_start", watch, {
+        ...invocation,
+        capabilities: new Set(["computer"]),
+        client: { sessionId: "reader", label: "Read only", access: "read-only" },
+      })).isError,
+    );
+    expect(
+      yield* call("computer_watch_start", watch, {
+        ...invocation,
+        capabilities: new Set(["computer"]),
+        thread: undefined,
+      }),
+    ).toMatchObject({
+      isError: true,
+      structuredContent: { error: { code: "thread_credential_required" } },
+    });
+    assert.isFalse(
+      (yield* call(
+        "computer_watch_capabilities",
+        {},
+        {
+          ...invocation,
+          capabilities: new Set(["computer"]),
+          thread: undefined,
+          client: { sessionId: "reader", label: "Read only", access: "read-only" },
+        },
+      )).isError,
+    );
     assert.isFalse((yield* call("monitor_start", input)).isError);
     const service = yield* ThreadMonitorService;
     const { monitors } = yield* service.status({ threadId: MonitorTestkit.threadId, query: {} });
@@ -246,5 +282,22 @@ it.effect("returns structured monitor parameter, ownership and service failures"
         error: { _tag: "ThreadMonitorError", code: "MONITOR_NOT_FOUND", monitorId: "missing" },
       },
     });
+  }).pipe(Effect.provide(layer)),
+);
+
+it.effect("keeps watch capabilities independent of browser permission and honors revocation", () =>
+  Effect.gen(function* () {
+    const allowed = { ...invocation, capabilities: new Set(["computer"] as const) };
+    assert.isFalse((yield* call("computer_watch_capabilities", {}, allowed)).isError);
+    for (const capabilities of [new Set<"preview">(["preview"]), new Set<never>()]) {
+      const denied = yield* call(
+        "computer_watch_capabilities",
+        {},
+        { ...invocation, capabilities },
+      );
+      assert.isTrue(denied.isError);
+      assert.include(JSON.stringify(denied), "computer capability");
+    }
+    assert.isFalse((yield* call("computer_watch_capabilities", {}, allowed)).isError);
   }).pipe(Effect.provide(layer)),
 );
