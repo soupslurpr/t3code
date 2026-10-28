@@ -527,7 +527,8 @@ const TOP_STATUS_ICONS = {
   woke: AlarmClockIcon,
 } as const;
 
-function TopStatusIcon(props: { icon: keyof typeof TOP_STATUS_ICONS; className: string }) {
+function TopStatusIcon(props: { icon: keyof typeof TOP_STATUS_ICONS | null; className: string }) {
+  if (props.icon === null) return null;
   const Icon = TOP_STATUS_ICONS[props.icon];
   return <Icon aria-hidden className={cn("shrink-0", props.className)} />;
 }
@@ -728,10 +729,10 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: SidebarThreadRowP
           icon: "working" as const,
           className: "text-info-foreground",
         }
-      : status === "waiting"
+      : status === "waiting" || status === "monitoring"
         ? {
-            label: "Waiting",
-            icon: "waiting" as const,
+            label: status === "monitoring" ? "Monitoring" : "Waiting",
+            icon: status === "waiting" ? ("waiting" as const) : null,
             className: "text-muted-foreground",
           }
         : status === "approval"

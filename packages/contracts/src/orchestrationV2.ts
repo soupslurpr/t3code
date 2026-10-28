@@ -2056,6 +2056,7 @@ export type OrchestrationV2LatestVisibleMessageSummary =
   typeof OrchestrationV2LatestVisibleMessageSummary.Type;
 
 export const OrchestrationV2ThreadShell = Schema.Struct({
+  backgroundLiveness: Schema.optional(Schema.NullOr(Schema.Literal("monitoring"))),
   ...OrchestrationV2CreationFields,
   id: ThreadId,
   projectId: ProjectId,

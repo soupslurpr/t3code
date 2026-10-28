@@ -1,3 +1,4 @@
+import { ThreadMonitorService } from "../threadMonitor/ThreadMonitorService.ts";
 import { AgentDesktopManager } from "../agentDesktop/AgentDesktopManager.ts";
 import { ComputerAutomationRouter } from "../computer/ComputerAutomationRouter.ts";
 import * as NodeServices from "@effect/platform-node/NodeServices";
@@ -48,6 +49,7 @@ import budget from "./agentContextBudget.json" with { type: "json" };
 
 // Registration only stores tool definitions, so the handlers' services are never called.
 const toolHandlerServices = Layer.mergeAll(
+  Layer.mock(ThreadMonitorService)({}),
   Layer.mock(AgentDesktopManager)({}),
   Layer.mock(ComputerAutomationRouter)({}),
   Layer.mock(DeviceService)({}),

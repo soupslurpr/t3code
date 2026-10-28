@@ -1,4 +1,7 @@
 import * as ComputerAutomationRouter from "../computer/ComputerAutomationRouter.ts";
+import { ThreadMonitorService } from "../threadMonitor/ThreadMonitorService.ts";
+import { MonitorToolkit } from "./toolkits/monitor/tools.ts";
+import { MonitorToolkitHandlersLive } from "./toolkits/monitor/handlers.ts";
 import { AgentDesktopToolkitHandlersLive } from "./toolkits/agentDesktop/handlers.ts";
 import { AgentDesktopToolkit } from "./toolkits/agentDesktop/tools.ts";
 import * as Cause from "effect/Cause";
@@ -21,6 +24,7 @@ import {
   DeviceToolError,
   OrchestratorMcpFailure,
   PreviewAutomationError,
+  PreviewAutomationUnavailableError,
   ProviderInteractionMode,
   type RunId,
   RuntimeMode,
@@ -474,6 +478,7 @@ const decodeAsAdvertised = <Tools extends Record<string, Tool.Any>>(
   ) as unknown as Toolkit.Toolkit<Tools>;
 
 const isPreviewAutomationError = Schema.is(PreviewAutomationError);
+const isPreviewAutomationUnavailable = Schema.is(PreviewAutomationUnavailableError);
 
 const previewSnapshotFailure = Effect.fn("previewSnapshotFailure")(function <E>(
   cause: Cause.Cause<E>,
@@ -970,6 +975,98 @@ const computerImageFailure = Effect.fn("computerImageFailure")(<E>(
   ).pipe(Effect.as(result));
 });
 
+const monitorToolFailure = Effect.fn("McpHttpServer.monitorToolFailure")(function <E>(
+  toolName: string,
+  cause: Cause.Cause<E>,
+) {
+  if (Cause.hasInterrupts(cause) || cause.reasons.some(Cause.isDieReason)) {
+    return Effect.failCause(cause).pipe(Effect.orDie);
+  }
+  const failures = cause.reasons.filter(Cause.isFailReason);
+  const firstFailure = failures[0]?.error;
+  const parameterValidation =
+    typeof firstFailure === "object" &&
+    firstFailure !== null &&
+    "_tag" in firstFailure &&
+    firstFailure._tag === "AiError" &&
+    "reason" in firstFailure &&
+    typeof firstFailure.reason === "object" &&
+    firstFailure.reason !== null &&
+    "_tag" in firstFailure.reason &&
+    firstFailure.reason._tag === "ToolParameterValidationError" &&
+    "description" in firstFailure.reason &&
+    typeof firstFailure.reason.description === "string"
+      ? firstFailure.reason.description
+      : undefined;
+  const declaredFailure =
+    typeof firstFailure === "object" &&
+    firstFailure !== null &&
+    "_tag" in firstFailure &&
+    firstFailure._tag === "ThreadMonitorError" &&
+    "code" in firstFailure &&
+    typeof firstFailure.code === "string" &&
+    "operation" in firstFailure &&
+    typeof firstFailure.operation === "string" &&
+    "detail" in firstFailure &&
+    typeof firstFailure.detail === "string"
+      ? firstFailure
+      : undefined;
+  const validationField =
+    parameterValidation === undefined ? undefined : validationFieldFromMessage(parameterValidation);
+  const error = isOrchestratorMcpFailure(firstFailure)
+    ? {
+        _tag: firstFailure._tag,
+        operation: toolName,
+        code: firstFailure.code,
+        message: firstFailure.message,
+      }
+    : isPreviewAutomationUnavailable(firstFailure)
+      ? {
+          _tag: firstFailure._tag,
+          operation: toolName,
+          capability: firstFailure.capability,
+          message: firstFailure.message,
+        }
+      : parameterValidation !== undefined
+        ? {
+            _tag: "ToolParameterValidationError",
+            operation: toolName,
+            failureCount: failures.length,
+            message: "The monitor request is invalid.",
+            ...(validationField === undefined ? {} : { field: validationField }),
+            expected: [validationExpectation(parameterValidation)],
+            phase: "validation",
+          }
+        : declaredFailure !== undefined
+          ? {
+              _tag: declaredFailure._tag,
+              code: declaredFailure.code,
+              operation: declaredFailure.operation,
+              failureCount: failures.length,
+              message: declaredFailure.detail,
+              ...("monitorId" in declaredFailure && typeof declaredFailure.monitorId === "string"
+                ? { monitorId: declaredFailure.monitorId }
+                : {}),
+            }
+          : {
+              _tag: "ThreadMonitorToolError",
+              operation: toolName,
+              failureCount: failures.length,
+              message: "The monitor request failed.",
+            };
+  const result = new McpSchema.CallToolResult({
+    isError: true,
+    structuredContent: { error },
+    content: [{ type: "text", text: JSON.stringify({ error }) }],
+  });
+  return Effect.logWarning("monitor tool failed", {
+    toolName,
+    errorTag: error._tag,
+    operation: error.operation,
+    failureCount: failures.length,
+  }).pipe(Effect.as(result));
+});
+
 type ComputerImageResult = {
   readonly snapshot?: ComputerSnapshotResult;
   readonly screenshot?: ComputerScreenshotResult;
@@ -1085,6 +1182,62 @@ const registerComputerImageTools = Effect.fn("McpHttpServer.registerComputerImag
 
 const isOrchestratorMcpFailure = Schema.is(OrchestratorMcpFailure);
 const isDeviceToolError = Schema.is(DeviceToolError);
+
+const registerMonitorStandardTools = Effect.fn("McpHttpServer.registerMonitorStandardTools")(
+  function* () {
+    const server = yield* McpServer.McpServer;
+    const threads = yield* ThreadManagementService.ThreadManagementService;
+    const service = yield* ThreadMonitorService;
+    const built = yield* decodeAsAdvertised(MonitorToolkit);
+    for (const tool of Object.values(built.tools)) {
+      yield* server.addTool({
+        tool: new McpSchema.Tool({
+          name: tool.name,
+          description: Tool.getDescription(tool),
+          inputSchema: advertisedJsonSchema(tool),
+          annotations: {
+            ...Context.getOption(tool.annotations, Tool.Title).pipe(
+              Option.map((title) => ({ title })),
+              Option.getOrUndefined,
+            ),
+            readOnlyHint: Context.get(tool.annotations, Tool.Readonly),
+            destructiveHint: Context.get(tool.annotations, Tool.Destructive),
+            idempotentHint: Context.get(tool.annotations, Tool.Idempotent),
+            openWorldHint: Context.get(tool.annotations, Tool.OpenWorld),
+          },
+        }),
+        annotations: tool.annotations,
+        handle: (payload) =>
+          Effect.withFiber((fiber) => {
+            const invocation = Context.getUnsafe(
+              fiber.context,
+              McpInvocationContext.McpInvocationContext,
+            );
+            return built.handle(tool.name, payload).pipe(
+              Stream.unwrap,
+              Stream.run(Sink.last()),
+              Effect.flatMap(Effect.fromOption),
+              Effect.provideService(ThreadManagementService.ThreadManagementService, threads),
+              Effect.provideService(ThreadMonitorService, service),
+              Effect.provideService(McpInvocationContext.McpInvocationContext, invocation),
+              Effect.matchCauseEffect({
+                onFailure: (cause) => monitorToolFailure(tool.name, cause),
+                onSuccess: ({ encodedResult }) =>
+                  Effect.succeed(
+                    new McpSchema.CallToolResult({
+                      isError: false,
+                      structuredContent:
+                        typeof encodedResult === "object" ? encodedResult : undefined,
+                      content: [{ type: "text", text: JSON.stringify(encodedResult) }],
+                    }),
+                  ),
+              }),
+            );
+          }),
+      });
+    }
+  },
+);
 
 const registerHtmlPreview = Effect.fn("McpHttpServer.registerHtmlPreview")(function* () {
   const htmlRender = yield* HtmlRender.HtmlRender;
@@ -1466,6 +1619,11 @@ export const ComputerToolkitRegistrationLive = Layer.mergeAll(
   ComputerImageRegistrationLive,
 );
 
+export const MonitorToolkitRegistrationLive = imageToolRegistration(
+  registerMonitorStandardTools(),
+  MonitorToolkitHandlersLive,
+);
+
 export const layerMcpTransport = McpServer.layerHttp({
   name: "T3 Code",
   version: packageJson.version,
@@ -1489,6 +1647,7 @@ export const layerTools = Layer.mergeAll(
   layerHtmlToolkit,
   ComputerToolkitRegistrationLive,
   AgentDesktopToolkitRegistrationLive,
+  MonitorToolkitRegistrationLive,
 );
 
 export const layer = layerTools.pipe(Layer.provideMerge(layerMcpTransport));

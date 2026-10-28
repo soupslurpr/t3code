@@ -138,6 +138,29 @@ export const actsAsCaller = <P, A, E, R>(handle: (params: P) => Effect.Effect<A,
   );
 
 /**
+ * Reports completion of existing durable work owned by the calling thread,
+ * such as an external monitor signal. The turn may have ended or changed
+ * providers. The handler must check ownership and terminal monitor state;
+ * this declaration never authorizes starting, editing, or cancelling work.
+ */
+export const completesAsCaller = <P, A, E, R>(handle: (params: P) => Effect.Effect<A, E, R>) =>
+  declare(
+    (params: P) =>
+      Effect.gen(function* () {
+        yield* requireThreadCaller;
+        yield* refuseReadOnlyClient;
+        const { caller } = yield* loadCaller();
+        if (caller?.archivedAt !== null) {
+          return yield* new OrchestratorMcpFailure({
+            code: "parent_not_active",
+            message: "The calling thread is archived and cannot complete background work.",
+          });
+        }
+        return yield* handle(params);
+      }),
+    undefined,
+  );
+/**
  * Changes something that belongs to no thread, such as a pending upload or a
  * scheduled task. Work a linked environment started may not: none of it
  * carries the link's origin, so none of it is that link's.
