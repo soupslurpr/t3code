@@ -35,6 +35,7 @@ import { environmentThreadDetails } from "../../state/threads";
 import { act, fakeTimers, render, stubGlobal } from "../../../test/render";
 import { ChangedFilesCard } from "./ChangedFilesTree";
 import { MessagesTimeline } from "./MessagesTimeline";
+import { useTimelineFollow } from "./useTimelineFollow";
 import { makeStreamingTimelineFixture } from "../../test-fixtures";
 import {
   type PendingApproval,
@@ -118,6 +119,38 @@ function baseProps(): Omit<TimelineProps, "timelineEntries"> {
     liveFollowEnabled: true,
     onIsAtEndChange: () => {},
   };
+}
+
+function FollowedTimeline(props: TimelineProps) {
+  const follow = useTimelineFollow({
+    legendListRef: props.listRef,
+    composerTimelineInset: 0,
+    routeThreadKey: props.routeThreadKey,
+    activeThreadKey: props.routeThreadKey,
+    isServerThread: false,
+    serverProjection: null,
+    threadStatus: "live",
+    activeActivityRun: null,
+    activeRunningTurnId: null,
+    timelineEntries: props.timelineEntries,
+    timelineAnchorMessageId: null,
+    setTimelineAnchor: () => {},
+  });
+  return (
+    <>
+      <MessagesTimeline
+        {...props}
+        liveFollowEnabled={follow.timelineLiveFollowEnabled}
+        onViewportAttach={follow.attachTimelineViewport}
+        onIsAtEndChange={follow.onIsAtEndChangeStable}
+      />
+      {follow.showScrollToBottom ? (
+        <button style={{ position: "absolute" }} onClick={() => follow.scrollToEnd(false)}>
+          Scroll to bottom
+        </button>
+      ) : null}
+    </>
+  );
 }
 
 function message(
@@ -360,7 +393,7 @@ describe("MessagesTimeline messages", () => {
             ),
     );
     await using screen = await renderElement(
-      <MessagesTimeline {...props} timelineEntries={entries} />,
+      <FollowedTimeline {...props} timelineEntries={entries} />,
     );
     const headings = () => [...screen.container.querySelectorAll("h3")];
     const headingFor = (text: string) =>
@@ -387,6 +420,56 @@ describe("MessagesTimeline messages", () => {
     await expectHeadingInView("First turn", "Turn 1:");
     expect(headingFor("Last turn")).toBeDefined();
     await expectHeadingInView("Last turn", "Turn 118:");
+  });
+
+  it("follows a large catch-up and leaves history navigation in control", async () => {
+    setup();
+    const props = baseProps();
+    const entries = Array.from({ length: 80 }, (_, index) =>
+      message(`Catch-up ${index}:\n\n${"line\n\n".repeat(20)}`, {}, `catch-up-${index}`),
+    );
+    await using screen = await renderElement(
+      <FollowedTimeline {...props} timelineEntries={entries.slice(0, 1)} />,
+    );
+    const viewport = props.listRef.current!.getScrollableNode()!;
+    const atEnd = () => viewport.scrollHeight - viewport.scrollTop - viewport.clientHeight < 2;
+    await vi.waitFor(() => expect(atEnd()).toBe(true));
+    using scrollListener = new DisposableStack();
+    const reachedEnd = new Promise<void>((resolve) => {
+      const onScroll = () => {
+        if (viewport.scrollHeight > viewport.clientHeight && atEnd()) resolve();
+      };
+      viewport.addEventListener("scroll", onScroll);
+      scrollListener.defer(() => viewport.removeEventListener("scroll", onScroll));
+    });
+    await screen.rerender(<FollowedTimeline {...props} timelineEntries={entries} />);
+    await reachedEnd;
+    await vi.waitFor(() => {
+      expect(screen.text()).toContain("Catch-up 79:");
+      expect(atEnd()).toBe(true);
+    });
+    const firstHeading = screen.container.querySelector("h3")!;
+    await act(() => firstHeading.scrollIntoView({ block: "start" }));
+    await vi.waitFor(() => {
+      expect(screen.text()).toContain("Catch-up 1:");
+      expect(atEnd()).toBe(false);
+    });
+    await expect.element(screen.getByRole("button", { name: "Scroll to bottom" })).toBeVisible();
+    const more = [...entries, message("New live end", {}, "after-catch-up")];
+    await screen.rerender(<FollowedTimeline {...props} timelineEntries={more} />);
+    await vi.waitFor(() => {
+      expect(screen.text()).toContain("Catch-up 1:");
+      expect(atEnd()).toBe(false);
+    });
+    const row = firstHeading.parentElement!.getBoundingClientRect();
+    const view = viewport.getBoundingClientRect();
+    expect(row.top).toBeLessThan(view.bottom);
+    expect(row.bottom).toBeGreaterThan(view.top);
+    await screen.getByRole("button", { name: "Scroll to bottom" }).click();
+    await vi.waitFor(() => {
+      expect(screen.text()).toContain("New live end");
+      expect(atEnd()).toBe(true);
+    });
   });
 
   it("keeps rows in item order after a reload or thread switch, before any timer runs", async () => {

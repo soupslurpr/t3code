@@ -193,3 +193,34 @@ Use of libraries under the terms of the LGPLv3 is via the
 Please report any errors or omissions via
 https://github.com/lovell/sharp-libvips/issues/new
 ```
+
+## Legend List 3.3.5
+
+Source: [Legend List 3.3.5](https://registry.npmjs.org/@legendapp/list/-/list-3.3.5.tgz)
+License: MIT.
+
+- `patches/@legendapp__list@3.3.5.patch`: adapted; preserve the existing React and React Native patches and cancel queued end-follow scrolling after navigation releases it. The added guard covers the CommonJS and ESM `react`, `react-native`, and `react-native.web` bundles.
+
+```text
+MIT License
+
+Copyright (c) 2022 Moo.do LLC
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+```
