@@ -1,3 +1,4 @@
+import { vi } from "vite-plus/test";
 import * as NodeSqlite from "node:sqlite";
 
 import * as NodeServices from "@effect/platform-node/NodeServices";
@@ -31,6 +32,21 @@ it.each([1])("blocks legacy launcher protocol %i with exact recovery steps", (la
   expect(reason).toContain("~/.local/bin/t3 service install");
   expect(reason).toContain("t3 --version");
   expect(reason).toContain("which -a t3");
+});
+
+it("N03 refuses a fresh fork preflight even with a forged upstream version", () => {
+  buildProvenance.fork = true;
+  try {
+    expect(
+      runServicePreflight({
+        databasePath: "/missing/state.sqlite",
+        launcherProtocol: SERVICE_LAUNCHER_PROTOCOL,
+        version: "1.7.0",
+      }),
+    ).toMatchObject({ status: "blocked", reason: expect.stringContaining("fork") });
+  } finally {
+    buildProvenance.fork = false;
+  }
 });
 
 it.layer(NodeServices.layer)("service preflight database", (it) => {
@@ -78,3 +94,12 @@ it.layer(NodeServices.layer)("service preflight database", (it) => {
     }),
   );
 });
+
+const buildProvenance = vi.hoisted(() => ({ fork: false }));
+vi.mock("@t3tools/shared/forkBuildIdentity", () => ({
+  get forkBuildIdentity() {
+    return buildProvenance.fork
+      ? { repository: "https://github.com/soupslurpr/t3code" }
+      : undefined;
+  },
+}));

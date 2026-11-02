@@ -1,3 +1,4 @@
+import { forkUpdateBlockReason } from "./forkUpdateCompatibility.ts";
 import * as HostProcess from "@t3tools/shared/HostProcess";
 import * as Config from "effect/Config";
 import * as Context from "effect/Context";
@@ -471,7 +472,17 @@ export class BootServiceDowngradeRefusedError extends Schema.TaggedError<BootSer
   }
 }
 
+export class BootServiceForkUpdateRefusedError extends Schema.TaggedError<BootServiceForkUpdateRefusedError>()(
+  "BootServiceForkUpdateRefusedError",
+  { reason: Schema.String },
+) {
+  override get message(): string {
+    return this.reason;
+  }
+}
+
 export type BootServiceError =
+  | BootServiceForkUpdateRefusedError
   | BootServiceUnsupportedError
   | BootServiceCommandError
   | BootServiceInstallError
@@ -584,6 +595,23 @@ export const make = Effect.fn("cloud.boot_service.make")(function* (input: {
   const logPath = path.join(input.logsDir, BOOT_SERVICE_LOG_FILE);
   const statePath = path.join(input.baseDir, "runtime", SERVICE_STATE_FILE);
   const restartPendingPath = path.join(input.baseDir, "runtime", SERVICE_RESTART_PENDING_FILE);
+  const checkPendingUpdate = Effect.fn("cloud.boot_service.check_pending_update")(
+    function* () {
+      if (!(yield* fs.exists(statePath))) return;
+      const text = yield* fs.readFileString(statePath);
+      if (!serviceStateHasPendingUpdate(text)) return;
+      const state = parseServiceState(text);
+      const reason = forkUpdateBlockReason([
+        path.join(input.baseDir, "userdata", "statev2.sqlite"),
+        path.join(input.baseDir, "userdata", "state.sqlite"),
+        ...(state?.update?.status === "pending" ? [state.update.dbPath] : []),
+      ]);
+      if (reason !== undefined) return yield* new BootServiceForkUpdateRefusedError({ reason });
+    },
+    Effect.mapError((cause) =>
+      cause._tag === "PlatformError" ? new BootServiceInstallError({ cause }) : cause,
+    ),
+  );
   const writeDurably = (filePath: string, contents: string) =>
     Effect.scoped(
       Effect.gen(function* () {
@@ -725,6 +753,12 @@ export const make = Effect.fn("cloud.boot_service.make")(function* (input: {
     readonly allowDowngrade?: boolean;
     readonly start?: boolean;
   }) {
+    const forkReason = forkUpdateBlockReason([
+      path.join(input.baseDir, "userdata", "statev2.sqlite"),
+      path.join(input.baseDir, "userdata", "state.sqlite"),
+    ]);
+    if (forkReason !== undefined)
+      return yield* new BootServiceForkUpdateRefusedError({ reason: forkReason });
     const manager = yield* requireManager;
     yield* fs
       .makeDirectory(input.logsDir, { recursive: true })
@@ -786,6 +820,12 @@ export const make = Effect.fn("cloud.boot_service.make")(function* (input: {
           : new BootServiceInstallError({ cause: error }),
       ),
     );
+    const handoffReason = forkUpdateBlockReason([
+      path.join(input.baseDir, "userdata", "statev2.sqlite"),
+      path.join(input.baseDir, "userdata", "state.sqlite"),
+    ]);
+    if (handoffReason !== undefined)
+      return yield* new BootServiceForkUpdateRefusedError({ reason: handoffReason });
     const installed = yield* fs
       .exists(unitPath)
       .pipe(Effect.mapError((cause) => new BootServiceInstallError({ cause })));
@@ -891,6 +931,7 @@ export const make = Effect.fn("cloud.boot_service.make")(function* (input: {
     ) {
       return "skipped" as const;
     }
+    yield* checkPendingUpdate();
     // Writes no state, and the launcher lets an update transition in flight
     // finish before the queued stop tears it down.
     if (runningInsideService && manager.handoff !== undefined) {
@@ -924,6 +965,7 @@ export const make = Effect.fn("cloud.boot_service.make")(function* (input: {
     ) {
       return yield* operation;
     }
+    yield* checkPendingUpdate();
     // `is-active` misses crash-looping systemd units; launchd can be loaded without a pid.
     // Always stop; restore only if previously active, enabled, or loaded,
     // so disabled crash loops stay stopped.

@@ -1,5 +1,6 @@
 import type { DesktopBridge, DesktopUpdateChannel, DesktopUpdateState } from "@t3tools/contracts";
 import { acceptsTrackSwitchRelease } from "@t3tools/shared/cliRelease";
+import { forkBuildUpdateBlockReason } from "@t3tools/shared/forkUpdates";
 
 type TrackSwitchBridge = Pick<DesktopBridge, "setUpdateChannel">;
 
@@ -18,6 +19,10 @@ export async function prepareLocalTrackSwitch(
   | { readonly ok: true; readonly local: DesktopUpdateState | null }
   | { readonly ok: false; readonly message: string }
 > {
+  const forkReason = forkBuildUpdateBlockReason();
+  if (forkReason !== undefined) {
+    return input.reinstall ? { ok: false, message: forkReason } : { ok: true, local: null };
+  }
   let local: DesktopUpdateState;
   try {
     // A build on another track re-checks the feed, older releases allowed down to the checked one.

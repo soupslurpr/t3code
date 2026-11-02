@@ -1,7 +1,12 @@
 import type { DesktopUpdateChannel, DesktopUpdateState } from "@t3tools/contracts";
-import { describe, expect, it } from "vite-plus/test";
+import { describe, expect, it, vi } from "vite-plus/test";
+import * as forkUpdates from "@t3tools/shared/forkUpdates";
 
 import { localUpdaterStaysPut, prepareLocalTrackSwitch } from "./updateTrackSwitch.logic";
+
+vi.mock("@t3tools/shared/forkUpdates", () => ({
+  forkBuildUpdateBlockReason: vi.fn((): string | undefined => undefined),
+}));
 
 const STABLE = "0.1.3";
 
@@ -47,6 +52,27 @@ const prepare = (bridge: ReturnType<typeof fakeBridge>["bridge"], reinstall = tr
   prepareLocalTrackSwitch(bridge, { channel: "latest", version: STABLE, reinstall });
 
 describe("prepareLocalTrackSwitch", () => {
+  it("leaves the local fork untouched so a remote-only fleet switch can proceed", async () => {
+    using _fork = vi
+      .spyOn(forkUpdates, "forkBuildUpdateBlockReason")
+      .mockReturnValue("Fork release proof unavailable");
+    const local = fakeBridge(new Error("Local fork updater refused"));
+    expect(await prepare(local.bridge, false)).toEqual({ ok: true, local: null });
+    expect(local.saved).toEqual([]);
+  });
+
+  it("refuses a fork reinstall before calling the local bridge", async () => {
+    using _fork = vi
+      .spyOn(forkUpdates, "forkBuildUpdateBlockReason")
+      .mockReturnValue("Fork release proof unavailable");
+    const local = fakeBridge(STABLE);
+    expect(await prepare(local.bridge)).toEqual({
+      ok: false,
+      message: "Fork release proof unavailable",
+    });
+    expect(local.saved).toEqual([]);
+  });
+
   it("installs the checked release or a newer one on the track, never an older one", async () => {
     expect(await prepare(fakeBridge(STABLE).bridge)).toMatchObject({ ok: true });
     // A newer Stable knows every migration the checked one does.

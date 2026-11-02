@@ -529,6 +529,7 @@ export const runCloudCommand = Effect.fn("cloud.cli.run_cloud_command")(function
   >,
   options?: {
     readonly quietLogs?: boolean;
+    readonly requireUpdateCompatibility?: boolean;
   },
 ) {
   const logLevel = yield* GlobalFlag.LogLevel;

@@ -3,6 +3,10 @@
   "private": true,
   "type": "module",
   "exports": {
+    "./forkUpdates": {
+      "types": "./src/forkUpdates.ts",
+      "import": "./src/forkUpdates.ts"
+    },
     "./forkBuildIdentity": {
       "types": "./src/forkBuildIdentity.ts",
       "import": "./src/forkBuildIdentity.ts"

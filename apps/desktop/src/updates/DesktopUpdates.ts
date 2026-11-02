@@ -1,3 +1,4 @@
+import { forkBuildUpdateBlockReason } from "@t3tools/shared/forkUpdates";
 import {
   DESKTOP_UPDATE_RESTART_MARKER_FILE,
   DesktopUpdateChannelSchema,
@@ -459,6 +460,8 @@ export const make = Effect.gen(function* () {
   );
 
   const resolveDisabledReason = Effect.gen(function* () {
+    const forkReason = forkBuildUpdateBlockReason();
+    if (forkReason !== undefined) return Option.some(forkReason);
     const hasFeedConfig = yield* hasUpdateFeedConfig;
     return Option.fromNullishOr(
       getAutoUpdateDisabledReason({
@@ -532,6 +535,7 @@ export const make = Effect.gen(function* () {
     actionReservation: "acquire" | "held" = "acquire",
     allowDowngrade = false,
   ) {
+    if (forkBuildUpdateBlockReason() !== undefined) return false;
     yield* Effect.annotateCurrentSpan({ reason });
     if (yield* Ref.get(desktopState.quitting)) return false;
     if (!(yield* Ref.get(updaterConfiguredRef))) return false;
@@ -588,6 +592,7 @@ export const make = Effect.gen(function* () {
   });
 
   const downloadAvailableUpdate = Effect.gen(function* () {
+    if (forkBuildUpdateBlockReason() !== undefined) return { accepted: false, completed: false };
     const state = yield* Ref.get(updateStateRef);
     if (!(yield* Ref.get(updaterConfiguredRef)) || state.status !== "available") {
       return { accepted: false, completed: false };
@@ -866,7 +871,7 @@ export const make = Effect.gen(function* () {
   const installWithExpectedVersion = Effect.fn("desktop.updates.install")(function* (
     expectedVersion?: string,
   ) {
-    if (yield* Ref.get(desktopState.quitting)) {
+    if (forkBuildUpdateBlockReason() !== undefined || (yield* Ref.get(desktopState.quitting))) {
       return {
         accepted: false,
         completed: false,
@@ -1112,6 +1117,14 @@ export const make = Effect.gen(function* () {
       Effect.flatMap((state) => resolveStateDisabledReason(state.channel)),
     ),
     configure: Effect.gen(function* () {
+      const forkReason = forkBuildUpdateBlockReason();
+      if (forkReason !== undefined) {
+        yield* electronUpdater.setAutoDownload(false);
+        yield* electronUpdater.setAutoInstallOnAppQuit(false);
+        const settings = yield* desktopSettings.get;
+        yield* setState(yield* baseUpdateState(settings.updateChannel, Option.some(forkReason)));
+        return;
+      }
       const context = yield* Effect.context<never>();
       const runEffect = (effect: Effect.Effect<void>) => {
         void Effect.runPromiseWith(context)(effect);
@@ -1197,6 +1210,12 @@ export const make = Effect.gen(function* () {
       nextChannel: DesktopUpdateChannel,
       options?: { readonly minimumVersion?: string | undefined },
     ) {
+      const forkReason = forkBuildUpdateBlockReason();
+      if (forkReason !== undefined)
+        return yield* new DesktopUpdateChannelManagedError({
+          channel: nextChannel,
+          policyMessage: forkReason,
+        });
       yield* Effect.annotateCurrentSpan({ channel: nextChannel });
       if (Option.isSome(channelBlockedReason(nextChannel))) {
         return yield* new DesktopUpdateChannelManagedError({

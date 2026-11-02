@@ -23,6 +23,7 @@ import { Argument, Flag } from "effect/cli";
 import * as CliError from "effect/cli/CliError";
 
 import { readBootstrapEnvelope } from "../bootstrap.ts";
+import { forkUpdateBlockReason } from "../cloud/forkUpdateCompatibility.ts";
 import { resolveServiceLauncherMode } from "../cloud/serviceLauncherClient.ts";
 import * as ServerConfig from "../config.ts";
 import { expandHomePath, resolveBaseDir } from "../os-jank.ts";
@@ -267,8 +268,14 @@ export const resolveServerConfig = Effect.fn("config.resolveServerConfig")(funct
     readonly startupPresentation?: ServerConfig.StartupPresentation;
     readonly forceAutoBootstrapProjectFromCwd?: boolean;
     readonly rejectRunningServer?: boolean;
+    readonly requireUpdateCompatibility?: boolean;
   },
 ) {
+  if (options?.requireUpdateCompatibility) {
+    const reason = forkUpdateBlockReason([]);
+    if (reason !== undefined)
+      return yield* new CliError.UserError({ cause: "fork-update-refused", userMessage: reason });
+  }
   const { findAvailablePort } = yield* NetService.NetService;
   const path = yield* Path.Path;
   const fs = yield* FileSystem.FileSystem;
@@ -340,6 +347,14 @@ export const resolveServerConfig = Effect.fn("config.resolveServerConfig")(funct
   const derivedPaths = yield* ServerConfig.deriveServerPaths(baseDir, devUrl, {
     baseDirIsExplicit: Option.isSome(explicitBaseDir),
   });
+  if (options?.requireUpdateCompatibility) {
+    const reason = forkUpdateBlockReason([
+      derivedPaths.dbPath,
+      path.join(derivedPaths.stateDir, "state.sqlite"),
+    ]);
+    if (reason !== undefined)
+      return yield* new CliError.UserError({ cause: "fork-update-refused", userMessage: reason });
+  }
   // An interactive CLI must not start over a discovered server. Lifetime locking
   // and supervisor handoff are separate; this preflight cannot arbitrate two starts.
   if (options?.rejectRunningServer && mode === "web") {
@@ -527,7 +542,7 @@ export const resolveServerConfig = Effect.fn("config.resolveServerConfig")(funct
 export const resolveCliAuthConfig = (
   flags: CliAuthLocationFlags,
   cliLogLevel: Option.Option<LogLevel.LogLevel>,
-  options?: { readonly quietLogs?: boolean },
+  options?: { readonly quietLogs?: boolean; readonly requireUpdateCompatibility?: boolean },
 ) => {
   const resolved = resolveServerConfig(
     {
@@ -546,6 +561,7 @@ export const resolveCliAuthConfig = (
       lan: Option.none(),
     },
     cliLogLevel,
+    options?.requireUpdateCompatibility ? { requireUpdateCompatibility: true } : undefined,
   );
   // Logs go to stdout, where --json and --token-only print, and resolving can
   // log, for example when it sweeps abandoned attachment uploads.

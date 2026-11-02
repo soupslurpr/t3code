@@ -3,6 +3,7 @@ import * as NodeChildProcess from "node:child_process";
 import * as NodeEvents from "node:events";
 import * as NodeFS from "node:fs";
 import * as NodeOS from "node:os";
+import * as NodeSqlite from "node:sqlite";
 
 import { assert, expect, it } from "@effect/vitest";
 import * as ConfigProvider from "effect/ConfigProvider";
@@ -14,6 +15,8 @@ import * as Path from "effect/Path";
 import * as Redacted from "effect/Redacted";
 import * as Result from "effect/Result";
 import * as Schema from "effect/Schema";
+import * as TestClock from "effect/testing/TestClock";
+import { vi } from "vite-plus/test";
 
 import {
   DesktopBackendBootstrap,
@@ -31,7 +34,7 @@ import {
   SERVICE_LAUNCHER_PROTOCOL,
 } from "../cloud/serviceProtocol.ts";
 import { deriveServerPaths } from "../config.ts";
-import { resolveServerConfig } from "./config.ts";
+import { resolveCliAuthConfig, resolveServerConfig } from "./config.ts";
 
 const deriveExplicitServerPaths = (baseDir: string, devUrl: URL | undefined) =>
   deriveServerPaths(baseDir, devUrl, { baseDirIsExplicit: true });
@@ -86,6 +89,54 @@ const liveProcess = Effect.acquireRelease(
 );
 
 it.layer(NodeServices.layer)("cli config resolution", (it) => {
+  it.effect.each(["build", "fork-ledger", "legacy-ledger"] as const)(
+    "N03 refuses %s before directory initialization or upload cleanup",
+    (provenance) =>
+      Effect.gen(function* () {
+        buildProvenance.fork = provenance === "build";
+        yield* Effect.addFinalizer(() =>
+          Effect.sync(() => {
+            buildProvenance.fork = false;
+          }),
+        );
+        const fs = yield* FileSystem.FileSystem;
+        const baseDir = yield* fs.makeTempDirectoryScoped({ prefix: "t3-fork-config-" });
+        const attachments = `${baseDir}/userdata/attachments`;
+        yield* fs.makeDirectory(attachments, { recursive: true });
+        yield* fs.writeFileString(`${attachments}/abandoned.part`, "preserve upload");
+        yield* fs.utimes(`${attachments}/abandoned.part`, 0, 0);
+        yield* TestClock.setTime(7 * 24 * 60 * 60 * 1000);
+        if (provenance !== "build") {
+          const db = new NodeSqlite.DatabaseSync(`${baseDir}/userdata/state.sqlite`);
+          try {
+            if (provenance === "fork-ledger")
+              db.exec("CREATE TABLE effect_sql_fork_migrations (migration_id INTEGER, name TEXT)");
+            else
+              db.exec(
+                "CREATE TABLE effect_sql_migrations (migration_id INTEGER, name TEXT); INSERT INTO effect_sql_migrations VALUES (55, 'ThreadMonitors')",
+              );
+          } finally {
+            db.close();
+          }
+        }
+        const before = NodeFS.readdirSync(baseDir, { recursive: true }).toSorted();
+        const exit = yield* resolveCliAuthConfig({ baseDir: Option.some(baseDir) }, Option.none(), {
+          requireUpdateCompatibility: true,
+        }).pipe(
+          Effect.provideService(HostProcess.Environment, {}),
+          Effect.provide(
+            Layer.mergeAll(
+              ConfigProvider.layer(ConfigProvider.fromEnv({ env: {} })),
+              NetService.layer,
+            ),
+          ),
+          Effect.exit,
+        );
+        expect(yield* fs.exists(`${attachments}/abandoned.part`)).toBe(true);
+        expect(NodeFS.readdirSync(baseDir, { recursive: true }).toSorted()).toEqual(before);
+        expect(exit._tag).toBe("Failure");
+      }),
+  );
   const defaultObservabilityConfig = {
     traceMinLevel: "Info",
     traceTimingEnabled: true,
@@ -930,3 +981,12 @@ it.layer(NodeServices.layer)("cli config resolution", (it) => {
     }),
   );
 });
+
+const buildProvenance = vi.hoisted(() => ({ fork: false }));
+vi.mock("@t3tools/shared/forkBuildIdentity", () => ({
+  get forkBuildIdentity() {
+    return buildProvenance.fork
+      ? { repository: "https://github.com/soupslurpr/t3code" }
+      : undefined;
+  },
+}));

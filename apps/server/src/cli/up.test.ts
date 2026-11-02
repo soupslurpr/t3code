@@ -154,6 +154,59 @@ const answering = (text: string) =>
 it.layer(Layer.mergeAll(NodeServices.layer, NetService.layer))("t3 up", (it) => {
   afterEach(() => vi.restoreAllMocks());
 
+  it.effect.each([
+    { installed: false, current: false, lan: "--lan" },
+    { installed: true, current: false, lan: "--lan" },
+    { installed: true, current: true, lan: "--no-lan" },
+  ])("N03 refuses setup before writes or rollback restart: %j", (input) =>
+    Effect.gen(function* () {
+      buildProvenance.fork = true;
+      yield* Effect.addFinalizer(() =>
+        Effect.sync(() => {
+          buildProvenance.fork = false;
+        }),
+      );
+      const fs = yield* FileSystem.FileSystem;
+      const baseDir = yield* fs.makeTempDirectoryScoped({ prefix: "t3-fork-up-" });
+      yield* fs.writeFileString(`${baseDir}/service.env`, "T3CODE_LAN=false\n");
+      const calls: string[] = [];
+      const layerSpy = vi.spyOn(BootService, "layer").mockReturnValue(
+        Layer.succeed(
+          BootService.BootService,
+          BootService.BootService.of({
+            status: Effect.sync(() => {
+              calls.push("status");
+              return { ...SERVICE, ...input };
+            }),
+            withStopped: (operation) => operation,
+            restart: Effect.sync(() => {
+              calls.push("restart");
+              return "restarted" as const;
+            }),
+            install: () => Effect.die("unexpected service installation"),
+            uninstall: Effect.succeed(false),
+          }),
+        ),
+      );
+      const error = yield* Command.runWith(upCommand, { version: packageJson.version })([
+        "--base-dir",
+        baseDir,
+        input.lan,
+        "--no-connect",
+        "--yes",
+      ]).pipe(
+        Effect.provideService(HostProcess.Environment, {}),
+        Effect.provide(ConfigProvider.layer(ConfigProvider.fromEnv({ env: {} }))),
+        Effect.flip,
+      );
+      expect(calls).toEqual([]);
+      expect(layerSpy).not.toHaveBeenCalled();
+      expect(yield* fs.readFileString(`${baseDir}/service.env`)).toBe("T3CODE_LAN=false\n");
+      expect(yield* fs.readDirectory(baseDir)).toEqual(["service.env"]);
+      expect(error).toMatchObject({ userMessage: expect.stringContaining("fork") });
+    }),
+  );
+
   it.effect.each<{
     readonly label: string;
     readonly installed: boolean;
@@ -337,7 +390,9 @@ it.layer(Layer.mergeAll(NodeServices.layer, NetService.layer))("t3 up", (it) => 
       if (input.prints !== undefined) {
         expect(lines.join("\n")).toContain(input.prints);
       }
-      expect(exit._tag).toBe(input.restartFails === true ? "Failure" : "Success");
+      expect(exit._tag, exit._tag === "Failure" ? Cause.pretty(exit.cause) : undefined).toBe(
+        input.restartFails === true ? "Failure" : "Success",
+      );
       expect({ installs, restarts }).toEqual({
         installs: input.installs,
         restarts: input.restarts,
@@ -354,3 +409,17 @@ it("rewrites only the named service.env keys and keeps the user's lines", () => 
   );
   expect(upsertServiceEnv("", { T3CODE_LAN: "false" })).toBe("T3CODE_LAN=false\n");
 });
+
+const buildProvenance = vi.hoisted(() => ({ fork: false }));
+// Upstream setup fixtures must not install the fork auth database's migration ledger.
+vi.mock("../auth/EnvironmentAuth.ts", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../auth/EnvironmentAuth.ts")>()),
+  layerRuntime: (await import("../policy/ManagedPolicy.ts")).layer,
+}));
+vi.mock("@t3tools/shared/forkBuildIdentity", () => ({
+  get forkBuildIdentity() {
+    return buildProvenance.fork
+      ? { repository: "https://github.com/soupslurpr/t3code" }
+      : undefined;
+  },
+}));

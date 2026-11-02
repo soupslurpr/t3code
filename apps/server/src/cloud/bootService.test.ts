@@ -1,3 +1,4 @@
+import { vi } from "vite-plus/test";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { expect, it } from "@effect/vitest";
 import * as HostProcess from "@t3tools/shared/HostProcess";
@@ -224,6 +225,82 @@ const makeHarness = Effect.fn("test.make_boot_service_harness")(function* (
 });
 
 it.layer(NodeServices.layer)("boot service install", (it) => {
+  it.effect.each(["restart", "maintenance"] as const)(
+    "N03 refuses a pending fork update before service %s",
+    (operation) =>
+      Effect.gen(function* () {
+        const { service, fs, baseDir, statePath, commands } = yield* makeHarness();
+        yield* service.install();
+        const pendingState = JSON.stringify({
+          protocol: SERVICE_LAUNCHER_PROTOCOL,
+          activeVersion: "1.2.3",
+          update: {
+            id: "pending-fork",
+            fromVersion: "1.2.3",
+            targetVersion: "1.2.4",
+            dbPath: `${baseDir}/userdata/statev2.sqlite`,
+            status: "pending",
+          },
+        });
+        yield* fs.writeFileString(statePath, pendingState);
+        commands.length = 0;
+        buildProvenance.fork = true;
+        yield* Effect.addFinalizer(() =>
+          Effect.sync(() => {
+            buildProvenance.fork = false;
+          }),
+        );
+        const result = yield* (
+          operation === "restart"
+            ? service.restart
+            : service.withStopped(
+                Effect.sync(() => {
+                  commands.push("maintenance");
+                  return "repaired";
+                }),
+              )
+        ).pipe(Effect.exit);
+        expect(commands).toEqual([]);
+        expect(result).toMatchObject({ _tag: "Failure" });
+        expect(yield* fs.readFileString(statePath)).toBe(pendingState);
+      }),
+  );
+
+  it.effect("N03 permits ordinary fork service restart without a pending replacement", () =>
+    Effect.gen(function* () {
+      const { service } = yield* makeHarness();
+      yield* service.install();
+      buildProvenance.fork = true;
+      yield* Effect.addFinalizer(() =>
+        Effect.sync(() => {
+          buildProvenance.fork = false;
+        }),
+      );
+      expect(yield* service.restart).toBe("restarted");
+    }),
+  );
+  it.effect("N03 refuses fork install before commands, downloads, logs or service state", () =>
+    Effect.gen(function* () {
+      buildProvenance.fork = true;
+      yield* Effect.addFinalizer(() =>
+        Effect.sync(() => {
+          buildProvenance.fork = false;
+        }),
+      );
+      const { service, fs, baseDir, statePath, commands } = yield* makeHarness();
+      const error = yield* service
+        .install({ allowDowngrade: true, start: false })
+        .pipe(Effect.flip);
+      expect(error).toMatchObject({
+        _tag: "BootServiceForkUpdateRefusedError",
+        reason: expect.stringContaining("fork"),
+      });
+      expect(commands).toEqual([]);
+      expect(yield* fs.exists(statePath)).toBe(false);
+      expect(yield* fs.exists(`${baseDir}/userdata/logs`)).toBe(false);
+    }),
+  );
+
   it.effect(
     "fails before installing files or validating a runtime when lingering needs an administrator",
     () =>
@@ -907,3 +984,12 @@ it.layer(NodeServices.layer)("boot service install", (it) => {
     }),
   );
 });
+
+const buildProvenance = vi.hoisted(() => ({ fork: false }));
+vi.mock("@t3tools/shared/forkBuildIdentity", () => ({
+  get forkBuildIdentity() {
+    return buildProvenance.fork
+      ? { repository: "https://github.com/soupslurpr/t3code" }
+      : undefined;
+  },
+}));

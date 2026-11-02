@@ -1,0 +1,121 @@
+// The standalone launcher must read identities without loading migration implementations.
+export const upstreamMigrationIdentities = [
+  [1, "OrchestrationEvents"],
+  [2, "OrchestrationCommandReceipts"],
+  [3, "CheckpointDiffBlobs"],
+  [4, "ProviderSessionRuntime"],
+  [5, "Projections"],
+  [6, "ProjectionThreadSessionRuntimeModeColumns"],
+  [7, "ProjectionThreadMessageAttachments"],
+  [8, "ProjectionThreadActivitySequence"],
+  [9, "ProviderSessionRuntimeMode"],
+  [10, "ProjectionThreadsRuntimeMode"],
+  [11, "OrchestrationThreadCreatedRuntimeMode"],
+  [12, "ProjectionThreadsInteractionMode"],
+  [13, "ProjectionThreadProposedPlans"],
+  [14, "ProjectionThreadProposedPlanImplementation"],
+  [15, "ProjectionTurnsSourceProposedPlan"],
+  [16, "CanonicalizeModelSelections"],
+  [17, "ProjectionThreadsArchivedAt"],
+  [18, "ProjectionThreadsArchivedAtIndex"],
+  [19, "ProjectionSnapshotLookupIndexes"],
+  [20, "AuthAccessManagement"],
+  [21, "AuthSessionClientMetadata"],
+  [22, "AuthSessionLastConnectedAt"],
+  [23, "ProjectionThreadShellSummary"],
+  [24, "BackfillProjectionThreadShellSummary"],
+  [25, "CleanupInvalidProjectionPendingApprovals"],
+  [26, "CanonicalizeModelSelectionOptions"],
+  [27, "ProviderSessionRuntimeInstanceId"],
+  [28, "ProjectionThreadSessionInstanceId"],
+  [29, "ProjectionThreadDetailOrderingIndexes"],
+  [30, "ProjectionThreadShellArchiveIndexes"],
+  [31, "AuthAuthorizationScopes"],
+  [32, "AuthPairingProofKeyThumbprint"],
+  [33, "ProjectionThreadsSettled"],
+  [34, "ProjectionThreadsSnoozed"],
+  [35, "ProjectionThreadTitleRegeneration"],
+  [36, "ProjectionThreadsPinned"],
+  [37, "ProjectionTurnsKeysetIndex"],
+  [38, "ProjectionThreadsPinOrderKey"],
+  [39, "ProjectionProjectsDefaultThreadEnvMode"],
+  [40, "ProjectionProjectFaviconPath"],
+  [41, "AuthSessionClientConnection"],
+  [42, "ProjectionThreadLinkedPullRequest"],
+  [43, "ProjectionThreadsUnsettledAt"],
+  [44, "ClearAutomaticProjectModelDefaults"],
+  [45, "ProjectionProjectsAutoPull"],
+  [46, "RepairAutomaticSettlementTimestamps"],
+  [47, "ProjectionProjectIcon"],
+  [48, "ProjectionThreadBranchPullRequest"],
+  [49, "ProjectionThreadsActiveOrderKey"],
+  [50, "ProjectionThreadPullRequests"],
+  [51, "ProjectionThreadMessageContext"],
+  [52, "ProjectionThreadTitleState"],
+  [53, "PullRequestFilesViewed"],
+  [54, "ProjectionThreadsAutoSettleDisabledAt"],
+  [55, "OrchestrationV2"],
+  [56, "RemoveRedundantProjectionIndexes"],
+  [57, "ScheduledTaskWebhooks"],
+  [58, "WebhookRelayDeliveries"],
+  [59, "McpAppModelContext"],
+  [60, "ThreadSnapshotWindowIndexes"],
+  [61, "PullRequestReviewGuides"],
+  [62, "ThreadFailureLookupIndex"],
+  [63, "DropUnusedV1Projections"],
+  [64, "CanonicalizeThreadPullRequestLinks"],
+  [65, "CodexUsageNativeTurnIndex"],
+  [66, "RepairClientSettlementTimestamps"],
+  [67, "WebhookDedupe"],
+  [68, "ShellStopRequestIndex"],
+  [69, "ThreadMessageSearch"],
+  [70, "PeerLinks"],
+  [71, "PeerLinkFence"],
+  [72, "WaitingLinkRequestIndex"],
+  [73, "ActiveTurnItemIndexes"],
+  [74, "ExcludeAttachmentPlaceholdersFromSearch"],
+  [75, "SubagentDeliveryState"],
+  [76, "ProjectionProjectsPinArchive"],
+] as const;
+export const migrationManifest = upstreamMigrationIdentities.map(
+  ([id, name]) => [id, name] as const,
+);
+
+// Recognition is frozen independently of the loaders present at a given fork boundary.
+export const releasedForkMigrationNames = [
+  "ThreadMonitors",
+  "ThreadMonitorDelivery",
+  "ComputerThreadMonitors",
+  "ComputerMonitorEvaluationThrottle",
+  "AdaptiveComputerMonitors",
+  "ComputerMonitorImageEncoding",
+  "ProjectionThreadMessageSystemEvents",
+  "ComputerMonitorCacheWriteUsage",
+  "UserDesktops",
+  "UserDesktopAccessAudit",
+  "PreviewSessions",
+  "ToolRuns",
+  "ThreadMonitorCancellation",
+  "ThreadRunMonitors",
+  "DesktopAuthorizationActivity",
+  "ProcessMonitors",
+] as const;
+
+export const isPreviewHistory = (
+  rows: ReadonlyArray<{ readonly migration_id: number; readonly name: string }>,
+) => {
+  const tail = rows.filter((row) => row.migration_id >= 53);
+  const legacy = tail.find(
+    (row) => row.name === "OrchestrationV2" && (row.migration_id === 53 || row.migration_id === 54),
+  );
+  return (
+    legacy !== undefined &&
+    tail.every(
+      (row) =>
+        row === legacy ||
+        (legacy.migration_id === 54 &&
+          ((row.migration_id === 53 && row.name === "PullRequestFilesViewed") ||
+            (row.migration_id === 55 && row.name === "RemoveRedundantProjectionIndexes"))),
+    )
+  );
+};
