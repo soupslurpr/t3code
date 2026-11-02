@@ -2,6 +2,8 @@ import * as NodeServices from "@effect/platform-node/NodeServices";
 import { assert, it } from "@effect/vitest";
 import type { ManagedUpdatesPolicy } from "@t3tools/contracts";
 import * as HostProcess from "@t3tools/shared/HostProcess";
+import * as NetService from "@t3tools/shared/Net";
+import * as ConfigProvider from "effect/ConfigProvider";
 import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
@@ -11,6 +13,7 @@ import * as Option from "effect/Option";
 import * as Path from "effect/Path";
 import * as TestClock from "effect/testing/TestClock";
 import { HttpClient, HttpClientResponse } from "effect/http";
+import { Command } from "effect/cli";
 import * as ChildProcessSpawner from "effect/process/ChildProcessSpawner";
 import { afterEach, vi } from "vite-plus/test";
 
@@ -18,7 +21,13 @@ import * as BootService from "../cloud/bootService.ts";
 import { prunePinnedRuntimes } from "../cloud/pinnedRuntime.ts";
 import * as ManagedPolicy from "../policy/ManagedPolicy.ts";
 import * as ProcessRunner from "../processRunner.ts";
-import { repointLauncher, resolveLauncherPath, resolveNewestVersion, runUpdate } from "./update.ts";
+import {
+  repointLauncher,
+  resolveLauncherPath,
+  resolveNewestVersion,
+  runUpdate,
+  updateCommand,
+} from "./update.ts";
 
 // lsof listing one process, so prune sees a process list in which no runtime is running.
 const unrelatedLsof = ProcessRunner.ProcessRunner.of({
@@ -93,6 +102,24 @@ it.layer(NodeServices.layer)("t3 update under a managed policy", (it) => {
       ),
     );
 
+  it.effect(
+    "N03 refuses a fork before release lookup, download, service mutation or launcher replacement",
+    () =>
+      Effect.gen(function* () {
+        buildProvenance.fork = true;
+        yield* Effect.addFinalizer(() =>
+          Effect.sync(() => {
+            buildProvenance.fork = false;
+          }),
+        );
+        const error = yield* runWithPolicy(
+          { mode: "auto" },
+          { channel: "nightly", requestedVersion: "1.2.3" },
+        );
+        assert.include(error.message, "fork");
+      }),
+  );
+
   it.effect("refuses to update when updates are off", () =>
     Effect.gen(function* () {
       const error = yield* runWithPolicy({ mode: "off" });
@@ -121,6 +148,35 @@ it.layer(NodeServices.layer)("t3 update under a managed policy", (it) => {
 });
 
 it.layer(NodeServices.layer)("t3 update launcher", (it) => {
+  it.effect("N03 refuses the update command before initializing a new home", () =>
+    Effect.gen(function* () {
+      buildProvenance.fork = true;
+      yield* Effect.addFinalizer(() =>
+        Effect.sync(() => {
+          buildProvenance.fork = false;
+        }),
+      );
+      const fs = yield* FileSystem.FileSystem;
+      const parent = yield* fs.makeTempDirectoryScoped({ prefix: "t3-fork-update-cli-" });
+      const error = yield* Command.runWith(updateCommand, { version: "1.0.0" })([
+        "--base-dir",
+        `${parent}/missing`,
+        "--yes",
+      ]).pipe(
+        Effect.provideService(HostProcess.Environment, {}),
+        Effect.provide(
+          Layer.mergeAll(
+            ConfigProvider.layer(ConfigProvider.fromEnv({ env: {} })),
+            NetService.layer,
+          ),
+        ),
+        Effect.flip,
+      );
+      assert.propertyVal(error, "_tag", "UserError");
+      assert.include(error.message, "fork");
+      assert.deepEqual(yield* fs.readDirectory(parent), []);
+    }),
+  );
   it.effect("repoints a symlink that lives in a runtime versions tree", () =>
     Effect.gen(function* () {
       const fs = yield* FileSystem.FileSystem;
@@ -364,3 +420,12 @@ it.layer(NodeServices.layer)("t3 update launcher", (it) => {
     }).pipe(Effect.scoped, Effect.provideService(HostProcess.Platform, "linux")),
   );
 });
+
+const buildProvenance = vi.hoisted(() => ({ fork: false }));
+vi.mock("@t3tools/shared/forkBuildIdentity", () => ({
+  get forkBuildIdentity() {
+    return buildProvenance.fork
+      ? { repository: "https://github.com/soupslurpr/t3code" }
+      : undefined;
+  },
+}));

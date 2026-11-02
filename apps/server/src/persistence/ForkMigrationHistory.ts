@@ -3,25 +3,7 @@ import * as Schema from "effect/Schema";
 import * as Migrator from "effect/sql/Migrator";
 import * as SqlClient from "effect/sql/SqlClient";
 
-// Recognition is frozen independently of the loaders present at a given fork boundary.
-const releasedForkMigrationNames = [
-  "ThreadMonitors",
-  "ThreadMonitorDelivery",
-  "ComputerThreadMonitors",
-  "ComputerMonitorEvaluationThrottle",
-  "AdaptiveComputerMonitors",
-  "ComputerMonitorImageEncoding",
-  "ProjectionThreadMessageSystemEvents",
-  "ComputerMonitorCacheWriteUsage",
-  "UserDesktops",
-  "UserDesktopAccessAudit",
-  "PreviewSessions",
-  "ToolRuns",
-  "ThreadMonitorCancellation",
-  "ThreadRunMonitors",
-  "DesktopAuthorizationActivity",
-  "ProcessMonitors",
-] as const;
+import { isPreviewHistory, releasedForkMigrationNames } from "./MigrationIdentities.ts";
 
 interface HistoryRow {
   readonly migration_id: number;
@@ -83,23 +65,6 @@ const decodeF08Condition = Schema.decodeUnknownSync(
     }),
   ),
 );
-
-const isPreviewHistory = (rows: ReadonlyArray<HistoryRow>) => {
-  const tail = rows.filter((row) => row.migration_id >= 53);
-  const legacy = tail.find(
-    (row) => row.name === "OrchestrationV2" && (row.migration_id === 53 || row.migration_id === 54),
-  );
-  return (
-    legacy !== undefined &&
-    tail.every(
-      (row) =>
-        row === legacy ||
-        (legacy.migration_id === 54 &&
-          ((row.migration_id === 53 && row.name === "PullRequestFilesViewed") ||
-            (row.migration_id === 55 && row.name === "RemoveRedundantProjectionIndexes"))),
-    )
-  );
-};
 
 // The caller holds the SQLite write transaction through adoption and both migrators.
 export const adoptForkMigrationHistory = Effect.fn("adoptForkMigrationHistory")(function* (

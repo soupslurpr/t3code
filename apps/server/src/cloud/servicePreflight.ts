@@ -1,3 +1,5 @@
+import { FORK_UPDATE_BLOCK_REASON } from "@t3tools/shared/forkUpdates";
+import { forkUpdateBlockReason } from "./forkUpdateCompatibility.ts";
 import packageJson from "../../package.json" with { type: "json" };
 import { BUILD_MIGRATION_HEAD, recordedMigrations } from "../persistence/databaseMigrationHead.ts";
 import { SERVICE_LAUNCHER_PROTOCOL } from "./serviceProtocol.ts";
@@ -20,6 +22,9 @@ export function runServicePreflight(input: {
   readonly version?: string;
 }): ServicePreflightResult {
   const version = input.version ?? packageJson.version;
+  const forkReason = forkUpdateBlockReason([input.databasePath]);
+  if (forkReason === FORK_UPDATE_BLOCK_REASON)
+    return { status: "blocked", version, reason: forkReason };
   if (input.launcherProtocol !== SERVICE_LAUNCHER_PROTOCOL) {
     return {
       status: "blocked",
@@ -51,6 +56,7 @@ export function runServicePreflight(input: {
     };
   }
 
+  if (forkReason !== undefined) return { status: "blocked", version, reason: forkReason };
   return { status: "ready", version, launcherProtocol: SERVICE_LAUNCHER_PROTOCOL };
 }
 

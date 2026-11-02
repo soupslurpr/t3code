@@ -1,3 +1,4 @@
+import { vi } from "vite-plus/test";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { expect, it } from "@effect/vitest";
 import type { DesktopUpdateState, DesktopUpdateStatusReport } from "@t3tools/contracts";
@@ -105,6 +106,33 @@ const makeHarness = Effect.fn("test.make_desktop_app_update_harness")(function* 
 });
 
 it.layer(NodeServices.layer)("desktop app update", (it) => {
+  it.effect("N03 refuses fork preparation and cached commit before desktop IPC or handoff", () =>
+    Effect.gen(function* () {
+      buildProvenance.fork = true;
+      yield* Effect.addFinalizer(() =>
+        Effect.sync(() => {
+          buildProvenance.fork = false;
+        }),
+      );
+      const { service } = yield* makeHarness({
+        reports: () => {
+          throw new Error("unexpected update IPC");
+        },
+      });
+      const progress = () => Effect.die("unexpected update progress");
+      expect(
+        (yield* service
+          .run(progress, { channel: "nightly", targetVersion: "1.2.4" })
+          .pipe(Effect.flip)).reason,
+      ).toContain("fork");
+      expect(
+        (yield* service
+          .commit("cached-token", () => Effect.die("unexpected handoff"))
+          .pipe(Effect.flip)).reason,
+      ).toContain("fork");
+    }),
+  );
+
   it.effect("collapses state reports into progress stages and succeeds on installing", () =>
     Effect.gen(function* () {
       const { service } = yield* makeHarness({
@@ -216,3 +244,12 @@ it.layer(NodeServices.layer)("desktop app update", (it) => {
     }),
   );
 });
+
+const buildProvenance = vi.hoisted(() => ({ fork: false }));
+vi.mock("@t3tools/shared/forkBuildIdentity", () => ({
+  get forkBuildIdentity() {
+    return buildProvenance.fork
+      ? { repository: "https://github.com/soupslurpr/t3code" }
+      : undefined;
+  },
+}));

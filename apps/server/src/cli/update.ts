@@ -1,3 +1,4 @@
+import { forkUpdateBlockReason } from "../cloud/forkUpdateCompatibility.ts";
 import * as HostProcess from "@t3tools/shared/HostProcess";
 import {
   CLI_RELEASE_BASE_URL_ENV,
@@ -236,7 +237,9 @@ export const updateCommand = Command.make("update", {
   Command.withHandler((flags) =>
     Effect.gen(function* () {
       const logLevel = yield* GlobalFlag.LogLevel;
-      const config = yield* resolveCliAuthConfig(flags, logLevel);
+      const config = yield* resolveCliAuthConfig(flags, logLevel, {
+        requireUpdateCompatibility: true,
+      });
       return yield* runUpdate({
         baseDir: config.baseDir,
         logsDir: config.logsDir,
@@ -321,6 +324,11 @@ export const runUpdate = Effect.fn("cli.update.run")(function* (input: {
   const service = yield* BootService.BootService;
   const policy = yield* ManagedPolicy.ManagedPolicy;
 
+  const forkReason = forkUpdateBlockReason([
+    path.join(input.baseDir, "userdata", "statev2.sqlite"),
+    path.join(input.baseDir, "userdata", "state.sqlite"),
+  ]);
+  if (forkReason !== undefined) return yield* new CliUpdateError({ reason: forkReason });
   const currentVersion = packageJson.version;
   const channel = input.channel ?? cliReleaseChannelOf(currentVersion);
   const refusal = managedUpdateRefusal(
@@ -496,6 +504,11 @@ export const runUpdate = Effect.fn("cli.update.run")(function* (input: {
   );
 
   const launchedAs = (yield* HostProcess.IsExecutable) ? yield* resolveLauncherPath : undefined;
+  const handoffReason = forkUpdateBlockReason([
+    path.join(input.baseDir, "userdata", "statev2.sqlite"),
+    path.join(input.baseDir, "userdata", "state.sqlite"),
+  ]);
+  if (handoffReason !== undefined) return yield* new CliUpdateError({ reason: handoffReason });
   const repointed = yield* repointLauncher({
     launchedAs,
     baseDir: input.baseDir,

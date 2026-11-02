@@ -446,7 +446,9 @@ export const upCommand = Command.make("up", {
     { command: "t3 up --yes", description: "Take the defaults with no questions." },
     { command: "t3 status --json", description: "Read the settings from a script." },
   ]),
-  Command.withHandler((flags) => runCloudCommand(flags, setUp(flags), { quietLogs: true })),
+  Command.withHandler((flags) =>
+    runCloudCommand(flags, setUp(flags), { quietLogs: true, requireUpdateCompatibility: true }),
+  ),
 );
 
 export const connectCommand = Command.make("connect", {
@@ -458,7 +460,7 @@ export const connectCommand = Command.make("connect", {
     runCloudCommand(
       flags,
       setUp({ ...flags, connect: Option.some(true), lan: Option.none(), yes: false }),
-      { quietLogs: true },
+      { quietLogs: true, requireUpdateCompatibility: true },
     ),
   ),
   Command.withSubcommands(connectSubcommands),

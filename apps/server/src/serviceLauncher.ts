@@ -1,3 +1,4 @@
+import { forkUpdateBlockReason } from "./cloud/forkUpdateCompatibility.ts";
 // @effect-diagnostics nodeBuiltinImport:off
 // @effect-diagnostics globalTimers:off
 // The launcher must survive unloadable server versions; use Node built-ins without Effect.
@@ -525,6 +526,11 @@ export class Launcher {
   }
 
   async #recover(): Promise<void> {
+    if (this.#state.update?.status === "pending") {
+      const reason = forkUpdateBlockReason([this.#state.update.dbPath]);
+      if (reason !== undefined)
+        throw new Error(`Pending update retained without starting any runtime. ${reason}`);
+    }
     // Clear old stop markers to preserve future tunnels; clear restart-pending only for the awaited version to avoid CLI races.
     await NodeFSP.rm(stopMarkerPath(this.#baseDir), { force: true }).catch(() => undefined);
     const restartPending = restartPendingPath(this.#baseDir);
@@ -552,6 +558,8 @@ export class Launcher {
   }
 
   async #startTrial(pending: PendingServiceUpdate): Promise<void> {
+    const reason = forkUpdateBlockReason([pending.dbPath]);
+    if (reason !== undefined) throw new Error(reason);
     try {
       await backupDatabaseOnce(this.#baseDir, pending);
     } catch {
@@ -633,6 +641,11 @@ export class Launcher {
   ): Promise<void> {
     const reject = (reason: string) =>
       sendMessage(child.process, { type: "update-rejected", reason });
+    const forkReason = forkUpdateBlockReason([message.dbPath]);
+    if (forkReason !== undefined) {
+      await reject(forkReason);
+      return;
+    }
     if (child.role !== "active") {
       await reject("Only the active server can request an update.");
       return;
@@ -695,6 +708,12 @@ export class Launcher {
     if (this.#child !== child || child.role !== "active" || pending?.status !== "pending") {
       return;
     }
+    const reason = forkUpdateBlockReason([pending.dbPath]);
+    if (reason !== undefined) {
+      this.#clearTimer();
+      await sendMessage(child.process, { type: "update-rejected", reason });
+      return;
+    }
     this.#timer = undefined;
     this.#child = null;
     await terminateChild(child.process);
@@ -715,6 +734,8 @@ export class Launcher {
       }
       throw new Error("Trial child reported prepared for an unexpected update.");
     }
+    const reason = forkUpdateBlockReason([pending.dbPath]);
+    if (reason !== undefined) throw new Error(reason);
     this.#clearTimer();
     const committed = terminalUpdate({ pending, status: "committed" });
     const next: ServiceState = {
@@ -777,6 +798,8 @@ export class Launcher {
     this.#clearTimer();
     const pending = this.#state.update;
     if (pending?.status === "pending") {
+      const reason = forkUpdateBlockReason([pending.dbPath]);
+      if (reason !== undefined) throw new Error(reason);
       const next: ServiceState = {
         ...this.#state,
         activeVersion: pending.fromVersion,
@@ -799,6 +822,8 @@ export class Launcher {
     reason: string,
     child?: ManagedChild,
   ): Promise<void> {
+    const blocker = forkUpdateBlockReason([pending.dbPath]);
+    if (blocker !== undefined) throw new Error(blocker);
     if (child !== undefined) {
       this.#child = null;
       await terminateChild(child.process);

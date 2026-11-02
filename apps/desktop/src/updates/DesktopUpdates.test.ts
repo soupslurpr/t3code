@@ -1,3 +1,4 @@
+import { vi } from "vite-plus/test";
 import { assert, describe, it } from "@effect/vitest";
 import { DESKTOP_UPDATE_RESTART_MARKER_FILE } from "@t3tools/contracts";
 import * as Cause from "effect/Cause";
@@ -23,6 +24,62 @@ import * as DesktopUpdates from "./DesktopUpdates.ts";
 import { flushCallbacks, makeHarness } from "./updatesTestHarness.ts";
 
 describe("DesktopUpdates", () => {
+  it.effect("N03 refuses fork track changes before saving or checking a feed", () => {
+    const harness = makeHarness({ beforeSetUpdateChannel: Effect.die("track must not be saved") });
+    return Effect.scoped(
+      Effect.gen(function* () {
+        buildProvenance.fork = true;
+        yield* Effect.addFinalizer(() =>
+          Effect.sync(() => {
+            buildProvenance.fork = false;
+          }),
+        );
+        const updates = yield* DesktopUpdates.DesktopUpdates;
+        yield* updates.configure;
+        assert.equal((yield* updates.getState).status, "disabled");
+        const result = yield* updates.setChannel("nightly").pipe(Effect.result);
+        assert.equal(result._tag, "Failure");
+        assert.equal((yield* updates.getState).channel, "latest");
+        assert.isFalse((yield* updates.check("manual")).checked);
+        assert.isFalse((yield* updates.download).accepted);
+        assert.isFalse((yield* updates.install).accepted);
+        assert.isFalse((yield* updates.installPrepared("1.2.4")).accepted);
+        assert.equal(harness.checkCount(), 0);
+        assert.equal(harness.downloadCount(), 0);
+        assert.equal(harness.quitAndInstalls(), 0);
+        assert.deepEqual(harness.installSteps, []);
+      }),
+    ).pipe(Effect.provide(harness.layer));
+  });
+
+  it.effect("N03 rechecks fork provenance before installing a prepared desktop update", () => {
+    const harness = makeHarness();
+    return Effect.scoped(
+      Effect.gen(function* () {
+        yield* Effect.addFinalizer(() =>
+          Effect.sync(() => {
+            buildProvenance.fork = false;
+          }),
+        );
+        const updates = yield* DesktopUpdates.DesktopUpdates;
+        yield* updates.configure;
+        const { changes } = yield* updates.subscribe;
+        const downloaded = yield* changes.pipe(
+          Stream.filter((state) => state.status === "downloaded"),
+          Stream.runHead,
+          Effect.forkScoped,
+        );
+        harness.emit("update-downloaded", { version: "1.2.4" });
+        yield* Fiber.join(downloaded);
+        buildProvenance.fork = true;
+        assert.isFalse((yield* updates.installPrepared("1.2.4")).accepted);
+        assert.equal(harness.quitAndInstalls(), 0);
+        assert.deepEqual(harness.installSteps, []);
+        assert.equal(harness.updateRestartMarkers.size, 0);
+      }),
+    ).pipe(Effect.provide(harness.layer));
+  });
+
   it.effect("updates Linux .deb installs and leaves other non-AppImage installs off", () =>
     Effect.gen(function* () {
       const linuxState = (packageType: string | undefined) =>
@@ -1076,3 +1133,13 @@ describe("DesktopUpdates under a managed policy", () => {
     ).pipe(Effect.provide(Layer.merge(TestClock.layer(), harness.layer)));
   });
 });
+
+// Existing updater cases exercise an upstream build; fork cases opt into trusted build provenance.
+const buildProvenance = vi.hoisted(() => ({ fork: false }));
+vi.mock("@t3tools/shared/forkBuildIdentity", () => ({
+  get forkBuildIdentity() {
+    return buildProvenance.fork
+      ? { repository: "https://github.com/soupslurpr/t3code", channel: "soupslurpr" }
+      : undefined;
+  },
+}));

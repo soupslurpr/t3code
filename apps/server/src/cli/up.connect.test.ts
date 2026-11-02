@@ -12,11 +12,24 @@ import { vi } from "vite-plus/test";
 
 import packageJson from "../../package.json" with { type: "json" };
 import * as BootService from "../cloud/bootService.ts";
-import { upCommand } from "./up.ts";
+import { connectCommand, upCommand } from "./up.ts";
 
 // T3 Connect's flows run only in builds with its public config, and they call
 // the relay; this file swaps in the link and unlink steps.
 const events = vi.hoisted((): Array<string> => []);
+const buildProvenance = vi.hoisted(() => ({ fork: false }));
+vi.mock("@t3tools/shared/forkBuildIdentity", () => ({
+  get forkBuildIdentity() {
+    return buildProvenance.fork
+      ? { repository: "https://github.com/soupslurpr/t3code" }
+      : undefined;
+  },
+}));
+// Upstream setup fixtures must not install the fork auth database's migration ledger.
+vi.mock("../auth/EnvironmentAuth.ts", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../auth/EnvironmentAuth.ts")>()),
+  layerRuntime: (await import("../policy/ManagedPolicy.ts")).layer,
+}));
 // The CLI link marker, kept in memory instead of the secret store.
 const link = vi.hoisted(() => ({
   desired: false,
@@ -57,6 +70,71 @@ vi.mock("./connect.ts", async (importOriginal) => {
 });
 
 it.layer(Layer.mergeAll(NodeServices.layer, NetService.layer))("t3 up with T3 Connect", (it) => {
+  it.effect.each([
+    { name: "up links", prior: false, alias: false },
+    { name: "up unlinks", prior: true, alias: false },
+    { name: "connect links", prior: false, alias: true },
+    { name: "connect keeps a link", prior: true, alias: true },
+  ])("N03 refuses before changing a prior cloud link: $name", ({ prior, alias }) =>
+    Effect.gen(function* () {
+      events.length = 0;
+      link.desired = prior;
+      link.mode = "managed";
+      buildProvenance.fork = true;
+      yield* Effect.addFinalizer(() =>
+        Effect.sync(() => {
+          buildProvenance.fork = false;
+        }),
+      );
+      const fs = yield* FileSystem.FileSystem;
+      const baseDir = yield* fs.makeTempDirectoryScoped({ prefix: "t3-fork-up-connect-" });
+      yield* Effect.acquireRelease(
+        Effect.sync(() =>
+          vi.spyOn(BootService, "layer").mockReturnValue(
+            Layer.succeed(
+              BootService.BootService,
+              BootService.BootService.of({
+                status: Effect.sync(() => {
+                  events.push("status");
+                  return {
+                    supported: true,
+                    installed: true,
+                    current: true,
+                    unitPath: `${baseDir}/unit`,
+                    logPath: `${baseDir}/log`,
+                  };
+                }),
+                withStopped: (operation) => operation,
+                restart: Effect.sync(() => {
+                  events.push("restart");
+                  return "restarted" as const;
+                }),
+                install: () => Effect.die("unexpected service install"),
+                uninstall: Effect.succeed(false),
+              }),
+            ),
+          ),
+        ),
+        (spy) => Effect.sync(() => spy.mockRestore()),
+      );
+      const run = alias
+        ? Command.runWith(connectCommand, { version: packageJson.version })
+        : Command.runWith(upCommand, { version: packageJson.version });
+      const error = yield* run([
+        "--base-dir",
+        baseDir,
+        ...(alias ? ["--headless"] : [prior ? "--no-connect" : "--connect", "--yes"]),
+      ]).pipe(
+        Effect.provideService(HostProcess.Environment, {}),
+        Effect.provide(ConfigProvider.layer(ConfigProvider.fromEnv({ env: {} }))),
+        Effect.flip,
+      );
+      expect(events).toEqual([]);
+      expect(error).toMatchObject({ userMessage: expect.stringContaining("fork") });
+      expect(link).toEqual({ desired: prior, mode: "managed" });
+      expect(yield* fs.readDirectory(baseDir)).toEqual([]);
+    }),
+  );
   it.effect.each([
     { label: "no link", prior: null, events: ["link", "restart", "unlink", "restart"] },
     // The publish-only link comes back, with its activity publishing.

@@ -1,5 +1,12 @@
 # Updating T3 Code
 
+This fork uses manual package updates. Built-in updates,
+release-track changes, and `t3 up` are blocked because the upstream releases do
+not establish compatibility with fork data. Follow the
+[fork update procedure](../operations/fork-updates.md), including its launcher
+transition before restarting an installation with a pending update. Connected
+upstream environments retain their own update behavior described below.
+
 The app you use and the server running your agents can be on different machines.
 When a server is behind your web or desktop app, the update button at the bottom
 of the sidebar and **Settings → Environments** offer to update it.

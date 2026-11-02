@@ -1,3 +1,4 @@
+import { forkUpdateBlockReason } from "./forkUpdateCompatibility.ts";
 import {
   ServerSelfUpdateError,
   type ServerSelfUpdateCapability,
@@ -83,6 +84,13 @@ export const pruneRuntimesOnStart = Effect.fn("cloud.server_self_update.prune_on
     const path = yield* Path.Path;
     const platform = yield* HostProcess.Platform;
     const executablePath = yield* HostProcess.ExecutablePath;
+    if (
+      forkUpdateBlockReason([
+        path.join(input.baseDir, "userdata", "statev2.sqlite"),
+        path.join(input.baseDir, "userdata", "state.sqlite"),
+      ]) !== undefined
+    )
+      return [];
     const { entryPath } = pinnedRuntimePaths(path, input.baseDir, packageJson.version, platform);
     // The executable path is resolved, so it names the real path of a symlinked T3 home.
     const realEntryPath = yield* fs.realPath(entryPath).pipe(Effect.orElseSucceed(() => entryPath));
@@ -158,6 +166,8 @@ export const make = Effect.fn("cloud.server_self_update.make")(function* () {
   const update: ServerSelfUpdate["Service"]["update"] = Effect.fn(
     "cloud.server_self_update.update",
   )(function* (input, reportProgress = () => Effect.void, onHandoffAccepted = () => Effect.void) {
+    const forkReason = forkUpdateBlockReason([serverConfig.dbPath]);
+    if (forkReason !== undefined) return yield* failWith(forkReason);
     const policyRefusal = managedUpdateRefusal(
       policy.document,
       capability === "boot-service" ? cliReleaseChannelOf(input.targetVersion.trim()) : undefined,
@@ -285,6 +295,8 @@ export const make = Effect.fn("cloud.server_self_update.make")(function* () {
         ),
       );
 
+      const handoffReason = forkUpdateBlockReason([serverConfig.dbPath]);
+      if (handoffReason !== undefined) return yield* failWith(handoffReason);
       yield* reportProgress("installing");
       const updateId = yield* Effect.uninterruptible(
         launcher.requestUpdate({ targetVersion, dbPath: serverConfig.dbPath }).pipe(
@@ -313,7 +325,10 @@ export const make = Effect.fn("cloud.server_self_update.make")(function* () {
     update,
     commitDesktopUpdate: Effect.fn("ServerSelfUpdate.commitDesktopUpdate")(
       function (requestId, onHandoffAccepted) {
-        return desktopAppUpdate.commit(requestId, onHandoffAccepted);
+        const forkReason = forkUpdateBlockReason([serverConfig.dbPath]);
+        return forkReason === undefined
+          ? desktopAppUpdate.commit(requestId, onHandoffAccepted)
+          : Effect.fail(failWith(forkReason));
       },
     ),
   });

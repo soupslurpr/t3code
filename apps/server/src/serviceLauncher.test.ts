@@ -1,5 +1,6 @@
 // @effect-diagnostics-next-line nodeBuiltinImport:off - observes the children the launcher spawns with Node built-ins.
 import type * as NodeChildProcess from "node:child_process";
+import * as NodeSqlite from "node:sqlite";
 
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { assert, it } from "@effect/vitest";
@@ -25,7 +26,9 @@ import {
   SERVICE_ENV_FILE,
   SERVICE_LAUNCHER_PROTOCOL,
   SERVICE_RESTART_PENDING_FILE,
+  SERVICE_STOP_MARKER_FILE,
 } from "./cloud/serviceProtocol.ts";
+import { migrationManifest } from "./persistence/MigrationIdentities.ts";
 
 const spawnedChildren = vi.hoisted((): Array<NodeChildProcess.ChildProcess> => []);
 
@@ -127,6 +130,317 @@ const writeFakeRuntime = (
   });
 
 it.layer(NodeServices.layer)("service state persistence", (it) => {
+  it.effect.each([
+    {
+      name: "new upstream migration",
+      previousFutureMigration: false,
+      addsForkHistory: false,
+      outcome: "prepared",
+    },
+    {
+      name: "recovery after newer upstream migrations",
+      previousFutureMigration: true,
+      addsForkHistory: false,
+      outcome: "prepared",
+    },
+    {
+      name: "trial that introduces fork history",
+      previousFutureMigration: false,
+      addsForkHistory: true,
+      outcome: "prepared",
+    },
+    ...["exit", "invalid-prepared", "state-dir-owned"].map((outcome) => ({
+      name: `trial that introduces fork history before ${outcome}`,
+      previousFutureMigration: false,
+      addsForkHistory: true,
+      outcome,
+    })),
+    {
+      name: "upstream rollback after invalid prepared",
+      previousFutureMigration: false,
+      addsForkHistory: false,
+      outcome: "invalid-prepared",
+    },
+  ])(
+    "N03 preserves upstream completion and fork refusal for $name",
+    ({ previousFutureMigration, addsForkHistory, outcome }) =>
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const path = yield* Path.Path;
+        forkGuard.enabled = true;
+        forkGuard.upstream = true;
+        yield* Effect.addFinalizer(() =>
+          Effect.sync(() => {
+            forkGuard.enabled = false;
+            forkGuard.upstream = false;
+          }),
+        );
+        const root = yield* fs.makeTempDirectoryScoped({ prefix: "t3-upstream-trial-" });
+        const statePath = path.join(root, "runtime", "service-state.json");
+        const dbPath = path.join(root, "state.sqlite");
+        const replyPath = path.join(root, "committed-reply.json");
+        const db = new NodeSqlite.DatabaseSync(dbPath);
+        try {
+          db.exec(
+            "CREATE TABLE effect_sql_migrations (migration_id INTEGER PRIMARY KEY, name TEXT)",
+          );
+          const insert = db.prepare("INSERT INTO effect_sql_migrations VALUES (?, ?)");
+          for (const [id, name] of migrationManifest) insert.run(id, name);
+          if (previousFutureMigration) insert.run(77, "FutureUpstreamMigration");
+          db.exec("CREATE TABLE sample (value TEXT); INSERT INTO sample VALUES ('before')");
+        } finally {
+          db.close();
+        }
+        const childSource = `
+const { DatabaseSync } = require("node:sqlite");
+const fs = require("node:fs");
+const context = JSON.parse(process.env.T3_SERVICE_LAUNCHER_CONTEXT);
+const db = new DatabaseSync(${JSON.stringify(dbPath)});
+db.exec(${JSON.stringify(
+          addsForkHistory
+            ? "CREATE TABLE effect_sql_fork_migrations (migration_id INTEGER PRIMARY KEY, name TEXT)"
+            : `INSERT INTO effect_sql_migrations VALUES (${previousFutureMigration ? 78 : 77}, 'NextUpstreamMigration')`,
+        )});
+db.exec("UPDATE sample SET value = 'after'");
+db.close();
+process.on("message", (message) => {
+  if (message.type === "committed") {
+    fs.writeFileSync(${JSON.stringify(replyPath)}, JSON.stringify(message));
+    process.exit(0);
+  }
+});
+${outcome === "exit" ? "process.exit(1);" : outcome === "state-dir-owned" ? `process.exit(${SERVER_EXIT_CODE_STATE_DIR_OWNED});` : `process.send({ type: "prepared", updateId: ${outcome === "invalid-prepared" ? '"wrong-update"' : "context.update.id"} });`}
+`;
+        for (const version of ["1.0.0", "1.1.0"]) {
+          yield* writeFakeRuntime(
+            fs,
+            path,
+            path.join(root, "runtime", "versions", version),
+            version === "1.1.0" ? childSource : "process.exit(0);",
+          );
+        }
+        yield* Effect.promise(() =>
+          writeServiceState(statePath, {
+            protocol: SERVICE_LAUNCHER_PROTOCOL,
+            activeVersion: "1.0.0",
+            update: {
+              id: "upstream-trial",
+              fromVersion: "1.0.0",
+              targetVersion: "1.1.0",
+              dbPath,
+              status: "pending",
+            },
+          }),
+        );
+        const childrenBefore = spawnedChildren.length;
+        const launcher = new Launcher(
+          root,
+          yield* Effect.promise(() => readServiceState(statePath)),
+        );
+        yield* Effect.addFinalizer(() => Effect.promise(() => launcher.stop("SIGTERM")));
+        const idle = Promise.withResolvers<void>();
+        yield* Effect.acquireRelease(
+          Effect.sync(() =>
+            vi.spyOn(process.stderr, "write").mockImplementation((chunk) => {
+              if (String(chunk).includes("owns this T3 home")) idle.resolve();
+              return true;
+            }),
+          ),
+          (spy) => Effect.sync(() => spy.mockRestore()),
+        );
+        const running = launcher.run().then(
+          () => "unexpected completion",
+          (error: unknown) => (error instanceof Error ? error.message : String(error)),
+        );
+        const failure = yield* Effect.promise(() =>
+          Promise.race([
+            running,
+            idle.promise.then(async () => {
+              await launcher.stop("SIGTERM");
+              return running;
+            }),
+          ]),
+        );
+        const state = yield* Effect.promise(() => readServiceState(statePath));
+        const committed = !addsForkHistory && outcome === "prepared";
+        const rolledBack = !addsForkHistory && !committed;
+        assert.equal(spawnedChildren.length, childrenBefore + (rolledBack ? 2 : 1));
+        assert.equal(state.activeVersion, committed ? "1.1.0" : "1.0.0");
+        assert.equal(
+          state.update?.status,
+          addsForkHistory ? "pending" : committed ? "committed" : "rolled-back",
+        );
+        const after = new NodeSqlite.DatabaseSync(dbPath, { readOnly: true });
+        try {
+          assert.equal(
+            after.prepare("SELECT value FROM sample").get()?.value,
+            rolledBack ? "before" : "after",
+          );
+          assert.equal(
+            after
+              .prepare(
+                "SELECT count(*) AS count FROM sqlite_master WHERE name = 'effect_sql_fork_migrations'",
+              )
+              .get()?.count,
+            addsForkHistory ? 1 : 0,
+          );
+        } finally {
+          after.close();
+        }
+        assert.equal(
+          yield* fs.exists(path.join(root, "runtime", "db-backup", "upstream-trial")),
+          addsForkHistory,
+        );
+        assert.equal(yield* fs.exists(replyPath), committed);
+        assert.include(failure, addsForkHistory ? "fork" : "Active child exited unexpectedly");
+        if (committed) {
+          assert.deepEqual(JSON.parse(yield* fs.readFileString(replyPath)), {
+            type: "committed",
+            updateId: "upstream-trial",
+          });
+        }
+      }),
+  );
+
+  it.effect.each([false, true])(
+    "N03 refuses cached pending recovery with existing backup %s without mutation or children",
+    (existingBackup) =>
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const path = yield* Path.Path;
+        forkGuard.enabled = true;
+        yield* Effect.addFinalizer(() =>
+          Effect.sync(() => {
+            forkGuard.enabled = false;
+          }),
+        );
+        const root = yield* fs.makeTempDirectoryScoped({ prefix: "t3-fork-pending-" });
+        const statePath = path.join(root, "runtime", "service-state.json");
+        const dbPath = path.join(root, "state.sqlite");
+        for (const version of ["1.0.0", "1.1.0"]) {
+          yield* writeFakeRuntime(
+            fs,
+            path,
+            path.join(root, "runtime", "versions", version),
+            "process.exit(1);",
+          );
+        }
+        yield* fs.writeFileString(dbPath, "untouched database fixture");
+        yield* fs.writeFileString(
+          path.join(root, "runtime", SERVICE_STOP_MARKER_FILE),
+          "preserve stop marker",
+        );
+        yield* Effect.promise(() =>
+          writeServiceState(statePath, {
+            protocol: SERVICE_LAUNCHER_PROTOCOL,
+            activeVersion: "1.0.0",
+            update: {
+              id: "pending-fork",
+              fromVersion: "1.0.0",
+              targetVersion: "1.1.0",
+              dbPath,
+              status: "pending",
+            },
+          }),
+        );
+        const backup = path.join(root, "runtime", "db-backup", "pending-fork");
+        if (existingBackup) {
+          yield* fs.makeDirectory(backup, { recursive: true });
+          yield* fs.writeFileString(path.join(backup, "database"), "preserve previous database");
+          yield* fs.writeFileString(
+            path.join(backup, ".restore-pending"),
+            "preserve restore marker",
+          );
+        }
+        const before = yield* fs.readFileString(statePath);
+        const childrenBefore = spawnedChildren.length;
+        const launcher = new Launcher(
+          root,
+          yield* Effect.promise(() => readServiceState(statePath)),
+        );
+        const failure = yield* Effect.promise(() =>
+          launcher.run().then(
+            () => "unexpected completion",
+            (error: unknown) => (error instanceof Error ? error.message : String(error)),
+          ),
+        );
+        assert.include(failure, "fork");
+        assert.equal(spawnedChildren.length, childrenBefore);
+        assert.equal(yield* fs.readFileString(statePath), before);
+        assert.equal(yield* fs.readFileString(dbPath), "untouched database fixture");
+        assert.equal(
+          yield* fs.readFileString(path.join(root, "runtime", SERVICE_STOP_MARKER_FILE)),
+          "preserve stop marker",
+        );
+        if (existingBackup) {
+          assert.equal(
+            yield* fs.readFileString(path.join(backup, "database")),
+            "preserve previous database",
+          );
+          assert.equal(
+            yield* fs.readFileString(path.join(backup, ".restore-pending")),
+            "preserve restore marker",
+          );
+        } else {
+          assert.isFalse(yield* fs.exists(path.join(root, "runtime", "db-backup")));
+        }
+      }),
+  );
+
+  it.effect("N03 rejects an active child's cached update before pending state or replacement", () =>
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      const path = yield* Path.Path;
+      forkGuard.enabled = true;
+      yield* Effect.addFinalizer(() =>
+        Effect.sync(() => {
+          forkGuard.enabled = false;
+        }),
+      );
+      const root = yield* fs.makeTempDirectoryScoped({ prefix: "t3-fork-request-" });
+      const statePath = path.join(root, "runtime", "service-state.json");
+      const dbPath = path.join(root, "state.sqlite");
+      const receipt = path.join(root, "request-result.json");
+      yield* writeFakeRuntime(
+        fs,
+        path,
+        path.join(root, "runtime", "versions", "1.0.0"),
+        `
+import { writeFileSync } from "node:fs";
+process.once("message", (reply) => {
+  writeFileSync(${JSON.stringify(receipt)}, JSON.stringify(reply));
+  process.exit(0);
+});
+process.send({ type: "request-update", targetVersion: "1.1.0", dbPath: ${JSON.stringify(dbPath)} });
+`,
+      );
+      yield* writeFakeRuntime(
+        fs,
+        path,
+        path.join(root, "runtime", "versions", "1.1.0"),
+        "process.exit(1);",
+      );
+      yield* fs.writeFileString(dbPath, "unchanged source");
+      yield* Effect.promise(() =>
+        writeServiceState(statePath, {
+          protocol: SERVICE_LAUNCHER_PROTOCOL,
+          activeVersion: "1.0.0",
+        }),
+      );
+      const before = yield* fs.readFileString(statePath);
+      const childrenBefore = spawnedChildren.length;
+      const launcher = new Launcher(root, yield* Effect.promise(() => readServiceState(statePath)));
+      yield* Effect.promise(() => launcher.run().catch(() => undefined));
+      const result = JSON.parse(yield* fs.readFileString(receipt));
+      assert.equal(result.type, "update-rejected");
+      assert.include(result.reason, "fork");
+      assert.equal(spawnedChildren.length, childrenBefore + 1);
+      assert.equal(yield* fs.readFileString(statePath), before);
+      assert.equal(yield* fs.readFileString(dbPath), "unchanged source");
+      assert.isFalse(yield* fs.exists(path.join(root, "runtime", "db-backup")));
+    }),
+  );
+
   it.effect(
     "loads optional service.env literally without changing inherited or managed variables",
     () =>
@@ -642,4 +956,22 @@ setInterval(() => {}, 1_000);
       assert.include(blocker ?? "", "The server was not stopped");
     }),
   );
+});
+
+// The original rollback fixtures intentionally use opaque database bytes. New fork tests use the real guard.
+const forkGuard = vi.hoisted(() => ({ enabled: false, upstream: false }));
+vi.mock("@t3tools/shared/forkBuildIdentity", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@t3tools/shared/forkBuildIdentity")>();
+  return {
+    get forkBuildIdentity() {
+      return forkGuard.upstream ? undefined : actual.forkBuildIdentity;
+    },
+  };
+});
+vi.mock("./cloud/forkUpdateCompatibility.ts", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("./cloud/forkUpdateCompatibility.ts")>();
+  return {
+    forkUpdateBlockReason: (paths: ReadonlyArray<string>) =>
+      forkGuard.enabled ? actual.forkUpdateBlockReason(paths) : undefined,
+  };
 });

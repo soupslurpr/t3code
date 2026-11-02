@@ -56,6 +56,45 @@ function makeTestService(
 
 it.layer(Layer.mergeAll(NodeServices.layer, NetService.layer))("service commands", (it) => {
   it.effect.each(["install", "update"] as const)(
+    "N03 refuses fork service %s before environment or service writes",
+    (command) =>
+      Effect.gen(function* () {
+        buildProvenance.fork = true;
+        yield* Effect.addFinalizer(() =>
+          Effect.sync(() => {
+            buildProvenance.fork = false;
+          }),
+        );
+        const fs = yield* FileSystem.FileSystem;
+        const baseDir = yield* fs.makeTempDirectoryScoped({ prefix: "t3-fork-service-cli-" });
+        const { service, installOptions } = makeTestService({
+          ...status,
+          installed: false,
+          current: false,
+        });
+        vi.spyOn(BootService, "layer").mockReturnValue(
+          Layer.succeed(BootService.BootService, service),
+        );
+        const error = yield* Command.runWith(serviceCommand, { version: packageJson.version })([
+          command,
+          "--base-dir",
+          baseDir,
+        ]).pipe(
+          Effect.provideService(HostProcess.Environment, {}),
+          Effect.provide(ConfigProvider.layer(ConfigProvider.fromEnv({ env: {} }))),
+          Effect.flip,
+        );
+        expect(error).toMatchObject({
+          _tag: "UserError",
+          userMessage: expect.stringContaining("fork"),
+        });
+        expect(installOptions).toEqual([]);
+        expect(yield* fs.exists(`${baseDir}/service.env`)).toBe(false);
+        expect(yield* fs.readDirectory(baseDir)).toEqual([]);
+      }),
+  );
+
+  it.effect.each(["install", "update"] as const)(
     "%s refuses a downgrade before changing the service",
     (command) =>
       Effect.gen(function* () {
@@ -195,3 +234,12 @@ it.layer(Layer.mergeAll(NodeServices.layer, NetService.layer))("service commands
       }),
   );
 });
+
+const buildProvenance = vi.hoisted(() => ({ fork: false }));
+vi.mock("@t3tools/shared/forkBuildIdentity", () => ({
+  get forkBuildIdentity() {
+    return buildProvenance.fork
+      ? { repository: "https://github.com/soupslurpr/t3code" }
+      : undefined;
+  },
+}));

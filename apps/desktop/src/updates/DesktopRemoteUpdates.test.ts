@@ -1,3 +1,4 @@
+import { vi } from "vite-plus/test";
 import { assert, describe, it } from "@effect/vitest";
 import type {
   DesktopTelemetryRequestDesktopUpdate,
@@ -44,6 +45,7 @@ function runRemoteUpdatesTest(
     readonly commits: Queue.Queue<DesktopTelemetryCommitDesktopUpdate>;
     readonly cancellations: Queue.Queue<DesktopTelemetryCancelDesktopUpdate>;
   }) => Effect.Effect<void, never, DesktopUpdates.DesktopUpdates | DesktopState.DesktopState>,
+  onReport: (report: DesktopUpdateStatusReport) => Effect.Effect<void> = () => Effect.void,
 ) {
   return Effect.scoped(
     Effect.gen(function* () {
@@ -62,7 +64,7 @@ function runRemoteUpdatesTest(
         publishUpdateReport: (report) =>
           Effect.sync(() => {
             reports.push(report);
-          }),
+          }).pipe(Effect.andThen(onReport(report))),
         updateRequests: Stream.fromQueue(requests),
         updateCommits: Stream.fromQueue(commits),
         updateCancellations: Stream.fromQueue(cancellations),
@@ -73,7 +75,6 @@ function runRemoteUpdatesTest(
       yield* DesktopRemoteUpdates.listen.pipe(
         Effect.provideService(DesktopTelemetryPublisher.DesktopTelemetryPublisher, publisher),
       );
-      yield* settle;
       yield* body({ reports, requests, commits, cancellations });
     }),
   ).pipe(Effect.provide(Layer.merge(TestClock.layer(), harness.layer)));
@@ -84,6 +85,48 @@ function terminalReports(reports: DesktopUpdateStatusReport[]): DesktopUpdateSta
 }
 
 describe("DesktopRemoteUpdates", () => {
+  it.effect.each([false, true])(
+    "N03 refuses remote fork track changes with multiple backends %s before any update effects",
+    (wslBackend) =>
+      Effect.scoped(
+        Effect.gen(function* () {
+          buildProvenance.fork = true;
+          yield* Effect.addFinalizer(() =>
+            Effect.sync(() => {
+              buildProvenance.fork = false;
+            }),
+          );
+          const failed = yield* Deferred.make<DesktopUpdateStatusReport>();
+          const harness = makeHarness({
+            wslBackend,
+            beforeSetUpdateChannel: Effect.die("unexpected track write"),
+          });
+          yield* runRemoteUpdatesTest(
+            harness,
+            ({ requests }) =>
+              Effect.gen(function* () {
+                yield* Queue.offer(requests, {
+                  ...request("fork-remote"),
+                  channel: "latest",
+                  targetVersion: "1.2.4",
+                });
+                const report = yield* Deferred.await(failed);
+                assert.include(report.reason ?? "", "fork");
+                assert.equal(harness.checkCount(), 0);
+                assert.equal(harness.downloadCount(), 0);
+                assert.equal(harness.quitAndInstalls(), 0);
+                assert.deepEqual(harness.installSteps, []);
+                assert.equal(harness.updateRestartMarkers.size, 0);
+              }),
+            (report) =>
+              report.requestId === "fork-remote" && report.outcome === "failed"
+                ? Deferred.succeed(failed, report).pipe(Effect.asVoid)
+                : Effect.void,
+          );
+        }),
+      ),
+  );
+
   it.effect("drives check, download, and install with no local confirmation", () => {
     const harness = makeHarness();
 
@@ -951,3 +994,12 @@ describe("DesktopRemoteUpdates", () => {
     );
   });
 });
+
+const buildProvenance = vi.hoisted(() => ({ fork: false }));
+vi.mock("@t3tools/shared/forkBuildIdentity", () => ({
+  get forkBuildIdentity() {
+    return buildProvenance.fork
+      ? { repository: "https://github.com/soupslurpr/t3code" }
+      : undefined;
+  },
+}));

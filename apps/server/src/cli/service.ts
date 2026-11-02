@@ -1,3 +1,4 @@
+import { forkUpdateBlockReason } from "../cloud/forkUpdateCompatibility.ts";
 import * as NodeUtil from "node:util";
 
 import * as HostProcess from "@t3tools/shared/HostProcess";
@@ -89,7 +90,10 @@ export const reconcileService = Effect.fn("cli.service.reconcile")(function* (op
   readonly allowDowngrade?: boolean;
   readonly start?: boolean;
 }) {
-  const { baseDir } = yield* ServerConfig.ServerConfig;
+  const { baseDir, dbPath } = yield* ServerConfig.ServerConfig;
+  const forkReason = forkUpdateBlockReason([dbPath]);
+  if (forkReason !== undefined)
+    return yield* new BootService.BootServiceForkUpdateRefusedError({ reason: forkReason });
   const service = yield* BootService.BootService;
   const status = yield* service.status;
   if (status.installed && status.current) {
@@ -185,9 +189,10 @@ function formatServiceStatus(
 const runServiceCommand = Effect.fn("cli.service.run")(function* <A, E, R>(
   flags: { readonly baseDir: Parameters<typeof resolveCliAuthConfig>[0]["baseDir"] },
   run: Effect.Effect<A, E, R>,
+  options?: { readonly requireUpdateCompatibility?: boolean },
 ) {
   const logLevel = yield* GlobalFlag.LogLevel;
-  const config = yield* resolveCliAuthConfig(flags, logLevel);
+  const config = yield* resolveCliAuthConfig(flags, logLevel, options);
   return yield* run.pipe(Effect.provide(Layer.merge(layer(config), ServerConfig.layer(config))));
 });
 
@@ -219,6 +224,7 @@ const serviceInstallCommand = Command.make("install", serviceReconcileFlags).pip
           yield* Console.log("Run `t3 up` to choose how your other devices reach it.");
         }
       }),
+      { requireUpdateCompatibility: true },
     ),
   ),
 );
@@ -242,6 +248,7 @@ const serviceUpdateCommand = Command.make("update", serviceReconcileFlags).pipe(
         }
         yield* Console.log(formatServiceChange(result));
       }),
+      { requireUpdateCompatibility: true },
     ),
   ),
 );
