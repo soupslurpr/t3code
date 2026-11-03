@@ -75,6 +75,219 @@ const layerOrchestratorService = OrchestratorMcpService.layer.pipe(
 );
 
 describe("OrchestratorMcpService", () => {
+  it.effect.each([
+    "nested reviewer",
+    "pending delivery",
+    "claimed delivery",
+    "awaited command",
+    "awaited monitor",
+    "native subagent",
+    "background task",
+    "passive watcher",
+    "original passive watcher",
+    "steered monitor",
+    "original steered monitor",
+    "active continuation",
+    "queued continuation",
+    "held continuation",
+    "unrelated follow-up",
+  ] as const)("reports delegated task status for %s", (kind) =>
+    Effect.gen(function* () {
+      const parentThreadId = ThreadId.make(`thread:n02-status-parent:${kind}`);
+      const childThreadId = ThreadId.make(`thread:n02-status-child:${kind}`);
+      const childRunId = RunId.make(`run:n02-status-child:${kind}`);
+      const taskId = NodeId.make(`node:n02-status-task:${kind}`);
+      const acknowledgements = yield* Ref.make(0);
+      const now = DateTime.makeUnsafe("2026-11-01T00:00:00Z");
+      const followup = kind !== "original passive watcher" && kind !== "original steered monitor";
+      const steeredMonitor = kind === "steered monitor" || kind === "original steered monitor";
+      const unrelated = kind === "unrelated follow-up";
+      const passive =
+        kind === "passive watcher" ||
+        kind === "original passive watcher" ||
+        unrelated ||
+        steeredMonitor;
+      const working =
+        kind === "active continuation" ||
+        kind === "queued continuation" ||
+        kind === "held continuation";
+      const queued = kind === "queued continuation" || kind === "held continuation";
+      const held = kind === "held continuation";
+      const task = {
+        id: taskId,
+        threadId: parentThreadId,
+        origin: "app_owned",
+        childThreadId,
+        driver: "codex",
+        model: "test",
+        result: null,
+        status: "running",
+        completionDelivery: { state: "pending" },
+      } as const;
+      const parent = {
+        ...idleThreadProjection(liveThreadShell(parentThreadId)),
+        subagents: [task],
+      } as unknown as OrchestrationV2ThreadProjection;
+      const nested =
+        kind === "nested reviewer" || kind === "pending delivery" || kind === "claimed delivery";
+      const childRun = {
+        id: childRunId,
+        userMessageId: MessageId.make(`message:n02-status-user:${kind}`),
+        ordinal: 1,
+        status: "completed",
+        startedAt: now,
+        completedAt: now,
+        ...(followup ? { delegatedTaskId: taskId } : {}),
+      } as const;
+      const child = {
+        ...idleThreadProjection(liveThreadShell(childThreadId)),
+        runs: [
+          childRun,
+          ...(working || unrelated
+            ? [
+                {
+                  ...childRun,
+                  delegatedTaskId: unrelated ? NodeId.make("node:unrelated-follow-up") : taskId,
+                  id: RunId.make("run:n02-active-continuation"),
+                  ordinal: 2,
+                  status: queued ? "queued" : "running",
+                  completedAt: null,
+                  startedAt: queued ? null : now,
+                  ...(held ? { queueHeld: true } : {}),
+                },
+              ]
+            : []),
+        ],
+        messages: [
+          ...(steeredMonitor
+            ? [
+                {
+                  id: MessageId.make(`message:n02-status-monitor:${kind}`),
+                  threadId: childThreadId,
+                  runId: childRunId,
+                  nodeId: null,
+                  role: "user",
+                  text: "Watch finished.",
+                  attachments: [],
+                  streaming: false,
+                  createdBy: "system",
+                  creationSource: "server",
+                  createdAt: now,
+                  updatedAt: now,
+                  notification: {
+                    source: { kind: "monitor" },
+                    outcome: "updated",
+                    summary: "Watch finished.",
+                  },
+                },
+              ]
+            : []),
+          {
+            id: MessageId.make("message:n02-status-result"),
+            threadId: childThreadId,
+            runId: childRunId,
+            nodeId: null,
+            role: "assistant",
+            text: "Settled result.",
+            attachments: [],
+            streaming: false,
+            createdBy: "agent",
+            creationSource: "server",
+            createdAt: now,
+            updatedAt: now,
+          },
+        ],
+        subagents:
+          nested || unrelated
+            ? [
+                {
+                  ...task,
+                  id: NodeId.make("node:n02-status-reviewer"),
+                  runId: unrelated ? RunId.make("run:n02-active-continuation") : childRunId,
+                  threadId: childThreadId,
+                  status: kind === "nested reviewer" || unrelated ? "running" : "completed",
+                  completionDelivery: {
+                    state: kind === "claimed delivery" ? "claimed" : "pending",
+                    observedByRunId: null,
+                  },
+                },
+              ]
+            : [],
+        providerThreads:
+          nested || working
+            ? []
+            : [
+                {
+                  pendingBackgroundTasks: [
+                    {
+                      taskId: "provider-work",
+                      kind:
+                        kind === "native subagent"
+                          ? "subagent"
+                          : kind === "background task"
+                            ? "background_task"
+                            : kind === "awaited command"
+                              ? "command"
+                              : "monitor",
+                      ...(kind === "awaited command" || kind === "awaited monitor"
+                        ? { awaited: true }
+                        : {}),
+                    },
+                  ],
+                },
+              ],
+      } as unknown as OrchestrationV2ThreadProjection;
+      const dependencies = Layer.mergeAll(
+        NodeServices.layer,
+        Layer.mock(ThreadManagementService.ThreadManagementService)({
+          getThreadRecords: (threadId) =>
+            Effect.succeed(threadId === parentThreadId ? parent : child),
+          // This boundary has no restart outbox; actual nested progress is evaluated by the service.
+          delegatedTaskResultPending: () => Effect.succeed(false),
+          dispatch: () => Ref.update(acknowledgements, (n) => n + 1).pipe(Effect.as({} as never)),
+        }),
+        ServerSettings.layerTest(),
+        Layer.mock(ProviderRegistry.ProviderRegistry)({ getProviders: Effect.succeed([]) }),
+        Layer.mock(ProviderAdapterRegistry.ProviderAdapterRegistryV2)({
+          list: () => Effect.succeed([]),
+        }),
+        Layer.mock(ProjectService.ProjectService)({}),
+        Layer.mock(SecretRequests.SecretRequests)({}),
+        Layer.mock(RemoteDelegation.RemoteDelegation)({}),
+        Layer.mock(ScheduledTaskService.ScheduledTaskService)({}),
+      );
+      const scope: McpInvocationScope = {
+        environmentId: EnvironmentId.make("environment:n02-status"),
+        requestNamespace: "n02-status",
+        thread: {
+          threadId: parentThreadId,
+          controllerId: "n02-status",
+          providerSessionId: "n02-status",
+          providerInstanceId: ProviderInstanceId.make("codex"),
+        },
+        client: undefined,
+        capabilities: new Set(["orchestration"]),
+        issuedAt: 1,
+      };
+      yield* Effect.gen(function* () {
+        const service = yield* OrchestratorMcpService.OrchestratorMcpService;
+        const status = yield* service.taskStatus(scope, taskId);
+        assert.equal(status.status, passive ? "completed" : queued ? "queued" : "running");
+        assert.equal(
+          status.workState,
+          passive ? "result_available" : working ? "working" : "waiting_for_children",
+        );
+        assert.equal(status.summary, passive ? "Settled result." : null);
+        assert.equal(status.hasPendingChildRuns, (working && !held) || unrelated);
+        assert.isNull(status.resultContextTransferId);
+        if (steeredMonitor) {
+          assert.equal(status.latestTerminalRunId, childRunId);
+          assert.equal(status.latestTerminalStatus, "completed");
+        }
+        assert.equal(yield* Ref.get(acknowledgements), passive ? 1 : 0);
+      }).pipe(Effect.provide(layerOrchestratorService.pipe(Layer.provide(dependencies))));
+    }),
+  );
   it.effect("retries terminal acknowledgement with a fresh command id", () =>
     Effect.gen(function* () {
       const parentThreadId = ThreadId.make("thread:mcp-ack-parent");
