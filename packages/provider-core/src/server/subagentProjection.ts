@@ -18,6 +18,7 @@ import type {
   ThreadId,
   TurnItemId,
 } from "@t3tools/contracts";
+import { backgroundWorkHoldsCompletion } from "@t3tools/shared/orchestrationV2PendingBackgroundWork";
 import { runRanAfter } from "@t3tools/shared/orchestrationV2ThreadError";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
@@ -223,44 +224,66 @@ export function subagentResultForRun(
   };
 }
 
-export function delegatedTaskProgress(projection: {
-  readonly runs: OrchestrationV2ThreadProjection["runs"];
-  readonly messages: ReadonlyArray<
-    Pick<OrchestrationV2ConversationMessage, "runId" | "notification">
-  >;
-  readonly subagents: ReadonlyArray<
-    Pick<OrchestrationV2ThreadProjection["subagents"][number], "status" | "completionDelivery">
-  >;
-  readonly providerThreads: ReadonlyArray<
-    Pick<OrchestrationV2ThreadProjection["providerThreads"][number], "pendingBackgroundTasks">
-  >;
-}) {
+export function delegatedTaskProgress(
+  projection: {
+    readonly runs: OrchestrationV2ThreadProjection["runs"];
+    readonly messages: ReadonlyArray<
+      Pick<OrchestrationV2ConversationMessage, "id" | "runId" | "notification">
+    >;
+    readonly subagents: ReadonlyArray<
+      Pick<
+        OrchestrationV2ThreadProjection["subagents"][number],
+        "runId" | "status" | "completionDelivery"
+      >
+    >;
+    readonly providerThreads: ReadonlyArray<
+      Pick<OrchestrationV2ThreadProjection["providerThreads"][number], "pendingBackgroundTasks">
+    >;
+  },
+  taskId?: NodeId,
+) {
+  const runs =
+    taskId === undefined
+      ? projection.runs
+      : projection.runs.filter((run) => run.delegatedTaskId === taskId);
+  const taskRunIds = taskId === undefined ? undefined : new Set(runs.map((run) => run.id));
   const terminal = (status: string) =>
     ["completed", "failed", "cancelled", "interrupted", "rolled_back"].includes(status);
-  const monitorRuns = new Set(
+  const monitorMessageIds = new Set(
     projection.messages
       .filter((message) => message.notification?.source.kind === "monitor")
-      .map((message) => message.runId),
+      .map((message) => message.id),
   );
-  const workRuns = projection.runs.filter(
-    (run) => !monitorRuns.has(run.id) && run.status !== "rolled_back",
+  const workRuns = runs.filter(
+    (run) =>
+      !monitorMessageIds.has(run.userMessageId) &&
+      (taskId !== undefined || run.status !== "rolled_back"),
   );
   const active = workRuns.some(
-    (run) => !terminal(run.status) && !(run.status === "queued" && run.queueHeld === true),
+    (run) =>
+      !terminal(run.status) &&
+      (taskId !== undefined || !(run.status === "queued" && run.queueHeld === true)),
   );
   const children =
     projection.subagents.some(
       (task) =>
-        isOrchestrationV2WorkActive(task.status) ||
-        // Publishing a child's result precedes scheduling its parent's wake.
-        // The parent still owes that follow-up even between those transactions.
-        (task.status !== "idle" &&
-          (task.completionDelivery?.state === "pending" ||
-            task.completionDelivery?.state === "claimed")),
+        (taskRunIds === undefined || (task.runId !== null && taskRunIds.has(task.runId))) &&
+        (isOrchestrationV2WorkActive(task.status) ||
+          // Publishing a child's result precedes scheduling its parent's wake.
+          // The parent still owes that follow-up even between those transactions.
+          (task.status !== "idle" &&
+            (task.completionDelivery?.state === "pending" ||
+              task.completionDelivery?.state === "claimed"))),
     ) ||
-    projection.providerThreads.some((thread) => (thread.pendingBackgroundTasks?.length ?? 0) > 0);
+    projection.providerThreads.some((thread) =>
+      backgroundWorkHoldsCompletion(thread.pendingBackgroundTasks ?? []),
+    );
   const resultRun = workRuns
-    .filter((run) => terminal(run.status) && (run.startedAt !== null || run.ordinal === 1))
+    .filter(
+      (run) =>
+        terminal(run.status) &&
+        (taskId !== undefined || run.startedAt !== null || run.ordinal === 1),
+    )
     .toSorted((a, b) => (runRanAfter(a, b) ? -1 : runRanAfter(b, a) ? 1 : 0))[0];
   return {
     state:

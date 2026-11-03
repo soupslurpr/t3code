@@ -238,29 +238,38 @@ it("reports the run that ended last, not the highest ordinal", () => {
 it("waits for nested work and retains the report across monitor acknowledgements", () => {
   const { projection, run } = taskFixture();
   assert.equal(
-    delegatedTaskProgress({ ...projection, subagents: [{ status: "running" }] }).state,
+    delegatedTaskProgress({ ...projection, subagents: [{ runId: null, status: "running" }] }).state,
     "waiting_for_children",
   );
   assert.equal(
-    delegatedTaskProgress({ ...projection, subagents: [{ status: "completed" }] }).state,
+    delegatedTaskProgress({ ...projection, subagents: [{ runId: null, status: "completed" }] })
+      .state,
     "result_available",
   );
   assert.equal(
-    delegatedTaskProgress({ ...projection, subagents: [{ status: "idle" }] }).state,
+    delegatedTaskProgress({ ...projection, subagents: [{ runId: null, status: "idle" }] }).state,
     "result_available",
   );
   for (const state of ["pending", "claimed"] as const) {
     assert.equal(
       delegatedTaskProgress({
         ...projection,
-        subagents: [{ status: "idle", completionDelivery: { state, observedByRunId: null } }],
+        subagents: [
+          { runId: null, status: "idle", completionDelivery: { state, observedByRunId: null } },
+        ],
       }).state,
       "result_available",
     );
     assert.equal(
       delegatedTaskProgress({
         ...projection,
-        subagents: [{ status: "completed", completionDelivery: { state, observedByRunId: null } }],
+        subagents: [
+          {
+            runId: null,
+            status: "completed",
+            completionDelivery: { state, observedByRunId: null },
+          },
+        ],
       }).state,
       "waiting_for_children",
     );
@@ -269,7 +278,13 @@ it("waits for nested work and retains the report across monitor acknowledgements
     assert.equal(
       delegatedTaskProgress({
         ...projection,
-        subagents: [{ status: "completed", completionDelivery: { state, observedByRunId: null } }],
+        subagents: [
+          {
+            runId: null,
+            status: "completed",
+            completionDelivery: { state, observedByRunId: null },
+          },
+        ],
       }).state,
       "result_available",
     );
@@ -278,7 +293,9 @@ it("waits for nested work and retains the report across monitor acknowledgements
     delegatedTaskProgress({
       ...projection,
       providerThreads: [
-        { pendingBackgroundTasks: [{ taskId: "background-audit", kind: "command" }] },
+        {
+          pendingBackgroundTasks: [{ taskId: "background-audit", kind: "command", awaited: true }],
+        },
       ],
     }).state,
     "waiting_for_children",
@@ -299,7 +316,12 @@ it("waits for nested work and retains the report across monitor acknowledgements
   assert.equal(held.state, "result_available");
   assert.equal(held.resultRun?.id, cancelled.id);
   const report = { ...pending, status: "completed" as const, startedAt: parentCreatedAt };
-  const monitor = { ...report, id: RunId.make("monitor"), ordinal: 3 };
+  const monitor = {
+    ...report,
+    id: RunId.make("monitor"),
+    ordinal: 3,
+    userMessageId: MessageId.make("monitor-message"),
+  };
   const artifacts = makeSubagentConversationArtifacts({
     messageId: MessageId.make("monitor-message"),
     turnItemId: TurnItemId.make("monitor-item"),
