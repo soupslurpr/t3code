@@ -26,6 +26,7 @@ type Reply = { readonly status?: number; readonly body: unknown };
 interface Sent {
   readonly host: string;
   readonly path: string;
+  readonly query: URLSearchParams;
   readonly form: URLSearchParams;
   /** The bearer token, if any. */
   readonly token: string | undefined;
@@ -61,6 +62,7 @@ function harness(options: {
     const sent: Sent = {
       host: url.host,
       path: url.pathname,
+      query: url.searchParams,
       form: new URLSearchParams(
         request.body._tag === "Uint8Array" ? new TextDecoder().decode(request.body.body) : "",
       ),
@@ -759,6 +761,7 @@ describe("GitHubAppAccess", () => {
         ];
       }).pipe(Effect.provide(failing.layer));
       expect(answers).toEqual(["covered", "covered"]);
+      expect(signedOut.requests).toHaveLength(0);
       // A failed read is kept briefly instead of asked again per request.
       expect(failing.requests).toHaveLength(1);
     });
@@ -773,6 +776,8 @@ describe("GitHubAppAccess", () => {
           .credentialFor("github.com", repository)
           .pipe(Effect.map((held) => Redacted.value(held.token)));
       expect(yield* tokenFor("pingdotgg/t3code")).toBe("ghu_current");
+      expect(yield* tokenFor("acme/one")).toBe("ghu_current");
+      expect(yield* tokenFor("acme/two")).toBe("gh-token");
       expect(yield* tokenFor("someone/else")).toBe("gh-token");
     }).pipe(Effect.provide(layer));
   });
@@ -796,6 +801,135 @@ describe("GitHubAppAccess", () => {
       expect(yield* tokenFor.pipe(Effect.provide(appOnly.layer))).toBe("ghu_current");
     });
   });
+
+  it.effect.each([
+    { repository: "acme/repo-0", reach: "covered", token: "ghu_current", personal: true },
+    { repository: "acme/repo-999", reach: "covered", token: "ghu_current", personal: true },
+    { repository: "acme/unseen", reach: "covered", token: "gh-token", personal: true },
+    { repository: "acme/unseen", reach: "covered", token: "ghu_current", personal: false },
+    { repository: "outside/unseen", reach: "not-covered", token: "gh-token", personal: true },
+  ])("keeps capped selected coverage honest for $repository (personal=$personal)", (row) => {
+    const { layer, requests } = harness({
+      signIns: { "github.com": session() },
+      ghSignedIn: row.personal,
+      handle: (sent) => {
+        if (sent.path === "/user/installations") {
+          return {
+            body: {
+              installations: [
+                { id: 1, repository_selection: "selected", account: { login: "Acme" } },
+              ],
+            },
+          };
+        }
+        expect(sent.path).toBe("/user/installations/1/repositories");
+        expect(sent.query.get("per_page")).toBe("100");
+        const page = Number(sent.query.get("page"));
+        return {
+          body: {
+            repositories: Array.from({ length: 100 }, (_, index) => ({
+              full_name: `Acme/repo-${(page - 1) * 100 + index}`,
+            })),
+          },
+        };
+      },
+    });
+    return Effect.gen(function* () {
+      const access = yield* GitHubAppAccess.GitHubAppAccess;
+      expect(yield* access.reach("github.com", row.repository)).toBe(row.reach);
+      const held = yield* access.credentialFor("github.com", row.repository);
+      expect(Redacted.value(held.token)).toBe(row.token);
+      expect(requests).toHaveLength(11);
+      expect(requests.slice(1).map((sent) => sent.query.get("page"))).toEqual(
+        Array.from({ length: 10 }, (_, index) => String(index + 1)),
+      );
+      expect(new Set(requests.map((sent) => sent.token))).toEqual(new Set(["ghu_current"]));
+    }).pipe(Effect.provide(layer));
+  });
+
+  it.effect.each([
+    { repository: "unseen/repo", complete: false, reach: "covered", token: "gh-token" },
+    { repository: "unseen/repo", complete: true, reach: "not-covered", token: "gh-token" },
+    { repository: "org-999/repo", complete: false, reach: "covered", token: "ghu_current" },
+    { repository: "acme/one", complete: false, reach: "covered", token: "ghu_current" },
+    { repository: "acme/unseen", complete: false, reach: "covered", token: "gh-token" },
+  ])("distinguishes incomplete installations for $repository (complete=$complete)", (row) => {
+    const { layer, requests } = harness({
+      signIns: { "github.com": session() },
+      handle: (sent) => {
+        if (sent.path === "/user/installations/1/repositories") {
+          return { body: { repositories: [{ full_name: "acme/one" }] } };
+        }
+        expect(sent.path).toBe("/user/installations");
+        expect(sent.query.get("per_page")).toBe("100");
+        const page = Number(sent.query.get("page"));
+        return {
+          body: {
+            installations: Array.from(
+              { length: row.complete && page === 10 ? 99 : 100 },
+              (_, index) => {
+                const ordinal = (page - 1) * 100 + index;
+                return {
+                  id: ordinal + 1,
+                  repository_selection: ordinal === 0 ? "selected" : "all",
+                  account: { login: ordinal === 0 ? "acme" : `org-${ordinal}` },
+                };
+              },
+            ),
+          },
+        };
+      },
+    });
+    return Effect.gen(function* () {
+      const access = yield* GitHubAppAccess.GitHubAppAccess;
+      expect(yield* access.reach("github.com", row.repository)).toBe(row.reach);
+      const held = yield* access.credentialFor("github.com", row.repository);
+      expect(Redacted.value(held.token)).toBe(row.token);
+      expect(requests).toHaveLength(11);
+      expect(requests.slice(0, 10).map((sent) => sent.query.get("page"))).toEqual(
+        Array.from({ length: 10 }, (_, index) => String(index + 1)),
+      );
+    }).pipe(Effect.provide(layer));
+  });
+
+  it.effect.each(["installations-http", "repositories-http", "repositories-schema"] as const)(
+    "keeps %s coverage failures unconfirmed until the cached read expires",
+    (failure) => {
+      let failing = true;
+      const { layer, requests } = harness({
+        signIns: { "github.com": session() },
+        handle: (sent) => {
+          const failedPath =
+            failure === "installations-http"
+              ? "/user/installations"
+              : "/user/installations/2/repositories";
+          return failing && sent.path === failedPath
+            ? { status: failure === "repositories-schema" ? 200 : 502, body: {} }
+            : installedOn(sent);
+        },
+      });
+      return Effect.gen(function* () {
+        const access = yield* GitHubAppAccess.GitHubAppAccess;
+        const tokenFor = (repository: string) =>
+          access
+            .credentialFor("github.com", repository)
+            .pipe(Effect.map((held) => Redacted.value(held.token)));
+        expect(yield* access.reach("github.com", "acme/one")).toBe("covered");
+        expect(yield* tokenFor("acme/one")).toBe("gh-token");
+        const failedReads = failure === "installations-http" ? 1 : 2;
+        expect(requests).toHaveLength(failedReads);
+        failing = false;
+        expect(yield* access.reach("github.com", "acme/two")).toBe("covered");
+        expect(yield* tokenFor("acme/one")).toBe("gh-token");
+        expect(requests).toHaveLength(failedReads);
+        yield* TestClock.adjust("31 seconds");
+        expect(yield* tokenFor("acme/one")).toBe("ghu_current");
+        expect(yield* access.reach("github.com", "acme/two")).toBe("not-covered");
+        expect(yield* tokenFor("acme/two")).toBe("gh-token");
+        expect(requests).toHaveLength(failedReads + 2);
+      }).pipe(Effect.provide(layer));
+    },
+  );
 
   it.effect("names the account the app sign-in acts as", () => {
     const { layer } = harness({

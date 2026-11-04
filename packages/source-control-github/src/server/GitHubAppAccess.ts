@@ -43,6 +43,8 @@ export type GitHubAppReach = "covered" | "not-covered" | "signed-out";
 interface AppCoverage {
   readonly accounts: ReadonlySet<string>;
   readonly repositories: ReadonlySet<string>;
+  readonly incompleteAccounts: ReadonlySet<string>;
+  readonly installationsComplete: boolean;
 }
 
 export class GitHubAppAccess extends Context.Service<
@@ -111,6 +113,7 @@ export const make = Effect.gen(function* () {
       readonly repository_selection: string;
       readonly account: { readonly login: string } | null;
     }> = [];
+    let installationsComplete = false;
     for (let page = 1; page <= MAX_PAGES; page++) {
       const listed = yield* readAsApp(
         host,
@@ -120,10 +123,14 @@ export const make = Effect.gen(function* () {
       );
       if (Option.isNone(listed)) return null;
       installations.push(...listed.value.installations);
-      if (listed.value.installations.length < PAGE_SIZE) break;
+      if (listed.value.installations.length < PAGE_SIZE) {
+        installationsComplete = true;
+        break;
+      }
     }
     const accounts = new Set<string>();
     const repositories = new Set<string>();
+    const incompleteAccounts = new Set<string>();
     for (const installation of installations) {
       const login = installation.account?.login.toLowerCase();
       if (login === undefined) continue;
@@ -132,9 +139,8 @@ export const make = Effect.gen(function* () {
         continue;
       }
       for (let page = 1; ; page++) {
-        // Past the cap the list is cut short; count the whole account as reached rather than nag.
         if (page > MAX_PAGES) {
-          accounts.add(login);
+          incompleteAccounts.add(login);
           break;
         }
         const listed = yield* readAsApp(
@@ -150,7 +156,12 @@ export const make = Effect.gen(function* () {
         if (listed.value.repositories.length < PAGE_SIZE) break;
       }
     }
-    return { accounts, repositories } satisfies AppCoverage;
+    return {
+      accounts,
+      repositories,
+      incompleteAccounts,
+      installationsComplete,
+    } satisfies AppCoverage;
   });
 
   const coverage = yield* Cache.makeWith(coverageOf, {
@@ -158,7 +169,7 @@ export const make = Effect.gen(function* () {
     timeToLive: (exit) => (Exit.isSuccess(exit) ? COVERAGE_TTL : COVERAGE_FAILURE_TTL),
   });
 
-  /** `unknown` when GitHub could not list the installations just now. */
+  /** `unknown` when a failed or incomplete read cannot establish coverage. */
   const coverageFor = Effect.fn("GitHubAppAccess.coverageFor")(function* (
     rawHost: string,
     rawRepository: string,
@@ -170,8 +181,11 @@ export const make = Effect.gen(function* () {
     if (known.value === null) return "signed-out" as const;
     const repository = ownerAndName(rawRepository);
     const owner = repository.split("/")[0] ?? "";
-    return known.value.accounts.has(owner) || known.value.repositories.has(repository)
-      ? ("covered" as const)
+    if (known.value.accounts.has(owner) || known.value.repositories.has(repository)) {
+      return "covered" as const;
+    }
+    return !known.value.installationsComplete || known.value.incompleteAccounts.has(owner)
+      ? ("unknown" as const)
       : ("not-covered" as const);
   });
 
