@@ -53,7 +53,12 @@ export function DeviceStreamWebView({
       key={`${attempt}:${configuration}`}
       ref={ref}
       configuration={configuration}
-      baseUrl={deviceStreamBaseUrl(Platform.OS, props.platform, props.access.httpBase)}
+      baseUrl={deviceStreamBaseUrl(
+        Platform.OS,
+        props.platform,
+        props.access.httpBase,
+        props.serveSimOnly,
+      )}
       background={props.colors.background}
       onUnauthorized={props.onUnauthorized}
       onInputConnected={props.onInputConnected}
