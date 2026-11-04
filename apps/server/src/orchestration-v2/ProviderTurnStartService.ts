@@ -298,7 +298,7 @@ export const layer: Layer.Layer<
           isPendingForRun(handoff),
       );
       // Carried forward until a provider turn accepts it, also after a provider switch.
-      const sideChatHandoff = projection.contextHandoffs.find(
+      const initialSideChatHandoff = projection.contextHandoffs.find(
         (handoff) =>
           isSideChatHandoff(handoff) &&
           handoff.delivery === undefined &&
@@ -578,7 +578,7 @@ export const layer: Layer.Layer<
         .resolve({
           thread:
             projection.thread.lineage.sideChat === true &&
-            (sideChatHandoff !== undefined ||
+            (initialSideChatHandoff !== undefined ||
               !projection.runs.some((previous) => previous.ordinal < run.ordinal))
               ? { ...projection.thread, runtimeMode: "approval-required" }
               : projection.thread,
@@ -968,6 +968,10 @@ export const layer: Layer.Layer<
             coveredRunOrdinals: { from: 1, to: Math.max(1, run.ordinal - 1) },
             strategy: "full_thread_summary",
             runs: projection.runs,
+            parentHistory: yield* ContextHandoffService.readSideChatParentHistory(
+              projectionStore,
+              projection.thread,
+            ),
             items: (yield* projectionStore.getTurnStartHistory(input.threadId)).filter(
               (item) =>
                 item.runId === null ||
@@ -1025,7 +1029,10 @@ export const layer: Layer.Layer<
           const sourceBusy = sourceProjection.runs.some(
             (candidate) => candidate.ordinal > sourceRun.ordinal && isActiveRun(candidate),
           );
-          if (!sourceBusy) {
+          if (
+            !sourceBusy &&
+            (projection.thread.lineage.sideChat !== true || sourceRun.status !== "rolled_back")
+          ) {
             return yield* loadFromProvider(
               session.forkThread({
                 sourceProviderThread,
@@ -1039,11 +1046,18 @@ export const layer: Layer.Layer<
               }),
             );
           }
-          const sourceItems = yield* ContextHandoffService.readForkHistoryItems(
+          const retainedParent = yield* ContextHandoffService.readSideChatParentHistory(
             projectionStore,
-            sourceProjection,
-            sourceRun,
+            projection.thread,
           );
+          const sourceItems =
+            retainedParent !== undefined
+              ? []
+              : yield* ContextHandoffService.readForkHistoryItems(
+                  projectionStore,
+                  sourceProjection,
+                  sourceRun,
+                );
           const createdAt = yield* DateTime.now;
           const handoff = yield* contextHandoffService.prepareProviderHandoff({
             threadId: projection.thread.id,
@@ -1058,6 +1072,7 @@ export const layer: Layer.Layer<
               sourceItems,
             ),
             strategy: "full_thread_summary",
+            parentHistory: retainedParent,
             items: sourceItems,
             runs: sourceProjection.runs,
             createdAt,
@@ -1210,6 +1225,7 @@ export const layer: Layer.Layer<
               : "resume_failed",
           errorTag: resumed._tag === "Failure" ? resumed.failure._tag : "ContextHandoffBudgetError",
         });
+        const { handoff, transferId, createdAt } = yield* recoveryHandoff;
         const replacement = yield* loadFromProvider(
           session.ensureThread({
             threadId: projection.thread.id,
@@ -1223,7 +1239,6 @@ export const layer: Layer.Layer<
           }),
         );
         if (replacement === undefined) return undefined;
-        const { handoff, transferId, createdAt } = yield* recoveryHandoff;
         effectiveHandoffs = withRecoveryHandoff(handoff);
         resumeFellBack = true;
         yield* eventSink.write({
@@ -1266,7 +1281,17 @@ export const layer: Layer.Layer<
           ],
         });
         return replacement;
-      });
+      }).pipe(
+        Effect.catchTags({
+          SideChatParentHistoryUnavailable: (error) =>
+            settleStartFailure({
+              signal: "side-chat-parent-history-unavailable",
+              title: "Side chat context unavailable",
+              error,
+              message: error.message,
+            }).pipe(Effect.as(undefined)),
+        }),
+      );
       if (loadedProviderThread === undefined) return;
       if (!(yield* isCurrentAttemptInStatus("starting"))) {
         return;
@@ -1435,6 +1460,20 @@ export const layer: Layer.Layer<
           ],
         });
       });
+      const sideChatHandoffs = projection.contextHandoffs.filter(
+        (handoff) =>
+          isSideChatHandoff(handoff) &&
+          handoff.status === "ready" &&
+          (handoff.delivery !== undefined || isPendingForRun(handoff, true)),
+      );
+      const sideChatHandoff = sideChatHandoffs.some(
+        (handoff) =>
+          handoff.toProviderThreadId === runningProviderThread.id &&
+          handoff.delivery?.nativeThreadId === runningProviderThread.nativeThreadRef?.nativeId &&
+          handoff.delivery?.status === "inline",
+      )
+        ? undefined
+        : sideChatHandoffs[0];
       const startWithHandoffs = Effect.fn("ProviderTurnStartService.startWithHandoffs")(
         function* (turnInput: Parameters<typeof session.startTurn>[0], compact = false) {
           const delivery = yield* deliverContextHandoffs({
@@ -1493,10 +1532,23 @@ export const layer: Layer.Layer<
               ...(sideChatContext === "" || sideChatHandoff === undefined || nativeThreadId == null
                 ? []
                 : [
-                    persistHandoff({
-                      ...sideChatHandoff,
-                      toProviderThreadId: runningProviderThread.id,
-                      delivery: { nativeThreadId, status: "inline" as const, itemIds: [] },
+                    Effect.gen(function* () {
+                      // Keep prior native-thread receipts when a provider switch reuses that thread.
+                      const id =
+                        sideChatHandoff.delivery === undefined
+                          ? sideChatHandoff.id
+                          : yield* idAllocator.allocate.contextHandoff({
+                              threadId: projection.thread.id,
+                              fromProviderInstanceId: run.providerInstanceId,
+                              toProviderInstanceId: run.providerInstanceId,
+                            });
+                      yield* persistHandoff({
+                        ...sideChatHandoff,
+                        id,
+                        targetRunId: run.id,
+                        toProviderThreadId: runningProviderThread.id,
+                        delivery: { nativeThreadId, status: "inline" as const, itemIds: [] },
+                      });
                     }),
                   ]),
             ],

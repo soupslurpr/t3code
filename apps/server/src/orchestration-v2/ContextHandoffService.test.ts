@@ -270,3 +270,252 @@ it.effect("inherited history stops at a missing fork ancestor", () =>
     assert.deepEqual(items, []);
   }),
 );
+
+it.effect.each([
+  "retained",
+  "receipt-moved-run",
+  "copied-receipt",
+  "conflicting-copy",
+  "empty",
+  "omitted",
+  "legacy-portable",
+  "legacy-native",
+  "wrong-parent",
+  "wrong-transfer",
+  "wrong-source-run",
+  "wrong-portable-id",
+  "absent-transfer",
+  "non-side-chat",
+  "no-stable-source",
+] as const)("selects side-chat parent history with %s", (scenario) =>
+  Effect.gen(function* () {
+    const service = yield* ContextHandoffService.ContextHandoffServiceV2;
+    const tid = ThreadId.make("retention-child"),
+      pid = ThreadId.make("retention-parent"),
+      rid = RunId.make("parent-source");
+    const now = DateTime.makeUnsafe(0);
+    const thread: OrchestrationV2AppThread = {
+      id: tid,
+      createdBy: "user",
+      creationSource: "web",
+      projectId: ProjectId.make("retention-project"),
+      title: "Side chat",
+      providerInstanceId: ProviderInstanceId.make("codex"),
+      modelSelection: { instanceId: ProviderInstanceId.make("codex"), model: "fixture-model" },
+      runtimeMode: "approval-required",
+      interactionMode: "default",
+      branch: null,
+      worktreePath: null,
+      activeProviderThreadId: null,
+      lineage: {
+        parentThreadId: pid,
+        relationshipToParent: "fork",
+        rootThreadId: pid,
+        ...(scenario === "non-side-chat" ? {} : { sideChat: true as const }),
+      },
+      forkedFrom:
+        scenario === "no-stable-source" ? null : { type: "run", threadId: pid, runId: rid },
+      createdAt: now,
+      updatedAt: now,
+      archivedAt: null,
+      settledOverride: null,
+      settledAt: null,
+      lastVisitedAt: null,
+      snoozedUntil: null,
+      snoozedAt: null,
+      deletedAt: null,
+    };
+    const portable = yield* service.prepareProviderHandoff({
+      threadId: tid,
+      targetRunId: RunId.make("first-run"),
+      transferId: ContextTransferId.make("fork-transfer"),
+      fromProviderThreadIds: [],
+      toProviderThreadId: ProviderThreadId.make("first-provider"),
+      fromProviderInstanceId: ProviderInstanceId.make("codex"),
+      toProviderInstanceId: ProviderInstanceId.make("codex"),
+      coveredRunOrdinals: { from: 1, to: 1 },
+      strategy: "full_thread_summary",
+      createdAt: now,
+      items:
+        scenario === "empty"
+          ? []
+          : [
+              importedItem({
+                role: "user",
+                id: "stable",
+                text: "STABLE RETAINED MARKER",
+                ordinal: 1,
+              }),
+            ],
+    });
+    const history =
+      scenario === "omitted"
+        ? {
+            ...portable.history!,
+            omittedItems: 3,
+            omittedItemIds: [TurnItemId.make("omitted-old")],
+          }
+        : portable.history!;
+    const manual = yield* service.prepareSideChatContext({
+      threadId: tid,
+      parentThreadId: pid,
+      targetRunId: RunId.make("first-run"),
+      transferId: ContextTransferId.make("fork-transfer"),
+      toProviderThreadId: ProviderThreadId.make("first-provider"),
+      fromProviderInstanceId: ProviderInstanceId.make("codex"),
+      toProviderInstanceId: ProviderInstanceId.make("codex"),
+      coveredRunOrdinals: { from: 1, to: 1 },
+      parentItems: [],
+      parentHistory: history,
+      createdAt: now,
+    });
+    const { history: _history, ...legacyManual } = manual;
+    const legacy = scenario.startsWith("legacy-") || scenario === "wrong-portable-id";
+    const transfer = {
+      id: ContextTransferId.make("fork-transfer"),
+      type: "fork" as const,
+      sourceThreadId: scenario === "wrong-parent" ? ThreadId.make("foreign") : pid,
+      targetThreadId: tid,
+      sourcePoint: {
+        threadId: pid,
+        runId: scenario === "wrong-source-run" ? RunId.make("foreign-run") : rid,
+      },
+      basePoint: null,
+      sourceProviderInstanceId: ProviderInstanceId.make("codex"),
+      targetProviderInstanceId: ProviderInstanceId.make("codex"),
+      targetRunId: RunId.make("first-run"),
+      status: "consumed" as const,
+      createdBy: "user" as const,
+      error: null,
+      createdAt: now,
+      updatedAt: now,
+      consumedAt: now,
+      resolution:
+        scenario === "legacy-portable" || scenario === "wrong-portable-id"
+          ? {
+              strategy: "portable_context" as const,
+              contextHandoffId: scenario === "wrong-portable-id" ? manual.id : portable.id,
+            }
+          : null,
+    };
+    const handoffs = [
+      legacy
+        ? legacyManual
+        : {
+            ...manual,
+            ...(scenario === "receipt-moved-run"
+              ? { targetRunId: RunId.make("accepted-later-run") }
+              : {}),
+          },
+      ...(scenario === "legacy-portable" || scenario === "wrong-portable-id" ? [portable] : []),
+      ...(scenario === "copied-receipt" || scenario === "conflicting-copy"
+        ? [
+            {
+              ...manual,
+              id: portable.id,
+              targetRunId: RunId.make("copied-run"),
+              history: scenario === "conflicting-copy" ? { ...history, messages: [] } : history,
+            },
+          ]
+        : []),
+    ];
+    let reads = 0;
+    const store = {
+      getThreadRecords: (id: ThreadId) => {
+        assert.equal(id, tid, "never consult the mutable parent for retained context");
+        reads++;
+        return Effect.succeed({
+          thread,
+          contextTransfers: scenario === "absent-transfer" ? [] : [transfer],
+          contextHandoffs:
+            scenario === "wrong-transfer"
+              ? handoffs.map((h) => ({
+                  ...h,
+                  transferId: ContextTransferId.make("foreign-transfer"),
+                }))
+              : handoffs,
+        });
+      },
+    };
+    const outcome = yield* Effect.result(
+      ContextHandoffService.readSideChatParentHistory(
+        store as Parameters<typeof ContextHandoffService.readSideChatParentHistory>[0],
+        thread,
+      ),
+    );
+    const unavailable = [
+      "conflicting-copy",
+      "legacy-native",
+      "wrong-parent",
+      "wrong-transfer",
+      "wrong-source-run",
+      "wrong-portable-id",
+      "absent-transfer",
+    ].includes(scenario);
+    assert.equal(outcome._tag, unavailable ? "Failure" : "Success");
+    if (outcome._tag === "Failure")
+      assert.equal(outcome.failure._tag, "SideChatParentHistoryUnavailable");
+    else if (scenario === "non-side-chat" || scenario === "no-stable-source") {
+      assert.isUndefined(outcome.success);
+      assert.equal(reads, 0);
+    } else assert.deepEqual(outcome.success, history);
+    assert.isUndefined(manual.delivery, "snapshot retention never manufactures a receipt");
+  }).pipe(Effect.provide(layerTest)),
+);
+
+it.effect("preserves retained selection bounds and original omissions", () =>
+  Effect.gen(function* () {
+    const service = yield* ContextHandoffService.ContextHandoffServiceV2;
+    const originalItems = Array.from({ length: 80 }, (_, i) =>
+      importedItem({
+        role: i % 2 === 0 ? "user" : "assistant",
+        id: `large-${i}`,
+        ordinal: i + 1,
+        text: `marker-${i} ` + "x".repeat(4096),
+      }),
+    );
+    const common = {
+      threadId: ThreadId.make("budget-child"),
+      targetRunId: RunId.make("first"),
+      transferId: ContextTransferId.make("budget-transfer"),
+      fromProviderThreadIds: [],
+      toProviderThreadId: ProviderThreadId.make("budget-provider"),
+      fromProviderInstanceId: ProviderInstanceId.make("codex"),
+      toProviderInstanceId: ProviderInstanceId.make("codex"),
+      coveredRunOrdinals: { from: 1, to: 80 },
+      strategy: "full_thread_summary" as const,
+      createdAt: DateTime.makeUnsafe(0),
+    };
+    const retained = (yield* service.prepareProviderHandoff({ ...common, items: originalItems }))
+      .history!;
+    const bytes = JSON.stringify(retained);
+    assert.isBelow(retained.messages.length, originalItems.length);
+    assert.equal(retained.messages.length + retained.omittedItems, originalItems.length);
+    assert.equal(retained.omittedItemIds?.length, retained.omittedItems);
+    const delivered = (yield* service.prepareProviderHandoff({
+      ...common,
+      targetRunId: RunId.make("switch"),
+      parentHistory: retained,
+      items: [
+        importedItem({
+          role: "user",
+          id: "current",
+          ordinal: 81,
+          text: "CURRENT SIDE CHAT QUESTION",
+        }),
+      ],
+    })).history!;
+    assert.include(
+      delivered.messages.map((m) => m.text),
+      "CURRENT SIDE CHAT QUESTION",
+    );
+    assert.equal(delivered.messages.length + delivered.omittedItems, 81);
+    assert.equal(delivered.omittedItemIds?.length, delivered.omittedItems);
+    assert.equal(new Set(delivered.omittedItemIds).size, delivered.omittedItems);
+    assert.equal(
+      JSON.stringify(retained),
+      bytes,
+      "delivery budget selection cannot rewrite retained history",
+    );
+  }).pipe(Effect.provide(layerTest)),
+);
