@@ -131,11 +131,13 @@ const resolveEntryEnabled = (entry: ProviderInstanceConfig, typedConfig: unknown
 
 type BlockedReason = (driver: ProviderDriverKind) => string | undefined;
 
-// The enabled state `buildEntry` decodes, so a disabled instance never reads its secrets.
+// Match buildEntry's policy and enabled checks before collecting secret references.
 const isEntryEnabled = Effect.fn("ProviderInstanceRegistry.isEntryEnabled")(function* <R>(
   driversById: ReadonlyMap<ProviderDriverKind, AnyProviderDriver<R>>,
   entry: ProviderInstanceConfig,
+  blockedReason: BlockedReason,
 ) {
+  if (blockedReason(entry.driver) !== undefined) return false;
   const driver = driversById.get(entry.driver);
   if (!driver) return false;
   const decoder = Schema.decodeUnknownEffect(driver.configSchema);
@@ -341,7 +343,7 @@ const makeReconcile = <R>(input: {
         Effect.gen(function* () {
           const instanceId = ProviderInstanceId.make(rawInstanceId);
           const kept = previousEntries.has(instanceId) && !replacedIds.has(instanceId);
-          return kept || !(yield* isEntryEnabled(driversById, entry))
+          return kept || !(yield* isEntryEnabled(driversById, entry, blockedReason))
             ? []
             : secretReferencesOf(driversById, entry);
         }),
@@ -448,10 +450,11 @@ export const makeProviderInstanceRegistry = Effect.fn(
   yield* Effect.addFinalizer(() => PubSub.shutdown(changes));
 
   const state: RegistryState = { entries, unavailable, changes };
+  const blockedReason = input.blockedReason ?? (() => undefined);
   const reconcileWithR = makeReconcile({
     state,
     driversById,
-    blockedReason: input.blockedReason ?? (() => undefined),
+    blockedReason,
     parentScope,
   });
   const configMapRef = yield* Ref.make(input.configMap);
@@ -474,7 +477,7 @@ export const makeProviderInstanceRegistry = Effect.fn(
         const targets = yield* Effect.filter(Object.entries(configMap), ([rawInstanceId, entry]) =>
           (instanceId === undefined || rawInstanceId === instanceId) &&
           secretReferencesOf(driversById, entry).length > 0
-            ? isEntryEnabled(driversById, entry)
+            ? isEntryEnabled(driversById, entry, blockedReason)
             : Effect.succeed(false),
         );
         if (targets.length === 0) return;
@@ -511,7 +514,7 @@ export const makeProviderInstanceRegistry = Effect.fn(
   );
   const startupReferences = yield* Effect.filter(Object.entries(input.configMap), ([, entry]) =>
     secretReferencesOf(driversById, entry).length > 0
-      ? isEntryEnabled(driversById, entry)
+      ? isEntryEnabled(driversById, entry, blockedReason)
       : Effect.succeed(false),
   ).pipe(
     Effect.map((targets) => targets.flatMap(([, entry]) => secretReferencesOf(driversById, entry))),

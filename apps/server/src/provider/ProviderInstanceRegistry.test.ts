@@ -827,6 +827,7 @@ describe("ProviderInstanceRegistry secret environment", () => {
     const reads: Array<ReadonlyArray<string>> = [];
     const invalidated: Array<ReadonlyArray<string>> = [];
     const created: Array<ResolvedProviderInstanceEnvironment> = [];
+    const createdIds: Array<ProviderInstanceId> = [];
     const configs: Array<unknown> = [];
     const driver: AnyProviderDriver = {
       driverKind,
@@ -836,6 +837,7 @@ describe("ProviderInstanceRegistry secret environment", () => {
       create: (input) =>
         Effect.sync(() => {
           created.push(input.environment);
+          createdIds.push(input.instanceId);
           configs.push(input.config);
           return { instanceId: input.instanceId, enabled: input.enabled } as ProviderInstance;
         }),
@@ -877,8 +879,111 @@ describe("ProviderInstanceRegistry secret environment", () => {
       yield* PubSub.take(changes);
       return built;
     });
-    return { vault, reads, invalidated, created, configs, make, makeGated, gate };
+    return {
+      vault,
+      reads,
+      invalidated,
+      created,
+      createdIds,
+      configs,
+      make,
+      makeGated,
+      gate,
+      driver,
+      resolver,
+      configMap,
+    };
   }
+
+  describe.each(["environment", "config", "both"] as const)(
+    "policy-blocked %s secrets",
+    (location) => {
+      it.effect.each([
+        "startup",
+        "reconcile",
+        "reload all",
+        "reload blocked",
+        "reload allowed",
+      ] as const)("does not read or invalidate blocked references during %s", (operation) => {
+        const configSecret: SecretReference = { ...secret, reference: "op://Private/Blocked/key" };
+        const allowedSecret: SecretReference = { ...secret, reference: "op://Private/Allowed/key" };
+        const allowedId = ProviderInstanceId.make("allowed_main");
+        const allowedKind = ProviderDriverKind.make("allowed");
+        const reason = "Test organization's policy does not allow the Fake provider.";
+        const fixture = setup(
+          {
+            [secret.reference]: "synthetic-blocked-env",
+            [configSecret.reference]: "synthetic-blocked-config",
+            [allowedSecret.reference]: "synthetic-allowed",
+          },
+          location === "environment"
+            ? Schema.Unknown
+            : Schema.Struct({ apiKey: SettingsSecretValue }),
+          location === "environment" ? {} : { apiKey: configSecret },
+        );
+        const blockedEntry = {
+          ...fixture.configMap[instanceId]!,
+          ...(location === "config" ? { environment: [] } : {}),
+        };
+        const allowedMap: ProviderInstanceConfigMap = {
+          [allowedId]: {
+            driver: allowedKind,
+            environment: [{ name: "ALLOWED_KEY", value: allowedSecret, sensitive: true }],
+          },
+        };
+        const configMap = { ...allowedMap, [instanceId]: blockedEntry };
+        return Effect.gen(function* () {
+          const { registry, mutator } = yield* makeProviderInstanceRegistry({
+            drivers: [
+              fixture.driver,
+              { ...fixture.driver, driverKind: allowedKind, configSchema: Schema.Unknown },
+            ],
+            configMap: operation === "reconcile" ? allowedMap : configMap,
+            blockedReason: (driver) => (driver === driverKind ? reason : undefined),
+          });
+          const changes = yield* registry.subscribeChanges;
+          yield* Deferred.succeed(fixture.gate, undefined);
+          // The allowed instance's publish settles the shared startup batch before assertions.
+          yield* PubSub.take(changes);
+          const allowed = yield* registry.getInstance(allowedId);
+          expect(allowed).toBeDefined();
+
+          if (operation !== "startup") {
+            fixture.reads.length = 0;
+            fixture.invalidated.length = 0;
+          }
+          if (operation === "reconcile") yield* mutator.reconcile(configMap);
+          if (operation === "reload all") yield* mutator.reloadSecrets();
+          if (operation === "reload blocked") yield* mutator.reloadSecrets(instanceId);
+          if (operation === "reload allowed") yield* mutator.reloadSecrets(allowedId);
+
+          expect(
+            fixture.reads.flat().filter((reference) => reference !== allowedSecret.reference),
+          ).toEqual([]);
+          expect(
+            fixture.invalidated.flat().filter((reference) => reference !== allowedSecret.reference),
+          ).toEqual([]);
+          if (operation === "reconcile" || operation === "reload blocked") {
+            expect(fixture.reads).toEqual([]);
+            expect(fixture.invalidated).toEqual([]);
+          } else {
+            expect(fixture.reads.flat()).toContain(allowedSecret.reference);
+          }
+          expect(fixture.createdIds).toEqual([allowedId]);
+          expect(yield* registry.getInstance(allowedId)).toBe(allowed);
+          expect(yield* registry.getInstance(instanceId)).toBeUndefined();
+          expect(yield* registry.listUnavailable).toMatchObject([
+            {
+              instanceId,
+              driver: driverKind,
+              availability: "unavailable",
+              unavailableReason: reason,
+            },
+          ]);
+        }).pipe(Effect.provide(fixture.resolver), Effect.scoped);
+      });
+    },
+  );
 
   it.effect("starts an instance with the secret its environment points at", () => {
     const fixture = setup({ [secret.reference]: "sk-live" });
