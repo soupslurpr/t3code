@@ -78,6 +78,10 @@ export class SourceControlHost extends Context.Service<
       readonly update: (
         patch: ServerSettingsPatch,
       ) => Effect.Effect<ServerSettings, ServerSettingsError>;
+      /** Selects a patch atomically with the settings write; undefined leaves settings unchanged. */
+      readonly updateWith: (
+        update: (current: ServerSettings) => ServerSettingsPatch | undefined,
+      ) => Effect.Effect<ServerSettings, ServerSettingsError>;
     };
     readonly process: {
       readonly run: (

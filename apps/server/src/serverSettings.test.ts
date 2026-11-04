@@ -22,6 +22,7 @@ import { assert, it } from "@effect/vitest";
 import * as DateTime from "effect/DateTime";
 import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
+import * as Equal from "effect/Equal";
 import * as FileSystem from "effect/FileSystem";
 import * as Fiber from "effect/Fiber";
 import * as Layer from "effect/Layer";
@@ -761,6 +762,178 @@ it.layer(NodeServices.layer)("server settings", (it) => {
         ),
       );
     }).pipe(Effect.provide(layerServerSettings())),
+  );
+
+  it.effect.each(["sign-out", "new sign-in"] as const)(
+    "compares a conditional secret update after a queued %s under the write lock",
+    (winner) =>
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        let settingsPath: string | undefined;
+        const publications: Array<string> = [];
+        const trackedFs = FileSystem.FileSystem.of({
+          ...fs,
+          rename: (from, to) =>
+            fs
+              .rename(from, to)
+              .pipe(
+                Effect.tap(() =>
+                  to === settingsPath
+                    ? fs
+                        .readFileString(to)
+                        .pipe(Effect.tap((bytes) => Effect.sync(() => publications.push(bytes))))
+                    : Effect.void,
+                ),
+              ),
+        });
+        yield* Effect.gen(function* () {
+          const service = yield* ServerSettingsModule.ServerSettingsService;
+          settingsPath = (yield* ServerConfig.ServerConfig).settingsPath;
+          const original = { "github.com": "synthetic-original-session" };
+          const newer = winner === "sign-out" ? {} : { "github.com": "synthetic-newer-session" };
+          yield* service.updateSettings({ sourceControlHosts: { github: { signIns: original } } });
+          publications.length = 0;
+          const held = yield* Deferred.make<void>();
+          const release = yield* Deferred.make<void>();
+          const lock = yield* service
+            .withSettingsSnapshot(() =>
+              Deferred.succeed(held, undefined).pipe(Effect.andThen(Deferred.await(release))),
+            )
+            .pipe(Effect.forkChild({ startImmediately: true }));
+          yield* Deferred.await(held);
+          const ordinary = yield* service
+            .updateSettings({ sourceControlHosts: { github: { signIns: newer } } })
+            .pipe(Effect.forkChild({ startImmediately: true }));
+          const compared: Array<unknown> = [];
+          const conditional = yield* service
+            .updateSettingsWith((current) => {
+              compared.push(current.sourceControlHosts.github?.signIns);
+              return Equal.equals(current.sourceControlHosts.github?.signIns, original)
+                ? {
+                    sourceControlHosts: {
+                      github: { signIns: { "github.com": "synthetic-stale-refresh" } },
+                    },
+                  }
+                : undefined;
+            })
+            .pipe(Effect.forkChild({ startImmediately: true }));
+          assert.deepEqual(compared, []);
+          yield* Deferred.succeed(release, undefined);
+          yield* Fiber.join(lock);
+          yield* Fiber.join(ordinary);
+          const returned = yield* Fiber.join(conditional);
+          assert.deepEqual(compared, [newer]);
+          assert.deepEqual(returned.sourceControlHosts.github?.signIns, newer);
+          assert.deepEqual((yield* service.getSettings).sourceControlHosts.github?.signIns, newer);
+          assert.lengthOf(publications, 1);
+          assert.equal(yield* fs.readFileString(settingsPath), publications[0]);
+          assert.notInclude(publications[0]!, "synthetic-newer-session");
+          assert.notInclude(publications[0]!, "synthetic-stale-refresh");
+        }).pipe(
+          Effect.provide(
+            layerServerSettings().pipe(
+              Layer.provideMerge(Layer.succeed(FileSystem.FileSystem, trackedFs)),
+            ),
+          ),
+        );
+      }),
+  );
+
+  it.effect("vets conditional patches before changing secret files", () =>
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      const service = yield* ServerSettingsModule.ServerSettingsService;
+      const path = (yield* ServerConfig.ServerConfig).settingsPath;
+      const original = { "github.com": "synthetic-original-session" };
+      yield* service.updateSettings({ sourceControlHosts: { github: { signIns: original } } });
+      const before = yield* fs.readFileString(path);
+      const error = yield* service
+        .updateSettingsWith((current) => {
+          assert.deepEqual(current.sourceControlHosts.github?.signIns, original);
+          return {
+            defaultRuntimeMode: "full-access",
+            sourceControlHosts: {
+              github: { signIns: { "github.com": "synthetic-denied-session" } },
+            },
+          };
+        })
+        .pipe(Effect.flip);
+      assert.equal(error.operation, "write-managed-setting");
+      assert.equal(yield* fs.readFileString(path), before);
+      assert.deepEqual((yield* service.getSettings).sourceControlHosts.github?.signIns, original);
+    }).pipe(
+      Effect.provide(
+        layerServerSettings({
+          schemaVersion: 1,
+          organization: "N08 test",
+          settings: { defaultRuntimeMode: { value: "approval-required", locked: true } },
+        }),
+      ),
+    ),
+  );
+
+  it.effect(
+    "rolls back conditional session secrets on failed publication and permits a retry",
+    () =>
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        let failPublication = false;
+        let settingsPath: string | undefined;
+        const failure = PlatformError.systemError({
+          _tag: "PermissionDenied",
+          module: "FileSystem",
+          method: "rename",
+          description: "N08 synthetic publication failure",
+        });
+        const failingFs = FileSystem.FileSystem.of({
+          ...fs,
+          rename: (from, to) =>
+            failPublication && to === settingsPath ? Effect.fail(failure) : fs.rename(from, to),
+        });
+        yield* Effect.gen(function* () {
+          const service = yield* ServerSettingsModule.ServerSettingsService;
+          settingsPath = (yield* ServerConfig.ServerConfig).settingsPath;
+          const original = {
+            "github.com": "synthetic-original-session",
+            "other.example": "synthetic-independent-session",
+          };
+          yield* service.updateSettings({ sourceControlHosts: { github: { signIns: original } } });
+          const before = yield* fs.readFileString(settingsPath);
+          const update = service.updateSettingsWith((current) => {
+            assert.deepEqual(current.sourceControlHosts.github?.signIns, original);
+            return {
+              sourceControlHosts: {
+                github: { signIns: { ...original, "github.com": "synthetic-refreshed-session" } },
+              },
+            };
+          });
+          failPublication = true;
+          const error = yield* Effect.flip(update);
+          assert.equal(error.operation, "write-file");
+          assert.equal(yield* fs.readFileString(settingsPath), before);
+          assert.deepEqual(
+            (yield* service.getSettings).sourceControlHosts.github?.signIns,
+            original,
+          );
+          failPublication = false;
+          const saved = yield* update;
+          assert.deepEqual(saved.sourceControlHosts.github?.signIns, {
+            ...original,
+            "github.com": "synthetic-refreshed-session",
+          });
+          assert.deepEqual(
+            (yield* service.getSettings).sourceControlHosts.github?.signIns,
+            saved.sourceControlHosts.github?.signIns,
+          );
+          assert.notInclude(yield* fs.readFileString(settingsPath), "synthetic-refreshed-session");
+        }).pipe(
+          Effect.provide(
+            layerServerSettings().pipe(
+              Layer.provideMerge(Layer.succeed(FileSystem.FileSystem, failingFs)),
+            ),
+          ),
+        );
+      }),
   );
 
   it.effect("pauses provider-instance mutations while a settings snapshot is in use", () =>

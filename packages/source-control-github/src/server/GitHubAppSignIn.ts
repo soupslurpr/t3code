@@ -1,6 +1,7 @@
 import {
   SourceControlProviderKind,
   SourceControlSignInError,
+  type ServerSettings,
   type SourceControlSignInFailure,
   type SourceControlSignInPrompt,
 } from "@t3tools/contracts";
@@ -11,6 +12,7 @@ import * as Context from "effect/Context";
 import * as Deferred from "effect/Deferred";
 import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
+import * as Equal from "effect/Equal";
 import * as Fiber from "effect/Fiber";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
@@ -46,6 +48,23 @@ type GitHubAppSession = typeof GitHubAppSession.Type;
 const GitHubAppSessionJson = Schema.fromJsonString(GitHubAppSession);
 const decodeSession = Schema.decodeUnknownOption(GitHubAppSessionJson);
 const encodeSession = Schema.encodeSync(GitHubAppSessionJson);
+
+const signInsFrom = (settings: ServerSettings) =>
+  readSourceControlHostSettings(
+    GitHubClient.settings,
+    settings.sourceControlHosts[GitHubClient.definition.kind],
+  ).signIns;
+
+const sessionPatch = (
+  current: Readonly<Record<string, string>>,
+  host: string,
+  session: GitHubAppSession | null,
+) => {
+  const signIns = { ...current };
+  if (session === null) delete signIns[host];
+  else signIns[host] = encodeSession(session);
+  return { sourceControlHosts: { [GitHubClient.definition.kind]: { signIns } } };
+};
 
 // GitHub answers both token grants with HTTP 200 and puts refusals in `error`.
 const TokenResponse = Schema.Struct({
@@ -118,13 +137,7 @@ export const make = Effect.gen(function* () {
     enabled && GitHubClient.APP_SIGN_IN.hosts.includes(host.trim().toLowerCase());
 
   const readSignIns = sourceControlHost.settings.get.pipe(
-    Effect.map(
-      (settings) =>
-        readSourceControlHostSettings(
-          GitHubClient.settings,
-          settings.sourceControlHosts[GitHubClient.definition.kind],
-        ).signIns,
-    ),
+    Effect.map(signInsFrom),
     Effect.orElseSucceed((): Readonly<Record<string, string>> => ({})),
   );
 
@@ -135,12 +148,9 @@ export const make = Effect.gen(function* () {
     host: string,
     session: GitHubAppSession | null,
   ) {
-    const signIns = { ...(yield* readSignIns) };
-    if (session === null) delete signIns[host];
-    else signIns[host] = encodeSession(session);
-    yield* sourceControlHost.settings.update({
-      sourceControlHosts: { [GitHubClient.definition.kind]: { signIns } },
-    });
+    yield* sourceControlHost.settings.updateWith((current) =>
+      sessionPatch(signInsFrom(current), host, session),
+    );
   });
 
   /**
@@ -152,10 +162,13 @@ export const make = Effect.gen(function* () {
     from: GitHubAppSession,
     next: GitHubAppSession | null,
   ) {
-    const current = yield* readSession(host);
-    if (Option.isNone(current) || current.value.accessToken !== from.accessToken) return false;
-    yield* writeSession(host, next);
-    return true;
+    const saved = yield* sourceControlHost.settings.updateWith((settings) => {
+      const signIns = signInsFrom(settings);
+      const current = decodeSession(signIns[host] ?? "");
+      if (Option.isNone(current) || !Equal.equals(current.value, from)) return undefined;
+      return sessionPatch(signIns, host, next);
+    });
+    return decodeSession(signInsFrom(saved)[host] ?? "");
   });
 
   const postForm = <S extends Schema.Top>(
@@ -200,8 +213,10 @@ export const make = Effect.gen(function* () {
       session.refreshToken === null ||
       (session.refreshTokenExpiresAt !== null && session.refreshTokenExpiresAt <= now)
     ) {
-      yield* replaceSession(host, session, null).pipe(Effect.ignore);
-      return Option.none<string>();
+      return yield* replaceSession(host, session, null).pipe(
+        Effect.map(Option.map((current) => current.accessToken)),
+        Effect.orElseSucceed(() => Option.none<string>()),
+      );
     }
     const response = yield* postForm(
       host,
@@ -215,9 +230,11 @@ export const make = Effect.gen(function* () {
     ).pipe(Effect.mapError((cause) => new GitHubAppSessionError({ host, cause })));
     if (response.error === "bad_refresh_token") {
       // Final: the user revoked the app or the session lapsed.
-      yield* Effect.logWarning("GitHub refused the app sign-in refresh; signing out.", { host });
-      yield* replaceSession(host, session, null).pipe(Effect.ignore);
-      return Option.none<string>();
+      yield* Effect.logWarning("GitHub refused the prior app sign-in refresh.", { host });
+      return yield* replaceSession(host, session, null).pipe(
+        Effect.map(Option.map((current) => current.accessToken)),
+        Effect.orElseSucceed(() => Option.none<string>()),
+      );
     }
     if (response.access_token === undefined) {
       return yield* new GitHubAppSessionError({
@@ -233,15 +250,18 @@ export const make = Effect.gen(function* () {
     const saved = yield* replaceSession(host, session, next).pipe(
       Effect.retry({ times: 2, schedule: Schedule.spaced(Duration.millis(250)) }),
       Effect.catch((cause) =>
-        Effect.logError("Could not save the refreshed app sign-in; using it unsaved.", {
-          host,
-          cause,
-        }).pipe(Effect.as(true)),
+        Effect.gen(function* () {
+          const current = yield* readSession(host);
+          if (Option.isNone(current) || !Equal.equals(current.value, session)) return current;
+          yield* Effect.logError("Could not save the refreshed app sign-in; using it unsaved.", {
+            host,
+            cause,
+          });
+          return Option.some(next);
+        }),
       ),
     );
-    if (saved) return Option.some(next.accessToken);
-    // Signed out or signed in again meanwhile: serve whatever is stored now.
-    return Option.map(yield* readSession(host), (current) => current.accessToken);
+    return Option.map(saved, (current) => current.accessToken);
   });
 
   const isFresh = (session: GitHubAppSession, now: number) =>
@@ -281,8 +301,13 @@ export const make = Effect.gen(function* () {
           // A refresh ahead of expiry that fails leaves the still-valid token in use.
           return yield* refresh(host, current.value).pipe(
             Effect.catchTags({
-              GitHubAppSessionError: (error) =>
-                Option.isSome(usable) ? Effect.succeed(usable) : Effect.fail(error),
+              GitHubAppSessionError: Effect.fn("GitHubAppSignIn.recoverRefresh")(function* (error) {
+                const latest = yield* readSession(host);
+                if (Option.isNone(latest) || !Equal.equals(latest.value, current.value)) {
+                  return Option.map(latest, (session) => session.accessToken);
+                }
+                return yield* Option.isSome(usable) ? Effect.succeed(usable) : Effect.fail(error);
+              }),
             }),
           );
         }),
