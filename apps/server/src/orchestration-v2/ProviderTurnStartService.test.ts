@@ -1012,6 +1012,12 @@ effectIt.effect.each([
     context: "SIDE_CHAT_CONTEXT",
   },
   { contextRun: "delivered", runtimeMode: "full-access", context: "" },
+  {
+    contextRun: "delivered",
+    switchedProvider: true,
+    runtimeMode: "full-access",
+    context: "SIDE_CHAT_CONTEXT",
+  },
 ] as const)(
   "sends side chat context inline once, for the first turn that reaches the provider: %j",
   ({ runtimeMode, context, ...sideChat }) =>
@@ -1030,13 +1036,22 @@ effectIt.effect.each([
       expect(harness.startTurn.mock.calls.map(([turn]) => turn.message.text)).toEqual([
         withInlineContext(context, "What is the main thread doing?"),
       ]);
-      expect(harness.projection().contextHandoffs).toMatchObject([
-        {
+      const handoffs = harness.projection().contextHandoffs;
+      expect(handoffs.at(-1)).toMatchObject({
+        toProviderThreadId: "new-provider-thread",
+        delivery: { nativeThreadId: "side-chat-native", status: "inline" },
+      });
+      if (sideChat.contextRun === "delivered" && "switchedProvider" in sideChat) {
+        expect(handoffs).toHaveLength(2);
+        expect(handoffs[0]).toMatchObject({
           id: "side-chat-context",
-          toProviderThreadId: "new-provider-thread",
+          toProviderThreadId: "existing-native-provider-thread",
           delivery: { nativeThreadId: "side-chat-native", status: "inline" },
-        },
-      ]);
+        });
+      } else {
+        expect(handoffs).toHaveLength(1);
+        expect(handoffs[0]?.id).toBe("side-chat-context");
+      }
     }),
 );
 

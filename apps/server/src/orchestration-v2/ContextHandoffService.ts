@@ -81,6 +81,8 @@ export interface ContextHandoffServiceV2Shape {
       OrchestrationV2ContextHandoff["strategy"],
       "delta_since_target_last_seen" | "full_thread_summary"
     >;
+    readonly historySourceThreadId?: ThreadId;
+    readonly parentHistory?: OrchestrationV2ContextHandoff["history"];
     readonly items: ReadonlyArray<OrchestrationV2TurnItem>;
     readonly createdAt: DateTime.Utc;
   }) => Effect.Effect<OrchestrationV2ContextHandoff, ContextHandoffServiceV2Error>;
@@ -94,6 +96,7 @@ export interface ContextHandoffServiceV2Shape {
     readonly fromProviderInstanceId: ProviderInstanceId;
     readonly toProviderInstanceId: ProviderInstanceId;
     readonly coveredRunOrdinals: OrchestrationV2ContextHandoff["coveredRunOrdinals"];
+    readonly parentHistory?: OrchestrationV2ContextHandoff["history"];
     readonly parentItems: ReadonlyArray<OrchestrationV2TurnItem>;
     readonly createdAt: DateTime.Utc;
   }) => Effect.Effect<OrchestrationV2ContextHandoff, ContextHandoffServiceV2Error>;
@@ -200,6 +203,68 @@ export const readForkHistoryItems = Effect.fn(
     ...(yield* readInheritedHandoffItems(projectionStore, source.thread)),
     ...(yield* readOwnHistoryItems(projectionStore, source, throughRun)),
   ];
+});
+
+export class SideChatParentHistoryUnavailable extends Schema.TaggedError<SideChatParentHistoryUnavailable>()(
+  "SideChatParentHistoryUnavailable",
+  { threadId: ThreadId },
+) {
+  override get message() {
+    return `Cannot establish the original stable parent history for side chat ${this.threadId} in a fresh provider thread. Its existing native thread can continue if still available.`;
+  }
+}
+
+export const readSideChatParentHistory = Effect.fn(
+  "orchestrationV2.contextHandoff.readSideChatParentHistory",
+)(function* (
+  projectionStore: Pick<ProjectionStoreV2Shape, "getThreadRecords">,
+  thread: OrchestrationV2AppThread,
+) {
+  if (thread.lineage.sideChat !== true || thread.forkedFrom?.type !== "run") return undefined;
+  const original = thread.forkedFrom;
+  const { contextTransfers, contextHandoffs } = yield* projectionStore.getThreadRecords(thread.id, [
+    "contextTransfers",
+    "contextHandoffs",
+  ]);
+  const transfer = contextTransfers.find(
+    (candidate) =>
+      candidate.type === "fork" &&
+      candidate.targetThreadId === thread.id &&
+      candidate.sourceThreadId === original.threadId &&
+      candidate.sourcePoint.threadId === original.threadId &&
+      candidate.sourcePoint.runId === original.runId,
+  );
+  if (transfer !== undefined) {
+    const retained = contextHandoffs.filter(
+      (candidate) =>
+        candidate.threadId === thread.id &&
+        candidate.transferId === transfer.id &&
+        isSideChatContextHandoff(candidate) &&
+        candidate.status === "ready" &&
+        candidate.history !== undefined,
+    );
+    if (retained.length > 0) {
+      const history = retained[0]!.history!;
+      if (
+        retained.some((candidate) => JSON.stringify(candidate.history) !== JSON.stringify(history))
+      )
+        return yield* new SideChatParentHistoryUnavailable({ threadId: thread.id });
+      return history;
+    }
+    const resolution = transfer.resolution;
+    if (resolution?.strategy === "portable_context") {
+      const portable = contextHandoffs.find(
+        (candidate) =>
+          candidate.id === resolution.contextHandoffId &&
+          candidate.threadId === thread.id &&
+          candidate.transferId === transfer.id &&
+          candidate.strategy === "full_thread_summary" &&
+          candidate.status === "ready",
+      );
+      if (portable?.history !== undefined) return portable.history;
+    }
+  }
+  return yield* new SideChatParentHistoryUnavailable({ threadId: thread.id });
 });
 
 function summarizeDeltaItem(item: OrchestrationV2TurnItem): string | null {
@@ -497,6 +562,8 @@ const makeContextHandoffService = Effect.fn("orchestrationV2.ContextHandoffServi
         OrchestrationV2ContextHandoff["strategy"],
         "delta_since_target_last_seen" | "full_thread_summary"
       >;
+      readonly historySourceThreadId?: ThreadId;
+      readonly parentHistory?: OrchestrationV2ContextHandoff["history"];
       readonly items: ReadonlyArray<OrchestrationV2TurnItem>;
       readonly createdAt: DateTime.Utc;
     }) {
@@ -519,19 +586,28 @@ const makeContextHandoffService = Effect.fn("orchestrationV2.ContextHandoffServi
           ),
         );
       const runStatuses = new Map(input.runs?.map((run) => [run.id, run.status]));
-      const coverage = handoffCoverage(input);
+      const coverage = [
+        input.parentHistory?.coverage,
+        handoffCoverage({ ...input, threadId: input.historySourceThreadId ?? input.threadId }),
+      ]
+        .filter(Boolean)
+        .join("\n");
       const selected = selectHistory({
-        messages: input.items.flatMap((item) => {
-          const message = historicalMessage(item);
-          return message === null
-            ? []
-            : [
-                {
-                  ...message,
-                  ...(item.runId === null ? {} : { runStatus: runStatuses.get(item.runId) }),
-                },
-              ];
-        }),
+        messages: [
+          ...(input.parentHistory?.messages ?? []),
+          ...input.items.flatMap((item) => {
+            const message = historicalMessage(item);
+            return message === null
+              ? []
+              : [
+                  {
+                    ...message,
+                    ...(item.runId === null ? {} : { runStatus: runStatuses.get(item.runId) }),
+                  },
+                ];
+          }),
+        ],
+        omittedItems: input.parentHistory?.omittedItems ?? 0,
         coverage,
         budget: tokenCap,
       });
@@ -551,7 +627,10 @@ const makeContextHandoffService = Effect.fn("orchestrationV2.ContextHandoffServi
           messages: selected.messages,
           coverage,
           omittedItems: selected.omittedItems,
-          omittedItemIds: selected.omittedItemIds,
+          omittedItemIds: [
+            ...(input.parentHistory?.omittedItemIds ?? []),
+            ...selected.omittedItemIds,
+          ],
         },
         createdByProviderInstanceId: null,
         createdAt: input.createdAt,
@@ -595,6 +674,7 @@ const makeContextHandoffService = Effect.fn("orchestrationV2.ContextHandoffServi
           parentThreadId: input.parentThreadId,
           digest: input.parentItems,
         }),
+        ...(input.parentHistory === undefined ? {} : { history: input.parentHistory }),
         createdByProviderInstanceId: null,
         createdAt: input.createdAt,
         updatedAt: input.createdAt,

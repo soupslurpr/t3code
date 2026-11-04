@@ -2,6 +2,7 @@ import type * as ProviderAdapter from "@t3tools/provider-core/server/ProviderAda
 import { assert, describe, it } from "@effect/vitest";
 import {
   ContextHandoffId,
+  ContextTransferId,
   PROVIDER_SEND_TURN_MAX_ATTACHMENTS,
   ProviderDriverKind,
   ProviderInstanceId,
@@ -399,6 +400,289 @@ describe("handoff budget", () => {
 });
 
 describe("handoff delivery", () => {
+  it.effect.each(
+    [
+      {
+        label: "same item in two transfers",
+        histories: [
+          { count: 1, ids: ["omitted:a"] },
+          { count: 1, ids: ["omitted:a"] },
+        ],
+        expected: 1,
+      },
+      {
+        label: "same item in three transfers",
+        histories: [
+          { count: 1, ids: ["omitted:a"] },
+          { count: 1, ids: ["omitted:a"] },
+          { count: 1, ids: ["omitted:a"] },
+        ],
+        expected: 1,
+      },
+      {
+        label: "partial overlap",
+        histories: [
+          { count: 2, ids: ["omitted:a", "omitted:b"] },
+          { count: 2, ids: ["omitted:b", "omitted:c"] },
+        ],
+        expected: 3,
+      },
+      {
+        label: "disjoint omissions",
+        histories: [
+          { count: 1, ids: ["omitted:a"] },
+          { count: 1, ids: ["omitted:b"] },
+        ],
+        expected: 2,
+      },
+      {
+        label: "repeated identity in one record",
+        histories: [{ count: 1, ids: ["omitted:a", "omitted:a"] }],
+        expected: 1,
+      },
+      {
+        label: "omitted item supplied by another record",
+        histories: [
+          { count: 1, ids: ["omitted:a"] },
+          { count: 0, ids: [], supplied: "omitted:a" },
+        ],
+        expected: 0,
+      },
+      {
+        label: "omitted item already delivered",
+        histories: [{ count: 1, ids: ["omitted:a"] }],
+        delivered: ["omitted:a"],
+        expected: 0,
+      },
+      {
+        label: "recovered candidate omitted again by final budget",
+        histories: [
+          { count: 1, ids: ["omitted:a"] },
+          { count: 0, ids: [], oversized: "omitted:a" },
+        ],
+        expected: 1,
+      },
+      {
+        label: "distinct final budget omission",
+        histories: [
+          { count: 1, ids: ["omitted:a"] },
+          { count: 0, ids: [], oversized: "omitted:b" },
+        ],
+        expected: 2,
+      },
+      {
+        label: "legacy counts without identities",
+        histories: [{ count: 2 }, { count: 3 }],
+        expected: 5,
+        unknown: true,
+      },
+      {
+        label: "legacy count with empty identity list",
+        histories: [{ count: 2, ids: [] }],
+        expected: 2,
+        unknown: true,
+      },
+      {
+        label: "partially identified omissions",
+        histories: [
+          { count: 3, ids: ["omitted:a"] },
+          { count: 1, ids: ["omitted:a"] },
+        ],
+        expected: 3,
+        unknown: true,
+      },
+      {
+        label: "legacy and identified overlap cannot be proved",
+        histories: [{ count: 2 }, { count: 1, ids: ["omitted:a"] }],
+        expected: 3,
+        unknown: true,
+      },
+      {
+        label: "legacy residual survives known item delivery",
+        histories: [{ count: 3, ids: ["omitted:a"] }],
+        delivered: ["omitted:a"],
+        expected: 2,
+        unknown: true,
+      },
+      {
+        label: "zero known omissions",
+        histories: [{ count: 0, ids: [] }, { count: 0 }],
+        expected: 0,
+      },
+    ].flatMap((scenario) => [true, false].map((native) => ({ ...scenario, native }))),
+  )("aggregates omitted identities: $label (native=$native)", (scenario) =>
+    Effect.gen(function* () {
+      const records = scenario.histories.map((entry, index): OrchestrationV2ContextHandoff => ({
+        ...handoff,
+        id: ContextHandoffId.make(`handoff:omissions:${index}`),
+        transferId: ContextTransferId.make(`transfer:omissions:${index}`),
+        history: {
+          coverage: "Original bounded source history",
+          messages: [
+            ...messages,
+            ...("supplied" in entry && entry.supplied
+              ? [message(entry.supplied, "user", "Recovered omitted source")]
+              : []),
+            ...("oversized" in entry && entry.oversized
+              ? [message(entry.oversized, "user", "x".repeat(20_000))]
+              : []),
+          ],
+          omittedItems: entry.count,
+          ...("ids" in entry ? { omittedItemIds: entry.ids!.map(TurnItemId.make) } : {}),
+        },
+      }));
+      const sourceBytes = JSON.stringify(records);
+      const durable = new Map(records.map((record) => [record.id, record]));
+      const alreadyDeliveredItemIds = new Set("delivered" in scenario ? scenario.delivered : []);
+      let captured: ProviderAdapter.ProviderAdapterV2HistoricalContext | undefined;
+      const result = yield* deliverContextHandoffs({
+        handoffs: records,
+        providerThread,
+        budget: 16_000,
+        alreadyDeliveredItemIds,
+        inject: (value) =>
+          Effect.sync(() => {
+            captured = value;
+            return scenario.native;
+          }),
+        persist: (record) =>
+          Effect.sync(() => {
+            durable.set(record.id, record);
+          }),
+      });
+      assert.isDefined(captured);
+      assert.equal(Number(/omitted (\d+) items/.exec(captured.context)?.[1]), scenario.expected);
+      assert.equal(
+        captured.context.includes("upper bound"),
+        "unknown" in scenario && scenario.unknown === true,
+      );
+      assert.isAtMost(historyCost(captured.messages, captured.context), 16_000);
+      const acceptedIds = new Set([
+        ...alreadyDeliveredItemIds,
+        ...captured.messages.map((item) => item.itemId),
+      ]);
+      if (scenario.native) assert.equal(result.context, "");
+      else assert.include(result.context, captured.context);
+      for (const record of durable.values()) {
+        assert.equal(record.delivery?.status, scenario.native ? "injected" : "pending");
+        assert.deepEqual(
+          record.history,
+          records.find((original) => original.id === record.id)!.history,
+        );
+        assert.deepEqual(
+          (record.delivery?.omittedItemIds ?? []).filter((id) => acceptedIds.has(id)),
+          [],
+        );
+        assert.equal(
+          new Set(record.delivery?.omittedItemIds).size,
+          record.delivery?.omittedItemIds?.length,
+        );
+      }
+      yield* result.delivered;
+      for (const record of durable.values())
+        assert.equal(record.delivery?.status, scenario.native ? "injected" : "inline");
+      assert.equal(JSON.stringify(records), sourceBytes);
+      const uniqueReceived = new Set(captured.messages.map((item) => item.itemId));
+      assert.equal(uniqueReceived.size, captured.messages.length);
+    }),
+  );
+
+  it.effect(
+    "keeps overlapping omission receipts unaccepted after refusal and accepts a later input",
+    () =>
+      Effect.gen(function* () {
+        const missing = TurnItemId.make("omitted:source");
+        const records = [0, 1].map((index): OrchestrationV2ContextHandoff => ({
+          ...handoff,
+          id: ContextHandoffId.make(`handoff:refusal:${index}`),
+          history: { ...handoff.history!, omittedItems: 1, omittedItemIds: [missing] },
+        }));
+        const durable = new Map(records.map((record) => [record.id, record]));
+        const persist = (record: OrchestrationV2ContextHandoff) =>
+          Effect.sync(() => {
+            durable.set(record.id, record);
+          });
+        const first = yield* deliverContextHandoffs({
+          handoffs: records,
+          providerThread,
+          budget: 16_000,
+          alreadyDeliveredItemIds: new Set(),
+          persist,
+        });
+        assert.include(first.context, "omitted 1 items");
+        assert.isTrue(
+          [...durable.values()].every((record) => record.delivery?.status === "pending"),
+        );
+        yield* first.unsent;
+        assert.deepEqual([...durable.values()], records);
+        const later = yield* deliverContextHandoffs({
+          handoffs: [...durable.values()],
+          providerThread,
+          budget: 16_000,
+          alreadyDeliveredItemIds: new Set(),
+          persist,
+        });
+        assert.include(later.context, "omitted 1 items");
+        yield* later.delivered;
+        assert.isTrue(
+          [...durable.values()].every((record) => record.delivery?.status === "inline"),
+        );
+        assert.deepEqual(
+          [...durable.values()].flatMap((record) => record.delivery?.omittedItemIds ?? []),
+          [missing, missing],
+        );
+        const sameNative = yield* deliverContextHandoffs({
+          handoffs: [...durable.values()],
+          providerThread,
+          budget: 16_000,
+          alreadyDeliveredItemIds: new Set(),
+          persist,
+        });
+        assert.equal(sameNative.context, "");
+        assert.deepEqual(
+          [...durable.values()].map((record) => record.history),
+          records.map((record) => record.history),
+        );
+      }),
+  );
+
+  it.effect.each([1_024, 2_500, 16_000])(
+    "bounds legacy omission qualification after coverage compaction (%s)",
+    (budget) =>
+      Effect.gen(function* () {
+        const records = Array.from({ length: 100 }, (_, index) => ({
+          ...handoff,
+          id: ContextHandoffId.make(`handoff:legacy-budget:${index}`),
+          history: {
+            ...handoff.history!,
+            omittedItems: 9,
+            omittedItemIds: [TurnItemId.make("omitted:shared")],
+          },
+        }));
+        let captured: ProviderAdapter.ProviderAdapterV2HistoricalContext | undefined;
+        yield* deliverContextHandoffs({
+          handoffs: records,
+          providerThread,
+          budget,
+          alreadyDeliveredItemIds: new Set(),
+          inject: (value) =>
+            Effect.sync(() => {
+              captured = value;
+              return true;
+            }),
+          persist: () => Effect.void,
+        });
+        assert.isDefined(captured);
+        assert.include(captured.context, "detailed coverage references omitted");
+        assert.include(captured.context, "upper bound");
+        assert.equal(
+          Number(/omitted (\d+) items/.exec(captured.context)?.[1]),
+          801 + messages.length - captured.messages.length,
+        );
+        assert.isAtMost(historyCost(captured.messages, captured.context), budget);
+      }),
+  );
+
   it.effect.each([
     { native: true, label: "injected" },
     { native: false, label: "inline" },

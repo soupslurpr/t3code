@@ -1,4 +1,6 @@
 import { vi } from "vite-plus/test";
+import * as NodeServices from "@effect/platform-node/NodeServices";
+import * as ContextHandoffService from "../ContextHandoffService.ts";
 import { historyResponseItems } from "@t3tools/provider-core/server/handoffBudget";
 import { assert, describe, it } from "@effect/vitest";
 import {
@@ -22,6 +24,7 @@ import {
   TurnItemId,
   ProviderDriverKind,
 } from "@t3tools/contracts";
+import * as Cause from "effect/Cause";
 import * as DateTime from "effect/DateTime";
 import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
@@ -105,6 +108,8 @@ function makeTestAdapter(input: {
   readonly nativeThreadGeneration?: Ref.Ref<number>;
   readonly failResume?: boolean;
   readonly failResumeOnce?: Ref.Ref<boolean>;
+  readonly failResumeWhile?: Ref.Ref<boolean>;
+  readonly nativeForks?: Ref.Ref<number>;
   readonly initialContextUsage?: OrchestrationV2ProviderThread["contextUsage"];
   readonly getModelContextWindow?: (selection: ModelSelection) => number | undefined;
   readonly canReuseContextUsage?: ProviderAdapter.ProviderAdapterV2SessionRuntime["canReuseContextUsage"];
@@ -115,6 +120,7 @@ function makeTestAdapter(input: {
   readonly failedRunOrdinals?: ReadonlySet<number>;
   readonly interruptedRunOrdinals?: ReadonlySet<number>;
   readonly holdRunOrdinal?: number;
+  readonly holdThreadId?: ThreadId;
   readonly pendingBackgroundWork?: Ref.Ref<boolean>;
   readonly subagentOnlyBackgroundWork?: boolean;
   readonly holdFirstTurn?: Deferred.Deferred<void>;
@@ -197,6 +203,7 @@ function makeTestAdapter(input: {
             Effect.gen(function* () {
               if (
                 input.failResume ||
+                (input.failResumeWhile !== undefined && (yield* Ref.get(input.failResumeWhile))) ||
                 (input.failResumeOnce !== undefined &&
                   (yield* Ref.getAndSet(input.failResumeOnce, false)))
               )
@@ -265,6 +272,7 @@ function makeTestAdapter(input: {
               ]);
               if (
                 turnInput.runOrdinal === (input.holdRunOrdinal ?? 1) &&
+                (input.holdThreadId === undefined || input.holdThreadId === turnInput.threadId) &&
                 input.holdFirstTurn !== undefined
               ) {
                 yield* Deferred.succeed(input.holdFirstTurn, undefined);
@@ -376,10 +384,25 @@ function makeTestAdapter(input: {
           respondToRuntimeRequest: () => Effect.void,
           readThreadSnapshot: () =>
             unimplemented(input.driver, "readThreadSnapshot unused in provider switch test"),
-          rollbackThread: () =>
-            unimplemented(input.driver, "rollbackThread unused in provider switch test"),
-          forkThread: () =>
-            unimplemented(input.driver, "forkThread unused in provider switch test"),
+          rollbackThread: ({ providerThread }) =>
+            Effect.succeed({
+              providerThread,
+              providerTurns: [],
+              messages: [],
+              runtimeRequests: [],
+            }),
+          forkThread: (fork) =>
+            input.nativeForks === undefined
+              ? unimplemented(input.driver, "forkThread unused in provider switch test")
+              : Ref.update(input.nativeForks, (count) => count + 1).pipe(
+                  Effect.andThen(
+                    runtime.ensureThread({
+                      threadId: fork.targetThreadId,
+                      modelSelection: fork.modelSelection ?? input.modelSelection,
+                      runtimePolicy: fork.runtimePolicy ?? sessionInput.runtimePolicy,
+                    }),
+                  ),
+                ),
         };
         return runtime;
       }),
@@ -422,6 +445,1108 @@ class ClaudeMcpRegistrationTimeoutError extends Schema.TaggedError<ClaudeMcpRegi
 ) {}
 
 describe("orchestration v2 provider switching", () => {
+  it.live.each([
+    "portable",
+    "native-fork",
+    "refused",
+    "compact",
+    "goal",
+    "replacement",
+    "queued",
+    "steered",
+    "portable-rollback",
+    "native-rollback",
+    "portable-advance",
+    "native-advance",
+    "portable-compact-rebuild",
+    "native-compact-rebuild",
+    "portable-legacy",
+    "native-legacy",
+    "native-legacy-healthy",
+    "native-first-refusal",
+    "portable-first-refusal",
+    "native-prestart-rollback",
+    "native-prestart-busy",
+    "native-prestart-cancel",
+    "portable-prefork-rollback",
+    "native-prefork-rollback",
+    "portable-beforecapture",
+    "native-beforecapture",
+    "portable-ancestor",
+    "native-ancestor",
+    "native-prestart-legacy-same-ancestor-milestone",
+    "native-legacy-recovery-settled",
+    "native-legacy-queued-refined",
+    "native-prestart-ordinary-rollback",
+    "portable-transaction-failure",
+    "native-transaction-failure",
+    "portable-refused-replacement-omissions",
+    "native-refused-replacement-omissions",
+  ] as const)(
+    "preserves side-chat parent context once per provider native thread (%s)",
+    (scenario) =>
+      Effect.scoped(
+        Effect.gen(function* () {
+          const cwd = yield* checkpointWorkspace("side-chat-provider-switch");
+          const capturedTurns = yield* Ref.make<ReadonlyArray<CapturedTurn>>([]);
+          const parentStarted = yield* Deferred.make<void>();
+          const queuedStarted = yield* Deferred.make<void>();
+          const queuedRelease = yield* Deferred.make<void>();
+          const nativeForks = yield* Ref.make(0);
+          const refuseStarts = yield* Ref.make(0);
+          const failResumeOnce = yield* Ref.make(false);
+          const nativeThreadGeneration = yield* Ref.make(0);
+          const native =
+            scenario === "native-fork" || scenario === "steered" || scenario.startsWith("native-");
+          const omittedRecovery = scenario.endsWith("refused-replacement-omissions");
+          const firstRefusal = scenario.endsWith("first-refusal");
+          const beforeCapture = scenario.endsWith("beforecapture");
+          const transactionFailure = scenario.endsWith("transaction-failure");
+          const ancestor = scenario.includes("ancestor");
+          const ancestorId = ThreadId.make("thread:ordinary-ancestor");
+          const ancestorRequest = "ANCESTOR_STABLE_REQUEST";
+          const ancestorResponse = "ANCESTOR_STABLE_RESPONSE";
+          const preForkRollback = scenario.includes("prefork-rollback");
+          const prestart = scenario.startsWith("native-prestart-");
+          const prestartCancel = scenario === "native-prestart-cancel";
+          const persistent =
+            scenario.endsWith("compact-rebuild") ||
+            scenario === "native-legacy-recovery-settled" ||
+            transactionFailure;
+          const databasePath = `${cwd}/.git/n05-retention.sqlite`;
+          const databaseLayer = SqlitePersistence.layerFromPath(databasePath).pipe(
+            Layer.provide(NodeServices.layer),
+          );
+          const sharedDatabase = persistent ? databaseLayer : SqlitePersistence.layerMemory;
+          const rollback =
+            !prestart &&
+            (scenario.endsWith("rollback") ||
+              scenario.endsWith("compact-rebuild") ||
+              scenario.endsWith("legacy") ||
+              firstRefusal);
+          const legacy = scenario.includes("legacy");
+          const firstSelection = native
+            ? CODEX_MODEL_SELECTION
+            : scenario === "goal"
+              ? GROK_MODEL_SELECTION
+              : CLAUDE_MODEL_SELECTION;
+          const targetSelection =
+            scenario === "goal" ? CLAUDE_MODEL_SELECTION : GROK_MODEL_SELECTION;
+          const sideChatId = ThreadId.make("thread:side-chat-provider-switch");
+          const stableRequest =
+            "PARENT_STABLE_REQUEST: retain the violet release marker." +
+            (omittedRecovery ? "x".repeat(20_000) : "");
+          const stableResponse = "PARENT_STABLE_RESPONSE: the existing API is compatible.";
+          const activity = "PARENT_ACTIVITY_DIGEST: inspect the deployment configuration.";
+          const firstQuestion = "SIDE_CHAT_QUESTION: explain the release constraints.";
+          const firstAnswer = "SIDE_CHAT_ANSWER: the violet marker must remain.";
+          const framing = "You are in a side chat beside the main thread.";
+          const registry = ProviderAdapterRegistry.layerFromAdapters([
+            makeTestAdapter({
+              instanceId: CODEX_MODEL_SELECTION.instanceId,
+              driver: CODEX_DRIVER,
+              capabilities: CodexProviderCapabilitiesV2,
+              modelSelection: CODEX_MODEL_SELECTION,
+              responseByRunOrdinal: preForkRollback
+                ? { 1: "EXCLUDED_OLD_ANSWER", 2: stableResponse }
+                : { 1: stableResponse },
+              responseByThreadId: {
+                [sideChatId]:
+                  firstRefusal || prestartCancel
+                    ? { 1: firstAnswer, 2: firstAnswer }
+                    : { 1: firstAnswer },
+                ...(ancestor ? { [ancestorId]: { 1: ancestorResponse } } : {}),
+              },
+              ...(firstRefusal && native ? { refuseStarts } : {}),
+              ...(scenario === "native-legacy-recovery-settled"
+                ? { failResumeWhile: failResumeOnce, nativeThreadGeneration }
+                : {}),
+              ...(scenario === "native-legacy-queued-refined"
+                ? {
+                    holdRunOrdinal: 2,
+                    holdFirstTurn: queuedStarted,
+                    releaseFirstTurn: queuedRelease,
+                    holdThreadId: sideChatId,
+                  }
+                : {}),
+              capturedTurns,
+              ...(native || ancestor
+                ? { nativeForks }
+                : scenario.startsWith("portable-")
+                  ? {}
+                  : { holdRunOrdinal: 2, holdFirstTurn: parentStarted }),
+              ...(scenario === "steered"
+                ? { holdRunOrdinal: 2, holdFirstTurn: queuedStarted, holdThreadId: sideChatId }
+                : {}),
+            }),
+            makeTestAdapter({
+              instanceId: CLAUDE_MODEL_SELECTION.instanceId,
+              driver: CLAUDE_DRIVER,
+              capabilities: ClaudeProviderCapabilitiesV2,
+              modelSelection: CLAUDE_MODEL_SELECTION,
+              responseByRunOrdinal: firstRefusal
+                ? { 1: firstAnswer, 2: firstAnswer }
+                : { 1: firstAnswer },
+              ...(firstRefusal && !native ? { refuseStarts } : {}),
+              capturedTurns,
+              ...(scenario === "queued"
+                ? {
+                    holdRunOrdinal: 2,
+                    holdFirstTurn: queuedStarted,
+                    releaseFirstTurn: queuedRelease,
+                  }
+                : {}),
+            }),
+            makeTestAdapter({
+              instanceId: GROK_MODEL_SELECTION.instanceId,
+              driver: GROK_DRIVER,
+              capabilities: AcpProviderCapabilitiesV2,
+              modelSelection: GROK_MODEL_SELECTION,
+              responseByRunOrdinal: { 1: firstAnswer },
+              capturedTurns,
+              refuseStarts,
+              failResumeOnce,
+              nativeThreadGeneration,
+            }),
+          ]);
+          yield* Effect.gen(function* () {
+            const orchestrator = yield* Orchestrator.OrchestratorV2;
+            const worker = yield* EffectWorker.OrchestrationEffectWorkerV2;
+            const eventSink = yield* EventSink.EventSinkV2;
+            const preparationWorker = prestart
+              ? yield* EffectWorker.runDaemon.pipe(Effect.forkScoped)
+              : undefined;
+            const dispatch = (
+              target: ThreadId,
+              ordinal: number,
+              text: string,
+              modelSelection: ModelSelection,
+              dispatchMode: Extract<
+                OrchestrationV2Command,
+                { readonly type: "message.dispatch" }
+              >["dispatchMode"] = { type: "start_immediately" },
+            ) =>
+              orchestrator.dispatch({
+                type: "message.dispatch",
+                commandId: CommandId.make(`${target}:command:${ordinal}`),
+                threadId: target,
+                messageId: MessageId.make(`${target}:message:${ordinal}`),
+                text,
+                attachments: [],
+                modelSelection,
+                dispatchMode,
+                createdBy: "user",
+                creationSource: "web",
+              });
+            const awaitParentRollback = (afterSequence: number, target = threadId) =>
+              eventSink.stream({ afterSequence }).pipe(
+                Stream.mapEffect(() => orchestrator.getThreadProjection(target)),
+                Stream.filter(
+                  (p) => p.runs.length > 0 && p.runs.every((r) => r.status === "rolled_back"),
+                ),
+                Stream.take(1),
+                Stream.runDrain,
+              );
+            const settle = (target: ThreadId) =>
+              waitForIdle(target).pipe(Effect.tap(() => worker.drain()));
+            yield* orchestrator.dispatch({
+              type: "thread.create",
+              commandId: CommandId.make("side-chat-provider-switch:create"),
+              threadId: ancestor ? ancestorId : threadId,
+              projectId,
+              createdBy: "user",
+              creationSource: "web",
+              title: "Side chat parent",
+              modelSelection: CODEX_MODEL_SELECTION,
+              runtimeMode: "full-access",
+              interactionMode: "default",
+              branch: null,
+              worktreePath: null,
+            });
+            if (ancestor) {
+              yield* dispatch(ancestorId, 1, ancestorRequest, CODEX_MODEL_SELECTION);
+              const original = yield* settle(ancestorId);
+              yield* orchestrator.dispatch({
+                type: "thread.fork",
+                commandId: CommandId.make("n05-design:ordinary-fork"),
+                sourceThreadId: ancestorId,
+                targetThreadId: threadId,
+                sourcePoint: { type: "run", runId: original.runs[0]!.id },
+                sideChat: false,
+                createdBy: "user",
+                creationSource: "web",
+              });
+            }
+            if (preForkRollback) {
+              yield* dispatch(threadId, 1, "EXCLUDED_OLD_REQUEST", CODEX_MODEL_SELECTION);
+              const old = yield* settle(threadId);
+              const baseline = old.checkpoints.find(
+                (c) => c.runId === null && c.status === "ready",
+              )!;
+              const beforeRollback = yield* eventSink.latestSequence();
+              yield* orchestrator.dispatch({
+                type: "checkpoint.rollback",
+                restoreFiles: false,
+                commandId: CommandId.make("n05-design:before-fork-rollback"),
+                threadId,
+                scopeId: baseline.scopeId,
+                checkpointId: baseline.id,
+              });
+              yield* worker.drain();
+              yield* awaitParentRollback(beforeRollback);
+              assert.equal(
+                (yield* orchestrator.getThreadProjection(threadId)).runs[0]?.status,
+                "rolled_back",
+              );
+            }
+            yield* dispatch(
+              threadId,
+              preForkRollback ? 2 : 1,
+              stableRequest,
+              CODEX_MODEL_SELECTION,
+            );
+            const parentStable = yield* settle(threadId);
+            assert.equal(parentStable.runs.at(-1)?.status, "completed");
+            yield* dispatch(threadId, preForkRollback ? 3 : 2, activity, CODEX_MODEL_SELECTION);
+            if (native || scenario.startsWith("portable-")) yield* settle(threadId);
+            else yield* Deferred.await(parentStarted);
+            yield* orchestrator.dispatch({
+              type: "thread.fork",
+              commandId: CommandId.make("side-chat-provider-switch:fork"),
+              sourceThreadId: threadId,
+              targetThreadId: sideChatId,
+              sourcePoint: { type: "run", runId: parentStable.runs.at(-1)!.id },
+              sideChat: scenario !== "native-prestart-ordinary-rollback",
+              createdBy: "user",
+              creationSource: "web",
+            });
+            if (transactionFailure) {
+              const before = yield* orchestrator.getThreadProjection(sideChatId);
+              const beforeTurns = yield* Ref.get(capturedTurns);
+              const fault = (query: string) =>
+                Effect.gen(function* () {
+                  const sql = yield* SqlClient.SqlClient;
+                  yield* sql.unsafe(query);
+                }).pipe(Effect.provide(sharedDatabase));
+              yield* fault(
+                "CREATE TRIGGER n05_retention_fault BEFORE INSERT ON orchestration_v2_projection_context_handoffs WHEN NEW.thread_id = 'thread:side-chat-provider-switch' BEGIN SELECT RAISE(ABORT, 'n05 retention transaction fault'); END",
+              );
+              const result = yield* Effect.exit(
+                dispatch(sideChatId, 1, firstQuestion, firstSelection),
+              ).pipe(Effect.ensuring(fault("DROP TRIGGER n05_retention_fault").pipe(Effect.orDie)));
+              assert.isTrue(
+                result._tag === "Failure" &&
+                  Cause.pretty(result.cause).includes("n05 retention transaction fault"),
+              );
+              yield* worker.drain();
+              const after = yield* orchestrator.getThreadProjection(sideChatId);
+              assert.deepEqual(after.runs, before.runs);
+              assert.deepEqual(after.contextHandoffs, before.contextHandoffs);
+              assert.deepEqual(after.contextTransfers, before.contextTransfers);
+              assert.deepEqual(yield* Ref.get(capturedTurns), beforeTurns);
+              const outbox = yield* EffectOutbox.EffectOutboxV2;
+              assert.deepEqual(
+                yield* outbox.listByCommandId(CommandId.make(`${sideChatId}:command:1`)),
+                [],
+              );
+              yield* dispatch(sideChatId, 2, firstQuestion, firstSelection);
+              const retried = yield* settle(sideChatId);
+              assert.equal(retried.runs.length, 1);
+              assert.equal(retried.runs[0]?.status, "completed");
+              assert.isDefined(
+                retried.contextHandoffs.find((h) => h.strategy === "manual_context")?.history,
+              );
+              assert.equal((yield* Ref.get(capturedTurns)).length, beforeTurns.length + 1);
+              return;
+            }
+            if (beforeCapture) {
+              const baseline = parentStable.checkpoints.find(
+                (c) => c.runId === null && c.status === "ready",
+              )!;
+              const sequence = yield* eventSink.latestSequence();
+              yield* orchestrator.dispatch({
+                type: "checkpoint.rollback",
+                restoreFiles: false,
+                commandId: CommandId.make("n05-design:before-capture-rollback"),
+                threadId,
+                scopeId: baseline.scopeId,
+                checkpointId: baseline.id,
+              });
+              yield* worker.drain();
+              yield* awaitParentRollback(sequence);
+              const before = yield* Ref.get(capturedTurns);
+              const result = yield* Effect.exit(
+                dispatch(sideChatId, 1, firstQuestion, firstSelection),
+              );
+              assert.equal(
+                result._tag,
+                "Failure",
+                "no proof of original history before first capture",
+              );
+              assert.isTrue(
+                result._tag === "Failure" &&
+                  Cause.pretty(result.cause).includes("original stable parent history"),
+                "failure must be the intended retention refusal",
+              );
+              yield* worker.drain();
+              assert.deepEqual(yield* Ref.get(capturedTurns), before);
+              const after = yield* orchestrator.getThreadProjection(sideChatId);
+              assert.equal(after.runs.length, 0);
+              assert.equal(after.contextHandoffs.length, 0);
+              return;
+            }
+            if (preparationWorker !== undefined) yield* Fiber.interrupt(preparationWorker);
+            if (firstRefusal) {
+              yield* Ref.set(refuseStarts, 1);
+              yield* dispatch(sideChatId, 1, "UNSENT_FIRST_QUESTION", firstSelection);
+              const refused = yield* settle(sideChatId);
+              assert.equal(refused.runs.at(-1)?.status, "failed");
+              assert.isUndefined(
+                refused.contextHandoffs.find((handoff) => handoff.strategy === "manual_context")
+                  ?.delivery,
+              );
+            }
+            yield* dispatch(
+              sideChatId,
+              firstRefusal ? 2 : 1,
+              prestartCancel ? "CANCELLED BEFORE START" : firstQuestion,
+              firstSelection,
+            );
+            if (prestart) {
+              const prepared = yield* orchestrator.getThreadProjection(sideChatId);
+              if (scenario === "native-prestart-ordinary-rollback") {
+                assert.isFalse(prepared.thread.lineage.sideChat === true);
+                assert.equal(prepared.contextHandoffs.length, 0);
+                const source = yield* orchestrator.getThreadProjection(threadId);
+                const changed = { ...source.runs[0]!, status: "rolled_back" as const };
+                yield* eventSink.write({
+                  events: [
+                    {
+                      id: EventId.make("sol-probe:ordinary-prestart-rollback"),
+                      type: "run.updated",
+                      threadId,
+                      runId: changed.id,
+                      providerInstanceId: CODEX_MODEL_SELECTION.instanceId,
+                      occurredAt: yield* DateTime.now,
+                      payload: changed,
+                    },
+                  ],
+                });
+                yield* EffectWorker.runDaemon.pipe(Effect.forkScoped);
+                const result = yield* settle(sideChatId);
+                const turn = (yield* Ref.get(capturedTurns))
+                  .filter((t) => t.threadId === sideChatId)
+                  .at(-1);
+                const forks = yield* Ref.get(nativeForks);
+
+                assert.isFalse(
+                  result.runs.at(-1)?.status === "completed" &&
+                    forks === 0 &&
+                    !turn?.text.includes(stableRequest),
+                  "an ordinary fork cannot report successful portable inheritance with no original history",
+                );
+                return;
+              }
+              const retained = prepared.contextHandoffs.find(
+                (h) => h.strategy === "manual_context",
+              )!;
+              assert.isDefined(retained.history);
+              assert.isUndefined(retained.delivery);
+              if (scenario === "native-prestart-legacy-same-ancestor-milestone") {
+                assert.isTrue(retained.history!.messages.some((m) => m.text === ancestorRequest));
+                const { history: _discarded, ...legacyPrepared } = retained;
+                yield* eventSink.write({
+                  events: [
+                    {
+                      id: EventId.make("sol-probe:legacy-pending-preparation"),
+                      type: "context-handoff.updated",
+                      threadId: sideChatId,
+                      runId: retained.targetRunId,
+                      providerInstanceId: firstSelection.instanceId,
+                      occurredAt: yield* DateTime.now,
+                      payload: legacyPrepared,
+                    },
+                  ],
+                });
+                yield* orchestrator.dispatch({
+                  type: "thread.stop",
+                  commandId: CommandId.make("sol-probe:legacy-stop-before-start"),
+                  threadId: sideChatId,
+                });
+                yield* EffectWorker.runDaemon.pipe(Effect.forkScoped);
+                yield* worker.drain();
+                assert.equal(
+                  (yield* Ref.get(capturedTurns)).filter((t) => t.threadId === sideChatId).length,
+                  0,
+                );
+                const oldAncestor = yield* orchestrator.getThreadProjection(ancestorId);
+                const baseline = oldAncestor.checkpoints.find(
+                  (c) => c.runId === null && c.status === "ready",
+                )!;
+                const sequence = yield* eventSink.latestSequence();
+                yield* orchestrator.dispatch({
+                  type: "checkpoint.rollback",
+                  restoreFiles: false,
+                  commandId: CommandId.make("sol-probe:legacy-ancestor-rollback"),
+                  threadId: ancestorId,
+                  scopeId: baseline.scopeId,
+                  checkpointId: baseline.id,
+                });
+                yield* worker.drain();
+                yield* awaitParentRollback(sequence, ancestorId);
+                assert.equal(
+                  (yield* orchestrator.getThreadProjection(threadId)).runs[0]!.status,
+                  "completed",
+                );
+                const result = yield* Effect.exit(
+                  dispatch(
+                    sideChatId,
+                    2,
+                    "Retry opening without original snapshot",
+                    firstSelection,
+                  ),
+                );
+                if (result._tag === "Success") {
+                  yield* settle(sideChatId);
+                  yield* dispatch(
+                    sideChatId,
+                    3,
+                    "Switch after legacy pending recapture",
+                    targetSelection,
+                  );
+                  yield* settle(sideChatId);
+                }
+
+                assert.equal(
+                  result._tag,
+                  "Failure",
+                  "legacy pending preparation is not proof; refuse before recapturing current parent visibility",
+                );
+                return;
+              }
+
+              const source = yield* orchestrator.getThreadProjection(threadId);
+              if (prestartCancel) {
+                yield* orchestrator.dispatch({
+                  type: "thread.stop",
+                  commandId: CommandId.make("n05-design:stop-before-open"),
+                  threadId: sideChatId,
+                });
+              }
+              const changed =
+                scenario === "native-prestart-busy"
+                  ? { ...source.runs[1]!, id: source.runs[1]!.id, status: "running" as const }
+                  : { ...source.runs[0]!, status: "rolled_back" as const };
+              yield* eventSink.write({
+                events: [
+                  {
+                    id: EventId.make("n05-design:source-changed-before-fork"),
+                    type: "run.updated",
+                    threadId,
+                    runId: changed.id,
+                    providerInstanceId: CODEX_MODEL_SELECTION.instanceId,
+                    occurredAt: yield* DateTime.now,
+                    payload: changed,
+                  },
+                ],
+              });
+              yield* EffectWorker.runDaemon.pipe(Effect.forkScoped);
+              if (prestartCancel) {
+                yield* worker.drain();
+                assert.equal(
+                  (yield* Ref.get(capturedTurns)).filter((t) => t.threadId === sideChatId).length,
+                  0,
+                  "cancelled opening sends no prompt",
+                );
+                const stopped = yield* orchestrator.getThreadProjection(sideChatId);
+                assert.isUndefined(
+                  stopped.contextHandoffs.find((h) => h.id === retained.id)?.delivery,
+                );
+                assert.deepEqual(
+                  stopped.contextHandoffs.find((h) => h.id === retained.id)?.history,
+                  retained.history,
+                );
+                yield* dispatch(sideChatId, 2, firstQuestion, firstSelection);
+              }
+            }
+            const first = yield* settle(sideChatId);
+            assert.equal(first.runs.at(-1)?.status, "completed");
+            const firstTurn = (yield* Ref.get(capturedTurns)).at(-1)!;
+            assert.notInclude(firstTurn.text, "EXCLUDED_OLD_");
+            assert.equal(
+              yield* Ref.get(nativeForks),
+              (ancestor ? 1 : 0) + (native && !prestart ? 1 : 0),
+            );
+            for (const context of [activity, framing]) {
+              assert.equal(firstTurn.text.split(context).length - 1, 1, context);
+            }
+            for (const context of [...(omittedRecovery ? [] : [stableRequest]), stableResponse]) {
+              assert.equal(
+                firstTurn.text.split(context).length - 1,
+                native && !prestart ? 0 : 1,
+                context,
+              );
+            }
+            if (ancestor)
+              for (const marker of [ancestorRequest, ancestorResponse])
+                assert.equal(firstTurn.text.split(marker).length - 1, native ? 0 : 1, marker);
+            let firstReceipt = first.contextHandoffs.find(
+              (handoff) => handoff.strategy === "manual_context",
+            )!;
+            assert.equal(firstReceipt.delivery?.status, "inline");
+            const capturedHistory = firstReceipt.history;
+            const refusedSnapshots = new Map<string, string>();
+            assert.isDefined(capturedHistory, "new side-chat preparation retains stable history");
+            assert.include(
+              capturedHistory!.coverage,
+              `Thread: ${threadId}.`,
+              "retained coverage identifies the parent source",
+            );
+            assert.equal(
+              firstReceipt.delivery?.itemIds.length,
+              0,
+              "retention is not a history delivery receipt",
+            );
+            if (ancestor) {
+              const source = yield* orchestrator.getThreadProjection(ancestorId);
+              const baseline = source.checkpoints.find(
+                (c) => c.runId === null && c.status === "ready",
+              )!;
+              const sequence = yield* eventSink.latestSequence();
+              yield* orchestrator.dispatch({
+                type: "checkpoint.rollback",
+                restoreFiles: false,
+                commandId: CommandId.make("n05-design:ancestor-rollback"),
+                threadId: ancestorId,
+                scopeId: baseline.scopeId,
+                checkpointId: baseline.id,
+              });
+              yield* worker.drain();
+              yield* awaitParentRollback(sequence, ancestorId);
+              const retained = (yield* orchestrator.getThreadProjection(
+                sideChatId,
+              )).contextHandoffs.find((h) => h.id === firstReceipt.id)?.history;
+              assert.deepEqual(retained, capturedHistory);
+            }
+            if (scenario.endsWith("advance")) {
+              yield* dispatch(
+                threadId,
+                3,
+                "NEW_PARENT_BRANCH_MUST_NOT_LEAK",
+                CODEX_MODEL_SELECTION,
+              );
+              yield* settle(threadId);
+            }
+            if (rollback) {
+              const baseline = parentStable.checkpoints.find(
+                (checkpoint) => checkpoint.runId === null && checkpoint.status === "ready",
+              )!;
+              const beforeRollback = yield* eventSink.latestSequence();
+              yield* orchestrator.dispatch({
+                type: "checkpoint.rollback",
+                restoreFiles: false,
+                commandId: CommandId.make("n05-design:parent-rollback"),
+                threadId,
+                scopeId: baseline.scopeId,
+                checkpointId: baseline.id,
+              });
+              yield* worker.drain();
+              yield* awaitParentRollback(beforeRollback);
+              assert.deepEqual(
+                (yield* orchestrator.getThreadProjection(threadId)).runs.map((run) => run.status),
+                Array.from({ length: preForkRollback ? 3 : 2 }, () => "rolled_back"),
+              );
+            }
+            if (scenario.endsWith("compact-rebuild")) {
+              const stores = Layer.mergeAll(
+                databaseLayer,
+                EventStore.layer.pipe(Layer.provide(databaseLayer)),
+                ProjectionStore.layer.pipe(Layer.provide(databaseLayer)),
+              );
+              yield* Effect.scoped(
+                Effect.gen(function* () {
+                  const maintenance = yield* ProjectionMaintenance.ProjectionMaintenanceV2;
+                  yield* maintenance.compactEventStore();
+                  const result = yield* maintenance.rebuild;
+                  assert.isTrue(result.valid);
+                }).pipe(Effect.provide(ProjectionMaintenance.layer.pipe(Layer.provide(stores)))),
+              );
+              const loaded = yield* orchestrator.getThreadProjection(sideChatId);
+              assert.deepEqual(
+                loaded.contextHandoffs.find((handoff) => handoff.id === firstReceipt.id)?.history,
+                capturedHistory,
+              );
+              const readFromNewConnection = () =>
+                Effect.scoped(
+                  Effect.gen(function* () {
+                    const store = yield* ProjectionStore.ProjectionStoreV2;
+                    const stored = yield* store.getThread(sideChatId);
+                    return yield* ContextHandoffService.readSideChatParentHistory(store, stored);
+                  }).pipe(
+                    Effect.provide(
+                      ProjectionStore.layer.pipe(Layer.provide(Layer.fresh(databaseLayer))),
+                    ),
+                  ),
+                );
+              assert.deepEqual(yield* readFromNewConnection(), capturedHistory);
+              assert.deepEqual(yield* readFromNewConnection(), capturedHistory);
+            }
+            if (legacy) {
+              const { history: _history, ...oldReceipt } = firstReceipt;
+              firstReceipt = oldReceipt;
+              yield* eventSink.write({
+                events: [
+                  {
+                    id: EventId.make("n05-design:legacy-record"),
+                    type: "context-handoff.updated",
+                    threadId: sideChatId,
+                    runId: firstReceipt.targetRunId,
+                    providerInstanceId: firstSelection.instanceId,
+                    occurredAt: yield* DateTime.now,
+                    payload: firstReceipt,
+                  },
+                ],
+              });
+            }
+            let ordinal = firstRefusal || prestartCancel ? 3 : 2;
+            if (legacy && native) {
+              if (scenario === "native-legacy-recovery-settled") {
+                yield* orchestrator.dispatch({
+                  type: "provider-session.detach",
+                  commandId: CommandId.make("sol-probe:legacy-detach"),
+                  threadId: sideChatId,
+                  providerSessionId: first.providerThreads.find(
+                    (p) => p.id === firstTurn.providerThreadId,
+                  )!.providerSessionId!,
+                });
+                yield* worker.drain();
+                yield* Ref.set(failResumeOnce, true);
+                const before = yield* Ref.get(capturedTurns);
+                const allocationsBefore = yield* Ref.get(nativeThreadGeneration);
+                const recoveryCommandId = CommandId.make(`${sideChatId}:command:${ordinal}`);
+                yield* dispatch(
+                  sideChatId,
+                  ordinal++,
+                  "Continue after legacy native resume fails",
+                  firstSelection,
+                );
+                const outbox = yield* EffectOutbox.EffectOutboxV2;
+                const effects = yield* outbox.listByCommandId(recoveryCommandId);
+                const startEffect = effects.find((e) => e.request.type === "provider-turn.start")!;
+                assert.isDefined(startEffect);
+                yield* outbox.awaitSettled(startEffect.id);
+                yield* worker.drain();
+                const finalEffect = (yield* outbox.listByCommandId(recoveryCommandId)).find(
+                  (e) => e.id === startEffect.id,
+                )!;
+                const refused = yield* orchestrator.getThreadProjection(sideChatId);
+
+                const errors = refused.turnItems
+                  .filter((i) => i.type === "error")
+                  .map((i) => i.failure.message);
+
+                assert.equal(refused.runs.at(-1)?.status, "failed");
+                assert.equal(
+                  finalEffect.status,
+                  "succeeded",
+                  "handled refusal completes its start effect",
+                );
+                assert.equal(finalEffect.attemptCount, 1, "static proof failure is not retried");
+                assert.equal(
+                  yield* Ref.get(nativeThreadGeneration),
+                  allocationsBefore,
+                  "no replacement allocated before proof",
+                );
+                const failed = refused.runs.at(-1)!;
+                assert.equal(
+                  refused.attempts.find((a) => a.id === failed.activeAttemptId)?.status,
+                  "failed",
+                );
+                assert.equal(
+                  refused.nodes.find((n) => n.id === failed.rootNodeId)?.status,
+                  "failed",
+                );
+                assert.deepEqual(
+                  yield* Ref.get(capturedTurns),
+                  before,
+                  "no prompt without proven retained history",
+                );
+                assert.isTrue(
+                  errors.some((m) => m.includes("original stable parent history")),
+                  "legacy recovery must explain the retained-history refusal",
+                );
+                yield* Ref.set(failResumeOnce, false);
+                yield* dispatch(
+                  sideChatId,
+                  ordinal++,
+                  "Explicit retry in the existing native thread",
+                  firstSelection,
+                );
+                const retried = yield* settle(sideChatId);
+                assert.equal(retried.runs.at(-1)?.status, "completed");
+                assert.equal((yield* Ref.get(capturedTurns)).length, before.length + 1);
+                assert.equal(
+                  (yield* Ref.get(capturedTurns)).at(-1)?.nativeThreadId,
+                  firstTurn.nativeThreadId,
+                );
+                assert.equal(yield* Ref.get(nativeThreadGeneration), allocationsBefore);
+                return;
+              }
+              if (scenario === "native-legacy-queued-refined") {
+                yield* dispatch(
+                  sideChatId,
+                  ordinal++,
+                  "Continue in existing native thread while queuing",
+                  firstSelection,
+                );
+                yield* Deferred.await(queuedStarted);
+                const before = yield* Ref.get(capturedTurns);
+                yield* dispatch(
+                  sideChatId,
+                  ordinal++,
+                  "Queued fresh destination without snapshot",
+                  targetSelection,
+                  { type: "queue_after_active" },
+                );
+                assert.equal(
+                  (yield* orchestrator.getThreadProjection(sideChatId)).runs.at(-1)?.status,
+                  "queued",
+                );
+                yield* Deferred.succeed(queuedRelease, undefined);
+                const refused = yield* settle(sideChatId);
+                const errors = refused.turnItems
+                  .filter((i) => i.type === "error")
+                  .map((i) => i.failure.message);
+
+                assert.equal(refused.runs.at(-1)?.status, "failed");
+                assert.deepEqual(
+                  yield* Ref.get(capturedTurns),
+                  before,
+                  "no queued prompt without proven retained history",
+                );
+                assert.isTrue(
+                  errors.some((m) => m.includes("original stable parent history")),
+                  "queued legacy refusal must explain the retention limit",
+                );
+                return;
+              }
+
+              yield* dispatch(
+                sideChatId,
+                ordinal++,
+                "Continue in the existing native thread.",
+                firstSelection,
+              );
+              assert.equal((yield* settle(sideChatId)).runs.at(-1)?.status, "completed");
+              const before = yield* Ref.get(capturedTurns);
+              const refused = yield* Effect.exit(
+                dispatch(
+                  sideChatId,
+                  ordinal++,
+                  "Switch without a retained snapshot.",
+                  targetSelection,
+                ),
+              );
+              assert.equal(refused._tag, "Failure");
+              assert.deepEqual(
+                yield* Ref.get(capturedTurns),
+                before,
+                "no provider prompt after unavailable history",
+              );
+              assert.deepEqual(
+                (yield* orchestrator.getThreadProjection(sideChatId)).contextHandoffs.find(
+                  (handoff) => handoff.id === firstReceipt.id,
+                ),
+                firstReceipt,
+              );
+              return;
+            }
+            if (
+              scenario === "refused" ||
+              omittedRecovery ||
+              scenario === "compact" ||
+              scenario === "goal"
+            ) {
+              if (scenario === "refused" || omittedRecovery) yield* Ref.set(refuseStarts, 1);
+              yield* dispatch(
+                sideChatId,
+                ordinal++,
+                scenario === "compact"
+                  ? "/compact"
+                  : scenario === "goal"
+                    ? "/goal clear"
+                    : "Refused question.",
+                targetSelection,
+              );
+              const deferred = yield* settle(sideChatId);
+              assert.equal(
+                deferred.runs.at(-1)?.status,
+                scenario === "refused" || omittedRecovery ? "failed" : "completed",
+              );
+              assert.deepEqual(
+                deferred.contextHandoffs.filter((handoff) => handoff.strategy === "manual_context"),
+                [firstReceipt],
+              );
+            }
+            if (omittedRecovery) {
+              const failed = yield* orchestrator.getThreadProjection(sideChatId);
+              const target = failed.providerThreads.find(
+                (p) => p.providerInstanceId === targetSelection.instanceId,
+              )!;
+              assert.isDefined(target.nativeThreadRef);
+              assert.equal(failed.runs.at(-1)?.status, "failed");
+              assert.isAbove(capturedHistory!.omittedItems, 0);
+              const rejectedHistories = failed.contextHandoffs.filter(
+                (h) => h.toProviderThreadId === target.id && h.strategy !== "manual_context",
+              );
+              assert.equal(
+                rejectedHistories.length,
+                1,
+                "one refused switch history before recovery",
+              );
+              for (const h of rejectedHistories) {
+                assert.isUndefined(
+                  h.delivery,
+                  "pre-consumption refusal has no accepted history receipt",
+                );
+                assert.equal(h.history!.omittedItems, 1);
+                refusedSnapshots.set(
+                  h.id,
+                  JSON.stringify({ history: h.history, transferId: h.transferId }),
+                );
+              }
+              assert.deepEqual(
+                failed.contextHandoffs.find((h) => h.id === firstReceipt.id),
+                firstReceipt,
+              );
+
+              yield* orchestrator.dispatch({
+                type: "provider-session.detach",
+                commandId: CommandId.make("review2:detach-refused-native"),
+                threadId: sideChatId,
+                providerSessionId: target.providerSessionId!,
+              });
+              yield* worker.drain();
+              yield* Ref.set(failResumeOnce, true);
+            }
+            if (scenario === "queued" || scenario === "steered") {
+              yield* dispatch(sideChatId, ordinal++, "Finish this side-chat turn.", firstSelection);
+              yield* Deferred.await(queuedStarted);
+              if (scenario === "queued") {
+                yield* dispatch(sideChatId, ordinal++, "Explain the next step.", targetSelection, {
+                  type: "queue_after_active",
+                });
+                assert.equal(
+                  (yield* orchestrator.getThreadProjection(sideChatId)).runs.at(-1)?.status,
+                  "queued",
+                );
+                yield* Deferred.succeed(queuedRelease, undefined);
+              } else {
+                const active = (yield* orchestrator.getThreadProjection(sideChatId)).runs.at(-1)!;
+                const now = yield* DateTime.now;
+                const turn = {
+                  id: ProviderTurnId.make("side-chat-provider-switch:held-turn"),
+                  providerThreadId: active.providerThreadId!,
+                  nodeId: active.rootNodeId!,
+                  runAttemptId: active.activeAttemptId!,
+                  nativeTurnRef: null,
+                  ordinal: 2,
+                  status: "running" as const,
+                  startedAt: now,
+                  completedAt: null,
+                };
+                yield* eventSink.write({
+                  events: [
+                    {
+                      id: EventId.make("side-chat-provider-switch:held-running"),
+                      type: "provider-turn.updated",
+                      threadId: sideChatId,
+                      runId: active.id,
+                      nodeId: active.rootNodeId!,
+                      driver: firstTurn.driver,
+                      providerInstanceId: firstSelection.instanceId,
+                      occurredAt: now,
+                      payload: turn,
+                    },
+                  ],
+                });
+                yield* dispatch(sideChatId, ordinal++, "Explain the next step.", targetSelection, {
+                  type: "steer_active",
+                  targetRunId: active.id,
+                });
+                const afterSteer = yield* orchestrator.getThreadProjection(sideChatId);
+                const oldAttempt = afterSteer.attempts.find(
+                  (attempt) => attempt.id === active.activeAttemptId,
+                )!;
+                const stoppedAt = yield* DateTime.now;
+                yield* eventSink.write({
+                  events: [
+                    {
+                      id: EventId.make("side-chat-provider-switch:held-interrupted"),
+                      type: "provider-turn.updated",
+                      threadId: sideChatId,
+                      runId: active.id,
+                      nodeId: active.rootNodeId!,
+                      driver: firstTurn.driver,
+                      providerInstanceId: firstSelection.instanceId,
+                      occurredAt: stoppedAt,
+                      payload: { ...turn, status: "interrupted", completedAt: stoppedAt },
+                    },
+                    {
+                      id: EventId.make("side-chat-provider-switch:held-attempt-interrupted"),
+                      type: "run-attempt.updated",
+                      threadId: sideChatId,
+                      runId: active.id,
+                      nodeId: active.rootNodeId!,
+                      providerInstanceId: firstSelection.instanceId,
+                      occurredAt: stoppedAt,
+                      payload: { ...oldAttempt, status: "interrupted", completedAt: stoppedAt },
+                    },
+                  ],
+                });
+              }
+            } else {
+              yield* dispatch(sideChatId, ordinal++, "Explain the next step.", targetSelection);
+            }
+            const switched = yield* settle(sideChatId);
+            assert.equal(switched.runs.at(-1)?.status, "completed");
+            const switchedTurn = (yield* Ref.get(capturedTurns)).at(-1)!;
+            assert.notInclude(switchedTurn.text, "NEW_PARENT_BRANCH_MUST_NOT_LEAK");
+            if (omittedRecovery) {
+              const received = switched.contextHandoffs.filter(
+                (h) =>
+                  h.toProviderThreadId === switchedTurn.providerThreadId &&
+                  h.delivery?.nativeThreadId === switchedTurn.nativeThreadId &&
+                  h.strategy !== "manual_context",
+              );
+              const uniqueOmitted = new Set(
+                received.flatMap((h) => h.delivery?.omittedItemIds ?? []),
+              ).size;
+              assert.equal(received.length, 2, "both refused and recovery records survive");
+              assert.equal(new Set(received.map((h) => h.transferId)).size, 2);
+              for (const [id, before] of refusedSnapshots) {
+                const final = received.find((h) => h.id === id)!;
+                assert.isDefined(final);
+                assert.equal(
+                  JSON.stringify({ history: final.history, transferId: final.transferId }),
+                  before,
+                );
+              }
+              const selectedIds = new Set(received.flatMap((h) => h.delivery?.itemIds ?? []));
+              for (const h of received) {
+                assert.equal(h.delivery?.status, "inline");
+                assert.equal(h.history!.omittedItems, 1);
+                assert.isFalse(
+                  (h.delivery?.omittedItemIds ?? []).some((id) => selectedIds.has(id)),
+                );
+              }
+
+              const advertised = Number(/omitted (\d+) items/.exec(switchedTurn.text)?.[1]);
+
+              assert.equal(
+                advertised,
+                uniqueOmitted,
+                "retry after refused prompt and native replacement must not count the same omitted parent item twice",
+              );
+            }
+            assert.notInclude(switchedTurn.text, "EXCLUDED_OLD_");
+            assert.notEqual(switchedTurn.providerThreadId, firstTurn.providerThreadId);
+            assert.isTrue(
+              switched.contextHandoffs.some(
+                (handoff) =>
+                  handoff.toProviderThreadId === switchedTurn.providerThreadId &&
+                  handoff.strategy === "full_thread_summary",
+              ),
+            );
+            for (const context of [
+              ...(ancestor ? [ancestorRequest, ancestorResponse] : []),
+              ...(omittedRecovery ? [] : [stableRequest]),
+              stableResponse,
+              activity,
+              framing,
+              firstQuestion,
+              firstAnswer,
+            ]) {
+              assert.equal(switchedTurn.text.split(context).length - 1, 1, context);
+            }
+            assert.deepEqual(
+              switched.contextHandoffs.find((handoff) => handoff.id === firstReceipt.id),
+              firstReceipt,
+            );
+            let currentTargetNativeId = switchedTurn.nativeThreadId;
+            if (scenario === "replacement") {
+              yield* orchestrator.dispatch({
+                type: "provider-session.detach",
+                commandId: CommandId.make("side-chat-provider-switch:detach"),
+                threadId: sideChatId,
+                providerSessionId: switched.providerThreads.find(
+                  (thread) => thread.id === switchedTurn.providerThreadId,
+                )!.providerSessionId!,
+              });
+              yield* worker.drain();
+              yield* Ref.set(failResumeOnce, true);
+              yield* dispatch(
+                sideChatId,
+                ordinal++,
+                "Continue in the replacement.",
+                GROK_MODEL_SELECTION,
+              );
+              const replaced = yield* settle(sideChatId);
+              assert.equal(replaced.runs.at(-1)?.status, "completed");
+              const replacementTurn = (yield* Ref.get(capturedTurns)).at(-1)!;
+              assert.equal(replacementTurn.providerThreadId, switchedTurn.providerThreadId);
+              assert.notEqual(replacementTurn.nativeThreadId, switchedTurn.nativeThreadId);
+              currentTargetNativeId = replacementTurn.nativeThreadId;
+              for (const context of [
+                ...(ancestor ? [ancestorRequest, ancestorResponse] : []),
+                ...(omittedRecovery ? [] : [stableRequest]),
+                stableResponse,
+                activity,
+                framing,
+                firstQuestion,
+                firstAnswer,
+              ]) {
+                assert.equal(replacementTurn.text.split(context).length - 1, 1, context);
+              }
+            }
+            for (const selection of [targetSelection, firstSelection, targetSelection]) {
+              yield* dispatch(sideChatId, ordinal, `Question ${ordinal++}.`, selection);
+              const continued = yield* settle(sideChatId);
+              assert.equal(continued.runs.at(-1)?.status, "completed");
+              const turn = (yield* Ref.get(capturedTurns)).at(-1)!;
+              assert.equal(
+                turn.nativeThreadId,
+                selection === firstSelection ? firstTurn.nativeThreadId : currentTargetNativeId,
+              );
+              for (const context of [stableRequest, stableResponse, activity, framing]) {
+                assert.notInclude(turn.text, context);
+              }
+            }
+          }).pipe(
+            Effect.provide(
+              Layer.merge(
+                ProviderReplayHarness.layerWithRegistry(
+                  {
+                    name: "side-chat-provider-switch",
+                    runtimePolicyOverride: {
+                      cwd,
+                      approvalPolicy: "never",
+                      sandboxPolicy: { type: "readOnly" },
+                    },
+                  },
+                  registry,
+                  {
+                    databaseLayer: sharedDatabase,
+                    ...(prestart ? { runEffectWorker: false } : {}),
+                  },
+                ),
+                EffectOutbox.layer.pipe(Layer.provide(sharedDatabase)),
+              ),
+            ),
+          );
+        }),
+      ),
+  );
   it.live.each([
     "compact-native",
     "compact-legacy",
