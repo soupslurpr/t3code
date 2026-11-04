@@ -4,6 +4,7 @@ import {
   type ServerPrepareTriageInput,
   type ServerPrepareTriageResult,
 } from "@t3tools/contracts";
+import { forkBuildIdentity } from "@t3tools/shared/forkBuildIdentity";
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
@@ -83,7 +84,8 @@ const make = Effect.gen(function* () {
   // seconds, and the user is writing their description meanwhile.
   const serviceScope = yield* Effect.scope;
   // Clones a previous server process left half done.
-  yield* fs.remove(stagingDir, { recursive: true }).pipe(Effect.ignore);
+  if (forkBuildIdentity === undefined)
+    yield* fs.remove(stagingDir, { recursive: true }).pipe(Effect.ignore);
 
   // Fetches the exact commit `ls-remote` resolved, so the folder the session
   // names is the one that appears even when main moves meanwhile.
@@ -186,15 +188,18 @@ const make = Effect.gen(function* () {
 
   const prepare: TriageService["Service"]["prepare"] = Effect.fn("TriageService.prepare")(
     function* (input) {
-      const sourceClone = yield* startSourceClone().pipe(
-        Effect.catch((error) =>
-          Effect.succeed<TriageSourceClone>({
-            _tag: "failed",
-            serverVersion,
-            reason: error.message,
-          }),
-        ),
-      );
+      const sourceClone =
+        forkBuildIdentity === undefined
+          ? yield* startSourceClone().pipe(
+              Effect.catch((error) =>
+                Effect.succeed<TriageSourceClone>({
+                  _tag: "failed",
+                  serverVersion,
+                  reason: error.message,
+                }),
+              ),
+            )
+          : undefined;
       const session = yield* writeTriageSession({
         baseDir: config.baseDir,
         paths: config,
