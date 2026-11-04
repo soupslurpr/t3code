@@ -58,7 +58,16 @@ export const layer = (
       const update = (patch: ServerSettingsPatch) =>
         Ref.updateAndGet(settings, (current) => applyServerSettingsPatch(current, patch));
       const host = SourceControlHost.SourceControlHost.of({
-        settings: { get: Ref.get(settings), getWithSecrets: () => Ref.get(settings), update },
+        settings: {
+          get: Ref.get(settings),
+          getWithSecrets: () => Ref.get(settings),
+          update,
+          updateWith: (transform) =>
+            Ref.updateAndGet(settings, (current) => {
+              const patch = transform(current);
+              return patch === undefined ? current : applyServerSettingsPatch(current, patch);
+            }),
+        },
         process: {
           run:
             options.process?.run ??
