@@ -22,12 +22,13 @@ export function deviceStreamBaseUrl(
   viewerPlatform: PlatformOSType,
   devicePlatform: DevicePlatform,
   httpBase: string,
+  serveSimOnly = false,
 ) {
   if (viewerPlatform !== "android") return "file:///";
-  // Android targets stream through WebCodecs, which needs a secure context. iOS targets
-  // stream an MJPEG image from the environment, which a synthetic https document blocks as
-  // mixed content on plain-http environments even with mixedContentMode="always".
-  if (devicePlatform === "android") return "https://localhost/";
+  // Android and Simlock targets need WebCodecs in a secure context. Local iOS MJPEG
+  // needs the environment origin to avoid mixed-content blocking on plain HTTP,
+  // even with mixedContentMode="always".
+  if (devicePlatform === "android" || serveSimOnly) return "https://localhost/";
   return `${new URL(httpBase).origin}/`;
 }
 
