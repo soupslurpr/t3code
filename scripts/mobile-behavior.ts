@@ -10,8 +10,14 @@ import * as NodeProcess from "node:process";
 import * as NodeReadline from "node:readline";
 import * as NodeURL from "node:url";
 
-import { CASES } from "./mobile-behavior/cases.ts";
-import { blockingResults, resultsFor, summarize, type SampleRow } from "./mobile-behavior/grade.ts";
+import { CASES, selectCases } from "./mobile-behavior/cases.ts";
+import {
+  blockingResults,
+  positiveSamples,
+  resultsFor,
+  summarize,
+  type SampleRow,
+} from "./mobile-behavior/grade.ts";
 import { Device, type Pool, poolError, run } from "./mobile-e2e/device.ts";
 import type { Pose } from "./mobile-e2e/poses.ts";
 
@@ -50,7 +56,7 @@ function renewWhileRunning(pool: Pool, stateDir: string, session: string, token:
   return () => clearInterval(timer);
 }
 
-async function runTarget(
+export async function runTarget(
   target: Target,
   pool: Pool,
   runId: string,
@@ -90,7 +96,7 @@ async function runTarget(
     const child = NodeChildProcess.spawn(
       NodeProcess.execPath,
       [
-        "scripts/mobile-behavior/run.ts",
+        NodePath.join(REPO_ROOT, "scripts/mobile-behavior/run.ts"),
         "--out",
         directory,
         "--label",
@@ -105,23 +111,34 @@ async function runTarget(
         pool.agentDevice,
         ...passThrough,
       ],
-      { cwd: REPO_ROOT, env: NodeProcess.env, stdio: ["ignore", "pipe", "pipe"] },
+      {
+        cwd: pool.workspace,
+        env: { ...pool.env, PWD: pool.workspace },
+        stdio: ["ignore", "pipe", "pipe"],
+      },
     );
     const transcript = NodeFS.createWriteStream(NodePath.join(directory, "run.log"));
     // The scoreboard and any fatal error go to stdout, progress to stderr; the transcript keeps both.
-    NodeReadline.createInterface({ input: child.stdout }).on("line", (line) =>
+    const stdout = NodeReadline.createInterface({ input: child.stdout }).on("line", (line) =>
       transcript.write(`${line}\n`),
     );
-    NodeReadline.createInterface({ input: child.stderr }).on("line", (line) => {
+    const stderr = NodeReadline.createInterface({ input: child.stderr }).on("line", (line) => {
       transcript.write(`${line}\n`);
       if (/#\d+: /.test(line)) log(target.id, line);
     });
-    const code = await new Promise<number>((resolve) =>
-      child.on("close", (exit) => resolve(exit ?? 1)),
-    );
-    transcript.end();
+    let code: number;
+    try {
+      code = await new Promise<number>((resolve, reject) => {
+        child.once("close", (exit) => resolve(exit ?? 1));
+        child.once("error", reject);
+      });
+    } finally {
+      stdout.close();
+      stderr.close();
+      await new Promise<void>((resolve) => transcript.end(resolve));
+    }
     const hasResults = NodeFS.existsSync(NodePath.join(directory, "results.jsonl"));
-    return hasResults || code === 0
+    return hasResults && code === 0
       ? { target, directory }
       : { target, directory, error: `the cases stopped (exit ${code}); see ${directory}/run.log` };
   } finally {
@@ -130,8 +147,7 @@ async function runTarget(
   }
 }
 
-async function main() {
-  const args = NodeProcess.argv.slice(2);
+export async function main(args = NodeProcess.argv.slice(2)) {
   const values = (flag: string) =>
     args.flatMap((arg, index) => (args[index - 1] === flag ? [arg] : []));
   if (args.includes("--list")) {
@@ -144,9 +160,18 @@ async function main() {
   const unknown = selected.filter((id) => !TARGETS.some((target) => target.id === id));
   if (unknown.length) throw new Error(`Unknown device ${unknown.join(", ")}. Run with --list.`);
   const targets = TARGETS.filter((target) => selected.length === 0 || selected.includes(target.id));
+  if (values("--samples").length > 1) throw new Error("Specify --samples once.");
+  const samples = positiveSamples(Number(values("--samples")[0] ?? 3));
+  const wanted = values("--case").length ? values("--case").join(",") : undefined;
+  const plan = targets.map((target) => ({
+    device: target.id,
+    caseIds: selectCases(target.behaviorPose, wanted).map(({ id }) => id),
+    samples,
+  }));
   const passThrough = [
-    ...values("--samples").flatMap((value) => ["--samples", value]),
-    ...values("--case").flatMap((value) => ["--case", value]),
+    "--samples",
+    String(samples),
+    ...(wanted === undefined ? [] : ["--case", wanted]),
   ];
 
   const agentDeviceUrl = NodeProcess.env.SIMLOCK_AGENT_DEVICE_URL;
@@ -183,10 +208,19 @@ async function main() {
       ["scripts/mobile-native-client.ts", "ensure", "ios", "--prepare"],
       { cwd: REPO_ROOT, timeoutMs: 1_800_000 },
     );
-    const runs = await Promise.all(
+    const settled = await Promise.allSettled(
       targets.map((target) =>
         runTarget(target, pool, runId, outputDirectory, config, stateDir, token, passThrough),
       ),
+    );
+    const runs: TargetRun[] = settled.map((result, index) =>
+      result.status === "fulfilled"
+        ? result.value
+        : {
+            target: targets[index]!,
+            directory: NodePath.join(outputDirectory, targets[index]!.id),
+            error: result.reason instanceof Error ? result.reason.message : String(result.reason),
+          },
     );
 
     const rows = runs.flatMap((entry) => {
@@ -197,7 +231,7 @@ async function main() {
         .filter(Boolean)
         .map((line) => JSON.parse(line) as SampleRow);
     });
-    const results = resultsFor(rows, CASES);
+    const results = resultsFor(rows, CASES, plan);
     const stopped = runs.filter((entry) => entry.error);
     const summary = summarize({
       cases: CASES,

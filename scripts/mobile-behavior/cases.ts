@@ -94,7 +94,11 @@ export const CASES: ReadonlyArray<MobileBehaviorCase> = [
     experience: "Another thread finishing resets the open thread's scroll position.",
     scenario: "backgroundFinish",
     key: "largestStepPx",
-    checks: [{ metric: "largestStepPx", max: 4 }],
+    checks: [
+      { metric: "samples", min: 2 },
+      { metric: "measuredSteps", min: 1 },
+      { metric: "largestStepPx", max: 4 },
+    ],
   },
   {
     id: "jank-streaming-long-reply",
@@ -336,3 +340,14 @@ export const CASES: ReadonlyArray<MobileBehaviorCase> = [
     checks: [{ metric: "contentGrewPx", min: 500 }],
   },
 ];
+
+export function selectCases(pose: Pose, wanted?: string): ReadonlyArray<MobileBehaviorCase> {
+  const ids = wanted === undefined ? undefined : new Set(wanted.split(",").map((id) => id.trim()));
+  const unknown = [...(ids ?? [])].filter((id) => !CASES.some((entry) => entry.id === id));
+  if (unknown.length > 0) throw new Error(`Unknown case id(s): ${unknown.join(", ")}.`);
+  const selected = CASES.filter(
+    (entry) => (ids === undefined || ids.has(entry.id)) && (entry.poses?.includes(pose) ?? true),
+  );
+  if (selected.length === 0) throw new Error(`No cases match ${pose}.`);
+  return selected;
+}

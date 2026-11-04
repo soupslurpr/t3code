@@ -2,7 +2,7 @@
 
 `vp run mobile:behavior` checks what the iOS app does, from its own state rather than pixels: scroll position, dropped frames, composer drafts and focus, status labels, and which thread opens. It leases an iPhone 18 Pro and an iPad Pro 13 from the Simlock pool and runs the cases on both in parallel. It is the companion to `vp run mobile:e2e`, which checks layout.
 
-No model runs. Each device gets its own server whose only provider, `evalbot`, is an Fx instance backed by [`fake-fx.ts`](fake-fx.ts). A `[[eval:…]]` marker in a message picks its scripted reply: a paced stream, a held turn, a question, two subagents, or a failure. Each device also gets its own Metro with the dev-only probe ([`behavior-probe.ts`](../../apps/mobile/src/features/development/behavior-probe.ts)) compiled in. The probe reads app state through Metro's Hermes inspector, and agent-device drives the touches.
+No model runs. Each device gets its own server whose only enabled provider, `evalbot`, is an Fx instance backed by [`fake-fx.ts`](fake-fx.ts). The fixture explicitly disables the built-in providers and starts the server and its CLI with a scratch home and a sanitized environment, without ambient provider credentials. A `[[eval:…]]` marker in a message picks its scripted reply: a paced stream, a held turn, a question, two subagents, or a failure. Each device also gets its own Metro with the dev-only probe ([`behavior-probe.ts`](../../apps/mobile/src/features/development/behavior-probe.ts)) compiled in. The probe reads app state through Metro's Hermes inspector, and agent-device drives the touches.
 
 ## Run
 
@@ -16,7 +16,9 @@ vp run mobile:behavior --list                             # devices and cases
 
 Output lands in `artifacts/mobile-behavior/<run>/`: `summary.md` is the scoreboard. Each device's folder holds `results.jsonl` (one row per case sample), `run.log`, `metro.log`, and the server under `env/`. A full run takes about 15 minutes.
 
-A case fails when half or more of its graded samples fail, and is `incomplete` when errors outnumber graded samples. The run fails on a `guard` or `control` case that fails or is incomplete. `bad` cases reproduce known bugs and fail until those are fixed.
+A run requires a positive sample count, a successful child exit for every selected device, and one graded row for every selected case and sample on that device. Missing, duplicate, out-of-range or ungraded samples make the run incomplete and fail it. A complete case fails when half or more of its samples fail. Failed `guard` and `control` cases block; `bad` cases reproduce known bugs and are non-blocking only when all their requested samples actually ran and were graded. A partial results file never turns an aborted run into a pass.
+
+The wrapper prepares and installs the native client before starting Metro. It keeps the lease workspace, configuration and session on the behavior child and every device CLI call, and releases its lease when the child finishes or fails. For direct `run.ts` use, run from the workspace that owns the supplied device session.
 
 ## Metrics
 

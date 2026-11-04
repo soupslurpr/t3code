@@ -65,11 +65,12 @@ const waitForPort = Effect.fn("environment.waitForPort")(function* (port: number
 });
 
 /** Runs a server CLI command and returns both output streams. */
-const runCli = (args: ReadonlyArray<string>) =>
+const runCli = (args: ReadonlyArray<string>, env: NodeJS.ProcessEnv) =>
   Effect.try({
     try: () => {
       const result = NodeChildProcess.spawnSync("node", ["apps/server/src/bin.ts", ...args], {
         cwd: REPO_ROOT,
+        env,
         encoding: "utf8",
       });
       if (result.status !== 0) throw new Error(result.stderr);
@@ -79,7 +80,11 @@ const runCli = (args: ReadonlyArray<string>) =>
       new EnvironmentError({ message: `bin.ts ${args.join(" ")} failed: ${cause}` }),
   });
 
-function writeScratch(baseDir: string) {
+export function writeScratch(baseDir: string) {
+  const home = NodePath.join(baseDir, "home");
+  for (const path of ["", ".config", ".cache", ".local/share", ".local/state", "tmp"])
+    NodeFS.mkdirSync(NodePath.join(home, path), { recursive: true });
+  const env = fixtureEnvironment(home, process.env);
   const workspace = NodePath.join(baseDir, "workspace/acme-app");
   const control = NodePath.join(baseDir, "control");
   NodeFS.mkdirSync(NodePath.join(baseDir, "userdata"), { recursive: true });
@@ -94,7 +99,7 @@ function writeScratch(baseDir: string) {
     "---\nname: eval-notes\ndescription: Takes notes for the eval.\n---\nTake notes.\n",
   );
   const git = (...args: string[]) =>
-    NodeChildProcess.execFileSync("git", ["-C", workspace, ...args], { stdio: "ignore" });
+    NodeChildProcess.execFileSync("git", ["-C", workspace, ...args], { env, stdio: "ignore" });
   git("init", "-q");
   git("add", "-A");
   git("-c", "user.name=eval", "-c", "user.email=eval@example.com", "commit", "-qm", "init");
@@ -108,6 +113,19 @@ function writeScratch(baseDir: string) {
     NodePath.join(baseDir, "userdata/settings.json"),
     JSON.stringify({
       providerInstances: {
+        ...Object.fromEntries(
+          [
+            "codex",
+            "claudeAgent",
+            "cursor",
+            "grok",
+            "fx",
+            "opencode",
+            "antigravity",
+            "pi",
+            "muse",
+          ].map((driver) => [driver, { driver, enabled: false }]),
+        ),
         [EVAL_INSTANCE]: {
           driver: "fx",
           displayName: "Eval Bot",
@@ -117,8 +135,31 @@ function writeScratch(baseDir: string) {
       },
     }),
   );
-  return { workspace, control };
+  return { workspace, control, env };
 }
+
+export const fixtureEnvironment = (home: string, ambient: NodeJS.ProcessEnv): NodeJS.ProcessEnv => {
+  const env: NodeJS.ProcessEnv = {};
+  for (const key of ["PATH", "LANG", "LC_ALL", "LC_CTYPE", "SystemRoot", "WINDIR"]) {
+    if (ambient[key] !== undefined) env[key] = ambient[key];
+  }
+  return {
+    ...env,
+    HOME: home,
+    USERPROFILE: home,
+    XDG_CONFIG_HOME: NodePath.join(home, ".config"),
+    XDG_CACHE_HOME: NodePath.join(home, ".cache"),
+    XDG_DATA_HOME: NodePath.join(home, ".local/share"),
+    XDG_STATE_HOME: NodePath.join(home, ".local/state"),
+    APPDATA: NodePath.join(home, ".config"),
+    LOCALAPPDATA: NodePath.join(home, ".local/share"),
+    TMPDIR: NodePath.join(home, "tmp"),
+    TMP: NodePath.join(home, "tmp"),
+    TEMP: NodePath.join(home, "tmp"),
+    GIT_CONFIG_NOSYSTEM: "1",
+    GIT_CONFIG_GLOBAL: NodePath.join(home, ".gitconfig"),
+  };
+};
 
 /** Starts the server in the caller's scope; the scope's end stops it. */
 export const startEnvironment = Effect.fn("environment.start")(function* (input: {
@@ -127,9 +168,7 @@ export const startEnvironment = Effect.fn("environment.start")(function* (input:
   readonly deviceHost: string;
 }) {
   NodeFS.rmSync(input.baseDir, { recursive: true, force: true });
-  const { workspace, control } = writeScratch(input.baseDir);
-  const home = NodePath.join(input.baseDir, "home");
-  NodeFS.mkdirSync(home, { recursive: true });
+  const { workspace, control, env } = writeScratch(input.baseDir);
   const port = yield* freePort();
   const log = NodeFS.openSync(NodePath.join(input.baseDir, "server.log"), "w");
   yield* Effect.acquireRelease(
@@ -151,21 +190,17 @@ export const startEnvironment = Effect.fn("environment.start")(function* (input:
           workspace,
         ],
         // A scratch HOME keeps the user's own skills and config out of the app under test.
-        { cwd: REPO_ROOT, stdio: ["ignore", log, log], env: { ...process.env, HOME: home } },
+        { cwd: REPO_ROOT, stdio: ["ignore", log, log], env },
       ),
     ),
     (child) => Effect.sync(() => child.kill("SIGTERM")),
   );
   yield* waitForPort(port);
   const origin = `http://127.0.0.1:${port}`;
-  const issued = yield* runCli([
-    "auth",
-    "session",
-    "issue",
-    "--base-dir",
-    input.baseDir,
-    "--token-only",
-  ]);
+  const issued = yield* runCli(
+    ["auth", "session", "issue", "--base-dir", input.baseDir, "--token-only"],
+    env,
+  );
   // The token is the last line of stdout; stderr is only a fallback.
   const lastLine = (text: string) =>
     text
@@ -394,19 +429,22 @@ export const startEnvironment = Effect.fn("environment.start")(function* (input:
     release: (key: string) =>
       Effect.sync(() => NodeFS.writeFileSync(NodePath.join(control, `release-${key}`), "")),
     pairingUrl: () =>
-      runCli([
-        "auth",
-        "pairing",
-        "create",
-        "--base-dir",
-        input.baseDir,
-        "--base-url",
-        `http://${input.deviceHost}:${port}`,
-        "--ttl",
-        "15m",
-        "--label",
-        "mobile-behavior-eval",
-      ]).pipe(
+      runCli(
+        [
+          "auth",
+          "pairing",
+          "create",
+          "--base-dir",
+          input.baseDir,
+          "--base-url",
+          `http://${input.deviceHost}:${port}`,
+          "--ttl",
+          "15m",
+          "--label",
+          "mobile-behavior-eval",
+        ],
+        env,
+      ).pipe(
         Effect.flatMap((out) => {
           const url = /Pair URL:\s*(\S+)/.exec(`${out.stdout}\n${out.stderr}`)?.[1];
           return url
