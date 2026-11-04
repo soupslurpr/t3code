@@ -3,13 +3,35 @@ import * as NodeFS from "node:fs";
 import * as NodePath from "node:path";
 
 import { assert, it } from "@effect/vitest";
+import { vi } from "vite-plus/test";
 
 import {
   buildTriageContext,
   buildTriageLaunchPrompt,
+  buildTriageSeedPrompt,
   type TriageContextInput,
   TRIAGE_PLAYBOOK,
 } from "./triagePrompt.ts";
+
+const build = vi.hoisted(() => ({ fork: false }));
+vi.mock("@t3tools/shared/forkBuildIdentity", () => ({
+  get forkBuildIdentity() {
+    return build.fork
+      ? { repository: "https://github.com/soupslurpr/t3code", channel: "soupslurpr" }
+      : undefined;
+  },
+}));
+
+function useFork(revision: string | null | undefined) {
+  build.fork = true;
+  vi.stubGlobal("__T3CODE_FORK_REVISION__", revision);
+  return {
+    [Symbol.dispose]() {
+      build.fork = false;
+      vi.unstubAllGlobals();
+    },
+  };
+}
 
 it("stays byte-identical to .github/triage/PLAYBOOK.md", () => {
   // Older releases fetch the repository playbook.
@@ -59,6 +81,69 @@ it("in-app context warns the agent off its own server and points at the clone in
   assert.include(context, "## This session runs inside T3 Code");
   assert.include(context, "/home/u/.t3/source/abc123  (v0.1.1, commit abc123)");
   assert.include(context, "Wait for it instead of\ncloning again.");
+});
+
+it("uses trusted fork identity over same-version source hints in app context", () => {
+  using _build = useFork("1234567890abcdef1234567890abcdef12345678");
+  const context = buildTriageContext({
+    ...contextInput,
+    entry: { kind: "app", client: "local desktop" },
+    server: "running (version 0.1.6)",
+    sourceClone: {
+      _tag: "cloned",
+      directory: "/comparison/upstream",
+      ref: "v0.1.6",
+      commit: "upstream",
+      serverVersion: "0.1.6",
+    },
+  });
+  assert.include(context, "- Repo: https://github.com/soupslurpr/t3code");
+  assert.include(context, "Compiled fork revision: 1234567890abcdef1234567890abcdef12345678");
+  assert.include(context, "Exact fork source is unavailable");
+  assert.include(context, "comparison only");
+  assert.include(context, "supersede the playbook");
+  assert.include(context, "including a newer fetched playbook");
+  assert.notInclude(context, "/comparison/upstream");
+  assert.notInclude(context, "source for its own version");
+});
+
+it.each([undefined, null, "", "0.1.6", "main"])(
+  "does not synthesize a compiled fork revision from %s",
+  (revision) => {
+    using _build = useFork(revision);
+    const context = buildTriageContext({
+      ...contextInput,
+      entry: { kind: "cli", cliVersion: "0.1.6", launchedAs: "t3 triage" },
+      server: "not running",
+    });
+    assert.include(context, "Compiled fork revision: unavailable");
+    assert.include(context, "Exact fork source is unavailable");
+    assert.notInclude(context, "Clone it as step 4 describes");
+  },
+);
+
+it("keeps CLI identity separate from the diagnosed server and qualifies upstream filing", () => {
+  using _build = useFork("1234567890abcdef1234567890abcdef12345678");
+  const entry = { kind: "cli", cliVersion: "0.1.6", launchedAs: "t3 triage" } as const;
+  const context = buildTriageContext({
+    ...contextInput,
+    entry,
+    server: "running (version 0.1.7); identity not recorded",
+    sourceClone: { _tag: "failed", serverVersion: "0.1.7", reason: "no source" },
+  });
+  assert.include(context, "This identity describes the triage CLI");
+  assert.include(context, "does not establish the identity of another server or client");
+  assert.include(context, "fork-specific diagnosis");
+  assert.include(context, "fork repository and compiled revision");
+  assert.include(context, "explicit approval");
+  assert.notInclude(context, "Clone it as step 4 describes");
+  const prompt = buildTriageSeedPrompt({ contextFilePath: "/isolated/context.md", entry });
+  assert.include(
+    prompt,
+    "Build-specific source and filing constraints in that context take precedence",
+  );
+  assert.include(prompt.replace(/\s+/g, " "), "get an explicit yes before posting");
+  assert.include(prompt, "only with the user's approval");
 });
 
 const contextInput = {
