@@ -1320,6 +1320,8 @@
   "d2becdc27390c92c": "Other Models",
   "3abbefc7732635ff": "Usage allowance for third-party models such as Claude, GPT, and Gemini.",
   "7d72af75b2812d60": "{provider} on {environment}",
+  "0c3caa49dda519f5": "Muse could not report subscription usage.",
+  "2cfe2f11726f3f06": "Muse has not reported subscription usage yet. Run a Muse turn, then refresh.",
   "bb34eaf6ddc55a72": "This account has no subscription limits.",
   "42a2622893a6bced": "Could not read limits.",
   "4897e228d3185c96": "No limits reported.",

@@ -65,6 +65,11 @@ export function collectExternalUsageLinks(
   );
 }
 
+const MUSE_USAGE_NOTICES = new Set<string>([
+  msg("Muse could not report subscription usage."),
+  msg("Muse has not reported subscription usage yet. Run a Muse turn, then refresh."),
+]);
+
 /** @public */
 export function limitsNotice(
   limits: ServerProviderUsageLimits,
@@ -74,7 +79,9 @@ export function limitsNotice(
     return limits.unavailable.message ?? resolve(msg("This account has no subscription limits."));
   }
   if (limits.unavailable?.reason === "probeFailed") {
-    return limits.unavailable.message ?? resolve(msg("Could not read limits."));
+    const message = limits.unavailable.message;
+    if (message && MUSE_USAGE_NOTICES.has(message)) return resolve(message);
+    return message ?? resolve(msg("Could not read limits."));
   }
   return limits.windows.length === 0 ? resolve(msg("No limits reported.")) : null;
 }

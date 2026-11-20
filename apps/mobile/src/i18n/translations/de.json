@@ -1319,6 +1319,8 @@
   "d2becdc27390c92c": "Andere Modelle",
   "3abbefc7732635ff": "Nutzungskontingent für Modelle von Drittanbietern wie Claude, GPT und Gemini.",
   "7d72af75b2812d60": "{provider} auf {environment}",
+  "0c3caa49dda519f5": "Muse konnte die Abonutzung nicht melden.",
+  "2cfe2f11726f3f06": "Muse hat noch keine Abonutzung gemeldet. Sende eine Nachricht an Muse und aktualisiere die Ansicht.",
   "bb34eaf6ddc55a72": "Dieses Konto hat keine Abonnementlimits.",
   "42a2622893a6bced": "Limits konnten nicht gelesen werden.",
   "4897e228d3185c96": "Keine Limits gemeldet.",

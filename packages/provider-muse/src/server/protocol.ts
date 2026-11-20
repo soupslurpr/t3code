@@ -82,7 +82,10 @@ export const MuseSessionResult = Schema.Struct({
     }),
   ),
 });
-export const MuseTurnStartResult = Schema.Struct({ turnId: NonEmptyString });
+export const MuseTurnStartResult = Schema.Struct({
+  turnId: NonEmptyString,
+  disposition: Schema.optional(Schema.String),
+});
 
 export const MuseApproval = Schema.Struct({
   approvalId: NonEmptyString,
@@ -182,6 +185,8 @@ export const MuseSubscriptionUsage = Schema.Struct({
   }),
 });
 export type MuseSubscriptionUsage = typeof MuseSubscriptionUsage.Type;
+export const MuseUsageReadResult = Schema.Struct({ usage: Schema.optional(MuseSubscriptionUsage) });
+
 /** `turn/retryScheduled` carries `reason`; `turn/modelRetryScheduled` carries the HTTP failure. */
 export const MuseRetryScheduled = Schema.Struct({
   turnId: NonEmptyString,

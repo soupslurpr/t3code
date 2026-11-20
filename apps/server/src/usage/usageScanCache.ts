@@ -325,6 +325,7 @@ export function decodeScanCache(
     // v15 repairs skipped Codex requests whose counters rewound; clean v14 entries stay served.
     // v17 keys Grok turns by time, restoring turns previously dropped as repeats.
     const legacy =
+      (entry.p === "muse" && version < 11) ||
       (entry.p === "claude" && version < 13) ||
       (entry.p === "grok" && version < 17) ||
       (format.state !== undefined &&

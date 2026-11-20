@@ -15,7 +15,8 @@ Run [Muse Code](https://dev.meta.ai/docs/muse-code) on your T3 Code server. Muse
 
 ## Models, permissions, and limitations
 
-- **Models**: Reported by Muse on the host (refresh provider status after config changes). If a listed model fails with an access error, pick another or add an allowed ID under **Custom models**.
+- **Launch settings**: T3 Code disables automatic goal and skill reminders and requests a 500,000-token context budget for each Muse launch, retrying with accepted settings on older hosts.
+- **Models**: Reported by Muse on the host (refresh provider status after config changes). Wonder defaults to **Extra High** reasoning when offered (adjustable in the model picker). If a listed model fails with an access error, pick another or add an allowed ID under **Custom models**.
 - **Permission modes**: Supports **Supervised** and **Full access** only (**Auto** and **Auto-accept edits** are unavailable).
 - **Skills**: Muse loads its own skills (`muse skills` on the host); they do not appear in the composer's `$` menu.
 - **Forks & rewind**: Forking starts a new session with copied conversation context; conversation rewind is not supported.

@@ -214,6 +214,10 @@ export const makeManagedServerProvider = Effect.fn("makeManagedServerProvider")(
           a !== undefined && b !== undefined && a !== b;
         const switchedAccount =
           differs(probedSnapshot.auth.email?.toLowerCase(), previous.email?.toLowerCase()) ||
+          differs(
+            probedSnapshot.usageLimits?.credentialFingerprint,
+            state.snapshot.usageLimits?.credentialFingerprint,
+          ) ||
           (probedSnapshot.auth.workspaceId !== undefined &&
             probedSnapshot.auth.workspaceId !== previous.workspaceId);
         const usageLimits = switchedAccount
@@ -263,8 +267,22 @@ export const makeManagedServerProvider = Effect.fn("makeManagedServerProvider")(
     function* (update) {
       const snapshotToPublish = yield* Ref.modify(snapshotStateRef, (state) => {
         const complete = update.complete && update.windows.length > 0;
+        const previous = state.snapshot.usageLimits;
+        if (
+          update.complete &&
+          previous &&
+          !previous.unavailable &&
+          Date.parse(update.checkedAt) < Date.parse(previous.checkedAt)
+        ) {
+          return [null, state] as const;
+        }
         const usageLimits = complete
-          ? makeUsageLimits(update)
+          ? {
+              ...makeUsageLimits(update),
+              ...(previous?.credentialFingerprint
+                ? { credentialFingerprint: previous.credentialFingerprint }
+                : {}),
+            }
           : applyUsageLimitsUpdate({
               previous: state.snapshot.usageLimits,
               update,

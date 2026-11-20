@@ -1,10 +1,10 @@
 import { ProviderDriverKind, type ServerProvider } from "@t3tools/contracts";
 import { MuseSettings } from "../settings.ts";
 import * as HostProcess from "@t3tools/shared/HostProcess";
+import * as Digest from "effect/crypto/Digest";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
 import * as Ref from "effect/Ref";
-import * as Semaphore from "effect/Semaphore";
 import * as Path from "effect/Path";
 import * as Schema from "effect/Schema";
 import * as HttpClient from "effect/http/HttpClient";
@@ -22,7 +22,6 @@ import * as ProviderContinuationRequests from "@t3tools/provider-core/server/Pro
 import { checkMuseProviderStatus, makePendingMuseProvider } from "./status.ts";
 import * as ProviderEventLoggers from "@t3tools/provider-core/server/ProviderEventLoggers";
 import { makeManagedServerProvider } from "@t3tools/provider-core/server/managedProvider";
-import type { ProviderUsageLimitsReport } from "@t3tools/provider-core/server/snapshot";
 import { makeUsageLimits } from "@t3tools/provider-core/server/usageLimits";
 import { enrichMuseSnapshot, latestMuseVersion, museMaintenance } from "./maintenance.ts";
 import { makeMuseEnvironment } from "./sdk.ts";
@@ -55,6 +54,7 @@ export type MuseDriverEnv =
   | ChildProcessSpawner.ChildProcessSpawner
   | FileSystem.FileSystem
   | HttpClient.HttpClient
+  | Digest.Digest
   | ProviderLatestVersions.ProviderLatestVersions
   | Path.Path
   | ProviderEventLoggers.ProviderEventLoggers;
@@ -81,6 +81,7 @@ export const MuseDriver: ProviderDriver<
     const fileSystem = yield* FileSystem.FileSystem;
     const path = yield* Path.Path;
     const httpClient = yield* HttpClient.HttpClient;
+    const crypto = yield* Digest.Digest;
     const latestVersions = yield* ProviderLatestVersions.ProviderLatestVersions;
     const host = yield* ProviderHost.ProviderHost;
     const eventLoggers = yield* ProviderEventLoggers.ProviderEventLoggers;
@@ -108,26 +109,40 @@ export const MuseDriver: ProviderDriver<
       accentColor,
       continuationGroupKey: continuationIdentity.continuationKey,
     });
-    // Only a running CLI reports usage; status probes cannot fetch it.
-    const latestUsage = yield* Ref.make<ProviderUsageLimitsReport | undefined>(undefined);
-    const usagePermit = yield* Semaphore.make(1);
+    // Probes and several running hosts can report the same account out of order.
+    type Usage = NonNullable<ServerProvider["usageLimits"]> & {
+      readonly authLabel?: string | undefined;
+    };
+    const latestUsage = yield* Ref.make<Usage | undefined>(undefined);
     const withLatestUsage = (provider: ServerProvider) =>
-      Ref.get(latestUsage).pipe(
-        Effect.map((report): ServerProvider =>
-          report
-            ? {
-                ...provider,
-                ...(report.authLabel
-                  ? { auth: { ...provider.auth, label: report.authLabel } }
-                  : {}),
-                usageLimits: makeUsageLimits({
-                  checkedAt: report.checkedAt,
-                  windows: report.windows,
-                }),
-              }
-            : provider,
-        ),
-      );
+      Ref.modify(latestUsage, (latest): readonly [ServerProvider, Usage | undefined] => {
+        const polled = provider.usageLimits;
+        const fingerprint = polled?.credentialFingerprint;
+        const sameHome =
+          latest?.credentialFingerprint === undefined ||
+          fingerprint === undefined ||
+          latest.credentialFingerprint === fingerprint;
+        if (
+          latest &&
+          sameHome &&
+          (polled === undefined ||
+            polled.unavailable ||
+            Date.parse(latest.checkedAt) >= Date.parse(polled.checkedAt))
+        ) {
+          const { authLabel, ...limits } = latest;
+          const usageLimits = fingerprint
+            ? { ...limits, credentialFingerprint: fingerprint }
+            : limits;
+          return [
+            { ...provider, auth: { ...provider.auth, label: authLabel }, usageLimits },
+            { ...usageLimits, authLabel },
+          ];
+        }
+        return [
+          provider,
+          polled && !polled.unavailable ? { ...polled, authLabel: provider.auth.label } : undefined,
+        ];
+      });
     const snapshotSettings = yield* makeProviderSnapshotSettingsSource(effectiveConfig);
     const resolveInstallation = yield* makeCachedProviderMaintenanceResolution(
       resolveProviderMaintenanceCapabilitiesEffect(museMaintenance, {
@@ -174,6 +189,7 @@ export const MuseDriver: ProviderDriver<
       checkProvider: checkMuseProviderStatus(effectiveConfig, processEnvironment, cwd).pipe(
         Effect.map(stampIdentity),
         Effect.flatMap(withLatestUsage),
+        Effect.provideService(Digest.Digest, crypto),
         Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, spawner),
         Effect.provideService(FileSystem.FileSystem, fileSystem),
         Effect.provideService(Path.Path, path),
@@ -211,15 +227,24 @@ export const MuseDriver: ProviderDriver<
       modelCatalog,
       ...(eventLoggers.native ? { nativeEventLogger: eventLoggers.native } : {}),
       continuationRequests,
-      onUsageLimits: (report) =>
-        usagePermit.withPermits(1)(
-          Effect.gen(function* () {
-            const previous = yield* Ref.get(latestUsage);
-            if (previous && Date.parse(report.checkedAt) < Date.parse(previous.checkedAt)) return;
-            yield* Ref.set(latestUsage, report);
-            yield* snapshot.applyUsageLimits({ ...report, complete: true });
-          }),
-        ),
+      onUsageLimits: Effect.fn("MuseDriver.onUsageLimits")(function* (report) {
+        const { usageLimits } = yield* snapshot.getSnapshot;
+        const accepted = yield* Ref.modify(latestUsage, (previous) => {
+          if (previous && Date.parse(report.checkedAt) < Date.parse(previous.checkedAt)) {
+            return [false, previous] as const;
+          }
+          const fingerprint = previous?.credentialFingerprint ?? usageLimits?.credentialFingerprint;
+          return [
+            true,
+            {
+              ...makeUsageLimits(report),
+              ...(fingerprint ? { credentialFingerprint: fingerprint } : {}),
+              authLabel: report.authLabel,
+            },
+          ] as const;
+        });
+        if (accepted) yield* snapshot.applyUsageLimits(report);
+      }),
     });
     const textGeneration = yield* makeMuseTextGeneration(effectiveConfig, {
       environment: processEnvironment,
@@ -232,7 +257,11 @@ export const MuseDriver: ProviderDriver<
       displayName,
       accentColor,
       enabled,
-      snapshot: { ...snapshot, resolveMaintenance, refreshUsage: Effect.void },
+      snapshot: {
+        ...snapshot,
+        resolveMaintenance,
+        refreshUsage: snapshot.refresh.pipe(Effect.asVoid),
+      },
       orchestrationAdapter,
       textGeneration,
     } satisfies ProviderInstance;

@@ -1319,6 +1319,8 @@
   "d2becdc27390c92c": "Autres modèles",
   "3abbefc7732635ff": "Quota d’utilisation des modèles tiers comme Claude, GPT et Gemini.",
   "7d72af75b2812d60": "{provider} sur {environment}",
+  "0c3caa49dda519f5": "Muse n’a pas pu communiquer l’utilisation de l’abonnement.",
+  "2cfe2f11726f3f06": "Muse n’a pas encore communiqué l’utilisation de l’abonnement. Envoyez un message à Muse, puis actualisez.",
   "bb34eaf6ddc55a72": "Ce compte n’a pas de limites d’abonnement.",
   "42a2622893a6bced": "Impossible de lire les limites.",
   "4897e228d3185c96": "Aucune limite signalée.",

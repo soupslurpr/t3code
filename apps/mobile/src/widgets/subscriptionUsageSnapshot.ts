@@ -210,19 +210,22 @@ function subscriptionUsageProps(
 ): SubscriptionUsageSnapshot {
   const pools = collectLimitPools(accounts, now);
   const checked = accounts
-    .filter((account) => account.driver === "codex" || account.driver === "claudeAgent")
+    .filter(
+      (account) =>
+        account.driver === "codex" || account.driver === "claudeAgent" || account.driver === "muse",
+    )
     .map((account) => Date.parse(account.limits.checkedAt));
   return {
     checkedAt: checked.length > 0 && checked.every(Number.isFinite) ? Math.min(...checked) : 0,
-    providers: (["codex", "claudeAgent"] as const)
+    providers: (["codex", "claudeAgent", "muse"] as const)
       .filter(
         (driver) =>
           configuredDrivers.has(driver) || accounts.some((account) => account.driver === driver),
       )
       .map((driver) => {
         const pool = pools.find((candidate) => candidate.driver === driver);
-        const name = driver === "codex" ? "Codex" : "Claude";
-        const kind = driver === "codex" ? "codex" : "claude";
+        const name = driver === "codex" ? "Codex" : driver === "muse" ? "Muse Code" : "Claude";
+        const kind = driver === "claudeAgent" ? "claude" : driver;
         const colors = { light: providerColors("light")[kind], dark: providerColors("dark")[kind] };
         if (!pool)
           return {

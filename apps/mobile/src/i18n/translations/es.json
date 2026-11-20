@@ -1319,6 +1319,8 @@
   "d2becdc27390c92c": "Otros modelos",
   "3abbefc7732635ff": "Asignación de uso para modelos de terceros como Claude, GPT y Gemini.",
   "7d72af75b2812d60": "{provider} en {environment}",
+  "0c3caa49dda519f5": "Muse no pudo informar del uso de la suscripción.",
+  "2cfe2f11726f3f06": "Muse aún no ha informado del uso de la suscripción. Envía un mensaje a Muse y actualiza la vista.",
   "bb34eaf6ddc55a72": "Esta cuenta no tiene límites de suscripción.",
   "42a2622893a6bced": "No se pudieron leer los límites.",
   "4897e228d3185c96": "No se informaron límites.",

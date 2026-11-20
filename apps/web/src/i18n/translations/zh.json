@@ -1320,6 +1320,8 @@
   "d2becdc27390c92c": "其他模型",
   "3abbefc7732635ff": "Claude、GPT 和 Gemini 等第三方模型的用量额度。",
   "7d72af75b2812d60": "{environment} 上的 {provider}",
+  "0c3caa49dda519f5": "Muse 未能报告订阅用量。",
+  "2cfe2f11726f3f06": "Muse 尚未报告订阅用量。向 Muse 发送一条消息，然后刷新。",
   "bb34eaf6ddc55a72": "此账户没有订阅限制。",
   "42a2622893a6bced": "无法读取限额。",
   "4897e228d3185c96": "没有报告限额。",

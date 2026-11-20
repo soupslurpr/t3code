@@ -1319,6 +1319,8 @@
   "d2becdc27390c92c": "Outros modelos",
   "3abbefc7732635ff": "Cota de uso para modelos de terceiros, como Claude, GPT e Gemini.",
   "7d72af75b2812d60": "{provider} em {environment}",
+  "0c3caa49dda519f5": "O Muse não conseguiu informar o uso da assinatura.",
+  "2cfe2f11726f3f06": "O Muse ainda não informou o uso da assinatura. Envie uma mensagem ao Muse e atualize a tela.",
   "bb34eaf6ddc55a72": "Esta conta não tem limites de assinatura.",
   "42a2622893a6bced": "Não foi possível ler os limites.",
   "4897e228d3185c96": "Nenhum limite informado.",

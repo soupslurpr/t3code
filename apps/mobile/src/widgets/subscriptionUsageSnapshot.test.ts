@@ -8,6 +8,7 @@ import {
 import { describe, expect, it, vi } from "vite-plus/test";
 import {
   buildSubscriptionUsageSnapshot,
+  subscriptionUsageTimeline,
   createWidgetRefresher,
   WIDGET_REFRESH_INTERVAL,
 } from "./subscriptionUsageSnapshot";
@@ -50,6 +51,83 @@ function presentations(providers: readonly ServerProvider[] = [provider()]) {
 }
 
 describe("subscription widget snapshots", () => {
+  it("pools Muse instances sharing a home once and expires its observed windows", () => {
+    const muse = provider({
+      instanceId: ProviderInstanceId.make("muse-one"),
+      driver: ProviderDriverKind.make("muse"),
+      auth: { status: "unknown" },
+      usageLimits: {
+        checkedAt,
+        credentialFingerprint: "shared-muse-home",
+        windows: [
+          { ...window, id: "window", label: "Session" },
+          { ...window, id: "weekly", kind: "weekly", label: "Weekly", usedPercent: 20 },
+        ],
+      },
+    });
+    const snapshot = buildSubscriptionUsageSnapshot(
+      presentations([muse, { ...muse, instanceId: ProviderInstanceId.make("muse-two") }]),
+      deepLink,
+    );
+    expect(snapshot.checkedAt).toBe(now);
+    expect(snapshot.providers).toEqual([
+      expect.objectContaining({
+        name: "Muse Code",
+        detail: "Subscription remaining",
+        totalWindows: 2,
+        windows: [
+          expect.objectContaining({ label: "Session", remaining: 60 }),
+          expect.objectContaining({ label: "Weekly", remaining: 80 }),
+        ],
+      }),
+    ]);
+    expect(
+      subscriptionUsageTimeline(snapshot, now + 10 * 60_000)[0]?.props.providers[0]?.windows,
+    ).toEqual([]);
+  });
+
+  it("does not advertise session capacity or an early refill for weekly-blocked Muse accounts", () => {
+    const muse = (id: string, usedPercent: number) =>
+      provider({
+        instanceId: ProviderInstanceId.make(id),
+        driver: ProviderDriverKind.make("muse"),
+        auth: { status: "unknown" },
+        usageLimits: {
+          checkedAt,
+          credentialFingerprint: id,
+          windows: [
+            { ...window, id: "window", label: "Session", usedPercent: 20 },
+            {
+              ...window,
+              id: "weekly",
+              kind: "weekly",
+              label: "Weekly",
+              usedPercent,
+              resetsAt: "2026-09-06T12:00:00.000Z",
+            },
+          ],
+        },
+      });
+    const blocked = muse("blocked", 100);
+    const available = muse("available", 20);
+    const snapshot = structuredClone(blocked);
+    const single = buildSubscriptionUsageSnapshot(presentations([blocked]), deepLink);
+    const session = single.providers[0]?.windows.find((row) => row.kind === "session");
+    const weekly = single.providers[0]?.windows.find((row) => row.kind === "weekly");
+    expect(session?.remaining).toBe(0);
+    expect(session?.reset).toBe(weekly?.reset);
+    const mixed = buildSubscriptionUsageSnapshot(presentations([blocked, available]), deepLink);
+    expect(mixed.providers[0]?.windows.find((row) => row.kind === "session")?.remaining).toBe(40);
+    const refreshed = buildSubscriptionUsageSnapshot(
+      presentations([muse("blocked", 10), available]),
+      deepLink,
+    );
+    expect(refreshed.providers[0]?.windows.find((row) => row.kind === "session")?.remaining).toBe(
+      80,
+    );
+    expect(blocked).toEqual(snapshot);
+  });
+
   it("uses provider data and its observation time without exposing account emails", () => {
     const snapshot = buildSubscriptionUsageSnapshot(
       presentations([provider({ displayName: "private@example.com" })]),

@@ -5,6 +5,8 @@ import { MuseSettings } from "../settings.ts";
 import { createModelCapabilities, getProviderOptionDescriptors } from "@t3tools/shared/model";
 import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
+import * as Result from "effect/Result";
+import { MuseUsageReadResult } from "./protocol.ts";
 import {
   createMuseSdkHost,
   createMuseSdkHostEffect,
@@ -12,7 +14,7 @@ import {
   type MuseSdkHost,
 } from "./sdk.ts";
 
-export const resolveMuseStartupTimeoutMs = (environment?: NodeJS.ProcessEnv) =>
+const resolveMuseStartupTimeoutMs = (environment?: NodeJS.ProcessEnv) =>
   resolveProviderProbeTimeoutMs("muse", 8_000, environment);
 
 type MuseReasoningEffort = NonNullable<SendUserTurnOptions<never>["reasoningEffort"]>;
@@ -33,6 +35,7 @@ const isMuseReasoningEffort = (tier: string): tier is MuseReasoningEffort =>
 
 const FALLBACK_EFFORTS = ["low", "medium", "high", "xhigh", "max"];
 const FALLBACK_DEFAULT_EFFORT = "high";
+const WONDER_DEFAULT_EFFORTS = ["xhigh", "high", "medium", "low", "minimal", "none"] as const;
 
 const ModelCatalogEntry = Schema.Struct({
   modelId: Schema.NonEmptyString,
@@ -50,25 +53,31 @@ const ModelCatalogEntry = Schema.Struct({
 const decodeModelList = Schema.decodeUnknownEffect(
   Schema.Struct({ providerId: Schema.String, models: Schema.Array(ModelCatalogEntry) }),
 );
+const decodeUsageReadResult = Schema.decodeUnknownEffect(MuseUsageReadResult);
 
 export function museModelCapabilities(
-  model?: Pick<
-    typeof ModelCatalogEntry.Type,
-    "variants" | "defaultReasoningEffort" | "reasoningEffortVariants"
+  model?: Partial<
+    Pick<
+      typeof ModelCatalogEntry.Type,
+      "modelId" | "variants" | "defaultReasoningEffort" | "reasoningEffortVariants"
+    >
   >,
 ): ModelCapabilities {
   const reported = model?.variants !== undefined && model.variants !== "unknown";
   const efforts = (reported ? model.variants : FALLBACK_EFFORTS).filter(isMuseReasoningEffort);
   const preferredDefault = reported ? model?.defaultReasoningEffort : FALLBACK_DEFAULT_EFFORT;
-  const defaultValue = efforts.find((tier) => tier === preferredDefault) ?? efforts[0];
-  if (!defaultValue) return createModelCapabilities({ optionDescriptors: [] });
+  const defaultValue =
+    reported && (model.modelId === "muse-wonder-full-1.0" || model.modelId === "muse-wonder-1.0")
+      ? WONDER_DEFAULT_EFFORTS.find((tier) => efforts.includes(tier))
+      : (efforts.find((tier) => tier === preferredDefault) ?? efforts[0]);
+  if (efforts.length === 0) return createModelCapabilities({ optionDescriptors: [] });
   return createModelCapabilities({
     optionDescriptors: [
       {
         id: "reasoningEffort",
         label: "Reasoning",
         type: "select",
-        currentValue: defaultValue,
+        ...(defaultValue === undefined ? {} : { currentValue: defaultValue }),
         options: efforts.map((id) => {
           const description = model?.reasoningEffortVariants?.find(
             (variant) => variant.tier === id,
@@ -102,36 +111,41 @@ class MuseCatalogError extends Schema.TaggedError<MuseCatalogError>()("MuseCatal
   detail: Schema.String,
 }) {}
 
-export const discoverMuseModels = Effect.fn("discoverMuseModels")(function* (
+export const discoverMuseModelsAndUsage = Effect.fn("discoverMuseModelsAndUsage")(function* (
   settings: MuseSettings,
   environment: NodeJS.ProcessEnv | undefined,
   cwd?: string,
   createHost: typeof createMuseSdkHost = createMuseSdkHost,
 ) {
-  const host = yield* Effect.acquireRelease(
-    createMuseSdkHostEffect(
-      {
-        binaryPath: settings.binaryPath,
-        ...(environment ? { environment } : {}),
-        ...(cwd ? { cwd } : {}),
-        readOnly: true,
-        startupTimeoutMs: resolveMuseStartupTimeoutMs(environment),
-      },
-      createHost,
-    ),
-    (host: MuseSdkHost) => Effect.promise(() => host.close()),
-    { interruptible: true },
-  );
-  const result = yield* Effect.tryPromise({
-    try: () => host.connection.request("model/list", {}),
-    catch: (cause) => new MuseSdkError({ operation: "model/list", cause }),
-  });
-  const catalog = yield* decodeModelList(result);
-  if (catalog.providerId !== "meta") {
-    return yield* new MuseCatalogError({ detail: "Muse returned a catalog for another provider." });
-  }
+  const { host, catalog } = yield* Effect.gen(function* () {
+    const host = yield* Effect.acquireRelease(
+      createMuseSdkHostEffect(
+        {
+          binaryPath: settings.binaryPath,
+          ...(environment ? { environment } : {}),
+          ...(cwd ? { cwd } : {}),
+          readOnly: true,
+          startupTimeoutMs: resolveMuseStartupTimeoutMs(environment),
+        },
+        createHost,
+      ),
+      (host: MuseSdkHost) => Effect.promise(() => host.close()),
+      { interruptible: true },
+    );
+    const result = yield* Effect.tryPromise({
+      try: () => host.connection.request("model/list", {}),
+      catch: (cause) => new MuseSdkError({ operation: "model/list", cause }),
+    });
+    const catalog = yield* decodeModelList(result);
+    if (catalog.providerId !== "meta") {
+      return yield* new MuseCatalogError({
+        detail: "Muse returned a catalog for another provider.",
+      });
+    }
+    return { host, catalog };
+  }).pipe(Effect.timeout(resolveMuseStartupTimeoutMs(environment) + 4_000));
   const seen = new Set<string>();
-  return catalog.models.flatMap((model): ServerProviderModel[] => {
+  const models = catalog.models.flatMap((model): ServerProviderModel[] => {
     if (model.providerId !== "meta" || seen.has(model.modelId)) return [];
     seen.add(model.modelId);
     const label = model.displayLabel.trim() || model.modelId;
@@ -149,4 +163,15 @@ export const discoverMuseModels = Effect.fn("discoverMuseModels")(function* (
       },
     ];
   });
+  // Usage is best-effort and gets its own deadline after the catalog succeeds.
+  const usage = yield* Effect.tryPromise({
+    try: () => host.connection.request("usage/read", {}),
+    catch: (cause) => new MuseSdkError({ operation: "usage/read", cause }),
+  }).pipe(Effect.flatMap(decodeUsageReadResult), Effect.timeout(3_000), Effect.result);
+  return {
+    models,
+    ...(Result.isSuccess(usage) && usage.success.usage ? { usage: usage.success.usage } : {}),
+    usageFailed: Result.isFailure(usage),
+    ...(host.initializeResult.museHome ? { museHome: host.initializeResult.museHome } : {}),
+  };
 });

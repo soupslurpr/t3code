@@ -1320,6 +1320,8 @@
   "d2becdc27390c92c": "Andra modeller",
   "3abbefc7732635ff": "Användningskvot för tredjepartsmodeller som Claude, GPT och Gemini.",
   "7d72af75b2812d60": "{provider} på {environment}",
+  "0c3caa49dda519f5": "Muse kunde inte rapportera abonnemangets användning.",
+  "2cfe2f11726f3f06": "Muse har ännu inte rapporterat abonnemangets användning. Skicka ett meddelande till Muse och uppdatera sedan vyn.",
   "bb34eaf6ddc55a72": "Det här kontot har inga prenumerationsgränser.",
   "42a2622893a6bced": "Kunde inte läsa gränser.",
   "4897e228d3185c96": "Inga gränser rapporterades.",

@@ -39,7 +39,7 @@ Usage aggregates history across Codex, Claude Code, Grok Build, OpenCode, Antigr
   - **Grok**: Reports billing-period quotas for `grok login` (not `XAI_API_KEY`).
   - **Muse Code**: Reports session/weekly limits after running in a thread (not persisted across restarts).
   - Pure API-key accounts generally do not report subscription limits.
-- **Mobile widget**: Add the **Subscription usage** widget on iOS or Android to monitor Codex and Claude quotas from your home screen.
+- **Mobile widget**: Add the **Subscription usage** widget on iOS or Android to monitor Codex, Claude, and Muse Code quotas from your home screen.
 
 ## Connect a CLIProxyAPI hub
 

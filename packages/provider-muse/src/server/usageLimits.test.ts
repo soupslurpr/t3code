@@ -1,11 +1,10 @@
 import { describe, expect, it } from "@effect/vitest";
 
-import type { MuseSubscriptionUsage } from "./protocol.ts";
-import {
-  isMuseUsageLimitFailure,
-  museUsageLimitResetAt,
-  museUsageToLimits,
-} from "./usageLimits.ts";
+import { MuseSubscriptionUsage, MuseUsageReadResult } from "./protocol.ts";
+import { museUsageToLimits, museUsageReport, museUsageToWindows } from "./usageLimits.ts";
+import * as Option from "effect/Option";
+import * as Schema from "effect/Schema";
+import { isMuseUsageLimitFailure, museUsageLimitResetAt } from "./usageLimits.ts";
 
 const usage = {
   observedAtMs: 1791447762610,
@@ -61,12 +60,13 @@ describe("Muse usage limit failures", () => {
 
 describe("Muse account usage", () => {
   it("reports the session and weekly windows, capped at 100, with the tier as plan", () => {
-    expect(museUsageToLimits({ ...usage, window: { ...usage.window, usedPercent: 103 } })).toEqual({
+    expect(museUsageReport({ ...usage, window: { ...usage.window, usedPercent: 103 } })).toEqual({
       checkedAt: "2026-10-08T08:22:42.610Z",
       authLabel: "tier-1",
+      complete: true,
       windows: [
         {
-          id: "session",
+          id: "window",
           kind: "session",
           label: "Session",
           usedPercent: 100,
@@ -83,6 +83,111 @@ describe("Muse account usage", () => {
         },
       ],
     });
-    expect(museUsageToLimits({ ...usage, tier: " " })).not.toHaveProperty("authLabel");
+    expect(museUsageReport({ ...usage, tier: " " })).not.toHaveProperty("authLabel");
+  });
+});
+
+describe("observed usage reports", () => {
+  const decodeUsageReadResult = Schema.decodeUnknownSync(MuseUsageReadResult);
+  const decodeSubscriptionUsage = Schema.decodeUnknownOption(MuseSubscriptionUsage);
+
+  const usage: MuseSubscriptionUsage = {
+    observedAtMs: Date.parse("2026-10-12T12:00:00Z"),
+    tier: "pro",
+    window: {
+      resetsAtMs: Date.parse("2026-10-12T16:00:00Z"),
+      usedPercent: 25,
+      windowDurationMins: 300,
+    },
+    weekly: { resetsAtMs: Date.parse("2026-10-19T12:00:00Z"), usedPercent: 40 },
+  };
+
+  describe("Muse subscription usage", () => {
+    it("decodes over-quota percentages and ignores additional wrapper fields", () => {
+      const overQuota = { ...usage, window: { ...usage.window, usedPercent: 120, extra: true } };
+      expect(decodeUsageReadResult({ usage: overQuota, extra: true }).usage).toEqual({
+        ...usage,
+        window: { ...usage.window, usedPercent: 120 },
+      });
+      expect(decodeUsageReadResult({ future: true })).toEqual({});
+      for (const usedPercent of [-1, "20", Infinity]) {
+        expect(
+          Option.isNone(
+            decodeSubscriptionUsage({
+              ...usage,
+              weekly: { ...usage.weekly, usedPercent },
+            }),
+          ),
+        ).toBe(true);
+      }
+    });
+
+    it("maps both windows and keeps updates consistent with probes", () => {
+      const windows = [
+        {
+          id: "window",
+          kind: "session",
+          label: "Session",
+          usedPercent: 25,
+          windowDurationMins: 300,
+          resetsAt: "2026-10-12T16:00:00.000Z",
+        },
+        {
+          id: "weekly",
+          kind: "weekly",
+          label: "Weekly",
+          usedPercent: 40,
+          windowDurationMins: 10080,
+          resetsAt: "2026-10-19T12:00:00.000Z",
+        },
+      ];
+      expect(museUsageToWindows(usage)).toEqual(windows);
+      expect(museUsageReport(usage)).toMatchObject({ complete: true, windows });
+      expect(
+        museUsageToLimits({
+          usage,
+          checkedAt: "2026-10-12T12:00:00.000Z",
+          credentialFingerprint: "login-home",
+        }),
+      ).toEqual({
+        checkedAt: "2026-10-12T12:00:00.000Z",
+        credentialFingerprint: "login-home",
+        windows,
+      });
+    });
+
+    it.each([
+      [300, "session", "Session"],
+      [10080, "weekly", "Weekly"],
+      [43200, "monthly", "Monthly"],
+    ])("classifies a %i-minute window", (windowDurationMins, kind, label) => {
+      expect(
+        museUsageToWindows({ ...usage, window: { ...usage.window, windowDurationMins } })[0],
+      ).toMatchObject({ id: "window", kind, label, windowDurationMins });
+    });
+
+    it("clamps percentages and omits invalid reset times and durations", () => {
+      for (const invalid of [0, -1, Infinity, NaN]) {
+        const windows = museUsageToWindows({
+          ...usage,
+          window: { usedPercent: 120, resetsAtMs: invalid, windowDurationMins: invalid },
+          weekly: { usedPercent: -1, resetsAtMs: invalid },
+        });
+        expect(windows[0]?.usedPercent).toBe(100);
+        expect(windows[0]?.resetsAt).toBeUndefined();
+        expect(windows[0]?.windowDurationMins).toBeUndefined();
+        expect(windows[1]).toEqual({
+          id: "weekly",
+          kind: "weekly",
+          label: "Weekly",
+          usedPercent: 0,
+          windowDurationMins: 10080,
+        });
+      }
+      expect(
+        museUsageToWindows({ ...usage, weekly: { ...usage.weekly, resetsAtMs: 1e20 } })[1]
+          ?.resetsAt,
+      ).toBeUndefined();
+    });
   });
 });
