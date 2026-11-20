@@ -4,7 +4,7 @@ mod fd;
 mod vnc;
 
 use frame::{CaptureRequest, bgra_len, render_bgra};
-use serde::{Deserialize, de::DeserializeOwned};
+use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use std::{
     error::Error,
     io::{self, BufRead, BufWriter, Read, Write},
@@ -75,6 +75,7 @@ fn raw(input: &mut impl BufRead) -> Result<(CaptureRequest, Bitmap)> {
     ))
 }
 
+#[derive(Clone, Copy)]
 enum Mode {
     Raw,
     Vnc,
@@ -121,7 +122,13 @@ fn capture(mode: Mode) -> Result<(CaptureRequest, Bitmap)> {
 }
 
 fn run() -> Result<()> {
-    let (request, bitmap) = capture(mode()?)?;
+    let source = mode()?;
+    let (mut request, bitmap) = capture(source)?;
+    let source_size = matches!(source, Mode::Vnc).then_some([bitmap.width, bitmap.height]);
+    if source_size.is_some() {
+        request.display.bounds.width = bitmap.width;
+        request.display.bounds.height = bitmap.height;
+    }
     let output = render_bgra(
         bitmap.width,
         bitmap.height,
@@ -130,7 +137,21 @@ fn run() -> Result<()> {
         &request,
     )?;
     let mut stdout = BufWriter::new(io::stdout().lock());
-    serde_json::to_writer(&mut stdout, &output)?;
+    #[derive(Serialize)]
+    #[serde(rename_all = "camelCase")]
+    struct Reply {
+        #[serde(flatten)]
+        output: frame::CaptureOutput,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        source_size: Option<[u32; 2]>,
+    }
+    serde_json::to_writer(
+        &mut stdout,
+        &Reply {
+            output,
+            source_size,
+        },
+    )?;
     stdout.write_all(b"\n")?;
     stdout.flush()?;
     Ok(())

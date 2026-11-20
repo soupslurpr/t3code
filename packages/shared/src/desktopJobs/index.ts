@@ -219,7 +219,7 @@ async function makeOwnedJobs(
           check(auth, "start");
           jobs.set(job.state.processId, job);
           job.change({});
-          await job.launch(executor, config, input, data, async (signal, send) => {
+          await job.launch(executor, auth, config, input, data, async (signal, send) => {
             await admit(auth, "start", signal);
             check(auth, "start", signal);
             return send();

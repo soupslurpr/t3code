@@ -637,13 +637,18 @@ const buildCliArchive = Effect.fn("buildCliArchive")(function* (input: {
   yield* fs.copyFile(builtExecutable, path.join(contentDir, executableName));
   yield* stageWebClient(webClient, path.join(contentDir, "client"));
   yield* fs.copy(resourceMonitorDir, path.join(contentDir, "resource-monitor"));
-  if (input.platform === "linux")
+  if (input.platform === "linux") {
+    yield* fs.copy(
+      path.join(serverDir, "resources/agent-desktop"),
+      path.join(contentDir, "resources/agent-desktop"),
+    );
     yield* stageDesktopNative({
       repoRoot,
       destination: path.join(contentDir, "desktop-native"),
       arch: input.arch,
       gnome: false,
     });
+  }
   yield* stageRuntimeExternals({
     repoRoot,
     stageDir: contentDir,

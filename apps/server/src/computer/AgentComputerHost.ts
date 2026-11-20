@@ -16,7 +16,7 @@ import { AgentComputerBackend, type AgentComputerPort } from "./ComputerAutomati
 import { hostFailure, type DesktopCaller } from "./ComputerHostConnection.ts";
 import { captureDesktopFrame } from "./DesktopFrame.ts";
 
-interface AuthorizedAgentFrame {
+export interface AuthorizedAgentFrame {
   readonly socket: NodeNet.Socket;
   readonly display: ComputerAutomationDisplay;
   readonly frameId: string;
@@ -25,9 +25,10 @@ interface AuthorizedAgentFrame {
   readonly accessibility?: NonNullable<ComputerAutomationSnapshot["accessibility"]>;
   readonly remember: (
     frames: readonly ComputerAutomationFrame[],
+    display: ComputerAutomationDisplay,
   ) => Effect.Effect<void, ComputerHostError>;
 }
-interface AgentDesktopRuntimePort {
+export interface AgentDesktopRuntimePort {
   readonly invoke: AgentComputerPort["invoke"];
   /** Acquire the caller's view grant and an exclusively owned connected Unix socket for this scope. */
   readonly openCapture: (
@@ -39,6 +40,46 @@ export const AgentDesktopRuntime = Context.Reference<AgentDesktopRuntimePort | n
   "t3/computer/AgentDesktopRuntime",
   { defaultValue: () => null },
 );
+export const captureAgentFrame = Effect.fn("AgentComputerHost.captureFrame")(function* (
+  desktopId: string,
+  options: Omit<ComputerAutomationSnapshotInput, "desktop">,
+  frame: AuthorizedAgentFrame,
+) {
+  const { sourceSize, ...image } = yield* captureDesktopFrame(
+    { kind: "vnc", socket: frame.socket },
+    {
+      desktopId,
+      display: frame.display,
+      frameId: frame.frameId,
+      pointer: frame.pointer,
+      options,
+      sourceFrames: frame.sourceFrames,
+    },
+  ).pipe(Effect.mapError((cause) => hostFailure("capture-failed", "resource", cause.detail)));
+  const display = sourceSize
+    ? {
+        ...frame.display,
+        bounds: { ...frame.display.bounds, width: sourceSize[0], height: sourceSize[1] },
+      }
+    : frame.display;
+  yield* frame.remember(
+    [
+      ...(image.frame ? [image.frame] : []),
+      ...(image.detailScreenshots ?? []).map((detail) => detail.frame),
+    ],
+    display,
+  );
+  return {
+    display,
+    cursor: frame.pointer,
+    captureSource: "virtual-display" as const,
+    ...image,
+    ...(options.includeAccessibility !== false && frame.accessibility
+      ? { accessibility: frame.accessibility }
+      : {}),
+  };
+});
+
 const decodeSnapshot = Schema.decodeUnknownEffect(ComputerAutomationSnapshotInput);
 const make = Effect.gen(function* () {
   const runtime = yield* AgentDesktopRuntime;
@@ -79,32 +120,7 @@ const make = Effect.gen(function* () {
       return yield* Effect.scoped(
         Effect.gen(function* () {
           const frame = yield* runtime.openCapture(caller, input);
-          const image = yield* captureDesktopFrame(
-            { kind: "vnc", socket: frame.socket },
-            {
-              desktopId: desktop.desktopId,
-              display: frame.display,
-              frameId: frame.frameId,
-              pointer: frame.pointer,
-              options,
-              sourceFrames: frame.sourceFrames,
-            },
-          ).pipe(
-            Effect.mapError((cause) => hostFailure("capture-failed", "resource", cause.detail)),
-          );
-          yield* frame.remember([
-            ...(image.frame ? [image.frame] : []),
-            ...(image.detailScreenshots ?? []).map((detail) => detail.frame),
-          ]);
-          return {
-            display: frame.display,
-            cursor: frame.pointer,
-            captureSource: "virtual-display" as const,
-            ...image,
-            ...(options.includeAccessibility !== false && frame.accessibility
-              ? { accessibility: frame.accessibility }
-              : {}),
-          };
+          return yield* captureAgentFrame(desktop.desktopId, options, frame);
         }),
       );
     },

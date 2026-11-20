@@ -94,3 +94,4 @@ export * from "./clientRpcPermissions.ts";
 export * from "./threadWorktree.ts";
 export * from "./desktopExecutionAuthorization.ts";
 export * from "./desktopTransfer.ts";
+export * from "./agentDesktop.ts";

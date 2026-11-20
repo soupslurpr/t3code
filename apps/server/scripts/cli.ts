@@ -89,6 +89,10 @@ const buildCmd = Command.make(
         }),
       );
 
+      yield* fs.copy(
+        path.join(serverDir, "resources/agent-desktop"),
+        path.join(serverDir, "dist/resources/agent-desktop"),
+      );
       const webDist = path.join(repoRoot, "apps/web/dist");
       const clientTarget = path.join(serverDir, "dist/client");
 

@@ -1,6 +1,7 @@
 /** Coordinates bounded file transfers over the selected desktop's existing connection. */
 // @effect-diagnostics nodeBuiltinImport:off - Owns staged binary archives and capability tokens.
 import * as NodeCrypto from "node:crypto";
+import { DesktopTransferStream } from "./DesktopTransferStream.ts";
 import * as NodeFSP from "node:fs/promises";
 import * as NodeModule from "node:module";
 import * as NodePath from "node:path";
@@ -128,6 +129,7 @@ export const make = Effect.gen(function* () {
 
   const scope = yield* Effect.scope;
   const clock = yield* Clock.Clock;
+  const runUpload = Effect.runPromiseWith(yield* Effect.context<never>());
   const now = () => DateTime.formatIso(DateTime.makeUnsafe(clock.currentTimeMillisUnsafe()));
   const directory = NodePath.join(config.stateDir, "user-desktop-transfers");
   // Each server lifetime owns a private directory within the shared staging root.
@@ -228,25 +230,35 @@ export const make = Effect.gen(function* () {
         );
         metadata(record, manifest);
       }
-      const result = yield* router.invoke(
-        UserDesktopTransferResult,
-        yield* desktopCaller(record.scope),
-        "computerTransfer",
-        {
-          operation: "run",
-          desktop: input.desktop,
-          transferId: record.snapshot.id,
-          direction: input.direction,
-          desktopPath: input.desktopPath,
-          collision: input.collision ?? "create",
-          compression: input.compression ?? "auto",
-          timeoutMs: input.timeoutMs ?? 3_600_000,
-          url: `${DESKTOP_TRANSFER_ROUTE_PREFIX}/${record.snapshot.id}`,
-          token: record.token,
-          ...(record.manifest === null ? {} : { manifest: record.manifest }),
-        },
-        input.timeoutMs ?? 3_600_000,
-      );
+      const result = yield* router
+        .invoke(
+          UserDesktopTransferResult,
+          yield* desktopCaller(record.scope),
+          "computerTransfer",
+          {
+            operation: "run",
+            desktop: input.desktop,
+            transferId: record.snapshot.id,
+            direction: input.direction,
+            desktopPath: input.desktopPath,
+            collision: input.collision ?? "create",
+            compression: input.compression ?? "auto",
+            timeoutMs: input.timeoutMs ?? 3_600_000,
+            url: `${DESKTOP_TRANSFER_ROUTE_PREFIX}/${record.snapshot.id}`,
+            token: record.token,
+            ...(record.manifest === null ? {} : { manifest: record.manifest }),
+          },
+          input.timeoutMs ?? 3_600_000,
+        )
+        .pipe(
+          Effect.provideService(DesktopTransferStream, {
+            download: () => download(record.snapshot.id, record.token),
+            upload: (manifest, body, signal) =>
+              runUpload(upload(record.snapshot.id, record.token, manifest, body), {
+                signal,
+              }),
+          }),
+        );
       if (result.cancelled)
         return yield* new DesktopTransferError({
           code: "cancelled",

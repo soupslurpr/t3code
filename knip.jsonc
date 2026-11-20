@@ -58,6 +58,9 @@
         "src/bin.ts!",
         "src/claude-history-worker.ts!",
         "src/process-launcher.ts!",
+        // Node and GJS load these packaged resources by their runtime paths.
+        "resources/agent-desktop/image-builder.mjs!",
+        "resources/agent-desktop/guest/atspi.js!",
         "scripts/cli.ts",
         "scripts/fetch-expo-schema.ts",
         "scripts/probe-claude-fork-local-rollback-replay.ts",

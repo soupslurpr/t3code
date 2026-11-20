@@ -66,5 +66,6 @@ export interface DesktopJobExecutor {
     cwd: string,
     stdout: import("node:stream").Writable,
     stderr: import("node:stream").Writable,
+    authority: DesktopJobAuthority,
   ) => DesktopJobProcess;
 }

@@ -1105,6 +1105,7 @@ export const DESKTOP_EXTRA_RESOURCES = [
   },
 ] as const;
 export const LINUX_CAPTURE_EXTRA_RESOURCES = [
+  { from: "apps/desktop/resources/agent-desktop", to: "agent-desktop" },
   { from: "apps/desktop/resources/desktop-native", to: "desktop-native" },
   {
     from: "apps/desktop/prod-resources/hyprland-capture",
@@ -3870,6 +3871,10 @@ const buildDesktopArtifactUnlocked = Effect.fn("buildDesktopArtifactUnlocked")(f
     verbose: options.verbose,
   });
   if (options.platform === "linux") {
+    yield* fs.copy(
+      path.join(repoRoot, "apps/server/resources/agent-desktop"),
+      path.join(stageResourcesDir, "agent-desktop"),
+    );
     yield* stageDesktopNative({
       repoRoot,
       destination: path.join(stageResourcesDir, "desktop-native"),

@@ -137,7 +137,7 @@ it.live(
             Effect.orDie,
             Effect.map((socket) => ({
               socket,
-              display: display(2, 1),
+              display: display(1600, 900),
               frameId: "owned",
               pointer: null,
               sourceFrames: [],
@@ -167,6 +167,7 @@ it.live(
         Effect.provide(AgentComputerHost.layer.pipe(Layer.provide(runtime))),
       )) as ComputerAutomationSnapshot;
       yield* Effect.promise(() => fixture.accepted);
+      expect(result.display.bounds).toMatchObject({ width: 2, height: 1 });
       expect(frames).toEqual(["owned"]);
       expect(result.screenshot?.contentHash).toBe(hashes.rfbOpaque2x1);
       expect(result.captureSource).toBe("virtual-display");

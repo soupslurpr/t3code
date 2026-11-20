@@ -160,6 +160,7 @@ export class Job {
   }
   async launch(
     executor: DesktopJobExecutor,
+    authority: DesktopJobAuthority,
     config: ReturnType<typeof commandConfig>,
     input: DesktopJobStart,
     bytes: Buffer,
@@ -167,7 +168,7 @@ export class Job {
   ) {
     let native: DesktopJobProcess;
     try {
-      native = executor.connect(config.cwd, this.stdout.sink(), this.stderr.sink());
+      native = executor.connect(config.cwd, this.stdout.sink(), this.stderr.sink(), authority);
     } catch (e) {
       await this.finish({ code: null, signal: null, error: errorMessage(e) });
       return;

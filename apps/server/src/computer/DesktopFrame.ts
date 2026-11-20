@@ -14,7 +14,14 @@ import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
 
 const { frame, pointer, screenshot, detailScreenshots } = ComputerAutomationSnapshot.fields;
-const FrameOutput = Schema.Struct({ frame, pointer, screenshot, detailScreenshots });
+const extent = Schema.Int.check(Schema.isBetween({ minimum: 1, maximum: 65535 }));
+const FrameOutput = Schema.Struct({
+  frame,
+  pointer,
+  screenshot,
+  detailScreenshots,
+  sourceSize: Schema.optional(Schema.Tuple([extent, extent])),
+});
 const decodeOutput = Schema.decodeUnknownSync(Schema.fromJsonString(FrameOutput));
 const encodeHeader = Schema.encodeSync(Schema.fromJsonString(Schema.Unknown));
 export type DesktopFrameOutput = typeof FrameOutput.Type;
