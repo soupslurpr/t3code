@@ -685,6 +685,7 @@ export function BranchToolbarBranchSelector({
 
   const handleOpenChange = (open: boolean) => {
     setIsBranchMenuOpen(open);
+    if (open && !isBranchMenuOpen) branchRefState.refresh();
     if (open && !isBranchMenuOpen && branchCwd !== null) {
       void refreshLocalStatusForPicker({
         environmentId,
@@ -853,7 +854,8 @@ export function BranchToolbarBranchSelector({
             : "branch"
       }
       originControl={
-        isSelectingWorktreeBase
+        isSelectingWorktreeBase &&
+        (branchRefState.data?.hasPrimaryRemote || (activeProject?.trackedFolders?.length ?? 0) > 0)
           ? { checked: startFromOrigin, onCheckedChange: onStartFromOriginChange }
           : undefined
       }

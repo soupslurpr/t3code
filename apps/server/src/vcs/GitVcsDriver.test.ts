@@ -1281,16 +1281,18 @@ it.effect("a capture through a kept index skips the index rebuild and its scan",
       ...start,
       "read-tree",
       "ls-files",
+      "ls-files",
       "add",
       "write-tree",
       ...end,
     ]);
-    // HEAD lacks untracked.txt, so check-ignore runs; the last diff-tree checks .gitattributes.
+    // HEAD lacks untracked.txt, so check-ignore runs; ls-files bounds untracked input; the last diff-tree checks .gitattributes.
     assert.deepStrictEqual(commands, [
       ...start,
       "diff-tree",
       "check-ignore",
       "cat-file",
+      "ls-files",
       "add",
       "write-tree",
       "diff-tree",
@@ -1571,7 +1573,9 @@ it.effect("checkpoint capture refuses a truncated nested repository listing", ()
             .run(input)
             .pipe(
               Effect.map((result) =>
-                input.args.includes("--others") ? { ...result, stdoutTruncated: true } : result,
+                input.args.includes("--") && input.args.includes("--others")
+                  ? { ...result, stdoutTruncated: true }
+                  : result,
               ),
             ),
       }),
@@ -1735,7 +1739,7 @@ it.effect.each([
       const captureProcess = yield* VcsProcess.make.pipe(
         Effect.provideService(ProcessRunner.ProcessRunner, {
           run: (input) => {
-            if (input.args.includes("--others")) discoveries += 1;
+            if (input.args.includes("--") && input.args.includes("--others")) discoveries += 1;
             if (input.env?.GIT_INDEX_FILE) privateIndexes.add(input.env.GIT_INDEX_FILE);
             const initialStage =
               phase === "add" &&
@@ -1826,7 +1830,7 @@ it.effect("checkpoint recovery preserves interruption and removes the private in
         run: (input) => {
           if (input.args.includes("add") && input.args.includes("-A"))
             privateIndex = input.env?.GIT_INDEX_FILE;
-          return input.args.includes("--others")
+          return input.args.includes("--") && input.args.includes("--others")
             ? Deferred.succeed(entered, undefined).pipe(Effect.andThen(Effect.never))
             : liveProcess.run(input);
         },
@@ -2627,6 +2631,7 @@ it.effect.each(["committed", "unborn"] as const)(
         ...(head === "committed" ? ["log"] : []),
         "config",
         ...(head === "committed" ? ["read-tree", "ls-files"] : []),
+        "ls-files",
         "add",
         "write-tree",
         "commit-tree",
@@ -2685,6 +2690,7 @@ it.effect.skipIf(HostProcess.Platform.defaultValue() === "win32")(
         "config",
         "rev-parse",
         "read-tree",
+        "ls-files",
         "ls-files",
         "add",
         "write-tree",

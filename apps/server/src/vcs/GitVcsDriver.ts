@@ -16,6 +16,7 @@ import { ChildProcessSpawner } from "effect/process";
 import {
   GitCommandError,
   VcsCheckpointStorageError,
+  VcsCheckpointLimitError,
   VcsProcessExitError,
   VcsUnsupportedOperationError,
   type VcsSwitchRefInput,
@@ -595,6 +596,9 @@ function isLocalReflogCreation(entry: ReturnType<typeof parseCheckpointReflogEnt
   return !entry.fetched && !REF_MOVE_REFLOG_SUBJECT.test(entry.subject);
 }
 
+const CHECKPOINT_MAX_UNTRACKED_FILES = 10_000;
+const CHECKPOINT_MAX_UNTRACKED_BYTES = 2 * 1024 * 1024 * 1024;
+const CHECKPOINT_UNTRACKED_PATH_MAX_OUTPUT_BYTES = 4 * 1024 * 1024;
 const WORKSPACE_GIT_HARDENED_CONFIG_ARGS = [
   "-c",
   "core.fsmonitor=false",
@@ -1141,6 +1145,128 @@ export const makeVcsDriverShape = Effect.fn("makeGitVcsDriverShape")(function* (
       ? ["-c", "core.fsyncMethod=batch"]
       : []),
   ] as const;
+  const validateCheckpointUntrackedContent = Effect.fn(
+    "GitVcsDriver.checkpoints.validateUntrackedContent",
+  )(function* (
+    cwd: string,
+    env: NodeJS.ProcessEnv,
+    keptUntrackedPaths: ReadonlyArray<string> = [],
+  ) {
+    const operation = VcsProcess.CHECKPOINT_CAPTURE_OPERATION;
+    const result = yield* execute({
+      operation,
+      cwd,
+      env,
+      args: [
+        ...WORKSPACE_GIT_HARDENED_CONFIG_ARGS,
+        "ls-files",
+        "--others",
+        "--exclude-standard",
+        "-z",
+      ],
+      timeoutMs: 10_000,
+      maxOutputBytes: CHECKPOINT_UNTRACKED_PATH_MAX_OUTPUT_BYTES,
+      outputMode: "truncate",
+    });
+    if (result.stdoutTruncated) {
+      return yield* new VcsCheckpointLimitError({
+        operation,
+        cwd,
+        kind: "untracked-path-output-bytes",
+        limit: CHECKPOINT_UNTRACKED_PATH_MAX_OUTPUT_BYTES,
+        observed: CHECKPOINT_UNTRACKED_PATH_MAX_OUTPUT_BYTES + 1,
+      });
+    }
+
+    const untrackedPaths = splitNullSeparatedGitStdoutPaths(result);
+    let pathOutputBytes = Buffer.byteLength(result.stdout);
+    const existingKeptSizes: Array<bigint> = [];
+    if (keptUntrackedPaths.length > 0) {
+      const seen = new Set(untrackedPaths);
+      for (const relativePath of keptUntrackedPaths) {
+        if (seen.has(relativePath)) continue;
+        const info = yield* fileSystem
+          .lstat(path.resolve(cwd, relativePath))
+          .pipe(Effect.orElseSucceed(() => null));
+        if (info === null) {
+          continue;
+        }
+        let effectivePath = relativePath;
+        if (!relativePath.endsWith("/") && info.type === "Directory") {
+          const isEmbeddedRepo = yield* fileSystem
+            .exists(path.join(cwd, relativePath, ".git"))
+            .pipe(Effect.orElseSucceed(() => false));
+          if (!isEmbeddedRepo) {
+            continue;
+          }
+          effectivePath = `${relativePath}/`;
+        }
+        pathOutputBytes += Buffer.byteLength(effectivePath) + 1;
+        if (pathOutputBytes > CHECKPOINT_UNTRACKED_PATH_MAX_OUTPUT_BYTES) {
+          return yield* new VcsCheckpointLimitError({
+            operation,
+            cwd,
+            kind: "untracked-path-output-bytes",
+            limit: CHECKPOINT_UNTRACKED_PATH_MAX_OUTPUT_BYTES,
+            observed: pathOutputBytes,
+          });
+        }
+        existingKeptSizes.push(info.size);
+      }
+    }
+
+    const totalUntrackedFiles = untrackedPaths.length + existingKeptSizes.length;
+    if (totalUntrackedFiles > CHECKPOINT_MAX_UNTRACKED_FILES) {
+      return yield* new VcsCheckpointLimitError({
+        operation,
+        cwd,
+        kind: "untracked-file-count",
+        limit: CHECKPOINT_MAX_UNTRACKED_FILES,
+        observed: totalUntrackedFiles,
+      });
+    }
+
+    const maxUntrackedBytes = BigInt(CHECKPOINT_MAX_UNTRACKED_BYTES);
+    let untrackedBytes = 0n;
+    for (const size of existingKeptSizes) {
+      untrackedBytes += size;
+      if (untrackedBytes > maxUntrackedBytes) {
+        return yield* new VcsCheckpointLimitError({
+          operation,
+          cwd,
+          kind: "untracked-file-bytes",
+          limit: CHECKPOINT_MAX_UNTRACKED_BYTES,
+          observed: Number(
+            untrackedBytes > BigInt(Number.MAX_SAFE_INTEGER)
+              ? BigInt(Number.MAX_SAFE_INTEGER)
+              : untrackedBytes,
+          ),
+        });
+      }
+    }
+    for (const relativePath of untrackedPaths) {
+      const info = yield* fileSystem
+        .lstat(path.resolve(cwd, relativePath))
+        .pipe(Effect.orElseSucceed(() => null));
+      if (info === null) {
+        continue;
+      }
+      untrackedBytes += info.size;
+      if (untrackedBytes > maxUntrackedBytes) {
+        return yield* new VcsCheckpointLimitError({
+          operation,
+          cwd,
+          kind: "untracked-file-bytes",
+          limit: CHECKPOINT_MAX_UNTRACKED_BYTES,
+          observed: Number(
+            untrackedBytes > BigInt(Number.MAX_SAFE_INTEGER)
+              ? BigInt(Number.MAX_SAFE_INTEGER)
+              : untrackedBytes,
+          ),
+        });
+      }
+    }
+  });
 
   // Checkpoints must handle existing paths beyond Windows MAX_PATH, even when
   // core.longpaths is disabled in the user's Git configuration.
@@ -1478,7 +1604,7 @@ export const makeVcsDriverShape = Effect.fn("makeGitVcsDriverShape")(function* (
                   hostEnv,
                 }),
               };
-        const previousTree =
+        const claimedCaptureIndex =
           captureIndex === undefined || input.rebuildIndex === true
             ? undefined
             : yield* captureIndexes.claim({
@@ -1491,6 +1617,8 @@ export const makeVcsDriverShape = Effect.fn("makeGitVcsDriverShape")(function* (
                 env: commitEnv,
                 indexConfig,
               });
+        const previousTree = claimedCaptureIndex?.tree;
+        const keptUntrackedPaths = claimedCaptureIndex?.untrackedPaths ?? [];
         if (headExists && previousTree === undefined) {
           const reusedIndex = yield* Effect.gen(function* () {
             const userIndexPath =
@@ -1696,6 +1824,16 @@ export const makeVcsDriverShape = Effect.fn("makeGitVcsDriverShape")(function* (
             });
           }
         }
+        // Validate against the private index after recovery so a damaged user
+        // index cannot prevent capture, and before staging writes any objects.
+        yield* validateCheckpointUntrackedContent(input.cwd, commitEnv, keptUntrackedPaths).pipe(
+          Effect.catchTags({
+            VcsProcessExitError: (error) =>
+              previousTree !== undefined
+                ? Effect.fail(new CheckpointCaptureIndex.StaleCaptureIndex())
+                : Effect.fail(error),
+          }),
+        );
 
         const stageFiles = (exclusions: ReadonlyArray<string>, ignoreErrors = false) =>
           execute({

@@ -10,6 +10,7 @@ import { DEFAULT_SERVER_SETTINGS, ProviderInstanceId } from "@t3tools/contracts"
 import {
   modelPreferencesMigrationPatch,
   resolveModelPreferences,
+  supportsServerModelPreferences,
 } from "@t3tools/shared/serverSettings";
 import type {
   EnvironmentId,
@@ -98,7 +99,7 @@ import { useSelectedThreadWorktree } from "../../state/use-selected-thread-workt
 import { providerWorkspaceSnapshotRefresh } from "../../state/provider-workspace-snapshot-refresh";
 import { threadAllowsProviderSwitch } from "../../state/thread-provider-switching";
 import { environmentServerConfigsAtom, serverEnvironment } from "../../state/server";
-import { mobilePreferencesAtom } from "../../state/preferences";
+import { mobilePreferencesAtom, saveMobilePreferences } from "../../state/preferences";
 import { useAtomCommand } from "../../state/use-atom-command";
 import { useNewTaskFlow } from "./new-task-flow-provider";
 import { ScreenContent } from "../../components/ui/ScreenContent";
@@ -322,6 +323,7 @@ type ThreadSettingsSessionValue = {
   readonly toggleHidden: (option: ModelOption) => void;
   readonly pendingHiddenKeys: ReadonlySet<string>;
   readonly manageHidden: boolean;
+  readonly canManageHidden: boolean;
   readonly setManageHidden: (value: boolean) => void;
   readonly runtimeMode: RuntimeMode;
   readonly runtimeModeChoices: ReadonlyArray<RuntimeModeChoice>;
@@ -367,7 +369,16 @@ function ThreadSettingsSessionProvider(
     props.environmentId ? environmentCatalog.stateAtom(props.environmentId) : null,
   ).data;
   const connectionGeneration = connection?.phase === "connected" ? connection.generation : null;
-  const [manageHidden, setManageHidden] = useState(false);
+  const serverModelPreferences = supportsServerModelPreferences(
+    settings,
+    config?.environment.capabilities,
+  );
+  const saveLocalPreferences = useAtomCommand(
+    saveMobilePreferences,
+    "local model favorites update",
+  );
+  const [manageHiddenEnabled, setManageHidden] = useState(false);
+  const manageHidden = serverModelPreferences && manageHiddenEnabled;
   const pendingHidden = useRef(new Set<string>());
   const pendingFavorites = useRef(
     new Map<string, { favorite: boolean; settings: ServerSettings; pending: boolean }>(),
@@ -399,6 +410,7 @@ function ThreadSettingsSessionProvider(
     if (
       !props.environmentId ||
       !settings ||
+      !serverModelPreferences ||
       !AsyncResult.isSuccess(preferences) ||
       connectionGeneration === null ||
       attemptedMigrationGenerations.get(props.environmentId) === connectionGeneration
@@ -415,6 +427,7 @@ function ThreadSettingsSessionProvider(
     props.environmentId,
     saveSettings,
     settings,
+    serverModelPreferences,
   ]);
   const favoriteKeys = new Set(
     modelFavorites.map((favorite) => modelFavoriteKey(favorite.provider, favorite.model)),
@@ -422,8 +435,30 @@ function ThreadSettingsSessionProvider(
   const toggleFavorite = async (option: ModelOption) => {
     const environmentId = props.environmentId;
     if (!favoritesLoaded || !environmentId) return;
-    const currentSettings = registry.get(environmentServerConfigsAtom).get(environmentId)?.settings;
+    const currentConfig = registry.get(environmentServerConfigsAtom).get(environmentId);
+    const currentSettings = currentConfig?.settings;
     if (!currentSettings) return;
+    if (!supportsServerModelPreferences(currentSettings, currentConfig?.environment.capabilities)) {
+      void Haptics.selectionAsync();
+      void saveLocalPreferences({
+        transform: (current) => {
+          const favorites = current.modelFavorites ?? [];
+          const provider = option.selection.instanceId;
+          const model = option.selection.model;
+          const exists = favorites.some(
+            (favorite) => favorite.provider === provider && favorite.model === model,
+          );
+          return {
+            modelFavorites: exists
+              ? favorites.filter(
+                  (favorite) => favorite.provider !== provider || favorite.model !== model,
+                )
+              : [...favorites, { provider, model }],
+          };
+        },
+      });
+      return;
+    }
     const favorites = resolveModelPreferences(currentSettings, {
       favorites: legacyFavorites,
     }).favorites;
@@ -482,6 +517,7 @@ function ThreadSettingsSessionProvider(
   const toggleHidden = (option: ModelOption) => {
     if (
       !settings ||
+      !serverModelPreferences ||
       !props.environmentId ||
       !option.canHide ||
       pendingHidden.current.has(option.key)
@@ -655,6 +691,7 @@ function ThreadSettingsSessionProvider(
     providerInstanceId: props.providerInstanceId,
     providerGroups,
     manageHidden,
+    canManageHidden: serverModelPreferences,
     setManageHidden,
     toggleHidden,
     pendingHiddenKeys,
@@ -1055,16 +1092,20 @@ function ThreadSettingsOptionsItem(props: {
         </Animated.View>
       </Animated.View>
 
-      <Text className="px-5 pb-2 pt-7 text-sm font-t3-medium text-foreground-muted">
-        {gt("Catalog", { $context: "section heading for the model catalog" })}
-      </Text>
+      {session.canManageHidden && (
+        <Text className="px-5 pb-2 pt-7 text-sm font-t3-medium text-foreground-muted">
+          {gt("Catalog", { $context: "section heading for the model catalog" })}
+        </Text>
+      )}
       <View className="mx-4 overflow-hidden rounded-2xl bg-grouped-card">
-        <SwitchRow
-          label={gt("Manage hidden models")}
-          value={session.manageHidden}
-          onValueChange={session.setManageHidden}
-          isLast
-        />
+        {session.canManageHidden && (
+          <SwitchRow
+            label={gt("Manage hidden models")}
+            value={session.manageHidden}
+            onValueChange={session.setManageHidden}
+            isLast
+          />
+        )}
       </View>
     </View>
   );

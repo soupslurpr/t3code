@@ -932,7 +932,8 @@ it.live.each(["repository", "uppercase", "bare"] as const)(
 it.live("removes a worktree whose ignored folder holds a gitfile pointing nowhere", () =>
   runCleanupTest(
     Effect.gen(function* () {
-      const { service, fs, worktree } = yield* cleanupFixture();
+      const { service, fs, worktree, setPolicy } = yield* cleanupFixture();
+      setPolicy("uncommitted-changes");
       // Packages such as conda-forge's `referencing` ship a test suite's dangling gitlink.
       yield* fs.makeDirectory(`${worktree}/dist/suite`, { recursive: true });
       yield* fs.writeFileString(`${worktree}/dist/suite/.git`, "gitdir: ../.git/modules/x\n");
@@ -947,7 +948,8 @@ it.live("removes a worktree whose ignored folder holds a gitfile pointing nowher
 it.live("keeps a worktree whose gitfile target exists only with its trailing space", () =>
   runCleanupTest(
     Effect.gen(function* () {
-      const { service, fs, worktree } = yield* cleanupFixture();
+      const { service, fs, worktree, setPolicy } = yield* cleanupFixture();
+      setPolicy("uncommitted-changes");
       yield* fs.makeDirectory(`${worktree}/dist/suite/git `, { recursive: true });
       yield* fs.writeFileString(`${worktree}/dist/suite/.git`, "gitdir: git \n");
       const [entry] = (yield* service.runNow).entries;
@@ -1025,7 +1027,9 @@ it.live("keeps an ignored repository inside a registered submodule", () =>
 it.live("removes a task folder's clean worktrees and keeps the one with uncommitted work", () =>
   runCleanupTest(
     Effect.gen(function* () {
-      const { service, fs, repo, command, setTaskFolders, setThreads } = yield* cleanupFixture();
+      const { service, fs, repo, command, setPolicy, setTaskFolders, setThreads } =
+        yield* cleanupFixture();
+      setPolicy("uncommitted-changes");
       const trackedRepository = Effect.fnUntraced(function* (name: string) {
         const folder = `${repo}/dist/${name}`;
         yield* fs.makeDirectory(folder, { recursive: true });
@@ -3666,6 +3670,18 @@ describe("storage cleanup reports and local file policies", () => {
         expect((yield* service.runNow).entries[0]).toMatchObject({ outcome: "kept" });
         yield* command(worktree, ["bisect", "reset"]);
         expect((yield* service.runNow).entries[0]).toMatchObject({ outcome: "removed" });
+      }),
+    ),
+  );
+  it.live("keeps ignored local configuration when cleanup has no explicit file policy", () =>
+    runCleanupTest(
+      Effect.gen(function* () {
+        const { service, fs, worktree } = yield* cleanupFixture();
+        yield* fs.writeFileString(`${worktree}/.env`, "LOCAL_CONFIG=keep\n");
+        const report = yield* service.runNow;
+        expect(report.entries[0]).toMatchObject({ outcome: "kept" });
+        expect(report.entries[0]?.reason).toContain("ignored files (.env)");
+        expect(yield* fs.readFileString(`${worktree}/.env`)).toBe("LOCAL_CONFIG=keep\n");
       }),
     ),
   );

@@ -44,6 +44,7 @@ const cloudMintKeys = NodeCrypto.generateKeyPairSync("ed25519", {
 
 const withService = <A, E>(
   options: {
+    readonly requireConnectDeviceApproval?: boolean;
     readonly failHoldWrite?: boolean;
     readonly failActivityWrite?: boolean;
     readonly relayFails?: boolean;
@@ -92,7 +93,9 @@ const withService = <A, E>(
       { preconnect: () => {} },
     );
     const layerDependencies = Layer.mergeAll(
-      ServerSettings.ServerSettingsService.layerTest(),
+      ServerSettings.ServerSettingsService.layerTest({
+        requireConnectDeviceApproval: options.requireConnectDeviceApproval ?? false,
+      }),
       Layer.mock(ServerSecretStore.ServerSecretStore)({
         get: (name) =>
           (options.failActivityRead && name === PUBLISH_AGENT_ACTIVITY_SECRET) ||
@@ -296,38 +299,42 @@ it.effect("an update the client walks away from still finishes", () => {
   );
 });
 
-it.effect("mints a T3 Connect credential under the host's device approval setting", () =>
-  withService({}, ({ mintCredential, connectCredentialRequests, stored }) =>
-    Effect.gen(function* () {
-      const before = new Set(stored.keys());
-      const proof = yield* signRelayJwt({
-        privateKey: cloudMintKeys.privateKey,
-        typ: RELAY_MINT_REQUEST_TYP,
-        payload: {
-          iss: "https://relay.test",
-          aud: "t3-env:environment-1",
-          sub: "cloud-user-1",
-          // Longer than a file name can be, and not one: the marker is named by a digest.
-          jti: "../mint-jti-1".padEnd(300, "x"),
-          iat: 0,
-          exp: 60,
-          environmentId: "environment-1",
-          clientProofKeyThumbprint: "client-jkt",
-          cnf: { jkt: "client-jkt" },
-          nonce: "mint-nonce-1",
-          scope: ["environment:connect"],
-        },
-      }).pipe(Effect.provide(NodePlatformCrypto.layerSignature));
-      yield* mintCredential({ proof });
-      assert.deepEqual(connectCredentialRequests, [
-        { proofKeyThumbprint: "client-jkt", requireApproval: false },
-      ]);
-      const markers = [...stored.keys()].filter((name) => !before.has(name)).toSorted();
-      assert.lengthOf(markers, 2);
-      assert.match(markers[0]!, /^cloud-mint-jti-[0-9a-f]{64}$/);
-      assert.match(markers[1]!, /^cloud-mint-nonce-[0-9a-f]{64}$/);
-    }),
-  ),
+it.effect.each([false, true])(
+  "mints a T3 Connect credential with device approval set to %s",
+  (requireApproval) =>
+    withService(
+      { requireConnectDeviceApproval: requireApproval },
+      ({ mintCredential, connectCredentialRequests, stored }) =>
+        Effect.gen(function* () {
+          const before = new Set(stored.keys());
+          const proof = yield* signRelayJwt({
+            privateKey: cloudMintKeys.privateKey,
+            typ: RELAY_MINT_REQUEST_TYP,
+            payload: {
+              iss: "https://relay.test",
+              aud: "t3-env:environment-1",
+              sub: "cloud-user-1",
+              // Longer than a file name can be, and not one: the marker is named by a digest.
+              jti: "../mint-jti-1".padEnd(300, "x"),
+              iat: 0,
+              exp: 60,
+              environmentId: "environment-1",
+              clientProofKeyThumbprint: "client-jkt",
+              cnf: { jkt: "client-jkt" },
+              nonce: "mint-nonce-1",
+              scope: ["environment:connect"],
+            },
+          }).pipe(Effect.provide(NodePlatformCrypto.layerSignature));
+          yield* mintCredential({ proof });
+          assert.deepEqual(connectCredentialRequests, [
+            { proofKeyThumbprint: "client-jkt", requireApproval },
+          ]);
+          const markers = [...stored.keys()].filter((name) => !before.has(name)).toSorted();
+          assert.lengthOf(markers, 2);
+          assert.match(markers[0]!, /^cloud-mint-jti-[0-9a-f]{64}$/);
+          assert.match(markers[1]!, /^cloud-mint-nonce-[0-9a-f]{64}$/);
+        }),
+    ),
 );
 
 it.effect("unlinks on startup and refuses to link when the policy turns Connect off", () =>

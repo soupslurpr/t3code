@@ -107,6 +107,7 @@ export function BranchPicker({
       {children}
       <ComboboxPopup {...popupProps}>
         <ComboboxSearchInput
+          aria-label={gt("Search refs")}
           placeholder={gt("Search refs...")}
           value={query}
           onChange={(event) => {

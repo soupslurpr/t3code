@@ -48,17 +48,20 @@ function harness(
           stderrTruncated: false,
         };
       }
-      // gh hands the enterprise variables to every host but github.com.
-      const fromEnterpriseEnv = input.args.includes("github.com")
-        ? undefined
-        : ENTERPRISE_TOKEN_VARIABLES.map(
-            (name) =>
-              (input.env !== undefined && name in input.env ? input.env : process.env)[name],
-          ).find(Boolean);
-      if (fromEnterpriseEnv !== undefined) {
+      const host = input.args[input.args.indexOf("--hostname") + 1]!;
+      const tokenNames =
+        host === "github.com" || host.endsWith(".ghe.com")
+          ? ["GH_TOKEN", "GITHUB_TOKEN"]
+          : ENTERPRISE_TOKEN_VARIABLES;
+      const fromEnv = tokenNames
+        .map(
+          (name) => (input.env !== undefined && name in input.env ? input.env : process.env)[name],
+        )
+        .find(Boolean);
+      if (fromEnv !== undefined) {
         return {
           exitCode: ChildProcessSpawner.ExitCode(0),
-          stdout: `${fromEnterpriseEnv}\n`,
+          stdout: `${fromEnv}\n`,
           stderr: "",
           stdoutTruncated: false,
           stderrTruncated: false,
@@ -140,17 +143,21 @@ describe("GitHubCredentials", () => {
     }).pipe(Effect.provide(layer));
   });
 
-  it.effect("falls back to the active login when the pinned one is no longer signed in", () => {
-    const { layer, calls } = harness({ "github.com": { account: "gone" } }, ["gone"]);
-    return Effect.gen(function* () {
-      const credentials = yield* GitHubCredentials.GitHubCredentials;
-      expect(Redacted.value((yield* credentials.get("github.com")).token)).toBe("active-token");
-      expect(calls).toEqual([
-        ["auth", "token", "--hostname", "github.com", "--user", "gone"],
-        ["auth", "token", "--hostname", "github.com"],
-      ]);
-    }).pipe(Effect.provide(layer));
-  });
+  it.effect.each(["GH_TOKEN", "GITHUB_TOKEN"])(
+    "falls back to the active login when the pinned one is signed out and %s is blank",
+    (name) => {
+      vi.stubEnv(name, "   ");
+      const { layer, calls } = harness({ "github.com": { account: "gone" } }, ["gone"]);
+      return Effect.gen(function* () {
+        const credentials = yield* GitHubCredentials.GitHubCredentials;
+        expect(Redacted.value((yield* credentials.get("github.com")).token)).toBe("active-token");
+        expect(calls).toEqual([
+          ["auth", "token", "--hostname", "github.com", "--user", "gone"],
+          ["auth", "token", "--hostname", "github.com"],
+        ]);
+      }).pipe(Effect.provide(layer));
+    },
+  );
 
   it.effect("uses a token saved in Settings before GH_TOKEN and gh", () => {
     vi.stubEnv("GH_TOKEN", "env-token");

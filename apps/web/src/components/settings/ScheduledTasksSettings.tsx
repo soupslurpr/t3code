@@ -1935,6 +1935,7 @@ function ScheduledTaskEditorForm({
                 onStartFromOriginChange={(startFromOrigin) =>
                   setDraft((current) => ({ ...current, startFromOrigin }))
                 }
+                hasTrackedFolders={(selectedProject?.trackedFolders?.length ?? 0) > 0}
                 disabled={saving || !connected}
               />
             </Field>

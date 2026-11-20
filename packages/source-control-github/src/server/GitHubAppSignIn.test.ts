@@ -28,6 +28,7 @@ type Reply = { readonly status?: number; readonly body: unknown };
 interface Sent {
   readonly host: string;
   readonly path: string;
+  readonly query: URLSearchParams;
   readonly form: URLSearchParams;
   /** The bearer token, if any. */
   readonly token: string | undefined;
@@ -52,7 +53,8 @@ function harness(options: {
   /** Without one, the server has no `gh` login to fall back to. */
   readonly ghSignedIn?: boolean;
   /** Makes every settings write fail, as a full disk would. */
-  readonly settingsWritesFail?: boolean;
+  readonly settingsWritesFail?: boolean | (() => boolean);
+  readonly beforeSettingsWrite?: Effect.Effect<void>;
   /** Holds a request open until it completes, to interleave other work with it. */
   readonly gate?: (sent: Sent) => Effect.Effect<void>;
   /** Defaults to a configured app; null runs without one. */
@@ -64,6 +66,7 @@ function harness(options: {
     const sent: Sent = {
       host: url.host,
       path: url.pathname,
+      query: url.searchParams,
       form: new URLSearchParams(
         request.body._tag === "Uint8Array" ? new TextDecoder().decode(request.body.body) : "",
       ),
@@ -99,23 +102,42 @@ function harness(options: {
     }),
     process: { run },
   });
-  const failingWrites = Layer.effect(
+  const controlledWrites = Layer.effect(
     SourceControlHost.SourceControlHost,
-    Effect.map(Effect.service(SourceControlHost.SourceControlHost), (service) => ({
-      ...service,
-      settings: {
-        ...service.settings,
-        update: () =>
-          Effect.fail(
-            new ServerSettingsError({ settingsPath: "settings.json", operation: "write-file" }),
+    Effect.map(Effect.service(SourceControlHost.SourceControlHost), (service) => {
+      const write = <A>(effect: Effect.Effect<A, ServerSettingsError>) =>
+        (options.beforeSettingsWrite ?? Effect.void).pipe(
+          Effect.andThen(
+            Effect.suspend(() =>
+              (
+                typeof options.settingsWritesFail === "function"
+                  ? options.settingsWritesFail()
+                  : options.settingsWritesFail === true
+              )
+                ? Effect.fail(
+                    new ServerSettingsError({
+                      settingsPath: "settings.json",
+                      operation: "write-file",
+                    }),
+                  )
+                : effect,
+            ),
           ),
-      },
-    })),
+        );
+      return {
+        ...service,
+        settings: {
+          ...service.settings,
+          update: (patch) => write(service.settings.update(patch)),
+          updateWith: (update) => write(service.settings.updateWith(update)),
+        },
+      } satisfies SourceControlHost.SourceControlHost["Service"];
+    }),
   ).pipe(Layer.provideMerge(host));
   const layer = GitHubAppAccess.layer.pipe(
     Layer.provideMerge(GitHubRest.layerWithDependencies),
     Layer.provideMerge(SourceControlRateLimit.layer),
-    Layer.provideMerge(options.settingsWritesFail === true ? failingWrites : host),
+    Layer.provideMerge(controlledWrites),
     Layer.provide(NodeCrypto.layer),
     Layer.provide(
       FeatureFlags.layerTest({
@@ -418,6 +440,203 @@ describe("GitHubAppSignIn", () => {
         expect(yield* savedSignIns).toEqual({});
       }).pipe(Effect.provide(layer));
     });
+
+    it.effect.each([
+      { name: "sign-out", signIns: {}, token: Option.none<string>() },
+      {
+        name: "new sign-in",
+        signIns: { "github.com": session({ accessToken: "ghu_other", refreshToken: "ghr_other" }) },
+        token: Option.some("ghu_other"),
+      },
+      {
+        name: "same access token with changed refresh token",
+        signIns: { "github.com": session({ accessTokenExpiresAt: 0, refreshToken: "ghr_other" }) },
+        token: Option.some("ghu_current"),
+      },
+      {
+        name: "same access token with changed access expiry",
+        signIns: { "github.com": session({ accessTokenExpiresAt: HOUR }) },
+        token: Option.some("ghu_current"),
+      },
+      {
+        name: "same access token with changed refresh expiry",
+        signIns: {
+          "github.com": session({ accessTokenExpiresAt: 0, refreshTokenExpiresAt: HOUR }),
+        },
+        token: Option.some("ghu_current"),
+      },
+    ])("keeps $name that wins before the refresh settings write", (replacement) => {
+      const reached = Deferred.makeUnsafe<void>();
+      const release = Deferred.makeUnsafe<void>();
+      const { layer } = harness({
+        signIns: { "github.com": session({ accessTokenExpiresAt: 0 }) },
+        beforeSettingsWrite: Deferred.succeed(reached, undefined).pipe(
+          Effect.andThen(Deferred.await(release)),
+        ),
+        handle: () => ({ body: refreshed }),
+      });
+      return Effect.gen(function* () {
+        const signIn = yield* GitHubAppSignIn.GitHubAppSignIn;
+        const settings = yield* TestSourceControlHost.TestSourceControlHostSettings;
+        const refreshing = yield* Effect.forkChild(signIn.token("github.com"));
+        yield* Deferred.await(reached);
+        yield* settings.update({
+          sourceControlHosts: { github: { signIns: replacement.signIns } },
+        });
+        yield* Deferred.succeed(release, undefined);
+        expect(yield* Fiber.join(refreshing)).toEqual(replacement.token);
+        expect(yield* savedSignIns).toEqual(replacement.signIns);
+      }).pipe(Effect.provide(layer));
+    });
+
+    it.effect.each(["success", "bad refresh"] as const)(
+      "keeps a newer sign-in made during the %s response",
+      (answer) => {
+        const reached = Deferred.makeUnsafe<void>();
+        const release = Deferred.makeUnsafe<void>();
+        const signIns = { "github.com": session({ accessToken: "ghu_other" }) };
+        const { layer } = harness({
+          signIns: { "github.com": session({ accessTokenExpiresAt: 0 }) },
+          gate: () =>
+            Deferred.succeed(reached, undefined).pipe(Effect.andThen(Deferred.await(release))),
+          handle: () => ({
+            body: answer === "success" ? refreshed : { error: "bad_refresh_token" },
+          }),
+        });
+        return Effect.gen(function* () {
+          const signIn = yield* GitHubAppSignIn.GitHubAppSignIn;
+          const settings = yield* TestSourceControlHost.TestSourceControlHostSettings;
+          const refreshing = yield* Effect.forkChild(signIn.token("github.com"));
+          yield* Deferred.await(reached);
+          yield* settings.update({ sourceControlHosts: { github: { signIns } } });
+          yield* Deferred.succeed(release, undefined);
+          expect(yield* Fiber.join(refreshing)).toEqual(Option.some("ghu_other"));
+          expect(yield* savedSignIns).toEqual(signIns);
+        }).pipe(Effect.provide(layer));
+      },
+    );
+
+    it.effect.each(["expired refresh", "missing refresh", "bad refresh"] as const)(
+      "does not clear a newer sign-in when the old session has %s",
+      (failure) => {
+        const reached = Deferred.makeUnsafe<void>();
+        const release = Deferred.makeUnsafe<void>();
+        const signIns = { "github.com": session({ accessToken: "ghu_other" }) };
+        const { layer, requests } = harness({
+          signIns: {
+            "github.com": session({
+              accessTokenExpiresAt: 0,
+              ...(failure === "expired refresh" ? { refreshTokenExpiresAt: 0 } : {}),
+              ...(failure === "missing refresh" ? { refreshToken: null } : {}),
+            }),
+          },
+          beforeSettingsWrite: Deferred.succeed(reached, undefined).pipe(
+            Effect.andThen(Deferred.await(release)),
+          ),
+          handle: () => ({ body: { error: "bad_refresh_token" } }),
+        });
+        return Effect.gen(function* () {
+          const signIn = yield* GitHubAppSignIn.GitHubAppSignIn;
+          const settings = yield* TestSourceControlHost.TestSourceControlHostSettings;
+          const refreshing = yield* Effect.forkChild(signIn.token("github.com"));
+          yield* Deferred.await(reached);
+          yield* settings.update({ sourceControlHosts: { github: { signIns } } });
+          yield* Deferred.succeed(release, undefined);
+          expect(yield* Fiber.join(refreshing)).toEqual(Option.some("ghu_other"));
+          expect(yield* savedSignIns).toEqual(signIns);
+          expect(requests).toHaveLength(failure === "bad refresh" ? 1 : 0);
+        }).pipe(Effect.provide(layer));
+      },
+    );
+
+    it.effect("retries saving the same refresh without repeating the network request", () => {
+      let attempts = 0;
+      const firstAttempt = Deferred.makeUnsafe<void>();
+      const { layer, requests } = harness({
+        signIns: { "github.com": session({ accessTokenExpiresAt: 0 }) },
+        beforeSettingsWrite: Effect.sync(() => attempts++).pipe(
+          Effect.andThen(Deferred.succeed(firstAttempt, undefined)),
+        ),
+        settingsWritesFail: () => attempts < 3,
+        handle: () => ({ body: refreshed }),
+      });
+      return Effect.gen(function* () {
+        const signIn = yield* GitHubAppSignIn.GitHubAppSignIn;
+        const refreshing = yield* Effect.forkChild(signIn.token("github.com"));
+        yield* Deferred.await(firstAttempt);
+        yield* TestClock.adjust("1 second");
+        expect(yield* Fiber.join(refreshing)).toEqual(Option.some("ghu_refreshed"));
+        expect(JSON.parse((yield* savedSignIns)["github.com"] ?? "").accessToken).toBe(
+          "ghu_refreshed",
+        );
+        expect(attempts).toBe(3);
+        expect(requests).toHaveLength(1);
+      }).pipe(Effect.provide(layer));
+    });
+
+    it.effect.each(["sign-out", "new sign-in"] as const)(
+      "does not reuse the prior token after %s during a failed network refresh",
+      (replacement) => {
+        const reached = Deferred.makeUnsafe<void>();
+        const release = Deferred.makeUnsafe<void>();
+        const signIns =
+          replacement === "sign-out" ? {} : { "github.com": session({ accessToken: "ghu_other" }) };
+        const { layer } = harness({
+          signIns: { "github.com": session({ accessTokenExpiresAt: 3 * 60_000 }) },
+          gate: () =>
+            Deferred.succeed(reached, undefined).pipe(Effect.andThen(Deferred.await(release))),
+          handle: () => ({ status: 502, body: {} }),
+        });
+        return Effect.gen(function* () {
+          const signIn = yield* GitHubAppSignIn.GitHubAppSignIn;
+          const settings = yield* TestSourceControlHost.TestSourceControlHostSettings;
+          const refreshing = yield* Effect.forkChild(signIn.token("github.com"));
+          yield* Deferred.await(reached);
+          yield* settings.update({ sourceControlHosts: { github: { signIns } } });
+          yield* Deferred.succeed(release, undefined);
+          expect(yield* Fiber.join(refreshing)).toEqual(
+            replacement === "sign-out" ? Option.none() : Option.some("ghu_other"),
+          );
+          expect(yield* savedSignIns).toEqual(signIns);
+        }).pipe(Effect.provide(layer));
+      },
+    );
+
+    it.effect.each(["sign-out", "new sign-in"] as const)(
+      "does not serve an unsaved refreshed token after %s wins during save failure",
+      (replacement) => {
+        let attempts = 0;
+        const lastAttempt = Deferred.makeUnsafe<void>();
+        const release = Deferred.makeUnsafe<void>();
+        const signIns =
+          replacement === "sign-out" ? {} : { "github.com": session({ accessToken: "ghu_other" }) };
+        const { layer } = harness({
+          signIns: { "github.com": session({ accessTokenExpiresAt: 0 }) },
+          beforeSettingsWrite: Effect.suspend(() =>
+            ++attempts === 3
+              ? Deferred.succeed(lastAttempt, undefined).pipe(
+                  Effect.andThen(Deferred.await(release)),
+                )
+              : Effect.void,
+          ),
+          settingsWritesFail: true,
+          handle: () => ({ body: refreshed }),
+        });
+        return Effect.gen(function* () {
+          const signIn = yield* GitHubAppSignIn.GitHubAppSignIn;
+          const settings = yield* TestSourceControlHost.TestSourceControlHostSettings;
+          const refreshing = yield* Effect.forkChild(signIn.token("github.com"));
+          yield* TestClock.adjust("1 second");
+          yield* Deferred.await(lastAttempt);
+          yield* settings.update({ sourceControlHosts: { github: { signIns } } });
+          yield* Deferred.succeed(release, undefined);
+          expect(yield* Fiber.join(refreshing)).toEqual(
+            replacement === "sign-out" ? Option.none() : Option.some("ghu_other"),
+          );
+          expect(yield* savedSignIns).toEqual(signIns);
+        }).pipe(Effect.provide(layer));
+      },
+    );
   });
 });
 
@@ -567,6 +786,7 @@ describe("GitHubAppAccess", () => {
         ];
       }).pipe(Effect.provide(failing.layer));
       expect(answers).toEqual(["covered", "covered"]);
+      expect(signedOut.requests).toHaveLength(0);
       // A failed read is kept briefly instead of asked again per request.
       expect(failing.requests).toHaveLength(1);
     });
@@ -581,6 +801,8 @@ describe("GitHubAppAccess", () => {
           .credentialFor("github.com", repository)
           .pipe(Effect.map((held) => Redacted.value(held.token)));
       expect(yield* tokenFor("pingdotgg/t3code")).toBe("ghu_current");
+      expect(yield* tokenFor("acme/one")).toBe("ghu_current");
+      expect(yield* tokenFor("acme/two")).toBe("gh-token");
       expect(yield* tokenFor("someone/else")).toBe("gh-token");
     }).pipe(Effect.provide(layer));
   });
@@ -604,6 +826,135 @@ describe("GitHubAppAccess", () => {
       expect(yield* tokenFor.pipe(Effect.provide(appOnly.layer))).toBe("ghu_current");
     });
   });
+
+  it.effect.each([
+    { repository: "acme/repo-0", reach: "covered", token: "ghu_current", personal: true },
+    { repository: "acme/repo-999", reach: "covered", token: "ghu_current", personal: true },
+    { repository: "acme/unseen", reach: "covered", token: "gh-token", personal: true },
+    { repository: "acme/unseen", reach: "covered", token: "ghu_current", personal: false },
+    { repository: "outside/unseen", reach: "not-covered", token: "gh-token", personal: true },
+  ])("keeps capped selected coverage honest for $repository (personal=$personal)", (row) => {
+    const { layer, requests } = harness({
+      signIns: { "github.com": session() },
+      ghSignedIn: row.personal,
+      handle: (sent) => {
+        if (sent.path === "/user/installations") {
+          return {
+            body: {
+              installations: [
+                { id: 1, repository_selection: "selected", account: { login: "Acme" } },
+              ],
+            },
+          };
+        }
+        expect(sent.path).toBe("/user/installations/1/repositories");
+        expect(sent.query.get("per_page")).toBe("100");
+        const page = Number(sent.query.get("page"));
+        return {
+          body: {
+            repositories: Array.from({ length: 100 }, (_, index) => ({
+              full_name: `Acme/repo-${(page - 1) * 100 + index}`,
+            })),
+          },
+        };
+      },
+    });
+    return Effect.gen(function* () {
+      const access = yield* GitHubAppAccess.GitHubAppAccess;
+      expect(yield* access.reach("github.com", row.repository)).toBe(row.reach);
+      const held = yield* access.credentialFor("github.com", row.repository);
+      expect(Redacted.value(held.token)).toBe(row.token);
+      expect(requests).toHaveLength(11);
+      expect(requests.slice(1).map((sent) => sent.query.get("page"))).toEqual(
+        Array.from({ length: 10 }, (_, index) => String(index + 1)),
+      );
+      expect(new Set(requests.map((sent) => sent.token))).toEqual(new Set(["ghu_current"]));
+    }).pipe(Effect.provide(layer));
+  });
+
+  it.effect.each([
+    { repository: "unseen/repo", complete: false, reach: "covered", token: "gh-token" },
+    { repository: "unseen/repo", complete: true, reach: "not-covered", token: "gh-token" },
+    { repository: "org-999/repo", complete: false, reach: "covered", token: "ghu_current" },
+    { repository: "acme/one", complete: false, reach: "covered", token: "ghu_current" },
+    { repository: "acme/unseen", complete: false, reach: "covered", token: "gh-token" },
+  ])("distinguishes incomplete installations for $repository (complete=$complete)", (row) => {
+    const { layer, requests } = harness({
+      signIns: { "github.com": session() },
+      handle: (sent) => {
+        if (sent.path === "/user/installations/1/repositories") {
+          return { body: { repositories: [{ full_name: "acme/one" }] } };
+        }
+        expect(sent.path).toBe("/user/installations");
+        expect(sent.query.get("per_page")).toBe("100");
+        const page = Number(sent.query.get("page"));
+        return {
+          body: {
+            installations: Array.from(
+              { length: row.complete && page === 10 ? 99 : 100 },
+              (_, index) => {
+                const ordinal = (page - 1) * 100 + index;
+                return {
+                  id: ordinal + 1,
+                  repository_selection: ordinal === 0 ? "selected" : "all",
+                  account: { login: ordinal === 0 ? "acme" : `org-${ordinal}` },
+                };
+              },
+            ),
+          },
+        };
+      },
+    });
+    return Effect.gen(function* () {
+      const access = yield* GitHubAppAccess.GitHubAppAccess;
+      expect(yield* access.reach("github.com", row.repository)).toBe(row.reach);
+      const held = yield* access.credentialFor("github.com", row.repository);
+      expect(Redacted.value(held.token)).toBe(row.token);
+      expect(requests).toHaveLength(11);
+      expect(requests.slice(0, 10).map((sent) => sent.query.get("page"))).toEqual(
+        Array.from({ length: 10 }, (_, index) => String(index + 1)),
+      );
+    }).pipe(Effect.provide(layer));
+  });
+
+  it.effect.each(["installations-http", "repositories-http", "repositories-schema"] as const)(
+    "keeps %s coverage failures unconfirmed until the cached read expires",
+    (failure) => {
+      let failing = true;
+      const { layer, requests } = harness({
+        signIns: { "github.com": session() },
+        handle: (sent) => {
+          const failedPath =
+            failure === "installations-http"
+              ? "/user/installations"
+              : "/user/installations/2/repositories";
+          return failing && sent.path === failedPath
+            ? { status: failure === "repositories-schema" ? 200 : 502, body: {} }
+            : installedOn(sent);
+        },
+      });
+      return Effect.gen(function* () {
+        const access = yield* GitHubAppAccess.GitHubAppAccess;
+        const tokenFor = (repository: string) =>
+          access
+            .credentialFor("github.com", repository)
+            .pipe(Effect.map((held) => Redacted.value(held.token)));
+        expect(yield* access.reach("github.com", "acme/one")).toBe("covered");
+        expect(yield* tokenFor("acme/one")).toBe("gh-token");
+        const failedReads = failure === "installations-http" ? 1 : 2;
+        expect(requests).toHaveLength(failedReads);
+        failing = false;
+        expect(yield* access.reach("github.com", "acme/two")).toBe("covered");
+        expect(yield* tokenFor("acme/one")).toBe("gh-token");
+        expect(requests).toHaveLength(failedReads);
+        yield* TestClock.adjust("31 seconds");
+        expect(yield* tokenFor("acme/one")).toBe("ghu_current");
+        expect(yield* access.reach("github.com", "acme/two")).toBe("not-covered");
+        expect(yield* tokenFor("acme/two")).toBe("gh-token");
+        expect(requests).toHaveLength(failedReads + 2);
+      }).pipe(Effect.provide(layer));
+    },
+  );
 
   it.effect("names the account the app sign-in acts as", () => {
     const { layer } = harness({

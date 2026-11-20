@@ -2680,6 +2680,42 @@ describe("VcsStatusBroadcaster", () => {
     }).pipe(Effect.provide(layerTestFor(state)));
   });
 
+  it.effect(
+    "interrupts an active status producer and its waiters when the broadcaster closes",
+    () =>
+      Effect.gen(function* () {
+        const scope = yield* Scope.make();
+        const started = yield* Deferred.make<void>();
+        const interrupted = yield* Deferred.make<void>();
+        const context = yield* Layer.buildWithScope(
+          layerTestFor({
+            currentLocalStatus: baseLocalStatus,
+            currentRemoteStatus: baseRemoteStatus,
+            localStatusCalls: 0,
+            remoteStatusCalls: 0,
+            localInvalidationCalls: 0,
+            remoteInvalidationCalls: 0,
+            beforeRemoteStatus: Deferred.succeed(started, undefined).pipe(
+              Effect.andThen(Effect.never),
+              Effect.onInterrupt(() => Deferred.succeed(interrupted, undefined)),
+            ),
+          }),
+          scope,
+        );
+        const broadcaster = yield* Effect.provide(
+          VcsStatusBroadcaster.VcsStatusBroadcaster,
+          context,
+        );
+        const request = yield* broadcaster
+          .refreshStatus("/repo")
+          .pipe(Effect.exit, Effect.forkChild);
+        yield* Deferred.await(started);
+        yield* Scope.close(scope, Exit.void);
+        yield* Deferred.await(interrupted);
+        assert.isTrue(Exit.isFailure(yield* Fiber.join(request)));
+      }),
+  );
+
   it.effect("a failed refresh releases interrupted waiters and runs the shared follow-up", () => {
     const state: Parameters<typeof layerTestFor>[0] = {
       currentLocalStatus: baseLocalStatus,

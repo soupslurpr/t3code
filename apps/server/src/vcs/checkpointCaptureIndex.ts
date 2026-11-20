@@ -259,6 +259,7 @@ export const make = (
         }
       }
 
+      const untrackedPaths: string[] = [];
       if (candidates.length > 0) {
         // Paths HEAD lacks are untracked to a rebuilt index: add -A skips them once ignored,
         // and stages a directory that became a repository as one gitlink.
@@ -317,8 +318,12 @@ export const make = (
             (entry.mode === "160000" && !repositories.has(entry.path))
           ) {
             updates.push(`0 ${entry.oid}\t${entry.path}`);
-          } else if (entry.mode !== "160000") {
-            kept.add(entry.oid);
+          } else {
+            const relative = entry.path.slice(input.prefix.length);
+            untrackedPaths.push(entry.mode === "160000" ? `${relative}/` : relative);
+            if (entry.mode !== "160000") {
+              kept.add(entry.oid);
+            }
           }
         }
       }
@@ -346,7 +351,7 @@ export const make = (
           env: input.env,
         });
       }
-      return meta.tree;
+      return { tree: meta.tree, untrackedPaths };
     },
     Effect.orElseSucceed(() => undefined),
   );

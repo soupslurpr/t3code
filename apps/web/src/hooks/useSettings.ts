@@ -41,8 +41,10 @@ import {
   themeAllowsSidebarArtwork,
 } from "~/themePalette";
 import {
+  applyServerSettingsPatch,
   modelPreferencesMigrationPatch,
   resolveModelPreferences,
+  supportsServerModelPreferences,
 } from "@t3tools/shared/serverSettings";
 import * as Equal from "effect/Equal";
 import * as Struct from "effect/Struct";
@@ -80,6 +82,7 @@ let clientSettingsHydrationGeneration = 0;
 let clientSettingsPersistenceQueue: Promise<void> = Promise.resolve();
 let deferredClientSettingsPatchCount = 0;
 let unsubscribeOtherTabClientSettings: (() => void) | null = null;
+let pendingLocalModelPreferenceUpdates = 0;
 
 function emitClientSettingsChange() {
   for (const listener of clientSettingsListeners) {
@@ -364,14 +367,17 @@ const modelPreferencesMigrationTargetsAtom = Atom.make((get) =>
       },
     );
     const settings = get(serverEnvironment.settingsValueAtom(environmentId));
-    return generation === null || settings === null
+    const config = get(serverEnvironment.configValueAtom(environmentId));
+    return generation === null ||
+      settings === null ||
+      !supportsServerModelPreferences(settings, config?.environment.capabilities)
       ? []
       : [{ environmentId, generation, settings }];
   }),
 ).pipe(Atom.withLabel("web-model-preferences-migration-targets"));
 
 function migrateModelPreferences(): void {
-  if (clientSettingsHydrationStatus !== "ready") return;
+  if (clientSettingsHydrationStatus !== "ready" || pendingLocalModelPreferenceUpdates > 0) return;
   for (const { environmentId, generation, settings } of appAtomRegistry.get(
     modelPreferencesMigrationTargetsAtom,
   )) {
@@ -449,25 +455,51 @@ export async function prepareModelPreferencesPatch(
 ): Promise<ServerSettingsPatch> {
   if (settings.favorites === null || settings.providerModelPreferences === null) {
     await ensureClientSettingsHydrated();
+    await clientSettingsPersistenceQueue;
   }
   return { ...modelPreferencesMigrationPatch(settings, getClientSettings()), ...patch };
 }
 
+export async function persistLocalModelPreferences(patch: ServerSettingsPatch): Promise<void> {
+  pendingLocalModelPreferenceUpdates += 1;
+  try {
+    await persistClientSettingsUpdate((current) => ({
+      ...current,
+      ...resolveModelPreferences(
+        applyServerSettingsPatch(
+          {
+            ...DEFAULT_SERVER_SETTINGS,
+            favorites: current.favorites,
+            providerModelPreferences: current.providerModelPreferences,
+          },
+          patch,
+        ),
+      ),
+    }));
+  } finally {
+    pendingLocalModelPreferenceUpdates -= 1;
+    if (pendingLocalModelPreferenceUpdates === 0) emitClientSettingsChange();
+  }
+}
+
 export function useUpdateEnvironmentModelPreferences(environmentId: EnvironmentId | null) {
-  const settings = useAtomValue(
-    environmentId ? serverEnvironment.settingsValueAtom(environmentId) : noEnvironmentSettingsAtom,
-  );
+  const config = useAtomValue(serverEnvironment.configValueAtom(environmentId));
+  const settings = config?.settings;
   const save = useAtomCommand(serverEnvironment.updateSettings, "model preferences update");
   return async (patch: ServerSettingsPatch) => {
     if (!environmentId || !settings) return;
     let prepared: ServerSettingsPatch;
     try {
+      if (!supportsServerModelPreferences(settings, config?.environment.capabilities)) {
+        await persistLocalModelPreferences(patch);
+        return;
+      }
       prepared = await prepareModelPreferencesPatch(settings, patch);
     } catch {
       toastManager.add({
         type: "error",
         title: m(msg("Model preferences not saved")),
-        description: m(msg("Could not load saved model preferences. Try again.")),
+        description: m(msg("Could not save model preferences. Try again.")),
       });
       return;
     }
@@ -821,6 +853,7 @@ export function __resetClientSettingsPersistenceForTests(): void {
   deferredClientSettingsPatchCount = 0;
   unsubscribeOtherTabClientSettings?.();
   unsubscribeOtherTabClientSettings = null;
+  pendingLocalModelPreferenceUpdates = 0;
   clientSettingsListeners.clear();
   clientSettingsHydrationListeners.clear();
 }

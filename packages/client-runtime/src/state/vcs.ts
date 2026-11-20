@@ -35,7 +35,11 @@ import {
   type EnvironmentRpcInput,
 } from "../rpc/client.ts";
 import { followStreamInEnvironment } from "./runtime.ts";
-import { vcsCommandConcurrency, vcsCommandScheduler } from "./vcsCommandScheduler.ts";
+import {
+  vcsCommandConcurrency,
+  vcsCommandScheduler,
+  vcsRefreshCommandConcurrency,
+} from "./vcsCommandScheduler.ts";
 import {
   invalidateCachedVcsRefs,
   invalidateCachedVcsRefsIfChanged,
@@ -286,7 +290,8 @@ export function createVcsEnvironmentAtoms<R, E>(
   const listRefs = (target: {
     readonly environmentId: EnvironmentId;
     readonly input: VcsListRefsInput;
-  }) => listRefsFamily(JSON.stringify([target.environmentId, target.input]));
+    readonly cacheKey?: string;
+  }) => listRefsFamily(JSON.stringify([target.environmentId, target.input, target.cacheKey]));
   const invalidateRefs = (
     target: { readonly environmentId: EnvironmentId; readonly input: { readonly cwd: string } },
     registry: AtomRegistry.AtomRegistry,
@@ -353,7 +358,7 @@ export function createVcsEnvironmentAtoms<R, E>(
       label: "environment-data:vcs:refresh-status",
       tag: WS_METHODS.vcsRefreshStatus,
       scheduler: vcsCommandScheduler,
-      concurrency: vcsCommandConcurrency,
+      concurrency: vcsRefreshCommandConcurrency,
       onSettled: invalidateRefsIfChanged,
     }),
     // Outside the serial queue: it only reads status, and a checkout picked right after opening

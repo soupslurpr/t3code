@@ -20,6 +20,7 @@ export function WorktreeBaseBranchPicker({
   onValueChange,
   startFromOrigin,
   onStartFromOriginChange,
+  hasTrackedFolders = false,
   disabled = false,
   id,
 }: {
@@ -29,6 +30,7 @@ export function WorktreeBaseBranchPicker({
   onValueChange: (branch: string) => void;
   startFromOrigin: boolean;
   onStartFromOriginChange: (checked: boolean) => void;
+  hasTrackedFolders?: boolean;
   disabled?: boolean;
   id?: string;
 }) {
@@ -88,8 +90,11 @@ export function WorktreeBaseBranchPicker({
           : null);
   const handleOpenChange = (next: boolean) => {
     setOpen(next);
-    if (next && !open && cwd !== null) {
-      void refreshLocalStatusForPicker({ environmentId, input: { cwd } });
+    if (next && !open) {
+      branches.refresh();
+      if (cwd !== null) {
+        void refreshLocalStatusForPicker({ environmentId, input: { cwd } });
+      }
     }
     if (!next) setQuery("");
   };
@@ -110,7 +115,11 @@ export function WorktreeBaseBranchPicker({
       isFetchingNextPage={branches.isFetchingNextPage}
       onLoadNext={branches.loadNext}
       statusText={statusText}
-      originControl={{ checked: startFromOrigin, onCheckedChange: onStartFromOriginChange }}
+      originControl={
+        branches.data?.hasPrimaryRemote === true || hasTrackedFolders
+          ? { checked: startFromOrigin, onCheckedChange: onStartFromOriginChange }
+          : undefined
+      }
       popupProps={{ align: "start", side: "bottom", className: "flex w-80 flex-col" }}
       renderItem={(name, index) => {
         const branch = branchByName.get(name);

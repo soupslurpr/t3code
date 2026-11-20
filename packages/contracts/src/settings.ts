@@ -1188,7 +1188,7 @@ export type WorktreeKeepWhen = typeof WorktreeKeepWhen.Type;
 
 export const WorktreeCleanupRules = Schema.Struct({
   worktreeKeepWhen: WorktreeKeepWhen.pipe(
-    Schema.withDecodingDefault(Effect.succeed("uncommitted-changes")),
+    Schema.withDecodingDefault(Effect.succeed("any-local-files")),
   ),
   worktreeAfterDays: StorageRetentionDays,
   worktreeSettledAfterDays: SettledWorktreeRetentionDays.pipe(
@@ -1371,7 +1371,7 @@ export type StorageCleanupReport = typeof StorageCleanupReport.Type;
 
 export const StorageCleanupSettings = Schema.Struct({
   worktreeKeepWhen: WorktreeKeepWhen.pipe(
-    Schema.withDecodingDefault(Effect.succeed("uncommitted-changes")),
+    Schema.withDecodingDefault(Effect.succeed("any-local-files")),
   ),
   worktreeAfterDays: StorageRetentionDays.pipe(Schema.withDecodingDefault(Effect.succeed(null))),
   worktreeSettledAfterDays: SettledWorktreeRetentionDays.pipe(
@@ -1508,7 +1508,7 @@ export const ServerSettings = Schema.Struct({
   ),
   idleCompaction: Schema.optionalKey(IdleCompactionMode),
   snoozeLimitedThreads: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(false))),
-  autoResumeLimitedThreads: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(false))),
+  autoResumeLimitedThreads: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(true))),
   snoozePresets: SnoozePresetSettings.pipe(
     Schema.withDecodingDefault(Effect.succeed(DEFAULT_SNOOZE_PRESETS)),
   ),
