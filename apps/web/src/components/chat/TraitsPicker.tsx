@@ -1,6 +1,7 @@
 import {
   buildTraitsTriggerDisplay,
   getDescriptorStringValue,
+  getLocalizedProviderOptionDescriptors,
   getTraitSelectChange,
   replaceDescriptorCurrentValue,
   selectableProviderOptionChoices,
@@ -18,7 +19,6 @@ import {
 import {
   buildProviderOptionSelectionsFromDescriptors,
   getProviderOptionCurrentLabel,
-  getProviderOptionDescriptors,
   isClaudeUltrathinkPrompt,
   normalizeModelSlug,
 } from "@t3tools/shared/model";
@@ -137,10 +137,7 @@ function getSelectedTraits(
           : modelOptions?.filter((option) => option.id !== "agent" || option.value !== "plan"),
         resolve,
       )
-    : getProviderOptionDescriptors({
-        caps,
-        selections: modelOptions,
-      });
+    : getLocalizedProviderOptionDescriptors({ caps, selections: modelOptions }, resolve);
   const selectDescriptors = descriptors.filter(
     (descriptor): descriptor is Extract<ProviderOptionDescriptor, { type: "select" }> =>
       descriptor.type === "select",

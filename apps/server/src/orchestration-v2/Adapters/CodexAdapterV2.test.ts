@@ -157,6 +157,56 @@ describe("CodexAdapterV2 assistant message streaming", () => {
 });
 
 describe("CodexAdapterV2 runtime policy", () => {
+  it.effect.each(["default", "plan"] as const)(
+    "requests explicit cyber access programs and restores automatic behavior in %s mode",
+    (interactionMode) =>
+      Effect.gen(function* () {
+        for (const program of ["daybreakBlue", "standard", "daybreakRed", "automatic", undefined]) {
+          const params = yield* CodexAdapterV2.buildCodexTurnStartParams({
+            nativeThreadId: "cyber-access-thread",
+            cyberAccess: { defaultProgram: undefined },
+            codexInput: [{ type: "text", text: "Review this patch" }],
+            runtimePolicy: { runtimeMode: "auto", interactionMode, cwd: null },
+            modelSelection: {
+              instanceId: ProviderInstanceId.make("codex"),
+              model: "gpt-6-sol",
+              options: program === undefined ? [] : [{ id: "cyberAccessProgram", value: program }],
+            },
+            omitServiceTier: true,
+          });
+          assert.equal(params.model, "gpt-6-sol");
+          if (program === "automatic" || program === undefined)
+            assert.notProperty(params, "cyberAccessProgram");
+          else assert.equal(params.cyberAccessProgram, program);
+        }
+      }),
+  );
+
+  it.effect.each(
+    (["default", "plan"] as const).flatMap((interactionMode) =>
+      ["invalid-program", true, false].map((value) => ({ interactionMode, value })),
+    ),
+  )(
+    "rejects invalid cyber access program $value in $interactionMode mode",
+    ({ interactionMode, value }) =>
+      Effect.gen(function* () {
+        const error = yield* Effect.flip(
+          CodexAdapterV2.buildCodexTurnStartParams({
+            nativeThreadId: "cyber-access-thread",
+            cyberAccess: { defaultProgram: undefined },
+            codexInput: [],
+            runtimePolicy: { runtimeMode: "auto", interactionMode, cwd: null },
+            modelSelection: {
+              instanceId: ProviderInstanceId.make("codex"),
+              model: "gpt-6.1-sol",
+              options: [{ id: "cyberAccessProgram", value }],
+            },
+          }),
+        );
+        assert.equal(error._tag, "SchemaError");
+      }),
+  );
+
   it.effect.each([undefined, false, true])(
     "selects native collaboration modes without prompt overrides with hasT3Mcp=%s",
     (hasT3Mcp) =>

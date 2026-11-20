@@ -34,11 +34,20 @@ import {
   getModelSelectionStringOptionValue,
   readCustomModelEntries,
 } from "@t3tools/shared/model";
-import { getCodexServiceTierOptionValue } from "../codexModelOptions.ts";
+import {
+  getCodexServiceTierOptionValue,
+  selectedCodexAccessProgram,
+  codexCyberAccess,
+} from "../codexModelOptions.ts";
 import * as HostProcess from "@t3tools/shared/HostProcess";
 
 const CODEX_TIMEOUT_MS = 180_000;
 const CODEX_MCP_LIST_TIMEOUT_MS = 10_000;
+const CODEX_CLI_ACCESS_PROGRAMS = {
+  standard: "standard",
+  daybreakBlue: "daybreak_blue",
+  daybreakRed: "daybreak_red",
+} as const;
 // Plugins/apps add MCP servers; use trailing config overrides because --disable loses to user -c flags.
 // Codex also reads the legacy connectors key for apps.
 const CODEX_NO_PLUGIN_ARGS = [
@@ -288,6 +297,14 @@ export const makeCodexTextGeneration = Effect.fn("makeCodexTextGeneration")(func
         DEFAULT_TEXT_GENERATION_REASONING_EFFORT;
       const serviceTier =
         resolved || fellBack ? undefined : getCodexServiceTierOptionValue(modelSelection);
+      const cyberAccessProgram = yield* selectedCodexAccessProgram(
+        modelSelection,
+        fellBack ? undefined : codexCyberAccess(models, model),
+      ).pipe(
+        Effect.mapError(
+          () => new TextGenerationError({ operation, detail: "Invalid Codex access program." }),
+        ),
+      );
       const binary = effectiveConfig.binaryPath || "codex";
       const env = {
         ...codexAppServerEnvironment(effectiveEnvironment),
@@ -336,6 +353,9 @@ export const makeCodexTextGeneration = Effect.fn("makeCodexTextGeneration")(func
           "--config",
           "features.hooks=false",
           ...(serviceTier ? ["--config", `service_tier="${serviceTier}"`] : []),
+          ...(cyberAccessProgram
+            ? ["--cyber-access-program", CODEX_CLI_ACCESS_PROGRAMS[cyberAccessProgram]]
+            : []),
           "--output-schema",
           schemaPath,
           "--output-last-message",

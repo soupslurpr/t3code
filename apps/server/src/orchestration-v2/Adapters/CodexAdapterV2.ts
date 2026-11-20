@@ -115,7 +115,11 @@ import { ChildProcess, ChildProcessSpawner } from "effect/process";
 
 import { resolveAttachmentPath, resolveAttachmentPathById } from "../../attachmentStore.ts";
 import * as PortScanner from "../../preview/PortScanner.ts";
-import { getCodexServiceTierOptionValue } from "../../codexModelOptions.ts";
+import {
+  codexCyberAccess,
+  getCodexServiceTierOptionValue,
+  selectedCodexAccessProgram,
+} from "../../codexModelOptions.ts";
 import { ServerConfig } from "../../config.ts";
 import { expandHomePath } from "@t3tools/provider-core/server/pathExpansion";
 import { buildCodexAdditionalContext } from "../../provider/CodexDeveloperInstructions.ts";
@@ -899,18 +903,6 @@ function codexRuntimeModeTurnDefaults(runtimeMode: RuntimeMode): {
   }
 }
 
-const isCodexCyberAccessProgram = Schema.is(CodexSchema.V2TurnStartParams__CyberAccessProgram);
-
-function codexCyberAccess(
-  models: ReadonlyArray<ServerProviderModel>,
-  model: string,
-): { readonly defaultProgram: string | undefined } | undefined {
-  const descriptor = models
-    .find((candidate) => candidate.slug === model)
-    ?.capabilities?.optionDescriptors?.find((candidate) => candidate.id === "cyberAccessProgram");
-  return descriptor?.type === "select" ? { defaultProgram: descriptor.currentValue } : undefined;
-}
-
 export const buildCodexTurnStartParams = Effect.fn("CodexAdapterV2.buildCodexTurnStartParams")(
   function* (input: {
     readonly nativeThreadId: string;
@@ -957,14 +949,10 @@ export const buildCodexTurnStartParams = Effect.fn("CodexAdapterV2.buildCodexTur
       input.omitServiceTier === true
         ? undefined
         : getCodexServiceTierOptionValue(input.modelSelection);
-    // A chosen program goes as is, even one the model lacks, so Codex rejects it visibly.
-    const cyberAccessProgram =
-      input.cyberAccess === undefined
-        ? undefined
-        : [
-            getModelSelectionStringOptionValue(input.modelSelection, "cyberAccessProgram"),
-            input.cyberAccess.defaultProgram,
-          ].find(isCodexCyberAccessProgram);
+    const cyberAccessProgram = yield* selectedCodexAccessProgram(
+      input.modelSelection,
+      input.cyberAccess,
+    );
     // MCP-written app context must be quoted user input, not developer instructions.
     const appContext = Object.fromEntries(
       (input.appContext ?? []).map((entry) => [
@@ -1014,7 +1002,7 @@ export const buildCodexTurnStartParams = Effect.fn("CodexAdapterV2.buildCodexTur
       ...(effort === undefined ? {} : { effort }),
       ...(serviceTier === undefined ? {} : { serviceTier }),
       // Codex keeps no per-thread choice for this, so every turn must carry it.
-      ...(cyberAccessProgram === undefined ? {} : { cyberAccessProgram }),
+      ...(cyberAccessProgram === null ? {} : { cyberAccessProgram }),
       // Codex supplies its own mode instructions; send both modes to clear Plan on exit.
       collaborationMode: {
         mode: input.runtimePolicy.interactionMode,

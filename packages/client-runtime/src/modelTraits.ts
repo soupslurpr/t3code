@@ -3,6 +3,7 @@ import {
   buildProviderOptionSelectionsFromDescriptors,
   getProviderOptionCurrentLabel,
   getProviderOptionCurrentValue,
+  getProviderOptionDescriptors,
   isClaudeUltrathinkPrompt,
 } from "@t3tools/shared/model";
 import { REASONING_EFFORT_OPTION_IDS } from "./state/threadExecution.ts";
@@ -13,6 +14,31 @@ const REASONING_DESCRIPTOR_IDS: ReadonlySet<string> = new Set([
   ...REASONING_EFFORT_OPTION_IDS,
   "thinking",
 ]);
+
+export function getLocalizedProviderOptionDescriptors(
+  input: Parameters<typeof getProviderOptionDescriptors>[0],
+  resolve: MFunctionType,
+): ReadonlyArray<ProviderOptionDescriptor> {
+  return getProviderOptionDescriptors(input).map((descriptor) => {
+    if (descriptor.id !== "cyberAccessProgram" || descriptor.type !== "select") return descriptor;
+    return {
+      ...descriptor,
+      label: resolve(msg("Access program")),
+      options: descriptor.options.map((option) => {
+        if (option.id === "automatic") {
+          return {
+            ...option,
+            label: resolve(msg("Automatic", { $context: "Codex access program" })),
+            description: resolve(msg("Let Codex choose based on your account and model.")),
+          };
+        }
+        return option.id === "standard"
+          ? { ...option, label: resolve(msg("Standard", { $context: "Codex access program" })) }
+          : option;
+      }),
+    };
+  });
+}
 
 /** The model's reasoning control: a known effort id, or a select its agent marked as reasoning. */
 export function isReasoningControl(descriptor: ProviderOptionDescriptor): boolean {

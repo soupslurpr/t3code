@@ -1,3 +1,5 @@
+import { getLocalizedProviderOptionDescriptors } from "@t3tools/client-runtime/model-traits";
+import { m } from "../i18n/messages";
 import type {
   ModelCapabilities,
   ModelSelection,
@@ -8,21 +10,26 @@ import type {
 } from "@t3tools/contracts";
 import {
   buildProviderOptionSelectionsFromDescriptors,
-  getProviderOptionDescriptors,
   withImplicitFastModeDefault,
 } from "@t3tools/shared/model";
 
-export function resolveProviderOptionDescriptors(input: {
-  readonly capabilities: ModelCapabilities | null | undefined;
-  readonly selections: ReadonlyArray<ProviderOptionSelection> | null | undefined;
-}): ReadonlyArray<ProviderOptionDescriptor> {
+export function resolveProviderOptionDescriptors(
+  input: {
+    readonly capabilities: ModelCapabilities | null | undefined;
+    readonly selections: ReadonlyArray<ProviderOptionSelection> | null | undefined;
+  },
+  resolve = m,
+): ReadonlyArray<ProviderOptionDescriptor> {
   if (!input.capabilities) {
     return [];
   }
-  return getProviderOptionDescriptors({
-    caps: input.capabilities,
-    selections: withImplicitFastModeDefault(input.capabilities, input.selections),
-  });
+  return getLocalizedProviderOptionDescriptors(
+    {
+      caps: input.capabilities,
+      selections: withImplicitFastModeDefault(input.capabilities, input.selections),
+    },
+    resolve,
+  );
 }
 
 /** Spells out the Fast off the picker shows, or a provider such as Cursor applies its own default. */

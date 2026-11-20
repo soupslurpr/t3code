@@ -43,7 +43,7 @@ To switch accounts mid-thread, pick another compatible Codex instance sharing th
 - **Async questions**: Codex can ask a question while continuing to work; answer in the question panel (steers the active turn or starts a new one) or dismiss it without sending.
 - **App access approvals**: Respond to external app access requests directly in chat (one-time, session, or permanent depending on the tool).
 - **MCP OAuth sign-in**: Click **Sign in** on the thread notice, approve in your browser, and paste the final redirect URL into **Finish sign-in** (requires provider management permission).
-- **Daybreak**: Models with cyber access programs show a **Cyber Access** option (`Standard` or `Daybreak`, initialized from `daybreak = true` in `config.toml`).
+- **Daybreak**: Models with access programs show an **Access program** option from the selected account and model (**Automatic** lets Codex choose; **Standard**, **Daybreak Blue**, or **Daybreak Red** requests that program explicitly on each turn and for text generation; custom models omit it). Refresh provider status if available programs change.
 - **Usage limits**: Limit stops display the exhausted window, reset time, and (on workspace plans) whether credits or spend limits need adjustment.
 - **Feedback to OpenAI**: Send `/feedback <description>` in an existing Codex thread to upload conversation and Codex logs to OpenAI.
 

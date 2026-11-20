@@ -43,6 +43,7 @@ function MissingTaskDraft() {
 
 export function ScheduledTaskModelPickerRouteScreen() {
   const navigation = useNavigation();
+  const resolve = useMessages();
   const { editor, setEditor } = useScheduledTaskEditor();
   const config = useEnvironmentServerConfig(editor?.environmentId ?? null);
   const selectedModel = editor?.draft.modelSelection ?? null;
@@ -59,11 +60,14 @@ export function ScheduledTaskModelPickerRouteScreen() {
   );
   const optionDescriptors = useMemo(
     () =>
-      resolveProviderOptionDescriptors({
-        capabilities: selectedOption?.capabilities,
-        selections: selectedModel?.options,
-      }),
-    [selectedOption?.capabilities, selectedModel?.options],
+      resolveProviderOptionDescriptors(
+        {
+          capabilities: selectedOption?.capabilities,
+          selections: selectedModel?.options,
+        },
+        resolve,
+      ),
+    [selectedOption?.capabilities, selectedModel?.options, resolve],
   );
 
   if (!editor) return <MissingTaskDraft />;

@@ -58,6 +58,7 @@ import {
   type CodexResetCreditsSummary,
 } from "./codexUsageLimits.ts";
 import * as HostProcess from "@t3tools/shared/HostProcess";
+import { codexAccessProgramOptionDescriptors } from "../codexModelOptions.ts";
 import packageJson from "../../package.json" with { type: "json" };
 const isCodexAppServerSpawnError = Schema.is(CodexErrors.CodexAppServerSpawnError);
 
@@ -183,12 +184,6 @@ const DEFAULT_SERVICE_TIER_ID = "default";
 
 const SERVICE_TIER_DESCRIPTIONS: Readonly<Record<string, string>> = {
   ultrafast: "Even faster, more expensive",
-};
-
-const CYBER_ACCESS_PROGRAM_LABELS: Readonly<Record<string, string>> = {
-  standard: "Standard",
-  daybreakBlue: "Daybreak Blue",
-  daybreakRed: "Daybreak Red",
 };
 
 function reasoningEffortLabel(reasoningEffort: string): string {
@@ -319,25 +314,9 @@ export function mapCodexModelCapabilities(
       currentValue: defaultServiceTier,
     });
   }
-  const cyberAccessPrograms = model.availableAccessPrograms?.cyber ?? [];
-  if (cyberAccessPrograms.length > 0) {
-    const hasStandard = cyberAccessPrograms.includes("standard");
-    const defaultProgram = hasStandard ? "standard" : cyberAccessPrograms[0];
-    optionDescriptors.push({
-      id: "cyberAccessProgram",
-      label: "Cyber Access",
-      type: "select",
-      // Standard stays selectable as an opt-out; Codex rejects it visibly when the login cannot use it.
-      options: (hasStandard ? cyberAccessPrograms : ["standard", ...cyberAccessPrograms]).map(
-        (program) => ({
-          id: program,
-          label: CYBER_ACCESS_PROGRAM_LABELS[program] ?? program,
-          ...(program === defaultProgram ? { isDefault: true } : {}),
-        }),
-      ),
-      ...(defaultProgram === undefined ? {} : { currentValue: defaultProgram }),
-    });
-  }
+  optionDescriptors.push(
+    ...codexAccessProgramOptionDescriptors(model.availableAccessPrograms?.cyber),
+  );
 
   return createModelCapabilities({
     optionDescriptors,
@@ -458,11 +437,12 @@ function applyConfiguredCodexCyberAccess(
       ];
     }),
   );
-  if (snapshot.daybreakEnabled !== true) return offered;
+  if (snapshot.daybreakEnabled === undefined) return offered;
   return withConfiguredSelectDefault(offered, "cyberAccessProgram", (options) =>
-    ["daybreakBlue", "daybreakRed"].find((program) =>
-      options.some((option) => option.id === program),
-    ),
+    (snapshot.daybreakEnabled
+      ? ["daybreakBlue", "daybreakRed", "standard"]
+      : ["standard", "daybreakBlue", "daybreakRed"]
+    ).find((program) => options.some((option) => option.id === program)),
   );
 }
 
@@ -475,7 +455,15 @@ function appendCustomCodexModels(
   models: ReadonlyArray<ServerProviderModel>,
   customModels: ReadonlyArray<CustomModelSetting>,
 ): ReadonlyArray<ServerProviderModel> {
-  const fallbackCapabilities = models.find((model) => model.capabilities)?.capabilities ?? null;
+  const fallbackModelCapabilities = models.find((model) => model.capabilities)?.capabilities;
+  const fallbackCapabilities = fallbackModelCapabilities
+    ? createModelCapabilities({
+        // Access programs are advertised per model and cannot be inferred for custom slugs.
+        optionDescriptors: (fallbackModelCapabilities.optionDescriptors ?? []).filter(
+          (descriptor) => descriptor.id !== "cyberAccessProgram",
+        ),
+      })
+    : null;
   return providerModelsFromSettings(models, customModels, fallbackCapabilities);
 }
 

@@ -207,13 +207,19 @@ it("maps current Codex model capability fields", () => {
     },
     {
       id: "cyberAccessProgram",
-      label: "Cyber Access",
+      label: "Access program",
       type: "select",
       options: [
-        { id: "standard", label: "Standard", isDefault: true },
+        {
+          id: "automatic",
+          label: "Automatic",
+          description: "Let Codex choose based on your account and model.",
+          isDefault: true,
+        },
+        { id: "standard", label: "Standard" },
         { id: "daybreakBlue", label: "Daybreak Blue" },
       ],
-      currentValue: "standard",
+      currentValue: "automatic",
     },
   ]);
 });
@@ -340,3 +346,42 @@ it("reports native quota only for an OpenAI login on a native route", () => {
   assert.strictEqual(codexCustomEndpoint({ openai_base_url: "https://chatgpt.com/x" }), undefined);
   assert.strictEqual(codexCustomEndpoint({}), undefined);
 });
+
+it.each([
+  { programs: undefined, expected: [] },
+  { programs: null, expected: [] },
+  { programs: { cyber: [] }, expected: [] },
+  { programs: { cyber: ["standard"] }, expected: ["automatic", "standard"] },
+  {
+    programs: { cyber: ["standard", "daybreakBlue"] },
+    expected: ["automatic", "standard", "daybreakBlue"],
+  },
+  { programs: { cyber: ["daybreakBlue"] }, expected: ["automatic", "daybreakBlue"] },
+  {
+    programs: { cyber: ["standard", "daybreakRed"] },
+    expected: ["automatic", "standard", "daybreakRed"],
+  },
+] as const)(
+  "exposes only the account's advertised cyber access programs: $expected",
+  ({ programs, expected }) => {
+    const capabilities = mapCodexModelCapabilities({
+      id: "model-with-access-programs",
+      model: "model-with-access-programs",
+      displayName: "Model with access programs",
+      description: "Test model",
+      hidden: false,
+      isDefault: false,
+      defaultReasoningEffort: "medium",
+      supportedReasoningEfforts: [],
+      ...(programs === undefined ? {} : { availableAccessPrograms: programs }),
+    });
+    const descriptor = capabilities.optionDescriptors?.find(
+      (option) => option.id === "cyberAccessProgram",
+    );
+    assert.deepEqual(
+      descriptor?.type === "select" ? descriptor.options.map((option) => option.id) : [],
+      [...expected],
+    );
+    if (expected.length > 0) assert.equal(descriptor?.currentValue, "automatic");
+  },
+);
