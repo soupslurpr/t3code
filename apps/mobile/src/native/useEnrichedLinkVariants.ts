@@ -100,7 +100,6 @@ function presentation(
   const link = resolveMarkdownLinkPresentation(url);
   if (link.kind === "file")
     return {
-      label: link.label,
       icon: markdownFileIconSource(link.icon),
       chip: { accent: contextChipPresentation("mention").accent, tintsIcon: false },
     };
@@ -128,7 +127,6 @@ export function useEnrichedLinkVariants(
       const label = fileHrefs.has(url) ? fileEmbedLabel?.(url, false) : null;
       const value = label
         ? {
-            label,
             color: textStyle.fileTextColor,
             icon: markdownFileIconSource(resolveMarkdownFileIcon(label)),
           }
@@ -198,7 +196,13 @@ export function useEnrichedLinkVariants(
   const linkPillContent = useMemo<Record<string, LinkPillContent>>(
     () =>
       Object.fromEntries(
-        [...links].map(([url, link]) => [url, { label: link.label, ...icons.get(url) }]),
+        [...links].map(([url, link]) => [
+          url,
+          {
+            ...(link.label === undefined ? {} : { label: link.label }),
+            ...icons.get(url),
+          },
+        ]),
       ),
     [icons, links],
   );

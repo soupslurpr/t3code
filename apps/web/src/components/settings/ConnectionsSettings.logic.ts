@@ -248,6 +248,7 @@ export function parseManualDesktopSshTarget(
 
 export function parsePairingUrlFields(
   input: string,
+  baseUrl = window.location.origin,
 ): { readonly host: string; readonly pairingCode: string } | null {
   const trimmed = input.trim();
   if (!trimmed) return null;
@@ -257,7 +258,7 @@ export function parsePairingUrlFields(
       /^[a-zA-Z][a-zA-Z\d+.-]*:\/\//u.test(trimmed) || trimmed.startsWith("//")
         ? trimmed
         : `https://${trimmed}`;
-    const url = new URL(urlLikeInput, window.location.origin);
+    const url = new URL(urlLikeInput, baseUrl);
     const hostedPairingRequest = readHostedPairingRequest(url);
     if (hostedPairingRequest) {
       return {
@@ -283,11 +284,12 @@ export function parseRemotePairingFields(
     readonly pairingCode: string;
   },
   resolve: MessageResolver = m,
+  baseUrl = window.location.origin,
 ): {
   readonly host: string;
   readonly pairingCode: string;
 } {
-  const parsedPairingUrl = parsePairingUrlFields(input.host);
+  const parsedPairingUrl = parsePairingUrlFields(input.host, baseUrl);
   if (parsedPairingUrl) return parsedPairingUrl;
 
   const host = input.host.trim();

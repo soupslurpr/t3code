@@ -981,6 +981,7 @@ describe("V2 session presentation", () => {
     if (entries[0]?.kind === "proposed-plan") {
       expect(entries[0].proposedPlan.status).toBe("completed");
       expect(entries[0].proposedPlan.planMarkdown).toBe("Finished plan");
+      expect(entries[0].proposedPlan.streaming).toBe(false);
     }
     expect(entries[1]?.kind).toBe("work");
     if (entries[1]?.kind === "work") {
@@ -1860,6 +1861,9 @@ describe("incremental v2 timeline entries", () => {
       plans: plans("Let"),
     };
     let projection = deriveTimelineEntriesFromVisibleTurnItemsWithState(input);
+    expect(projection.entries.find((entry) => entry.id === fixture.streamingItemId)).toMatchObject({
+      proposedPlan: { streaming: true },
+    });
     for (const [step, text] of ["Let me", "Let me check the tests"].entries()) {
       input = {
         visibleTurnItems: withStreamedText(

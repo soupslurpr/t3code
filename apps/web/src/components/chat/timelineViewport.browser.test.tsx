@@ -80,6 +80,36 @@ describe("attachTimelineViewport", () => {
     expect(sources).toEqual(["command", "command"]);
   });
 
+  it("keeps following when row measurement clamps the old offset and releases on a jump to history", async () => {
+    // The viewport reads the browser's scrolling geometry directly.
+    await using screen = await render(
+      <div data-testid="timeline" style={{ height: 300, overflowY: "auto" }}>
+        <div data-testid="rows" style={{ height: 2400 }} />
+      </div>,
+      { router: false },
+    );
+    const timeline = screen.getByTestId("timeline").element() as HTMLElement;
+    const rows = screen.getByTestId("rows").element() as HTMLElement;
+    timeline.scrollTop = timeline.scrollHeight;
+    const previous = timeline.scrollTop;
+    const viewport = attachTimelineViewport(timeline);
+    using _viewport = { [Symbol.dispose]: viewport.dispose };
+    const sources: string[] = [];
+    viewport.subscribe((event) => sources.push(event.source));
+
+    rows.style.height = "1200px";
+    const clamped = timeline.scrollTop;
+    rows.style.height = "1400px";
+    expect(clamped).toBeLessThan(previous);
+    expect(timeline.scrollTop).toBeLessThan(timeline.scrollHeight - timeline.clientHeight);
+    viewport.reportScrollAwayFromEnd(previous);
+    expect(sources).toEqual([]);
+
+    timeline.scrollTop = 0;
+    viewport.reportScrollAwayFromEnd(clamped);
+    expect(sources).toEqual(["scroll"]);
+  });
+
   it("reports a scrollbar press but not a click on the scroller's empty padding", async () => {
     await using screen = await render(
       <div

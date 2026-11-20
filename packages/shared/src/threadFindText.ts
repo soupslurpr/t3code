@@ -15,8 +15,6 @@ import {
   classifyMarkdownImageSource,
   isMarkdownFileLinkLabel,
   extractMarkdownLinkHrefs,
-  extractInlineCodeSpans,
-  inlineCodeFilePathCandidate,
   resolveMarkdownFileLink,
   shouldRenderMarkdownImageAsFileLink,
 } from "./markdownLinks.ts";
@@ -69,7 +67,7 @@ interface TextTree {
   readonly value?: string;
   readonly properties?: ChatMarkdownImageProperties & {
     readonly href?: unknown;
-    readonly dataInlineCode?: unknown;
+    readonly src?: unknown;
   };
   readonly children?: ReadonlyArray<TextTree>;
 }
@@ -103,15 +101,12 @@ function markdownThreadFindText(
       : insightProcessor
     : processor;
   const tree = renderer.runSync(renderer.parse(markdown), markdown);
-  const paths = [
-    ...extractMarkdownLinkHrefs(renderCodexInlineDirectivesAsMarkdown(markdown)).map(
-      decodeMarkdownLinkEscapes,
-    ),
-    ...extractInlineCodeSpans(markdown).flatMap((span) => inlineCodeFilePathCandidate(span) ?? []),
-  ].flatMap((href) => {
-    const resolved = resolveMarkdownFileLink(href, cwd);
-    return resolved ? [resolved.position.path] : [];
-  });
+  const paths = extractMarkdownLinkHrefs(renderCodexInlineDirectivesAsMarkdown(markdown))
+    .map(decodeMarkdownLinkEscapes)
+    .flatMap((href) => {
+      const resolved = resolveMarkdownFileLink(href, cwd);
+      return resolved ? [resolved.position.path] : [];
+    });
   const parentSuffixes = buildFileLinkParentSuffixByPath(paths);
   const segments: string[] = [];
   let text = "";
@@ -150,14 +145,6 @@ function markdownThreadFindText(
             candidate = authoredSrc;
           }
         }
-      } else if (
-        node.tagName === "code" &&
-        !inPre &&
-        node.properties?.dataInlineCode !== undefined
-      ) {
-        candidate = inlineCodeFilePathCandidate(
-          (node.children ?? []).map((child) => child.value ?? "").join(""),
-        );
       }
       const resolved = candidate ? resolveMarkdownFileLink(candidate, cwd) : null;
       if (candidate && resolved) {

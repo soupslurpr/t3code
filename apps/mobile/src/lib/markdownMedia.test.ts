@@ -2,7 +2,7 @@ import { EnvironmentId, ThreadId } from "@t3tools/contracts";
 import { describe, expect, it } from "vite-plus/test";
 
 import { resolveMarkdownMediaPreview } from "./markdownMedia";
-import { resolveMarkdownLinkPresentation } from "./markdownLinks";
+import { confirmedInlineFileHref, resolveMarkdownLinkPresentation } from "./markdownLinks";
 
 const input = {
   environmentId: EnvironmentId.make("environment-1"),
@@ -11,6 +11,22 @@ const input = {
 };
 
 describe("resolveMarkdownMediaPreview", () => {
+  it("opens an inferred directory with a media extension in the file browser", () => {
+    expect(resolveMarkdownMediaPreview("file:///scratch/screens.pdf/", input)).toBeNull();
+  });
+
+  it("keeps the verified path in preview and menu actions across a possible symlink", () => {
+    const path = "/scratch/dir/../run";
+    const href = confirmedInlineFileHref({ path }, "file")!;
+    expect(resolveMarkdownMediaPreview(href, input)).toMatchObject({
+      kind: "file",
+      source: {
+        resource: { path },
+        actionsSource: { reference: { kind: "file", path }, resource: { path } },
+      },
+    });
+  });
+
   it("decodes remote filenames once without changing the authored URL", () => {
     const href = "https://cdn.example.com/clip%20one%2520%2Emp4?signature=a%2fb#t=2";
     expect(resolveMarkdownMediaPreview(href, input)).toMatchObject({

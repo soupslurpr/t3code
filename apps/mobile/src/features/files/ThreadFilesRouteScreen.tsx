@@ -1,5 +1,4 @@
 import { formatFilePathForClipboard } from "@t3tools/client-runtime/media-actions";
-import { resolvePathLinkTarget } from "@t3tools/shared/fileLinks";
 import { resolveFilesystemReadAccess } from "@t3tools/client-runtime/state/filesystem";
 import { environmentSession } from "../../state/session";
 import {
@@ -968,10 +967,7 @@ export function ThreadFileScreen(props: ThreadFileRouteScreenProps) {
               inline: false,
               onPress: () =>
                 copyTextWithHaptic(
-                  formatFilePathForClipboard(
-                    relativePath,
-                    resolvePathLinkTarget(relativePath, cwd ?? ""),
-                  ),
+                  formatFilePathForClipboard(relativePath, targetPath ?? relativePath),
                 ),
             } as const,
           ]),

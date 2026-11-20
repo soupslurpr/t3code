@@ -8,40 +8,10 @@ import {
   enrichedTextLinkRegex,
   enrichedSkillLinkRegex,
   enrichedThreadLinkPresentation,
-  ENRICHED_INLINE_FILE_LINK_REGEX,
   threadChipTargets,
 } from "./enrichedLinkPresentation";
 
 describe("Enriched link presentation", () => {
-  it("recognizes file-shaped code without turning commands or URLs into links", () => {
-    for (const path of [
-      "src/app.tsx",
-      "./README.md",
-      "/tmp/report.md",
-      "C:\\repo\\app.tsx",
-      "app.tsx:12:3",
-      "src/http.ts:42-64",
-      "http.ts:42-64",
-    ]) {
-      expect(ENRICHED_INLINE_FILE_LINK_REGEX.test(path), path).toBe(true);
-    }
-    for (const text of [
-      "npm run dev",
-      "port:3000",
-      "port:3000-3010",
-      "TODO:12",
-      "example.com",
-      "https://example.com/app.tsx",
-      "x + y",
-      "README.md",
-      "Dockerfile",
-      "docker/Dockerfiles",
-      "/app/settings",
-    ]) {
-      expect(ENRICHED_INLINE_FILE_LINK_REGEX.test(text), text).toBe(false);
-    }
-  });
-
   it("only recognizes complete known skill names and escapes their punctuation", () => {
     const regex = enrichedSkillLinkRegex([{ name: "check" }, { name: "check.mobile" }]);
     expect(regex?.exec("Try $check.mobile next")?.[0]).toBe("$check.mobile");

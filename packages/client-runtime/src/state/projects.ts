@@ -205,6 +205,7 @@ export function canNavigateUp(currentPath: string): boolean {
   return hasTrailingPathSeparator(currentPath) && getBrowseParentPath(currentPath) !== null;
 }
 
+export { createCheckpointFileTracker, isFileMetadataPath } from "./fileMetadata.ts";
 export * from "./projectCommands.ts";
 export * from "./projectEntities.ts";
 export * from "./projectRemoval.ts";

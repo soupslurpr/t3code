@@ -1,3 +1,5 @@
+import type { EnvironmentId, ThreadId } from "@t3tools/contracts";
+
 export interface NativeMarkdownTextStyle {
   readonly selectionColor?: string;
   readonly selectionHandleColor?: string;
@@ -71,6 +73,11 @@ export interface MarkdownLinkCustomization {
 }
 
 export interface SelectableMarkdownTextProps {
+  readonly environmentId?: EnvironmentId | null | undefined;
+  readonly threadId?: ThreadId | null | undefined;
+  readonly cwd?: string | undefined;
+  readonly baseDir?: string | undefined;
+  readonly isStreaming?: boolean | undefined;
   readonly markdown: string;
   readonly textStyle: NativeMarkdownTextStyle;
   readonly skills?: ReadonlyArray<SelectableMarkdownSkill>;

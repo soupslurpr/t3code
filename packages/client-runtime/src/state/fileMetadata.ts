@@ -1,13 +1,23 @@
 import {
   FILESYSTEM_METADATA_BATCH_LIMIT,
+  FILESYSTEM_PATH_MAX_LENGTH,
   type EnvironmentId,
   type FilesystemEntryMetadata,
+  type OrchestrationV2Checkpoint,
+  type OrchestrationV2ThreadProjection,
   type ProjectEntry,
   type ScopedThreadRef,
   type ThreadId,
   WS_METHODS,
 } from "@t3tools/contracts";
-import { normalizeProjectPathForComparison, resolveWorkspaceFilePath } from "@t3tools/shared/path";
+import {
+  isAbsolutePath,
+  isHostPath,
+  isNetworkPath,
+  isWindowsAbsolutePath,
+  normalizeProjectPathForDispatch,
+  resolveWorkspaceFilePath,
+} from "@t3tools/shared/path";
 import * as Clock from "effect/Clock";
 import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
@@ -26,13 +36,112 @@ import {
 } from "../rpc/client.ts";
 import type { RpcSession } from "../rpc/session.ts";
 import { createEnvironmentQueryAtomFamily } from "./runtime.ts";
+import { isRepositoryCheckpointScope } from "./threadRepositories.ts";
 
 const METADATA_STALE_TIME_MS = 60_000;
 const METADATA_CACHE_LIMIT = 1024;
 
+export function isFileMetadataPath(path: string): boolean {
+  return isHostPath(path) && !isNetworkPath(path) && path.length <= FILESYSTEM_PATH_MAX_LENGTH;
+}
+
+function metadataLookupPath(path: string): string {
+  return /^~[\\/]+$/.test(path) ? "~/" : normalizeProjectPathForDispatch(path);
+}
+
+function metadataCacheKey(path: string): string {
+  const normalized = metadataLookupPath(path);
+  return isWindowsAbsolutePath(normalized) ? normalized.replaceAll("/", "\\") : normalized;
+}
+
+function metadataInvalidationKey(path: string): string {
+  const key = metadataCacheKey(path);
+  const windows = isWindowsAbsolutePath(key);
+  const slashes = windows ? key.toLowerCase().replaceAll("\\", "/") : key;
+  const compact = slashes.replace(/\/+(?:\.(?:\/+|$))*/g, "/");
+  const rooted = slashes.startsWith("//") ? "/" + compact : compact;
+  return metadataLookupPath(windows ? rooted.replaceAll("/", "\\") : rooted);
+}
+
+type Checkpoints = ReadonlyArray<
+  Pick<OrchestrationV2Checkpoint, "id" | "status" | "files"> & {
+    readonly scopeId?: OrchestrationV2Checkpoint["scopeId"];
+  }
+>;
+type CheckpointScopes = OrchestrationV2ThreadProjection["checkpointScopes"];
+export function createCheckpointFileTracker() {
+  let previous: (ScopedThreadRef & { cwd: string; checkpoints: Checkpoints }) | null = null;
+  return (
+    ref: ScopedThreadRef | null,
+    cwd: string | null | undefined,
+    checkpoints?: Checkpoints,
+    checkpointScopes?: CheckpointScopes,
+  ) => {
+    const before = previous;
+    previous = ref && cwd && checkpoints ? { ...ref, cwd, checkpoints } : null;
+    if (
+      !before ||
+      !previous ||
+      before.cwd !== previous.cwd ||
+      before.environmentId !== previous.environmentId ||
+      before.threadId !== previous.threadId ||
+      before.checkpoints === previous.checkpoints
+    )
+      return [];
+    return changedCheckpointFilePaths(
+      before.checkpoints,
+      previous.checkpoints,
+      previous.cwd,
+      checkpointScopes,
+    );
+  };
+}
+
+function changedCheckpointFilePaths(
+  before: Checkpoints,
+  after: Checkpoints,
+  cwd: string,
+  checkpointScopes?: CheckpointScopes,
+) {
+  const oldById = new Map(before.map((checkpoint) => [checkpoint.id, checkpoint]));
+  // A tracked repository's files are relative to its own folder, not the thread's.
+  const repositoryCwdByScope = new Map(
+    checkpointScopes?.flatMap((scope) =>
+      isRepositoryCheckpointScope(scope) ? [[scope.id, scope.cwd] as const] : [],
+    ),
+  );
+  const paths = new Set<string>();
+  const add = (checkpoint: Checkpoints[number]) => {
+    const root =
+      (checkpoint.scopeId !== undefined
+        ? repositoryCwdByScope.get(checkpoint.scopeId)
+        : undefined) ?? cwd;
+    for (const file of checkpoint.files) paths.add(resolveWorkspaceFilePath(file.path, root));
+  };
+  for (const checkpoint of after) {
+    const old = oldById.get(checkpoint.id);
+    oldById.delete(checkpoint.id);
+    if (old?.files === checkpoint.files && old?.status === checkpoint.status) continue;
+    add(checkpoint);
+    if (old) add(old);
+  }
+  for (const checkpoint of oldById.values()) add(checkpoint);
+  return [...paths];
+}
+
+interface MetadataRevision {
+  versions: WeakMap<RpcSession, number>;
+  version: number;
+}
+
+function isCurrentRevision(session: RpcSession, revision: MetadataRevision): boolean {
+  return revision.version === (revision.versions.get(session) ?? 0);
+}
+
 interface CachedMetadata {
   value: FilesystemEntryMetadata | null;
   expires: number;
+  revision: MetadataRevision;
 }
 
 type RetainedMetadata = Map<string, CachedMetadata>;
@@ -58,22 +167,63 @@ export function createFileMetadataAtoms<R, E>(
 ) {
   const cache = new WeakMap<RpcSession, Map<string, CachedMetadata>>();
   const invalidationVersions = new WeakMap<RpcSession, number>();
-  const inFlight = new WeakMap<RpcSession, Map<string, Set<{ valid: boolean }>>>();
+  // Aliases share an invalidation revision. Their stat requests and cached values keep their casing.
+  const versionsForKey = Atom.family((_key: string) => new WeakMap<RpcSession, number>());
+  const captureRevision = (session: RpcSession, path: string): MetadataRevision => {
+    const versions = versionsForKey(metadataInvalidationKey(path));
+    return { versions, version: versions.get(session) ?? 0 };
+  };
+  const homePaths = new Map<EnvironmentId, Map<string, number>>();
+  const retainHomePath = (environmentId: EnvironmentId, input: string) => {
+    const path = metadataInvalidationKey(input);
+    let paths = homePaths.get(environmentId);
+    if (!paths) homePaths.set(environmentId, (paths = new Map()));
+    paths.set(path, (paths.get(path) ?? 0) + 1);
+    return () => {
+      const remaining = paths.get(path)! - 1;
+      if (remaining) paths.set(path, remaining);
+      else paths.delete(path);
+      if (!paths.size) homePaths.delete(environmentId);
+    };
+  };
+  const changedKeys = (environmentId: EnvironmentId, paths: Iterable<string>) => {
+    const keys = new Set(Array.from(paths, metadataInvalidationKey));
+    const aliases = homePaths.get(environmentId);
+    if (!aliases) return keys;
+    for (const key of keys) {
+      if (!isAbsolutePath(key)) continue;
+      const windows = isWindowsAbsolutePath(key);
+      const absolute = windows ? key.replaceAll("\\", "/") : key;
+      // The host expands ~. Only matching tails need a fresh stat of the authored alias.
+      for (const alias of aliases.keys()) {
+        const suffix = alias.slice(1).replace(/^.*\/\.\.(?=\/|$)/, "");
+        if (suffix && absolute.endsWith(windows ? suffix.toLowerCase() : suffix)) keys.add(alias);
+      }
+    }
+    return keys;
+  };
   const retainedThreads = new Map<
     string,
-    { readers: number; sessions: WeakMap<RpcSession, RetainedMetadata> }
+    {
+      readers: number;
+      sessions: WeakMap<RpcSession, RetainedMetadata>;
+      homePaths: Map<string, () => void>;
+    }
   >();
   const threadKey = (ref: ScopedThreadRef) => JSON.stringify([ref.environmentId, ref.threadId]);
   const retainThreadFamily = Atom.family((key: string) =>
     Atom.make((get) => {
       let retained = retainedThreads.get(key);
       if (!retained) {
-        retained = { readers: 0, sessions: new WeakMap() };
+        retained = { readers: 0, sessions: new WeakMap(), homePaths: new Map() };
         retainedThreads.set(key, retained);
       }
       retained.readers++;
       get.addFinalizer(() => {
-        if (--retained.readers === 0) retainedThreads.delete(key);
+        if (--retained.readers === 0) {
+          retainedThreads.delete(key);
+          for (const release of retained.homePaths.values()) release();
+        }
       });
     }).pipe(Atom.setIdleTTL(0), Atom.withLabel(`file-metadata-thread:${key}`)),
   );
@@ -81,11 +231,20 @@ export function createFileMetadataAtoms<R, E>(
     Atom.make(0).pipe(Atom.withLabel(`file-metadata-revision:${key}`)),
   );
   const revision = (environmentId: EnvironmentId, path: string) =>
-    revisions(JSON.stringify([environmentId, normalizeProjectPathForComparison(path)]));
+    revisions(JSON.stringify([environmentId, metadataInvalidationKey(path)]));
+  const homeRevision = Atom.family((key: string) => {
+    const [environmentId, path] = JSON.parse(key) as [EnvironmentId, string];
+    return Atom.make((get) => {
+      get.addFinalizer(retainHomePath(environmentId, path));
+      return get(revisions(key));
+    }).pipe(Atom.setIdleTTL(METADATA_STALE_TIME_MS));
+  });
   const knownEntry = (session: RpcSession, path: string, now: number) => {
-    const key = normalizeProjectPathForComparison(path);
+    const key = metadataCacheKey(path);
     const cached = cache.get(session)?.get(key);
-    return cached && cached.expires > now ? cached : undefined;
+    return cached && cached.expires > now && isCurrentRevision(session, cached.revision)
+      ? cached
+      : undefined;
   };
   const remember = (
     session: RpcSession,
@@ -93,15 +252,16 @@ export function createFileMetadataAtoms<R, E>(
     value: FilesystemEntryMetadata | null,
     now: number,
     partial = false,
+    revision = captureRevision(session, path),
   ) => {
     let entries = cache.get(session);
     if (!entries) {
       entries = new Map();
       cache.set(session, entries);
     }
-    const key = normalizeProjectPathForComparison(path);
+    const key = metadataCacheKey(path);
     entries.delete(key);
-    const entry = { value, expires: now + METADATA_STALE_TIME_MS };
+    const entry = { value, expires: now + METADATA_STALE_TIME_MS, revision };
     entries.set(key, entry);
     for (const thread of retainedThreads.values()) {
       const retained = thread.sessions.get(session);
@@ -110,7 +270,10 @@ export function createFileMetadataAtoms<R, E>(
         retained.set(key, {
           ...entry,
           value:
-            partial && value && previous.value?.kind === value.kind
+            partial &&
+            value &&
+            previous.value?.kind === value.kind &&
+            isCurrentRevision(session, previous.revision)
               ? { ...previous.value, ...value }
               : value,
         });
@@ -119,6 +282,7 @@ export function createFileMetadataAtoms<R, E>(
       const oldest = entries.keys().next().value;
       if (oldest !== undefined) entries.delete(oldest);
     }
+    return entry;
   };
   const resolver = RequestResolver.makeWith<FileMetadataRequest>({
     batchKey: (entry) => entry.request.session,
@@ -128,56 +292,36 @@ export function createFileMetadataAtoms<R, E>(
       const session = entries[0].request.session;
       let pending = [...entries];
       while (pending.length > 0) {
-        const paths = [...new Set(pending.map((entry) => entry.request.path))];
-        let requests = inFlight.get(session);
-        if (!requests) {
-          requests = new Map();
-          inFlight.set(session, requests);
+        const batch = new Map<string, { index: number; revision: MetadataRevision }>();
+        const paths: string[] = [];
+        for (const entry of pending) {
+          const path = entry.request.path;
+          const key = metadataCacheKey(path);
+          if (batch.has(key)) continue;
+          batch.set(key, { index: paths.length, revision: captureRevision(session, key) });
+          paths.push(path);
         }
-        const tokens = new Map(paths.map((path) => [path, { valid: true }]));
-        for (const [path, token] of tokens) {
-          let active = requests.get(path);
-          if (!active) requests.set(path, (active = new Set()));
-          active.add(token);
-        }
-        const activeRequests = requests;
-        pending = yield* Effect.gen(function* () {
-          const result = yield* request(WS_METHODS.filesystemGetMetadata, { paths }).pipe(
-            Effect.provideService(
-              EnvironmentSupervisor.EnvironmentSupervisor,
-              entries[0].request.supervisor,
-            ),
-          );
-          const now = yield* Clock.currentTimeMillis;
-          const byPath = new Map(paths.map((path, index) => [path, result.entries[index] ?? null]));
-          const retry: typeof pending = [];
-          for (const entry of pending) {
-            // Retry only paths invalidated during this request. Never retain the
-            // old response or complete a waiting chip with pre-write metadata.
-            if (!tokens.get(entry.request.path)!.valid) {
-              retry.push(entry);
-              continue;
-            }
-            const value = byPath.get(entry.request.path) ?? null;
-            remember(session, entry.request.path, value, now);
-            entry.request.retained?.set(entry.request.path, {
-              value,
-              expires: now + METADATA_STALE_TIME_MS,
-            });
-            entry.completeUnsafe(Exit.succeed(value));
-          }
-          return retry;
-        }).pipe(
-          Effect.ensuring(
-            Effect.sync(() => {
-              for (const [path, token] of tokens) {
-                const active = activeRequests.get(path);
-                active?.delete(token);
-                if (active?.size === 0) activeRequests.delete(path);
-              }
-            }),
+        const result = yield* request(WS_METHODS.filesystemGetMetadata, { paths }).pipe(
+          Effect.provideService(
+            EnvironmentSupervisor.EnvironmentSupervisor,
+            entries[0].request.supervisor,
           ),
         );
+        const now = yield* Clock.currentTimeMillis;
+        const retry: typeof pending = [];
+        for (const entry of pending) {
+          const key = metadataCacheKey(entry.request.path);
+          const { index, revision } = batch.get(key)!;
+          if (!isCurrentRevision(session, revision)) {
+            retry.push(entry);
+            continue;
+          }
+          const value = result.entries[index] ?? null;
+          const cached = remember(session, key, value, now, false, revision);
+          entry.request.retained?.set(key, cached);
+          entry.completeUnsafe(Exit.succeed(value));
+        }
+        pending = retry;
       }
     }),
   });
@@ -195,19 +339,27 @@ export function createFileMetadataAtoms<R, E>(
             threadKey({ environmentId: supervisor.target.environmentId, threadId: input.threadId }),
           )
         : undefined;
+      const key = metadataCacheKey(input.path);
+      if (thread && key.startsWith("~/") && !thread.homePaths.has(key)) {
+        thread.homePaths.set(key, retainHomePath(supervisor.target.environmentId, key));
+      }
       let retained = thread?.sessions.get(session.value);
       if (thread && !retained) {
         retained = new Map();
         thread.sessions.set(session.value, retained);
       }
-      const retainedEntry = retained?.get(input.path);
+      const retainedEntry = retained?.get(key);
       const now = yield* Clock.currentTimeMillis;
       // Agents mention paths before creating them, so misses must still expire within a thread.
-      if (retainedEntry && (retainedEntry.value !== null || retainedEntry.expires > now))
+      if (
+        retainedEntry &&
+        isCurrentRevision(session.value, retainedEntry.revision) &&
+        (retainedEntry.value !== null || retainedEntry.expires > now)
+      )
         return retainedEntry.value;
       const cached = knownEntry(session.value, input.path, now);
       if (cached) {
-        retained?.set(input.path, cached);
+        retained?.set(key, cached);
         return cached.value;
       }
       return yield* Effect.request(
@@ -226,7 +378,10 @@ export function createFileMetadataAtoms<R, E>(
     }: {
       environmentId: EnvironmentId;
       input: FileMetadataInput;
-    }) => revision(environmentId, input.path),
+    }) =>
+      input.path.startsWith("~/")
+        ? homeRevision(JSON.stringify([environmentId, metadataInvalidationKey(input.path)]))
+        : revision(environmentId, input.path),
   });
   const refreshMissing = Atom.family((query: ReturnType<typeof metadataFamily>) => {
     const retry = query.pipe(Atom.withRefresh(METADATA_STALE_TIME_MS), Atom.setIdleTTL(0));
@@ -241,16 +396,29 @@ export function createFileMetadataAtoms<R, E>(
       { initialValueTarget: query },
     ).pipe(Atom.setIdleTTL(0));
   });
-  const metadata = (target: {
+  const queryFor = ({
+    environmentId,
+    input,
+  }: {
     environmentId: EnvironmentId;
-    input: { path: string; threadId?: ThreadId };
-  }) =>
-    refreshMissing(
-      metadataFamily({
-        ...target,
-        input: { ...target.input, path: normalizeProjectPathForComparison(target.input.path) },
-      }),
-    );
+    input: FileMetadataInput;
+  }) => {
+    return metadataFamily({
+      environmentId,
+      input: { ...input, path: metadataLookupPath(input.path) },
+    });
+  };
+  const metadata = (target: Parameters<typeof queryFor>[0]) => refreshMissing(queryFor(target));
+  const noKind = Atom.make(null);
+  const kindByQuery = Atom.family((query: ReturnType<typeof queryFor>) =>
+    Atom.map(query, (result) =>
+      result._tag === "Success" && !result.waiting ? (result.value?.kind ?? null) : null,
+    ).pipe(Atom.setIdleTTL(0)),
+  );
+  const confirmedKind = (target: Parameters<typeof queryFor>[0]) => {
+    if (!isFileMetadataPath(target.input.path)) return noKind;
+    return kindByQuery(queryFor(target));
+  };
 
   const rememberEntries = Effect.fnUntraced(function* (
     cwd: string,
@@ -271,9 +439,11 @@ export function createFileMetadataAtoms<R, E>(
       }
 
       // A file listing can invalidate the cached kind but only a stat supplies full metadata.
-      const key = normalizeProjectPathForComparison(path);
+      const key = metadataCacheKey(path);
       const cached = cache.get(session.value);
-      if (cached?.get(key)?.value?.kind === "file") continue;
+      const previous = cached?.get(key);
+      if (previous?.value?.kind === "file" && isCurrentRevision(session.value, previous.revision))
+        continue;
       cached?.delete(key);
       for (const thread of retainedThreads.values()) {
         const retained = thread.sessions.get(session.value);
@@ -283,16 +453,15 @@ export function createFileMetadataAtoms<R, E>(
     }
   });
 
-  const invalidate = Effect.fnUntraced(function* (path: string) {
+  const invalidate = Effect.fn("FileMetadata.invalidate")(function* (paths: Iterable<string>) {
     const supervisor = yield* EnvironmentSupervisor.EnvironmentSupervisor;
     const session = yield* SubscriptionRef.get(supervisor.session);
     if (session._tag === "Some") {
       invalidationVersions.set(session.value, (invalidationVersions.get(session.value) ?? 0) + 1);
-      const key = normalizeProjectPathForComparison(path);
-      for (const token of inFlight.get(session.value)?.get(key) ?? []) token.valid = false;
-      cache.get(session.value)?.delete(key);
-      for (const thread of retainedThreads.values())
-        thread.sessions.get(session.value)?.delete(normalizeProjectPathForComparison(path));
+      for (const key of changedKeys(supervisor.target.environmentId, paths)) {
+        const versions = versionsForKey(key);
+        versions.set(session.value, (versions.get(session.value) ?? 0) + 1);
+      }
     }
   });
 
@@ -346,22 +515,25 @@ export function createFileMetadataAtoms<R, E>(
       return result;
     });
 
-  const refreshPath = (
+  const refreshPaths = (
     environmentId: EnvironmentId,
-    path: string,
+    paths: Iterable<string>,
     registry: AtomRegistry.AtomRegistry,
   ) => {
-    const signal = revision(environmentId, path);
-    registry.set(signal, registry.get(signal) + 1);
+    for (const key of changedKeys(environmentId, paths)) {
+      const signal = revision(environmentId, key);
+      registry.set(signal, registry.get(signal) + 1);
+    }
   };
 
   return {
     metadata,
+    confirmedKind,
     retainThread: (ref: ScopedThreadRef) => retainThreadFamily(threadKey(ref)),
     rememberEntries,
     rememberFile,
     seedAfterRead,
     invalidate,
-    refreshPath,
+    refreshPaths,
   };
 }

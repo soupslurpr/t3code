@@ -41,6 +41,7 @@ import { readEnvironmentScope, useEnvironmentScope } from "~/state/session";
 
 export const ProposedPlanCard = memo(function ProposedPlanCard({
   planMarkdown,
+  isStreaming,
   environmentId,
   threadRef,
   cwd,
@@ -48,6 +49,7 @@ export const ProposedPlanCard = memo(function ProposedPlanCard({
   findActive = false,
 }: {
   planMarkdown: string;
+  isStreaming: boolean;
   environmentId: EnvironmentId;
   threadRef?: ScopedThreadRef | undefined;
   cwd: string | undefined;
@@ -205,25 +207,14 @@ export const ProposedPlanCard = memo(function ProposedPlanCard({
           data-thread-find-text="true"
           data-thread-find-fold={isCollapsed ? "" : undefined}
         >
-          {showPreview ? (
-            <ChatMarkdown
-              text={collapsedPreview ?? ""}
-              cwd={cwd}
-              environmentId={environmentId}
-              threadRef={threadRef}
-              isStreaming={false}
-              headingLevelOffset={3}
-            />
-          ) : (
-            <ChatMarkdown
-              text={displayedPlanMarkdown}
-              cwd={cwd}
-              environmentId={environmentId}
-              threadRef={threadRef}
-              isStreaming={false}
-              headingLevelOffset={3}
-            />
-          )}
+          <ChatMarkdown
+            text={showPreview ? (collapsedPreview ?? "") : displayedPlanMarkdown}
+            cwd={cwd}
+            environmentId={environmentId}
+            threadRef={threadRef}
+            isStreaming={isStreaming}
+            headingLevelOffset={3}
+          />
           {isCollapsed ? (
             <div className="pointer-events-none absolute inset-x-0 bottom-0 h-24 bg-linear-to-t from-card/95 via-card/80 to-transparent" />
           ) : null}

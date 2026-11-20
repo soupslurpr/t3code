@@ -123,6 +123,7 @@ export function ConnectionEnvironmentRow(props: {
         <Pressable
           className="min-w-0 flex-1 gap-0.5 active:opacity-70"
           accessibilityRole="button"
+          accessibilityState={{ expanded: props.expanded }}
           accessibilityLabel={toggleLabel}
           onPress={props.onToggle}
         >
@@ -274,14 +275,18 @@ export function ConnectionEnvironmentRow(props: {
                 </View>
               )}
               <IconButton
-                accessibilityLabel={gt("Reconnect environment")}
+                accessibilityLabel={gt("Reconnect {environment}", {
+                  environment: props.environment.environmentLabel,
+                })}
                 icon="arrow.clockwise"
                 variant="tonal"
                 disabled={!enabled}
                 onPress={() => props.onReconnect(props.environment.environmentId)}
               />
               <IconButton
-                accessibilityLabel={gt("Remove environment")}
+                accessibilityLabel={gt("Remove {environment}", {
+                  environment: props.environment.environmentLabel,
+                })}
                 icon="trash"
                 variant="danger"
                 onPress={() => props.onRemove(props.environment.environmentId)}
@@ -291,6 +296,8 @@ export function ConnectionEnvironmentRow(props: {
             <View className="flex-row justify-end gap-2">
               {props.environment.isRelayManaged ? null : (
                 <Pressable
+                  accessibilityRole="button"
+                  accessibilityLabel={gt("Save environment")}
                   className="min-h-[42px] flex-1 flex-row items-center justify-center gap-1.5 rounded-[14px] bg-primary px-3.5 py-2.5 active:opacity-70"
                   onPress={handleSave}
                 >
@@ -308,7 +315,9 @@ export function ConnectionEnvironmentRow(props: {
 
               <Pressable
                 accessibilityRole="button"
-                accessibilityLabel={gt("Reconnect environment")}
+                accessibilityLabel={gt("Reconnect {environment}", {
+                  environment: props.environment.environmentLabel,
+                })}
                 accessibilityState={{ disabled: !enabled }}
                 className="h-[42px] w-[42px] items-center justify-center rounded-[14px] border border-input-border bg-input active:opacity-70 disabled:opacity-40"
                 disabled={!enabled}
@@ -324,7 +333,9 @@ export function ConnectionEnvironmentRow(props: {
 
               <Pressable
                 accessibilityRole="button"
-                accessibilityLabel={gt("Remove environment")}
+                accessibilityLabel={gt("Remove {environment}", {
+                  environment: props.environment.environmentLabel,
+                })}
                 className="h-[42px] w-[42px] items-center justify-center rounded-[14px] border border-danger-border bg-danger active:opacity-70"
                 onPress={() => props.onRemove(props.environment.environmentId)}
               >

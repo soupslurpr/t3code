@@ -1,17 +1,16 @@
 import { m } from "../i18n/messages";
 import { thrownErrorMessage } from "@t3tools/client-runtime/errors";
 import { msg, T, useGT, useMessages } from "gt-react";
-import { resolvePathLinkTarget } from "@t3tools/shared/fileLinks";
+import { useConfirmedFileKind } from "../hooks/useFileMetadata";
 import { clientHostEnvironmentAtom } from "../state/clientHostEnvironment";
-import { buildFileLinkParentSuffixByPath, fileLinkLabel } from "@t3tools/shared/fileLinks";
+import { buildFileLinkParentSuffixByPath } from "@t3tools/shared/fileLinks";
 import {
-  isMarkdownFileLinkLabel,
   isWindowsDrivePathHref,
   shouldRenderMarkdownImageAsFileLink,
   normalizeMarkdownLinkDestination,
-  extractInlineCodeSpans,
+  inlineCodeFileKindMatches,
+  markdownHrefForFilePath,
   extractMarkdownLinkHrefs,
-  inlineCodeFilePathCandidate,
   parseMarkdownSandboxFileLink,
 } from "@t3tools/shared/markdownLinks";
 import { taskListMarkerOffset } from "@t3tools/shared/markdownTaskEdits";
@@ -222,7 +221,10 @@ import {
 } from "./chat/ChatMarkdownMedia";
 import { MarkdownExternalLinkContent } from "./chat/MarkdownExternalLink";
 import { MarkdownFileLink } from "./chat/MarkdownFileLink";
-import { canUseMarkdownFileShellActions } from "./chat/MarkdownFileLink.logic";
+import {
+  canUseMarkdownFileShellActions,
+  markdownFileLinkLabel,
+} from "./chat/MarkdownFileLink.logic";
 import { handleMarkdownFragmentClick } from "./chat/markdownFragments";
 import { hastHasText, hastPlainTextDeep, plainHastText } from "./chat/markdownHast.logic";
 import {
@@ -491,30 +493,21 @@ const markdownServerConfigFieldsAtom = Atom.family((environmentId: EnvironmentId
   }).pipe(Atom.withLabel("markdown-server-config-fields")),
 );
 
-interface BlockFileLinkSources {
-  readonly hrefs: ReadonlyArray<string>;
-  readonly spans: ReadonlyArray<string>;
-}
-
-function blockFileLinkSources(
+function blockFileLinkHrefs(
   text: string,
   cwd: string | undefined,
   imageBaseDir: string | undefined,
-): BlockFileLinkSources {
-  const hrefs = extractMarkdownLinkHrefs(renderCodexInlineDirectivesAsMarkdown(text))
+): ReadonlyArray<string> {
+  return extractMarkdownLinkHrefs(renderCodexInlineDirectivesAsMarkdown(text))
     .filter((href) => !parseComposerContextHref(href))
     .map(decodeMarkdownLinkEscapes)
     .map(normalizeMarkdownLinkHrefKey)
     .filter((href) => resolveMarkdownFileLinkMeta(href, cwd, imageBaseDir ?? cwd));
-  const spans = extractInlineCodeSpans(text).filter((span) =>
-    resolveInlineCodeFileLinkMeta(span, cwd, imageBaseDir ?? cwd),
-  );
-  return { hrefs, spans };
 }
 
-// Links and code spans never cross blocks: a streamed reply rescans only its open last block.
+// Links never cross blocks: a streamed reply rescans only its open last block.
 const MAX_CACHED_BLOCK_CHARS = 2_000_000;
-const finishedBlockFileLinkSources = new Map<string, BlockFileLinkSources>();
+const finishedBlockFileLinkHrefs = new Map<string, ReadonlyArray<string>>();
 let cachedBlockChars = 0;
 
 function fileLinkSourcesKey(
@@ -524,32 +517,29 @@ function fileLinkSourcesKey(
   streamingBlocks: ReadonlyArray<string> | null,
 ): string {
   if (!streamingBlocks) {
-    const { hrefs, spans } = blockFileLinkSources(text, cwd, imageBaseDir);
-    return JSON.stringify([[...new Set(hrefs)], [...new Set(spans)]]);
+    return JSON.stringify([...new Set(blockFileLinkHrefs(text, cwd, imageBaseDir))]);
   }
   const config = `${cwd ?? ""}\u0000${imageBaseDir ?? ""}\u0000`;
   const hrefs = new Set<string>();
-  const spans = new Set<string>();
   const last = streamingBlocks.length - 1;
   for (const [index, block] of streamingBlocks.entries()) {
     // The last block still grows; caching each of its prefixes would only fill the cache.
     const key = config + block;
-    let sources = index === last ? undefined : finishedBlockFileLinkSources.get(key);
-    if (!sources) {
-      sources = blockFileLinkSources(block, cwd, imageBaseDir);
+    let blockHrefs = index === last ? undefined : finishedBlockFileLinkHrefs.get(key);
+    if (!blockHrefs) {
+      blockHrefs = blockFileLinkHrefs(block, cwd, imageBaseDir);
       if (index !== last) {
         if (cachedBlockChars + key.length > MAX_CACHED_BLOCK_CHARS) {
-          finishedBlockFileLinkSources.clear();
+          finishedBlockFileLinkHrefs.clear();
           cachedBlockChars = 0;
         }
-        finishedBlockFileLinkSources.set(key, sources);
+        finishedBlockFileLinkHrefs.set(key, blockHrefs);
         cachedBlockChars += key.length;
       }
     }
-    for (const href of sources.hrefs) hrefs.add(href);
-    for (const span of sources.spans) spans.add(span);
+    for (const href of blockHrefs) hrefs.add(href);
   }
-  return JSON.stringify([[...hrefs], [...spans]]);
+  return JSON.stringify([...hrefs]);
 }
 
 function resolveFileLinkSources(
@@ -557,22 +547,16 @@ function resolveFileLinkSources(
   cwd: string | undefined,
   imageBaseDir: string | undefined,
 ) {
-  const [hrefs, spans] = JSON.parse(key) as [string[], string[]];
+  const hrefs = JSON.parse(key) as string[];
   const markdownFileLinkMetaByHref = new Map<string, MarkdownFileLinkMeta>();
   for (const href of hrefs) {
     const meta = resolveMarkdownFileLinkMeta(href, cwd, imageBaseDir ?? cwd);
     if (meta) markdownFileLinkMetaByHref.set(href, meta);
   }
-  const inlineCodeFileLinkMetaByText = new Map<string, MarkdownFileLinkMeta>();
-  for (const span of spans) {
-    const meta = resolveInlineCodeFileLinkMeta(span, cwd, imageBaseDir ?? cwd);
-    if (meta) inlineCodeFileLinkMetaByText.set(span, meta);
-  }
-  const fileLinkParentSuffixByPath = buildFileLinkParentSuffixByPath([
-    ...[...markdownFileLinkMetaByHref.values()].map((meta) => meta.filePath),
-    ...[...inlineCodeFileLinkMetaByText.values()].map((meta) => meta.filePath),
-  ]);
-  return { markdownFileLinkMetaByHref, inlineCodeFileLinkMetaByText, fileLinkParentSuffixByPath };
+  const fileLinkParentSuffixByPath = buildFileLinkParentSuffixByPath(
+    [...markdownFileLinkMetaByHref.values()].map((meta) => meta.filePath),
+  );
+  return { markdownFileLinkMetaByHref, fileLinkParentSuffixByPath };
 }
 
 function useChatMarkdownState(
@@ -642,6 +626,7 @@ function useChatMarkdownState(
   const searchProjectEntries = useAtomQueryRunner(projectEnvironment.searchEntries, {
     reportFailure: false,
   });
+  const browseHost = useAtomQueryRunner(filesystemEnvironment.browse, { reportFailure: false });
   const getFilesystemMetadata = useAtomQueryRunner(filesystemEnvironment.getMetadata, {
     reportFailure: false,
     refresh: true,
@@ -797,8 +782,11 @@ function useChatMarkdownState(
   // renderer context, and every block reading it, unchanged.
   // A template literal marks the key as a string, so the compiler memoizes the maps on its value.
   const fileLinksKey = `${fileLinkSourcesKey(text, cwd, imageBaseDir, isStreaming ? (streamingBlocks ?? splitMarkdownBlocks(text) ?? [text]) : null)}`;
-  const { markdownFileLinkMetaByHref, inlineCodeFileLinkMetaByText, fileLinkParentSuffixByPath } =
-    resolveFileLinkSources(fileLinksKey, cwd, imageBaseDir);
+  const { markdownFileLinkMetaByHref, fileLinkParentSuffixByPath } = resolveFileLinkSources(
+    fileLinksKey,
+    cwd,
+    imageBaseDir,
+  );
   const resolveThreadPullRequest = (
     href: string,
   ): (ThreadPullRequestKey & { readonly url: string }) | null => {
@@ -989,16 +977,27 @@ function useChatMarkdownState(
   };
   const fileLinkChip = (
     fileLinkMeta: MarkdownFileLinkMeta,
+    label: string,
     copyMarkdown: string,
     mediaSource?: string,
+    entryKind?: "file" | "directory",
   ) => {
     const resolveHostPath = () =>
       resolveMarkdownFileHostPath({
         meta: fileLinkMeta,
         cwd,
+        resolveHome: async () => {
+          if (!environmentId)
+            throw new PreferredEditorEnvironmentRequiredError({
+              targetPath: fileLinkMeta.filePath,
+            });
+          const result = await browseHost({ environmentId, input: { partialPath: "~" } });
+          if (result._tag !== "Success") throw squashAtomCommandFailure(result);
+          return result.value.parentPath;
+        },
         findWorkspaceMatch: () => findWorkspaceFileMatch(fileLinkMeta),
       });
-    const isAppBundle = isMacOS && fileLinkMeta.filePath.endsWith(".app");
+    const isAppBundle = entryKind !== "file" && isMacOS && fileLinkMeta.filePath.endsWith(".app");
     const canOpenApp =
       environmentId !== null &&
       isAppBundle &&
@@ -1007,6 +1006,7 @@ function useChatMarkdownState(
       availableEditors.includes("file-manager");
     const mediaPath = mediaSource ?? fileLinkMeta.filePath;
     const canPreviewMedia =
+      entryKind !== "directory" &&
       mediaMimeTypeFromExtension(
         fileLinkMeta.basename.slice(fileLinkMeta.basename.lastIndexOf(".")),
       ) !== null;
@@ -1026,17 +1026,9 @@ function useChatMarkdownState(
         }
         isAppBundle={isAppBundle}
         workspaceRelativePath={fileLinkMeta.workspaceRelativePath}
-        panelPath={isAppBundle ? null : panelPath}
+        panelPath={isAppBundle && (entryKind === undefined || canOpenApp) ? null : panelPath}
         line={fileLinkMeta.line}
-        label={fileLinkLabel(
-          {
-            path: fileLinkMeta.filePath,
-            ...(fileLinkMeta.line !== undefined ? { line: fileLinkMeta.line } : {}),
-            ...(fileLinkMeta.column !== undefined ? { column: fileLinkMeta.column } : {}),
-            ...(fileLinkMeta.endLine !== undefined ? { endLine: fileLinkMeta.endLine } : {}),
-          },
-          fileLinkParentSuffixByPath,
-        )}
+        label={label}
         copyMarkdown={copyMarkdown}
         theme={resolvedTheme}
         threadRef={threadRef}
@@ -1054,9 +1046,7 @@ function useChatMarkdownState(
                   )
               : undefined
         }
-        resolveDragPath={async () =>
-          resolvePathLinkTarget((await resolveHostPath()).absolutePath, cwd ?? "")
-        }
+        resolveDragPath={async () => (await resolveHostPath()).absolutePath}
         resolveCopyPaths={async () =>
           markdownFileCopyPaths(fileLinkMeta, await resolveHostPath(), cwd)
         }
@@ -1077,6 +1067,7 @@ function useChatMarkdownState(
           threadRef &&
           canOperatePreview &&
           isPreviewAvailableFor(threadRef.environmentId) &&
+          entryKind !== "directory" &&
           isBrowserPreviewFile(fileLinkMeta.filePath)
             ? () => openMarkdownFileInPreview(fileLinkMeta.filePath)
             : undefined
@@ -1099,7 +1090,8 @@ function useChatMarkdownState(
     headingLevelOffset,
     imageBaseDir,
     workspaceMutationId,
-    inlineCodeFileLinkMetaByText,
+    fileLinkParentSuffixByPath,
+    canNavigateDirectory: !!threadRef || canUseShellActions,
     inline,
     mathEnabled,
     isStreaming,
@@ -1140,6 +1132,42 @@ const ChatMarkdownRendererContext = React.createContext<
 
 // Isolate streamed source text from the renderer context; only offset-based renderers need it.
 const ChatMarkdownTextContext = React.createContext("");
+
+function formatInlineCodeMarkdown(label: string): string {
+  let maxRun = 0;
+  let currentRun = 0;
+  for (let index = 0; index < label.length; index++) {
+    if (label[index] === "`") {
+      currentRun++;
+      if (currentRun > maxRun) maxRun = currentRun;
+    } else {
+      currentRun = 0;
+    }
+  }
+  const fence = "`".repeat(maxRun + 1);
+  const needsPadding =
+    label.startsWith("`") ||
+    label.endsWith("`") ||
+    (label.length > 0 && label.startsWith(" ") && label.endsWith(" ") && /[^ ]/.test(label));
+  return needsPadding ? `${fence} ${label} ${fence}` : `${fence}${label}${fence}`;
+}
+
+function InlineFileCode(props: { meta: MarkdownFileLinkMeta; label: string; fallback: ReactNode }) {
+  const { environmentId, fileLinkChip, canNavigateDirectory } = use(ChatMarkdownRendererContext);
+  const kind = useConfirmedFileKind(environmentId, props.meta.filePath);
+  if (
+    (kind === "directory" && !canNavigateDirectory) ||
+    !inlineCodeFileKindMatches({ path: props.meta.filePath, line: props.meta.line }, kind)
+  )
+    return props.fallback;
+  return fileLinkChip(
+    props.meta,
+    props.label,
+    formatInlineCodeMarkdown(props.label),
+    markdownHrefForFilePath(props.meta.filePath),
+    kind,
+  );
+}
 
 // A quote card is a block. These say nothing else shares its paragraph or list item on that side.
 const LIST_MARKER = String.raw`(?:[-*+]|\d+[.)])[ \t]+`;
@@ -1278,6 +1306,7 @@ const CHAT_MARKDOWN_COMPONENTS = {
       environmentId,
       imageBaseDir,
       markdownFileLinkMetaByHref,
+      fileLinkParentSuffixByPath,
       threadRef,
       openMarkdownMedia,
       openChangeRequestLink,
@@ -1603,47 +1632,24 @@ const CHAT_MARKDOWN_COMPONENTS = {
         ? source
         : `[${(label || fileLinkMeta.basename).replace(/[\\[\]]/g, "\\$&")}](${normalizedHref})`;
     // Media previews resolve the parsed host path; they do not understand the sandbox: scheme.
-    const chip = fileLinkChip(
+    return fileLinkChip(
       fileLinkMeta,
+      markdownFileLinkLabel(fileLinkMeta, fileLinkParentSuffixByPath, label, normalizedHref),
       copyMarkdown,
       parseMarkdownSandboxFileLink(normalizedHref) ? undefined : normalizedHref,
     );
-    return isMarkdownFileLinkLabel(label, normalizedHref) ? (
-      chip
-    ) : (
-      <span data-markdown-copy={copyMarkdown}>
-        <span className="whitespace-normal">{children} </span>
-        {chip}
-      </span>
-    );
   },
   code: function MarkdownCode({ node, children, className, ...props }) {
-    const { cwd, imageBaseDir, inlineCodeFileLinkMetaByText, fileLinkChip } = use(
-      ChatMarkdownRendererContext,
-    );
-    if (node?.properties?.dataInlineCode != null) {
-      const codeText = nodeToPlainText(children);
-      const fileLinkMeta =
-        inlineCodeFileLinkMetaByText.get(codeText.trim()) ??
-        resolveInlineCodeFileLinkMeta(codeText, cwd, imageBaseDir ?? cwd);
-      if (fileLinkMeta) {
-        return fileLinkChip(
-          fileLinkMeta,
-          `\`${codeText}\``,
-          inlineCodeFilePathCandidate(codeText) ?? codeText.trim(),
-        );
-      }
-      return (
-        <code {...props} className={className}>
-          {children}
-        </code>
-      );
-    }
-    return (
+    const { cwd, imageBaseDir, isStreaming } = use(ChatMarkdownRendererContext);
+    const code = (
       <code {...props} className={className}>
         {children}
       </code>
     );
+    if (isStreaming || node?.properties?.dataInlineCode == null) return code;
+    const label = nodeToPlainText(children);
+    const meta = resolveInlineCodeFileLinkMeta(label, cwd, imageBaseDir ?? cwd);
+    return meta ? <InlineFileCode meta={meta} label={label} fallback={code} /> : code;
   },
   img: function MarkdownImage({ node, title, src, alt, ...props }) {
     const {
@@ -1657,6 +1663,7 @@ const CHAT_MARKDOWN_COMPONENTS = {
       workspaceMutationId,
       renderContextReference,
       fileLinkChip,
+      fileLinkParentSuffixByPath,
       resolvedTheme,
     } = use(ChatMarkdownRendererContext);
     const imageExpand = use(MarkdownLinkContext) ? undefined : expandMedia;
@@ -1712,7 +1719,13 @@ const CHAT_MARKDOWN_COMPONENTS = {
     }
     if (shouldRenderMarkdownImageAsFileLink(imageSource, mediaKind)) {
       const fileLinkMeta = resolveMarkdownFileLinkMeta(srcString, cwd, imageBaseDir ?? cwd);
-      if (fileLinkMeta) return fileLinkChip(fileLinkMeta, copyMarkdown, srcString);
+      if (fileLinkMeta)
+        return fileLinkChip(
+          fileLinkMeta,
+          markdownFileLinkLabel(fileLinkMeta, fileLinkParentSuffixByPath),
+          copyMarkdown,
+          srcString,
+        );
     }
     const kind = mediaKind ?? "image";
     const directUri = imageSource._tag === "Direct" ? imageSource.uri : null;
@@ -1979,14 +1992,7 @@ const markdownIslandOptionsByState = new WeakMap<
 function markdownIslandOptions(state: ChatMarkdownComponentState): MarkdownIslandOptions {
   const cached = markdownIslandOptionsByState.get(state);
   if (cached) return cached;
-  const {
-    cwd,
-    headingLevelOffset,
-    imageBaseDir,
-    inlineCodeFileLinkMetaByText,
-    onTaskListChange,
-    skills,
-  } = state;
+  const { cwd, headingLevelOffset, imageBaseDir, isStreaming, onTaskListChange, skills } = state;
   const options: MarkdownIslandOptions = {
     components: CHAT_MARKDOWN_COMPONENTS,
     variant: String(headingLevelOffset),
@@ -2005,12 +2011,9 @@ function markdownIslandOptions(state: ChatMarkdownComponentState): MarkdownIslan
         case "input":
           return node.properties.type === "checkbox" && onTaskListChange !== undefined;
         case "code": {
-          if (node.properties.dataInlineCode == null) return false;
+          if (isStreaming || node.properties.dataInlineCode == null) return false;
           const codeText = hastPlainTextDeep(node);
-          return (
-            (inlineCodeFileLinkMetaByText.get(codeText.trim()) ??
-              resolveInlineCodeFileLinkMeta(codeText, cwd, imageBaseDir ?? cwd)) != null
-          );
+          return resolveInlineCodeFileLinkMeta(codeText, cwd, imageBaseDir ?? cwd) != null;
         }
         case "p":
         case "li":

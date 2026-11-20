@@ -1,4 +1,5 @@
 import type { Root, RootContent } from "mdast";
+import type { FilesystemEntryMetadata } from "@t3tools/contracts";
 import { unified, type Processor } from "unified";
 import remarkParse from "remark-parse";
 import remarkGfm from "remark-gfm";
@@ -6,10 +7,21 @@ import { remarkKeepWindowsProsePaths } from "@t3tools/shared/markdownWindowsPath
 import {
   absoluteFilePathMatches,
   inlineCodeFilePathCandidate,
+  isMarkdownFileLinkLabel,
   parseMarkdownFileLink,
+  resolveMarkdownFileLinkTarget,
+  resolveInlineCodeFileTarget,
 } from "@t3tools/shared/markdownLinks";
+import {
+  type FilePathPosition,
+  buildFileLinkParentSuffixByPath,
+  fileLinkLabel,
+  splitFilePathPosition,
+} from "@t3tools/shared/fileLinks";
 import { isWindowsAbsolutePath } from "@t3tools/shared/path";
 import { hasRightToLeftLetter, textDirection } from "@t3tools/shared/textDirection";
+
+import { confirmedInlineFileHref } from "./markdownLinks";
 
 const parser = unified().use(remarkParse).use(remarkGfm).use(remarkKeepWindowsProsePaths);
 export type MarkdownNode = Root | RootContent;
@@ -329,56 +341,90 @@ export function withReferenceDefinitions(
 // Start only at the beginning of a backtick run to avoid retrying every suffix.
 const INLINE_CODE_SPAN = /(?<!`)`+([^`\r\n]+)`+/g;
 
-// The native regex stops at whitespace; the shared classifier decides paths with spaces.
-function isInlineCodeFileLink(code: string, fileLink: RegExp): boolean {
-  return fileLink.test(code) || (/\s/.test(code) && inlineCodeFilePathCandidate(code) !== null);
+type FileKind = (path: string) => FilesystemEntryMetadata["kind"] | null;
+
+interface NativeMarkdownEdit extends MarkdownEdit {
+  readonly inlineTarget?: FilePathPosition;
+  readonly tableBreak?: boolean;
 }
 
-export function markdownWithInlineFileLinks(markdown: string, fileLink: RegExp): string {
-  return transformNativeMarkdown(markdown, fileLink, false);
+function fileLinkLabelMarkdown(label: string): string {
+  return label.replace(/[\\[\]\x60*_~|&<>]/g, (character) => "&#" + character.charCodeAt(0) + ";");
 }
 
-function transformNativeMarkdown(
+function fileLinkMarkdown(label: string, href: string): string {
+  const escapedLabel = fileLinkLabelMarkdown(label);
+  const escapedHref = href
+    .replace(/[\\[\]&]/g, "\\$&")
+    .replace(/</g, "%3C")
+    .replace(/>/g, "%3E");
+  return `[${escapedLabel}](<${escapedHref}>)`;
+}
+
+export function prepareNativeMarkdown(
   markdown: string,
-  fileLink: RegExp | undefined,
-  tableBreaks: boolean,
-): string {
+  {
+    tableBreaks,
+    inferInlineFiles = false,
+    fileLinks = true,
+    cwd,
+    baseDir,
+  }: {
+    tableBreaks: boolean;
+    inferInlineFiles?: boolean;
+    fileLinks?: boolean;
+    cwd?: string | undefined;
+    baseDir?: string | undefined;
+  },
+) {
   const breakTables = tableBreaks && mayHaveTableUnderText(markdown);
   let linkFiles = false;
-  if (fileLink) {
+  if (inferInlineFiles) {
     for (const [, code] of markdown.matchAll(INLINE_CODE_SPAN)) {
-      if (isInlineCodeFileLink(code!.trim(), fileLink)) {
+      if (inlineCodeFilePathCandidate(code!)) {
         linkFiles = true;
         break;
       }
     }
   }
-  const linkProseFiles = fileLink !== undefined && absoluteFilePathMatches(markdown).length > 0;
-  if (!linkFiles && !linkProseFiles && !breakTables) return markdown;
-  const edits: MarkdownEdit[] = [];
-  const fileEdits: MarkdownEdit[] = [];
-  let rewritesPipe = false;
+  const linkProseFiles = fileLinks && absoluteFilePathMatches(markdown).length > 0;
+  const labelLinks = fileLinks && (markdown.includes("](") || markdown.includes("]:"));
+  if (!linkFiles && !linkProseFiles && !breakTables && !labelLinks)
+    return { hasInlineFiles: false, render: () => markdown };
+  const edits: NativeMarkdownEdit[] = [];
+  const explicit: {
+    node: Extract<MarkdownNode, { type: "link" | "linkReference" }>;
+    href: string;
+    target: NonNullable<ReturnType<typeof parseMarkdownFileLink>>;
+  }[] = [];
+  const root = parser.parse(markdown);
+  const definitions = new Map<string, string>();
+  if (labelLinks && markdown.includes("]:")) {
+    const collect = (node: MarkdownNode) => {
+      if (node.type === "definition" && !definitions.has(node.identifier))
+        definitions.set(node.identifier, node.url);
+      if ("children" in node) node.children.forEach(collect);
+    };
+    collect(root);
+  }
   const visit = (node: MarkdownNode) => {
-    if (linkFiles && node.type === "inlineCode") {
+    if (node.type === "link" || node.type === "linkReference") {
+      const href = node.type === "link" ? node.url : definitions.get(node.identifier);
+      const target = labelLinks && href ? parseMarkdownFileLink(href) : null;
+      if (href && target) {
+        const resolved = resolveMarkdownFileLinkTarget(href, cwd, baseDir);
+        explicit.push({
+          node,
+          href,
+          target: resolved ? { ...target, path: splitFilePathPosition(resolved).path } : target,
+        });
+      }
+    } else if (linkFiles && node.type === "inlineCode") {
       const start = node.position?.start.offset;
       const end = node.position?.end.offset;
-      const escaped = node.value.replace(/[\\[\]&]/g, "\\$&");
-      if (
-        start !== undefined &&
-        end !== undefined &&
-        fileLink !== undefined &&
-        isInlineCodeFileLink(node.value, fileLink) &&
-        parseMarkdownFileLink(node.value) !== null &&
-        !/[<>]/.test(node.value)
-      ) {
-        const edit = {
-          start,
-          end,
-          content: `[${escaped}](<${escaped}>)`,
-        };
-        edits.push(edit);
-        fileEdits.push(edit);
-        if (node.value.includes("|")) rewritesPipe = true;
+      const target = resolveInlineCodeFileTarget(node.value, cwd, baseDir);
+      if (start !== undefined && end !== undefined && target) {
+        edits.push({ start, end, content: node.value, inlineTarget: target });
       }
     } else if (
       linkProseFiles &&
@@ -390,16 +436,14 @@ function transformNativeMarkdown(
       for (const { index, path } of absoluteFilePathMatches(raw)) {
         // Source offsets stay valid for paths whose own text needs no Markdown decoding.
         if (raw !== node.value && /[\\&]/.test(path)) continue;
-        const escaped = path.replace(/[\\[\]&]/g, "\\$&");
-        const edit = {
+        const target = parseMarkdownFileLink(path);
+        edits.push({
           start: start + index,
           end: start + index + path.length,
-          content: `[${escaped}](<${escaped}>)`,
-        };
-        edits.push(edit);
-        fileEdits.push(edit);
+          content: fileLinkMarkdown(target ? fileLinkLabel(target, new Map()) : path, path),
+        });
       }
-    } else if (node.type !== "link" && node.type !== "linkReference" && "children" in node)
+    } else if ("children" in node)
       node.children.forEach((child, index) => {
         const previous = node.children[index - 1];
         const start = child.position?.start;
@@ -416,6 +460,7 @@ function transformNativeMarkdown(
           const [, header = "", , ending = "\n", markers = ""] =
             /^([ \t>]*)([^\r\n]*)(\r\n|\r|\n)([ \t>]*)/.exec(markdown.slice(lineStart)) ?? [];
           edits.push({
+            tableBreak: true,
             start: lineStart,
             end: lineStart + header.length,
             content: `${markers.trimEnd()}${ending}${markers}`,
@@ -424,11 +469,53 @@ function transformNativeMarkdown(
         visit(child);
       });
   };
-  visit(parser.parse(markdown));
-  // Rewritten pipes can change table structure, so preserve the original pass ordering.
-  if (breakTables && rewritesPipe)
-    return markdownWithTableBreaks(applyMarkdownEdits(markdown, fileEdits));
-  return applyMarkdownEdits(markdown, edits);
+  visit(root);
+  const parentSuffixes = buildFileLinkParentSuffixByPath(explicit.map(({ target }) => target.path));
+  for (const { node, href, target } of explicit) {
+    const label = renderedText(node);
+    if ((!label && node.children.length) || !isMarkdownFileLinkLabel(label, href)) continue;
+    const compact = fileLinkLabel(target, parentSuffixes);
+    if (compact === label) continue;
+    const start = node.position?.start.offset;
+    const end = node.position?.end.offset;
+    if (start === undefined || end === undefined) continue;
+    const labelEnd = node.children.at(-1)?.position?.end.offset ?? start + 1;
+    if (markdown[start] !== "[") {
+      edits.push({ start, end, content: fileLinkMarkdown(compact, href) });
+    } else if (node.type === "linkReference" && node.referenceType !== "full") {
+      const reference = markdown.slice(start, labelEnd + 1);
+      edits.push({ start, end, content: "[" + fileLinkLabelMarkdown(compact) + "]" + reference });
+    } else {
+      edits.push({ start: start + 1, end: labelEnd, content: fileLinkLabelMarkdown(compact) });
+    }
+  }
+  if (explicit.length > 0) edits.sort((a, b) => a.start - b.start);
+  const render = (fileKind?: FileKind) => {
+    const resolved: NativeMarkdownEdit[] = [];
+    let rewritesPipe = false;
+    for (const edit of edits) {
+      if (edit.inlineTarget === undefined) {
+        resolved.push(edit);
+        continue;
+      }
+      const href = confirmedInlineFileHref(
+        edit.inlineTarget,
+        fileKind?.(edit.inlineTarget.path) ?? null,
+      );
+      if (!href) continue;
+      resolved.push({ ...edit, content: fileLinkMarkdown(edit.content, href) });
+      if (edit.content.includes("|")) rewritesPipe = true;
+    }
+    if (breakTables && rewritesPipe)
+      return markdownWithTableBreaks(
+        applyMarkdownEdits(
+          markdown,
+          resolved.filter((edit) => !edit.tableBreak),
+        ),
+      );
+    return applyMarkdownEdits(markdown, resolved);
+  };
+  return { hasInlineFiles: edits.some((edit) => edit.inlineTarget !== undefined), render };
 }
 
 // A delimiter row such as `|---|:--:|`, possibly inside a blockquote or list item.
@@ -452,7 +539,7 @@ function mayHaveTableUnderText(markdown: string): boolean {
 
 /** md4c starts tables only at paragraph starts; insert breaks to match GFM. */
 export function markdownWithTableBreaks(markdown: string): string {
-  return transformNativeMarkdown(markdown, undefined, true);
+  return prepareNativeMarkdown(markdown, { tableBreaks: true, fileLinks: false }).render();
 }
 
 // `>` covers a destination continued on a blockquote line.
@@ -559,10 +646,6 @@ export function markdownForNativeParsing(markdown: string): string {
 
 export function parseMarkdownDocument(markdown: string): Root {
   return parser.parse(normalizedMarkdown(markdown));
-}
-
-export function markdownForNativeRendering(markdown: string, fileLink: RegExp): string {
-  return transformNativeMarkdown(markdownForNativeParsing(markdown), fileLink, true);
 }
 
 /** Native media slots only cover standalone images; nested file embeds must become links. */

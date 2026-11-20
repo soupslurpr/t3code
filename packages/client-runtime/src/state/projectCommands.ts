@@ -64,10 +64,8 @@ function writtenFilePaths(
   input: EnvironmentRpcInput<typeof WS_METHODS.projectsWriteFile>,
   result: EnvironmentRpcSuccess<typeof WS_METHODS.projectsWriteFile>,
 ) {
-  return new Set(
-    [result.relativePath, input.relativePath].map((path) =>
-      resolveWorkspaceFilePath(path, input.cwd),
-    ),
+  return [result.relativePath, input.relativePath].map((path) =>
+    resolveWorkspaceFilePath(path, input.cwd),
   );
 }
 
@@ -130,19 +128,18 @@ export function createProjectEnvironmentAtoms<R, E>(
   };
   return {
     fileMetadata: fileMetadata.metadata,
+    confirmedFileKind: fileMetadata.confirmedKind,
     fileMetadataThread: fileMetadata.retainThread,
     invalidateFileMetadata: createEnvironmentCommand(runtime, {
       label: "environment-data:filesystem:invalidate-metadata",
       execute: (input: { paths: ReadonlyArray<string> }, registry, environmentId) =>
-        Effect.forEach([...new Set(input.paths)], (path) =>
-          fileMetadata
-            .invalidate(path)
-            .pipe(
-              Effect.tap(() =>
-                Effect.sync(() => fileMetadata.refreshPath(environmentId, path, registry)),
-              ),
+        fileMetadata
+          .invalidate(input.paths)
+          .pipe(
+            Effect.tap(() =>
+              Effect.sync(() => fileMetadata.refreshPaths(environmentId, input.paths, registry)),
             ),
-        ),
+          ),
     }),
     searchEntries: createEnvironmentRpcQueryAtomFamily(runtime, {
       label: "environment-data:projects:search-entries",
@@ -242,15 +239,12 @@ export function createProjectEnvironmentAtoms<R, E>(
       },
       execute: (input) =>
         requestGuarded(WS_METHODS.projectsWriteFile, input).pipe(
-          Effect.tap((result) =>
-            Effect.forEach(writtenFilePaths(input, result), fileMetadata.invalidate),
-          ),
+          Effect.tap((result) => fileMetadata.invalidate(writtenFilePaths(input, result))),
         ),
       onSuccess: ({ environmentId, input }, registry, result) =>
-        Effect.sync(() => {
-          for (const path of writtenFilePaths(input, result))
-            fileMetadata.refreshPath(environmentId, path, registry);
-        }),
+        Effect.sync(() =>
+          fileMetadata.refreshPaths(environmentId, writtenFilePaths(input, result), registry),
+        ),
     }),
   };
 }

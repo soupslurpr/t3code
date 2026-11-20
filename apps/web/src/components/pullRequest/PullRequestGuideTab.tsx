@@ -153,7 +153,7 @@ export function PullRequestGuideTab({
           {running ? (
             gt("Rewriting this guide. You will be told when the new one is ready.")
           ) : failure === null ? (
-            gt("Written before the latest push.")
+            gt("Written before the latest push. Rewrite the guide to see code excerpts.")
           ) : (
             <>
               {gt(
@@ -175,6 +175,7 @@ export function PullRequestGuideTab({
         environmentId={environmentId}
         reference={reference}
         guide={guide}
+        stale={stale}
         banner={banner}
         active={active}
         commenting={commenting}

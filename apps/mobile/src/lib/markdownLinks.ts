@@ -1,7 +1,15 @@
 import { fileBasename } from "@t3tools/shared/path";
-import { fileLinkLabel } from "@t3tools/shared/fileLinks";
 import {
-  inlineCodeFilePathCandidate,
+  type FilePathPosition,
+  fileLinkLabel,
+  formatFilePathPosition,
+  parseFileUrlHref,
+  splitFilePathPosition,
+} from "@t3tools/shared/fileLinks";
+import {
+  inlineCodeFileKindMatches,
+  markdownHrefForFilePath,
+  safeDecodeURIComponent,
   normalizeMarkdownLinkDestination,
   parseMarkdownFileLink,
 } from "@t3tools/shared/markdownLinks";
@@ -297,6 +305,14 @@ export function resolveMarkdownFileIcon(value: string): MarkdownFileIcon {
   return "default";
 }
 
+export function nativeMarkdownFileTarget(href: string): FilePathPosition | null {
+  const target = parseMarkdownFileLink(href);
+  if (target) return target;
+  if (!href.startsWith("file:///")) return null;
+  const url = parseFileUrlHref(href);
+  return url ? splitFilePathPosition(safeDecodeURIComponent(url.path), url.hash) : null;
+}
+
 export function resolveMarkdownLinkPresentation(href: string): MarkdownLinkPresentation {
   const normalized = normalizeMarkdownLinkDestination(href);
   try {
@@ -310,7 +326,7 @@ export function resolveMarkdownLinkPresentation(href: string): MarkdownLinkPrese
     }
   } catch {}
 
-  const target = parseMarkdownFileLink(normalized);
+  const target = nativeMarkdownFileTarget(normalized);
   if (target) {
     return {
       kind: "file",
@@ -332,11 +348,18 @@ export function resolveMarkdownLinkPresentation(href: string): MarkdownLinkPrese
   };
 }
 
-export function resolveMarkdownInlineCodePresentation(
-  content: string,
-): Extract<MarkdownLinkPresentation, { readonly kind: "file" }> | null {
-  const candidate = inlineCodeFilePathCandidate(content);
-  if (candidate === null) return null;
-  const presentation = resolveMarkdownLinkPresentation(candidate);
-  return presentation.kind === "file" ? presentation : null;
+export function confirmedInlineFileHref(
+  target: FilePathPosition,
+  kind: "file" | "directory" | "other" | null,
+) {
+  if (!inlineCodeFileKindMatches(target, kind)) return null;
+  const path =
+    kind === "directory" && !/[\\/]$/.test(target.path) ? target.path + "/" : target.path;
+  const href = formatFilePathPosition({ ...target, path: markdownHrefForFilePath(path) });
+  if (!path.startsWith("/") || parseMarkdownFileLink(href)) return href;
+  // An extensionless path can look like an app route. Keep dot segments inside one URI
+  // segment so URL parsing cannot traverse a symlink before the host opens the file.
+  return /\/\.\.?(?:\/|$)/.test(path)
+    ? "file:///" + href.slice(1).replaceAll("/", "%2F")
+    : "file://" + href;
 }

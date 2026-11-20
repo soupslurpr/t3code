@@ -407,12 +407,21 @@ export const recoverEditedCreationAfterDelivery = Effect.fn("ThreadOutbox.recove
     const draftKey = scopedThreadKey(kept.environmentId, kept.threadId);
     const handedBack = yield* Effect.gen(function* () {
       // Merge before removal to retain file ownership; allow overflow and let send guards require trimming.
+      let beforeMerge = getComposerDraftSnapshot(draftKey);
       yield* storage("hand-back-to-draft", kept.messageId, () =>
-        mergeComposerDraftContent(draftKey, {
-          text: kept.text,
-          context: kept.context,
-          attachments: [],
-        }),
+        mergeComposerDraftContent(
+          draftKey,
+          {
+            text: kept.text,
+            context: kept.context,
+            attachments: [],
+          },
+          {
+            onMerge: (snapshot) => {
+              beforeMerge = snapshot;
+            },
+          },
+        ),
       );
       if (isEditingQueuedMessage(kept.messageId)) return "edited" as const;
       if (threadOutboxRevision(kept.messageId) !== keptRevision) return "changed" as const;
@@ -424,10 +433,19 @@ export const recoverEditedCreationAfterDelivery = Effect.fn("ThreadOutbox.recove
         kept.attachments.filter((attachment) => !existingAttachmentIds.has(attachment.id)),
         { restore: true },
       );
+      const current = getComposerDraftSnapshot(draftKey);
       updateComposerDraftSettings(draftKey, {
-        ...(kept.modelSelection !== undefined ? { modelSelection: kept.modelSelection } : {}),
-        ...(kept.runtimeMode !== undefined ? { runtimeMode: kept.runtimeMode } : {}),
-        ...(kept.interactionMode !== undefined ? { interactionMode: kept.interactionMode } : {}),
+        ...(current.modelSelection === beforeMerge.modelSelection &&
+        kept.modelSelection !== undefined
+          ? { modelSelection: kept.modelSelection }
+          : {}),
+        ...(current.runtimeMode === beforeMerge.runtimeMode && kept.runtimeMode !== undefined
+          ? { runtimeMode: kept.runtimeMode }
+          : {}),
+        ...(current.interactionMode === beforeMerge.interactionMode &&
+        kept.interactionMode !== undefined
+          ? { interactionMode: kept.interactionMode }
+          : {}),
       });
       // Flush before removal: append only schedules persistence, leaving the queue as the sole durable copy.
       yield* storage("flush-drafts", kept.messageId, () => flushComposerDrafts());
@@ -465,7 +483,10 @@ export const restoreRejectedQueuedMessage = Effect.fn("ThreadOutbox.restoreRejec
   function* (queuedMessage: QueuedThreadMessage, message: string) {
     const draftKey = recoveryDraftKey(queuedMessage);
     const threadKey = scopedThreadKey(queuedMessage.environmentId, queuedMessage.threadId);
-    const editing = () => isEditingQueuedMessage(queuedMessage.messageId);
+    const revision = threadOutboxRevision(queuedMessage.messageId);
+    const superseded = () =>
+      isEditingQueuedMessage(queuedMessage.messageId) ||
+      !isQueuedMessagePayloadCurrent(queuedMessage, revision);
     // Until the queue drops the message, a failure undoes the merge, keeping concurrent edits.
     let rollback: { readonly snapshot: ComposerDraft; readonly merged: ComposerDraft } | null =
       null;
@@ -474,20 +495,23 @@ export const restoreRejectedQueuedMessage = Effect.fn("ThreadOutbox.restoreRejec
         undoComposerDraftMerge(draftKey, snapshot, merged),
       );
     return yield* Effect.gen(function* () {
-      if (editing() || !(yield* confirmQueued(queuedMessage)) || editing()) {
+      if (superseded() || !(yield* confirmQueued(queuedMessage)) || superseded()) {
         return "deferred" as const;
       }
-      const revision = threadOutboxRevision(queuedMessage.messageId);
       if (queuedMessage.restoreToDraft === false) {
         const removed = yield* storage("remove-unsendable", queuedMessage.messageId, () =>
-          removeThreadOutboxMessage(queuedMessage, revision, () => !editing()),
+          removeThreadOutboxMessage(
+            queuedMessage,
+            revision,
+            () => !isEditingQueuedMessage(queuedMessage.messageId),
+          ),
         );
         if (!removed) return "deferred" as const;
         setThreadComposerError(threadKey, message, queuedMessage.messageId);
         return "restored" as const;
       }
       yield* storage("load-drafts", queuedMessage.messageId, () => waitForComposerDraftsLoaded());
-      if (editing()) return "deferred" as const;
+      if (superseded()) return "deferred" as const;
       const originalDraft = getComposerDraftSnapshot(draftKey);
       const existingAttachmentIds = new Set(
         originalDraft.attachments.map((attachment) => attachment.id),
@@ -509,38 +533,50 @@ export const restoreRejectedQueuedMessage = Effect.fn("ThreadOutbox.restoreRejec
         return "blocked" as const;
       }
 
+      const merge = { snapshot: originalDraft, merged: originalDraft };
       const withdraw = (merged: ComposerDraft) =>
         Effect.sync(() => clearThreadComposerError(threadKey, queuedMessage.messageId)).pipe(
-          Effect.andThen(undo(originalDraft, merged)),
+          Effect.andThen(undo(merge.snapshot, merged)),
           Effect.as("deferred" as const),
         );
       if (!queuedMessage.creation) {
         setThreadComposerError(threadKey, message, queuedMessage.messageId);
       }
       stampRecoveryDraftProject(queuedMessage, draftKey);
-      // The merge publishes even when persisting it fails, so the rollback is captured either way.
       yield* storage("restore-to-draft", queuedMessage.messageId, () =>
-        mergeComposerDraftContent(draftKey, {
-          text: queuedMessage.text,
-          context: queuedMessage.context,
-          attachments: queuedMessage.attachments,
-        }),
-      ).pipe(
-        Effect.ensuring(
-          Effect.sync(() => {
-            rollback = { snapshot: originalDraft, merged: getComposerDraftSnapshot(draftKey) };
-          }),
+        mergeComposerDraftContent(
+          draftKey,
+          {
+            text: queuedMessage.text,
+            context: queuedMessage.context,
+            attachments: queuedMessage.attachments,
+          },
+          {
+            onMerge: (snapshot, merged) => {
+              merge.snapshot = snapshot;
+              merge.merged = merged;
+              rollback = merge;
+            },
+          },
         ),
       );
-      if (editing()) return yield* withdraw(getComposerDraftSnapshot(draftKey));
-      updateComposerDraftSettings(draftKey, {
-        ...(queuedMessage.modelSelection ? { modelSelection: queuedMessage.modelSelection } : {}),
-        ...(queuedMessage.runtimeMode ? { runtimeMode: queuedMessage.runtimeMode } : {}),
-        ...(queuedMessage.interactionMode
+      if (superseded()) return yield* withdraw(merge.merged);
+      const current = getComposerDraftSnapshot(draftKey);
+      const settings = {
+        ...(current.modelSelection === merge.merged.modelSelection && queuedMessage.modelSelection
+          ? { modelSelection: queuedMessage.modelSelection }
+          : {}),
+        ...(current.runtimeMode === merge.merged.runtimeMode && queuedMessage.runtimeMode
+          ? { runtimeMode: queuedMessage.runtimeMode }
+          : {}),
+        ...(current.interactionMode === merge.merged.interactionMode &&
+        queuedMessage.interactionMode
           ? { interactionMode: queuedMessage.interactionMode }
           : {}),
-        ...(queuedMessage.freshContext ? { freshContext: true } : {}),
-        ...(queuedMessage.creation
+        ...(current.freshContext === merge.merged.freshContext && queuedMessage.freshContext
+          ? { freshContext: true }
+          : {}),
+        ...(current.workspaceSelection === merge.merged.workspaceSelection && queuedMessage.creation
           ? {
               workspaceSelection: {
                 mode: queuedMessage.creation.workspaceMode,
@@ -556,15 +592,20 @@ export const restoreRejectedQueuedMessage = Effect.fn("ThreadOutbox.restoreRejec
               },
             }
           : {}),
-      });
-      const restoredDraft = getComposerDraftSnapshot(draftKey);
-      rollback = { snapshot: originalDraft, merged: restoredDraft };
+      };
+      updateComposerDraftSettings(draftKey, settings);
+      const restoredDraft = { ...merge.merged, ...settings };
+      rollback = { snapshot: merge.snapshot, merged: restoredDraft };
       yield* storage("flush-drafts", queuedMessage.messageId, () => flushComposerDrafts());
-      if (editing() || !(yield* confirmQueued(queuedMessage)) || editing()) {
+      if (superseded() || !(yield* confirmQueued(queuedMessage)) || superseded()) {
         return yield* withdraw(restoredDraft);
       }
       const removed = yield* storage("remove-restored", queuedMessage.messageId, () =>
-        removeThreadOutboxMessage(queuedMessage, revision, () => !editing()),
+        removeThreadOutboxMessage(
+          queuedMessage,
+          revision,
+          () => !isEditingQueuedMessage(queuedMessage.messageId),
+        ),
       );
       if (!removed) return yield* withdraw(restoredDraft);
       // After queue removal, the draft owns content and must never roll back.
@@ -967,7 +1008,7 @@ export function createThreadOutboxDelivery(): {
       return yield* restoreQueuedMessage(persistedMessage, `${title}. ${detail}`);
     }
     const sendSettings = resolveQueuedThreadSettings(
-      queuedMessage,
+      persistedMessage,
       settings,
       currentConfig.providers,
     );
@@ -1014,10 +1055,10 @@ export function createThreadOutboxDelivery(): {
           messageId: queuedMessage.messageId,
           role: "user",
           ...serializeComposerMessageForServer(
-            queuedMessage.text,
+            persistedMessage.text,
             uploadedComposerContext(
-              queuedMessage.context,
-              queuedMessage.attachments,
+              persistedMessage.context,
+              persistedMessage.attachments,
               prepared.attachments,
             ),
           ),
@@ -1025,7 +1066,7 @@ export function createThreadOutboxDelivery(): {
         },
         modelSelection: sendSettings.modelSelection,
         titleSeed: deriveThreadTitleSeed(
-          { text: queuedMessage.text, attachments: queuedMessage.attachments },
+          { text: persistedMessage.text, attachments: persistedMessage.attachments },
           m,
         ),
         runtimeMode: sendSettings.runtimeMode,
@@ -1121,29 +1162,26 @@ export function createThreadOutboxDelivery(): {
     if (!isQueuedMessagePayloadCurrent(persistedMessage, deliveryRevision)) {
       return;
     }
-    const currentConfig = appAtomRegistry.get(
-      serverEnvironment.configValueAtom(queuedMessage.environmentId),
-    );
-    if (!currentConfig) return yield* retryDelivery;
-    if (isModelSelectionUnavailable(currentConfig, settings.modelSelection, creation.projectId)) {
-      const { title, detail } = describeUnavailableModelSelection(
-        currentConfig,
-        settings.modelSelection,
-        creation.projectId,
-      );
-      return yield* restoreQueuedMessage(persistedMessage, `${title}. ${detail}`);
-    }
-    const sendSettings = resolveQueuedThreadSettings(
-      queuedMessage,
-      settings,
-      currentConfig.providers,
-    );
     if (!hasAccess()) return;
     let workspace = creation;
     const launched = launchedCreations.get(persistedMessage.messageId);
     if (launched?.revision === deliveryRevision) {
       workspace = launched.workspace;
     } else if (creation.pullRequestReference) {
+      const checkoutConfig = appAtomRegistry.get(
+        serverEnvironment.configValueAtom(queuedMessage.environmentId),
+      );
+      if (!checkoutConfig) return yield* retryDelivery;
+      if (
+        isModelSelectionUnavailable(checkoutConfig, settings.modelSelection, creation.projectId)
+      ) {
+        const { title, detail } = describeUnavailableModelSelection(
+          checkoutConfig,
+          settings.modelSelection,
+          creation.projectId,
+        );
+        return yield* restoreQueuedMessage(persistedMessage, `${title}. ${detail}`);
+      }
       const checkout = yield* deliveryCommand(gitEnvironment.preparePullRequestThread, {
         environmentId: queuedMessage.environmentId,
         input: { cwd: projectCwd, reference: creation.pullRequestReference, mode: "worktree" },
@@ -1180,6 +1218,29 @@ export function createThreadOutboxDelivery(): {
         startFromOrigin: false,
       };
     }
+    if (
+      !isQueuedMessagePayloadCurrent(persistedMessage, deliveryRevision) ||
+      isEditingQueuedMessage(queuedMessage.messageId)
+    )
+      return;
+    const currentConfig = appAtomRegistry.get(
+      serverEnvironment.configValueAtom(queuedMessage.environmentId),
+    );
+    if (!currentConfig) return yield* retryDelivery;
+    if (isModelSelectionUnavailable(currentConfig, settings.modelSelection, creation.projectId)) {
+      const { title, detail } = describeUnavailableModelSelection(
+        currentConfig,
+        settings.modelSelection,
+        creation.projectId,
+      );
+      return yield* restoreQueuedMessage(persistedMessage, `${title}. ${detail}`);
+    }
+    const sendSettings = resolveQueuedThreadSettings(
+      persistedMessage,
+      settings,
+      currentConfig.providers,
+    );
+    if (!hasAccess()) return;
     launchedCreations.set(persistedMessage.messageId, { revision: deliveryRevision, workspace });
     const deliveryResult = yield* deliveryCommand(threadEnvironment.startTurn, {
       environmentId: queuedMessage.environmentId,
@@ -1190,12 +1251,12 @@ export function createThreadOutboxDelivery(): {
         commandId: queuedMessage.commandId,
         messageId: queuedMessage.messageId,
         createdAt: queuedMessage.createdAt,
-        titleText: queuedMessage.text,
+        titleText: persistedMessage.text,
         ...serializeComposerMessageForServer(
-          queuedMessage.text.trim(),
+          persistedMessage.text,
           uploadedComposerContext(
-            queuedMessage.context,
-            queuedMessage.attachments,
+            persistedMessage.context,
+            persistedMessage.attachments,
             prepared.attachments,
           ),
         ),

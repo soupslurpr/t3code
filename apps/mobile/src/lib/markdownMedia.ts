@@ -7,14 +7,17 @@ import {
   mediaMimeTypeFromExtension,
 } from "@t3tools/shared/mediaPreview";
 import { splitFilePathPosition } from "@t3tools/shared/fileLinks";
-import { parseMarkdownFileLink } from "@t3tools/shared/markdownLinks";
 import {
   mediaFileReference,
   mediaUrlReference,
   mediaReferenceFileName,
 } from "@t3tools/client-runtime/media-reference";
 import type { EnvironmentId, ThreadId } from "@t3tools/contracts";
-import { normalizeNativeMarkdownUrl, resolveMarkdownLinkPresentation } from "./markdownLinks";
+import {
+  nativeMarkdownFileTarget,
+  normalizeNativeMarkdownUrl,
+  resolveMarkdownLinkPresentation,
+} from "./markdownLinks";
 import { resolveMobileMarkdownMediaSource } from "./markdownMediaSource";
 
 import type { FilePreviewSource } from "../components/ui/FilePreviewModal";
@@ -47,7 +50,8 @@ export function resolveMarkdownMediaPreview(
   | { readonly kind: "pdf" | "audio" | "document" | "file"; readonly source: FilePreviewSource }
   | { readonly kind: "video"; readonly source: MediaVideoPreviewSource }
   | null {
-  if (parseMarkdownFileLink(href)?.line !== undefined) return null;
+  const file = nativeMarkdownFileTarget(href);
+  if (file?.line !== undefined || (file && /[\\/]$/.test(file.path))) return null;
   const classified = classifyMarkdownImageSource(href, input.workspaceRoot);
   if (classified._tag === "Direct" && /^data:(?!image\/|video\/)/i.test(classified.uri))
     return null;

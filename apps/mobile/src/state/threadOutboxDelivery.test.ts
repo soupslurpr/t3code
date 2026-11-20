@@ -35,7 +35,11 @@ const harness = vi.hoisted(() => ({
   draftFile: (() => {
     let document = "";
     let writeError: Error | null = null;
+    let onNextWrite: (() => void) | null = null;
     return {
+      setOnNextWrite(callback: (() => void) | null) {
+        onNextWrite = callback;
+      },
       setDocument(value: unknown) {
         document = JSON.stringify(value);
       },
@@ -62,6 +66,9 @@ const harness = vi.hoisted(() => ({
             throw writeError;
           }
           document = value;
+          const callback = onNextWrite;
+          onNextWrite = null;
+          callback?.();
         }
       },
     };
@@ -122,8 +129,20 @@ vi.mock("./session", () => ({
 
 vi.mock("./use-thread-outbox", async () => {
   const { Atom } = await import("effect/reactivity");
+  const { appAtomRegistry } = await import("./atom-registry");
+  const editingQueuedMessageIdsAtom = Atom.make<Record<string, boolean>>({}).pipe(Atom.keepAlive);
   return {
-    editingQueuedMessageIdsAtom: Atom.make<Record<string, boolean>>({}).pipe(Atom.keepAlive),
+    editingQueuedMessageIdsAtom,
+    holdEditingQueuedMessage: (id: string) =>
+      appAtomRegistry.set(editingQueuedMessageIdsAtom, {
+        ...appAtomRegistry.get(editingQueuedMessageIdsAtom),
+        [id]: true,
+      }),
+    releaseEditingQueuedMessage: (id: string) => {
+      const current = { ...appAtomRegistry.get(editingQueuedMessageIdsAtom) };
+      delete current[id];
+      appAtomRegistry.set(editingQueuedMessageIdsAtom, current);
+    },
     dispatchingQueuedMessageIdsAtom: Atom.make({}).pipe(Atom.keepAlive),
     retryingQueuedMessageIdsAtom: Atom.make({}).pipe(Atom.keepAlive),
     threadOutboxShellStatusesAtom: Atom.make(new Map()),
@@ -160,6 +179,7 @@ import { clearThreadComposerError, threadComposerErrorsAtom } from "./thread-com
 import type { QueuedThreadMessage } from "./thread-outbox-model";
 import * as composerDrafts from "./use-composer-drafts";
 import { startComposerDraftOperation } from "./composerDraftOperations";
+import { editPendingThreadMessage } from "./edit-pending-thread-message";
 import { recoverFailedThreadDraft } from "./recover-failed-thread-draft";
 import { editingQueuedMessageIdsAtom } from "./use-thread-outbox";
 import {
@@ -235,6 +255,7 @@ afterEach(() => {
   appAtomRegistry.set(pendingThreadCreationOutcomesAtom, {});
   appAtomRegistry.set(threadComposerErrorsAtom, {});
   harness.draftFile.setWriteError(null);
+  harness.draftFile.setOnNextWrite(null);
   harness.removePersistedFile.mockClear();
   harness.removeOutboxMessage.mockClear();
   harness.prepareTurnAttachments.mockReset();
@@ -635,8 +656,8 @@ describe("thread outbox delivered creation recovery", () => {
       const releaseRecovery = Promise.withResolvers<void>();
       const mergeSpy = vi
         .spyOn(composerDrafts, "mergeComposerDraftContent")
-        .mockImplementation(async (draftKey, content) => {
-          const result = await originalMergeComposerDraftContent(draftKey, content);
+        .mockImplementation(async (draftKey, content, options) => {
+          const result = await originalMergeComposerDraftContent(draftKey, content, options);
           mergeCompleted.resolve();
           await releaseRecovery.promise;
           return result;
@@ -680,8 +701,8 @@ describe("thread outbox delivered creation recovery", () => {
       const releaseRecovery = Promise.withResolvers<void>();
       const mergeSpy = vi
         .spyOn(composerDrafts, "mergeComposerDraftContent")
-        .mockImplementation(async (draftKey, content) => {
-          const result = await originalMergeComposerDraftContent(draftKey, content);
+        .mockImplementation(async (draftKey, content, options) => {
+          const result = await originalMergeComposerDraftContent(draftKey, content, options);
           mergeCompleted.resolve();
           await releaseRecovery.promise;
           return result;
@@ -1041,5 +1062,87 @@ describe("thread outbox recovery rollback", () => {
       expect(remainingMessages()).toEqual([]);
       expect(appAtomRegistry.get(threadComposerErrorsAtom)[draftKey]?.message).toBe("too large");
     }),
+  );
+});
+
+describe("draft merge ownership during persistence", () => {
+  it.effect.each(["queued edit", "rejected recovery"] as const)(
+    "preserves typing and settings after a failed %s merge",
+    (path) =>
+      Effect.gen(function* () {
+        const message = queuedMessage({ messageId: `ownership-${path}`, text: "Queued text" });
+        const draftKey = `${message.environmentId}:${message.threadId}`;
+        yield* Effect.promise(() => composerDrafts.waitForComposerDraftsLoaded());
+        appAtomRegistry.set(composerDrafts.composerDraftsAtom, {
+          [draftKey]: { text: "Original", attachments: [] },
+        });
+        yield* Effect.promise(() => harness.manager.enqueue(message));
+        const newerSelection = {
+          instanceId: ProviderInstanceId.make("codex"),
+          model: "newer-model",
+        };
+        harness.draftFile.setOnNextWrite(() => {
+          composerDrafts.setComposerDraftText(
+            draftKey,
+            `${composerDrafts.getComposerDraftSnapshot(draftKey).text}\nTyped during write`,
+          );
+          composerDrafts.updateComposerDraftSettings(draftKey, {
+            modelSelection: newerSelection,
+            runtimeMode: "approval-required",
+          });
+          throw new Error("write failed after concurrent edit");
+        });
+        if (path === "queued edit") {
+          yield* Effect.promise(() => expect(editPendingThreadMessage(message)).rejects.toThrow());
+        } else {
+          expect(yield* restoreRejectedQueuedMessage(message, "rejected")).toBe("retry");
+        }
+        expect(composerDrafts.getComposerDraftSnapshot(draftKey)).toMatchObject({
+          text: "Original\nTyped during write",
+          modelSelection: newerSelection,
+          runtimeMode: "approval-required",
+        });
+        expect(remainingMessages()).toEqual([message]);
+        expect(appAtomRegistry.get(editingQueuedMessageIdsAtom)).toEqual({});
+      }),
+  );
+
+  it.effect.each(["queued edit", "rejected recovery", "delivered creation"] as const)(
+    "preserves newer model choices during successful %s persistence",
+    (path) =>
+      Effect.gen(function* () {
+        const message = {
+          ...queuedMessage({ messageId: `settings-${path}`, text: "Queued text" }),
+          modelSelection: { instanceId: ProviderInstanceId.make("codex"), model: "queued-model" },
+          runtimeMode: "full-access" as const,
+        };
+        const draftKey = `${message.environmentId}:${message.threadId}`;
+        yield* Effect.promise(() => composerDrafts.waitForComposerDraftsLoaded());
+        appAtomRegistry.set(composerDrafts.composerDraftsAtom, {
+          [draftKey]: { text: "Original", attachments: [] },
+        });
+        yield* Effect.promise(() => harness.manager.enqueue(message));
+        const newerSelection = {
+          instanceId: ProviderInstanceId.make("codex"),
+          model: "user-choice",
+        };
+        harness.draftFile.setOnNextWrite(() => {
+          composerDrafts.updateComposerDraftSettings(draftKey, {
+            modelSelection: newerSelection,
+            runtimeMode: "approval-required",
+          });
+        });
+        if (path === "queued edit")
+          expect(yield* Effect.promise(() => editPendingThreadMessage(message))).toBe(true);
+        else if (path === "rejected recovery")
+          expect(yield* restoreRejectedQueuedMessage(message, "rejected")).toBe("restored");
+        else expect(yield* handled(recoverEditedCreationAfterDelivery(message))).toBe(true);
+        expect(composerDrafts.getComposerDraftSnapshot(draftKey)).toMatchObject({
+          text: "Original\n\nQueued text",
+          modelSelection: newerSelection,
+          runtimeMode: "approval-required",
+        });
+        expect(remainingMessages()).toEqual([]);
+      }),
   );
 });

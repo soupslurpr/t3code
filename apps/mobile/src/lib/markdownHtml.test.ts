@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vite-plus/test";
 import {
+  prepareNativeMarkdown,
   markdownForNativeParsing,
-  markdownForNativeRendering,
   markdownHtmlContent,
   markdownWithHtml,
   markdownWithFileEmbeds,
@@ -11,9 +11,11 @@ import {
 import { markdownImageSources } from "./markdownImageSources";
 import { markdownFileEmbedLabel, resolveMarkdownMediaPreview } from "./markdownMedia";
 import { resolveMarkdownLinkPresentation } from "./markdownLinks";
-import { ENRICHED_INLINE_FILE_LINK_REGEX } from "./enrichedLinkPresentation";
 import { EnvironmentId, ThreadId } from "@t3tools/contracts";
 import { parseMarkdown } from "react-native-enriched-markdown/src/web/parseMarkdown";
+
+const markdownForNativeRendering = (markdown: string) =>
+  prepareNativeMarkdown(markdownForNativeParsing(markdown), { tableBreaks: true }).render();
 
 describe("HTML in native Markdown", () => {
   it("preserves screenshot URLs and captions from GitHub HTML image embeds", () => {
@@ -90,7 +92,7 @@ describe("HTML in native Markdown", () => {
     const markdown =
       "| Status | Preview URL |\n| - | - |\n| Done | <a href='https://commit.example.com'>Commit</a><br><a href='https://branch.example.com'>Branch</a> |\n| • One<br/>• Two<BR />**Three** | `<br>` |";
     // md4c decodes the reference to a newline in the cell's text, as remark does.
-    expect(markdownForNativeRendering(markdown, ENRICHED_INLINE_FILE_LINK_REGEX)).toContain(
+    expect(markdownForNativeRendering(markdown)).toContain(
       "| • One&#10;• Two&#10;**Three** | `<br>` |",
     );
     const table = parseMarkdownDocument(markdown).children[0];
@@ -116,10 +118,7 @@ describe("HTML in native Markdown", () => {
     "<p>one</p><p>two</p>",
   ])("keeps a table row intact when a cell contains block HTML: %s", async (cell) => {
     const native = await parseMarkdown(
-      markdownForNativeRendering(
-        `| A | B |\n| - | - |\n| ${cell} | x |`,
-        ENRICHED_INLINE_FILE_LINK_REGEX,
-      ),
+      markdownForNativeRendering(`| A | B |\n| - | - |\n| ${cell} | x |`),
     );
     const text = (node: { content?: string; children?: unknown[] }): string =>
       (node.content ?? "") +
@@ -308,9 +307,9 @@ describe("file embeds in native thread and file Markdown", () => {
     const images =
       "![before](./before.png)\n![after light](./after-light.png) \\\n![after dark][dark]";
     const source = `Shots:\n\n${images}\n\n![a](./a.svg) ![b](./b.svg)\n![c](./c.svg)\n\nNext\n\n[dark]: ./after-dark.png`;
-    const paragraphs = (
-      await parseMarkdown(markdownForNativeRendering(source, ENRICHED_INLINE_FILE_LINK_REGEX))
-    ).children?.map((block) => block.children?.map((child) => child.type).join(" "));
+    const paragraphs = (await parseMarkdown(markdownForNativeRendering(source))).children?.map(
+      (block) => block.children?.map((child) => child.type).join(" "),
+    );
     expect(paragraphs).toEqual([
       "Text",
       "Image",
@@ -416,9 +415,7 @@ describe("Windows paths in native Markdown", () => {
       "> ![quoted](\n> " + image + ")",
     ].join("\n\n");
 
-    const native = await parseMarkdown(
-      markdownForNativeRendering(markdown, ENRICHED_INLINE_FILE_LINK_REGEX),
-    );
+    const native = await parseMarkdown(markdownForNativeRendering(markdown));
     const urls: string[] = [];
     const collect = (node: { attributes?: { url?: string }; children?: unknown[] }) => {
       if (node.attributes?.url) urls.push(node.attributes.url);

@@ -83,6 +83,24 @@ async function expectDefaultModeAfterReopen() {
 }
 
 describe("AddEnvironmentDialog", () => {
+  it.each([
+    "http://127.0.0.1:3775/pair#token=first-rest",
+    "http://127.0.0.1:3775/pair?token=first-rest",
+    "https://app.t3.codes/pair?host=http%3A%2F%2F127.0.0.1%3A3775#token=first-rest",
+  ])("keeps the complete pairing URL while typing and extracts it on blur: %s", async (url) => {
+    using _bridge = setup();
+    await using _screen = await render(<Owner />);
+
+    await userEvent.click(page.getByRole("button", { name: "Add environment" }));
+    const host = page.getByPlaceholder("backend.example.com");
+    await userEvent.type(host, url);
+    await expect.element(host).toHaveValue(url);
+    await expect.element(page.getByPlaceholder("PAIRCODE")).toHaveValue("");
+    await userEvent.click(page.getByPlaceholder("PAIRCODE"));
+    await expect.element(host).toHaveValue("http://127.0.0.1:3775");
+    await expect.element(page.getByPlaceholder("PAIRCODE")).toHaveValue("first-rest");
+  });
+
   it("reopens on Remote link after adding an SSH environment", async () => {
     using _bridge = setup();
     await using _screen = await render(<Owner />);

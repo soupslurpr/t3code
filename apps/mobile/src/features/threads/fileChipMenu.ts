@@ -1,5 +1,5 @@
 import { formatFilePathForClipboard } from "@t3tools/client-runtime/media-actions";
-import { fileBasename } from "@t3tools/shared/path";
+import { fileBasename, isHostPath } from "@t3tools/shared/path";
 import type { ThreadId } from "@t3tools/contracts";
 import { resolveMarkdownLinkPresentation } from "../../lib/markdownLinks";
 import type { MarkdownFileContextMenu } from "../../native/SelectableMarkdownText.types";
@@ -9,7 +9,6 @@ import { msg } from "gt-react-native";
 import { m, type MessageResolver } from "../../i18n/messages";
 
 import {
-  isAbsolutePath,
   resolveFileLinkPath,
   resolveWorkspaceFilePath,
   resolveWorkspaceRelativeFilePath,
@@ -34,10 +33,10 @@ export function resolveFileChipTarget(
 ): FileChipTarget | null {
   const presentation = resolveMarkdownLinkPresentation(href);
   if (presentation.kind !== "file") return null;
-  const path = resolveFileLinkPath(workspaceRoot, presentation.path);
+  const path = resolveFileLinkPath(presentation.path);
   if (path === null) return null;
   const relativePath = resolveWorkspaceRelativeFilePath(workspaceRoot, path);
-  const fullPath = isAbsolutePath(path)
+  const fullPath = isHostPath(path)
     ? path
     : workspaceRoot && relativePath
       ? resolveWorkspaceFilePath(workspaceRoot, relativePath)

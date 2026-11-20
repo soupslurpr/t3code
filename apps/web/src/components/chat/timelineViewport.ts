@@ -76,6 +76,7 @@ export function attachTimelineViewport(
   onFrameResize?: (frame: HTMLIFrameElement) => void,
 ): TimelineViewport & {
   readonly dispose: () => void;
+  readonly reportScrollAwayFromEnd: (previousOffset?: number) => void;
 } {
   const listeners = new Set<(navigation: TimelineNavigation) => void>();
   const followReleasedListeners = new Set<() => void>();
@@ -131,12 +132,27 @@ export function attachTimelineViewport(
     top: scrollNode.scrollTop,
     height: scrollNode.scrollHeight,
   });
-  // Only a frame's input reaches the timeline unseen. Any other unexplained upward move is not
-  // the reader's: the browser clamps scrollTop when content briefly shrinks.
+  // Without a list navigation signal, only input inside a frame accounts for a raw upward scroll.
   const frameHasInput = () =>
     scrollNode.querySelector("iframe:hover") !== null ||
     (document.activeElement instanceof HTMLIFrameElement &&
       scrollNode.contains(document.activeElement));
+  const reportScrollAwayFromEnd = (previousOffset?: number) => {
+    const { scrollHeight, clientHeight, scrollTop } = scrollNode;
+    // Remeasuring rows can clamp the old offset beyond the new scroll range.
+    if (previousOffset !== undefined && previousOffset > scrollHeight - clientHeight + 1) return;
+    if (
+      programmaticHolds === 0 &&
+      // LegendList updates its scroll state on the next animation frame.
+      resolveTimelineIsAtEnd({
+        contentLength: scrollHeight,
+        scroll: scrollTop,
+        scrollLength: clientHeight,
+      }) === false
+    ) {
+      emit({ source: "scroll" });
+    }
+  };
   const handleScroll = () => {
     if (
       scrolledUp({
@@ -144,15 +160,9 @@ export function attachTimelineViewport(
         height: scrollNode.scrollHeight,
         programmatic: programmaticHolds > 0,
       }) &&
-      frameHasInput() &&
-      // LegendList updates its scroll state on the next animation frame.
-      resolveTimelineIsAtEnd({
-        contentLength: scrollNode.scrollHeight,
-        scroll: scrollNode.scrollTop,
-        scrollLength: scrollNode.clientHeight,
-      }) === false
+      frameHasInput()
     ) {
-      emit({ source: "scroll" });
+      reportScrollAwayFromEnd();
     }
   };
   const frameHeights = new WeakMap<HTMLIFrameElement, number>();
@@ -179,6 +189,7 @@ export function attachTimelineViewport(
   const unregisterKeyDown = registerCommands({}, { observe: handleKeyDown });
   return {
     scrollNode,
+    reportScrollAwayFromEnd,
     subscribe: (listener) => {
       listeners.add(listener);
       return () => listeners.delete(listener);

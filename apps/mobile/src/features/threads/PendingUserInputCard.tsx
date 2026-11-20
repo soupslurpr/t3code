@@ -95,7 +95,7 @@ function QuestionText(props: {
       void openPullRequest(href);
       return;
     }
-    const path = resolveFileLinkPath(props.workspaceRoot, link.path);
+    const path = resolveFileLinkPath(link.path);
     if (path === null) return;
     navigation.navigate("ThreadFile", {
       environmentId: String(props.environmentId),
@@ -108,6 +108,9 @@ function QuestionText(props: {
   };
   return (
     <SelectableMarkdownText
+      environmentId={props.environmentId}
+      cwd={props.workspaceRoot ?? undefined}
+      threadId={props.threadId}
       markdown={markdown}
       textStyle={styles.nativeTextStyle}
       writingDirection={markdownProseDirection(markdown)}

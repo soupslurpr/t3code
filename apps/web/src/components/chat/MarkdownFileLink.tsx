@@ -333,7 +333,9 @@ export const MarkdownFileLink = memo(function MarkdownFileLink({
   const chipKind = documentChipKindForFileName(iconPath) ?? "mention";
 
   const tooltipContent = (
-    <WorkspaceEntryTooltip path={iconPath} label={targetPath} environmentId={environmentId} />
+    <span className="select-text">
+      <WorkspaceEntryTooltip path={iconPath} label={targetPath} environmentId={environmentId} />
+    </span>
   );
   const sharedTooltip = useSharedTooltip({
     render: () => tooltipContent,

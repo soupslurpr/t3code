@@ -1,5 +1,6 @@
 import type { mediaKindFromPath } from "./mediaPreview.ts";
 import {
+  isHostPath,
   isNetworkPath,
   isWindowsAbsolutePath,
   stripSlashPrefixedWindowsDrive,
@@ -29,6 +30,8 @@ const EXTERNAL_SCHEME_PATTERN = /^([A-Za-z][A-Za-z0-9+.-]*):(.*)$/;
 
 const POSITION_SUFFIX_PATTERN = /:\d+(?::\d+|-\d+)?$/;
 
+const INLINE_POSITION_SUFFIX = /(?::\d+(?::\d+|-\d+)?|#L\d+(?:C\d+|-L?\d+)?)$/i;
+
 const POSITION_ONLY_PATTERN = /^\d+(?::\d+|-\d+)?$/;
 
 const INLINE_CODE_WHITESPACE_PATTERN = /\s/;
@@ -44,7 +47,7 @@ const SPACED_PATH_BODY_PATTERN =
 function isSpacedAbsoluteFilePath(text: string): boolean {
   const root = SPACED_ABSOLUTE_PATH_ROOT_PATTERN.exec(text)?.[0];
   if (root === undefined) return false;
-  const body = text.slice(root.length).replace(POSITION_SUFFIX_PATTERN, "");
+  const body = text.slice(root.length).replace(INLINE_POSITION_SUFFIX, "");
   if (!SPACED_PATH_BODY_PATTERN.test(body)) return false;
   const firstSpace = body.indexOf(" ");
   const foldersBeforeSpace = body.slice(0, firstSpace).split(PATH_SEPARATOR_PATTERN).slice(0, -1);
@@ -93,7 +96,7 @@ const POSIX_FILE_ROOT_PREFIXES = [
   "/workspaces/",
 ] as const;
 
-export const EXTENSIONLESS_FILE_NAMES: ReadonlySet<string> = new Set([
+const EXTENSIONLESS_FILE_NAMES: ReadonlySet<string> = new Set([
   "Makefile",
   "makefile",
   "GNUmakefile",
@@ -208,16 +211,16 @@ export function inlineCodeFilePathCandidate(codeText: string): string | null {
   }
 
   const candidate = isWindowsAbsolutePath(trimmed) ? trimmed : trimmed.replaceAll("\\", "/");
-  const hasPosition = POSITION_SUFFIX_PATTERN.test(candidate);
+  const hasPosition = INLINE_POSITION_SUFFIX.test(candidate);
   if (!hasPosition && !PATH_SEPARATOR_PATTERN.test(candidate)) return null;
-  if (ELIDED_PATH_SEGMENT_PATTERN.test(candidate.replace(POSITION_SUFFIX_PATTERN, ""))) return null;
+  if (ELIDED_PATH_SEGMENT_PATTERN.test(candidate.replace(INLINE_POSITION_SUFFIX, ""))) return null;
 
   const hasExplicitPathShape =
     RELATIVE_PATH_PREFIX_PATTERN.test(candidate) ||
     candidate.startsWith("/") ||
     isWindowsAbsolutePath(candidate);
   if (!hasExplicitPathShape) {
-    const withoutPosition = candidate.replace(POSITION_SUFFIX_PATTERN, "");
+    const withoutPosition = candidate.replace(INLINE_POSITION_SUFFIX, "");
     // Markdown destinations accept `patches/`. Inline code still needs a
     // file-shaped final segment, so a trailing slash stays plain code.
     if (withoutPosition.endsWith("/")) return null;
@@ -228,7 +231,8 @@ export function inlineCodeFilePathCandidate(codeText: string): string | null {
         .replace(/[/\\]+$/, "")
         .split(/[\\/]/)
         .at(-1) ?? "";
-    if (VERSION_SUFFIX_PATTERN.test(basename)) return null;
+    if (VERSION_SUFFIX_PATTERN.test(basename) && !/(?:^|\/)s?bin\/[^/]+$/.test(withoutPosition))
+      return null;
     if (!FILE_EXTENSION_PATTERN.test(basename)) {
       if (!hasPosition) return EXTENSIONLESS_FILE_NAMES.has(basename) ? candidate : null;
       // A `:line` suffix alone does not make `I/W217:220` a file reference.
@@ -389,7 +393,7 @@ export function isMarkdownFileLinkLabel(label: string, href: string): boolean {
   return matchesLabelPosition(splitFilePathPosition(trimmed));
 }
 
-export function isRelativeFilePath(path: string): boolean {
+function isRelativeFilePath(path: string): boolean {
   return (
     RELATIVE_PATH_PREFIX_PATTERN.test(path) ||
     (!path.startsWith("/") && !isWindowsAbsolutePath(path))
@@ -621,6 +625,45 @@ export function extractMarkdownLinkHrefs(markdown: string): string[] {
     }
   }
   return hrefs;
+}
+
+/** Inline code names a filesystem path. Only a line anchor has URL semantics here. */
+export function resolveInlineCodeFileTarget(
+  codeText: string,
+  cwd?: string,
+  baseDir: string | undefined = cwd,
+): FilePathPosition | null {
+  const candidate = inlineCodeFilePathCandidate(codeText);
+  if (!candidate) return null;
+  const hash = candidate.match(/#L\d+(?:C\d+|-L?\d+)?$/i)?.[0] ?? "";
+  const path = hash ? candidate.slice(0, -hash.length) : candidate;
+  const source = parseFilePathLink(stripSlashPrefixedWindowsDrive(path), hash);
+  if (
+    !source ||
+    isNetworkPath(source.path) ||
+    (INLINE_POSITION_SUFFIX.test(candidate) && source.line === undefined)
+  )
+    return null;
+  if (isHostPath(source.path)) return source;
+  if (!baseDir || !isHostPath(baseDir) || isNetworkPath(baseDir)) return null;
+  const fromWorkspaceRoot =
+    cwd &&
+    !RELATIVE_PATH_PREFIX_PATTERN.test(path) &&
+    path.includes("/") &&
+    workspaceRelativeFilePath(baseDir, cwd) !== null;
+  return { ...source, path: resolvePathLinkTarget(source.path, fromWorkspaceRoot ? cwd : baseDir) };
+}
+
+export function inlineCodeFileKindMatches(
+  target: { readonly path: string; readonly line?: number | undefined },
+  kind: "file" | "directory" | "other" | null,
+): kind is "file" | "directory" {
+  if (/[\\/]$/.test(target.path)) return target.line === undefined && kind === "directory";
+  return kind === "file" || (target.line === undefined && kind === "directory");
+}
+
+export function markdownHrefForFilePath(path: string): string {
+  return path.replace(/[%?#<>|]/g, encodeURIComponent);
 }
 
 export function resolveMarkdownFileLinkTarget(

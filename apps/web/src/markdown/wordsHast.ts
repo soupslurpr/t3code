@@ -139,7 +139,12 @@ interface Tokenized {
   readonly root: Root;
   /** Elements with a `data-sourcepos`, which raw HTML can write too. */
   readonly positioned: Element[];
+  /** Non-`<pre>` `<code>` elements with no raw HTML attributes (candidates for Markdown inline code). */
+  readonly bareCodes: Element[];
 }
+
+/** Inline `<code>` elements confirmed to come from Markdown backticks rather than raw HTML. */
+const markdownInlineCodes = new WeakSet<Element>();
 
 /**
  * Hast for Words' HTML. Its own markup is well formed; raw HTML closes where its end tags say,
@@ -148,6 +153,7 @@ interface Tokenized {
 function tokenize(html: string, offsetOf: (byte: number) => number): Tokenized {
   const root: Root = { type: "root", children: [] };
   const positioned: Element[] = [];
+  const bareCodes: Element[] = [];
   const stack: Array<Root | Element> = [root];
   let svgDepth = 0;
   let last = 0;
@@ -208,6 +214,14 @@ function tokenize(html: string, offsetOf: (byte: number) => number): Tokenized {
       properties: properties(match[3], inSvg),
       children: [],
     };
+    if (tagName === "code") {
+      // Never let authored `<code data-inline-code>` survive into chat sanitization.
+      delete element.properties.dataInlineCode;
+      const inPre = stack.some((item) => item.type === "element" && item.tagName === "pre");
+      if (!inPre && !match[3]?.trim()) {
+        bareCodes.push(element);
+      }
+    }
     const sourcepos = element.properties.dataSourcepos;
     if (typeof sourcepos === "string") {
       delete element.properties.dataSourcepos;
@@ -244,11 +258,65 @@ function tokenize(html: string, offsetOf: (byte: number) => number): Tokenized {
     end.value = end.value.replace(/\n$/, "");
     if (end.value.trim() === "") root.children.pop();
   }
-  return { root, positioned };
+  return { root, positioned, bareCodes };
 }
 
 const positionKey = (node: Element) =>
   `${node.tagName.toLowerCase()}:${node.position!.start.offset}-${node.position!.end.offset}`;
+
+function markMarkdownInlineCodesByPair(
+  normal: Root | Element,
+  renamed: Root | Element,
+  bareSet: ReadonlySet<Element>,
+  inPre = false,
+) {
+  const normalChildren = normal.children;
+  const renamedChildren = renamed.children;
+  const count = Math.min(normalChildren.length, renamedChildren.length);
+  for (let index = 0; index < count; index++) {
+    const a = normalChildren[index]!;
+    const b = renamedChildren[index]!;
+    if (a.type !== "element" || b.type !== "element") continue;
+    if (!inPre && a.tagName === "code" && b.tagName === "code" && bareSet.has(a)) {
+      markdownInlineCodes.add(a);
+    }
+    markMarkdownInlineCodesByPair(a, b, bareSet, inPre || a.tagName === "pre");
+  }
+}
+
+const SENTINEL_LETTERS = "zyxwvutsrqponmlkjihgfedcba";
+const SENTINEL_ALNUM = "0123456789abcdefghijklmnopqrstuvwxyz";
+
+/**
+ * Pick a 4-character HTML phrasing tag (`[a-z][0-9][a-z0-9]{2}`) not present as a tag in
+ * `markdown` in one O(n) pass. Matching `code`'s 4-character length preserves every byte offset
+ * and CommonMark length limit (such as the 999-character link-label limit) in the paired parse.
+ */
+function pickCodeSentinel(markdown: string): string {
+  const used = new Set<string>();
+  for (const match of markdown.matchAll(/<\/?([a-z][0-9][a-z0-9]{2})(?=[\s/>])/gi)) {
+    used.add(match[1]!.toLowerCase());
+  }
+  for (let a = 0; a < SENTINEL_LETTERS.length; a++) {
+    const first = SENTINEL_LETTERS[a]!;
+    for (let b = 0; b < 10; b++) {
+      for (let c = 0; c < SENTINEL_ALNUM.length; c++) {
+        for (let d = 0; d < SENTINEL_ALNUM.length; d++) {
+          const candidate = `${first}${b}${SENTINEL_ALNUM[c]!}${SENTINEL_ALNUM[d]!}`;
+          if (!used.has(candidate)) return candidate;
+        }
+      }
+    }
+  }
+  const usedLong = new Set<string>();
+  for (const match of markdown.matchAll(/<\/?(z0[0-9a-z]+)(?=[\s/>])/gi)) {
+    usedLong.add(match[1]!.toLowerCase());
+  }
+  for (let n = 0; ; n++) {
+    const candidate = `z0${n.toString(36)}`;
+    if (!usedLong.has(candidate)) return candidate;
+  }
+}
 
 /**
  * Words' HTML for `markdown` as hast. A position marks what Words generated, so raw HTML that
@@ -268,7 +336,25 @@ function parse(markdown: string, options: RenderOptions): Root {
       ),
       offsetOf,
     );
-  const { root, positioned } = render();
+  const { root, positioned, bareCodes } = render();
+  const hasRawHtmlCode =
+    !options.escapeHtml && !options.skipHtml && /<code(?=[\s/>])/i.test(markdown);
+  if (!hasRawHtmlCode) {
+    for (const code of bareCodes) markdownInlineCodes.add(code);
+  } else if (bareCodes.length > 0) {
+    // Rename every literal `<code` / `</code` tag to a collision-free 4-char sentinel phrasing tag.
+    // CommonMark parses the renamed document with the exact same tree shape and lengths, except raw
+    // HTML `<code>` becomes `<sentinel>` while genuine Markdown backtick spans still emit `<code>`.
+    const sentinel = pickCodeSentinel(markdown);
+    const renamed = markdown
+      .replace(/<code(?=[\s/>])/gi, `<${sentinel}`)
+      .replace(/<\/code(?=[\s/>])/gi, `</${sentinel}`);
+    const renamedRoot = tokenize(
+      decoder.decode(renderToHtml(renamed, { ...options, sourcePositions: true })),
+      sentinel.length === 4 ? offsetOf : utf16Offsets(renamed),
+    ).root;
+    markMarkdownInlineCodesByPair(root, renamedRoot, new Set(bareCodes));
+  }
   if (options.escapeHtml || options.skipHtml || !/data-sourcepos/i.test(markdown)) return root;
   const generated = new Map<string, number>();
   for (const node of render(true).positioned) {
@@ -697,7 +783,7 @@ function transform(node: Root | Element, walk: Walk, inLink: boolean, inCode: bo
         props.dataCodeMeta = props.dataMeta;
         delete props.dataMeta;
       }
-    } else if (tagName === "code" && !inLink) {
+    } else if (tagName === "code" && !inLink && markdownInlineCodes.has(child)) {
       props.dataInlineCode = "";
     } else if (tagName === "ol" && walk.options.extensions.userMessage) {
       keepListNumbers(child, walk.source);

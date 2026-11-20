@@ -118,6 +118,27 @@ describe("resolveInlineCodeFileLinkMeta", () => {
 describe("chat file chip paths", () => {
   const cwd = String.raw`C:\Users\alice\project`;
 
+  it("opens, copies and drags the verified host path without searching other workspaces", async () => {
+    const cwd = "/home/another-user/scratch";
+    for (const [source, expected] of [
+      ["config/AGENTS.md", cwd + "/config/AGENTS.md"],
+      ["~/.gemini/config/AGENTS.md", "/host/home/.gemini/config/AGENTS.md"],
+    ] as const) {
+      const meta = resolveInlineCodeFileLinkMeta(source + ":12:3", cwd)!;
+      const host = await resolveMarkdownFileHostPath({
+        meta,
+        cwd,
+        resolveHome: async () => "/host/home",
+        findWorkspaceMatch: async () => {
+          throw new Error("unexpected search");
+        },
+      });
+      expect(host.absolutePath).toBe(expected);
+      expect(markdownFileEditorTarget(meta, host)).toBe(expected + ":12:3");
+      expect(markdownFileCopyPaths(meta, host, cwd).fullPath).toBe(expected + ":12:3");
+    }
+  });
+
   it("opens and copies the indexed file for a bare filename, preserving its line and column", async () => {
     const meta = resolveMarkdownFileLinkMeta("user.ts:261:7", cwd);
     if (!meta) throw new Error("Expected a file link");

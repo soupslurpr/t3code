@@ -6,23 +6,28 @@ import {
   isMarkdownPreviewFile,
   needsWorkspaceFileContents,
   resolveFileLinkPath,
+  resolveWorkspaceFilePath,
   resolveWorkspaceRelativeFilePath,
 } from "./filePath";
 
 describe("resolveFileLinkPath", () => {
-  it.each([
-    ["/home/maria/project", "~/.agents/AGENTS.md", "/home/maria/.agents/AGENTS.md"],
-    ["/Users/maria/project", "~/notes.md", "/Users/maria/notes.md"],
-    ["C:\\Users\\maria\\project", "~\\.agents\\AGENTS.md", "C:\\Users\\maria\\.agents\\AGENTS.md"],
-  ])("expands a home link from %s", (cwd, path, expected) => {
-    expect(resolveFileLinkPath(cwd, path)).toBe(expected);
-    expect(fileRoutePathSegments(expected).join("/")).toBe(expected);
+  it.each(["~/.agents/AGENTS.md", "~\\.agents\\AGENTS.md"])(
+    "preserves %s for the owning host",
+    (path) => {
+      const resolved = resolveFileLinkPath(path);
+      expect(resolved).toBe("~/.agents/AGENTS.md");
+      expect(fileRoutePathSegments(resolved!).join("/")).toBe(resolved);
+      expect(resolveWorkspaceFilePath("/home/another-user/repo", resolved!)).toBe(resolved);
+    },
+  );
+
+  it("preserves the home and filesystem roots through route serialization", () => {
+    for (const root of ["/", "~/", "C:/", "C:\\"])
+      expect(fileRoutePathSegments(root).join("/")).toBe(root);
   });
 
-  it("does not turn an unresolved home into a workspace path", () => {
-    expect(resolveFileLinkPath("/repo", "~/notes.md")).toBeNull();
-    expect(resolveFileLinkPath(null, "~/notes.md")).toBeNull();
-    expect(resolveFileLinkPath("/repo", "../notes.md")).toBeNull();
+  it("rejects a relative path that escapes the workspace", () => {
+    expect(resolveFileLinkPath("../notes.md")).toBeNull();
   });
 });
 
@@ -36,10 +41,10 @@ describe("resolveWorkspaceRelativeFilePath", () => {
     );
   });
 
-  it("recognizes home links inside the workspace", () => {
-    expect(resolveWorkspaceRelativeFilePath("/home/maria/project", "~/project/src/main.ts")).toBe(
-      "src/main.ts",
-    );
+  it("leaves home aliases outside workspace-relative navigation", () => {
+    expect(
+      resolveWorkspaceRelativeFilePath("/home/maria/project", "~/project/src/main.ts"),
+    ).toBeNull();
     expect(
       resolveWorkspaceRelativeFilePath("/home/maria/project", "~/.agents/AGENTS.md"),
     ).toBeNull();

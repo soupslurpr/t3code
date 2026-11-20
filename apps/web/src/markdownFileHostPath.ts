@@ -1,6 +1,6 @@
-import { formatFilePathPosition, resolvePathLinkTarget } from "@t3tools/shared/fileLinks";
+import { formatFilePathPosition, joinPath, resolvePathLinkTarget } from "@t3tools/shared/fileLinks";
 
-import { workspaceRelativeFilePath } from "@t3tools/shared/path";
+import { isWindowsAbsolutePath, workspaceRelativeFilePath } from "@t3tools/shared/path";
 import type { MarkdownFileLinkMeta } from "./markdown-links";
 
 interface MarkdownFileHostPath {
@@ -11,9 +11,19 @@ interface MarkdownFileHostPath {
 export async function resolveMarkdownFileHostPath(input: {
   meta: MarkdownFileLinkMeta;
   cwd: string | undefined;
+  resolveHome?: () => Promise<string>;
   findWorkspaceMatch: (workspaceRelativePath: string) => Promise<string | null>;
 }) {
   const { meta, cwd } = input;
+  if (meta.filePath.startsWith("~/") && input.resolveHome) {
+    const home = await input.resolveHome();
+    const absolutePath = joinPath(
+      home,
+      meta.filePath.slice(2),
+      isWindowsAbsolutePath(home) ? "\\" : "/",
+    );
+    return { absolutePath, matched: true };
+  }
   const match =
     meta.workspaceLookupPath && cwd
       ? await input.findWorkspaceMatch(meta.workspaceLookupPath)

@@ -64,7 +64,9 @@ const audio = vi.hoisted(() => ({
   videoRequestListeners: new Set<(event: { isPlaybackRequested: boolean }) => void>(),
   navigate: vi.fn(),
   query: vi.fn(),
+  renderMarkdown: vi.fn(),
 }));
+vi.mock("expo-symbols", () => ({ SymbolView: () => null }));
 vi.mock("expo-audio", () => ({
   AudioModule: { setAudioSessionOwner: audio.setSessionOwner },
   useAudioPlayer: () => audio.player,
@@ -204,6 +206,7 @@ vi.mock("../native/SelectableMarkdownText", () => ({
     onLinkPress(href: string): void;
     renderImage?: MarkdownImageRenderer;
   }) => {
+    audio.renderMarkdown(props);
     const embeds = [...props.markdown.matchAll(/!\[([^\]]*)\]\(([^)]+)\)/g)];
     return createElement(
       "div",
@@ -445,6 +448,7 @@ describe("ThreadInlineFilePreview playback", () => {
       const name = kind === "audio" ? "clip.mp3" : "clip.mp4";
       const mimeType = kind === "audio" ? "audio/mpeg" : "video/mp4";
       const uri = `https://example.com/${name}`;
+      const streaming = role === "assistant" && origin === "markdown";
       const feed: ThreadFeedEntry[] = [
         {
           type: "message",
@@ -461,7 +465,7 @@ describe("ThreadInlineFilePreview playback", () => {
             createdAt: timestamp,
             updatedAt: timestamp,
             runId: null,
-            streaming: false,
+            streaming,
             visibility: "local",
             sourceThreadId: threadId,
           },
@@ -501,6 +505,14 @@ describe("ThreadInlineFilePreview playback", () => {
             keyboardOffset: 0,
           }),
         ),
+      );
+      expect(audio.renderMarkdown).toHaveBeenCalledWith(
+        expect.objectContaining({
+          environmentId,
+          threadId,
+          cwd: "/repo",
+          ...(role === "assistant" ? { isStreaming: streaming } : {}),
+        }),
       );
       const link = Array.from(container.querySelectorAll("button")).find((button) =>
         button.textContent?.startsWith("open target.ts"),

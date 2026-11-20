@@ -8,12 +8,11 @@ import {
   resolvePathLinkTarget,
   splitFilePathPosition,
 } from "@t3tools/shared/fileLinks";
-import {
-  isAbsolutePath,
-  isNetworkPath,
-  normalizeProjectPathForComparison,
-} from "@t3tools/shared/path";
+import { isHostPath } from "@t3tools/shared/path";
 import { safeDecodeURIComponent } from "@t3tools/shared/markdownLinks";
+import { isFileMetadataPath } from "@t3tools/client-runtime/state/projects";
+import { useAtomValue } from "@effect/atom-react";
+import { Atom } from "effect/reactivity";
 import { useContext } from "react";
 
 import { useEnvironmentScope } from "../state/session";
@@ -29,18 +28,15 @@ export function getFileMetadataQueryAtom(
 ) {
   const uri = /^file:\/\//iu.test(path) ? parseFileUrlHref(path) : null;
   const hostPath = splitFilePathPosition(path).path;
-  const targetPath = normalizeProjectPathForComparison(
-    uri
-      ? safeDecodeURIComponent(uri.path)
-      : hostPath.startsWith("~/") || !cwd
-        ? hostPath
-        : resolvePathLinkTarget(hostPath, cwd),
-  );
-  const absolute = isAbsolutePath(targetPath) || targetPath.startsWith("~/");
+  const targetPath = uri
+    ? safeDecodeURIComponent(uri.path)
+    : isHostPath(hostPath) || !cwd
+      ? hostPath
+      : resolvePathLinkTarget(hostPath, cwd);
   return (
     // Servers stat what they are asked about, and a network path leaks the
     // Windows user's NTLM credentials to its host before any chip is clicked.
-    absolute && !isNetworkPath(targetPath) && targetPath.length <= 512
+    isFileMetadataPath(targetPath)
       ? projectEnvironment.fileMetadata({
           environmentId,
           input: {
@@ -62,4 +58,22 @@ export function useFileMetadata(
   return useEnvironmentQuery(
     environmentId && canRead ? getFileMetadataQueryAtom(environmentId, path, cwd, threadRef) : null,
   ).data;
+}
+
+const NO_FILE_KIND = Atom.make(null);
+
+export function useConfirmedFileKind(environmentId: EnvironmentId | null, path: string) {
+  const thread = useContext(FileMetadataThreadContext);
+  const canRead = useEnvironmentScope(environmentId, AuthFilesystemReadScope);
+  return useAtomValue(
+    environmentId && canRead
+      ? projectEnvironment.confirmedFileKind({
+          environmentId,
+          input: {
+            path,
+            ...(thread?.environmentId === environmentId ? { threadId: thread.threadId } : {}),
+          },
+        })
+      : NO_FILE_KIND,
+  );
 }

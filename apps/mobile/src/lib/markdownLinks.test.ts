@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vite-plus/test";
+import { resolveInlineCodeFileTarget } from "@t3tools/shared/markdownLinks";
 
-import { resolveMarkdownLinkPresentation } from "./markdownLinks";
+import { confirmedInlineFileHref, resolveMarkdownLinkPresentation } from "./markdownLinks";
 
 describe("resolveMarkdownLinkPresentation", () => {
   it("opens relative directory links as workspace paths", () => {
@@ -83,6 +84,27 @@ describe("resolveMarkdownLinkPresentation", () => {
       kind: "file",
       path: "docs/My Folder/checklist.xml",
       label: "checklist.xml",
+    });
+  });
+
+  it("navigates confirmed directories and extensionless files under an arbitrary host root", () => {
+    for (const [path, kind, expected] of [
+      ["/scratch/bin/run", "file", "/scratch/bin/run"],
+      ["/scratch/screens.pdf", "directory", "/scratch/screens.pdf/"],
+      ["~/.gemini/config/AGENTS.md", "file", "~/.gemini/config/AGENTS.md"],
+    ] as const) {
+      const href = confirmedInlineFileHref({ path }, kind)!;
+      expect(resolveMarkdownLinkPresentation(href)).toMatchObject({ kind: "file", path: expected });
+    }
+  });
+
+  it("activates the verified path across a possible symlink", () => {
+    const target = resolveInlineCodeFileTarget("./dir/../run", "/scratch")!;
+    expect(target.path).toBe("/scratch/dir/../run");
+    const href = confirmedInlineFileHref(target, "file")!;
+    expect(resolveMarkdownLinkPresentation(href)).toMatchObject({
+      kind: "file",
+      path: target.path,
     });
   });
 

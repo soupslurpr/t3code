@@ -1,9 +1,8 @@
 import { useAtomValue } from "@effect/atom-react";
 import type { OrchestrationV2ThreadProjection, ScopedThreadRef } from "@t3tools/contracts";
-import { isRepositoryCheckpointScope } from "@t3tools/client-runtime/state/thread-repositories";
-import { resolveWorkspaceFilePath } from "@t3tools/shared/path";
+import { createCheckpointFileTracker } from "@t3tools/client-runtime/state/projects";
 import { Atom } from "effect/reactivity";
-import { createContext, useEffect, useRef, type ReactNode } from "react";
+import { createContext, useEffect, useState, type ReactNode } from "react";
 
 import { projectEnvironment } from "../state/projects";
 import { useAtomCommand } from "../state/use-atom-command";
@@ -24,51 +23,14 @@ export function FileMetadataThreadProvider(props: {
   const invalidate = useAtomCommand(projectEnvironment.invalidateFileMetadata, {
     reportFailure: false,
   });
-  const previous = useRef<{
-    environmentId: ScopedThreadRef["environmentId"];
-    threadId: ScopedThreadRef["threadId"];
-    cwd: string;
-    checkpoints: OrchestrationV2ThreadProjection["checkpoints"];
-  } | null>(null);
+  const [checkpointChanges] = useState(createCheckpointFileTracker);
 
   // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- invalidates the server file metadata cache for files whose checkpoints changed
   useEffect(() => {
-    if (!threadRef || !cwd || !checkpoints) {
-      previous.current = null;
-      return;
-    }
-    const before = previous.current;
-    previous.current = { ...threadRef, cwd, checkpoints };
-    if (
-      !before ||
-      before.environmentId !== threadRef.environmentId ||
-      before.threadId !== threadRef.threadId ||
-      before.cwd !== cwd
-    )
-      return;
-    const oldById = new Map(before.checkpoints.map((checkpoint) => [checkpoint.id, checkpoint]));
-    // A tracked repository's files are relative to its own folder, not the thread's.
-    const repositoryCwdByScope = new Map(
-      checkpointScopes?.flatMap((scope) =>
-        isRepositoryCheckpointScope(scope) ? [[scope.id, scope.cwd] as const] : [],
-      ),
-    );
-    const paths = new Set<string>();
-    const add = (checkpoint: OrchestrationV2ThreadProjection["checkpoints"][number]) => {
-      const root = repositoryCwdByScope.get(checkpoint.scopeId) ?? cwd;
-      for (const file of checkpoint.files) paths.add(resolveWorkspaceFilePath(file.path, root));
-    };
-    for (const checkpoint of checkpoints) {
-      const old = oldById.get(checkpoint.id);
-      oldById.delete(checkpoint.id);
-      if (old?.files === checkpoint.files && old?.status === checkpoint.status) continue;
-      add(checkpoint);
-      if (old) add(old);
-    }
-    for (const checkpoint of oldById.values()) add(checkpoint);
-    if (paths.size > 0)
-      void invalidate({ environmentId: threadRef.environmentId, input: { paths: [...paths] } });
-  }, [threadRef, cwd, checkpoints, checkpointScopes, invalidate]);
+    const paths = checkpointChanges(threadRef, cwd, checkpoints, checkpointScopes);
+    if (threadRef && paths.length)
+      void invalidate({ environmentId: threadRef.environmentId, input: { paths } });
+  }, [checkpointChanges, threadRef, cwd, checkpoints, checkpointScopes, invalidate]);
 
   return <FileMetadataThreadContext value={threadRef}>{children}</FileMetadataThreadContext>;
 }

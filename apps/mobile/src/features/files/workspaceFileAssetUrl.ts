@@ -1,13 +1,9 @@
 import type { AssetResource, EnvironmentId, ThreadId } from "@t3tools/contracts";
+import { isHostPath } from "@t3tools/shared/path";
 import { useMemo } from "react";
 
 import { useAssetUrlState, useRefreshAssetUrl } from "../../state/assets";
-import {
-  isAbsolutePath,
-  isAudioPreviewFile,
-  isVideoPreviewFile,
-  resolveWorkspaceFilePath,
-} from "./filePath";
+import { isAudioPreviewFile, isVideoPreviewFile, resolveWorkspaceFilePath } from "./filePath";
 
 export function useWorkspaceFileAssetUrlState(props: {
   readonly cwd: string | null;
@@ -30,7 +26,7 @@ export function useWorkspaceFileAssetUrlState(props: {
         _tag:
           isVideoPreviewFile(absolutePath) ||
           isAudioPreviewFile(absolutePath) ||
-          isAbsolutePath(relativePath)
+          isHostPath(relativePath)
             ? "media-file"
             : "workspace-file",
         threadId: props.threadId,

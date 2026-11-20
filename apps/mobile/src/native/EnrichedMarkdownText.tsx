@@ -5,13 +5,17 @@ import {
   formatComposerContextReference,
 } from "@t3tools/shared/composerContextReferences";
 import {
-  markdownForNativeRendering,
+  prepareNativeMarkdown,
   markdownWithFileEmbeds,
   markdownForNativeParsing,
-  markdownWithInlineFileLinks,
   markdownWithTableBreaks,
   markdownWithTextDirection,
 } from "../lib/markdownDocument";
+import { useAtomValue } from "@effect/atom-react";
+import { Atom } from "effect/reactivity";
+import { AuthFilesystemReadScope } from "@t3tools/contracts";
+import { projectEnvironment } from "../state/projects";
+import { useEnvironmentScope } from "../state/session";
 import { useGT } from "gt-react-native";
 import { isValidElement, useMemo, useState, type ReactElement, type ReactNode } from "react";
 import { Platform, Share, StyleSheet, useWindowDimensions, View } from "react-native";
@@ -37,12 +41,13 @@ import * as Dialog from "../components/ui/Dialog";
 import { copyTextWithHaptic } from "../lib/copyTextWithHaptic";
 import type { HighlightScheme } from "../lib/highlights";
 import {
-  ENRICHED_INLINE_FILE_LINK_REGEX,
   enrichedTextLinkRegex,
   enrichedModelDetails,
   enrichedModelReference,
   enrichedLinkVariantPattern,
 } from "../lib/enrichedLinkPresentation";
+
+const NO_VERIFIED_MARKDOWN = Atom.make(null);
 
 function enrichedStyle(
   style: SelectableMarkdownTextProps["textStyle"],
@@ -269,25 +274,45 @@ export function MobileEnrichedMarkdownText(props: SelectableMarkdownTextProps) {
     }),
     [gt],
   );
-  const { markdown, fileHrefs } = useMemo(() => {
-    if (!fileEmbedLabel) {
-      return {
-        markdown: markdownWithTextDirection(
-          markdownForNativeRendering(props.markdown, ENRICHED_INLINE_FILE_LINK_REGEX),
+  const { environmentId, threadId, cwd, baseDir, isStreaming } = props;
+  const inferenceEnvironment =
+    !isStreaming && props.markdown.includes("`") ? (environmentId ?? null) : null;
+  const verify = useEnvironmentScope(inferenceEnvironment, AuthFilesystemReadScope);
+  const hasEmbeds = !!fileEmbedLabel;
+  const document = useMemo(
+    () =>
+      prepareNativeMarkdown(markdownForNativeParsing(props.markdown), {
+        tableBreaks: !hasEmbeds,
+        inferInlineFiles: verify,
+        cwd,
+        baseDir,
+      }),
+    [props.markdown, hasEmbeds, verify, cwd, baseDir],
+  );
+  const verifiedDocument = useMemo(() => {
+    if (!document.hasInlineFiles || !environmentId) return NO_VERIFIED_MARKDOWN;
+    return Atom.make((get) =>
+      document.render((path) =>
+        get(
+          projectEnvironment.confirmedFileKind({
+            environmentId,
+            input: { path, ...(threadId ? { threadId } : {}) },
+          }),
         ),
-        fileHrefs: new Set<string>(),
-      };
-    }
-    const content = markdownWithInlineFileLinks(
-      markdownForNativeParsing(props.markdown),
-      ENRICHED_INLINE_FILE_LINK_REGEX,
-    );
+      ),
+    ).pipe(Atom.setIdleTTL(0));
+  }, [document, environmentId, threadId]);
+  const verified = useAtomValue(verifiedDocument);
+  const content = useMemo(() => verified ?? document.render(), [document, verified]);
+  const { markdown, fileHrefs } = useMemo(() => {
+    if (!fileEmbedLabel)
+      return { markdown: markdownWithTextDirection(content), fileHrefs: new Set<string>() };
     const files = markdownWithFileEmbeds(content, fileEmbedLabel);
     return {
       ...files,
       markdown: markdownWithTextDirection(markdownWithTableBreaks(files.markdown)),
     };
-  }, [props.markdown, fileEmbedLabel]);
+  }, [content, fileEmbedLabel]);
   const [parsedLinkUrls, setParsedLinkUrls] = useState<ReadonlyArray<string>>([]);
   const onLinksChange = (links: MarkdownLinkOccurrence[]) => {
     const urls = [...new Set(links.map((link) => link.url))];

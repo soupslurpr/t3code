@@ -989,6 +989,7 @@ describe("rightPanelStore", () => {
 
   it.each([
     ["generated\\", "generated"],
+    ["~/", "~"],
     ["notes/meeting ", "notes/meeting"],
     [" notes/meeting", "notes/meeting"],
   ])("keeps %j and %j in separate file tabs", (firstPath, secondPath) => {

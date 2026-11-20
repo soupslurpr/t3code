@@ -337,6 +337,7 @@ export function ProposedPlanTimelineRow({
     <div className="min-w-0 px-1 py-0.5">
       <ProposedPlanCard
         planMarkdown={row.proposedPlan.planMarkdown}
+        isStreaming={row.proposedPlan.streaming}
         environmentId={ctx.activeThreadEnvironmentId}
         threadRef={ctx.threadRef ?? undefined}
         cwd={ctx.markdownCwd}

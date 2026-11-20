@@ -236,6 +236,10 @@ export function FileMarkdownPreview(props: {
   ) : undefined;
   const renderMarkdown = (markdown: string) => (
     <SelectableMarkdownText
+      environmentId={props.captured ? null : props.environmentId}
+      threadId={props.threadId}
+      cwd={props.cwd}
+      baseDir={markdownDirectory}
       markdown={markdown}
       fileEmbedLabel={(href) =>
         markdownFileEmbedLabel(

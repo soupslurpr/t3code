@@ -1,6 +1,8 @@
 import { MISSING_FILE_ACCESS_MESSAGE } from "@t3tools/client-runtime/state/assets";
 import { EnvironmentId, ThreadId } from "@t3tools/contracts";
-import { AsyncResult } from "effect/reactivity";
+import { RegistryContext } from "@effect/atom-react";
+import { projectEnvironment } from "../state/projects";
+import { AsyncResult, Atom, AtomRegistry } from "effect/reactivity";
 import { type ReactElement } from "react";
 import { describe, expect, it, vi } from "vite-plus/test";
 import { commands, page, userEvent } from "vite-plus/test/browser";
@@ -79,10 +81,12 @@ vi.mock(import("../state/server"), async (original) => {
   };
 });
 vi.mock(import("../state/session"), async (original) => {
-  const { AuthStandardClientScopes } = await import("@t3tools/contracts");
+  const { AuthFilesystemReadScope, AuthStandardClientScopes } = await import("@t3tools/contracts");
   const granted = new Set<string>(AuthStandardClientScopes);
   const hasScope = (environmentId: unknown, scope: string) =>
-    environmentId !== null && granted.has(scope);
+    environmentId !== null &&
+    granted.has(scope) &&
+    !(environmentId === deniedEnvironmentId && scope === AuthFilesystemReadScope);
   return {
     ...(await original()),
     useEnvironmentScope: hasScope as never,
@@ -858,14 +862,23 @@ describe("ChatMarkdown inline code selection", () => {
     // Desktop on macOS and Windows makes local file chips draggable for native file drags.
     nativeFileDrag.enabled = true;
     filesystemMetadata.mockResolvedValue(AsyncResult.success({ entries: [{ kind: "file" }] }));
-    await using screen = await renderText(
-      "The template (`config/app.yaml.example`) and two docs still say 5 fps.",
-      {
-        threadRef: {
-          environmentId: EnvironmentId.make("workspace"),
-          threadId: ThreadId.make("thread"),
-        },
-      },
+    const registry = AtomRegistry.make();
+    using _registry = { [Symbol.dispose]: () => registry.dispose() };
+    const confirmed = Atom.make<"file" | null>("file");
+    using _query = vi
+      .spyOn(projectEnvironment, "confirmedFileKind")
+      .mockImplementation(() => confirmed);
+    await using screen = await render(
+      <RegistryContext.Provider value={registry}>
+        <ChatMarkdown
+          cwd="/tmp/project"
+          text="The template (`config/app.yaml.example`) and two docs still say 5 fps."
+          threadRef={{
+            environmentId: EnvironmentId.make("workspace"),
+            threadId: ThreadId.make("thread"),
+          }}
+        />
+      </RegistryContext.Provider>,
     );
     await vi.waitFor(() =>
       expect(
@@ -1158,6 +1171,53 @@ describe("ChatMarkdown copy", () => {
       [...pasted.querySelectorAll('ol[start="2"] > li')].map((item) => item.textContent),
     ).toEqual(["Configure", "Deploy"]);
   });
+});
+
+it("verifies settled scratch paths and preserves each written label", async () => {
+  setup();
+  const cwd = "/scratch";
+  const environmentId = EnvironmentId.make("scratch");
+  const spans =
+    "`AGENTS.md`, `GEMINI.md`, <code>config/AGENTS.md</code>, <code data-inline-code>config/AGENTS.md</code>, ``config/AGENTS.md``, `config/GEMINI.md`, `config/rules/`";
+  const registry = AtomRegistry.make();
+  using _registry = { [Symbol.dispose]: () => registry.dispose() };
+  const entry = Atom.make<"file" | null>(null);
+  const absent = Atom.make(null);
+  using query = vi
+    .spyOn(projectEnvironment, "confirmedFileKind")
+    .mockImplementation((target) =>
+      target.environmentId === environmentId && target.input.path === "/scratch/config/AGENTS.md"
+        ? entry
+        : absent,
+    );
+  const message = (id: EnvironmentId, streaming: boolean, text = spans) => (
+    <RegistryContext.Provider value={registry}>
+      <ChatMarkdown cwd={cwd} text={text} environmentId={id} isStreaming={streaming} />
+    </RegistryContext.Provider>
+  );
+  await using screen = await render(message(environmentId, true));
+  const chips = () => [
+    ...screen.container.querySelectorAll<HTMLElement>(".chat-markdown-file-link"),
+  ];
+  expect(screen.container.querySelectorAll("code")).toHaveLength(7);
+  expect(chips()).toHaveLength(0);
+  expect(query).not.toHaveBeenCalled();
+  await screen.rerender(message(EnvironmentId.make(deniedEnvironmentId), false));
+  expect(query).not.toHaveBeenCalled();
+  await screen.rerender(message(environmentId, false));
+  expect(new Set(query.mock.calls.map(([target]) => target.input.path))).toEqual(
+    new Set(["/scratch/config/AGENTS.md", "/scratch/config/GEMINI.md"]),
+  );
+  expect(chips()).toHaveLength(0);
+  const text = spans + " [Instructions](config/AGENTS.md)";
+  await screen.rerender(message(environmentId, false, text));
+  expect(chips().map((chip) => chip.textContent)).toEqual(["Instructions"]);
+  await act(() => registry.set(entry, "file"));
+  expect(chips().map((chip) => chip.textContent)).toEqual(["config/AGENTS.md", "Instructions"]);
+  await expect.element(chips()[0]!).toHaveAttribute("data-markdown-copy", "`config/AGENTS.md`");
+  expect(screen.container.querySelectorAll("code")).toHaveLength(6);
+  await screen.rerender(message(EnvironmentId.make("other-scratch"), false, text));
+  expect(chips().map((chip) => chip.textContent)).toEqual(["Instructions"]);
 });
 
 describe("ChatMarkdown file chip tooltips", () => {

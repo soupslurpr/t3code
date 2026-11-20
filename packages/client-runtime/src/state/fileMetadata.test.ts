@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from "@effect/vitest";
 import {
   EnvironmentId,
   ThreadId,
+  CheckpointId,
   AuthFilesystemReadScope,
   EnvironmentAuthorizationError,
   type FilesystemEntryMetadata,
@@ -20,11 +21,15 @@ import * as SubscriptionRef from "effect/SubscriptionRef";
 import * as TestClock from "effect/testing/TestClock";
 import { Atom, AtomRegistry } from "effect/reactivity";
 
-import { AVAILABLE_CONNECTION_STATE, BearerConnectionTarget } from "../connection/model.ts";
+import {
+  type SupervisorConnectionState,
+  AVAILABLE_CONNECTION_STATE,
+  BearerConnectionTarget,
+} from "../connection/model.ts";
 import * as EnvironmentRegistry from "../connection/registry.ts";
 import * as EnvironmentSupervisor from "../connection/supervisor.ts";
 import type { RpcSession } from "../rpc/session.ts";
-import { createFileMetadataAtoms } from "./fileMetadata.ts";
+import { createFileMetadataAtoms, createCheckpointFileTracker } from "./fileMetadata.ts";
 
 const ENVIRONMENT_ID = EnvironmentId.make("metadata-environment");
 const OTHER_ENVIRONMENT_ID = EnvironmentId.make("metadata-other-environment");
@@ -52,7 +57,7 @@ const makeHarness = Effect.fnUntraced(function* () {
       },
     }) as unknown as RpcSession;
   const session = yield* SubscriptionRef.make(Option.some(makeSession()));
-  const state = yield* SubscriptionRef.make({
+  const state = yield* SubscriptionRef.make<SupervisorConnectionState>({
     ...AVAILABLE_CONNECTION_STATE,
     phase: "connected" as const,
   });
@@ -112,6 +117,7 @@ const makeHarness = Effect.fnUntraced(function* () {
       .pipe(Effect.provideService(EnvironmentSupervisor.EnvironmentSupervisor, supervisor));
   return {
     batches,
+    state,
     values,
     registry,
     atom,
@@ -127,6 +133,123 @@ const makeHarness = Effect.fnUntraced(function* () {
 });
 
 describe("file metadata", () => {
+  it.effect("checks inferred paths once, then follows checkpoint and connection changes", () =>
+    Effect.gen(function* () {
+      vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+      yield* Effect.addFinalizer(() => Effect.sync(() => vi.useRealTimers()));
+      const h = yield* makeHarness();
+      const ref = { environmentId: ENVIRONMENT_ID, threadId: ThreadId.make("scratch") };
+      const path = "/scratch/config/AGENTS.md";
+      const query = (path: string) =>
+        h.atoms.confirmedKind({
+          environmentId: ref.environmentId,
+          input: { path, threadId: ref.threadId },
+        });
+      h.registry.mount(h.atoms.retainThread(ref));
+      const kind = query(path);
+      const waitForKind = (value: "file" | null) =>
+        AtomRegistry.toStream(h.registry, kind).pipe(
+          Stream.filter((current) => current === value),
+          Stream.runHead,
+        );
+      const unmount = h.registry.mount(kind);
+      h.registry.mount(query("/scratch/config/GEMINI.md"));
+      h.registry.mount(query("\\\\host\\share\\file.md"));
+      h.registry.mount(query("/" + "x".repeat(512)));
+      h.registry.mount(query("unanchored/file.md"));
+      yield* h.read(path, ref.environmentId, ref.threadId);
+      expect(h.batches).toEqual([[path, "/scratch/config/GEMINI.md"]]);
+      yield* TestClock.adjust(120_001);
+      yield* Effect.promise(() => vi.advanceTimersByTimeAsync(120_001));
+      expect(h.batches).toHaveLength(1);
+
+      const changes = createCheckpointFileTracker();
+      const checkpoint = {
+        id: CheckpointId.make("cp"),
+        status: "ready",
+        files: [{ path: "config/AGENTS.md", kind: "added", additions: 1, deletions: 0 }],
+      } as const;
+      expect(changes(ref, "/scratch", [])).toEqual([]);
+      const refreshCheckpoint = Effect.fn("test.refreshCheckpoint")(function* (
+        checkpoints: ReadonlyArray<typeof checkpoint>,
+      ) {
+        const paths = changes(ref, "/scratch", checkpoints);
+        expect(paths).toEqual([path]);
+        yield* h.atoms
+          .invalidate(paths)
+          .pipe(Effect.provideService(EnvironmentSupervisor.EnvironmentSupervisor, h.supervisor));
+        h.atoms.refreshPaths(ref.environmentId, paths, h.registry);
+      });
+      h.values.set(path, { kind: "file" });
+      yield* refreshCheckpoint([checkpoint]);
+      yield* waitForKind("file");
+      yield* SubscriptionRef.set<SupervisorConnectionState>(h.state, {
+        ...AVAILABLE_CONNECTION_STATE,
+        phase: "offline",
+      });
+      yield* waitForKind(null);
+      yield* SubscriptionRef.set(h.session, Option.some(h.makeSession()));
+      yield* SubscriptionRef.set<SupervisorConnectionState>(h.state, {
+        ...AVAILABLE_CONNECTION_STATE,
+        phase: "connected",
+      });
+      yield* waitForKind("file");
+      h.values.delete(path);
+      yield* refreshCheckpoint([]);
+      yield* h.read(path, ref.environmentId, ref.threadId);
+      expect(h.registry.get(kind)).toBeNull();
+      expect(h.batches.slice(1)).toEqual([[path], expect.arrayContaining([path]), [path]]);
+      unmount();
+      yield* TestClock.adjust(61_000);
+      yield* Effect.promise(() => vi.advanceTimersByTimeAsync(61_000));
+      h.values.set(path, { kind: "file" });
+      h.registry.mount(kind);
+      yield* waitForKind("file");
+      h.failure.denied = true;
+      yield* refreshCheckpoint([checkpoint]);
+      expect(yield* h.read(path, ref.environmentId, ref.threadId).pipe(Effect.flip)).toBeInstanceOf(
+        EnvironmentAuthorizationError,
+      );
+      expect(h.registry.get(kind)).toBeNull();
+    }),
+  );
+
+  it.effect(
+    "rechecks home aliases affected by absolute checkpoint paths, even across row unmounts",
+    () =>
+      Effect.gen(function* () {
+        const h = yield* makeHarness();
+        const ref = { environmentId: ENVIRONMENT_ID, threadId: ThreadId.make("home-thread") };
+        const alias = "~/repo/config/AGENTS.md";
+        const unrelated = "~/other/GEMINI.md";
+        h.registry.mount(h.atoms.retainThread(ref));
+        const kind = h.atoms.confirmedKind({
+          environmentId: ref.environmentId,
+          input: { path: alias, threadId: ref.threadId },
+        });
+        const unmount = h.registry.mount(kind);
+        yield* h.read(alias, ref.environmentId, ref.threadId);
+        yield* h.read(unrelated, ref.environmentId, ref.threadId);
+        const refresh = Effect.fn("test.invalidateHomeCheckpoint")(function* (...paths: string[]) {
+          yield* h.atoms
+            .invalidate(paths)
+            .pipe(Effect.provideService(EnvironmentSupervisor.EnvironmentSupervisor, h.supervisor));
+          h.atoms.refreshPaths(ref.environmentId, paths, h.registry);
+        });
+        const before = h.batches.length;
+        h.values.set(alias, { kind: "file" });
+        yield* refresh("/srv/account/repo/config/AGENTS.md", "/mnt/archive/repo/config/AGENTS.md");
+        expect(yield* h.read(alias, ref.environmentId, ref.threadId)).toEqual({ kind: "file" });
+        expect(h.registry.get(kind)).toBe("file");
+        unmount();
+        yield* TestClock.adjust(120_001);
+        h.values.delete(alias);
+        yield* refresh("C:\\Users\\account\\repo\\config\\agents.md");
+        expect(yield* h.read(alias, ref.environmentId, ref.threadId)).toBeNull();
+        expect(h.batches.slice(before)).toEqual([[alias], [alias]]);
+      }),
+  );
+
   it.effect("refreshes expired mounted misses while retaining known thread entries", () =>
     Effect.gen(function* () {
       vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
@@ -192,26 +315,27 @@ describe("file metadata", () => {
       h.response.wait = Deferred.succeed(started, undefined).pipe(
         Effect.andThen(Deferred.await(release)),
       );
-      h.values.set("/workspace/file", { kind: "file", byteLength: 5 });
+      const file = "/workspace//./file";
+      h.values.set(file, { kind: "file", byteLength: 5 });
       h.values.set("/workspace/unchanged", { kind: "directory" });
       const read = yield* Effect.all(
-        [h.read("/workspace/file", ENVIRONMENT_ID, threadId), h.read("/workspace/unchanged")],
+        [h.read(file, ENVIRONMENT_ID, threadId), h.read("/workspace/unchanged")],
         { concurrency: "unbounded" },
       ).pipe(Effect.forkChild);
       yield* Deferred.await(started);
       yield* h.atoms
-        .invalidate("/workspace/file")
+        .invalidate(["/workspace/file"])
         .pipe(Effect.provideService(EnvironmentSupervisor.EnvironmentSupervisor, h.supervisor));
-      h.values.set("/workspace/file", { kind: "file", byteLength: 10 });
+      h.values.set(file, { kind: "file", byteLength: 10 });
       h.response.wait = Effect.void;
       yield* Deferred.succeed(release, undefined);
       expect(yield* Fiber.join(read)).toEqual([
         { kind: "file", byteLength: 10 },
         { kind: "directory" },
       ]);
-      expect(h.batches).toEqual([["/workspace/file", "/workspace/unchanged"], ["/workspace/file"]]);
-      h.registry.refresh(h.atom("/workspace/file", ENVIRONMENT_ID, threadId));
-      expect(yield* h.read("/workspace/file", ENVIRONMENT_ID, threadId)).toEqual({
+      expect(h.batches).toEqual([[file, "/workspace/unchanged"], [file]]);
+      h.registry.refresh(h.atom(file, ENVIRONMENT_ID, threadId));
+      expect(yield* h.read(file, ENVIRONMENT_ID, threadId)).toEqual({
         kind: "file",
         byteLength: 10,
       });
@@ -226,9 +350,9 @@ describe("file metadata", () => {
       h.registry.mount(h.atoms.retainThread({ environmentId: ENVIRONMENT_ID, threadId }));
       yield* h.read("/workspace/file", ENVIRONMENT_ID, threadId);
       yield* h.atoms
-        .invalidate("/workspace/file")
+        .invalidate(["/workspace/file"])
         .pipe(Effect.provideService(EnvironmentSupervisor.EnvironmentSupervisor, h.supervisor));
-      h.atoms.refreshPath(ENVIRONMENT_ID, "/workspace/file", h.registry);
+      h.atoms.refreshPaths(ENVIRONMENT_ID, ["/workspace/file"], h.registry);
       yield* Effect.yieldNow;
       expect(h.batches).toHaveLength(1);
       h.values.set("/workspace/file", { kind: "directory" });
@@ -252,9 +376,9 @@ describe("file metadata", () => {
       const before = h.batches.length;
       h.values.set("/workspace/file", { kind: "file", byteLength: 10 });
       yield* h.atoms
-        .invalidate("/workspace/file")
+        .invalidate(["/workspace/file"])
         .pipe(Effect.provideService(EnvironmentSupervisor.EnvironmentSupervisor, h.supervisor));
-      h.atoms.refreshPath(ENVIRONMENT_ID, "/workspace/file", h.registry);
+      h.atoms.refreshPaths(ENVIRONMENT_ID, ["/workspace/file"], h.registry);
       expect(yield* h.read("/workspace/file", ENVIRONMENT_ID, threadId)).toEqual({
         kind: "file",
         byteLength: 10,
@@ -312,7 +436,62 @@ describe("file metadata", () => {
     }),
   );
 
-  it.effect("reuses file read sizes and normalizes Windows cache keys", () =>
+  it.effect("invalidates equivalent separator and dot spellings and stats the written path", () =>
+    Effect.gen(function* () {
+      const h = yield* makeHarness();
+      const ref = { environmentId: ENVIRONMENT_ID, threadId: ThreadId.make("dot-path") };
+      const path = "/scratch/config/./AGENTS.md";
+      const parent = "/scratch/link/../config/AGENTS.md";
+      h.registry.mount(h.atoms.retainThread(ref));
+      const kind = h.atoms.confirmedKind({
+        environmentId: ref.environmentId,
+        input: { path, threadId: ref.threadId },
+      });
+      h.registry.mount(kind);
+      expect(yield* h.read(path, ref.environmentId, ref.threadId)).toBeNull();
+      expect(yield* h.read(parent, ref.environmentId, ref.threadId)).toBeNull();
+      h.values.set(path, { kind: "file" });
+      const changed = ["/scratch/config/AGENTS.md"];
+      yield* h.atoms
+        .invalidate(changed)
+        .pipe(Effect.provideService(EnvironmentSupervisor.EnvironmentSupervisor, h.supervisor));
+      h.atoms.refreshPaths(ref.environmentId, changed, h.registry);
+      expect(yield* h.read(path, ref.environmentId, ref.threadId)).toEqual({ kind: "file" });
+      expect(h.registry.get(kind)).toBe("file");
+      expect(yield* h.read(parent, ref.environmentId, ref.threadId)).toBeNull();
+      expect(h.batches).toEqual([[path], [parent], [path]]);
+    }),
+  );
+
+  it.effect("preserves Windows casing on the wire and in retained metadata", () =>
+    Effect.gen(function* () {
+      const h = yield* makeHarness();
+      const ref = {
+        environmentId: ENVIRONMENT_ID,
+        threadId: ThreadId.make("case-sensitive-mount"),
+      };
+      h.registry.mount(h.atoms.retainThread(ref));
+      const upper = String.raw`C:\MixedCase\File.md`;
+      const lower = String.raw`C:\MixedCase\file.md`;
+      const read = (path: string) => h.read(path, ref.environmentId, ref.threadId);
+      h.values.set(upper, { kind: "file" });
+      expect(yield* read(upper)).toEqual({ kind: "file" });
+      expect(yield* read(lower)).toBeNull();
+      expect(h.batches).toEqual([[upper], [lower]]);
+      h.values.delete(upper);
+      h.values.set(lower, { kind: "directory" });
+      const changed = ["c:/mixedcase/FILE.md"];
+      yield* h.atoms
+        .invalidate(changed)
+        .pipe(Effect.provideService(EnvironmentSupervisor.EnvironmentSupervisor, h.supervisor));
+      h.atoms.refreshPaths(ref.environmentId, changed, h.registry);
+      expect(yield* read(upper)).toBeNull();
+      expect(yield* read(lower)).toEqual({ kind: "directory" });
+      expect(h.batches.flat()).toEqual([upper, lower, upper, lower]);
+    }),
+  );
+
+  it.effect("reuses file read sizes across Windows separator spellings", () =>
     Effect.gen(function* () {
       const h = yield* makeHarness();
       yield* h.atoms
@@ -321,7 +500,7 @@ describe("file metadata", () => {
           byteLength: 100,
         })
         .pipe(Effect.provideService(EnvironmentSupervisor.EnvironmentSupervisor, h.supervisor));
-      expect(yield* h.read("c:/workspace/file/")).toEqual({ kind: "file", byteLength: 100 });
+      expect(yield* h.read("C:/Workspace/file/")).toEqual({ kind: "file", byteLength: 100 });
       expect(h.batches).toHaveLength(0);
     }),
   );

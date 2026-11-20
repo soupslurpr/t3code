@@ -487,7 +487,7 @@ interface ThreadWorkLogProps {
   /** `groupId` is the group a lone call stands in for; it opens and closes with the row. */
   readonly onToggleRow: (rowId: string, anchorKey: string, groupId?: string) => void;
   readonly renderImage: MarkdownImageRenderer;
-  readonly renderReasoning: (text: string) => ReactNode;
+  readonly renderReasoning: (text: string, isStreaming: boolean) => ReactNode;
   readonly onPressPreview: (source: FilePreviewSource) => void;
 }
 
@@ -521,7 +521,7 @@ export function ThreadWorkLog(props: ThreadWorkLogProps) {
         environmentId={props.environmentId}
         workspaceRoot={props.workspaceRoot}
         markdown={plan.markdown}
-        renderMarkdown={props.renderReasoning}
+        renderMarkdown={(text) => props.renderReasoning(text, plan.streaming)}
       />
     );
   }
@@ -567,7 +567,7 @@ export function ThreadWorkLog(props: ThreadWorkLogProps) {
 function ThreadReasoningGroup(props: {
   readonly activities: ReadonlyArray<ThreadFeedActivity>;
   readonly edgeFadeColor: string;
-  readonly renderReasoning: (text: string) => ReactNode;
+  readonly renderReasoning: (text: string, isStreaming: boolean) => ReactNode;
 }) {
   const scrollOffset = useSharedValue(0);
   const contentHeight = useSharedValue(0);
@@ -599,7 +599,12 @@ function ThreadReasoningGroup(props: {
         }}
       >
         {props.activities.map((row) => (
-          <View key={row.id}>{props.renderReasoning(row.workEntry.detail ?? "")}</View>
+          <View key={row.id}>
+            {props.renderReasoning(
+              row.workEntry.detail ?? "",
+              row.projectedItem.item.type === "reasoning" && row.projectedItem.item.streaming,
+            )}
+          </View>
         ))}
       </Animated.ScrollView>
       <Animated.View
@@ -1313,7 +1318,7 @@ const ThreadWorkLogRow = function ThreadWorkLogRow(
             contentContainerStyle={{ paddingRight: 8 }}
           >
             {reasoning ? (
-              props.renderReasoning(reasoning.text)
+              props.renderReasoning(reasoning.text, reasoning.streaming)
             ) : call ? (
               [
                 call.command ? (

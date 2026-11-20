@@ -1,4 +1,5 @@
 import { CollapsibleUserMessageBody } from "./CollapsibleUserMessageBody";
+import { isHostPath } from "@t3tools/shared/path";
 import { msg, T, useGT, useLocale, useMessages } from "gt-react-native";
 import { m } from "../../i18n/messages";
 import { errorDisplayMessage } from "@t3tools/client-runtime/errors";
@@ -317,7 +318,6 @@ import { useAtomCommand } from "../../state/use-atom-command";
 import { useV2ItemSupport } from "../../state/v2-item-support";
 import {
   fileRoutePathSegments,
-  isAbsolutePath,
   resolveFileLinkPath,
   resolveWorkspaceFilePath,
   resolveWorkspaceRelativeFilePath,
@@ -1225,6 +1225,10 @@ function ThreadMediaVisibility(props: {
 type MarkdownLinkReply = Pick<OrchestrationV2ProjectedTurnItem, "sourceThreadId" | "sourceItemId">;
 
 interface MarkdownLinkHandlers {
+  readonly environmentId: EnvironmentId;
+  readonly threadId: ThreadId;
+  readonly cwd: string | undefined;
+  readonly isStreaming?: boolean | undefined;
   readonly onLinkPress: (href: string, reply?: MarkdownLinkReply) => void;
   readonly fileContextMenu: (href: string) => MarkdownFileContextMenu | undefined;
   readonly onFileContextMenuAction: (
@@ -1999,7 +2003,7 @@ function renderFeedEntry(
     readonly markdownLinkHandlers: MarkdownLinkHandlers;
     readonly renderMarkdownImage: MarkdownImageRenderer;
     readonly renderViewedImage: MarkdownImageRenderer;
-    readonly renderReasoning: (text: string) => ReactNode;
+    readonly renderReasoning: (text: string, isStreaming: boolean) => ReactNode;
     readonly iconSubtleColor: string | import("react-native").ColorValue;
     readonly replyActionSize: { readonly button: number; readonly icon: number };
     readonly screenColor: string;
@@ -2687,7 +2691,7 @@ function renderFeedEntry(
               citationSource={{ threadId: props.threadId, messageId: message.id }}
               onCiteAssistantText={props.onCiteAssistantText}
               markdownStyles={styles}
-              linkHandlers={props.markdownLinkHandlers}
+              linkHandlers={{ ...props.markdownLinkHandlers, isStreaming: message.streaming }}
               reply={message.projectedItem}
               onUseArtifactTemplate={props.onUseArtifactTemplate}
               renderImage={props.renderMarkdownImage}
@@ -3452,7 +3456,7 @@ export const ThreadFeed = memo(function ThreadFeed(props: ThreadFeedProps) {
 
     const presentation = resolveMarkdownLinkPresentation(href);
     if (presentation.kind === "file") {
-      const path = resolveFileLinkPath(props.workspaceRoot, presentation.path);
+      const path = resolveFileLinkPath(presentation.path);
       if (path === null) return;
       void findFileLinkTarget(presentation.path, path, request.signal, reply).then((target) => {
         if (request.signal.aborted) return;
@@ -3483,6 +3487,9 @@ export const ThreadFeed = memo(function ThreadFeed(props: ThreadFeedProps) {
     workspaceRoot: props.workspaceRoot ?? null,
   });
   const markdownLinkHandlers: MarkdownLinkHandlers = {
+    environmentId: props.environmentId,
+    threadId: props.threadId,
+    cwd: props.workspaceRoot ?? undefined,
     fileEmbedLabel: (href, standalone) =>
       markdownFileEmbedLabel(
         href,
@@ -3568,10 +3575,7 @@ export const ThreadFeed = memo(function ThreadFeed(props: ThreadFeedProps) {
         case "copy-full-path":
         case "copy-relative-path": {
           const presentation = resolveMarkdownLinkPresentation(href);
-          const path =
-            presentation.kind === "file"
-              ? resolveFileLinkPath(props.workspaceRoot, presentation.path)
-              : null;
+          const path = presentation.kind === "file" ? resolveFileLinkPath(presentation.path) : null;
           if (presentation.kind !== "file" || path === null) return;
           markdownLinkRequest.current?.abort();
           const request = new AbortController();
@@ -3579,7 +3583,7 @@ export const ThreadFeed = memo(function ThreadFeed(props: ThreadFeedProps) {
           void findFileLinkTarget(presentation.path, path, request.signal, reply).then((found) => {
             if (request.signal.aborted) return;
             const fullPath =
-              props.workspaceRoot && !isAbsolutePath(found)
+              props.workspaceRoot && !isHostPath(found)
                 ? resolveWorkspaceFilePath(props.workspaceRoot, found)
                 : found;
             const clipboardPath = fileChipClipboardPath(
@@ -3724,12 +3728,12 @@ export const ThreadFeed = memo(function ThreadFeed(props: ThreadFeedProps) {
     ) : null;
   };
   const markdownStyles = useMarkdownStyles();
-  const renderReasoning = (text: string) => (
+  const renderReasoning = (text: string, isStreaming: boolean) => (
     <AssistantMarkdownContent
       markdown={text}
       environmentId={props.environmentId}
       markdownStyles={markdownStyles.assistant}
-      linkHandlers={markdownLinkHandlers}
+      linkHandlers={{ ...markdownLinkHandlers, isStreaming }}
       renderImage={renderMarkdownImage}
       skills={props.skills}
     />

@@ -9,6 +9,8 @@ import {
 
 import {
   inlineCodeFilePathCandidate,
+  inlineCodeFileKindMatches,
+  resolveInlineCodeFileTarget,
   isMarkdownFileLinkLabel,
   parseMarkdownFileLink,
 } from "./markdownLinks.ts";
@@ -38,13 +40,18 @@ describe("inlineCodeFilePathCandidate", () => {
     ["src\\main.ts", "src/main.ts"],
     ["allocator.cc:217", "allocator.cc:217"],
     ["src/http.ts:42-64", "src/http.ts:42-64"],
+    ["src/file.ts#L4-L8", "src/file.ts#L4-L8"],
     ["http.ts:42-64", "http.ts:42-64"],
     ["origin/main", null],
     ["z-ai/glm-5.3", null],
+    ["bin/python3.12", "bin/python3.12"],
     ["share/man/ls.1", "share/man/ls.1"],
     ["docker/Dockerfile", "docker/Dockerfile"],
     ["src/main.ts/", null],
     ["./patches/", "./patches/"],
+    ["config/rules/", null],
+    ["config/rules", null],
+    ["foo.d/bar", null],
     // regression: #30757 an agent's shortened path is not a file
     ["/tmp/claude-1000/...", null],
     ["/tmp/claude-1000/...:12", null],
@@ -85,6 +92,31 @@ describe("inlineCodeFilePathCandidate", () => {
   ])("distinguishes file paths from code and hostnames in %s", (source, candidate) => {
     expect(inlineCodeFilePathCandidate(source)).toBe(candidate);
   });
+});
+
+it("checks the kind at the exact host target", () => {
+  for (const [source, path, kinds] of [
+    ["config/AGENTS.md", "/scratch/config/AGENTS.md", ["file", "directory"]],
+    ["./rules/", "/scratch/docs/rules/", ["directory"]],
+    ["./rules/:12", "/scratch/docs/rules/", []],
+    ["src/file.ts#L4-L8", "/scratch/src/file.ts", ["file"]],
+    ["/path/to/file.rs:12:3", "/path/to/file.rs", ["file"]],
+    ["C:\\docs\\file.rs:3-5", "C:\\docs\\file.rs", ["file"]],
+    ["~/.gemini/config/AGENTS.md", "~/.gemini/config/AGENTS.md", ["file", "directory"]],
+    ["./a%23#literal?.md", "/scratch/docs/a%23#literal?.md", ["file", "directory"]],
+  ] as const) {
+    const target = resolveInlineCodeFileTarget(source, "/scratch", "/scratch/docs");
+    expect(target?.path).toBe(path);
+    expect(
+      (["file", "directory", "other", null] as const).filter((kind) =>
+        inlineCodeFileKindMatches(target!, kind),
+      ),
+    ).toEqual(kinds);
+  }
+  expect(resolveInlineCodeFileTarget("./dir:0", "/scratch")).toBeNull();
+  expect(resolveInlineCodeFileTarget("src/main.ts")).toBeNull();
+  expect(resolveInlineCodeFileTarget("src/main.ts", "\\\\host\\share")).toBeNull();
+  expect(resolveInlineCodeFileTarget("\\\\host\\share\\a.md", "/scratch")).toBeNull();
 });
 
 describe("parseMarkdownFileLink", () => {

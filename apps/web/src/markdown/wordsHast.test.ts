@@ -240,6 +240,39 @@ describe("wordsHast", () => {
     expect(slices).toEqual(["[a](u)", "- [ ] task", "```sh\nls\n```", "-      [b](./b.ts)"]);
   });
 
+  it("tags only Markdown backtick spans as data-inline-code", () => {
+    const label = `${"x".repeat(989)}\\</code/>`;
+    const markdown =
+      `[ref][${label}] <z000>kept</z000> <code>raw-link/a.ts</code>\`link-code/a.ts\`\n\n` +
+      `[${label}]: /demo\n\n` +
+      "<p><code>raw-p/a.ts</code></p>\n\n" +
+      "<code>\n`raw-block/a.ts`\n</code>\n\n" +
+      "<code>raw/a.ts</code> <code data-inline-code>spoofed/a.ts</code> <code>`nested/a.ts`</code>\n\n" +
+      "<details><summary>s</summary>\n\n`details/a.ts`\n\n</details>\n\n" +
+      "`single/a.ts` ``double/a.ts`` [`linked/a.ts`](./a.ts)";
+    const tree = wordsHast(markdown, ASSISTANT);
+    const tagged: string[] = [];
+    const visit = (node: Root | Element) => {
+      for (const child of node.children) {
+        if (child.type !== "element") continue;
+        if (child.tagName === "code" && child.properties.dataInlineCode !== undefined) {
+          tagged.push(
+            child.children.map((part) => (part.type === "text" ? part.value : "")).join(""),
+          );
+        }
+        visit(child);
+      }
+    };
+    visit(tree);
+    expect(tagged).toEqual([
+      "link-code/a.ts",
+      "nested/a.ts",
+      "details/a.ts",
+      "single/a.ts",
+      "double/a.ts",
+    ]);
+  });
+
   it("renders insight blocks as remarkAssistantInsights did", () => {
     for (const ending of ["\n", "\r\n", "\r"]) {
       expect(

@@ -1,31 +1,40 @@
 import { describe, expect, it } from "vite-plus/test";
+import { resolveInlineCodeFileTarget } from "@t3tools/shared/markdownLinks";
+import { confirmedInlineFileHref } from "./markdownLinks";
+import { parseMarkdown } from "react-native-enriched-markdown/src/web/parseMarkdown";
 import { unified } from "unified";
 import remarkParse from "remark-parse";
 import remarkGfm from "remark-gfm";
 import type { Root, RootContent } from "mdast";
-import { ENRICHED_INLINE_FILE_LINK_REGEX } from "./enrichedLinkPresentation";
 import {
-  markdownForNativeRendering,
-  markdownWithInlineFileLinks,
+  prepareNativeMarkdown,
+  markdownForNativeParsing,
   markdownWithHtml,
 } from "./markdownDocument";
 
 const rewrite = (markdown: string) =>
-  markdownWithInlineFileLinks(markdown, ENRICHED_INLINE_FILE_LINK_REGEX);
+  prepareNativeMarkdown(markdown, {
+    cwd: "/repo",
+    tableBreaks: false,
+    inferInlineFiles: true,
+  }).render(() => "file");
+const markdownForNativeRendering = (markdown: string) =>
+  prepareNativeMarkdown(markdownForNativeParsing(markdown), {
+    cwd: "/repo",
+    tableBreaks: true,
+    inferInlineFiles: true,
+  }).render(() => "file");
 
 describe("absolute paths in prose", () => {
   it("become links without corrupting the source around them", () => {
     const path =
       "/tmp/claude-1000/-home-user--t3-worktrees-app-t3-abc123/session/scratchpad/notes.md";
-    expect(rewrite(`Saved to ${path}.`)).toBe(`Saved to [${path}](<${path}>).`);
+    expect(rewrite(`Saved to ${path}.`)).toBe(`Saved to [notes.md](<${path}>).`);
     expect(
-      markdownForNativeRendering(
-        "Intro /tmp/notes.md\n| a | c |\n|---|---|\n| `./a\\|b.ts` | b |",
-        ENRICHED_INLINE_FILE_LINK_REGEX,
-      ),
-    ).toContain("[/tmp/notes.md](</tmp/notes.md>)");
+      markdownForNativeRendering("Intro /tmp/notes.md\n| a | c |\n|---|---|\n| `./a\\|b.ts` | b |"),
+    ).toContain("[notes.md](</tmp/notes.md>)");
     expect(rewrite(String.raw`See \* and /tmp/notes.md.`)).toBe(
-      String.raw`See \* and [/tmp/notes.md](</tmp/notes.md>).`,
+      String.raw`See \* and [notes.md](</tmp/notes.md>).`,
     );
     for (const decoded of [String.raw`See /tmp/a\_b.md.`, "See /tmp/a&copy;.md."])
       expect(rewrite(decoded)).toBe(decoded);
@@ -76,22 +85,70 @@ describe("inline code that names a file", () => {
       const document = fixture.replaceAll("\n", ending);
       for (let length = 0; length <= document.length; length++) {
         const prefix = document.slice(0, length);
-        const expected = previousTableBreaks(
-          previousFileLinks(markdownWithHtml(prefix), ENRICHED_INLINE_FILE_LINK_REGEX),
-        );
-        expect(
-          markdownForNativeRendering(prefix, ENRICHED_INLINE_FILE_LINK_REGEX),
-          JSON.stringify(prefix),
-        ).toBe(expected);
+        const expected = previousTableBreaks(previousFileLinks(markdownWithHtml(prefix)));
+        expect(markdownForNativeRendering(prefix), JSON.stringify(prefix)).toBe(expected);
       }
     }
   });
 
+  it("renders verified paths and explicit names per occurrence in both native branches", async () => {
+    const spans =
+      "`AGENTS.md`, `GEMINI.md`, `config/AGENTS.md`, `config/GEMINI.md`, `config/rules/`";
+    const path = "/scratch/config/AGENTS.md";
+    for (const breakTables of [true, false]) {
+      for (const href of ["config/AGENTS.md", path]) {
+        const explicit = " [Instructions](" + href + ")";
+        const document = prepareNativeMarkdown(spans + explicit, {
+          cwd: "/scratch",
+          tableBreaks: breakTables,
+          inferInlineFiles: true,
+        });
+        expect(document.render()).toBe(spans + explicit);
+        const markdown = document.render((target) => (target === path ? "file" : null));
+        const native = await parseMarkdown(markdown);
+        const links = native.children?.[0]?.children?.filter((node) => node.type === "Link");
+        expect(links?.map((node) => [node.attributes?.url, node.children?.[0]?.content])).toEqual([
+          [path, "config/AGENTS.md"],
+          [href, "Instructions"],
+        ]);
+      }
+      const streaming = prepareNativeMarkdown(spans, { tableBreaks: breakTables });
+      expect(
+        streaming.render(() => {
+          throw new Error("streamed file lookup");
+        }),
+      ).toBe(spans);
+    }
+  });
+
+  it("compacts only explicit path labels, including reference links to the same target", () => {
+    const source =
+      '`src/report.md` [src/report.md](src/report.md "original title") [Instructions](src/report.md) [other/report.md][]\n\n[other/report.md]: other/report.md';
+    const document = prepareNativeMarkdown(source, { cwd: "/repo", tableBreaks: false });
+    expect(document.render()).toBe(
+      '`src/report.md` [report.md · repo/src](src/report.md "original title") [Instructions](src/report.md) [report.md · repo/other][other/report.md]\n\n[other/report.md]: other/report.md',
+    );
+  });
+
+  it("renders verified Windows labels with the native parser's path handling", async () => {
+    const path = String.raw`C:\Repo\_private\File[1].ts`;
+    const native = await parseMarkdown(rewrite("`" + path + "`"), {
+      preserveWindowsPaths: true,
+      admonitions: true,
+      hardSoftBreaks: false,
+      latexMath: true,
+    });
+    const link = native.children?.[0]?.children?.[0];
+    expect(link?.type).toBe("Link");
+    expect(link?.children?.map((child) => child.content).join("")).toBe(path);
+    expect(link?.attributes?.url).toBe(path);
+  });
+
   it("becomes a link to the same path", () => {
     expect(rewrite("See `/tmp/claude-1000/...`.")).toBe("See `/tmp/claude-1000/...`.");
-    expect(rewrite("See `bin/python3.12`.")).toBe("See [bin/python3.12](<bin/python3.12>).");
+    expect(rewrite("See `bin/python3.12`.")).toBe("See [bin/python3.12](</repo/bin/python3.12>).");
     expect(rewrite("See `src/math.ts:2` and `./README.md`.")).toBe(
-      "See [src/math.ts:2](<src/math.ts:2>) and [./README.md](<./README.md>).",
+      "See [src/math.ts:2](</repo/src/math.ts:2>) and [./README.md](</repo/README.md>).",
     );
     for (const path of [
       "src/數學.ts:2",
@@ -102,7 +159,15 @@ describe("inline code that names a file", () => {
       "/Users/me/Path Test/notes with spaces.md",
       "~/Library/Mobile Documents/notes.md",
     ]) {
-      expect(rewrite(`See \`${path}\`.`), path).toBe(`See [${path}](<${path}>).`);
+      const paragraph = parser.parse(rewrite(`See \`${path}\`.`)).children[0];
+      expect(paragraph?.type === "paragraph" && paragraph.children[1], path).toMatchObject({
+        type: "link",
+        url:
+          path.startsWith("/") || path.startsWith("~/")
+            ? path
+            : "/repo/" + path.replace(/:2-4$/, ":2"),
+        children: [{ type: "text", value: path }],
+      });
     }
   });
 
@@ -114,14 +179,14 @@ describe("inline code that names a file", () => {
 
   it("leaves fenced code blocks and code already inside a link alone", () => {
     const markdown = "```\nsrc/math.ts:2\n```\n\n[`src/math.ts`](src/math.ts)";
-    expect(rewrite(markdown)).toBe(markdown);
+    expect(rewrite(markdown)).toBe(markdown.replace("[`src/math.ts`]", "[math.ts]"));
   });
 
   it("links to the exact path when it holds backslashes or ampersands", () => {
     for (const path of ["C:\\repo\\_private\\file.ts", "./src/a&copy;.ts", "./src/[id].ts"]) {
       const paragraph = parser.parse(rewrite(`\`${path}\``)).children[0];
       const link = paragraph?.type === "paragraph" ? paragraph.children[0] : undefined;
-      expect(link?.type === "link" && link.url).toBe(path);
+      expect(link?.type === "link" && link.url).toBe(path.replace(/^\.\//, "/repo/"));
       expect(
         link?.type === "link" && link.children[0]?.type === "text" && link.children[0].value,
       ).toBe(path);
@@ -129,31 +194,25 @@ describe("inline code that names a file", () => {
   });
 });
 
-// Freeze the pre-optimization passes so shared transform regressions cannot change the oracle.
+// Separate link and table passes are the oracle for the combined pass on truncated Markdown.
 const parser = unified().use(remarkParse).use(remarkGfm);
 type MarkdownNode = Root | RootContent;
-const INLINE_CODE_SPAN = /`+([^`\r\n]+)`+/g;
-
-function previousFileLinks(markdown: string, fileLink: RegExp): string {
-  if (![...markdown.matchAll(INLINE_CODE_SPAN)].some(([, code]) => fileLink.test(code!.trim())))
-    return markdown;
+function previousFileLinks(markdown: string): string {
   const edits: Array<{ start: number; end: number; content: string }> = [];
   const visit = (node: MarkdownNode) => {
     if (node.type === "inlineCode") {
       const start = node.position?.start.offset;
       const end = node.position?.end.offset;
-      const escaped = node.value.replace(/[\\[\]&]/g, "\\$&");
-      if (
-        start !== undefined &&
-        end !== undefined &&
-        fileLink.test(node.value) &&
-        !/[<>]/.test(node.value)
-      )
-        edits.push({
-          start,
-          end,
-          content: `[${escaped}](<${escaped}>)`,
-        });
+      const target = resolveInlineCodeFileTarget(node.value, "/repo");
+      const href = target && confirmedInlineFileHref(target, "file");
+      if (start === undefined || end === undefined || !href) return;
+      const escaped = href.replace(/[\\[\]&]/g, "\\$&");
+      const label = node.value.replace(/[\\[\]\x60*_~|&<>]/g, (c) => "&#" + c.charCodeAt(0) + ";");
+      edits.push({
+        start,
+        end,
+        content: `[${label}](<${escaped}>)`,
+      });
     } else if (node.type !== "link" && node.type !== "linkReference" && "children" in node)
       node.children.forEach(visit);
   };

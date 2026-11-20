@@ -1305,6 +1305,10 @@ const ConversationTimeline = memo(function ConversationTimeline({
       : undefined;
     const detachViewport = viewport ? onViewportAttach?.(viewport) : undefined;
     const stopRememberingRelease = viewport?.onFollowReleased(rememberReleasedPosition);
+    // Screen-reader heading navigation can interrupt LegendList without a wheel or key event.
+    const stopListeningToFollow = list?.getState().listen("isFollowingEnd", (following) => {
+      if (!following) viewport?.reportScrollAwayFromEnd(list.getState().scroll);
+    });
     const stopDisclosureReveal = viewport?.subscribe(() => {
       disclosureRevealRef.current = null;
     });
@@ -1330,6 +1334,7 @@ const ConversationTimeline = memo(function ConversationTimeline({
       .listen("totalSize", () => scheduleContentSizeChanged());
     scheduleContentSizeChanged();
     return () => {
+      stopListeningToFollow?.();
       stopListeningToContentSize?.();
       stopPreservingReadingPosition?.();
       stopRememberingRelease?.();
@@ -1527,7 +1532,8 @@ const ConversationTimeline = memo(function ConversationTimeline({
                   ? false
                   : maintainVisibleContentPosition
               }
-              maintainScrollAtEndThreshold={1}
+              // A catch-up can add arbitrarily many rows while the reader is following.
+              maintainScrollAtEndThreshold={Infinity}
               onScroll={handleScroll}
               onItemSizeChanged={scheduleMinimapRefresh}
               onMetricsChange={scheduleMinimapRefresh}

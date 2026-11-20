@@ -1,6 +1,7 @@
 import {
   AuthOrchestrationOperateScope,
   CommandId,
+  ComposerContextId,
   EnvironmentId,
   MessageId,
   ProjectId,
@@ -42,7 +43,7 @@ const state = vi.hoisted(() => ({
         ),
       ),
   }),
-  modelUnavailable: vi.fn(() => false),
+  modelUnavailable: vi.fn((_config: unknown) => false),
   familyMount: vi.fn(() => () => {}),
   threadShells: null as unknown as Atom.Writable<ReadonlyArray<unknown>>,
   manager: null as unknown as ReturnType<
@@ -121,7 +122,13 @@ vi.mock("./git", async () => ({
     preparePullRequestThread: state.command(await import("effect/Effect"), state.checkout),
   },
 }));
-vi.mock("../lib/modelOptions", () => ({ isModelSelectionUnavailable: state.modelUnavailable }));
+vi.mock("../lib/modelOptions", () => ({
+  isModelSelectionUnavailable: state.modelUnavailable,
+  describeUnavailableModelSelection: () => ({
+    title: "Model unavailable",
+    detail: "Choose a current model",
+  }),
+}));
 vi.mock("../lib/uuid", () => ({ uuidv4: () => "uuid", randomHex: () => "abcd" }));
 vi.mock("../lib/attachmentUpload", () => ({ prepareTurnAttachments: state.prepare }));
 vi.mock("./composer-attachment-uploads", () => ({ uploadComposerAttachmentShared: vi.fn() }));
@@ -168,9 +175,24 @@ vi.mock("./use-composer-drafts", async () => {
     appendComposerDraftAttachments: vi.fn(),
     flushComposerDrafts: vi.fn(async () => {}),
     getComposerDraftSnapshot: vi.fn(() => ({ text: state.draftText, attachments: [] })),
-    mergeComposerDraftContent: vi.fn(async (_key: string, input: { text: string }) => {
-      state.draftText += `\n${input.text}`;
-    }),
+    mergeComposerDraftContent: vi.fn(
+      async (
+        _key: string,
+        input: { text: string },
+        options?: {
+          onMerge?: (
+            snapshot: { text: string; attachments: never[] },
+            merged: { text: string; attachments: never[] },
+          ) => void;
+        },
+      ) => {
+        options?.onMerge?.(
+          { text: state.draftText, attachments: [] },
+          { text: `${state.draftText}\n${input.text}`, attachments: [] },
+        );
+        state.draftText += `\n${input.text}`;
+      },
+    ),
     replaceComposerDraftAttachments: vi.fn(),
     setFreshSessionPending: vi.fn(),
     undoComposerDraftMerge: vi.fn(),
@@ -180,6 +202,7 @@ vi.mock("./use-composer-drafts", async () => {
 });
 
 import { appAtomRegistry } from "./atom-registry";
+import { serverEnvironment } from "./server";
 import { environmentSession } from "./session";
 import { dispatchingQueuedMessageIdsAtom, editingQueuedMessageIdsAtom } from "./use-thread-outbox";
 
@@ -234,6 +257,12 @@ beforeEach(() => {
   setOperateGrant("secondary", false);
   state.draftText = "Keep this draft separate";
   state.config.shellThreadFamilies = false;
+  appAtomRegistry.set(
+    serverEnvironment.configValueAtom(EnvironmentId.make("secondary")) as unknown as Atom.Writable<
+      typeof state.config
+    >,
+    state.config,
+  );
   state.modelUnavailable.mockReset().mockReturnValue(false);
   state.familyMount.mockReset().mockReturnValue(() => {});
   appAtomRegistry.set(state.threadShells, [state.thread]);
@@ -279,6 +308,66 @@ describe("queued PR checkout", () => {
     worktreePath: "/repo/.t3/worktrees/pr-123",
     isOnPullRequestHead: true,
   };
+
+  it("preserves exact queued text and context after a PR checkout", async () => {
+    setOperateGrant("secondary", true);
+    const context = {
+      version: 1 as const,
+      records: [
+        {
+          version: 1 as const,
+          kind: "skill" as const,
+          contextId: ComposerContextId.make("chosen-skill"),
+          label: "Chosen skill",
+          name: "chosen-skill",
+        },
+      ],
+    };
+    const queued = {
+      ...queuedPullRequest(),
+      text: "  Use [Chosen skill](t3-context://v1/skill/chosen-skill)\n",
+      context,
+    };
+    await state.manager.enqueue(queued);
+    state.checkout.mockResolvedValueOnce(AsyncResult.success(preparedCheckout));
+    await runDrain();
+    expect(state.start.mock.calls[0]?.[0].input.message).toMatchObject({
+      text: queued.text,
+      context,
+    });
+  });
+
+  it("rechecks the current model catalog after a PR checkout", async () => {
+    setOperateGrant("secondary", true);
+    const queued = queuedPullRequest();
+    await state.manager.enqueue(queued);
+    const currentConfig = { ...state.config, providers: [] };
+    state.modelUnavailable.mockImplementation((config) => config === currentConfig);
+    state.checkout.mockImplementationOnce(async () => {
+      appAtomRegistry.set(
+        serverEnvironment.configValueAtom(queued.environmentId) as unknown as Atom.Writable<
+          typeof currentConfig
+        >,
+        currentConfig,
+      );
+      return AsyncResult.success(preparedCheckout);
+    });
+    await runDrain();
+    expect(state.start).not.toHaveBeenCalled();
+  });
+
+  it("keeps an editor-owned task queued when the editor opens during PR checkout", async () => {
+    setOperateGrant("secondary", true);
+    const queued = queuedPullRequest();
+    await state.manager.enqueue(queued);
+    state.checkout.mockImplementationOnce(async () => {
+      appAtomRegistry.set(editingQueuedMessageIdsAtom, { [queued.messageId]: true });
+      return AsyncResult.success(preparedCheckout);
+    });
+    await runDrain();
+    expect(state.start).not.toHaveBeenCalled();
+    expect(remaining()).toEqual([queued]);
+  });
 
   it("waits for the provider's PR checkout and launches in that worktree", async () => {
     setOperateGrant("secondary", true);

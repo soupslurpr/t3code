@@ -9,7 +9,12 @@ import {
   resolveAssetUrl,
 } from "@t3tools/client-runtime/state/assets";
 import { squashAtomCommandFailure } from "@t3tools/client-runtime/state/runtime";
-import { AssetResource, EnvironmentId } from "@t3tools/contracts";
+import {
+  ASSET_ROUTE_PREFIX,
+  AssetResource,
+  DESKTOP_ASSET_PROXY_PATH,
+  EnvironmentId,
+} from "@t3tools/contracts";
 import { AsyncResult } from "effect/reactivity";
 
 import { assetEnvironment } from "~/state/assets";
@@ -20,6 +25,41 @@ import { useAtomQueryRunner } from "~/state/use-atom-query-runner";
 export { resolveAssetUrl } from "@t3tools/client-runtime/state/assets";
 
 export type AssetUrlState = RuntimeAssetUrlState & { readonly waiting?: boolean };
+
+/** Resolves one signed asset through Electron's secure same-origin media route when available. */
+export function resolveClientAssetUrl(
+  httpBaseUrl: string,
+  relativeUrl: string,
+  desktopRendererUrl?: string,
+): string | null {
+  const assetUrl = resolveAssetUrl(httpBaseUrl, relativeUrl);
+  if (assetUrl === null || desktopRendererUrl === undefined) return assetUrl;
+  try {
+    const target = new URL(assetUrl);
+    if (
+      (target.protocol !== "http:" && target.protocol !== "https:") ||
+      target.username ||
+      target.password ||
+      !target.pathname.startsWith(`${ASSET_ROUTE_PREFIX}/`)
+    )
+      return null;
+    const proxyUrl = new URL(
+      `${DESKTOP_ASSET_PROXY_PATH}/${encodeURIComponent(target.origin)}${target.pathname}`,
+      desktopRendererUrl,
+    );
+    proxyUrl.search = target.search;
+    proxyUrl.hash = target.hash;
+    return proxyUrl.toString();
+  } catch {
+    return null;
+  }
+}
+
+function currentDesktopRendererUrl(): string | undefined {
+  return typeof window !== "undefined" && window.desktopBridge !== undefined
+    ? window.location.href
+    : undefined;
+}
 
 const revisionedAssetUrl = makeRevisionedAssetUrlFamily(assetEnvironment.createUrl);
 
@@ -45,13 +85,20 @@ export function useAssetUrlState(
         : revisionedAssetUrl({ environmentId, input: { resource }, revision }),
   );
   if (blocked !== null) return blocked;
-  return {
-    ...assetUrlStateFromResult(
-      result,
-      preparedConnection._tag === "Some" ? preparedConnection.value.httpBaseUrl : null,
-    ),
+  const httpBaseUrl =
+    preparedConnection._tag === "Some" ? preparedConnection.value.httpBaseUrl : null;
+  const state = {
+    ...assetUrlStateFromResult(result, httpBaseUrl),
     ...(result.waiting ? { waiting: true } : {}),
   };
+  if (state._tag !== "Success" || httpBaseUrl === null) return state;
+  const url = resolveClientAssetUrl(httpBaseUrl, state.url, currentDesktopRendererUrl());
+  return url === null
+    ? { _tag: "Failure" }
+    : {
+        ...state,
+        url,
+      };
 }
 
 export function useAssetUrlRefresh(
@@ -68,7 +115,11 @@ export function useAssetUrlRefresh(
     if (environmentId === null || resource === null || httpBaseUrl === null) return null;
     const result = await refresh({ environmentId, input: { resource } });
     if (result._tag === "Failure") throw squashAtomCommandFailure(result);
-    return resolveAssetUrl(httpBaseUrl, result.value.relativeUrl);
+    return resolveClientAssetUrl(
+      httpBaseUrl,
+      result.value.relativeUrl,
+      currentDesktopRendererUrl(),
+    );
   };
 }
 
@@ -99,7 +150,11 @@ export function useAssetUrls(
     resultIndex += 1;
     urls.push(
       result && AsyncResult.isSuccess(result)
-        ? resolveAssetUrl(preparedConnection.value.httpBaseUrl, result.value.relativeUrl)
+        ? resolveClientAssetUrl(
+            preparedConnection.value.httpBaseUrl,
+            result.value.relativeUrl,
+            currentDesktopRendererUrl(),
+          )
         : null,
     );
   }

@@ -1,20 +1,14 @@
 import type { FilesystemEntryMetadata } from "@t3tools/contracts";
 import { filePreviewDelimiter } from "@t3tools/shared/delimitedPreview";
-import { joinPath, resolvePathLinkTarget } from "@t3tools/shared/fileLinks";
+import { isHostPath, isWindowsAbsolutePath } from "@t3tools/shared/path";
+import { joinPath } from "@t3tools/shared/fileLinks";
 import {
   isWorkspaceAudioPreviewPath,
   isWorkspaceVideoPreviewPath,
 } from "@t3tools/shared/filePreview";
 
-function isWindowsAbsolutePath(value: string): boolean {
-  return /^[A-Za-z]:[\\/]/.test(value) || value.startsWith("\\\\");
-}
-
-export function isAbsolutePath(value: string): boolean {
-  return value.startsWith("/") || isWindowsAbsolutePath(value);
-}
-
 export function fileRoutePathSegments(path: string): string[] {
+  if (path === "/" || path === "~/" || /^[a-z]:\/$/i.test(path)) return path.split("/");
   const segments = path.split("/").filter((segment) => segment.length > 0);
   return path.startsWith("/") ? ["", ...segments] : segments;
 }
@@ -29,7 +23,7 @@ export function basename(path: string): string {
 }
 
 export function resolveWorkspaceFilePath(cwd: string, relativePath: string): string {
-  if (isAbsolutePath(relativePath)) {
+  if (isHostPath(relativePath)) {
     return relativePath;
   }
 
@@ -55,26 +49,19 @@ function normalizeRelativePath(value: string): string | null {
   return segments.length > 0 ? segments.join("/") : null;
 }
 
-export function resolveFileLinkPath(
-  workspaceRoot: string | null | undefined,
-  targetPath: string,
-): string | null {
-  if (targetPath.startsWith("~/") || targetPath.startsWith("~\\")) {
-    if (!workspaceRoot) return null;
-    const expanded = resolvePathLinkTarget(targetPath, workspaceRoot);
-    return isAbsolutePath(expanded) ? expanded : null;
-  }
-  return isAbsolutePath(targetPath) ? targetPath : normalizeRelativePath(targetPath);
+export function resolveFileLinkPath(targetPath: string): string | null {
+  if (/^~[\\/]/.test(targetPath)) return targetPath.replaceAll("\\", "/");
+  return isHostPath(targetPath) ? targetPath : normalizeRelativePath(targetPath);
 }
 
 export function resolveWorkspaceRelativeFilePath(
   workspaceRoot: string | null | undefined,
   targetPath: string,
 ): string | null {
-  const resolved = resolveFileLinkPath(workspaceRoot, targetPath);
+  const resolved = resolveFileLinkPath(targetPath);
   if (resolved === null) return null;
   targetPath = resolved;
-  if (!isAbsolutePath(targetPath)) return targetPath;
+  if (!isHostPath(targetPath)) return targetPath;
   if (!workspaceRoot) {
     return null;
   }
@@ -133,7 +120,7 @@ export function fileHeaderSubtitle(projectName: string, relativePath: string): s
     0,
     Math.max(relativePath.lastIndexOf("/"), relativePath.lastIndexOf("\\"), 0),
   );
-  return isAbsolutePath(relativePath)
+  return isHostPath(relativePath)
     ? parentDir
     : [projectName, parentDir].filter(Boolean).join(" · ");
 }

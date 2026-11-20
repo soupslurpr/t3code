@@ -1,5 +1,6 @@
 import type { AssetResource } from "@t3tools/contracts";
 import {
+  ASSET_ROUTE_PREFIX,
   AssetAttachmentNotFoundError,
   AssetSourceControlMediaUrlValidationError,
   AssetPreviewTypeValidationError,
@@ -73,7 +74,7 @@ import {
 import * as WorkspacePreviewRevisions from "./WorkspacePreviewRevisions.ts";
 import * as HostProcess from "@t3tools/shared/HostProcess";
 
-export const ASSET_ROUTE_PREFIX = "/api/assets";
+export { ASSET_ROUTE_PREFIX };
 
 const ASSET_TOKEN_TTL_MS = 60 * 60 * 1000;
 const PROJECT_FAVICON_TOKEN_BUCKET_MS = 30 * 60 * 1000;

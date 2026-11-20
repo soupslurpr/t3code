@@ -1538,7 +1538,10 @@ function ThreadDetailBody(
               />
             )}
           >
-            <WorkspaceMutationIdProvider threadRef={props.selectedThreadDetailRef}>
+            <WorkspaceMutationIdProvider
+              threadRef={props.selectedThreadDetailRef}
+              cwd={props.threadCwd}
+            >
               <ColumnWidth width={columnWidth}>
                 <ThreadFeed
                   toolCallVisibility={toolCallVisibility}

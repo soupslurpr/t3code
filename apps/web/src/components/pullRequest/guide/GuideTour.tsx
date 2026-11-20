@@ -26,6 +26,7 @@ export function GuideTour({
   environmentId,
   reference,
   guide,
+  stale,
   banner,
   active,
   commenting,
@@ -36,6 +37,7 @@ export function GuideTour({
   environmentId: EnvironmentId;
   reference: PullRequestRef;
   guide: PullRequestReviewGuide;
+  stale: boolean;
   banner: ReactNode;
   active: boolean;
   commenting: ExcerptCommenting | null;
@@ -58,6 +60,7 @@ export function GuideTour({
     environmentId,
     reference,
     headSha: guide.headSha,
+    enabled: !stale,
     wantedPaths,
   });
   const getDiffFileContents = useAtomCommand(pullRequestEnvironment.diffFileContents);
