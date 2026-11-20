@@ -142,8 +142,10 @@ import {
 import { CommandReceiptStoreV2, type CommandReceiptV2 } from "./CommandReceiptStore.ts";
 import {
   ContextHandoffServiceV2,
+  SideChatParentHistoryUnavailable,
   readForkHistoryItems,
   readInheritedHandoffItems,
+  readSideChatParentHistory,
   visibleConversationItems,
   visibleDeltaRunOrdinals,
 } from "./ContextHandoffService.ts";
@@ -278,6 +280,7 @@ export class OrchestratorProjectionError extends Schema.TaggedError<Orchestrator
 }
 
 const isOrchestratorProjectionError = Schema.is(OrchestratorProjectionError);
+const isSideChatParentHistoryUnavailable = Schema.is(SideChatParentHistoryUnavailable);
 
 export class OrchestratorDomainEventStreamError extends Schema.TaggedError<OrchestratorDomainEventStreamError>()(
   "OrchestratorDomainEventStreamError",
@@ -1944,6 +1947,11 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       Effect.mapError((cause) => new OrchestratorProjectionError({ threadId: thread.id, cause })),
     );
 
+  const readSideChatParentItems = (thread: OrchestrationV2AppThread) =>
+    readSideChatParentHistory(projectionStore, thread).pipe(
+      Effect.mapError((cause) => new OrchestratorProjectionError({ threadId: thread.id, cause })),
+    );
+
   /** Includes tombstones, which still reserve their id. */
   const findThread = (threadId: ThreadId) =>
     projectionStore
@@ -2367,10 +2375,22 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       "cause" in cause
         ? cause.cause
         : cause;
+    const retentionFailure = isSideChatParentHistoryUnavailable(failureCause)
+      ? failureCause
+      : isOrchestratorProjectionError(failureCause) &&
+          isSideChatParentHistoryUnavailable(failureCause.cause)
+        ? failureCause.cause
+        : undefined;
     const failure = makeProviderFailure({
       cause: failureCause,
-      code: handoffUnsupported ? "context_handoff_unsupported" : "queued_start_failed",
-      class: handoffUnsupported ? "validation_error" : "unknown",
+      code:
+        retentionFailure !== undefined
+          ? "side_chat_parent_history_unavailable"
+          : handoffUnsupported
+            ? "context_handoff_unsupported"
+            : "queued_start_failed",
+      class: retentionFailure !== undefined || handoffUnsupported ? "validation_error" : "unknown",
+      ...(retentionFailure === undefined ? {} : { message: retentionFailure.message }),
     });
     yield* writeSystemEvents([
       ...retainedUserItems.map((item) => ({
@@ -2997,6 +3017,10 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
                 },
                 runs: projection.runs,
                 strategy: handoffStrategy,
+                parentHistory:
+                  needsFullContext && contextBoundary === 0
+                    ? yield* readSideChatParentItems(projection.thread)
+                    : undefined,
                 items: [
                   ...(needsFullContext && contextBoundary === 0
                     ? yield* readInheritedItems(projection.thread)
@@ -6932,6 +6956,10 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
           toProviderInstanceId: input.modelSelection.instanceId,
           coveredRunOrdinals: { from: Math.max(1, contextBoundary), to: targetRun.ordinal },
           strategy: "full_thread_summary",
+          parentHistory:
+            contextBoundary === 0 && targetProviderThreadBase.nativeThreadRef === null
+              ? yield* readSideChatParentItems(input.projection.thread)
+              : undefined,
           items: yield* readHandoffItems(
             input.command.threadId,
             contextBoundary === 0
@@ -9198,8 +9226,33 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
             providerSessionId,
             updatedAt: now,
           };
+    const existingSideChatHandoffs = sideChatFork
+      ? (yield* projectionStore
+          .getThreadRecords(command.threadId, ["contextHandoffs"])
+          .pipe(mapDispatchError(command))).contextHandoffs
+      : [];
+    const retainedSideChatContext = sideChatFork
+      ? existingSideChatHandoffs.find(
+          (handoff) =>
+            handoff.transferId === pendingForkTransfer.id &&
+            handoff.strategy === "manual_context" &&
+            handoff.status === "ready",
+        )
+      : undefined;
+    const retainedForkHistory =
+      retainedSideChatContext === undefined
+        ? undefined
+        : yield* readSideChatParentItems(projection.thread);
+    if (sideChatFork && retainedForkHistory === undefined && sourceRun?.status === "rolled_back") {
+      return yield* mapDispatchError(command)(
+        Effect.fail(new SideChatParentHistoryUnavailable({ threadId: command.threadId })),
+      );
+    }
     const portableForkItems =
-      !requiresPortableFork || sourceProjection === null || sourceRun === null
+      retainedForkHistory !== undefined ||
+      (!requiresPortableFork && !sideChatFork) ||
+      sourceProjection === null ||
+      sourceRun === null
         ? []
         : yield* readForkHistoryItems(
             projectionStore,
@@ -9212,8 +9265,8 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
                 new OrchestratorProjectionError({ threadId: sourceProjection.thread.id, cause }),
             ),
           );
-    const portableForkHandoff =
-      !requiresPortableFork ||
+    const preparedForkHistory =
+      (!requiresPortableFork && !sideChatFork) ||
       pendingForkTransfer === undefined ||
       sourceProjection === null ||
       sourceRun === null
@@ -9231,6 +9284,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
               toProviderInstanceId: modelSelection.instanceId,
               coveredRunOrdinals: visibleDeltaRunOrdinals(sourceProjection, portableForkItems),
               strategy: "full_thread_summary",
+              parentHistory: retainedForkHistory,
               items: portableForkItems,
               runs: sourceProjection.runs,
               createdAt: now,
@@ -9245,6 +9299,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
                   }),
               ),
             );
+    const portableForkHandoff = requiresPortableFork ? preparedForkHistory : null;
     // Without a source run the digest covers the parent's whole history: inherited fork rows
     // first, so the cap truncates them first, then imported and run items.
     const sideChatParentRunIds = [
@@ -9270,7 +9325,8 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
     const sideChatContextHandoff =
       !sideChatFork || pendingForkTransfer === undefined || sourceProjection === null
         ? null
-        : yield* contextHandoffService
+        : (retainedSideChatContext ??
+          (yield* contextHandoffService
             .prepareSideChatContext({
               threadId: command.threadId,
               parentThreadId: sourceProjection.thread.id,
@@ -9282,9 +9338,10 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
               toProviderInstanceId: modelSelection.instanceId,
               coveredRunOrdinals: visibleDeltaRunOrdinals(sourceProjection, sideChatParentItems),
               parentItems: sideChatParentItems,
+              parentHistory: retainedForkHistory ?? preparedForkHistory?.history,
               createdAt: now,
             })
-            .pipe(mapDispatchError(command));
+            .pipe(mapDispatchError(command))));
     const requiresFullProviderSwitchContext =
       isProviderSwitch && pendingMergeBackTransfer !== undefined;
     const targetLastCompletedRun =
@@ -9367,6 +9424,10 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
               strategy: providerSwitchNeedsFullContext
                 ? "full_thread_summary"
                 : "delta_since_target_last_seen",
+              parentHistory:
+                providerSwitchNeedsFullContext && contextBoundary === 0
+                  ? yield* readSideChatParentItems(projection.thread)
+                  : undefined,
               items: providerSwitchItems,
               runs: projection.runs,
               createdAt: now,

@@ -1157,6 +1157,8 @@
   "40bc7efea699741f": "{minutes}m {seconds}s",
   "93918bb7fbf62e92": "{hours}h {minutes}m {seconds}s",
   "d3a9046187e04d81": "{hours}h {seconds}s",
+  "c47883129eb5aa41": "Side chat context unavailable",
+  "eb5b9b0f0c89f90f": "The saved parent history for this side chat is unavailable. To continue, switch back to the previous provider if the original session is still available.",
   "8e551e83aa1b35ca": "PR",
   "70c699d18aaa4c6c": "Branch",
   "a147a2509d4fcfd5": "Project",

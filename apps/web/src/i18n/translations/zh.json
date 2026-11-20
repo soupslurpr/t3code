@@ -1158,6 +1158,8 @@
   "40bc7efea699741f": "{minutes} 分 {seconds} 秒",
   "93918bb7fbf62e92": "{hours} 小时 {minutes} 分 {seconds} 秒",
   "d3a9046187e04d81": "{hours} 小时 {seconds} 秒",
+  "c47883129eb5aa41": "侧边聊天的上下文不可用",
+  "eb5b9b0f0c89f90f": "此侧边聊天保存的父聊天历史记录不可用。如果原会话仍可用，请切换回之前的提供商以继续。",
   "8e551e83aa1b35ca": "PR",
   "70c699d18aaa4c6c": "分支",
   "a147a2509d4fcfd5": "项目",

@@ -1158,6 +1158,8 @@
   "40bc7efea699741f": "{minutes} min {seconds} s",
   "93918bb7fbf62e92": "{hours} h {minutes} min {seconds} s",
   "d3a9046187e04d81": "{hours} h {seconds} s",
+  "c47883129eb5aa41": "El contexto del chat secundario no está disponible",
+  "eb5b9b0f0c89f90f": "El historial guardado del chat principal no está disponible para este chat secundario. Si la sesión original sigue disponible, vuelve al proveedor anterior para continuar.",
   "8e551e83aa1b35ca": "PR",
   "70c699d18aaa4c6c": "Rama",
   "a147a2509d4fcfd5": "Proyecto",

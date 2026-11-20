@@ -1,4 +1,5 @@
 import { useAtomValue } from "@effect/atom-react";
+import { localizeSideChatHistoryError } from "@t3tools/shared/orchestrationV2ThreadError";
 import * as Dialog from "../../components/ui/Dialog";
 import type { ThreadRowProviderInstance } from "./thread-provider-instance";
 import {
@@ -1529,7 +1530,7 @@ export const ThreadListV2Row = memo(function ThreadListV2Row(props: {
             )}
             numberOfLines={1}
           >
-            {thread.runtime.lastError}
+            {localizeSideChatHistoryError(thread.runtime.lastError, m)}
           </Text>
         ) : props.environmentLabel ? (
           <View className="min-w-0 flex-1 flex-row items-center gap-1">

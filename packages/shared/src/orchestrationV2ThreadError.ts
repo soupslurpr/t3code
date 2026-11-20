@@ -1,9 +1,23 @@
+import { msg } from "gt-i18n";
+import type { MFunctionType } from "gt-i18n/types";
 import type {
   OrchestrationV2ProviderFailure,
   OrchestrationV2Run,
   OrchestrationV2TurnItem,
 } from "@t3tools/contracts";
 import * as DateTime from "effect/DateTime";
+
+export const SIDE_CHAT_HISTORY_UNAVAILABLE_TITLE = msg("Side chat context unavailable");
+export const SIDE_CHAT_HISTORY_UNAVAILABLE_MESSAGE = msg(
+  "The saved parent history for this side chat is unavailable. To continue, switch back to the previous provider if the original session is still available.",
+);
+
+export function localizeSideChatHistoryError(text: string, resolve: MFunctionType): string {
+  return text === SIDE_CHAT_HISTORY_UNAVAILABLE_MESSAGE ||
+    text === SIDE_CHAT_HISTORY_UNAVAILABLE_TITLE
+    ? resolve(text)
+    : text;
+}
 
 type ErrorTurnItem = Extract<OrchestrationV2TurnItem, { type: "error" }>;
 /** Only error items are read, so callers may pass items stripped of other fields. */

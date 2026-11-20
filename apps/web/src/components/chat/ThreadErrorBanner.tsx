@@ -1,3 +1,4 @@
+import { localizeSideChatHistoryError } from "@t3tools/shared/orchestrationV2ThreadError";
 import type { OrchestrationV2ProviderFailureClass } from "@t3tools/contracts";
 import {
   CHATGPT_USAGE_LIMIT_CODE,
@@ -92,6 +93,7 @@ export const ThreadErrorBanner = memo(function ThreadErrorBanner({
 }) {
   const gt = useGT();
   if (!error) return null;
+  const displayError = localizeSideChatHistoryError(error, m);
   const workspaceLimit = errorCode === CHATGPT_WORKSPACE_USAGE_LIMIT_CODE;
   const chatGptLimit = workspaceLimit || errorCode === CHATGPT_USAGE_LIMIT_CODE;
   const variant = errorClass === "usage_limit" || chatGptLimit ? "warning" : "error";
@@ -118,7 +120,10 @@ export const ThreadErrorBanner = memo(function ThreadErrorBanner({
               ) : null}
             </div>
           ) : (
-            <ExpandableText text={error} collapsedText={getThreadErrorBannerMessage(error)} />
+            <ExpandableText
+              text={displayError}
+              collapsedText={getThreadErrorBannerMessage(displayError)}
+            />
           )}
         </AlertDescription>
         {(chatGptLimit || onDismiss) && (

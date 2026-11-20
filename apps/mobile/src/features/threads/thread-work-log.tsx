@@ -1,3 +1,4 @@
+import { localizeSideChatHistoryError } from "@t3tools/shared/orchestrationV2ThreadError";
 import { ProviderIcon } from "../../components/ProviderIcon";
 import { Button } from "../../components/ui/Button";
 import { ThreadSubagentGroup } from "./thread-subagent-group";
@@ -937,19 +938,20 @@ const ThreadWorkLogRow = function ThreadWorkLogRow(
           minute: "2-digit",
         })} (${new Intl.DateTimeFormat().resolvedOptions().timeZone})`
       : null;
+    const failureMessage = localizeSideChatHistoryError(failureItem.failure.message, messages);
     const label = warning
       ? resetTime
         ? gt("Usage limit reached. Retry after {resetTime}.", { resetTime })
         : gt("Usage limit reached.")
-      : row.summary;
+      : localizeSideChatHistoryError(row.summary, messages);
     const errorRow = (
       <WorkLogPressable
         accessibilityLabel={
           warning
             ? label
             : gt("{summary}: {message}", {
-                summary: row.summary,
-                message: failureItem.failure.message,
+                summary: label,
+                message: failureMessage,
               })
         }
         accessibilityHint={gt("Long press to copy.")}
@@ -992,7 +994,7 @@ const ThreadWorkLogRow = function ThreadWorkLogRow(
           </View>
           {!warning ? (
             <Text selectable className="ml-7 text-sm text-foreground">
-              {failureItem.failure.message}
+              {failureMessage}
             </Text>
           ) : null}
           {failureItem.failure.code === ORCHESTRATION_V2_WORKSPACE_PREPARATION_FAILURE_CODE &&

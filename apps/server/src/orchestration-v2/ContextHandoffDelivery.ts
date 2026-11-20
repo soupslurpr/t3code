@@ -57,10 +57,6 @@ export const deliverContextHandoffs = Effect.fn("orchestrationV2.deliverContextH
           }`,
       )
       .join("\n");
-    if (historyCost([], coverage) > Math.min(4_000, budget / 2)) {
-      const strategies = Array.from(new Set(pending.map((handoff) => handoff.strategy)));
-      coverage = `Context handoff (${strategies.join(", ")}). ${pending.length} handoff records; detailed coverage references omitted. Recover an omitted item only when the request needs it, with t3_thread_read({threadId:"${input.providerThread.appThreadId ?? pending[0]!.threadId}",view:"activity",itemId:"<omitted item ID>",maxCharsPerItem:4000}); continue long text with textOffset=nextTextOffset until null. Follow fork/handoff source references in activity. Items included below need no read.`;
-    }
     const seen = new Set(input.alreadyDeliveredItemIds);
     const messages = pending
       .flatMap((handoff) => handoff.history?.messages ?? [])
@@ -69,6 +65,28 @@ export const deliverContextHandoffs = Effect.fn("orchestrationV2.deliverContextH
         seen.add(message.itemId);
         return true;
       });
+    const retainedOmissions = new Set<string>();
+    let unidentifiedOmissions = 0;
+    for (const handoff of pending) {
+      const ids = new Set(handoff.history?.omittedItemIds);
+      unidentifiedOmissions += Math.max(0, (handoff.history?.omittedItems ?? 0) - ids.size);
+      for (const id of ids) {
+        if (!seen.has(id)) retainedOmissions.add(id);
+      }
+    }
+    if (historyCost([], coverage) > Math.min(4_000, budget / 2)) {
+      const strategies = Array.from(new Set(pending.map((handoff) => handoff.strategy)));
+      const threadId = input.providerThread.appThreadId ?? pending[0]!.threadId;
+      const recovery =
+        unidentifiedOmissions > 0
+          ? `Read omitted items with t3_thread_read on thread ${threadId}, view=activity, itemId and textOffset.`
+          : `Recover an omitted item only when the request needs it, with t3_thread_read({threadId:"${threadId}",view:"activity",itemId:"<omitted item ID>",maxCharsPerItem:4000}); continue long text with textOffset=nextTextOffset until null. Follow fork/handoff source references in activity. Items included below need no read.`;
+      coverage = `Context handoff (${strategies.join(", ")}). ${pending.length} handoff records; detailed coverage references omitted. ${recovery}`;
+    }
+    if (unidentifiedOmissions > 0) {
+      coverage +=
+        "\nSome earlier omissions lack item identities; the omitted count is an upper bound, not an exact distinct-item count.";
+    }
     const oldContext = pending
       .filter((handoff) => handoff.history === undefined)
       .map((handoff) => handoff.summaryText)
@@ -80,8 +98,8 @@ export const deliverContextHandoffs = Effect.fn("orchestrationV2.deliverContextH
     const selected = selectHistory({
       messages,
       coverage: fullCoverage,
-      omittedItems: pending.reduce((sum, handoff) => sum + (handoff.history?.omittedItems ?? 0), 0),
-      omittedItemIds: pending.flatMap((handoff) => handoff.history?.omittedItemIds ?? []),
+      omittedItems: retainedOmissions.size + unidentifiedOmissions,
+      omittedItemIds: [...retainedOmissions],
       budget,
     });
     if (historyCost(selected.messages, selected.context) > budget) {
@@ -90,6 +108,10 @@ export const deliverContextHandoffs = Effect.fn("orchestrationV2.deliverContextH
       return yield* new ContextHandoffBudgetError();
     }
     const omittedItemIds = new Set(selected.omittedItemIds);
+    const receivedItemIds = new Set([
+      ...input.alreadyDeliveredItemIds,
+      ...selected.messages.map((message) => message.itemId),
+    ]);
     const persist = (status: "pending" | "injected" | "inline") =>
       Effect.forEach(
         pending,
@@ -102,12 +124,14 @@ export const deliverContextHandoffs = Effect.fn("orchestrationV2.deliverContextH
                   delivery: {
                     nativeThreadId,
                     status,
-                    omittedItemIds: [
-                      ...(handoff.history?.omittedItemIds ?? []),
-                      ...(handoff.history?.messages ?? [])
-                        .filter((message) => omittedItemIds.has(message.itemId))
-                        .map((message) => message.itemId),
-                    ],
+                    omittedItemIds: Array.from(
+                      new Set([
+                        ...(handoff.history?.omittedItemIds ?? []),
+                        ...(handoff.history?.messages ?? [])
+                          .filter((message) => omittedItemIds.has(message.itemId))
+                          .map((message) => message.itemId),
+                      ]),
+                    ).filter((id) => !receivedItemIds.has(id)),
                     itemIds: selected.messages
                       .filter((message) =>
                         handoff.history?.messages.some(

@@ -1,3 +1,4 @@
+import { localizeSideChatHistoryError } from "@t3tools/shared/orchestrationV2ThreadError";
 import type {
   ThreadPendingApproval,
   ThreadPendingUserInput,
@@ -768,7 +769,7 @@ function itemPreview(item: OrchestrationV2TurnItem, resolve: MessageResolver): s
     case "system_notice":
       return item.message || null;
     case "error":
-      return item.failure.message;
+      return localizeSideChatHistoryError(item.failure.message, resolve);
     case "compaction":
     case "handoff":
       return item.summary ?? null;

@@ -1157,6 +1157,8 @@
   "40bc7efea699741f": "{minutes}min {seconds}s",
   "93918bb7fbf62e92": "{hours}h {minutes}min {seconds}s",
   "d3a9046187e04d81": "{hours}h {seconds}s",
+  "c47883129eb5aa41": "Contexto da conversa paralela indisponível",
+  "eb5b9b0f0c89f90f": "O histórico salvo da conversa principal não está disponível para esta conversa paralela. Se a sessão original ainda estiver disponível, volte ao provedor anterior para continuar.",
   "8e551e83aa1b35ca": "PR",
   "70c699d18aaa4c6c": "Branch",
   "a147a2509d4fcfd5": "Projeto",

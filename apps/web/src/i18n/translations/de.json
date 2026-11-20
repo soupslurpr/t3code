@@ -1158,6 +1158,8 @@
   "40bc7efea699741f": "{minutes} Min. {seconds} s",
   "93918bb7fbf62e92": "{hours} Std. {minutes} Min. {seconds} s",
   "d3a9046187e04d81": "{hours} Std. {seconds} s",
+  "c47883129eb5aa41": "Kontext des Nebenchats nicht verfügbar",
+  "eb5b9b0f0c89f90f": "Der gespeicherte Verlauf des übergeordneten Chats ist für diesen Nebenchat nicht verfügbar. Wechsle zum vorherigen Anbieter zurück, wenn dessen ursprüngliche Sitzung noch verfügbar ist.",
   "8e551e83aa1b35ca": "PR",
   "70c699d18aaa4c6c": "Branch",
   "a147a2509d4fcfd5": "Projekt",

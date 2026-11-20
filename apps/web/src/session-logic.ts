@@ -1,3 +1,4 @@
+import { localizeSideChatHistoryError } from "@t3tools/shared/orchestrationV2ThreadError";
 import type { ThreadStructureRuntime } from "@t3tools/client-runtime/state/shell";
 import { msg } from "gt-react";
 import { resolveThreadWorkingStartedAt } from "@t3tools/client-runtime/state/models";
@@ -317,8 +318,11 @@ export function providerErrorPresentation(
       label:
         item.failure.class === "usage_limit"
           ? resolve(msg("Usage limit reached"))
-          : item.title?.trim() || resolve(msg("Provider error")),
-      detail: item.failure.message,
+          : localizeSideChatHistoryError(
+              item.title?.trim() || resolve(msg("Provider error")),
+              resolve,
+            ),
+      detail: localizeSideChatHistoryError(item.failure.message, resolve),
     };
   }
   const progress =

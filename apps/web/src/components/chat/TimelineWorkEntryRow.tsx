@@ -1,3 +1,4 @@
+import { localizeSideChatHistoryError } from "@t3tools/shared/orchestrationV2ThreadError";
 import { TimelinePendingApprovalRow } from "./TimelinePendingApprovalRow";
 import { WorkLogDetails, WorkLogRow } from "./WorkLog";
 import {
@@ -392,7 +393,7 @@ function WorkEntryLogRow(props: WorkEntryRowProps) {
       >
         {!warning ? (
           <p className="ms-7 whitespace-pre-wrap break-words py-1 text-sm leading-relaxed text-foreground/80">
-            {failureItem.failure.message}
+            {localizeSideChatHistoryError(failureItem.failure.message, m)}
           </p>
         ) : null}
         {verificationUrl !== undefined ? (
