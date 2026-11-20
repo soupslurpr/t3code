@@ -54,6 +54,7 @@ export type ComputerAutomationPointer = typeof ComputerAutomationPointer.Type;
 export const ComputerAutomationScreenshot = Schema.Union([
   Schema.Struct({
     state: Schema.Literal("image"),
+    matchedLegacyContentHash: Schema.optional(ComputerAutomationContentHash),
     contentHash: ComputerAutomationContentHash,
     mimeType: ComputerAutomationScreenshotMimeType,
     data: Schema.String.annotate({ description: "Base64-encoded compressed image bytes." }),

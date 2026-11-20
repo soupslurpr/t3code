@@ -1,0 +1,12 @@
+{
+  "lossless2x2": "sha256-bgra8-v2:l8SqHkxTIMn3dDTz0iiVgixwLr6pt1schFIILAefTDs",
+  "png1x1": "sha256-bgra8-v2:oHbnipacOQULHLzlJchpdq2Ovx-6jO2yPkpiiUBxTPE",
+  "nearLossless2x2": "sha256-bgra8-v2:noAGZCvT714cB5rHWohVgc9Cwdol4zsNgLZgXw_ICYE",
+  "lossy2x2": "sha256-bgra8-v2:HKdDPRMP-61r-avhYPJ4hSFUF1ylBZqL7IUt0J_-Cb8",
+  "pointer25": "sha256-bgra8-v2:PrgUgLNZS32ihDbvC8mOBom6RSY4PrzhdhG8YyyAV9U",
+  "ecmaNumbers": "sha256-bgra8-v2:2G2WmlHBMo9az9BHiyiCRQowwpBmzesrJURLX9I-IS4",
+  "overview": "sha256-bgra8-v2:LbXhQNVzyXEn56-pchyaTxdZQxX6UrY0_z4FpJhkiE8",
+  "logicalCrop": "sha256-bgra8-v2:ZVsfJ_U5r7rFCX-57CBC0PDegT9LmxWQgQl-tCgHrEo",
+  "frameCrop": "sha256-bgra8-v2:3ydoSSZ_BcftoY_CFkJBzb52BchwSNAbBWrpneagJ9o",
+  "rfbOpaque2x1": "sha256-bgra8-v2:Qpvp31nzF-c2xzb5GrjrbRA4w2mglUYh0N0A2_nMsgY"
+}

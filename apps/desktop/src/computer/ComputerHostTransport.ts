@@ -4,6 +4,8 @@ import {
   ComputerAutomationSnapshot,
   ComputerAutomationStatus,
 } from "@t3tools/contracts";
+import { screen } from "electron";
+import { legacyDisplayId, migrateGnomeDisplay } from "./legacyGnomeDisplay.ts";
 import * as Config from "effect/Config";
 import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
@@ -39,7 +41,10 @@ const Reply = Schema.Union([
       code: Schema.String,
       message: Schema.String,
       detail: Schema.optionalKey(
-        Schema.Struct({ cleanup: Schema.optionalKey(ComputerAutomationInputCleanup) }),
+        Schema.Struct({
+          cleanup: Schema.optionalKey(ComputerAutomationInputCleanup),
+          restoreTokenUnconsumed: Schema.optionalKey(Schema.Boolean),
+        }),
       ),
     }),
   }),
@@ -57,7 +62,9 @@ const SavedConsent = Schema.fromJsonString(
 const emptyTokens: typeof Tokens.Type = { view: null, control: null };
 const encodeLine = Schema.encodeEffect(Schema.fromJsonString(Schema.Unknown));
 const encodeConsent = Schema.encodeEffect(Schema.fromJsonString(ConsentV2));
+const decodeSnapshot = Schema.decodeUnknownEffect(ComputerAutomationSnapshot);
 const decodeStatus = Schema.decodeUnknownEffect(NativeStatus);
+const decodeStatusOption = Schema.decodeUnknownOption(NativeStatus);
 const decodeReply = Schema.decodeUnknownEffect(Reply);
 
 type Operation = ComputerUse.ComputerUseOperationError["operation"];
@@ -68,6 +75,7 @@ const make = Effect.gen(function* () {
   const identity = yield* UserDesktopIdentity.UserDesktopIdentity;
   const fs = yield* FileSystem.FileSystem;
   const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
+  const scope = yield* Effect.scope;
   const desktop = yield* Config.String("XDG_CURRENT_DESKTOP").pipe(Config.withDefault(""));
   const session = yield* Config.String("XDG_SESSION_TYPE").pipe(Config.withDefault(""));
   const path = env.isPackaged
@@ -105,10 +113,47 @@ const make = Effect.gen(function* () {
     {
       operation: Operation;
       deferred: Deferred.Deferred<unknown, ComputerUse.ComputerUseOperationError>;
+      abandoned: boolean;
+      onReply?: (reply: typeof Reply.Type, abandoned: boolean) => Effect.Effect<void>;
     }
   >();
   let closed = !handle;
   let sequence = 0;
+  const consentEpoch = { view: 0, control: 0 };
+  const tokenPath = env.path.join(env.stateDir, "computer-control-grant.json");
+  let tokens = yield* fs.readFileString(tokenPath).pipe(
+    Effect.flatMap(Schema.decodeUnknownEffect(SavedConsent)),
+    Effect.map((saved) =>
+      saved.version === 2 ? saved.restoreTokens : { view: null, control: saved.restoreToken },
+    ),
+    Effect.orElseSucceed(() => emptyTokens),
+  );
+  const consentLock = yield* Semaphore.make(1);
+  const writeTokensFile = Effect.fn("ComputerHostTransport.writeTokensFile")(function* (
+    next: typeof Tokens.Type,
+  ) {
+    const data = yield* encodeConsent({ version: 2, restoreTokens: next });
+    const file = yield* fs.makeTempFile({ directory: env.stateDir, prefix: "computer-grant-" });
+    yield* fs
+      .writeFileString(file, data, { mode: 0o600 })
+      .pipe(
+        Effect.andThen(fs.rename(file, tokenPath)),
+        Effect.ensuring(fs.remove(file, { force: true }).pipe(Effect.ignore)),
+      );
+  });
+  const storeConsent = Effect.fn("ComputerHostTransport.storeConsent")(function* (
+    level: "view" | "control",
+    token: string | null,
+  ) {
+    const other = level === "view" ? "control" : "view";
+    const otherBefore = tokens[other];
+    yield* writeTokensFile({ ...tokens, [level]: token });
+    tokens = { ...tokens, [level]: token };
+    consentEpoch[level] += 1;
+    if (tokens[other] !== otherBefore) {
+      yield* writeTokensFile(tokens).pipe(Effect.ignore);
+    }
+  });
   if (handle) {
     yield* handle.stdout.pipe(
       Stream.pipeThroughChannel(Ndjson.decode({ ignoreEmptyLines: true })),
@@ -117,18 +162,36 @@ const make = Effect.gen(function* () {
         Effect.suspend(() => {
           const receipt = pending.get(reply.id);
           if (!receipt) return Effect.void;
-          return reply.ok
-            ? Deferred.succeed(receipt.deferred, reply.result)
-            : Deferred.fail(receipt.deferred, unavailable(receipt.operation, reply.error));
+          pending.delete(reply.id);
+          const reconcile = receipt.onReply
+            ? receipt.onReply(reply, receipt.abandoned)
+            : Effect.void;
+          if (receipt.abandoned) {
+            return reconcile;
+          }
+          return reconcile.pipe(
+            Effect.andThen(
+              reply.ok
+                ? Deferred.succeed(receipt.deferred, reply.result)
+                : Deferred.fail(receipt.deferred, unavailable(receipt.operation, reply.error)),
+            ),
+          );
         }),
       ),
       Effect.ensuring(
         Effect.gen(function* () {
           closed = true;
+          const outstanding = [...pending.values()];
+          pending.clear();
           yield* Effect.forEach(
-            pending.values(),
+            outstanding,
             (r) =>
-              Deferred.fail(r.deferred, unavailable(r.operation, "Native desktop helper exited.")),
+              r.abandoned
+                ? Effect.void
+                : Deferred.fail(
+                    r.deferred,
+                    unavailable(r.operation, "Native desktop helper exited."),
+                  ),
             { discard: true },
           );
         }),
@@ -140,6 +203,10 @@ const make = Effect.gen(function* () {
     operation: Operation,
     method: string,
     params: unknown,
+    hooks?: {
+      readonly onDispatch?: () => void;
+      readonly onReply?: (reply: typeof Reply.Type, abandoned: boolean) => Effect.Effect<void>;
+    },
   ) {
     if (closed || !handle)
       return yield* unavailable(operation, "Native GNOME desktop helper unavailable.");
@@ -149,71 +216,175 @@ const make = Effect.gen(function* () {
       Effect.mapError((cause) => unavailable(operation, cause)),
     );
     const line = new TextEncoder().encode(data + "\n");
-    pending.set(id, { operation, deferred });
+    const entry = {
+      operation,
+      deferred,
+      abandoned: false,
+      ...(hooks?.onReply ? { onReply: hooks.onReply } : {}),
+    };
+    let dispatched = false;
+    pending.set(id, entry);
     return yield* writes
-      .withPermits(1)(Stream.make(line).pipe(Stream.run(handle.stdin)))
+      .withPermits(1)(
+        Effect.sync(() => {
+          dispatched = true;
+          hooks?.onDispatch?.();
+        }).pipe(Effect.andThen(Stream.make(line).pipe(Stream.run(handle.stdin)))),
+      )
       .pipe(
         Effect.mapError((cause) => unavailable(operation, cause)),
         Effect.andThen(Deferred.await(deferred)),
         Effect.timeout("2 minutes"),
         Effect.catchTags({
-          TimeoutError: () => Effect.fail(unavailable(operation, { code: "timed-out" })),
+          TimeoutError: () =>
+            Effect.sync(() => {
+              if (dispatched && hooks?.onReply && pending.has(id)) {
+                entry.abandoned = true;
+              }
+            }).pipe(Effect.andThen(Effect.fail(unavailable(operation, { code: "timed-out" })))),
         }),
-        Effect.ensuring(Effect.sync(() => pending.delete(id))),
+        Effect.onInterrupt(() =>
+          Effect.sync(() => {
+            if (dispatched && hooks?.onReply && pending.has(id)) {
+              entry.abandoned = true;
+            } else {
+              pending.delete(id);
+            }
+          }),
+        ),
+        Effect.ensuring(
+          Effect.sync(() => {
+            if (!entry.abandoned) {
+              pending.delete(id);
+            }
+          }),
+        ),
       );
-  });
-  const tokenPath = env.path.join(env.stateDir, "computer-control-grant.json");
-  let tokens = yield* fs.readFileString(tokenPath).pipe(
-    Effect.flatMap(Schema.decodeUnknownEffect(SavedConsent)),
-    Effect.map((saved) =>
-      saved.version === 2 ? saved.restoreTokens : { view: null, control: saved.restoreToken },
-    ),
-    Effect.orElseSucceed(() => emptyTokens),
-  );
-  const consentLock = yield* Semaphore.make(1);
-  const storeConsent = Effect.fn("ComputerHostTransport.storeConsent")(function* (
-    level: "view" | "control",
-    token: string | null,
-  ) {
-    const next = { ...tokens, [level]: token };
-    const data = yield* encodeConsent({ version: 2, restoreTokens: next });
-    const file = yield* fs.makeTempFile({ directory: env.stateDir, prefix: "computer-grant-" });
-    yield* fs
-      .writeFileString(file, data, { mode: 0o600 })
-      .pipe(
-        Effect.andThen(fs.rename(file, tokenPath)),
-        Effect.ensuring(fs.remove(file, { force: true }).pipe(Effect.ignore)),
-      );
-    tokens = next;
   });
   const read = Effect.fn("ComputerHostTransport.status")(function* (
     operation: Operation,
     level?: "view" | "control",
   ) {
+    if (level) {
+      consentEpoch[level] += 1;
+    }
     const restoreToken = level ? tokens[level] : null;
     // Each portal token is single-use and tied to its original interface.
-    if (level && restoreToken && !closed)
-      yield* storeConsent(level, null).pipe(
-        Effect.mapError((cause) => unavailable(operation, cause)),
-      );
-    const raw = yield* call(operation, operation, restoreToken ? { restoreToken } : {});
-    const { restoreToken: replacement, ...status } = yield* decodeStatus(raw).pipe(
-      Effect.mapError((cause) => unavailable(operation, cause)),
+    let withdrawnEpoch = level ? consentEpoch[level] : 0;
+    let dispatched = false;
+    let pendingWriteEpoch: number | undefined;
+    const forkFlush = (flushEpoch: number) =>
+      consentLock
+        .withPermits(1)(
+          Effect.suspend(() =>
+            level && consentEpoch[level] === flushEpoch
+              ? writeTokensFile(tokens).pipe(Effect.ignore)
+              : Effect.void,
+          ),
+        )
+        .pipe(Effect.forkIn(scope), Effect.asVoid);
+    const applyRecoveredToken = Effect.fn("ComputerHostTransport.applyRecoveredToken")(function* (
+      recovered: string,
+      abandoned: boolean,
+    ) {
+      if (!level || consentEpoch[level] !== withdrawnEpoch) return;
+      tokens = { ...tokens, [level]: recovered };
+      consentEpoch[level] += 1;
+      const flushEpoch = consentEpoch[level];
+      if (abandoned) {
+        yield* forkFlush(flushEpoch);
+        return;
+      }
+      pendingWriteEpoch = flushEpoch;
+    });
+    const flushPendingDirect = (failOnWriteError: boolean) =>
+      Effect.suspend(() => {
+        const epoch = pendingWriteEpoch;
+        pendingWriteEpoch = undefined;
+        if (epoch === undefined || !level || consentEpoch[level] !== epoch) return Effect.void;
+        const persist = writeTokensFile(tokens);
+        return failOnWriteError
+          ? persist.pipe(Effect.mapError((cause) => unavailable(operation, cause)))
+          : persist.pipe(Effect.ignore);
+      });
+    const hooks = level
+      ? {
+          onDispatch: () => {
+            dispatched = true;
+          },
+          onReply: (reply: typeof Reply.Type, abandoned: boolean) =>
+            Effect.suspend(() => {
+              if (reply.ok) {
+                const decoded = decodeStatusOption(reply.result);
+                if (decoded._tag === "Some" && decoded.value.restoreToken) {
+                  return applyRecoveredToken(decoded.value.restoreToken, abandoned);
+                }
+                return Effect.void;
+              }
+              if (restoreToken && reply.error.detail?.restoreTokenUnconsumed === true) {
+                return applyRecoveredToken(restoreToken, abandoned);
+              }
+              return Effect.void;
+            }),
+        }
+      : undefined;
+    const raw = yield* Effect.uninterruptibleMask((restore) =>
+      Effect.gen(function* () {
+        if (level && restoreToken && !closed) {
+          yield* storeConsent(level, null).pipe(
+            Effect.mapError((cause) => unavailable(operation, cause)),
+          );
+          withdrawnEpoch = consentEpoch[level];
+        }
+        return yield* restore(
+          call(operation, operation, restoreToken ? { restoreToken } : {}, hooks),
+        ).pipe(
+          Effect.onInterrupt(() =>
+            Effect.suspend(() => {
+              if (pendingWriteEpoch !== undefined) {
+                const epoch = pendingWriteEpoch;
+                pendingWriteEpoch = undefined;
+                return forkFlush(epoch);
+              }
+              if (!dispatched && restoreToken) {
+                return applyRecoveredToken(restoreToken, true);
+              }
+              return Effect.void;
+            }),
+          ),
+          Effect.tapError(() =>
+            Effect.suspend(() => {
+              if (!dispatched && restoreToken && pendingWriteEpoch === undefined) {
+                return applyRecoveredToken(restoreToken, false).pipe(
+                  Effect.andThen(flushPendingDirect(false)),
+                );
+              }
+              return flushPendingDirect(false);
+            }),
+          ),
+          Effect.flatMap((result) =>
+            decodeStatus(result).pipe(
+              Effect.mapError((cause) => unavailable(operation, cause)),
+              Effect.tap(() => flushPendingDirect(true)),
+            ),
+          ),
+        );
+      }),
     );
-    if (level && replacement)
-      yield* storeConsent(level, replacement).pipe(
-        Effect.mapError((cause) => unavailable(operation, cause)),
-      );
+    const { restoreToken: _replacement, ...status } = raw;
     const rememberedAccess = (["view", "control"] as const).filter(
       (access) => tokens[access] !== null,
     );
+    const permission =
+      status.permission === "prompt-required" && rememberedAccess.length > 0
+        ? ("remembered" as const)
+        : status.permission === "remembered" && rememberedAccess.length === 0
+          ? ("prompt-required" as const)
+          : status.permission;
     return {
       ...status,
       rememberedAccess,
-      permission:
-        status.permission === "prompt-required" && rememberedAccess.length > 0
-          ? ("remembered" as const)
-          : status.permission,
+      permission,
     };
   });
   const status = read("status").pipe(Effect.orElseSucceed(() => inactive));
@@ -227,12 +398,32 @@ const make = Effect.gen(function* () {
     rememberControl: request("rememberControl", "control"),
     requestAvailability: read("requestAvailability"),
     releaseAvailability: read("releaseAvailability"),
-    snapshot: Effect.fn("ComputerHostTransport.snapshot")((options) =>
-      call("snapshot", "snapshot", { desktopId: identity.registration.desktopId, options }).pipe(
-        Effect.flatMap(Schema.decodeUnknownEffect(ComputerAutomationSnapshot)),
+    snapshot: Effect.fn("ComputerHostTransport.snapshot")(function* (options) {
+      const legacyId = legacyDisplayId(options);
+      if (legacyId !== undefined) {
+        const shared = yield* read("status");
+        const host = yield* Effect.try({
+          try: () => screen.getAllDisplays(),
+          catch: (cause) => unavailable("snapshot", cause),
+        });
+        const migrated = migrateGnomeDisplay(options, legacyId, host, shared.displays);
+        if (!migrated)
+          return yield* unavailable("snapshot", {
+            code: "legacy-baseline-required",
+            message:
+              "The legacy display cannot be identified among the shared monitors. Select a display and capture a new baseline.",
+          });
+        options = migrated;
+      }
+      const raw = yield* call("snapshot", "snapshot", {
+        desktopId: identity.registration.desktopId,
+        options,
+        legacyDisplayId: legacyId,
+      });
+      return yield* decodeSnapshot(raw).pipe(
         Effect.mapError((cause) => unavailable("snapshot", cause)),
-      ),
-    ),
+      );
+    }),
     act: Effect.fn("ComputerHostTransport.act")((input, beforeAction = Effect.void) =>
       Effect.forEach(input.actions, (action, index) =>
         beforeAction.pipe(
@@ -256,11 +447,15 @@ const make = Effect.gen(function* () {
     release: call("release", "release", {}).pipe(Effect.asVoid),
     forget: consentLock.withPermits(1)(
       Effect.gen(function* () {
+        consentEpoch.view += 1;
+        consentEpoch.control += 1;
         yield* call("forget", "forget", {});
         yield* fs
           .remove(tokenPath, { force: true })
           .pipe(Effect.mapError((cause) => unavailable("forget", cause)));
         tokens = emptyTokens;
+        consentEpoch.view += 1;
+        consentEpoch.control += 1;
       }),
     ),
   });

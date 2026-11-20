@@ -18,6 +18,7 @@ import { ChildProcess, ChildProcessSpawner } from "effect/process";
 import * as HostProcess from "@t3tools/shared/HostProcess";
 import { fromYaml } from "@t3tools/shared/schemaYaml";
 import { resolveSpawnCommand } from "@t3tools/shared/shell";
+import { stageDesktopNative } from "./lib/stage-desktop-native.ts";
 import rootPackageJson from "../package.json" with { type: "json" };
 import serverPackageJson from "../apps/server/package.json" with { type: "json" };
 
@@ -636,6 +637,13 @@ const buildCliArchive = Effect.fn("buildCliArchive")(function* (input: {
   yield* fs.copyFile(builtExecutable, path.join(contentDir, executableName));
   yield* stageWebClient(webClient, path.join(contentDir, "client"));
   yield* fs.copy(resourceMonitorDir, path.join(contentDir, "resource-monitor"));
+  if (input.platform === "linux")
+    yield* stageDesktopNative({
+      repoRoot,
+      destination: path.join(contentDir, "desktop-native"),
+      arch: input.arch,
+      gnome: false,
+    });
   yield* stageRuntimeExternals({
     repoRoot,
     stageDir: contentDir,

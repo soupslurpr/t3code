@@ -19,6 +19,7 @@ import { fromYaml } from "@t3tools/shared/schemaYaml";
 import * as HostProcess from "@t3tools/shared/HostProcess";
 import { clerkFrontendApiHostnameFromPublishableKey } from "@t3tools/shared/relayAuth";
 import { resolveSpawnCommand } from "@t3tools/shared/shell";
+import { stageDesktopNative } from "./lib/stage-desktop-native.ts";
 import rootPackageJson from "../package.json" with { type: "json" };
 import desktopPackageJson from "../apps/desktop/package.json" with { type: "json" };
 import gnomeCaptureBundle from "../apps/desktop/gnome-extension/bundle.json" with { type: "json" };
@@ -1104,6 +1105,7 @@ export const DESKTOP_EXTRA_RESOURCES = [
   },
 ] as const;
 export const LINUX_CAPTURE_EXTRA_RESOURCES = [
+  { from: "apps/desktop/resources/desktop-native", to: "desktop-native" },
   {
     from: "apps/desktop/prod-resources/hyprland-capture",
     to: "hyprland-capture",
@@ -3868,6 +3870,12 @@ const buildDesktopArtifactUnlocked = Effect.fn("buildDesktopArtifactUnlocked")(f
     verbose: options.verbose,
   });
   if (options.platform === "linux") {
+    yield* stageDesktopNative({
+      repoRoot,
+      destination: path.join(stageResourcesDir, "desktop-native"),
+      arch: options.arch === "arm64" ? "arm64" : "x64",
+      gnome: true,
+    });
     for (const backend of ["kde", "hyprland"] as const)
       yield* stageLinuxCaptureHelper({
         backend,

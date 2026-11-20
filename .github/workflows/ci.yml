@@ -349,6 +349,11 @@ jobs:
           exit "$(cat "$RUNNER_TEMP/apt-status")"
 
       # `changes` lists the affected packages, or nothing when all of them are.
+      - name: Build the native frame encoder
+        run: |
+          sudo apt-get update && sudo apt-get install -y libwebp-dev
+          cargo build --locked --release -p t3-desktop-frame --manifest-path native/desktop-native/Cargo.toml
+
       - name: Test
         env:
           TEST_PACKAGES: ${{ needs.changes.outputs.test_packages }}
@@ -588,15 +593,18 @@ jobs:
           toolchain: stable
           components: rustfmt
 
+      - name: Install desktop capture and input development libraries
+        run: sudo apt-get update && sudo apt-get install -y libwebp-dev libei-dev libxkbcommon-dev libgstreamer-plugins-base1.0-dev libgstreamer1.0-dev gstreamer1.0-pipewire gstreamer1.0-tools gstreamer1.0-plugins-base pipewire pipewire-bin libeis-dev ibus dbus-daemon
+
       - name: Check Rust formatting
         run: |
-          for crate in resource-monitor kde-snap-shot hyprland-snap-shot; do
+          for crate in resource-monitor kde-snap-shot hyprland-snap-shot desktop-native; do
             cargo fmt --manifest-path "native/$crate/Cargo.toml" -- --check
           done
 
       - name: Test Rust crates
         run: |
-          for crate in resource-monitor kde-snap-shot hyprland-snap-shot; do
+          for crate in resource-monitor kde-snap-shot hyprland-snap-shot desktop-native; do
             cargo test --locked --manifest-path "native/$crate/Cargo.toml"
           done
 

@@ -1,3 +1,4 @@
+import * as AgentComputerHost from "./computer/AgentComputerHost.ts";
 import * as ProviderEventLoggers from "@t3tools/provider-core/server/ProviderEventLoggers";
 import * as DatabaseMigrationProgress from "./persistence/DatabaseMigrationProgress.ts";
 import type { RelayManagedEndpointRuntimeConfig } from "@t3tools/contracts/relay";
@@ -975,9 +976,10 @@ const layerMakeRoutes = Layer.mergeAll(
   Layer.provide(CloudSpeech.layer.pipe(Layer.provide(SecretResolver.layer))),
   Layer.provide(layerServerSettings),
   Layer.provide(
-    Layer.mergeAll(ComputerAutomationRouter.layer, ComputerObservationStore.layer).pipe(
-      Layer.provideMerge(UserDesktopHosts.layer),
-    ),
+    Layer.mergeAll(
+      ComputerAutomationRouter.layer.pipe(Layer.provide(AgentComputerHost.layer)),
+      ComputerObservationStore.layer,
+    ).pipe(Layer.provideMerge(UserDesktopHosts.layer)),
   ),
   Layer.provide(PreviewAutomationBroker.layer),
   Layer.provide(ServerSelfUpdate.layer.pipe(Layer.provide(layerDesktopAppUpdate))),
