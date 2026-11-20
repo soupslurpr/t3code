@@ -8,7 +8,8 @@ import * as SqlClient from "effect/sql/SqlClient";
 import * as SqlError from "effect/sql/SqlError";
 import * as NodeSqliteClient from "@t3tools/shared/nodeSqliteClient";
 
-import { hasPendingMigrations, runMigrations } from "./Migrations.ts";
+import { inspectForkSchema } from "./ForkSchema.ts";
+import { hasPendingMigrations, migrationManifest, runMigrations } from "./Migrations.ts";
 import { initializeV2Database } from "./initializeV2Database.ts";
 import * as ServerConfig from "../config.ts";
 import * as ServerOwnership from "../serverOwnership.ts";
@@ -74,9 +75,14 @@ const makeLayerSetup = <E, R>(migrate: Effect.Effect<unknown, E, R>) =>
       // Existing databases need doctor's offline VACUUM to add pointer maps for this mode.
       const tables = yield* sql<{
         readonly count: number;
-      }>`SELECT COUNT(*) AS count FROM sqlite_schema WHERE type = 'table'`;
+      }>`SELECT COUNT(*) AS count FROM sqlite_schema`;
       if (tables[0]?.count === 0) yield* sql`PRAGMA auto_vacuum = INCREMENTAL;`;
-      yield* sql`PRAGMA journal_mode = WAL;`;
+      const [journal] = yield* sql<{ journal_mode: string }>`PRAGMA journal_mode`;
+      if (journal?.journal_mode !== "wal") {
+        // Switching to WAL changes an existing database header even if migration later refuses it.
+        if (tables[0]?.count) yield* inspectForkSchema(migrationManifest);
+        yield* sql`PRAGMA journal_mode = WAL;`;
+      }
       // FULL fsyncs every event commit; NORMAL syncs only at WAL checkpoints.
       // App crashes lose nothing; OS crashes or power loss can roll back post-checkpoint commits without corruption.
       yield* sql`PRAGMA synchronous = NORMAL;`;

@@ -64,7 +64,10 @@ export const reconcileV2PreviewMigration = Effect.fn("reconcileV2PreviewMigratio
         });
       }
       const executed: Array<readonly [number, string]> = [];
-      if (previewId === 53) {
+      const missingFilesViewed = !history.some(
+        (row) => row.migration_id === 53 && row.name === "PullRequestFilesViewed",
+      );
+      if (missingFilesViewed) {
         yield* PullRequestFilesViewed;
         executed.push([53, "PullRequestFilesViewed"]);
       }
@@ -73,7 +76,7 @@ export const reconcileV2PreviewMigration = Effect.fn("reconcileV2PreviewMigratio
       // Move the later entry first to avoid a primary-key collision.
       yield* sql`UPDATE effect_sql_migrations SET migration_id = 56 WHERE migration_id = 55 AND name = 'RemoveRedundantProjectionIndexes'`;
       yield* sql`UPDATE effect_sql_migrations SET migration_id = 55 WHERE migration_id = ${previewId} AND name = 'OrchestrationV2'`;
-      if (previewId === 53) {
+      if (missingFilesViewed) {
         yield* sql`INSERT INTO effect_sql_migrations (migration_id, name) VALUES (53, 'PullRequestFilesViewed')`;
       }
       yield* sql`INSERT INTO effect_sql_migrations (migration_id, name) VALUES (54, 'ProjectionThreadsAutoSettleDisabledAt')`;

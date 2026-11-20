@@ -9,6 +9,7 @@ import {
   DATABASE_MIGRATIONS_FINISHED_MESSAGE,
   DATABASE_MIGRATIONS_STARTED_MESSAGE,
 } from "@t3tools/shared/databaseMigrationLog";
+import { bootstrapForkSchema, inspectForkSchema } from "./ForkSchema.ts";
 import { reconcileV2PreviewMigration } from "./reconcileV2PreviewMigration.ts";
 
 import Migration0001 from "./Migrations/001_OrchestrationEvents.ts";
@@ -285,48 +286,9 @@ export function skippedV2Migrations(
   });
 }
 
-// Migrators skip ids up to the highest recorded; reject collisions that would skip V2 schema.
-const assertV2MigrationsCanRun = Effect.fn("assertV2MigrationsCanRun")(function* (
-  throughId?: number,
-) {
-  const sql = yield* SqlClient.SqlClient;
-  const tables = yield* sql`
-    SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'effect_sql_migrations'
-  `;
-  if (tables.length === 0) return;
-  const recorded = yield* sql<{
-    readonly migration_id: number;
-    readonly name: string;
-  }>`SELECT migration_id, name FROM effect_sql_migrations`;
-  const skipped = skippedV2Migrations(
-    recorded.map((row) => ({ id: row.migration_id, name: row.name })),
-    throughId,
-  );
-  const latestRecordedId = Math.max(0, ...recorded.map((row) => row.migration_id));
-  if (skipped.length === 0) return;
-  return yield* new Migrator.MigrationError({
-    kind: "BadState",
-    message: `This database's migration history would skip required schema migrations: ${skipped.join(", ")}. The migrator skips every id up to the highest recorded id (${latestRecordedId}), regardless of name. It was probably written by a different build. Start the build that wrote it, or report this migration history so an upgrade path can be added.`,
-  });
-});
-
-const latestMigrationId = Math.max(...migrationEntries.map(([id]) => id));
-
-// Mirrors the Migrator, which runs only ids above the highest recorded, plus the V2-preview reconciliation.
 export const hasPendingMigrations = Effect.fn("hasPendingMigrations")(function* () {
-  const sql = yield* SqlClient.SqlClient;
-  const tables = yield* sql`
-    SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'effect_sql_migrations'
-  `;
-  if (tables.length === 0) return true;
-  const rows = yield* sql<{ readonly latestId: number | null; readonly previewRows: number }>`
-    SELECT
-      MAX(migration_id) AS latestId,
-      SUM(name = 'OrchestrationV2' AND migration_id IN (53, 54)) AS previewRows
-    FROM effect_sql_migrations
-  `;
-  const row = rows[0];
-  return (row?.latestId ?? 0) < latestMigrationId || (row?.previewRows ?? 0) > 0;
+  const state = yield* inspectForkSchema(migrationManifest);
+  return !state.installed || state.preview || state.upstream.length < migrationEntries.length;
 });
 
 const run = Migrator.make({});
@@ -339,77 +301,71 @@ export const runMigrations = Effect.fn("runMigrations")(function* ({
   toMigrationInclusive,
 }: RunMigrationsOptions = {}) {
   const progress = yield* Effect.serviceOption(DatabaseMigrationProgress.DatabaseMigrationProgress);
+  const state = yield* inspectForkSchema(migrationManifest);
+  const includeFork = toMigrationInclusive === undefined;
   // The desktop waits past its readiness budget until the finished line follows this one.
-  const hasPending = yield* hasPendingMigrations();
+  const hasPending =
+    state.preview ||
+    state.upstream.length < (toMigrationInclusive ?? migrationEntries.length) ||
+    (includeFork && !state.installed);
   if (hasPending) yield* Effect.log(DATABASE_MIGRATIONS_STARTED_MESSAGE);
   const includesV2 =
     toMigrationInclusive === undefined || toMigrationInclusive >= FIRST_V2_MIGRATION_ID;
-  // The reconcile takes the write lock; CLI startup must not contend with the server for a no-op.
-  const previewMigrations = includesV2 && hasPending ? yield* reconcileV2PreviewMigration() : [];
-  if (includesV2) {
-    yield* assertV2MigrationsCanRun(toMigrationInclusive);
-  }
+  const previewMigrations = state.preview && includesV2 ? yield* reconcileV2PreviewMigration() : [];
   const sql = yield* SqlClient.SqlClient;
-  const ledger = yield* sql`
-    SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'effect_sql_migrations'
-  `;
-  const [latest] =
-    ledger.length === 0
-      ? []
-      : yield* sql<{
-          readonly id: number | null;
-        }>`SELECT MAX(migration_id) AS id FROM effect_sql_migrations`;
-  const latestRecordedId = latest?.id ?? 0;
+  const latestRecordedId =
+    state.preview && includesV2
+      ? (yield* sql<{ id: number }>`SELECT MAX(migration_id) AS id FROM effect_sql_migrations`)[0]!
+          .id
+      : (state.upstream.at(-1)?.id ?? 0);
   const pending = migrationEntries.filter(
     ([id]) =>
       id > latestRecordedId && (toMigrationInclusive === undefined || id <= toMigrationInclusive),
   );
+  const needsForkBootstrap = includeFork && !state.installed;
+  const totalSteps = pending.length + (needsForkBootstrap ? 1 : 0);
   // One transaction per migration: an index build on a large database can take minutes, and a
   // restart then resumes after the last finished migration instead of rolling all of them back.
   const executedMigrations: Array<readonly [id: number, name: string]> = [...previewMigrations];
   yield* Effect.gen(function* () {
     for (const [index, [id, name]] of pending.entries()) {
       if (Option.isSome(progress)) {
-        yield* Ref.set(progress.value.current, { current: index + 1, total: pending.length });
+        yield* Ref.set(progress.value.current, { current: index + 1, total: totalSteps });
       }
       if (latestRecordedId > 0) {
         yield* Effect.log(
-          `${DATABASE_MIGRATION_PROGRESS_MESSAGE} (${index + 1} of ${pending.length})`,
+          `${DATABASE_MIGRATION_PROGRESS_MESSAGE} (${index + 1} of ${totalSteps})`,
         ).pipe(
           Effect.annotateLogs({
             migration: `${id}_${name}`,
-            progress: `${index + 1} of ${pending.length}`,
+            progress: `${index + 1} of ${totalSteps}`,
           }),
         );
       }
       executedMigrations.push(...(yield* run({ loader: makeMigrationLoader(id) })));
     }
+    if (needsForkBootstrap) {
+      if (Option.isSome(progress)) {
+        yield* Ref.set(progress.value.current, { current: totalSteps, total: totalSteps });
+      }
+      if (latestRecordedId > 0) {
+        yield* Effect.log(
+          `${DATABASE_MIGRATION_PROGRESS_MESSAGE} (${totalSteps} of ${totalSteps})`,
+        ).pipe(
+          Effect.annotateLogs({
+            migration: "fork_bootstrap",
+            progress: `${totalSteps} of ${totalSteps}`,
+          }),
+        );
+      }
+      executedMigrations.push(...(yield* bootstrapForkSchema(migrationManifest)));
+    }
   }).pipe(
     Effect.ensuring(Option.isSome(progress) ? Ref.set(progress.value.current, null) : Effect.void),
   );
   const migrations = executedMigrations.map(([id, name]) => `${id}_${name}`);
-  yield* migrations.length === 0
-    ? Effect.logDebug("Database schema is current")
-    : Effect.log(DATABASE_MIGRATIONS_FINISHED_MESSAGE).pipe(Effect.annotateLogs({ migrations }));
-
-  const recorded = yield* sql<{
-    readonly migration_id: number;
-    readonly name: string;
-  }>`SELECT migration_id, name FROM effect_sql_migrations`;
-  const manifestNames = new Map<number, string>(migrationEntries.map(([id, name]) => [id, name]));
-  const divergent = recorded.flatMap((row) => {
-    const expected = manifestNames.get(row.migration_id);
-    if (expected === undefined) {
-      return [`${row.migration_id}:${row.name} (unknown to this build)`];
-    }
-    return expected === row.name
-      ? []
-      : [`${row.migration_id}:${row.name} (this build: ${expected})`];
-  });
-  if (divergent.length > 0) {
-    yield* Effect.logWarning(
-      "Database migration history diverges from this build; recorded migration ids are skipped, not reconciled by name.",
-    ).pipe(Effect.annotateLogs({ divergent }));
-  }
+  yield* hasPending
+    ? Effect.log(DATABASE_MIGRATIONS_FINISHED_MESSAGE).pipe(Effect.annotateLogs({ migrations }))
+    : Effect.logDebug("Database schema is current");
   return executedMigrations;
 });

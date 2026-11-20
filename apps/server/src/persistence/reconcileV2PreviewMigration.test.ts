@@ -5,6 +5,7 @@ import * as Exit from "effect/Exit";
 import * as Migrator from "effect/sql/Migrator";
 import * as SqlClient from "effect/sql/SqlClient";
 
+import { forkMigrationManifest } from "./ForkSchema.ts";
 import { migrationManifest, runMigrations } from "./Migrations.ts";
 import PullRequestFilesViewed from "./Migrations/053_PullRequestFilesViewed.ts";
 import RemoveRedundantProjectionIndexes from "./Migrations/056_RemoveRedundantProjectionIndexes.ts";
@@ -99,6 +100,7 @@ describe("V2 preview upgrade", () => {
         [117, "WorkflowMailSender"],
         [118, "WorkflowPools"],
         [119, "WorkflowRunSubject"],
+        ...forkMigrationManifest,
       ]);
       assert.deepStrictEqual(yield* runMigrations(), []);
       assert.deepStrictEqual(yield* sql`SELECT * FROM orchestration_v2_legacy_imports`, imports);
@@ -122,15 +124,19 @@ describe("V2 preview upgrade", () => {
     }).pipe(Effect.provide(NodeSqliteClient.layer({ filename: ":memory:" }))),
   );
 
-  it.effect.each([false, true])(
-    "upgrades preview migration 54 with index cleanup %s",
-    (withIndexes) =>
+  it.effect.each([
+    { withFilesViewed: true, withIndexes: false },
+    { withFilesViewed: true, withIndexes: true },
+    { withFilesViewed: false, withIndexes: true },
+  ])(
+    "upgrades preview migration 54 with files viewed $withFilesViewed and index cleanup $withIndexes",
+    ({ withFilesViewed, withIndexes }) =>
       Effect.gen(function* () {
         const sql = yield* SqlClient.SqlClient;
         yield* runMigrations({ toMigrationInclusive: 52 });
         yield* Migrator.make({})({
           loader: Migrator.fromRecord({
-            "53_PullRequestFilesViewed": PullRequestFilesViewed,
+            ...(withFilesViewed ? { "53_PullRequestFilesViewed": PullRequestFilesViewed } : {}),
             "54_OrchestrationV2": OrchestrationV2,
             ...(withIndexes
               ? { "55_RemoveRedundantProjectionIndexes": RemoveRedundantProjectionIndexes }
@@ -241,6 +247,7 @@ describe("V2 preview upgrade", () => {
         [117, "WorkflowMailSender"],
         [118, "WorkflowPools"],
         [119, "WorkflowRunSubject"],
+        ...forkMigrationManifest,
       ]);
     }).pipe(Effect.provide(NodeSqliteClient.layer({ filename: ":memory:" }))),
   );
