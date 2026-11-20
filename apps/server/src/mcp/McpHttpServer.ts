@@ -70,6 +70,8 @@ import { compactT3McpToolOutput } from "@t3tools/shared/toolOutput";
 import * as McpProviderSessions from "@t3tools/provider-core/server/McpProviderSessions";
 import { MCP_TOOL_EXPOSURE_HEADER } from "@t3tools/provider-core/server/mcpSession";
 import * as OrchestratorMcpService from "./OrchestratorMcpService.ts";
+import { AgentDesktopToolkit } from "./toolkits/agentDesktop/tools.ts";
+import { handlers as agentDesktopHandlers } from "./toolkits/agentDesktop/handlers.ts";
 import { ComputerToolkit } from "./toolkits/computer/tools.ts";
 import { ComputerToolkitHandlersLive } from "./toolkits/computer/handlers.ts";
 import { PreviewControlsToolkit } from "./toolkits/previewControls/tools.ts";
@@ -1594,6 +1596,7 @@ export const layerMcpTransport = <RA, RE, RR>(registrations: Layer.Layer<RA, RE,
 /** Every tool the T3 MCP server advertises. AgentContextBudget.test.ts measures this set. */
 export const layerTools = Layer.mergeAll(
   layerComputerTools,
+  toolkitRegistration(AgentDesktopToolkit, agentDesktopHandlers),
   layerPreviewToolkit,
   layerOrchestratorToolkit,
   layerThreadToolkit,

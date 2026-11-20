@@ -1,3 +1,4 @@
+import { AgentDesktopService } from "../agentDesktop/AgentDesktopService.ts";
 import { DesktopTransfers } from "../computer/DesktopTransfers.ts";
 import { ThreadWorktreeService } from "../orchestration-v2/ThreadWorktreeService.ts";
 import { ComputerAutomationRouter } from "../computer/ComputerAutomationRouter.ts";
@@ -85,6 +86,19 @@ const toolHandlerServices = Layer.mergeAll(
   }),
   Layer.mock(ComputerObservationStore)({}),
   Layer.mock(ComputerAutomationRouter)({}),
+  Layer.mock(AgentDesktopService)({
+    display: {
+      invoke: () => Effect.die("unexpected guest input"),
+      openCapture: () => Effect.die("unexpected guest capture"),
+    },
+    operations: {
+      jobs: () => Effect.die("unexpected guest job"),
+      access: () => Effect.die("unexpected guest access"),
+      completion: () => Effect.die("unexpected guest completion"),
+      transfer: () => Effect.die("unexpected guest transfer"),
+      close: async () => {},
+    },
+  }),
   Layer.mock(PreviewAutomationBroker)({}),
   Layer.mock(PreviewBrowser)({}),
   Layer.mock(PreviewManager)({}),

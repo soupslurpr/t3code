@@ -73,14 +73,25 @@ it.live("finishes admitted input before releasing control and rejects subsequent
       },
     };
     const order: string[] = [];
+    const releaseEntered = Promise.withResolvers<void>();
+    const finishRelease = Promise.withResolvers<void>();
+    const reselected = Promise.withResolvers<void>();
+    let pauseRelease = false;
     const lifecycle: DesktopLifecycle = {
-      acquire: async () => row,
+      acquire: async () => {
+        if (pauseRelease) reselected.resolve();
+        return row;
+      },
       lease: async (_owner, _id, access) => {
         if (access === "release") {
+          if (pauseRelease) {
+            releaseEntered.resolve();
+            await finishRelease.promise;
+          }
           controlled = false;
           order.push("release");
-        }
-        return row;
+        } else if (access === "control") controlled = true;
+        return { ...row, controllerId: controlled ? caller.controllerId : null };
       },
       begin: async () => {
         if (!controlled) throw new Error("released");
@@ -112,7 +123,7 @@ it.live("finishes admitted input before releasing control and rejects subsequent
         }
       },
     };
-    const display = makeGuestDisplay(lifecycle, guest, {
+    const display = yield* makeGuestDisplay(lifecycle, guest, {
       install: vi.fn(),
       identity: vi.fn(),
       session: vi.fn(),
@@ -141,5 +152,21 @@ it.live("finishes admitted input before releasing control and rejects subsequent
     expect((yield* Effect.result(display.invoke(caller, "computerAct", input, 30_000)))._tag).toBe(
       "Failure",
     );
+
+    yield* display.invoke(caller, "computerRequestControl", request, 30_000);
+    pauseRelease = true;
+    const oldRelease = yield* display
+      .invoke(caller, "computerRelease", { desktop }, 30_000)
+      .pipe(Effect.forkScoped({ startImmediately: true }));
+    yield* Effect.promise(() => releaseEntered.promise);
+    const reacquire = yield* display
+      .invoke(caller, "computerRequestControl", request, 30_000)
+      .pipe(Effect.forkScoped({ startImmediately: true }));
+    yield* Effect.promise(() => reselected.promise);
+    finishRelease.resolve();
+    yield* Fiber.join(oldRelease);
+    yield* Fiber.join(reacquire);
+    expect(controlled).toBe(true);
+    yield* display.invoke(caller, "computerAct", input, 30_000);
   }),
 );

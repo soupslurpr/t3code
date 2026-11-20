@@ -4,6 +4,7 @@ import * as NativeDesktopAuthorization from "./computer/DesktopExecutionAuthoriz
 import * as DesktopLifecycle from "./computer/DesktopThreadLifecycle.ts";
 import * as DesktopTransfers from "./computer/DesktopTransfers.ts";
 import { userDesktopTransferRouteLayer } from "./computer/userDesktopTransferHttp.ts";
+import * as AgentDesktopService from "./agentDesktop/AgentDesktopService.ts";
 import * as AgentComputerHost from "./computer/AgentComputerHost.ts";
 import * as ProviderEventLoggers from "@t3tools/provider-core/server/ProviderEventLoggers";
 import * as DatabaseMigrationProgress from "./persistence/DatabaseMigrationProgress.ts";
@@ -1006,10 +1007,13 @@ const layerMakeRoutes = Layer.mergeAll(
   Layer.provide(layerNativeDesktopAuthorization),
   Layer.provide(
     Layer.mergeAll(
-      ComputerAutomationRouter.layer.pipe(Layer.provide(AgentComputerHost.layer)),
+      ComputerAutomationRouter.layer.pipe(
+        Layer.provide(AgentComputerHost.layer.pipe(Layer.provide(AgentDesktopService.backend))),
+      ),
       ComputerObservationStore.layer,
     ).pipe(Layer.provideMerge(UserDesktopHosts.layer)),
   ),
+  Layer.provide(AgentDesktopService.layer),
   Layer.provide(PreviewAutomationBroker.layer),
   Layer.provide(ServerSelfUpdate.layer.pipe(Layer.provide(layerDesktopAppUpdate))),
   Layer.provide(ProviderMaintenanceRunner.layer),

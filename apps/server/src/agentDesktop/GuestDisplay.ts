@@ -3,7 +3,7 @@ import * as NodeCrypto from "node:crypto";
 import * as Clock from "effect/Clock";
 import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
-import * as Semaphore from "effect/Semaphore";
+import * as KeyedLock from "@t3tools/shared/KeyedLock";
 import {
   ComputerAutomationAccessInput,
   ComputerAutomationActInput,
@@ -30,7 +30,6 @@ const decodeAccess = Schema.decodeEffect(ComputerAutomationAccessInput);
 const decodeAct = Schema.decodeUnknownEffect(ComputerAutomationActInput);
 type ControllerState = InputState & {
   semantics: GuestAccessibility;
-  serial: Semaphore.Semaphore;
   view: boolean;
 };
 const defaultDisplay = (): ComputerAutomationDisplay => ({
@@ -40,11 +39,12 @@ const defaultDisplay = (): ComputerAutomationDisplay => ({
   bounds: { x: 0, y: 0, width: 1600, height: 900 },
   scaleFactor: 1,
 });
-export function makeGuestDisplay(
+export const makeGuestDisplay = Effect.fn("GuestDisplay.make")(function* (
   lifecycle: DesktopLifecycle,
   guest: GuestIo,
   tools: GuestTools,
-): AgentDesktopRuntimePort {
+): Effect.fn.Return<AgentDesktopRuntimePort> {
+  const serial = yield* KeyedLock.make<string>();
   const sessions = new Map<string, ControllerState>();
   const identity = (caller: DesktopCaller, id: string) =>
     [id, caller.environmentId, caller.threadId, ownerOf(caller).controllerId].join("\0");
@@ -58,7 +58,6 @@ export function makeGuestDisplay(
         held: new Map(),
         pointer: null,
         semantics: makeGuestAccessibility(tools, lease.paths),
-        serial: Semaphore.makeUnsafe(1),
         view: false,
       };
       sessions.set(key, state);
@@ -136,9 +135,14 @@ export function makeGuestDisplay(
   });
   const openCapture: AgentDesktopRuntimePort["openCapture"] = Effect.fn("GuestDisplay.openCapture")(
     function* (caller, input) {
-      const lease = yield* begin(caller, input.desktop.desktopId, "view");
-      const state = stateFor(caller, lease);
-      return yield* state.serial.withPermits(1)(frame(lease, state, input));
+      const id = input.desktop.desktopId;
+      return yield* serial.withLock(
+        identity(caller, id),
+        Effect.gen(function* () {
+          const lease = yield* begin(caller, id, "view");
+          return yield* frame(lease, stateFor(caller, lease), input);
+        }),
+      );
     },
   );
   const snap = Effect.fn("GuestDisplay.snapshot")(function* (
@@ -166,48 +170,70 @@ export function makeGuestDisplay(
       if (operation === "computerRequestView" || operation === "computerRequestControl") {
         const input = yield* decodeAccess(params).pipe(Effect.mapError(invalid));
         if (input.desktop.kind !== "agent") return yield* invalid();
-        const machine = yield* agentIo(() => lifecycle.acquire(owner, input.desktop));
         const access = operation === "computerRequestControl" ? "control" : "view";
-        const desktop = yield* agentIo(() => lifecycle.lease(owner, machine.id, access));
-        return yield* Effect.scoped(
-          Effect.gen(function* () {
-            const lease = yield* begin(caller, desktop.id, access);
-            const state = stateFor(caller, lease);
-            state.view = true;
-            const snapshot =
-              input.observation === false
-                ? undefined
-                : yield* state.serial.withPermits(1)(snap(lease, state, input.observation ?? {}));
-            return { status: status(caller, desktop), ...(snapshot ? { snapshot } : {}) };
-          }),
+        const selection = input.desktop;
+        const id = yield* agentIo(async () => {
+          let id = access === "view" ? selection.desktopId : undefined;
+          if (access === "view" && !id && !selection.fresh) {
+            const available = (await lifecycle.list(owner)).filter(
+              (row) => !["recoverable", "deleting", "failed"].includes(row.state),
+            );
+            id = available.find((row) => row.owner.controllerId === owner.controllerId)?.id;
+            if (!id && available.length > 1)
+              throw hostFailure(
+                "invalid-action",
+                "invalid-input",
+                "Select the Agent desktop to view by id.",
+              );
+            id ??= available[0]?.id;
+          }
+          return id ?? (await lifecycle.acquire(owner, selection)).id;
+        });
+        return yield* serial.withLock(
+          identity(caller, id),
+          Effect.scoped(
+            Effect.gen(function* () {
+              const desktop = yield* agentIo(() => lifecycle.lease(owner, id, access));
+              const lease = yield* begin(caller, id, access);
+              const state = stateFor(caller, lease);
+              state.view = true;
+              const snapshot =
+                input.observation === false
+                  ? undefined
+                  : yield* snap(lease, state, input.observation ?? {});
+              return { status: status(caller, desktop), ...(snapshot ? { snapshot } : {}) };
+            }),
+          ),
         );
       }
       const id = params.desktop.desktopId;
       if (!id) return yield* invalid();
       if (operation === "computerRelease" || operation === "computerForgetControl") {
         const key = identity(caller, id);
-        const state = sessions.get(key);
-        const release = Effect.scoped(
-          Effect.gen(function* () {
-            if (state?.held.size) {
-              const lease = yield* begin(caller, id, "control");
-              yield* agentIo((signal) =>
-                makeGuestActions(
-                  guest,
-                  lease.paths,
-                  state,
-                  state.semantics,
-                  tools,
-                  signal,
-                ).release(),
-              );
-            }
-            const desktop = yield* agentIo(() => lifecycle.lease(owner, id, "release"));
-            if (sessions.get(key) === state) sessions.delete(key);
-            return operation === "computerForgetControl" ? undefined : status(caller, desktop);
-          }),
+        return yield* serial.withLock(
+          key,
+          Effect.scoped(
+            Effect.gen(function* () {
+              const state = sessions.get(key);
+              if (state?.held.size) {
+                const lease = yield* begin(caller, id, "control");
+                yield* agentIo((signal) =>
+                  makeGuestActions(
+                    guest,
+                    lease.paths,
+                    state,
+                    state.semantics,
+                    tools,
+                    signal,
+                  ).release(),
+                );
+              }
+              const desktop = yield* agentIo(() => lifecycle.lease(owner, id, "release"));
+              sessions.delete(key);
+              return operation === "computerForgetControl" ? undefined : status(caller, desktop);
+            }),
+          ),
         );
-        return yield* state ? state.serial.withPermits(1)(release) : release;
       }
       if (operation === "computerStatus") {
         const desktop = (yield* agentIo(() => lifecycle.list(owner))).find((d) => d.id === id);
@@ -229,7 +255,8 @@ export function makeGuestDisplay(
           "authorization",
           "Acquire control of this Agent desktop first.",
         );
-      return yield* state.serial.withPermits(1)(
+      return yield* serial.withLock(
+        key,
         Effect.scoped(
           Effect.gen(function* () {
             if (sessions.get(key) !== state)
@@ -326,4 +353,4 @@ export function makeGuestDisplay(
     },
   );
   return { invoke, openCapture };
-}
+});
