@@ -7,6 +7,7 @@ import * as NodeFSP from "node:fs/promises";
 import * as NodeOS from "node:os";
 import * as NodePath from "node:path";
 import * as NodeUtil from "node:util";
+import { deviceToolRevision } from "./DeviceToolManifest.ts";
 import { DEVICE_HUB_VERSION } from "./DeviceToolchain.ts";
 import { quoteRemoteArg, remoteDeviceEnvironment, remoteDeviceScript } from "./sshDeviceScript.ts";
 
@@ -261,7 +262,7 @@ it.effect("starts the hub requiring a session token and reports the one it print
         const install = NodePath.join(
           home,
           ".t3/device/tools",
-          `expo-device-hub@${DEVICE_HUB_VERSION}`,
+          `expo-device-hub@${DEVICE_HUB_VERSION}-${deviceToolRevision("expo-device-hub")}`,
         );
         const entry = NodePath.join(install, "node_modules/expo-device-hub/dist/server/cli.mjs");
         await completeSdk(NodePath.join(home, "sdk"));

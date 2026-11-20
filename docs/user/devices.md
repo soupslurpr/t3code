@@ -4,7 +4,7 @@ Stream and interact with live iOS Simulators, Android Emulators, and physical An
 
 ## Open a device
 
-Open the right panel in a project thread and choose **Device** (first-time setup starts the device hub, checks iOS/Android tools, and asks whether agents may control devices).
+Open the right panel in a project thread and choose **Device**. Device support and agent access are on by default unless disabled in **Settings → Devices** or by managed policy; T3 Code installs the helpers with Node and npm when you first discover or open devices.
 
 - Start a stopped device or attach to a running one; open additional devices via **+ → Device**.
 - Click, drag, and type directly on the live screen; use the toolbar for Home, Back, Recents, rotate, power off, **3D view** (and fold/unfold on foldables), **Tools**, or **Float device over chat**.
@@ -25,7 +25,7 @@ Restart the environment server after installing SDK tools or changing `PATH` / `
 
 Enable **Settings → Devices → Agents can use devices** so agents can drive devices through `agent-device` (restart existing agent sessions after enabling). First iOS tap builds a small test runner once per server (~2 minutes).
 
-When an agent opens a device, it floats over chat by default (disable **Settings → Browser → Auto-show floating preview** to open in the right panel instead). On mobile, tap the device button above the composer to watch and interact.
+T3 Code installs its managed `agent-device` CLI when an agent first opens a device, returning a host- and session-bound command so concurrent devices stay independent; native tools such as `adb` and `simctl` remain available. Turn off **Agents can use devices** in **Settings → Devices** to stop the agent helper and reject calls from new agent sessions (the manual Device panel remains available). When an agent opens a device, it floats over chat by default (disable **Settings → Browser → Auto-show floating preview** to open in the right panel instead). On mobile, tap the device button above the composer to watch and interact.
 
 ## Remote connections
 

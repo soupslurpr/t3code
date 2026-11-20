@@ -115,6 +115,8 @@ export interface SessionOptions {
   /** Simulator UDID; empty for a Simlock lease, whose gateway picks it. */
   readonly device: string;
   readonly deviceName: string;
+  /** The exact workspace from which this device session was leased. */
+  readonly workspace?: string;
   readonly fold?: "closed" | "open";
   readonly forgetOtherEnvironments: boolean;
   /** Turns in the long settled thread every run seeds. */
@@ -145,6 +147,7 @@ export const startSession = Effect.fn("session.start")(function* (options: Sessi
   });
   const device = makeDevice({
     agentDevice: options.agentDevice,
+    workspace: options.workspace ?? NodeFS.realpathSync(process.cwd()),
     targetArgs: [
       "--platform",
       "ios",

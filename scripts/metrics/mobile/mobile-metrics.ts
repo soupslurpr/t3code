@@ -59,9 +59,9 @@ const log = (message: string) => Console.error(`[mobile-metrics] ${message}`);
 
 /** The scratch repository on a branch changing many files, with an open PR on the fake GitHub. */
 const prepareBenchProject = (forge: FakeGitHub) =>
-  Effect.fn("mobileMetrics.prepareProject")(function* (workspace: string) {
+  Effect.fn("mobileMetrics.prepareProject")(function* (workspace: string, env: NodeJS.ProcessEnv) {
     const fs = yield* FileSystem.FileSystem;
-    const git = (args: ReadonlyArray<string>) => run("git", args, { cwd: workspace });
+    const git = (args: ReadonlyArray<string>) => run("git", args, { cwd: workspace, env });
     const author = ["-c", "user.email=bench@t3.codes", "-c", "user.name=bench"];
     yield* git(["branch", "-M", "main"]);
     yield* fs.makeDirectory(NodePath.join(workspace, "src"), { recursive: true });
@@ -78,7 +78,7 @@ const prepareBenchProject = (forge: FakeGitHub) =>
         NodePath.join(workspace, `src/module${index}.ts`),
         sourceFile(index, "after"),
       );
-    yield* forge.setupProject(workspace);
+    yield* forge.setupProject(workspace, env);
   });
 
 /** The app process's memory from agent-device, in MB; its field differs by platform. */
@@ -149,6 +149,7 @@ const measureOnce = Effect.fn("mobileMetrics.measureOnce")(function* (options: M
     out: options.out,
     host: options.host,
     agentDevice: options.access.pool.agentDevice,
+    workspace: options.access.pool.workspace,
     deviceConfig: options.access.config,
     deviceSession: options.deviceSession,
     device: "",
@@ -161,8 +162,8 @@ const measureOnce = Effect.fn("mobileMetrics.measureOnce")(function* (options: M
     build: options.build,
     environment: {
       serverEnv: forge.env,
-      prepareWorkspace: (workspace) =>
-        prepareBenchProject(forge)(workspace).pipe(
+      prepareWorkspace: (workspace, env) =>
+        prepareBenchProject(forge)(workspace, env).pipe(
           Effect.provideService(FileSystem.FileSystem, fs),
           Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, spawner),
         ),

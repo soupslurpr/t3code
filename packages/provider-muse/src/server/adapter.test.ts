@@ -221,6 +221,7 @@ const makeHarness = Effect.fnUntraced(function* (
     settings: museSettings,
     environment: { PATH: "/fake/bin" },
     createHost: async (options) => {
+      assert.deepStrictEqual(options.environment, { PATH: "/fake/bin" });
       const selected = hostCount++ === 0 ? fake : (replacement ?? fake);
       const attempt = await options.prepareAttempt?.(options.launch!);
       const processExited = pendingPromise<Awaited<MuseSdkHost["exited"]>>();
@@ -889,6 +890,7 @@ describe("MuseAdapterV2", () => {
         endpoint: "http://127.0.0.1:43210/mcp",
         authorizationHeader: "Bearer thread-scoped-test-token",
         browserToolsAvailable: true,
+        capabilities: new Set(["device"]),
       };
       for (const nativeId of [undefined, "saved-native-session"]) {
         yield* sessions.set(config);

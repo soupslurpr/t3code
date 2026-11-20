@@ -74,6 +74,8 @@ describe("Codex device context", () => {
         ?.value ?? "";
 
     NodeAssert.ok(tools(true).includes(T3_CODE_DEVICE_TOOL_INSTRUCTIONS));
+    NodeAssert.match(tools(true), /Native tools such as adb, simctl/);
+    NodeAssert.match(tools(true), /Helpers are installed on first use/);
     NodeAssert.ok(!tools(true).includes("ToolSearch"));
     NodeAssert.ok(!tools(false).includes("## T3 Code devices"));
   });

@@ -100,6 +100,8 @@ export interface DeviceOptions {
   /** `agent-device` executable and the target args `device_open` returned. */
   readonly agentDevice: string;
   readonly targetArgs: ReadonlyArray<string>;
+  /** The exact workspace from which this device session was leased. */
+  readonly workspace: string;
   readonly metro: string;
   /** Simulator name as Metro's inspector lists it; empty for the only app on this run's Metro. */
   readonly deviceName: string;
@@ -110,6 +112,8 @@ export function makeDevice(options: DeviceOptions) {
     Effect.try({
       try: () =>
         NodeChildProcess.execFileSync(options.agentDevice, [...args, ...options.targetArgs], {
+          cwd: options.workspace,
+          env: { ...process.env, PWD: options.workspace },
           encoding: "utf8",
           timeout: timeoutMs,
           stdio: ["ignore", "pipe", "pipe"],

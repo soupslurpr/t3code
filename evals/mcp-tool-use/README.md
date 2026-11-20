@@ -36,6 +36,8 @@ Check that the case builds with `--dry-run --case <id>`. Then run it on the text
 
 `cases/device-manager.ndjson` ports nine mechanisms from the [device-routing investigation described in #25661](https://github.com/pingdotgg/t3code/pull/25661) and adds seven cases from t3dotgg’s 2026-10-26 fleet device investigation, and two from [#36192](https://github.com/pingdotgg/t3code/issues/36192). All prompts, files, hosts and prior turns are authored Acme data; the fleet cases cite finding ids without carrying source transcripts or identifiers.
 
+The managed capture and session cases explicitly request the Device panel. NATIVE-01 checks an explicit local `adb` screenshot and its reported artifact path. The historical results below cover the original sixteen cases.
+
 | Case           | Kind    | What it checks                                                                                                                                                                                     |
 | -------------- | ------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | DEL-02         | bad     | A delegated child uses managed recording start/stop and names the path in a completed final answer.                                                                                                |

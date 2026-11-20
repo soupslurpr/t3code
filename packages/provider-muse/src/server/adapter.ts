@@ -45,7 +45,6 @@ import * as Scope from "effect/Scope";
 import * as Stream from "effect/Stream";
 
 import * as ProviderHost from "@t3tools/provider-core/server/ProviderHost";
-import * as McpProviderSession from "@t3tools/provider-core/server/mcpSession";
 import * as McpProviderSessions from "@t3tools/provider-core/server/McpProviderSessions";
 import { buildRuntimeInstructions } from "@t3tools/provider-core/server/runtimeInstructions";
 import { museModelCapabilities, resolveMuseReasoningEffort } from "./modelCatalog.ts";
@@ -1852,11 +1851,6 @@ export const makeMuseAdapterV2 = Effect.fn("makeMuseAdapterV2")(function* (
       );
       const launchHost = Effect.fnUntraced(function* () {
         const epoch = ++hostEpoch;
-        const mcpSession = yield* mcpSessions.read(input.threadId);
-        const environment = McpProviderSession.withAgentDeviceEnvironment(
-          options.environment,
-          mcpSession,
-        );
         const runPromise = Effect.runPromiseWith(yield* Effect.context<never>());
         let scopeUnit: string | undefined;
         const created = yield* Effect.acquireRelease(
@@ -1864,7 +1858,7 @@ export const makeMuseAdapterV2 = Effect.fn("makeMuseAdapterV2")(function* (
             {
               binaryPath: options.settings.binaryPath || "muse",
               cwd,
-              environment,
+              environment: options.environment,
               runtimeMode: input.runtimePolicy.runtimeMode,
               prepareAttempt: (launch) =>
                 runPromise(
@@ -1873,7 +1867,7 @@ export const makeMuseAdapterV2 = Effect.fn("makeMuseAdapterV2")(function* (
                       ...launch,
                       name: "muse",
                       threadId: input.threadId,
-                      env: environment,
+                      env: options.environment,
                     });
                     scopeUnit = wrapped.unit;
                     const unit = wrapped.unit;

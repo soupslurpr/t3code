@@ -64,10 +64,24 @@ export function feedMotion(samples: ReadonlyArray<FeedSample>, direction: 1 | -1
   let largest = 0;
   let teleports = 0;
   let moved = 0;
+  let measuredSteps = 0;
   for (let index = 1; index < samples.length; index++) {
     const before = samples[index - 1]!;
     const after = samples[index]!;
     const shared = Object.keys(before.rows ?? {}).filter((key) => after.rows?.[key] !== undefined);
+    if (
+      before.ready &&
+      after.ready &&
+      before.threadId === after.threadId &&
+      (shared.some(
+        (key) => Number.isFinite(before.rows?.[key]) && Number.isFinite(after.rows?.[key]),
+      ) ||
+        (Number.isFinite(before.content) &&
+          before.content === after.content &&
+          Number.isFinite(before.scroll) &&
+          Number.isFinite(after.scroll)))
+    )
+      measuredSteps++;
     let step = 0;
     for (const key of shared) {
       const rowStep = after.rows![key]! - before.rows![key]!;
@@ -86,6 +100,7 @@ export function feedMotion(samples: ReadonlyArray<FeedSample>, direction: 1 | -1
   );
   return {
     samples: samples.length,
+    measuredSteps,
     movedPx: Math.round(moved),
     backwardPx: Math.round(backward),
     largestStepPx: Math.round(largest),
@@ -125,6 +140,7 @@ export interface CaseResult {
   readonly samples: number;
   readonly passed: number;
   readonly errors: number;
+  readonly expectedSamples?: number;
   /**
    * `null` when too few samples were graded: errors outnumber graded samples, or none ran.
    * Otherwise a case fails when half or more of its graded samples fail.
@@ -159,7 +175,7 @@ export function caseResult(
 }
 
 const mark = (result: CaseResult) =>
-  `${result.pass === null ? "incomplete" : result.pass ? "pass" : "FAIL"} ${result.passed}/${result.samples + result.errors}`;
+  `${result.pass === null ? "incomplete" : result.pass ? "pass" : "FAIL"} ${result.passed}/${result.expectedSamples ?? result.samples + result.errors}`;
 
 /** Markdown scoreboard. With a baseline, each row shows the earlier result. */
 export function summarize(input: {
@@ -205,17 +221,60 @@ export function summarize(input: {
 export function resultsFor(
   rows: ReadonlyArray<SampleRow>,
   cases: ReadonlyArray<{ readonly id: string; readonly key: string }>,
+  plan?: ReadonlyArray<{
+    readonly device: string;
+    readonly caseIds: ReadonlyArray<string>;
+    readonly samples: number;
+  }>,
 ): ReadonlyArray<CaseResult> {
-  const keys = [...new Set(rows.map((row) => `${row.id}\u0000${row.device}`))];
-  return keys.map((key) => {
+  const expected = new Map<string, number>();
+  if (plan !== undefined) {
+    if (plan.length === 0) throw new Error("No devices match.");
+    for (const entry of plan) {
+      const samples = positiveSamples(entry.samples);
+      if (entry.caseIds.length === 0) throw new Error(`No cases match ${entry.device}.`);
+      for (const id of entry.caseIds) {
+        if (!cases.some((testCase) => testCase.id === id)) throw new Error(`Unknown case ${id}.`);
+        expected.set(`${id}\u0000${entry.device}`, samples);
+      }
+    }
+  }
+  const keys = new Set([...expected.keys(), ...rows.map((row) => `${row.id}\u0000${row.device}`)]);
+  return [...keys].map((key) => {
     const [id, device] = key.split("\u0000") as [string, string];
-    return caseResult(
+    const selected = rows.filter((row) => row.id === id && row.device === device);
+    const result = caseResult(
       id,
       device,
       cases.find((entry) => entry.id === id)?.key ?? "",
-      rows.filter((row) => row.id === id && row.device === device),
+      selected,
     );
+    if (plan === undefined) return result;
+    const samples = expected.get(key);
+    const complete =
+      samples !== undefined &&
+      selected.length === samples &&
+      new Set(selected.map((row) => row.sample)).size === samples &&
+      selected.every(
+        (row) =>
+          Number.isSafeInteger(row.sample) &&
+          row.sample >= 1 &&
+          row.sample <= samples &&
+          typeof row.pass === "boolean" &&
+          row.error === undefined,
+      );
+    return {
+      ...result,
+      ...(samples === undefined ? {} : { expectedSamples: samples }),
+      pass: complete ? result.pass : null,
+    };
   });
+}
+
+export function positiveSamples(samples: number): number {
+  if (!Number.isSafeInteger(samples) || samples <= 0)
+    throw new Error("Samples must be a positive integer.");
+  return samples;
 }
 
 /**
@@ -228,6 +287,7 @@ export function blockingResults(
 ): ReadonlyArray<CaseResult> {
   return results.filter(
     (result) =>
-      result.pass !== true && cases.find((entry) => entry.id === result.id)?.kind !== "bad",
+      result.pass === null ||
+      (result.pass !== true && cases.find((entry) => entry.id === result.id)?.kind !== "bad"),
   );
 }

@@ -203,12 +203,14 @@ export const makeDeviceHubOperations = (options: {
     const androidAvailable = yield* options.platformAvailable("android");
     const avdsAvailable =
       androidAvailable && (yield* options.avdsAvailable ?? Effect.succeed(true));
+    const iosAvailable = yield* options.platformAvailable("ios");
     const warnings = hubList.errors?.filter(
       (error) =>
         // The host summary already explains a missing Android SDK; the hub's failed probes are noise.
         !(!androidAvailable && error.message.startsWith("[android-utils] ")) &&
         // Without emulator tooling, avdmanager is expected to be missing.
         !(!avdsAvailable && error.message.startsWith(AVDMANAGER_LIST_FAILED)) &&
+        (iosAvailable || !error.message.startsWith("[apple-utils] Failed to run `xcrun simctl ")) &&
         // CoreSimulator can retain deleted devices; their optional usage timestamps are absent.
         !(
           error.message.startsWith("[apple-utils] Failed to read CoreSimulator plist at ") &&

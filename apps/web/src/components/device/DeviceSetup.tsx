@@ -20,10 +20,10 @@ import { m, type MessageResolver } from "~/i18n/messages";
 const platformName = (platform: DevicePlatform) => (platform === "ios" ? "iOS" : "Android");
 
 const deviceHubDescription = msg(
-  "Enable this environment to open simulators and emulators, whether they run here or on a remote device host.",
+  "Open local or remote simulators and emulators. Device helpers are installed when you first discover or open devices.",
 );
 const agentDeviceDescription = msg(
-  "Allow new agent sessions in this environment to start and control local and remote devices, with required tools set up automatically.",
+  "Allow new agent sessions to control local and remote devices. Agent tools are installed when an agent first opens a device.",
 );
 
 /** Platforms whose latest listing on a ready host may be missing devices. */
@@ -195,7 +195,7 @@ export function DeviceSetup(props: {
   const [pending, setPending] = useState<"hub" | "check" | "agent" | "complete" | null>(null);
   const [step, setStep] = useState(0);
   const enabled = props.state.hostStatus !== "disabled";
-  const { ready, busy } = deviceHubReadiness(props.state);
+  const { busy } = deviceHubReadiness(props.state);
   const localPlatformsUnavailable = props.state.hosts.some(
     (host) => host.kind === "local" && !host.platforms.some((platform) => platform.available),
   );
@@ -320,12 +320,12 @@ export function DeviceSetup(props: {
           </Button>
         )}
         {step < 2 ? (
-          <Button disabled={!ready || pending !== null} onClick={() => setStep(step + 1)}>
+          <Button disabled={!enabled || busy || pending !== null} onClick={() => setStep(step + 1)}>
             <T>Continue</T>
           </Button>
         ) : (
           <Button
-            disabled={!canConfigure || !ready || pending !== null}
+            disabled={!canConfigure || !enabled || busy || pending !== null}
             onClick={() => void update("complete", { onboardingCompleted: true })}
           >
             {pending === "complete" ? gt("Saving…") : gt("Done")}

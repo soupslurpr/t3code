@@ -20,6 +20,7 @@ import { HttpClient, HttpClientResponse } from "effect/http";
 import * as NetService from "@t3tools/shared/Net";
 import * as ServerConfig from "../config.ts";
 import * as ProcessRunner from "../processRunner.ts";
+import { deviceToolRevision } from "./DeviceToolManifest.ts";
 import {
   AGENT_DEVICE_VERSION,
   DEVICE_HUB_VERSION,
@@ -64,12 +65,12 @@ const agentFixture = Effect.fn("agentFixture")(function* (
   for (const [name, version, entry] of [
     ["expo-device-hub", DEVICE_HUB_VERSION, "dist/server/cli.mjs"],
     ["agent-device", AGENT_DEVICE_VERSION, "bin/agent-device.mjs"],
-  ]) {
-    const installDir = path.join(baseDir, "tools", name!, version!);
-    const entryPath = path.join(installDir, "node_modules", name!, entry!);
+  ] as const) {
+    const installDir = path.join(baseDir, "tools", name, `${version}-${deviceToolRevision(name)}`);
+    const entryPath = path.join(installDir, "node_modules", name, entry);
     yield* fs.makeDirectory(path.dirname(entryPath), { recursive: true });
     yield* fs.writeFileString(entryPath, "");
-    yield* fs.writeFileString(path.join(installDir, ".install-complete"), version!);
+    yield* fs.writeFileString(path.join(installDir, ".install-complete"), version);
   }
   if (previousDaemon) {
     yield* fs.makeDirectory(stateDir, { recursive: true });
@@ -498,28 +499,30 @@ describe("AgentDevice startup", () => {
     }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
   );
 
-  it.effect("stops a previous server's daemon with the agent-device version it recorded", () =>
-    Effect.gen(function* () {
-      const path = yield* Path.Path;
-      const { host, fs, baseDir, runs } = yield* agentFixture(
-        () => Effect.die("A session that never readies agent tools must not start the daemon"),
-        processOutput(0),
-        { httpPort: 12345, token: "previous-token", pid: process.pid, version: "0.0.1" },
-      );
-      const olderInstall = path.join(baseDir, "tools", "agent-device", "0.0.1");
-      const olderEntry = path.join(
-        olderInstall,
-        "node_modules",
-        "agent-device",
-        "bin",
-        "agent-device.mjs",
-      );
-      yield* fs.makeDirectory(path.dirname(olderEntry), { recursive: true });
-      yield* fs.writeFileString(olderEntry, "");
-      yield* fs.writeFileString(path.join(olderInstall, ".install-complete"), "0.0.1");
-      yield* host.stop;
-      expect(runs.find((run) => run.args.includes("daemon"))?.args[0]).toBe(olderEntry);
-    }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
+  it.effect.each(["0.0.1", "0.0.1-0123456789abcdef"])(
+    "stops a previous server's daemon with its recorded agent-device install %s",
+    (directoryName) =>
+      Effect.gen(function* () {
+        const path = yield* Path.Path;
+        const { host, fs, baseDir, runs } = yield* agentFixture(
+          () => Effect.die("A session that never readies agent tools must not start the daemon"),
+          processOutput(0),
+          { httpPort: 12345, token: "previous-token", pid: process.pid, version: "0.0.1" },
+        );
+        const olderInstall = path.join(baseDir, "tools", "agent-device", directoryName);
+        const olderEntry = path.join(
+          olderInstall,
+          "node_modules",
+          "agent-device",
+          "bin",
+          "agent-device.mjs",
+        );
+        yield* fs.makeDirectory(path.dirname(olderEntry), { recursive: true });
+        yield* fs.writeFileString(olderEntry, "");
+        yield* fs.writeFileString(path.join(olderInstall, ".install-complete"), "0.0.1");
+        yield* host.stop;
+        expect(runs.find((run) => run.args.includes("daemon"))?.args[0]).toBe(olderEntry);
+      }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
   );
 
   // regression: #33552 a daemon left by a previous server survived every later graceful quit
@@ -537,7 +540,7 @@ describe("AgentDevice startup", () => {
           baseDir,
           "tools",
           "agent-device",
-          AGENT_DEVICE_VERSION,
+          `${AGENT_DEVICE_VERSION}-${deviceToolRevision("agent-device")}`,
           "node_modules",
           "agent-device",
           "bin",

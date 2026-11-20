@@ -1805,7 +1805,7 @@ const deviceCases = () =>
 it.effect("builds device cases from product-backed worlds and synthetic prior turns", () =>
   Effect.gen(function* () {
     const cases = deviceCases();
-    assert.equal(new Set(cases.map((c) => c.id)).size, 18);
+    assert.equal(new Set(cases.map((c) => c.id)).size, 19);
     const base = buildBase(
       {
         ...template,
@@ -1832,6 +1832,21 @@ it.effect("builds device cases from product-backed worlds and synthetic prior tu
     const native = cases.find((c) => c.id === "NAT-01")!;
     assert.equal(native.kind, "bad");
     assert.equal(native.setup.harness, "claude");
+    const capture = cases.find((c) => c.id === "NATIVE-01")!;
+    const artifact = "/tmp/proof/native-settings.png";
+    for (const serial of ["emulator-5554", "emulator-5556"]) {
+      const command = `adb -s ${serial} exec-out screencap -p > ${artifact}`;
+      const checks = gradeSample(capture.expect, {
+        calls: [{ step: 0, tool: "Bash", input: { command } }],
+        text: artifact,
+        finalText: artifact,
+        stopReason: "end_turn",
+      });
+      assert.equal(
+        checks.every((check) => check.pass),
+        serial === "emulator-5554",
+      );
+    }
     assert.isNotEmpty(cases.find((c) => c.id === "SEED-01")!.setup.priorTurns!);
   }).pipe(Effect.scoped, Effect.provide(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer))),
 );
@@ -2782,9 +2797,8 @@ it("credits USER-01's screenshot script only when it runs, not when it is printe
     assert.isFalse(runs(command), command);
 });
 
-it("applies device shell checks to decoded cases and stops raw UI early", () => {
-  // In USER-01 the user picks the project's own simctl script, so raw UI is the right route.
-  for (const testCase of deviceCases().filter((c) => c.id !== "USER-01")) {
+it("stops native UI commands early in cases that prohibit them", () => {
+  for (const testCase of deviceCases()) {
     const run = {
       calls: [
         {
@@ -2796,11 +2810,13 @@ it("applies device shell checks to decoded cases and stops raw UI early", () => 
       text: "",
       stopReason: "tool_use",
     };
-    assert.isTrue(
+    const prohibitsNativeUi = testCase.expect.device?.noRawUi === true;
+    assert.equal(
       gradeSample(testCase.expect, run).some((c) => c.check.startsWith("shellMustNot") && !c.pass),
+      prohibitsNativeUi,
       testCase.id,
     );
-    assert.isTrue(failedEarly(testCase.expect, run), testCase.id);
+    assert.equal(failedEarly(testCase.expect, run), prohibitsNativeUi, testCase.id);
   }
 });
 

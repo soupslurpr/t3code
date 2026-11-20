@@ -15,9 +15,16 @@ import * as Effect from "effect/Effect";
 import * as Option from "effect/Option";
 import { Command, Flag } from "effect/cli";
 
-import { CASES, type MobileBehaviorCase } from "./cases.ts";
+import { CASES, selectCases, type MobileBehaviorCase } from "./cases.ts";
 import { DeviceError } from "./device.ts";
-import { blockingResults, checkFails, resultsFor, summarize, type SampleRow } from "./grade.ts";
+import {
+  blockingResults,
+  checkFails,
+  positiveSamples,
+  resultsFor,
+  summarize,
+  type SampleRow,
+} from "./grade.ts";
 import { SCENARIOS, type Pose, type ScenarioContext } from "./scenarios.ts";
 import { reachableHost, startSession } from "./session.ts";
 
@@ -30,7 +37,7 @@ const decodeRows = (file: string): ReadonlyArray<SampleRow> =>
     .filter(Boolean)
     .map((line) => JSON.parse(line) as SampleRow);
 
-const command = Command.make(
+export const command = Command.make(
   "mobile-behavior",
   {
     out: Flag.String("out").pipe(Flag.withDescription("Directory for results and run state.")),
@@ -85,24 +92,18 @@ const command = Command.make(
     ),
   },
   Effect.fn("mobileBehavior.main")(function* (flags) {
+    const { samples, selected } = yield* Effect.try({
+      try: () => ({
+        samples: positiveSamples(flags.samples),
+        selected: selectCases(flags.pose, Option.getOrUndefined(flags.cases)),
+      }),
+      catch: (cause) => new DeviceError({ message: String(cause) }),
+    });
     const out = NodePath.resolve(flags.out);
     // Read first: the baseline may be this --out's own results.jsonl, which the run rewrites.
     const baseline = Option.map(flags.baseline, (file) => resultsFor(decodeRows(file), CASES));
     NodeFS.mkdirSync(out, { recursive: true });
     const label = Option.getOrElse(flags.label, () => flags.pose);
-    const wanted = Option.map(flags.cases, (ids) => new Set(ids.split(",").map((id) => id.trim())));
-    const selected = CASES.filter(
-      (testCase) =>
-        Option.match(wanted, { onNone: () => true, onSome: (ids) => ids.has(testCase.id) }) &&
-        (testCase.poses?.includes(flags.pose) ?? true),
-    );
-    const unknown = Option.match(wanted, {
-      onNone: () => [],
-      onSome: (ids) => [...ids].filter((id) => !CASES.some((testCase) => testCase.id === id)),
-    });
-    if (unknown.length > 0)
-      return yield* new DeviceError({ message: `Unknown case id(s): ${unknown.join(", ")}.` });
-    if (selected.length === 0) return yield* new DeviceError({ message: "No cases match." });
     const host = Option.getOrElse(flags.host, reachableHost);
     const startedAt = yield* Clock.currentTimeMillis;
 
@@ -113,6 +114,7 @@ const command = Command.make(
       deviceConfig: flags.deviceConfig,
       deviceSession: flags.deviceSession,
       device: flags.device,
+      workspace: NodeFS.realpathSync(process.cwd()),
       deviceName: flags.deviceName,
       ...(flags.pose === "duo-closed" ? { fold: "closed" as const } : {}),
       ...(flags.pose === "duo-open" ? { fold: "open" as const } : {}),
@@ -130,7 +132,7 @@ const command = Command.make(
     const resultsFile = NodeFS.openSync(NodePath.join(out, "results.jsonl"), "w");
     for (const scenario of scenarios) {
       const cases = selected.filter((testCase) => testCase.scenario === scenario);
-      for (let sample = 1; sample <= flags.samples; sample++) {
+      for (let sample = 1; sample <= samples; sample++) {
         const outcome = yield* env.interruptAll().pipe(
           Effect.andThen(env.archiveAllExcept(longThread)),
           Effect.andThen(device.reload(seeded)),
@@ -163,7 +165,13 @@ const command = Command.make(
     }
     NodeFS.closeSync(resultsFile);
     const minutes = Math.round(((yield* Clock.currentTimeMillis) - startedAt) / 60_000);
-    const results = resultsFor(rows, CASES);
+    const results = resultsFor(rows, CASES, [
+      {
+        device: label,
+        caseIds: selected.map(({ id }) => id),
+        samples,
+      },
+    ]);
     const summary = summarize({
       cases: selected as ReadonlyArray<MobileBehaviorCase>,
       results,
@@ -176,7 +184,9 @@ const command = Command.make(
   }, Effect.scoped),
 );
 
-Command.run(command, { version: "0.0.0" }).pipe(
-  Effect.provide([NodeServices.layer, NodeCrypto.layer]),
-  NodeRuntime.runMain,
-);
+if (import.meta.main) {
+  Command.run(command, { version: "0.0.0" }).pipe(
+    Effect.provide([NodeServices.layer, NodeCrypto.layer]),
+    NodeRuntime.runMain,
+  );
+}

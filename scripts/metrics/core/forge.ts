@@ -118,7 +118,7 @@ export const serveFakeGitHub = Effect.fn("serverMetrics.serveFakeGitHub")(functi
     certFile,
   ]);
   const bare = path.join(dir, `${REPO}.git`);
-  yield* run("git", ["init", "-q", "--bare", bare]);
+  let bareEnv: NodeJS.ProcessEnv | undefined;
   const requests: ForgeRequest[] = [];
   const host = HOST;
   const pullRequests: Array<FakePullRequest> = [
@@ -552,8 +552,10 @@ export const serveFakeGitHub = Effect.fn("serverMetrics.serveFakeGitHub")(functi
   /** Publishes the project to the fake remote and checks out a branch with an open PR. */
   const setupProject = Effect.fn("serverMetrics.fakeGitHub.setupProject")(function* (
     project: string,
+    env?: NodeJS.ProcessEnv,
   ) {
-    const git = (args: ReadonlyArray<string>) => run("git", args, { cwd: project });
+    const git = (args: ReadonlyArray<string>) =>
+      run("git", args, { cwd: project, ...(env === undefined ? {} : { env }) });
     yield* git(["switch", "-q", "-c", "bench/feature"]);
     yield* fs.writeFileString(path.join(project, "FEATURE.md"), "# feature\n");
     yield* git(["add", "."]);
@@ -566,18 +568,22 @@ export const serveFakeGitHub = Effect.fn("serverMetrics.serveFakeGitHub")(functi
       "-qm",
       "feature",
     ]);
+    bareEnv = env;
+    if (!(yield* fs.exists(bare))) {
+      yield* run("git", ["init", "-q", "--bare", bare], env === undefined ? {} : { env });
+    }
     yield* git(["push", "-q", bare, "main", "bench/feature"]);
-    yield* run("git", ["--git-dir", bare, "update-server-info"]);
+    yield* run("git", ["--git-dir", bare, "update-server-info"], env === undefined ? {} : { env });
     yield* git(["remote", "add", "origin", `https://${host}/${OWNER}/${REPO}.git`]);
     yield* git(["config", "http.sslCAInfo", certFile]);
     yield* git(["config", "http.proxy", proxyUrl]);
     // A developer's NO_PROXY could send this past the proxy, which is the only route to the host.
-    const hostEnvironment = yield* HostProcess.Environment;
+    const baseEnvironment = env ?? (yield* HostProcess.Environment);
     yield* run("git", ["fetch", "-q", "origin"], {
       cwd: project,
       env: {
         ...Object.fromEntries(
-          Object.entries(hostEnvironment).filter(
+          Object.entries(baseEnvironment).filter(
             (entry): entry is [string, string] => entry[1] !== undefined,
           ),
         ),
@@ -596,7 +602,8 @@ export const serveFakeGitHub = Effect.fn("serverMetrics.serveFakeGitHub")(functi
   let pushes = 0;
   /** Lands a commit on the remote's main, so the server's next fetch transfers something. */
   const advanceRemote = Effect.gen(function* () {
-    const git = (args: ReadonlyArray<string>) => run("git", ["--git-dir", bare, ...args]);
+    const git = (args: ReadonlyArray<string>) =>
+      run("git", ["--git-dir", bare, ...args], bareEnv === undefined ? {} : { env: bareEnv });
     const commit = (yield* git([
       "-c",
       "user.email=bench@t3.codes",
