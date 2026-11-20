@@ -1,3 +1,10 @@
+import {
+  UserDesktopExecutionInput,
+  UserDesktopExecutionResult,
+  UserDesktopTransferRequest,
+  UserDesktopTransferResult,
+} from "@t3tools/contracts";
+import { DesktopExecution } from "../../process/DesktopExecution.ts";
 import * as DesktopScreenPermissions from "../../computer/DesktopScreenPermissions.ts";
 import { DesktopComputerAutomationContextSchema } from "@t3tools/contracts";
 import {
@@ -448,7 +455,33 @@ const cancelPreparation = DesktopIpc.makeIpcMethod({
   }),
 });
 
+const execution = DesktopIpc.makeIpcMethod({
+  channel: IpcChannels.COMPUTER_EXECUTION_CHANNEL,
+  payload: Schema.Struct({
+    input: UserDesktopExecutionInput,
+    context: DesktopComputerAutomationContextSchema,
+  }),
+  result: makeDesktopComputerAutomationResultSchema(UserDesktopExecutionResult),
+  handler: Effect.fn("desktop.ipc.computer.execution")(function* (request) {
+    return yield* computerResult((yield* DesktopExecution).invoke(request.context, request.input));
+  }),
+});
+const transfer = DesktopIpc.makeIpcMethod({
+  channel: IpcChannels.COMPUTER_TRANSFER_CHANNEL,
+  payload: Schema.Struct({
+    input: UserDesktopTransferRequest,
+    context: DesktopComputerAutomationContextSchema,
+  }),
+  result: makeDesktopComputerAutomationResultSchema(UserDesktopTransferResult),
+  handler: Effect.fn("desktop.ipc.computer.transfer")(function* (request) {
+    return yield* computerResult(
+      (yield* DesktopExecution).transfer(request.context, request.input),
+    );
+  }),
+});
 export const methods = [
+  execution,
+  transfer,
   cancelPreparation,
   status,
   requestAvailability,

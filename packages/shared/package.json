@@ -698,6 +698,14 @@
     "./assistantInsights": {
       "types": "./src/assistantInsights.ts",
       "import": "./src/assistantInsights.ts"
+    },
+    "./desktopJobs": {
+      "types": "./src/desktopJobs/index.ts",
+      "import": "./src/desktopJobs/index.ts"
+    },
+    "./desktopTransfer": {
+      "types": "./src/desktopTransfer/index.ts",
+      "import": "./src/desktopTransfer/index.ts"
     }
   },
   "scripts": {
@@ -713,11 +721,13 @@
     "get-east-asian-width": "^1.6.0",
     "gt-i18n": "1.0.40",
     "hast-util-sanitize": "^5.0.2",
+    "koffi": "3.3.6",
     "mdast-util-directive": "catalog:",
     "mdast-util-to-hast": "^13.2.1",
     "micromark-extension-directive": "catalog:",
     "micromark-util-character": "catalog:",
     "micromark-util-decode-string": "catalog:",
+    "node-pty": "catalog:",
     "property-information": "^7.2.0",
     "rehype-raw": "catalog:",
     "rehype-sanitize": "catalog:",

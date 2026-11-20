@@ -68,6 +68,7 @@ import type * as Orchestrator from "./Orchestrator.ts";
 import { makeProviderFailure } from "@t3tools/provider-core/server/failure";
 import { randomUuidV4 } from "@t3tools/provider-core/server/randomUuid";
 import { DispatchModeLimit } from "./DispatchModeLimit.ts";
+import { AbandonedSetupWorktree, PreparedRunWorktreeUpdate } from "./ThreadWorktreeBinding.ts";
 import * as ThreadManagement from "./ThreadManagementService.ts";
 import { isWithinRoot } from "../workspace/KnownWorkspaces.ts";
 import * as TaskFolders from "../workspace/TaskFolders.ts";
@@ -964,6 +965,9 @@ const make = Effect.gen(function* () {
             worktreePath,
           })
           .pipe(
+            runId === null
+              ? (effect) => effect
+              : Effect.provideService(PreparedRunWorktreeUpdate, runId),
             Effect.mapError(mapError(input, "update-thread", threadId)),
             Effect.tap(() =>
               Effect.sync(() => {
@@ -1281,7 +1285,7 @@ const make = Effect.gen(function* () {
                   worktreePath: null,
                   branch: null,
                 })
-                .pipe(Effect.ignore);
+                .pipe(Effect.provideService(AbandonedSetupWorktree, removedPath), Effect.ignore);
             }).pipe(
               Effect.catchCause((removeCause) =>
                 Effect.logWarning("Failed to remove an abandoned thread worktree", {

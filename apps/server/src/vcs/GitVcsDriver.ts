@@ -167,6 +167,8 @@ export interface CreateWorktreeProgress {
 }
 
 export interface CreateWorktreeOptions {
+  /** Recreate the exact prunable registration while Git still guards branch occupancy. */
+  readonly recoverPrunableRegistration?: boolean;
   readonly progress?: CreateWorktreeProgress;
   /** Null or omitted defers to the checkout's t3.json. */
   readonly submodules?: WorktreeSubmodules | null;

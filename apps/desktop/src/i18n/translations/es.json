@@ -157,5 +157,9 @@
   "8af79268f2349f4c": "Copiar dirección de correo",
   "a9f9254d458e49fe": "Copiar imagen",
   "9c1b20fbc881de5d": "Configuración de escritorio",
-  "1b14230874f19eb9": "Imágenes"
+  "1b14230874f19eb9": "Imágenes",
+  "d3a62840ed89f07c": "Ejecutar comandos y transferir archivos en este escritorio",
+  "7a33d32200ee3623": "Elige quién puede ejecutar comandos y transferir archivos",
+  "5c9c7f2d78c02395": "Elige cuándo caduca el permiso para ejecutar comandos",
+  "4905f10f8181ab2e": "¿Quitar el permiso para ejecutar comandos?"
 }

@@ -1,3 +1,5 @@
+import { DesktopExecution } from "../process/DesktopExecution.ts";
+import { DesktopExecutionAuthorizationHost } from "../process/DesktopExecutionAuthorizationHost.ts";
 import * as DesktopScreenPermissions from "../computer/DesktopScreenPermissions.ts";
 import * as UserDesktopIdentity from "../computer/UserDesktopIdentity.ts";
 import * as DesktopGrants from "../computer/DesktopGrants.ts";
@@ -208,6 +210,7 @@ const runStubbedDesktop = (stub: StubbedDesktop) =>
       Effect.provide(
         Layer.mergeAll(
           Layer.mock(ComputerUseRouter.ComputerUseRouter)({}),
+          Layer.mock(DesktopExecution)({}),
           Layer.mock(DesktopGrants.DesktopGrants)({
             now: () => 0,
             list: () => [],
@@ -263,6 +266,9 @@ const runStubbedDesktop = (stub: StubbedDesktop) =>
           Layer.succeed(DesktopPrimaryPaste.DesktopPrimaryPaste, { enabled: true }),
           Layer.mock(DesktopSshEnvironment.DesktopSshEnvironment, {}),
           Layer.mock(DesktopSshPasswordPrompts.DesktopSshPasswordPrompts, {}),
+          Layer.mock(DesktopExecutionAuthorizationHost)({
+            open: Effect.die("Unexpected authorization pipe in this fixture"),
+          }),
           Layer.mock(DesktopTelemetryPublisher.DesktopTelemetryPublisher, {}),
           Layer.mock(DesktopWebLinks.DesktopWebLinks, {}),
           Layer.mock(DesktopWslEnvironment.DesktopWslEnvironment, {}),

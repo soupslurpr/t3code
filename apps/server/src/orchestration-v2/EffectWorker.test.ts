@@ -115,6 +115,9 @@ function layerExecutorFor(input: {
     Layer.succeed(
       ProviderSessionManager.ProviderSessionManagerV2,
       ProviderSessionManager.ProviderSessionManagerV2.of({
+        ownsMcpTurn: () => Effect.succeed(false),
+        liveWorkspacePaths: Effect.succeed([]),
+        liveThreadWorkspaces: Effect.succeed([]),
         shutdown: Effect.void,
         open: () => Effect.die("unused open"),
         get: () => Effect.succeedNone,

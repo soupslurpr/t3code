@@ -1,0 +1,238 @@
+// @effect-diagnostics nodeBuiltinImport:off -- Subprocess boundary for inherited descriptors and real session records.
+import * as NodeRuntime from "@effect/platform-node/NodeRuntime";
+import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
+import * as NodeServices from "@effect/platform-node/NodeServices";
+import { EnvironmentId, ThreadId, type AuthEnvironmentScope } from "@t3tools/contracts";
+import * as HostProcess from "@t3tools/shared/HostProcess";
+import * as DateTime from "effect/DateTime";
+import * as Console from "effect/Console";
+import * as Context from "effect/Context";
+import * as Effect from "effect/Effect";
+import * as Layer from "effect/Layer";
+import * as Option from "effect/Option";
+import * as Stream from "effect/Stream";
+import * as SessionStore from "../../auth/SessionStore.ts";
+import * as ServerSecretStore from "../../auth/ServerSecretStore.ts";
+import * as ServerConfig from "../../config.ts";
+import * as ServerEnvironment from "../../environment/ServerEnvironment.ts";
+import * as SqlitePersistence from "../../persistence/Sqlite.ts";
+import * as DesktopExecutionAuthorizationChannel from "../DesktopExecutionAuthorizationChannel.ts";
+import * as DesktopThreadLifecycle from "../DesktopThreadLifecycle.ts";
+
+const environmentId = EnvironmentId.make("desktop-host-environment");
+const threadId = ThreadId.make("thread");
+const desktop = { kind: "user", desktopId: "desktop-host-desktop" } as const;
+
+Effect.gen(function* () {
+  const base = yield* ServerConfig.ServerConfig.pipe(
+    Effect.provide(ServerConfig.layerTest(process.cwd(), { prefix: "t3-command-channel-" })),
+  );
+  const config = {
+    ...base,
+    desktopAuthorizationFd: 3,
+    desktopAuthorizationControlFd: 4,
+    environmentHost: {
+      protocolVersion: 1,
+      desktopId: String(desktop.desktopId),
+      defaultLabel: "Test host",
+      platform: "linux",
+      capabilities: ["execution"],
+    } as const,
+  };
+  const services = yield* Layer.build(
+    SessionStore.layer.pipe(
+      Layer.provideMerge(ServerSecretStore.layer),
+      Layer.provideMerge(SqlitePersistence.layerMemory),
+      Layer.provideMerge(
+        Layer.succeed(ServerEnvironment.ServerEnvironmentIdentity, {
+          getEnvironmentId: Effect.succeed(environmentId),
+        }),
+      ),
+      Layer.provideMerge(Layer.succeed(ServerConfig.ServerConfig, config)),
+    ),
+  );
+  const sessions = Context.get(services, SessionStore.SessionStore);
+  const current = yield* sessions.issue({ scopes: ["orchestration:operate", "terminal:operate"] });
+  let revokeBeforeAcceptance = false;
+  const source = Layer.succeed(DesktopThreadLifecycle.DesktopThreadLifecycleService, {
+    read: Effect.fn("DesktopThreadLifecycle.DesktopThreadLifecycleService.read")(function* () {
+      if (revokeBeforeAcceptance) yield* sessions.revoke(current.sessionId).pipe(Effect.orDie);
+      return {
+        version: 2 as const,
+        environmentId,
+        threadId,
+        revision: 1,
+        activityRevision: 1,
+        state: "active" as const,
+        serverNow: DateTime.formatIso(yield* DateTime.now),
+        activityAt: DateTime.formatIso(yield* DateTime.now),
+        settledAt: null,
+      };
+    }),
+    changes: Stream.empty,
+  });
+  const native = Layer.succeed(ServerEnvironment.ServerEnvironment, {
+    getEnvironmentId: Effect.succeed(environmentId),
+    getDescriptor: Effect.die("unused descriptor"),
+  });
+  const channelContext = yield* Layer.build(
+    DesktopExecutionAuthorizationChannel.layer.pipe(
+      Layer.provide(source),
+      Layer.provide(native),
+      Layer.provide(Layer.succeedContext(services)),
+    ),
+  );
+  const channel = Context.get(
+    channelContext,
+    DesktopExecutionAuthorizationChannel.DesktopExecutionAuthorizationChannel,
+  );
+  const input = { operation: "access", desktop, input: { action: "status", desktop } } as const;
+  const screenInput = { action: "status", desktop } as const;
+  for (const scopes of [
+    [],
+    ["orchestration:operate"],
+    ["terminal:operate"],
+    ["orchestration:read", "preview:operate"],
+  ] satisfies AuthEnvironmentScope[][]) {
+    const session = yield* sessions.issue({ scopes });
+    const rejected = yield* channel.invoke(session.sessionId, threadId, input).pipe(Effect.flip);
+    const screenRejected = yield* channel
+      .invokeScreen(session.sessionId, threadId, screenInput)
+      .pipe(Effect.flip);
+    if (screenRejected.code !== "permission-denied")
+      return yield* Effect.die("Screen approval accepted insufficient scopes");
+    if (rejected.code !== "permission-denied")
+      return yield* Effect.die("Insufficient session scopes were accepted");
+  }
+  const foreign = yield* channel.invoke(current.sessionId, threadId, {
+    ...input,
+    desktop: { kind: "user", desktopId: "laptop-host-desktop" },
+  });
+  if (Option.isSome(foreign))
+    return yield* Effect.die("Reverse desktop access was accepted by the source backend");
+  const accepted = yield* channel.invoke(current.sessionId, threadId, input);
+  if (Option.isNone(accepted) || accepted.value.kind !== "access")
+    return yield* Effect.die("Bound target was not reached");
+  if (
+    Option.isSome(
+      yield* channel.invokeScreen(current.sessionId, threadId, {
+        ...screenInput,
+        desktop: { kind: "user", desktopId: "laptop-host-desktop" },
+      }),
+    )
+  )
+    return yield* Effect.die("Screen approval crossed native host boundary");
+  if (
+    Option.isSome(
+      yield* channel.invokeScreen(current.sessionId, threadId, {
+        ...screenInput,
+        localPrompt: true,
+      }),
+    )
+  )
+    return yield* Effect.die("Local screen confirmation was bypassed");
+  const screen = yield* channel.invokeScreen(current.sessionId, threadId, screenInput);
+  if (Option.isNone(screen) || screen.value.remoteApprovalAvailable !== true)
+    return yield* Effect.die("Native screen channel was not reached");
+  revokeBeforeAcceptance = true;
+  const revoked = yield* channel.invoke(current.sessionId, threadId, input).pipe(Effect.flip);
+  if (revoked.code !== "permission-denied")
+    return yield* Effect.die("Revoked session authorized a decision");
+  const revokedScreen = yield* channel
+    .invokeScreen(current.sessionId, threadId, screenInput)
+    .pipe(Effect.flip);
+  if (revokedScreen.code !== "permission-denied")
+    return yield* Effect.die("Revoked session approved screen access");
+  for (const outcome of ["success", "failure", "interrupt"] as const) {
+    yield* Effect.scoped(
+      Effect.gen(function* () {
+        if (!(yield* channel.reserveWorktreeCleanup))
+          return yield* Effect.die("Idle native host rejected cleanup");
+        if (outcome === "failure") return yield* Effect.fail("cleanup failed");
+        if (outcome === "interrupt") return yield* Effect.interrupt;
+      }),
+    ).pipe(Effect.exit);
+  }
+  if (yield* Effect.scoped(channel.reserveWorktreeCleanup))
+    return yield* Effect.die("Busy native host admitted cleanup");
+  config.environmentHost = { ...config.environmentHost, desktopId: "different-native-host" };
+  if (yield* Effect.scoped(channel.reserveWorktreeCleanup))
+    return yield* Effect.die("Mismatched native host admitted cleanup");
+  config.environmentHost = { ...config.environmentHost, desktopId: desktop.desktopId };
+  if (yield* Effect.scoped(channel.reserveWorktreeCleanup))
+    return yield* Effect.die("Disconnected native host admitted cleanup");
+  const standaloneContext = yield* Layer.build(
+    DesktopExecutionAuthorizationChannel.layer.pipe(
+      Layer.provide(source),
+      Layer.provide(native),
+      Layer.provide(Layer.succeed(ServerConfig.ServerConfig, base)),
+      Layer.provide(Layer.succeedContext(services)),
+    ),
+  );
+  const standalone = Context.get(
+    standaloneContext,
+    DesktopExecutionAuthorizationChannel.DesktopExecutionAuthorizationChannel,
+  );
+  const replacement = yield* sessions.issue({
+    scopes: ["orchestration:operate", "terminal:operate"],
+  });
+  if (Option.isSome(yield* standalone.invoke(replacement.sessionId, threadId, input)))
+    return yield* Effect.die("Standalone backend claimed native approval authority");
+  if (Option.isSome(yield* standalone.invokeScreen(replacement.sessionId, threadId, screenInput)))
+    return yield* Effect.die("Standalone backend claimed screen approval authority");
+  if (!(yield* Effect.scoped(standalone.reserveWorktreeCleanup)))
+    return yield* Effect.die("Standalone cleanup waited for a nonexistent native host");
+  const hostPlatform = yield* HostProcess.Platform;
+  const sameDesktopPlatform =
+    hostPlatform === "darwin" ? "macos" : hostPlatform === "win32" ? "windows" : "linux";
+  const otherDesktopPlatform = sameDesktopPlatform === "windows" ? "linux" : "windows";
+  const wslContext = yield* Layer.build(
+    DesktopExecutionAuthorizationChannel.layer.pipe(
+      Layer.provide(source),
+      Layer.provide(native),
+      Layer.provide(
+        Layer.succeed(ServerConfig.ServerConfig, {
+          ...base,
+          environmentHost: {
+            ...config.environmentHost,
+            platform: otherDesktopPlatform,
+          },
+        }),
+      ),
+      Layer.provide(Layer.succeedContext(services)),
+    ),
+  );
+  const wsl = Context.get(
+    wslContext,
+    DesktopExecutionAuthorizationChannel.DesktopExecutionAuthorizationChannel,
+  );
+  if (!(yield* Effect.scoped(wsl.reserveWorktreeCleanup)))
+    return yield* Effect.die("Cross-platform backend without descriptors refused cleanup");
+  const missingFdsContext = yield* Layer.build(
+    DesktopExecutionAuthorizationChannel.layer.pipe(
+      Layer.provide(source),
+      Layer.provide(native),
+      Layer.provide(
+        Layer.succeed(ServerConfig.ServerConfig, {
+          ...base,
+          environmentHost: {
+            ...config.environmentHost,
+            platform: sameDesktopPlatform,
+          },
+        }),
+      ),
+      Layer.provide(Layer.succeedContext(services)),
+    ),
+  );
+  const missingFds = Context.get(
+    missingFdsContext,
+    DesktopExecutionAuthorizationChannel.DesktopExecutionAuthorizationChannel,
+  );
+  if (yield* Effect.scoped(missingFds.reserveWorktreeCleanup))
+    return yield* Effect.die("Same-platform backend without descriptors admitted cleanup");
+  yield* Console.log("verified");
+}).pipe(
+  Effect.scoped,
+  Effect.provide(Layer.merge(NodeServices.layer, NodeCrypto.layer)),
+  NodeRuntime.runMain,
+);

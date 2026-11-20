@@ -1,3 +1,10 @@
+import {
+  UserDesktopExecutionInput,
+  UserDesktopTransferRequest,
+  DESKTOP_TRANSFER_ROUTE_PREFIX,
+} from "@t3tools/contracts";
+import * as Schema from "effect/Schema";
+import { readPreparedConnection } from "~/state/session";
 import { createDesktopAuthorizationSync } from "./desktopAuthorizationSync";
 import { squashAtomCommandFailure } from "@t3tools/client-runtime/state/runtime";
 import { useAtomValue } from "@effect/atom-react";
@@ -28,6 +35,9 @@ import {
 } from "./computerAutomationErrors";
 import { createComputerHostRequestConsumerAtom } from "./computerHostConsumer";
 
+const decodeExecution = Schema.decodeUnknownSync(UserDesktopExecutionInput);
+const decodeTransfer = Schema.decodeUnknownSync(UserDesktopTransferRequest);
+
 async function handleComputerRequest(
   environmentId: EnvironmentId,
   request: ComputerHostRequest,
@@ -53,6 +63,24 @@ async function handleComputerRequest(
       : { connectionGeneration: request.connectionGeneration }),
   };
   switch (request.operation) {
+    case "computerExecution":
+      return await resolveDesktopComputerAutomation(
+        computer.execution?.(decodeExecution(request.input), computerContext),
+      );
+    case "computerTransfer": {
+      const input = decodeTransfer(request.input);
+      if (input.operation === "cancel")
+        return await resolveDesktopComputerAutomation(computer.transfer?.(input, computerContext));
+      const connection = readPreparedConnection(environmentId);
+      if (!connection || input.url !== DESKTOP_TRANSFER_ROUTE_PREFIX + "/" + input.transferId)
+        throw new Error("Invalid environment transfer route.");
+      return await resolveDesktopComputerAutomation(
+        computer.transfer?.(
+          { ...input, url: new URL(input.url, connection.httpBaseUrl).toString() },
+          computerContext,
+        ),
+      );
+    }
     case "computerStatus":
       return await resolveDesktopComputerAutomation(
         computer?.status(request.input as ComputerAutomationTargetInput, computerContext),
@@ -130,6 +158,9 @@ async function cancelComputerRequest(environmentId: EnvironmentId, request: Comp
     controllerKind: request.controllerKind ?? ("agent" as const),
     environmentId,
     threadId: request.threadId,
+    ...(request.connectionGeneration === undefined
+      ? {}
+      : { connectionGeneration: request.connectionGeneration }),
   };
   if (computer === undefined) return;
   if (
@@ -141,6 +172,24 @@ async function cancelComputerRequest(environmentId: EnvironmentId, request: Comp
     return;
   }
   switch (request.operation) {
+    case "computerTransfer": {
+      const input = decodeTransfer(request.input);
+      if (input.operation === "run")
+        await computer.transfer?.(
+          { operation: "cancel", desktop: input.desktop, transferId: input.transferId },
+          context,
+        );
+      return;
+    }
+    case "computerExecution": {
+      const input = decodeExecution(request.input);
+      if (
+        input.operation === "access" &&
+        (input.input.action === "request" || input.input.action === "edit")
+      )
+        await computer.execution?.({ operation: "cancel", desktop: input.desktop }, context);
+      return;
+    }
     case "computerRequestAvailability":
       await computer.releaseAvailability(
         request.input as ComputerAutomationAvailabilityInput,

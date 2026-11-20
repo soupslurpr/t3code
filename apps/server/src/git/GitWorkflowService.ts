@@ -1,3 +1,4 @@
+import { makePrunableWorktreeProbe, makeWorktreeMembershipProbe } from "./linkedWorktree.ts";
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
@@ -38,6 +39,8 @@ import { withWorkspaceLease } from "../workspace/workspaceLease.ts";
 export class GitWorkflowService extends Context.Service<
   GitWorkflowService,
   {
+    readonly isPrunableWorktree: ReturnType<typeof makePrunableWorktreeProbe>;
+    readonly worktreeMembership: ReturnType<typeof makeWorktreeMembershipProbe>;
     readonly repositoryRoot: (cwd: string) => Effect.Effect<string | null, GitManagerServiceError>;
     readonly hasCommit: (input: {
       readonly cwd: string;
@@ -291,7 +294,10 @@ export const make = Effect.gen(function* () {
     (input: Input) =>
       ensureGit(operation, input.cwd).pipe(Effect.andThen(run(input)));
 
+  const isPrunableWorktree = makePrunableWorktreeProbe(git, fileSystem);
   return GitWorkflowService.of({
+    isPrunableWorktree,
+    worktreeMembership: makeWorktreeMembershipProbe(git, fileSystem),
     repositoryRoot: Effect.fn("GitWorkflowService.repositoryRoot")(function (cwd) {
       return registry.detect({ cwd }).pipe(
         Effect.map((handle) => (handle?.kind === "git" ? handle.repository.rootPath : null)),
@@ -460,10 +466,16 @@ export const make = Effect.gen(function* () {
         ),
       );
     }),
-    createWorktree: Effect.fn("GitWorkflowService.createWorktree")(function (input, options) {
-      return ensureGitCommand("GitWorkflowService.createWorktree", input.cwd).pipe(
-        Effect.andThen(gitManager.createWorktree(input, options)),
-      );
+    createWorktree: Effect.fn("GitWorkflowService.createWorktree")(function* (input, options) {
+      yield* ensureGitCommand("GitWorkflowService.createWorktree", input.cwd);
+      if (options?.recoverPrunableRegistration) {
+        const registered = input.path != null && (yield* isPrunableWorktree(input.cwd, input.path));
+        return yield* gitManager.createWorktree(input, {
+          ...options,
+          recoverPrunableRegistration: registered,
+        });
+      }
+      return yield* gitManager.createWorktree(input, options);
     }),
     listLocalBranchNames: Effect.fn("GitWorkflowService.listLocalBranchNames")(function (cwd) {
       return ensureGitCommand("GitWorkflowService.listLocalBranchNames", cwd).pipe(

@@ -16,7 +16,10 @@ import * as ProjectionStore from "./ProjectionStore.ts";
 import * as ProjectStore from "./ProjectStore.ts";
 import * as PullRequestService from "../pullRequest/PullRequestService.ts";
 import * as Effect from "effect/Effect";
+import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
+import * as Option from "effect/Option";
+import { makeWorktreeMembershipProbe } from "../git/linkedWorktree.ts";
 
 import * as GitWorkflow from "../git/GitWorkflowService.ts";
 import * as ProjectService from "../project/ProjectService.ts";
@@ -39,6 +42,37 @@ export const layer = Layer.mergeAll(
   }),
   Layer.mock(ProjectService.ProjectService)({
     getById: () => Effect.succeedNone,
+  }),
+);
+
+export const layerReplayWorkspaces = Layer.unwrap(
+  Effect.gen(function* () {
+    const projects = yield* ProjectStore.ProjectStoreV2;
+    const git = yield* GitVcsDriver.GitVcsDriver;
+    const fs = yield* FileSystem.FileSystem;
+    return Layer.mergeAll(
+      Layer.mock(ProjectSetupScriptRunner.ProjectSetupScriptRunner)({
+        runForThread: () => Effect.succeed({ status: "no-script" }),
+      }),
+      layerNoTaskFolders,
+      Layer.mock(GitWorkflow.GitWorkflowService)({
+        worktreeMembership: makeWorktreeMembershipProbe(git, fs),
+      }),
+      Layer.mock(ProjectService.ProjectService)({
+        getById: (id, options) =>
+          projects.get(id, options).pipe(
+            Effect.map(
+              Option.map(({ projectId, ...row }) => ({
+                ...row,
+                id: projectId,
+                faviconPath: row.faviconPath ?? null,
+                repositoryIdentity: null,
+              })),
+            ),
+            Effect.orDie,
+          ),
+      }),
+    );
   }),
 );
 

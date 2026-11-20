@@ -157,5 +157,9 @@
   "8af79268f2349f4c": "Copier l’adresse e-mail",
   "a9f9254d458e49fe": "Copier l’image",
   "9c1b20fbc881de5d": "Configuration du bureau",
-  "1b14230874f19eb9": "Images"
+  "1b14230874f19eb9": "Images",
+  "d3a62840ed89f07c": "Exécuter des commandes et transférer des fichiers sur ce bureau",
+  "7a33d32200ee3623": "Choisir qui peut exécuter des commandes et transférer des fichiers",
+  "5c9c7f2d78c02395": "Choisir quand expire l’autorisation d’exécuter des commandes",
+  "4905f10f8181ab2e": "Supprimer l’autorisation d’exécuter des commandes ?"
 }

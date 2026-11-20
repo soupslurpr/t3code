@@ -41,7 +41,7 @@ const make = Effect.gen(function* () {
     schema: Schema.ConstraintDecoder<A>,
     caller: DesktopCaller,
     operation: ComputerHostOperation,
-    input: { readonly desktop: ComputerDesktopSelector },
+    input: { readonly desktop: ComputerDesktopSelector; readonly [key: string]: unknown },
     timeoutMs: number,
   ) {
     let result: unknown;
@@ -95,6 +95,7 @@ const make = Effect.gen(function* () {
       }),
     });
   return {
+    invoke,
     status,
     snapshot,
     observeSequence,

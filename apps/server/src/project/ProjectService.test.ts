@@ -41,6 +41,10 @@ import * as ThreadCommandExecutor from "../orchestration-v2/ThreadCommandExecuto
 import * as SqlitePersistence from "../persistence/Sqlite.ts";
 import * as ProcessRunner from "../processRunner.ts";
 import * as ServerSettings from "../serverSettings.ts";
+import {
+  withCheckpointRestoreReservation,
+  withWorkspaceLease,
+} from "../workspace/workspaceLease.ts";
 import * as WorkspacePaths from "../workspace/WorkspacePaths.ts";
 import * as ProjectEnrichmentService from "./ProjectEnrichmentService.ts";
 import * as ProjectFaviconResolver from "./ProjectFaviconResolver.ts";
@@ -1076,6 +1080,53 @@ it.effect("refuses a worktree container as a new project and as a new workspace 
       );
     }).pipe(Effect.provide(layerTest));
   }).pipe(Effect.provide(ProcessRunner.layer.pipe(Layer.provideMerge(NodeServices.layer)))),
+);
+
+it.effect("refuses to register a workspace removed after its initial validation", () =>
+  Effect.gen(function* () {
+    const fs = yield* FileSystem.FileSystem;
+    const path = yield* Path.Path;
+    const fixture = yield* fs.makeTempDirectoryScoped();
+    const checkout = path.join(fixture, "checkout");
+    const alias = path.join(fixture, "alias");
+    yield* fs.makeDirectory(path.join(checkout, "subdir"), { recursive: true });
+    yield* fs.symlink(checkout, alias);
+    const validated = yield* Deferred.make<void>();
+    const paths = yield* WorkspacePaths.WorkspacePaths.pipe(Effect.provide(WorkspacePaths.layer));
+    const projects = yield* ProjectService.make.pipe(
+      Effect.provideService(WorkspacePaths.WorkspacePaths, {
+        ...paths,
+        normalizeWorkspaceRoot: (root, options) =>
+          paths
+            .normalizeWorkspaceRoot(root, options)
+            .pipe(Effect.tap(() => Deferred.succeed(validated, undefined))),
+      }),
+    );
+    const projectId = ProjectId.make("register-during-removal");
+    const registering = yield* withCheckpointRestoreReservation(
+      fs,
+      path,
+      checkout,
+      withWorkspaceLease(
+        checkout,
+        Effect.gen(function* () {
+          const pending = yield* projects
+            .create({
+              commandId: CommandId.make("register-during-removal"),
+              projectId,
+              title: "Nested project",
+              workspaceRoot: path.join(alias, "subdir"),
+            })
+            .pipe(Effect.result, Effect.forkScoped);
+          yield* Deferred.await(validated);
+          yield* fs.remove(checkout, { recursive: true });
+          return pending;
+        }),
+      ),
+    );
+    assert.equal((yield* Fiber.join(registering))._tag, "Failure");
+    assert.isTrue(Option.isNone(yield* projects.getById(projectId)));
+  }).pipe(Effect.scoped, Effect.provide(layerProjectServiceDependencies)),
 );
 
 it.effect("serializes two projects claiming the same workspace root", () =>

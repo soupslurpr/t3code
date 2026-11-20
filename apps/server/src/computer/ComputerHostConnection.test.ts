@@ -12,7 +12,12 @@ import { makeHostConnection } from "./ComputerHostConnection.ts";
 const registration: ComputerHostRegistration = {
   clientId: "attached",
   environmentId: EnvironmentId.make("environment"),
-  supportedOperations: ["computerRequestControl", "computerStatus"],
+  supportedOperations: [
+    "computerRequestControl",
+    "computerStatus",
+    "computerExecution",
+    "computerTransfer",
+  ],
   userDesktop: {
     protocolVersion: 1,
     desktopId: "host",
@@ -41,6 +46,12 @@ it.effect(
         _tag: "Failure",
         failure: { computerFailure: { code: "desktop-client-update-required" } },
       });
+      for (const operation of ["computerExecution", "computerTransfer"] as const) {
+        expect(yield* Effect.result(host.invoke(caller, operation, {}, 100))).toMatchObject({
+          _tag: "Failure",
+          failure: { computerFailure: { code: "unsupported-operation" } },
+        });
+      }
       const requests: unknown[] = [];
       yield* host.events.pipe(
         Stream.runForEach((event) => {

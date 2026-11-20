@@ -243,6 +243,15 @@ export const ProviderSessionManagerV2Error = Schema.Union([
 export type ProviderSessionManagerV2Error = typeof ProviderSessionManagerV2Error.Type;
 
 export interface ProviderSessionManagerV2Shape {
+  readonly ownsMcpTurn: (input: {
+    readonly threadId: ThreadId;
+    readonly credentialId: string;
+    readonly run: Pick<OrchestrationV2Run, "id" | "ordinal" | "providerThreadId">;
+  }) => Effect.Effect<boolean>;
+  readonly liveWorkspacePaths: Effect.Effect<ReadonlyArray<string>>;
+  readonly liveThreadWorkspaces: Effect.Effect<
+    ReadonlyArray<{ readonly threadId: ThreadId; readonly cwd: string }>
+  >;
   readonly shutdown: Effect.Effect<void>;
   readonly open: (input: {
     readonly threadId: ThreadId;
@@ -3211,6 +3220,10 @@ export const layerWithOptions = (
 
       // Shutdown must fit the launcher's 5 s deadline with up to 15 sessions.
       const sessionScopes = yield* Scope.make("parallel");
+      const workspaces = new Map<
+        Scope.Closeable,
+        { processCwd: string | null; threads: Map<ThreadId, string | null> }
+      >();
       const shutdown = Effect.gen(function* () {
         const activeSessions = [...(yield* Ref.get(sessions)).values()];
         yield* Effect.forEach(
@@ -3236,8 +3249,45 @@ export const layerWithOptions = (
         ),
       );
 
-      return ProviderSessionManagerV2.of({
+      const service: ProviderSessionManagerV2Shape = ProviderSessionManagerV2.of({
         shutdown,
+        ownsMcpTurn: ({ threadId, credentialId, run }) => {
+          if (run.providerThreadId === null) return Effect.succeed(false);
+          const turn = busyTurnKey(run.providerThreadId, run.ordinal);
+          return Ref.get(sessions).pipe(
+            Effect.map((live) =>
+              live
+                .values()
+                .some(
+                  (entry) =>
+                    entry.mcpCredentialIdByThread.get(threadId) === credentialId &&
+                    entry.busyTurns.has(turn),
+                ),
+            ),
+          );
+        },
+        liveWorkspacePaths: Effect.sync(() => {
+          const paths = new Set<string>();
+          for (const { processCwd, threads } of workspaces.values())
+            for (const cwd of [processCwd, ...threads.values()]) if (cwd !== null) paths.add(cwd);
+          return [...paths];
+        }),
+        liveThreadWorkspaces: Effect.sync(() => {
+          const entries: Array<{ readonly threadId: ThreadId; readonly cwd: string }> = [];
+          const seen = new Set<string>();
+          for (const { processCwd, threads } of workspaces.values()) {
+            for (const [threadId, threadCwd] of threads) {
+              for (const cwd of [threadCwd, processCwd]) {
+                if (cwd === null) continue;
+                const dedupeKey = `${threadId}\u0000${cwd}`;
+                if (seen.has(dedupeKey)) continue;
+                seen.add(dedupeKey);
+                entries.push({ threadId, cwd });
+              }
+            }
+          }
+          return entries;
+        }),
         open: (input) =>
           sessionOpen.withLock(
             input.providerSessionId,
@@ -3257,7 +3307,17 @@ export const layerWithOptions = (
               }
               const key = sessionKey(input.providerSessionId);
               const live = (yield* Ref.get(sessions)).get(key);
-              if (live !== undefined) yield* releaseForLinkedEnvironments(live);
+              const previousCwd = live && workspaces.get(live.scope)?.threads.get(input.threadId);
+              if (previousCwd !== undefined && previousCwd !== cwd) {
+                yield* service.detach({
+                  providerSessionId: input.providerSessionId,
+                  threadId: input.threadId,
+                  detail: "The thread moved to another checkout.",
+                });
+              }
+              const attachedSession = (yield* Ref.get(sessions)).get(key);
+              if (attachedSession !== undefined)
+                yield* releaseForLinkedEnvironments(attachedSession);
               const existing = (yield* Ref.get(sessions)).get(key);
               if (existing !== undefined) {
                 const attached = existing.attachedThreadIds.has(input.threadId);
@@ -3274,6 +3334,7 @@ export const layerWithOptions = (
                   threadId: input.threadId,
                   providerInstanceId: existing.runtime.instanceId,
                 });
+                workspaces.get(existing.scope)?.threads.set(input.threadId, cwd);
                 yield* touchActivity(input.providerSessionId);
                 return existing.exposedRuntime;
               }
@@ -3302,6 +3363,17 @@ export const layerWithOptions = (
                 }
               });
               const sessionScope = yield* Scope.fork(sessionScopes);
+              workspaces.set(sessionScope, {
+                processCwd: cwd,
+                threads: new Map([[input.threadId, cwd]]),
+              });
+              yield* Scope.addFinalizer(
+                sessionScope,
+                Effect.sync(() => {
+                  workspaces.delete(sessionScope);
+                }),
+              );
+
               // Added before the adapter's finalizers so it runs after them: the pump drains shutdown events first.
               const sessionClosed = yield* Deferred.make<void>();
               yield* Scope.addFinalizer(sessionScope, Deferred.done(sessionClosed, Exit.void));
@@ -3660,6 +3732,7 @@ export const layerWithOptions = (
               return;
             }
             const unloadThread = detached.value.exposedRuntime.unloadThread;
+            let unloadFailed = false;
             if (detached.value.supportsMultipleProviderThreads && unloadThread !== undefined) {
               // The projection includes native children owned by other app threads;
               // lock each owner so an attached child stays loaded and later attaches wait.
@@ -3681,19 +3754,30 @@ export const layerWithOptions = (
                     }
                     yield* unloadThread({ providerThread }).pipe(
                       Effect.timeout(UNLOAD_THREAD_TIMEOUT_MS),
-                      Effect.catchCause((cause) =>
-                        Effect.logWarning("orchestration-v2.driver-session.detach-unload-failed", {
-                          providerSessionId: input.providerSessionId,
-                          threadId: ownerThreadId,
-                          providerThreadId: providerThread.id,
-                          cause,
-                        }),
-                      ),
+                      Effect.catchCause((cause) => {
+                        unloadFailed = true;
+                        return Effect.logWarning(
+                          "orchestration-v2.driver-session.detach-unload-failed",
+                          {
+                            providerSessionId: input.providerSessionId,
+                            threadId: ownerThreadId,
+                            providerThreadId: providerThread.id,
+                            cause,
+                          },
+                        );
+                      }),
                     );
                   }),
                 );
               }
             }
+            const current = (yield* Ref.get(sessions)).get(key);
+            if (
+              !unloadFailed &&
+              current?.scope === detached.value.scope &&
+              !current.attachedThreadIds.has(input.threadId)
+            )
+              workspaces.get(current.scope)?.threads.delete(input.threadId);
             yield* scheduleIdleRelease(input.providerSessionId);
           },
           (effect, input) =>
@@ -3741,6 +3825,7 @@ export const layerWithOptions = (
             Stream.changes,
           ),
       } satisfies ProviderSessionManagerV2Shape);
+      return service;
     }),
   );
 

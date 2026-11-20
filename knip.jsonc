@@ -101,7 +101,8 @@
       ],
       // The injected runtime resolves Playwright by string; release tooling runs
       // electron-builder from this workspace, outside its package scripts.
-      "ignoreDependencies": ["playwright-core", "electron-builder"],
+      // The staged desktop also supplies the shared command supervisor's node-pty runtime.
+      "ignoreDependencies": ["playwright-core", "electron-builder", "node-pty"],
     },
     "apps/web": {
       // Worktree setup (scripts/setup-worktree.ts) runs this directly, and evidence

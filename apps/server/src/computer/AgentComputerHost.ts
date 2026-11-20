@@ -1,3 +1,4 @@
+import { AgentDesktopOperations, invokeAgentOperation } from "./AgentDesktopOperations.ts";
 import {
   ComputerAutomationSnapshotInput,
   type ComputerAutomationDisplay,
@@ -41,9 +42,25 @@ export const AgentDesktopRuntime = Context.Reference<AgentDesktopRuntimePort | n
 const decodeSnapshot = Schema.decodeUnknownEffect(ComputerAutomationSnapshotInput);
 const make = Effect.gen(function* () {
   const runtime = yield* AgentDesktopRuntime;
-  if (runtime === null) return null;
+  const operations = yield* AgentDesktopOperations;
+  if (runtime === null && operations === null) return null;
   const invoke: AgentComputerPort["invoke"] = Effect.fn("AgentComputerHost.invoke")(
     function* (caller, operation, params, timeoutMs) {
+      if (operation === "computerExecution" || operation === "computerTransfer") {
+        if (!operations)
+          return yield* hostFailure(
+            "agent-desktop-unavailable",
+            "resource",
+            "Agent desktop operations are unavailable.",
+          );
+        return yield* invokeAgentOperation(operations, caller, operation, params);
+      }
+      if (!runtime)
+        return yield* hostFailure(
+          "agent-desktop-unavailable",
+          "resource",
+          "The Agent display is unavailable.",
+        );
       if (operation !== "computerSnapshot")
         return yield* runtime.invoke(caller, operation, params, timeoutMs);
       const input = yield* decodeSnapshot(params).pipe(

@@ -5615,14 +5615,33 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
               attempts,
               providerTurns,
             });
-            const messageIds = [run, unsentSource].flatMap((source) =>
-              source === undefined ? [] : [source.userMessageId],
-            );
+            const recoveryRun =
+              thread.worktreeRecoveryRunId === undefined || thread.worktreePath !== null
+                ? undefined
+                : runs.find((source) => source.id === thread.worktreeRecoveryRunId);
+            const messageIds = [
+              ...new Set([
+                ...[run, unsentSource].flatMap((source) =>
+                  source === undefined ? [] : [source.userMessageId],
+                ),
+                ...(recoveryRun === undefined || run === undefined
+                  ? []
+                  : runs
+                      .filter(
+                        (source) =>
+                          source.freshContext === true &&
+                          source.ordinal >= recoveryRun.ordinal &&
+                          source.ordinal < run.ordinal,
+                      )
+                      .map((source) => source.userMessageId)),
+              ]),
+            ];
             // Earlier slash command turns defer context too; isSlashCommandMessage narrows the match.
+            // Use json_each so arbitrarily many fresh-context runs never hit SQLite's variable limit.
             const messages = yield* sql<PayloadRow>`
               SELECT payload_json FROM (
                 SELECT payload_json, created_at, message_id FROM orchestration_v2_projection_messages
-                WHERE thread_id = ${threadId} AND message_id IN ${sql.in(messageIds)}
+                WHERE thread_id = ${threadId} AND message_id IN (SELECT value FROM json_each(${encodeIdList(messageIds)}))
                 UNION
                 SELECT payload_json, created_at, message_id FROM orchestration_v2_projection_messages
                 WHERE thread_id = ${threadId} AND ${sql.literal(DEFERRED_COMMAND_MESSAGE_CONDITION)}

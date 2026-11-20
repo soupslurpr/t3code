@@ -3274,11 +3274,15 @@ it.effect(
           "detach must not revoke the credential the live provider process still holds",
         );
 
+        const checkout = yield* FileSystem.FileSystem.pipe(
+          Effect.flatMap((fs) => fs.makeTempDirectoryScoped()),
+          Effect.provide(NodeServices.layer),
+        );
         yield* manager.open({
           threadId,
           providerSessionId,
           modelSelection,
-          runtimePolicy,
+          runtimePolicy: { ...runtimePolicy, cwd: checkout },
         });
         assert.equal(
           (yield* mcpSessions.read(threadId))?.providerSessionId,
@@ -3286,8 +3290,14 @@ it.effect(
           "re-attach must reuse the existing credential, not rotate it",
         );
         assert.equal((yield* registry.resolve(originalToken!))?.thread.threadId, threadId);
+        assert.include(yield* manager.liveWorkspacePaths, checkout);
+        assert.deepInclude(yield* manager.liveThreadWorkspaces, { threadId, cwd: checkout });
+        yield* manager.detach({ providerSessionId, threadId });
+        assert.deepEqual(yield* manager.liveWorkspacePaths, [runtimePolicy.cwd]);
+        assert.deepEqual(yield* manager.liveThreadWorkspaces, []);
 
         yield* manager.close(providerSessionId);
+        assert.deepEqual(yield* manager.liveWorkspacePaths, []);
         assert.isUndefined(yield* registry.resolve(originalToken!));
       });
 

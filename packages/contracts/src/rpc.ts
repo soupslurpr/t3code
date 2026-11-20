@@ -1,4 +1,11 @@
 import {
+  ThreadWorktreeRemoveInput,
+  ThreadWorktreeDetachInput,
+  ThreadWorktreeRemoveResult,
+  ThreadWorktreeDetachResult,
+  ThreadWorktreeError,
+} from "./threadWorktree.ts";
+import {
   ComputerHostRegistration,
   ComputerHostEvent,
   ComputerHostFocus,
@@ -556,6 +563,8 @@ export const WS_METHODS = {
   vcsRefreshStatus: "vcs.refreshStatus",
   vcsListRefs: "vcs.listRefs",
   vcsCreateWorktree: "vcs.createWorktree",
+  threadWorktreeRemove: "threadWorktree.remove",
+  threadWorktreeDetach: "threadWorktree.detach",
   vcsRemoveWorktree: "vcs.removeWorktree",
   vcsCreateRef: "vcs.createRef",
   vcsSwitchRef: "vcs.switchRef",
@@ -1933,6 +1942,17 @@ const WsVcsCreateWorktreeRpc = Rpc.make(WS_METHODS.vcsCreateWorktree, {
   error: Schema.Union([GitCommandError, EnvironmentAuthorizationError]),
 });
 
+const WsThreadWorktreeRemoveRpc = Rpc.make(WS_METHODS.threadWorktreeRemove, {
+  payload: ThreadWorktreeRemoveInput,
+  success: ThreadWorktreeRemoveResult,
+  error: Schema.Union([ThreadWorktreeError, EnvironmentAuthorizationError]),
+});
+const WsThreadWorktreeDetachRpc = Rpc.make(WS_METHODS.threadWorktreeDetach, {
+  payload: ThreadWorktreeDetachInput,
+  success: ThreadWorktreeDetachResult,
+  error: Schema.Union([ThreadWorktreeError, EnvironmentAuthorizationError]),
+});
+
 const WsVcsRemoveWorktreeRpc = Rpc.make(WS_METHODS.vcsRemoveWorktree, {
   payload: VcsRemoveWorktreeInput,
   error: Schema.Union([GitCommandError, EnvironmentAuthorizationError]),
@@ -2732,6 +2752,8 @@ export const WsRpcGroup = RpcGroup.make(
   WsGitPreparePullRequestThreadRpc,
   WsVcsListRefsRpc,
   WsVcsCreateWorktreeRpc,
+  WsThreadWorktreeRemoveRpc,
+  WsThreadWorktreeDetachRpc,
   WsVcsRemoveWorktreeRpc,
   WsVcsCreateRefRpc,
   WsVcsSwitchRefRpc,

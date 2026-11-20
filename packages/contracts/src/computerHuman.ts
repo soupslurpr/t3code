@@ -1,3 +1,4 @@
+import { UserDesktopExecutionInput } from "./desktopExecution.ts";
 import * as Schema from "effect/Schema";
 import { ThreadId } from "./baseSchemas.ts";
 import {
@@ -14,6 +15,7 @@ const UserDesktopHumanTarget = { desktopId: UserDesktopId };
 
 /** Describes one authenticated human request for User desktop management and supervision. */
 export const UserDesktopHumanRequest = Schema.Union([
+  Schema.Struct({ operation: Schema.Literal("execution"), input: UserDesktopExecutionInput }),
   Schema.Struct({
     operation: Schema.Literal("screen-permission"),
     ...UserDesktopHumanTarget,

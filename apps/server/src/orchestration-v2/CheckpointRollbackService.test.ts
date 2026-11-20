@@ -246,13 +246,9 @@ it.effect.each([
             },
           }),
           Layer.mock(GitWorkflow.GitWorkflowService)({
-            pruneWorktrees: (input) =>
-              Effect.sync(() => {
-                assert.deepEqual(input, { cwd: workspaceRoot });
-                calls.push("prune");
-              }),
-            createWorktree: (input) =>
+            createWorktree: (input, options) =>
               Effect.gen(function* () {
+                assert.isTrue(options?.recoverPrunableRegistration);
                 assert.deepEqual(input, {
                   cwd: workspaceRoot,
                   refName: branch,
@@ -376,7 +372,7 @@ it.effect.each([
       }
       if (createFails) {
         yield* Fiber.join(rollback).pipe(Effect.exit);
-        assert.deepEqual(calls, ["cleanup", "prune", "create"]);
+        assert.deepEqual(calls, ["cleanup", "create"]);
         assert.equal(
           yield* fileSystem.readFileString(path.join(worktreePath, "unsaved.txt")),
           "keep",
@@ -393,7 +389,7 @@ it.effect.each([
       assert.deepEqual(
         calls,
         order === "cleanup-first"
-          ? ["cleanup", ...(recreates ? ["prune", "create"] : []), ...rollbackCalls]
+          ? ["cleanup", ...(recreates ? ["create"] : []), ...rollbackCalls]
           : [...rollbackCalls, "cleanup"],
       );
       if (!recreates) {

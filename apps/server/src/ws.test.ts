@@ -1,3 +1,5 @@
+import { ThreadWorktreeService } from "./orchestration-v2/ThreadWorktreeService.ts";
+import { DesktopExecutionAuthorizationChannel } from "./computer/DesktopExecutionAuthorizationChannel.ts";
 import { ComputerObservationStore } from "./computer/ComputerObservationStore.ts";
 import { UserDesktopHosts } from "./computer/UserDesktopHosts.ts";
 import * as SecretResolver from "@t3tools/secret-provider-core/server/SecretResolver";
@@ -857,6 +859,7 @@ const layerUnusedConfigRpcServices = Layer.mergeAll(
   Layer.mock(CodexInstallation.CodexInstallation)({ managedDirectory: "/unused" }),
   Layer.mock(DeviceService.DeviceService)({}),
   Layer.mock(EnvironmentTheme.EnvironmentThemeService)({}),
+  Layer.mock(ThreadWorktreeService)({}),
   Layer.mock(GitWorkflowService.GitWorkflowService)({}),
   Layer.mock(HostResources.HostResources)({}),
   Layer.mock(McpAppRequests.McpAppRequests)({}),
@@ -960,6 +963,9 @@ it.live.each([
           },
         }),
         Layer.mock(ComputerObservationStore)({}),
+        Layer.mock(DesktopExecutionAuthorizationChannel)({
+          reserveWorktreeCleanup: Effect.succeed(true),
+        }),
         layerUnusedConfigRpcServices,
         Layer.mock(ServerBrowser.ServerBrowser)({
           profileReporter: Effect.succeed(() => Effect.void),
@@ -1298,6 +1304,9 @@ it.effect.each([
             },
           }),
           Layer.mock(ComputerObservationStore)({}),
+          Layer.mock(DesktopExecutionAuthorizationChannel)({
+            reserveWorktreeCleanup: Effect.succeed(true),
+          }),
           Layer.mock(PreviewAutomationBroker.PreviewAutomationBroker)({}),
           Layer.mock(ServerBrowser.ServerBrowser)({}),
         ),
@@ -1428,6 +1437,9 @@ it.effect("access changes made while the snapshot loads reach the client after i
           },
         }),
         Layer.mock(ComputerObservationStore)({}),
+        Layer.mock(DesktopExecutionAuthorizationChannel)({
+          reserveWorktreeCleanup: Effect.succeed(true),
+        }),
         Layer.mock(PreviewAutomationBroker.PreviewAutomationBroker)({}),
         Layer.mock(ServerBrowser.ServerBrowser)({}),
       ),
@@ -1788,6 +1800,9 @@ it.effect("on-demand clients get provider config without workspace snapshots", (
           },
         }),
         Layer.mock(ComputerObservationStore)({}),
+        Layer.mock(DesktopExecutionAuthorizationChannel)({
+          reserveWorktreeCleanup: Effect.succeed(true),
+        }),
         Layer.mock(PreviewAutomationBroker.PreviewAutomationBroker)({}),
         Layer.mock(ServerBrowser.ServerBrowser)({}),
       ),
@@ -1965,6 +1980,9 @@ it.effect("a missing thread worktree gets its project's skills in the cwd snapsh
           },
         }),
         Layer.mock(ComputerObservationStore)({}),
+        Layer.mock(DesktopExecutionAuthorizationChannel)({
+          reserveWorktreeCleanup: Effect.succeed(true),
+        }),
         Layer.mock(PreviewAutomationBroker.PreviewAutomationBroker)({}),
         Layer.mock(ServerBrowser.ServerBrowser)({}),
       ),
@@ -2002,6 +2020,15 @@ it.effect(
           Layer.mock(ScratchThreadPromotion.ScratchThreadPromotion)({}),
           Layer.mock(ServerEnvironment.ServerEnvironment)({}),
           Layer.mock(EnvironmentAuth.EnvironmentAuth)({}),
+          Layer.mock(UserDesktopHosts)({
+            forSocket: () => {
+              throw new Error("Unexpected desktop host socket");
+            },
+          }),
+          Layer.mock(ComputerObservationStore)({}),
+          Layer.mock(DesktopExecutionAuthorizationChannel)({
+            reserveWorktreeCleanup: Effect.succeed(true),
+          }),
         );
         const server = yield* RpcServer.makeNoSerialization(WsRpcGroup, {
           ...WS_RPC_SERVER_OPTIONS,
@@ -2093,6 +2120,15 @@ it.effect(
           Layer.mock(ScratchThreadPromotion.ScratchThreadPromotion)({}),
           Layer.mock(ServerEnvironment.ServerEnvironment)({}),
           Layer.mock(EnvironmentAuth.EnvironmentAuth)({}),
+          Layer.mock(UserDesktopHosts)({
+            forSocket: () => {
+              throw new Error("Unexpected desktop host socket");
+            },
+          }),
+          Layer.mock(ComputerObservationStore)({}),
+          Layer.mock(DesktopExecutionAuthorizationChannel)({
+            reserveWorktreeCleanup: Effect.succeed(true),
+          }),
         );
         const server = yield* RpcServer.makeNoSerialization(WsRpcGroup, {
           ...WS_RPC_SERVER_OPTIONS,
@@ -2222,6 +2258,9 @@ it.effect("a git action that fails partway still refreshes the repository status
           },
         }),
         Layer.mock(ComputerObservationStore)({}),
+        Layer.mock(DesktopExecutionAuthorizationChannel)({
+          reserveWorktreeCleanup: Effect.succeed(true),
+        }),
         Layer.mock(PreviewAutomationBroker.PreviewAutomationBroker)({}),
         Layer.mock(ServerBrowser.ServerBrowser)({}),
       ),
@@ -2315,6 +2354,9 @@ it.effect("a publish whose push fails still refreshes the new remote", () =>
           },
         }),
         Layer.mock(ComputerObservationStore)({}),
+        Layer.mock(DesktopExecutionAuthorizationChannel)({
+          reserveWorktreeCleanup: Effect.succeed(true),
+        }),
         Layer.mock(PreviewAutomationBroker.PreviewAutomationBroker)({}),
         Layer.mock(ServerBrowser.ServerBrowser)({}),
       ),
@@ -2938,6 +2980,9 @@ it.effect("ACP session RPCs list a thread missing its history and repair it on i
           },
         }),
         Layer.mock(ComputerObservationStore)({}),
+        Layer.mock(DesktopExecutionAuthorizationChannel)({
+          reserveWorktreeCleanup: Effect.succeed(true),
+        }),
         Layer.mock(PreviewAutomationBroker.PreviewAutomationBroker)({}),
         Layer.mock(ServerBrowser.ServerBrowser)({}),
       ),
@@ -3045,6 +3090,15 @@ const makeWorkflowClient = Effect.fn("test.makeWorkflowClient")(function* (
 });
 const layerWorkflowRpcTest = Layer.mergeAll(
   Layer.fresh(layerConfigSources),
+  Layer.mock(UserDesktopHosts)({
+    forSocket: () => {
+      throw new Error("Unexpected desktop host socket");
+    },
+  }),
+  Layer.mock(ComputerObservationStore)({}),
+  Layer.mock(DesktopExecutionAuthorizationChannel)({
+    reserveWorktreeCleanup: Effect.succeed(true),
+  }),
   Layer.mock(PreviewAutomationBroker.PreviewAutomationBroker)({}),
   Layer.mock(ServerBrowser.ServerBrowser)({}),
 );

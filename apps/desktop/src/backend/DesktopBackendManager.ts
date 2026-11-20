@@ -35,6 +35,7 @@ import { waitForHttpReady as waitForHttpReadyShared } from "@t3tools/shared/http
 
 import * as DesktopObservability from "../app/DesktopObservability.ts";
 import * as DesktopTelemetryPublisher from "../telemetry/DesktopTelemetryPublisher.ts";
+import * as DesktopExecutionAuthorizationHost from "../process/DesktopExecutionAuthorizationHost.ts";
 import * as DesktopBrowserHost from "../preview/DesktopBrowserHost.ts";
 import * as DesktopWslEnvironment from "../wsl/DesktopWslEnvironment.ts";
 
@@ -213,6 +214,8 @@ type TrackBackendProcess = (pid: number) => Effect.Effect<Effect.Effect<void>>;
 interface RunBackendProcessOptions extends DesktopBackendStartConfig {
   readonly desktopTelemetryStream: Stream.Stream<Uint8Array>;
   readonly desktopBrowserStream?: Stream.Stream<Uint8Array>;
+  readonly desktopAuthorizationStream?: Stream.Stream<Uint8Array> | undefined;
+  readonly onDesktopAuthorizationCommand?: ((line: string) => Effect.Effect<void>) | undefined;
   readonly onDesktopBrowserCommand?: (line: string) => Effect.Effect<void>;
   readonly onDesktopTelemetryControl?: (
     message: DesktopTelemetryControlMessageValue,
@@ -501,6 +504,17 @@ export const runBackendProcess = Effect.fn("runBackendProcess")(function* (
         stream: options.desktopBrowserStream,
       };
     }
+    if (
+      options.bootstrap.desktopAuthorizationFd !== undefined &&
+      options.desktopAuthorizationStream !== undefined
+    ) {
+      additionalFds[`fd${options.bootstrap.desktopAuthorizationFd}`] = {
+        type: "input",
+        stream: options.desktopAuthorizationStream,
+      };
+      if (options.bootstrap.desktopAuthorizationControlFd !== undefined)
+        additionalFds[`fd${options.bootstrap.desktopAuthorizationControlFd}`] = { type: "output" };
+    }
     if (options.bootstrap.desktopBrowserControlFd !== undefined) {
       additionalFds[`fd${options.bootstrap.desktopBrowserControlFd}`] = { type: "output" };
     }
@@ -590,6 +604,24 @@ export const runBackendProcess = Effect.fn("runBackendProcess")(function* (
       Effect.catchCause((cause) =>
         logBackendProcessWarning("desktop browser command stream stopped", {
           fd: browserFd,
+          cause: Cause.pretty(cause),
+        }),
+      ),
+      Effect.forkScoped,
+    );
+  }
+  if (
+    options.bootstrapDelivery === "fd3" &&
+    options.bootstrap.desktopAuthorizationControlFd !== undefined &&
+    options.onDesktopAuthorizationCommand !== undefined
+  ) {
+    yield* handle.getOutputFd(options.bootstrap.desktopAuthorizationControlFd).pipe(
+      Stream.decodeText(),
+      Stream.splitLines,
+      Stream.filter((line) => line.length > 0),
+      Stream.runForEach(options.onDesktopAuthorizationCommand),
+      Effect.catchCause((cause) =>
+        logBackendProcessWarning("desktop authorization stream stopped", {
           cause: Cause.pretty(cause),
         }),
       ),
@@ -729,6 +761,7 @@ export const makeBackendInstance = Effect.fn("makeBackendInstance")(function* (
   | DesktopObservability.DesktopBackendOutputLogFactory
   | DesktopTelemetryPublisher.DesktopTelemetryPublisher
   | DesktopBrowserHost.DesktopBrowserHost
+  | DesktopExecutionAuthorizationHost.DesktopExecutionAuthorizationHost
   | DesktopWslEnvironment.DesktopWslEnvironment
   | Scope.Scope
 > {
@@ -738,6 +771,8 @@ export const makeBackendInstance = Effect.fn("makeBackendInstance")(function* (
   const backendOutputLog = yield* backendOutputLogFactory.forInstance(spec.id);
   const desktopTelemetryPublisher = yield* DesktopTelemetryPublisher.DesktopTelemetryPublisher;
   const desktopBrowserHost = yield* DesktopBrowserHost.DesktopBrowserHost;
+  const authorizationHost =
+    yield* DesktopExecutionAuthorizationHost.DesktopExecutionAuthorizationHost;
   const wslEnvironment = yield* DesktopWslEnvironment.DesktopWslEnvironment;
   const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
   const httpClient = yield* HttpClient.HttpClient;
@@ -1003,112 +1038,121 @@ export const makeBackendInstance = Effect.fn("makeBackendInstance")(function* (
           );
         });
 
-        const program = runBackendProcess({
-          ...config.value,
-          ...(spec.trackProcess === undefined ? {} : { trackProcess: spec.trackProcess }),
-          desktopTelemetryStream: desktopTelemetryPublisher.encoded,
-          desktopBrowserStream: desktopBrowserHost.events,
-          onDesktopBrowserCommand: desktopBrowserHost.handleCommandLine,
-          onDesktopTelemetryControl: (message) =>
-            desktopTelemetryPublisher.handleControlForSource(spec.id, message),
-          onStarted: Effect.fn("desktop.backendInstance.onStarted")(function* (pid) {
-            yield* updateActiveRun(runId, (run) => ({
-              ...run,
-              pid: Option.some(pid),
-            }));
-            yield* Ref.set(outputTail, "");
-            yield* Ref.set(migrationProgress, null);
-            yield* spec.onMigrationProgress?.(null) ?? Effect.void;
-            outputDecoders = makeOutputDecoders();
-            yield* backendOutputLog.beginSession({
-              details: `pid=${pid} port=${config.value.bootstrap.port} cwd=${config.value.cwd}`,
-            });
-          }),
-          onExitObserved: () =>
-            updateActiveRun(runId, (run) => ({
-              ...run,
-              exitObserved: true,
-            })),
-          onReady: Effect.fn("desktop.backendInstance.onReady")(function* (pid) {
-            const isCurrentRun = yield* SubscriptionRef.modify(state, (latest) => {
-              const activeRun = Option.getOrUndefined(latest.active);
-              if (activeRun?.id !== runId) {
-                return [false, latest] as const;
-              }
+        const program = Effect.gen(function* () {
+          const authorization =
+            config.value.bootstrapDelivery === "fd3" &&
+            config.value.bootstrap.desktopAuthorizationFd !== undefined
+              ? yield* authorizationHost.open
+              : undefined;
+          return yield* runBackendProcess({
+            desktopAuthorizationStream: authorization?.events,
+            onDesktopAuthorizationCommand: authorization?.handleCommandLine,
+            ...config.value,
+            ...(spec.trackProcess === undefined ? {} : { trackProcess: spec.trackProcess }),
+            desktopTelemetryStream: desktopTelemetryPublisher.encoded,
+            desktopBrowserStream: desktopBrowserHost.events,
+            onDesktopBrowserCommand: desktopBrowserHost.handleCommandLine,
+            onDesktopTelemetryControl: (message) =>
+              desktopTelemetryPublisher.handleControlForSource(spec.id, message),
+            onStarted: Effect.fn("desktop.backendInstance.onStarted")(function* (pid) {
+              yield* updateActiveRun(runId, (run) => ({
+                ...run,
+                pid: Option.some(pid),
+              }));
+              yield* Ref.set(outputTail, "");
+              yield* Ref.set(migrationProgress, null);
+              yield* spec.onMigrationProgress?.(null) ?? Effect.void;
+              outputDecoders = makeOutputDecoders();
+              yield* backendOutputLog.beginSession({
+                details: `pid=${pid} port=${config.value.bootstrap.port} cwd=${config.value.cwd}`,
+              });
+            }),
+            onExitObserved: () =>
+              updateActiveRun(runId, (run) => ({
+                ...run,
+                exitObserved: true,
+              })),
+            onReady: Effect.fn("desktop.backendInstance.onReady")(function* (pid) {
+              const isCurrentRun = yield* SubscriptionRef.modify(state, (latest) => {
+                const activeRun = Option.getOrUndefined(latest.active);
+                if (activeRun?.id !== runId) {
+                  return [false, latest] as const;
+                }
 
-              return [
-                true,
-                {
-                  ...latest,
-                  restartAttempt: 0,
-                  ready: true,
-                },
-              ] as const;
-            });
-            if (!isCurrentRun) {
-              return;
-            }
-
-            yield* Ref.set(migrationProgress, null);
-            yield* spec.onMigrationProgress?.(null) ?? Effect.void;
-            yield* spec.onReady?.(config.value.httpBaseUrl, pid) ?? Effect.void;
-            if (
-              config.value.runningDistro !== undefined &&
-              config.value.wslRuntimeId !== undefined
-            ) {
-              yield* wslEnvironment.pruneRuntimes(
-                config.value.runningDistro,
-                config.value.wslRuntimeId,
-                config.value.wslT3Home ?? null,
-              );
-            }
-          }),
-          onReadinessFailure: Effect.fn("desktop.backendInstance.onReadinessFailure")(
-            function* (error) {
-              if (
-                (yield* Ref.get(migrationProgress)) !== null ||
-                isRunningDatabaseMigrations(yield* Ref.get(outputTail))
-              ) {
-                yield* logInstanceWarning("backend is still migrating its database; waiting", {
-                  error: error.message,
-                });
+                return [
+                  true,
+                  {
+                    ...latest,
+                    restartAttempt: 0,
+                    ready: true,
+                  },
+                ] as const;
+              });
+              if (!isCurrentRun) {
                 return;
               }
-              yield* logInstanceWarning("backend readiness check failed during bootstrap", {
-                error: error.message,
-              });
-              yield* backendOutputLog.persistFailureSnapshot({
-                details: error.message,
-              });
-              yield* reportStartupFailure("The server started but did not become ready in time.");
-            },
-          ),
-          onOutput: (streamName, chunk) =>
-            Ref.modify(outputTail, (tail) => {
-              const output = tail + outputDecoders[streamName].decode(chunk, { stream: true });
-              return [
-                output,
-                // A cut through a surrogate pair would make encodeURIComponent throw when rendering.
-                output.slice(-STARTUP_FAILURE_OUTPUT_CHARS).toWellFormed(),
-              ];
-            }).pipe(
-              Effect.flatMap((output) =>
-                Effect.gen(function* () {
-                  const latest = yield* SubscriptionRef.get(state);
-                  if (
-                    !latest.ready &&
-                    Option.isSome(latest.active) &&
-                    latest.active.value.id === runId
-                  ) {
-                    const progress = yield* Ref.updateAndGet(migrationProgress, (previous) =>
-                      databaseMigrationProgress(output, previous),
-                    );
-                    yield* spec.onMigrationProgress?.(progress) ?? Effect.void;
-                  }
-                }),
-              ),
-              Effect.andThen(backendOutputLog.writeOutputChunk(streamName, chunk)),
+
+              yield* Ref.set(migrationProgress, null);
+              yield* spec.onMigrationProgress?.(null) ?? Effect.void;
+              yield* spec.onReady?.(config.value.httpBaseUrl, pid) ?? Effect.void;
+              if (
+                config.value.runningDistro !== undefined &&
+                config.value.wslRuntimeId !== undefined
+              ) {
+                yield* wslEnvironment.pruneRuntimes(
+                  config.value.runningDistro,
+                  config.value.wslRuntimeId,
+                  config.value.wslT3Home ?? null,
+                );
+              }
+            }),
+            onReadinessFailure: Effect.fn("desktop.backendInstance.onReadinessFailure")(
+              function* (error) {
+                if (
+                  (yield* Ref.get(migrationProgress)) !== null ||
+                  isRunningDatabaseMigrations(yield* Ref.get(outputTail))
+                ) {
+                  yield* logInstanceWarning("backend is still migrating its database; waiting", {
+                    error: error.message,
+                  });
+                  return;
+                }
+                yield* logInstanceWarning("backend readiness check failed during bootstrap", {
+                  error: error.message,
+                });
+                yield* backendOutputLog.persistFailureSnapshot({
+                  details: error.message,
+                });
+                yield* reportStartupFailure("The server started but did not become ready in time.");
+              },
             ),
+            onOutput: (streamName, chunk) =>
+              Ref.modify(outputTail, (tail) => {
+                const output = tail + outputDecoders[streamName].decode(chunk, { stream: true });
+                return [
+                  output,
+                  // A cut through a surrogate pair would make encodeURIComponent throw when rendering.
+                  output.slice(-STARTUP_FAILURE_OUTPUT_CHARS).toWellFormed(),
+                ];
+              }).pipe(
+                Effect.flatMap((output) =>
+                  Effect.gen(function* () {
+                    const latest = yield* SubscriptionRef.get(state);
+                    if (
+                      !latest.ready &&
+                      Option.isSome(latest.active) &&
+                      latest.active.value.id === runId
+                    ) {
+                      const progress = yield* Ref.updateAndGet(migrationProgress, (previous) =>
+                        databaseMigrationProgress(output, previous),
+                      );
+                      yield* spec.onMigrationProgress?.(progress) ?? Effect.void;
+                    }
+                  }),
+                ),
+                Effect.andThen(backendOutputLog.writeOutputChunk(streamName, chunk)),
+              ),
+          });
         }).pipe(
           Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, spawner),
           Effect.provideService(HttpClient.HttpClient, httpClient),

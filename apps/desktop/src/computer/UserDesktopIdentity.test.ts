@@ -71,7 +71,7 @@ describe("UserDesktopIdentity", () => {
           desktopId: first.registration.desktopId,
           defaultLabel: "desktop-host",
           platform: "linux",
-          capabilities: ["view", "control", "availability"],
+          capabilities: ["view", "control", "availability", "execution"],
         });
 
         const stored = decodeIdentityDocument(
@@ -111,7 +111,7 @@ describe("UserDesktopIdentity", () => {
         const identity = yield* UserDesktopIdentity.makeWithHostname("windows-client");
 
         assert.strictEqual(identity.registration.platform, "windows");
-        assert.deepEqual(identity.registration.capabilities, []);
+        assert.deepEqual(identity.registration.capabilities, ["execution"]);
       }),
       "win32",
     ),

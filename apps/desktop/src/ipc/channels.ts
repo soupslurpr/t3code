@@ -183,3 +183,6 @@ export const COMPUTER_AUTOMATION_FORGET_CONTROL_CHANNEL =
   "desktop:computer-automation-forget-control";
 export const DESKTOP_AUTHORIZATION_CHANNEL = "desktop:authorization";
 export const DESKTOP_AUTHORIZATION_CHANGED_CHANNEL = "desktop:authorization-changed";
+
+export const COMPUTER_EXECUTION_CHANNEL = "desktop:computer-execution";
+export const COMPUTER_TRANSFER_CHANNEL = "desktop:computer-transfer";

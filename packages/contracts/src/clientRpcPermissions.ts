@@ -74,6 +74,8 @@ export const CLIENT_GUARDED_RPC_SCOPES = {
   [WS_METHODS.gitRunStackedAction]: AuthSourceControlWriteScope,
   [WS_METHODS.gitPreparePullRequestThread]: AuthSourceControlWriteScope,
   [WS_METHODS.vcsCreateWorktree]: AuthSourceControlWriteScope,
+  [WS_METHODS.threadWorktreeRemove]: AuthSourceControlWriteScope,
+  [WS_METHODS.threadWorktreeDetach]: AuthSourceControlWriteScope,
   [WS_METHODS.vcsRemoveWorktree]: AuthSourceControlWriteScope,
   [WS_METHODS.workspaceAddTaskFolderRepository]: AuthSourceControlWriteScope,
   // The server runs an approved layout command: approving one is running code there, as a terminal does.
@@ -120,6 +122,8 @@ export function clientRpcRequiredScopes(
   method: string,
   input: unknown,
 ): readonly AuthEnvironmentScope[] {
+  if (method === WS_METHODS.threadWorktreeDetach)
+    return [AuthSourceControlWriteScope, AuthOrchestrationOperateScope];
   if (method === WS_METHODS.gitPreparePullRequestThread && input !== undefined) {
     const payload = decodePrepareThread(input);
     if (payload.mode === "worktree" && payload.threadId !== undefined)

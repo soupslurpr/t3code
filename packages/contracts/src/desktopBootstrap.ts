@@ -34,6 +34,10 @@ export const DesktopBackendBootstrap = Schema.Struct({
   desktopAppUpdate: Schema.optionalKey(Schema.Boolean),
   desktopBrowserFd: Schema.optionalKey(PositiveInt),
   desktopBrowserControlFd: Schema.optionalKey(PositiveInt),
+  /** Native same-account execution authorization replies, never delivered to WSL or renderers. */
+  desktopAuthorizationFd: Schema.optionalKey(PositiveInt),
+  /** Authenticated human decisions from the bound native backend. */
+  desktopAuthorizationControlFd: Schema.optionalKey(PositiveInt),
   resourceMonitorPath: Schema.optionalKey(TrimmedNonEmptyString),
 });
 

@@ -8971,7 +8971,7 @@ it.layer(layerTest)("GitVcsDriver core integration", (it) => {
       }),
     );
 
-    it.effect("prunes stale registrations when removing an already-gone worktree", () =>
+    it.effect("removes only the selected registration when a worktree is already gone", () =>
       Effect.gen(function* () {
         const cwd = yield* makeTmpDir();
         const { initialBranch } = yield* initRepoWithCommit(cwd);
@@ -8994,8 +8994,10 @@ it.layer(layerTest)("GitVcsDriver core integration", (it) => {
           path: pathService.join(worktreesRoot, "never-registered"),
         });
 
-        const registered = yield* git(cwd, ["worktree", "list", "--porcelain"]);
-        assert.notInclude(registered, "stale");
+        const registered = () => git(cwd, ["worktree", "list", "--porcelain"]);
+        assert.include(yield* registered(), stalePath);
+        yield* driver.removeWorktree({ cwd, path: stalePath });
+        assert.notInclude(yield* registered(), stalePath);
       }),
     );
   });

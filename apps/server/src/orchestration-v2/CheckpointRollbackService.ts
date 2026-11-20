@@ -285,14 +285,9 @@ export const layer: Layer.Layer<
         ) {
           const project = yield* projects.get(context.thread.projectId);
           if (Option.isSome(project)) {
-            const recreate = gitWorkflow.pruneWorktrees({ cwd: project.value.workspaceRoot }).pipe(
-              Effect.andThen(
-                gitWorkflow.createWorktree({
-                  cwd: project.value.workspaceRoot,
-                  refName: branch,
-                  path: worktreePath,
-                }),
-              ),
+            const recreate = gitWorkflow.createWorktree(
+              { cwd: project.value.workspaceRoot, refName: branch, path: worktreePath },
+              { recoverPrunableRegistration: true },
             );
             if (leftover) {
               if (!(yield* isolated)) return yield* sharedWorkspace();

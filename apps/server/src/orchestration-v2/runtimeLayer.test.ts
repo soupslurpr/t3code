@@ -72,6 +72,10 @@ import * as ProviderInstanceRegistry from "../provider/ProviderInstanceRegistry.
 import type { ProviderInstance } from "@t3tools/provider-core/server/driver";
 import * as VcsDriverRegistry from "../vcs/VcsDriverRegistry.ts";
 import * as VcsProcess from "../vcs/VcsProcess.ts";
+import {
+  withCheckpointRestoreReservation,
+  withWorkspaceLease,
+} from "../workspace/workspaceLease.ts";
 import * as WorkspacePaths from "../workspace/WorkspacePaths.ts";
 import * as LegacyV1ThreadImporter from "./legacy/LegacyV1ThreadImporter.ts";
 import * as Orchestrator from "./Orchestrator.ts";
@@ -1837,6 +1841,11 @@ it.layer(layerTest)("OrchestrationV2LayerLive", (it) => {
           assert.match(String(overlap.cause), /isolated worktree/);
           assert.equal(yield* orchestrator.getThreadEventSequence(threadId), overlapSequence);
           assert.deepEqual(yield* outbox.listByCommandId(overlapCommandId), []);
+          yield* orchestrator.dispatch({
+            type: "thread.stop",
+            commandId: CommandId.make("runtime-rollback-stop-before-sharing"),
+            threadId,
+          });
           yield* orchestrator.dispatch({
             type: "thread.metadata.update",
             commandId: CommandId.make("runtime-rollback-share"),
@@ -3643,6 +3652,74 @@ const writeHtmlRenderRun = Effect.fn("test.writeHtmlRenderRun")(function* (input
 });
 
 it.layer(layerTest)("OrchestrationV2LayerLive lifecycle", (it) => {
+  it.effect("refuses new and changed thread bindings to a checkout removed during dispatch", () =>
+    Effect.gen(function* () {
+      const threads = yield* ThreadManagementService.ThreadManagementService;
+      const projections = yield* ProjectionStore.ProjectionStoreV2;
+      const fs = yield* FileSystem.FileSystem;
+      const path = yield* Path.Path;
+      const root = yield* fs.makeTempDirectoryScoped();
+      const cwd = path.join(root, "checkout");
+      const alias = path.join(root, "alias");
+      yield* fs.makeDirectory(cwd);
+      yield* fs.symlink(cwd, alias);
+      const create = {
+        type: "thread.create",
+        commandId: CommandId.make("initial-binding"),
+        threadId: ThreadId.make("existing"),
+        projectId: ProjectId.make("bindings"),
+        title: "Worktree",
+        modelSelection,
+        runtimeMode: "full-access",
+        interactionMode: "default",
+        branch: null,
+        worktreePath: null,
+        createdBy: "user",
+        creationSource: "web",
+      } as const;
+      yield* threads.dispatch(create);
+      const newThread = {
+        ...create,
+        threadId: ThreadId.make("new"),
+        commandId: CommandId.make("create-bound"),
+        worktreePath: alias,
+      };
+      const rebind = {
+        type: "thread.metadata.update",
+        threadId: create.threadId,
+        commandId: CommandId.make("bind-existing"),
+        worktreePath: alias,
+      } as const;
+      const pending = yield* withCheckpointRestoreReservation(
+        fs,
+        path,
+        cwd,
+        withWorkspaceLease(
+          cwd,
+          Effect.gen(function* () {
+            const writes = yield* Effect.forEach(
+              [newThread, rebind],
+              (command) => threads.dispatch(command).pipe(Effect.result),
+              { concurrency: "unbounded" },
+            ).pipe(Effect.forkScoped);
+            yield* fs.remove(cwd, { recursive: true });
+            return writes;
+          }),
+        ),
+      );
+      assert.deepEqual(
+        (yield* Fiber.join(pending)).map((result) => result._tag),
+        ["Failure", "Failure"],
+      );
+      assert.isNull(yield* projections.getThreadShell(newThread.threadId));
+      assert.isNull((yield* projections.getThread(create.threadId)).worktreePath);
+      yield* fs.makeDirectory(cwd);
+      const accepted = yield* threads.dispatch(rebind);
+      yield* fs.remove(cwd, { recursive: true });
+      assert.equal((yield* threads.dispatch(rebind)).sequence, accepted.sequence);
+    }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
+  );
+
   it.effect("applies lifecycle commands idempotently and emits archive/removal shell deltas", () =>
     Effect.gen(function* () {
       const orchestrator = yield* Orchestrator.OrchestratorV2;
@@ -8093,6 +8170,22 @@ it.layer(layerTest)("OrchestrationV2LayerLive lifecycle", (it) => {
         })
         .pipe(Effect.flip);
       assert.instanceOf(nonEmptyClaim, Orchestrator.OrchestratorDispatchError);
+
+      for (const worktreePath of [null, "/tmp/reassigned-after-message"]) {
+        const rejected = yield* orchestrator
+          .dispatch({
+            type: "thread.metadata.update",
+            commandId: CommandId.make(`active-worktree:${worktreePath}`),
+            threadId,
+            worktreePath,
+          })
+          .pipe(Effect.result);
+        assert.equal(rejected._tag, "Failure");
+      }
+      assert.equal(
+        (yield* orchestrator.getThreadProjection(threadId)).thread.worktreePath,
+        "/tmp/runtime-layer-active-settle",
+      );
 
       const error = yield* orchestrator
         .dispatch({

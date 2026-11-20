@@ -392,6 +392,10 @@ export function layerWithRegistry<Error>(
   const layerCommandReceiptStoreProvided = CommandReceiptStore.layer.pipe(
     Layer.provide(layerDatabase),
   );
+  const layerGit = GitVcsDriver.layer.pipe(
+    Layer.provide(layerServerConfig),
+    Layer.provide(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer)),
+  );
   const layerProviderEventIngestorProvided = ProviderEventIngestor.layer.pipe(
     Layer.provide(
       Layer.mergeAll(
@@ -402,10 +406,7 @@ export function layerWithRegistry<Error>(
         layerEventSinkProvided,
         IdAllocator.layer,
         ThreadCommandExecutor.layer,
-        GitVcsDriver.layer.pipe(
-          Layer.provide(layerServerConfig),
-          Layer.provide(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer)),
-        ),
+        layerGit,
       ),
     ),
   );
@@ -622,7 +623,11 @@ export function layerWithRegistry<Error>(
     layerCommandOutputHubProvided,
     ThreadCommandExecutor.layer,
   ).pipe(
-    Layer.provide(ProviderTurnStartServiceTestkit.layer),
+    Layer.provide(
+      ProviderTurnStartServiceTestkit.layerReplayWorkspaces.pipe(
+        Layer.provide([layerGit, layerStores]),
+      ),
+    ),
     Layer.provide(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer)),
   );
 

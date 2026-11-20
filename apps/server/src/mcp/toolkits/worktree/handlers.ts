@@ -1,7 +1,8 @@
+import { ThreadWorktreeService } from "../../../orchestration-v2/ThreadWorktreeService.ts";
 import { OrchestratorMcpFailure } from "@t3tools/contracts";
 import * as Option from "effect/Option";
 import * as Project from "../../../project/ProjectService.ts";
-import { readThread, unavailable } from "../../threadAccess.ts";
+import { loadCaller, readThread, unavailable } from "../../threadAccess.ts";
 import * as Effect from "effect/Effect";
 
 import * as McpInvocationContext from "../../McpInvocationContext.ts";
@@ -10,6 +11,26 @@ import * as WorktreeMcpService from "../../WorktreeMcpService.ts";
 import { WorktreeToolkit } from "./tools.ts";
 
 const handlers = {
+  t3_worktree_detach: McpToolAccess.actsAsCaller((input) =>
+    Effect.gen(function* () {
+      const { scope, caller } = yield* loadCaller();
+      if (!caller || !scope.thread || !scope.capabilities.has("worktree"))
+        return yield* new OrchestratorMcpFailure({
+          code: "capability_denied",
+          message: "A thread credential with worktree access is required.",
+        });
+      return yield* (yield* ThreadWorktreeService).detach(
+        caller.id,
+        {
+          removeWorktree: input.removeWorktree === true,
+          force: input.force,
+        },
+        caller.activeRunId && scope.thread.providerInstanceId === caller.modelSelection.instanceId
+          ? { runId: caller.activeRunId, credentialId: scope.thread.providerSessionId }
+          : undefined,
+      );
+    }),
+  ),
   t3_worktree_list: McpToolAccess.reads((input) =>
     Effect.gen(function* () {
       const context = yield* McpInvocationContext.McpInvocationContext;

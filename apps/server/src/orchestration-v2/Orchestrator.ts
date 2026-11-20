@@ -178,6 +178,7 @@ import { withCommandMetrics } from "../observability/Metrics.ts";
 import type { OrchestrationEffectRequestV2, PendingOrchestrationEffectV2 } from "./EffectOutbox.ts";
 import * as IdAllocator from "@t3tools/provider-core/server/IdAllocator";
 import * as ThreadCommandExecutor from "./ThreadCommandExecutor.ts";
+import { AbandonedSetupWorktree, PreparedRunWorktreeUpdate } from "./ThreadWorktreeBinding.ts";
 import {
   DispatchModeLimit,
   exceededDispatchModeLimit,
@@ -4837,15 +4838,59 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       }
     }
 
+    const changingWorktree =
+      command.type === "thread.metadata.update" &&
+      command.worktreePath !== undefined &&
+      command.worktreePath !== thread.worktreePath;
+    const preparedRunId = yield* PreparedRunWorktreeUpdate;
+    if (
+      (command.type === "thread.metadata.update" && preparedRunId !== undefined) ||
+      (changingWorktree &&
+        thread.worktreePath !== null &&
+        !(command.worktreePath === null && (yield* AbandonedSetupWorktree) === thread.worktreePath))
+    ) {
+      const { runs } = yield* projectionStore
+        .getThreadRecords(command.threadId, ["runs"], {
+          runStatuses: ["queued", "preparing", "starting", "running", "waiting"],
+        })
+        .pipe(mapDispatchError(command));
+      if (preparedRunId !== undefined) {
+        if (!runs.some((run) => run.id === preparedRunId && run.status === "preparing"))
+          return yield* new OrchestratorDispatchError({
+            commandId: command.commandId,
+            commandType: command.type,
+            cause: "Prepared run is no longer preparing.",
+          });
+        if (
+          runs.some(
+            (run) =>
+              !(run.id === preparedRunId && run.status === "preparing") && run.status !== "queued",
+          )
+        )
+          return yield* new OrchestratorDispatchError({
+            commandId: command.commandId,
+            commandType: command.type,
+            cause: "Finish or stop the thread's runs before changing its worktree.",
+          });
+      } else if (
+        runs.some(
+          (run) => !(command.worktreePath === null && run.status === "queued" && run.queueHeld),
+        )
+      )
+        return yield* new OrchestratorDispatchError({
+          commandId: command.commandId,
+          commandType: command.type,
+          cause: "Finish or stop the thread's runs before changing its worktree.",
+        });
+    }
+
     const needsProviderState =
       command.type === "thread.runtime-mode.set" ||
       command.type === "thread.model-selection.set" ||
       command.type === "provider.switch" ||
       command.type === "thread.archive" ||
       command.type === "thread.settle" ||
-      (command.type === "thread.metadata.update" &&
-        command.worktreePath !== undefined &&
-        command.worktreePath !== thread.worktreePath);
+      changingWorktree;
     const providerContext = needsProviderState
       ? yield* projectionStore
           .getThreadProviderContext(
@@ -4895,9 +4940,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
     const detachSessionIds = new Set(
       command.type === "thread.archive" || command.type === "thread.settle"
         ? (providerContext?.providerSessions ?? []).map((session) => session.id)
-        : command.type === "thread.metadata.update" &&
-            command.worktreePath !== undefined &&
-            command.worktreePath !== thread.worktreePath
+        : changingWorktree
           ? (providerContext?.providerSessions ?? []).map((session) => session.id)
           : command.type === "thread.runtime-mode.set"
             ? (providerContext?.providerSessions ?? [])

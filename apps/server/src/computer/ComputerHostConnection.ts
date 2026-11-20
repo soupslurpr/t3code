@@ -137,7 +137,13 @@ export const makeHostConnection = Effect.fn("ComputerHostConnection.open")(funct
         "resource",
         "The selected desktop disconnected.",
       );
-    if (!operations.has(operation))
+    const requiresExecution = operation === "computerExecution" || operation === "computerTransfer";
+    if (
+      !operations.has(operation) ||
+      (requiresExecution &&
+        (!registration.userDesktop.capabilities.includes("execution") ||
+          registration.authorizationVersion !== 2))
+    )
       return yield* hostFailure(
         "unsupported-operation",
         "unsupported-operation",

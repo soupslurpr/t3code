@@ -1,3 +1,18 @@
+import {
+  DesktopJobAccessInput,
+  DesktopJobAccess,
+  DesktopCommandToolInput,
+  UserDesktopToolProcessResult,
+  DesktopProcessToolInput,
+  UserDesktopToolProcessList,
+  DesktopJobCompletionInput,
+  DesktopJobCompletionResult,
+  DesktopCopyInput,
+  DesktopTransfer,
+  UserDesktopTransferTargetInput,
+  UserDesktopTransferRequestError,
+} from "@t3tools/contracts";
+import { DesktopTransfers } from "../../../computer/DesktopTransfers.ts";
 import * as Digest from "effect/crypto/Digest";
 import {
   ComputerAutomationAccessInput,
@@ -227,7 +242,94 @@ const ComputerForgetControlTool = safeComputerTool(
     .annotate(Tool.Idempotent, true),
 );
 
+const desktopOperationFailure = Schema.Union([
+  ComputerHostError,
+  OrchestratorMcpFailure,
+  McpCapabilityUnavailableError,
+  UserDesktopTransferRequestError,
+]);
+const computer_execution = computerTool(
+  Tool.make("computer_execution", {
+    description:
+      "Request or inspect command and file-transfer permission for the selected desktop. Screen control grants are independent.",
+    parameters: DesktopJobAccessInput,
+    success: DesktopJobAccess,
+    failure: desktopOperationFailure,
+    failureMode: "return",
+    dependencies: [...dependencies, DesktopTransfers],
+  }),
+);
+const computer_command = computerTool(
+  Tool.make("computer_command", {
+    description:
+      "Start an authorized command on the selected desktop. Reuse commandId when retrying. Read output or send PTY input with computer_process.",
+    parameters: DesktopCommandToolInput,
+    success: UserDesktopToolProcessResult,
+    failure: desktopOperationFailure,
+    failureMode: "return",
+    dependencies: [...dependencies, DesktopTransfers],
+  }),
+);
+const computer_process = computerTool(
+  Tool.make("computer_process", {
+    description:
+      "List owned desktop jobs, read paged output, send PTY input, resize, stop, or forget a finished process.",
+    parameters: DesktopProcessToolInput,
+    success: Schema.Union([UserDesktopToolProcessResult, UserDesktopToolProcessList]),
+    failure: desktopOperationFailure,
+    failureMode: "return",
+    dependencies: [...dependencies, DesktopTransfers],
+  }),
+);
+const computer_completion = computerTool(
+  Tool.make("computer_completion", {
+    description: "Register or inspect a completion receipt for one process and runtime generation.",
+    parameters: DesktopJobCompletionInput,
+    success: DesktopJobCompletionResult,
+    failure: desktopOperationFailure,
+    failureMode: "return",
+    dependencies: [...dependencies, DesktopTransfers],
+  }),
+);
+const computer_copy = computerTool(
+  Tool.make("computer_copy", {
+    description:
+      "Copy a file or directory between the thread workspace and an explicitly authorized desktop. Reuse copyId for a retry.",
+    parameters: DesktopCopyInput,
+    success: DesktopTransfer,
+    failure: desktopOperationFailure,
+    failureMode: "return",
+    dependencies: [...dependencies, DesktopTransfers],
+  }),
+);
+const computer_transfer_status = readonlyComputerTool(
+  Tool.make("computer_transfer_status", {
+    description: "Inspect a transfer owned by this thread.",
+    parameters: UserDesktopTransferTargetInput,
+    success: DesktopTransfer,
+    failure: desktopOperationFailure,
+    failureMode: "return",
+    dependencies: [...dependencies, DesktopTransfers],
+  }),
+);
+const computer_transfer_cancel = computerTool(
+  Tool.make("computer_transfer_cancel", {
+    description: "Cancel a transfer owned by this thread.",
+    parameters: UserDesktopTransferTargetInput,
+    success: DesktopTransfer,
+    failure: desktopOperationFailure,
+    failureMode: "return",
+    dependencies: [...dependencies, DesktopTransfers],
+  }),
+);
 export const ComputerToolkit = Toolkit.make(
+  computer_execution,
+  computer_command,
+  computer_process,
+  computer_completion,
+  computer_copy,
+  computer_transfer_status,
+  computer_transfer_cancel,
   UserDesktopListTool,
   ComputerStatusTool,
   ComputerRequestAvailabilityTool,

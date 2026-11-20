@@ -1,4 +1,6 @@
 import { classifyCodexManagedError } from "../provider/CodexManagedErrors.ts";
+import { WORKTREE_RECOVERY_NOTICE } from "./ThreadWorktreeBinding.ts";
+import * as ThreadCommands from "./ThreadCommandExecutor.ts";
 import { SIDE_CHAT_HISTORY_UNAVAILABLE_TITLE } from "@t3tools/shared/orchestrationV2ThreadError";
 import { modelSelectionsEqual } from "@t3tools/shared/model";
 import { projectComposerContextForProvider } from "@t3tools/shared/composerContextReferences";
@@ -46,11 +48,9 @@ import * as ProjectService from "../project/ProjectService.ts";
 import * as ProjectSetupScriptRunner from "../project/ProjectSetupScriptRunner.ts";
 import * as ProviderAuthService from "../provider/ProviderAuthService.ts";
 import * as ServerSettings from "../serverSettings.ts";
-import {
-  makeRestoreMissingWorktree,
-  ThreadWorktreeRestore,
-} from "../workspace/restoreMissingWorktree.ts";
+import { ThreadWorktreeRestore } from "../workspace/restoreMissingWorktree.ts";
 import type * as TaskFolders from "../workspace/TaskFolders.ts";
+import { makeEnsureThreadWorktree } from "./ThreadWorktreeService.ts";
 import * as EventSink from "./EventSink.ts";
 import * as ProviderUsageAnalytics from "../telemetry/ProviderUsageAnalytics.ts";
 import * as ContextHandoffService from "./ContextHandoffService.ts";
@@ -368,8 +368,8 @@ export const layer: Layer.Layer<
     const providerSessions = yield* ProviderSessionManager.ProviderSessionManagerV2;
     const runExecution = yield* RunExecutionService.RunExecutionServiceV2;
     const runtimePolicy = yield* RuntimePolicy.RuntimePolicyV2;
-    const restoreMissingWorktree = yield* makeRestoreMissingWorktree;
     const worktreeRestore = yield* ThreadWorktreeRestore;
+    const ensureWorktree = yield* makeEnsureThreadWorktree;
     const turnItemPositions = yield* TurnItemPositionStore.TurnItemPositionStoreV2;
 
     // Build draining callbacks outside startup scope so they cannot retain full thread history.
@@ -612,6 +612,7 @@ export const layer: Layer.Layer<
         readonly willRetry?: boolean;
       },
       captureStartingRun: (run: OrchestrationV2Run) => void,
+      reservedWorktree: string | null,
     ) {
       const { runId } = input;
       const projection = yield* projectionStore.getTurnStartContext(input.threadId, runId);
@@ -623,6 +624,7 @@ export const layer: Layer.Layer<
         return;
       }
       captureStartingRun(run);
+      if (projection.thread.worktreePath !== reservedWorktree) return "workspace-changed" as const;
       const rootNode = projection.nodes.find((candidate) => candidate.id === run.rootNodeId);
       const attempt = projection.attempts.find((candidate) => candidate.id === run.activeAttemptId);
       const providerThread = projection.providerThreads.find(
@@ -897,7 +899,7 @@ export const layer: Layer.Layer<
           return;
         }
       }
-      const recreateResult = yield* Effect.result(restoreMissingWorktree(projection.thread));
+      const recreateResult = yield* Effect.result(ensureWorktree(projection.thread, run.id));
       if (recreateResult._tag === "Failure") {
         if (input.willRetry === true) return yield* recreateResult.failure;
         yield* settleStartFailure({
@@ -908,9 +910,19 @@ export const layer: Layer.Layer<
         });
         return;
       }
+      // Release the old checkout's reservation before opening the provider in the main checkout.
+      if (recreateResult.success.status === "detached") return "workspace-changed" as const;
       const recreatedBeforeDispatch = yield* worktreeRestore.takeRecreated(projection.thread.id);
       const recreated =
-        recreateResult.success ??
+        (recreateResult.success.status === "recreated" &&
+        "project" in recreateResult.success &&
+        recreateResult.success.project !== undefined &&
+        recreateResult.success.worktreePath !== undefined
+          ? {
+              project: recreateResult.success.project,
+              worktreePath: recreateResult.success.worktreePath,
+            }
+          : undefined) ??
         (recreatedBeforeDispatch?.worktreePath === projection.thread.worktreePath
           ? recreatedBeforeDispatch
           : undefined);
@@ -1208,6 +1220,55 @@ export const layer: Layer.Layer<
         }),
       );
       const slashCommand = isSlashCommandMessage(providerMessage);
+      // Carry the recovery notice forward across slash commands or undelivered runs until a
+      // non-slash provider turn delivers it in the main checkout.
+      const workspaceNoticePending = (() => {
+        const recoveryRunId = projection.thread.worktreeRecoveryRunId;
+        if (
+          recoveryRunId === undefined ||
+          projection.thread.worktreePath !== null ||
+          run.freshContext === true
+        ) {
+          return false;
+        }
+        const recoveryRun = projection.runs.find((candidate) => candidate.id === recoveryRunId);
+        if (recoveryRun === undefined || run.ordinal < recoveryRun.ordinal) return false;
+        if (recoveryRunId === run.id) return true;
+        const deliveredAttemptIds = new Set(
+          projection.providerTurns.filter(isDeliveredProviderTurn).map((turn) => turn.runAttemptId),
+        );
+        const attemptsByRun = Map.groupBy(projection.attempts, (candidate) => candidate.runId);
+        const slashMessageIds = new Set(
+          projection.messages.filter(isSlashCommandMessage).map((candidate) => candidate.id),
+        );
+        const scheduledMessageIds = new Set(
+          projection.messages
+            .filter((candidate) => candidate.scheduledTaskId !== undefined)
+            .map((candidate) => candidate.id),
+        );
+        return !projection.runs.some((source) => {
+          if (source.ordinal < recoveryRun.ordinal || source.ordinal >= run.ordinal) return false;
+          if (source.status === "rolled_back") return false;
+          const hasDeliveredTurn = (attemptsByRun.get(source.id) ?? []).some((candidate) =>
+            deliveredAttemptIds.has(candidate.id),
+          );
+          if (!hasDeliveredTurn) return false;
+          if (source.freshContext === true) {
+            // A fresh-session scheduled run is a side conversation; only a delivered manual fresh
+            // run starts a new main conversation that no longer needs the recovery notice.
+            const scheduled =
+              (source.userMessageId !== null && scheduledMessageIds.has(source.userMessageId)) ||
+              isScheduledFreshRun(source, projection.turnItems);
+            return !scheduled;
+          }
+          if (source.userMessageId !== null && slashMessageIds.has(source.userMessageId)) {
+            return false;
+          }
+          return true;
+        });
+      })();
+      const workspaceNotice =
+        !slashCommand && workspaceNoticePending ? WORKTREE_RECOVERY_NOTICE : "";
       const goalDriver =
         session.driver === "codex" ||
         session.driver === "claudeAgent" ||
@@ -2146,6 +2207,7 @@ export const layer: Layer.Layer<
         retryHandoff.attachments.length > 0 ||
         sideChatHandoff !== undefined ||
         restartNote !== "" ||
+        workspaceNotice !== "" ||
         noteContinuation;
       // Pending context turns the resume into a prompted turn, which needs no native resume.
       if (
@@ -2380,7 +2442,8 @@ export const layer: Layer.Layer<
               ? []
               : [sideChatHandoff]),
           ];
-          const context = [delivery.context, sideChatContext, restartNote]
+          const workspaceContext = compact || slashCommand ? "" : workspaceNotice;
+          const context = [workspaceContext, delivery.context, sideChatContext, restartNote]
             .filter((part) => part !== "")
             .join("\n\n");
           const { restartContinuationOfRunId: _resumedRunId, ...promptedInput } = turnInput;
@@ -2581,46 +2644,50 @@ export const layer: Layer.Layer<
         return yield* Effect.gen(function* () {
           // Storage cleanup removes worktrees under the same lease. Only startup
           // holds it; the provider turn runs after it is released.
-          const { thread } = yield* projectionStore.getThreadRecords(input.threadId, []);
-          const cwd =
-            thread.worktreePath ??
-            (yield* projects
-              .getById(thread.projectId, { includeDeleted: true })
-              .pipe(Effect.map((project) => Option.getOrUndefined(project)?.workspaceRoot)));
-          // Settling a turn a restart cut off changes what a start reads, so it starts once more.
-          const startSettled = start(input, captureStartingRun).pipe(
-            Effect.filterOrElse(
-              (started) => started !== CUT_TURN_SETTLED,
-              () => start(input, captureStartingRun),
-            ),
-            Effect.map((started) => (started === CUT_TURN_SETTLED ? undefined : started)),
-          );
-          const providerTurn = yield* cwd === undefined
-            ? startSettled
-            : withTurnStartReservation(
-                fileSystem,
-                path,
-                path.resolve(cwd),
-                thread.worktreePath === null
-                  ? startSettled
-                  : withWorkspaceLease(path.resolve(thread.worktreePath), startSettled),
-              );
-          if (providerTurn !== undefined && "worktreeSetup" in providerTurn) {
-            yield* providerTurn.worktreeSetup;
-          } else if (providerTurn !== undefined) {
-            // Run execution owns finalization after the running write. A later
-            // failure must not settle a replacement attempt committed by steering.
-            yield* providerTurn.pipe(
-              Effect.catchCauseIf(
-                (cause) => !Cause.hasInterruptsOnly(cause),
-                (cause) =>
-                  Effect.logWarning(
-                    "Run execution failed after starting",
-                    { runId: input.runId },
-                    cause,
-                  ),
+          for (;;) {
+            const { thread } = yield* projectionStore.getThreadRecords(input.threadId, []);
+            const cwd =
+              thread.worktreePath ??
+              (yield* projects
+                .getById(thread.projectId, { includeDeleted: true })
+                .pipe(Effect.map((project) => Option.getOrUndefined(project)?.workspaceRoot)));
+            // Settling a turn a restart cut off changes what a start reads, so it starts once more.
+            const startSettled = start(input, captureStartingRun, thread.worktreePath).pipe(
+              Effect.filterOrElse(
+                (started) => started !== CUT_TURN_SETTLED,
+                () => start(input, captureStartingRun, thread.worktreePath),
               ),
+              Effect.map((started) => (started === CUT_TURN_SETTLED ? undefined : started)),
             );
+            const providerTurn = yield* cwd === undefined
+              ? startSettled
+              : withTurnStartReservation(
+                  fileSystem,
+                  path,
+                  cwd,
+                  thread.worktreePath === null
+                    ? startSettled
+                    : withWorkspaceLease(path.resolve(thread.worktreePath), startSettled),
+                );
+            if (providerTurn === "workspace-changed") continue;
+            if (providerTurn !== undefined && "worktreeSetup" in providerTurn) {
+              yield* providerTurn.worktreeSetup;
+            } else if (providerTurn !== undefined) {
+              // Run execution owns finalization after the running write. A later
+              // failure must not settle a replacement attempt committed by steering.
+              yield* providerTurn.pipe(
+                Effect.catchCauseIf(
+                  (cause) => !Cause.hasInterruptsOnly(cause),
+                  (cause) =>
+                    Effect.logWarning(
+                      "Run execution failed after starting",
+                      { runId: input.runId },
+                      cause,
+                    ),
+                ),
+              );
+            }
+            return;
           }
         }).pipe(
           Effect.catchCauseIf(
@@ -2698,4 +2765,4 @@ export const layer: Layer.Layer<
       ),
     });
   }),
-);
+).pipe(Layer.provide(ThreadCommands.layer));

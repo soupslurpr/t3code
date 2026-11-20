@@ -157,5 +157,9 @@
   "8af79268f2349f4c": "Kopiera e-postadress",
   "a9f9254d458e49fe": "Kopiera bild",
   "9c1b20fbc881de5d": "Skrivbordskonfiguration",
-  "1b14230874f19eb9": "Bilder"
+  "1b14230874f19eb9": "Bilder",
+  "d3a62840ed89f07c": "Kör kommandon och överför filer på det här skrivbordet",
+  "7a33d32200ee3623": "Välj vem som får köra kommandon och överföra filer",
+  "5c9c7f2d78c02395": "Välj när behörigheten att köra kommandon upphör",
+  "4905f10f8181ab2e": "Ta bort behörigheten att köra kommandon?"
 }

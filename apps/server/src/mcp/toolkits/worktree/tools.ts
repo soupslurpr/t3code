@@ -1,3 +1,5 @@
+import { ThreadWorktreeDetachResult, ThreadWorktreeError } from "@t3tools/contracts";
+import { ThreadWorktreeService } from "../../../orchestration-v2/ThreadWorktreeService.ts";
 import {
   WorktreeMcpFailure,
   OrchestratorMcpEnvironmentTarget,
@@ -85,6 +87,20 @@ const WorktreeListTool = Tool.make("t3_worktree_list", {
   .annotate(Tool.Readonly, true)
   .annotate(Tool.Destructive, false);
 export const WorktreeToolkit = Toolkit.make(
+  Tool.make("t3_worktree_detach", {
+    description:
+      "Detach this thread to the main checkout. Its Git branch is preserved. Optional removal requires an idle checkout. A removal refusal is returned after the binding moves.",
+    parameters: Schema.Struct({
+      removeWorktree: Schema.optional(Schema.Boolean),
+      force: Schema.optional(Schema.Boolean),
+    }),
+    success: ThreadWorktreeDetachResult,
+    failure: Schema.Union([ThreadWorktreeError, OrchestratorMcpFailure]),
+    failureMode: "return",
+    dependencies: [...dependencies, ThreadWorktreeService],
+  })
+    .annotate(Tool.Destructive, true)
+    .annotate(McpSchema.EnabledWhen, McpInvocationContext.hiddenFromOutsideClients),
   WorktreeHandoffTool,
   WorktreeStatusTool,
   WorktreeListTool,

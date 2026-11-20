@@ -228,7 +228,7 @@ it.effect.each([
   const dispatched: Array<string> = [];
   const layerTest = ThreadManagementService.layerWithLegacyImporter.pipe(
     Layer.provide(
-      Layer.succeed(ThreadWorktreeRestore, {
+      Layer.mock(ThreadWorktreeRestore)({
         takeRecreated: () => Effect.undefined,
         restore: () =>
           Effect.fail(

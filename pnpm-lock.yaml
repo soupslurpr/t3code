@@ -486,6 +486,12 @@ importers:
       gt-i18n:
         specifier: 1.0.40
         version: 1.0.40(patch_hash=5126b6d63c869104ca0c002d982627211d0c6d246eb648e1e020227020c2343c)
+      koffi:
+        specifier: 3.3.6
+        version: 3.3.6
+      node-pty:
+        specifier: 1.2.0-beta.15
+        version: 1.2.0-beta.15(patch_hash=ff8117509663fe1d5a07ef2648c324e80a9349b7d90401a00a591702615b8b30)
       playwright-core:
         specifier: 1.64.1
         version: 1.64.1
@@ -954,6 +960,9 @@ importers:
       ffi-rs:
         specifier: 1.3.2
         version: 1.3.2
+      koffi:
+        specifier: 3.3.6
+        version: 3.3.6
       node-pty:
         specifier: 1.2.0-beta.15
         version: 1.2.0-beta.15(patch_hash=ff8117509663fe1d5a07ef2648c324e80a9349b7d90401a00a591702615b8b30)
@@ -2142,6 +2151,9 @@ importers:
       hast-util-sanitize:
         specifier: ^5.0.2
         version: 5.0.2
+      koffi:
+        specifier: 3.3.6
+        version: 3.3.6
       mdast-util-directive:
         specifier: 'catalog:'
         version: 3.1.0(supports-color@8.1.1)
@@ -2157,6 +2169,9 @@ importers:
       micromark-util-decode-string:
         specifier: 'catalog:'
         version: 2.0.1
+      node-pty:
+        specifier: 1.2.0-beta.15
+        version: 1.2.0-beta.15(patch_hash=ff8117509663fe1d5a07ef2648c324e80a9349b7d90401a00a591702615b8b30)
       property-information:
         specifier: ^7.2.0
         version: 7.2.0

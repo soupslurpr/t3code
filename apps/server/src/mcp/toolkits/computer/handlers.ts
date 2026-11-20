@@ -1,3 +1,6 @@
+import { desktopCommands } from "../../../computer/DesktopCommandPresentation.ts";
+import { DesktopJobAccess, DesktopJobCompletionResult } from "@t3tools/contracts";
+import { DesktopTransfers } from "../../../computer/DesktopTransfers.ts";
 import {
   type ComputerAutomationObservation,
   type ComputerDesktopSelector,
@@ -5,7 +8,7 @@ import {
   UserDesktopInventoryError,
 } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
-import * as Digest from "effect/crypto/Digest";
+import { desktopCaller } from "../../../computer/DesktopCaller.ts";
 import * as McpInvocationContext from "../../McpInvocationContext.ts";
 import * as McpToolAccess from "../../McpToolAccess.ts";
 import * as ComputerAutomationRouter from "../../../computer/ComputerAutomationRouter.ts";
@@ -44,21 +47,61 @@ const publishControllerObservation = Effect.fn("ComputerToolkit.publishControlle
   },
 );
 
-const caller = Effect.fn("ComputerToolkit.caller")(function* () {
-  const scope = yield* McpInvocationContext.requireThreadMcpCapability("computer");
-  const digest = yield* Digest.Digest;
-  const id = yield* digest.digestHex(
-    Digest.sha256,
-    new TextEncoder().encode(scope.environmentId + "\0" + scope.thread.threadId),
-  );
-  return {
-    environmentId: scope.environmentId,
-    threadId: scope.thread.threadId,
-    controllerId: "thread-" + id,
-    controllerKind: "agent" as const,
-  };
-});
+const caller = Effect.fn("ComputerToolkit.caller")(() =>
+  McpInvocationContext.requireThreadMcpCapability("computer").pipe(Effect.flatMap(desktopCaller)),
+);
 const handlers = {
+  computer_execution: McpToolAccess.actsAsCaller((input) =>
+    Effect.gen(function* () {
+      return yield* (yield* ComputerAutomationRouter.ComputerAutomationRouter).invoke(
+        DesktopJobAccess,
+        yield* caller(),
+        "computerExecution",
+        { operation: "access", desktop: input.desktop, input },
+        120_000,
+      );
+    }),
+  ),
+  computer_command: McpToolAccess.actsAsCaller((input) =>
+    Effect.gen(function* () {
+      return yield* (yield* desktopCommands).command(yield* caller(), input);
+    }),
+  ),
+  computer_process: McpToolAccess.actsAsCaller((input) =>
+    Effect.gen(function* () {
+      return yield* (yield* desktopCommands).process(yield* caller(), input);
+    }),
+  ),
+  computer_completion: McpToolAccess.actsAsCaller((input) =>
+    Effect.gen(function* () {
+      return yield* (yield* ComputerAutomationRouter.ComputerAutomationRouter).invoke(
+        DesktopJobCompletionResult,
+        yield* caller(),
+        "computerExecution",
+        { operation: "completion", desktop: input.desktop, input },
+        120_000,
+      );
+    }),
+  ),
+  computer_copy: McpToolAccess.actsAsCaller((input) =>
+    Effect.gen(function* () {
+      const scope = yield* McpInvocationContext.requireThreadMcpCapability("computer");
+      return yield* (yield* DesktopTransfers).start(scope, input);
+    }),
+  ),
+  computer_transfer_status: McpToolAccess.actsAsCaller((input) =>
+    Effect.gen(function* () {
+      const scope = yield* McpInvocationContext.requireThreadMcpCapability("computer");
+      return yield* (yield* DesktopTransfers).status(scope, input);
+    }),
+  ),
+  computer_transfer_cancel: McpToolAccess.actsAsCaller((input) =>
+    Effect.gen(function* () {
+      const scope = yield* McpInvocationContext.requireThreadMcpCapability("computer");
+      return yield* (yield* DesktopTransfers).cancel(scope, input);
+    }),
+  ),
+
   user_desktop_list: McpToolAccess.readsAsCaller(() =>
     Effect.gen(function* () {
       yield* McpInvocationContext.requireThreadMcpCapability("computer");

@@ -1,3 +1,4 @@
+import { DesktopTransfers } from "../computer/DesktopTransfers.ts";
 import * as Digest from "effect/crypto/Digest";
 import * as ComputerObservationStore from "../computer/ComputerObservationStore.ts";
 import * as ComputerAutomationRouter from "../computer/ComputerAutomationRouter.ts";
@@ -1515,6 +1516,7 @@ const layerIssuesToolkit = toolkitRegistration(IssuesToolkit, IssuesHandlers.lay
 const isComputerHostError = Schema.is(ComputerHostError);
 const registerComputerTools = Effect.fn("McpHttpServer.registerComputerTools")(function* () {
   const services = yield* Effect.context<
+    | DesktopTransfers
     | ComputerAutomationRouter.ComputerAutomationRouter
     | UserDesktopHosts.UserDesktopHosts
     | ComputerObservationStore.ComputerObservationStore

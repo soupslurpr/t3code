@@ -6694,8 +6694,12 @@ export const makeGitVcsDriverCore = Effect.fn("makeGitVcsDriverCore")(function* 
     );
     const checkoutWorkers = configuredCheckoutWorkers ?? "0";
     // The cache clones a full checkout, so a sparse worktree uses Git's own checkout.
+    const recoverRegistration = options?.recoverPrunableRegistration === true;
     const fastCheckout =
-      checkoutCache !== undefined && options?.fastCheckout === true && sparsePatterns === null;
+      !recoverRegistration &&
+      checkoutCache !== undefined &&
+      options?.fastCheckout === true &&
+      sparsePatterns === null;
     const cacheGeneration = fastCheckout ? yield* checkoutCache.currentGeneration : 0;
     const stockCheckout = executeGitWithStableDiagnostics(
       "GitVcsDriver.createWorktree",
@@ -6705,6 +6709,7 @@ export const makeGitVcsDriverCore = Effect.fn("makeGitVcsDriverCore")(function* 
         `checkout.workers=${checkoutWorkers}`,
         "worktree",
         "add",
+        ...(recoverRegistration ? ["--force", "--detach"] : []),
         ...(sparsePatterns === null ? [] : ["--no-checkout"]),
         ...(lockReason ? ["--lock", "--reason", lockReason] : []),
         "--",
@@ -6772,6 +6777,25 @@ export const makeGitVcsDriverCore = Effect.fn("makeGitVcsDriverCore")(function* 
         : stockCheckout
     ).pipe(
       Effect.andThen(sparseCheckout),
+      // Force replaces only the stale path. Attaching separately keeps Git's branch-in-use check.
+      Effect.andThen(
+        recoverRegistration
+          ? executeGitWithStableDiagnostics(
+              "GitVcsDriver.createWorktree.attachBranch",
+              worktreePath,
+              ["switch", "--no-guess", "--", checkoutRef],
+              {
+                fallbackErrorDetail: "Unable to attach the recovered worktree to its branch.",
+                timeoutMs: null,
+              },
+            ).pipe(
+              Effect.tapError(() =>
+                removeWorktree({ cwd: input.cwd, path: worktreePath }).pipe(Effect.ignore),
+              ),
+              Effect.asVoid,
+            )
+          : Effect.void,
+      ),
       Effect.andThen(
         fastCheckout ? checkoutCache.schedule(worktreePath, cacheGeneration) : Effect.void,
       ),
@@ -7440,10 +7464,7 @@ export const makeGitVcsDriverCore = Effect.fn("makeGitVcsDriverCore")(function* 
     const alreadyGone =
       isMissingWorktreeStderr(result.stderr) &&
       !(yield* fileSystem.exists(target).pipe(Effect.orElseSucceed(() => false)));
-    if (alreadyGone) {
-      yield* pruneWorktrees({ cwd: input.cwd });
-      return;
-    }
+    if (alreadyGone) return;
     yield* Effect.logWarning(
       `GitVcsDriver.removeWorktree: git worktree remove exited with code ${result.exitCode} for ${input.path} (stderr length ${result.stderr.length}).`,
     );

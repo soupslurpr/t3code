@@ -1,3 +1,5 @@
+import type { UserDesktopExecutionInput, UserDesktopExecutionResult } from "./desktopExecution.ts";
+import type { UserDesktopTransferRequest, UserDesktopTransferResult } from "./desktopTransfer.ts";
 import * as Schema from "effect/Schema";
 import {
   ComputerAutomationAccessInput,
@@ -62,6 +64,14 @@ export type DesktopComputerAutomationResult<Value> =
     };
 
 export interface DesktopComputerAutomationBridge {
+  execution?: (
+    input: UserDesktopExecutionInput,
+    context: DesktopComputerAutomationContext,
+  ) => Promise<DesktopComputerAutomationResult<UserDesktopExecutionResult>>;
+  transfer?: (
+    input: UserDesktopTransferRequest,
+    context: DesktopComputerAutomationContext,
+  ) => Promise<DesktopComputerAutomationResult<UserDesktopTransferResult>>;
   cancelPreparation?: (context: DesktopComputerAutomationContext) => Promise<void>;
   status: (
     input: ComputerAutomationTargetInput,

@@ -386,6 +386,14 @@ export function createVcsEnvironmentAtoms<R, E>(
       label: "environment-data:vcs:cancel-worktree-setup",
       tag: WS_METHODS.worktreeSetupCancel,
     }),
+    removeThreadWorktree: createEnvironmentRpcCommand(runtime, {
+      label: "environment-data:thread-worktree:remove",
+      tag: WS_METHODS.threadWorktreeRemove,
+    }),
+    detachThreadWorktree: createEnvironmentRpcCommand(runtime, {
+      label: "environment-data:thread-worktree:detach",
+      tag: WS_METHODS.threadWorktreeDetach,
+    }),
     removeWorktree: createEnvironmentRpcCommand(runtime, {
       label: "environment-data:vcs:remove-worktree",
       tag: WS_METHODS.vcsRemoveWorktree,

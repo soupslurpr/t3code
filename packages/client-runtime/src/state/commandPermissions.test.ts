@@ -632,3 +632,54 @@ it.effect("rejects protected unary and streamed RPCs outside a guarded command",
     expect(writes).toBe(0);
   }),
 );
+
+it.effect.each([WS_METHODS.threadWorktreeRemove, WS_METHODS.threadWorktreeDetach])(
+  "%s uses destination source control permission and rechecks revoked grants",
+  (tag) =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const registry = yield* setup;
+        const permission = createCommandPermissions(runtime, tag);
+        registry.set(sessions(env), AsyncResult.success(grant(true)));
+        expect(registry.get(permission.permissionAtom(env))).toBe(false);
+        expect(
+          (yield* permission.authorize(registry, env).pipe(Effect.flip)).requiredPermission,
+        ).toBe(AuthSourceControlWriteScope);
+        if (tag === WS_METHODS.threadWorktreeDetach) {
+          registry.set(
+            sessions(env),
+            AsyncResult.success({
+              ...grant(false),
+              scopes: [AuthSourceControlWriteScope],
+              permissions: [AuthSourceControlWriteScope],
+            }),
+          );
+          expect(
+            (yield* permission.authorize(registry, env).pipe(Effect.flip)).requiredPermission,
+          ).toBe(AuthOrchestrationOperateScope);
+        }
+        const scopes =
+          tag === WS_METHODS.threadWorktreeDetach
+            ? [AuthSourceControlWriteScope, AuthOrchestrationOperateScope]
+            : [AuthSourceControlWriteScope];
+        registry.set(
+          sessions(env),
+          AsyncResult.success({
+            ...grant(false),
+            scopes,
+            permissions: scopes,
+          }),
+        );
+        expect(registry.get(permission.permissionAtom(env))).toBe(true);
+        yield* permission.authorize(registry, env);
+        registry.set(sessions(other), AsyncResult.success(grant(false)));
+        expect(
+          (yield* permission.authorize(registry, other).pipe(Effect.flip)).requiredPermission,
+        ).toBe(AuthSourceControlWriteScope);
+        registry.set(sessions(env), AsyncResult.success(grant(false)));
+        expect(
+          (yield* permission.authorize(registry, env).pipe(Effect.flip)).requiredPermission,
+        ).toBe(AuthSourceControlWriteScope);
+      }),
+    ),
+);

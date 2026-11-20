@@ -1,3 +1,5 @@
+import { DesktopTransfers } from "../computer/DesktopTransfers.ts";
+import { ThreadWorktreeService } from "../orchestration-v2/ThreadWorktreeService.ts";
 import { ComputerAutomationRouter } from "../computer/ComputerAutomationRouter.ts";
 import { ComputerObservationStore } from "../computer/ComputerObservationStore.ts";
 import { UserDesktopHosts } from "../computer/UserDesktopHosts.ts";
@@ -109,6 +111,8 @@ const toolHandlerServices = Layer.mergeAll(
   Layer.mock(ThreadLaunchService)({}),
   Layer.mock(ThreadManagementService)({}),
   Layer.mock(ThreadSearch)({}),
+  Layer.mock(DesktopTransfers)({ download: () => null }),
+  Layer.mock(ThreadWorktreeService)({}),
   Layer.mock(VcsStatusBroadcaster)({}),
 ).pipe(Layer.provideMerge(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer)));
 

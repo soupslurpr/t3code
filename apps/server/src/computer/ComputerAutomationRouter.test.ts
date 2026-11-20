@@ -1,3 +1,10 @@
+import * as AgentHost from "./AgentComputerHost.ts";
+import {
+  AgentDesktopOperations,
+  type AgentDesktopOperationsPort,
+} from "./AgentDesktopOperations.ts";
+import type { DesktopJobPort } from "@t3tools/shared/desktopJobs";
+import { DesktopJobList, UserDesktopTransferResult } from "@t3tools/contracts";
 import { expect, it } from "@effect/vitest";
 import { EnvironmentId, ThreadId, type ComputerAutomationStatus } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
@@ -64,4 +71,91 @@ it.effect("reports a missing Agent runtime without falling back to a User deskto
       failure: { computerFailure: { code: "agent-desktop-unavailable" } },
     });
   }).pipe(Effect.provide(layer.pipe(Layer.provide(noUserHosts)))),
+);
+
+it.effect(
+  "routes commands and transfer cancellation to the assigned guest and rejects a mismatched job owner",
+  () =>
+    Effect.gen(function* () {
+      const calls: string[] = [];
+      let owned = true;
+      const jobs: DesktopJobPort = {
+        start: async () => {
+          throw Error("Unexpected job start");
+        },
+        operate: async () => {
+          throw Error("Unexpected job operation");
+        },
+        list: async (authority) => {
+          await authority.admit("read");
+          calls.push("list");
+          return [];
+        },
+        revoke: async () => {},
+        close: async () => {},
+      };
+      const guest: AgentDesktopOperationsPort = {
+        jobs: (actor, desktop) =>
+          Effect.succeed({
+            port: jobs,
+            authority: {
+              owner: {
+                environmentId: actor.environmentId,
+                threadId: owned ? actor.threadId : "another-thread",
+              },
+              revision: 1,
+              grantId: desktop.desktopId,
+              inspectAllThreads: false,
+              admit: async () => {
+                calls.push("admitted");
+              },
+            },
+          }),
+        access: () => Effect.die("Unexpected permission request"),
+        completion: () => Effect.die("Unexpected receipt"),
+        transfer: (actor, input) =>
+          Effect.sync(() => {
+            expect(actor.threadId).toBe(caller.threadId);
+            calls.push(input.operation);
+            return { transferId: input.transferId, cancelled: true };
+          }),
+      };
+      const router = yield* ComputerAutomationRouter.pipe(
+        Effect.provide(
+          layer.pipe(
+            Layer.provide(noUserHosts),
+            Layer.provide(
+              AgentHost.layer.pipe(Layer.provide(Layer.succeed(AgentDesktopOperations, guest))),
+            ),
+          ),
+        ),
+      );
+      const list = () =>
+        router.invoke(
+          DesktopJobList,
+          caller,
+          "computerExecution",
+          {
+            desktop: agentDesktop,
+            operation: "process",
+            input: { desktop: agentDesktop, action: "list" },
+          },
+          1000,
+        );
+      expect(yield* list()).toMatchObject({ kind: "list", processes: [] });
+      owned = false;
+      expect(yield* Effect.flip(list())).toMatchObject({
+        computerFailure: { code: "permission-denied" },
+      });
+      expect(
+        yield* router.invoke(
+          UserDesktopTransferResult,
+          caller,
+          "computerTransfer",
+          { desktop: agentDesktop, operation: "cancel", transferId: "one" },
+          1000,
+        ),
+      ).toMatchObject({ cancelled: true });
+      expect(calls).toEqual(["admitted", "list", "cancel"]);
+    }),
 );

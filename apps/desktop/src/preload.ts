@@ -157,6 +157,10 @@ contextBridge.exposeInMainWorld("desktopBridge", {
     return result as ReturnType<DesktopBridge["getLocalEnvironmentBootstraps"]>;
   },
   computer: {
+    execution: (input, context) =>
+      ipcRenderer.invoke(IpcChannels.COMPUTER_EXECUTION_CHANNEL, { input, context }),
+    transfer: (input, context) =>
+      ipcRenderer.invoke(IpcChannels.COMPUTER_TRANSFER_CHANNEL, { input, context }),
     status: (input, context) =>
       ipcRenderer.invoke(IpcChannels.COMPUTER_AUTOMATION_STATUS_CHANNEL, { input, context }),
     requestAvailability: (input, context) =>

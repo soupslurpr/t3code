@@ -163,7 +163,6 @@ function startWithMissingWorktree(
     Effect.succeed({ committed: true, storedEvents: [] } as never),
   );
   const startRootRun = vi.fn(() => Effect.void);
-  const pruneWorktrees = vi.fn(() => Effect.void);
   let worktreeExists = false;
   const createWorktree = vi.fn(() =>
     Effect.sync(() => {
@@ -180,7 +179,16 @@ function startWithMissingWorktree(
         }),
         Layer.mock(ThreadWorktreeRestore)({ takeRecreated: () => Effect.undefined }),
         Layer.mock(ContextHandoffService.ContextHandoffServiceV2)({}),
-        Layer.mock(EventSink.EventSinkV2)({ writeIfRunCurrent }),
+        Layer.mock(EventSink.EventSinkV2)({
+          writeIfRunCurrent,
+          write: ({ events }) =>
+            Effect.sync(() => {
+              for (const event of events)
+                if (event.type === "thread.metadata-updated")
+                  Object.assign(projection, { thread: event.payload });
+              return [];
+            }),
+        }),
         IdAllocator.layer,
         Layer.mock(TurnItemPositionStore.TurnItemPositionStoreV2)({}),
         Layer.succeed(FileSystem.FileSystem, {
@@ -200,7 +208,6 @@ function startWithMissingWorktree(
         layerWorktreeLocation(),
         layerNoTaskFolders,
         Layer.mock(GitWorkflow.GitWorkflowService)({
-          pruneWorktrees,
           createWorktree,
           listLocalBranchNames,
         }),
@@ -252,7 +259,6 @@ function startWithMissingWorktree(
   }).pipe(Effect.provide(layer), Effect.runPromise);
   return {
     start,
-    pruneWorktrees,
     createWorktree,
     writeIfRunCurrent,
     startRootRun,
@@ -327,7 +333,6 @@ const layerRestoreLeaseTest = layerThreadWorktreeRestore.pipe(
       } as never),
       layerWorktreeLocation(),
       Layer.mock(GitWorkflow.GitWorkflowService)({
-        pruneWorktrees: () => Effect.void,
         createWorktree: restoreLeaseCreateWorktree,
         listLocalBranchNames: () => Effect.succeed(["feature/restore"]),
       }),
@@ -399,13 +404,13 @@ effectIt.effect("restores into a leftover worktree folder that cannot itself be 
             Layer.succeed(FileSystem.FileSystem, {
               exists: (target: string) => Effect.succeed(!target.endsWith("/.git")),
               readDirectory: () => Effect.succeed(["node_modules"]),
-              stat: () => Effect.succeed({ type: "Directory" }),
+              lstat: () => Effect.succeed({ type: "Directory" }),
               realPath: (target: string) => Effect.succeed(normalize(target)),
               remove,
             } as never),
             layerWorktreeLocation(),
             Layer.mock(GitWorkflow.GitWorkflowService)({
-              pruneWorktrees: () => Effect.void,
+              isPrunableWorktree: () => Effect.succeed(true),
               createWorktree,
               listLocalBranchNames: () => Effect.succeed(["feature/restore"]),
             }),
@@ -603,6 +608,7 @@ function makeLocalCommandHarness(input: {
       projectId: ProjectId.make("project-native-account-command"),
       runtimeMode: "full-access",
       interactionMode: "default",
+      deletedAt: null,
       branch: input.worktreePath === undefined ? null : "feature/restore",
       worktreePath: input.worktreePath ?? null,
       lineage: { parentThreadId: null, relationshipToParent: null, rootThreadId: threadId },
@@ -1220,6 +1226,7 @@ function makeLocalCommandHarness(input: {
                 ? Effect.succeed({
                     driver: providerThread.driver,
                     providerSession,
+                    startTurn,
                     ensureThread: () => Effect.succeed(providerThread),
                     resumeThread: () => Effect.succeed(projection.providerThreads[0]),
                   } as never)
@@ -1264,7 +1271,7 @@ function makeLocalCommandHarness(input: {
         ),
   );
   const writeIfRunCurrent = vi.fn<EventSink.EventSinkV2["Service"]["writeIfRunCurrent"]>(
-    ({ events: incoming, activeAttemptId, expectedStatus }) =>
+    ({ runId: targetRunId, events: incoming, activeAttemptId, expectedStatus }) =>
       "writeFailure" in input
         ? Effect.fail(
             new EventSink.EventSinkWriteError({
@@ -1273,7 +1280,7 @@ function makeLocalCommandHarness(input: {
             }),
           )
         : Effect.sync(() => {
-            const current = projection.runs.find((candidate) => candidate.id === runId);
+            const current = projection.runs.find((candidate) => candidate.id === targetRunId);
             const committed =
               current !== undefined &&
               current.activeAttemptId === activeAttemptId &&
@@ -1291,7 +1298,7 @@ function makeLocalCommandHarness(input: {
   const resolveRuntimePolicy = vi.fn(
     ({ thread }: Parameters<RuntimePolicy.RuntimePolicyV2Shape["resolve"]>[0]) =>
       Effect.succeed({
-        cwd: thread.worktreePath ?? "/tmp/native-account-command",
+        cwd: thread.worktreePath ?? input.workspaceRoot ?? "/tmp/native-account-command",
         runtimeMode: thread.runtimeMode,
       } as never),
   );
@@ -1394,7 +1401,8 @@ function makeLocalCommandHarness(input: {
           : Layer.succeed(FileSystem.FileSystem, input.fileSystem),
         input.gitWorkflow === undefined
           ? Layer.mock(GitWorkflow.GitWorkflowService)({
-              pruneWorktrees: () => Effect.void,
+              worktreeMembership: () => Effect.succeed("linked" as const),
+              isPrunableWorktree: () => Effect.succeed(false),
               listLocalBranchNames: () => Effect.succeed(["feature/restore"]),
               createWorktree,
             })
@@ -1950,7 +1958,7 @@ effectIt.effect("preserves a replacement committed before exhausted start settle
 );
 
 effectIt.effect(
-  "recovers the local or pushed thread tip, else the current branch, remote default, or detached HEAD",
+  "continues in the registered checkout across branch switches and detach, restores owned caches, and uses main after branch deletion",
   () =>
     Effect.gen(function* () {
       const fileSystem = yield* FileSystem.FileSystem;
@@ -1959,7 +1967,6 @@ effectIt.effect(
       const driver = yield* GitVcsDriver.GitVcsDriver;
       const root = yield* fileSystem.makeTempDirectoryScoped({ prefix: "t3-recreate-repo-" });
       const workspaceRoot = path.join(root, "project");
-      const originRoot = path.join(root, "origin.git");
       const worktreesDir = path.join(root, "worktrees");
       const worktreePath = path.join(worktreesDir, "project", "restore");
       yield* fileSystem.makeDirectory(workspaceRoot);
@@ -1967,137 +1974,286 @@ effectIt.effect(
         driver
           .execute({ operation: "test.worktreeRecovery", cwd, args })
           .pipe(Effect.map((result) => result.stdout.trim()));
-      const branchConfig = (key: string) =>
-        git(workspaceRoot, ["config", "--get", `branch.feature/restore.${key}`]).pipe(
-          Effect.orElseSucceed(() => ""),
-        );
-      yield* git(root, ["init", "--bare", "-b", "main", originRoot]);
+
       yield* git(workspaceRoot, ["init", "-b", "main"]);
       yield* git(workspaceRoot, ["config", "user.name", "Test"]);
       yield* git(workspaceRoot, ["config", "user.email", "test@example.com"]);
       yield* git(workspaceRoot, ["commit", "--allow-empty", "-m", "base"]);
-      const baseTip = yield* git(workspaceRoot, ["rev-parse", "HEAD"]);
-      yield* git(workspaceRoot, ["remote", "add", "origin", originRoot]);
-      yield* git(workspaceRoot, ["push", "origin", "main"]);
-      yield* git(workspaceRoot, ["remote", "set-head", "origin", "main"]);
       yield* git(workspaceRoot, ["worktree", "add", "-b", "feature/restore", worktreePath]);
-      yield* fileSystem.writeFileString(path.join(worktreePath, "thread.txt"), "thread work");
-      yield* git(worktreePath, ["add", "."]);
-      yield* git(worktreePath, ["commit", "-m", "thread tip"]);
-      const threadTip = yield* git(worktreePath, ["rev-parse", "HEAD"]);
-      yield* git(workspaceRoot, ["switch", "-c", "project-current"]);
-      yield* fileSystem.writeFileString(
-        path.join(workspaceRoot, "project.txt"),
-        "new project code",
-      );
-      yield* git(workspaceRoot, ["add", "."]);
-      yield* git(workspaceRoot, ["commit", "-m", "project tip"]);
-      const projectTip = yield* git(workspaceRoot, ["rev-parse", "HEAD"]);
-      expect(projectTip).not.toBe(threadTip);
-      // Tags must neither hide the thread branch nor select a different recovery tip.
-      yield* git(workspaceRoot, ["tag", "feature/restore", projectTip]);
-      yield* git(workspaceRoot, ["tag", "project-current", threadTip]);
-      yield* git(workspaceRoot, ["tag", "origin/feature/restore", threadTip]);
-
-      const expectedTips = {
-        retained: { tip: threadTip, file: "thread.txt", upstream: null, base: "" },
-        // A failed removal can leave the folder behind with only dependencies inside.
-        leftover: { tip: threadTip, file: "thread.txt", upstream: null, base: "" },
-        deleted: { tip: projectTip, file: "project.txt", upstream: null, base: "project-current" },
-        pushed: {
-          tip: threadTip,
-          file: "thread.txt",
-          upstream: "refs/remotes/origin/feature/restore",
-          base: "",
-        },
-        "pushed-detached": {
-          tip: threadTip,
-          file: "thread.txt",
-          upstream: "refs/remotes/origin/feature/restore",
-          base: "",
-        },
-        "pushed-sole-remote": {
-          tip: threadTip,
-          file: "thread.txt",
-          upstream: "refs/remotes/upstream/feature/restore",
-          base: "",
-        },
-        detached: { tip: baseTip, file: null, upstream: null, base: "main" },
-        "detached-no-remote": { tip: projectTip, file: "project.txt", upstream: null, base: "" },
-      } as const;
-      // Reuse the workflow across turns so recovery cannot select a cached project branch.
-      for (const scenario of Object.keys(expectedTips) as Array<keyof typeof expectedTips>) {
-        const expected = expectedTips[scenario];
-        if (scenario === "pushed") {
-          yield* git(workspaceRoot, ["push", "origin", `${threadTip}:refs/heads/feature/restore`]);
-          yield* git(workspaceRoot, ["fetch", "origin"]);
-        }
-        if (scenario === "pushed-detached") {
-          yield* git(workspaceRoot, ["switch", "--detach"]);
-          expect(yield* git(workspaceRoot, ["branch", "--show-current"])).toBe("");
-        }
-        if (scenario === "pushed-sole-remote") {
-          yield* git(workspaceRoot, ["remote", "rename", "origin", "upstream"]);
-        }
-        if (scenario === "detached") {
-          yield* git(workspaceRoot, ["remote", "rename", "upstream", "origin"]);
-          yield* git(workspaceRoot, ["push", "origin", "--delete", "feature/restore"]);
-        }
-        if (scenario === "detached-no-remote") {
-          yield* git(workspaceRoot, ["remote", "remove", "origin"]);
-        }
-        yield* fileSystem.remove(worktreePath, { recursive: true });
-        if (scenario === "leftover") {
-          yield* fileSystem.makeDirectory(path.join(worktreePath, "node_modules"), {
-            recursive: true,
-          });
-        }
-        if (scenario !== "retained" && scenario !== "leftover") {
-          yield* git(workspaceRoot, ["worktree", "prune"]);
-          yield* git(workspaceRoot, ["branch", "-D", "feature/restore"]);
-        }
-        const harness = makeLocalCommandHarness({
+      const harness = (checkout = worktreePath) =>
+        makeLocalCommandHarness({
           text: "Continue",
           workspaceRoot,
-          worktreePath,
+          worktreePath: checkout,
           worktreesDir,
           fileSystem,
           gitWorkflow,
           failReadsAfterRunning: true,
         });
-        const open = harness.open.getMockImplementation()!;
-        harness.open.mockImplementation(() =>
-          Effect.gen(function* () {
-            expect(yield* git(worktreePath, ["branch", "--show-current"])).toBe("feature/restore");
-            expect(yield* git(worktreePath, ["rev-parse", "HEAD"])).toBe(expected.tip);
-            for (const file of ["thread.txt", "project.txt"]) {
-              expect(yield* fileSystem.exists(path.join(worktreePath, file))).toBe(
-                file === expected.file,
-              );
-            }
-            expect(yield* branchConfig("merge")).toBe(
-              expected.upstream === null ? "" : "refs/heads/feature/restore",
-            );
-            if (expected.upstream !== null) {
-              expect(
-                yield* git(worktreePath, ["rev-parse", "--symbolic-full-name", "@{upstream}"]),
-              ).toBe(expected.upstream);
-            }
-            expect(yield* branchConfig("t3-merge-base")).toBe(expected.base);
-            return yield* open();
-          }).pipe(Effect.orDie),
-        );
-
-        yield* harness.start;
-
-        expect(harness.open).toHaveBeenCalledOnce();
-        expect(harness.startRootRun).toHaveBeenCalledWith(
+      for (const checkout of [
+        ["switch", "-c", "changed"],
+        ["checkout", "--detach"],
+      ]) {
+        yield* git(worktreePath, checkout);
+        const h = harness();
+        yield* h.start;
+        expect(h.open).toHaveBeenCalledWith(
           expect.objectContaining({
             runtimePolicy: expect.objectContaining({ cwd: worktreePath }),
           }),
         );
-        expect(harness.projection().runs.at(-1)?.status).toBe("running");
+        expect(h.projection().thread.worktreePath).toBe(worktreePath);
       }
+      yield* git(worktreePath, ["switch", "changed"]);
+      const sibling = path.join(worktreesDir, "project", "sibling");
+      yield* git(workspaceRoot, ["worktree", "add", "-b", "feature/sibling", sibling]);
+      yield* fileSystem.remove(sibling, { recursive: true });
+      yield* fileSystem.makeDirectory(path.join(sibling, ".next"), { recursive: true });
+      yield* fileSystem.remove(worktreePath, { recursive: true });
+      yield* fileSystem.makeDirectory(path.join(worktreePath, "node_modules"), { recursive: true });
+      const recovered = harness();
+      yield* recovered.start;
+      expect(yield* git(worktreePath, ["branch", "--show-current"])).toBe("feature/restore");
+      expect(yield* gitWorkflow.isPrunableWorktree(workspaceRoot, sibling)).toBe(true);
+      yield* git(worktreePath, ["switch", "changed"]);
+      yield* fileSystem.remove(worktreePath, { recursive: true });
+      yield* git(workspaceRoot, ["switch", "feature/restore"]);
+      const taken = harness();
+      yield* taken.start.pipe(Effect.ignore);
+      expect(taken.open).not.toHaveBeenCalled();
+      expect(yield* git(workspaceRoot, ["branch", "--show-current"])).toBe("feature/restore");
+      yield* git(workspaceRoot, ["switch", "main"]);
+      yield* harness().start;
+      expect(yield* git(worktreePath, ["branch", "--show-current"])).toBe("feature/restore");
+      expect(yield* gitWorkflow.isPrunableWorktree(workspaceRoot, sibling)).toBe(true);
+      yield* git(workspaceRoot, ["worktree", "remove", worktreePath]);
+      yield* git(workspaceRoot, ["branch", "-d", "feature/restore"]);
+      const detached = harness();
+      detached.getRun.mockImplementation((_thread, id) =>
+        Effect.succeed(detached.projection().runs.find((run) => run.id === id)),
+      );
+      detached.startRootRun.mockImplementation((runInput) =>
+        runInput.session.startTurn(runInput as never).pipe(Effect.orDie),
+      );
+      yield* detached.start;
+      expect(detached.startTurn.mock.calls.map(([turn]) => turn.message.text).join(" ")).toContain(
+        "This turn continues in the project's main checkout.",
+      );
+      expect(detached.projection().thread.worktreePath).toBe(null);
+      expect(yield* fileSystem.exists(worktreePath)).toBe(false);
+      expect(detached.open).toHaveBeenCalledWith(
+        expect.objectContaining({ runtimePolicy: expect.objectContaining({ cwd: workspaceRoot }) }),
+      );
+      expect(detached.projection().thread.worktreeRecoveryRunId).toEqual(
+        detached.projection().runs.at(-1)?.id,
+      );
+      expect(yield* gitWorkflow.listLocalBranchNames(workspaceRoot)).not.toContain(
+        "feature/restore",
+      );
+      // A slash command triggered during recovery goes verbatim and defers the notice to the
+      // next normal turn, which delivers it once.
+      const slashRecovery = makeLocalCommandHarness({
+        text: "/implement",
+        worktreePath,
+        worktreesDir,
+        workspaceRoot,
+        fileSystem,
+        gitWorkflow,
+        failReadsAfterRunning: true,
+      });
+      slashRecovery.tryHandlePromptCommand.mockImplementation(() => Effect.succeed(false));
+      slashRecovery.getRun.mockImplementation((_thread, id) =>
+        Effect.succeed(slashRecovery.projection().runs.find((run) => run.id === id)),
+      );
+      slashRecovery.startRootRun.mockImplementation((runInput) =>
+        runInput.session.startTurn(runInput as never).pipe(Effect.orDie),
+      );
+      yield* slashRecovery.start;
+      expect(slashRecovery.startTurn).toHaveBeenCalledTimes(1);
+      expect(slashRecovery.startTurn.mock.calls[0]?.[0]?.message.text).toBe("/implement");
+      const recoveryRun = slashRecovery.projection().runs.at(-1)!;
+      expect(slashRecovery.projection().thread.worktreeRecoveryRunId).toBe(recoveryRun.id);
+      const runStartService = (targetRunId: RunId) =>
+        Effect.gen(function* () {
+          yield* (yield* ProviderTurnStart.ProviderTurnStartServiceV2).start({
+            threadId: slashRecovery.projection().thread.id,
+            runId: targetRunId,
+          });
+        }).pipe(Effect.provide(slashRecovery.layer));
+      const canceledFreshMessageId = MessageId.make("msg-recovery-canceled-fresh");
+      const canceledFreshRunId = RunId.make("run-recovery-canceled-fresh");
+      const canceledFreshAttemptId = RunAttemptId.make("attempt-recovery-canceled-fresh");
+      const canceledFreshRootNodeId = NodeId.make("node-recovery-canceled-fresh");
+      const followUpMessageId = MessageId.make("msg-recovery-followup");
+      const followUpRunId = RunId.make("run-recovery-followup");
+      const followUpAttemptId = RunAttemptId.make("attempt-recovery-followup");
+      const followUpRootNodeId = NodeId.make("node-recovery-followup");
+      const baseRun = recoveryRun;
+      const baseAttempt = slashRecovery.projection().attempts.at(-1)!;
+      const baseNode = slashRecovery.projection().nodes.at(-1)!;
+      const baseMessage = slashRecovery.projection().messages.at(-1)!;
+      const currentAfterSlash = slashRecovery.projection();
+      slashRecovery.setProjection({
+        ...currentAfterSlash,
+        messages: [
+          ...currentAfterSlash.messages,
+          {
+            ...baseMessage,
+            id: canceledFreshMessageId,
+            text: "Scheduled check",
+            scheduledTaskId: ScheduledTaskId.make("sched-recovery"),
+          },
+          { ...baseMessage, id: followUpMessageId, text: "Check tests" },
+        ],
+        runs: [
+          ...currentAfterSlash.runs.map((run) =>
+            run.id === recoveryRun.id ? { ...run, status: "completed" as const } : run,
+          ),
+          // A canceled scheduled fresh-session run must not drop the deferred recovery notice.
+          {
+            ...baseRun,
+            id: canceledFreshRunId,
+            ordinal: baseRun.ordinal + 1,
+            status: "cancelled" as const,
+            freshContext: true,
+            userMessageId: canceledFreshMessageId,
+            rootNodeId: canceledFreshRootNodeId,
+            activeAttemptId: canceledFreshAttemptId,
+          },
+          {
+            ...baseRun,
+            id: followUpRunId,
+            ordinal: baseRun.ordinal + 2,
+            status: "starting" as const,
+            userMessageId: followUpMessageId,
+            rootNodeId: followUpRootNodeId,
+            activeAttemptId: followUpAttemptId,
+          },
+        ],
+        attempts: [
+          ...currentAfterSlash.attempts.map((attempt) =>
+            attempt.id === baseAttempt.id ? { ...attempt, status: "completed" as const } : attempt,
+          ),
+          {
+            ...baseAttempt,
+            id: canceledFreshAttemptId,
+            runId: canceledFreshRunId,
+            status: "cancelled" as const,
+          },
+          {
+            ...baseAttempt,
+            id: followUpAttemptId,
+            runId: followUpRunId,
+            status: "pending" as const,
+          },
+        ],
+        nodes: [
+          ...currentAfterSlash.nodes.map((node) =>
+            node.id === baseNode.id ? { ...node, status: "completed" as const } : node,
+          ),
+          {
+            ...baseNode,
+            id: canceledFreshRootNodeId,
+            runId: canceledFreshRunId,
+            status: "cancelled" as const,
+          },
+          {
+            ...baseNode,
+            id: followUpRootNodeId,
+            runId: followUpRunId,
+            status: "pending" as const,
+          },
+        ],
+      });
+      yield* runStartService(followUpRunId);
+      expect(slashRecovery.startTurn).toHaveBeenCalledTimes(2);
+      expect(slashRecovery.startTurn.mock.calls[1]?.[0]?.message.text).toContain(
+        "This turn continues in the project's main checkout.",
+      );
+      expect(slashRecovery.startTurn.mock.calls[1]?.[0]?.message.text).toContain("Check tests");
+      const thirdMessageId = MessageId.make("msg-recovery-third");
+      const thirdRunId = RunId.make("run-recovery-third");
+      const thirdAttemptId = RunAttemptId.make("attempt-recovery-third");
+      const thirdRootNodeId = NodeId.make("node-recovery-third");
+      const currentAfterFollowUp = slashRecovery.projection();
+      slashRecovery.setProjection({
+        ...currentAfterFollowUp,
+        messages: [
+          ...currentAfterFollowUp.messages,
+          { ...baseMessage, id: thirdMessageId, text: "All good" },
+        ],
+        runs: [
+          ...currentAfterFollowUp.runs.map((run) =>
+            run.id === followUpRunId ? { ...run, status: "completed" as const } : run,
+          ),
+          {
+            ...baseRun,
+            id: thirdRunId,
+            ordinal: baseRun.ordinal + 3,
+            status: "starting" as const,
+            userMessageId: thirdMessageId,
+            rootNodeId: thirdRootNodeId,
+            activeAttemptId: thirdAttemptId,
+          },
+        ],
+        attempts: [
+          ...currentAfterFollowUp.attempts.map((attempt) =>
+            attempt.id === followUpAttemptId
+              ? { ...attempt, status: "completed" as const }
+              : attempt,
+          ),
+          {
+            ...baseAttempt,
+            id: thirdAttemptId,
+            runId: thirdRunId,
+            status: "pending" as const,
+          },
+        ],
+        nodes: [
+          ...currentAfterFollowUp.nodes.map((node) =>
+            node.id === followUpRootNodeId ? { ...node, status: "completed" as const } : node,
+          ),
+          {
+            ...baseNode,
+            id: thirdRootNodeId,
+            runId: thirdRunId,
+            status: "pending" as const,
+          },
+        ],
+        providerTurns: [
+          ...currentAfterFollowUp.providerTurns,
+          {
+            id: ProviderTurnId.make("turn-recovery-followup"),
+            providerThreadId: baseRun.providerThreadId!,
+            nodeId: followUpRootNodeId,
+            runAttemptId: followUpAttemptId,
+            nativeTurnRef: null,
+            ordinal: 2,
+            status: "completed" as const,
+            startedAt: baseMessage.createdAt,
+            completedAt: baseMessage.createdAt,
+          },
+        ],
+      });
+      yield* runStartService(thirdRunId);
+      expect(slashRecovery.startTurn).toHaveBeenCalledTimes(3);
+      expect(slashRecovery.startTurn.mock.calls[2]?.[0]?.message.text).toBe("All good");
+      yield* git(workspaceRoot, ["branch", "feature/restore"]);
+      const unmanaged = path.join(root, "external", "checkout");
+      const outside = harness(unmanaged);
+      yield* outside.start;
+      expect(outside.projection().thread.worktreePath).toBeNull();
+      expect(yield* fileSystem.exists(unmanaged)).toBe(false);
+      expect(yield* gitWorkflow.listLocalBranchNames(workspaceRoot)).toContain("feature/restore");
+
+      const cache = path.join(worktreePath, "node_modules", "keep");
+      yield* fileSystem.makeDirectory(path.dirname(cache), { recursive: true });
+      yield* fileSystem.writeFileString(cache, "unregistered");
+      const occupied = harness();
+      yield* occupied.start.pipe(Effect.ignore);
+      expect(occupied.open).not.toHaveBeenCalled();
+      expect(yield* fileSystem.readFileString(cache)).toBe("unregistered");
+      expect(yield* fileSystem.exists(path.join(worktreePath, ".git"))).toBe(false);
     }).pipe(Effect.scoped, Effect.provide(layerRealGit)),
 );
 
@@ -2116,7 +2272,8 @@ effectIt.effect("leaves a managed worktree folder without .git that holds user f
       fileSystem,
       failReadsAfterRunning: true,
     });
-    yield* harness.start;
+    yield* harness.start.pipe(Effect.ignore);
+    expect(harness.open).not.toHaveBeenCalled();
     expect(harness.createWorktree).not.toHaveBeenCalled();
     expect(yield* fileSystem.readFileString(path.join(worktreePath, "notes.md"))).toBe("keep me");
   }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
@@ -2937,7 +3094,8 @@ effectIt.effect.each(["cleanup-first", "startup-first"])(
       const path = yield* Path.Path;
       const workspaceRoot = yield* fileSystem.makeTempDirectoryScoped({ prefix: "t3-start-" });
       const worktreePath = path.join(workspaceRoot, "project", "worktree");
-      yield* fileSystem.makeDirectory(path.join(worktreePath, ".git"), { recursive: true });
+      yield* fileSystem.makeDirectory(worktreePath, { recursive: true });
+      yield* fileSystem.writeFileString(path.join(worktreePath, ".git"), "gitdir: fixture");
       const release = yield* Deferred.make<void>();
       const openEntered = yield* Deferred.make<void>();
       const harness = makeLocalCommandHarness({
@@ -2991,11 +3149,14 @@ effectIt.effect.each(["cleanup-first", "startup-first"])(
       yield* Fiber.join(startup);
       if (laterCleanup !== undefined) yield* Fiber.join(laterCleanup);
       if (order === "cleanup-first") {
-        expect(harness.createWorktree).toHaveBeenCalledWith({
-          cwd: "/tmp/native-account-project",
-          refName: "feature/restore",
-          path: worktreePath,
-        });
+        expect(harness.createWorktree).toHaveBeenCalledWith(
+          {
+            cwd: "/tmp/native-account-project",
+            refName: "feature/restore",
+            path: worktreePath,
+          },
+          { recoverPrunableRegistration: true },
+        );
       }
       expect(harness.resolveRuntimePolicy).toHaveBeenCalledWith(
         expect.objectContaining({
@@ -3025,6 +3186,7 @@ effectIt.effect.each([
     restorePath: "/tmp/native-account-project",
     worktreePath: undefined,
     realPaths: {},
+    readLinks: {},
     missing: [],
   },
   {
@@ -3032,6 +3194,7 @@ effectIt.effect.each([
     restorePath: "/tmp/restore-overlap/link",
     worktreePath: "/tmp/restore-overlap/checkout",
     realPaths: { "/tmp/restore-overlap/link": "/tmp/restore-overlap/checkout" },
+    readLinks: {},
     missing: [],
   },
   {
@@ -3039,6 +3202,15 @@ effectIt.effect.each([
     restorePath: "/tmp/restore-overlap/checkout",
     worktreePath: "/tmp/restore-overlap/checkout/packages/app",
     realPaths: {},
+    readLinks: {},
+    missing: [],
+  },
+  {
+    overlap: "a symlink-plus-parent-segment alias of the restoring checkout",
+    restorePath: "/tmp/restore-overlap/real/checkout",
+    worktreePath: "/tmp/restore-overlap/link/../checkout",
+    realPaths: {},
+    readLinks: { "/tmp/restore-overlap/link": "/tmp/restore-overlap/real/sub" },
     missing: [],
   },
   {
@@ -3046,6 +3218,7 @@ effectIt.effect.each([
     restorePath: "/tmp/restore-overlap/link/missing-child",
     worktreePath: "/tmp/restore-overlap/checkout/missing-child",
     realPaths: { "/tmp/restore-overlap/link": "/tmp/restore-overlap/checkout" },
+    readLinks: {},
     missing: [
       "/tmp/restore-overlap/link/missing-child",
       "/tmp/restore-overlap/checkout/missing-child",
@@ -3053,13 +3226,26 @@ effectIt.effect.each([
   },
 ] as const)(
   "does not start provider work in $overlap until the restore finishes",
-  ({ restorePath, worktreePath, realPaths, missing }) =>
+  ({ restorePath, worktreePath, realPaths, readLinks, missing }) =>
     Effect.gen(function* () {
       const order: Array<string> = [];
       const releaseRestore = yield* Deferred.make<void>();
       const restoreEntered = yield* Deferred.make<void>();
       const fileSystem = FileSystem.makeNoop({
         exists: () => Effect.succeed(true),
+        readLink: (candidate) => {
+          const target = (readLinks as Record<string, string>)[candidate];
+          return target !== undefined
+            ? Effect.succeed(target)
+            : Effect.fail(
+                PlatformError.systemError({
+                  _tag: "InvalidData",
+                  module: "FileSystem",
+                  method: "readLink",
+                  pathOrDescriptor: candidate,
+                }),
+              );
+        },
         realPath: (candidate) =>
           (missing as ReadonlyArray<string>).includes(candidate)
             ? Effect.fail(

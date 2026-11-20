@@ -78,7 +78,7 @@ const layerWorkspaceFoldersProvided = WorkspaceFolders.layer.pipe(
   Layer.provide(Layer.merge(ProjectStore.layer, TaskFolderStore.layer)),
 );
 
-const layerRuntimePolicyProvided = RuntimePolicy.layerFromProjectStore.pipe(
+export const layerRuntimePolicyProvided = RuntimePolicy.layerFromProjectStore.pipe(
   Layer.provide(layerWorkspaceFoldersProvided),
   Layer.provide(ProjectStore.layer),
 );

@@ -1,3 +1,9 @@
+import * as DesktopOperationIds from "@t3tools/provider-core/server/IdAllocator";
+import * as ThreadWorktrees from "./orchestration-v2/ThreadWorktreeService.ts";
+import * as NativeDesktopAuthorization from "./computer/DesktopExecutionAuthorizationChannel.ts";
+import * as DesktopLifecycle from "./computer/DesktopThreadLifecycle.ts";
+import * as DesktopTransfers from "./computer/DesktopTransfers.ts";
+import { userDesktopTransferRouteLayer } from "./computer/userDesktopTransferHttp.ts";
 import * as AgentComputerHost from "./computer/AgentComputerHost.ts";
 import * as ProviderEventLoggers from "@t3tools/provider-core/server/ProviderEventLoggers";
 import * as DatabaseMigrationProgress from "./persistence/DatabaseMigrationProgress.ts";
@@ -738,13 +744,20 @@ const layerServerRestart = Layer.effect(
   }),
 );
 
+const layerNativeDesktopAuthorization = NativeDesktopAuthorization.layer.pipe(
+  Layer.provideMerge(DesktopLifecycle.layer),
+);
+
 const layerRuntimeCoreDependenciesBase = Layer.mergeAll(
   AgentAwarenessRelay.layer,
   ProviderHostPathWatcher.layer.pipe(Layer.provide(layerDesktopTelemetryReceiver)),
   HeldHooksWaker.layer,
   layerThreadSettlementWorker,
   layerIdleCompactionWorker,
-  StorageCleanup.layer.pipe(Layer.provide(ProjectionStoreV2.layer)),
+  StorageCleanup.layer.pipe(
+    Layer.provide(ProjectionStoreV2.layer),
+    Layer.provide(layerNativeDesktopAuthorization),
+  ),
   DatabaseStorage.layer.pipe(
     Layer.provide(ProjectionMaintenance.layer),
     Layer.provide(layerServerRestart),
@@ -926,6 +939,7 @@ const layerMakeRoutes = Layer.mergeAll(
     GuestHttp.layer,
     LinkThreadHttp.layer,
     DeviceHubProxy.layer,
+    userDesktopTransferRouteLayer,
     ServerBrowserStream.routeLayer,
     PreviewTunnel.routeLayer,
     ServerHttp.layerStaticAndDevRoute,
@@ -975,6 +989,21 @@ const layerMakeRoutes = Layer.mergeAll(
   ),
   Layer.provide(CloudSpeech.layer.pipe(Layer.provide(SecretResolver.layer))),
   Layer.provide(layerServerSettings),
+  Layer.provide(
+    ThreadWorktrees.layer.pipe(
+      Layer.provide([
+        RuntimeLayer.layerEventSink,
+        DesktopOperationIds.layer,
+        ProjectionStoreV2.layer,
+      ]),
+    ),
+  ),
+  Layer.provide(
+    DesktopTransfers.layer.pipe(
+      Layer.provide([RuntimeLayer.layerRuntimePolicyProvided, ProjectionStoreV2.layer]),
+    ),
+  ),
+  Layer.provide(layerNativeDesktopAuthorization),
   Layer.provide(
     Layer.mergeAll(
       ComputerAutomationRouter.layer.pipe(Layer.provide(AgentComputerHost.layer)),

@@ -3,7 +3,7 @@ import * as NodeCrypto from "node:crypto";
 // @effect-diagnostics-next-line nodeBuiltinImport:off -- an aborted executable probe must not wait for the child to exit a stalled mount.
 import * as NodeChildProcess from "node:child_process";
 
-import { withWorkspaceLease } from "../workspace/workspaceLease.ts";
+import { withTurnStartReservation, withWorkspaceLease } from "../workspace/workspaceLease.ts";
 import {
   DEFAULT_TERMINAL_ID,
   DEFAULT_MAX_TERMINAL_BUFFER_BYTES,
@@ -3572,13 +3572,20 @@ export const makeWithOptions = Effect.fn("TerminalManager.makeWithOptions")(func
     return liveSession;
   });
 
-  const openLocked = (input: TerminalOpenInput, supportsSnapshotSequenceState?: boolean) =>
-    withWorkspaceLease(
-      path.resolve(input.worktreePath ?? input.cwd),
+  const openLocked = (input: TerminalOpenInput, supportsSnapshotSequenceState?: boolean) => {
+    const rawLeaseTarget = input.worktreePath ?? input.cwd;
+    const leaseTarget = path.resolve(rawLeaseTarget);
+    const leased = withWorkspaceLease(
+      leaseTarget,
       openWithWorkspaceLease(input).pipe(
         Effect.map((session) => snapshot(session, supportsSnapshotSequenceState)),
       ),
     );
+    const reserved = withTurnStartReservation(fileSystem, path, rawLeaseTarget, leased);
+    return input.cwd === rawLeaseTarget
+      ? reserved
+      : withTurnStartReservation(fileSystem, path, input.cwd, reserved);
+  };
 
   const open: TerminalManager["Service"]["open"] = (input) =>
     withThreadLock(

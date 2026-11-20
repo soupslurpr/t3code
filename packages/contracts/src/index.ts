@@ -14,6 +14,8 @@ export * from "./computerHuman.ts";
 export * from "./desktopComputerContext.ts";
 export * from "./desktopComputerBridge.ts";
 export * from "./desktopAuthorization.ts";
+export * from "./desktopExecution.ts";
+export * from "./desktopJobs.ts";
 export * from "./desktopProcessActivity.ts";
 export * from "./environment.ts";
 export * from "./environmentHttp.ts";
@@ -88,3 +90,7 @@ export * from "./agentFeedback.ts";
 export * from "./secretReference.ts";
 export * from "./settingsSecretValue.ts";
 export * from "./clientRpcPermissions.ts";
+
+export * from "./threadWorktree.ts";
+export * from "./desktopExecutionAuthorization.ts";
+export * from "./desktopTransfer.ts";

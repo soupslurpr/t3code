@@ -64,6 +64,7 @@ import * as TextGeneration from "../textGeneration/TextGeneration.ts";
 import { ClaudeProviderCapabilitiesV2 } from "./Adapters/ClaudeAdapterV2.ts";
 import { CodexProviderCapabilitiesV2 } from "./Adapters/CodexAdapterV2.ts";
 import * as CommandReceiptStore from "./CommandReceiptStore.ts";
+import { PreparedRunWorktreeUpdate } from "./ThreadWorktreeBinding.ts";
 import * as Orchestrator from "./Orchestrator.ts";
 import * as ProjectionStore from "./ProjectionStore.ts";
 import * as EffectOutbox from "./EffectOutbox.ts";
@@ -1134,6 +1135,152 @@ it.effect("a rejected initial message leaves no title change and no new thread",
     }).pipe(Effect.provide(harness.layer));
   }),
 );
+
+it.effect("replaces an existing worktree when launching a new worktree on an empty thread", () => {
+  const harness = makeHarness();
+  return Effect.gen(function* () {
+    const launches = yield* ThreadLaunch.ThreadLaunchService;
+    const threads = yield* ThreadManagement.ThreadManagementService;
+    const threadId = ThreadId.make("thread:launch:replace-empty-worktree");
+    yield* threads.dispatch({
+      type: "thread.create",
+      commandId: CommandId.make("command:launch:replace-empty-worktree:create"),
+      threadId,
+      projectId,
+      title: "Empty worktree draft",
+      modelSelection,
+      runtimeMode: "full-access",
+      interactionMode: "default",
+      branch: "old-branch",
+      worktreePath: "/repo-worktrees/old-feature",
+      createdBy: "user",
+      creationSource: "web",
+    });
+
+    const launched = yield* launches.launch({
+      ...launchInput({
+        command: "command:launch:replace-empty-worktree",
+        thread: threadId,
+        message: "Start fresh worktree",
+        workspace: { type: "worktree", baseRef: "main" },
+      }),
+      reuseExistingThread: true,
+    });
+    assert.equal(launched.projection.runs[0]?.status, "preparing");
+
+    const settled = yield* preparationSettled(threadId);
+    assert.equal(settled.thread.worktreePath, "/repo-worktrees/feature");
+    assert.notEqual(settled.runs[0]?.status, "failed");
+
+    // An interrupted preparing run must not replace an existing worktree binding later.
+    const interruptedThreadId = ThreadId.make("thread:launch:interrupted-replace-worktree");
+    yield* threads.dispatch({
+      type: "thread.create",
+      commandId: CommandId.make("command:launch:interrupted-replace-worktree:create"),
+      threadId: interruptedThreadId,
+      projectId,
+      title: "Interrupted worktree draft",
+      modelSelection,
+      runtimeMode: "full-access",
+      interactionMode: "default",
+      branch: "old-branch",
+      worktreePath: "/repo-worktrees/old-feature",
+      createdBy: "user",
+      creationSource: "web",
+    });
+    yield* threads.dispatch({
+      type: "message.dispatch",
+      commandId: CommandId.make("command:launch:interrupted-replace-worktree:msg"),
+      threadId: interruptedThreadId,
+      messageId: MessageId.make("message:launch:interrupted-replace-worktree"),
+      text: "Will be interrupted",
+      attachments: [],
+      modelSelection,
+      dispatchMode: {
+        type: "defer_start",
+        workspaceStrategy: { type: "worktree", baseRef: "main" },
+      },
+      createdBy: "user",
+      creationSource: "web",
+    });
+    const interruptedRunId = (yield* threads.getThreadProjection(interruptedThreadId)).runs[0]?.id;
+    assert.isDefined(interruptedRunId);
+    yield* threads.dispatch({
+      type: "run.interrupt",
+      commandId: CommandId.make("command:launch:interrupted-replace-worktree:interrupt"),
+      threadId: interruptedThreadId,
+      runId: interruptedRunId!,
+    });
+    const delayed = yield* threads
+      .dispatch({
+        type: "thread.metadata.update",
+        commandId: CommandId.make("command:launch:interrupted-replace-worktree:workspace"),
+        threadId: interruptedThreadId,
+        branch: "new-branch",
+        worktreePath: "/repo-worktrees/new-feature",
+      })
+      .pipe(Effect.provideService(PreparedRunWorktreeUpdate, interruptedRunId!), Effect.exit);
+    assert.isTrue(Exit.isFailure(delayed));
+    assert.equal(
+      (yield* threads.getThreadProjection(interruptedThreadId)).thread.worktreePath,
+      "/repo-worktrees/old-feature",
+    );
+
+    // An interrupted root-checkout launch must not overwrite a newer branch selection either.
+    const rootThreadId = ThreadId.make("thread:launch:interrupted-root-branch");
+    yield* threads.dispatch({
+      type: "thread.create",
+      commandId: CommandId.make("command:launch:interrupted-root-branch:create"),
+      threadId: rootThreadId,
+      projectId,
+      title: "Root checkout draft",
+      modelSelection,
+      runtimeMode: "full-access",
+      interactionMode: "default",
+      branch: "main",
+      worktreePath: null,
+      createdBy: "user",
+      creationSource: "web",
+    });
+    yield* threads.dispatch({
+      type: "message.dispatch",
+      commandId: CommandId.make("command:launch:interrupted-root-branch:msg"),
+      threadId: rootThreadId,
+      messageId: MessageId.make("message:launch:interrupted-root-branch"),
+      text: "Will be interrupted",
+      attachments: [],
+      modelSelection,
+      dispatchMode: { type: "defer_start", workspaceStrategy: { type: "root" } },
+      createdBy: "user",
+      creationSource: "web",
+    });
+    const rootRunId = (yield* threads.getThreadProjection(rootThreadId)).runs[0]?.id;
+    assert.isDefined(rootRunId);
+    yield* threads.dispatch({
+      type: "run.interrupt",
+      commandId: CommandId.make("command:launch:interrupted-root-branch:interrupt"),
+      threadId: rootThreadId,
+      runId: rootRunId!,
+    });
+    yield* threads.dispatch({
+      type: "thread.metadata.update",
+      commandId: CommandId.make("command:launch:interrupted-root-branch:switch-branch"),
+      threadId: rootThreadId,
+      branch: "new-branch",
+    });
+    const delayedRoot = yield* threads
+      .dispatch({
+        type: "thread.metadata.update",
+        commandId: CommandId.make("command:launch:interrupted-root-branch:workspace"),
+        threadId: rootThreadId,
+        branch: "main",
+        worktreePath: null,
+      })
+      .pipe(Effect.provideService(PreparedRunWorktreeUpdate, rootRunId!), Effect.exit);
+    assert.isTrue(Exit.isFailure(delayedRoot));
+    assert.equal((yield* threads.getThreadProjection(rootThreadId)).thread.branch, "new-branch");
+  }).pipe(Effect.provide(harness.layer));
+});
 
 // Stands `projectId` in for a plain folder, not a Git repository, so Git fails
 // there with the error a real one raises. It is the Scratch project unless

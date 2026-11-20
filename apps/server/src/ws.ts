@@ -1,3 +1,5 @@
+import { ThreadWorktreeService } from "./orchestration-v2/ThreadWorktreeService.ts";
+import { DesktopExecutionAuthorizationChannel } from "./computer/DesktopExecutionAuthorizationChannel.ts";
 import * as ComputerObservationStore from "./computer/ComputerObservationStore.ts";
 import * as UserDesktopHosts from "./computer/UserDesktopHosts.ts";
 import * as UserDesktopHuman from "./computer/UserDesktopHuman.ts";
@@ -1568,6 +1570,7 @@ export const layerWsRpc = (
       const remoteOpenTargets = yield* RemoteOpenTargets.RemoteOpenTargets;
       const directEndpoints = yield* DirectEndpoints.DirectEndpoints;
       const gitWorkflow = yield* GitWorkflowService.GitWorkflowService;
+      const threadWorktrees = yield* ThreadWorktreeService;
       const review = yield* ReviewService.ReviewService;
       const vcsProvisioning = yield* VcsProvisioningService.VcsProvisioningService;
       const vcsStatusBroadcaster = yield* VcsStatusBroadcaster.VcsStatusBroadcaster;
@@ -3415,8 +3418,10 @@ export const layerWsRpc = (
             ),
             Effect.tap(() => refreshGitStatus(input.cwd)),
           ),
+        [WS_METHODS.threadWorktreeRemove]: (input) => threadWorktrees.remove(input.threadId, input),
+        [WS_METHODS.threadWorktreeDetach]: (input) => threadWorktrees.detach(input.threadId, input),
         [WS_METHODS.vcsRemoveWorktree]: (input) =>
-          // A thread's worktree may be a task folder: its repositories' worktrees go with it.
+          // A thread's worktree may be a task folder; single-repo worktrees go through ThreadWorktreeService guards.
           taskFolders
             .removeIfTaskFolder({ path: input.path, force: input.force === true, projectCommands })
             .pipe(
@@ -3430,7 +3435,7 @@ export const layerWsRpc = (
                   }),
               ),
               Effect.flatMap((removed) =>
-                removed ? Effect.void : gitWorkflow.removeWorktree(input),
+                removed ? Effect.void : threadWorktrees.removePath(input, projectCommands),
               ),
               // No project-root refresh here: the client awaits vcs.refreshStatus right after, and a
               // second refresh would queue behind this one and reread an unchanged repository.
@@ -3835,8 +3840,11 @@ export const WS_RPC_SERVER_OPTIONS = {
 
 export const layer = Layer.unwrap(
   Effect.gen(function* () {
-    const desktopServices = yield* Effect.context<
-      UserDesktopHosts.UserDesktopHosts | ComputerObservationStore.ComputerObservationStore
+    const socketServices = yield* Effect.context<
+      | ThreadWorktreeService
+      | DesktopExecutionAuthorizationChannel
+      | UserDesktopHosts.UserDesktopHosts
+      | ComputerObservationStore.ComputerObservationStore
     >();
     const serverBrowser = yield* ServerBrowser.ServerBrowser;
     const serverSelfUpdate = yield* ServerSelfUpdate.ServerSelfUpdate;
@@ -3936,7 +3944,7 @@ export const layer = Layer.unwrap(
               Layer.provide(AcpRegistrySessions.layer),
               Layer.provide(
                 Layer.merge(
-                  Layer.succeedContext(desktopServices),
+                  Layer.succeedContext(socketServices),
                   Layer.succeed(SqlClient.SqlClient, sql),
                 ),
               ),

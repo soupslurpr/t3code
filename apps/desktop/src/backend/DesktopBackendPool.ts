@@ -1,3 +1,4 @@
+import { DesktopExecutionAuthorizationHost } from "../process/DesktopExecutionAuthorizationHost.ts";
 import {
   DESKTOP_UPDATE_IN_PROGRESS_MARKER_FILE,
   DESKTOP_UPDATE_IN_PROGRESS_TTL_MS,
@@ -115,6 +116,7 @@ export type BackendInstanceFactoryRequirements =
   | ChildProcessSpawner.ChildProcessSpawner
   | HttpClient.HttpClient
   | DesktopObservability.DesktopBackendOutputLogFactory
+  | DesktopExecutionAuthorizationHost
   | DesktopTelemetryPublisher.DesktopTelemetryPublisher
   | DesktopBrowserHost.DesktopBrowserHost
   | DesktopWslEnvironment.DesktopWslEnvironment;

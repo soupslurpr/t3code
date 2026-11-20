@@ -1,3 +1,4 @@
+import { DesktopExecutionAuthorizationHost } from "../process/DesktopExecutionAuthorizationHost.ts";
 import {
   SERVER_EXIT_CODE_MANAGED_POLICY,
   SERVER_EXIT_CODE_STATE_DIR_OWNED,
@@ -181,6 +182,9 @@ function makeTestInstance(input: MakeInstanceInput) {
     Layer.succeed(DesktopObservability.DesktopBackendOutputLogFactory, {
       forInstance: () => Effect.succeed(stubLog),
     } satisfies DesktopObservability.DesktopBackendOutputLogFactory["Service"]),
+    Layer.mock(DesktopExecutionAuthorizationHost)({
+      open: Effect.die("Unexpected authorization pipe in this fixture"),
+    }),
     Layer.succeed(DesktopTelemetryPublisher.DesktopTelemetryPublisher, {
       latest: Effect.succeedNone,
       changes: Stream.empty,

@@ -846,11 +846,29 @@ const make = Effect.gen(function* () {
     }
   };
 
-  const dispatch: ThreadManagementServiceShape["dispatch"] = (command) =>
-    ensureCommandTranscripts(command).pipe(
+  const dispatch: ThreadManagementServiceShape["dispatch"] = (command) => {
+    const run = ensureCommandTranscripts(command).pipe(
       Effect.andThen(assertDispatchTargetEnabled(command)),
       Effect.andThen(orchestrator.dispatch(command)),
     );
+    const worktreePath =
+      command.type === "thread.create" || command.type === "thread.metadata.update"
+        ? command.worktreePath
+        : undefined;
+    if (worktreePath == null) return run;
+    return worktreeRestore.withBindingLease(worktreePath, (isDirectory) =>
+      Effect.gen(function* () {
+        if (!isDirectory && !(yield* hasReceipt(command.commandId))) {
+          return yield* new Orchestrator.OrchestratorDispatchError({
+            commandId: command.commandId,
+            commandType: command.type,
+            cause: `Cannot bind a thread to an unavailable worktree: ${worktreePath}`,
+          });
+        }
+        return yield* run;
+      }),
+    );
+  };
 
   const getProjectThreadRecords: ThreadManagementServiceShape["getProjectThreadRecords"] = (
     input,
@@ -2025,14 +2043,20 @@ const make = Effect.gen(function* () {
   });
 });
 
-const layerThreadWorktreeRestoreNoop = Layer.succeed(ThreadWorktreeRestore, {
-  restore: Effect.fn("ThreadWorktreeRestore.restore")(function () {
-    return Effect.void;
+const layerThreadWorktreeRestoreNoop = Layer.succeed(
+  ThreadWorktreeRestore,
+  ThreadWorktreeRestore.of({
+    withBindingLease: Effect.fn("ThreadWorktreeRestore.withBindingLease")((_worktreePath, use) =>
+      use(true),
+    ),
+    restore: Effect.fn("ThreadWorktreeRestore.restore")(function () {
+      return Effect.void;
+    }),
+    takeRecreated: Effect.fn("ThreadWorktreeRestore.takeRecreated")(function () {
+      return Effect.undefined;
+    }),
   }),
-  takeRecreated: Effect.fn("ThreadWorktreeRestore.takeRecreated")(function () {
-    return Effect.undefined;
-  }),
-});
+);
 
 const layerLegacyV1ThreadImporterNoop = Layer.succeed(
   LegacyV1ThreadImporter.LegacyV1ThreadImporter,

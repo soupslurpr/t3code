@@ -159,6 +159,8 @@ export class TaskFolders extends Context.Service<
     }) => Effect.Effect<TaskFolder, TaskFolderError>;
     /** The task folder that is, or contains, `target`. */
     readonly find: (target: string) => Effect.Effect<TaskFolder | null, TaskFolderError>;
+    /** Drops a task folder's stored record without running teardown commands or removing files. */
+    readonly forget: (root: string) => Effect.Effect<void, TaskFolderError>;
     /**
      * Removes repository worktrees, then the project folder, then the links and the folder.
      * `inspect` may keep a checkout, with the reason to report, or allow forcing it; without it
@@ -1722,6 +1724,7 @@ const make = Effect.gen(function* () {
     createForProjectFolder,
     addRepository,
     find: store.findContaining,
+    forget: store.remove,
     remove,
     removeIfTaskFolder,
     renameBranch,

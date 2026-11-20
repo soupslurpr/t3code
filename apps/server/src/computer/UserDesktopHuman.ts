@@ -1,6 +1,9 @@
+import * as Option from "effect/Option";
+import { DesktopExecutionAuthorizationChannel } from "./DesktopExecutionAuthorizationChannel.ts";
 import {
   AuthOrchestrationOperateScope,
   AuthPreviewOperateScope,
+  AuthTerminalOperateScope,
   authScopeRequiredResponse,
   ComputerAutomationStatus,
   EnvironmentAuthorizationError,
@@ -35,7 +38,10 @@ export const invoke = Effect.fn("UserDesktopHuman.invoke")(function* (
   scopes: readonly AuthEnvironmentScope[],
   input: UserDesktopHumanInvokeInput,
 ) {
-  for (const scope of [AuthOrchestrationOperateScope, AuthPreviewOperateScope]) {
+  for (const scope of [
+    AuthOrchestrationOperateScope,
+    input.request.operation === "execution" ? AuthTerminalOperateScope : AuthPreviewOperateScope,
+  ]) {
     if (!scopes.includes(scope))
       return yield* new EnvironmentAuthorizationError({
         ...authScopeRequiredResponse(scope),
@@ -71,6 +77,28 @@ export const invoke = Effect.fn("UserDesktopHuman.invoke")(function* (
     controllerId: "human-" + id,
     controllerKind: "human" as const,
   };
+  if (request.operation === "execution") {
+    const local = yield* (yield* DesktopExecutionAuthorizationChannel)
+      .invoke(sessionId, caller.threadId, request.input)
+      .pipe(Effect.mapError((e) => hostFailure("permission-denied", "authorization", e.message)));
+    if (Option.isSome(local)) return local.value;
+    return yield* hosts.invoke(
+      caller,
+      request.input.desktop.desktopId,
+      "computerExecution",
+      request.input,
+      120_000,
+    );
+  }
+  if (request.operation === "screen-permission") {
+    const local = yield* (yield* DesktopExecutionAuthorizationChannel)
+      .invokeScreen(sessionId, caller.threadId, {
+        ...request,
+        desktop: { kind: "user", desktopId: request.desktopId },
+      })
+      .pipe(Effect.mapError((e) => hostFailure("permission-denied", "authorization", e.message)));
+    if (Option.isSome(local)) return local.value;
+  }
   const desktop = { kind: "user", desktopId: request.desktopId } as const;
   const run = (operation: ComputerHostOperation, params: Record<string, unknown> = {}) =>
     hosts.invoke(

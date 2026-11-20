@@ -1,10 +1,16 @@
+import * as NodeServices from "@effect/platform-node/NodeServices";
 import { ProjectId, ThreadId } from "@t3tools/contracts";
+import { normalizeProjectPathForComparison } from "@t3tools/shared/path";
 import { describe, expect, it } from "@effect/vitest";
 import * as Effect from "effect/Effect";
+import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
+import * as Path from "effect/Path";
 
+import * as ProviderSessionManager from "../orchestration-v2/ProviderSessionManager.ts";
 import * as ThreadManagementService from "../orchestration-v2/ThreadManagementService.ts";
 import * as ProjectService from "../project/ProjectService.ts";
+import * as TaskFolders from "../workspace/TaskFolders.ts";
 import * as GitWorkflowService from "./GitWorkflowService.ts";
 import { assertCheckoutIdle, busyThreadsInCheckout } from "./sharedCheckoutGuard.ts";
 
@@ -47,12 +53,12 @@ describe("busyThreadsInCheckout", () => {
     expect(busy.map(({ title }) => title)).toEqual(["local running"]);
   });
 
-  it("finds running threads that share a worktree", () => {
+  it("finds running threads that share a worktree across path spellings", () => {
     const busy = busyThreadsInCheckout({
       checkoutPaths: ["/worktrees/a"],
       projectIds: new Set(),
       threads: [
-        thread("same worktree", { worktreePath: "/worktrees/a", activityRunStatus: "waiting" }),
+        thread("same worktree", { worktreePath: "/worktrees/a/", activityRunStatus: "waiting" }),
         thread("other worktree", { worktreePath: "/worktrees/b" }),
         thread("local running"),
       ],
@@ -67,11 +73,22 @@ describe("assertCheckoutIdle", () => {
     readonly repositoryRoot: string;
     readonly threads: ReadonlyArray<ReturnType<typeof thread>>;
     readonly failWorktreeLookup?: boolean;
+    readonly taskFolder?: { readonly root: string; readonly projectPath: string } | null;
+    readonly liveThreadWorkspaces?: ReadonlyArray<{
+      readonly threadId: ThreadId;
+      readonly cwd: string;
+    }>;
   }) =>
     Layer.mergeAll(
       Layer.mock(GitWorkflowService.GitWorkflowService)({
         repositoryRoot: (cwd) =>
-          Effect.succeed(cwd.startsWith("/repo/child") ? "/repo/child" : input.repositoryRoot),
+          Effect.succeed(
+            cwd.startsWith("/repo/child")
+              ? "/repo/child"
+              : cwd.startsWith("/other")
+                ? "/other"
+                : input.repositoryRoot,
+          ),
       }),
       Layer.mock(ProjectService.ProjectService)({
         snapshot: Effect.succeed({
@@ -89,12 +106,21 @@ describe("assertCheckoutIdle", () => {
             ? Effect.fail("worktree lookup failed" as never)
             : Effect.succeed(
                 (() => {
+                  const worktreeKey =
+                    options?.worktreePath === undefined
+                      ? undefined
+                      : normalizeProjectPathForComparison(options.worktreePath);
+                  const threadIdSet =
+                    options?.threadIds === undefined ? undefined : new Set(options.threadIds);
                   const matching = input.threads.filter(
                     (candidate) =>
                       (options?.projectId === undefined ||
                         candidate.projectId === options.projectId) &&
-                      (options?.worktreePath === undefined ||
-                        candidate.worktreePath === options.worktreePath),
+                      (worktreeKey === undefined ||
+                        (candidate.worktreePath !== null &&
+                          normalizeProjectPathForComparison(candidate.worktreePath) ===
+                            worktreeKey)) &&
+                      (threadIdSet === undefined || threadIdSet.has(candidate.id)),
                   );
                   return {
                     threads: matching.filter((candidate) => !candidate.archived),
@@ -103,6 +129,20 @@ describe("assertCheckoutIdle", () => {
                 })(),
               ),
       }),
+      ...(input.taskFolder === undefined
+        ? []
+        : [
+            Layer.mock(TaskFolders.TaskFolders)({
+              find: () => Effect.succeed((input.taskFolder ?? null) as never),
+            }),
+          ]),
+      ...(input.liveThreadWorkspaces === undefined
+        ? []
+        : [
+            Layer.mock(ProviderSessionManager.ProviderSessionManagerV2)({
+              liveThreadWorkspaces: Effect.succeed(input.liveThreadWorkspaces),
+            }),
+          ]),
     );
 
   it.effect("refuses a switch from a subdirectory of a busy checkout", () =>
@@ -163,5 +203,129 @@ describe("assertCheckoutIdle", () => {
         }),
       ),
     ),
+  );
+
+  it.effect("refuses a switch when a worktree path differs only by a trailing slash", () =>
+    Effect.gen(function* () {
+      const error = yield* assertCheckoutIdle("test", "/worktrees/a").pipe(
+        Effect.flip,
+        Effect.provide(
+          guardLayer({
+            repositoryRoot: "/worktrees/a",
+            threads: [thread("slash worktree", { worktreePath: "/worktrees/a/" })],
+          }),
+        ),
+      );
+      expect(error.detail).toContain("'slash worktree'");
+    }),
+  );
+
+  it.effect("refuses a switch for a repository inside an active task folder", () =>
+    Effect.gen(function* () {
+      const error = yield* assertCheckoutIdle("test", "/tasks/feature/tracked-repo").pipe(
+        Effect.flip,
+        Effect.provide(
+          guardLayer({
+            repositoryRoot: "/tasks/feature/tracked-repo",
+            taskFolder: { root: "/tasks/feature", projectPath: "/tasks/feature/project" },
+            threads: [thread("task runner", { worktreePath: "/tasks/feature/project" })],
+          }),
+        ),
+      );
+      expect(error.detail).toContain("'task runner'");
+    }),
+  );
+
+  it.effect("refuses a switch while a detached thread's live session still uses the checkout", () =>
+    Effect.gen(function* () {
+      const detached = thread("detached active", { worktreePath: null, projectId: otherProjectId });
+      const idleWarm = thread("idle warm", {
+        worktreePath: null,
+        projectId: otherProjectId,
+        activityRunStatus: null,
+      });
+      const error = yield* assertCheckoutIdle("test", "/worktrees/old").pipe(
+        Effect.flip,
+        Effect.provide(
+          guardLayer({
+            repositoryRoot: "/worktrees/old",
+            threads: [detached, idleWarm],
+            liveThreadWorkspaces: [
+              { threadId: detached.id, cwd: "/worktrees/old" },
+              { threadId: idleWarm.id, cwd: "/worktrees/old" },
+            ],
+          }),
+        ),
+      );
+      expect(error.detail).toContain("'detached active'");
+      expect(error.detail).not.toContain("'idle warm'");
+    }),
+  );
+
+  it.effect("refuses a switch when a thread works through a symlink alias to the checkout", () =>
+    Effect.gen(function* () {
+      const fileSystem = yield* FileSystem.FileSystem;
+      const path = yield* Path.Path;
+      const tempRoot = yield* fileSystem.makeTempDirectoryScoped({ prefix: "t3-checkout-link-" });
+      const physicalRepo = path.join(tempRoot, "physical-repo");
+      const symlinkRepo = path.join(tempRoot, "symlink-repo");
+      const physicalSubdir = path.join(physicalRepo, "packages", "app");
+      const symlinkSubdir = path.join(tempRoot, "symlink-subdir");
+      yield* fileSystem.makeDirectory(physicalSubdir, { recursive: true });
+      yield* fileSystem.symlink(physicalRepo, symlinkRepo);
+      yield* fileSystem.symlink(physicalSubdir, symlinkSubdir);
+      const realPhysicalRepo = yield* fileSystem.realPath(physicalRepo);
+
+      const symlinkProjectId = ProjectId.make("project-symlink");
+      const symlinkSubdirProjectId = ProjectId.make("project-symlink-subdir");
+      const layer = Layer.mergeAll(
+        Layer.mock(GitWorkflowService.GitWorkflowService)({
+          repositoryRoot: (cwd) =>
+            fileSystem.realPath(cwd).pipe(
+              Effect.map((real) => (real.startsWith(realPhysicalRepo) ? realPhysicalRepo : real)),
+              Effect.orElseSucceed(() => cwd),
+            ),
+        }),
+        Layer.mock(ProjectService.ProjectService)({
+          snapshot: Effect.succeed({
+            projects: [
+              { id: symlinkProjectId, workspaceRoot: symlinkRepo },
+              { id: symlinkSubdirProjectId, workspaceRoot: symlinkSubdir },
+            ],
+          } as never),
+        }),
+        Layer.mock(ThreadManagementService.ThreadManagementService)({
+          getShellSnapshot: (options) =>
+            Effect.succeed(
+              (() => {
+                const all = [
+                  thread("symlink root active", { projectId: symlinkProjectId }),
+                  thread("symlink subdir active", { projectId: symlinkSubdirProjectId }),
+                ];
+                const matching = all.filter(
+                  (candidate) =>
+                    (options?.projectId === undefined ||
+                      candidate.projectId === options.projectId) &&
+                    options?.worktreePath === undefined,
+                );
+                return { threads: matching, archivedThreads: [] } as never;
+              })(),
+            ),
+        }),
+      );
+
+      const fromPhysical = yield* assertCheckoutIdle("test", physicalRepo).pipe(
+        Effect.flip,
+        Effect.provide(layer),
+      );
+      expect(fromPhysical.detail).toContain("'symlink root active'");
+      expect(fromPhysical.detail).toContain("'symlink subdir active'");
+
+      const fromSymlink = yield* assertCheckoutIdle("test", symlinkRepo).pipe(
+        Effect.flip,
+        Effect.provide(layer),
+      );
+      expect(fromSymlink.detail).toContain("'symlink root active'");
+    }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
   );
 });

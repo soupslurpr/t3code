@@ -52,6 +52,7 @@ import {
   projectFolders,
   sameProjectFolders,
 } from "../workspace/WorkspaceFolders.ts";
+import { withWorkspaceBindingLease } from "../workspace/workspaceLease.ts";
 import * as WorkspacePaths from "../workspace/WorkspacePaths.ts";
 
 export interface ProjectCreateInput extends ProjectCreatePayload {
@@ -210,7 +211,6 @@ export const make = Effect.gen(function* () {
   );
   const scope = yield* Effect.scope;
   const projectLocks = yield* KeyedLock.make<ProjectId>();
-  const workspaceLocks = yield* KeyedLock.make<string>();
 
   const toProject = (
     row: ProjectStore.ProjectRow,
@@ -446,14 +446,20 @@ export const make = Effect.gen(function* () {
       });
       return { receipt };
     });
-    const outcome = yield* projectLocks
-      .withLock(
-        projectId,
-        workspaceRoot === undefined
-          ? planAndCommit
-          : workspaceLocks.withLock(workspaceRoot, planAndCommit),
-      )
+    const locked = projectLocks
+      .withLock(projectId, planAndCommit)
       .pipe(Effect.mapError(dispatchError));
+    const outcome = yield* workspaceRoot === undefined
+      ? locked
+      : withWorkspaceBindingLease(
+          fileSystem,
+          path,
+          workspaceRoot,
+          normalizeWorkspaceRoot({ projectId, workspaceRoot }).pipe(
+            Effect.andThen(rejectWorktreeContainer(projectId, workspaceRoot)),
+            Effect.andThen(locked),
+          ),
+        );
     if (outcome === null) return;
     if ("refused" in outcome) return yield* Effect.failCause(outcome.refused);
     const { receipt } = outcome;

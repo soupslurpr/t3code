@@ -24,6 +24,8 @@ export const COMPUTER_AUTOMATION_OPERATIONS = [
   "computerInterrupt",
   "computerRelease",
   "computerForgetControl",
+  "computerExecution",
+  "computerTransfer",
 ] as const;
 
 export const ComputerAutomationDisplayId = TrimmedNonEmptyString.check(Schema.isMaxLength(128));

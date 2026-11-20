@@ -1,3 +1,5 @@
+import * as DesktopExecution from "./process/DesktopExecution.ts";
+import * as NativeDesktopAuthorization from "./process/DesktopExecutionAuthorizationHost.ts";
 import * as MacPermissions from "./permissions/MacPermissions.ts";
 import { handleStdioError } from "./app/stdioErrors.ts";
 
@@ -187,7 +189,7 @@ const layerDesktopPreview = PreviewManager.layer.pipe(
 );
 
 const layerDesktopGrants = DesktopGrants.layer.pipe(Layer.provideMerge(layerDesktopFoundation));
-const layerDesktopComputer = ComputerUseRouter.layer.pipe(
+const layerDesktopComputer = Layer.merge(ComputerUseRouter.layer, DesktopExecution.layer).pipe(
   Layer.provideMerge(ComputerUseCoordinator.layer),
   Layer.provideMerge(DesktopScreenPermissions.layer),
   Layer.provideMerge(ComputerHostTransport.layer),
@@ -209,6 +211,7 @@ const layerDesktopAppActivation = DesktopAppActivation.layer.pipe(
 );
 
 const layerDesktopBackend = DesktopBackendPool.layer.pipe(
+  Layer.provideMerge(NativeDesktopAuthorization.layer),
   Layer.provideMerge(DesktopAppIdentity.layer),
   Layer.provideMerge(DesktopBackendConfiguration.layer),
   Layer.provideMerge(DesktopWslEnvironment.layer),
