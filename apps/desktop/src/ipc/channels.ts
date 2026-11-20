@@ -155,3 +155,31 @@ export const COMPLETE_LEGACY_LOCAL_STORAGE_CHANNEL = "desktop:complete-legacy-lo
 export const RESTART_AUDIO_SERVICE_CHANNEL = "desktop:restart-audio-service";
 
 export const START_FILE_DRAG_CHANNEL = "desktop:start-file-drag";
+
+export const COMPUTER_AUTOMATION_STATUS_CHANNEL = "desktop:computer-automation-status";
+export const GET_USER_DESKTOP_HOST_CHANNEL = "desktop:get-user-desktop-host";
+export const COMPUTER_AUTOMATION_REQUEST_AVAILABILITY_CHANNEL =
+  "desktop:computer-automation-request-availability";
+export const COMPUTER_AUTOMATION_RELEASE_AVAILABILITY_CHANNEL =
+  "desktop:computer-automation-release-availability";
+export const COMPUTER_AUTOMATION_REQUEST_VIEW_CHANNEL = "desktop:computer-automation-request-view";
+export const COMPUTER_AUTOMATION_REQUEST_CONTROL_CHANNEL =
+  "desktop:computer-automation-request-control";
+export const COMPUTER_AUTOMATION_REMEMBER_VIEW_CHANNEL =
+  "desktop:computer-automation-remember-view";
+export const COMPUTER_AUTOMATION_REMEMBER_CONTROL_CHANNEL =
+  "desktop:computer-automation-remember-control";
+export const COMPUTER_AUTOMATION_FORCE_RELEASE_CHANNEL =
+  "desktop:computer-automation-force-release";
+export const COMPUTER_AUTOMATION_FORCE_FORGET_CONTROL_CHANNEL =
+  "desktop:computer-automation-force-forget-control";
+export const COMPUTER_AUTOMATION_SNAPSHOT_CHANNEL = "desktop:computer-automation-snapshot";
+export const COMPUTER_AUTOMATION_ACT_CHANNEL = "desktop:computer-automation-act";
+export const COMPUTER_AUTOMATION_RELEASE_CHANNEL = "desktop:computer-automation-release";
+export const COMPUTER_AUTOMATION_CANCEL_PREPARATION_CHANNEL =
+  "desktop:computer-automation-cancel-preparation";
+export const COMPUTER_AUTOMATION_INTERRUPT_CHANNEL = "desktop:computer-automation-interrupt";
+export const COMPUTER_AUTOMATION_FORGET_CONTROL_CHANNEL =
+  "desktop:computer-automation-forget-control";
+export const DESKTOP_AUTHORIZATION_CHANNEL = "desktop:authorization";
+export const DESKTOP_AUTHORIZATION_CHANGED_CHANNEL = "desktop:authorization-changed";

@@ -79,6 +79,8 @@ import {
   setSnapShotAnimationDestination,
   setSnapShotShortcutSuppressed,
 } from "./methods/snapShot.ts";
+import * as ComputerIpc from "./methods/computer.ts";
+import * as DesktopAuthorizationIpc from "./methods/desktopAuthorization.ts";
 import * as PreviewIpc from "./methods/preview.ts";
 import * as AppActivationIpc from "./methods/appActivation.ts";
 import * as WebLinksIpc from "./methods/webLinks.ts";
@@ -98,6 +100,7 @@ export const installDesktopIpcHandlers = Effect.fn("desktop.ipc.installHandlers"
   const ipc = yield* DesktopIpc.DesktopIpc;
   yield* installNotificationBadge();
   yield* PreviewIpc.installPreviewEventForwarding();
+  yield* DesktopAuthorizationIpc.installChangeNotifications();
 
   yield* ipc.handle(AppActivationIpc.setReady);
   yield* ipc.handle(AppActivationIpc.complete);
@@ -184,6 +187,14 @@ export const installDesktopIpcHandlers = Effect.fn("desktop.ipc.installHandlers"
   yield* ipc.handle(installCliCommand);
   yield* ipc.handle(uninstallCliCommand);
   yield* ipc.handle(addCliCommandToPath);
+  yield* ipc.handleSync(ComputerIpc.getUserDesktopHost);
+  yield* ipc.handle(DesktopAuthorizationIpc.sync);
+  for (const method of ComputerIpc.methods) {
+    yield* ipc.handle<
+      Effect.Error<ReturnType<(typeof ComputerIpc.methods)[number]["handler"]>>,
+      Effect.Services<ReturnType<(typeof ComputerIpc.methods)[number]["handler"]>>
+    >(method);
+  }
   for (const previewMethod of PreviewIpc.methods) {
     // Explicit types preserve the error/service union of these heterogeneous preview methods.
     yield* ipc.handle<

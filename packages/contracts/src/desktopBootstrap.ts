@@ -1,4 +1,5 @@
 import * as Schema from "effect/Schema";
+import { UserDesktopHostRegistration } from "./userDesktop.ts";
 
 import { PortSchema, PositiveInt, TrimmedNonEmptyString } from "./baseSchemas.ts";
 
@@ -15,6 +16,7 @@ export const DesktopBackendBootstrap = Schema.Struct({
   t3Home: Schema.optional(Schema.String),
   host: Schema.String,
   desktopBootstrapToken: Schema.String,
+  environmentHost: Schema.optionalKey(UserDesktopHostRegistration),
   // Derives rotating tokens instead of trusting desktopBootstrapToken indefinitely; see @t3tools/shared/desktopBootstrapToken.
   desktopBootstrapSecret: Schema.optionalKey(Schema.String),
   // Fresh per launch. A backend without a control channel proves it holds this before it counts as ready; see @t3tools/shared/desktopReadinessProof.

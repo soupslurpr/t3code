@@ -1,3 +1,6 @@
+import { ComputerAutomationRouter } from "../computer/ComputerAutomationRouter.ts";
+import { ComputerObservationStore } from "../computer/ComputerObservationStore.ts";
+import { UserDesktopHosts } from "../computer/UserDesktopHosts.ts";
 import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { expect, it } from "@effect/vitest";
@@ -73,6 +76,13 @@ const toolHandlerServices = Layer.mergeAll(
   Layer.mock(PeerForwarding)({}),
   Layer.mock(PeerLinkRequests)({}),
   Layer.mock(PeerLinks)({}),
+  Layer.mock(UserDesktopHosts)({
+    forSocket: () => {
+      throw new Error("Unexpected desktop host socket");
+    },
+  }),
+  Layer.mock(ComputerObservationStore)({}),
+  Layer.mock(ComputerAutomationRouter)({}),
   Layer.mock(PreviewAutomationBroker)({}),
   Layer.mock(PreviewBrowser)({}),
   Layer.mock(PreviewManager)({}),

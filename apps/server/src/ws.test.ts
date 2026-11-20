@@ -1,3 +1,5 @@
+import { ComputerObservationStore } from "./computer/ComputerObservationStore.ts";
+import { UserDesktopHosts } from "./computer/UserDesktopHosts.ts";
 import * as SecretResolver from "@t3tools/secret-provider-core/server/SecretResolver";
 import * as NodeHttpServer from "@effect/platform-node/NodeHttpServer";
 import { WebSocket } from "@effect/platform-node/NodeWS";
@@ -952,6 +954,12 @@ it.live.each([
   ({ subject, extensions, framed }) =>
     Effect.gen(function* () {
       const services = Layer.mergeAll(
+        Layer.mock(UserDesktopHosts)({
+          forSocket: () => {
+            throw new Error("Unexpected desktop host socket");
+          },
+        }),
+        Layer.mock(ComputerObservationStore)({}),
         layerUnusedConfigRpcServices,
         Layer.mock(ServerBrowser.ServerBrowser)({
           profileReporter: Effect.succeed(() => Effect.void),
@@ -1284,6 +1292,12 @@ it.effect.each([
       Effect.provide(
         Layer.mergeAll(
           Layer.fresh(layerConfigSources),
+          Layer.mock(UserDesktopHosts)({
+            forSocket: () => {
+              throw new Error("Unexpected desktop host socket");
+            },
+          }),
+          Layer.mock(ComputerObservationStore)({}),
           Layer.mock(PreviewAutomationBroker.PreviewAutomationBroker)({}),
           Layer.mock(ServerBrowser.ServerBrowser)({}),
         ),
@@ -1408,6 +1422,12 @@ it.effect("access changes made while the snapshot loads reach the client after i
     Effect.provide(
       Layer.mergeAll(
         Layer.fresh(layerConfigSources),
+        Layer.mock(UserDesktopHosts)({
+          forSocket: () => {
+            throw new Error("Unexpected desktop host socket");
+          },
+        }),
+        Layer.mock(ComputerObservationStore)({}),
         Layer.mock(PreviewAutomationBroker.PreviewAutomationBroker)({}),
         Layer.mock(ServerBrowser.ServerBrowser)({}),
       ),
@@ -1762,6 +1782,12 @@ it.effect("on-demand clients get provider config without workspace snapshots", (
     Effect.provide(
       Layer.mergeAll(
         Layer.fresh(layerConfigSources),
+        Layer.mock(UserDesktopHosts)({
+          forSocket: () => {
+            throw new Error("Unexpected desktop host socket");
+          },
+        }),
+        Layer.mock(ComputerObservationStore)({}),
         Layer.mock(PreviewAutomationBroker.PreviewAutomationBroker)({}),
         Layer.mock(ServerBrowser.ServerBrowser)({}),
       ),
@@ -1933,6 +1959,12 @@ it.effect("a missing thread worktree gets its project's skills in the cwd snapsh
     Effect.provide(
       Layer.mergeAll(
         Layer.fresh(layerConfigSources),
+        Layer.mock(UserDesktopHosts)({
+          forSocket: () => {
+            throw new Error("Unexpected desktop host socket");
+          },
+        }),
+        Layer.mock(ComputerObservationStore)({}),
         Layer.mock(PreviewAutomationBroker.PreviewAutomationBroker)({}),
         Layer.mock(ServerBrowser.ServerBrowser)({}),
       ),
@@ -2184,6 +2216,12 @@ it.effect("a git action that fails partway still refreshes the repository status
     Effect.provide(
       Layer.mergeAll(
         Layer.fresh(layerConfigSources),
+        Layer.mock(UserDesktopHosts)({
+          forSocket: () => {
+            throw new Error("Unexpected desktop host socket");
+          },
+        }),
+        Layer.mock(ComputerObservationStore)({}),
         Layer.mock(PreviewAutomationBroker.PreviewAutomationBroker)({}),
         Layer.mock(ServerBrowser.ServerBrowser)({}),
       ),
@@ -2271,6 +2309,12 @@ it.effect("a publish whose push fails still refreshes the new remote", () =>
     Effect.provide(
       Layer.mergeAll(
         Layer.fresh(layerConfigSources),
+        Layer.mock(UserDesktopHosts)({
+          forSocket: () => {
+            throw new Error("Unexpected desktop host socket");
+          },
+        }),
+        Layer.mock(ComputerObservationStore)({}),
         Layer.mock(PreviewAutomationBroker.PreviewAutomationBroker)({}),
         Layer.mock(ServerBrowser.ServerBrowser)({}),
       ),
@@ -2888,6 +2932,12 @@ it.effect("ACP session RPCs list a thread missing its history and repair it on i
     Effect.provide(
       Layer.mergeAll(
         EventSink.layer.pipe(Layer.provideMerge(acpStores)),
+        Layer.mock(UserDesktopHosts)({
+          forSocket: () => {
+            throw new Error("Unexpected desktop host socket");
+          },
+        }),
+        Layer.mock(ComputerObservationStore)({}),
         Layer.mock(PreviewAutomationBroker.PreviewAutomationBroker)({}),
         Layer.mock(ServerBrowser.ServerBrowser)({}),
       ),

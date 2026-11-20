@@ -1,3 +1,4 @@
+import * as NodeSqlite from "node:sqlite";
 // @effect-diagnostics nodeBuiltinImport:off - CLI integration exercises Node HTTP and filesystem boundaries.
 import * as NodeHttp from "node:http";
 import * as NodeFS from "node:fs";
@@ -907,6 +908,39 @@ describe("auth scope options", () => {
 });
 
 describe("auth pairing create --base-url", () => {
+  it.effect("issues a one-time pairing link bound to the specified User desktop", () =>
+    Effect.gen(function* () {
+      const baseDir = NodeFS.mkdtempSync(NodePath.join(NodeOS.tmpdir(), "t3-cli-host-pair-"));
+      try {
+        const output = yield* captureStdout(
+          runCli([
+            "auth",
+            "pairing",
+            "create",
+            "--base-dir",
+            baseDir,
+            "--user-desktop-id",
+            "workstation",
+            "--base-url",
+            "https://fixture.invalid",
+            "--json",
+          ]),
+        );
+        const issued = JSON.parse(output) as { id: string; credential: string; pairUrl: string };
+        assert.equal(issued.pairUrl, `https://fixture.invalid/pair#token=${issued.credential}`);
+        using db = new NodeSqlite.DatabaseSync(
+          NodePath.join(baseDir, "userdata", "statev2.sqlite"),
+          { readOnly: true },
+        );
+        assert.equal(
+          db.prepare("SELECT subject FROM auth_pairing_links WHERE id = ?").get(issued.id)?.subject,
+          "desktop-host:workstation",
+        );
+      } finally {
+        NodeFS.rmSync(baseDir, { recursive: true, force: true });
+      }
+    }),
+  );
   it.effect.each(["192.168.1.5:3773", "localhost:3773", "ftp://localhost:3773"])(
     "rejects %s before issuing a token",
     (baseUrl) =>

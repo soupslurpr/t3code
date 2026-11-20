@@ -628,7 +628,7 @@ export const layerWithOptions = (
                   yield* agentAccessSettings(threadId);
                 const capabilities = new Set<
                   import("../mcp/McpInvocationContext.ts").McpCapability
-                >(["orchestration", "worktree", "pull-requests", "issues"]);
+                >(["orchestration", "worktree", "pull-requests", "issues", "computer"]);
                 if (browserToolsAvailable) capabilities.add("preview");
                 if (deviceToolsAvailable) capabilities.add("device");
                 const backgroundWait = yield* registry.get(providerInstanceId).pipe(
@@ -662,6 +662,7 @@ export const layerWithOptions = (
                     resolved !== undefined &&
                     resolved.thread.threadId === threadId &&
                     resolved.thread.providerInstanceId === providerInstanceId &&
+                    resolved.capabilities.has("computer") &&
                     resolved.capabilities.has("preview") === browserToolsAvailable &&
                     resolved.capabilities.has("device") === deviceToolsAvailable &&
                     // A failed capability read cannot tell that the live credential is wrong.

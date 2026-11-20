@@ -82,6 +82,119 @@ const requestMetadata = {
 it.layer(Layer.mergeAll(NodeServices.layer, NodePlatformCrypto.layer))(
   "EnvironmentAuth.layer",
   (it) => {
+    it.effect(
+      "derives native host authority from the issuing bootstrap and exact desktop pairing",
+      () =>
+        Effect.gen(function* () {
+          const auth = yield* EnvironmentAuth.EnvironmentAuth;
+          const paired = yield* auth.issuePairingCredential();
+          const enroll = (userDesktopId: string) =>
+            auth.issuePairingCredential({ purpose: "user-desktop-host", userDesktopId });
+          const attached = yield* enroll("attached");
+          const reserved = yield* enroll("native");
+          const sessions = yield* SessionStore.SessionStore;
+          for (const [credential, expectedId] of [
+            ["native-fixture", "native"],
+            [attached.credential, "attached"],
+            [reserved.credential, null],
+            [paired.credential, null],
+          ] as const) {
+            const access = yield* auth.exchangeBootstrapCredentialForAccessToken(
+              credential,
+              undefined,
+              requestMetadata,
+            );
+            const state = yield* auth.getSessionState(makeBearerRequest(access.access_token));
+            expect(state.userDesktopHostId).toBe(expectedId);
+          }
+          const cookieGrant = yield* enroll("attached");
+          const cookie = yield* auth.createBrowserSession(cookieGrant.credential, requestMetadata);
+          expect(
+            (yield* auth.getSessionState(
+              makeCookieRequest(sessions.cookieName, cookie.sessionToken),
+            )).userDesktopHostId,
+          ).toBeNull();
+          const limited = yield* enroll("attached");
+          const preview = yield* auth.exchangeBootstrapCredentialForAccessToken(
+            limited.credential,
+            ["preview:operate"],
+            requestMetadata,
+          );
+          expect(
+            (yield* auth.getSessionState(makeBearerRequest(preview.access_token)))
+              .userDesktopHostId,
+          ).toBeNull();
+        }).pipe(
+          Effect.provide(
+            layerEnvironmentAuth({
+              desktopBootstrapToken: "native-fixture",
+              environmentHost: {
+                protocolVersion: 1,
+                desktopId: "native",
+                defaultLabel: "Native",
+                platform: "linux",
+                capabilities: ["view"],
+              },
+            }),
+          ),
+        ),
+    );
+
+    it.effect(
+      "retains only the paired desktop identity on renewed device-key sessions and socket tickets",
+      () =>
+        Effect.gen(function* () {
+          const auth = yield* EnvironmentAuth.EnvironmentAuth;
+          const sessions = yield* SessionStore.SessionStore;
+          const key = makeDpopKey();
+          const link = yield* auth.issuePairingCredential({
+            purpose: "user-desktop-host",
+            userDesktopId: "attached",
+          });
+          const initial = yield* auth.exchangeBootstrapCredentialForAccessToken(
+            link.credential,
+            undefined,
+            requestMetadata,
+            { proofKeyThumbprint: key.thumbprint },
+          );
+          const verified = yield* sessions.verify(initial.access_token);
+          yield* TestClock.adjust("2 hours");
+          const renewed = yield* auth.renewAccessToken(
+            initial.access_token,
+            key.thumbprint,
+            Effect.void,
+          );
+          const session = yield* sessions.verify(renewed.access_token);
+          const ticket = yield* sessions.issueWebSocketToken(session.sessionId, {
+            audience: "rpc",
+            proofKeyThumbprint: key.thumbprint,
+          });
+          for (const authenticated of [
+            verified,
+            session,
+            yield* sessions.verifyWebSocketToken(ticket.token),
+          ]) {
+            expect(authenticated).toMatchObject({
+              sessionId: verified.sessionId,
+              method: "dpop-access-token",
+              subject: "desktop-host:attached",
+              proofKeyThumbprint: key.thumbprint,
+            });
+          }
+          const connect = yield* auth.issueConnectCredential({
+            proofKeyThumbprint: key.thumbprint,
+            requireApproval: false,
+          });
+          const remote = yield* auth.exchangeBootstrapCredentialForAccessToken(
+            connect.credential,
+            undefined,
+            requestMetadata,
+            { proofKeyThumbprint: key.thumbprint },
+          );
+          expect((yield* sessions.verify(remote.access_token)).subject).toBe("cloud-connect");
+        }).pipe(Effect.provide(layerEnvironmentAuth())),
+    );
+
     it.effect("uses the reusable dev cookie without overriding a normal scoped cookie", () =>
       Effect.gen(function* () {
         const serverAuth = yield* EnvironmentAuth.EnvironmentAuth;

@@ -42,6 +42,7 @@ import { Button } from "../components/ui/button";
 import { StandalonePage, StandalonePageHeader } from "../components/ui/standalone-page";
 import { SharedTooltipProvider } from "../components/ui/shared-tooltip";
 import { AnchoredToastProvider, ToastProvider } from "../components/ui/toast";
+import { ComputerAutomationHosts } from "../components/computer/ComputerAutomationHosts";
 import { isElectron } from "../env";
 import { useClientSettings } from "../hooks/useSettings";
 import {
@@ -198,6 +199,7 @@ function RootRouteBranch() {
           <DesktopWebLinkCoordinator />
         </>
       ) : null}
+      {isElectron ? <ComputerAutomationHosts /> : null}
       {isElectron ? <RunningThreadKeepAlive /> : null}
       <RelayClientInstallDialog />
       <ConnectOnboardingDialog />

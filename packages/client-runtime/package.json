@@ -327,6 +327,10 @@
       "types": "./src/state/peerPairingCode.ts",
       "default": "./src/state/peerPairingCode.ts"
     },
+    "./state/computer": {
+      "types": "./src/state/computer.ts",
+      "default": "./src/state/computer.ts"
+    },
     "./state/preview": {
       "types": "./src/state/preview.ts",
       "default": "./src/state/preview.ts"
@@ -670,6 +674,10 @@
     "./pull-request-references": {
       "types": "./src/pullRequestReferences.ts",
       "default": "./src/pullRequestReferences.ts"
+    },
+    "./computer/viewerKeys": {
+      "types": "./src/computer/viewerKeys.ts",
+      "default": "./src/computer/viewerKeys.ts"
     }
   },
   "scripts": {

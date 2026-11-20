@@ -3,6 +3,7 @@ import {
   AuthAccessTokenType,
   AuthAccessWriteScope,
   AuthStandardClientScopes,
+  AuthUserDesktopHostScopes,
   AuthGrantScope,
   EnvironmentAuthInvalidError,
   type EnvironmentAuthInvalidReason,
@@ -506,7 +507,9 @@ export const layer = HttpApiBuilder.group(
               : (args.payload.scopes ?? AuthStandardClientScopes);
             if (
               delegatedScopes.length === 0 ||
-              new Set<AuthEnvironmentScope>(delegatedScopes).size !== delegatedScopes.length
+              new Set<AuthEnvironmentScope>(delegatedScopes).size !== delegatedScopes.length ||
+              (args.payload.purpose === "user-desktop-host" &&
+                !AuthUserDesktopHostScopes.every((scope) => delegatedScopes.includes(scope)))
             ) {
               return yield* failEnvironmentInvalidRequest("invalid_scope");
             }

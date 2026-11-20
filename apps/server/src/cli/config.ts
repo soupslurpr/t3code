@@ -528,6 +528,9 @@ export const resolveServerConfig = Effect.fn("config.resolveServerConfig")(funct
     desktopBootstrapToken,
     ...(desktopBootstrapSecret === undefined ? {} : { desktopBootstrapSecret }),
     ...(desktopReadinessSecret === undefined ? {} : { desktopReadinessSecret }),
+    ...(bootstrap?.environmentHost === undefined
+      ? {}
+      : { environmentHost: bootstrap.environmentHost }),
     ...(shellEnvironmentPrepared === undefined ? {} : { shellEnvironmentPrepared }),
     desktopTelemetryFd,
     desktopTelemetryControlFd,

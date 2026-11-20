@@ -9,6 +9,7 @@ import {
   TrimmedNonEmptyString,
 } from "./baseSchemas.ts";
 import { RuntimeMode } from "./providerPolicy.ts";
+import { UserDesktopId } from "./userDesktop.ts";
 
 export const ServerAuthPolicy = Schema.Literals([
   "desktop-managed-local",
@@ -516,7 +517,19 @@ const pairingCredentialFields = {
   scopes: Schema.optionalKey(AuthGrantScopes),
 };
 
+export const AuthUserDesktopHostScopes = [
+  AuthPreviewOperateScope,
+  AuthOrchestrationReadScope,
+  AuthOrchestrationOperateScope,
+] as const;
+
 export const AuthCreatePairingCredentialInput = Schema.Union([
+  Schema.Struct({
+    ...pairingCredentialFields,
+    purpose: Schema.Literal("user-desktop-host"),
+    userDesktopId: UserDesktopId,
+    access: Schema.optionalKey(Schema.Undefined),
+  }),
   Schema.Struct({
     ...pairingCredentialFields,
     access: Schema.optionalKey(AuthMcpClientAccess),
@@ -531,6 +544,8 @@ export const AuthCreatePairingCredentialInput = Schema.Union([
 export type AuthCreatePairingCredentialInput = typeof AuthCreatePairingCredentialInput.Type;
 
 export const AuthSessionState = Schema.Struct({
+  /** Issuer-enrolled desktop this session can host. Older servers omit the field. */
+  userDesktopHostId: Schema.optionalKey(Schema.NullOr(UserDesktopId)),
   authenticated: Schema.Boolean,
   auth: ServerAuthDescriptor,
   scopes: Schema.optionalKey(AuthEnvironmentScopes),

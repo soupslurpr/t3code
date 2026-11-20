@@ -20,6 +20,7 @@ import { ChildProcessSpawner } from "effect/process";
 
 import * as DesktopEnvironment from "../app/DesktopEnvironment.ts";
 import * as DesktopManagedPolicy from "../app/DesktopManagedPolicy.ts";
+import * as UserDesktopIdentity from "../computer/UserDesktopIdentity.ts";
 import * as DesktopBackendConfiguration from "./DesktopBackendConfiguration.ts";
 import * as DesktopShellEnvironment from "../shell/DesktopShellEnvironment.ts";
 import * as DesktopConfig from "../app/DesktopConfig.ts";
@@ -41,6 +42,7 @@ const layerShellEnvironment = (prepared = true) =>
 const layerBackendConfiguration = (prepared = true) =>
   DesktopBackendConfiguration.layer.pipe(
     Layer.provide(layerShellEnvironment(prepared)),
+    Layer.provide(UserDesktopIdentity.layer),
     Layer.provide(DesktopState.layer),
   );
 

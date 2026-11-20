@@ -43,6 +43,12 @@ import * as DesktopCliCommand from "./app/DesktopCliCommand.ts";
 import * as DesktopApplicationMenu from "./window/DesktopApplicationMenu.ts";
 import * as DesktopAssets from "./app/DesktopAssets.ts";
 import * as DesktopPrimaryPaste from "./app/DesktopPrimaryPaste.ts";
+import * as ComputerHostTransport from "./computer/ComputerHostTransport.ts";
+import * as ComputerUseCoordinator from "./computer/ComputerUseCoordinator.ts";
+import * as ComputerUseRouter from "./computer/ComputerUseRouter.ts";
+import * as DesktopGrants from "./computer/DesktopGrants.ts";
+import * as DesktopScreenPermissions from "./computer/DesktopScreenPermissions.ts";
+import * as UserDesktopIdentity from "./computer/UserDesktopIdentity.ts";
 import * as DesktopBackendConfiguration from "./backend/DesktopBackendConfiguration.ts";
 import * as DesktopBackendPool from "./backend/DesktopBackendPool.ts";
 import * as DesktopLocalEnvironmentAuth from "./backend/DesktopLocalEnvironmentAuth.ts";
@@ -135,6 +141,7 @@ const layerElectron = Layer.mergeAll(
   ElectronDialog.layer,
   ElectronMenu.layer,
   ElectronPowerMonitor.layer,
+  UserDesktopIdentity.layer,
   ElectronProtocol.layer,
   ElectronSafeStorage.layer,
   ElectronShell.layer,
@@ -179,7 +186,16 @@ const layerDesktopPreview = PreviewManager.layer.pipe(
   Layer.provideMerge(layerDesktopFoundation),
 );
 
+const layerDesktopGrants = DesktopGrants.layer.pipe(Layer.provideMerge(layerDesktopFoundation));
+const layerDesktopComputer = ComputerUseRouter.layer.pipe(
+  Layer.provideMerge(ComputerUseCoordinator.layer),
+  Layer.provideMerge(DesktopScreenPermissions.layer),
+  Layer.provideMerge(ComputerHostTransport.layer),
+  Layer.provideMerge(layerDesktopGrants),
+);
+
 const layerDesktopWindow = DesktopWindow.layer.pipe(
+  Layer.provideMerge(layerDesktopComputer),
   Layer.provideMerge(layerDesktopServerExposure),
   Layer.provideMerge(layerDesktopPreview),
 );

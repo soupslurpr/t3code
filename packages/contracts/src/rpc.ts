@@ -1,4 +1,13 @@
 import {
+  ComputerHostRegistration,
+  ComputerHostEvent,
+  ComputerHostFocus,
+  ComputerHostError,
+} from "./computerHost.ts";
+import { UserDesktopHumanInvokeInput } from "./computerHuman.ts";
+import { PreviewAutomationResponse } from "./previewAutomation.ts";
+import { UserDesktopManagementError, UserDesktopInventoryError } from "./userDesktop.ts";
+import {
   OrchestrationV2SearchThreadError,
   OrchestrationV2SearchThreadInput,
   OrchestrationV2SearchThreadResult,
@@ -572,6 +581,10 @@ export const WS_METHODS = {
   previewResize: "preview.resize",
   previewAdjust: "preview.adjust",
   previewClose: "preview.close",
+  previewAutomationConnect: "previewAutomation.connect",
+  previewAutomationRespond: "previewAutomation.respond",
+  previewAutomationFocusHost: "previewAutomation.focusHost",
+  userDesktopHumanInvoke: "userDesktop.humanInvoke",
   previewList: "preview.list",
   previewClearProfile: "preview.clearProfile",
   previewReportProfiles: "preview.reportProfiles",
@@ -2023,6 +2036,31 @@ const WsPreviewCloseRpc = Rpc.make(WS_METHODS.previewClose, {
   error: Schema.Union([PreviewError, EnvironmentAuthorizationError]),
 });
 
+const WsComputerHostConnectRpc = Rpc.make(WS_METHODS.previewAutomationConnect, {
+  payload: ComputerHostRegistration,
+  success: ComputerHostEvent,
+  error: EnvironmentAuthorizationError,
+  stream: true,
+});
+const WsComputerHostRespondRpc = Rpc.make(WS_METHODS.previewAutomationRespond, {
+  payload: PreviewAutomationResponse,
+  error: EnvironmentAuthorizationError,
+});
+const WsComputerHostFocusRpc = Rpc.make(WS_METHODS.previewAutomationFocusHost, {
+  payload: ComputerHostFocus,
+  error: EnvironmentAuthorizationError,
+});
+const WsUserDesktopHumanInvokeRpc = Rpc.make(WS_METHODS.userDesktopHumanInvoke, {
+  payload: UserDesktopHumanInvokeInput,
+  success: Schema.Unknown,
+  error: Schema.Union([
+    ComputerHostError,
+    UserDesktopInventoryError,
+    UserDesktopManagementError,
+    EnvironmentAuthorizationError,
+  ]),
+});
+
 const WsPreviewListRpc = Rpc.make(WS_METHODS.previewList, {
   payload: PreviewListInput,
   success: PreviewListResult,
@@ -2713,6 +2751,10 @@ export const WsRpcGroup = RpcGroup.make(
   WsPreviewResizeRpc,
   WsPreviewAdjustRpc,
   WsPreviewCloseRpc,
+  WsComputerHostConnectRpc,
+  WsComputerHostRespondRpc,
+  WsComputerHostFocusRpc,
+  WsUserDesktopHumanInvokeRpc,
   WsPreviewListRpc,
   WsPreviewClearProfileRpc,
   WsPreviewReportProfilesRpc,

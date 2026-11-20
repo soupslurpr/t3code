@@ -3,6 +3,14 @@
   "private": true,
   "type": "module",
   "exports": {
+    "./computerAutomationFailure": {
+      "types": "./src/computerAutomationFailure.ts",
+      "import": "./src/computerAutomationFailure.ts"
+    },
+    "./computerTemporalCapture": {
+      "types": "./src/computerTemporalCapture.ts",
+      "import": "./src/computerTemporalCapture.ts"
+    },
     "./png": {
       "types": "./src/png.ts",
       "import": "./src/png.ts"

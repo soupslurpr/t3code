@@ -74,7 +74,7 @@ const postJson = (path: string, body: unknown, headers?: Readonly<Record<string,
     body: encodeJson(body),
   });
 
-it.effect("sets the selected browser session cookies through the HTTP route", () =>
+it.effect("applies the selected browser session and its delegation rights to desktop pairing", () =>
   Effect.gen(function* () {
     const random = yield* SecureRandom.SecureRandom;
     const unusedSecretStore = ServerSecretStore.ServerSecretStore.of({
@@ -166,6 +166,59 @@ it.effect("sets the selected browser session cookies through the HTTP route", ()
           expect(restrictedCookies).toHaveLength(1);
           expect(restrictedCookies[0]).toMatch(/^t3_session_/);
           expect(restrictedCookies[0]).not.toContain("t3_dev_session_");
+          const enrollment = {
+            purpose: "user-desktop-host",
+            userDesktopId: "workstation",
+            scopes: ["orchestration:read", "orchestration:operate", "preview:operate"],
+          };
+          const issue = (cookie: string, payload: unknown) =>
+            environmentA.handler(
+              postJson("/api/auth/pairing-token", payload, { cookie }),
+              requestContext,
+            );
+          const restrictedCookie = restrictedCookies[0]!.split(";", 1)[0]!;
+          expect((await issue(restrictedCookie, enrollment)).status).toBe(403);
+          const accessGrant = await issue(devCookieHeader, {
+            scopes: ["access:write", "preview:operate"],
+          });
+          const accessCredential = (await accessGrant.json()) as { credential: string };
+          const accessSession = await environmentA.handler(
+            postJson("/api/auth/browser-session", accessCredential),
+            requestContext,
+          );
+          const accessCookie = accessSession.headers.getSetCookie()[0]!.split(";", 1)[0]!;
+          expect((await issue(accessCookie, enrollment)).status).toBe(403);
+          expect(
+            (await issue(devCookieHeader, { ...enrollment, scopes: ["preview:operate"] })).status,
+          ).toBe(400);
+          const grant = await issue(devCookieHeader, enrollment);
+          expect(grant.status).toBe(200);
+          const { credential } = (await grant.json()) as { credential: string };
+          const exchange = await environmentA.handler(
+            new Request("http://127.0.0.1/oauth/token", {
+              method: "POST",
+              body: new URLSearchParams({
+                grant_type: AuthTokenExchangeGrantType,
+                subject_token: credential,
+                subject_token_type: AuthEnvironmentBootstrapTokenType,
+                requested_token_type: AuthAccessTokenType,
+              }),
+            }),
+            requestContext,
+          );
+          expect(exchange.status).toBe(200);
+          const { access_token } = (await exchange.json()) as { access_token: string };
+          const state = await environmentA.handler(
+            new Request("http://127.0.0.1/api/auth/session", {
+              headers: { authorization: `Bearer ${access_token}` },
+            }),
+            requestContext,
+          );
+          expect(await state.json()).toMatchObject({
+            authenticated: true,
+            userDesktopHostId: "workstation",
+            permissions: expect.arrayContaining(enrollment.scopes),
+          });
         }),
       ([environmentA, environmentB]) =>
         Effect.promise(() => Promise.all([environmentA.dispose(), environmentB.dispose()])),

@@ -3,6 +3,7 @@ import {
   AuthRevokePairingLinkInput,
   AuthSessionId,
   AuthStandardClientScopes,
+  UserDesktopId,
 } from "@t3tools/contracts";
 import * as Console from "effect/Console";
 import * as Effect from "effect/Effect";
@@ -13,6 +14,7 @@ import * as Schema from "effect/Schema";
 import { Argument, Command, Flag, GlobalFlag } from "effect/cli";
 
 import * as EnvironmentAuth from "../auth/EnvironmentAuth.ts";
+import { attachedDesktopSubject } from "../auth/DesktopHostAuthority.ts";
 
 import {
   formatConnectDeviceList,
@@ -105,6 +107,11 @@ const pairingCreateCommand = Command.make("create", {
   scopes: authScopesFlag(AuthStandardClientScopes),
   ttl: ttlFlag,
   label: labelFlag,
+  userDesktopId: Flag.String("user-desktop-id").pipe(
+    Flag.withSchema(UserDesktopId),
+    Flag.withDescription("Authorize the paired desktop to host this exact User desktop ID."),
+    Flag.optional,
+  ),
   baseUrl: baseUrlFlag,
   json: jsonFlag,
 }).pipe(
@@ -116,7 +123,9 @@ const pairingCreateCommand = Command.make("create", {
         Effect.gen(function* () {
           const issued = yield* environmentAuth.createPairingLink({
             scopes: flags.scopes,
-            subject: "one-time-token",
+            subject: Option.isSome(flags.userDesktopId)
+              ? attachedDesktopSubject(flags.userDesktopId.value)
+              : "one-time-token",
             ...(Option.isSome(flags.ttl) ? { ttl: flags.ttl.value } : {}),
             ...(Option.isSome(flags.label) ? { label: flags.label.value } : {}),
           });

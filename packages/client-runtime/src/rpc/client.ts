@@ -1,3 +1,4 @@
+import * as Schedule from "effect/Schedule";
 import { msg } from "gt-i18n";
 import {
   MarkedText,
@@ -76,6 +77,7 @@ export type EnvironmentSubscriptionRpcTag =
   | typeof WS_METHODS.serverGetStorageCleanupReport
   | typeof WS_METHODS.serverGetDatabaseStorage
   | typeof WS_METHODS.subscribeTerminalMetadata
+  | typeof WS_METHODS.previewAutomationConnect
   | typeof WS_METHODS.subscribePreviewEvents
   | typeof WS_METHODS.subscribeDiscoveredLocalServers
   | typeof WS_METHODS.subscribeDeviceState
@@ -292,6 +294,7 @@ interface SubscriptionOptions<TTag extends EnvironmentSubscriptionRpcTag> {
     cause: Cause.Cause<EnvironmentRpcStreamFailure<TTag>>,
   ) => Effect.Effect<void, never, never>;
   readonly retryExpectedFailureAfter?: Duration.Input;
+  readonly resubscribeOnCompletionAfter?: Duration.Input;
   readonly resubscribe?: Stream.Stream<unknown, never, never>;
 }
 
@@ -365,6 +368,9 @@ function subscribeDynamicMapped<TTag extends EnvironmentSubscriptionRpcTag, A>(
                       return stream.pipe(Stream.ensuring(completeObservation));
                     }),
                   ).pipe(
+                    options?.resubscribeOnCompletionAfter === undefined
+                      ? (stream) => stream
+                      : Stream.repeat(Schedule.spaced(options.resubscribeOnCompletionAfter)),
                     Stream.tapCause((cause) =>
                       options?.onDefect !== undefined &&
                       cause.reasons.some(

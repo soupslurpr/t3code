@@ -27,6 +27,7 @@ import serverPackageJson from "../../../server/package.json" with { type: "json"
 import * as DesktopBackendManager from "./DesktopBackendManager.ts";
 import * as DesktopCliShim from "../app/DesktopCliShim.ts";
 import * as DesktopEnvironment from "../app/DesktopEnvironment.ts";
+import * as UserDesktopIdentity from "../computer/UserDesktopIdentity.ts";
 import * as DesktopState from "../app/DesktopState.ts";
 import * as DesktopServerExposure from "./DesktopServerExposure.ts";
 import * as DesktopShellEnvironment from "../shell/DesktopShellEnvironment.ts";
@@ -246,6 +247,7 @@ const readBackendObservabilitySettings = Effect.gen(function* () {
 });
 
 interface SharedBootstrapInput {
+  readonly environmentHost: UserDesktopIdentity.UserDesktopIdentity["Service"]["registration"];
   readonly bootstrapToken: string;
   readonly bootstrapSecret: string;
   readonly observabilitySettings: BackendObservabilitySettings;
@@ -547,6 +549,7 @@ const resolvePrimaryStartConfig = Effect.fn("desktop.backendConfiguration.resolv
       port: backendExposure.port,
       t3Home: environment.baseDir,
       host: backendExposure.bindHost,
+      environmentHost: input.environmentHost,
       desktopBootstrapToken: input.bootstrapToken,
       desktopBootstrapSecret: input.bootstrapSecret,
       shellEnvironmentPrepared: input.shellEnvironmentPrepared,
@@ -625,6 +628,7 @@ const resolveWslStartConfig = Effect.fn("desktop.backendConfiguration.resolveWsl
     port: input.port,
     // Omit t3Home to keep the Linux backend from sharing the primary's Windows SQLite file.
     host: wslBindHost,
+    environmentHost: input.environmentHost,
     desktopBootstrapToken: input.bootstrapToken,
     desktopBootstrapSecret: input.bootstrapSecret,
     desktopReadinessSecret: input.readiness.secret,
@@ -779,6 +783,7 @@ const resolveWslStartConfig = Effect.fn("desktop.backendConfiguration.resolveWsl
 
 /** @public */
 export const make = Effect.gen(function* () {
+  const identity = yield* UserDesktopIdentity.UserDesktopIdentity;
   const environment = yield* DesktopEnvironment.DesktopEnvironment;
   const shellEnvironment = yield* DesktopShellEnvironment.DesktopShellEnvironment;
   const fileSystem = yield* FileSystem.FileSystem;
@@ -838,6 +843,7 @@ export const make = Effect.gen(function* () {
       Effect.provideService(DesktopEnvironment.DesktopEnvironment, environment),
     );
     return {
+      environmentHost: identity.registration,
       bootstrapToken,
       bootstrapSecret,
       observabilitySettings,

@@ -156,6 +156,80 @@ contextBridge.exposeInMainWorld("desktopBridge", {
     }
     return result as ReturnType<DesktopBridge["getLocalEnvironmentBootstraps"]>;
   },
+  computer: {
+    status: (input, context) =>
+      ipcRenderer.invoke(IpcChannels.COMPUTER_AUTOMATION_STATUS_CHANNEL, { input, context }),
+    requestAvailability: (input, context) =>
+      ipcRenderer.invoke(IpcChannels.COMPUTER_AUTOMATION_REQUEST_AVAILABILITY_CHANNEL, {
+        input,
+        context,
+      }),
+    releaseAvailability: (input, context) =>
+      ipcRenderer.invoke(IpcChannels.COMPUTER_AUTOMATION_RELEASE_AVAILABILITY_CHANNEL, {
+        input,
+        context,
+      }),
+    requestView: (input, context) =>
+      ipcRenderer.invoke(IpcChannels.COMPUTER_AUTOMATION_REQUEST_VIEW_CHANNEL, {
+        input,
+        context,
+      }),
+    requestControl: (input, context) =>
+      ipcRenderer.invoke(IpcChannels.COMPUTER_AUTOMATION_REQUEST_CONTROL_CHANNEL, {
+        input,
+        context,
+      }),
+    rememberView: (input, context) =>
+      ipcRenderer.invoke(IpcChannels.COMPUTER_AUTOMATION_REMEMBER_VIEW_CHANNEL, {
+        input,
+        context,
+      }),
+    rememberControl: (input, context) =>
+      ipcRenderer.invoke(IpcChannels.COMPUTER_AUTOMATION_REMEMBER_CONTROL_CHANNEL, {
+        input,
+        context,
+      }),
+    forceRelease: (input, context) =>
+      ipcRenderer.invoke(IpcChannels.COMPUTER_AUTOMATION_FORCE_RELEASE_CHANNEL, {
+        input,
+        context,
+      }),
+    cancelPreparation: (context) =>
+      ipcRenderer.invoke(IpcChannels.COMPUTER_AUTOMATION_CANCEL_PREPARATION_CHANNEL, context),
+    interrupt: (input, context) =>
+      ipcRenderer.invoke(IpcChannels.COMPUTER_AUTOMATION_INTERRUPT_CHANNEL, { input, context }),
+    forceForgetControl: (input, context) =>
+      ipcRenderer.invoke(IpcChannels.COMPUTER_AUTOMATION_FORCE_FORGET_CONTROL_CHANNEL, {
+        input,
+        context,
+      }),
+    snapshot: (input, context) =>
+      ipcRenderer.invoke(IpcChannels.COMPUTER_AUTOMATION_SNAPSHOT_CHANNEL, {
+        input,
+        context,
+      }),
+    act: (input, context) =>
+      ipcRenderer.invoke(IpcChannels.COMPUTER_AUTOMATION_ACT_CHANNEL, { input, context }),
+    release: (input, context) =>
+      ipcRenderer.invoke(IpcChannels.COMPUTER_AUTOMATION_RELEASE_CHANNEL, { input, context }),
+    forgetControl: (input, context) =>
+      ipcRenderer.invoke(IpcChannels.COMPUTER_AUTOMATION_FORGET_CONTROL_CHANNEL, {
+        input,
+        context,
+      }),
+  },
+  authorization: (input) => ipcRenderer.invoke(IpcChannels.DESKTOP_AUTHORIZATION_CHANNEL, input),
+  onDesktopAuthorizationChanged: (listener) => {
+    const receive = (_event: Electron.IpcRendererEvent, environmentId: string) =>
+      listener(environmentId);
+    ipcRenderer.on(IpcChannels.DESKTOP_AUTHORIZATION_CHANGED_CHANNEL, receive);
+    return () =>
+      ipcRenderer.removeListener(IpcChannels.DESKTOP_AUTHORIZATION_CHANGED_CHANNEL, receive);
+  },
+  getUserDesktopHost: () =>
+    ipcRenderer.sendSync(IpcChannels.GET_USER_DESKTOP_HOST_CHANNEL) as ReturnType<
+      NonNullable<DesktopBridge["getUserDesktopHost"]>
+    >,
   getLocalEnvironmentBearerToken: () =>
     ipcRenderer.invoke(IpcChannels.GET_LOCAL_ENVIRONMENT_BEARER_TOKEN_CHANNEL),
   getLocalEnvironmentEnabled: () =>

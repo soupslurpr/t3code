@@ -1110,6 +1110,16 @@ export const SystemSettingsPaneSchema = Schema.Literals(["full-disk-access"]);
 export type SystemSettingsPane = typeof SystemSettingsPaneSchema.Type;
 
 export interface DesktopBridge {
+  getUserDesktopHost?: () => import("./userDesktop.ts").UserDesktopHostRegistration;
+  computer?: import("./desktopComputerBridge.ts").DesktopComputerAutomationBridge;
+  authorization?: (
+    input: import("./desktopAuthorization.ts").DesktopAuthorizationSyncInput,
+  ) => Promise<
+    import("./desktopComputerBridge.ts").DesktopComputerAutomationResult<
+      import("./desktopAuthorization.ts").DesktopAuthorizationReferences
+    >
+  >;
+  onDesktopAuthorizationChanged?: (listener: (environmentId: string) => void) => () => void;
   getAppBranding: () => DesktopAppBranding | null;
   getDatabaseMigrationProgress?: () => Promise<DatabaseMigrationProgress | null>;
   /** `null` until the desktop host has read the login shell's environment; ask again later. */

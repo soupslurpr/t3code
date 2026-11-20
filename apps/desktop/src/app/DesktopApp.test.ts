@@ -1,3 +1,7 @@
+import * as DesktopScreenPermissions from "../computer/DesktopScreenPermissions.ts";
+import * as UserDesktopIdentity from "../computer/UserDesktopIdentity.ts";
+import * as DesktopGrants from "../computer/DesktopGrants.ts";
+import * as ComputerUseRouter from "../computer/ComputerUseRouter.ts";
 import { assert, it } from "@effect/vitest";
 import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
 import * as NodeServices from "@effect/platform-node/NodeServices";
@@ -203,6 +207,39 @@ const runStubbedDesktop = (stub: StubbedDesktop) =>
     return yield* runApp.pipe(
       Effect.provide(
         Layer.mergeAll(
+          Layer.mock(ComputerUseRouter.ComputerUseRouter)({}),
+          Layer.mock(DesktopGrants.DesktopGrants)({
+            now: () => 0,
+            list: () => [],
+            select: () => undefined,
+            source: () => undefined,
+            generation: () => undefined,
+            connect: () => true,
+            disconnect: () => {},
+            invalidate: () => {},
+            references: () => [],
+            publicationUncertain: () => false,
+            withPermit: (effect) => effect,
+            retain: () => {},
+            releaseReference: () => {},
+            changes: Stream.empty,
+          }),
+          Layer.succeed(UserDesktopIdentity.UserDesktopIdentity, {
+            registration: {
+              desktopId: "test-desktop",
+              protocolVersion: 1,
+              platform: "linux",
+              capabilities: [],
+              defaultLabel: "Test desktop",
+            },
+          }),
+          Layer.mock(DesktopScreenPermissions.DesktopScreenPermissions)({
+            has: () => false,
+            grants: () => [],
+            authorization: () => undefined,
+            retain: () => {},
+            release: () => {},
+          }),
           Layer.mock(BrowserImport.BrowserImport, {}),
           Layer.mock(ChildProcessSpawner.ChildProcessSpawner, {}),
           Layer.mock(DesktopBackendConfiguration.DesktopBackendConfiguration, {}),

@@ -57,6 +57,12 @@ import {
   PEER_LINK_PAIRING_SUBJECT_PREFIX,
 } from "../persistence/AuthPairingLinks.ts";
 import { requestUrl } from "../requestUrl.ts";
+import {
+  attachedDesktopId,
+  attachedDesktopSubject,
+  authorizedDesktopId,
+  nativeDesktopSubject,
+} from "./DesktopHostAuthority.ts";
 
 const DEFAULT_SESSION_SUBJECT = "cli-issued-session";
 export const INTERNAL_ADMINISTRATIVE_BOOTSTRAP_SUBJECT = "administrative-bootstrap";
@@ -940,6 +946,7 @@ export const make = Effect.gen(function* () {
           ({
             authenticated: true,
             auth: descriptor,
+            userDesktopHostId: authorizedDesktopId(session, config.environmentHost?.desktopId),
             ...authScopeResponse(session.scopes),
             sessionMethod: session.method,
             sessionId: session.sessionId,
@@ -1166,16 +1173,19 @@ export const make = Effect.gen(function* () {
               if (grantedScopes.length === 0) {
                 return yield* new ServerAuthScopeNotGrantedError({});
               }
-              // Only plain pairing links renew. T3 Connect, CLI, desktop and peer sessions keep
-              // their own lifetimes, so unlinking Connect or rotating a credential still cuts off.
+              // Direct pairing links renew in place. Connect and the native bootstrap reauthenticate.
               const renewable =
                 input?.proofKeyThumbprint !== undefined &&
                 grant.method === "one-time-token" &&
-                grant.subject === PAIRING_LINK_SUBJECT;
+                (grant.subject === PAIRING_LINK_SUBJECT ||
+                  attachedDesktopId(grant.subject) !== null);
               const issue = sessions
                 .issue({
                   method: input?.proofKeyThumbprint ? "dpop-access-token" : "bearer-access-token",
-                  subject: grant.subject,
+                  subject:
+                    grant.method === "desktop-bootstrap" && config.environmentHost !== undefined
+                      ? nativeDesktopSubject(config.environmentHost.desktopId)
+                      : grant.subject,
                   scopes: grantedScopes,
                   ...(input?.proofKeyThumbprint
                     ? {
@@ -1432,9 +1442,11 @@ export const make = Effect.gen(function* () {
         ? mcpClientScopes(input.access)
         : (input?.scopes ?? AuthStandardClientScopes),
       subject:
-        input?.purpose === "peer-link" && input.access
-          ? `${PEER_LINK_PAIRING_SUBJECT_PREFIX}${input.access}`
-          : "one-time-token",
+        input?.purpose === "user-desktop-host"
+          ? attachedDesktopSubject(input.userDesktopId)
+          : input?.purpose === "peer-link" && input.access
+            ? `${PEER_LINK_PAIRING_SUBJECT_PREFIX}${input.access}`
+            : "one-time-token",
       ...(input?.label ? { label: input.label } : {}),
       ...(input?.access && input.purpose !== "peer-link" ? { mcpApproval: input.access } : {}),
     }).pipe(
@@ -1838,6 +1850,7 @@ const revokePairedClientsThePolicyDisallows = Effect.fn(
   const sessions = (yield* stores.sessions.listActive()).filter(
     (session) =>
       disallowed.has(session.subject) ||
+      (!remoteAllowed && attachedDesktopId(session.subject) !== null) ||
       // The startup link also pairs browsers on this machine; only a device elsewhere goes.
       (!remoteAllowed &&
         session.subject === INTERNAL_ADMINISTRATIVE_BOOTSTRAP_SUBJECT &&
@@ -1847,6 +1860,7 @@ const revokePairedClientsThePolicyDisallows = Effect.fn(
   const links = (yield* stores.pairingLinks.listActive()).filter(
     (link) =>
       disallowed.has(link.subject) ||
+      (!remoteAllowed && attachedDesktopId(link.subject) !== null) ||
       // Approval codes let an agent elsewhere sign in, as plain codes do.
       (!remoteAllowed && link.subject.startsWith(MCP_APPROVAL_SUBJECT_PREFIX)),
   );

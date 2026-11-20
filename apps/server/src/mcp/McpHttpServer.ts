@@ -1,3 +1,9 @@
+import * as Digest from "effect/crypto/Digest";
+import * as ComputerObservationStore from "../computer/ComputerObservationStore.ts";
+import * as ComputerAutomationRouter from "../computer/ComputerAutomationRouter.ts";
+import * as UserDesktopHosts from "../computer/UserDesktopHosts.ts";
+import { computerResult } from "./toolkits/computer/results.ts";
+import { ComputerHostError } from "@t3tools/contracts";
 import * as Cache from "effect/Cache";
 import * as Cause from "effect/Cause";
 import * as Clock from "effect/Clock";
@@ -63,6 +69,8 @@ import { compactT3McpToolOutput } from "@t3tools/shared/toolOutput";
 import * as McpProviderSessions from "@t3tools/provider-core/server/McpProviderSessions";
 import { MCP_TOOL_EXPOSURE_HEADER } from "@t3tools/provider-core/server/mcpSession";
 import * as OrchestratorMcpService from "./OrchestratorMcpService.ts";
+import { ComputerToolkit } from "./toolkits/computer/tools.ts";
+import { ComputerToolkitHandlersLive } from "./toolkits/computer/handlers.ts";
 import { PreviewControlsToolkit } from "./toolkits/previewControls/tools.ts";
 import * as PreviewControlsHandlers from "./toolkits/previewControls/handlers.ts";
 import * as FeedbackHandlers from "./toolkits/feedback/handlers.ts";
@@ -870,6 +878,9 @@ const imageToolFailure =
           operation,
           failureCount: failures.length,
           ...(message === undefined ? {} : { message }),
+          ...(isComputerHostError(firstFailure)
+            ? { computerFailure: firstFailure.computerFailure }
+            : {}),
         },
       },
       // Some clients show only the text content and others only structuredContent, so both carry it.
@@ -907,6 +918,7 @@ const registerImageTool = Effect.fn("McpHttpServer.registerImageTool")(function*
   >,
   operation: string,
   failureText: string | ((error: E) => string),
+  present?: (encoded: unknown) => McpSchema.CallToolResult,
 ) {
   const server = yield* McpServer.McpServer;
   yield* server.addTool({
@@ -937,6 +949,7 @@ const registerImageTool = Effect.fn("McpHttpServer.registerImageTool")(function*
           Effect.matchCauseEffect({
             onFailure: imageToolFailure(tool.name, operation, failureText),
             onSuccess: ({ encodedResult }) => {
+              if (present) return Effect.succeed(present(encodedResult));
               const { screenshot, ...rest } = encodedResult as ImageToolResult;
               const metadata = {
                 ...rest,
@@ -1499,6 +1512,39 @@ export const layerPullRequestsToolkit = toolkitRegistration(
 
 const layerIssuesToolkit = toolkitRegistration(IssuesToolkit, IssuesHandlers.layer);
 
+const isComputerHostError = Schema.is(ComputerHostError);
+const registerComputerTools = Effect.fn("McpHttpServer.registerComputerTools")(function* () {
+  const services = yield* Effect.context<
+    | ComputerAutomationRouter.ComputerAutomationRouter
+    | UserDesktopHosts.UserDesktopHosts
+    | ComputerObservationStore.ComputerObservationStore
+    | ThreadManagementService.ThreadManagementService
+    | Digest.Digest
+  >();
+  const built = yield* decodeAsAdvertised(ComputerToolkit);
+  for (const name of Object.keys(built.tools) as Array<keyof typeof built.tools>) {
+    const tool = built.tools[name];
+    yield* registerImageTool(
+      tool,
+      (payload) =>
+        built
+          .handle(name, payload)
+          .pipe(Stream.unwrap, Stream.run(Sink.last()), Effect.flatMap(Effect.fromOption)),
+      (effect) => Effect.provide(effect, services),
+      name,
+      (error) =>
+        isComputerHostError(error)
+          ? error.computerFailure.message
+          : (parameterValidationMessage(error) ?? "Desktop operation failed."),
+      computerResult,
+    );
+  }
+});
+const layerComputerTools = imageToolRegistration(
+  registerComputerTools(),
+  ComputerToolkitHandlersLive,
+);
+
 const layerDeviceStandardToolkitRegistration = toolkitRegistration(
   DeviceStandardToolkit,
   DeviceHandlers.layerStandard,
@@ -1545,6 +1591,7 @@ export const layerMcpTransport = <RA, RE, RR>(registrations: Layer.Layer<RA, RE,
 
 /** Every tool the T3 MCP server advertises. AgentContextBudget.test.ts measures this set. */
 export const layerTools = Layer.mergeAll(
+  layerComputerTools,
   layerPreviewToolkit,
   layerOrchestratorToolkit,
   layerThreadToolkit,

@@ -1,0 +1,150 @@
+import * as Schema from "effect/Schema";
+
+import { IsoDateTime, NonNegativeInt, ThreadId, TrimmedNonEmptyString } from "./baseSchemas.ts";
+
+export const MAX_USER_DESKTOPS = 256;
+
+/** Identifies one durable user desktop exposed by a T3 desktop client. */
+export const UserDesktopId = TrimmedNonEmptyString.check(Schema.isMaxLength(128));
+export type UserDesktopId = typeof UserDesktopId.Type;
+export const isUserDesktopId = Schema.is(UserDesktopId);
+
+/** Names one user desktop without treating the label as its identity. */
+export const UserDesktopLabel = TrimmedNonEmptyString.check(Schema.isMaxLength(256));
+export type UserDesktopLabel = typeof UserDesktopLabel.Type;
+
+/** Describes the operating system hosting a user desktop. */
+export const UserDesktopPlatform = Schema.Literals(["linux", "macos", "windows", "unknown"]);
+export type UserDesktopPlatform = typeof UserDesktopPlatform.Type;
+
+/** Advertises coarse computer-use capabilities without granting access. */
+export const UserDesktopCapability = Schema.Literals([
+  "view",
+  "control",
+  "availability",
+  "execution",
+]);
+export type UserDesktopCapability = typeof UserDesktopCapability.Type;
+
+/** Registers one current user-desktop protocol host with an environment. */
+export const UserDesktopHostRegistration = Schema.Struct({
+  protocolVersion: Schema.Literal(1),
+  desktopId: UserDesktopId,
+  defaultLabel: UserDesktopLabel,
+  platform: UserDesktopPlatform,
+  capabilities: Schema.Array(UserDesktopCapability).check(Schema.isMaxLength(4)),
+});
+export type UserDesktopHostRegistration = typeof UserDesktopHostRegistration.Type;
+
+/** Selects one concrete user desktop for computer use. */
+export const UserDesktopTarget = Schema.Struct({
+  kind: Schema.Literal("user"),
+  desktopId: UserDesktopId,
+});
+export type UserDesktopTarget = typeof UserDesktopTarget.Type;
+
+/** Presents one known user desktop without exposing screen or network contents. */
+export const UserDesktopView = Schema.Struct({
+  desktop: UserDesktopTarget,
+  label: UserDesktopLabel,
+  defaultLabel: UserDesktopLabel,
+  platform: UserDesktopPlatform,
+  capabilities: Schema.Array(UserDesktopCapability).check(Schema.isMaxLength(4)),
+  connectionState: Schema.Literals(["online", "offline", "identity-conflict"]),
+  lastSeenAt: IsoDateTime,
+  t3Focused: Schema.Boolean,
+  lastActiveAt: Schema.NullOr(IsoDateTime),
+});
+export type UserDesktopView = typeof UserDesktopView.Type;
+
+/** Identifies the User desktop that owns the current T3 environment when known. */
+export const UserDesktopEnvironmentHost = Schema.Union([
+  Schema.Struct({
+    status: Schema.Literal("identified"),
+    desktop: UserDesktopTarget,
+  }),
+  Schema.Struct({ status: Schema.Literal("unidentified") }),
+]);
+export type UserDesktopEnvironmentHost = typeof UserDesktopEnvironmentHost.Type;
+
+/** Names one durable, metadata-only User desktop access transition. */
+export const UserDesktopAuditAction = Schema.Literals([
+  "view-granted",
+  "control-granted",
+  "control-released",
+  "control-returned-to-agent",
+  "access-released",
+  "all-access-ended",
+  "view-remembered",
+  "control-remembered",
+  "approval-forgotten",
+]);
+export type UserDesktopAuditAction = typeof UserDesktopAuditAction.Type;
+
+/** Records a successful access transition without screen, input, or authorization contents. */
+export const UserDesktopAuditEvent = Schema.Struct({
+  sequence: NonNegativeInt,
+  desktopId: UserDesktopId,
+  occurredAt: IsoDateTime,
+  actorKind: Schema.Literals(["agent", "human"]),
+  action: UserDesktopAuditAction,
+  threadId: Schema.optional(ThreadId),
+  actorLabel: Schema.optional(TrimmedNonEmptyString.check(Schema.isMaxLength(128))),
+  takeover: Schema.Boolean,
+});
+export type UserDesktopAuditEvent = typeof UserDesktopAuditEvent.Type;
+
+/** Returns a bounded newest-first window of durable User desktop access metadata. */
+export const UserDesktopAuditLog = Schema.Struct({
+  events: Schema.Array(UserDesktopAuditEvent).check(Schema.isMaxLength(50)),
+});
+export type UserDesktopAuditLog = typeof UserDesktopAuditLog.Type;
+
+/** Lists durable user desktops and incompatible connected clients. */
+export const UserDesktopList = Schema.Struct({
+  desktops: Schema.Array(UserDesktopView).check(Schema.isMaxLength(MAX_USER_DESKTOPS)),
+  incompatibleClientCount: Schema.Int.check(Schema.isGreaterThanOrEqualTo(0)),
+  /** Missing only when decoding a response from an older environment server. */
+  environmentHost: Schema.optionalKey(UserDesktopEnvironmentHost),
+});
+export type UserDesktopList = typeof UserDesktopList.Type;
+
+/** Renames one user desktop within an environment. */
+export const UserDesktopRenameInput = Schema.Struct({
+  desktopId: UserDesktopId,
+  label: UserDesktopLabel,
+});
+export type UserDesktopRenameInput = typeof UserDesktopRenameInput.Type;
+
+/** Removes one offline user desktop from an environment's known inventory. */
+export const UserDesktopRemoveInput = Schema.Struct({
+  desktopId: UserDesktopId,
+});
+export type UserDesktopRemoveInput = typeof UserDesktopRemoveInput.Type;
+
+/** Reports that the environment could not read its durable user-desktop inventory. */
+export class UserDesktopInventoryError extends Schema.TaggedError<UserDesktopInventoryError>()(
+  "UserDesktopInventoryError",
+  {
+    code: Schema.Literal("user-desktop-inventory-unavailable"),
+    detail: TrimmedNonEmptyString.check(Schema.isMaxLength(2_000)),
+  },
+) {
+  override get message(): string {
+    return this.detail;
+  }
+}
+
+/** Reports a rejected user-desktop inventory mutation. */
+export class UserDesktopManagementError extends Schema.TaggedError<UserDesktopManagementError>()(
+  "UserDesktopManagementError",
+  {
+    code: Schema.Literals(["user-desktop-not-found", "user-desktop-online"]),
+    desktopId: UserDesktopId,
+    detail: TrimmedNonEmptyString.check(Schema.isMaxLength(2_000)),
+  },
+) {
+  override get message(): string {
+    return this.detail;
+  }
+}

@@ -1,3 +1,6 @@
+import * as ComputerObservationStore from "./computer/ComputerObservationStore.ts";
+import * as UserDesktopHosts from "./computer/UserDesktopHosts.ts";
+import * as UserDesktopHuman from "./computer/UserDesktopHuman.ts";
 import { GitCommandError, OrchestrationDispatchCommandError } from "@t3tools/contracts";
 // @effect-diagnostics-next-line nodeBuiltinImport:off -- A synchronous digest inside the pure provider mapping.
 import * as NodeCrypto from "node:crypto";
@@ -1604,6 +1607,14 @@ export const layerWsRpc = (
         yield* LayoutCommandApprovalWrites.LayoutCommandApprovalWrites;
       const workspaceFileSystem = yield* WorkspaceFileSystem.WorkspaceFileSystem;
       const serverEnvironment = yield* ServerEnvironment.ServerEnvironment;
+      const desktopHosts = yield* UserDesktopHosts.UserDesktopHosts;
+      const desktopSocket = yield* Effect.cached(
+        serverEnvironment.getEnvironmentId.pipe(
+          Effect.orDie,
+          Effect.map((id) => desktopHosts.forSocket(currentSession, id)),
+        ),
+      );
+
       const backgroundPolicy = yield* BackgroundPolicy.BackgroundPolicy;
       const rpcClientIds = yield* Ref.make(new Set<RpcClientId>());
       yield* Effect.addFinalizer(() =>
@@ -3494,6 +3505,19 @@ export const layerWsRpc = (
         [WS_METHODS.previewResize]: (input) => previewManager.resize(input),
         [WS_METHODS.previewAdjust]: (input) => previewManager.adjust(input),
         [WS_METHODS.previewClose]: (input) => previewManager.close(input),
+        [WS_METHODS.previewAutomationConnect]: (input) =>
+          Stream.unwrap(desktopSocket.pipe(Effect.map((socket) => socket.connect(input)))),
+        [WS_METHODS.previewAutomationRespond]: (input) =>
+          desktopSocket.pipe(Effect.flatMap((socket) => socket.respond(input))),
+        [WS_METHODS.previewAutomationFocusHost]: (input) =>
+          desktopSocket.pipe(Effect.flatMap((socket) => socket.focus(input))),
+        [WS_METHODS.userDesktopHumanInvoke]: (input) =>
+          serverEnvironment.getEnvironmentId.pipe(
+            Effect.orDie,
+            Effect.flatMap((id) =>
+              UserDesktopHuman.invoke(id, currentSessionId, currentSession.scopes, input),
+            ),
+          ),
         [WS_METHODS.previewList]: (input) => previewManager.list(input),
         [WS_METHODS.previewClearProfile]: (input) => serverBrowser.clearProfile(input.profileId),
         [WS_METHODS.previewReportProfiles]: (input) => reportProfiles(input),
@@ -3811,6 +3835,9 @@ export const WS_RPC_SERVER_OPTIONS = {
 
 export const layer = Layer.unwrap(
   Effect.gen(function* () {
+    const desktopServices = yield* Effect.context<
+      UserDesktopHosts.UserDesktopHosts | ComputerObservationStore.ComputerObservationStore
+    >();
     const serverBrowser = yield* ServerBrowser.ServerBrowser;
     const serverSelfUpdate = yield* ServerSelfUpdate.ServerSelfUpdate;
     const providerMaintenanceRunner = yield* ProviderMaintenanceRunner.ProviderMaintenanceRunner;
@@ -3856,7 +3883,10 @@ export const layer = Layer.unwrap(
           ),
         );
         // Desktop bootstrap sessions connect to their own backend, including same-machine WSL.
-        if (session.subject === "desktop-bootstrap") {
+        if (
+          session.subject === "desktop-bootstrap" ||
+          session.subject.startsWith("desktop-bootstrap:")
+        ) {
           delete NodeHttpServerRequest.toIncomingMessage(request).headers[
             "sec-websocket-extensions"
           ];
@@ -3904,7 +3934,12 @@ export const layer = Layer.unwrap(
               // Handler-context reporters see only request defects, not server-wide defects.
               Layer.provide(DefectReporter.layer),
               Layer.provide(AcpRegistrySessions.layer),
-              Layer.provide(Layer.succeed(SqlClient.SqlClient, sql)),
+              Layer.provide(
+                Layer.merge(
+                  Layer.succeedContext(desktopServices),
+                  Layer.succeed(SqlClient.SqlClient, sql),
+                ),
+              ),
               // Installs outlive the connection that started them and lock across clients.
               Layer.provide(
                 Layer.succeed(
