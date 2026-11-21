@@ -4,6 +4,7 @@ import {
   AuthTokenExchangeGrantType,
   AuthEnvironmentBootstrapTokenType,
   AuthAccessTokenType,
+  AuthUserDesktopHostScopes,
   EnvironmentHttpApi,
 } from "@t3tools/contracts";
 import { expect, it } from "@effect/vitest";
@@ -169,7 +170,6 @@ it.effect("applies the selected browser session and its delegation rights to des
           const enrollment = {
             purpose: "user-desktop-host",
             userDesktopId: "workstation",
-            scopes: ["orchestration:read", "orchestration:operate", "preview:operate"],
           };
           const issue = (cookie: string, payload: unknown) =>
             environmentA.handler(
@@ -178,20 +178,29 @@ it.effect("applies the selected browser session and its delegation rights to des
             );
           const restrictedCookie = restrictedCookies[0]!.split(";", 1)[0]!;
           expect((await issue(restrictedCookie, enrollment)).status).toBe(403);
-          const accessGrant = await issue(devCookieHeader, {
-            scopes: ["access:write", "preview:operate"],
-          });
-          const accessCredential = (await accessGrant.json()) as { credential: string };
-          const accessSession = await environmentA.handler(
-            postJson("/api/auth/browser-session", accessCredential),
-            requestContext,
-          );
-          const accessCookie = accessSession.headers.getSetCookie()[0]!.split(";", 1)[0]!;
+          const issuerCookie = async (scopes: readonly string[]) => {
+            const grant = await issue(devCookieHeader, { scopes });
+            const accessSession = await environmentA.handler(
+              postJson("/api/auth/browser-session", await grant.json()),
+              requestContext,
+            );
+            return accessSession.headers.getSetCookie()[0]!.split(";", 1)[0]!;
+          };
+          const accessCookie = await issuerCookie(["access:write", "preview:operate"]);
           expect((await issue(accessCookie, enrollment)).status).toBe(403);
           expect(
             (await issue(devCookieHeader, { ...enrollment, scopes: ["preview:operate"] })).status,
           ).toBe(400);
-          const grant = await issue(devCookieHeader, enrollment);
+          const hostIssuer = await issuerCookie(["access:write", ...AuthUserDesktopHostScopes]);
+          expect(
+            (
+              await issue(hostIssuer, {
+                ...enrollment,
+                scopes: [...AuthUserDesktopHostScopes, "terminal:operate"],
+              })
+            ).status,
+          ).toBe(403);
+          const grant = await issue(hostIssuer, enrollment);
           expect(grant.status).toBe(200);
           const { credential } = (await grant.json()) as { credential: string };
           const exchange = await environmentA.handler(
@@ -217,7 +226,7 @@ it.effect("applies the selected browser session and its delegation rights to des
           expect(await state.json()).toMatchObject({
             authenticated: true,
             userDesktopHostId: "workstation",
-            permissions: expect.arrayContaining(enrollment.scopes),
+            permissions: expect.arrayContaining([...AuthUserDesktopHostScopes]),
           });
         }),
       ([environmentA, environmentB]) =>

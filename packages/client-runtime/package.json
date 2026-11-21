@@ -678,6 +678,10 @@
     "./computer/viewerKeys": {
       "types": "./src/computer/viewerKeys.ts",
       "default": "./src/computer/viewerKeys.ts"
+    },
+    "./computer/viewer": {
+      "types": "./src/computer/viewer.ts",
+      "default": "./src/computer/viewer.ts"
     }
   },
   "scripts": {

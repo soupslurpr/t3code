@@ -235,6 +235,7 @@ export class Session {
   readonly lock = new Serial();
   readonly viewers = new Set<string>();
   controller: string | null = null;
+  displacedController: string | null = null;
   operations = 0;
   touched = 0;
   attached = false;
@@ -269,6 +270,8 @@ export function summary(row: Machine, s: Session): AgentDesktop {
       ...(virgl ? ["graphics-acceleration" as const] : []),
     ],
     controllerId: s.controller,
+    canReturnControl:
+      s.displacedController === row.owner.controllerId && s.viewers.has(row.owner.controllerId),
     viewerCount: s.viewers.size,
     createdAt: row.createdAt,
     lastActiveAt: s.touched > Date.parse(row.lastActiveAt) ? nowIso(s.touched) : row.lastActiveAt,

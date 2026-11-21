@@ -1,4 +1,9 @@
-import type { OrchestrationV2AppThread, OrchestrationV2Run, RunId } from "@t3tools/contracts";
+import type {
+  OrchestrationV2AppThread,
+  OrchestrationV2Run,
+  RunId,
+  ThreadWorktreeBinding,
+} from "@t3tools/contracts";
 import { ThreadWorktreeError } from "@t3tools/contracts";
 import * as IdAllocator from "@t3tools/provider-core/server/IdAllocator";
 import * as DateTime from "effect/DateTime";
@@ -24,6 +29,17 @@ const isWorktreeError = Schema.is(ThreadWorktreeError);
 
 export const WORKTREE_RECOVERY_NOTICE =
   "The linked worktree is gone. This turn continues in the project's main checkout.";
+
+export function sameWorktreeBinding(
+  actual: ThreadWorktreeBinding,
+  expected: ThreadWorktreeBinding,
+) {
+  return (
+    actual.projectId === expected.projectId &&
+    actual.worktreePath === expected.worktreePath &&
+    actual.branch === expected.branch
+  );
+}
 
 export const makeUnbindWorktree = Effect.gen(function* () {
   const sink = yield* EventSink.EventSinkV2;
@@ -53,12 +69,7 @@ export const makeUnbindWorktree = Effect.gen(function* () {
           const { thread, runs } = yield* store.getThreadRecords(expected.id, ["runs"], {
             runStatuses: ["queued", "preparing", "starting", "running", "waiting"],
           });
-          if (
-            thread.branch !== expected.branch ||
-            thread.worktreePath !== expected.worktreePath ||
-            thread.projectId !== expected.projectId
-          )
-            return yield* error();
+          if (!sameWorktreeBinding(thread, expected)) return yield* error();
           if (thread.deletedAt !== null) return yield* error();
           const recoveryRunId = "recoveryRunId" in request ? request.recoveryRunId : undefined;
           let busy: boolean;

@@ -169,6 +169,8 @@ describe("searchSettings", () => {
       "days-before-auto-settle",
       "linked-environments",
       "agent-feedback",
+      "user-desktops",
+      "agent-desktops",
     ]);
     expect(available.map((item) => item.id).filter((id) => gatedIds.has(id))).toEqual([]);
   });

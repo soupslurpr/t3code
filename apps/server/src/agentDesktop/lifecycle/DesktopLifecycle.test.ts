@@ -1,3 +1,4 @@
+import { EnvironmentId } from "@t3tools/contracts";
 // @effect-diagnostics nodeBuiltinImport:off -- Exercises durable inventory and interrupted disk recovery in a private directory.
 import * as NodeFSP from "node:fs/promises";
 import * as NodePath from "node:path";
@@ -72,6 +73,14 @@ effectTest.live(
       using _running = vi.spyOn(QemuMachine.prototype, "running").mockResolvedValue(true);
       using _attach = vi.spyOn(QemuMachine.prototype, "reattach").mockResolvedValue([]);
       const lifecycle = yield* Effect.promise(() => makeDesktopLifecycle(f.options));
+      expect(
+        yield* Effect.promise(() => lifecycle.listEnvironment(owner.environmentId)),
+      ).toMatchObject([{ id, owner }]);
+      const otherEnvironment = EnvironmentId.make("other");
+      expect(yield* Effect.promise(() => lifecycle.listEnvironment(otherEnvironment))).toEqual([]);
+      yield* Effect.promise(() =>
+        expect(lifecycle.resolveOwner(otherEnvironment, id)).rejects.toThrow(),
+      );
       yield* Effect.promise(() => lifecycle.lease(owner, id, "control"));
       const display = yield* makeGuestDisplay(
         lifecycle,
@@ -84,6 +93,28 @@ effectTest.live(
       expect(observation).toMatchObject({ status: { lease: { access: "view" } } });
       expect(yield* Effect.promise(() => lifecycle.list(owner))).toMatchObject([
         { owner, controllerId: owner.controllerId, viewerCount: 2 },
+      ]);
+      yield* display.invoke(caller, "computerRequestControl", request, 30_000);
+      expect(yield* Effect.promise(() => lifecycle.list(owner))).toMatchObject([
+        { owner, controllerId: caller.controllerId, viewerCount: 2 },
+      ]);
+      expect(
+        yield* Effect.exit(
+          display.invoke(
+            { ...caller, controllerId: "second-human" },
+            "computerRequestControl",
+            request,
+            30_000,
+          ),
+        ),
+      ).toMatchObject({ _tag: "Failure" });
+      const handback = { ...request, returnControlToAgent: true };
+      const returned = yield* display.invoke(caller, "computerRequestControl", handback, 30_000);
+      expect(returned).toMatchObject({
+        status: { lease: { access: "view", controller: { kind: "agent" } } },
+      });
+      expect(yield* Effect.promise(() => lifecycle.list(owner))).toMatchObject([
+        { owner, controllerId: owner.controllerId },
       ]);
     }),
 );

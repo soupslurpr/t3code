@@ -3,6 +3,7 @@ import { GitPreparePullRequestThreadInput, GitRunStackedActionInput } from "./gi
 import {
   AuthAccessWriteScope,
   AuthEnvironmentMaintainScope,
+  AuthFilesystemReadScope,
   AuthOrchestrationOperateScope,
   AuthOrchestrationReadScope,
   AuthPreviewOperateScope,
@@ -86,6 +87,9 @@ export const CLIENT_GUARDED_RPC_SCOPES = {
 
   // Starts an agent session on this environment that can read its logs and database.
   [WS_METHODS.serverPrepareTriage]: AuthOrchestrationOperateScope,
+  [WS_METHODS.agentDesktopHumanInvoke]: AuthOrchestrationOperateScope,
+  [WS_METHODS.threadMonitorsInspectWatch]: AuthOrchestrationOperateScope,
+  [WS_METHODS.threadMonitorsUpdateWatch]: AuthOrchestrationOperateScope,
   [WS_METHODS.threadMonitorsCancel]: AuthOrchestrationOperateScope,
   [WS_METHODS.scheduledTasksUpsert]: AuthOrchestrationOperateScope,
   [WS_METHODS.scheduledTasksSetEnabled]: AuthOrchestrationOperateScope,
@@ -123,6 +127,41 @@ export function clientRpcRequiredScopes(
   method: string,
   input: unknown,
 ): readonly AuthEnvironmentScope[] {
+  if (
+    method === WS_METHODS.threadMonitorsInspectWatch ||
+    method === WS_METHODS.threadMonitorsUpdateWatch
+  )
+    return [AuthOrchestrationOperateScope, AuthPreviewOperateScope];
+  if (
+    method === WS_METHODS.userDesktopHumanInvoke ||
+    method === WS_METHODS.agentDesktopHumanInvoke
+  ) {
+    const op =
+      typeof input === "object" &&
+      input !== null &&
+      "request" in input &&
+      typeof input.request === "object" &&
+      input.request !== null &&
+      "operation" in input.request
+        ? input.request.operation
+        : undefined;
+    if (method === WS_METHODS.userDesktopHumanInvoke && op === "execution")
+      return [AuthOrchestrationOperateScope, AuthTerminalOperateScope];
+    if (method === WS_METHODS.userDesktopHumanInvoke && op === "screen-permission")
+      return [AuthOrchestrationOperateScope, AuthPreviewOperateScope, AuthTerminalOperateScope];
+    if (method === WS_METHODS.userDesktopHumanInvoke && op === "transfers")
+      return [AuthOrchestrationOperateScope, AuthPreviewOperateScope, AuthFilesystemReadScope];
+    if (
+      method === WS_METHODS.agentDesktopHumanInvoke &&
+      (op === "setup" ||
+        op === "manage" ||
+        op === "update" ||
+        op === "create-route" ||
+        op === "remove-route")
+    )
+      return [AuthOrchestrationOperateScope, AuthPreviewOperateScope, AuthEnvironmentMaintainScope];
+    return [AuthOrchestrationOperateScope, AuthPreviewOperateScope];
+  }
   if (method === WS_METHODS.threadWorktreeDetach)
     return [AuthSourceControlWriteScope, AuthOrchestrationOperateScope];
   if (method === WS_METHODS.gitPreparePullRequestThread && input !== undefined) {

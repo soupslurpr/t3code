@@ -57,6 +57,7 @@ export class GitWorkflowService extends Context.Service<
       input: VcsStatusInput,
       options?: GitManager.GitLocalStatusOptions,
     ) => Effect.Effect<VcsStatusLocalResult, GitManagerServiceError>;
+    readonly hasStrictWorkingTreeChanges: (cwd: string) => Effect.Effect<boolean, GitCommandError>;
     readonly currentBranch: (cwd: string) => Effect.Effect<string | null, GitManagerServiceError>;
     readonly upstreamDivergence: (cwd: string) => Effect.Effect<
       {
@@ -361,6 +362,31 @@ export const make = Effect.gen(function* () {
         ),
       );
     }),
+    hasStrictWorkingTreeChanges: Effect.fn("GitWorkflowService.hasStrictWorkingTreeChanges")(
+      function* (cwd) {
+        const result = yield* ensureGitCommand(
+          "GitWorkflowService.hasStrictWorkingTreeChanges",
+          cwd,
+        ).pipe(
+          Effect.andThen(
+            git.execute({
+              operation: "GitWorkflowService.hasStrictWorkingTreeChanges",
+              cwd,
+              args: [
+                "status",
+                "--porcelain=v1",
+                "-z",
+                "--ignore-submodules=none",
+                "--untracked-files=all",
+              ],
+              maxOutputBytes: 4_096,
+              appendTruncationMarker: true,
+            }),
+          ),
+        );
+        return result.stdoutTruncated || result.stdout.length > 0;
+      },
+    ),
     currentBranch: Effect.fn("GitWorkflowService.currentBranch")(function* (cwd) {
       if (!(yield* detectGitRepositoryForStatus("GitWorkflowService.currentBranch", cwd))) {
         return null;

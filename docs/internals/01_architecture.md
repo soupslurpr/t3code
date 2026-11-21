@@ -72,3 +72,8 @@ workers with deadlines, never as top-level imports in main.
 
 See the [glossary](./00_glossary.md) for shared terms and the
 [development runbook](../operations/00_development.md) for setup and checks.
+
+An Agent desktop's durable VM owner and its live input controller can differ.
+Human supervision resolves the assignment on the destination server, while
+input leases use a session-derived controller identity. A handback changes
+input ownership without moving the VM between threads.

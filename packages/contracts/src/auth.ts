@@ -523,6 +523,44 @@ export const AuthUserDesktopHostScopes = [
   AuthOrchestrationOperateScope,
 ] as const;
 
+export type UserDesktopPairingPreset = "standard" | "host-commands" | "host-only";
+
+export interface UserDesktopHostPairingSelection {
+  readonly scopes: AuthGrantScopes;
+  readonly omitted: AuthGrantScopes;
+}
+
+export function userDesktopHostPairingScopes(
+  preset: UserDesktopPairingPreset,
+  issuer: SessionGrantInput,
+): UserDesktopHostPairingSelection | null {
+  if (!issuer.authenticated) return null;
+  const granted = new Set<AuthEnvironmentScope>(issuer.permissions ?? issuer.scopes ?? []);
+  if (
+    !granted.has(AuthAccessWriteScope) ||
+    !AuthUserDesktopHostScopes.every((scope) => granted.has(scope))
+  ) {
+    return null;
+  }
+  switch (preset) {
+    case "host-only":
+      return { scopes: AuthUserDesktopHostScopes, omitted: [] };
+    case "host-commands":
+      return granted.has(AuthTerminalOperateScope)
+        ? { scopes: [...AuthUserDesktopHostScopes, AuthTerminalOperateScope], omitted: [] }
+        : null;
+    case "standard": {
+      const scopes: Array<AuthGrantScope> = [];
+      const omitted: Array<AuthGrantScope> = [];
+      for (const scope of AuthStandardClientScopes) {
+        if (granted.has(scope)) scopes.push(scope);
+        else omitted.push(scope);
+      }
+      return { scopes, omitted };
+    }
+  }
+}
+
 export const AuthCreatePairingCredentialInput = Schema.Union([
   Schema.Struct({
     ...pairingCredentialFields,
@@ -542,6 +580,16 @@ export const AuthCreatePairingCredentialInput = Schema.Union([
   }),
 ]);
 export type AuthCreatePairingCredentialInput = typeof AuthCreatePairingCredentialInput.Type;
+
+export function pairingCredentialScopes(
+  input?: AuthCreatePairingCredentialInput,
+): ReadonlyArray<AuthGrantScope> {
+  if (input?.access) return mcpClientScopes(input.access);
+  return (
+    input?.scopes ??
+    (input?.purpose === "user-desktop-host" ? AuthUserDesktopHostScopes : AuthStandardClientScopes)
+  );
+}
 
 export const AuthSessionState = Schema.Struct({
   /** Issuer-enrolled desktop this session can host. Older servers omit the field. */

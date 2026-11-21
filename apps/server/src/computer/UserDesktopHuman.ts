@@ -1,9 +1,8 @@
 import * as Option from "effect/Option";
 import { DesktopExecutionAuthorizationChannel } from "./DesktopExecutionAuthorizationChannel.ts";
 import {
-  AuthOrchestrationOperateScope,
-  AuthPreviewOperateScope,
-  AuthTerminalOperateScope,
+  clientRpcRequiredScopes,
+  WS_METHODS,
   authScopeRequiredResponse,
   ComputerAutomationStatus,
   EnvironmentAuthorizationError,
@@ -16,7 +15,8 @@ import {
   type EnvironmentId,
   type UserDesktopHumanInvokeInput,
 } from "@t3tools/contracts";
-import * as SecureRandom from "effect/crypto/Digest";
+import { humanDesktopCaller } from "./DesktopCaller.ts";
+import { DesktopTransfers } from "./DesktopTransfers.ts";
 import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
 
@@ -38,10 +38,7 @@ export const invoke = Effect.fn("UserDesktopHuman.invoke")(function* (
   scopes: readonly AuthEnvironmentScope[],
   input: UserDesktopHumanInvokeInput,
 ) {
-  for (const scope of [
-    AuthOrchestrationOperateScope,
-    input.request.operation === "execution" ? AuthTerminalOperateScope : AuthPreviewOperateScope,
-  ]) {
+  for (const scope of clientRpcRequiredScopes(WS_METHODS.userDesktopHumanInvoke, input)) {
     if (!scopes.includes(scope))
       return yield* new EnvironmentAuthorizationError({
         ...authScopeRequiredResponse(scope),
@@ -69,14 +66,17 @@ export const invoke = Effect.fn("UserDesktopHuman.invoke")(function* (
       ? yield* observations.readById({ ...target, observationId: request.observationId })
       : yield* observations.list(target);
   }
-  const digest = yield* SecureRandom.Digest;
-  const id = yield* digest.digestHex(SecureRandom.sha256, new TextEncoder().encode(sessionId));
-  const caller = {
+  if (request.operation === "transfers")
+    return yield* (yield* DesktopTransfers).listForDesktop(
+      environmentId,
+      request.desktopId,
+      input.threadId,
+    );
+  const caller = yield* humanDesktopCaller(
     environmentId,
-    threadId: input.threadId ?? ThreadId.make("user-desktop-settings"),
-    controllerId: "human-" + id,
-    controllerKind: "human" as const,
-  };
+    sessionId,
+    input.threadId ?? ThreadId.make("user-desktop-settings"),
+  );
   if (request.operation === "execution") {
     const local = yield* (yield* DesktopExecutionAuthorizationChannel)
       .invoke(sessionId, caller.threadId, request.input)
@@ -155,8 +155,12 @@ export const invoke = Effect.fn("UserDesktopHuman.invoke")(function* (
         return yield* run("computerForgetControl", { permission: request.permission });
       return yield* access(
         request.capability === "control" ? "computerRequestControl" : "computerRequestView",
-        { permission: request.permission, permissionPolicy: request.policy },
+        { permission: request.permission, permissionPolicy: request.policy, acquireLease: false },
       );
+    case "request-availability":
+      return yield* run("computerRequestAvailability");
+    case "release-availability":
+      return yield* run("computerReleaseAvailability");
     case "status":
       return yield* run("computerStatus");
     case "request-view":

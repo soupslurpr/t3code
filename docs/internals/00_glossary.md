@@ -11,6 +11,9 @@ Shared vocabulary across T3 Code. Architecture and lifecycle constraints belong 
 | Client         | A web, desktop, or mobile UI connected to an environment. The desktop app can also host a server. |
 | Project        | An environment-local workspace record rooted at a directory.                                      |
 | Workspace root | The project's base filesystem directory on the environment.                                       |
+| User desktop   | An enrolled T3 Desktop host that grants view, input, or command access.                           |
+| Agent desktop  | An environment-managed VM assigned to a thread.                                                   |
+| Screen watch   | A durable thread monitor with a revisioned observation plan and retained screen evidence.         |
 | Worktree       | A separate Git checkout a thread can use instead of the project's main checkout.                  |
 | Thread         | The durable conversation and work history for a project. Survives provider process exits.         |
 | Turn           | One user-to-agent cycle (a run). Provider work can end before checkpoint and diff work settles.   |

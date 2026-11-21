@@ -1,3 +1,4 @@
+import { useNavigation } from "@react-navigation/native";
 import { useGT, useMessages } from "gt-react-native";
 
 import { AppBar } from "../../components/ui/AppBar";
@@ -25,6 +26,7 @@ export function ThreadHeader(props: {
   readonly onOpenFilesInspector: () => void;
 }) {
   const gt = useGT();
+  const navigation = useNavigation();
   const m = useMessages();
   const goBack = useWorkspaceBackNavigation();
   const { toggleAuxiliaryPane, startNewTask } = useAdaptiveWorkspaceLayout();
@@ -45,6 +47,31 @@ export function ThreadHeader(props: {
       ]
     : [];
   const menus = [gitMenu, terminalMenu].filter((menu): menu is AppBarMenu => menu !== null);
+
+  if (!props.draft && props.gitControls.hasThread !== false) {
+    const target = {
+      environmentId: props.gitControls.environmentId,
+      threadId: props.gitControls.threadId,
+    };
+    menus.push({
+      title: gt("Supervise"),
+      icon: "desktopcomputer",
+      items: [
+        {
+          id: "thread-desktops",
+          title: gt("Desktop"),
+          icon: "desktopcomputer",
+          onPress: () => navigation.navigate("ThreadDesktops", target),
+        },
+        {
+          id: "thread-supervisor",
+          title: gt("Thread supervision"),
+          icon: "clock",
+          onPress: () => navigation.navigate("ThreadSupervisor", target),
+        },
+      ],
+    });
+  }
 
   return (
     <AppBar

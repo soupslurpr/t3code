@@ -1,3 +1,14 @@
+import {
+  DesktopDetailRouteScreen,
+  SettingsAgentDesktopsRouteScreen,
+  SettingsUserDesktopsRouteScreen,
+  ThreadDesktopsRouteScreen,
+} from "./features/supervision/DesktopScreens";
+import { DesktopViewerRouteScreen } from "./features/supervision/DesktopViewer";
+import {
+  ThreadSupervisorRouteScreen,
+  ThreadWatchRouteScreen,
+} from "./features/supervision/ThreadSupervisor";
 import { isDraftThreadRoute } from "./features/threads/thread-route-state";
 import { ComponentCatalogScreen } from "./features/development/ComponentCatalogScreen";
 import { PullRequestGuideStopScreen } from "./features/pull-requests/guide/PullRequestGuideScreen";
@@ -183,6 +194,13 @@ const ROUTE_TITLES: Readonly<Record<string, string>> = {
   SettingsNotifications: msg("Notifications"),
   SettingsThreads: msg("Threads"),
   SettingsAbout: msg("About"),
+  SettingsUserDesktops: msg("User desktops"),
+  SettingsAgentDesktops: msg("Agent desktops"),
+  ThreadDesktops: msg("Desktop"),
+  ThreadSupervisor: msg("Thread supervision"),
+  ThreadWatch: msg("Inspect watch"),
+  DesktopDetail: msg("Desktop"),
+  DesktopViewer: msg("Supervise"),
   SettingsEnvironmentNew: msg("Add Environment"),
   SettingsArchive: msg("Archive", { $context: "noun, settings page of archived threads" }),
   SettingsNavigation: msg("Navigation tabs"),
@@ -303,6 +321,16 @@ const SETTINGS_SCREENS = {
   SettingsThreads: createNativeStackScreen({
     screen: SettingsThreadsRouteScreen,
     linking: "settings/thread-preferences",
+    options: settingsPage(),
+  }),
+  SettingsUserDesktops: createNativeStackScreen({
+    screen: SettingsUserDesktopsRouteScreen,
+    linking: "settings/user-desktops",
+    options: settingsPage(),
+  }),
+  SettingsAgentDesktops: createNativeStackScreen({
+    screen: SettingsAgentDesktopsRouteScreen,
+    linking: "settings/agent-desktops",
     options: settingsPage(),
   }),
   SettingsAbout: createNativeStackScreen({
@@ -724,6 +752,34 @@ const RootStackConfig = createWorkspaceStackNavigator({
       screen: NewTaskThreadSettingsRouteScreen,
       linking: "new/draft/settings",
       options: THREAD_SETTINGS_ROUTE,
+    }),
+    ThreadDesktops: createNativeStackScreen({
+      screen: ThreadDesktopsRouteScreen,
+      linking: `${THREAD_LINKING_PREFIX}/desktops`,
+      options: pageRoute({ header: "solid" }),
+    }),
+    ThreadSupervisor: createNativeStackScreen({
+      screen: ThreadSupervisorRouteScreen,
+      linking: {
+        path: `${THREAD_LINKING_PREFIX}/supervision`,
+        alias: [`${THREAD_LINKING_PREFIX}/monitors`],
+      },
+      options: pageRoute({ header: "solid" }),
+    }),
+    ThreadWatch: createNativeStackScreen({
+      screen: ThreadWatchRouteScreen,
+      linking: `${THREAD_LINKING_PREFIX}/supervision/:monitorId`,
+      options: pageRoute({ header: "solid" }),
+    }),
+    DesktopDetail: createNativeStackScreen({
+      screen: DesktopDetailRouteScreen,
+      linking: "desktops/:environmentId/:kind/:desktopId",
+      options: pageRoute({ header: "solid" }),
+    }),
+    DesktopViewer: createNativeStackScreen({
+      screen: DesktopViewerRouteScreen,
+      linking: "desktops/:environmentId/:kind/:desktopId/view",
+      options: modalRoute({ header: "solid" }),
     }),
     ThreadTerminal: createNativeStackScreen({
       screen: ThreadTerminalRouteScreen,

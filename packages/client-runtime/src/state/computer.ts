@@ -3,7 +3,11 @@ import * as Stream from "effect/Stream";
 import { Atom } from "effect/reactivity";
 import type { EnvironmentRegistry } from "../connection/registry.ts";
 import { subscribe } from "../rpc/client.ts";
-import { createEnvironmentRpcCommand, createEnvironmentSubscriptionAtomFamily } from "./runtime.ts";
+import {
+  createEnvironmentRpcCommand,
+  createEnvironmentRpcSubscriptionAtomFamily,
+  createEnvironmentSubscriptionAtomFamily,
+} from "./runtime.ts";
 
 export function createComputerEnvironmentAtoms<R, E>(
   runtime: Atom.AtomRuntime<EnvironmentRegistry | R, E>,
@@ -33,6 +37,35 @@ export function createComputerEnvironmentAtoms<R, E>(
     humanInvoke: createEnvironmentRpcCommand(runtime, {
       label: "environment-data:computer:supervise",
       tag: WS_METHODS.userDesktopHumanInvoke,
+    }),
+    agentInvoke: createEnvironmentRpcCommand(runtime, {
+      label: "environment-data:agent-desktops:supervise",
+      tag: WS_METHODS.agentDesktopHumanInvoke,
+    }),
+    threadMonitors: createEnvironmentRpcSubscriptionAtomFamily(runtime, {
+      label: "environment-data:thread:monitors",
+      tag: WS_METHODS.threadMonitorsSubscribe,
+      idleTtlMs: 0,
+    }),
+    cancelMonitor: createEnvironmentRpcCommand(runtime, {
+      label: "environment-data:thread:cancel-monitor",
+      tag: WS_METHODS.threadMonitorsCancel,
+    }),
+    inspectWatch: createEnvironmentRpcCommand(runtime, {
+      label: "environment-data:thread:inspect-watch",
+      tag: WS_METHODS.threadMonitorsInspectWatch,
+    }),
+    updateWatch: createEnvironmentRpcCommand(runtime, {
+      label: "environment-data:thread:update-watch",
+      tag: WS_METHODS.threadMonitorsUpdateWatch,
+    }),
+    detachWorktree: createEnvironmentRpcCommand(runtime, {
+      label: "environment-data:thread:detach-worktree",
+      tag: WS_METHODS.threadWorktreeDetach,
+    }),
+    removeWorktree: createEnvironmentRpcCommand(runtime, {
+      label: "environment-data:thread:remove-worktree",
+      tag: WS_METHODS.threadWorktreeRemove,
     }),
   };
 }

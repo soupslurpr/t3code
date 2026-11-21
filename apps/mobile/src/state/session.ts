@@ -85,6 +85,11 @@ export function useEnvironmentsWithScope(
   return useAtomValue(permittedEnvironments);
 }
 
+export function readEnvironmentSessionState(environmentId: EnvironmentId): AuthSessionState | null {
+  const result = appAtomRegistry.get(environmentSession.sessionStateAtom(environmentId));
+  return result._tag === "Failure" ? null : AsyncResult.getOrElse(result, () => null);
+}
+
 export function readEnvironmentScope(
   environmentId: EnvironmentId,
   scope: AuthEnvironmentScope,

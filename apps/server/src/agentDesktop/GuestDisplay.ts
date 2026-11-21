@@ -2,6 +2,8 @@
 import * as NodeCrypto from "node:crypto";
 import * as Clock from "effect/Clock";
 import * as Effect from "effect/Effect";
+import * as Scope from "effect/Scope";
+import * as Schedule from "effect/Schedule";
 import * as Schema from "effect/Schema";
 import * as KeyedLock from "@t3tools/shared/KeyedLock";
 import {
@@ -43,9 +45,10 @@ export const makeGuestDisplay = Effect.fn("GuestDisplay.make")(function* (
   lifecycle: DesktopLifecycle,
   guest: GuestIo,
   tools: GuestTools,
-): Effect.fn.Return<AgentDesktopRuntimePort> {
+): Effect.fn.Return<AgentDesktopRuntimePort, never, Scope.Scope> {
   const serial = yield* KeyedLock.make<string>();
   const sessions = new Map<string, ControllerState>();
+  const humanLeases = new Map<string, { caller: DesktopCaller; id: string; renewedAt: number }>();
   const identity = (caller: DesktopCaller, id: string) =>
     [id, caller.environmentId, caller.threadId, ownerOf(caller).controllerId].join("\0");
   const stateFor = (caller: DesktopCaller, lease: DesktopLease) => {
@@ -81,17 +84,70 @@ export const makeGuestDisplay = Effect.fn("GuestDisplay.make")(function* (
       lease: {
         access: control ? "control" : view ? "view" : "none",
         controller: desktop.controllerId
-          ? { kind: "agent", sameEnvironment: true, threadId: desktop.owner.threadId }
+          ? {
+              kind: desktop.controllerId === desktop.owner.controllerId ? "agent" : "human",
+              sameEnvironment: true,
+              threadId: desktop.owner.threadId,
+            }
           : null,
-        canReturnControl: false,
+        canReturnControl:
+          control && caller.controllerKind === "human" && desktop.canReturnControl === true,
       },
     };
   };
   const begin = (caller: DesktopCaller, id: string, permission: "owned" | "view" | "control") =>
     Effect.acquireRelease(
-      agentIo(() => lifecycle.begin(ownerOf(caller), id, permission)),
+      agentIo(() =>
+        lifecycle.begin(ownerOf(caller), id, permission, caller.controllerKind === "human"),
+      ),
       (lease) => Effect.promise(() => lease.release()),
     );
+  const releaseHeld = Effect.fn("GuestDisplay.releaseHeld")(function* (
+    caller: DesktopCaller,
+    id: string,
+  ) {
+    const state = sessions.get(identity(caller, id));
+    if (state?.held.size) {
+      const lease = yield* begin(caller, id, "control");
+      yield* agentIo((signal) =>
+        makeGuestActions(guest, lease.paths, state, state.semantics, tools, signal).release(),
+      );
+    }
+  });
+  const release = Effect.fn("GuestDisplay.release")(function* (caller: DesktopCaller, id: string) {
+    yield* releaseHeld(caller, id);
+    const desktop = yield* agentIo(() =>
+      lifecycle.lease(ownerOf(caller), id, "release", caller.controllerKind === "human"),
+    );
+    const key = identity(caller, id);
+    sessions.delete(key);
+    humanLeases.delete(key);
+    return status(caller, desktop);
+  });
+  const renew = Effect.fn("GuestDisplay.renew")(function* (caller: DesktopCaller, id: string) {
+    if (caller.controllerKind === "human")
+      humanLeases.set(identity(caller, id), {
+        caller,
+        id,
+        renewedAt: yield* Clock.currentTimeMillis,
+      });
+  });
+  yield* Effect.gen(function* () {
+    const now = yield* Clock.currentTimeMillis;
+    for (const [key, lease] of humanLeases) {
+      if (now - lease.renewedAt < 30_000) continue;
+      yield* serial
+        .withLock(
+          lease.id,
+          Effect.suspend(() =>
+            humanLeases.get(key) === lease
+              ? Effect.scoped(release(lease.caller, lease.id))
+              : Effect.void,
+          ),
+        )
+        .pipe(Effect.ignore);
+    }
+  }).pipe(Effect.repeat(Schedule.spaced("10 seconds")), Effect.forkScoped);
   const frame = Effect.fn("GuestDisplay.frame")(function* (
     lease: DesktopLease,
     state: ControllerState,
@@ -137,9 +193,10 @@ export const makeGuestDisplay = Effect.fn("GuestDisplay.make")(function* (
     function* (caller, input) {
       const id = input.desktop.desktopId;
       return yield* serial.withLock(
-        identity(caller, id),
+        id,
         Effect.gen(function* () {
           const lease = yield* begin(caller, id, "view");
+          yield* renew(caller, id);
           return yield* frame(lease, stateFor(caller, lease), input);
         }),
       );
@@ -173,6 +230,10 @@ export const makeGuestDisplay = Effect.fn("GuestDisplay.make")(function* (
         const access = operation === "computerRequestControl" ? "control" : "view";
         const selection = input.desktop;
         const id = yield* agentIo(async () => {
+          if (caller.controllerKind === "human") {
+            if (!selection.desktopId) throw invalid();
+            return selection.desktopId;
+          }
           let id = access === "view" ? selection.desktopId : undefined;
           if (access === "view" && !id && !selection.fresh) {
             const available = (await lifecycle.list(owner)).filter(
@@ -190,11 +251,24 @@ export const makeGuestDisplay = Effect.fn("GuestDisplay.make")(function* (
           return id ?? (await lifecycle.acquire(owner, selection)).id;
         });
         return yield* serial.withLock(
-          identity(caller, id),
+          id,
           Effect.scoped(
             Effect.gen(function* () {
-              const desktop = yield* agentIo(() => lifecycle.lease(owner, id, access));
-              const lease = yield* begin(caller, id, access);
+              const human = caller.controllerKind === "human";
+              if (human && access === "control") {
+                if (input.returnControlToAgent) yield* releaseHeld(caller, id);
+                else {
+                  const assigned = yield* agentIo(() =>
+                    lifecycle.resolveOwner(owner.environmentId, id),
+                  );
+                  if (assigned.threadId !== caller.threadId) return yield* invalid();
+                  yield* releaseHeld({ ...assigned, controllerKind: "agent" }, id);
+                }
+              }
+              const change = human && input.returnControlToAgent ? "return-control" : access;
+              const desktop = yield* agentIo(() => lifecycle.lease(owner, id, change, human));
+              yield* renew(caller, id);
+              const lease = yield* begin(caller, id, change === "return-control" ? "view" : access);
               const state = stateFor(caller, lease);
               state.view = true;
               const snapshot =
@@ -209,31 +283,8 @@ export const makeGuestDisplay = Effect.fn("GuestDisplay.make")(function* (
       const id = params.desktop.desktopId;
       if (!id) return yield* invalid();
       if (operation === "computerRelease" || operation === "computerForgetControl") {
-        const key = identity(caller, id);
-        return yield* serial.withLock(
-          key,
-          Effect.scoped(
-            Effect.gen(function* () {
-              const state = sessions.get(key);
-              if (state?.held.size) {
-                const lease = yield* begin(caller, id, "control");
-                yield* agentIo((signal) =>
-                  makeGuestActions(
-                    guest,
-                    lease.paths,
-                    state,
-                    state.semantics,
-                    tools,
-                    signal,
-                  ).release(),
-                );
-              }
-              const desktop = yield* agentIo(() => lifecycle.lease(owner, id, "release"));
-              sessions.delete(key);
-              return operation === "computerForgetControl" ? undefined : status(caller, desktop);
-            }),
-          ),
-        );
+        const released = yield* serial.withLock(id, Effect.scoped(release(caller, id)));
+        return operation === "computerForgetControl" ? undefined : released;
       }
       if (operation === "computerStatus") {
         const desktop = (yield* agentIo(() => lifecycle.list(owner))).find((d) => d.id === id);
@@ -256,7 +307,7 @@ export const makeGuestDisplay = Effect.fn("GuestDisplay.make")(function* (
           "Acquire control of this Agent desktop first.",
         );
       return yield* serial.withLock(
-        key,
+        id,
         Effect.scoped(
           Effect.gen(function* () {
             if (sessions.get(key) !== state)
@@ -266,6 +317,7 @@ export const makeGuestDisplay = Effect.fn("GuestDisplay.make")(function* (
                 "The Agent desktop control lease has ended.",
               );
             const lease = yield* begin(caller, id, "control");
+            yield* renew(caller, id);
             const signal = yield* Effect.abortSignal;
             const actions = makeGuestActions(
               guest,

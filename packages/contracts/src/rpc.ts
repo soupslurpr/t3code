@@ -12,6 +12,7 @@ import {
   ComputerHostError,
 } from "./computerHost.ts";
 import { UserDesktopHumanInvokeInput } from "./computerHuman.ts";
+import { AgentDesktopHumanInvokeInput } from "./agentDesktopHuman.ts";
 import { PreviewAutomationResponse } from "./previewAutomation.ts";
 import { UserDesktopManagementError, UserDesktopInventoryError } from "./userDesktop.ts";
 import {
@@ -68,7 +69,14 @@ import {
   ThreadMonitorId,
   TrimmedNonEmptyString,
 } from "./baseSchemas.ts";
-import { ThreadMonitorError, ThreadMonitorSummaryList } from "./threadMonitor.ts";
+import {
+  ThreadMonitorError,
+  ThreadMonitorSummaryList,
+  ThreadMonitorComputerInspectInput,
+  ThreadMonitorComputerInspection,
+  ThreadMonitorComputerUpdateInput,
+  ThreadMonitorComputerRevisionResult,
+} from "./threadMonitor.ts";
 import { SecretSourceCheckResult } from "./settingsSecretValue.ts";
 import { SecretReference } from "./secretReference.ts";
 import {
@@ -601,6 +609,7 @@ export const WS_METHODS = {
   previewAutomationRespond: "previewAutomation.respond",
   previewAutomationFocusHost: "previewAutomation.focusHost",
   userDesktopHumanInvoke: "userDesktop.humanInvoke",
+  agentDesktopHumanInvoke: "agentDesktop.humanInvoke",
   previewList: "preview.list",
   previewClearProfile: "preview.clearProfile",
   previewReportProfiles: "preview.reportProfiles",
@@ -697,6 +706,8 @@ export const WS_METHODS = {
 
   threadMonitorsSubscribe: "threadMonitors.subscribe",
   threadMonitorsCancel: "threadMonitors.cancel",
+  threadMonitorsInspectWatch: "threadMonitors.inspectWatch",
+  threadMonitorsUpdateWatch: "threadMonitors.updateWatch",
 
   cloudGetRelayClientStatus: "cloud.getRelayClientStatus",
   cloudInstallRelayClient: "cloud.installRelayClient",
@@ -2091,6 +2102,12 @@ const WsUserDesktopHumanInvokeRpc = Rpc.make(WS_METHODS.userDesktopHumanInvoke, 
   ]),
 });
 
+const WsAgentDesktopHumanInvokeRpc = Rpc.make(WS_METHODS.agentDesktopHumanInvoke, {
+  payload: AgentDesktopHumanInvokeInput,
+  success: Schema.Unknown,
+  error: Schema.Union([ComputerHostError, EnvironmentAuthorizationError]),
+});
+
 const WsPreviewListRpc = Rpc.make(WS_METHODS.previewList, {
   payload: PreviewListInput,
   success: PreviewListResult,
@@ -2484,6 +2501,18 @@ const WsThreadMonitorsCancelRpc = Rpc.make(WS_METHODS.threadMonitorsCancel, {
   error: Schema.Union([ThreadMonitorError, EnvironmentAuthorizationError]),
 });
 
+const WsThreadMonitorsInspectWatchRpc = Rpc.make(WS_METHODS.threadMonitorsInspectWatch, {
+  payload: Schema.Struct({ threadId: ThreadId, inspect: ThreadMonitorComputerInspectInput }),
+  success: ThreadMonitorComputerInspection,
+  error: Schema.Union([ThreadMonitorError, EnvironmentAuthorizationError]),
+});
+
+const WsThreadMonitorsUpdateWatchRpc = Rpc.make(WS_METHODS.threadMonitorsUpdateWatch, {
+  payload: Schema.Struct({ threadId: ThreadId, update: ThreadMonitorComputerUpdateInput }),
+  success: ThreadMonitorComputerRevisionResult,
+  error: Schema.Union([ThreadMonitorError, EnvironmentAuthorizationError]),
+});
+
 const WsScheduledTasksSubscribeRpc = Rpc.make(WS_METHODS.scheduledTasksSubscribe, {
   payload: ScheduledTaskListInput,
   success: ScheduledTaskListResult,
@@ -2682,6 +2711,8 @@ export const WsRpcGroup = RpcGroup.make(
   WsScheduledTasksGetWebhookDeliveryRpc,
   WsThreadMonitorsSubscribeRpc,
   WsThreadMonitorsCancelRpc,
+  WsThreadMonitorsInspectWatchRpc,
+  WsThreadMonitorsUpdateWatchRpc,
   WsServerReportClientActivityRpc,
   WsCloudGetRelayClientStatusRpc,
   WsCloudInstallRelayClientRpc,
@@ -2802,6 +2833,7 @@ export const WsRpcGroup = RpcGroup.make(
   WsComputerHostRespondRpc,
   WsComputerHostFocusRpc,
   WsUserDesktopHumanInvokeRpc,
+  WsAgentDesktopHumanInvokeRpc,
   WsPreviewListRpc,
   WsPreviewClearProfileRpc,
   WsPreviewReportProfilesRpc,

@@ -202,7 +202,10 @@ const make = Effect.gen(function* () {
   const forceRelease: ComputerUseCoordinatorShape["forceRelease"] = Effect.fn(
     "ComputerUseCoordinator.forceRelease",
   )(function* (...[context]: Parameters<ComputerUseCoordinatorShape["forceRelease"]>) {
-    yield* permissions.confirmShared(context, m(msg("End all screen access on this desktop?")));
+    yield* permissions.confirmShared(
+      context,
+      m(msg("End screen access for everyone and release all keep-awake requests on this desktop?")),
+    );
     yield* permissions.cancelAll;
     const cancelAcquiring = yield* withLeaseState(
       Effect.gen(function* () {

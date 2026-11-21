@@ -340,6 +340,7 @@ export const makeLeaseRuntime = Effect.gen(function* () {
       permission,
       rememberedAccess,
       lease: {
+        holdsExplicitAvailability: leases.explicitAvailability.has(key),
         access:
           controller?.key === key ? "control" : hasView ? ("view" as const) : ("none" as const),
         controller:

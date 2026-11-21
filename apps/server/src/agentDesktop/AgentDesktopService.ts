@@ -1,6 +1,8 @@
 import * as HostProcess from "@t3tools/shared/HostProcess";
 import type {
   AgentDesktopAcquireInput,
+  AgentDesktopOwner,
+  AgentDesktopHumanRequest,
   AgentDesktopCreatePortRouteInput,
   AgentDesktopList,
   ComputerHostError,
@@ -81,10 +83,15 @@ const make = Effect.gen(function* () {
       Effect.repeat(Schedule.spaced("1 minute")),
       Effect.forkScoped,
     );
-  const list = Effect.fn("AgentDesktopService.list")(function* (caller: DesktopCaller) {
+  const list = Effect.fn("AgentDesktopService.list")(function* (
+    caller: DesktopCaller,
+    environmentWide = false,
+  ) {
     return yield* agentIo(async (): Promise<AgentDesktopList> => {
       const [desktops, requirements, base] = await Promise.all([
-        lifecycle.list(ownerOf(caller)),
+        environmentWide
+          ? lifecycle.listEnvironment(caller.environmentId)
+          : lifecycle.list(ownerOf(caller)),
         hostRequirements(images, host),
         images.current(),
       ]);
@@ -123,11 +130,12 @@ const make = Effect.gen(function* () {
   const update = Effect.fn("AgentDesktopService.update")(function* (
     caller: DesktopCaller,
     { target }: AgentDesktopUpdateInput,
+    assignment: AgentDesktopOwner = ownerOf(caller),
   ): Effect.fn.Return<AgentDesktopUpdateResult, ComputerHostError> {
     const id = target.kind === "desktop" ? target.desktopId : null;
     const admission = yield* Deferred.make<boolean, ComputerHostError>();
     yield* agentIo(() =>
-      lifecycle.update(ownerOf(caller), id, (accepted) => {
+      lifecycle.update(assignment, id, (accepted) => {
         Deferred.doneUnsafe(admission, Effect.succeed(accepted));
       }),
     ).pipe(
@@ -159,6 +167,30 @@ const make = Effect.gen(function* () {
     operations: { ...jobs, transfer },
     list,
     update,
+    superviseMachine: (
+      assignment: AgentDesktopOwner,
+      request: Extract<
+        AgentDesktopHumanRequest,
+        { operation: "manage" | "inspect" | "create-route" | "remove-route" }
+      >,
+    ) => {
+      switch (request.operation) {
+        case "manage":
+          return agentIo(() => lifecycle.manage(assignment, request.input, true));
+        case "inspect":
+          return agentIo(() =>
+            lifecycle.inspect(assignment, request.desktopId, request.includeConnections === true),
+          );
+        case "create-route":
+          return agentIo(() => lifecycle.route(assignment, request.input.desktopId, request.input));
+        case "remove-route":
+          return agentIo(() =>
+            lifecycle.route(assignment, request.input.desktopId, request.input.routeId),
+          );
+      }
+    },
+    resolveOwner: (environmentId: DesktopCaller["environmentId"], id: string) =>
+      agentIo(() => lifecycle.resolveOwner(environmentId, id)),
     setup: Effect.fn("AgentDesktopService.setup")(function* (caller: DesktopCaller) {
       const { packages, provisioned } = yield* agentIo(() =>
         prepareHost(images, host, lifecycle.ensureBase),

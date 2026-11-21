@@ -26,7 +26,7 @@
   "1510c6547cde9c2e": "Otro servidor de T3 Code (por ejemplo, `t3 serve` o uno iniciado por SSH) está usando este directorio de T3 (PID {pid}, puerto {port}, versión {version}). Si lo inició por SSH una app de T3 Code en otra máquina, esa app lo reinicia: quita o desconecta allí ese entorno SSH, o cierra esa app. Después detén el servidor y vuelve a abrir T3 Code. También puedes definir otro T3CODE_HOME y emparejarte con el servidor en ejecución.",
   "8d8628520de0d9f1": "Otro servidor de T3 Code (por ejemplo, `t3 serve` o uno iniciado por SSH) está usando este directorio de T3 (PID {pid}, puerto {port}). Si lo inició por SSH una app de T3 Code en otra máquina, esa app lo reinicia: quita o desconecta allí ese entorno SSH, o cierra esa app. Después detén el servidor y vuelve a abrir T3 Code. También puedes definir otro T3CODE_HOME y emparejarte con el servidor en ejecución.",
   "534035f4fe79b7bb": "¿Recordar en este escritorio el consentimiento del sistema para acceder a la pantalla?",
-  "3e8eed187da1d7e4": "¿Finalizar todo acceso a la pantalla de este escritorio?",
+  "e12e8c0ffdd8c4d8": "¿Finalizar el acceso a la pantalla para todos y cancelar todas las solicitudes para mantener este escritorio activo?",
   "9a27ceba2163a732": "¿Eliminar todos los permisos de pantalla de T3 y el consentimiento guardado del sistema operativo?",
   "00ad8aeed0a6c461": "Cancelar",
   "0fdf303b060c2739": "Este hilo",

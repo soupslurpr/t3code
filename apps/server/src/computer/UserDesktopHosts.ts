@@ -44,10 +44,12 @@ function auditAction(
   const options = typeof input === "object" && input !== null ? input : {};
   switch (operation) {
     case "computerRequestView":
+      if ("acquireLease" in options && options.acquireLease === false) return undefined;
       return "releaseControlToView" in options && options.releaseControlToView
         ? "control-released"
         : "view-granted";
     case "computerRequestControl":
+      if ("acquireLease" in options && options.acquireLease === false) return undefined;
       return "returnControlToAgent" in options && options.returnControlToAgent
         ? "control-returned-to-agent"
         : "control-granted";

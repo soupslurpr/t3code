@@ -1,3 +1,4 @@
+import type { ServerConfig } from "@t3tools/contracts";
 import {
   isExplicitRelativePath,
   isUncPath,
@@ -6,6 +7,7 @@ import {
   normalizeProjectPathForComparison,
   normalizeProjectPathForDispatch,
 } from "@t3tools/shared/path";
+import type { EnvironmentProject } from "./models.ts";
 
 export { normalizeProjectPathForComparison };
 
@@ -136,13 +138,22 @@ export function findProjectByPath<T extends { workspaceRoot?: string; cwd?: stri
 }
 
 export function isScratchProject(
-  project: { readonly workspaceRoot: string; readonly isScratch?: true },
+  project: Pick<EnvironmentProject, "workspaceRoot" | "isScratch">,
   scratchWorkspaceRoot: string | null | undefined,
 ): boolean {
   return (
     project.isScratch === true ||
     (scratchWorkspaceRoot != null &&
       findProjectByPath([project], scratchWorkspaceRoot) !== undefined)
+  );
+}
+
+export function canManageProjectWorktrees(
+  project: Pick<EnvironmentProject, "workspaceRoot" | "isScratch"> | null,
+  config: Pick<ServerConfig, "scratchWorkspaceRoot"> | null | undefined,
+): boolean {
+  return (
+    project !== null && config != null && !isScratchProject(project, config.scratchWorkspaceRoot)
   );
 }
 

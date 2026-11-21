@@ -115,17 +115,28 @@ export interface DesktopLease {
 }
 export interface DesktopLifecycle {
   readonly list: (owner: DesktopOwner) => Promise<readonly AgentDesktop[]>;
+  readonly listEnvironment: (id: DesktopOwner["environmentId"]) => Promise<readonly AgentDesktop[]>;
+  readonly resolveOwner: (
+    environmentId: DesktopOwner["environmentId"],
+    id: string,
+  ) => Promise<DesktopOwner>;
   readonly acquire: (owner: DesktopOwner, input: AgentDesktopAcquireInput) => Promise<AgentDesktop>;
-  readonly manage: (owner: DesktopOwner, input: AgentDesktopManageInput) => Promise<AgentDesktop>;
+  readonly manage: (
+    owner: DesktopOwner,
+    input: AgentDesktopManageInput,
+    exactOwner?: boolean,
+  ) => Promise<AgentDesktop>;
   readonly lease: (
     owner: DesktopOwner,
     id: string,
-    access: "view" | "control" | "release",
+    access: "view" | "control" | "release" | "return-control",
+    human?: boolean,
   ) => Promise<AgentDesktop>;
   readonly begin: (
     owner: DesktopOwner,
     id: string,
     permission: "owned" | "view" | "control",
+    human?: boolean,
   ) => Promise<DesktopLease>;
   readonly inspect: (
     owner: DesktopOwner,

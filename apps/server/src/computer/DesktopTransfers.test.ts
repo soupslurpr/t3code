@@ -113,6 +113,16 @@ it.effect.each(["user", "agent"] as const)(
         const download = yield* transfers.start(caller, input);
         const out = yield* Queue.take(requests);
         expect((yield* transfers.start(caller, input)).id).toBe(download.id);
+        const active = (yield* transfers.listForDesktop(
+          caller.environmentId,
+          "selected",
+          caller.thread.threadId,
+        )).map((t) => t.id);
+        expect(active).toEqual(kind === "user" ? [download.id] : []);
+        expect(yield* transfers.listForDesktop("other", "selected")).toEqual([]);
+        expect(yield* transfers.listForDesktop(caller.environmentId, "selected", "other")).toEqual(
+          [],
+        );
         const url = "http://desktop.test" + out.input.url;
         const manifest = out.input.manifest!;
         const headers = {
@@ -137,6 +147,7 @@ it.effect.each(["user", "agent"] as const)(
         expect(
           (yield* transfers.status(caller, { transferId: download.id, waitMs: 60_000 })).state,
         ).toBe("completed");
+        expect(yield* transfers.listForDesktop(caller.environmentId, "selected")).toEqual([]);
         const archivePath = path.join(root, "archive");
         const packed = yield* Effect.promise(() =>
           packAgentDesktopBundle({

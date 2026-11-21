@@ -24,6 +24,7 @@ import {
   DpopFailureReason,
   type DpopFailureReason as DpopFailureReasonType,
   mcpClientScopes,
+  pairingCredentialScopes,
 } from "@t3tools/contracts";
 import { isLocalLoopbackHost } from "@t3tools/shared/hostClassification";
 import { encodeOAuthScope } from "@t3tools/shared/oauthScope";
@@ -1438,9 +1439,7 @@ export const make = Effect.gen(function* () {
 
   const issuePairingCredential: EnvironmentAuth["Service"]["issuePairingCredential"] = (input) =>
     createPairingLink({
-      scopes: input?.access
-        ? mcpClientScopes(input.access)
-        : (input?.scopes ?? AuthStandardClientScopes),
+      scopes: pairingCredentialScopes(input),
       subject:
         input?.purpose === "user-desktop-host"
           ? attachedDesktopSubject(input.userDesktopId)

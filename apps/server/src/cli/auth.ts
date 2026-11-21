@@ -3,6 +3,8 @@ import {
   AuthRevokePairingLinkInput,
   AuthSessionId,
   AuthStandardClientScopes,
+  AuthUserDesktopHostScopes,
+  pairingCredentialScopes,
   UserDesktopId,
 } from "@t3tools/contracts";
 import * as Console from "effect/Console";
@@ -11,7 +13,7 @@ import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as References from "effect/References";
 import * as Schema from "effect/Schema";
-import { Argument, Command, Flag, GlobalFlag } from "effect/cli";
+import { Argument, CliError, Command, Flag, GlobalFlag } from "effect/cli";
 
 import * as EnvironmentAuth from "../auth/EnvironmentAuth.ts";
 import { attachedDesktopSubject } from "../auth/DesktopHostAuthority.ts";
@@ -104,7 +106,11 @@ const tokenOnlyFlag = Flag.Boolean("token-only").pipe(
 
 const pairingCreateCommand = Command.make("create", {
   ...authLocationFlags,
-  scopes: authScopesFlag(AuthStandardClientScopes),
+  scopes: authScopesFlag([]).pipe(
+    Flag.withDescription(
+      "Repeat --scope to replace the default grants. Desktop hosts receive preview and orchestration access. Other clients receive standard client scopes.",
+    ),
+  ),
   ttl: ttlFlag,
   label: labelFlag,
   userDesktopId: Flag.String("user-desktop-id").pipe(
@@ -121,11 +127,21 @@ const pairingCreateCommand = Command.make("create", {
       flags,
       (environmentAuth) =>
         Effect.gen(function* () {
+          const desktopId = Option.getOrUndefined(flags.userDesktopId);
+          const host =
+            desktopId === undefined
+              ? undefined
+              : { purpose: "user-desktop-host" as const, userDesktopId: desktopId };
+          const scopes = flags.scopes.length > 0 ? flags.scopes : pairingCredentialScopes(host);
+          if (host && !AuthUserDesktopHostScopes.every((scope) => scopes.includes(scope))) {
+            return yield* new CliError.UserError({
+              cause: "invalid_scope",
+              userMessage: `Desktop host pairing requires ${AuthUserDesktopHostScopes.join(", ")}.`,
+            });
+          }
           const issued = yield* environmentAuth.createPairingLink({
-            scopes: flags.scopes,
-            subject: Option.isSome(flags.userDesktopId)
-              ? attachedDesktopSubject(flags.userDesktopId.value)
-              : "one-time-token",
+            scopes,
+            subject: host ? attachedDesktopSubject(host.userDesktopId) : "one-time-token",
             ...(Option.isSome(flags.ttl) ? { ttl: flags.ttl.value } : {}),
             ...(Option.isSome(flags.label) ? { label: flags.label.value } : {}),
           });

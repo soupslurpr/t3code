@@ -70,6 +70,7 @@ import {
   CornerLeftUpIcon,
   FileSearchIcon,
   FolderGit2Icon,
+  Settings2Icon,
   FolderIcon,
   FolderPlusIcon,
   MessageSquareDashedIcon,
@@ -146,6 +147,7 @@ import {
   usePrimaryEnvironmentId,
 } from "../state/environments";
 import {
+  readHasManagedWorktree,
   useAnyEnvironmentHiding,
   useDelegatedUnderParent,
   useHiddenThreadKeys,
@@ -277,6 +279,7 @@ import { Checkbox } from "./ui/checkbox";
 import { ProjectFilePicker } from "./files/ProjectFilePicker";
 import { openLinkPullRequestDialog } from "./pullRequest/LinkPullRequestDialog";
 import { canShareWithGuestAtom } from "./chat/guestShareAvailability";
+import { openThreadSupervision } from "./computer/ThreadSupervisionDialog";
 import { openGuestShareDialog } from "./chat/guestShareDialogState";
 import { openUseInAnotherApp } from "./mcp/UseInAnotherAppDialog";
 import { ProjectContentSearchDialog } from "./search/ProjectContentSearchDialog";
@@ -1569,6 +1572,27 @@ function OpenCommandPaletteDialog(props: {
         useRightPanelStore.getState().open(threadRef, "pull-requests");
       },
     });
+  }
+
+  if (activeThread) {
+    const target = scopeThreadRef(activeThread.environmentId, activeThread.id);
+    actionItems.push({
+      kind: "action",
+      value: "action:thread-supervision",
+      title: gt("Thread supervision"),
+      searchTerms: ["desktop", "monitor", "screen watch", "evidence", "control"],
+      icon: <Settings2Icon className={ITEM_ICON_CLASS} />,
+      run: async () => openThreadSupervision(target),
+    });
+    if (readHasManagedWorktree(activeThread))
+      actionItems.push({
+        kind: "action",
+        value: "action:thread-worktree",
+        title: gt("Manage worktree…"),
+        searchTerms: ["worktree", "remove", "detach", "recover", "main checkout"],
+        icon: <FolderGit2Icon className={ITEM_ICON_CLASS} />,
+        run: async () => openThreadSupervision(target, "worktree"),
+      });
   }
 
   if (activeThread !== null && canShareActiveThreadWithGuest) {

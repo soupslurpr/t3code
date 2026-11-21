@@ -1,5 +1,5 @@
 import { ThreadWorktreeService } from "../../../orchestration-v2/ThreadWorktreeService.ts";
-import { OrchestratorMcpFailure } from "@t3tools/contracts";
+import { OrchestratorMcpFailure, threadWorktreeBinding } from "@t3tools/contracts";
 import * as Option from "effect/Option";
 import * as Project from "../../../project/ProjectService.ts";
 import { loadCaller, readThread, unavailable } from "../../threadAccess.ts";
@@ -22,6 +22,7 @@ const handlers = {
       return yield* (yield* ThreadWorktreeService).detach(
         caller.id,
         {
+          expectedBinding: threadWorktreeBinding(caller),
           removeWorktree: input.removeWorktree === true,
           force: input.force,
         },

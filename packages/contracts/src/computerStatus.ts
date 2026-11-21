@@ -243,6 +243,10 @@ export type ComputerAutomationLeaseController = typeof ComputerAutomationLeaseCo
 
 export const ComputerAutomationLeaseStatus = Schema.Struct({
   access: Schema.Literals(["none", "view", "control"]),
+  holdsExplicitAvailability: Schema.optional(Schema.Boolean).annotate({
+    description:
+      "Whether this caller holds its own keep-awake lease that releaseAvailability can release.",
+  }),
   controller: Schema.NullOr(ComputerAutomationLeaseController),
   takeoverLeaseId: Schema.optional(ComputerAutomationLeaseId).annotate({
     description:

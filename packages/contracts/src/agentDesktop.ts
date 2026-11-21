@@ -167,6 +167,7 @@ export const AgentDesktop = Schema.Struct({
     Schema.isMaxLength(MAX_AGENT_DESKTOP_CAPABILITIES),
   ),
   controllerId: Schema.NullOr(AgentDesktopControllerId),
+  canReturnControl: Schema.optional(Schema.Boolean),
   viewerCount: Schema.Int.check(Schema.isGreaterThanOrEqualTo(0)),
   createdAt: Schema.String,
   lastActiveAt: Schema.String,

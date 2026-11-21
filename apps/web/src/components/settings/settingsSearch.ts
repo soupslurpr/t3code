@@ -31,6 +31,8 @@ export type SettingsPath =
   | "/settings/threads"
   | "/settings/browser"
   | "/settings/devices"
+  | "/settings/user-desktops"
+  | "/settings/agent-desktops"
   | "/settings/scheduled-tasks"
   | "/settings/source-control"
   | "/settings/worktrees"
@@ -109,6 +111,8 @@ export const SETTINGS_SECTION_LABELS: Readonly<Record<SettingsPath, string>> = {
   "/settings/threads": msg("Threads"),
   "/settings/browser": msg("Browser"),
   "/settings/devices": msg("Devices"),
+  "/settings/user-desktops": msg("User desktops"),
+  "/settings/agent-desktops": msg("Agent desktops"),
   "/settings/scheduled-tasks": msg("Scheduled tasks"),
   "/settings/source-control": msg("Source control & issues"),
   "/settings/worktrees": msg("Worktrees"),
@@ -159,6 +163,8 @@ const ALL_SETTINGS_NAV_GROUPS: ReadonlyArray<SettingsNavGroup> = [
       "/settings/threads",
       "/settings/browser",
       "/settings/devices",
+      "/settings/user-desktops",
+      "/settings/agent-desktops",
       "/settings/scheduled-tasks",
     ],
   },
@@ -253,6 +259,22 @@ const SOURCE_CONTROL_HOST_TERMS = sourceControlClients.definitions
   .join(" ");
 
 export const SETTINGS_SEARCH_ITEMS = [
+  {
+    id: "user-desktops",
+    environmentOnly: true,
+    title: msg("User desktops"),
+    to: "/settings/user-desktops",
+    scope: "environment",
+    searchTerms: [msg("Screen sharing"), msg("Permissions"), msg("Commands")],
+  },
+  {
+    id: "agent-desktops",
+    environmentOnly: true,
+    title: msg("Agent desktops"),
+    to: "/settings/agent-desktops",
+    scope: "environment",
+    searchTerms: [msg("Virtual machines"), msg("System maintenance"), msg("Port routes")],
+  },
   {
     id: "storage-worktree-keep-when",
     targetId: "storage-worktrees",
@@ -1545,6 +1567,8 @@ const SETTINGS_CATEGORY_SCOPES: Readonly<Record<SettingsPath, SettingsSearchScop
   "/settings/threads": null,
   "/settings/browser": null,
   "/settings/devices": null,
+  "/settings/user-desktops": "environment",
+  "/settings/agent-desktops": "environment",
   "/settings/source-control": "environment-defaults",
   "/settings/worktrees": "project-defaults",
   "/settings/connections": "connections",

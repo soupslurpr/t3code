@@ -1,4 +1,4 @@
-import type { EnvironmentId, ThreadId } from "@t3tools/contracts";
+import type { AuthSessionId, EnvironmentId, ThreadId } from "@t3tools/contracts";
 import * as Digest from "effect/crypto/Digest";
 import * as Effect from "effect/Effect";
 import type { McpThreadInvocationScope } from "../mcp/McpInvocationContext.ts";
@@ -24,4 +24,14 @@ export const desktopCaller = Effect.fn("DesktopCaller.forThread")(function* (
   scope: McpThreadInvocationScope,
 ) {
   return yield* threadDesktopCaller(scope.environmentId, scope.thread.threadId);
+});
+
+export const humanDesktopCaller = Effect.fn("DesktopCaller.forSession")(function* (
+  environmentId: EnvironmentId,
+  sessionId: AuthSessionId,
+  threadId: ThreadId,
+) {
+  const digest = yield* Digest.Digest;
+  const id = yield* digest.digestHex(Digest.sha256, new TextEncoder().encode(sessionId));
+  return { environmentId, threadId, controllerId: "human-" + id, controllerKind: "human" as const };
 });

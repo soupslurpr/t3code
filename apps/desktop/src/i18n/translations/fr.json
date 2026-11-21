@@ -26,7 +26,7 @@
   "1510c6547cde9c2e": "Un autre serveur T3 Code (par exemple `t3 serve`, ou un serveur démarré via SSH) utilise ce home T3 (PID {pid}, port {port}, version {version}). Si une app T3 Code sur une autre machine l’a démarré via SSH, cette app le redémarre : supprimez ou déconnectez-y cet environnement SSH, ou quittez cette app. Arrêtez ensuite le serveur et rouvrez T3 Code. Vous pouvez aussi définir un T3CODE_HOME distinct et vous appairer avec le serveur en cours d’exécution.",
   "8d8628520de0d9f1": "Un autre serveur T3 Code (par exemple `t3 serve`, ou un serveur démarré via SSH) utilise ce home T3 (PID {pid}, port {port}). Si une app T3 Code sur une autre machine l’a démarré via SSH, cette app le redémarre : supprimez ou déconnectez-y cet environnement SSH, ou quittez cette app. Arrêtez ensuite le serveur et rouvrez T3 Code. Vous pouvez aussi définir un T3CODE_HOME distinct et vous appairer avec le serveur en cours d’exécution.",
   "534035f4fe79b7bb": "Mémoriser sur ce bureau le consentement du système à l’accès à l’écran ?",
-  "3e8eed187da1d7e4": "Mettre fin à tous les accès à l’écran de ce bureau ?",
+  "e12e8c0ffdd8c4d8": "Mettre fin à l’accès à l’écran pour tout le monde et annuler toutes les demandes de maintien en éveil de cet ordinateur ?",
   "9a27ceba2163a732": "Supprimer toutes les autorisations d’écran de T3 et le consentement mémorisé du système ?",
   "00ad8aeed0a6c461": "Annuler",
   "0fdf303b060c2739": "Ce fil",

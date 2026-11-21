@@ -13,9 +13,9 @@ New to T3 Code? Start with the **[User Guide & Index](./user/README.md)** for ho
 
 ### Workspace tools & automation
 
-- [Built-in browser](./user/browser.md) ([import sessions](./user/browser-import.md) · [default browser](./user/default-browser.md)) · [Devices](./user/devices.md)
+- [Built-in browser](./user/browser.md) ([import sessions](./user/browser-import.md) · [default browser](./user/default-browser.md)) · [Devices](./user/devices.md) · [Computer use](./user/computer-use.md)
 - [Terminal](./user/terminal.md) · [Visual replies & MCP apps](./user/html-renders.md) · [SnapShots](./user/snap-shot.md) · [Voice input](./user/voice-input.md)
-- [Workflows](./user/workflows.md) · [Text generation models](./user/text-generation.md) · [Prompt links](./user/prompt-links.md)
+- [Workflows](./user/workflows.md) · [Durable waits and monitoring](./user/durable-monitors.md) · [Text generation models](./user/text-generation.md) · [Prompt links](./user/prompt-links.md)
 - [Activity log](./user/activity-log.md) · [Appearance and themes](./user/appearance.md) · [Keybindings](./user/keybindings.md) · [Keyboard focus](./user/keyboard-focus.md)
 
 ### Remote, security & operations

@@ -30,6 +30,8 @@ import {
   Settings2Icon,
   ShieldCheckIcon,
   SmartphoneIcon,
+  MonitorIcon,
+  MonitorCogIcon,
   WrenchIcon,
   XIcon,
 } from "lucide-react";
@@ -106,6 +108,8 @@ const SETTINGS_SECTION_ICONS: Readonly<
   "/settings/threads": MessagesSquareIcon,
   "/settings/browser": GlobeIcon,
   "/settings/devices": SmartphoneIcon,
+  "/settings/user-desktops": MonitorIcon,
+  "/settings/agent-desktops": MonitorCogIcon,
   "/settings/scheduled-tasks": CalendarClockIcon,
   "/settings/source-control": GitBranchIcon,
   "/settings/worktrees": FolderTreeIcon,

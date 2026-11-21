@@ -7,7 +7,11 @@ import * as NodePath from "node:path";
 
 import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
 import * as NodeServices from "@effect/platform-node/NodeServices";
-import { AuthStandardClientScopes, ORCHESTRATION_PROTOCOL_VERSION } from "@t3tools/contracts";
+import {
+  AuthStandardClientScopes,
+  AuthUserDesktopHostScopes,
+  ORCHESTRATION_PROTOCOL_VERSION,
+} from "@t3tools/contracts";
 import * as NetService from "@t3tools/shared/Net";
 import * as HostProcess from "@t3tools/shared/HostProcess";
 import { assert, describe, expect, it } from "@effect/vitest";
@@ -908,37 +912,92 @@ describe("auth scope options", () => {
 });
 
 describe("auth pairing create --base-url", () => {
-  it.effect("issues a one-time pairing link bound to the specified User desktop", () =>
+  it.effect.each([
+    {
+      kind: "desktop host",
+      flags: ["--user-desktop-id", "workstation"],
+      subject: "desktop-host:workstation",
+      scopes: AuthUserDesktopHostScopes,
+    },
+    {
+      kind: "desktop host with command access",
+      flags: [
+        "--user-desktop-id",
+        "workstation",
+        ...[...AuthUserDesktopHostScopes, "terminal:operate"].flatMap((scope) => [
+          "--scope",
+          scope,
+        ]),
+      ],
+      subject: "desktop-host:workstation",
+      scopes: [...AuthUserDesktopHostScopes, "terminal:operate"],
+    },
+    {
+      kind: "standard client",
+      flags: [],
+      subject: "one-time-token",
+      scopes: AuthStandardClientScopes,
+    },
+  ])(
+    "issues a one-time pairing link with the selected grants for a $kind",
+    ({ flags, subject, scopes }) =>
+      Effect.gen(function* () {
+        const baseDir = NodeFS.mkdtempSync(NodePath.join(NodeOS.tmpdir(), "t3-cli-host-pair-"));
+        try {
+          const output = yield* captureStdout(
+            runCli([
+              "auth",
+              "pairing",
+              "create",
+              "--base-dir",
+              baseDir,
+              ...flags,
+              "--base-url",
+              "https://fixture.invalid",
+              "--json",
+            ]),
+          );
+          const issued = JSON.parse(output) as {
+            id: string;
+            credential: string;
+            pairUrl: string;
+            scopes: string[];
+          };
+          assert.equal(issued.pairUrl, `https://fixture.invalid/pair#token=${issued.credential}`);
+          assert.deepEqual(new Set(issued.scopes), new Set(scopes));
+          using db = new NodeSqlite.DatabaseSync(
+            NodePath.join(baseDir, "userdata", "statev2.sqlite"),
+            { readOnly: true },
+          );
+          const row = db
+            .prepare("SELECT subject, scopes FROM auth_pairing_links WHERE id = ?")
+            .get(issued.id);
+          assert.equal(row?.subject, subject);
+          assert.deepEqual(new Set(JSON.parse(String(row?.scopes)) as string[]), new Set(scopes));
+        } finally {
+          NodeFS.rmSync(baseDir, { recursive: true, force: true });
+        }
+      }),
+  );
+  it.effect("rejects incomplete desktop host scopes before issuing a credential", () =>
     Effect.gen(function* () {
-      const baseDir = NodeFS.mkdtempSync(NodePath.join(NodeOS.tmpdir(), "t3-cli-host-pair-"));
-      try {
-        const output = yield* captureStdout(
-          runCli([
-            "auth",
-            "pairing",
-            "create",
-            "--base-dir",
-            baseDir,
-            "--user-desktop-id",
-            "workstation",
-            "--base-url",
-            "https://fixture.invalid",
-            "--json",
-          ]),
-        );
-        const issued = JSON.parse(output) as { id: string; credential: string; pairUrl: string };
-        assert.equal(issued.pairUrl, `https://fixture.invalid/pair#token=${issued.credential}`);
-        using db = new NodeSqlite.DatabaseSync(
-          NodePath.join(baseDir, "userdata", "statev2.sqlite"),
-          { readOnly: true },
-        );
-        assert.equal(
-          db.prepare("SELECT subject FROM auth_pairing_links WHERE id = ?").get(issued.id)?.subject,
-          "desktop-host:workstation",
-        );
-      } finally {
-        NodeFS.rmSync(baseDir, { recursive: true, force: true });
-      }
+      using dir = NodeFS.mkdtempDisposableSync(
+        NodePath.join(NodeOS.tmpdir(), "t3-cli-host-scopes-"),
+      );
+      const flags = ["--base-dir", dir.path, "--json"];
+      const error = yield* runCli([
+        "auth",
+        "pairing",
+        "create",
+        ...flags,
+        "--user-desktop-id",
+        "workstation",
+        "--scope",
+        "terminal:operate",
+      ]).pipe(Effect.provide(layerCliRuntime), Effect.flip);
+      expect(error).toMatchObject({ cause: "invalid_scope" });
+      const output = yield* captureStdout(runCli(["auth", "pairing", "list", ...flags]));
+      assert.deepEqual(JSON.parse(output), []);
     }),
   );
   it.effect.each(["192.168.1.5:3773", "localhost:3773", "ftp://localhost:3773"])(

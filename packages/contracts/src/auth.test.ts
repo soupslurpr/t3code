@@ -2,14 +2,23 @@ import { describe, expect, it } from "vite-plus/test";
 import * as Schema from "effect/Schema";
 
 import {
+  AuthAccessWriteScope,
+  AuthAdministrativeClientScopes,
   AuthEnvironmentScopes,
   AuthEnvironmentScope,
+  AuthFilesystemReadScope,
   authScopeRequiredResponse,
   AuthGrantScopes,
+  AuthRelayConfigureScope,
+  AuthRelayWriteScope,
   AuthStandardClientScopes,
+  AuthTerminalOperateScope,
+  AuthTerminalReadScope,
+  AuthUserDesktopHostScopes,
   authScopeResponse,
   AuthSessionState,
   sessionGrantsScope,
+  userDesktopHostPairingScopes,
 } from "./auth.ts";
 
 describe("authorization grants", () => {
@@ -128,5 +137,90 @@ describe("authorization grants", () => {
     },
   ] as const)("sessionGrantsScope accepts $label", ({ session, scope, expected }) => {
     expect(sessionGrantsScope(session, scope)).toBe(expected);
+  });
+
+  it("computes desktop enrollment preset scopes from exact issuer grants", () => {
+    const adminIssuer = {
+      authenticated: true,
+      permissions: AuthAdministrativeClientScopes,
+    };
+    expect(userDesktopHostPairingScopes("standard", adminIssuer)).toEqual({
+      scopes: AuthStandardClientScopes,
+      omitted: [],
+    });
+    expect(userDesktopHostPairingScopes("standard", adminIssuer)?.scopes).not.toContain(
+      AuthRelayConfigureScope,
+    );
+    expect(userDesktopHostPairingScopes("host-commands", adminIssuer)).toEqual({
+      scopes: [...AuthUserDesktopHostScopes, AuthTerminalOperateScope],
+      omitted: [],
+    });
+    expect(userDesktopHostPairingScopes("host-only", adminIssuer)).toEqual({
+      scopes: AuthUserDesktopHostScopes,
+      omitted: [],
+    });
+
+    const partialIssuer = {
+      authenticated: true,
+      permissions: AuthStandardClientScopes.filter(
+        (scope) => scope !== AuthTerminalOperateScope && scope !== AuthRelayWriteScope,
+      ),
+    };
+    const partialStandard = userDesktopHostPairingScopes("standard", partialIssuer);
+    expect(partialStandard?.scopes).toContain(AuthFilesystemReadScope);
+    expect(partialStandard?.omitted).toEqual([AuthTerminalOperateScope, AuthRelayWriteScope]);
+    expect(userDesktopHostPairingScopes("host-commands", partialIssuer)).toBeNull();
+    expect(userDesktopHostPairingScopes("host-only", partialIssuer)).toEqual({
+      scopes: AuthUserDesktopHostScopes,
+      omitted: [],
+    });
+
+    const minimumIssuer = {
+      authenticated: true,
+      permissions: [AuthAccessWriteScope, ...AuthUserDesktopHostScopes],
+    };
+    const minimumStandard = userDesktopHostPairingScopes("standard", minimumIssuer);
+    expect(minimumStandard?.scopes).toEqual([
+      "orchestration:read",
+      "orchestration:operate",
+      "preview:operate",
+      "access:write",
+    ]);
+    expect(minimumStandard?.omitted).toContain(AuthFilesystemReadScope);
+
+    // Legacy scopes never infer terminal:read from terminal:operate during desktop enrollment.
+    const legacyCommandIssuer = {
+      authenticated: true,
+      scopes: [AuthAccessWriteScope, ...AuthUserDesktopHostScopes, AuthTerminalOperateScope],
+    };
+    expect(userDesktopHostPairingScopes("host-commands", legacyCommandIssuer)).toEqual({
+      scopes: [...AuthUserDesktopHostScopes, AuthTerminalOperateScope],
+      omitted: [],
+    });
+    expect(userDesktopHostPairingScopes("standard", legacyCommandIssuer)?.scopes).not.toContain(
+      AuthTerminalReadScope,
+    );
+    expect(userDesktopHostPairingScopes("standard", legacyCommandIssuer)?.omitted).toContain(
+      AuthTerminalReadScope,
+    );
+
+    expect(
+      userDesktopHostPairingScopes("standard", {
+        authenticated: false,
+        permissions: AuthAdministrativeClientScopes,
+      }),
+    ).toBeNull();
+    expect(
+      userDesktopHostPairingScopes("host-only", {
+        authenticated: true,
+        permissions: AuthUserDesktopHostScopes,
+      }),
+    ).toBeNull();
+    expect(
+      userDesktopHostPairingScopes("standard", {
+        authenticated: true,
+        permissions: [AuthAccessWriteScope, "orchestration:read", "orchestration:operate"],
+      }),
+    ).toBeNull();
   });
 });

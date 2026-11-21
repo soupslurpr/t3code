@@ -1,3 +1,6 @@
+import { DesktopTransfers } from "./computer/DesktopTransfers.ts";
+import { AgentDesktopService } from "./agentDesktop/AgentDesktopService.ts";
+import { ComputerAutomationRouter } from "./computer/ComputerAutomationRouter.ts";
 import { ThreadWorktreeService } from "./orchestration-v2/ThreadWorktreeService.ts";
 import { DesktopExecutionAuthorizationChannel } from "./computer/DesktopExecutionAuthorizationChannel.ts";
 import { ComputerObservationStore } from "./computer/ComputerObservationStore.ts";
@@ -861,6 +864,21 @@ const layerUnusedConfigRpcServices = Layer.mergeAll(
   Layer.mock(DeviceService.DeviceService)({}),
   Layer.mock(EnvironmentTheme.EnvironmentThemeService)({}),
   Layer.mock(ThreadWorktreeService)({}),
+  Layer.mock(AgentDesktopService)({
+    display: {
+      invoke: () => Effect.die("unexpected guest input"),
+      openCapture: () => Effect.die("unexpected guest capture"),
+    },
+    operations: {
+      jobs: () => Effect.die("unexpected guest job"),
+      access: () => Effect.die("unexpected guest access"),
+      completion: () => Effect.die("unexpected guest completion"),
+      transfer: () => Effect.die("unexpected guest transfer"),
+      close: async () => {},
+    },
+  }),
+  Layer.mock(ComputerAutomationRouter)({}),
+  Layer.mock(DesktopTransfers)({ download: () => null }),
   Layer.mock(GitWorkflowService.GitWorkflowService)({}),
   Layer.mock(HostResources.HostResources)({}),
   Layer.mock(McpAppRequests.McpAppRequests)({}),
@@ -2007,11 +2025,24 @@ it.effect(
               Effect.sync(() => seen.push(options.projectCommands)).pipe(
                 Effect.as({ worktree: { path: "/repo-worktrees/feature", refName: "feature" } }),
               ),
-            removeIfTaskFolder: (input) =>
-              Effect.sync(() => seen.push(input.projectCommands)).pipe(Effect.as(true)),
+          }),
+          Layer.mock(ThreadWorktreeService)({
+            removePath: (_input, projectCommands) =>
+              Effect.sync(() => {
+                seen.push(projectCommands ?? "request-not-permitted");
+              }).pipe(Effect.as(undefined)),
+            remove: (_threadId, options) =>
+              Effect.sync(() => {
+                seen.push(options.projectCommands ?? "request-not-permitted");
+              }).pipe(Effect.as({ removed: true })),
+            detach: (_threadId, options) =>
+              Effect.sync(() => {
+                seen.push(options.projectCommands ?? "request-not-permitted");
+              }).pipe(Effect.as({ detachedThreadIds: [ThreadId.make("thread-1")], removed: true })),
           }),
           Layer.mock(VcsStatusBroadcaster.VcsStatusBroadcaster)({
             refreshStatus: () => Effect.die("unused"),
+            refreshLocalStatus: () => Effect.succeed({ isRepo: false } as never),
           }),
           Layer.mock(ExternalLauncher.ExternalLauncher)({}),
           Layer.mock(ProviderRegistry.ProviderRegistry)({}),
@@ -2068,18 +2099,45 @@ it.effect(
           headers: Headers.empty,
         });
         assert.equal(yield* Queue.take(exits), "Success");
+        yield* server.write(0, {
+          _tag: "Request",
+          id: RpcMessage.RequestId("thread-remove"),
+          tag: WS_METHODS.threadWorktreeRemove,
+          payload: {
+            threadId: ThreadId.make("thread-1"),
+            expectedBinding: { worktreePath: "/repo-worktrees/feature", branch: "feature" },
+          },
+          headers: Headers.empty,
+        });
+        assert.equal(yield* Queue.take(exits), "Success");
+        if (scopes.includes(AuthOrchestrationOperateScope)) {
+          yield* server.write(0, {
+            _tag: "Request",
+            id: RpcMessage.RequestId("thread-detach"),
+            tag: WS_METHODS.threadWorktreeDetach,
+            payload: {
+              threadId: ThreadId.make("thread-1"),
+              expectedBinding: { worktreePath: "/repo-worktrees/feature", branch: "feature" },
+              removeWorktree: true,
+            },
+            headers: Headers.empty,
+          });
+          assert.equal(yield* Queue.take(exits), "Success");
+        }
         return seen;
       }, Effect.scoped);
 
       assert.deepEqual(yield* requested([AuthSourceControlWriteScope]), [
         "request-not-permitted",
         "request-not-permitted",
+        "request-not-permitted",
       ]);
       assert.deepEqual(
         yield* requested([AuthSourceControlWriteScope, AuthOrchestrationOperateScope]),
-        ["permitted", "permitted"],
+        ["permitted", "permitted", "permitted", "permitted"],
       );
       assert.deepEqual(yield* requested([AuthSourceControlWriteScope, AuthTerminalOperateScope]), [
+        "permitted",
         "permitted",
         "permitted",
       ]);

@@ -29,6 +29,10 @@ export const UserDesktopHumanRequest = Schema.Union([
   Schema.Struct({ operation: Schema.Literal("rename"), input: UserDesktopRenameInput }),
   Schema.Struct({ operation: Schema.Literal("remove"), input: UserDesktopRemoveInput }),
   Schema.Struct({ operation: Schema.Literal("status"), ...UserDesktopHumanTarget }),
+  Schema.Struct({
+    operation: Schema.Literals(["request-availability", "release-availability", "transfers"]),
+    ...UserDesktopHumanTarget,
+  }),
   Schema.Struct({ operation: Schema.Literal("request-view"), ...UserDesktopHumanTarget }),
   Schema.Struct({
     operation: Schema.Literal("request-control"),

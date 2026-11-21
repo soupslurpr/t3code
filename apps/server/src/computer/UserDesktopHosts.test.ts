@@ -12,6 +12,7 @@ import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
 import * as Fiber from "effect/Fiber";
 import * as Layer from "effect/Layer";
+import * as Queue from "effect/Queue";
 import * as Stream from "effect/Stream";
 import * as ServerConfig from "../config.ts";
 import * as UserDesktops from "../persistence/UserDesktops.ts";
@@ -31,7 +32,8 @@ it.effect("binds enrollment and replies to the desktop, socket and registration 
     const registration: ComputerHostRegistration = {
       clientId: "renderer",
       environmentId: env,
-      supportedOperations: ["computerStatus"],
+      supportsPermissionPreparation: true,
+      supportedOperations: ["computerStatus", "computerRequestView", "computerRequestControl"],
       userDesktop: {
         desktopId: "host-a",
         protocolVersion: 1,
@@ -57,13 +59,13 @@ it.effect("binds enrollment and replies to the desktop, socket and registration 
       ))._tag,
     ).toBe("Failure");
     const ready = yield* Deferred.make<string>();
-    const pending = yield* Deferred.make<string>();
+    const pending = yield* Queue.unbounded<string>();
     const connection = yield* one.connect(registration).pipe(
       Stream.runForEach((e) =>
         e.type === "connected"
           ? Deferred.succeed(ready, e.connectionId)
           : e.type === "request"
-            ? Deferred.succeed(pending, e.request.requestId)
+            ? Queue.offer(pending, e.request.requestId)
             : Effect.void,
       ),
       Effect.forkScoped,
@@ -86,7 +88,7 @@ it.effect("binds enrollment and replies to the desktop, socket and registration 
     const reply = {
       clientId: "renderer",
       connectionId: generation,
-      requestId: yield* Deferred.await(pending),
+      requestId: yield* Queue.take(pending),
       ok: true,
       result: "verified",
     };
@@ -96,6 +98,29 @@ it.effect("binds enrollment and replies to the desktop, socket and registration 
     );
     yield* one.respond(reply);
     expect(yield* Fiber.join(status)).toBe("verified");
+    const repo = yield* UserDesktops.UserDesktopRepository;
+    const human = {
+      controllerId: "human",
+      controllerKind: "human" as const,
+      environmentId: env,
+      threadId: ThreadId.make("thread"),
+    };
+    for (const operation of ["computerRequestView", "computerRequestControl"] as const) {
+      const request = yield* hosts
+        .invoke(human, "host-a", operation, { acquireLease: false }, 250)
+        .pipe(Effect.forkScoped);
+      yield* one.respond({ ...reply, requestId: yield* Queue.take(pending) });
+      yield* Fiber.join(request);
+    }
+    expect((yield* repo.listAudit("host-a")).events).toHaveLength(0);
+    const viewing = yield* hosts
+      .invoke(human, "host-a", "computerRequestView", {}, 250)
+      .pipe(Effect.forkScoped);
+    yield* one.respond({ ...reply, requestId: yield* Queue.take(pending) });
+    yield* Fiber.join(viewing);
+    expect((yield* repo.listAudit("host-a")).events.map((entry) => entry.action)).toEqual([
+      "view-granted",
+    ]);
     yield* Fiber.interrupt(connection);
     expect((yield* hosts.list()).desktops[0]?.connectionState).toBe("offline");
   }).pipe(

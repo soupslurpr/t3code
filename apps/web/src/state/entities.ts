@@ -1,4 +1,5 @@
 import type * as DateTime from "effect/DateTime";
+import { canManageProjectWorktrees } from "@t3tools/client-runtime/state/projects";
 import { msg } from "gt-react";
 import { useAtomValue } from "@effect/atom-react";
 import type {
@@ -355,6 +356,15 @@ export function readThreadTurnItems(ref: ScopedThreadRef) {
 
 export function readThreadShell(ref: ScopedThreadRef): EnvironmentThreadShell | null {
   return appAtomRegistry.get(environmentThreadShells.threadShellAtom(ref));
+}
+
+export function readHasManagedWorktree(
+  thread: Pick<EnvironmentThreadShell, "environmentId" | "projectId" | "worktreePath">,
+): boolean {
+  if (!thread.worktreePath) return false;
+  const project = readProject(thread);
+  const config = appAtomRegistry.get(environmentServerConfigsAtom).get(thread.environmentId);
+  return canManageProjectWorktrees(project, config);
 }
 
 export function waitForThreadShell(ref: ScopedThreadRef, timeoutMs = 5_000): Promise<boolean> {

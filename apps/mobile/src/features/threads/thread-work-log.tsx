@@ -98,6 +98,7 @@ import {
   workEntryViewedImagePath,
 } from "@t3tools/client-runtime/work-log/presentation";
 import { notificationChildThreadId } from "@t3tools/client-runtime/state/thread-execution";
+import { MonitorEventRow } from "../supervision/MonitorEventRow";
 import type { MarkdownImageRenderer } from "../../native/SelectableMarkdownText";
 import type { FilePreviewSource } from "../../components/ui/FilePreviewModal";
 import { FilePreviewGallery } from "../../components/ui/FilePreviewGallery";
@@ -925,6 +926,21 @@ const ThreadWorkLogRow = function ThreadWorkLogRow(
       : null,
   );
   const failureItem = row.projectedItem.item;
+  if (
+    failureItem.type === "notification" &&
+    failureItem.source.kind === "monitor" &&
+    failureItem.systemEvent
+  ) {
+    return (
+      <MonitorEventRow
+        scope={{ environmentId: props.environmentId, threadId: failureItem.threadId }}
+        event={failureItem.systemEvent}
+        summary={failureItem.summary}
+        expanded={expanded}
+        toggle={() => props.onToggleRow(row.id, props.anchorKey, row.groupStandIn?.groupId)}
+      />
+    );
+  }
   if (failureItem.type === "error" && failureItem.status === "failed") {
     const warning = failureItem.failure.class === "usage_limit";
     const timestamp = new Date(row.createdAt);

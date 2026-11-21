@@ -148,6 +148,7 @@ import {
   usePrimaryEnvironmentId,
 } from "../state/environments";
 import {
+  readHasManagedWorktree,
   readThreadShell,
   useAllEnvironmentProjectSnapshotsReady,
   useDelegatedUnderParent,
@@ -165,6 +166,7 @@ import { threadTriagePermitted, useOrchestrationCommand } from "../state/use-orc
 import { readEnvironmentScope, useEnvironmentScope } from "../state/session";
 import { appAtomRegistry } from "../rpc/atomRegistry";
 import { canShareWithGuestAtom } from "./chat/guestShareAvailability";
+import { openThreadSupervision } from "~/components/computer/ThreadSupervisionDialog";
 import { openGuestShareDialog } from "./chat/guestShareDialogState";
 import {
   buildThreadRouteParams,
@@ -2724,6 +2726,7 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
                 AuthOrchestrationOperateScope,
               ),
               canTriage: threadTriagePermitted(threadRef.environmentId),
+              hasWorktree: readHasManagedWorktree(thread),
               branch: thread.branch ?? null,
               // An archived project is not a filter choice.
               projectFilter:
@@ -2871,6 +2874,12 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
           }
           case "rename":
             startThreadRename(threadRef, thread.title);
+            return;
+          case "supervise":
+            openThreadSupervision(threadRef);
+            return;
+          case "manage-worktree":
+            openThreadSupervision(threadRef, "worktree");
             return;
           case "share-guest":
             openGuestShareDialog(threadRef);

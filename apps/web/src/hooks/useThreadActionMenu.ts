@@ -1,6 +1,7 @@
 import { thrownErrorMessage } from "@t3tools/client-runtime/errors";
 import { scopeProjectRef } from "@t3tools/client-runtime/environment";
 import { requestCustomSnooze } from "../components/CustomSnoozeDialog";
+import { openThreadSupervision } from "~/components/computer/ThreadSupervisionDialog";
 import { openGuestShareDialog } from "../components/chat/guestShareDialogState";
 import {
   type AtomCommandResult,
@@ -35,6 +36,7 @@ import { threadTriagePermitted, useOrchestrationCommand } from "../state/use-orc
 import { readEnvironmentScope } from "../state/session";
 import {
   readEnvironmentServerConfigLoaded,
+  readHasManagedWorktree,
   readEnvironmentSupportsAutoSettleOptOut,
   readThreadShell,
   useProjects,
@@ -138,6 +140,7 @@ export function useThreadActionMenu(input: {
       canTriage: threadTriagePermitted(threadRef.environmentId),
       canFind: onFind !== undefined,
       canRename: onStartRename !== undefined,
+      hasWorktree: readHasManagedWorktree(thread),
       branch: thread.branch ?? null,
       projectFilter: null,
       isPinned: thread.pinnedAt != null,
@@ -269,6 +272,12 @@ export function useThreadActionMenu(input: {
         }
         case "mark-unread":
           markThreadUnread(threadRef);
+          return;
+        case "supervise":
+          openThreadSupervision(threadRef);
+          return;
+        case "manage-worktree":
+          openThreadSupervision(threadRef, "worktree");
           return;
         case "share-guest":
           openGuestShareDialog(threadRef);

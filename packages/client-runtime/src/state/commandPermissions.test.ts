@@ -10,6 +10,7 @@ import {
   AuthAccessReadScope,
   AuthAccessWriteScope,
   AuthEnvironmentMaintainScope,
+  AuthFilesystemReadScope,
   AuthOrchestrationOperateScope,
   AuthTerminalOperateScope,
   AuthOrchestrationReadScope,
@@ -126,6 +127,39 @@ describe("command permissions", () => {
       expect((yield* close.authorize(registry, other).pipe(Effect.flip))._tag).toBe(
         "EnvironmentAuthorizationError",
       );
+    }),
+  );
+
+  it.effect("checks the operation-specific desktop and watch grants at the destination", () =>
+    Effect.gen(function* () {
+      const registry = yield* setup;
+      const user = createCommandPermissions(runtime, WS_METHODS.userDesktopHumanInvoke);
+      const agent = createCommandPermissions(runtime, WS_METHODS.agentDesktopHumanInvoke);
+      const watch = createCommandPermissions(runtime, WS_METHODS.threadMonitorsInspectWatch);
+      const scopes = [AuthOrchestrationOperateScope, AuthPreviewOperateScope] as const;
+      registry.set(
+        sessions(env),
+        AsyncResult.success({ ...grant(false), scopes, permissions: scopes }),
+      );
+      const input = (operation: string) => ({ request: { operation } });
+      expect(registry.get(user.permissionAtom(env, input("status")))).toBe(true);
+      expect(registry.get(watch.permissionAtom(env))).toBe(true);
+      yield* agent.authorize(registry, env, input("list"));
+      expect(
+        (yield* agent.authorize(registry, env, input("update")).pipe(Effect.flip))
+          .requiredPermission,
+      ).toBe(AuthEnvironmentMaintainScope);
+      expect(
+        (yield* user.authorize(registry, env, input("execution")).pipe(Effect.flip))
+          .requiredPermission,
+      ).toBe(AuthTerminalOperateScope);
+      expect(registry.get(user.permissionAtom(env, input("screen-permission")))).toBe(false);
+      expect(
+        (yield* user.authorize(registry, env, input("transfers")).pipe(Effect.flip))
+          .requiredPermission,
+      ).toBe(AuthFilesystemReadScope);
+      registry.set(sessions(env), AsyncResult.success(grant(false)));
+      expect(registry.get(watch.permissionAtom(env))).toBe(false);
     }),
   );
 

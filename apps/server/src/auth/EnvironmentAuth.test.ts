@@ -3,6 +3,8 @@ import * as NodeServices from "@effect/platform-node/NodeServices";
 import {
   authScopeResponse,
   AuthAdministrativeClientScopes,
+  AuthStandardClientScopes,
+  AuthUserDesktopHostScopes,
   connectDeviceVerificationCode,
 } from "@t3tools/contracts";
 import { expect, it } from "@effect/vitest";
@@ -106,6 +108,10 @@ it.layer(Layer.mergeAll(NodeServices.layer, NodePlatformCrypto.layer))(
             );
             const state = yield* auth.getSessionState(makeBearerRequest(access.access_token));
             expect(state.userDesktopHostId).toBe(expectedId);
+            if (credential === attached.credential)
+              expect(new Set(state.permissions)).toEqual(new Set(AuthUserDesktopHostScopes));
+            if (credential === paired.credential)
+              expect(new Set(state.permissions)).toEqual(new Set(AuthStandardClientScopes));
           }
           const cookieGrant = yield* enroll("attached");
           const cookie = yield* auth.createBrowserSession(cookieGrant.credential, requestMetadata);

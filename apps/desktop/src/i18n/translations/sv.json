@@ -26,7 +26,7 @@
   "1510c6547cde9c2e": "En annan T3 Code-server (till exempel `t3 serve` eller en som startats över SSH) använder den här T3-hemkatalogen (PID {pid}, port {port}, version {version}). Om en T3 Code-app på en annan dator startade den över SSH startar den appen om den: ta bort eller koppla från SSH-miljön där, eller avsluta appen. Stoppa sedan servern och öppna T3 Code igen. Du kan också ange en separat T3CODE_HOME och parkoppla med servern som körs.",
   "8d8628520de0d9f1": "En annan T3 Code-server (till exempel `t3 serve` eller en som startats över SSH) använder den här T3-hemkatalogen (PID {pid}, port {port}). Om en T3 Code-app på en annan dator startade den över SSH startar den appen om den: ta bort eller koppla från SSH-miljön där, eller avsluta appen. Stoppa sedan servern och öppna T3 Code igen. Du kan också ange en separat T3CODE_HOME och parkoppla med servern som körs.",
   "534035f4fe79b7bb": "Kom ihåg operativsystemets godkännande för skärmåtkomst på det här skrivbordet?",
-  "3e8eed187da1d7e4": "Avsluta all skärmåtkomst på det här skrivbordet?",
+  "e12e8c0ffdd8c4d8": "Avsluta allas åtkomst till skärmen och återkalla alla begäranden om att hålla datorn vaken?",
   "9a27ceba2163a732": "Ta bort alla T3-behörigheter för skärmen och operativsystemets sparade godkännande?",
   "00ad8aeed0a6c461": "Avbryt",
   "0fdf303b060c2739": "Den här tråden",

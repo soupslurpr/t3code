@@ -23,6 +23,8 @@ export type ThreadActionMenuId =
   | "rename"
   | "regenerate-title"
   | "mark-unread"
+  | "supervise"
+  | "manage-worktree"
   | "share-guest"
   | "copy"
   | "copy-path"
@@ -97,6 +99,7 @@ export interface ThreadActionMenuState {
   readonly canOperate: boolean;
   /** Settle, snooze and their undo stay available until the host denies the operate scope. */
   readonly canTriage?: boolean;
+  readonly hasWorktree?: boolean;
   readonly canFind?: boolean;
   /** False where no inline title editor is rendered, such as sidebar search results. */
   readonly canRename?: boolean;
@@ -137,6 +140,8 @@ export function threadActionRequiresOperate(action: ThreadActionMenuId): boolean
     "project-settings",
     "mark-unread",
     "share-guest",
+    "supervise",
+    "manage-worktree",
     "copy",
     "copy-path",
     "copy-branch",
@@ -235,6 +240,16 @@ export function buildThreadActionMenuItems(
       : []),
     ...(state.hasCompletedRun && !state.isRunning
       ? [{ id: "mark-unread" as const, label: resolve(msg("Mark unread")), icon: "mail-open" }]
+      : []),
+    { id: "supervise", label: resolve(msg("Thread supervision")), icon: "settings" },
+    ...(state.hasWorktree
+      ? [
+          {
+            id: "manage-worktree" as const,
+            label: resolve(msg("Manage worktree…")),
+            icon: "folder",
+          },
+        ]
       : []),
     ...(state.canShareWithGuest
       ? [{ id: "share-guest" as const, label: resolve(msg("Share with guest")), icon: "user-plus" }]

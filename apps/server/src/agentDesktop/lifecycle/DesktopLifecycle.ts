@@ -250,8 +250,9 @@ export async function makeDesktopLifecycle(options: LifecycleOptions): Promise<D
       }),
     );
   }
-  async function manage(owner: DesktopOwner, input: AgentDesktopManageInput) {
-    const threadAccess = input.operation === "restore" || input.operation === "delete";
+  async function manage(owner: DesktopOwner, input: AgentDesktopManageInput, exactOwner = false) {
+    const threadAccess =
+      !exactOwner && (input.operation === "restore" || input.operation === "delete");
     return onMachine(
       input.desktopId,
       owner,
@@ -369,53 +370,82 @@ export async function makeDesktopLifecycle(options: LifecycleOptions): Promise<D
     );
   }
 
-  const lease: DesktopLifecycle["lease"] = (owner, id, access) =>
-    onMachine(id, owner, access !== "control", async (row, s) => {
-      if (access === "control" && s.controller && s.controller !== owner.controllerId) throw busy();
+  const lease: DesktopLifecycle["lease"] = (owner, id, access, human = false) =>
+    onMachine(id, owner, human || access !== "control", async (row, s) => {
+      if (
+        access === "return-control" &&
+        (!human ||
+          s.controller !== owner.controllerId ||
+          s.displacedController !== row.owner.controllerId ||
+          !s.viewers.has(row.owner.controllerId))
+      )
+        throw invalid("The displaced Agent controller is no longer available.");
+      if (
+        access === "control" &&
+        s.controller &&
+        s.controller !== owner.controllerId &&
+        !(human && s.controller === row.owner.controllerId)
+      )
+        throw busy();
       if (access !== "release") row = await runtime.start(row, s);
       row = await inventory.put({ ...row, lastActiveAt: nowIso() });
       if (access === "release") {
         s.viewers.delete(owner.controllerId);
-        if (s.controller === owner.controllerId) s.controller = null;
+        if (s.displacedController === owner.controllerId) s.displacedController = null;
+        if (s.controller === owner.controllerId) {
+          s.controller = null;
+          s.displacedController = null;
+        }
       } else {
         s.viewers.add(owner.controllerId);
-        if (access === "control") s.controller = owner.controllerId;
+        if (access === "return-control") {
+          s.controller = s.displacedController;
+          s.displacedController = null;
+        } else if (access === "control" && s.controller !== owner.controllerId) {
+          s.displacedController = human ? s.controller : null;
+          s.controller = owner.controllerId;
+        }
       }
       return summary(row, s);
     });
-  const begin: DesktopLifecycle["begin"] = (owner, id, permission) =>
-    onMachine(id, owner, permission === "view", async (row, s) => {
-      if (
-        (permission === "control" && s.controller !== owner.controllerId) ||
-        (permission === "view" && !s.viewers.has(owner.controllerId))
-      ) {
-        throw hostFailure(
-          "desktop-lease-required",
-          "authorization",
-          "Acquire the requested Agent desktop lease first.",
-        );
-      }
-      row = await runtime.start(row, s);
-      s.operations++;
-      s.touched = nowMillis();
-      let released = false;
-      return {
-        desktop: summary(row, s),
-        paths: paths(id),
-        release: () =>
-          s.lock.run(async () => {
-            if (released) return;
-            released = true;
-            s.operations--;
-            s.touched = nowMillis();
-            if (!s.operations) {
-              const latest = await inventory.get(id);
-              if (s.touched - Date.parse(latest.lastActiveAt) >= 60_000)
-                await inventory.put({ ...latest, lastActiveAt: nowIso() });
-            }
-          }),
-      };
-    });
+  const begin: DesktopLifecycle["begin"] = (owner, id, permission, human = false) =>
+    onMachine(
+      id,
+      owner,
+      permission === "view" || (human && permission === "control"),
+      async (row, s) => {
+        if (
+          (permission === "control" && s.controller !== owner.controllerId) ||
+          (permission === "view" && !s.viewers.has(owner.controllerId))
+        ) {
+          throw hostFailure(
+            "desktop-lease-required",
+            "authorization",
+            "Acquire the requested Agent desktop lease first.",
+          );
+        }
+        row = await runtime.start(row, s);
+        s.operations++;
+        s.touched = nowMillis();
+        let released = false;
+        return {
+          desktop: summary(row, s),
+          paths: paths(id),
+          release: () =>
+            s.lock.run(async () => {
+              if (released) return;
+              released = true;
+              s.operations--;
+              s.touched = nowMillis();
+              if (!s.operations) {
+                const latest = await inventory.get(id);
+                if (s.touched - Date.parse(latest.lastActiveAt) >= 60_000)
+                  await inventory.put({ ...latest, lastActiveAt: nowIso() });
+              }
+            }),
+        };
+      },
+    );
   async function route(
     owner: DesktopOwner,
     id: string,
@@ -501,15 +531,15 @@ export async function makeDesktopLifecycle(options: LifecycleOptions): Promise<D
     }
   }
 
-  async function list(owner: DesktopOwner) {
-    const rows = (await inventory.read()).desktops.filter((r) => sameThread(r.owner, owner));
+  async function list(visible: (row: Machine) => boolean) {
+    const rows = (await inventory.read()).desktops.filter(visible);
     return (
       await Promise.all(
         rows.map(async (row) => {
           const s = session(row.id);
           return s.lock.run(async () => {
             const latest = (await inventory.read()).desktops.find((r) => r.id === row.id);
-            if (!latest || !sameThread(latest.owner, owner)) return [];
+            if (!latest || !visible(latest)) return [];
             if (s.updating) return [summary(latest, s)];
             try {
               return [summary(await prepare(latest, s), s)];
@@ -631,7 +661,13 @@ export async function makeDesktopLifecycle(options: LifecycleOptions): Promise<D
   return {
     ensureBase: () => bases.ensure(),
     baseMaintenance: (image) => bases.status(image),
-    list,
+    list: (owner) => list((row) => sameThread(row.owner, owner)),
+    listEnvironment: (id) => list((row) => row.owner.environmentId === id),
+    resolveOwner: async (environmentId, id) => {
+      const row = await inventory.get(id);
+      if (row.owner.environmentId !== environmentId) throw wrongOwner();
+      return row.owner;
+    },
     acquire,
     manage,
     lease,

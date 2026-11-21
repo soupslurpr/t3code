@@ -629,7 +629,21 @@ export const make = Effect.gen(function* () {
         .sort((a, b) => b.startedAt.localeCompare(a.startedAt))
         .slice(0, 50),
     );
-  return { start, status, cancel, download, upload, listForThread };
+  const listForDesktop = (environmentId: string, desktopId: string, threadId?: string) =>
+    Effect.sync(() =>
+      [...records.values()]
+        .filter(
+          (r) =>
+            r.scope.environmentId === environmentId &&
+            r.snapshot.desktop.kind === "user" &&
+            r.snapshot.desktop.desktopId === desktopId &&
+            !terminal(r.snapshot.state) &&
+            (threadId === undefined || threadId === r.scope.thread.threadId),
+        )
+        .map((r) => r.snapshot)
+        .sort((a, b) => b.startedAt.localeCompare(a.startedAt)),
+    );
+  return { start, status, cancel, download, upload, listForThread, listForDesktop };
 });
 
 export class DesktopTransfers extends Context.Service<

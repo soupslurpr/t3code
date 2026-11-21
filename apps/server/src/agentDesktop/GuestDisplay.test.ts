@@ -98,6 +98,8 @@ it.live("finishes admitted input before releasing control and rejects subsequent
         return { paths, desktop: row, release: async () => {} };
       },
       list: vi.fn(),
+      resolveOwner: vi.fn(),
+      listEnvironment: vi.fn(),
       manage: vi.fn(),
       inspect: vi.fn(),
       route: vi.fn(),

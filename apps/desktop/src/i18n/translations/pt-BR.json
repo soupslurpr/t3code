@@ -26,7 +26,7 @@
   "1510c6547cde9c2e": "Outro servidor do T3 Code (por exemplo, `t3 serve` ou um iniciado por SSH) está usando este T3 home (PID {pid}, porta {port}, versão {version}). Se um app do T3 Code em outra máquina o iniciou por SSH, esse app o reinicia: remova ou desconecte esse ambiente SSH lá ou feche esse app. Depois, pare o servidor e reabra o T3 Code. Você também pode definir um T3CODE_HOME separado e parear com o servidor em execução.",
   "8d8628520de0d9f1": "Outro servidor do T3 Code (por exemplo, `t3 serve` ou um iniciado por SSH) está usando este T3 home (PID {pid}, porta {port}). Se um app do T3 Code em outra máquina o iniciou por SSH, esse app o reinicia: remova ou desconecte esse ambiente SSH lá ou feche esse app. Depois, pare o servidor e reabra o T3 Code. Você também pode definir um T3CODE_HOME separado e parear com o servidor em execução.",
   "534035f4fe79b7bb": "Lembrar neste desktop o consentimento do sistema para acessar a tela?",
-  "3e8eed187da1d7e4": "Encerrar todo o acesso à tela deste desktop?",
+  "e12e8c0ffdd8c4d8": "Encerrar o acesso à tela para todos e cancelar todas as solicitações para manter este computador ativo?",
   "9a27ceba2163a732": "Remover todas as permissões de tela do T3 e o consentimento salvo do sistema operacional?",
   "00ad8aeed0a6c461": "Cancelar",
   "0fdf303b060c2739": "Esta conversa",

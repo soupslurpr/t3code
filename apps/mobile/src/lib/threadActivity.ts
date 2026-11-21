@@ -503,6 +503,9 @@ function itemIsToolLike(item: OrchestrationV2TurnItem): boolean {
 
 function itemIsProminent(item: OrchestrationV2TurnItem): boolean {
   return (
+    (item.type === "notification" &&
+      item.source.kind === "monitor" &&
+      item.systemEvent !== undefined) ||
     item.type === "fork" ||
     item.type === "thread_created" ||
     item.type === "system_notice" ||

@@ -26,7 +26,7 @@
   "1510c6547cde9c2e": "Another T3 Code server (for example `t3 serve`, or one started over SSH) is using this T3 home (PID {pid}, port {port}, version {version}). If a T3 Code app on another machine started it over SSH, that app restarts it: remove or disconnect that SSH environment there, or quit that app. Then stop the server, and reopen T3 Code. You can also set a separate T3CODE_HOME and pair with the running server.",
   "8d8628520de0d9f1": "Another T3 Code server (for example `t3 serve`, or one started over SSH) is using this T3 home (PID {pid}, port {port}). If a T3 Code app on another machine started it over SSH, that app restarts it: remove or disconnect that SSH environment there, or quit that app. Then stop the server, and reopen T3 Code. You can also set a separate T3CODE_HOME and pair with the running server.",
   "534035f4fe79b7bb": "Remember operating-system screen consent on this desktop?",
-  "3e8eed187da1d7e4": "End all screen access on this desktop?",
+  "e12e8c0ffdd8c4d8": "End screen access for everyone and release all keep-awake requests on this desktop?",
   "9a27ceba2163a732": "Remove all T3 screen permissions and remembered operating-system consent?",
   "00ad8aeed0a6c461": "Cancel",
   "0fdf303b060c2739": "This thread",

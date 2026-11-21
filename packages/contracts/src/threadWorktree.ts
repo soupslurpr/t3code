@@ -1,8 +1,24 @@
 import * as Schema from "effect/Schema";
-import { ThreadId } from "./baseSchemas.ts";
+import { ProjectId, ThreadId } from "./baseSchemas.ts";
+
+const ThreadWorktreeBinding = Schema.Struct({
+  projectId: ProjectId,
+  worktreePath: Schema.NullOr(Schema.String),
+  branch: Schema.NullOr(Schema.String),
+});
+export type ThreadWorktreeBinding = typeof ThreadWorktreeBinding.Type;
+
+export function threadWorktreeBinding({
+  projectId,
+  worktreePath,
+  branch,
+}: ThreadWorktreeBinding): ThreadWorktreeBinding {
+  return { projectId, worktreePath, branch };
+}
 
 export const ThreadWorktreeRemoveInput = Schema.Struct({
   threadId: ThreadId,
+  expectedBinding: ThreadWorktreeBinding,
   force: Schema.optional(Schema.Boolean),
 });
 export const ThreadWorktreeDetachInput = Schema.Struct({
@@ -38,6 +54,12 @@ export class ThreadWorktreeError extends Schema.TaggedError<ThreadWorktreeError>
     cause: Schema.optional(Schema.Defect()),
   },
 ) {
+  get retainedWorktreeDetail(): string {
+    const reason = this.message;
+    const path = this.worktreePath;
+    return path && !reason.includes(path) ? `${reason}\n${path}` : reason;
+  }
+
   override get message(): string {
     switch (this.reason) {
       case "thread-not-found":

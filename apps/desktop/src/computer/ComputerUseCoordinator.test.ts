@@ -191,13 +191,33 @@ describe("ComputerUseCoordinator", () => {
       Effect.gen(function* () {
         const coordinator = yield* ComputerUseCoordinator.ComputerUseCoordinator;
         yield* coordinator.requestControl(controller);
-        yield* coordinator.requestView(supervisor);
+        const observer = yield* coordinator.status(supervisor);
+        assert.isTrue(observer.keepAwake);
+        assert.deepInclude(observer.lease, { access: "none", holdsExplicitAvailability: false });
+        const held = yield* coordinator.requestAvailability(supervisor);
+        assert.deepInclude(held.lease, { access: "none", holdsExplicitAvailability: true });
+        const releasedHold = yield* coordinator.releaseAvailability(supervisor);
+        assert.isTrue(releasedHold.keepAwake);
+        assert.deepInclude(releasedHold.lease, { holdsExplicitAvailability: false });
+        const watching = yield* coordinator.requestView(supervisor);
+        assert.deepInclude(watching.lease, { access: "view", holdsExplicitAvailability: false });
         const unsupervised = yield* coordinator.release(supervisor);
         assert.isTrue(unsupervised.keepAwake);
 
         yield* coordinator.release(controller);
         const released = yield* coordinator.releaseAvailability(controller);
         assert.isFalse(released.keepAwake);
+
+        yield* coordinator.requestView(controller);
+        const otherViewer = yield* coordinator.status(supervisor);
+        assert.deepInclude(otherViewer.lease, {
+          access: "none",
+          controller: null,
+          holdsExplicitAvailability: false,
+        });
+        const ended = yield* coordinator.forceRelease(supervisor);
+        assert.isFalse(ended.keepAwake);
+        assert.strictEqual((yield* coordinator.status(controller)).lease?.access, "none");
       }),
       makeAvailabilityComputer(calls),
     );
@@ -289,6 +309,7 @@ describe("ComputerUseCoordinator", () => {
         const beforeTakeover = yield* coordinator.status(supervisor);
         assert.deepEqual(beforeTakeover.lease, {
           access: "none",
+          holdsExplicitAvailability: false,
           controller: {
             kind: "agent",
             sameEnvironment: true,

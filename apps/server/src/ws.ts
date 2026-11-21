@@ -1,3 +1,7 @@
+import * as AgentDesktopHuman from "./agentDesktop/AgentDesktopHuman.ts";
+import { DesktopTransfers } from "./computer/DesktopTransfers.ts";
+import { AgentDesktopService } from "./agentDesktop/AgentDesktopService.ts";
+import { ComputerAutomationRouter } from "./computer/ComputerAutomationRouter.ts";
 import { ThreadWorktreeService } from "./orchestration-v2/ThreadWorktreeService.ts";
 import { ThreadMonitorService } from "./threadMonitor/ThreadMonitorService.ts";
 import { DesktopExecutionAuthorizationChannel } from "./computer/DesktopExecutionAuthorizationChannel.ts";
@@ -2484,6 +2488,8 @@ export const layerWsRpc = (
             Effect.as(threadMonitors.subscribeSummaries(input.threadId)),
             Stream.unwrap,
           ),
+        [WS_METHODS.threadMonitorsInspectWatch]: (input) => threadMonitors.inspectComputer(input),
+        [WS_METHODS.threadMonitorsUpdateWatch]: (input) => threadMonitors.updateComputer(input),
         [WS_METHODS.threadMonitorsCancel]: (input) =>
           Effect.annotateCurrentSpan({ "orchestration_v2.thread_id": input.threadId }).pipe(
             Effect.andThen(
@@ -3435,34 +3441,21 @@ export const layerWsRpc = (
             ),
             Effect.tap(() => refreshGitStatus(input.cwd)),
           ),
-        [WS_METHODS.threadWorktreeRemove]: (input) => threadWorktrees.remove(input.threadId, input),
-        [WS_METHODS.threadWorktreeDetach]: (input) => threadWorktrees.detach(input.threadId, input),
+        [WS_METHODS.threadWorktreeRemove]: (input) =>
+          threadWorktrees.remove(input.threadId, { ...input, projectCommands }),
+        [WS_METHODS.threadWorktreeDetach]: (input) =>
+          threadWorktrees.detach(input.threadId, { ...input, projectCommands }),
         [WS_METHODS.vcsRemoveWorktree]: (input) =>
-          // A thread's worktree may be a task folder; single-repo worktrees go through ThreadWorktreeService guards.
-          taskFolders
-            .removeIfTaskFolder({ path: input.path, force: input.force === true, projectCommands })
-            .pipe(
-              Effect.mapError(
-                (cause) =>
-                  new GitCommandError({
-                    operation: "TaskFolders.remove",
-                    command: "git worktree remove",
-                    cwd: input.cwd,
-                    detail: cause.detail,
-                  }),
-              ),
-              Effect.flatMap((removed) =>
-                removed ? Effect.void : threadWorktrees.removePath(input, projectCommands),
-              ),
-              // No project-root refresh here: the client awaits vcs.refreshStatus right after, and a
-              // second refresh would queue behind this one and reread an unchanged repository.
-              // Subscribers of the removed checkout learn it is no longer a repository.
-              Effect.tap(() =>
-                vcsStatusBroadcaster
-                  .refreshLocalStatus(input.path)
-                  .pipe(Effect.ignoreCause({ log: true }), Effect.forkDetach, Effect.asVoid),
-              ),
+          threadWorktrees.removePath(input, projectCommands).pipe(
+            // No project-root refresh here: the client awaits vcs.refreshStatus right after, and a
+            // second refresh would queue behind this one and reread an unchanged repository.
+            // Subscribers of the removed checkout learn it is no longer a repository.
+            Effect.tap(() =>
+              vcsStatusBroadcaster
+                .refreshLocalStatus(input.path)
+                .pipe(Effect.ignoreCause({ log: true }), Effect.forkDetach, Effect.asVoid),
             ),
+          ),
         [WS_METHODS.vcsCreateRef]: (input) =>
           (input.switchRef
             ? assertCheckoutIdle("GitWorkflowService.createRef", input.cwd)
@@ -3533,6 +3526,11 @@ export const layerWsRpc = (
           desktopSocket.pipe(Effect.flatMap((socket) => socket.respond(input))),
         [WS_METHODS.previewAutomationFocusHost]: (input) =>
           desktopSocket.pipe(Effect.flatMap((socket) => socket.focus(input))),
+        [WS_METHODS.agentDesktopHumanInvoke]: (input) =>
+          serverEnvironment.getEnvironmentId.pipe(
+            Effect.orDie,
+            Effect.flatMap((id) => AgentDesktopHuman.invoke(id, currentSessionId, input)),
+          ),
         [WS_METHODS.userDesktopHumanInvoke]: (input) =>
           serverEnvironment.getEnvironmentId.pipe(
             Effect.orDie,
@@ -3858,6 +3856,9 @@ export const WS_RPC_SERVER_OPTIONS = {
 export const layer = Layer.unwrap(
   Effect.gen(function* () {
     const socketServices = yield* Effect.context<
+      | AgentDesktopService
+      | ComputerAutomationRouter
+      | DesktopTransfers
       | ThreadWorktreeService
       | DesktopExecutionAuthorizationChannel
       | UserDesktopHosts.UserDesktopHosts
