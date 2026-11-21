@@ -5,6 +5,7 @@ import {
 import {
   ChatAttachment,
   OrchestrationMessageContext,
+  OrchestrationSystemEvent,
   DEFAULT_MODEL,
   EventId,
   MessageId,
@@ -37,6 +38,9 @@ import { randomUuidV4 } from "@t3tools/provider-core/server/randomUuid";
 
 const IMPORT_EVENT_PREFIX = "migration:v1";
 const TRANSCRIPT_EVENT_BATCH_SIZE = 100;
+const decodeSystemEventOption = Schema.decodeOption(
+  Schema.fromJsonString(OrchestrationSystemEvent),
+);
 
 interface LegacyThreadRow {
   readonly thread_id: string;
@@ -72,10 +76,11 @@ interface LegacyRepairRow extends LegacyThreadRow {
 interface LegacyMessageRow {
   readonly message_id: string;
   readonly thread_id: string;
-  readonly role: "user" | "assistant";
+  readonly role: "user" | "assistant" | "system";
   readonly text: string;
   readonly attachments_json: string | null;
   readonly context_json?: string | null;
+  readonly system_event_json?: string | null;
   readonly is_streaming: number;
   readonly created_at: string;
   readonly updated_at: string;
@@ -264,14 +269,30 @@ function messageEvents(
   const updatedAt = dateTimeOr(row.updated_at, createdAt);
   const attachments = attachmentsFor(row);
   const context = contextFor(row);
+  const decodeSystemEvent = (raw: string) => Option.getOrUndefined(decodeSystemEventOption(raw));
+  const notification =
+    row.role === "system"
+      ? {
+          source: { kind: "monitor" as const },
+          outcome: "updated" as const,
+          summary: row.text,
+          ...(row.system_event_json == null
+            ? {}
+            : (() => {
+                const systemEvent = decodeSystemEvent(row.system_event_json);
+                return systemEvent === undefined ? {} : { systemEvent };
+              })()),
+        }
+      : undefined;
   const message: OrchestrationV2ConversationMessage = {
-    createdBy: row.role === "user" ? "user" : "agent",
+    createdBy: row.role === "system" ? "system" : row.role === "user" ? "user" : "agent",
     creationSource: "server",
     id: messageId,
     threadId,
     runId: null,
     nodeId: null,
-    role: row.role,
+    role: row.role === "system" ? "user" : row.role,
+    ...(notification === undefined ? {} : { notification }),
     text: row.text,
     ...(context !== undefined ? { context } : {}),
     attachments,
@@ -296,26 +317,28 @@ function messageEvents(
     updatedAt,
   };
   const turnItem: OrchestrationV2TurnItem =
-    row.role === "user"
-      ? {
-          ...baseTurnItem,
-          createdBy: "user",
-          creationSource: "server",
-          type: "user_message",
-          messageId,
-          inputIntent: "turn_start",
-          text: row.text,
-          ...(context !== undefined ? { context } : {}),
-          attachments,
-        }
-      : {
-          ...baseTurnItem,
-          type: "assistant_message",
-          messageId,
-          text: row.text,
-          ...(context !== undefined ? { context } : {}),
-          streaming: false,
-        };
+    notification !== undefined
+      ? { ...baseTurnItem, type: "notification", ...notification }
+      : row.role === "user"
+        ? {
+            ...baseTurnItem,
+            createdBy: "user",
+            creationSource: "server",
+            type: "user_message",
+            messageId,
+            inputIntent: "turn_start",
+            text: row.text,
+            ...(context !== undefined ? { context } : {}),
+            attachments,
+          }
+        : {
+            ...baseTurnItem,
+            type: "assistant_message",
+            messageId,
+            text: row.text,
+            ...(context !== undefined ? { context } : {}),
+            streaming: false,
+          };
   return [
     {
       id: EventId.make(`${IMPORT_EVENT_PREFIX}:message:${row.message_id}`),
@@ -356,6 +379,7 @@ const make = Effect.gen(function* () {
         text,
         attachments_json,
         context_json,
+        system_event_json,
         is_streaming,
         created_at,
         updated_at,
@@ -365,7 +389,7 @@ const make = Effect.gen(function* () {
         ) AS ordinal
       FROM projection_thread_messages
       WHERE thread_id = ${threadId}
-        AND role IN ('user', 'assistant')
+        AND role IN ('user', 'assistant', 'system')
       ORDER BY created_at ASC, message_id ASC
     `.pipe(NodeSqliteClient.readOnly);
 
@@ -380,6 +404,7 @@ const make = Effect.gen(function* () {
           message.text,
           message.attachments_json,
           message.context_json,
+          message.system_event_json,
           message.is_streaming,
           message.created_at,
           message.updated_at,
@@ -387,7 +412,7 @@ const make = Effect.gen(function* () {
             SELECT COUNT(*)
             FROM projection_thread_messages AS earlier
             WHERE earlier.thread_id = message.thread_id
-              AND earlier.role IN ('user', 'assistant')
+              AND earlier.role IN ('user', 'assistant', 'system')
               AND (
                 earlier.created_at < message.created_at
                 OR (
@@ -398,7 +423,7 @@ const make = Effect.gen(function* () {
           ) AS ordinal
         FROM projection_thread_messages AS message
         WHERE message.thread_id = ${threadId}
-          AND message.role IN ('user', 'assistant')
+          AND message.role IN ('user', 'assistant', 'system')
         ORDER BY message.created_at DESC, message.message_id DESC
         LIMIT 1
       `.pipe(NodeSqliteClient.readOnly);
@@ -410,6 +435,7 @@ const make = Effect.gen(function* () {
           message.text,
           message.attachments_json,
           message.context_json,
+          message.system_event_json,
           message.is_streaming,
           message.created_at,
           message.updated_at,
@@ -417,7 +443,7 @@ const make = Effect.gen(function* () {
             SELECT COUNT(*)
             FROM projection_thread_messages AS earlier
             WHERE earlier.thread_id = message.thread_id
-              AND earlier.role IN ('user', 'assistant')
+              AND earlier.role IN ('user', 'assistant', 'system')
               AND (
                 earlier.created_at < message.created_at
                 OR (

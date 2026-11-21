@@ -9,6 +9,7 @@ import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Path from "effect/Path";
+import * as Predicate from "effect/Predicate";
 import * as RcMap from "effect/RcMap";
 import * as Result from "effect/Result";
 import * as Schema from "effect/Schema";
@@ -166,6 +167,7 @@ export interface CodexAppServerProviderSnapshot {
   /** Undefined when `config/read` failed, so T3 cannot know Codex's default program. */
   readonly daybreakEnabled?: boolean | undefined;
   readonly cyberAccessProgramsUnavailable?: boolean | undefined;
+  readonly config?: CodexSchema.V2ConfigReadResponse__Config | undefined;
   readonly skills: ReadonlyArray<ServerProviderSkill>;
 }
 
@@ -181,6 +183,16 @@ const REASONING_EFFORT_LABELS: Readonly<Record<string, string>> = {
 };
 
 const DEFAULT_SERVICE_TIER_ID = "default";
+// https://developers.openai.com/api/docs/guides/prompt-caching#cache-lifetime
+const CODEX_PROMPT_CACHE_MINIMUM_LIFETIME_MS = 30 * 60 * 1_000;
+/** Matches the documented GPT-5.6-and-later minimum, leaving other model families unknown. */
+function hasDocumentedPromptCacheMinimum(model: string): boolean {
+  const version = /^gpt-(\d+)(?:\.(\d+))?(?:-|$)/u.exec(codexModelFamily(model));
+  if (version === null) return false;
+  const major = Number(version[1]);
+  const minor = Number(version[2] ?? 0);
+  return major > 5 || (major === 5 && minor >= 6);
+}
 
 const SERVICE_TIER_DESCRIPTIONS: Readonly<Record<string, string>> = {
   ultrafast: "Even faster, more expensive",
@@ -320,6 +332,14 @@ export function mapCodexModelCapabilities(
 
   return createModelCapabilities({
     optionDescriptors,
+    ...(hasDocumentedPromptCacheMinimum(model.model)
+      ? {
+          promptCache: {
+            minimumLifetimeMs: CODEX_PROMPT_CACHE_MINIMUM_LIFETIME_MS,
+            source: "provider-documented" as const,
+          },
+        }
+      : {}),
   });
 }
 
@@ -804,6 +824,7 @@ const probeCodexAppServerProvider = Effect.fn("probeCodexAppServerProvider")(fun
     ...(rateLimits ? { rateLimits } : {}),
     version,
     models,
+    config,
     serviceTier: config?.service_tier ?? undefined,
     daybreakEnabled: config === undefined ? undefined : cyberAccess?.daybreak === true,
     // An unread config cannot rule out an API key with the programs turned off.
@@ -997,6 +1018,44 @@ function accountProbeStatus(
   return { status: "ready", auth };
 }
 
+function hasOpenAiCacheProvenance(
+  snapshot: CodexAppServerProviderSnapshot,
+  environment: NodeJS.ProcessEnv,
+  managed: boolean,
+): boolean {
+  const config = snapshot.config;
+  if (!config || environment.OPENAI_BASE_URL?.trim() || config.chatgpt_base_url != null)
+    return false;
+  const provider = config.model_provider ?? "openai";
+  if (managed && provider === "openai_token_sharing") {
+    const providers = config.model_providers;
+    if (!Predicate.isObject(providers)) return false;
+    const definition = providers.openai_token_sharing;
+    return (
+      Predicate.isObject(definition) &&
+      definition.base_url === "https://api.openai.com/v1" &&
+      definition.wire_api === "responses"
+    );
+  }
+  const account = snapshot.account.account;
+  return provider === "openai" && (account?.type === "apiKey" || account?.type === "chatgpt");
+}
+
+export function codexModelsWithVerifiedCacheTiming(
+  snapshot: CodexAppServerProviderSnapshot,
+  environment: NodeJS.ProcessEnv,
+  managed: boolean,
+): ReadonlyArray<ServerProviderModel> {
+  const models = snapshot.models ?? [];
+  if (hasOpenAiCacheProvenance(snapshot, environment, managed)) return models;
+  // Catalog model names do not establish a gateway's documented cache contract.
+  return models.map((model) => {
+    if (model.capabilities?.promptCache?.source !== "provider-documented") return model;
+    const { promptCache: _promptCache, ...capabilities } = model.capabilities;
+    return { ...model, capabilities };
+  });
+}
+
 export const checkCodexProviderStatus = Effect.fn("checkCodexProviderStatus")(function* (
   codexSettings: CodexSettings,
   probe: (input: {
@@ -1141,7 +1200,14 @@ export const checkCodexProviderStatus = Effect.fn("checkCodexProviderStatus")(fu
     enabled: codexSettings.enabled,
     checkedAt,
     models: pipe(
-      appendCustomCodexModels(snapshot.models ?? [], codexSettings.customModels),
+      appendCustomCodexModels(
+        codexModelsWithVerifiedCacheTiming(
+          snapshot,
+          resolvedEnvironment,
+          managedAuth !== undefined,
+        ),
+        codexSettings.customModels,
+      ),
       applyPreferredCodexDefaultModel,
       (models) => applyConfiguredCodexServiceTier(models, snapshot.serviceTier),
       (models) => applyConfiguredCodexCyberAccess(models, snapshot),

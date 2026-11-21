@@ -1,4 +1,5 @@
 import { OrchestrationMessageContext } from "./composerContext.ts";
+import { OrchestrationSystemEvent } from "./orchestrationSystemEvent.ts";
 import { withRecordIdTable } from "./orchestrationV2IdTable.ts";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
@@ -1519,6 +1520,7 @@ export const OrchestrationV2NotificationSource = kindUnionWithFallback(
 export type OrchestrationV2NotificationSource = typeof OrchestrationV2NotificationSource.Type;
 
 export const OrchestrationV2Notification = Schema.Struct({
+  systemEvent: Schema.optional(OrchestrationSystemEvent),
   source: OrchestrationV2NotificationSource,
   outcome: OrchestrationV2NotificationOutcome,
   summary: TrimmedNonEmptyString,
@@ -1532,6 +1534,10 @@ export type OrchestrationV2IdleCompaction = typeof OrchestrationV2IdleCompaction
 
 export const OrchestrationV2ConversationMessage = Schema.Struct({
   notification: Schema.optional(OrchestrationV2Notification),
+  /** Only a definitively declined native delivery can be submitted again as a queued turn. */
+  notificationDelivery: Schema.optional(
+    Schema.Literals(["pending", "accepted", "declined", "unconfirmed"]),
+  ),
   ...OrchestrationV2CreationFields,
   scheduledTaskId: Schema.optional(ScheduledTaskId),
   /** A message that named no model; it runs on the thread's selection at start. */
@@ -2417,6 +2423,7 @@ export type OrchestrationV2LatestVisibleMessageSummary =
   typeof OrchestrationV2LatestVisibleMessageSummary.Type;
 
 export const OrchestrationV2ThreadShell = Schema.Struct({
+  backgroundLiveness: Schema.optional(Schema.NullOr(Schema.Literal("monitoring"))),
   ...OrchestrationV2CreationFields,
   id: ThreadId,
   projectId: ProjectId,
@@ -3643,6 +3650,8 @@ export const OrchestrationV2Command = Schema.Union([
     usageLimitRecoveryRequestId: Schema.optional(CommandId),
     deliveryIntent: Schema.optional(Schema.Literals(["auto", "steer", "restart"])),
     explicitQueue: Schema.optional(Schema.Literal(true)),
+    /** Requeue this run's unaccepted monitor input after a late user request. */
+    deferMonitorFromRunId: Schema.optional(RunId),
     delegatedCompletion: Schema.optional(
       Schema.Struct({
         parentRunId: RunId,
@@ -3707,6 +3716,11 @@ export const OrchestrationV2Command = Schema.Union([
     runId: RunId,
     reason: Schema.optional(Schema.String),
     holdQueue: Schema.optional(Schema.Boolean),
+  }),
+  Schema.Struct({
+    type: Schema.Literal("thread.monitors.cancel"),
+    commandId: CommandId,
+    threadId: ThreadId,
   }),
   Schema.Struct({
     type: Schema.Literal("queued-message.promote-to-steer"),
@@ -4000,6 +4014,14 @@ const OrchestrationV2InternalCommand = Schema.Union([
     threadId: ThreadId,
     requestId: CommandId,
     message: TrimmedNonEmptyString,
+  }),
+  Schema.Struct({
+    type: Schema.Literal("notification.delivery.fail"),
+    commandId: CommandId,
+    threadId: ThreadId,
+    runId: RunId,
+    messageId: MessageId,
+    disposition: Schema.Literals(["declined", "unconfirmed"]),
   }),
   /** Delivering the answer to request `requestId` failed on its last attempt. */
   Schema.Struct({

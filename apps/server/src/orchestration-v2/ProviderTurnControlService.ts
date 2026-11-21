@@ -1,3 +1,4 @@
+import { formatMonitorSystemEventForProvider } from "../threadMonitor/ThreadMonitorContinuation.ts";
 import { projectComposerContextForProvider } from "@t3tools/shared/composerContextReferences";
 import {
   MessageId,
@@ -43,6 +44,7 @@ export class ProviderTurnControlError extends Schema.TaggedError<ProviderTurnCon
     providerTurnId: ProviderTurnId,
     turnCompleted: Schema.optional(Schema.Boolean),
     steerDeclined: Schema.optional(Schema.Boolean),
+    monitorDeliveryDeferred: Schema.optional(Schema.Boolean),
     /** The provider never confirmed the stop; Force stop is the way out. */
     unresponsive: Schema.optional(Schema.Boolean),
     cause: Schema.optional(Schema.Defect()),
@@ -437,7 +439,31 @@ export const layer: Layer.Layer<
             )
               return;
           }
-          const loaded = yield* load({ ...input, operation: "steer" });
+          const wake = context.message?.notification?.systemEvent;
+          if (wake !== undefined) {
+            if (context.message?.notificationDelivery !== "pending") return;
+            if (
+              !(yield* projections.canDeliverMonitorWake(input.threadId, input.messageId, wake))
+            ) {
+              return yield* new ProviderTurnControlError({
+                threadId: input.threadId,
+                operation: "steer",
+                providerTurnId: input.providerTurnId,
+                monitorDeliveryDeferred: true,
+                cause: "The monitor wake is no longer ready for delivery.",
+              });
+            }
+          }
+          const loaded = yield* load({ ...input, operation: "steer" }).pipe(
+            Effect.catchTags({
+              ProviderTurnControlError: (cause) =>
+                Effect.fail(
+                  wake === undefined
+                    ? cause
+                    : new ProviderTurnControlError({ ...cause, steerDeclined: true }),
+                ),
+            }),
+          );
           if (Option.isNone(loaded.session)) return;
           const { message, run } = loaded.context;
           if (message === undefined || run === undefined) {
@@ -446,6 +472,19 @@ export const layer: Layer.Layer<
               operation: "steer",
               providerTurnId: input.providerTurnId,
               cause: "The persisted steering message or target run is missing.",
+            });
+          }
+          if (
+            wake === undefined &&
+            message.notification?.source.kind === "monitor" &&
+            (yield* projections.getThreadShell(input.threadId))?.pendingRuntimeRequest != null
+          ) {
+            return yield* new ProviderTurnControlError({
+              threadId: input.threadId,
+              operation: "steer",
+              providerTurnId: input.providerTurnId,
+              monitorDeliveryDeferred: true,
+              cause: "Monitor delivery is waiting for a pending user request.",
             });
           }
           const appContext = yield* McpAppModelContext.forProvider(
@@ -464,16 +503,22 @@ export const layer: Layer.Layer<
               ...(appContext.length === 0 ? {} : { appContext }),
               message: {
                 messageId: message.id,
-                text: withMessageSenderNote(
-                  message,
-                  projectComposerContextForProvider({
-                    text: message.text,
-                    records: message.context?.records ?? [],
-                  }),
-                ),
+                text:
+                  message.notification?.systemEvent === undefined
+                    ? withMessageSenderNote(
+                        message,
+                        projectComposerContextForProvider({
+                          text: message.text,
+                          records: message.context?.records ?? [],
+                        }),
+                      )
+                    : formatMonitorSystemEventForProvider(message.notification.systemEvent),
                 attachments: message.attachments,
                 createdBy: message.createdBy,
                 creationSource: message.creationSource,
+                ...(message.notification?.systemEvent === undefined
+                  ? {}
+                  : { inputSource: "harness" as const }),
                 ...(message.scheduledTaskId === undefined
                   ? {}
                   : { scheduledTaskId: message.scheduledTaskId }),
@@ -498,6 +543,14 @@ export const layer: Layer.Layer<
               Effect.catch((cause) =>
                 Effect.gen(function* () {
                   if (isProviderTurnControlError(cause)) return yield* cause;
+                  // A terminal event racing a lost acknowledgement cannot prove the monitor was refused.
+                  if (wake !== undefined)
+                    return yield* new ProviderTurnControlError({
+                      threadId: input.threadId,
+                      operation: "steer",
+                      providerTurnId: input.providerTurnId,
+                      cause,
+                    });
                   const current = yield* projections.getProviderControlContext(
                     input.threadId,
                     input,

@@ -76,6 +76,7 @@ export type EnvironmentSubscriptionRpcTag =
   | typeof WS_METHODS.workflowsCounts
   | typeof WS_METHODS.serverGetStorageCleanupReport
   | typeof WS_METHODS.serverGetDatabaseStorage
+  | typeof WS_METHODS.threadMonitorsSubscribe
   | typeof WS_METHODS.subscribeTerminalMetadata
   | typeof WS_METHODS.previewAutomationConnect
   | typeof WS_METHODS.subscribePreviewEvents

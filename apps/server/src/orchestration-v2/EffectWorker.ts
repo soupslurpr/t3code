@@ -353,7 +353,11 @@ export const layerExecutor: Layer.Layer<
                       { messageIds: [effect.request.messageId] },
                     );
                     const message = projection.messages.find((row) => row.id === messageId);
-                    if (message?.delegatedCompletion === undefined) return;
+                    if (
+                      message?.delegatedCompletion === undefined &&
+                      message?.notificationDelivery !== "pending"
+                    )
+                      return;
                     yield* threads.dispatch({
                       type: "notification.delivery.accept",
                       commandId: CommandId.make(`command:mailbox-accepted:${effect.id}`),
@@ -366,7 +370,6 @@ export const layerExecutor: Layer.Layer<
                   Effect.gen(function* () {
                     if (
                       !isProviderTurnControlError(error) ||
-                      (!error.turnCompleted && !error.steerDeclined) ||
                       effect.request.type !== "provider-turn.steer"
                     ) {
                       return yield* error;
@@ -380,6 +383,20 @@ export const layerExecutor: Layer.Layer<
                     const message = projection.messages.find((item) => item.id === messageId);
                     const run = projection.runs.find((item) => item.id === message?.runId);
                     if (message === undefined || run === undefined) return yield* error;
+                    const declined =
+                      error.turnCompleted || error.steerDeclined || error.monitorDeliveryDeferred;
+                    if (message.notification?.systemEvent !== undefined) {
+                      yield* threads.dispatch({
+                        type: "notification.delivery.fail",
+                        commandId: CommandId.make(`command:monitor-steer-failed:${effect.id}`),
+                        threadId: effect.threadId,
+                        messageId: message.id,
+                        runId: run.id,
+                        disposition: declined ? "declined" : "unconfirmed",
+                      });
+                      return;
+                    }
+                    if (!declined) return yield* error;
                     // Notifications must be queued messages.
                     const queued =
                       message.delegatedCompletion !== undefined ||
@@ -402,6 +419,9 @@ export const layerExecutor: Layer.Layer<
                         text: message.text,
                         ...(message.context ? { context: message.context } : {}),
                         attachments: message.attachments,
+                        ...("monitorDeliveryDeferred" in error && error.monitorDeliveryDeferred
+                          ? { deferMonitorFromRunId: run.id }
+                          : {}),
                         ...(error.steerDeclined && effect.request.modelSelection !== undefined
                           ? { modelSelection: effect.request.modelSelection }
                           : message.delegatedCompletion === undefined
@@ -988,8 +1008,10 @@ export const layerWithOptions = (
             ? yield* outbox
                 .succeed({ effectId: effect.id, workerId })
                 .pipe(Effect.onError((cause) => terminalizeClaim(effect, cause)))
-            : effect.attemptCount >= maxAttempts &&
-                (!ownsStartingRun(effect.request.type) || cannotSettleRun(exit.cause))
+            : (effect.request.type === "provider-turn.steer" &&
+                  effect.request.monitorWake === true) ||
+                (effect.attemptCount >= maxAttempts &&
+                  (!ownsStartingRun(effect.request.type) || cannotSettleRun(exit.cause)))
               ? yield* outbox
                   .fail({ effectId: effect.id, workerId, error })
                   .pipe(Effect.onError((cause) => terminalizeClaim(effect, cause)))

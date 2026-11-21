@@ -1,5 +1,9 @@
 import type { ProjectThreadAwarenessV2Input } from "@t3tools/shared/agentAwareness";
-import { applyOrchestrationV2ThreadVisit, pendingGuestMessageCount } from "@t3tools/contracts";
+import {
+  applyOrchestrationV2ThreadVisit,
+  pendingGuestMessageCount,
+  THREAD_MONITOR_REMAINDER_TASK_ID,
+} from "@t3tools/contracts";
 import { applyThreadPullRequestLinkUpdate } from "../sourceControl/threadPullRequests.ts";
 import { projectTurnItemForWire } from "./WireProjection.ts";
 import * as Stream from "effect/Stream";
@@ -31,6 +35,7 @@ import type {
   OrchestrationV2CheckpointScope,
   OrchestrationV2ExecutionNode,
   OrchestrationV2PlanArtifact,
+  OrchestrationSystemEvent,
   OrchestrationV2PendingRuntimeRequestSummary,
   PlanId,
   OrchestrationV2ConversationMessage,
@@ -65,6 +70,7 @@ import {
   OrchestrationV2ContextTransferJson as OrchestrationV2ContextTransferJsonSchema,
   OrchestrationV2ConversationMessageJson as OrchestrationV2ConversationMessageJsonSchema,
   OrchestrationV2ExecutionNodeJson as OrchestrationV2ExecutionNodeJsonSchema,
+  OrchestrationV2PendingBackgroundTask,
   OrchestrationV2PlanArtifact as OrchestrationV2PlanArtifactSchema,
   OrchestrationV2ProviderSessionJson as OrchestrationV2ProviderSessionJsonSchema,
   OrchestrationV2ProviderThreadJson as OrchestrationV2ProviderThreadJsonSchema,
@@ -666,6 +672,15 @@ export interface ProjectionStoreV2Shape {
   readonly getThreadShell: (
     threadId: ThreadId,
   ) => Effect.Effect<OrchestrationV2ThreadShell | null, ProjectionStoreV2Error>;
+  readonly canDeliverMonitorWake: (
+    threadId: ThreadId,
+    messageId: MessageId,
+    event: OrchestrationSystemEvent,
+  ) => Effect.Effect<boolean, ProjectionStoreV2Error>;
+  /** Point lookup against thread_monitors_thread_status_idx without reading full shell tables. */
+  readonly hasActiveThreadMonitor: (
+    threadId: ThreadId,
+  ) => Effect.Effect<boolean, ProjectionStoreV2Error>;
   /** The thread whose current guest share has this id. Scans thread rows; only redeem uses it. */
   readonly findGuestShareThreadId: (
     shareId: GuestShareId,
@@ -1266,6 +1281,9 @@ export type AgentAwarenessThread = ProjectThreadAwarenessV2Input["thread"] &
 
 type ShellThreadRow = {
   readonly fork_run_ids_json: string | null;
+  readonly active_monitors_json: string;
+  readonly active_monitor_remainder: number;
+  readonly has_active_monitor: number;
   readonly thread_id: string;
   readonly payload_json: string;
   readonly forked_from_run_source_thread_id: string | null;
@@ -1461,6 +1479,10 @@ const encodeForkRunIds = Schema.encodeEffect(forkRunIdsJson);
 
 const decodeThreadPayload = Schema.decodeUnknownEffect(
   Schema.fromJsonString(OrchestrationV2AppThreadJsonSchema),
+);
+const MAX_NAMED_MONITORS = 100;
+const decodeMonitorTasks = Schema.decodeUnknownEffect(
+  Schema.fromJsonString(Schema.Array(OrchestrationV2PendingBackgroundTask)),
 );
 const decodeRunPayload = Schema.decodeUnknownEffect(
   Schema.fromJsonString(OrchestrationV2RunJsonSchema),
@@ -2128,6 +2150,7 @@ function isActivityRunForShell(
 }
 
 type ShellThreadState = {
+  readonly backgroundLiveness?: "monitoring" | null;
   readonly thread: OrchestrationV2ThreadProjection["thread"];
   readonly latestRunId: RunId | null;
   readonly latestRunStatus: OrchestrationV2ShellThreadStatus;
@@ -2330,6 +2353,7 @@ function shellFromState(input: {
     latestUserAuthoredMessageAt: input.state.latestUserAuthoredMessageAt,
     hasActionableProposedPlan: input.state.hasActionableProposedPlan,
     pendingBackgroundTasks: input.state.pendingBackgroundTasks,
+    backgroundLiveness: input.state.backgroundLiveness ?? null,
     providerInstanceHistory: input.state.providerInstanceHistory,
     goal: input.state.goal,
     itemCount: input.state.itemCount,
@@ -8508,6 +8532,29 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
     ) =>
       sql<ShellThreadRow>`
             SELECT
+              CASE WHEN active.run_id IS NULL THEN (
+                SELECT json_group_array(json_object(
+                  'taskId', 'thread-monitor:' || m.monitor_id,
+                  'kind', 'monitor',
+                  'description', m.label
+                ) ORDER BY m.created_at, m.monitor_id)
+                FROM (
+                  SELECT monitor_id, label, created_at FROM thread_monitors
+                  WHERE thread_id = t.thread_id AND status IN ('active', 'triggered')
+                  ORDER BY created_at, monitor_id LIMIT ${MAX_NAMED_MONITORS}
+                ) m
+              ) ELSE '[]' END AS active_monitors_json,
+              CASE WHEN active.run_id IS NULL THEN (
+                SELECT COUNT(*) FROM (
+                  SELECT 1 FROM thread_monitors m
+                  WHERE m.thread_id = t.thread_id AND m.status IN ('active', 'triggered')
+                  LIMIT -1 OFFSET ${MAX_NAMED_MONITORS}
+                )
+              ) ELSE 0 END AS active_monitor_remainder,
+              active.run_id IS NOT NULL AND EXISTS (
+                SELECT 1 FROM thread_monitors m
+                WHERE m.thread_id = t.thread_id AND m.status IN ('active', 'triggered')
+              ) AS has_active_monitor,
               t.thread_id,
               t.payload_json,
               t.fork_run_ids_json,
@@ -9023,6 +9070,10 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
                 )
               )
               AND NOT EXISTS (
+                SELECT 1 FROM thread_monitors monitor
+                WHERE monitor.thread_id = t.thread_id AND monitor.status IN ('active', 'triggered')
+              )
+              AND NOT EXISTS (
                 SELECT 1 FROM orchestration_v2_projection_runs active
                 WHERE active.thread_id = t.thread_id
                   AND active.status IN ('preparing', 'starting', 'running', 'waiting')
@@ -9302,6 +9353,15 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
                 : DateTime.makeUnsafe(row.blocking_run_completed_at);
           }
         }
+        const monitorTasks = [...(yield* decodeMonitorTasks(row.active_monitors_json))];
+        const remainingMonitors = row.active_monitor_remainder;
+        if (remainingMonitors > 0) {
+          monitorTasks.push({
+            taskId: THREAD_MONITOR_REMAINDER_TASK_ID,
+            kind: "monitor",
+            description: `${remainingMonitors} more ${remainingMonitors === 1 ? "monitor" : "monitors"}`,
+          });
+        }
         const pendingBackgroundTasks = [
           ...derivePendingBackgroundWork({
             latestRun:
@@ -9318,6 +9378,7 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
             hasActiveRun: row.active_run_id !== null,
             pullRequests: thread.pullRequests,
           }),
+          ...(row.active_run_id === null ? monitorTasks : []),
         ];
         return {
           thread,
@@ -9358,6 +9419,8 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
               : DateTime.makeUnsafe(row.latest_user_message_at),
           latestUserAuthoredMessageAt,
           hasActionableProposedPlan: row.has_actionable_proposed_plan === 1,
+          backgroundLiveness:
+            row.has_active_monitor === 1 || monitorTasks.length > 0 ? "monitoring" : null,
           pendingBackgroundTasks,
           providerInstanceHistory: providerInstanceHistoryForShell({
             threadId: thread.id,
@@ -9719,6 +9782,11 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
                 THEN json_array_length(provider_thread.payload_json, '$.pendingBackgroundTasks') > 0
                 ELSE 0 END
             )
+            OR EXISTS (
+              SELECT 1 FROM thread_monitors monitor
+              WHERE monitor.thread_id = t.thread_id
+                AND monitor.status IN ('active', 'triggered')
+            )
             -- Only a thread with a pull request link reads its payload. CASE, not AND: SQLite
             -- 3.50 evaluates both AND operands here.
             OR CASE WHEN ${indexedField("$.pullRequests[0]", "json_type")} IS NOT NULL
@@ -10008,6 +10076,56 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
       (...args: Args): Effect.Effect<A, E, R> =>
         method(...args).pipe(NodeSqliteClient.readOnly);
 
+    const canDeliverMonitorWake = Effect.fn("ProjectionStore.canDeliverMonitorWake")(
+      function* (threadId: ThreadId, messageId: MessageId, event: OrchestrationSystemEvent) {
+        const shell = yield* getThreadShell(threadId);
+        if (!shell || shell.archivedAt !== null || shell.pendingRuntimeRequest !== null)
+          return false;
+        if (event.type === "monitor.review") {
+          const rows = yield* sql`
+            SELECT 1 FROM thread_monitors
+            WHERE thread_id = ${threadId} AND monitor_id = ${event.monitorId}
+              AND status = 'active' AND cancellation_requested = 0 AND condition_type = 'computer'
+              AND json_extract(condition_json, '$.revision') = ${event.revision}
+              AND json_extract(condition_json, '$.review.state') = 'pending'
+              AND ${messageId} = ${`thread-monitor:${event.monitorId}:review:${event.revision}:`} || json_extract(condition_json, '$.review.sequence')
+          `;
+          return rows.length === 1;
+        }
+        if (
+          messageId !== `thread-monitor-group:${event.deliveryGroupId}:continuation` ||
+          event.monitors.length === 0
+        )
+          return false;
+        const ids = event.monitors.map((member) => member.monitorId);
+        const rows = yield* sql<{ count: number }>`
+          SELECT COUNT(*) AS count FROM thread_monitors
+          WHERE thread_id = ${threadId} AND delivery_group_id = ${event.deliveryGroupId}
+            AND status = 'triggered' AND continuation_mode = 'resume-thread'
+            AND cancellation_requested = 0 AND ${sql.in("monitor_id", ids)}
+        `;
+        return rows[0]?.count === ids.length;
+      },
+      (effect, threadId) =>
+        sql
+          .withTransaction(effect)
+          .pipe(Effect.mapError((cause) => new ProjectionStoreReadError({ threadId, cause }))),
+    );
+    const hasActiveThreadMonitor: ProjectionStoreV2Shape["hasActiveThreadMonitor"] = Effect.fn(
+      "ProjectionStore.hasActiveThreadMonitor",
+    )(
+      (threadId) =>
+        sql<{ readonly found: number }>`
+          SELECT 1 AS found
+          FROM thread_monitors
+          WHERE thread_id = ${threadId}
+            AND status IN ('active', 'triggered')
+          LIMIT 1
+        `.pipe(Effect.map((rows) => rows.length > 0)),
+      (effect, threadId) =>
+        effect.pipe(Effect.mapError((cause) => new ProjectionStoreReadError({ threadId, cause }))),
+    );
+
     return {
       apply,
       getAgentAwarenessSnapshot: readOnReader(getAgentAwarenessSnapshot),
@@ -10020,6 +10138,8 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
       readShellSnapshot: readOnReader(readShellSnapshot),
       listOlderSettledThreads: readOnReader(listOlderSettledThreads),
       getThreadShell: readOnReader(getThreadShell),
+      hasActiveThreadMonitor: readOnReader(hasActiveThreadMonitor),
+      canDeliverMonitorWake: readOnReader(canDeliverMonitorWake),
       findGuestShareThreadId: readOnReader(findGuestShareThreadId),
       getThread: readOnReader(getThread),
       findThread: readOnReader(findThread),

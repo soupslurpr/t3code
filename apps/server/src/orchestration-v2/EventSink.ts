@@ -1,5 +1,7 @@
 import {
   CommandId,
+  type MessageId,
+  type OrchestrationSystemEvent,
   type OrchestrationV2Run,
   OrchestrationV2DomainEvent,
   type OrchestrationV2ProviderThread,
@@ -205,6 +207,10 @@ export interface EventSinkV2Shape {
     EventSinkV2Error
   >;
   readonly commitCommand: (input: {
+    readonly monitorWake?: {
+      readonly messageId: MessageId;
+      readonly event: OrchestrationSystemEvent;
+    };
     readonly commandId: CommandId;
     readonly threadId: ThreadId;
     readonly commandType: string;
@@ -450,9 +456,26 @@ const layerBase: Layer.Layer<
     const applyStoredEvents =
       /* This helper runs for individual orchestration events; the enclosing operation owns the span. */
       Effect.fnUntraced(function* (storedEvents: ReadonlyArray<OrchestrationV2StoredEvent>) {
-        yield* Effect.forEach(storedEvents, (stored) => projectionStore.apply(stored.event), {
-          concurrency: 1,
-        });
+        yield* Effect.forEach(
+          storedEvents,
+          (stored) =>
+            Effect.gen(function* () {
+              yield* projectionStore.apply(stored.event);
+              if (
+                stored.event.type === "turn-item.updated" &&
+                stored.event.payload.type === "run_interrupt_request" &&
+                stored.event.payload.unresponsiveAt === undefined
+              ) {
+                // Snapshot the targets in the command transaction. A delayed worker
+                // or a restart must not lose Stop or apply it to a newer monitor.
+                yield* sql`
+                  UPDATE thread_monitors SET cancellation_requested = 1
+                  WHERE thread_id = ${stored.event.threadId} AND status IN ('active', 'triggered')
+                `;
+              }
+            }),
+          { concurrency: 1 },
+        );
         const sequence = storedEvents.at(-1)?.sequence;
         if (sequence !== undefined) {
           const batch = yield* CurrentProviderBatch;
@@ -803,6 +826,27 @@ const layerBase: Layer.Layer<
           if (!reserved) {
             const existing = yield* existingCommandResult(input.commandId);
             return { ...existing, committed: false as const, cancelledEffectIds: [] };
+          }
+
+          if (
+            input.monitorWake !== undefined &&
+            !(yield* projectionStore.canDeliverMonitorWake(
+              input.threadId,
+              input.monitorWake.messageId,
+              input.monitorWake.event,
+            ))
+          ) {
+            const receipt: CommandReceiptStore.CommandReceiptV2 = {
+              commandId: input.commandId,
+              threadId: input.threadId,
+              commandType: input.commandType,
+              acceptedAt: input.acceptedAt,
+              resultSequence: yield* eventStore.latestSequence({ threadId: input.threadId }),
+              status: "rejected",
+              error: "The monitor wake is no longer ready for delivery.",
+            };
+            yield* commandReceipts.upsert(receipt);
+            return { receipt, storedEvents: [], committed: false as const, cancelledEffectIds: [] };
           }
 
           // Planning does not lock the source. Once deletion commits, maintenance

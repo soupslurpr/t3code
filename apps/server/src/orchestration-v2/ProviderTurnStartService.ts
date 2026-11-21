@@ -1,5 +1,6 @@
 import { classifyCodexManagedError } from "../provider/CodexManagedErrors.ts";
 import { WORKTREE_RECOVERY_NOTICE } from "./ThreadWorktreeBinding.ts";
+import { formatMonitorSystemEventForProvider } from "../threadMonitor/ThreadMonitorContinuation.ts";
 import * as ThreadCommands from "./ThreadCommandExecutor.ts";
 import { SIDE_CHAT_HISTORY_UNAVAILABLE_TITLE } from "@t3tools/shared/orchestrationV2ThreadError";
 import { modelSelectionsEqual } from "@t3tools/shared/model";
@@ -1212,13 +1213,16 @@ export const layer: Layer.Layer<
       });
       let effectiveHandoffs = handoffs;
       let resumeFellBack = false;
-      const messageText = withMessageSenderNote(
-        providerMessage,
-        projectComposerContextForProvider({
-          text: providerMessage.text,
-          records: providerMessage.context?.records ?? [],
-        }),
-      );
+      const messageText =
+        providerMessage.notification?.systemEvent === undefined
+          ? withMessageSenderNote(
+              providerMessage,
+              projectComposerContextForProvider({
+                text: providerMessage.text,
+                records: providerMessage.context?.records ?? [],
+              }),
+            )
+          : formatMonitorSystemEventForProvider(providerMessage.notification.systemEvent);
       const slashCommand = isSlashCommandMessage(providerMessage);
       // Carry the recovery notice forward across slash commands or undelivered runs until a
       // non-slash provider turn delivers it in the main checkout.
@@ -1269,6 +1273,7 @@ export const layer: Layer.Layer<
       })();
       const workspaceNotice =
         !slashCommand && workspaceNoticePending ? WORKTREE_RECOVERY_NOTICE : "";
+      // Native goal commands go verbatim; handoff history waits a turn.
       const goalDriver =
         session.driver === "codex" ||
         session.driver === "claudeAgent" ||
@@ -2617,6 +2622,9 @@ export const layer: Layer.Layer<
         loadUnsettledWork: runControls.loadUnsettledWork,
         message: {
           messageId: message.id,
+          ...(message.notification?.systemEvent === undefined
+            ? {}
+            : { inputSource: "harness" as const }),
           text: userText,
           attachments: providerMessage.attachments,
           createdBy: message.createdBy,

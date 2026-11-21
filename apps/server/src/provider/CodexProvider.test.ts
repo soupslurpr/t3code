@@ -14,6 +14,7 @@ import * as HostProcess from "@t3tools/shared/HostProcess";
 import {
   applyPreferredCodexDefaultModel,
   codexCustomEndpoint,
+  codexModelsWithVerifiedCacheTiming,
   codexRoutesSpendNativeQuota,
   makeCodexSkillsProbe,
   mapCodexModelCapabilities,
@@ -385,3 +386,68 @@ it.each([
     if (expected.length > 0) assert.equal(descriptor?.currentValue, "automatic");
   },
 );
+
+it("attaches documented promptCache timing only to verified OpenAI GPT-5.6+ models", () => {
+  const gpt56 = mapCodexModelCapabilities({
+    id: "gpt-5.6-codex",
+    model: "gpt-5.6-codex",
+    displayName: "GPT-5.6 Codex",
+    description: "Test",
+    hidden: false,
+    isDefault: false,
+    defaultReasoningEffort: "medium",
+    supportedReasoningEfforts: [],
+  });
+  const gpt55 = mapCodexModelCapabilities({
+    id: "gpt-5.5-codex",
+    model: "gpt-5.5-codex",
+    displayName: "GPT-5.5 Codex",
+    description: "Test",
+    hidden: false,
+    isDefault: false,
+    defaultReasoningEffort: "medium",
+    supportedReasoningEfforts: [],
+  });
+  assert.deepEqual(gpt56.promptCache, {
+    minimumLifetimeMs: 30 * 60_000,
+    source: "provider-documented",
+  });
+  assert.isUndefined(gpt55.promptCache);
+
+  const models = [
+    {
+      slug: "gpt-5.6-codex",
+      name: "GPT-5.6 Codex",
+      isCustom: false,
+      capabilities: gpt56,
+    },
+  ];
+  const openAi = codexModelsWithVerifiedCacheTiming(
+    {
+      account: {
+        account: { type: "chatgpt", email: "user@example.com", planType: "pro" },
+        requiresOpenaiAuth: true,
+      },
+      config: {},
+      version: "0.151.0",
+      models,
+      skills: [],
+    },
+    {},
+    false,
+  );
+  assert.deepEqual(openAi[0]?.capabilities?.promptCache, gpt56.promptCache);
+
+  const customGateway = codexModelsWithVerifiedCacheTiming(
+    {
+      account: { account: { type: "apiKey" }, requiresOpenaiAuth: true },
+      config: { model_provider: "custom-gateway" },
+      version: "0.151.0",
+      models,
+      skills: [],
+    },
+    { OPENAI_BASE_URL: "https://gateway.example.com/v1" },
+    false,
+  );
+  assert.isUndefined(customGateway[0]?.capabilities?.promptCache);
+});

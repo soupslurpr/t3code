@@ -133,7 +133,12 @@ const assertShellIndexCoversShells = Effect.fnUntraced(function* () {
       .filter((thread) => isListedThreadLineage(thread.lineage))
       .map((thread) => [thread.id, thread.projectId, thread.latestRunCompletedAt]),
   );
-  assert.isFalse(statements.some((statement) => /COUNT\(\*\)|GROUP BY/i.test(statement)));
+  // Only the monitor overflow count may aggregate rows for a listed thread.
+  const aggregatesHistory = (statement: string) =>
+    /COUNT\(\*\)|GROUP BY/i.test(
+      statement.replace(/SELECT COUNT\(\*\) FROM \(\s*SELECT 1 FROM thread_monitors m/i, ""),
+    );
+  assert.isFalse(statements.some(aggregatesHistory));
   assert.isTrue(queryTransactions.every((transaction) => transaction !== null));
   assert.equal(new Set(queryTransactions).size, 1);
   for (const shell of [...shells, ...snapshot.archivedThreads]) {
@@ -143,7 +148,7 @@ const assertShellIndexCoversShells = Effect.fnUntraced(function* () {
     assert.deepEqual(targeted.threads.map(awareness), [awareness(shell)]);
     assert.deepEqual(targeted.threads[0]?.archivedAt, shell.archivedAt);
   }
-  assert.isFalse(statements.some((statement) => /COUNT\(\*\)|GROUP BY/i.test(statement)));
+  assert.isFalse(statements.some(aggregatesHistory));
 
   const iso = (value: DateTime.Utc | null | undefined) =>
     value == null ? null : DateTime.formatIso(value);

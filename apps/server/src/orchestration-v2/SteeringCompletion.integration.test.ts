@@ -18,6 +18,7 @@ import {
   PROVIDER_SEND_TURN_MAX_INPUT_CHARS,
   ScheduledTaskId,
   ThreadId,
+  ThreadMonitorId,
   TurnItemId,
   type ModelSelection,
   type OrchestrationV2DomainEvent,
@@ -45,6 +46,8 @@ import * as ProviderAdapterRegistry from "./ProviderAdapterRegistry.ts";
 import * as ProviderReplayHarness from "./testkit/ProviderReplayHarness.ts";
 import * as ThreadManagementService from "./ThreadManagementService.ts";
 import * as ServerSettings from "../serverSettings.ts";
+import * as ThreadMonitors from "../persistence/ThreadMonitors.ts";
+import { makeMonitorContinuationEvent } from "../threadMonitor/ThreadMonitorContinuation.ts";
 import * as SqlitePersistence from "../persistence/Sqlite.ts";
 import * as CommandReceiptStore from "./CommandReceiptStore.ts";
 import { userFacingDispatchErrorMessage } from "./UserFacingErrors.ts";
@@ -1517,6 +1520,154 @@ it.effect.each(["complete", "stop-before-end"] as const)(
           ),
         );
       }).pipe(Effect.provide(layer));
+    }),
+);
+
+it.effect.each(["declined", "unconfirmed", "approval", "stop"] as const)(
+  "settles a durable monitor steer once after %s",
+  (outcome) =>
+    Effect.gen(function* () {
+      const { layer, startFirstTurn, started, steered } = yield* nextTurnSelectionHarness(
+        `monitor-steer-${outcome}`,
+        false,
+        true,
+        Effect.void,
+        true,
+        undefined,
+        (turn) =>
+          Effect.fail(
+            outcome === "unconfirmed"
+              ? new ProviderAdapter.ProviderAdapterSteerRunError({
+                  driver,
+                  providerThreadId: turn.providerThread.id,
+                  providerTurnId: turn.providerTurnId,
+                })
+              : new ProviderAdapter.ProviderAdapterSteerDeclinedError({
+                  driver,
+                  providerThreadId: turn.providerThread.id,
+                  providerTurnId: turn.providerTurnId,
+                }),
+          ),
+      );
+      yield* Effect.gen(function* () {
+        const threadId = yield* startFirstTurn;
+        const orchestrator = yield* Orchestrator.OrchestratorV2;
+        const worker = yield* EffectWorker.OrchestrationEffectWorkerV2;
+        const repository = yield* ThreadMonitors.ThreadMonitorRepository;
+        const sink = yield* EventSink.EventSinkV2;
+        const now = yield* DateTime.now;
+        const iso = DateTime.formatIso(now);
+        const monitor = {
+          id: ThreadMonitorId.make("monitor"),
+          threadId,
+          label: "Build completed",
+          status: "triggered" as const,
+          condition: { type: "signal" as const, deadlineAt: null },
+          continuation: { mode: "resume-thread" as const },
+          trigger: { reason: "signal" as const, summary: null, evidence: null },
+          createdAt: iso,
+          updatedAt: iso,
+          triggeredAt: iso,
+          deliveredAt: null,
+          cancelledAt: null,
+          lastError: null,
+          deliveryAttempts: 1,
+          deliveryFailureCount: 0,
+          deliveryGroupId: "group",
+          deliveryRetryAt: null,
+        };
+        yield* repository.upsert(monitor);
+        const wake = {
+          type: "message.dispatch" as const,
+          threadId,
+          messageId: MessageId.make("thread-monitor-group:group:continuation"),
+          commandId: CommandId.make("thread-monitor-group:group:resume:1"),
+          notification: {
+            source: { kind: "monitor" as const },
+            outcome: "updated" as const,
+            summary: monitor.label,
+            systemEvent: makeMonitorContinuationEvent([monitor]),
+          },
+          text: monitor.label,
+          attachments: [],
+          createdBy: "system" as const,
+          creationSource: "server" as const,
+          dispatchMode: { type: "queue_after_active" as const },
+        };
+        yield* orchestrator.dispatch(wake);
+        const first = started[0]!;
+        const request = {
+          id: RuntimeRequestId.make("request"),
+          nodeId: first.rootNodeId,
+          providerTurnId: ProviderTurnId.make(`provider-turn:${first.attemptId}`),
+          nativeRequestRef: null,
+          kind: "command" as const,
+          status: "pending" as const,
+          responseCapability: {
+            type: "live" as const,
+            providerSessionId: first.providerThread.providerSessionId!,
+          },
+          createdAt: now,
+          resolvedAt: null,
+        };
+        const approval = {
+          id: EventId.make("approval"),
+          type: "runtime-request.updated" as const,
+          threadId,
+          runId: first.runId,
+          nodeId: request.nodeId,
+          occurredAt: now,
+          payload: request,
+        };
+        if (outcome === "approval") yield* sink.write({ events: [approval] });
+        if (outcome === "stop")
+          yield* orchestrator.dispatch({
+            type: "thread.monitors.cancel",
+            threadId,
+            commandId: CommandId.make("stop-monitors"),
+          });
+        yield* worker.drain();
+        const projection = yield* orchestrator.getThreadProjection(threadId);
+        assert.equal(steered.length, outcome === "stop" || outcome === "approval" ? 0 : 1);
+        assert.equal(projection.runs.length, 1);
+        assert.equal(
+          projection.messages.find((message) => message.id === wake.messageId)
+            ?.notificationDelivery,
+          outcome === "unconfirmed" ? "unconfirmed" : "declined",
+        );
+        const retry = (attempt: number) =>
+          orchestrator
+            .dispatch({
+              ...wake,
+              commandId: CommandId.make(`thread-monitor-group:group:resume:${attempt}`),
+            })
+            .pipe(Effect.result);
+        yield* retry(2);
+        if (outcome === "approval") {
+          assert.lengthOf((yield* orchestrator.getThreadProjection(threadId)).runs, 1);
+          yield* sink.write({
+            events: [
+              {
+                ...approval,
+                id: EventId.make("answer"),
+                payload: { ...request, status: "resolved", decision: "accept", resolvedAt: now },
+              },
+            ],
+          });
+          yield* retry(3);
+        }
+        const final = yield* orchestrator.getThreadProjection(threadId);
+        const followUps = final.runs.filter((run) => run.userMessageId === wake.messageId);
+        assert.lengthOf(followUps, outcome === "declined" || outcome === "approval" ? 1 : 0);
+        assert.equal(steered.length, outcome === "stop" || outcome === "approval" ? 0 : 1);
+      }).pipe(
+        Effect.provide(
+          Layer.merge(
+            layer,
+            ThreadMonitors.layer.pipe(Layer.provide(SqlitePersistence.layerMemory)),
+          ),
+        ),
+      );
     }),
 );
 

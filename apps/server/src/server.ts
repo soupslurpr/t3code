@@ -6,6 +6,10 @@ import * as DesktopTransfers from "./computer/DesktopTransfers.ts";
 import { userDesktopTransferRouteLayer } from "./computer/userDesktopTransferHttp.ts";
 import * as AgentDesktopService from "./agentDesktop/AgentDesktopService.ts";
 import * as AgentComputerHost from "./computer/AgentComputerHost.ts";
+import * as ThreadMonitor from "./threadMonitor/ThreadMonitor.ts";
+import * as ThreadMonitorProcess from "./threadMonitor/ThreadMonitorProcess.ts";
+import * as ThreadMonitorSignalCallbacks from "./threadMonitor/ThreadMonitorSignalCallbacks.ts";
+import * as MonitorSignalRoute from "./threadMonitor/signalRoute.ts";
 import * as ProviderEventLoggers from "@t3tools/provider-core/server/ProviderEventLoggers";
 import * as DatabaseMigrationProgress from "./persistence/DatabaseMigrationProgress.ts";
 import type { RelayManagedEndpointRuntimeConfig } from "@t3tools/contracts/relay";
@@ -889,7 +893,26 @@ const layerRuntimeCoreDependencies = layerRuntimeCoreDependenciesBase.pipe(
   ),
 );
 
-const layerRuntimeDependencies = layerRuntimeCoreDependencies.pipe(
+const layerComputerServices = Layer.mergeAll(
+  ComputerAutomationRouter.layer.pipe(
+    Layer.provide(AgentComputerHost.layer.pipe(Layer.provide(AgentDesktopService.backend))),
+  ),
+  ComputerObservationStore.layer,
+).pipe(
+  Layer.provideMerge(UserDesktopHosts.layer),
+  Layer.provideMerge(AgentDesktopService.layer),
+  Layer.provideMerge(layerNativeDesktopAuthorization),
+);
+
+const layerThreadMonitor = ThreadMonitor.layer.pipe(
+  Layer.provide(ThreadMonitorProcess.layer),
+  Layer.provide(RuntimeLayer.layerEventSink),
+  Layer.provideMerge(ProjectionStoreV2.layer),
+  Layer.provideMerge(layerComputerServices),
+  Layer.provideMerge(layerRuntimeCoreDependencies),
+);
+
+const layerRuntimeDependencies = layerThreadMonitor.pipe(
   Layer.provideMerge(layerUsage),
   Layer.provideMerge(layerBackground),
   // The same layer the event sink uses; memoized, subscriptions and batch ranking share it.
@@ -929,6 +952,7 @@ const layerMakeRoutes = Layer.mergeAll(
       Layer.provide(ProjectHttp.layer),
       Layer.provide(speechHttpApiLayer),
       Layer.provide(ServerHttp.layerServerEnvironmentHttpApi),
+      Layer.provide(MonitorSignalRoute.layer),
       Layer.provide(WebhookRoute.layer.pipe(Layer.provide(RelayDeliveryProof.layer))),
       Layer.provide(AuthHttp.layerAuthenticatedAuth),
       Layer.provide(ServerHttp.layerApiBodyLimit),
@@ -991,29 +1015,20 @@ const layerMakeRoutes = Layer.mergeAll(
   Layer.provide(CloudSpeech.layer.pipe(Layer.provide(SecretResolver.layer))),
   Layer.provide(layerServerSettings),
   Layer.provide(
-    ThreadWorktrees.layer.pipe(
-      Layer.provide([
-        RuntimeLayer.layerEventSink,
-        DesktopOperationIds.layer,
-        ProjectionStoreV2.layer,
-      ]),
-    ),
-  ),
-  Layer.provide(
-    DesktopTransfers.layer.pipe(
-      Layer.provide([RuntimeLayer.layerRuntimePolicyProvided, ProjectionStoreV2.layer]),
-    ),
-  ),
-  Layer.provide(layerNativeDesktopAuthorization),
-  Layer.provide(
     Layer.mergeAll(
-      ComputerAutomationRouter.layer.pipe(
-        Layer.provide(AgentComputerHost.layer.pipe(Layer.provide(AgentDesktopService.backend))),
+      ThreadWorktrees.layer.pipe(
+        Layer.provide([
+          RuntimeLayer.layerEventSink,
+          DesktopOperationIds.layer,
+          ProjectionStoreV2.layer,
+        ]),
       ),
-      ComputerObservationStore.layer,
-    ).pipe(Layer.provideMerge(UserDesktopHosts.layer)),
+      DesktopTransfers.layer.pipe(
+        Layer.provide([RuntimeLayer.layerRuntimePolicyProvided, ProjectionStoreV2.layer]),
+      ),
+      ThreadMonitorSignalCallbacks.layer.pipe(Layer.provide(RuntimeLayer.layerEventSink)),
+    ),
   ),
-  Layer.provide(AgentDesktopService.layer),
   Layer.provide(PreviewAutomationBroker.layer),
   Layer.provide(ServerSelfUpdate.layer.pipe(Layer.provide(layerDesktopAppUpdate))),
   Layer.provide(ProviderMaintenanceRunner.layer),

@@ -744,6 +744,7 @@ function makeCodexReplayTurn(input: {
 }
 
 function codexReplayPreamble(input: {
+  readonly userAgent?: string;
   readonly nativeThreadId: string;
   readonly nativeTurnId: string;
   readonly prompt: string;
@@ -780,7 +781,7 @@ function codexReplayPreamble(input: {
       frame: {
         id: 1,
         result: {
-          userAgent: "T3 Code/0.156.1",
+          userAgent: input.userAgent ?? "T3 Code/0.156.1",
           codexHome: "/tmp/codex-home",
           platformFamily: "unix",
           platformOs: "macos",
@@ -935,7 +936,7 @@ function withConfigReadBeforeTurnStart(
           { config: {}, origins: {} },
         ]);
       }
-      if (frame.method === "turn/start") {
+      if (frame.method === "turn/start" && params.toolOutput === undefined) {
         if (!namedThreads.has(params.threadId)) {
           namedThreads.add(params.threadId);
           exchanges.push(["thread/name/set", { threadId: params.threadId, name: threadName }, {}]);
@@ -2447,6 +2448,100 @@ describe("CodexAdapterV2 post-settle continuation", () => {
         else yield* harness.runtime.startTurn(input);
         yield* harness.firstTerminal;
         assert.equal(harness.terminalEvents()[0]?.status, "completed");
+      }).pipe(
+        Effect.scoped,
+        Effect.provide(
+          Layer.mergeAll(
+            IdAllocator.layer,
+            McpProviderSessions.layer,
+            NodeServices.layer,
+            NodeCrypto.layer,
+          ),
+        ),
+      ),
+  );
+
+  it.effect.each(["old-cli", "refused", "invalid-response"] as const)(
+    "classifies a Codex monitor steer after %s",
+    (result) =>
+      Effect.gen(function* () {
+        const nativeThreadId = "monitor-thread";
+        const nativeTurnId = "monitor-turn";
+        const entries = codexReplayPreamble({
+          nativeThreadId,
+          nativeTurnId,
+          prompt: "Work.",
+          ...(result === "old-cli" ? { userAgent: "T3 Code/0.150.0" } : {}),
+        });
+        if (result !== "old-cli")
+          entries.push(
+            {
+              type: "expect_outbound",
+              frame: {
+                id: 4,
+                method: "turn/start",
+                params: {
+                  threadId: nativeThreadId,
+                  input: [],
+                  toolOutput: {
+                    namespace: "t3_code",
+                    name: "monitor",
+                    output: [{ type: "input_text", text: "Wake" }],
+                  },
+                },
+              },
+            },
+            {
+              type: "emit_inbound",
+              frame: {
+                method: "turn/started",
+                params: {
+                  threadId: nativeThreadId,
+                  turn: makeCodexReplayTurn({ id: "independent-successor", status: "inProgress" }),
+                },
+              },
+            },
+            {
+              type: "emit_inbound",
+              frame:
+                result === "refused"
+                  ? { id: 4, error: { code: -32602, message: "Unsupported tool output" } }
+                  : { id: 4, result: { turn: null } },
+            },
+          );
+        const harness = yield* makeCodexReplayHarness(
+          makeCodexReplayTranscript({ scenario: `monitor-${result}`, entries }),
+        );
+        const turnInput = makeCodexTestTurnInput({
+          threadId: harness.threadId,
+          providerThread: harness.providerThread,
+          now: yield* DateTime.now,
+          attemptId: RunAttemptId.make("monitor-owner"),
+          text: "Work.",
+        });
+        yield* harness.runtime.startTurn(turnInput);
+        yield* harness.until(() =>
+          harness.events.some(
+            (event) =>
+              event.type === "provider_turn.updated" &&
+              event.providerTurn.nativeTurnRef?.nativeId === nativeTurnId,
+          ),
+        );
+        const turn = harness.events.find((event) => event.type === "provider_turn.updated");
+        assert.isDefined(turn);
+        const failure = yield* harness.runtime
+          .steerTurn({
+            ...turnInput,
+            providerTurnId: turn.providerTurn.id,
+            message: { ...turnInput.message, text: "Wake", inputSource: "harness" },
+          })
+          .pipe(Effect.flip);
+        assert.equal(
+          failure._tag,
+          result === "invalid-response"
+            ? "ProviderAdapterSteerRunError"
+            : "ProviderAdapterSteerDeclinedError",
+        );
       }).pipe(
         Effect.scoped,
         Effect.provide(

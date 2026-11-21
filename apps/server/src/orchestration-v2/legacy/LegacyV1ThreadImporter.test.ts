@@ -837,4 +837,61 @@ it.layer(layerTest)("LegacyV1ThreadImporter", (it) => {
       assert.deepStrictEqual(eventsAfterRestart, eventsBeforeRetry);
     }),
   );
+
+  it.effect("imports system monitor messages with structured system_event_json", () =>
+    Effect.gen(function* () {
+      const sql = yield* SqlClient.SqlClient;
+      const importer = yield* LegacyV1ThreadImporter.LegacyV1ThreadImporter;
+      const projections = yield* ProjectionStore.ProjectionStoreV2;
+      const threadId = ThreadId.make("thread:legacy:monitor-system-event");
+      const systemEvent = {
+        type: "monitor.continuation" as const,
+        deliveryGroupId: "grp-legacy-1",
+        monitors: [
+          {
+            monitorId: "mon-legacy-1" as never,
+            triggeredAt: "2026-01-01T02:00:00.000Z",
+            triggerReason: "deadline" as const,
+            observation: {
+              label: "Legacy timer",
+              summary: "Deadline reached",
+              evidence: null,
+            },
+          },
+        ],
+        observationTrust: "untrusted" as const,
+        grantsAuthorization: false as const,
+      };
+      yield* sql`
+        INSERT INTO projection_threads (
+          thread_id, project_id, title, model_selection_json, runtime_mode,
+          interaction_mode, branch, worktree_path, latest_turn_id,
+          created_at, updated_at, archived_at, deleted_at
+        ) VALUES (
+          ${threadId}, 'project:legacy-import', 'Legacy monitor thread',
+          '{"provider":"codex","model":"gpt-5.4"}', 'full-access', 'default',
+          NULL, NULL, NULL, '2026-01-01T00:00:00.000Z', '2026-01-01T02:00:00.000Z', NULL, NULL
+        )
+      `;
+      yield* sql`
+        INSERT INTO projection_thread_messages (
+          message_id, thread_id, turn_id, role, text, attachments_json,
+          system_event_json, is_streaming, created_at, updated_at
+        ) VALUES (
+          'message:legacy:sys:1', ${threadId}, NULL, 'system',
+          'Monitor triggered: Legacy timer', '[]',
+          ${JSON.stringify(systemEvent)}, 0,
+          '2026-01-01T02:00:00.000Z', '2026-01-01T02:00:00.000Z'
+        )
+      `;
+      yield* importer.reconcileShells;
+      yield* importer.importPendingTranscripts;
+      const imported = yield* projections.getThreadProjection(threadId);
+      const sysMessage = imported.messages.find((m) => m.id === "message:legacy:sys:1");
+      assert.isDefined(sysMessage);
+      assert.equal(sysMessage?.createdBy, "system");
+      assert.equal(sysMessage?.notification?.source.kind, "monitor");
+      assert.deepStrictEqual(sysMessage?.notification?.systemEvent, systemEvent);
+    }),
+  );
 });

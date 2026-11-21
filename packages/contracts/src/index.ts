@@ -95,3 +95,5 @@ export * from "./threadWorktree.ts";
 export * from "./desktopExecutionAuthorization.ts";
 export * from "./desktopTransfer.ts";
 export * from "./agentDesktop.ts";
+export * from "./orchestrationSystemEvent.ts";
+export * from "./threadMonitor.ts";

@@ -120,6 +120,8 @@ import {
 import * as HtmlHandlers from "./toolkits/html/handlers.ts";
 import { MessageToolkit } from "./toolkits/message/tools.ts";
 import * as MessageHandlers from "./toolkits/message/handlers.ts";
+import { MonitorStandardToolkit } from "./toolkits/monitor/tools.ts";
+import { MonitorStandardToolkitHandlersLive } from "./toolkits/monitor/handlers.ts";
 import { HtmlPreviewTool, HtmlPreviewToolkit, HtmlRenderToolkit } from "./toolkits/html/tools.ts";
 import { MCP_HTTP_PATH } from "../httpCors.ts";
 import { requestUrl } from "../requestUrl.ts";
@@ -1593,6 +1595,11 @@ export const layerMcpTransport = <RA, RE, RR>(registrations: Layer.Layer<RA, RE,
     registrations,
   }).pipe(Layer.provide(layerMcpAuthMiddleware));
 
+export const layerMonitorToolkit = toolkitRegistration(
+  MonitorStandardToolkit,
+  MonitorStandardToolkitHandlersLive,
+);
+
 /** Every tool the T3 MCP server advertises. AgentContextBudget.test.ts measures this set. */
 export const layerTools = Layer.mergeAll(
   layerComputerTools,
@@ -1613,6 +1620,7 @@ export const layerTools = Layer.mergeAll(
   layerDeviceToolkit,
   layerHtmlToolkit,
   layerMessageToolkit,
+  layerMonitorToolkit,
 );
 
 const layerToolExposure = Layer.effect(

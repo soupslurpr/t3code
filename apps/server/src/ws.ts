@@ -1,4 +1,5 @@
 import { ThreadWorktreeService } from "./orchestration-v2/ThreadWorktreeService.ts";
+import { ThreadMonitorService } from "./threadMonitor/ThreadMonitorService.ts";
 import { DesktopExecutionAuthorizationChannel } from "./computer/DesktopExecutionAuthorizationChannel.ts";
 import * as ComputerObservationStore from "./computer/ComputerObservationStore.ts";
 import * as UserDesktopHosts from "./computer/UserDesktopHosts.ts";
@@ -1520,6 +1521,7 @@ export const layerWsRpc = (
       // The service's messages are built from its own attributes, so they are safe to send.
       const toWorkflowRequestError = (error: Workflows.WorkflowError) =>
         new WorkflowRequestError({ message: error.message });
+      const threadMonitors = yield* ThreadMonitorService;
       const secretRequests = yield* SecretRequests.SecretRequests;
       const feedbackStore = yield* FeedbackStore.FeedbackStore;
       const guestShares = yield* GuestShareService.GuestShareService;
@@ -2476,6 +2478,21 @@ export const layerWsRpc = (
         [WS_METHODS.scheduledTasksRotateWebhookToken]: (input) =>
           Effect.annotateCurrentSpan({ "scheduled_task.id": input.id }).pipe(
             Effect.andThen(scheduledTasks.rotateWebhookToken(input)),
+          ),
+        [WS_METHODS.threadMonitorsSubscribe]: (input) =>
+          Effect.annotateCurrentSpan({ "orchestration_v2.thread_id": input.threadId }).pipe(
+            Effect.as(threadMonitors.subscribeSummaries(input.threadId)),
+            Stream.unwrap,
+          ),
+        [WS_METHODS.threadMonitorsCancel]: (input) =>
+          Effect.annotateCurrentSpan({ "orchestration_v2.thread_id": input.threadId }).pipe(
+            Effect.andThen(
+              threadMonitors.cancel({
+                threadId: input.threadId,
+                cancel: input.monitorId === undefined ? {} : { monitorId: input.monitorId },
+              }),
+            ),
+            Effect.asVoid,
           ),
         [WS_METHODS.guestShareCreate]: (input) =>
           Effect.annotateCurrentSpan({ "orchestration_v2.thread_id": input.threadId }).pipe(

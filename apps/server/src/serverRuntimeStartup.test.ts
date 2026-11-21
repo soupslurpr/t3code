@@ -27,6 +27,7 @@ import * as GitVcsDriver from "./vcs/GitVcsDriver.ts";
 import * as BackgroundPolicy from "./background/BackgroundPolicy.ts";
 import * as ServerConfig from "./config.ts";
 import * as ServerRuntimeStartup from "./serverRuntimeStartup.ts";
+import { ThreadMonitorService } from "./threadMonitor/ThreadMonitorService.ts";
 import * as EnvironmentAuth from "./auth/EnvironmentAuth.ts";
 import * as ServiceLauncherClient from "./cloud/serviceLauncherClient.ts";
 import * as ServerEnvironment from "./environment/ServerEnvironment.ts";
@@ -212,6 +213,7 @@ it.effect.each([
       }),
       Layer.mock(GitVcsDriver.GitVcsDriver)({}),
       Layer.mock(AnalyticsService.AnalyticsService)({}),
+      Layer.mock(ThreadMonitorService)({ start: Effect.void }),
       // No provider logins or Connect link, so startup records no owners.
       FileSystem.layerNoop({}),
       Layer.mock(ServerSecretStore.ServerSecretStore)({ get: () => Effect.succeedNone }),
