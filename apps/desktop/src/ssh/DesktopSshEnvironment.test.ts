@@ -30,7 +30,7 @@ const packagedEnvironment = DesktopEnvironment.DesktopEnvironment.pipe(
 );
 
 describe("resolveDesktopSshCliRunner", () => {
-  it.effect("downloads the remote runner from the release mirror", () =>
+  it.effect("an upstream release mirror cannot supply a packaged fork's SSH runner", () =>
     Effect.gen(function* () {
       const environment = yield* packagedEnvironment;
 
@@ -40,7 +40,6 @@ describe("resolveDesktopSshCliRunner", () => {
 
       assert.deepStrictEqual(runner, {
         archiveVersion: "0.0.22",
-        releaseBaseUrl: "https://mirror.example.com/t3code",
       });
     }),
   );

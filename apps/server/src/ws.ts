@@ -13,6 +13,7 @@ import { GitCommandError, OrchestrationDispatchCommandError } from "@t3tools/con
 import * as NodeCrypto from "node:crypto";
 import * as FeatureFlags from "@t3tools/shared/FeatureFlags";
 import * as HostProcess from "@t3tools/shared/HostProcess";
+import { installedTriageCommand } from "./cli/invocation.ts";
 import * as Context from "effect/Context";
 import * as NodeHttpServerRequest from "@effect/platform-node/NodeHttpServerRequest";
 import * as SecureRandom from "effect/crypto/SecureRandom";
@@ -1598,6 +1599,9 @@ export const layerWsRpc = (
       const serverSelfUpdate = yield* ServerSelfUpdate.ServerSelfUpdate;
       const npmRelease = yield* NpmRelease.NpmRelease;
       const config = yield* ServerConfig.ServerConfig;
+      const getInstalledTriageCommand = yield* Effect.cached(
+        installedTriageCommand(config.baseDir),
+      );
       const lifecycleEvents = yield* ServerLifecycleEvents.ServerLifecycleEvents;
       const storageCleanup = yield* StorageCleanup.StorageCleanup;
       const databaseStorage = yield* DatabaseStorage.DatabaseStorage;
@@ -1918,6 +1922,7 @@ export const layerWsRpc = (
           settingsClient,
         );
         const environment = yield* serverEnvironment.getDescriptor;
+        const triageCommand = environment.forkBuild ? yield* getInstalledTriageCommand : undefined;
         const auth = yield* serverAuth.getDescriptor();
         const scratchWorkspaceRoot = yield* managedFolders.scratchRoot;
         const lastEventLoopStall = yield* eventLoopMonitor.latestNoticeableStall;
@@ -1934,6 +1939,7 @@ export const layerWsRpc = (
 
         return {
           environment,
+          ...(triageCommand === undefined ? {} : { installedTriageCommand: triageCommand }),
           auth,
           cwd: config.cwd,
           hostname: yield* HostProcess.Hostname,

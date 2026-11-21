@@ -48,6 +48,22 @@ const setup = Effect.gen(function* () {
 });
 
 it.layer(NodeServices.layer)("t3 install", (it) => {
+  it.effect("directs a non-standalone fork to its audited package on POSIX and Windows", () =>
+    Effect.gen(function* () {
+      const { provide } = yield* setup;
+      for (const platform of ["linux", "win32"] as const) {
+        const error = yield* provide(
+          installCli().pipe(
+            Effect.provideService(HostProcess.IsExecutable, false),
+            Effect.provideService(HostProcess.Platform, platform),
+          ),
+        ).pipe(Effect.flip);
+        assert.include(error.message, "local-arch-package.md");
+        assert.notMatch(error.message, /t3\.codes|npx|curl|\biex\b/i);
+      }
+    }),
+  );
+
   it.effect("installs the running runtime, records it, and never replaces another t3", () =>
     Effect.gen(function* () {
       const fs = yield* FileSystem.FileSystem;
@@ -186,6 +202,8 @@ it.layer(NodeServices.layer)("t3 install", (it) => {
         ),
       ).pipe(Effect.flip);
       assert.include(unrunnable.message, "has % or non-ASCII characters");
+      assert.include(unrunnable.message, "local-arch-package.md");
+      assert.notInclude(unrunnable.message, "npx");
     }),
   );
 

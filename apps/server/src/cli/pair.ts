@@ -6,6 +6,7 @@ import {
   PortSchema,
 } from "@t3tools/contracts";
 import { resolveWorktreeT3Home } from "@t3tools/shared/devHome";
+import { forkBuildIdentity } from "@t3tools/shared/forkBuildIdentity";
 import * as HostProcess from "@t3tools/shared/HostProcess";
 import { formatHostForUrl, isWildcardHost } from "@t3tools/shared/hostClassification";
 import { DEFAULT_SIGNAL_EXPORT } from "@t3tools/shared/observability";
@@ -67,7 +68,7 @@ export class NoRunningServerError extends Schema.TaggedError<NoRunningServerErro
     checkedStatePaths: Schema.Array(Schema.String),
     inLinkedWorktree: Schema.Boolean,
     serveCommand: Schema.String,
-    connectCommand: Schema.String,
+    connectCommand: Schema.optional(Schema.String),
   },
 ) {
   override get message(): string {
@@ -77,7 +78,9 @@ export class NoRunningServerError extends Schema.TaggedError<NoRunningServerErro
       ...(this.inLinkedWorktree
         ? ["In a linked worktree, pass --base-dir to pair with a server outside it."]
         : []),
-      `Start one with \`${this.serveCommand}\`, or connect this machine with T3 Connect: \`${this.connectCommand}\`.`,
+      this.connectCommand === undefined
+        ? `Start one with \`${this.serveCommand}\`.`
+        : `Start one with \`${this.serveCommand}\`, or connect this machine with T3 Connect: \`${this.connectCommand}\`.`,
     ].join("\n");
   }
 }
@@ -93,7 +96,7 @@ export class IncompatibleServerProtocolError extends Schema.TaggedError<Incompat
   override get message(): string {
     return [
       `The running T3 Code server (${this.serverVersion}) speaks orchestration protocol ${String(this.serverProtocolVersion)}, but this CLI speaks protocol ${String(ORCHESTRATION_PROTOCOL_VERSION)}.`,
-      `Pair with the matching CLI instead: \`${this.pairCommand}\`.`,
+      `Use the CLI installed with the running server to run \`${this.pairCommand}\`.`,
     ].join("\n");
   }
 }
@@ -327,7 +330,10 @@ const discoverPairTarget = Effect.fn("pair.discoverPairTarget")(function* (
     checkedStatePaths,
     inLinkedWorktree,
     serveCommand: (yield* resolveHostCliCommand("serve", baseDirArgs)).command,
-    connectCommand: (yield* resolveHostCliCommand("connect", baseDirArgs)).command,
+    connectCommand:
+      forkBuildIdentity === undefined
+        ? (yield* resolveHostCliCommand("connect", baseDirArgs)).command
+        : undefined,
   });
 });
 
@@ -559,7 +565,7 @@ export const pairCommand = Command.make("pair", {
         return yield* new IncompatibleServerProtocolError({
           serverVersion: target.descriptor.serverVersion,
           serverProtocolVersion,
-          pairCommand: `npx t3@${target.descriptor.serverVersion} pair${baseDirArgs}`,
+          pairCommand: `t3 pair${baseDirArgs}`,
         });
       }
 
@@ -584,7 +590,9 @@ export const pairCommand = Command.make("pair", {
         pairingBaseUrl = resolveDirectPairingBaseUrl(target.state, yield* HostProcess.Platform);
         if (isLoopbackHost(new URL(pairingBaseUrl).hostname)) {
           notes.push(
-            "This URL is only reachable from this machine. To reach it from your other devices, run `t3 up`, or re-run with --tailscale.",
+            forkBuildIdentity === undefined
+              ? "This URL is only reachable from this machine. To reach it from your other devices, run `t3 up`, or re-run with --tailscale."
+              : "This URL is only reachable from this machine. To pair another device on your tailnet, re-run with --tailscale.",
           );
         } else if (target.state.privateNetworkOnly) {
           notes.push(

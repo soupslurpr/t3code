@@ -18,6 +18,7 @@ import { ChildProcess, ChildProcessSpawner } from "effect/process";
 import * as HostProcess from "@t3tools/shared/HostProcess";
 import { fromYaml } from "@t3tools/shared/schemaYaml";
 import { resolveSpawnCommand } from "@t3tools/shared/shell";
+import { stageNativeNotices } from "./lib/desktop-native-notices.ts";
 import { stageDesktopNative } from "./lib/stage-desktop-native.ts";
 import rootPackageJson from "../package.json" with { type: "json" };
 import serverPackageJson from "../apps/server/package.json" with { type: "json" };
@@ -26,6 +27,7 @@ import {
   createStagePatchedDependencies,
   createStageWorkspaceConfig,
   resolveFffNativeDependencies,
+  resolveResourceMonitorRustTargets,
   STAGE_INSTALL_ARGS,
 } from "./build-desktop-artifact.ts";
 import { assertLinuxArm64PageCompatibility } from "./lib/linux-arm64-sea.ts";
@@ -637,6 +639,13 @@ const buildCliArchive = Effect.fn("buildCliArchive")(function* (input: {
   yield* fs.copyFile(builtExecutable, path.join(contentDir, executableName));
   yield* stageWebClient(webClient, path.join(contentDir, "client"));
   yield* fs.copy(resourceMonitorDir, path.join(contentDir, "resource-monitor"));
+  const [rustTarget] = resolveResourceMonitorRustTargets(input.platform, input.arch);
+  yield* stageNativeNotices(
+    path.join(repoRoot, "native/resource-monitor/Cargo.toml"),
+    rustTarget!,
+    ["t3-resource-monitor"],
+    path.join(contentDir, "resource-monitor"),
+  );
   if (input.platform === "linux") {
     yield* fs.copy(
       path.join(serverDir, "resources/agent-desktop"),
@@ -646,7 +655,6 @@ const buildCliArchive = Effect.fn("buildCliArchive")(function* (input: {
       repoRoot,
       destination: path.join(contentDir, "desktop-native"),
       arch: input.arch,
-      gnome: false,
     });
   }
   yield* stageRuntimeExternals({

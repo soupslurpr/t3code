@@ -1,6 +1,5 @@
 import { msg, T, Var } from "gt-react";
 import { useCopyToClipboard } from "~/hooks/useCopyToClipboard";
-import { TRIAGE_CLI_COMMAND } from "~/hooks/useStartTriage";
 
 import { InlineButton } from "../ui/button";
 import { SharedTooltipTrigger } from "../ui/shared-tooltip";
@@ -10,9 +9,11 @@ import { SharedTooltipTrigger } from "../ui/shared-tooltip";
  * Keeps the regular hero's heading-plus-one-line rhythm above the composer.
  */
 export function TriageDraftHero(props: {
+  readonly cliCommand: string | null;
   readonly machineLabel: string | null;
   readonly serverVersion: string | null;
 }) {
+  const { cliCommand } = props;
   const { copyToClipboard, isCopied } = useCopyToClipboard({
     timeout: 1500,
     target: {
@@ -44,35 +45,39 @@ export function TriageDraftHero(props: {
             <span className="ml-1.5 font-normal text-muted-foreground">v{props.serverVersion}</span>
           )}
         </SharedTooltipTrigger>
-        <span aria-hidden className="text-muted-foreground">
-          ·
-        </span>
-        <SharedTooltipTrigger
-          render={
-            <InlineButton
-              tone="muted"
-              className="pointer-events-auto"
-              onClick={() => copyToClipboard(TRIAGE_CLI_COMMAND, undefined)}
-            />
-          }
-          label={
-            <>
-              <T>Copy command, for a terminal</T>
-            </>
-          }
-          side="bottom"
-        >
-          {isCopied ? (
-            <T>Copied</T>
-          ) : (
-            <T>
-              or run
-              <code className="ml-1 font-mono text-xs">
-                <Var>{TRIAGE_CLI_COMMAND}</Var>
-              </code>
-            </T>
-          )}
-        </SharedTooltipTrigger>
+        {cliCommand && (
+          <>
+            <span aria-hidden className="text-muted-foreground">
+              ·
+            </span>
+            <SharedTooltipTrigger
+              render={
+                <InlineButton
+                  tone="muted"
+                  className="pointer-events-auto"
+                  onClick={() => copyToClipboard(cliCommand, undefined)}
+                />
+              }
+              label={
+                <>
+                  <T>Copy command, for a terminal</T>
+                </>
+              }
+              side="bottom"
+            >
+              {isCopied ? (
+                <T>Copied</T>
+              ) : (
+                <T>
+                  or run
+                  <code className="ml-1 inline-block max-w-[40vw] truncate align-bottom font-mono text-xs">
+                    <Var>{cliCommand}</Var>
+                  </code>
+                </T>
+              )}
+            </SharedTooltipTrigger>
+          </>
+        )}
       </p>
     </div>
   );

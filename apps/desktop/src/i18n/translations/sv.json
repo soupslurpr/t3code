@@ -20,7 +20,6 @@
   "eeb7ea62dc4706c1": "T3 Code använder Windows-backend för den här starten och försöker med WSL igen nästa gång appen startar.",
   "b5435aa5b470bafd": "WSL-backend kunde inte starta",
   "d82d7c96e1904629": "Faller tillbaka på Windows-backend så att T3 Code kan öppnas. Aktivera WSL-backend igen i Inställningar > Delning och åtkomst när WSL-distributionen är åtgärdad.",
-  "a4acf18834787a4f": "En annan T3 Code-server, till exempel bakgrundstjänsten, använder den här datakatalogen, eller så är en äldre bakgrundstjänst konfigurerad för den. Stoppa den servern eller prova `t3 update`. Om den äldre startaren inte kan uppdatera kör du `t3 service uninstall` och installerar eventuellt om med `t3 service install` från ett aktuellt CLI. Använd `npx t3@latest` om `t3` saknas eller är inaktuellt, och skicka med `--base-dir` med tjänstens T3-hemkatalog till varje kommando. Öppna sedan T3 Code igen. Du kan också ange en separat T3CODE_HOME och parkoppla med servern som körs.",
   "0e306130a55a3954": "T3 Codes bakgrundstjänst använder den här T3-hemkatalogen (PID {pid}, port {port}, version {version}). Stoppa den med `t3 service uninstall`, med `--base-dir` satt till den här T3-hemkatalogen, och öppna T3 Code igen. Du kan också ange en separat T3CODE_HOME och parkoppla med servern som körs.",
   "7379a43c1ac009d2": "T3 Codes bakgrundstjänst använder den här T3-hemkatalogen (PID {pid}, port {port}). Stoppa den med `t3 service uninstall`, med `--base-dir` satt till den här T3-hemkatalogen, och öppna T3 Code igen. Du kan också ange en separat T3CODE_HOME och parkoppla med servern som körs.",
   "1510c6547cde9c2e": "En annan T3 Code-server (till exempel `t3 serve` eller en som startats över SSH) använder den här T3-hemkatalogen (PID {pid}, port {port}, version {version}). Om en T3 Code-app på en annan dator startade den över SSH startar den appen om den: ta bort eller koppla från SSH-miljön där, eller avsluta appen. Stoppa sedan servern och öppna T3 Code igen. Du kan också ange en separat T3CODE_HOME och parkoppla med servern som körs.",
@@ -161,5 +160,8 @@
   "d3a62840ed89f07c": "Kör kommandon och överför filer på det här skrivbordet",
   "7a33d32200ee3623": "Välj vem som får köra kommandon och överföra filer",
   "5c9c7f2d78c02395": "Välj när behörigheten att köra kommandon upphör",
-  "4905f10f8181ab2e": "Ta bort behörigheten att köra kommandon?"
+  "4905f10f8181ab2e": "Ta bort behörigheten att köra kommandon?",
+  "2d26168ac5e12f60": "En annan T3 Code-server använder den här T3-hemkatalogen, eller så är en bakgrundstjänst konfigurerad för den. Om du vill låta servern fortsätta köra anger du ett annat T3CODE_HOME för skrivbordsappen och parkopplar den med servern. Stoppa först servern om du vill använda den här hemkatalogen i appen. För en bakgrundstjänst kör du `t3 service uninstall` på serverns värddator med det kommandoradsverktyg som installerades med tjänsten. Ange tjänstens T3-hemkatalog med `--base-dir`. Öppna sedan T3 Code igen.",
+  "d0fd5b8b1df16927": "En annan T3 Code-server använder distributionens T3-hemkatalog, eller så är en bakgrundstjänst konfigurerad för den. Parkoppla med servern som körs eller stoppa den först. För en bakgrundstjänst kör du `t3 service uninstall` inuti distributionen med det kommandoradsverktyg som installerades med tjänsten. Ange tjänstens T3-hemkatalog med `--base-dir` och försök sedan igen.",
+  "7ef9cef3a67aa6a4": "Inbyggda uppdateringar är avstängda för den här forken. Uppdatera det installerade paketet manuellt."
 }

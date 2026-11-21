@@ -741,6 +741,8 @@ export type ServerFeatureFlags = typeof ServerFeatureFlags.Type;
 
 export const ServerConfig = Schema.Struct({
   environment: ExecutionEnvironmentDescriptor,
+  /** The running fork's own CLI for this authenticated environment and data directory. */
+  installedTriageCommand: Schema.optionalKey(TrimmedNonEmptyString),
   auth: ServerAuthDescriptor,
   cwd: TrimmedNonEmptyString,
   /** The machine's own name, which file URIs from its shells may carry. Older servers omit it. */

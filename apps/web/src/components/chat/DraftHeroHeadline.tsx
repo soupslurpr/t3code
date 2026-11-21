@@ -1,7 +1,11 @@
 import type { DraftId } from "~/composerDraftStore";
 import { useComposerDraftStore } from "~/composerDraftStore";
 import { resolveEnvironmentMachineKind, type ScopedProjectRef } from "@t3tools/contracts";
-import { scopedProjectKey, scopeProjectRef } from "@t3tools/client-runtime/environment";
+import {
+  scopedProjectKey,
+  scopeProjectRef,
+  triageCommandForEnvironment,
+} from "@t3tools/client-runtime/environment";
 import { isScratchProject } from "@t3tools/client-runtime/state/projects";
 import { T, useGT, Var } from "gt-react";
 import { FolderPlusIcon } from "lucide-react";
@@ -341,6 +345,7 @@ export function DraftHeroHeadline({
     );
     return (
       <TriageDraftHero
+        cliCommand={triageCommandForEnvironment(environment?.serverConfig)}
         machineLabel={environment?.label ?? null}
         serverVersion={environment?.serverConfig?.environment.serverVersion ?? null}
       />

@@ -1,4 +1,5 @@
 import { DESKTOP_UPDATE_RESTART_MARKER_FILE } from "@t3tools/contracts";
+import { forkBuildUpdateBlockReason } from "@t3tools/shared/forkUpdates";
 import * as HostProcess from "@t3tools/shared/HostProcess";
 import * as Config from "effect/Config";
 import * as Context from "effect/Context";
@@ -760,7 +761,17 @@ export class BootServiceBaseDirUnsupportedError extends Schema.TaggedError<BootS
   }
 }
 
+export class BootServiceForkUpdateRefusedError extends Schema.TaggedError<BootServiceForkUpdateRefusedError>()(
+  "BootServiceForkUpdateRefusedError",
+  { reason: Schema.String },
+) {
+  override get message(): string {
+    return this.reason;
+  }
+}
+
 export type BootServiceError =
+  | BootServiceForkUpdateRefusedError
   | BootServiceUnsupportedError
   | BootServiceBaseDirUnsupportedError
   | BootServiceOtherBaseDirError
@@ -1025,14 +1036,33 @@ export const make = Effect.fn("cloud.boot_service.make")(function* (input: {
     };
     return { manager, unitPath, plan };
   };
-  let systemdUnitDir = platform === "linux" ? yield* readSystemdUnitDirectory(runner) : undefined;
-  let { manager: detectedManager, unitPath, plan } = resolveTarget(systemdUnitDir);
+  let systemdUnitDir: string | undefined;
+  let { manager: detectedManager, unitPath, plan } = resolveTarget(undefined);
+  const discoverManager = yield* Effect.cached(
+    Effect.gen(function* () {
+      if (platform !== "linux") return;
+      systemdUnitDir = yield* readSystemdUnitDirectory(runner);
+      ({ manager: detectedManager, unitPath, plan } = resolveTarget(systemdUnitDir));
+    }),
+  );
   const statePath = path.join(input.baseDir, "runtime", SERVICE_STATE_FILE);
   const restartPendingPath = path.join(input.baseDir, "runtime", SERVICE_RESTART_PENDING_FILE);
   const canonicalPath = (dir: string) =>
     fs.realPath(dir).pipe(Effect.orElseSucceed(() => path.resolve(dir)));
   const isThisHome = (dir: string) =>
     Effect.zipWith(canonicalPath(dir), canonicalPath(input.baseDir), (a, b) => a === b);
+  const checkPendingUpdate = Effect.fn("cloud.boot_service.check_pending_update")(
+    function* () {
+      if (!(yield* fs.exists(statePath))) return;
+      const text = yield* fs.readFileString(statePath);
+      if (!serviceStateHasPendingUpdate(text)) return;
+      const reason = forkBuildUpdateBlockReason();
+      if (reason !== undefined) return yield* new BootServiceForkUpdateRefusedError({ reason });
+    },
+    Effect.mapError((cause) =>
+      cause._tag === "PlatformError" ? new BootServiceInstallError({ cause }) : cause,
+    ),
+  );
   const otherBaseDirOf = (unit: string) => {
     const installedBaseDir = bootServiceBaseDirOf(unit);
     return installedBaseDir === undefined
@@ -1065,11 +1095,11 @@ export const make = Effect.fn("cloud.boot_service.make")(function* (input: {
       installBinDir || serviceUnitEnvironmentValueOf(unit, "T3CODE_INSTALL_BIN_DIR");
     return effectiveInstallBinDir ? { ...plan, installBinDir: effectiveInstallBinDir } : plan;
   };
-  const requireManager = Effect.suspend(() =>
-    detectedManager === undefined
-      ? new BootServiceUnsupportedError({ platform })
-      : Effect.succeed(detectedManager),
-  );
+  const requireManager = Effect.gen(function* () {
+    yield* discoverManager;
+    if (detectedManager === undefined) return yield* new BootServiceUnsupportedError({ platform });
+    return detectedManager;
+  });
 
   const logFailure = (error: { readonly message: string }) =>
     DateTime.now.pipe(
@@ -1282,6 +1312,9 @@ export const make = Effect.fn("cloud.boot_service.make")(function* (input: {
     readonly allowDowngrade?: boolean;
     readonly start?: boolean;
   }) {
+    const forkReason = forkBuildUpdateBlockReason();
+    if (forkReason !== undefined)
+      return yield* new BootServiceForkUpdateRefusedError({ reason: forkReason });
     let manager = yield* requireManager;
     if (manager.kind === "systemd" && systemdUnsafeValue(plan)) {
       return yield* new BootServiceBaseDirUnsupportedError({ baseDir: input.baseDir });
@@ -1369,6 +1402,9 @@ export const make = Effect.fn("cloud.boot_service.make")(function* (input: {
           : new BootServiceInstallError({ cause: error }),
       ),
     );
+    const handoffReason = forkBuildUpdateBlockReason();
+    if (handoffReason !== undefined)
+      return yield* new BootServiceForkUpdateRefusedError({ reason: handoffReason });
     const installed = yield* fs
       .exists(unitPath)
       .pipe(Effect.mapError((cause) => new BootServiceInstallError({ cause })));
@@ -1524,6 +1560,7 @@ export const make = Effect.fn("cloud.boot_service.make")(function* (input: {
     if (installedBaseDir === undefined || !(yield* isThisHome(installedBaseDir))) {
       return "skipped" as const;
     }
+    yield* checkPendingUpdate();
     // Writes no state, and the launcher lets an update transition in flight
     // finish before the queued stop tears it down.
     if (runningInsideService && manager.handoff !== undefined) {
@@ -1546,6 +1583,7 @@ export const make = Effect.fn("cloud.boot_service.make")(function* (input: {
   const withStopped = Effect.fn("cloud.boot_service.with_stopped")(function* <A, E, R>(
     operation: Effect.Effect<A, E, R>,
   ): Effect.fn.Return<A, E | BootServiceError, R> {
+    yield* discoverManager;
     if (detectedManager === undefined) return yield* operation;
     const manager = detectedManager;
     const unit = yield* readUnit().pipe(Effect.option);
@@ -1554,6 +1592,7 @@ export const make = Effect.fn("cloud.boot_service.make")(function* (input: {
     if (installedBaseDir === undefined || !(yield* isThisHome(installedBaseDir))) {
       return yield* operation;
     }
+    yield* checkPendingUpdate();
     // `is-active` misses crash-looping systemd units; launchd can be loaded without a pid.
     // Always stop; restore only if previously active, enabled, or loaded,
     // so disabled crash loops stay stopped.
@@ -1611,6 +1650,7 @@ export const make = Effect.fn("cloud.boot_service.make")(function* (input: {
   }).pipe(Effect.withSpan("cloud.boot_service.uninstall"));
 
   const status: BootService["Service"]["status"] = Effect.gen(function* () {
+    yield* discoverManager;
     const manager = detectedManager;
     if (manager === undefined) {
       return { supported: false, installed: false, current: false, unitPath, logPath };

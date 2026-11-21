@@ -4,6 +4,15 @@ T3 Code is a minimal GUI for coding agents. A Node WebSocket server wraps provid
 
 You can think of T3 Code as an open source "bring-your-own-subscription" alternative to apps like Claude Desktop, Codex App, Cursor Glass and Conductor.
 
+## Fork maintenance
+
+The fork binds updates, SSH, and recovery to its installed build. Preserve
+that boundary when integrating upstream changes. Keep desktop controls
+available on every client through the shared contracts and client runtime.
+Build and audit Arch packages from a clean checkout. Keep the package
+receipt with its artifact. See [local Arch operations](docs/operations/local-arch-package.md)
+and [distribution credits](CREDITS).
+
 ## What makes T3 Code special?
 
 We have over 500,000 users who love T3 Code. It's important we maintain the things they love as we continue to iterate on the product. Here's a brief list of the things we can never compromise on.

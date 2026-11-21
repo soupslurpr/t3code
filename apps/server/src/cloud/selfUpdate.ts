@@ -1,3 +1,4 @@
+import { forkBuildUpdateBlockReason } from "@t3tools/shared/forkUpdates";
 import {
   DESKTOP_UPDATE_IN_PROGRESS_MARKER_FILE,
   ServerSelfUpdateError,
@@ -81,6 +82,7 @@ export const pruneRuntimesOnStart = Effect.fn("cloud.server_self_update.prune_on
     const path = yield* Path.Path;
     const platform = yield* HostProcess.Platform;
     const executablePath = yield* HostProcess.ExecutablePath;
+    if (forkBuildUpdateBlockReason() !== undefined) return [];
     const { entryPath } = pinnedRuntimePaths(path, input.baseDir, packageJson.version, platform);
     // The executable path is resolved, so it names the real path of a symlinked T3 home.
     const realEntryPath = yield* fs.realPath(entryPath).pipe(Effect.orElseSucceed(() => entryPath));
@@ -172,6 +174,8 @@ export const make = Effect.fn("cloud.server_self_update.make")(function* () {
   const update: ServerSelfUpdate["Service"]["update"] = Effect.fn(
     "cloud.server_self_update.update",
   )(function* (input, reportProgress = () => Effect.void, onHandoffAccepted = () => Effect.void) {
+    const forkReason = forkBuildUpdateBlockReason();
+    if (forkReason !== undefined) return yield* failWith(forkReason);
     const policyRefusal = managedUpdateRefusal(
       policy.document,
       capability === "boot-service" ? cliReleaseChannelOf(input.targetVersion.trim()) : undefined,
@@ -257,6 +261,8 @@ export const make = Effect.fn("cloud.server_self_update.make")(function* () {
         }),
       );
 
+      const handoffReason = forkBuildUpdateBlockReason();
+      if (handoffReason !== undefined) return yield* failWith(handoffReason);
       if (input.stageOnly === true) {
         yield* Ref.set(inFlight, false);
         return { targetVersion, method: "boot-service" as const };
@@ -296,7 +302,10 @@ export const make = Effect.fn("cloud.server_self_update.make")(function* () {
     update,
     commitDesktopUpdate: Effect.fn("ServerSelfUpdate.commitDesktopUpdate")(
       function (requestId, onHandoffAccepted) {
-        return desktopAppUpdate.commit(requestId, onHandoffAccepted);
+        const forkReason = forkBuildUpdateBlockReason();
+        return forkReason === undefined
+          ? desktopAppUpdate.commit(requestId, onHandoffAccepted)
+          : Effect.fail(failWith(forkReason));
       },
     ),
   });

@@ -1,3 +1,4 @@
+import { forkBuildIdentity } from "@t3tools/shared/forkBuildIdentity";
 import * as HostProcess from "@t3tools/shared/HostProcess";
 import { pathSetupCommand, resolveCommandPath } from "@t3tools/shared/shell";
 import * as Console from "effect/Console";
@@ -30,6 +31,9 @@ export class CliInstallError extends Schema.TaggedError<CliInstallError>()("CliI
   }
 }
 
+const FORK_INSTALL_GUIDANCE =
+  "Use the CLI bundled with your audited fork package. To install or recover it, follow https://github.com/soupslurpr/t3code/blob/main/docs/operations/local-arch-package.md.";
+
 /** `<T3 home>/runtime/versions/<version>/t3`: the layout the install scripts and npm launcher share. */
 const standaloneRuntime = Effect.gen(function* () {
   const path = yield* Path.Path;
@@ -53,6 +57,9 @@ export const installCli = Effect.fn("cli.install.install")(function* () {
   const runtime = yield* standaloneRuntime;
   const windows = platform === "win32";
   if (Option.isNone(runtime)) {
+    if (forkBuildIdentity !== undefined) {
+      return yield* new CliInstallError({ reason: FORK_INSTALL_GUIDANCE });
+    }
     const script = windows
       ? "irm https://t3.codes/install.ps1 | iex"
       : "curl -fsSL https://t3.codes/install.sh | sh";
@@ -64,7 +71,7 @@ export const installCli = Effect.fn("cli.install.install")(function* () {
   // cmd.exe expands `%` and reads the shim in the OEM code page, so such a path would not run.
   if (windows && /[%\u0080-\uffff]/.test(executable)) {
     return yield* new CliInstallError({
-      reason: `A t3.cmd cannot run ${executable}, because the path has % or non-ASCII characters. Keep using npx t3.`,
+      reason: `A t3.cmd cannot run ${executable}, because the path has % or non-ASCII characters. ${forkBuildIdentity === undefined ? "Keep using npx t3." : FORK_INSTALL_GUIDANCE}`,
     });
   }
   // Absolute, so the PATH hint never adds a folder that changes with the working directory.
@@ -350,7 +357,10 @@ export const offerCliInstall = Effect.fn("cli.install.offer")(function* <E, R, E
   if (declined.trim() === minor) return true;
   if (!(yield* input.foreground)) return true;
 
-  const installHint = `Run \`${yield* resolveCliCommand("install")}\` any time.`;
+  const installHint =
+    forkBuildIdentity === undefined
+      ? `Run \`${yield* resolveCliCommand("install")}\` any time.`
+      : `To install later, run the install subcommand with the fork CLI at ${runtime.value.executable}.`;
   const saveDecline = fs.writeFileString(declinedFile, `${minor}\n`).pipe(Effect.ignore);
   const answer = yield* input.confirm.pipe(Effect.timeoutOption(PROMPT_TIMEOUT));
   if (Option.isNone(answer)) {

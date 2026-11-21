@@ -151,6 +151,9 @@ describe("DesktopWslBackend", () => {
       yield* recordOwnershipFailure();
       const refusal = yield* backend.lastPreflightError;
       assert.include(Option.getOrThrow(refusal), "Another T3 Code server");
+      assert.include(Option.getOrThrow(refusal), "CLI installed with that service");
+      assert.include(Option.getOrThrow(refusal), "inside the distro");
+      assert.notInclude(Option.getOrThrow(refusal), "npx");
       yield* backend.reconcile;
       assert.equal(startCount, 1);
       assert.deepEqual(yield* backend.lastPreflightError, refusal);

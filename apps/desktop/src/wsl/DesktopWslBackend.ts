@@ -5,6 +5,7 @@ import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Ref from "effect/Ref";
 import * as Semaphore from "effect/Semaphore";
+import { msg } from "gt-i18n";
 
 import * as NetService from "@t3tools/shared/Net";
 
@@ -12,6 +13,7 @@ import * as DesktopObservability from "../app/DesktopObservability.ts";
 import * as DesktopBackendConfiguration from "../backend/DesktopBackendConfiguration.ts";
 import * as DesktopBackendPool from "../backend/DesktopBackendPool.ts";
 import * as DesktopServerExposure from "../backend/DesktopServerExposure.ts";
+import { m } from "../i18n/messages.ts";
 import * as DesktopAppSettings from "../settings/DesktopAppSettings.ts";
 import * as DesktopWslEnvironment from "./DesktopWslEnvironment.ts";
 
@@ -128,7 +130,11 @@ export const layer = Layer.effect(
                 Ref.set(
                   preflightErrorRef,
                   Option.some(
-                    "Another T3 Code server is using this distro's T3 home, or an older background service is set up for it. Stop that server or pair with it, or try `t3 update` in the distro. If the older launcher cannot update, run `t3 service uninstall` and optionally reinstall with `t3 service install` from a current CLI in the distro. Use `npx t3@latest` if `t3` is missing or outdated, and pass `--base-dir` with the service's T3 home to each command.",
+                    m(
+                      msg(
+                        "Another T3 Code server is using this distro’s T3 home, or a background service is configured for it. Pair with the running server or stop it first. For a background service, run `t3 service uninstall` inside the distro using the CLI installed with that service. Pass its T3 home with `--base-dir`. Then retry.",
+                      ),
+                    ),
                   ),
                 ),
               ),

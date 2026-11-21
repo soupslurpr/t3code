@@ -1,10 +1,13 @@
 import { assert, it } from "@effect/vitest";
 import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
 import * as NodeServices from "@effect/platform-node/NodeServices";
+import * as NodeSqlite from "node:sqlite";
+import { providerReadSteer } from "../../../../scripts/arch/restart-execution.ts";
 import {
   CheckpointId,
   CheckpointRef,
   CheckpointScopeId,
+  CommandId,
   MessageId,
   GitCommandError,
   type ModelSelection,
@@ -23,6 +26,7 @@ import {
   RunAttemptId,
   RunId,
   RuntimeRequestId,
+  ThreadMonitorId,
   TurnItemId,
 } from "@t3tools/contracts";
 import * as Cause from "effect/Cause";
@@ -56,6 +60,7 @@ import * as ProviderAdapter from "@t3tools/provider-core/server/ProviderAdapter"
 import type { ProviderInstance } from "@t3tools/provider-core/server/driver";
 import type { ServerProvider } from "@t3tools/contracts";
 import { makeProviderFailure } from "@t3tools/provider-core/server/failure";
+import { notificationTurnItem } from "@t3tools/provider-core/server/notification";
 import {
   makeProviderEventRoutingState,
   type ProviderEventRouteIdentity,
@@ -1806,6 +1811,149 @@ layer("ProviderEventIngestorV2", (it) => {
       assert.deepInclude(yield* projected, { status: "pending", completedAt: null });
       yield* steerUpdated("completed");
       assert.equal((yield* projected)?.status, "completed");
+    }),
+  );
+
+  it.effect("retains the native read for a monitor steer without changing its notification", () =>
+    Effect.gen(function* () {
+      const now = yield* DateTime.now;
+      const allocator = yield* IdAllocator.IdAllocatorV2;
+      const sink = yield* EventSink.EventSinkV2;
+      const projections = yield* ProjectionStore.ProjectionStoreV2;
+      const ingestor = yield* ProviderEventIngestor.ProviderEventIngestorV2;
+      const created = yield* threadCreatedEvent(now);
+      const threadId = created.threadId;
+      const runId = RunId.make("run:monitor");
+      const messageId = MessageId.make("thread-monitor-group:group:continuation");
+      const driver = ProviderDriverKind.make("pi");
+      const providerInstanceId = ProviderInstanceId.make("pi");
+      const providerSessionId = yield* allocator.allocate.providerSession({
+        threadId,
+        providerInstanceId,
+      });
+      const providerThreadId = ProviderThreadId.make("provider-thread:monitor");
+      const providerTurnId = ProviderTurnId.make("provider-turn:monitor");
+      const item = notificationTurnItem(
+        {
+          id: allocator.derive.userTurnItem({ messageId }),
+          threadId,
+          runId,
+          providerThreadId,
+          providerTurnId,
+          nodeId: null,
+          nativeItemRef: null,
+          parentItemId: null,
+          ordinal: 1,
+          status: "completed",
+          title: null,
+          startedAt: now,
+          completedAt: now,
+          updatedAt: now,
+          type: "user_message",
+          inputIntent: "steer",
+          createdBy: "system",
+          creationSource: "server",
+          messageId,
+          text: "Monitor update",
+          attachments: [],
+        },
+        {
+          notification: {
+            source: { kind: "monitor" },
+            summary: "Monitor update",
+            outcome: "updated",
+            systemEvent: {
+              type: "monitor.continuation",
+              deliveryGroupId: "group",
+              grantsAuthorization: false,
+              observationTrust: "untrusted",
+              monitors: [
+                {
+                  monitorId: ThreadMonitorId.make("monitor"),
+                  triggeredAt: DateTime.formatIso(now),
+                  triggerReason: "deadline",
+                  observation: { label: "Timer", summary: null, evidence: null },
+                },
+              ],
+            },
+          },
+        },
+        [],
+      );
+      yield* sink.write({ events: [created] });
+      yield* ingestor.ingestNormalized({
+        threadId,
+        providerSessionId,
+        providerInstanceId,
+        event: {
+          type: "provider_thread.updated",
+          driver,
+          providerThread: {
+            id: providerThreadId,
+            driver,
+            providerInstanceId,
+            providerSessionId,
+            appThreadId: threadId,
+            ownerNodeId: null,
+            nativeThreadRef: null,
+            nativeConversationHeadRef: null,
+            status: "active",
+            firstRunOrdinal: 1,
+            lastRunOrdinal: 1,
+            handoffIds: [],
+            forkedFrom: null,
+            createdAt: now,
+            updatedAt: now,
+          },
+        },
+      });
+      yield* sink.write({
+        commandId: CommandId.make("command:monitor-dispatch"),
+        events: [
+          {
+            id: yield* allocator.allocate.event({ threadId }),
+            type: "turn-item.updated",
+            threadId,
+            runId,
+            providerInstanceId,
+            occurredAt: now,
+            payload: item,
+          },
+        ],
+      });
+      const readItem = projections.getTurnItem({ threadId, itemId: item.id });
+      const before = yield* readItem;
+      const fs = yield* FileSystem.FileSystem;
+      const sql = yield* SqlClient.SqlClient;
+      const readReceipt = Effect.gen(function* () {
+        const path = yield* fs.makeTempFileScoped({ suffix: ".sqlite" });
+        yield* sql`VACUUM INTO ${path}`;
+        using snapshot = new NodeSqlite.DatabaseSync(path, { readOnly: true });
+        return providerReadSteer(snapshot, threadId, runId, messageId);
+      });
+      const steer = (status: "pending" | "completed" | "cancelled", target = runId) =>
+        ingestor.ingestNormalized({
+          threadId,
+          runId: target,
+          providerSessionId,
+          providerInstanceId,
+          event: { type: "steer.updated", threadId, driver, runId: target, messageId, status },
+        });
+      assert.lengthOf(yield* steer("completed", RunId.make("run:other")), 0);
+      assert.lengthOf(yield* steer("pending"), 0);
+      assert.lengthOf(yield* steer("cancelled"), 0);
+      yield* ingestor.ingestNormalized({
+        threadId,
+        runId,
+        providerSessionId,
+        providerInstanceId,
+        event: { type: "turn_item.updated", driver, turnItem: item },
+      });
+      assert.isUndefined(yield* readReceipt);
+      const stored = yield* steer("completed");
+      assert.lengthOf(stored, 1);
+      assert.equal(yield* readReceipt, providerTurnId);
+      assert.deepEqual(yield* readItem, before);
     }),
   );
 

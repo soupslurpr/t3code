@@ -20,7 +20,6 @@
   "eeb7ea62dc4706c1": "T3 Code will use the Windows backend for this launch and retry WSL the next time the app starts.",
   "b5435aa5b470bafd": "WSL backend couldn't start",
   "d82d7c96e1904629": "Falling back to the Windows backend so T3 Code can open. Re-enable the WSL backend from Settings > Sharing & access once the WSL distro is fixed.",
-  "a4acf18834787a4f": "Another T3 Code server, such as the background service, is using this data directory, or an older background service is set up for it. Stop that server or try `t3 update`. If the older launcher cannot update, run `t3 service uninstall` and optionally reinstall with `t3 service install` from a current CLI. Use `npx t3@latest` if `t3` is missing or outdated, and pass `--base-dir` with the service's T3 home to each command. Then reopen T3 Code. You can also set a separate T3CODE_HOME and pair with the running server.",
   "0e306130a55a3954": "The T3 Code background service is using this T3 home (PID {pid}, port {port}, version {version}). Stop it with `t3 service uninstall`, passing `--base-dir` with this T3 home, and reopen T3 Code. You can also set a separate T3CODE_HOME and pair with the running server.",
   "7379a43c1ac009d2": "The T3 Code background service is using this T3 home (PID {pid}, port {port}). Stop it with `t3 service uninstall`, passing `--base-dir` with this T3 home, and reopen T3 Code. You can also set a separate T3CODE_HOME and pair with the running server.",
   "1510c6547cde9c2e": "Another T3 Code server (for example `t3 serve`, or one started over SSH) is using this T3 home (PID {pid}, port {port}, version {version}). If a T3 Code app on another machine started it over SSH, that app restarts it: remove or disconnect that SSH environment there, or quit that app. Then stop the server, and reopen T3 Code. You can also set a separate T3CODE_HOME and pair with the running server.",
@@ -161,5 +160,8 @@
   "d3a62840ed89f07c": "Run commands and transfer files on this desktop",
   "7a33d32200ee3623": "Choose who can run commands and transfer files",
   "5c9c7f2d78c02395": "Choose when command permission expires",
-  "4905f10f8181ab2e": "Remove command permission?"
+  "4905f10f8181ab2e": "Remove command permission?",
+  "2d26168ac5e12f60": "Another T3 Code server is using this T3 home, or a background service is configured for it. To keep it running, set a separate T3CODE_HOME for the desktop and pair with the server. To use this home in the desktop, stop the server first. For a background service, run `t3 service uninstall` on the server’s host using the CLI installed with that service. Pass its T3 home with `--base-dir`. Then reopen T3 Code.",
+  "d0fd5b8b1df16927": "Another T3 Code server is using this distro’s T3 home, or a background service is configured for it. Pair with the running server or stop it first. For a background service, run `t3 service uninstall` inside the distro using the CLI installed with that service. Pass its T3 home with `--base-dir`. Then retry.",
+  "7ef9cef3a67aa6a4": "Built-in updates are disabled for this fork. Update the installed package manually."
 }

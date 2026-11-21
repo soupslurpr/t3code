@@ -1,3 +1,4 @@
+import { forkBuildUpdateBlockReason } from "@t3tools/shared/forkUpdates";
 import {
   ServerSelfUpdateError,
   type DesktopUpdateState,
@@ -153,6 +154,8 @@ export const make = Effect.fn("desktopUpdate.desktopAppUpdate.make")(function* (
 
   const run: DesktopAppUpdate["Service"]["run"] = Effect.fn("desktopUpdate.desktopAppUpdate.run")(
     function* (reportProgress, trackSwitch) {
+      const forkReason = forkBuildUpdateBlockReason();
+      if (forkReason !== undefined) return yield* failWith(forkReason);
       if (!available) {
         return yield* failWith(
           "This server was not started by the T3 Code desktop app, so it cannot drive a desktop update.",
@@ -202,6 +205,8 @@ export const make = Effect.fn("desktopUpdate.desktopAppUpdate.make")(function* (
   const commit: DesktopAppUpdate["Service"]["commit"] = Effect.fn(
     "desktopUpdate.desktopAppUpdate.commit",
   )(function* (requestId, onHandoffAccepted = () => Effect.void) {
+    const forkReason = forkBuildUpdateBlockReason();
+    if (forkReason !== undefined) return yield* failWith(forkReason);
     if (!available) {
       return yield* failWith("This server cannot commit a desktop app update.");
     }

@@ -1,3 +1,4 @@
+import { forkBuildIdentity } from "@t3tools/shared/forkBuildIdentity";
 import {
   EnvironmentId,
   ORCHESTRATION_PROTOCOL_VERSION,
@@ -25,6 +26,8 @@ import * as ProcessRunner from "../processRunner.ts";
 import { isSpeechPlatformSupported } from "../speech/platform.ts";
 import { resolveServerEnvironmentLabel } from "./ServerEnvironmentLabel.ts";
 import { detectServerEnvironmentMachineKind } from "./ServerEnvironmentMachine.ts";
+
+declare const __T3CODE_FORK_REVISION__: string | null;
 
 export class ServerEnvironmentIdPersistenceError extends Schema.TaggedError<ServerEnvironmentIdPersistenceError>()(
   "ServerEnvironmentIdPersistenceError",
@@ -217,6 +220,10 @@ export const make = Effect.gen(function* () {
       ...(machine === null ? {} : { machine }),
     },
     serverVersion: packageJson.version,
+    forkBuild: {
+      channel: forkBuildIdentity.channel,
+      revision: typeof __T3CODE_FORK_REVISION__ === "string" ? __T3CODE_FORK_REVISION__ : null,
+    },
     orchestrationProtocolVersion: ORCHESTRATION_PROTOCOL_VERSION,
     ...(databaseMigration === undefined ? {} : { databaseMigration }),
     capabilities: {

@@ -4,6 +4,7 @@ import { acceptsTrackSwitchRelease } from "@t3tools/shared/cliRelease";
 import { msg } from "gt-react";
 
 import { m, type MessageResolver } from "../../i18n/messages";
+import { forkBuildUpdateBlockReason } from "@t3tools/shared/forkUpdates";
 
 type TrackSwitchBridge = Pick<DesktopBridge, "setUpdateChannel">;
 
@@ -22,6 +23,19 @@ export async function prepareLocalTrackSwitch(
   | { readonly ok: true; readonly local: DesktopUpdateState | null }
   | { readonly ok: false; readonly message: string }
 > {
+  const forkReason = forkBuildUpdateBlockReason();
+  if (forkReason !== undefined) {
+    return input.reinstall
+      ? {
+          ok: false,
+          message: m(
+            msg(
+              "Built-in updates are disabled for this fork. Update the installed package manually.",
+            ),
+          ),
+        }
+      : { ok: true, local: null };
+  }
   let local: DesktopUpdateState;
   try {
     // A build on another track re-checks the feed, older releases allowed down to the checked one.

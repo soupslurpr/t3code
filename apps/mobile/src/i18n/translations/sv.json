@@ -5965,5 +5965,6 @@
   "799b1f45615b2d7f": "Standardåtkomst för T3 Code-klient (filer, Git, terminaler, inställningar, åtkomst) plus skrivbordsvärd.",
   "5558fb18cd9559fd": "Skrivbordsvärd med åtkomst till trådar, förhandsvisningar och terminal-/kommandohantering för den här sessionen.",
   "8a03229c80ce1111": "Skrivbordsvärd med styrning av trådar och förhandsvisningar; utelämnar filbläddring, Git-skrivningar, inställningsändringar och terminalåtkomst för den här sessionen.",
-  "46dc489b1ba06b78": "Det här skrivbordet kommer inte att kunna öppna värdfiler i den inbyggda filvisaren."
+  "46dc489b1ba06b78": "Det här skrivbordet kommer inte att kunna öppna värdfiler i den inbyggda filvisaren.",
+  "f7f00081835db2e6": "Kör felsökningen med kommandoradsverktyget som är installerat på den datorn."
 }

@@ -5959,5 +5959,6 @@
   "799b1f45615b2d7f": "Accès client T3 Code standard (fichiers, Git, terminaux, paramètres, accès) plus hébergement de bureau.",
   "5558fb18cd9559fd": "Hébergement de bureau avec accès aux fils, aperçus et gestion des terminaux/commandes pour cette session.",
   "8a03229c80ce1111": "Hébergement de bureau avec contrôle des fils et aperçus ; omet la navigation de fichiers, les écritures Git, les modifications de paramètres et l’accès aux terminaux pour cette session.",
-  "46dc489b1ba06b78": "Ce bureau ne pourra pas ouvrir les fichiers de l’hôte dans la visionneuse de fichiers intégrée."
+  "46dc489b1ba06b78": "Ce bureau ne pourra pas ouvrir les fichiers de l’hôte dans la visionneuse de fichiers intégrée.",
+  "f7f00081835db2e6": "Lancez le diagnostic avec l’interface en ligne de commande installée sur cette machine."
 }

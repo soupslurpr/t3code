@@ -1,3 +1,4 @@
+import { triageCommandForEnvironment } from "@t3tools/client-runtime/environment";
 import { errorDisplayMessage } from "@t3tools/client-runtime/errors";
 import { pipe } from "effect/Function";
 import {
@@ -11,6 +12,8 @@ import { useGT } from "gt-react-native";
 import { m } from "../../i18n/messages";
 
 import * as Dialog from "../../components/ui/Dialog";
+import { appAtomRegistry } from "../../state/atom-registry";
+import { serverEnvironment } from "../../state/server";
 import { projectEnvironment } from "../../state/projects";
 import { useAtomCommand } from "../../state/use-atom-command";
 import {
@@ -20,8 +23,6 @@ import {
 } from "../../state/use-composer-drafts";
 import { useSelectWorkspaceDetail } from "../layout/workspace/useSelectWorkspaceDetail";
 import { usePrepareTriage } from "./usePrepareTriage";
-
-const CLI_COMMAND = "npx t3 triage";
 
 /**
  * In-app `t3 triage`, as on web: the server writes the session files and
@@ -34,27 +35,32 @@ export function useStartTriage() {
   const prepare = usePrepareTriage();
   const openScratch = useAtomCommand(projectEnvironment.openScratch, { reportFailure: false });
 
-  const fail = (message: string) =>
+  const reportFailure = (message: string, command: string | null) => {
+    if (!command) {
+      Dialog.alert(
+        gt("Could not start triage"),
+        `${message} ${gt("Run triage with the CLI installed on that machine.")}`,
+      );
+      return;
+    }
     Dialog.alert(
       gt("Could not start triage"),
       gt("{message} Run {command} in a terminal on that machine instead.", {
         message,
-        command: CLI_COMMAND,
+        command,
       }),
       [
         {
           text: gt("Copy command"),
           onPress: () =>
-            void Clipboard.setStringAsync(CLI_COMMAND).catch(() =>
-              Dialog.alert(
-                gt("Could not copy"),
-                gt("Type {command} instead.", { command: CLI_COMMAND }),
-              ),
+            void Clipboard.setStringAsync(command).catch(() =>
+              Dialog.alert(gt("Could not copy"), gt("Type {command} instead.", { command })),
             ),
         },
         { text: gt("OK"), style: "cancel" },
       ],
     );
+  };
   const errorMessage = (error: unknown, fallback: string) =>
     error instanceof Error ? (errorDisplayMessage(error, m) ?? error.message) : fallback;
 
@@ -64,6 +70,13 @@ export function useStartTriage() {
   };
 
   return async (environmentId: EnvironmentId) => {
+    const fail = (message: string) =>
+      reportFailure(
+        message,
+        triageCommandForEnvironment(
+          appAtomRegistry.get(serverEnvironment.configValueAtom(environmentId)),
+        ),
+      );
     // If the user goes elsewhere while this waits, the draft stays closed
     // instead of pulling them away. Split view changes params, not the route.
     const startRoute = activeRoute();

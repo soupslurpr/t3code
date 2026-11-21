@@ -5,6 +5,7 @@
   "type": "module",
   "main": "dist-electron/boot.cjs",
   "scripts": {
+    "build:desktop-native": "cargo build --locked --release --manifest-path ../../native/desktop-native/Cargo.toml",
     "ensure:electron": "node scripts/ensure-electron-runtime.mjs",
     "start": "node scripts/start-electron.mjs",
     "test": "vp test run --passWithNoTests",

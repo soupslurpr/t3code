@@ -5959,5 +5959,6 @@
   "799b1f45615b2d7f": "Acceso estándar de cliente de T3 Code (archivos, Git, terminales, ajustes, acceso) más alojamiento de escritorio.",
   "5558fb18cd9559fd": "Alojamiento de escritorio con acceso a hilos, vistas previas y gestión de terminales/comandos para esta sesión.",
   "8a03229c80ce1111": "Alojamiento de escritorio con control de hilos y vistas previas; omite la exploración de archivos, escrituras de Git, cambios de ajustes y acceso a terminales para esta sesión.",
-  "46dc489b1ba06b78": "Este escritorio no podrá abrir archivos del host en el visor de archivos integrado."
+  "46dc489b1ba06b78": "Este escritorio no podrá abrir archivos del host en el visor de archivos integrado.",
+  "f7f00081835db2e6": "Ejecuta el diagnóstico con la CLI instalada en esa máquina."
 }

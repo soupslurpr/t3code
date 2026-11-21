@@ -5967,5 +5967,6 @@
   "799b1f45615b2d7f": "Standard T3 Code client access (files, Git, terminals, settings, access) plus desktop hosting.",
   "5558fb18cd9559fd": "Desktop hosting with thread, preview, and terminal/command-management access for this session.",
   "8a03229c80ce1111": "Desktop hosting with thread and preview control; omits file browsing, Git writes, settings changes, and terminal access for this session.",
-  "46dc489b1ba06b78": "This desktop will not be able to open host files in the built-in file viewer."
+  "46dc489b1ba06b78": "This desktop will not be able to open host files in the built-in file viewer.",
+  "f7f00081835db2e6": "Run triage with the CLI installed on that machine."
 }

@@ -1,4 +1,6 @@
 import type { DesktopBridge, DesktopUpdateState } from "@t3tools/contracts";
+import { bootRecoveryText } from "./bootRecoveryText";
+import { forkBuildIdentity } from "@t3tools/shared/forkBuildIdentity";
 
 const FALLBACK_TRIAGE_COMMAND = "npx t3 triage";
 const DOWNLOAD_URL = "https://t3.codes/download";
@@ -23,18 +25,22 @@ function launcherCommand(launcherPath: string) {
     : `'${launcherPath.replaceAll("'", `'"'"'`)}'`;
 }
 
-/** Desktop can run its bundled launcher without Node; everything else falls back to npx. */
-export async function resolveTriageCommand(bridge: DesktopBridge | undefined) {
+export async function resolveTriageCommand(
+  bridge: DesktopBridge | undefined,
+  forkBuild?: BootErrorEnvironment["forkBuild"],
+) {
   try {
     const state = await bridge?.cliCommand.getState();
     // Windows reports onPath from its PATH entry alone; only an existing launcher proves it runs.
     if (state?.launcherPath) {
-      return state.onPath ? "t3 triage" : `${launcherCommand(state.launcherPath)} triage`;
+      return !forkBuild && state.onPath
+        ? "t3 triage"
+        : `${launcherCommand(state.launcherPath)} triage`;
     }
   } catch (error) {
     console.warn("Could not read the desktop CLI state.", error);
   }
-  return FALLBACK_TRIAGE_COMMAND;
+  return forkBuild ? null : FALLBACK_TRIAGE_COMMAND;
 }
 
 /** The update button only appears when the desktop updater has a newer build to offer. */
@@ -84,6 +90,7 @@ function redact(text: string) {
 }
 
 export interface BootErrorEnvironment {
+  readonly forkBuild?: { readonly channel: string; readonly revision: string | null };
   readonly version: string;
   readonly channel: string;
   readonly surface: "desktop" | "web";
@@ -91,6 +98,34 @@ export interface BootErrorEnvironment {
   readonly userAgent: string;
   readonly time: string;
 }
+
+/* oxlint-disable t3code/no-untranslated-copy -- Startup recovery must render even if the localization runtime fails to load. */
+export function bootRecoveryFor(environment: BootErrorEnvironment, locale = "en") {
+  if (environment.forkBuild) {
+    return {
+      issueUrl: "https://github.com/soupslurpr/t3code/issues/new",
+      reinstall: {
+        href: "https://github.com/soupslurpr/t3code/blob/main/docs/operations/local-arch-package.md",
+        label: bootRecoveryText(locale).guide,
+      },
+    };
+  }
+  const nightly = environment.channel === "nightly";
+  return {
+    issueUrl: ISSUE_URL,
+    reinstall:
+      environment.surface === "desktop"
+        ? {
+            href: nightly ? `${DOWNLOAD_URL}?channel=nightly` : DOWNLOAD_URL,
+            label: nightly
+              ? "Download and reinstall the latest nightly build"
+              : "Download and reinstall T3 Code",
+          }
+        : null,
+  };
+}
+
+/* oxlint-enable t3code/no-untranslated-copy */
 
 /** Plain text that is shown and copied as-is, so users see exactly what they share. */
 export function buildErrorReport(error: unknown, environment: BootErrorEnvironment) {
@@ -113,6 +148,13 @@ export function buildErrorReport(error: unknown, environment: BootErrorEnvironme
   return [
     details,
     "",
+    ...(environment.forkBuild
+      ? [
+          "Repository: soupslurpr/t3code",
+          `Fork channel: ${environment.forkBuild.channel}`,
+          `Fork revision: ${environment.forkBuild.revision ?? "development"}`,
+        ]
+      : []),
     `Version: ${environment.version}`,
     `Channel: ${environment.channel}`,
     `Surface: ${environment.surface}`,
@@ -134,6 +176,14 @@ function readEnvironment(bridge: DesktopBridge | undefined): BootErrorEnvironmen
   const version = import.meta.env.APP_VERSION;
   return {
     version,
+    ...(forkBuildIdentity === undefined
+      ? {}
+      : {
+          forkBuild: {
+            channel: forkBuildIdentity.channel,
+            revision: import.meta.env.T3CODE_FORK_REVISION ?? null,
+          },
+        }),
     channel:
       import.meta.env.VITE_RELEASE_CHANNEL || /-(nightly|preview)\./.exec(version)?.[1] || "stable",
     surface: bridge ? "desktop" : "web",
@@ -264,6 +314,9 @@ export function showBootError(error: unknown) {
 
   const bridge = window.desktopBridge;
   const environment = readEnvironment(bridge);
+  const documentLanguage = document.documentElement?.lang;
+  const locale =
+    documentLanguage && documentLanguage !== "en" ? documentLanguage : navigator.language;
   const offline = !bridge && navigator.onLine === false;
 
   const status = element("span", { className: "boot-error-sr" });
@@ -294,9 +347,11 @@ export function showBootError(error: unknown) {
   reload.addEventListener("click", () => window.location.reload());
   const update = element("button", { id: "boot-error-update", type: "button", hidden: true });
   const updateNote = element("p", { id: "boot-error-update-note", hidden: true });
-  if (bridge) mountUpdateButton(bridge, update, updateNote, announce);
+  if (bridge && !environment.forkBuild) mountUpdateButton(bridge, update, updateNote, announce);
 
-  const command = element("code", { textContent: FALLBACK_TRIAGE_COMMAND });
+  const command = element("code", {
+    textContent: environment.forkBuild ? "" : FALLBACK_TRIAGE_COMMAND,
+  });
   const copyCommand = element("button", {
     className: "boot-error-icon",
     type: "button",
@@ -325,7 +380,21 @@ export function showBootError(error: unknown) {
       },
     ),
   );
-  void resolveTriageCommand(bridge).then((value) => (command.textContent = value));
+  const commandRow = element("div", { id: "boot-error-command" }, [command, copyCommand]);
+  const triage = element("div", {}, [
+    element("p", {
+      textContent: environment.forkBuild
+        ? bootRecoveryText(locale).triage
+        : "Run this on the computer that runs T3 Code. Your agent can check the local logs and help you file a bug report.",
+    }),
+    ...(environment.forkBuild ? [] : [commandRow]),
+  ]);
+  void resolveTriageCommand(bridge, environment.forkBuild).then((value) => {
+    if (value !== null) {
+      command.textContent = value;
+      if (environment.forkBuild) triage.append(commandRow);
+    }
+  });
 
   let report = "(no error message)";
   try {
@@ -350,7 +419,8 @@ export function showBootError(error: unknown) {
     ),
   );
 
-  const issue = new URL(ISSUE_URL);
+  const recovery = bootRecoveryFor(environment, locale);
+  const issue = new URL(recovery.issueUrl);
   issue.searchParams.set("template", "bug_report.yml");
   issue.searchParams.set("title", "T3 Code failed to start");
   issue.searchParams.set("area", "apps/web");
@@ -358,27 +428,10 @@ export function showBootError(error: unknown) {
   issue.searchParams.set("environment", `${environment.surface}, ${environment.platform}`);
   const link = (href: string, textContent: string) =>
     element("a", { href, textContent, target: "_blank", rel: "noreferrer" });
-  const nightly = environment.channel === "nightly";
-
   const more = element("details", { open: isRepeatFailure(Date.now()) }, [
     element("summary", { textContent: "More options if it keeps failing" }),
-    ...(bridge
-      ? [
-          link(
-            nightly ? `${DOWNLOAD_URL}?channel=nightly` : DOWNLOAD_URL,
-            nightly
-              ? "Download and reinstall the latest nightly build"
-              : "Download and reinstall T3 Code",
-          ),
-        ]
-      : []),
-    element("div", {}, [
-      element("p", {
-        textContent:
-          "Run this on the computer that runs T3 Code. Your agent can check the local logs and help you file a bug report.",
-      }),
-      element("div", { id: "boot-error-command" }, [command, copyCommand]),
-    ]),
+    ...(recovery.reinstall ? [link(recovery.reinstall.href, recovery.reinstall.label)] : []),
+    triage,
     element("div", {}, [
       details,
       element("p", {

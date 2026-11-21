@@ -15,6 +15,7 @@ import { Command, Flag } from "effect/cli";
 import { ChildProcess, ChildProcessSpawner } from "effect/process";
 
 import * as NetService from "@t3tools/shared/Net";
+import { verifyLinuxComputerResources } from "./lib/linux-computer-resources.ts";
 import * as HostProcess from "@t3tools/shared/HostProcess";
 import { windowsSystemTar } from "./lib/windows-tar.ts";
 import { FetchHttpClient, HttpClient, HttpClientRequest } from "effect/http";
@@ -97,6 +98,7 @@ const smokeCliArchive = Effect.fn("smokeCliArchive")(function* (input: {
   }
   const contentDir = path.join(scratch, root);
   const executable = path.join(contentDir, platform === "win32" ? "t3.exe" : "t3");
+  const architecture = yield* HostProcess.Architecture;
   const bundledLibatomic = path.join(contentDir, "lib/libatomic.so.1");
   for (const required of [
     executable,
@@ -114,6 +116,7 @@ const smokeCliArchive = Effect.fn("smokeCliArchive")(function* (input: {
 
   // The runner has libatomic installed; fresh Ubuntu servers do not.
   if (platform === "linux") {
+    yield* verifyLinuxComputerResources(contentDir, architecture);
     const ldd = yield* spawner.string(ChildProcess.make("ldd", [executable]));
     // Older glibc prints the path as given, newer prints it resolved; compare both resolved.
     const loaded = /libatomic\.so\.1 => (\/.*) \(0x[0-9a-f]+\)/.exec(ldd)?.[1];

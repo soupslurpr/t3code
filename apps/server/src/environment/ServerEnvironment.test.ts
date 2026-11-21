@@ -108,6 +108,7 @@ it.layer(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer))("ServerEnvironmen
           Effect.provideService(HostProcess.IsExecutable, false),
           Effect.provideService(HostProcess.Environment, {}),
         );
+        expect(descriptor.forkBuild).toEqual({ channel: "soupslurpr", revision: null });
         expect(descriptor.capabilities.serverInstallation).toEqual(
           mode === "web" && platform !== "win32" ? { kind: "npm-global", prefix } : undefined,
         );

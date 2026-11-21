@@ -214,6 +214,145 @@ const fakeServiceUnit = (
   });
 
 it.layer(NodeServices.layer)("service state persistence", (it) => {
+  it.effect.each([false, true])(
+    "refuses cached pending recovery with existing backup %s without mutation or children",
+    (existingBackup) =>
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const path = yield* Path.Path;
+        forkGuard.enabled = true;
+        yield* Effect.addFinalizer(() =>
+          Effect.sync(() => {
+            forkGuard.enabled = false;
+          }),
+        );
+        const root = yield* fs.makeTempDirectoryScoped({ prefix: "t3-fork-pending-" });
+        const statePath = path.join(root, "runtime", "service-state.json");
+        const dbPath = path.join(root, "state.sqlite");
+        for (const version of ["1.0.0", "1.1.0"]) {
+          yield* writeFakeRuntime(
+            fs,
+            path,
+            path.join(root, "runtime", "versions", version),
+            "process.exit(1);",
+          );
+        }
+        yield* fs.writeFileString(dbPath, "untouched database fixture");
+        yield* fs.writeFileString(
+          path.join(root, "runtime", SERVICE_STOP_MARKER_FILE),
+          "preserve stop marker",
+        );
+        yield* Effect.promise(() =>
+          writeServiceState(statePath, {
+            protocol: SERVICE_LAUNCHER_PROTOCOL,
+            activeVersion: "1.0.0",
+            update: {
+              id: "pending-fork",
+              fromVersion: "1.0.0",
+              targetVersion: "1.1.0",
+              dbPath,
+              status: "pending",
+            },
+          }),
+        );
+        const backup = path.join(root, "runtime", "db-backup", "pending-fork");
+        if (existingBackup) {
+          yield* fs.makeDirectory(backup, { recursive: true });
+          yield* fs.writeFileString(path.join(backup, "database"), "preserve previous database");
+          yield* fs.writeFileString(
+            path.join(backup, ".restore-pending"),
+            "preserve restore marker",
+          );
+        }
+        const before = yield* fs.readFileString(statePath);
+        const childrenBefore = spawnedChildren.length;
+        const launcher = new Launcher(
+          root,
+          yield* Effect.promise(() => readServiceState(statePath)),
+        );
+        const failure = yield* Effect.promise(() =>
+          launcher.run().then(
+            () => "unexpected completion",
+            (error: unknown) => (error instanceof Error ? error.message : String(error)),
+          ),
+        );
+        assert.include(failure, "fork");
+        assert.equal(spawnedChildren.length, childrenBefore);
+        assert.equal(yield* fs.readFileString(statePath), before);
+        assert.equal(yield* fs.readFileString(dbPath), "untouched database fixture");
+        assert.equal(
+          yield* fs.readFileString(path.join(root, "runtime", SERVICE_STOP_MARKER_FILE)),
+          "preserve stop marker",
+        );
+        if (existingBackup) {
+          assert.equal(
+            yield* fs.readFileString(path.join(backup, "database")),
+            "preserve previous database",
+          );
+          assert.equal(
+            yield* fs.readFileString(path.join(backup, ".restore-pending")),
+            "preserve restore marker",
+          );
+        } else {
+          assert.isFalse(yield* fs.exists(path.join(root, "runtime", "db-backup")));
+        }
+      }),
+  );
+
+  it.effect("rejects an active child's cached update before pending state or replacement", () =>
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      const path = yield* Path.Path;
+      forkGuard.enabled = true;
+      yield* Effect.addFinalizer(() =>
+        Effect.sync(() => {
+          forkGuard.enabled = false;
+        }),
+      );
+      const root = yield* fs.makeTempDirectoryScoped({ prefix: "t3-fork-request-" });
+      const statePath = path.join(root, "runtime", "service-state.json");
+      const dbPath = path.join(root, "state.sqlite");
+      const receipt = path.join(root, "request-result.json");
+      yield* writeFakeRuntime(
+        fs,
+        path,
+        path.join(root, "runtime", "versions", "1.0.0"),
+        `
+import { writeFileSync } from "node:fs";
+process.once("message", (reply) => {
+  writeFileSync(${JSON.stringify(receipt)}, JSON.stringify(reply));
+  process.exit(0);
+});
+process.send({ type: "request-update", targetVersion: "1.1.0", dbPath: ${JSON.stringify(dbPath)} });
+`,
+      );
+      yield* writeFakeRuntime(
+        fs,
+        path,
+        path.join(root, "runtime", "versions", "1.1.0"),
+        "process.exit(1);",
+      );
+      yield* fs.writeFileString(dbPath, "unchanged source");
+      yield* Effect.promise(() =>
+        writeServiceState(statePath, {
+          protocol: SERVICE_LAUNCHER_PROTOCOL,
+          activeVersion: "1.0.0",
+        }),
+      );
+      const before = yield* fs.readFileString(statePath);
+      const childrenBefore = spawnedChildren.length;
+      const launcher = new Launcher(root, yield* Effect.promise(() => readServiceState(statePath)));
+      yield* Effect.promise(() => launcher.run().catch(() => undefined));
+      const result = JSON.parse(yield* fs.readFileString(receipt));
+      assert.equal(result.type, "update-rejected");
+      assert.include(result.reason, "fork");
+      assert.equal(spawnedChildren.length, childrenBefore + 1);
+      assert.equal(yield* fs.readFileString(statePath), before);
+      assert.equal(yield* fs.readFileString(dbPath), "unchanged source");
+      assert.isFalse(yield* fs.exists(path.join(root, "runtime", "db-backup")));
+    }),
+  );
+
   it.effect.each([
     "startup",
     "log write fails",
@@ -2111,3 +2250,11 @@ setInterval(() => {}, 1_000);
     }),
   );
 });
+
+// The original rollback fixtures intentionally use opaque database bytes. New fork tests use the real guard.
+const forkGuard = vi.hoisted(() => ({ enabled: false }));
+vi.mock("@t3tools/shared/forkBuildIdentity", () => ({
+  get forkBuildIdentity() {
+    return forkGuard.enabled ? { channel: "soupslurpr" } : undefined;
+  },
+}));

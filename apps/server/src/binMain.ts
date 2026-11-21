@@ -1,10 +1,27 @@
+import { forkBuildIdentity } from "@t3tools/shared/forkBuildIdentity";
+import packageJson from "../package.json" with { type: "json" };
 import { enableCliCompileCache } from "./cliCompileCache.ts";
+
+declare const __T3CODE_FORK_REVISION__: string | null;
 
 // Packaged builds load this graph with require(esm): top-level await anywhere in it breaks them.
 // ACP agents spawn `acp-mcp-bridge` per session and `acp-mcp-call` per tool call, so those fast
 // paths dispatch before the full CLI module graph (seconds of evaluation) loads.
 export async function runCliCommand() {
   const command = process.argv[2];
+  if (command === "__ssh-fork-identity") {
+    const revision = typeof __T3CODE_FORK_REVISION__ === "string" ? __T3CODE_FORK_REVISION__ : null;
+    if (
+      forkBuildIdentity === undefined ||
+      (process.argv[3] !== undefined && process.argv[3] !== revision)
+    )
+      process.exitCode = 1;
+    else
+      process.stdout.write(
+        `${forkBuildIdentity.repository} ${forkBuildIdentity.channel} ${packageJson.version}\n`,
+      );
+    return;
+  }
   // Install the socket guard before importing code that can open outbound connections.
   const { ignoreMacosTypeOfServiceEinval } = await import("./outboundHttp.ts");
   ignoreMacosTypeOfServiceEinval();

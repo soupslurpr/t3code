@@ -1,6 +1,7 @@
 import {
   NodeId,
   CommandId,
+  EventId,
   OrchestrationV2DomainEvent,
   OrchestrationV2StoredEvent,
   type OrchestrationV2PlanArtifact,
@@ -657,8 +658,47 @@ export const layer: Layer.Layer<
                 threadId: input.event.threadId,
                 itemId: idAllocator.derive.userTurnItem({ messageId: input.event.messageId }),
               });
+              if (!item || item.runId !== input.event.runId) return [];
+              if (item.type === "notification") {
+                if (
+                  item.source.kind !== "monitor" ||
+                  item.systemEvent?.type !== "monitor.continuation" ||
+                  input.event.messageId !==
+                    `thread-monitor-group:${item.systemEvent.deliveryGroupId}:continuation` ||
+                  input.threadId !== item.threadId ||
+                  (input.runId !== undefined && input.runId !== item.runId) ||
+                  item.providerTurnId === null ||
+                  item.providerThreadId === null ||
+                  input.event.status !== "completed"
+                )
+                  return [];
+                const { providerThreads } = yield* projections.getThreadRecords(
+                  item.threadId,
+                  ["providerThreads"],
+                  {
+                    providerThreadIds: [item.providerThreadId],
+                  },
+                );
+                const owner = providerThreads[0];
+                if (
+                  owner?.driver !== input.event.driver ||
+                  owner.providerInstanceId !== input.providerInstanceId ||
+                  owner.providerSessionId !== input.providerSessionId
+                )
+                  return [];
+                // The notification already reads completed on dispatch. Retain the native read
+                // separately from ordinary provider snapshots while replaying the same projection.
+                const read = yield* makeDomainEvent(input, {
+                  type: "turn-item.updated",
+                  threadId: item.threadId,
+                  runId: item.runId,
+                  nodeId: item.nodeId,
+                  payload: item,
+                });
+                return [{ ...read, id: EventId.make(`${read.id}:monitor-steer-read`) }];
+              }
               if (
-                item?.type !== "user_message" ||
+                item.type !== "user_message" ||
                 item.status === input.event.status ||
                 (item.status !== "pending" && item.status !== "completed")
               ) {
@@ -916,12 +956,16 @@ export const layer: Layer.Layer<
                   });
                 }),
               ),
-              (effect) =>
-                input.event.type === "app_thread.created"
-                  ? threadCommands.withLock(input.event.appThread.id, effect)
-                  : input.event.type === "thread_model_selection.updated"
-                    ? threadCommands.withLock(input.event.threadId, effect)
-                    : effect,
+              (effect) => {
+                if (input.event.type === "app_thread.created")
+                  return threadCommands.withLock(input.event.appThread.id, effect);
+                if (input.event.type === "thread_model_selection.updated")
+                  return threadCommands.withLock(input.event.threadId, effect);
+                // A queued follow-up can move this message to a new run while its native read arrives.
+                if (input.event.type === "steer.updated")
+                  return threadCommands.withLock(input.event.threadId, effect);
+                return effect;
+              },
             ),
         ),
     });

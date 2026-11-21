@@ -1,6 +1,8 @@
 import {
+  AuthStandardClientScopes,
   DESKTOP_UPDATE_IN_PROGRESS_MARKER_FILE,
   DESKTOP_UPDATE_IN_PROGRESS_TTL_MS,
+  ExecutionEnvironmentDescriptor,
 } from "@t3tools/contracts";
 import type {
   DesktopSshEnvironmentBootstrap,
@@ -8,6 +10,7 @@ import type {
 } from "@t3tools/contracts";
 import { waitForHttpReady as waitForHttpReadyShared } from "@t3tools/shared/httpReadiness";
 import { cliReleaseDownloadBaseUrl } from "@t3tools/shared/cliRelease";
+import { forkBuildIdentity } from "@t3tools/shared/forkBuildIdentity";
 import * as KeyedLock from "@t3tools/shared/KeyedLock";
 import * as NetService from "@t3tools/shared/Net";
 import { extractJsonObject, fromLenientJson } from "@t3tools/shared/schemaJson";
@@ -25,10 +28,11 @@ import * as Schedule from "effect/Schedule";
 import * as Schema from "effect/Schema";
 import * as Scope from "effect/Scope";
 import * as Stream from "effect/Stream";
-import { HttpClient } from "effect/http";
+import { HttpClient, HttpClientResponse } from "effect/http";
 import { ChildProcess, ChildProcessSpawner } from "effect/process";
 
 import * as SshAuth from "./auth.ts";
+import { buildForkRunner, forkSshRecovery, type RunningForkBuild } from "./forkRunner.ts";
 import {
   baseSshArgs,
   buildSshHostSpecEffect,
@@ -159,6 +163,8 @@ function sshRunnerLogFields(runner: RemoteT3RunnerOptions | undefined) {
     return { runner: "node-script", nodeScriptPath: runner.nodeScriptPath.trim() };
   }
   if (runner?.archiveVersion?.trim()) {
+    if (forkBuildIdentity !== undefined)
+      return { runner: "installed-fork", version: runner.archiveVersion.trim() };
     return { runner: "archive", archiveVersion: runner.archiveVersion.trim() };
   }
   return { runner: "archive" };
@@ -180,7 +186,7 @@ interface SshAuthAttemptInput<T> extends SshAuthOperationInput<T> {
 export interface SshEnvironmentManagerShape {
   readonly ensureEnvironment: (
     target: DesktopSshEnvironmentTarget,
-    options?: { readonly issuePairingToken?: boolean },
+    options?: { readonly issuePairingToken?: boolean; readonly userDesktopId?: string | undefined },
   ) => Effect.Effect<
     DesktopSshEnvironmentBootstrap,
     SshEnvironmentEffectError,
@@ -202,7 +208,12 @@ const RemotePairingResult = Schema.Struct({
   credential: Schema.String,
 });
 
-const decodeRemoteLaunchResult = Schema.decodeEffect(fromLenientJson(RemoteLaunchResult));
+const ExistingRemoteRuntime = Schema.Struct({
+  existingRuntime: Schema.Struct({ pid: Schema.Int, port: Schema.Int, origin: Schema.String }),
+});
+const decodeRemoteLaunchResult = Schema.decodeEffect(
+  fromLenientJson(Schema.Union([RemoteLaunchResult, ExistingRemoteRuntime])),
+);
 const decodeRemotePairingResult = Schema.decodeEffect(fromLenientJson(RemotePairingResult));
 
 const decodeRemoteJsonOutput = <A, E>(
@@ -644,12 +655,27 @@ cat >"$RUNNER_NEXT" <<'SH'
 SH
 chmod 700 "$RUNNER_NEXT"
 T3_ARCHIVE_MODE=@@T3_ARCHIVE_MODE@@
-if [ "$T3_ARCHIVE_MODE" = "1" ]; then
+T3_FORK_MODE=@@T3_FORK_MODE@@
+if [ "$T3_FORK_MODE" = "1" ]; then
+  set --
+  . "$RUNNER_NEXT"
+  if ! select_fork_cli; then
+    if [ -f "$DEFAULT_RUNTIME_FILE" ] && [ -s "$DEFAULT_RUNTIME_FILE" ]; then
+      printf '{"existingRuntime":'
+      head -c 65536 "$DEFAULT_RUNTIME_FILE"
+      printf '}\\n'
+      exit 0
+    fi
+    printf '%s\\n' @@T3_FORK_RECOVERY@@ >&2
+    exit 1
+  fi
+elif [ "$T3_ARCHIVE_MODE" = "1" ]; then
   # The archive ships the helpers below inside the executable; the remote
   # needs no Node at all. Resolving the runner once here also downloads the
   # archive before the port and readiness probes rely on it.
   "$RUNNER_NEXT" --version >/dev/null
-elif ! ensure_remote_node_path; then
+fi
+if [ "$T3_ARCHIVE_MODE" = "0" ] && ! ensure_remote_node_path; then
   if ! command -v node >/dev/null 2>&1; then
     printf 'Remote host is missing node on PATH. Install Node or configure a supported version manager for non-interactive shells.\\n' >&2
   fi
@@ -712,9 +738,14 @@ if [ -n "$LAUNCHER_ID" ] && [ -n "$RECORDED_LAUNCHER" ] && [ "$RECORDED_LAUNCHER
 elif [ -n "$LAUNCHER_ID" ]; then
   printf '%s\\n' "$LAUNCHER_ID" >"$STATE_DIR/launcher"
 fi
+remote_helper() {
+  if [ "$T3_FORK_MODE" = "1" ]; then (fork_cli __ssh-helper "$@")
+  else "$RUNNER_FILE" __ssh-helper "$@"
+  fi
+}
 pick_port() {
   if [ "$T3_ARCHIVE_MODE" = "1" ]; then
-    "$RUNNER_FILE" __ssh-helper pick-port "$PORT_FILE" "@@T3_DEFAULT_REMOTE_PORT@@" "@@T3_REMOTE_PORT_SCAN_WINDOW@@"
+    remote_helper pick-port "$PORT_FILE" "@@T3_DEFAULT_REMOTE_PORT@@" "@@T3_REMOTE_PORT_SCAN_WINDOW@@"
     return
   fi
   node - "$PORT_FILE" "@@T3_DEFAULT_REMOTE_PORT@@" "@@T3_REMOTE_PORT_SCAN_WINDOW@@" <<'NODE'
@@ -723,7 +754,7 @@ NODE
 }
 wait_ready() {
   if [ "$T3_ARCHIVE_MODE" = "1" ]; then
-    "$RUNNER_FILE" __ssh-helper wait-ready "$REMOTE_PORT" "$1" "@@T3_READY_PROBE_TIMEOUT_MS@@"
+    remote_helper wait-ready "$REMOTE_PORT" "$1" "@@T3_READY_PROBE_TIMEOUT_MS@@"
     return
   fi
   node - "$REMOTE_PORT" "$1" "@@T3_READY_PROBE_TIMEOUT_MS@@" <<'NODE'
@@ -748,8 +779,9 @@ server_running() {
 }
 # An older client replacing a same-or-newer server would run below the database's migrations.
 keeps_running_server() {
+  [ "$T3_FORK_MODE" = "0" ] || return 0
   [ "$T3_ARCHIVE_MODE" = "1" ] &&
-    "$RUNNER_FILE" __ssh-helper keep-server "$DEFAULT_RUNTIME_FILE" "$REMOTE_PID" >/dev/null 2>&1
+    remote_helper keep-server "$DEFAULT_RUNTIME_FILE" "$REMOTE_PID" >/dev/null 2>&1
 }
 @@T3_MANAGED_SERVER_RUNNING_SCRIPT@@
 # The server publishes its runtime record only after it answers, so one that
@@ -767,7 +799,7 @@ managed_server_stopping() {
 # it stops or idles behind another server.
 home_owned() {
   if [ "$T3_ARCHIVE_MODE" = "1" ]; then
-    "$RUNNER_FILE" __ssh-helper home-owned "$DEFAULT_SERVER_HOME" 2>/dev/null
+    remote_helper home-owned "$DEFAULT_SERVER_HOME" 2>/dev/null
     return
   fi
   node - "$DEFAULT_SERVER_HOME" 2>/dev/null <<'NODE'
@@ -796,7 +828,7 @@ NODE
 }
 resolve_default_runtime_port() {
   if [ "$T3_ARCHIVE_MODE" = "1" ]; then
-    "$RUNNER_FILE" __ssh-helper runtime-port "$DEFAULT_RUNTIME_FILE"
+    remote_helper runtime-port "$DEFAULT_RUNTIME_FILE"
     return
   fi
   node - "$DEFAULT_RUNTIME_FILE" <<'NODE'
@@ -823,7 +855,7 @@ NODE
 # This script ships with the SSH client; older clients do not honor this marker.
 update_remaining() {
   if [ "$T3_ARCHIVE_MODE" = "1" ]; then
-    "$RUNNER_FILE" __ssh-helper update-remaining "$DEFAULT_SERVER_HOME/runtime/@@T3_UPDATE_MARKER_FILE@@"
+    remote_helper update-remaining "$DEFAULT_SERVER_HOME/runtime/@@T3_UPDATE_MARKER_FILE@@"
     return
   fi
   node - "$DEFAULT_SERVER_HOME/runtime/@@T3_UPDATE_MARKER_FILE@@" <<'NODE'
@@ -1028,7 +1060,12 @@ if [ -z "$REMOTE_PORT" ]; then
   # earlier launch can still hold the old log open and keep writing to it.
   rm -f "$LOG_FILE"
   (umask 077 && : >"$LOG_FILE")
-  nohup env T3CODE_NO_BROWSER=1 "$RUNNER_FILE" serve --host 127.0.0.1 --port "$REMOTE_PORT" --base-dir "$DEFAULT_SERVER_HOME" >>"$LOG_FILE" 2>&1 < /dev/null &
+  set -- "$RUNNER_FILE"
+  if [ "$T3_FORK_MODE" = "1" ]; then
+    set -- "$T3_EXE"
+    if [ -n "$T3_ENTRY" ]; then set -- "$@" "$T3_ENTRY"; fi
+  fi
+  nohup env T3CODE_NO_BROWSER=1 "$@" serve --host 127.0.0.1 --port "$REMOTE_PORT" --base-dir "$DEFAULT_SERVER_HOME" >>"$LOG_FILE" 2>&1 < /dev/null &
   REMOTE_PID="$!"
   printf '%s\\n' "$REMOTE_PID" >"$PID_FILE"
   printf '%s\\n' "$REMOTE_PORT" >"$PORT_FILE"
@@ -1076,20 +1113,6 @@ fi
 printf '{"remotePort":%s,"serverKind":"%s"}\\n' "$REMOTE_PORT" "\${REMOTE_MANAGED:-managed}"
 `;
 
-const REMOTE_PAIRING_SCRIPT = `set -eu
-STATE_DIR="$HOME/.t3/ssh-launch/@@T3_STATE_KEY@@"
-DEFAULT_SERVER_HOME="$HOME/.t3"
-RUNNER_FILE="$STATE_DIR/run-t3.sh"
-@@T3_ENSURE_T3_HOME_SCRIPT@@
-mkdir -p "$STATE_DIR"
-cat >"$RUNNER_FILE" <<'SH'
-@@T3_RUNNER_SCRIPT@@
-SH
-chmod 700 "$RUNNER_FILE"
-PAIRING_BASE_DIR="$DEFAULT_SERVER_HOME"
-"$RUNNER_FILE" auth pairing create --base-dir "$PAIRING_BASE_DIR" --json
-`;
-
 const REMOTE_STOP_SCRIPT = `set -eu
 STATE_DIR="$HOME/.t3/ssh-launch/@@T3_STATE_KEY@@"
 PID_FILE="$STATE_DIR/pid"
@@ -1104,6 +1127,7 @@ if [ -n "$LAUNCHER_ID" ] && [ -n "$RECORDED_LAUNCHER" ] && [ "$RECORDED_LAUNCHER
 fi
 REMOTE_MANAGED="$(cat "$MANAGED_FILE" 2>/dev/null || true)"
 REMOTE_PID="$(cat "$PID_FILE" 2>/dev/null || true)"
+if [ "@@T3_EXTERNAL_ONLY@@" = "1" ] && [ "$REMOTE_MANAGED" != "external" ]; then exit 0; fi
 @@T3_MANAGED_SERVER_RUNNING_SCRIPT@@
 if [ "$REMOTE_MANAGED" != "external" ] && managed_server_running "$REMOTE_PID"; then
   kill "$REMOTE_PID" 2>/dev/null || true
@@ -1153,7 +1177,10 @@ export class SshMissingRunnerError extends Schema.TaggedError<SshMissingRunnerEr
   }
 }
 
-export function buildRemoteT3RunnerScript(input?: RemoteT3RunnerOptions): string {
+export function buildRemoteT3RunnerScript(
+  input?: RemoteT3RunnerOptions,
+  runningBuild?: RunningForkBuild,
+): string {
   const nodeScriptPath = input?.nodeScriptPath?.trim() || "";
   const archiveVersion = input?.archiveVersion?.trim() || "";
   if (nodeScriptPath === "" && archiveVersion === "") {
@@ -1161,6 +1188,14 @@ export function buildRemoteT3RunnerScript(input?: RemoteT3RunnerOptions): string
   }
   if (archiveVersion !== "" && !EXACT_ARCHIVE_VERSION.test(archiveVersion)) {
     throw new SshInvalidArchiveVersionError({ archiveVersion });
+  }
+  if (forkBuildIdentity !== undefined) {
+    return buildForkRunner({
+      nodeEnv: buildRemoteNodeEnvScript(input),
+      nodeScriptPath,
+      version: archiveVersion,
+      runningBuild,
+    });
   }
   const releaseBaseUrl = cliReleaseDownloadBaseUrl("", input?.releaseBaseUrl ?? undefined).replace(
     /\/v$/u,
@@ -1194,6 +1229,8 @@ export function buildRemoteLaunchScript(input?: RemoteT3RunnerOptions): string {
     T3_UPDATE_TTL_MS: String(DESKTOP_UPDATE_IN_PROGRESS_TTL_MS),
     T3_UPDATE_TTL_SECONDS: String(DESKTOP_UPDATE_IN_PROGRESS_TTL_MS / 1000),
     T3_ARCHIVE_MODE: isNodeScriptRunner(input) ? "0" : "1",
+    T3_FORK_MODE: forkBuildIdentity === undefined ? "0" : "1",
+    T3_FORK_RECOVERY: shellSingleQuote(forkSshRecovery),
     T3_NODE_ENV_SCRIPT: buildRemoteNodeEnvScript(input),
     T3_RUNNER_SCRIPT: stripTrailingNewlines(buildRemoteT3RunnerScript(input)),
     T3_PICK_PORT_SCRIPT: stripTrailingNewlines(REMOTE_PICK_PORT_SCRIPT),
@@ -1212,21 +1249,34 @@ export function buildRemoteLaunchScript(input?: RemoteT3RunnerOptions): string {
   });
 }
 
-function buildRemotePairingScript(stateKey: string, input?: RemoteT3RunnerOptions): string {
-  return applyScriptPlaceholders(REMOTE_PAIRING_SCRIPT, {
-    T3_STATE_KEY: stateKey,
-    T3_ENSURE_T3_HOME_SCRIPT: REMOTE_ENSURE_T3_HOME_SCRIPT,
-    T3_RUNNER_SCRIPT: stripTrailingNewlines(buildRemoteT3RunnerScript(input)),
-  });
+function buildRemotePairingScript(
+  input?: RemoteT3RunnerOptions,
+  runningBuild?: RunningForkBuild,
+  userDesktopId?: string,
+): string {
+  const enrollment =
+    userDesktopId === undefined
+      ? ""
+      : [
+          " --user-desktop-id",
+          shellSingleQuote(userDesktopId),
+          ...AuthStandardClientScopes.map((scope) => `--scope ${shellSingleQuote(scope)}`),
+        ].join(" ");
+  return `${REMOTE_ENSURE_T3_HOME_SCRIPT}\nset -- auth pairing create --base-dir "$HOME/.t3" --json${enrollment}\n${buildRemoteT3RunnerScript(input, runningBuild)}`;
 }
 
 // Launcher IDs are interpolated into remote shell commands, so only hex passes.
 const validLauncherId = (launcherId: string | null | undefined) =>
   typeof launcherId === "string" && /^[0-9a-f]{32}$/u.test(launcherId) ? launcherId : null;
 
-function buildRemoteStopScript(stateKey: string, launcherId: string | null): string {
+function buildRemoteStopScript(
+  stateKey: string,
+  externalOnly: boolean,
+  launcherId: string | null,
+): string {
   return applyScriptPlaceholders(REMOTE_STOP_SCRIPT, {
     T3_STATE_KEY: stateKey,
+    T3_EXTERNAL_ONLY: externalOnly ? "1" : "0",
     T3_LAUNCHER_ID: launcherId ?? "",
     T3_MANAGED_SERVER_RUNNING_SCRIPT: REMOTE_MANAGED_SERVER_RUNNING_SCRIPT,
   });
@@ -1270,9 +1320,10 @@ export const launchOrReuseRemoteServer = Effect.fn("ssh/tunnel.launchOrReuseRemo
     const result = yield* runSshCommand(target, {
       remoteCommandArgs: remoteLoginShellArgs(launchArgs),
       stdin: buildRemoteLaunchScript(runner),
-      timeoutMs: isNodeScriptRunner(runner)
-        ? REMOTE_LAUNCH_TIMEOUT_MS
-        : REMOTE_ARCHIVE_LAUNCH_TIMEOUT_MS,
+      timeoutMs:
+        isNodeScriptRunner(runner) || forkBuildIdentity !== undefined
+          ? REMOTE_LAUNCH_TIMEOUT_MS
+          : REMOTE_ARCHIVE_LAUNCH_TIMEOUT_MS,
       ...(input?.authSecret === undefined ? {} : { authSecret: input.authSecret }),
       ...(input?.batchMode === undefined ? {} : { batchMode: input.batchMode }),
       ...(input?.interactiveAuth === undefined ? {} : { interactiveAuth: input.interactiveAuth }),
@@ -1287,12 +1338,35 @@ export const launchOrReuseRemoteServer = Effect.fn("ssh/tunnel.launchOrReuseRemo
       Effect.mapError(
         (cause) =>
           new SshLaunchError({
-            message: "SSH launch returned unparseable output.",
+            message:
+              forkBuildIdentity === undefined
+                ? "SSH launch returned unparseable output."
+                : `SSH launch returned unparseable output. ${forkSshRecovery}`,
             stdout: result.stdout,
             cause,
           }),
       ),
     );
+    if ("existingRuntime" in parsed) {
+      const { pid, port, origin } = parsed.existingRuntime;
+      if (
+        pid <= 0 ||
+        port <= 0 ||
+        port > 65535 ||
+        ![`http://127.0.0.1:${port}`, `http://localhost:${port}`].includes(origin)
+      ) {
+        return yield* new SshLaunchError({
+          message: `Invalid remote runtime record. ${forkSshRecovery}`,
+          stdout: "",
+        });
+      }
+      yield* runSshCommand(target, {
+        ...input,
+        remoteCommandArgs: remoteLoginShellArgs(),
+        stdin: `kill -0 ${pid} 2>/dev/null || { printf '%s\\n' ${shellSingleQuote(forkSshRecovery)} >&2; exit 1; }`,
+      });
+      return { remotePort: port, remoteServerKind: "external" };
+    }
     if (!Number.isInteger(parsed.remotePort)) {
       return yield* new SshLaunchError({
         message: `SSH launch returned an invalid remote port: ${String(parsed.remotePort)}.`,
@@ -1312,17 +1386,55 @@ export const launchOrReuseRemoteServer = Effect.fn("ssh/tunnel.launchOrReuseRemo
   },
 );
 
+const runningForkForPairing = Effect.fn("ssh/tunnel.runningForkForPairing")(function* (
+  baseUrl: string,
+) {
+  if (forkBuildIdentity === undefined) return undefined;
+  const descriptor = yield* HttpClient.get(new URL("/.well-known/t3/environment", baseUrl)).pipe(
+    Effect.flatMap(HttpClientResponse.filterStatusOk),
+    Effect.flatMap(HttpClientResponse.schemaBodyJson(ExecutionEnvironmentDescriptor)),
+    Effect.timeout(SSH_READY_TIMEOUT_MS),
+    Effect.mapError(
+      (cause) =>
+        new SshPairingError({
+          message: `Could not identify the running environment for pairing. ${forkSshRecovery}`,
+          stdout: "",
+          cause,
+        }),
+    ),
+  );
+  if (descriptor.forkBuild?.channel !== forkBuildIdentity.channel) {
+    return yield* new SshPairingError({
+      message:
+        "Create a pairing URL in Sharing & access on the running environment and add it by URL.",
+      stdout: "",
+    });
+  }
+  return {
+    version: descriptor.serverVersion,
+    revision: descriptor.forkBuild.revision,
+    hostPairing: descriptor.capabilities.userDesktopHostPairing === true,
+  };
+});
+
 export const issueRemotePairingToken = Effect.fn("ssh/tunnel.issueRemotePairingToken")(function* (
   target: DesktopSshEnvironmentTarget,
+  httpBaseUrl: string,
   input?: SshAuth.SshAuthOptions,
   runner?: RemoteT3RunnerOptions,
+  userDesktopId?: string,
 ): Effect.fn.Return<
   {
     readonly credential: string;
   },
   SshCommandError | SshInvalidTargetError | SshPairingError,
-  ChildProcessSpawner.ChildProcessSpawner | Digest.Digest | FileSystem.FileSystem | Path.Path
+  | ChildProcessSpawner.ChildProcessSpawner
+  | Digest.Digest
+  | FileSystem.FileSystem
+  | Path.Path
+  | HttpClient.HttpClient
 > {
+  const runningBuild = yield* runningForkForPairing(httpBaseUrl);
   const stateKey = yield* remoteStateKey(target);
   yield* Effect.logDebug("ssh.remoteServer.pairingToken.start", {
     ...sshTargetLogFields(target),
@@ -1330,8 +1442,14 @@ export const issueRemotePairingToken = Effect.fn("ssh/tunnel.issueRemotePairingT
   });
   const result = yield* runSshCommand(target, {
     remoteCommandArgs: remoteLoginShellArgs(),
-    stdin: buildRemotePairingScript(stateKey, runner),
-    ...(isNodeScriptRunner(runner) ? {} : { timeoutMs: REMOTE_ARCHIVE_LAUNCH_TIMEOUT_MS }),
+    stdin: buildRemotePairingScript(
+      runner,
+      runningBuild,
+      runningBuild?.hostPairing ? userDesktopId : undefined,
+    ),
+    ...(isNodeScriptRunner(runner) || forkBuildIdentity !== undefined
+      ? {}
+      : { timeoutMs: REMOTE_ARCHIVE_LAUNCH_TIMEOUT_MS }),
     ...(input?.authSecret === undefined ? {} : { authSecret: input.authSecret }),
     ...(input?.batchMode === undefined ? {} : { batchMode: input.batchMode }),
     ...(input?.interactiveAuth === undefined ? {} : { interactiveAuth: input.interactiveAuth }),
@@ -1369,6 +1487,7 @@ export const issueRemotePairingToken = Effect.fn("ssh/tunnel.issueRemotePairingT
 
 const stopRemoteServer = Effect.fn("ssh/tunnel.stopRemoteServer")(function* (
   target: DesktopSshEnvironmentTarget,
+  externalOnly: boolean,
   input?: SshAuth.SshAuthOptions,
   launcherId?: string | null,
 ): Effect.fn.Return<
@@ -1383,7 +1502,7 @@ const stopRemoteServer = Effect.fn("ssh/tunnel.stopRemoteServer")(function* (
   });
   yield* runSshCommand(target, {
     remoteCommandArgs: ["sh", "-s"],
-    stdin: buildRemoteStopScript(stateKey, validLauncherId(launcherId)),
+    stdin: buildRemoteStopScript(stateKey, externalOnly, validLauncherId(launcherId)),
     ...(input?.authSecret === undefined ? {} : { authSecret: input.authSecret }),
     ...(input?.batchMode === undefined ? {} : { batchMode: input.batchMode }),
     ...(input?.interactiveAuth === undefined ? {} : { interactiveAuth: input.interactiveAuth }),
@@ -2064,6 +2183,7 @@ const makeSshEnvironmentManager = Effect.fn("ssh/tunnel.SshEnvironmentManager.ma
         const launcherId = yield* resolveLauncherId;
         yield* stopRemoteServer(
           tunnelEntry.target,
+          tunnelEntry.remoteServerKind === "external",
           authSecret === null
             ? {
                 batchMode: "yes",
@@ -2189,7 +2309,10 @@ const makeSshEnvironmentManager = Effect.fn("ssh/tunnel.SshEnvironmentManager.ma
 
   const ensureEnvironment = Effect.fn("ssh/tunnel.ensureEnvironment")(function* (
     target: DesktopSshEnvironmentTarget,
-    requestOptions?: { readonly issuePairingToken?: boolean },
+    requestOptions?: {
+      readonly issuePairingToken?: boolean;
+      readonly userDesktopId?: string | undefined;
+    },
   ): Effect.fn.Return<
     DesktopSshEnvironmentBootstrap,
     SshEnvironmentEffectError,
@@ -2221,13 +2344,18 @@ const makeSshEnvironmentManager = Effect.fn("ssh/tunnel.SshEnvironmentManager.ma
       key,
       Effect.gen(function* () {
         const entry = yield* ensureTunnelEntry(key, resolvedTarget, runner);
-
         const pairingResult = requestOptions?.issuePairingToken
           ? yield* runWithSshAuth({
               key,
               target: entry.target,
               operation: (authOptions) =>
-                issueRemotePairingToken(entry.target, authOptions, runner),
+                issueRemotePairingToken(
+                  entry.target,
+                  entry.httpBaseUrl,
+                  authOptions,
+                  runner,
+                  requestOptions.userDesktopId,
+                ),
             })
           : null;
         const pairingToken = pairingResult?.credential ?? null;
@@ -2284,7 +2412,13 @@ const makeSshEnvironmentManager = Effect.fn("ssh/tunnel.SshEnvironmentManager.ma
         yield* runWithSshAuth({
           key,
           target: resolvedTarget,
-          operation: (authOptions) => stopRemoteServer(resolvedTarget, authOptions, launcherId),
+          operation: (authOptions) =>
+            stopRemoteServer(
+              resolvedTarget,
+              entry?.remoteServerKind === "external",
+              authOptions,
+              launcherId,
+            ),
         });
         yield* Effect.logInfo("ssh.environment.disconnect.succeeded", {
           ...sshTargetLogFields(resolvedTarget),

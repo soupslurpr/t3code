@@ -3,6 +3,14 @@
   "private": true,
   "type": "module",
   "exports": {
+    "./forkBuildIdentity": {
+      "types": "./src/forkBuildIdentity.ts",
+      "import": "./src/forkBuildIdentity.ts"
+    },
+    "./forkUpdates": {
+      "types": "./src/forkUpdates.ts",
+      "import": "./src/forkUpdates.ts"
+    },
     "./computerAutomationFailure": {
       "types": "./src/computerAutomationFailure.ts",
       "import": "./src/computerAutomationFailure.ts"

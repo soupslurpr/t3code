@@ -20,7 +20,6 @@
   "eeb7ea62dc4706c1": "O T3 Code vai usar o backend do Windows nesta execução e tentar o WSL de novo na próxima vez que o app iniciar.",
   "b5435aa5b470bafd": "O backend do WSL não pôde iniciar",
   "d82d7c96e1904629": "Usando o backend do Windows para que o T3 Code possa abrir. Reative o backend do WSL em Configurações > Compartilhamento e acesso quando a distro do WSL for corrigida.",
-  "a4acf18834787a4f": "Outro servidor do T3 Code, como o serviço em segundo plano, está usando este diretório de dados, ou um serviço em segundo plano mais antigo está configurado para ele. Pare esse servidor ou tente `t3 update`. Se o inicializador mais antigo não conseguir atualizar, execute `t3 service uninstall` e, se quiser, reinstale com `t3 service install` a partir de uma CLI atual. Use `npx t3@latest` se o `t3` estiver ausente ou desatualizado e passe `--base-dir` com o T3 home do serviço em cada comando. Depois, reabra o T3 Code. Você também pode definir um T3CODE_HOME separado e parear com o servidor em execução.",
   "0e306130a55a3954": "O serviço em segundo plano do T3 Code está usando este T3 home (PID {pid}, porta {port}, versão {version}). Pare-o com `t3 service uninstall`, passando `--base-dir` com este T3 home, e reabra o T3 Code. Você também pode definir um T3CODE_HOME separado e parear com o servidor em execução.",
   "7379a43c1ac009d2": "O serviço em segundo plano do T3 Code está usando este T3 home (PID {pid}, porta {port}). Pare-o com `t3 service uninstall`, passando `--base-dir` com este T3 home, e reabra o T3 Code. Você também pode definir um T3CODE_HOME separado e parear com o servidor em execução.",
   "1510c6547cde9c2e": "Outro servidor do T3 Code (por exemplo, `t3 serve` ou um iniciado por SSH) está usando este T3 home (PID {pid}, porta {port}, versão {version}). Se um app do T3 Code em outra máquina o iniciou por SSH, esse app o reinicia: remova ou desconecte esse ambiente SSH lá ou feche esse app. Depois, pare o servidor e reabra o T3 Code. Você também pode definir um T3CODE_HOME separado e parear com o servidor em execução.",
@@ -161,5 +160,8 @@
   "d3a62840ed89f07c": "Executar comandos e transferir arquivos neste desktop",
   "7a33d32200ee3623": "Escolher quem pode executar comandos e transferir arquivos",
   "5c9c7f2d78c02395": "Escolher quando a permissão para executar comandos expira",
-  "4905f10f8181ab2e": "Remover a permissão para executar comandos?"
+  "4905f10f8181ab2e": "Remover a permissão para executar comandos?",
+  "2d26168ac5e12f60": "Outro servidor T3 Code está usando este diretório do T3 ou há um serviço em segundo plano configurado para ele. Para mantê-lo em execução, defina outro T3CODE_HOME para o aplicativo de desktop e faça o pareamento com o servidor. Para usar este diretório no aplicativo, pare o servidor primeiro. Se for um serviço em segundo plano, execute `t3 service uninstall` na máquina do servidor com a CLI instalada com esse serviço. Informe o diretório do T3 do serviço com `--base-dir`. Depois, abra o T3 Code novamente.",
+  "d0fd5b8b1df16927": "Outro servidor T3 Code está usando o diretório do T3 desta distribuição ou há um serviço em segundo plano configurado para ele. Faça o pareamento com o servidor em execução ou pare-o primeiro. Se for um serviço em segundo plano, execute `t3 service uninstall` dentro da distribuição com a CLI instalada com esse serviço. Informe o diretório do T3 do serviço com `--base-dir` e tente novamente.",
+  "7ef9cef3a67aa6a4": "As atualizações integradas estão desativadas neste fork. Atualize o pacote instalado manualmente."
 }

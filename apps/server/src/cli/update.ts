@@ -1,3 +1,4 @@
+import { forkBuildUpdateBlockReason } from "@t3tools/shared/forkUpdates";
 import * as HostProcess from "@t3tools/shared/HostProcess";
 import {
   CLI_RELEASE_BASE_URL_ENV,
@@ -283,7 +284,9 @@ export const updateCommand = Command.make("update", {
   Command.withHandler((flags) =>
     Effect.gen(function* () {
       const logLevel = yield* GlobalFlag.LogLevel;
-      const config = yield* resolveCliAuthConfig(flags, logLevel);
+      const config = yield* resolveCliAuthConfig(flags, logLevel, {
+        requireUpdateCompatibility: true,
+      });
       return yield* runUpdate({
         baseDir: config.baseDir,
         logsDir: config.logsDir,
@@ -371,6 +374,8 @@ export const runUpdate = Effect.fn("cli.update.run")(function* (input: {
   const policy = yield* ManagedPolicy.ManagedPolicy;
   const mirror = managedUpdateMirror(policy.document);
 
+  const forkReason = forkBuildUpdateBlockReason();
+  if (forkReason !== undefined) return yield* new CliUpdateError({ reason: forkReason });
   const currentVersion = packageJson.version;
   const channel = input.channel ?? cliReleaseChannelOf(currentVersion);
   const refusal = managedUpdateRefusal(
@@ -551,6 +556,8 @@ export const runUpdate = Effect.fn("cli.update.run")(function* (input: {
   );
 
   const launchedAs = (yield* HostProcess.IsExecutable) ? yield* resolveLauncherPath : undefined;
+  const handoffReason = forkBuildUpdateBlockReason();
+  if (handoffReason !== undefined) return yield* new CliUpdateError({ reason: handoffReason });
   const repointed = yield* repointLauncher({
     launchedAs,
     baseDir: input.baseDir,

@@ -32,6 +32,7 @@ import * as Schema from "effect/Schema";
 import * as IpcChannels from "../channels.ts";
 import * as DesktopIpc from "../DesktopIpc.ts";
 import * as DesktopSshEnvironment from "../../ssh/DesktopSshEnvironment.ts";
+import * as UserDesktopIdentity from "../../computer/UserDesktopIdentity.ts";
 import * as DesktopSshPasswordPrompts from "../../ssh/DesktopSshPasswordPrompts.ts";
 
 const DesktopSshEnvironmentRequestOperation = Schema.Literals([
@@ -137,7 +138,10 @@ export const ensureSshEnvironment = DesktopIpc.makeIpcMethod({
     options,
   }) {
     const sshEnvironment = yield* DesktopSshEnvironment.DesktopSshEnvironment;
-    return yield* sshEnvironment.ensureEnvironment(target, options).pipe(
+    const userDesktopId = options?.issuePairingToken
+      ? (yield* UserDesktopIdentity.UserDesktopIdentity).registration.desktopId
+      : undefined;
+    return yield* sshEnvironment.ensureEnvironment(target, { ...options, userDesktopId }).pipe(
       Effect.catchIf(DesktopSshEnvironment.isDesktopSshPasswordPromptCancellation, (error) =>
         Effect.succeed({
           type: DesktopSshPasswordPromptCancelledType,

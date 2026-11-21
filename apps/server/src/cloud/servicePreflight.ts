@@ -2,6 +2,7 @@ import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
 
+import { forkBuildUpdateBlockReason } from "@t3tools/shared/forkUpdates";
 import packageJson from "../../package.json" with { type: "json" };
 import { BUILD_MIGRATION_HEAD, recordedMigrations } from "../persistence/databaseMigrationHead.ts";
 import { skippedV2Migrations } from "../persistence/Migrations.ts";
@@ -42,6 +43,8 @@ export function runServicePreflight(input: {
   readonly version?: string;
 }): ServicePreflightResult {
   const version = input.version ?? packageJson.version;
+  const forkReason = forkBuildUpdateBlockReason();
+  if (forkReason !== undefined) return { status: "blocked", version, reason: forkReason };
   const { launcherProtocol } = input;
   if (!isSupportedLauncherProtocol(launcherProtocol)) {
     return {

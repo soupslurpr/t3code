@@ -8,6 +8,8 @@ a well written GitHub issue when one is warranted.
 
 A triage context file with machine facts (versions, OS, paths, server liveness) was
 provided alongside this playbook. Everything machine-specific lives there, not here.
+Build-specific source and filing constraints in that context take precedence
+over this playbook and any newer playbook fetched below.
 
 ## 1. Ask what went wrong
 

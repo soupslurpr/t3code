@@ -5959,5 +5959,6 @@
   "799b1f45615b2d7f": "Acesso padrão de cliente do T3 Code (arquivos, Git, terminais, configurações, acesso) mais hospedagem de desktop.",
   "5558fb18cd9559fd": "Hospedagem de desktop com acesso a threads, pré-visualizações e gerenciamento de terminais/comandos para esta sessão.",
   "8a03229c80ce1111": "Hospedagem de desktop com controle de threads e pré-visualizações; omite navegação de arquivos, gravações no Git, alterações de configurações e acesso a terminais para esta sessão.",
-  "46dc489b1ba06b78": "Este desktop não poderá abrir arquivos do host no visualizador de arquivos integrado."
+  "46dc489b1ba06b78": "Este desktop não poderá abrir arquivos do host no visualizador de arquivos integrado.",
+  "f7f00081835db2e6": "Execute a triagem com a CLI instalada nessa máquina."
 }

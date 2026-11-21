@@ -6,6 +6,7 @@ import * as NodeOS from "node:os";
 import * as NodePath from "node:path";
 
 import { assert, describe, it } from "@effect/vitest";
+import { vi } from "vite-plus/test";
 import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import * as HostProcess from "@t3tools/shared/HostProcess";
@@ -34,6 +35,9 @@ import * as SshAuth from "./auth.ts";
 import { remoteStateKey } from "./command.ts";
 import { SshCommandError, SshPasswordPromptError, SshReadinessError } from "./errors.ts";
 import * as SshTunnel from "./tunnel.ts";
+
+// Exercise the upstream release runner. Fork SSH uses independently installed runtimes.
+vi.mock("@t3tools/shared/forkBuildIdentity", () => ({ forkBuildIdentity: undefined }));
 
 const isSshCommandError = Schema.is(SshCommandError);
 
@@ -545,8 +549,14 @@ describe("ssh tunnel scripts", () => {
         yield* SshTunnel.launchOrReuseRemoteServer(target, undefined, ARCHIVE).pipe(
           Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, capture),
         );
-        yield* SshTunnel.issueRemotePairingToken(target, undefined, ARCHIVE).pipe(
+        yield* SshTunnel.issueRemotePairingToken(
+          target,
+          "http://127.0.0.1:3774",
+          undefined,
+          ARCHIVE,
+        ).pipe(
           Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, capture),
+          Effect.provideService(HttpClient.HttpClient, testHttpClient),
         );
         yield* fs.writeFileString(
           `${directory}/.zprofile`,
@@ -651,11 +661,20 @@ describe("ssh tunnel scripts", () => {
     );
     const layerSpawner = Layer.succeed(ChildProcessSpawner.ChildProcessSpawner, spawner);
     const layerProcess = Layer.merge(
-      Layer.mergeAll(NodeServices.layer, NodeCrypto.layer),
+      Layer.mergeAll(
+        NodeServices.layer,
+        NodeCrypto.layer,
+        Layer.succeed(HttpClient.HttpClient, testHttpClient),
+      ),
       layerSpawner,
     );
     return Effect.gen(function* () {
-      const result = yield* SshTunnel.issueRemotePairingToken(target, undefined, ARCHIVE);
+      const result = yield* SshTunnel.issueRemotePairingToken(
+        target,
+        "http://127.0.0.1:3774",
+        undefined,
+        ARCHIVE,
+      );
       assert.equal(result.credential, "LCL4R2TPHDKQ");
     }).pipe(Effect.provide(layerProcess));
   });

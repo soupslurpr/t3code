@@ -8,6 +8,18 @@ export const releasePackageFiles = [
   "packages/contracts/package.json",
 ] as const;
 
+export function resolveSourceRevision(repoRoot: string): string | null {
+  try {
+    return NodeChildProcess.execFileSync("git", ["rev-parse", "--verify", "HEAD"], {
+      cwd: repoRoot,
+      encoding: "utf8",
+      stdio: "pipe",
+    }).trim();
+  } catch {
+    return null;
+  }
+}
+
 /**
  * A release is tagged on the commit it was built from, and the manifest bump lands on main
  * afterwards, so source at `vX.Y.Z` still carries the previous version. Server, web and desktop

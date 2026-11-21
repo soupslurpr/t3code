@@ -92,6 +92,9 @@ describe("DesktopHomeOwner.readLiveHomeOwner", () => {
       assert.isTrue(
         Option.isNone(yield* readOwnerWithRuntimeFile(JSON.stringify({ pid: 0, port: 3790 }))),
       );
+      const message = DesktopHomeOwner.homeOwnedMessage(Option.none());
+      assert.include(message, "CLI installed with that service");
+      assert.notInclude(message, "npx");
     }),
   );
 });

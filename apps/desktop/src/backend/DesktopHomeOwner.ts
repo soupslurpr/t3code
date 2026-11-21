@@ -96,7 +96,7 @@ export const homeOwnedMessage = (owner: Option.Option<HomeOwner>): string =>
     onNone: () =>
       m(
         msg(
-          "Another T3 Code server, such as the background service, is using this data directory, or an older background service is set up for it. Stop that server or try `t3 update`. If the older launcher cannot update, run `t3 service uninstall` and optionally reinstall with `t3 service install` from a current CLI. Use `npx t3@latest` if `t3` is missing or outdated, and pass `--base-dir` with the service's T3 home to each command. Then reopen T3 Code. You can also set a separate T3CODE_HOME and pair with the running server.",
+          "Another T3 Code server is using this T3 home, or a background service is configured for it. To keep it running, set a separate T3CODE_HOME for the desktop and pair with the server. To use this home in the desktop, stop the server first. For a background service, run `t3 service uninstall` on the server’s host using the CLI installed with that service. Pass its T3 home with `--base-dir`. Then reopen T3 Code.",
         ),
       ),
     onSome: (owner) => {

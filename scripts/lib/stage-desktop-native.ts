@@ -10,19 +10,17 @@ export class DesktopNativeBuildError extends Schema.TaggedError<DesktopNativeBui
   { target: Schema.String, exitCode: Schema.Number },
 ) {}
 
-/** The Linux server archive only needs the RFB encoder. The desktop archive also hosts GNOME. */
 export const stageDesktopNative = Effect.fn("stageDesktopNative")(function* (input: {
   repoRoot: string;
   destination: string;
   arch: "x64" | "arm64";
-  gnome: boolean;
 }) {
   const fs = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
   const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
   const target = input.arch === "arm64" ? "aarch64-unknown-linux-gnu" : "x86_64-unknown-linux-gnu";
   const directory = path.join(input.repoRoot, "native", "desktop-native");
-  const names = input.gnome ? ["t3-desktop-frame", "t3-screen-gnome"] : ["t3-desktop-frame"];
+  const names = ["t3-desktop-frame", "t3-screen-gnome"];
   const args = [
     "build",
     "--locked",

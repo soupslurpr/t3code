@@ -15,6 +15,8 @@ import * as Path from "effect/Path";
 import * as Redacted from "effect/Redacted";
 import * as Result from "effect/Result";
 import * as Schema from "effect/Schema";
+import * as TestClock from "effect/testing/TestClock";
+import { vi } from "vite-plus/test";
 
 import {
   DesktopBackendBootstrap,
@@ -35,7 +37,7 @@ import {
 import { deriveServerPaths } from "../config.ts";
 import * as ProcessRunner from "../processRunner.ts";
 import { acquireServerOwnership } from "../serverOwnership.ts";
-import { resolveServerConfig } from "./config.ts";
+import { resolveCliAuthConfig, resolveServerConfig } from "./config.ts";
 
 const deriveExplicitServerPaths = (baseDir: string, devUrl: URL | undefined) =>
   deriveServerPaths(baseDir, devUrl, { baseDirIsExplicit: true });
@@ -73,6 +75,14 @@ const makeDesktopBootstrap = (
   ...overrides,
 });
 
+const ENVIRONMENT_HOST = {
+  protocolVersion: 1,
+  desktopId: "user-desktop-1",
+  defaultLabel: "Test desktop",
+  platform: "linux",
+  capabilities: ["view", "control", "availability"],
+} as const;
+
 const liveProcess = Effect.acquireRelease(
   Effect.promise(async () => {
     const child = NodeChildProcess.spawn(process.execPath, ["-e", "process.stdin.resume()"], {
@@ -90,6 +100,39 @@ const liveProcess = Effect.acquireRelease(
 );
 
 it.layer(NodeServices.layer)("cli config resolution", (it) => {
+  it.effect("refuses a fork update before directory initialization or upload cleanup", () =>
+    Effect.gen(function* () {
+      buildProvenance.fork = true;
+      yield* Effect.addFinalizer(() =>
+        Effect.sync(() => {
+          buildProvenance.fork = false;
+        }),
+      );
+      const fs = yield* FileSystem.FileSystem;
+      const baseDir = yield* fs.makeTempDirectoryScoped({ prefix: "t3-fork-config-" });
+      const attachments = `${baseDir}/userdata/attachments`;
+      yield* fs.makeDirectory(attachments, { recursive: true });
+      yield* fs.writeFileString(`${attachments}/abandoned.part`, "preserve upload");
+      yield* fs.utimes(`${attachments}/abandoned.part`, 0, 0);
+      yield* TestClock.setTime(7 * 24 * 60 * 60 * 1000);
+      const before = NodeFS.readdirSync(baseDir, { recursive: true }).toSorted();
+      const exit = yield* resolveCliAuthConfig({ baseDir: Option.some(baseDir) }, Option.none(), {
+        requireUpdateCompatibility: true,
+      }).pipe(
+        Effect.provideService(HostProcess.Environment, {}),
+        Effect.provide(
+          Layer.mergeAll(
+            ConfigProvider.layer(ConfigProvider.fromEnv({ env: {} })),
+            NetService.layer,
+          ),
+        ),
+        Effect.exit,
+      );
+      expect(yield* fs.exists(`${attachments}/abandoned.part`)).toBe(true);
+      expect(NodeFS.readdirSync(baseDir, { recursive: true }).toSorted()).toEqual(before);
+      expect(exit._tag).toBe("Failure");
+    }),
+  );
   const defaultObservabilityConfig = {
     traceMinLevel: "Info",
     traceTimingEnabled: true,
@@ -500,6 +543,7 @@ it.layer(NodeServices.layer)("cli config resolution", (it) => {
           t3Home: "/tmp/t3-bootstrap-home",
           noBrowser: false,
           desktopBootstrapToken: "desktop-token",
+          environmentHost: ENVIRONMENT_HOST,
           tailscaleServeEnabled: false,
           tailscaleServePort: 443,
         }),
@@ -560,6 +604,7 @@ it.layer(NodeServices.layer)("cli config resolution", (it) => {
         noBrowser: true,
         startupPresentation: "browser",
         desktopBootstrapToken: "desktop-token",
+        environmentHost: ENVIRONMENT_HOST,
         autoBootstrapProjectFromCwd: true,
         logWebSocketEvents: true,
         tailscaleServeEnabled: false,
@@ -1113,3 +1158,12 @@ it.layer(NodeServices.layer)("cli config resolution", (it) => {
     }),
   );
 });
+
+const buildProvenance = vi.hoisted(() => ({ fork: false }));
+vi.mock("@t3tools/shared/forkBuildIdentity", () => ({
+  get forkBuildIdentity() {
+    return buildProvenance.fork
+      ? { repository: "https://github.com/soupslurpr/t3code" }
+      : undefined;
+  },
+}));

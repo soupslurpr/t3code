@@ -1,3 +1,4 @@
+import { vi } from "vite-plus/test";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { expect, it } from "@effect/vitest";
 import type { ManagedPolicyDocument } from "@t3tools/contracts";
@@ -177,6 +178,28 @@ const makeHarness = Effect.fn("test.make_self_update_harness")(function* (
 });
 
 it.layer(NodeServices.layer)("server self update", (it) => {
+  it.effect("refuses repeated fork updates before download or launcher handoff", () =>
+    Effect.gen(function* () {
+      buildProvenance.fork = true;
+      yield* Effect.addFinalizer(() =>
+        Effect.sync(() => {
+          buildProvenance.fork = false;
+        }),
+      );
+      const harness = yield* makeHarness();
+      for (const channel of ["latest", "nightly"] as const) {
+        const result = yield* harness.selfUpdate
+          .update({ targetVersion: "1.1.0", channel })
+          .pipe(Effect.result);
+        expect(result).toMatchObject({
+          _tag: "Failure",
+          failure: { reason: expect.stringContaining("fork") },
+        });
+      }
+      expect(harness.order).toEqual([]);
+    }),
+  );
+
   it.effect.each([
     { asset: "checksums", status: 504 },
     { asset: "archive", status: 503 },
@@ -583,3 +606,13 @@ it("a host crosses tracks only to a release that knows its whole database", () =
     }),
   ).toContain("Cannot confirm");
 });
+
+// Existing updater cases exercise an upstream build; fork cases opt into trusted build provenance.
+const buildProvenance = vi.hoisted(() => ({ fork: false }));
+vi.mock("@t3tools/shared/forkBuildIdentity", () => ({
+  get forkBuildIdentity() {
+    return buildProvenance.fork
+      ? { repository: "https://github.com/soupslurpr/t3code", channel: "soupslurpr" }
+      : undefined;
+  },
+}));

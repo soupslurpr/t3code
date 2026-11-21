@@ -31,6 +31,7 @@ export const stageNativeNotices = Effect.fn("stageNativeNotices")(function* (
   target: string,
   names: readonly string[],
   dest: string,
+  filename = "THIRD-PARTY-NOTICES.txt",
 ) {
   const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
   const fs = yield* FileSystem.FileSystem;
@@ -40,7 +41,6 @@ export const stageNativeNotices = Effect.fn("stageNativeNotices")(function* (
     [
       "metadata",
       "--locked",
-      "--offline",
       "--format-version",
       "1",
       "--filter-platform",
@@ -73,6 +73,7 @@ export const stageNativeNotices = Effect.fn("stageNativeNotices")(function* (
     const notices = (yield* fs.readDirectory(dir))
       .filter((file) => /^(LICENSE|LICENCE|COPYING|NOTICE|UNLICENSE)(?:$|[-_.])/i.test(file))
       .sort();
+    if (pkg.name === "libwebp-sys2") notices.push("c_src/COPYING", "c_src/PATENTS");
     const texts: string[] = [];
     for (const notice of notices) {
       const file = path.join(dir, notice);
@@ -86,5 +87,5 @@ export const stageNativeNotices = Effect.fn("stageNativeNotices")(function* (
       `${pkg.name} ${pkg.version}\nhttps://crates.io/crates/${pkg.name}/${pkg.version}\n\n${texts.join("\n")}`,
     );
   }
-  yield* fs.writeFileString(path.join(dest, "THIRD-PARTY-NOTICES.txt"), sections.join("\n\n"));
+  yield* fs.writeFileString(path.join(dest, filename), sections.join("\n\n"));
 });

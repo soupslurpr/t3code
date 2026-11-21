@@ -308,6 +308,8 @@ describe("t3 pair", () => {
         assert.include(output, `Pairing URL: ${origin}/pair#token=`);
         assert.isTrue(output.includes("█") || output.includes("▀") || output.includes("▄"));
         assert.include(output, "only reachable from this machine");
+        assert.include(output, "--tailscale");
+        assert.notInclude(output, "t3 up");
 
         const token = /#token=([A-Z2-9]+)/.exec(output)?.[1];
         assert.isString(token);
@@ -429,10 +431,9 @@ describe("t3 pair", () => {
           typeof error === "object" && error !== null && "cause" in error ? error.cause : error,
         );
         assert.include(rendered, "No running T3 Code server found.");
-        for (const subcommand of ["serve", "connect"]) {
-          const { command } = yield* resolveHostCliCommand(subcommand, ["--base-dir", baseDir]);
-          assert.include(rendered, `\`${command}\``);
-        }
+        const args = ["--base-dir", baseDir];
+        assert.include(rendered, (yield* resolveHostCliCommand("serve", args)).command);
+        assert.notInclude(rendered, (yield* resolveHostCliCommand("connect", args)).command);
       }),
     ).pipe(Effect.provide(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer))),
   );
@@ -503,10 +504,10 @@ describe("t3 pair", () => {
           ]);
           assert.isTrue(Exit.isFailure(exit));
           if (Exit.isFailure(exit)) {
-            assert.include(
-              String(Cause.squash(exit.cause)),
-              `t3@0.0.45 pair --base-dir ${baseDir}`,
-            );
+            const message = String(Cause.squash(exit.cause));
+            assert.include(message, "CLI installed with the running server");
+            assert.include(message, `t3 pair --base-dir ${baseDir}`);
+            assert.notInclude(message, "npx");
           }
         }),
       "127.0.0.1",

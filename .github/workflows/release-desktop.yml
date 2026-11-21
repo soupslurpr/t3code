@@ -386,6 +386,22 @@ jobs:
           (cd "$dir" && grep " $name.zip\$" SHASUMS256.txt | sha256sum -c -)
           unzip -p "$dir/$name.zip" "$name/node.exe" > "$dest/node.exe"
 
+      - name: Install Linux desktop build libraries
+        if: inputs.platform == 'linux'
+        shell: bash
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebp-dev libei-dev libxkbcommon-dev libgstreamer-plugins-base1.0-dev libgstreamer1.0-dev libsecret-1-dev pkg-config libgtk-3-0t64 libnss3 libasound2t64 libgbm1
+          if ! command -v magick >/dev/null 2>&1 && ! command -v convert >/dev/null 2>&1; then
+              sudo apt-get install -y imagemagick
+          fi
+
+          if command -v magick >/dev/null 2>&1; then
+              magick -version
+          else
+              convert -version
+          fi
+
       # Setup Vite+ selects the exact engines.node version from package.json.
       # Native builds embed that executable; cross-target builds download the
       # same version for their target.
@@ -509,22 +525,6 @@ jobs:
           if-no-files-found: error
           # The archive is already gzip or zip; deflating it again saves under 2%.
           compression-level: 0
-
-      - name: Install Linux desktop build libraries
-        if: inputs.platform == 'linux'
-        shell: bash
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y libwebp-dev libei-dev libxkbcommon-dev libgstreamer-plugins-base1.0-dev libgstreamer1.0-dev libsecret-1-dev pkg-config libgtk-3-0t64 libnss3 libasound2t64 libgbm1
-          if ! command -v magick >/dev/null 2>&1 && ! command -v convert >/dev/null 2>&1; then
-              sudo apt-get install -y imagemagick
-          fi
-
-          if command -v magick >/dev/null 2>&1; then
-              magick -version
-          else
-              convert -version
-          fi
 
       # The WSL backend runs the Linux CLI archive inside the distro, so the
       # Windows desktop embeds the same-arch archive the release attaches.

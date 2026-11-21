@@ -5965,5 +5965,6 @@
   "799b1f45615b2d7f": "Standard-T3 Code-Clientzugriff (Dateien, Git, Terminals, Einstellungen, Zugriff) plus Desktop-Hosting.",
   "5558fb18cd9559fd": "Desktop-Hosting mit Thread-, Vorschau- und Terminal-/Befehlsverwaltungszugriff für diese Sitzung.",
   "8a03229c80ce1111": "Desktop-Hosting mit Thread- und Vorschausteuerung; ohne Dateibrowser, Git-Schreibvorgänge, Einstellungsänderungen und Terminalzugriff für diese Sitzung.",
-  "46dc489b1ba06b78": "Dieser Desktop kann keine Host-Dateien im integrierten Dateibetrachter öffnen."
+  "46dc489b1ba06b78": "Dieser Desktop kann keine Host-Dateien im integrierten Dateibetrachter öffnen.",
+  "f7f00081835db2e6": "Führe die Triage mit der auf diesem Rechner installierten CLI aus."
 }

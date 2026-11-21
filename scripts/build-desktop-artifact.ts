@@ -19,6 +19,11 @@ import { fromYaml } from "@t3tools/shared/schemaYaml";
 import * as HostProcess from "@t3tools/shared/HostProcess";
 import { clerkFrontendApiHostnameFromPublishableKey } from "@t3tools/shared/relayAuth";
 import { resolveSpawnCommand } from "@t3tools/shared/shell";
+import { stageNativeNotices } from "./lib/desktop-native-notices.ts";
+import {
+  linuxPtyExclusions,
+  verifyLinuxComputerResources,
+} from "./lib/linux-computer-resources.ts";
 import { stageDesktopNative } from "./lib/stage-desktop-native.ts";
 import rootPackageJson from "../package.json" with { type: "json" };
 import desktopPackageJson from "../apps/desktop/package.json" with { type: "json" };
@@ -867,7 +872,7 @@ const spawnAndCollectOutput = Effect.fn("spawnAndCollectOutput")(function* (
 
 const resolveGitCommitHash = Effect.fn("resolveGitCommitHash")(function* (repoRoot: string) {
   const result = yield* spawnAndCollectOutput(
-    ChildProcess.make("git", ["rev-parse", "--short=12", "HEAD"], {
+    ChildProcess.make("git", ["rev-parse", "HEAD"], {
       cwd: repoRoot,
     }),
   ).pipe(
@@ -882,7 +887,7 @@ const resolveGitCommitHash = Effect.fn("resolveGitCommitHash")(function* (repoRo
     return "unknown";
   }
   const hash = result.stdout.trim();
-  if (!/^[0-9a-f]{7,40}$/i.test(hash)) {
+  if (!/^[0-9a-f]{40}$/i.test(hash)) {
     return "unknown";
   }
   return hash.toLowerCase();
@@ -996,6 +1001,12 @@ export const DESKTOP_FILE_EXCLUSIONS = [
   "!**/*.d.cts",
   "!apps/desktop/resources/browser-secret",
   "!apps/desktop/resources/browser-secret/**/*",
+  ...["resources", "prod-resources"].flatMap((dir) =>
+    ["desktop-native", "agent-desktop", "resource-monitor"].flatMap((name) => [
+      `!apps/desktop/${dir}/${name}`,
+      `!apps/desktop/${dir}/${name}/**/*`,
+    ]),
+  ),
   "!apps/desktop/prod-resources/browser-secret",
   "!apps/desktop/prod-resources/browser-secret/**/*",
   "!apps/desktop/prod-resources/apple-speech",
@@ -1012,7 +1023,6 @@ export const MAC_FILE_EXCLUSIONS = [
   "!**/node_modules/node-pty/prebuilds/win32-*/**/*",
   "!**/node_modules/node-pty/third_party/conpty/**/*",
 ] as const;
-// Linux builds node-pty from source; its prebuilds target other platforms.
 export const LINUX_FILE_EXCLUSIONS = [
   ...MAC_FILE_EXCLUSIONS,
   "!**/node_modules/node-pty/prebuilds/darwin-*/**/*",
@@ -1105,8 +1115,8 @@ export const DESKTOP_EXTRA_RESOURCES = [
   },
 ] as const;
 export const LINUX_CAPTURE_EXTRA_RESOURCES = [
-  { from: "apps/desktop/resources/agent-desktop", to: "agent-desktop" },
-  { from: "apps/desktop/resources/desktop-native", to: "desktop-native" },
+  { from: "apps/desktop/prod-resources/agent-desktop", to: "agent-desktop" },
+  { from: "apps/desktop/prod-resources/desktop-native", to: "desktop-native" },
   {
     from: "apps/desktop/prod-resources/hyprland-capture",
     to: "hyprland-capture",
@@ -2443,6 +2453,15 @@ export const stageResourceMonitor = Effect.fn("stageResourceMonitor")(function* 
     );
   }
 
+  for (const target of rustTargets) {
+    yield* stageNativeNotices(
+      manifestPath,
+      target,
+      ["t3-resource-monitor"],
+      destinationDirectory,
+      rustTargets.length > 1 ? `THIRD-PARTY-NOTICES-${target}.txt` : undefined,
+    );
+  }
   if (input.platform !== "win") {
     yield* fs.chmod(destinationPath, 0o755);
   }
@@ -2821,6 +2840,7 @@ export const createBuildConfig = Effect.fn("createBuildConfig")(function* (
     | undefined,
   wslRuntimeBundled = false,
   arch?: typeof BuildArch.Type,
+  stagedFileExclusions: readonly string[] = [],
 ) {
   const buildConfig: Record<string, unknown> = {
     afterPack: (yield* Path.Path).join(yield* RepoRoot, "scripts/prepare-server-compile-cache.cjs"),
@@ -2842,6 +2862,7 @@ export const createBuildConfig = Effect.fn("createBuildConfig")(function* (
         : platform === "linux"
           ? LINUX_FILE_EXCLUSIONS
           : []),
+      ...stagedFileExclusions,
     ],
     directories: {
       buildResources: "apps/desktop/resources",
@@ -3659,6 +3680,7 @@ export const validateLinuxPackagedPayload = Effect.fn(
   }
   for (const asarPath of asarPaths) {
     yield* verifyPackagedBundleIsSelfContained({ asarPath, verbose: input.verbose ?? false });
+    yield* verifyLinuxComputerResources(path.dirname(asarPath));
   }
   yield* Effect.log(
     `[desktop-artifact] Validated Linux payload (${String(asarPaths.length)} app bundle(s)).`,
@@ -3879,7 +3901,6 @@ const buildDesktopArtifactUnlocked = Effect.fn("buildDesktopArtifactUnlocked")(f
       repoRoot,
       destination: path.join(stageResourcesDir, "desktop-native"),
       arch: options.arch === "arm64" ? "arm64" : "x64",
-      gnome: true,
     });
     for (const backend of ["kde", "hyprland"] as const)
       yield* stageLinuxCaptureHelper({
@@ -3977,7 +3998,7 @@ const buildDesktopArtifactUnlocked = Effect.fn("buildDesktopArtifactUnlocked")(f
     options.platform === "win"
       ? path.join(stageAppDir, WINDOWS_SERVER_RESOURCE_SOURCE_DIR, WINDOWS_SERVER_ASAR_RESOURCE)
       : undefined;
-  const stagePackageJson: StagePackageJson = {
+  const stagePackageJson: Omit<StagePackageJson, "build"> = {
     name: "t3code",
     version: appVersion,
     buildVersion: appVersion,
@@ -3992,22 +4013,6 @@ const buildDesktopArtifactUnlocked = Effect.fn("buildDesktopArtifactUnlocked")(f
     homepage: "https://t3.codes",
     author: "T3 Tools",
     main: "apps/desktop/dist-electron/boot.cjs",
-    build: yield* createBuildConfig(
-      options.platform,
-      options.target,
-      appVersion,
-      options.signed,
-      options.mockUpdates,
-      options.mockUpdateServerPort,
-      macPasskeySigning && macEntitlementsPath
-        ? {
-            entitlementsPath: macEntitlementsPath,
-            provisioningProfilePath: macPasskeySigning.provisioningProfilePath,
-          }
-        : undefined,
-      bundlesWslRuntime({ platform: options.platform, runtimeArchivePath: options.wslRuntime }),
-      options.arch,
-    ),
     dependencies: stageDependencies,
     devDependencies: {
       electron: electronVersion,
@@ -4042,6 +4047,27 @@ const buildDesktopArtifactUnlocked = Effect.fn("buildDesktopArtifactUnlocked")(f
     }),
     { label: "vp install --prod", verbose: options.verbose },
   );
+  const stagedFileExclusions =
+    options.platform === "linux" ? yield* linuxPtyExclusions(stageAppDir, options.arch) : [];
+  const build = yield* createBuildConfig(
+    options.platform,
+    options.target,
+    appVersion,
+    options.signed,
+    options.mockUpdates,
+    options.mockUpdateServerPort,
+    macPasskeySigning && macEntitlementsPath
+      ? {
+          entitlementsPath: macEntitlementsPath,
+          provisioningProfilePath: macPasskeySigning.provisioningProfilePath,
+        }
+      : undefined,
+    bundlesWslRuntime({ platform: options.platform, runtimeArchivePath: options.wslRuntime }),
+    options.arch,
+    stagedFileExclusions,
+  );
+  const packagedManifest = yield* encodeJsonString({ ...stagePackageJson, build });
+  yield* fs.writeFileString(path.join(stageAppDir, "package.json"), `${packagedManifest}\n`);
   yield* stageClerkPasskeyNativeBinaries(stageAppDir, options.platform, options.arch);
   yield* stageKeyringNativeBinaries(stageAppDir, options.platform, options.arch);
 

@@ -5,6 +5,7 @@ import * as NodePath from "node:path";
 import * as NodeReadlinePromises from "node:readline/promises";
 
 import * as HostProcess from "@t3tools/shared/HostProcess";
+import { forkBuildIdentity } from "@t3tools/shared/forkBuildIdentity";
 import { isCommandAvailable, resolveCommandPath, resolveSpawnCommand } from "@t3tools/shared/shell";
 import * as Config from "effect/Config";
 import * as Console from "effect/Console";
@@ -20,7 +21,7 @@ import { buildTriageLaunchPrompt } from "../triage/triagePrompt.ts";
 import { describeServerProcess, writeTriageSession } from "../triage/triageSession.ts";
 import { baseDirFlag } from "./config.ts";
 import { interactiveStdin } from "./consoleStdin.ts";
-import { resolveCliCommand } from "./invocation.ts";
+import { installedTriageCommand, resolveCliCommand } from "./invocation.ts";
 
 interface TriageAgent {
   readonly id: "claude" | "codex" | "antigravity";
@@ -191,7 +192,10 @@ export const triageCommand = Command.make("triage", {
         entry: {
           kind: "cli",
           cliVersion: packageJson.version,
-          launchedAs: yield* resolveCliCommand("triage"),
+          launchedAs:
+            forkBuildIdentity === undefined
+              ? yield* resolveCliCommand("triage")
+              : ((yield* installedTriageCommand(baseDir)) ?? "installed fork CLI"),
         },
         server: yield* describeServerProcess(paths.serverRuntimeStatePath),
       });

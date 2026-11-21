@@ -13232,6 +13232,8 @@
   "dd219069c2f50e54": "Genehmigung vergessen",
   "2a5240476407910d": "Bildschirmfreigabe",
   "f4ed58cf92925bd3": "Virtuelle Maschinen",
+  "7ef9cef3a67aa6a4": "Die integrierte Aktualisierung ist für diesen Fork deaktiviert. Aktualisiere das installierte Paket manuell.",
+  "f7f00081835db2e6": "Führe die Triage mit der auf diesem Rechner installierten CLI aus.",
   "7a3f8dce58f29647": "Deine Berechtigungen haben sich geändert. Prüfe die ausgewählten Berechtigungen und versuche es erneut.",
   "a0988e4e9321c1b0": "Zugriffsstufe",
   "1ccfb46313724f5a": "Standard-Desktop (eingeschränkt)",

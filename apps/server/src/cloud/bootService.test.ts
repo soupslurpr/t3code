@@ -35,6 +35,9 @@ import {
   serviceUnitLogPathOf,
 } from "./serviceProtocol.ts";
 
+const unitDirectoryQuery =
+  "busctl --user --json=short get-property org.freedesktop.systemd1 /org/freedesktop/systemd1 org.freedesktop.systemd1.Manager UnitPath";
+
 const leaseObserver = vi.hoisted(() => ({ contended: (_destination: string) => {} }));
 vi.mock("node:fs", async (importOriginal) => {
   const actual = await importOriginal<typeof import("node:fs")>();
@@ -456,6 +459,82 @@ const makeHarness = Effect.fn("test.make_boot_service_harness")(function* (
 });
 
 it.layer(NodeServices.layer)("boot service install", (it) => {
+  it.effect.each(["restart", "maintenance"] as const)(
+    "refuses a pending fork update before service %s",
+    (operation) =>
+      Effect.gen(function* () {
+        const { service, fs, baseDir, statePath, commands } = yield* makeHarness();
+        yield* service.install();
+        const pendingState = JSON.stringify({
+          protocol: SERVICE_LAUNCHER_PROTOCOL,
+          activeVersion: "1.2.3",
+          update: {
+            id: "pending-fork",
+            fromVersion: "1.2.3",
+            targetVersion: "1.2.4",
+            dbPath: `${baseDir}/userdata/statev2.sqlite`,
+            status: "pending",
+          },
+        });
+        yield* fs.writeFileString(statePath, pendingState);
+        commands.length = 0;
+        buildProvenance.fork = true;
+        yield* Effect.addFinalizer(() =>
+          Effect.sync(() => {
+            buildProvenance.fork = false;
+          }),
+        );
+        const result = yield* (
+          operation === "restart"
+            ? service.restart
+            : service.withStopped(
+                Effect.sync(() => {
+                  commands.push("maintenance");
+                  return "repaired";
+                }),
+              )
+        ).pipe(Effect.exit);
+        expect(commands).toEqual([]);
+        expect(result).toMatchObject({ _tag: "Failure" });
+        expect(yield* fs.readFileString(statePath)).toBe(pendingState);
+      }),
+  );
+
+  it.effect("permits ordinary fork service restart without a pending replacement", () =>
+    Effect.gen(function* () {
+      const { service } = yield* makeHarness();
+      yield* service.install();
+      buildProvenance.fork = true;
+      yield* Effect.addFinalizer(() =>
+        Effect.sync(() => {
+          buildProvenance.fork = false;
+        }),
+      );
+      expect(yield* service.restart).toBe("restarted");
+    }),
+  );
+  it.effect("refuses fork install before commands, downloads, logs or service state", () =>
+    Effect.gen(function* () {
+      buildProvenance.fork = true;
+      yield* Effect.addFinalizer(() =>
+        Effect.sync(() => {
+          buildProvenance.fork = false;
+        }),
+      );
+      const { service, fs, baseDir, statePath, commands } = yield* makeHarness();
+      const error = yield* service
+        .install({ allowDowngrade: true, start: false })
+        .pipe(Effect.flip);
+      expect(error).toMatchObject({
+        _tag: "BootServiceForkUpdateRefusedError",
+        reason: expect.stringContaining("fork"),
+      });
+      expect(commands).toEqual([]);
+      expect(yield* fs.exists(statePath)).toBe(false);
+      expect(yield* fs.exists(`${baseDir}/userdata/logs`)).toBe(false);
+    }),
+  );
+
   it.effect(
     "marks immediate and deferred service restarts without blocking on a marker error",
     () =>
@@ -823,8 +902,7 @@ it.layer(NodeServices.layer)("boot service install", (it) => {
       const plan = yield* service.install();
       expect(plan.unitPath).toBe(unitPath);
       if (setting === "manager-unavailable") {
-        control.failCommand =
-          "busctl --user --json=short get-property org.freedesktop.systemd1 /org/freedesktop/systemd1 org.freedesktop.systemd1.Manager UnitPath";
+        control.failCommand = unitDirectoryQuery;
       }
       const discoveredService = yield* makeService();
 
@@ -1070,7 +1148,7 @@ it.layer(NodeServices.layer)("boot service install", (it) => {
         );
         const rejection = path.join(plan.baseDir, "rejected-update");
         const databasePath = path.join(plan.baseDir, "state.sqlite");
-        yield* fs.writeFileString(databasePath, "database");
+        yield* fs.writeFile(databasePath, new Uint8Array());
         yield* fs.writeFileString(
           runtime.entryPath,
           `#!${process.execPath}
@@ -1095,7 +1173,14 @@ process.on("message", message => {
           `
 import fs from "node:fs/promises";
 import cp from "node:child_process";
-import { syncBuiltinESMExports } from "node:module";
+import { registerHooks, syncBuiltinESMExports } from "node:module";
+// This separate process exercises the upstream launcher through a stale unit selection.
+registerHooks({ resolve(specifier, context, next) {
+  const resolved = next(specifier, context);
+  return resolved.url === ${JSON.stringify(import.meta.resolve("@t3tools/shared/forkBuildIdentity"))}
+    ? { url: "data:text/javascript,export const forkBuildIdentity = undefined", shortCircuit: true }
+    : resolved;
+} });
 const server = Promise.withResolvers();
 const originalSpawn = cp.spawn;
 cp.spawn = (...args) => { const child = originalSpawn(...args); server.resolve(child); return child; };
@@ -1298,7 +1383,7 @@ process.disconnect();
       const other = yield* makeService(undefined, "1.2.3", otherHome);
       commands.length = 0;
       expect(yield* other.withStopped(Effect.sync(() => control.active))).toBe(true);
-      expect(commands).toEqual([]);
+      expect(commands).toEqual([unitDirectoryQuery]);
     }),
   );
 
@@ -1318,7 +1403,7 @@ process.disconnect();
       // The CLI prints a user message without a stack trace.
       expect(CliError.getUserMessage(refused)).toBe(refused.message);
       expect(yield* fs.readFileString(plan.unitPath)).toBe(unit);
-      expect(commands).toEqual([]);
+      expect(commands).toEqual([unitDirectoryQuery]);
       expect((yield* other.status).otherBaseDir).toBe(baseDir);
 
       const quoted = yield* makeService(undefined, "1.2.3", path.join(otherHome, 'T3 "Data"'));
@@ -1327,7 +1412,7 @@ process.disconnect();
       expect(unloadable._tag).toBe("BootServiceBaseDirUnsupportedError");
       expect(CliError.getUserMessage(unloadable)).toBe(unloadable.message);
       expect(yield* fs.readFileString(plan.unitPath)).toBe(unit);
-      expect(commands).toEqual([]);
+      expect(commands).toEqual([unitDirectoryQuery]);
     }),
   );
 
@@ -1427,7 +1512,7 @@ process.disconnect();
 
         const error = yield* inside.restart.pipe(Effect.flip);
         expect(error).toMatchObject({ _tag: "BootServiceCommandError", exitCode: 1 });
-        expect(commands).toEqual(["systemctl --user daemon-reload"]);
+        expect(commands).toEqual([unitDirectoryQuery, "systemctl --user daemon-reload"]);
         expect(control.active).toBe(true);
         expect(yield* fs.exists(relayMarker)).toBe(false);
         expect(markersAtPreparation.at(-1)).toBe(false);
@@ -1843,3 +1928,12 @@ process.disconnect();
     }),
   );
 });
+
+const buildProvenance = vi.hoisted(() => ({ fork: false }));
+vi.mock("@t3tools/shared/forkBuildIdentity", () => ({
+  get forkBuildIdentity() {
+    return buildProvenance.fork
+      ? { repository: "https://github.com/soupslurpr/t3code" }
+      : undefined;
+  },
+}));

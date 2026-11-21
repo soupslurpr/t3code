@@ -1,4 +1,5 @@
 import * as NodeServices from "@effect/platform-node/NodeServices";
+import * as NodePath from "@effect/platform-node/NodePath";
 import { expect, it } from "@effect/vitest";
 import * as HostProcess from "@t3tools/shared/HostProcess";
 import * as Effect from "effect/Effect";
@@ -9,10 +10,57 @@ import packageJson from "../../package.json" with { type: "json" };
 import { posixLauncherScript } from "../cloud/pinnedRuntime.ts";
 import {
   hostShellWord,
+  installedTriageCommand,
   resolveHostCliCommand,
   resolveRootCliCommand,
   resolveServerInstallation,
 } from "./invocation.ts";
+
+it.layer(NodeServices.layer)("installed triage command", (it) => {
+  it.effect("keeps the destination's launcher and quotes its data directory", () =>
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      const root = yield* fs.makeTempDirectoryScoped();
+      const shim = `${root}/desktop cli`;
+      yield* fs.writeFileString(shim, "");
+      const path = "/opt/Fork App/t3";
+      const entry = "/opt/Fork App/resources/app.asar/apps/server/dist/bin.mjs";
+      const command = (options: {
+        binary?: boolean;
+        entry?: string;
+        env?: Record<string, string>;
+      }) =>
+        installedTriageCommand("/srv/t3 home").pipe(
+          Effect.provideService(HostProcess.ExecutablePath, path),
+          Effect.provideService(HostProcess.Arguments, [path, options.entry ?? entry]),
+          Effect.provideService(HostProcess.IsExecutable, options.binary ?? false),
+          Effect.provideService(HostProcess.Environment, options.env ?? {}),
+          Effect.provideService(HostProcess.Platform, "linux"),
+        );
+      const args = "triage --base-dir '/srv/t3 home'";
+      expect(yield* command({ binary: true, env: { T3CODE_CLI_PATH: shim } })).toBe(
+        `'${path}' ${args}`,
+      );
+      expect(yield* command({})).toBe(`'${path}' '${entry}' ${args}`);
+      expect(yield* command({ env: { ELECTRON_RUN_AS_NODE: "1" } })).toBe(
+        `ELECTRON_RUN_AS_NODE=1 '${path}' '${entry}' ${args}`,
+      );
+      expect(yield* command({ env: { ELECTRON_RUN_AS_NODE: "1", T3CODE_CLI_PATH: shim } })).toBe(
+        `'${shim}' ${args}`,
+      );
+      expect(yield* command({ entry: "relative/bin.mjs" })).toBeUndefined();
+      expect(yield* command({ entry: "/unrelated/start.js" })).toBeUndefined();
+      expect(
+        yield* installedTriageCommand("C:\\T3\\$test").pipe(
+          Effect.provideService(HostProcess.Platform, "win32"),
+          Effect.provideService(HostProcess.ExecutablePath, "C:\\Program Files\\Fork\\t3.exe"),
+          Effect.provideService(HostProcess.IsExecutable, true),
+          Effect.provide(NodePath.layerWin32),
+        ),
+      ).toBe('& "C:\\Program Files\\Fork\\t3.exe" "triage" "--base-dir" "C:\\T3\\`$test"');
+    }),
+  );
+});
 
 it.layer(NodeServices.layer)("root CLI commands", (it) => {
   const rootCommand = (input: {

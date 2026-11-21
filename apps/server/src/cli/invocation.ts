@@ -175,6 +175,33 @@ const resolveInstallLauncher = Effect.gen(function* () {
     : Option.none<string>();
 });
 
+export const installedTriageCommand = Effect.fn("invocation.installedTriageCommand")(function* (
+  baseDir: string,
+) {
+  const platform = yield* HostProcess.Platform;
+  const path = yield* Path.Path;
+  const executable = yield* HostProcess.ExecutablePath;
+  if (!path.isAbsolute(executable)) return undefined;
+  const command = (launcher: readonly string[], prefix = platform === "win32" ? "& " : "") =>
+    prefix +
+    [...launcher, "triage", "--base-dir", baseDir]
+      .map((word) => hostShellWord(platform, word))
+      .join(" ");
+  if (yield* HostProcess.IsExecutable) return command([executable]);
+  const entry = (yield* HostProcess.Arguments)[1];
+  if (
+    !entry ||
+    !path.isAbsolute(entry) ||
+    !/^(?:bin\.(?:ts|m?js)|t3\.mjs)$/.test(path.basename(entry))
+  )
+    return undefined;
+  if ((yield* HostProcess.Environment).ELECTRON_RUN_AS_NODE !== "1")
+    return command([executable, entry]);
+  const launcher = yield* resolveInstallLauncher;
+  if (Option.isSome(launcher) && path.isAbsolute(launcher.value)) return command([launcher.value]);
+  return platform === "win32" ? undefined : command([executable, entry], "ELECTRON_RUN_AS_NODE=1 ");
+});
+
 /**
  * Uses this install's `t3` on PATH, the originating runner, or its absolute launcher path.
  * Arguments are quoted for POSIX shells or PowerShell on Windows.

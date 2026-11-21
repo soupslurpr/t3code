@@ -1,4 +1,5 @@
 // @effect-diagnostics nodeBuiltinImport:off - Tests use Node's glob matcher to verify electron-builder exclusions.
+import { linuxPtyExclusions } from "./lib/linux-computer-resources.ts";
 import * as NodeCrypto from "node:crypto";
 import * as NodePath from "node:path";
 
@@ -1540,6 +1541,41 @@ it.layer(NodeServices.layer)("build-desktop-artifact", (it) => {
         assert.instanceOf(error, BundleNotSelfContainedError);
       }),
     ),
+  );
+
+  it.effect(
+    "prefers a target-matched Linux PTY prebuild over an addon compiled against the host glibc",
+    () =>
+      Effect.scoped(
+        Effect.gen(function* () {
+          const fs = yield* FileSystem.FileSystem;
+          const path = yield* Path.Path;
+          const root = yield* fs.makeTempDirectoryScoped();
+          const binaries = path.join(root, "node_modules/node-pty/prebuilds/linux-x64");
+          yield* fs.makeDirectory(binaries, { recursive: true });
+          yield* fs.writeFileString(path.join(binaries, "pty.node"), "target prebuild");
+          const prebuildExclusions = yield* linuxPtyExclusions(root, "x64");
+          const config = yield* createBuildConfig(
+            "linux",
+            "AppImage",
+            "1.2.3",
+            false,
+            false,
+            undefined,
+            undefined,
+            false,
+            "x64",
+            prebuildExclusions,
+          );
+          assert.includeMembers(config.files as string[], [
+            "!**/node_modules/node-pty/build/**/*",
+            "!apps/desktop/prod-resources/agent-desktop/**/*",
+            "!apps/desktop/prod-resources/desktop-native/**/*",
+          ]);
+          assert.notNestedProperty(config, "linux.files");
+          assert.deepEqual(yield* linuxPtyExclusions(root, "arm64"), []);
+        }),
+      ),
   );
 
   it.effect("rejects a Linux app whose packaged server bundle cannot resolve", () =>

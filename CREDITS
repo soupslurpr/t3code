@@ -1,0 +1,116 @@
+# Fork distribution credits
+
+T3 Code and the Arch packaging template come from the MIT-licensed
+[upstream source](https://github.com/pingdotgg/t3code/tree/9cc4018c75ff4c61be8e86a6391d49a6c2d79830).
+The distribution retains its [copyright and license](LICENSE).
+The fork generates its local PKGBUILD from `packaging/aur/t3code-bin/PKGBUILD`
+and preserves the maintainer credit and packaging functions.
+
+The first-party Rust frame encoder, GNOME screen host and resource monitor
+use the repository MIT license. Linux packages carry the license texts for
+the selected Cargo dependencies beside their executables. The build resolves
+the target graph from `native/desktop-native/Cargo.lock` and
+`native/resource-monitor/Cargo.lock`. The frame notice includes the WebP
+copyright, BSD license and patent grant supplied with libwebp-sys2 0.2.0.
+
+The JavaScript and mobile distributions generate their notices from the
+workspace lockfile and `third-party-licenses.config.json`.
+
+## enriched-markdown mobile fork
+
+Source: [pingdotgg/enriched-markdown](https://github.com/pingdotgg/enriched-markdown/tree/3757a4493bfce5be27fc90470ee3704bd903deec)
+License: MIT for the project; Apache-2.0 for the native Remend repair.
+
+- `apps/mobile/deps/react-native-enriched-markdown-1.2.0-t3.19-3757a449.tgz`: adapted; upstream mobile fork with T3 native rendering and navigation support. Exact source and upstream base are preserved inside the archive.
+
+Archive SHA-256: `23d6baf3758a0c035a356399107853ee4c3d40908601e0d0b72713b71cc1f65a`.
+Upstream base: `3a2c1ade8f54c8fb1a18b8f0db498dd0f7b49380`.
+
+```text
+MIT License
+
+Copyright (c) 2025 Software Mansion
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+```
+
+The archive's native Remend repair retains this notice in
+`cpp/repair/LICENSE.remend`. The full Apache-2.0 terms are reproduced in
+the Alchemy entries above and included in the generated mobile notices.
+
+```text
+Copyright 2023 Vercel, Inc.
+
+Licensed under the Apache License, Version 2.0 (the "License");
+you may not use this file except in compliance with the License.
+You may obtain a copy of the License at
+
+    http://www.apache.org/licenses/LICENSE-2.0
+
+Unless required by applicable law or agreed to in writing, software
+distributed under the License is distributed on an "AS IS" BASIS,
+WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+See the License for the specific language governing permissions and
+limitations under the License.
+```
+
+## Native Markdown parser and highlighting
+
+Source: [enriched-markdown native sources](https://github.com/pingdotgg/enriched-markdown/tree/3757a4493bfce5be27fc90470ee3704bd903deec)
+License: MIT for MD4C, tree-sitter and its grammars; the runtime's Unicode/ICU notice is retained separately in the linked notice resource.
+
+- `apps/mobile/deps/react-native-enriched-markdown-1.2.0-t3.19-3757a449.tgz` (the four `cpp/enrmrkd/enrmrkd{,-entity}.{c,h}` files and `cpp/highlight/vendor/{generated,guarded}/generated_queries.h`): adapted; the fork retains MD4C parser sources and generates queries from the pinned tree-sitter grammars.
+- `third-party/notices/enriched-markdown-native-3757a449.md`: copied notices with provenance headings; contains the exact MD4C header, runtime MIT license, complete Unicode/ICU notice, and all 19 grammar IDs' notices from 18 verified pinned npm archives. The resource distinguishes the fourteen default grammar IDs from the five optional ones and records each immutable artifact source and hash.
+
+The mobile notice bundle includes this resource for the parser and native
+highlighting sources. The pinned native runtime and grammar sources are
+restored by the dependency's existing postinstall; no dependency is changed
+by this attribution record.
+
+## react-native-screens mobile fork
+
+Source: [pingdotgg/react-native-screens](https://github.com/pingdotgg/react-native-screens/tree/817fdacc948c5a92458200648b43cf8bd41a1ec7)
+
+- `apps/mobile/deps/react-native-screens-5.0.0-t3.63.tgz`: adapted; upstream mobile fork with T3 native rendering and navigation support. Exact source and upstream base are preserved inside the archive.
+
+Archive SHA-256: `d9c7e9af11db8956559a7fee8b07cf7a478539a7d4fa73657e888c5cc70d3c2a`.
+Upstream base: `e0248889e078db887f7db918113e3ee34205e1bb`.
+
+```text
+The MIT License (MIT)
+
+Copyright (c) 2018 Software Mansion <swmansion.com>
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+```

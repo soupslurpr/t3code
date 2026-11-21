@@ -24,6 +24,7 @@ import { Argument, Flag } from "effect/cli";
 import * as CliError from "effect/cli/CliError";
 
 import { readBootstrapEnvelope } from "../bootstrap.ts";
+import { forkBuildUpdateBlockReason } from "@t3tools/shared/forkUpdates";
 import { resolveServiceLauncherMode } from "../cloud/serviceLauncherClient.ts";
 import * as ServerConfig from "../config.ts";
 import { expandHomePath, resolveBaseDir } from "../os-jank.ts";
@@ -274,8 +275,14 @@ export const resolveServerConfig = Effect.fn("config.resolveServerConfig")(funct
       preferred: number,
       host: string | undefined,
     ) => Effect.Effect<number, NetService.NetError | CliError.UserError>;
+    readonly requireUpdateCompatibility?: boolean;
   },
 ) {
+  if (options?.requireUpdateCompatibility) {
+    const reason = forkBuildUpdateBlockReason();
+    if (reason !== undefined)
+      return yield* new CliError.UserError({ cause: "fork-update-refused", userMessage: reason });
+  }
   const { findAvailablePort } = yield* NetService.NetService;
   const selectAutomaticPort = options?.selectAutomaticPort ?? findAvailablePort;
   const path = yield* Path.Path;
@@ -554,7 +561,7 @@ export const resolveServerConfig = Effect.fn("config.resolveServerConfig")(funct
 export const resolveCliAuthConfig = (
   flags: CliAuthLocationFlags,
   cliLogLevel: Option.Option<LogLevel.LogLevel>,
-  options?: { readonly quietLogs?: boolean },
+  options?: { readonly quietLogs?: boolean; readonly requireUpdateCompatibility?: boolean },
 ) => {
   const resolved = resolveServerConfig(
     {
@@ -573,6 +580,7 @@ export const resolveCliAuthConfig = (
       lan: Option.none(),
     },
     cliLogLevel,
+    options?.requireUpdateCompatibility ? { requireUpdateCompatibility: true } : undefined,
   );
   // Logs go to stdout, where --json and --token-only print, and resolving can
   // log, for example when it sweeps abandoned attachment uploads.

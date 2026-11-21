@@ -1,5 +1,5 @@
 import { thrownErrorMessage } from "@t3tools/client-runtime/errors";
-import { scopeProjectRef } from "@t3tools/client-runtime/environment";
+import { scopeProjectRef, triageCommandForEnvironment } from "@t3tools/client-runtime/environment";
 import {
   type AtomCommandResult,
   isAtomCommandInterrupted,
@@ -12,6 +12,7 @@ import { msg } from "gt-react";
 import { stackedThreadToast, toastManager } from "~/components/ui/toast";
 import { currentClientMetadata } from "~/connection/platform";
 import { m } from "~/i18n/messages";
+import { appAtomRegistry } from "~/rpc/atomRegistry";
 import { projectEnvironment } from "~/state/projects";
 import { serverEnvironment } from "~/state/server";
 import { useAtomCommand } from "~/state/use-atom-command";
@@ -19,17 +20,15 @@ import { writeTextToClipboard } from "./useCopyToClipboard";
 import { useNewThreadHandler } from "./useHandleNewThread";
 import { useScratchProject } from "./useScratchProject";
 
-export const TRIAGE_CLI_COMMAND = "npx t3 triage";
-
-const copyTriageCliCommand = () =>
-  writeTextToClipboard(TRIAGE_CLI_COMMAND, {
+const copyTriageCliCommand = (command: string) =>
+  writeTextToClipboard(command, {
     target: "command",
     unavailableMessage: msg("Clipboard API is unavailable while copying command."),
     failureMessage: msg("Failed to copy command to the clipboard."),
   }).catch(() =>
     toastManager.add({
       type: "error",
-      title: m(msg("Could not copy. Type {command} instead.", { command: TRIAGE_CLI_COMMAND })),
+      title: m(msg("Could not copy. Type {command} instead.", { command })),
     }),
   );
 
@@ -47,32 +46,42 @@ export function useStartTriage() {
   const openScratch = useAtomCommand(projectEnvironment.openScratch, { reportFailure: false });
 
   // With no draft to show, a toast is the only place to point at the CLI.
-  const fail = (description: string) =>
-    toastManager.add(
+  const fail = (environmentId: EnvironmentId, description: string) => {
+    const command = triageCommandForEnvironment(
+      appAtomRegistry.get(serverEnvironment.configValueAtom(environmentId)),
+    );
+    return toastManager.add(
       stackedThreadToast({
         type: "error",
         title: m(msg("Could not start triage")),
-        description: m(
-          msg("{description} Run {command} in a terminal on that machine instead.", {
-            description,
-            command: TRIAGE_CLI_COMMAND,
-          }),
-        ),
+        description: command
+          ? m(
+              msg("{description} Run {command} in a terminal on that machine instead.", {
+                description,
+                command,
+              }),
+            )
+          : `${description} ${m(msg("Run triage with the CLI installed on that machine."))}`,
         timeout: 0,
-        actionProps: {
-          children: m(msg("Copy command")),
-          onClick: () => void copyTriageCliCommand(),
-        },
-        // "Copy command" is the copy that helps here, not the error text.
+        ...(command
+          ? {
+              actionProps: {
+                children: m(msg("Copy command")),
+                onClick: () => void copyTriageCliCommand(command),
+              },
+            }
+          : {}),
         data: { hideCopyButton: true },
       }),
     );
+  };
   const failWith = (
+    environmentId: EnvironmentId,
     result: Extract<AtomCommandResult<unknown, unknown>, { readonly _tag: "Failure" }>,
   ) => {
     if (isAtomCommandInterrupted(result)) return;
     const error = squashAtomCommandFailure(result);
-    fail(thrownErrorMessage(error, m) ?? m(msg("An error occurred.")));
+    fail(environmentId, thrownErrorMessage(error, m) ?? m(msg("An error occurred.")));
   };
 
   // `routeChanged` tells the steps the user went elsewhere while they waited;
@@ -82,19 +91,19 @@ export function useStartTriage() {
       environmentId,
       input: { client: currentClientMetadata() },
     });
-    if (prepared._tag === "Failure") return failWith(prepared);
+    if (prepared._tag === "Failure") return failWith(environmentId, prepared);
     const project = await openScratch({ environmentId, input: {} });
-    if (project._tag === "Failure") return failWith(project);
+    if (project._tag === "Failure") return failWith(environmentId, project);
     if (routeChanged()) return;
     // A null result means the user went elsewhere; only a throw is a failure.
     await handleNewThread(scopeProjectRef(project.value.environmentId, project.value.id), {
       prompt: prepared.value.prompt,
-    }).catch(() => fail(m(msg("T3 Code could not open a new thread."))));
+    }).catch(() => fail(environmentId, m(msg("T3 Code could not open a new thread."))));
   };
 
   return async (environmentId: EnvironmentId) => {
     if (scratchWorkspaceRootFor(environmentId) === null) {
-      fail(m(msg("This machine cannot start threads without a project.")));
+      fail(environmentId, m(msg("This machine cannot start threads without a project.")));
       return;
     }
     const requestingRouteHref = router.state.location.href;

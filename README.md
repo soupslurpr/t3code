@@ -1,3 +1,7 @@
+**soupslurpr’s T3 Code fork** adds supervised computer use and a locally
+packaged Arch build. [Computer use](docs/user/computer-use.md) ·
+[Arch installation and updates](docs/operations/local-arch-package.md)
+
 <p align="center">
   <a href="https://t3.codes">
     <img src="./assets/prod/t3-black-web-icon-192x192.png" width="80" height="80" alt="T3 Code logo" />
