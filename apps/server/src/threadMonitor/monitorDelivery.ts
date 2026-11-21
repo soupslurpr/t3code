@@ -18,7 +18,10 @@ import type { EventSinkV2 } from "../orchestration-v2/EventSink.ts";
 import { isUndeliveredMailboxSteer } from "../orchestration-v2/NotificationMailbox.ts";
 import type { ProjectionStoreV2 } from "../orchestration-v2/ProjectionStore.ts";
 import type { ThreadManagementService } from "../orchestration-v2/ThreadManagementService.ts";
-import type { ThreadMonitorRepository } from "../persistence/ThreadMonitors.ts";
+import type {
+  ThreadMonitorComputerEvidenceRecord,
+  ThreadMonitorRepository,
+} from "../persistence/ThreadMonitors.ts";
 import {
   makeMonitorContinuationEvent,
   monitorSystemEventSummary,
@@ -104,6 +107,7 @@ export function makeMonitorDelivery(deps: MonitorDeliveryDeps) {
     monitor: ThreadMonitor,
     trigger: ThreadMonitorTrigger,
     triggeredAt: string,
+    evidence?: ThreadMonitorComputerEvidenceRecord,
   ) {
     if (monitor.status !== "active") return monitor;
     const triggered = {
@@ -115,10 +119,16 @@ export function makeMonitorDelivery(deps: MonitorDeliveryDeps) {
       lastError: null,
       deliveryRetryAt: null,
     } satisfies ThreadMonitor;
-    if (monitor.condition.type === "thread-run" || monitor.condition.type === "process") {
-      const accepted = yield* repository
-        .tryAdvanceRun(triggered)
-        .pipe(Effect.mapError(mapPersistenceError("thread-run", monitor.id)));
+    if (
+      monitor.condition.type === "computer" ||
+      monitor.condition.type === "thread-run" ||
+      monitor.condition.type === "process"
+    ) {
+      const accepted = yield* (
+        monitor.condition.type === "computer"
+          ? repository.tryTriggerComputer(triggered, evidence)
+          : repository.tryAdvanceRun(triggered)
+      ).pipe(Effect.mapError(mapPersistenceError("trigger", monitor.id)));
       if (!accepted) return monitor;
       yield* notifyChanged(monitor.threadId);
     } else {
@@ -170,7 +180,7 @@ export function makeMonitorDelivery(deps: MonitorDeliveryDeps) {
       deliveryRetryAt: null,
     };
     yield* writeMonitor(failed);
-    yield* appendActivity(failed, "failed", `Monitor failed: ${failed.label}`);
+    yield* appendActivity(failed, "failed", `Monitor failed: ${failed.label}. ${failed.lastError}`);
     return failed;
   });
 

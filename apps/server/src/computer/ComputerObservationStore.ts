@@ -1,5 +1,6 @@
 /** Retains the latest exact model-facing computer observation for human supervision. */
 import {
+  ComputerAutomationContentHash,
   type ComputerAutomationObservation,
   type ComputerAutomationSnapshot,
   type ComputerObservation,
@@ -9,8 +10,13 @@ import {
   type ComputerObservationSummary,
   type ComputerObservationUpdate,
   type EnvironmentId,
+  type ModelSelection,
   type ProviderInstanceId,
   type ThreadId,
+  type ThreadMonitorComputerEvidenceImage,
+  type ThreadMonitorComputerInspection,
+  type ThreadMonitorComputerRegionState,
+  type ThreadMonitorComputerRevisionResult,
 } from "@t3tools/contracts";
 import * as Clock from "effect/Clock";
 import * as Context from "effect/Context";
@@ -41,6 +47,13 @@ interface StoreState {
   readonly observations: ReadonlyMap<string, RetainedObservation>;
 }
 
+/** Pairs the exact current and optional baseline images supplied to one evaluator region. */
+export interface ComputerWatchEvaluationImage {
+  readonly state: ThreadMonitorComputerRegionState;
+  readonly current: ThreadMonitorComputerEvidenceImage;
+  readonly baseline?: ThreadMonitorComputerEvidenceImage;
+}
+
 export interface ComputerObservationStoreShape {
   readonly publishController: (input: {
     readonly environmentId: EnvironmentId;
@@ -49,6 +62,27 @@ export interface ComputerObservationStoreShape {
     readonly desktopId: string;
     readonly source: ControllerObservationSource;
     readonly observation: ComputerAutomationObservation;
+  }) => Effect.Effect<void>;
+  readonly publishWatchEvaluation: (input: {
+    readonly environmentId: EnvironmentId;
+    readonly threadId: ThreadId;
+    readonly desktopId: string;
+    readonly monitorId: string;
+    readonly label: string;
+    readonly modelSelection: ModelSelection;
+    readonly images: ReadonlyArray<ComputerWatchEvaluationImage>;
+  }) => Effect.Effect<void>;
+  readonly publishWatchRevision: (input: {
+    readonly environmentId: EnvironmentId;
+    readonly threadId: ThreadId;
+    readonly instanceId: ProviderInstanceId;
+    readonly result: ThreadMonitorComputerRevisionResult;
+  }) => Effect.Effect<void>;
+  readonly publishWatchInspection: (input: {
+    readonly environmentId: EnvironmentId;
+    readonly threadId: ThreadId;
+    readonly instanceId: ProviderInstanceId;
+    readonly inspection: ThreadMonitorComputerInspection;
   }) => Effect.Effect<void>;
   readonly read: (input: {
     readonly environmentId: EnvironmentId;
@@ -120,6 +154,34 @@ function controllerObservationImages(
       }),
     ) ?? []),
   ];
+}
+
+/** Converts one retained watch image into the common lens representation. */
+function watchImage(
+  image: ThreadMonitorComputerEvidenceImage,
+  state: ThreadMonitorComputerRegionState,
+  generation: ComputerObservationImage["generation"] = image.kind,
+): ComputerObservationImage {
+  return {
+    id: image.id,
+    role: "watch-region",
+    ...(state.purpose === null ? {} : { purpose: state.purpose }),
+    generation,
+    capturedAt: image.capturedAt,
+    region: state.region,
+    ...(image.frameIndex === null ? {} : { frameIndex: image.frameIndex }),
+    ...(image.elapsedMs === null ? {} : { elapsedMs: image.elapsedMs }),
+    screenshot: {
+      state: "image",
+      contentHash: ComputerAutomationContentHash.make(image.hash),
+      mimeType: image.mimeType,
+      data: image.dataBase64,
+      width: image.width,
+      height: image.height,
+      sizeBytes: image.sizeBytes,
+      encoding: image.encoding,
+    },
+  };
 }
 
 /** Counts compressed bytes retained by one observation. */
@@ -248,6 +310,108 @@ export const make = Effect.gen(function* () {
     });
   });
 
+  const publishWatchEvaluation: ComputerObservationStoreShape["publishWatchEvaluation"] = (input) =>
+    publish({
+      environmentId: input.environmentId,
+      desktopId: input.desktopId,
+      threadId: input.threadId,
+      source: "watch-evaluation",
+      recipient: {
+        kind: "watch-evaluator",
+        monitorId: input.monitorId,
+        modelSelection: input.modelSelection,
+      },
+      label: input.label,
+      images: input.images.flatMap(({ state, current, baseline }) => [
+        ...(baseline === undefined ? [] : [watchImage(baseline, state, "baseline")]),
+        watchImage(current, state, "current"),
+      ]),
+    });
+
+  const publishWatchRevision: ComputerObservationStoreShape["publishWatchRevision"] = (input) => {
+    const condition = input.result.monitor.condition;
+    if (
+      condition.type !== "computer" ||
+      condition.desktop.kind !== "agent" ||
+      input.result.baselineObservation === null
+    ) {
+      return Effect.void;
+    }
+    const regions = new Map(condition.observation.regions.map((region) => [region.id, region]));
+    const images = input.result.baselineObservation.images.flatMap((image) => {
+      const region = regions.get(image.regionId);
+      if (region === undefined) return [];
+      if (image.state === "unchanged") {
+        return [
+          {
+            id: image.id,
+            role: "watch-region" as const,
+            ...(region.purpose === null ? {} : { purpose: region.purpose }),
+            generation: "baseline" as const,
+            capturedAt: image.capturedAt,
+            region: region.region,
+            screenshot: {
+              state: "unchanged" as const,
+              contentHash: ComputerAutomationContentHash.make(image.contentHash),
+              width: image.width,
+              height: image.height,
+            },
+          },
+        ];
+      }
+      return [
+        watchImage(
+          {
+            id: image.id,
+            kind: "baseline",
+            regionId: image.regionId,
+            capturedAt: image.capturedAt,
+            hash: image.contentHash,
+            width: image.width,
+            height: image.height,
+            frameIndex: null,
+            elapsedMs: null,
+            mimeType: image.mimeType,
+            dataBase64: image.dataBase64,
+            sizeBytes: image.sizeBytes,
+            encoding: image.encoding,
+          },
+          region,
+        ),
+      ];
+    });
+    return publish({
+      environmentId: input.environmentId,
+      desktopId: condition.desktop.desktopId,
+      threadId: input.threadId,
+      source: "watch-baseline",
+      recipient: { kind: "controller", instanceId: input.instanceId },
+      label: input.result.monitor.label,
+      images,
+    });
+  };
+
+  const publishWatchInspection: ComputerObservationStoreShape["publishWatchInspection"] = (
+    input,
+  ) => {
+    const condition = input.inspection.monitor.condition;
+    if (condition.type !== "computer" || condition.desktop.kind !== "agent") return Effect.void;
+    const regions = new Map(condition.observation.regions.map((region) => [region.id, region]));
+    const images = input.inspection.images.flatMap((image) => {
+      const region = regions.get(image.regionId);
+      return region === undefined ? [] : [watchImage(image, region)];
+    });
+    return publish({
+      environmentId: input.environmentId,
+      desktopId: condition.desktop.desktopId,
+      threadId: input.threadId,
+      source: "watch-inspection",
+      recipient: { kind: "controller", instanceId: input.instanceId },
+      label: input.inspection.monitor.label,
+      images,
+    });
+  };
+
   const read: ComputerObservationStoreShape["read"] = Effect.fn("ComputerObservationStore.read")(
     function* (input) {
       const nowMs = yield* Clock.currentTimeMillis;
@@ -312,6 +476,9 @@ export const make = Effect.gen(function* () {
 
   return ComputerObservationStore.of({
     publishController,
+    publishWatchRevision,
+    publishWatchEvaluation,
+    publishWatchInspection,
     read,
     list,
     readById,

@@ -1,6 +1,7 @@
 import type {
   BranchNamingOptions,
   ChatAttachment,
+  ComputerAutomationScreenshotMimeType,
   ModelSelection,
   ProjectId,
   PullRequestReviewGuide,
@@ -108,6 +109,43 @@ export type ReviewGuideGenerationResult = Omit<
   "headSha" | "generatedAt" | "modelSelection"
 >;
 
+export interface ImageConditionEvaluationInput {
+  cwd: string;
+  criterion: string;
+  images: ReadonlyArray<{
+    id: string;
+    purpose?: string | undefined;
+    current: {
+      mimeType: ComputerAutomationScreenshotMimeType;
+      dataBase64: string;
+    };
+    baseline?:
+      | {
+          mimeType: ComputerAutomationScreenshotMimeType;
+          dataBase64: string;
+        }
+      | undefined;
+  }>;
+  /** What model and provider instance to use for evaluation. */
+  modelSelection: ModelSelection;
+}
+
+export interface ImageConditionEvaluationResult {
+  verdict: "matched" | "not-matched" | "uncertain";
+  summary: string;
+  visibleFacts: ReadonlyArray<string>;
+  evidence: ReadonlyArray<{
+    readonly imageId: string;
+    readonly description: string;
+  }>;
+  usage: {
+    readonly inputTokens: number | null;
+    readonly cachedInputTokens: number | null;
+    readonly cacheWriteInputTokens: number | null;
+    readonly outputTokens: number | null;
+  };
+}
+
 export interface TranscriptionPostProcessingInput {
   cwd: string;
   prompt: string;
@@ -142,4 +180,12 @@ export interface ProviderTextGeneration {
   readonly generateReviewGuide: (
     input: ReviewGuideGenerationInput,
   ) => Effect.Effect<ReviewGuideGenerationResult, TextGenerationError>;
+
+  /** Evaluates a read-only screen condition when the provider supports images. */
+  readonly evaluateImageCondition?: (
+    input: ImageConditionEvaluationInput,
+  ) => Effect.Effect<ImageConditionEvaluationResult, TextGenerationError>;
+
+  /** Declares whether image-condition evaluation reports exact token counts. */
+  readonly imageConditionTokenUsage?: "exact";
 }

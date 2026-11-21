@@ -9,6 +9,12 @@ import type {
   ThreadMonitorCancelInput,
   ThreadMonitorCapabilities,
   ThreadMonitorCheckInput,
+  ThreadMonitorComputerCapabilities,
+  ThreadMonitorComputerInspectInput,
+  ThreadMonitorComputerInspection,
+  ThreadMonitorComputerRevisionResult,
+  ThreadMonitorComputerStartInput,
+  ThreadMonitorComputerUpdateInput,
   ThreadMonitorError,
   ThreadMonitorList,
   ThreadMonitorSignalInput,
@@ -24,6 +30,9 @@ export class ThreadMonitorService extends Context.Service<
   ThreadMonitorService,
   {
     readonly capabilities: (threadId?: ThreadId) => Effect.Effect<ThreadMonitorCapabilities>;
+    readonly computerCapabilities: (
+      threadId?: ThreadId,
+    ) => Effect.Effect<ThreadMonitorComputerCapabilities>;
     /** Restores waits only after runtime recovery and legacy shell import. */
     readonly start: Effect.Effect<void>;
     readonly create: (input: {
@@ -31,6 +40,18 @@ export class ThreadMonitorService extends Context.Service<
       readonly monitor: ThreadMonitorStartInput;
       readonly afterSequence?: number;
     }) => Effect.Effect<ThreadMonitor, ThreadMonitorError>;
+    readonly createComputer: (input: {
+      readonly threadId: ThreadId;
+      readonly monitor: ThreadMonitorComputerStartInput;
+    }) => Effect.Effect<ThreadMonitorComputerRevisionResult, ThreadMonitorError>;
+    readonly inspectComputer: (input: {
+      readonly threadId: ThreadId;
+      readonly inspect: ThreadMonitorComputerInspectInput;
+    }) => Effect.Effect<ThreadMonitorComputerInspection, ThreadMonitorError>;
+    readonly updateComputer: (input: {
+      readonly threadId: ThreadId;
+      readonly update: ThreadMonitorComputerUpdateInput;
+    }) => Effect.Effect<ThreadMonitorComputerRevisionResult, ThreadMonitorError>;
     readonly status: (input: {
       readonly threadId: ThreadId;
       readonly query: ThreadMonitorStatusInput;

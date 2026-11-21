@@ -7,6 +7,7 @@ import { userDesktopTransferRouteLayer } from "./computer/userDesktopTransferHtt
 import * as AgentDesktopService from "./agentDesktop/AgentDesktopService.ts";
 import * as AgentComputerHost from "./computer/AgentComputerHost.ts";
 import * as ThreadMonitor from "./threadMonitor/ThreadMonitor.ts";
+import * as ThreadMonitorComputer from "./threadMonitor/ThreadMonitorComputer.ts";
 import * as ThreadMonitorProcess from "./threadMonitor/ThreadMonitorProcess.ts";
 import * as ThreadMonitorSignalCallbacks from "./threadMonitor/ThreadMonitorSignalCallbacks.ts";
 import * as MonitorSignalRoute from "./threadMonitor/signalRoute.ts";
@@ -905,6 +906,7 @@ const layerComputerServices = Layer.mergeAll(
 );
 
 const layerThreadMonitor = ThreadMonitor.layer.pipe(
+  Layer.provide(ThreadMonitorComputer.layer),
   Layer.provide(ThreadMonitorProcess.layer),
   Layer.provide(RuntimeLayer.layerEventSink),
   Layer.provideMerge(ProjectionStoreV2.layer),

@@ -235,12 +235,20 @@ describe("ThreadMonitorRepository", () => {
         currentImages: [{ ...image, id: "img-2", kind: "current" }],
         terminalImages: [],
       });
-      const stored = yield* repo.getComputerEvidence(monitor.id);
-      expect(Option.isSome(stored)).toBe(true);
-      if (Option.isSome(stored)) {
-        expect(stored.value.baselineImages).toHaveLength(1);
-        expect(stored.value.currentImages[0]?.id).toBe("img-2");
-      }
+      const stored = Option.getOrThrow(
+        yield* repo.getComputerRevision({ threadId: monitor.threadId, monitorId: monitor.id }),
+      );
+      expect(stored.monitor).toEqual(monitor);
+      expect(stored.evidence.baselineImages).toEqual([image]);
+      expect(stored.evidence.currentImages[0]?.id).toBe("img-2");
+      expect(
+        Option.isNone(
+          yield* repo.getComputerRevision({
+            threadId: ThreadId.make("another-thread"),
+            monitorId: monitor.id,
+          }),
+        ),
+      ).toBe(true);
     }).pipe(Effect.provide(testLayer)),
   );
 });

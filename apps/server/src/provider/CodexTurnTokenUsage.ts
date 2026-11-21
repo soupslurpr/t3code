@@ -81,16 +81,33 @@ function codexTurnTokenUsageDelta(
   ) {
     return last;
   }
-  return {
-    inputTokens: current.inputTokens - previous.inputTokens,
-    cachedInputTokens: current.cachedInputTokens - previous.cachedInputTokens,
-    ...(current.cacheCreationTokens !== undefined &&
+  const inputTokens = current.inputTokens - previous.inputTokens;
+  const cachedInputTokens = current.cachedInputTokens - previous.cachedInputTokens;
+  const outputTokens = current.outputTokens - previous.outputTokens;
+  const reasoningTokens = current.reasoningTokens - previous.reasoningTokens;
+  let cacheCreationTokens: number | undefined;
+  if (
+    current.cacheCreationTokens !== undefined &&
     previous.cacheCreationTokens !== undefined &&
     current.cacheCreationTokens >= previous.cacheCreationTokens
-      ? { cacheCreationTokens: current.cacheCreationTokens - previous.cacheCreationTokens }
-      : {}),
-    outputTokens: current.outputTokens - previous.outputTokens,
-    reasoningTokens: current.reasoningTokens - previous.reasoningTokens,
+  ) {
+    cacheCreationTokens = current.cacheCreationTokens - previous.cacheCreationTokens;
+  } else if (inputTokens === 0) {
+    cacheCreationTokens = 0;
+  } else if (
+    inputTokens === last.inputTokens &&
+    cachedInputTokens === last.cachedInputTokens &&
+    outputTokens === last.outputTokens &&
+    reasoningTokens === last.reasoningTokens
+  ) {
+    cacheCreationTokens = last.cacheCreationTokens;
+  }
+  return {
+    inputTokens,
+    cachedInputTokens,
+    outputTokens,
+    reasoningTokens,
+    ...(cacheCreationTokens === undefined ? {} : { cacheCreationTokens }),
   };
 }
 

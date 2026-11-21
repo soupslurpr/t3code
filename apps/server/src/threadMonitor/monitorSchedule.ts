@@ -1,6 +1,7 @@
 import {
   ThreadMonitorError,
   type ThreadMonitor,
+  type ThreadMonitorComputerCondition,
   type ThreadMonitorCondition,
   type ThreadMonitorId,
   type ThreadMonitorStartInput,
@@ -86,6 +87,14 @@ export function monitorWakeAt(monitor: ThreadMonitor): string | null {
 export function monitorDeliveryReadyAt(monitor: ThreadMonitor): number {
   const settledAt = Date.parse(monitor.triggeredAt ?? monitor.updatedAt) + DELIVERY_SETTLE_MS;
   const retryAt = monitor.deliveryRetryAt === null ? 0 : Date.parse(monitor.deliveryRetryAt);
+  return Math.max(settledAt, retryAt);
+}
+
+export function reviewDeliveryReadyAt(condition: ThreadMonitorComputerCondition): number {
+  const settledAt =
+    Date.parse(condition.review.requestedAt ?? condition.nextCheckAt) + DELIVERY_SETTLE_MS;
+  const retryAt =
+    condition.review.deliveryRetryAt === null ? 0 : Date.parse(condition.review.deliveryRetryAt);
   return Math.max(settledAt, retryAt);
 }
 

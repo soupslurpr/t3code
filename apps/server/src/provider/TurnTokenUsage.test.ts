@@ -62,6 +62,29 @@ describe("billable native turn usage", () => {
     });
   });
 
+  it("counts cache writes measured on individual responses when the Codex thread total omits them", () => {
+    const state = makeCodexTurnTokenUsageState();
+    state.activeTurnId = "turn";
+    const first = {
+      total: breakdown(100, 60, 20),
+      last: { ...breakdown(100, 60, 20), cacheWriteInputTokens: 15 },
+      modelContextWindow: 200_000,
+    };
+    accumulateCodexTurnTokenUsage(state, "turn", first);
+    accumulateCodexTurnTokenUsage(state, "turn", first);
+    accumulateCodexTurnTokenUsage(state, "turn", {
+      total: breakdown(120, 65, 28),
+      last: { ...breakdown(20, 5, 8), cacheWriteInputTokens: 7 },
+      modelContextWindow: 200_000,
+    });
+    expect(completeCodexTurnTokenUsage(state, "turn", true)).toMatchObject({
+      inputTokens: 120,
+      cachedInputTokens: 65,
+      cacheCreationTokens: 22,
+      outputTokens: 28,
+    });
+  });
+
   it("does not bill late Codex updates against the next active turn", () => {
     const state = makeCodexTurnTokenUsageState();
     state.activeTurnId = "next";

@@ -34,21 +34,27 @@ export class ThreadMonitorRepository extends Context.Service<
     readonly deleteById: (
       monitorId: ThreadMonitorId,
     ) => Effect.Effect<void, ProjectionRepositoryError>;
-    readonly getComputerEvidence: (
-      monitorId: ThreadMonitorId,
-    ) => Effect.Effect<
-      Option.Option<ThreadMonitorComputerEvidenceRecord>,
+    readonly getComputerRevision: (input: {
+      readonly threadId: ThreadId;
+      readonly monitorId: ThreadMonitorId;
+    }) => Effect.Effect<
+      Option.Option<{
+        readonly monitor: ThreadMonitor;
+        readonly evidence: ThreadMonitorComputerEvidenceRecord;
+      }>,
       ProjectionRepositoryError
     >;
+    readonly tryTriggerComputer: (
+      monitor: ThreadMonitor & { readonly status: "triggered" },
+      evidence?: ThreadMonitorComputerEvidenceRecord,
+    ) => Effect.Effect<boolean, ProjectionRepositoryError>;
     /** Atomically writes one computer-monitor revision and all bounded evidence. */
-    readonly upsertComputerRevision: (input: {
-      readonly monitor: ThreadMonitor;
-      readonly afterSequence?: number;
-      readonly baselineImages: ReadonlyArray<ThreadMonitorComputerEvidenceImage>;
-      readonly previousImages: ReadonlyArray<ThreadMonitorComputerEvidenceImage>;
-      readonly currentImages: ReadonlyArray<ThreadMonitorComputerEvidenceImage>;
-      readonly terminalImages: ReadonlyArray<ThreadMonitorComputerEvidenceImage>;
-    }) => Effect.Effect<void, ProjectionRepositoryError>;
+    readonly upsertComputerRevision: (
+      input: ThreadMonitorComputerEvidenceRecord & {
+        readonly monitor: ThreadMonitor;
+        readonly afterSequence?: number;
+      },
+    ) => Effect.Effect<void, ProjectionRepositoryError>;
     readonly upsertMany: (
       monitors: ReadonlyArray<ThreadMonitor>,
     ) => Effect.Effect<void, ProjectionRepositoryError>;
@@ -322,6 +328,7 @@ const make = Effect.gen(function* () {
       SELECT ${selectColumns} FROM thread_monitors
       WHERE status IN ('active', 'triggered')
         OR (condition_type = 'process' AND json_extract(condition_json, '$.released') = 0)
+        OR (condition_type = 'computer' AND json_extract(condition_json, '$.resourceState') != 'released')
       ORDER BY COALESCE(wake_at, '9999-12-31T23:59:59.999Z') ASC, monitor_id ASC
     `,
   });
@@ -347,7 +354,10 @@ const make = Effect.gen(function* () {
 
   const deleteThreadRows = SqlSchema.void({
     Request: Schema.Struct({ threadId: ThreadId }),
-    execute: ({ threadId }) => sql`DELETE FROM thread_monitors WHERE thread_id = ${threadId}`,
+    execute: ({ threadId }) => sql`
+      DELETE FROM thread_monitors WHERE thread_id = ${threadId}
+        AND (condition_type != 'computer' OR json_extract(condition_json, '$.resourceState') = 'released')
+    `,
   });
 
   const deleteMonitorRow = SqlSchema.void({
@@ -355,17 +365,17 @@ const make = Effect.gen(function* () {
     execute: ({ monitorId }) => sql`DELETE FROM thread_monitors WHERE monitor_id = ${monitorId}`,
   });
 
-  const getComputerEvidenceRow = SqlSchema.findOneOption({
-    Request: Schema.Struct({ monitorId: ThreadMonitorId }),
-    Result: ComputerEvidenceRow,
-    execute: ({ monitorId }) => sql`
-      SELECT
-        baseline_images_json AS "baselineImagesJson",
-        previous_images_json AS "previousImagesJson",
-        current_images_json AS "currentImagesJson",
-        terminal_images_json AS "terminalImagesJson"
-      FROM thread_monitor_computer_evidence
-      WHERE monitor_id = ${monitorId}
+  const getComputerRevisionRow = SqlSchema.findOneOption({
+    Request: Schema.Struct({ threadId: ThreadId, monitorId: ThreadMonitorId }),
+    Result: Schema.Struct({ ...ThreadMonitorRow.fields, ...ComputerEvidenceRow.fields }),
+    execute: ({ threadId, monitorId }) => sql`
+      SELECT ${selectColumns},
+        COALESCE(baseline_images_json, '[]') AS "baselineImagesJson",
+        COALESCE(previous_images_json, '[]') AS "previousImagesJson",
+        COALESCE(current_images_json, '[]') AS "currentImagesJson",
+        COALESCE(terminal_images_json, '[]') AS "terminalImagesJson"
+      FROM thread_monitors LEFT JOIN thread_monitor_computer_evidence USING (monitor_id)
+      WHERE thread_id = ${threadId} AND monitor_id = ${monitorId}
       LIMIT 1
     `,
   });
@@ -399,6 +409,18 @@ const make = Effect.gen(function* () {
         terminal_images_json = excluded.terminal_images_json
     `,
   });
+
+  const putComputerEvidence = (
+    monitorId: ThreadMonitorId,
+    evidence: ThreadMonitorComputerEvidenceRecord,
+  ) =>
+    putComputerEvidenceRow({
+      monitorId,
+      baselineImagesJson: encodeComputerEvidenceImages(evidence.baselineImages),
+      previousImagesJson: encodeComputerEvidenceImages(evidence.previousImages),
+      currentImagesJson: encodeComputerEvidenceImages(evidence.currentImages),
+      terminalImagesJson: encodeComputerEvidenceImages(evidence.terminalImages),
+    });
 
   // A Stop can commit while initial validation or desktop preparation has no row.
   // Run this lookup in the same transaction as the first monitor write.
@@ -545,18 +567,44 @@ const make = Effect.gen(function* () {
       (monitorId) => deleteMonitorRow({ monitorId }),
       Effect.mapError(toPersistenceSqlError("ThreadMonitorRepository.deleteById:query")),
     ),
-    getComputerEvidence: Effect.fn("ThreadMonitorRepository.getComputerEvidence")((monitorId) =>
+    getComputerRevision: Effect.fn("ThreadMonitorRepository.getComputerRevision")((input) =>
       decodeQueryResult(
-        getComputerEvidenceRow({ monitorId }),
-        "ThreadMonitorRepository.getComputerEvidence:query",
+        getComputerRevisionRow(input),
+        "ThreadMonitorRepository.getComputerRevision:query",
         (row) =>
-          Option.map(row, (evidence) => ({
-            baselineImages: decodeComputerEvidenceImages(evidence.baselineImagesJson),
-            previousImages: decodeComputerEvidenceImages(evidence.previousImagesJson),
-            currentImages: decodeComputerEvidenceImages(evidence.currentImagesJson),
-            terminalImages: decodeComputerEvidenceImages(evidence.terminalImagesJson),
+          Option.map(row, (revision) => ({
+            monitor: fromRow(revision),
+            evidence: {
+              baselineImages: decodeComputerEvidenceImages(revision.baselineImagesJson),
+              previousImages: decodeComputerEvidenceImages(revision.previousImagesJson),
+              currentImages: decodeComputerEvidenceImages(revision.currentImagesJson),
+              terminalImages: decodeComputerEvidenceImages(revision.terminalImagesJson),
+            },
           })),
       ),
+    ),
+    tryTriggerComputer: Effect.fn("ThreadMonitorRepository.tryTriggerComputer")(
+      function* (monitor, evidence) {
+        if (monitor.condition.type !== "computer") return false;
+        const row = toRow(monitor);
+        const updated = yield* sql`
+          UPDATE thread_monitors SET
+            condition_json = ${row.conditionJson}, wake_at = ${row.wakeAt},
+            status = 'triggered', trigger_reason = ${row.triggerReason},
+            trigger_summary = ${row.triggerSummary}, trigger_evidence = ${row.triggerEvidence},
+            triggered_at = ${row.triggeredAt}, updated_at = ${row.updatedAt},
+            last_error = NULL, delivery_retry_at = NULL
+          WHERE monitor_id = ${monitor.id} AND thread_id = ${monitor.threadId}
+            AND condition_type = 'computer' AND status = 'active' AND cancellation_requested = 0
+            AND json_extract(condition_json, '$.revision') = ${monitor.condition.revision}
+          RETURNING monitor_id
+        `;
+        if (updated.length === 0) return false;
+        if (evidence !== undefined) yield* putComputerEvidence(monitor.id, evidence);
+        return true;
+      },
+      sql.withTransaction,
+      Effect.mapError(toPersistenceSqlError("ThreadMonitorRepository.tryTriggerComputer:query")),
     ),
     upsertComputerRevision: Effect.fn("ThreadMonitorRepository.upsertComputerRevision")(
       (input) =>
@@ -567,15 +615,7 @@ const make = Effect.gen(function* () {
                 ? Effect.void
                 : retainAcceptedStops(input.monitor, input.afterSequence),
             ),
-            Effect.flatMap(() =>
-              putComputerEvidenceRow({
-                monitorId: input.monitor.id,
-                baselineImagesJson: encodeComputerEvidenceImages(input.baselineImages),
-                previousImagesJson: encodeComputerEvidenceImages(input.previousImages),
-                currentImagesJson: encodeComputerEvidenceImages(input.currentImages),
-                terminalImagesJson: encodeComputerEvidenceImages(input.terminalImages),
-              }),
-            ),
+            Effect.flatMap(() => putComputerEvidence(input.monitor.id, input)),
           ),
         ),
       Effect.mapError(

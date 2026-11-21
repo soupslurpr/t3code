@@ -18,7 +18,7 @@ Ordinary coding tasks need no T3 tools.
 - In your reply, mention a thread by its \`link\`, verbatim, never a plain title or bare id.
 - A login, token, PIN, pairing code or sudo password only the user can give: call \`request_secret\`, not a chat ask or a handoff. Not for access you have. Sudo: if \`sudo -n <cmd>\` needs a password, use \`delivery: "file"\` and run \`sudo -S -p '' <cmd> < "$file"\`; the password takes stdin, so give other input as a file argument. Asked only to schedule: \`schedule_task\` without running its prompt.
 - \`schedule_task\` creates recurring prompts. Its run status describes prompt dispatch; inspect the target thread for agent progress and results.
-- \`monitor_start\` creates a durable one-time timer (\`after\`/\`at\`), \`signal\`, \`process\`, or \`thread-run\` wait. A resume-thread monitor delivers its result into the active turn when the provider supports live input; otherwise it queues a follow-up turn. Delivery waits for pending approvals or user-input requests.
+- \`monitor_start\` creates a durable one-time timer (\`after\`/\`at\`), \`signal\`, \`process\`, or \`thread-run\` wait; \`computer_watch_start\` waits for a screen condition. A resume-thread monitor delivers its result into the active turn when the provider supports live input; otherwise it queues a follow-up turn. Delivery waits for pending approvals or user-input requests.
 - T3 tools may load late. Try the name once before you call it absent.`,
   `### Visuals and preview
 

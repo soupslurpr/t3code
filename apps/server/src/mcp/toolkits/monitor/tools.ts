@@ -1,9 +1,16 @@
 import {
+  McpCapabilityUnavailableError,
   OrchestratorMcpFailure,
   ThreadMonitor,
   ThreadMonitorCancelInput,
   ThreadMonitorCapabilities,
   ThreadMonitorCheckInput,
+  ThreadMonitorComputerCapabilities,
+  ThreadMonitorComputerInspectInput,
+  ThreadMonitorComputerInspection,
+  ThreadMonitorComputerRevisionResult,
+  ThreadMonitorComputerStartInput,
+  ThreadMonitorComputerUpdateInput,
   ThreadMonitorError,
   ThreadMonitorList,
   ThreadMonitorSignalInput,
@@ -14,6 +21,7 @@ import {
 import * as Schema from "effect/Schema";
 import { McpSchema, Tool, Toolkit } from "effect/ai";
 
+import * as ComputerObservationStore from "../../../computer/ComputerObservationStore.ts";
 import { ThreadManagementService } from "../../../orchestration-v2/ThreadManagementService.ts";
 import { ThreadMonitorService } from "../../../threadMonitor/ThreadMonitorService.ts";
 import * as ThreadMonitorSignalCallbacks from "../../../threadMonitor/ThreadMonitorSignalCallbacks.ts";
@@ -22,6 +30,7 @@ import * as McpInvocationContext from "../../McpInvocationContext.ts";
 const EmptyParameters = Schema.Record(Schema.String, Schema.Never);
 
 const dependencies = [
+  ComputerObservationStore.ComputerObservationStore,
   ThreadManagementService,
   McpInvocationContext.McpInvocationContext,
   ThreadMonitorService,
@@ -36,7 +45,7 @@ const mutatingMonitorTool = <T extends Tool.Any>(tool: T): T =>
 const MonitorStartTool = mutatingMonitorTool(
   Tool.make("monitor_start", {
     description:
-      "Create a one-time durable wait for the current T3 thread without keeping this model turn or process asleep. Use schedule_task for recurring prompts. Use schedule type thread-run with a target threadId in this environment and run:{type:'exact',runId} or run:{type:'next'} for native T3 run completion. Next means the first run created after the monitor. The result distinguishes completed, failed, and stopped; it does not certify a broader goal. Use an optional deadlineAt as a fallback. Use schedule type after/at for long timers. Before choosing a cache-conscious timer, call monitor_capabilities for the current controller model's optional minimum prompt-cache lifetime. Use signal when a background watcher, subagent, automation, or later turn will report completion. A signal monitor returns signalCallback with a completion-only credential and a shell command for a worker on this environment: pipe a JSON object with optional summary and evidence into that command. Keep the callback private. It works after this turn ends and across server restarts at the same listening address; cancellation disables it. Agents in this thread may also call monitor_signal; an optional deadlineAt provides a restart-safe fallback. By default the trigger delivers its result into the active turn when the provider supports live input; otherwise it queues a follow-up turn using the thread's configuration. Pending approvals or user-input requests delay delivery. Set continuation=record-only when a durable result should be recorded without starting a turn. T3 persists the monitor across server restarts and retains one logical continuation message across delivery retries.",
+      "Create a one-time durable wait for the current T3 thread without keeping this model turn or process asleep. Use schedule_task for recurring prompts and computer_watch_start for screen conditions. Use schedule type thread-run with a target threadId in this environment and run:{type:'exact',runId} or run:{type:'next'} for native T3 run completion. Next means the first run created after the monitor. The result distinguishes completed, failed, and stopped; it does not certify a broader goal. Use an optional deadlineAt as a fallback. Use schedule type after/at for long timers. Before choosing a cache-conscious timer, call monitor_capabilities for the current controller model's optional minimum prompt-cache lifetime. Use signal when a background watcher, subagent, automation, or later turn will report completion. A signal monitor returns signalCallback with a completion-only credential and a shell command for a worker on this environment: pipe a JSON object with optional summary and evidence into that command. Keep the callback private. It works after this turn ends and across server restarts at the same listening address; cancellation disables it. Agents in this thread may also call monitor_signal; an optional deadlineAt provides a restart-safe fallback. By default the trigger delivers its result into the active turn when the provider supports live input; otherwise it queues a follow-up turn using the thread's configuration. Pending approvals or user-input requests delay delivery. Set continuation=record-only when a durable result should be recorded without starting a turn. T3 persists the monitor across server restarts and retains one logical continuation message across delivery retries.",
     parameters: ThreadMonitorStartInput,
     success: ThreadMonitorStartResult,
     failure: Schema.Union([ThreadMonitorError, OrchestratorMcpFailure]),
@@ -106,6 +115,92 @@ const MonitorCheckNowTool = mutatingMonitorTool(
   }).annotate(Tool.Title, "Check durable monitors now"),
 );
 
+const ComputerWatchStartTool = mutatingMonitorTool(
+  Tool.make("computer_watch_start", {
+    description:
+      "Create a durable multi-region screen watch for one explicitly named user or Agent desktop, acquire view-only access immediately, and return without keeping this model turn asleep. The controller may name up to eight independently cropped, sized, and encoded trigger or context regions; region images default to lossless WebP; trigger regions drive change detection, while context regions are captured only for evaluation or inspection. Watch creation and baseline capture are one operation: the result returns the exact captured baseline images by default so the controller can verify them before ending its turn. Supply baselineObservation.unchangedIfContentHashes to omit matching known bytes, or baselineObservation:false when no pixels are needed. Choose either exact image-change detection or one exact configured evaluator model plus a factual visible condition. Model watches can separately set a minimum evaluation interval; changes inside that window remain pending and coalesce into one evaluation of the latest sample. Frame regions are converted once to durable desktop coordinates. T3 retains only bounded baseline, previous, current, and terminal evidence, survives restarts, retries degraded capture or evaluation with backoff, supports deterministic controller-review checkpoints, releases its view lease when terminal or cancelled, and resumes the thread only through the ordinary monitor continuation. Model watches default to review after 12 evaluations and pause model calls until acknowledged. Every watch also requests health review after three consecutive failures; review.consecutiveFailures:null disables that safeguard. Set review.afterEvaluations:null to disable that checkpoint or review:null to disable all reviews. If a baseline captured a transient or wrong state, update the watch to rebaseline. After starting a resume-thread watch, finish the current turn rather than polling.",
+    parameters: ThreadMonitorComputerStartInput,
+    success: ThreadMonitorComputerRevisionResult,
+    failure: Schema.Union([
+      ThreadMonitorError,
+      OrchestratorMcpFailure,
+      McpCapabilityUnavailableError,
+    ]),
+    dependencies,
+  }).annotate(Tool.Title, "Start durable computer watch"),
+);
+
+const ComputerWatchCapabilitiesTool = Tool.make("computer_watch_capabilities", {
+  description:
+    "List optional prompt-cache timing for the current controller model, configured provider instances and models that support read-only screen-condition evaluation, and deterministic conditions that need no model. controllerPromptCache.minimumLifetimeMs is measured from creation or refresh and is not an expiration deadline; its source distinguishes provider-reported data from provider documentation, and absence means unknown. Select an exact returned evaluator instanceId and model; T3 does not silently substitute another evaluator. tokenUsage reports whether evaluation usage is measurable, and promptCacheRefresh reports whether an adapter can explicitly refresh an evaluator cache without creating a thread message.",
+  parameters: EmptyParameters,
+  success: ThreadMonitorComputerCapabilities,
+  failure: Schema.Union([
+    ThreadMonitorError,
+    OrchestratorMcpFailure,
+    McpCapabilityUnavailableError,
+  ]),
+  dependencies,
+})
+  .annotate(Tool.Title, "Get computer-watch capabilities")
+  .annotate(Tool.Readonly, true)
+  .annotate(Tool.Destructive, false)
+  .annotate(Tool.Idempotent, true);
+
+const ComputerWatchInspectTool = Tool.make("computer_watch_inspect", {
+  description:
+    "Inspect one computer watch's current revision, region metrics, evaluation usage and timing, and selected retained image generations. Optionally request one fresh capture or a bounded timestamped burst from selected configured regions. Fresh frames use the watch's existing view lease and are returned only to this call. Use this when the capable controller needs direct evidence to decide whether its regions, cadence, evaluator, or condition remain efficient; the narrow evaluator cannot revise the watch.",
+  parameters: ThreadMonitorComputerInspectInput,
+  success: ThreadMonitorComputerInspection,
+  failure: Schema.Union([
+    ThreadMonitorError,
+    OrchestratorMcpFailure,
+    McpCapabilityUnavailableError,
+  ]),
+  dependencies,
+})
+  .annotate(Tool.Title, "Inspect computer watch")
+  .annotate(McpSchema.EnabledWhen, McpInvocationContext.hiddenFromOutsideClients)
+  .annotate(Tool.Readonly, false)
+  .annotate(Tool.Destructive, false)
+  .annotate(Tool.Idempotent, false);
+
+const ComputerWatchUpdateTool = mutatingMonitorTool(
+  Tool.make("computer_watch_update", {
+    description:
+      "Atomically revise an active computer watch using its current expectedRevision. The capable controller may replace named trigger/context regions and their individual resolution or encoding, switch condition or exact evaluator model, adjust sampling and evaluation cadence, set or disable deterministic future review checkpoints, change the deadline or terminal continuation, or acknowledge a pending or delivered review while retaining the strategy. Set review:null to disable all reviews or review.consecutiveFailures:null to disable only automatic degradation review. Every successful update starts a new revision and returns its exact fresh baselines by default. baselineObservation supports known-hash byte deduplication or false to omit response pixels; supplying baselineObservation alone explicitly rebaselines the unchanged strategy. A stale expectedRevision fails without changing state, so inspect the latest revision before retrying. This operation is exclusively controller-owned; evaluator output is observational evidence, never an update instruction.",
+    parameters: ThreadMonitorComputerUpdateInput,
+    success: ThreadMonitorComputerRevisionResult,
+    failure: Schema.Union([
+      ThreadMonitorError,
+      OrchestratorMcpFailure,
+      McpCapabilityUnavailableError,
+    ]),
+    dependencies,
+  }).annotate(Tool.Title, "Update computer watch"),
+);
+
+export const MonitorToolkit = Toolkit.make(
+  MonitorStartTool,
+  MonitorCapabilitiesTool,
+  MonitorStatusTool,
+  MonitorSignalTool,
+  MonitorCancelTool,
+  MonitorCheckNowTool,
+  ComputerWatchStartTool,
+  ComputerWatchCapabilitiesTool,
+  ComputerWatchInspectTool,
+  ComputerWatchUpdateTool,
+);
+
+/** Groups monitor operations whose results contain image bytes. */
+export const MonitorImageToolkit = Toolkit.make(
+  ComputerWatchStartTool,
+  ComputerWatchInspectTool,
+  ComputerWatchUpdateTool,
+);
+
+/** Groups monitor operations handled by the standard structured registration. */
 export const MonitorStandardToolkit = Toolkit.make(
   MonitorStartTool,
   MonitorCapabilitiesTool,
@@ -113,4 +208,5 @@ export const MonitorStandardToolkit = Toolkit.make(
   MonitorSignalTool,
   MonitorCancelTool,
   MonitorCheckNowTool,
+  ComputerWatchCapabilitiesTool,
 );

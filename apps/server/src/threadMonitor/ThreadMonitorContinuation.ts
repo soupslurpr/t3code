@@ -83,6 +83,12 @@ export function monitorSystemEventSummary(event: OrchestrationSystemEvent): stri
   return `${event.monitors.length} monitors triggered`;
 }
 
+export function monitorReviewActivitySummary(event: OrchestrationMonitorReviewEvent): string {
+  return event.evaluatorPaused === true
+    ? `Computer watch evaluator paused: ${event.observation.label}`
+    : `Computer watch review requested: ${event.observation.label}`;
+}
+
 /** Renders one typed system event into provider-neutral model input. */
 export function formatMonitorSystemEventForProvider(event: OrchestrationSystemEvent): string {
   if (event.type === "monitor.review") {

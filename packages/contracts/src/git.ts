@@ -10,6 +10,7 @@ import {
   TrimmedNonEmptyString,
 } from "./baseSchemas.ts";
 import { SourceControlProviderError, SourceControlProviderInfo } from "./sourceControl.ts";
+import { ThreadMonitorComputerUsage } from "./threadMonitorComputer.ts";
 import { VcsDriverKind } from "./vcs.ts";
 
 const TrimmedNonEmptyStringSchema = TrimmedNonEmptyString;
@@ -407,6 +408,7 @@ export class TextGenerationError extends Schema.TaggedError<TextGenerationError>
     operation: Schema.String,
     detail: Schema.String,
     cause: Schema.optional(Schema.Defect()),
+    usage: Schema.optional(ThreadMonitorComputerUsage),
   },
 ) {
   override get message(): string {

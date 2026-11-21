@@ -120,8 +120,17 @@ import {
 import * as HtmlHandlers from "./toolkits/html/handlers.ts";
 import { MessageToolkit } from "./toolkits/message/tools.ts";
 import * as MessageHandlers from "./toolkits/message/handlers.ts";
-import { MonitorStandardToolkit } from "./toolkits/monitor/tools.ts";
-import { MonitorStandardToolkitHandlersLive } from "./toolkits/monitor/handlers.ts";
+import { MonitorImageToolkit, MonitorStandardToolkit } from "./toolkits/monitor/tools.ts";
+import {
+  MonitorImageToolkitHandlersLive,
+  MonitorStandardToolkitHandlersLive,
+} from "./toolkits/monitor/handlers.ts";
+import {
+  computerWatchInspectionResult,
+  encodeComputerWatchRevisionResult,
+  monitorToolFailure,
+} from "./toolkits/monitor/results.ts";
+import { ThreadMonitorService } from "../threadMonitor/ThreadMonitorService.ts";
 import { HtmlPreviewTool, HtmlPreviewToolkit, HtmlRenderToolkit } from "./toolkits/html/tools.ts";
 import { MCP_HTTP_PATH } from "../httpCors.ts";
 import { requestUrl } from "../requestUrl.ts";
@@ -1595,9 +1604,72 @@ export const layerMcpTransport = <RA, RE, RR>(registrations: Layer.Layer<RA, RE,
     registrations,
   }).pipe(Layer.provide(layerMcpAuthMiddleware));
 
-export const layerMonitorToolkit = toolkitRegistration(
-  MonitorStandardToolkit,
-  MonitorStandardToolkitHandlersLive,
+const registerMonitorImageTools = Effect.fn("McpHttpServer.registerMonitorImageTools")(
+  function* () {
+    const server = yield* McpServer.McpServer;
+    const services = yield* Effect.context<
+      | ThreadMonitorService
+      | ThreadManagementService.ThreadManagementService
+      | ComputerObservationStore.ComputerObservationStore
+    >();
+    const built = yield* decodeAsAdvertised(MonitorImageToolkit);
+    for (const name of Object.keys(built.tools) as Array<keyof typeof built.tools>) {
+      const tool = built.tools[name];
+      yield* server.addTool({
+        tool: new McpSchema.Tool({
+          name: tool.name,
+          description: Tool.getDescription(tool),
+          inputSchema: advertisedJsonSchema(tool),
+          annotations: {
+            ...Context.getOption(tool.annotations, Tool.Title).pipe(
+              Option.map((title) => ({ title })),
+              Option.getOrUndefined,
+            ),
+            readOnlyHint: Context.get(tool.annotations, Tool.Readonly),
+            destructiveHint: Context.get(tool.annotations, Tool.Destructive),
+            idempotentHint: Context.get(tool.annotations, Tool.Idempotent),
+            openWorldHint: Context.get(tool.annotations, Tool.OpenWorld),
+          },
+        }),
+        annotations: tool.annotations,
+        handle: (payload) =>
+          Effect.withFiber((fiber) => {
+            const invocation = Context.getUnsafe(
+              fiber.context,
+              McpInvocationContext.McpInvocationContext,
+            );
+            return built.handle(name, payload).pipe(
+              Stream.unwrap,
+              Stream.run(Sink.last()),
+              Effect.flatMap(Effect.fromOption),
+              Effect.provide(services),
+              Effect.provideService(McpInvocationContext.McpInvocationContext, invocation),
+              Effect.matchCauseEffect({
+                onFailure: (cause) => {
+                  const firstError = cause.reasons.find(Cause.isFailReason)?.error;
+                  return monitorToolFailure(
+                    tool.name,
+                    cause,
+                    firstError === undefined ? undefined : parameterValidationMessage(firstError),
+                  );
+                },
+                onSuccess: ({ encodedResult }) =>
+                  Effect.succeed(
+                    tool.name === "computer_watch_inspect"
+                      ? computerWatchInspectionResult(encodedResult)
+                      : encodeComputerWatchRevisionResult(encodedResult),
+                  ),
+              }),
+            );
+          }),
+      });
+    }
+  },
+);
+
+export const layerMonitorToolkit = Layer.mergeAll(
+  toolkitRegistration(MonitorStandardToolkit, MonitorStandardToolkitHandlersLive),
+  imageToolRegistration(registerMonitorImageTools(), MonitorImageToolkitHandlersLive),
 );
 
 /** Every tool the T3 MCP server advertises. AgentContextBudget.test.ts measures this set. */

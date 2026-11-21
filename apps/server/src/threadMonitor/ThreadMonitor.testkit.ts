@@ -6,6 +6,7 @@ import {
   ProviderDriverKind,
   ProviderInstanceId,
   ThreadId,
+  ThreadMonitorError,
   type ModelSelection,
 } from "@t3tools/contracts";
 import type * as ProviderAdapter from "@t3tools/provider-core/server/ProviderAdapter";
@@ -23,6 +24,10 @@ import * as Sqlite from "../persistence/Sqlite.ts";
 import * as ThreadMonitors from "../persistence/ThreadMonitors.ts";
 import { ServerActivation } from "../serverActivation.ts";
 import * as ThreadMonitor from "./ThreadMonitor.ts";
+import {
+  ThreadMonitorComputerService,
+  type ThreadMonitorComputerServiceShape,
+} from "./ThreadMonitorComputerService.ts";
 import * as ThreadMonitorProcess from "./ThreadMonitorProcess.ts";
 import { ThreadMonitorService } from "./ThreadMonitorService.ts";
 
@@ -42,11 +47,51 @@ const adapter = {
   openSession: () => Effect.die("Monitor persistence tests must not launch a provider"),
 } as ProviderAdapter.ProviderAdapterV2["Service"];
 
+const defaultComputerService: ThreadMonitorComputerServiceShape = {
+  prepare: () =>
+    Effect.fail(
+      new ThreadMonitorError({
+        code: "COMPUTER_WATCH_UNAVAILABLE",
+        operation: "computer-watch-start",
+        detail: "Computer watch service is not configured in this test.",
+      }),
+    ),
+  check: () =>
+    Effect.fail(
+      new ThreadMonitorError({
+        code: "COMPUTER_WATCH_UNAVAILABLE",
+        operation: "computer-watch-check",
+        detail: "Computer watch service is not configured in this test.",
+      }),
+    ),
+  revise: () =>
+    Effect.fail(
+      new ThreadMonitorError({
+        code: "COMPUTER_WATCH_UNAVAILABLE",
+        operation: "computer-watch-update",
+        detail: "Computer watch service is not configured in this test.",
+      }),
+    ),
+  inspectFresh: () =>
+    Effect.fail(
+      new ThreadMonitorError({
+        code: "COMPUTER_WATCH_UNAVAILABLE",
+        operation: "computer-watch-inspect",
+        detail: "Computer watch service is not configured in this test.",
+      }),
+    ),
+  release: () => Effect.void,
+  monitorCapabilities: () => Effect.succeed({}),
+  computerCapabilities: () =>
+    Effect.succeed({ evaluators: [], deterministicMatches: ["image-change"] as const }),
+};
+
 export function makeLayer(options?: {
   readonly database?: NonNullable<
     NonNullable<Parameters<typeof ProviderReplayHarness.layerWithRegistry>[2]>["databaseLayer"]
   >;
   readonly processes?: ThreadMonitorProcess.ProcessMonitorPort | null;
+  readonly computer?: Partial<ThreadMonitorComputerServiceShape>;
   readonly activation?: Effect.Effect<void>;
 }) {
   const database = options?.database ?? Sqlite.layerMemory;
@@ -73,6 +118,12 @@ export function makeLayer(options?: {
     }),
   );
   return ThreadMonitor.layer.pipe(
+    Layer.provide(
+      Layer.succeed(ThreadMonitorComputerService, {
+        ...defaultComputerService,
+        ...options?.computer,
+      }),
+    ),
     Layer.provide(
       Layer.succeed(ThreadMonitorProcess.ThreadMonitorProcess, options?.processes ?? null),
     ),

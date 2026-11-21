@@ -68,6 +68,13 @@ const filterLaunchArgs = (launchArgs: string | undefined, allowed: LaunchArgFilt
 
 const MCP_LIST_DISABLED_FEATURES = new Set(["apps", "connectors", "plugins"]);
 const EXEC_DISABLED_FEATURES = new Set([...MCP_LIST_DISABLED_FEATURES, "hooks", "codex_hooks"]);
+// Current Codex gives hooks precedence over the historical codex_hooks alias.
+export const CODEX_NO_HOOK_ARGS = [
+  "--config",
+  "features.codex_hooks=false",
+  "--config",
+  "features.hooks=false",
+] as const;
 
 // Codex can apply explicit --enable flags after trailing -c overrides.
 const omitFeatureEnables = (args: ReadonlyArray<string>, features: ReadonlySet<string>) =>
@@ -77,8 +84,11 @@ const omitFeatureEnables = (args: ReadonlyArray<string>, features: ReadonlySet<s
     return !(args[index - 1] === "--enable" && features.has(arg));
   });
 
+export const omitCodexGenerationFeatureEnables = (args: ReadonlyArray<string>) =>
+  omitFeatureEnables(args, EXEC_DISABLED_FEATURES);
+
 export const codexExecLaunchArgs = (launchArgs?: string) =>
-  omitFeatureEnables(filterLaunchArgs(launchArgs, EXEC_FILTER), EXEC_DISABLED_FEATURES);
+  omitCodexGenerationFeatureEnables(filterLaunchArgs(launchArgs, EXEC_FILTER));
 
 export const codexMcpListLaunchArgs = (launchArgs?: string) =>
   omitFeatureEnables(filterLaunchArgs(launchArgs, MCP_LIST_FILTER), MCP_LIST_DISABLED_FEATURES);

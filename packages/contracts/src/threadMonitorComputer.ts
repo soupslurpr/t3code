@@ -207,7 +207,7 @@ export const ThreadMonitorComputerCondition = Schema.Struct({
   consecutiveUncertain: NonNegativeInt,
   consecutiveFailures: NonNegativeInt,
   observationError: Schema.NullOr(Schema.String.check(Schema.isMaxLength(2_000))),
-  resourceState: Schema.Literals(["viewing", "degraded", "released"]),
+  resourceState: Schema.Literals(["viewing", "degraded", "release-pending", "released"]),
 }).check(
   Schema.makeFilter(
     (input) =>

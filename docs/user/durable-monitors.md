@@ -1,0 +1,93 @@
+# Durable waits and monitoring
+
+An agent can leave a durable wait when work should resume later. T3 Code stores
+the wait locally, lets the current turn finish, and shows the thread as
+**Monitoring**. No model process stays active while a monitor is dormant.
+Timers and exact image-change watches use no model tokens. A semantic screen
+watch runs an isolated, read-only visual evaluation only when its sampling
+rules ask for one.
+
+Before setting a cache-conscious timer or watch cadence, the agent can inspect
+the current model's optional minimum prompt-cache lifetime. T3 Code reports
+that timing only when the provider exposes a reliable minimum and omits it
+otherwise.
+
+An automated continuation appears as a **Monitor triggered** or **Monitor review**
+event. Expand it to inspect the trigger, observation, and evidence. The agent
+resumes using the existing conversation, without a separate handoff prompt.
+The event does not grant new authorization. Codex monitor continuations require
+Codex CLI 0.151.0 or later; update Codex if delivery reports that the installed
+version does not support automated input.
+
+A native thread wait uses the app's run events. Ask the agent to wait for an
+exact run or the next run. The result says whether that run completed, failed,
+or stopped; completion does not establish broader task success.
+
+Waits survive a T3 server restart. T3 Code does not run timers in a hosted
+service while the environment is offline; an overdue wait is reconciled the
+next time that server starts. Deleting a thread cancels its outstanding waits.
+When the desktop host is configured to stay awake for agent work, an
+outstanding wait counts as monitoring so its deadline can run on time. This
+does not bypass manual locking or unlock a workstation.
+
+Screen watches request view-only access when they are created, before the
+creating turn ends. A watch never acquires keyboard or pointer control. It can
+observe a full display or convert a crop from a current screenshot into stable
+desktop coordinates, and the agent can choose its capture resolution and
+sampling interval. An Agent desktop remains usable by its controlling agent
+while another agent in the same thread holds a view-only watch.
+
+For a semantic condition, the agent selects an exact configured provider
+instance and model. T3 Code does not silently substitute a cheaper or different
+model. It normally skips evaluation while the crop is byte-for-byte unchanged;
+the agent can disable that gate when periodic interpretation is more useful.
+The agent can also set a minimum interval between model evaluations
+independently of the capture interval. Changes during that interval remain
+pending and coalesce into one evaluation of the latest sample. Omitting the
+minimum keeps evaluation unthrottled. A throttled watch can miss a condition
+that appears and disappears before the next evaluation, so transient conditions
+need a short or omitted minimum.
+
+Evaluator availability, token reporting, and explicit prompt-cache refresh are
+adapter capabilities. T3 Code reports unsupported capabilities instead of
+creating synthetic keepalive turns or hidden conversation messages.
+
+A model-backed screen watch pauses evaluation after 12 evaluations by default
+and requests a controller review. Capture and hash comparison continue, but no
+more evaluator tokens are used until the controller inspects the watch and
+acknowledges, revises, or cancels it. The review reports evaluation counts,
+change rates, and available token usage. An agent can choose another
+evaluation checkpoint or explicitly disable it for a genuinely high-frequency
+condition.
+
+Ordinary screen samples are discarded after comparison. T3 Code stores hashes
+and bounded status details with the monitor, can optionally retain the initial
+baseline image for visual comparison, and retains the terminal matching image
+for audit. Those images live in the environment's local T3 data until the
+owning thread is deleted. Cancelling, matching, reaching a deadline, or deleting
+the thread releases the watch's view lease. A temporary capture or evaluator
+failure is recorded and retried with bounded exponential backoff.
+
+After three consecutive failures, a screen watch normally resumes its
+controller once with the current diagnostic so the agent can inspect or revise
+an ineffective watch. The watch keeps retrying and does not repeat the warning
+within the same revision. An agent can disable this safeguard while retaining
+other review checkpoints, or disable reviews entirely when silence is
+intentional.
+
+On web and desktop, open thread details and find **Automations** to inspect
+outstanding monitors and cancel an individual wait without an active provider.
+Details include the condition, deadline or next check, delivery blockers,
+errors, review checkpoints, and available evaluator usage. You can also ask the
+agent to list or cancel its waits from any client.
+
+Signal-based monitoring usually combines a durable wait with background work
+that reports when its condition is satisfied. The agent can give a background
+job a private completion callback that works after its turn ends. Cancelling
+the wait disables the callback. The wait survives restarting T3 Code, but T3
+Code does not restart the background job itself. If that background work can
+stop independently, use a fallback deadline when missing the wake-up would
+matter.
+
+On mobile, open **Monitors** from the thread header to inspect or cancel its
+one-time waits.

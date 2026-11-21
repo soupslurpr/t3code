@@ -328,6 +328,7 @@ export class ThreadMonitorError extends Schema.TaggedError<ThreadMonitorError>()
     operation: Schema.String,
     detail: Schema.String,
     monitorId: Schema.optional(ThreadMonitorId),
+    usage: Schema.optional(ThreadMonitorComputerUsage),
   },
 ) {
   override get message(): string {

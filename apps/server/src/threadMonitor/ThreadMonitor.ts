@@ -19,7 +19,6 @@ import * as Option from "effect/Option";
 import * as PubSub from "effect/PubSub";
 import * as Queue from "effect/Queue";
 import * as Result from "effect/Result";
-import * as Schema from "effect/Schema";
 import * as Scope from "effect/Scope";
 import * as Semaphore from "effect/Semaphore";
 import * as Stream from "effect/Stream";
@@ -30,26 +29,24 @@ import { ProjectionStoreV2 } from "../orchestration-v2/ProjectionStore.ts";
 import { ThreadManagementService } from "../orchestration-v2/ThreadManagementService.ts";
 import * as ThreadMonitorRepositoryLayer from "../persistence/ThreadMonitors.ts";
 import { ThreadMonitorRepository } from "../persistence/ThreadMonitors.ts";
-import * as ProviderInstanceRegistry from "../provider/ProviderInstanceRegistry.ts";
 import { forkParked } from "../serverActivation.ts";
-import { readMonitorCapabilities } from "./ControllerPromptCache.ts";
+import { makeMonitorComputerOps, requestControllerReview } from "./monitorComputerOps.ts";
 import { makeMonitorDelivery } from "./monitorDelivery.ts";
 import { makeMonitorLifecycle } from "./monitorLifecycle.ts";
 import {
   BLOCKED_DELIVERY_RETRY_MS,
   DELIVERY_SETTLE_MS,
   MAX_SCHEDULER_SLEEP_MS,
-  PROCESS_CHECK_INTERVAL_MS,
   boundedDetail,
   mapPersistenceError,
   monitorDeliveryReadyAt,
-  monitorError,
   monitorWakeAt,
+  reviewDeliveryReadyAt,
 } from "./monitorSchedule.ts";
+import { makeReleaseMonitorResource } from "./monitorResourceRelease.ts";
+import { ThreadMonitorComputerService } from "./ThreadMonitorComputerService.ts";
 import * as ThreadMonitorProcess from "./ThreadMonitorProcess.ts";
 import { ThreadMonitorService } from "./ThreadMonitorService.ts";
-
-const encodeEvidence = Schema.encodeSync(Schema.fromJsonString(Schema.Unknown));
 
 const make = Effect.gen(function* () {
   const effectOutbox = yield* EffectOutboxV2;
@@ -59,8 +56,8 @@ const make = Effect.gen(function* () {
   const projections = yield* ProjectionStoreV2;
   const scope = yield* Effect.scope;
   const repository = yield* ThreadMonitorRepository;
+  const computer = yield* ThreadMonitorComputerService;
   const processes = yield* ThreadMonitorProcess.ThreadMonitorProcess;
-  const registry = yield* Effect.serviceOption(ProviderInstanceRegistry.ProviderInstanceRegistry);
 
   const mutex = yield* Semaphore.make(1);
   const checks = new Map<ThreadMonitorId, Fiber.Fiber<void, ThreadMonitorError>>();
@@ -113,62 +110,16 @@ const make = Effect.gen(function* () {
       ),
     );
 
-  const releaseResource = Effect.fn("ThreadMonitor.releaseResource")(function* (
-    monitor: ThreadMonitor,
-    captureRelease?: (fiber: Fiber.Fiber<void, ThreadMonitorError>) => void,
-  ) {
-    if (monitor.condition.type !== "process" || monitor.condition.released) return monitor;
-    monitor = {
-      ...monitor,
-      condition: {
-        ...monitor.condition,
-        nextCheckAt: DateTime.formatIso(
-          DateTime.makeUnsafe((yield* Clock.currentTimeMillis) + PROCESS_CHECK_INTERVAL_MS),
-        ),
-      },
-    };
-    yield* writeMonitor(monitor);
-    const releasing = releases.get(monitor.id);
-    if (releasing !== undefined) {
-      captureRelease?.(releasing.fiber);
-      return monitor;
-    }
-    const checking = checks.get(monitor.id);
-    const fiber = yield* Effect.gen(function* () {
-      if (checking !== undefined) yield* Fiber.interrupt(checking);
-      if (processes === null) {
-        return yield* monitorError({
-          code: "INVALID_SCHEDULE",
-          operation: "process-release",
-          detail: "Process waits are unavailable on this server.",
-        });
-      }
-      yield* processes.release(monitor);
-      yield* mutex.withPermits(1)(
-        Effect.gen(function* () {
-          const current = yield* repository
-            .getById(monitor.id)
-            .pipe(Effect.mapError(mapPersistenceError("process-release", monitor.id)));
-          if (Option.isNone(current) || current.value.condition.type !== "process") return;
-          yield* writeMonitor({
-            ...current.value,
-            condition: { ...current.value.condition, released: true },
-          });
-        }),
-      );
-    }).pipe(
-      Effect.catch((error) =>
-        Effect.logWarning("Monitor resource release will retry", {
-          monitorId: monitor.id,
-          detail: error.detail,
-        }),
-      ),
-      Effect.ensuring(Effect.sync(() => releases.delete(monitor.id))),
-      Effect.forkIn(scope),
-    );
-    releases.set(monitor.id, { threadId: monitor.threadId, fiber });
-    captureRelease?.(fiber);
-    return monitor;
+  const releaseResource = makeReleaseMonitorResource({
+    repository,
+    processes,
+    computer,
+    mutex,
+    scope,
+    releases,
+    checks,
+    writeMonitor,
+    projections,
   });
 
   const awaitReleases = (threadId: ThreadId, monitorId?: ThreadMonitorId) =>
@@ -216,79 +167,37 @@ const make = Effect.gen(function* () {
     delivery,
   });
 
-  const startProcessCheck = Effect.fn("ThreadMonitor.startProcessCheck")(function* (
-    monitor: ThreadMonitor,
-    checkedAt: string,
-  ) {
-    if (checks.has(monitor.id) || monitor.condition.type !== "process" || processes === null)
-      return;
-    const nextCheckAt = DateTime.formatIso(
-      DateTime.makeUnsafe(Date.parse(checkedAt) + PROCESS_CHECK_INTERVAL_MS),
-    );
-    yield* writeMonitor({ ...monitor, condition: { ...monitor.condition, nextCheckAt } });
-    const fiber = yield* Effect.gen(function* () {
-      const result = yield* processes.check(monitor).pipe(Effect.result);
-      yield* mutex.withPermits(1)(
-        Effect.gen(function* () {
-          const saved = yield* repository
-            .getById(monitor.id)
-            .pipe(Effect.mapError(mapPersistenceError("process-check", monitor.id)));
-          if (
-            Option.isNone(saved) ||
-            saved.value.status !== "active" ||
-            saved.value.condition.type !== "process"
-          )
-            return;
-          const owner = yield* projections
-            .getThreadShell(monitor.threadId)
-            .pipe(Effect.mapError(mapPersistenceError("process-check", monitor.id)));
-          if (owner === null) {
-            yield* repository
-              .deleteByThread(monitor.threadId)
-              .pipe(Effect.mapError(mapPersistenceError("process-check", monitor.id)));
-            return;
-          }
-          const current = saved.value;
-          const now = yield* nowIso;
-          if (Result.isFailure(result)) {
-            yield* writeMonitor({ ...current, lastError: result.failure.detail });
-            return;
-          }
-          const receipt = result.success;
-          if (receipt === null) {
-            if (current.lastError !== null) yield* writeMonitor({ ...current, lastError: null });
-            return;
-          }
-          const summary = `Process ${receipt.processId}: ${receipt.status}${receipt.exitCode === null ? "" : ` (exit ${receipt.exitCode})`}${receipt.signal === null ? "" : ` (${receipt.signal})`}.`;
-          if (receipt.status === "permission-revoked" || receipt.status === "deleted") {
-            const cancelled: ThreadMonitor = {
-              ...current,
-              status: "cancelled",
-              updatedAt: now,
-              cancelledAt: now,
-              lastError: summary,
-              trigger: { reason: "condition", summary, evidence: null },
-            };
-            yield* writeMonitor(cancelled);
-            yield* releaseResource(cancelled);
-            return;
-          }
-          yield* delivery.triggerMonitor(
-            current,
-            { reason: "condition", summary, evidence: encodeEvidence(receipt) },
-            now,
-          );
-        }),
-      );
-    }).pipe(
-      Effect.ensuring(
-        mutex
-          .withPermits(1)(Effect.sync(() => checks.delete(monitor.id)))
-          .pipe(Effect.andThen(wake)),
-      ),
-      Effect.forkIn(scope),
-    );
-    checks.set(monitor.id, fiber);
+  const computerOps = makeMonitorComputerOps({
+    random,
+    engine,
+    eventSink,
+    projections,
+    scope,
+    repository,
+    computer,
+    mutex,
+    checks,
+    pendingStarts,
+    wake,
+    notifyChanged,
+    writeMonitor,
+    releaseResource,
+    awaitReleases,
+    readOwnedMonitor: lifecycle.readOwnedMonitor,
+    delivery,
+  });
+
+  const startProcessCheck = ThreadMonitorProcess.makeProcessMonitorCheck({
+    processes,
+    projections,
+    repository,
+    scope,
+    mutex,
+    checks,
+    wake,
+    writeMonitor,
+    releaseResource,
+    triggerMonitor: delivery.triggerMonitor,
   });
 
   const assignGroups = Effect.fn("ThreadMonitor.assignGroups")(function* (
@@ -387,6 +296,54 @@ const make = Effect.gen(function* () {
         ) {
           monitor = yield* releaseResource(monitor);
         }
+      } else if (monitor.status === "active" && monitor.condition.type === "computer") {
+        if (monitor.condition.lastVerdict === "matched") {
+          monitor = yield* delivery.triggerMonitor(
+            monitor,
+            {
+              reason: "condition",
+              summary: monitor.condition.lastSummary,
+              evidence: null,
+            },
+            monitor.condition.lastEvaluatedAt ?? monitor.updatedAt,
+          );
+        } else if (
+          monitor.condition.deadlineAt !== null &&
+          Date.parse(monitor.condition.deadlineAt) <= nowMs
+        ) {
+          monitor = yield* delivery.triggerMonitor(
+            monitor,
+            {
+              reason: "deadline",
+              summary: "The monitor deadline was reached.",
+              evidence: null,
+            },
+            now,
+          );
+          monitor = yield* releaseResource(monitor);
+        } else {
+          const reviewedCondition = requestControllerReview(monitor.condition, now);
+          if (reviewedCondition !== monitor.condition) {
+            const reviewRequested =
+              monitor.condition.review.state === "idle" &&
+              reviewedCondition.review.state === "pending";
+            monitor = { ...monitor, condition: reviewedCondition, updatedAt: now };
+            yield* writeMonitor(monitor);
+            if (reviewRequested) {
+              yield* computerOps.appendReviewRequestedActivity(monitor);
+            }
+          }
+          if (
+            monitor.condition.type === "computer" &&
+            startChecks &&
+            Date.parse(monitor.condition.nextCheckAt) <= nowMs
+          ) {
+            yield* computerOps.startComputerCheck(monitor, now);
+          }
+          if (monitor.status === "active") {
+            monitor = yield* computerOps.deliverControllerReview(monitor, now);
+          }
+        }
       } else if (monitor.status === "active" && wakeAt !== null && Date.parse(wakeAt) <= nowMs) {
         monitor = yield* delivery.triggerMonitor(
           monitor,
@@ -394,7 +351,12 @@ const make = Effect.gen(function* () {
           now,
         );
       }
-      if (monitor.status === "triggered") monitor = yield* releaseResource(monitor);
+      if (
+        monitor.status === "triggered" ||
+        (monitor.status !== "active" && monitor.condition.type === "computer")
+      ) {
+        monitor = yield* releaseResource(monitor);
+      }
       scoped.push(monitor);
     }
 
@@ -479,14 +441,8 @@ const make = Effect.gen(function* () {
         Effect.andThen(mutex.withPermits(1)(reconcileUnlocked(threadId, monitorId, startChecks))),
       );
 
-  const capabilities: ThreadMonitorService["Service"]["capabilities"] = (threadId) =>
-    Option.isNone(registry)
-      ? Effect.succeed({})
-      : readMonitorCapabilities({
-          threadId,
-          projections,
-          listInstances: registry.value.listInstances,
-        });
+  const capabilities = computer.monitorCapabilities;
+  const computerCapabilities = computer.computerCapabilities;
 
   const checkNow: ThreadMonitorService["Service"]["checkNow"] = Effect.fn("ThreadMonitor.checkNow")(
     function* (...[{ threadId, check }]: Parameters<ThreadMonitorService["Service"]["checkNow"]>) {
@@ -538,15 +494,35 @@ const make = Effect.gen(function* () {
       const currentTime = yield* Clock.currentTimeMillis;
       let waitMs = Number.POSITIVE_INFINITY;
       for (const monitor of scheduled.success) {
+        if (monitor.condition.type === "computer" && monitor.status !== "active") {
+          if (monitor.condition.resourceState !== "released") {
+            const dueIn = Date.parse(monitor.condition.nextCheckAt) - currentTime;
+            waitMs = Math.min(waitMs, dueIn > 0 ? dueIn : BLOCKED_DELIVERY_RETRY_MS);
+          }
+          if (monitor.status !== "triggered") continue;
+        }
         if (monitor.status === "triggered") {
           const readyInMs = monitorDeliveryReadyAt(monitor) - currentTime;
           waitMs = Math.min(waitMs, readyInMs <= 0 ? BLOCKED_DELIVERY_RETRY_MS : readyInMs);
           continue;
         }
+        if (monitor.condition.type === "computer" && monitor.condition.review.state === "pending") {
+          const readyInMs = reviewDeliveryReadyAt(monitor.condition) - currentTime;
+          waitMs = Math.min(waitMs, readyInMs <= 0 ? BLOCKED_DELIVERY_RETRY_MS : readyInMs);
+        }
         const wakeAt =
           monitor.condition.type === "process" && checks.has(monitor.id)
             ? monitor.condition.deadlineAt
-            : monitorWakeAt(monitor);
+            : monitor.condition.type === "computer" && checks.has(monitor.id)
+              ? ([
+                  monitor.condition.deadlineAt,
+                  monitor.condition.review.state === "idle"
+                    ? monitor.condition.review.policy?.at
+                    : null,
+                ]
+                  .filter((at): at is string => at !== null && at !== undefined)
+                  .toSorted()[0] ?? null)
+              : monitorWakeAt(monitor);
         if (wakeAt !== null) {
           waitMs = Math.min(waitMs, Math.max(0, Date.parse(wakeAt) - currentTime));
         }
@@ -658,7 +634,11 @@ const make = Effect.gen(function* () {
   return ThreadMonitorService.of({
     start: startOnce,
     create: lifecycle.create,
+    createComputer: computerOps.createComputer,
     capabilities,
+    computerCapabilities,
+    inspectComputer: computerOps.inspectComputer,
+    updateComputer: computerOps.updateComputer,
     status: lifecycle.status,
     subscribeSummaries: lifecycle.subscribeSummaries,
     signal: lifecycle.signal,

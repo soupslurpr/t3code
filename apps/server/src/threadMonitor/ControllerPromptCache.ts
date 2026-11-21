@@ -19,7 +19,7 @@ export interface ControllerModelLookup {
  * Resolves controller prompt-cache timing from the thread's exact current
  * provider instance and model slug, never an evaluator or custom-model fallback.
  */
-const readControllerModel = Effect.fn("ControllerPromptCache.readControllerModel")(
+export const readControllerModel = Effect.fn("ControllerPromptCache.readControllerModel")(
   function* (input: {
     readonly threadId: ThreadId | undefined;
     readonly projections: ProjectionStoreV2["Service"];

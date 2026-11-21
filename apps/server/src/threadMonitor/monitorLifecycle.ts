@@ -572,12 +572,27 @@ export function makeMonitorLifecycle(deps: MonitorLifecycleDeps) {
           .pipe(Effect.mapError(mapPersistenceError("delete-thread")));
         yield* Effect.forEach(
           monitors.filter((monitor) => monitor.threadId === threadId),
-          (monitor) => releaseResource(monitor),
+          (monitor) =>
+            Effect.gen(function* () {
+              if (monitor.condition.type === "computer" && isOutstanding(monitor)) {
+                const cancelledAt = yield* nowIso;
+                monitor = {
+                  ...monitor,
+                  status: "cancelled",
+                  cancelledAt,
+                  updatedAt: cancelledAt,
+                  deliveryRetryAt: null,
+                };
+                yield* writeMonitor(monitor);
+              }
+              yield* releaseResource(monitor);
+            }),
           { discard: true },
         );
         yield* repository
           .deleteByThread(threadId)
           .pipe(Effect.mapError(mapPersistenceError("delete-thread")));
+        yield* wake;
         yield* notifyChanged(threadId);
       }),
     );
