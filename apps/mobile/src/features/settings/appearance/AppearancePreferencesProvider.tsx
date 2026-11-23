@@ -15,6 +15,7 @@ import { ScopedTheme, ScopedVariables, Uniwind } from "uniwind";
 import {
   resolveAppearance,
   resolveAppearancePreferences,
+  resolveMathRenderingEnabled,
   type ResolvedAppearance,
 } from "../../../lib/appearancePreferences";
 import { appAtomRegistry } from "../../../state/atom-registry";
@@ -292,7 +293,7 @@ export function AppearancePreferencesProvider(props: { readonly children: ReactN
     updatePreferences({ codeWordBreak: value });
   };
 
-  const mathRenderingEnabled = storedPreferences?.mathRenderingEnabled === true;
+  const mathRenderingEnabled = resolveMathRenderingEnabled(storedPreferences?.mathRenderingEnabled);
   const setMathRenderingEnabled = (value: boolean) =>
     updatePreferences({ mathRenderingEnabled: value });
 

@@ -153,6 +153,7 @@ export interface Preferences {
   readonly markdownFontSize?: number;
   readonly codeFontSize?: number | null;
   readonly codeWordBreak?: boolean;
+  /** Unset means on: LaTeX math is typeset unless the user turns it off. */
   readonly mathRenderingEnabled?: boolean;
   /** Unset means on: crash reports are sent unless the user turns them off. */
   readonly crashReportsEnabled?: boolean;

@@ -82,6 +82,10 @@ function normalizeCodeWordBreak(value: boolean | null | undefined): boolean {
   return value === true;
 }
 
+export function resolveMathRenderingEnabled(value: boolean | null | undefined): boolean {
+  return value !== false;
+}
+
 function deriveTerminalFontSize(baseFontSize: number): number {
   const scale = normalizeBaseFontSize(baseFontSize) / DEFAULT_BASE_FONT_SIZE;
   return normalizeTerminalFontSize(Math.round(DEFAULT_TERMINAL_FONT_SIZE * scale * 2) / 2);

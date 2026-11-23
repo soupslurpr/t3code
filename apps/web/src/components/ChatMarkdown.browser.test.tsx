@@ -150,7 +150,7 @@ vi.mock(import("../hooks/useTheme"), async (original) => {
   };
 });
 
-const settingsOverrides = vi.hoisted(() => ({ mathRenderingEnabled: false }));
+const settingsOverrides = vi.hoisted(() => ({}) as { mathRenderingEnabled?: boolean });
 vi.mock(import("../hooks/useSettings"), async (original) => {
   const actual = await original();
   type Settings = ReturnType<typeof actual.getClientSettings>;
@@ -193,7 +193,7 @@ it("keeps compact audio playback loaded across signed URL renewals", async () =>
 function setup() {
   appearance.value = "light";
   parsedSources.length = 0;
-  settingsOverrides.mathRenderingEnabled = false;
+  delete settingsOverrides.mathRenderingEnabled;
   nativeFileDrag.enabled = false;
   renderDiagram.mockReset();
   threadWorktrees.clear();
@@ -1323,5 +1323,20 @@ describe("ChatMarkdown host media", () => {
       expect(screen.container.textContent).toContain(MISSING_FILE_ACCESS_MESSAGE),
     );
     expect(screen.container.textContent).not.toContain("Retry video");
+  });
+});
+
+describe("ChatMarkdown math rendering", () => {
+  it("renders LaTeX math by default and leaves raw TeX when disabled", async () => {
+    setup();
+    {
+      await using rendered = await renderText("Inline $x^2$ formula.");
+      expect(rendered.container.querySelector('[data-markdown-math="inline"]')).not.toBeNull();
+    }
+
+    settingsOverrides.mathRenderingEnabled = false;
+    await using disabled = await renderText("Inline $x^2$ formula.");
+    expect(disabled.container.querySelector('[data-markdown-math="inline"]')).toBeNull();
+    expect(disabled.container.textContent).toContain("$x^2$");
   });
 });

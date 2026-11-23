@@ -1,8 +1,19 @@
 import { describe, expect, it } from "vite-plus/test";
 
-import { resolveAppearancePreferences, resolveComposerTextRole } from "./appearancePreferences";
+import {
+  resolveAppearancePreferences,
+  resolveComposerTextRole,
+  resolveMathRenderingEnabled,
+} from "./appearancePreferences";
 
 describe("appearancePreferences", () => {
+  it("enables math rendering by default unless explicitly turned off", () => {
+    expect(resolveMathRenderingEnabled(undefined)).toBe(true);
+    expect(resolveMathRenderingEnabled(null)).toBe(true);
+    expect(resolveMathRenderingEnabled(true)).toBe(true);
+    expect(resolveMathRenderingEnabled(false)).toBe(false);
+  });
+
   it("migrates the legacy markdownFontSize key to baseFontSize", () => {
     expect(resolveAppearancePreferences({ markdownFontSize: 18 }).baseFontSize).toBe(18);
     expect(

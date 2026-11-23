@@ -16,7 +16,7 @@ Git-backed projects show branch and worktree controls below the composer before 
 
 ## Math
 
-Turn on **Settings → Appearance → Render math** (per device) to render LaTeX in messages and Markdown previews on web, desktop, and mobile.
+**Settings → Appearance → Render math** (per device) is on by default to render LaTeX in messages and Markdown previews on web, desktop, and mobile. Turn it off to show raw TeX instead.
 
 - Supports `$…$`, `$$…$$`, `\(…\)`, `\[…\]`, and fenced `math` blocks outside of code.
 - Currency like `$5 and $10` stays plain text; use `\$` to escape other literal dollar signs.

@@ -12,6 +12,7 @@ import {
   ClientSettingsPatch,
   ClientServerSettingsPatch,
   ClaudeSettings,
+  DEFAULT_CLIENT_SETTINGS,
   DEFAULT_SERVER_SETTINGS,
   globalIdleCompaction,
   idleCompactionPatch,
@@ -132,6 +133,20 @@ describe("storage cleanup settings", () => {
 describe("ClientSettings terminal close confirmation", () => {
   it("keeps confirmation enabled for settings without a saved preference", () => {
     expect(decodeClientSettings({}).confirmTerminalClose).toBe(true);
+  });
+});
+
+describe("ClientSettings math rendering", () => {
+  it("enables math rendering by default and preserves explicit preferences", () => {
+    expect(DEFAULT_CLIENT_SETTINGS.mathRenderingEnabled).toBe(true);
+    expect(decodeClientSettings({}).mathRenderingEnabled).toBe(true);
+    expect(decodeClientSettingsPatch({})).not.toHaveProperty("mathRenderingEnabled");
+    for (const mathRenderingEnabled of [true, false]) {
+      const preference = { mathRenderingEnabled };
+      expect(decodeClientSettingsPatch(preference)).toEqual(preference);
+      expect(encodeClientSettings(decodeClientSettings(preference))).toMatchObject(preference);
+    }
+    expect(() => decodeClientSettingsPatch({ mathRenderingEnabled: "yes" })).toThrow();
   });
 });
 
