@@ -11,6 +11,73 @@ import type { AgentDesktopBundleCollision } from "./format.ts";
 
 const missing = (cause: unknown) =>
   cause instanceof Error && "code" in cause && cause.code === "ENOENT";
+const inodeKey = (entry: { readonly dev: bigint; readonly ino: bigint }) =>
+  `${entry.dev}:${entry.ino}`;
+const splitPathSegments = (value: string) =>
+  (NodeProcess.platform === "win32" ? value.split(/[\\/]+/) : value.split(/\/+/)).filter(Boolean);
+async function ancestorInodeKeys(startPath: string) {
+  const keys = new Set<string>();
+  let current = NodePath.resolve(startPath);
+  for (;;) {
+    try {
+      keys.add(inodeKey(await NodeFSP.stat(current, { bigint: true })));
+    } catch (cause) {
+      if (!missing(cause)) throw cause;
+    }
+    const parent = NodePath.dirname(current);
+    if (parent === current) break;
+    current = parent;
+  }
+  return keys;
+}
+async function storageInodeKeys(rawPath: string) {
+  const full = NodePath.isAbsolute(rawPath) ? rawPath : NodePath.join(NodeProcess.cwd(), rawPath);
+  const keys = new Set<string>();
+  const addLstat = async (path: string) => {
+    const entry = await NodeFSP.lstat(path, { bigint: true });
+    keys.add(inodeKey(entry));
+    return entry;
+  };
+  let current = NodePath.parse(full).root;
+  await addLstat(current);
+  const pending = splitPathSegments(full.slice(current.length)).reverse();
+  let symlinks = 0;
+  while (pending.length > 0) {
+    const segment = pending.pop()!;
+    if (segment === ".") continue;
+    if (segment === "..") {
+      current = NodePath.dirname(current);
+      await addLstat(current);
+      continue;
+    }
+    const next = NodePath.join(current, segment);
+    const entry = await addLstat(next);
+    if (entry.isSymbolicLink()) {
+      symlinks += 1;
+      if (symlinks > 40) {
+        throw new DesktopTransferError({
+          code: "invalid-destination",
+          message: "Transfer storage path has too many symbolic links.",
+        });
+      }
+      const target = await NodeFSP.readlink(next);
+      if (NodePath.isAbsolute(target)) {
+        const targetRoot = NodePath.parse(target).root;
+        current =
+          NodeProcess.platform === "win32" && (targetRoot === "\\" || targetRoot === "/")
+            ? NodePath.parse(current).root
+            : targetRoot;
+        await addLstat(current);
+        pending.push(...splitPathSegments(target.slice(targetRoot.length)).reverse());
+      } else {
+        pending.push(...splitPathSegments(target).reverse());
+      }
+      continue;
+    }
+    current = next;
+  }
+  return keys;
+}
 export const linux = NodeProcess.platform === "linux";
 export async function existingChild(parent: BoundTransferEntry, name: string, list = false) {
   try {
@@ -209,9 +276,28 @@ export async function bindWorkspaceTransfer(
     const logicalTarget = NodePath.join(parent.path, ...names);
     checkEntry?.(NodePath.relative(canonicalRoot, logicalTarget).split(NodePath.sep));
     if (options && !source) {
-      const staging = await NodeFSP.realpath(options.stagingDirectory);
-      if (inside(logicalTarget, staging) || inside(staging, logicalTarget))
-        throw invalid("Choose a destination separate from the server's transfer storage.");
+      const targetAncestors = await ancestorInodeKeys(parent.path);
+      for (const entry of ancestors) targetAncestors.add(inodeKey(entry.identity));
+      const leafKey = leaf !== null ? inodeKey(leaf.identity) : null;
+      const storageDirs =
+        options.archiveDirectory && options.archiveDirectory !== options.stagingDirectory
+          ? [options.stagingDirectory, options.archiveDirectory]
+          : [options.stagingDirectory];
+      for (const storageDir of storageDirs) {
+        const configured = NodePath.resolve(storageDir);
+        const storage = await NodeFSP.realpath(storageDir);
+        const storageKey = inodeKey(await NodeFSP.stat(storage, { bigint: true }));
+        const storageAncestors = await storageInodeKeys(storageDir);
+        if (
+          inside(logicalTarget, storage) ||
+          inside(storage, logicalTarget) ||
+          inside(logicalTarget, configured) ||
+          inside(configured, logicalTarget) ||
+          targetAncestors.has(storageKey) ||
+          (leafKey !== null && (leafKey === storageKey || storageAncestors.has(leafKey)))
+        )
+          throw invalid("Choose a destination separate from the server's transfer storage.");
+      }
     }
     const openPublication = async (
       storage: AsyncDisposableStack,

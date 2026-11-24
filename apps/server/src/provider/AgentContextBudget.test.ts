@@ -14,7 +14,10 @@ import { McpProviderSessions } from "@t3tools/provider-core/server/McpProviderSe
 import * as NodeSqliteClient from "@t3tools/shared/nodeSqliteClient";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
-import { McpServer } from "effect/ai";
+import { McpServer, type Tool } from "effect/ai";
+import { advertisedJsonSchema } from "../mcp/advertisedJsonSchema.ts";
+import { ComputerToolkit } from "../mcp/toolkits/computer/tools.ts";
+import { MonitorImageToolkit } from "../mcp/toolkits/monitor/tools.ts";
 
 import { AssetSigner } from "../assets/AssetSigner.ts";
 import { ServerSecretStore } from "../auth/ServerSecretStore.ts";
@@ -127,7 +130,7 @@ const toolHandlerServices = Layer.mergeAll(
   Layer.mock(ThreadLaunchService)({}),
   Layer.mock(ThreadManagementService)({}),
   Layer.mock(ThreadSearch)({}),
-  Layer.mock(DesktopTransfers)({ download: () => null }),
+  Layer.mock(DesktopTransfers)({ download: () => Effect.succeed(null) }),
   Layer.mock(ThreadWorktreeService)({}),
   Layer.mock(ThreadMonitorService)({}),
   Layer.mock(ThreadMonitorSignalCallbacks)({}),
@@ -203,5 +206,53 @@ it.effect("agent context matches the committed budget", () =>
       measured,
       "Set agentContextBudget.json to the measured values. Before you cut text to fit, run the evals that cover it (evals/README.md).",
     ).toEqual(budget);
+  }).pipe(Effect.provide(layerAdvertisedTools)),
+);
+
+it.effect("advertises compact schemas for ComputerToolkit and MonitorImageToolkit tools", () =>
+  Effect.gen(function* () {
+    const mcp = yield* McpServer.McpServer;
+    const byName = new Map(mcp.tools.map(({ tool }) => [tool.name, tool]));
+    const originalTools: Record<string, Tool.Any> = {
+      ...ComputerToolkit.tools,
+      ...MonitorImageToolkit.tools,
+    };
+    const watchStartNullable = new Set(["review", "afterEvaluations", "consecutiveFailures"]);
+    const watchUpdateNullable = new Set([
+      ...watchStartNullable,
+      "deadlineAt",
+      "minEvaluationIntervalMs",
+      "consecutiveUncertain",
+      "at",
+    ]);
+    for (const [name, original] of Object.entries(originalTools)) {
+      expect(byName.get(name)?.inputSchema, name).toEqual(
+        advertisedJsonSchema(
+          original,
+          name === "computer_watch_start"
+            ? { preserveOptionalNullFields: watchStartNullable }
+            : name === "computer_watch_update"
+              ? { preserveOptionalNullFields: watchUpdateNullable }
+              : undefined,
+        ),
+      );
+    }
+    const watchUpdateProps = (
+      byName.get("computer_watch_update")?.inputSchema as {
+        properties?: Record<string, { type?: string; anyOf?: Array<{ type?: string }> }>;
+      }
+    )?.properties;
+    expect(watchUpdateProps?.review?.anyOf?.some((branch) => branch.type === "null")).toBe(true);
+    expect(watchUpdateProps?.deadlineAt?.anyOf?.some((branch) => branch.type === "null")).toBe(
+      true,
+    );
+    expect(watchUpdateProps?.label?.anyOf).toBeUndefined();
+    const watchStartProps = (
+      byName.get("computer_watch_start")?.inputSchema as {
+        properties?: Record<string, { type?: string; anyOf?: Array<{ type?: string }> }>;
+      }
+    )?.properties;
+    expect(watchStartProps?.review?.anyOf?.some((branch) => branch.type === "null")).toBe(true);
+    expect(watchStartProps?.label?.anyOf).toBeUndefined();
   }).pipe(Effect.provide(layerAdvertisedTools)),
 );

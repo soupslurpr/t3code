@@ -878,7 +878,7 @@ const layerUnusedConfigRpcServices = Layer.mergeAll(
     },
   }),
   Layer.mock(ComputerAutomationRouter)({}),
-  Layer.mock(DesktopTransfers)({ download: () => null }),
+  Layer.mock(DesktopTransfers)({ download: () => Effect.succeed(null) }),
   Layer.mock(GitWorkflowService.GitWorkflowService)({}),
   Layer.mock(HostResources.HostResources)({}),
   Layer.mock(McpAppRequests.McpAppRequests)({}),

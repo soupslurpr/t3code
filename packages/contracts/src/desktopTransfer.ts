@@ -29,7 +29,10 @@ export const UserDesktopCopyInput = Schema.Struct({
       "Unique retry ID. Repeating the same ID and copy returns the original transfer; different paths or options are rejected.",
   }),
   direction: Direction,
-  workspacePath: Path.annotate({ description: "Path relative to this thread's workspace." }),
+  workspacePath: Path.annotate({
+    description:
+      "Path relative to this thread's workspace, or an absolute path in full-access mode.",
+  }),
   desktopPath: Path.annotate({
     description:
       "Absolute path or a path relative to the selected desktop account's home directory.",

@@ -92,7 +92,7 @@ export function makeGuestTransfers(
         );
         let manifest: DesktopTransferManifest;
         if (input.direction === "to-desktop") {
-          const incoming = stream.download();
+          const incoming = await stream.download();
           if (!incoming || !input.manifest || incoming.manifest.sha256 !== input.manifest.sha256)
             throw new Error("The transfer archive is unavailable.");
           if (incoming.manifest.wireBytes > MAX_DESKTOP_TRANSFER_BYTES)

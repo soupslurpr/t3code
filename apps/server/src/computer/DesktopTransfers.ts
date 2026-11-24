@@ -16,7 +16,11 @@ import {
   type DesktopTransfer,
   type UserDesktopTransferTargetInput,
 } from "@t3tools/contracts";
-import { extractAgentDesktopBundle, packAgentDesktopBundle } from "@t3tools/shared/desktopTransfer";
+import {
+  AgentDesktopBundleError,
+  extractAgentDesktopBundle,
+  packAgentDesktopBundle,
+} from "@t3tools/shared/desktopTransfer";
 import {
   MAX_DESKTOP_TRANSFER_BYTES,
   isDesktopTransferCancellation,
@@ -25,7 +29,11 @@ import {
   desktopTransferArchiveChunks,
   receiveDesktopTransferArchive,
 } from "@t3tools/shared/desktopTransfer";
-import { bindWorkspaceTransfer, type WorkspaceTransferPath } from "@t3tools/shared/desktopTransfer";
+import {
+  bindAbsoluteTransfer,
+  bindWorkspaceTransfer,
+  type WorkspaceTransferPath,
+} from "@t3tools/shared/desktopTransfer";
 import * as Result from "effect/Result";
 import * as Cause from "effect/Cause";
 import * as Clock from "effect/Clock";
@@ -53,6 +61,7 @@ import { ProjectionStoreV2 } from "../orchestration-v2/ProjectionStore.ts";
 import { ProjectService } from "../project/ProjectService.ts";
 
 const isDesktopTransferError = Schema.is(DesktopTransferError);
+const isAgentDesktopBundleError = Schema.is(AgentDesktopBundleError);
 const requireNative = NodeModule.createRequire(import.meta.url);
 const loadKoffi = async () => requireNative("koffi") as typeof import("koffi").default;
 const isFailureCode = Schema.is(UserDesktopTransferFailure.fields.code);
@@ -72,6 +81,7 @@ interface TransferRecord {
   readonly cancel: Effect.Effect<void>;
   readonly completion: Deferred.Deferred<void>;
   readonly releaseWorkspace: Effect.Effect<void>;
+  readonly beforeDownload: (() => Promise<void>) | null;
   readonly io: Set<Promise<unknown>>;
   snapshot: DesktopTransfer;
   manifest: DesktopTransferManifest | null;
@@ -229,6 +239,18 @@ export const make = Effect.gen(function* () {
           }),
         );
         metadata(record, manifest);
+        if (record.beforeDownload !== null) {
+          yield* Effect.tryPromise({
+            try: record.beforeDownload,
+            catch: (cause) =>
+              isDesktopTransferError(cause)
+                ? cause
+                : new DesktopTransferError({
+                    code: "permission-denied",
+                    message: failure(cause, "preparing").detail,
+                  }),
+          });
+        }
       }
       const result = yield* router
         .invoke(
@@ -252,7 +274,7 @@ export const make = Effect.gen(function* () {
         )
         .pipe(
           Effect.provideService(DesktopTransferStream, {
-            download: () => download(record.snapshot.id, record.token),
+            download: () => runUpload(download(record.snapshot.id, record.token)),
             upload: (manifest, body, signal) =>
               runUpload(upload(record.snapshot.id, record.token, manifest, body), {
                 signal,
@@ -404,39 +426,53 @@ export const make = Effect.gen(function* () {
         };
         const retained = retainedCopy();
         if (retained !== undefined) return yield* restore(retained);
+        const absolute = NodePath.isAbsolute(input.workspacePath);
         const access = desktopTransferWorkspace(
           owner,
           projections,
           projects,
           policies,
           input.direction === "from-desktop",
+          absolute,
         );
         const workspace = yield* restore(
           access.pipe(Effect.mapError((error) => requestError(error.message))),
         );
         const lease = yield* Scope.fork(scope);
         const releaseWorkspace = Scope.close(lease, Exit.void);
+        const transferOptions = {
+          editOnly: workspace.editOnly,
+          stagingDirectory: directory,
+          archiveDirectory: staging,
+          collision: input.collision ?? "create",
+        };
         const boundPath = yield* Effect.acquireDisposable(
           Effect.tryPromise({
             try: () =>
-              bindWorkspaceTransfer(
-                workspace.root,
-                input.workspacePath,
-                input.direction === "to-desktop",
-                loadKoffi,
-                {
-                  editOnly: workspace.editOnly,
-                  stagingDirectory: directory,
-                  archiveDirectory: staging,
-                  collision: input.collision ?? "create",
-                },
-              ),
+              workspace.absolute
+                ? bindAbsoluteTransfer(
+                    input.workspacePath,
+                    input.direction === "to-desktop",
+                    loadKoffi,
+                    transferOptions,
+                  )
+                : bindWorkspaceTransfer(
+                    workspace.root,
+                    input.workspacePath,
+                    input.direction === "to-desktop",
+                    loadKoffi,
+                    transferOptions,
+                  ),
             catch: (cause) =>
               isDesktopTransferError(cause)
                 ? cause
                 : new DesktopTransferError({
                     code:
-                      input.direction === "to-desktop" ? "invalid-source" : "invalid-destination",
+                      isAgentDesktopBundleError(cause) && cause.code === "unsupported-entry"
+                        ? "unsupported-entry"
+                        : input.direction === "to-desktop"
+                          ? "invalid-source"
+                          : "invalid-destination",
                     message: failure(cause, "preparing").detail,
                   }),
           }),
@@ -483,10 +519,13 @@ export const make = Effect.gen(function* () {
           records.delete(record.snapshot.id);
         const id = `transfer-${NodeCrypto.randomUUID()}`;
         const timestamp = now();
+        const recheckAccess = beforeDesktopTransferPublication(access, workspace);
         const record: TransferRecord = {
           scope: owner,
           fingerprint,
           releaseWorkspace,
+          beforeDownload:
+            input.direction === "to-desktop" && workspace.absolute ? recheckAccess : null,
           token: NodeCrypto.randomBytes(32).toString("hex"),
           archivePath: NodePath.join(staging, `${id}.bundle`),
           signal,
@@ -518,12 +557,11 @@ export const make = Effect.gen(function* () {
           },
         };
         records.set(id, record);
-        record.fiber = yield* run(
-          record,
-          input,
-          boundPath,
-          beforeDesktopTransferPublication(access, workspace),
-        ).pipe(Effect.ensuring(releaseWorkspace), Effect.interruptible, Effect.forkIn(scope));
+        record.fiber = yield* run(record, input, boundPath, recheckAccess).pipe(
+          Effect.ensuring(releaseWorkspace),
+          Effect.interruptible,
+          Effect.forkIn(scope),
+        );
         return yield* restore(wait(record, input.waitMs ?? 15_000));
       }),
     );
@@ -552,7 +590,7 @@ export const make = Effect.gen(function* () {
     }
     return record.snapshot;
   });
-  const claim = (id: string, token: string, direction: DesktopTransfer["direction"]) => {
+  const eligible = (id: string, token: string, direction: DesktopTransfer["direction"]) => {
     const record = records.get(id);
     if (
       record === undefined ||
@@ -565,11 +603,30 @@ export const make = Effect.gen(function* () {
     )
       return null;
     if (direction === "to-desktop" && record.manifest === null) return null;
+    return record;
+  };
+  const claim = (id: string, token: string, direction: DesktopTransfer["direction"]) => {
+    const record = eligible(id, token, direction);
+    if (record === null) return null;
     record.claimed = true;
     update(record, { state: "transferring" });
     return record;
   };
-  const download = (id: string, token: string) => {
+  const download = Effect.fn("DesktopTransfers.download")(function* (id: string, token: string) {
+    const candidate = eligible(id, token, "to-desktop");
+    if (candidate === null) return null;
+    if (candidate.beforeDownload !== null) {
+      const check = yield* Effect.tryPromise({
+        try: candidate.beforeDownload,
+        catch: (cause) => failure(cause, "transferring"),
+      }).pipe(Effect.result);
+      if (Result.isFailure(check)) {
+        if (eligible(id, token, "to-desktop") !== null) {
+          yield* finish(candidate, "failed", { ...check.failure, code: "permission-denied" });
+        }
+        return null;
+      }
+    }
     const record = claim(id, token, "to-desktop");
     if (record === null || record.manifest === null) return null;
     async function* body() {
@@ -588,7 +645,7 @@ export const make = Effect.gen(function* () {
       }
     }
     return { manifest: record.manifest, body: body() };
-  };
+  });
   const upload = Effect.fn("DesktopTransfers.upload")(function* (
     id: string,
     token: string,

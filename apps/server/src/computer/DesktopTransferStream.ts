@@ -2,10 +2,10 @@ import type { DesktopTransferManifest } from "@t3tools/contracts";
 import * as Context from "effect/Context";
 
 export interface DesktopArchiveStream {
-  readonly download: () => {
+  readonly download: () => Promise<{
     readonly manifest: DesktopTransferManifest;
     readonly body: AsyncIterable<Uint8Array>;
-  } | null;
+  } | null>;
   readonly upload: (
     manifest: DesktopTransferManifest,
     body: AsyncIterable<Uint8Array>,

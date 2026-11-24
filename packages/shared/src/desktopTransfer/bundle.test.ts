@@ -6,6 +6,7 @@ import * as NodePath from "node:path";
 import * as NodeProcess from "node:process";
 import { expect, it } from "@effect/vitest";
 import {
+  bindAbsoluteTransfer,
   bindWorkspaceTransfer,
   extractAgentDesktopBundle,
   packAgentDesktopBundle,
@@ -321,3 +322,41 @@ it("restores a replacement if authorization changes between retirement and insta
     "target",
   ]);
 });
+
+it.skipIf(NodeProcess.platform === "win32")(
+  "rejects absolute destinations that overwrite symlinks traversed before .. to transfer storage",
+  async () => {
+    await using directory = await temp();
+    const realRoot = NodePath.join(directory.path, "real");
+    const sub = NodePath.join(realRoot, "sub");
+    const storage = NodePath.join(realRoot, "storage");
+    const links = NodePath.join(directory.path, "links");
+    const hop = NodePath.join(links, "hop");
+    const entry = NodePath.join(links, "entry");
+    await NodeFSP.mkdir(sub, { recursive: true });
+    await NodeFSP.mkdir(storage, { recursive: true });
+    await NodeFSP.mkdir(links, { recursive: true });
+    await NodeFSP.symlink(sub, hop);
+    await NodeFSP.symlink("hop/../storage", entry);
+
+    for (const protectedPath of [hop, entry, storage, realRoot]) {
+      await expect(
+        bindAbsoluteTransfer(protectedPath, false, loadTransferKoffi, {
+          editOnly: false,
+          stagingDirectory: entry,
+          collision: "replace",
+        }),
+      ).rejects.toMatchObject({ code: "invalid-destination" });
+    }
+
+    const literalBackslashStorage = NodePath.join(directory.path, "store\\dir");
+    const destination = NodePath.join(directory.path, "dest.txt");
+    await NodeFSP.mkdir(literalBackslashStorage, { recursive: true });
+    await using admitted = await bindAbsoluteTransfer(destination, false, loadTransferKoffi, {
+      editOnly: false,
+      stagingDirectory: literalBackslashStorage,
+      collision: "replace",
+    });
+    expect(admitted.names).toEqual(["dest.txt"]);
+  },
+);

@@ -9,6 +9,7 @@ export {
   type DesktopTransferArchiveChunksInput,
   type ReceiveDesktopTransferArchiveInput,
 } from "./archive.ts";
+export { bindAbsoluteTransfer } from "./absolute.ts";
 export { bindWorkspaceTransfer, type WorkspaceTransferPath } from "./workspace.ts";
 export { extractAgentDesktopBundle } from "./extract.ts";
 export { packAgentDesktopBundle, sha256AgentDesktopBundle } from "./pack.ts";

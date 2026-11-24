@@ -1537,8 +1537,10 @@ const registerComputerTools = Effect.fn("McpHttpServer.registerComputerTools")(f
     | Digest.Digest
   >();
   const built = yield* decodeAsAdvertised(ComputerToolkit);
-  for (const name of Object.keys(built.tools) as Array<keyof typeof built.tools>) {
-    const tool = built.tools[name];
+  for (const name of Object.keys(ComputerToolkit.tools) as Array<
+    keyof typeof ComputerToolkit.tools
+  >) {
+    const tool = ComputerToolkit.tools[name];
     yield* registerImageTool(
       tool,
       (payload) =>
@@ -1604,6 +1606,19 @@ export const layerMcpTransport = <RA, RE, RR>(registrations: Layer.Layer<RA, RE,
     registrations,
   }).pipe(Layer.provide(layerMcpAuthMiddleware));
 
+const WATCH_START_NULLABLE_FIELDS: ReadonlySet<string> = new Set([
+  "review",
+  "afterEvaluations",
+  "consecutiveFailures",
+]);
+const WATCH_UPDATE_NULLABLE_FIELDS: ReadonlySet<string> = new Set([
+  ...WATCH_START_NULLABLE_FIELDS,
+  "deadlineAt",
+  "minEvaluationIntervalMs",
+  "consecutiveUncertain",
+  "at",
+]);
+
 const registerMonitorImageTools = Effect.fn("McpHttpServer.registerMonitorImageTools")(
   function* () {
     const server = yield* McpServer.McpServer;
@@ -1613,13 +1628,22 @@ const registerMonitorImageTools = Effect.fn("McpHttpServer.registerMonitorImageT
       | ComputerObservationStore.ComputerObservationStore
     >();
     const built = yield* decodeAsAdvertised(MonitorImageToolkit);
-    for (const name of Object.keys(built.tools) as Array<keyof typeof built.tools>) {
-      const tool = built.tools[name];
+    for (const name of Object.keys(MonitorImageToolkit.tools) as Array<
+      keyof typeof MonitorImageToolkit.tools
+    >) {
+      const tool = MonitorImageToolkit.tools[name];
       yield* server.addTool({
         tool: new McpSchema.Tool({
           name: tool.name,
           description: Tool.getDescription(tool),
-          inputSchema: advertisedJsonSchema(tool),
+          inputSchema: advertisedJsonSchema(
+            tool,
+            name === "computer_watch_start"
+              ? { preserveOptionalNullFields: WATCH_START_NULLABLE_FIELDS }
+              : name === "computer_watch_update"
+                ? { preserveOptionalNullFields: WATCH_UPDATE_NULLABLE_FIELDS }
+                : undefined,
+          ),
           annotations: {
             ...Context.getOption(tool.annotations, Tool.Title).pipe(
               Option.map((title) => ({ title })),

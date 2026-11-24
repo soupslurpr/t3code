@@ -33,7 +33,7 @@ export const userDesktopTransferRouteLayer = Layer.unwrap(
           const request = yield* HttpServerRequest.HttpServerRequest;
           const auth = credentials(request);
           if (auth === null) return HttpServerResponse.empty({ status: 404 });
-          const download = transfers.download(auth.id, auth.token);
+          const download = yield* transfers.download(auth.id, auth.token);
           if (download === null) return HttpServerResponse.empty({ status: 404 });
           return HttpServerResponse.stream(
             Stream.fromAsyncIterable(

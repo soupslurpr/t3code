@@ -17,6 +17,7 @@ export const desktopTransferWorkspace = Effect.fn("DesktopTransfers.workspace")(
   projects: ProjectService["Service"],
   policies: RuntimePolicyV2["Service"],
   write: boolean,
+  absolute = false,
 ) {
   const { thread } = yield* projections
     .getThreadRecords(scope.thread.threadId, [])
@@ -33,36 +34,51 @@ export const desktopTransferWorkspace = Effect.fn("DesktopTransfers.workspace")(
   if (Option.isNone(project)) return yield* refused("Transfer workspace not found.");
   const root = thread.worktreePath ?? project.value.workspaceRoot;
   let editOnly = false;
-  if (write) {
+  if (write || absolute) {
     const policy = yield* policies
       .resolve({ thread, modelSelection: thread.modelSelection })
       .pipe(Effect.mapError((error) => refused(error.message)));
-    if (
-      (policy.cwd !== null && policy.cwd !== root) ||
-      policy.interactionMode === "plan" ||
-      (policy.runtimeMode !== "auto-accept-edits" && policy.runtimeMode !== "full-access") ||
-      policy.approvalPolicy !== undefined ||
-      policy.sandboxPolicy !== undefined
-    ) {
+    const unrestrictedFullAccess =
+      (policy.cwd === null || policy.cwd === root) &&
+      policy.interactionMode !== "plan" &&
+      policy.runtimeMode === "full-access" &&
+      policy.approvalPolicy === undefined &&
+      policy.sandboxPolicy === undefined;
+    if (absolute && !unrestrictedFullAccess) {
       return yield* refused(
-        "This desktop copy needs approval to write into the thread workspace. Use the provider’s approved file-edit path, or have the user copy the files directly.",
+        "Absolute workspacePath transfers require full-access mode without sandbox or approval restrictions. Use a path relative to the thread workspace.",
       );
     }
-    editOnly = policy.runtimeMode === "auto-accept-edits";
+    if (write) {
+      if (
+        (policy.cwd !== null && policy.cwd !== root) ||
+        policy.interactionMode === "plan" ||
+        (policy.runtimeMode !== "auto-accept-edits" && policy.runtimeMode !== "full-access") ||
+        policy.approvalPolicy !== undefined ||
+        policy.sandboxPolicy !== undefined
+      ) {
+        return yield* refused(
+          "This desktop copy needs approval to write into the thread workspace. Use the provider’s approved file-edit path, or have the user copy the files directly.",
+        );
+      }
+      editOnly = policy.runtimeMode === "auto-accept-edits";
+    }
   }
-  return { root, editOnly };
+  return { root, editOnly, absolute };
 });
 
 /** Promise callback for the bundle codec's final publication boundary. */
 export function beforeDesktopTransferPublication(
   read: ReturnType<typeof desktopTransferWorkspace>,
-  admitted: { readonly root: string; readonly editOnly: boolean },
+  admitted: { readonly root: string; readonly editOnly: boolean; readonly absolute: boolean },
 ) {
   return () =>
     Effect.runPromise(
       read.pipe(
         Effect.flatMap((current) =>
-          current.root !== admitted.root || (!admitted.editOnly && current.editOnly)
+          current.root !== admitted.root ||
+          (!admitted.editOnly && current.editOnly) ||
+          (admitted.absolute && !current.absolute)
             ? refused(
                 "The workspace or its write permissions changed. Start a new copy from the active thread.",
               )

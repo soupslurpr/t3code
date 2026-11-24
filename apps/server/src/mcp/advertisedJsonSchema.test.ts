@@ -59,3 +59,46 @@ it("advertises only string enum values, which Gemini requires", () => {
 
   expect(enumValues.filter((value) => typeof value !== "string")).toEqual([]);
 });
+
+it("preserves null only on listed optional fields when preserveOptionalNullFields is set", () => {
+  const tool = Tool.make("nullable_example", {
+    parameters: Schema.Struct({
+      label: Schema.optional(Schema.String),
+      deadlineAt: Schema.optional(Schema.NullOr(Schema.String)),
+      target: Schema.optional(
+        Schema.NullOr(
+          Schema.Union([
+            Schema.Struct({ kind: Schema.Literal("a"), a: Schema.String }),
+            Schema.Struct({ kind: Schema.Literal("b"), b: Schema.Int }),
+          ]),
+        ),
+      ),
+    }),
+  });
+
+  expect(
+    advertisedJsonSchema(tool, {
+      preserveOptionalNullFields: new Set(["deadlineAt", "target"]),
+    }),
+  ).toEqual({
+    type: "object",
+    properties: {
+      label: { type: "string" },
+      deadlineAt: { anyOf: [{ type: "string" }, { type: "null" }] },
+      target: {
+        anyOf: [
+          {
+            type: "object",
+            properties: {
+              kind: { type: "string", enum: ["a", "b"] },
+              a: { type: "string" },
+              b: { type: "integer" },
+            },
+            required: ["kind"],
+          },
+          { type: "null" },
+        ],
+      },
+    },
+  });
+});
